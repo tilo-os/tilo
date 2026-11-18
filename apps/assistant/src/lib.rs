@@ -2,8 +2,8 @@
 //!
 //! The assistant is not this app's. It is the agent the person keeps in the workspace (an
 //! item of Chat's `chat.agent`), its thread is the Chat conversation between the two, its
-//! work is issues in Tasks and its standing work is Shortcuts the host runs. The window
-//! shows those records and changes them only through the actions their keepers publish: the
+//! work is issues in Tasks and its progress work is Shortcuts the host runs. The window
+//! shows those resources and changes them only through the actions their keepers publish: the
 //! main chat and the sub-agents on the left, the conversation in the middle, drawn by Chat
 //! itself, tasks and scheduled work beside it, and a supervision of what it runs on.
 
@@ -14,12 +14,12 @@ mod conversation;
 mod effects;
 pub mod locales;
 mod panel;
-mod record;
 #[cfg(feature = "samples")]
 mod sample;
 mod sidebar;
 mod sources;
 mod supervision;
+mod window;
 
 use std::rc::Rc;
 
@@ -33,8 +33,8 @@ use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents, workspa
 use ui::widget::ButtonRole;
 
 pub use effects::AssistantEffect;
-pub use record::Window;
 use sources::{Assistant, Read, Reads};
+pub use window::Window;
 
 /// The resource Chat publishes a workspace's conversations under, and its action that sends
 /// a message to whom it names.
@@ -94,7 +94,7 @@ pub(crate) struct Nav {
     pub(crate) asking: LocalState<bool>,
     /// The job as typed so far.
     pub(crate) job: LocalState<String>,
-    /// Moves when this window changed a record it reads, so its parts read it again.
+    /// Moves when this window changed a resource it reads, so its parts read it again.
     pub(crate) changed: LocalState<u64>,
 }
 
@@ -141,8 +141,8 @@ impl Hands {
         }
     }
 
-    /// Make the person's assistant: an agent of the workspace's own record of agents, kept by
-    /// them, through that record's own `create-agent`, and set to run on the workspace's
+    /// Make the person's assistant: an agent of the workspace's own document of agents, kept by
+    /// them, through that resource's own `create-agent`, and set to run on the workspace's
     /// host: an assistant answers while every device of its person is off, so no device runs
     /// it, wherever it was made. Its model is its keeper's own.
     ///
@@ -160,7 +160,6 @@ impl Hands {
                     keeper: None,
                     id: Some(id.clone()),
                     model: None,
-                    colour: None,
                     mcp_client: None,
                 }),
             )

@@ -97,7 +97,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     // The instant a run is of does not matter, but it must not move while it runs: the days a view
     // shows are read from it, as a layout check reads them.
     ui::clock::freeze_for_capture();
-    tilo_ui_host::i18n::ensure();
+    tilo_app_window::i18n::ensure();
     let search = if options.search.is_empty() {
         options
             .dir

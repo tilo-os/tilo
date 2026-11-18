@@ -23,6 +23,7 @@ pub mod hdr_metadata;
 pub mod input;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
+pub mod placement;
 pub mod retention;
 pub mod unit_chain;
 
@@ -33,18 +34,63 @@ pub use tilo_actions::document_sync::{
 
 use serde::{Deserialize, Serialize};
 
-/// The device ↔ device interface's one version: the certified handshake
-/// (`tilo_relay_protocol::auth`), the relay session's frames and the
-/// peer-sync messages they carry. Two devices sync only when theirs are
-/// equal; there is no negotiation and nothing kept for an older version
-/// (docs/architecture/compatibility.md). `interface.toml` beside this crate
-/// holds the schema, and the repository policy fails a change to it that
-/// keeps the number.
+/// The device ↔ device interface's version: the certified handshake
+/// (`tilo_server_protocol::auth`), the server session's frames and the
+/// peer-sync messages they carry. Two devices sync when theirs are at most
+/// one apart ([`works_with_peer_version`]), so a person's servers updating
+/// one at a time keep serving each other and their devices while the
+/// rollout goes on; there is no negotiation and nothing kept for any older
+/// version (docs/architecture/compatibility.md). `interface.toml` beside this
+/// crate holds the schema, and the repository policy fails a change to it
+/// that keeps the number.
 ///
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 52;
+pub const PEER_PROTOCOL_VERSION: u32 = 55;
+
+/// The oldest peer version this build still works with: the one before
+/// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
+/// its main flows (a server holding a workspace, sync, a governance change,
+/// a lease) exactly as that version did, otherwise this one. The frames that
+/// version wrote are kept beside `tilo-server-protocol`
+/// (`previous/peer-v<N>.txt`), and its test fails a build that reads or
+/// writes them differently.
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 55;
+
+// A version bump moves `OLDEST_PEER_PROTOCOL_VERSION` in the same change, and
+// `previous-peer-frames.txt` with it: the window is one version wide, so a
+// bump that leaves it behind fails here, in the bumping crate's own build,
+// rather than later in a test of another crate (docs/architecture/compatibility.md,
+// "Two versions at once").
+const _: () = assert!(
+    OLDEST_PEER_PROTOCOL_VERSION + 1 >= PEER_PROTOCOL_VERSION
+        && OLDEST_PEER_PROTOCOL_VERSION <= PEER_PROTOCOL_VERSION,
+    "a peer version bump also moves OLDEST_PEER_PROTOCOL_VERSION and previous-peer-frames.txt"
+);
+
+#[cfg(test)]
+mod frozen_frames {
+    /// The frozen frames are the oldest version's this build works with, so a
+    /// bump that moves the window without writing them fails in this crate.
+    #[test]
+    fn the_frozen_frames_are_the_oldest_versions() {
+        let version = include_str!("../previous-peer-frames.txt")
+            .lines()
+            .find_map(|line| line.strip_prefix("version "))
+            .and_then(|version| version.trim().parse::<u32>().ok());
+        assert_eq!(version, Some(super::OLDEST_PEER_PROTOCOL_VERSION));
+    }
+}
+
+/// Whether a device at peer version `theirs` and this one work together:
+/// the same version, the one before when this build still speaks it
+/// ([`OLDEST_PEER_PROTOCOL_VERSION`]), or the one after, which speaks this
+/// one's by the same rule. The window is exactly one version wide.
+#[must_use]
+pub const fn works_with_peer_version(theirs: u32) -> bool {
+    theirs >= OLDEST_PEER_PROTOCOL_VERSION && theirs <= PEER_PROTOCOL_VERSION.saturating_add(1)
+}
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -376,7 +422,7 @@ pub enum NeighbourMsg {
         workspace: String,
     },
     /// Retired: a peer's presence cursor moved within `key`'s coordinate
-    /// space. A pointer move is a frame on the workspace's live plane now; no
+    /// space. A pointer move is a frame on the workspace's live session now; no
     /// build produces this, and it stays only so every later Postcard
     /// discriminant keeps its value.
     RetiredPresenceMoved {
@@ -389,7 +435,7 @@ pub enum NeighbourMsg {
         colour: PresenceColour,
     },
     /// Retired: a peer's presence cursor disappeared from `key`'s coordinate
-    /// space. A leaving pointer is a frame on the workspace's live plane now;
+    /// space. A leaving pointer is a frame on the workspace's live session now;
     /// no build produces this, and it stays only so every later Postcard
     /// discriminant keeps its value.
     RetiredPresenceCleared { peer: PeerId, key: PresenceKey },
@@ -537,7 +583,7 @@ pub enum NeighbourMsg {
         own: Option<collab_types::OwnResource>,
     },
     /// Retired: app-level presence crossing the host boundary. An app's
-    /// presence is a frame on the workspace's live plane now; no build
+    /// presence is a frame on the workspace's live session now; no build
     /// produces this, and it stays only so every later Postcard discriminant
     /// keeps its value.
     RetiredAppPresenceV2 {
@@ -712,10 +758,10 @@ pub enum NeighbourMsg {
         seq: u64,
     },
     /// One of session `peer`'s live presence frames in the workspace
-    /// (`tilo_relay_protocol::live`, sealed with the channel keys of the
+    /// (`tilo_server_protocol::live`, sealed with the channel keys of the
     /// record it names), on the workspace's own topic: how the frame travels
-    /// when no workspace host's live plane reaches the workspace. It is the same
-    /// frame, read the same way as one the live plane delivers, so what
+    /// when no workspace host's live session reaches the workspace. It is the same
+    /// frame, read the same way as one the live session delivers, so what
     /// rides it (a wave) reaches the workspace's people with or without a host.
     /// Appended to preserve every existing Postcard discriminant.
     LivePresence { peer: PeerId, frame: Vec<u8> },
@@ -837,7 +883,7 @@ impl NeighbourMsg {
             Self::IdentityAnnouncement { .. }
             // Never acted on; control consent rides `PermissionGrant`.
             | Self::PermissionRequest { .. }
-            // Presence is a frame on the workspace's live plane.
+            // Presence is a frame on the workspace's live session.
             | Self::RetiredPresenceMoved { .. }
             | Self::RetiredPresenceCleared { .. }
             | Self::RetiredAppPresenceV2 { .. } => true,
@@ -1476,7 +1522,7 @@ mod tests {
     }
 
     /// Only generations no build produces any more are retired: the two
-    /// identity predecessors and the presence messages that live-plane frames
+    /// identity predecessors and the presence messages that live-live session frames
     /// replaced. Every other variant, including both identity successors,
     /// stays live.
     #[test]

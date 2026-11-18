@@ -1058,10 +1058,10 @@ tilo_test_env::scenario! {
         assert_eq!(stack.folded, stack.on_screen.last().copied());
         let log = host.log();
         for n in log.active() {
-            let standing = stack.on_screen.contains(&n.id);
+            let on_screen = stack.on_screen.contains(&n.id);
             assert_eq!(
                 n.dwell.is_running(),
-                standing,
+                on_screen,
                 "only a banner on screen ages"
             );
         }
@@ -1301,7 +1301,7 @@ fn one_painted_banner(
         .expect("the banner painted its card")
 }
 
-/// Measurement: how long one paint takes while five banners reflow into four. Not a gate; run with
+/// Measurement: how long one paint takes while five banners reflow into four. Not a check; run with
 /// `--ignored --nocapture` . A debug build paints slower than a person's, so the numbers bound the
 /// cost.
 #[test]

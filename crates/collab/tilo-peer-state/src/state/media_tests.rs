@@ -71,7 +71,7 @@ fn message(doc: &mut AutoCommit) -> NeighbourMsg {
 }
 tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
-    fn workspace_media_policy_is_published_only_whole_by_its_standing_governor;
+    fn workspace_media_policy_is_published_only_whole_by_its_current_governor;
 
     phase workspace_media_native_rejects_malformed_policy_before_any_mutation;
     {
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert!(
             peer.receive_from(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                 message(&mut workspace),
                 now
             )
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
                 }
                 assert!(
                     peer.receive_from(
-                        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                        TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                         message(&mut doc),
                         now
                     )
@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             peer.receive_from(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                 message(&mut document),
                 now
             )
@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
             let before = peer.durable().unwrap();
             assert!(
                 peer.receive_from(
-                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                     message(&mut doc),
                     now
                 )
@@ -303,7 +303,7 @@ tilo_test_env::scenario! {
         doc.merge_incoming(&mut branch).unwrap();
         assert!(
             peer.receive_from(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                 message(&mut doc),
                 now
             )
@@ -328,8 +328,8 @@ tilo_test_env::scenario! {
         peer.governance_mut()
             .publish_governed_revocations(&[revocation], &key, now)
             .unwrap();
-        // The relay's historical retention proof refuses the same candidate; that
-        // half lives beside the proof, in `tilo_workspace_host::payloads`.
+        // The server's historical retention proof refuses the same candidate; that
+        // half lives beside the proof, in `tilo_workspace_service::payloads`.
         let mut current = peer.admitted_workspace().unwrap().clone();
         let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         // Every owner device's row carries the owner's revocations: clear them all.
@@ -361,7 +361,7 @@ tilo_test_env::scenario! {
         let durable = peer.durable().unwrap();
         assert!(
             peer.receive_from(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                 message(&mut current),
                 now
             )
@@ -510,7 +510,7 @@ fn install_policy(
     )
     .unwrap();
     peer.receive_from(
-        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+        TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
         message(&mut doc),
         now,
     )
@@ -608,7 +608,7 @@ tilo_test_env::scenario! {
             let before = peer.durable().unwrap();
             assert!(
                 peer.receive_from_report(
-                    TransportOrigin::RelayDelta(members[0].1.device_public_key),
+                    TransportOrigin::ServerDelta(members[0].1.device_public_key),
                     message,
                     now
                 )
@@ -793,7 +793,7 @@ fn workspace_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTim
     receiver.select_exact_admissions().unwrap();
     receiver
         .receive_from_report(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
             author.workspace_message(),
             now,
         )
@@ -811,7 +811,7 @@ fn assert_invalid_then_valid_chat(
     expected: media::WorkspaceMediaV1,
 ) {
     assert!(receiver.exact_admissions_selected(), "{case}");
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+    let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
     let bad_bytes = edited_chat(author, 2).0;
     let (bad, coverage) = author
         .prepare_signed_mutation(APP, "", DocumentMutation::Snapshot(bad_bytes), key, now)
@@ -1058,7 +1058,7 @@ tilo_test_env::scenario! {
             .unwrap();
         media::refresh_authorization(&old, &mut workspace).unwrap();
         peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
             message(&mut workspace),
             now,
         )

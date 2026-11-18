@@ -24,7 +24,7 @@ fn store_genesis(workspace: &str) -> Vec<tilo_peer_state::SeedDocument> {
 }
 
 fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManager) -> ui::App {
-    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
     use ui::portable_storage::{PortableStorage, StorageKey};
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     let definition = store_definition();
@@ -60,9 +60,9 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
         checkout: DocumentCheckout::new(record, definition.resource_type.clone()),
         reveal: None,
     };
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: "device".into(),

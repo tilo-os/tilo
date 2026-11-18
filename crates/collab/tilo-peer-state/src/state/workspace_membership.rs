@@ -276,7 +276,7 @@ impl PeerWorkspace<'_> {
 }
 impl PeerWorkspaceMut<'_> {
     /// Apply the retained person's typed membership command using actual
-    /// governor signing custody. Public command arguments grant no authority.
+    /// governor signing ownership. Public command arguments grant no authority.
     pub fn apply_workspace_membership_command(
         self,
         caller: &DeviceCert,
@@ -342,6 +342,25 @@ impl PeerWorkspaceMut<'_> {
         }
         if let WorkspaceMembershipCommand::Unshare { share } = command {
             return self.peer.apply_unshare(caller, share, key, now);
+        }
+        if let WorkspaceMembershipCommand::Lease { id, ttl_ms, rank } = command {
+            // A claim is the claiming device's own: no other signs for it.
+            if key.device_public_key() != caller.device_public_key {
+                return Err("a lease is claimed by its own device".into());
+            }
+            let before = self.peer.workspace_heads().unwrap_or_default();
+            if *ttl_ms == 0 {
+                self.peer.workspace_mut().release_lease(caller, id, now)?;
+            } else {
+                self.peer.workspace_mut().take_lease(
+                    caller,
+                    id,
+                    std::time::Duration::from_millis(*ttl_ms),
+                    *rank,
+                    now,
+                )?;
+            }
+            return Ok(self.peer.workspace_heads().unwrap_or_default() != before);
         }
         Ok(false)
     }

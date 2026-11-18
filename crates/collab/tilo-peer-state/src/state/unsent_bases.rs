@@ -22,7 +22,7 @@
 //! changes on top of it, so they are that writer's own follow-ups.
 //!
 //! A reader reads the record without them; only the workspace's store, which every write of the
-//! record reaches, folds them away (see the relay's compaction), so a device that is merely behind
+//! record reaches, folds them away (see the server's compaction), so a device that is merely behind
 //! never drops a write another may still bring.
 
 use std::collections::{BTreeSet, HashMap, HashSet};

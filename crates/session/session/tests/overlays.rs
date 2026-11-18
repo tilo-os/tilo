@@ -80,8 +80,8 @@ fn session() -> Session {
     session_with(layout_tree(), None)
 }
 
-/// The panel's app for this package's tests: the surface probe the session package ships, standing
-/// in for a view that draws the panel and staying up while the session keeps it.
+/// The panel's app for this package's tests: the surface probe the session package ships,
+/// in place of a view that draws the panel and stays up while the session keeps it.
 fn panel_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
@@ -468,7 +468,7 @@ fn a_press_on_the_shell_closes_the_workspace_menu_the_chrome_hangs_off_its_chip(
         "the press on the shell closed it"
     );
     // And the menu it draws followed the stack: the chip opens it again rather than closing the one
-    // still standing under the person's finger.
+    // still there under the person's finger.
     press(&mut session, chip.0, chip.1);
     assert_eq!(
         parts(&session),

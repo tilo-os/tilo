@@ -2,7 +2,7 @@
 //! Deserialized bytes alone confer no source or caller authority.
 use super::invalid;
 use crate::setup::{
-    home_capture::{MountedWitness, OriginalCallerFacts, SourceWitness},
+    home_capture::{MountedProof, OriginalCallerFacts, SourceProof},
     migration_handoff::{HomePolicy, Plan},
     portable_home_media::RegisteredOriginalSource,
 };
@@ -14,9 +14,9 @@ const LIMIT: usize = 64 * 1024;
 pub struct OriginalCopyDeclaration {
     schema: u32,
     source: Plan,
-    source_witness: SourceWitness,
+    source_proof: SourceProof,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    mounted_witness: Option<MountedWitness>,
+    mounted_proof: Option<MountedProof>,
     caller: OriginalCallerFacts,
     setup_binding: String,
     identity_public_key: [u8; 32],
@@ -32,8 +32,8 @@ impl OriginalCopyDeclaration {
         let value = Self {
             schema: 1,
             source: registered.plan,
-            source_witness: registered.witness,
-            mounted_witness: registered.mounted,
+            source_proof: registered.proof,
+            mounted_proof: registered.mounted,
             caller: registered.original_caller,
             setup_binding,
             identity_public_key,
@@ -53,10 +53,10 @@ impl OriginalCopyDeclaration {
         {
             return Err(invalid());
         }
-        self.source_witness.validate_plan(&self.source)?;
+        self.source_proof.validate_plan(&self.source)?;
         self.caller.validate(self.source.home_uid())?;
-        if let Some(mounted) = &self.mounted_witness {
-            mounted.matches_source(&self.source_witness)?;
+        if let Some(mounted) = &self.mounted_proof {
+            mounted.matches_source(&self.source_proof)?;
         }
         if self.schema != 1
             || self.source.home_policy != HomePolicy::Copy
@@ -82,11 +82,11 @@ impl OriginalCopyDeclaration {
     pub fn source(&self) -> &Plan {
         &self.source
     }
-    pub fn source_witness(&self) -> &SourceWitness {
-        &self.source_witness
+    pub fn source_proof(&self) -> &SourceProof {
+        &self.source_proof
     }
-    pub fn mounted_witness(&self) -> Option<&MountedWitness> {
-        self.mounted_witness.as_ref()
+    pub fn mounted_proof(&self) -> Option<&MountedProof> {
+        self.mounted_proof.as_ref()
     }
     pub fn requested_caller(&self) -> &OriginalCallerFacts {
         &self.caller

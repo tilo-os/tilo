@@ -7,7 +7,7 @@ use crate::agent::tests::{Notes, agent, answer, run};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
     Completer, Here, InvocationReceipt, InvocationState, InvokeRequest, Pending, ResourceChanged,
     WatchScope, pending,
 };
@@ -87,12 +87,12 @@ impl Watched {
     }
 }
 
-impl ActionHost for Watched {
+impl ActionProvider for Watched {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.notes.query(caller, query)
     }
 
@@ -100,7 +100,7 @@ impl ActionHost for Watched {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.notes.invoke(caller, request)
     }
 
@@ -116,7 +116,7 @@ impl ActionHost for Watched {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         self.notes.cancel(caller, id)
     }
 
@@ -142,7 +142,7 @@ impl ChangeFeed for Watched {
         &self,
         _caller: &Caller,
         after: Option<&str>,
-    ) -> Pending<Result<ChangePage, ActionHostError>> {
+    ) -> Pending<Result<ChangePage, ActionCallError>> {
         let changes = self.feed.lock().unwrap();
         // With no cursor a follower starts from now, as a feed answers it.
         let seen = after
@@ -157,7 +157,7 @@ impl ChangeFeed for Watched {
 }
 
 /// A watch of `server`, running beside the test: what it answered, and when.
-fn watching<H: ActionHost + Send + Sync + 'static>(
+fn watching<H: ActionProvider + Send + Sync + 'static>(
     server: &Arc<McpServer<H>>,
     arguments: Value,
 ) -> tokio::task::JoinHandle<(Value, bool)> {
@@ -166,7 +166,7 @@ fn watching<H: ActionHost + Send + Sync + 'static>(
 }
 
 /// The cursor a first watch answered with: what the test's watch reads on from.
-async fn cursor_of<H: ActionHost + Send + Sync + 'static>(
+async fn cursor_of<H: ActionProvider + Send + Sync + 'static>(
     server: &Arc<McpServer<H>>,
     arguments: Value,
 ) -> String {
@@ -209,7 +209,11 @@ tilo_test_env::scenario! {
                 .find(|event| event["kind"] == "change")
                 .unwrap_or_else(|| panic!("the change is told: {watched}"));
             assert_eq!(change["change"], "c1a2");
-            assert_eq!(change["record"], "notes.page:1");
+            assert_eq!(
+                change["resources"],
+                json!([{"path": "notes", "app": "so.tilo.notes", "record": "notes.page:1"}]),
+                "the change names what it changed: {change}"
+            );
         });
     }
 

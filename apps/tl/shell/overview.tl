@@ -107,7 +107,7 @@ view picture(windows: List<device.Window>, strip: Text) {
     }
 }
 
-/// The tabs standing behind `w` in its strip, in their order.
+/// The tabs behind `w` in its strip, in their order.
 fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Window> {
     return windows
         .filter(v -> v.group_key == w.group_key and v.tab_index > 0)
@@ -122,7 +122,7 @@ fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Wi
 /// wider than the screen allows is pictured no wider than that. A compact output holds one place
 /// across, so there the card takes the room it is given instead of a share of a strip.
 ///
-/// A `peek` is a tab standing beside the window in front of it, in a slice in which the window's
+/// A `peek` is a tab beside the window in front of it, in a slice in which the window's
 /// commands and the buttons of an app that stopped answering would not fit: it keeps the
 /// picture and its name, and its commands are the window's own when it comes forward. It is
 /// pictured no wider than its 0.469 slice of what a place may take, so a row of places never

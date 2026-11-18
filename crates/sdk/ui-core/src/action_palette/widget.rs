@@ -411,6 +411,7 @@ impl ActionPalette {
             multiline: false,
             placeholder,
             look,
+            inset: [0.0, 0.0],
         });
     }
 

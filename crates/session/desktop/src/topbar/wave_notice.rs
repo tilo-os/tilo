@@ -70,7 +70,7 @@ impl TopBarChrome {
         let height = 24.0;
         let right = right_x - f64::from(theme.tokens.spacing.s2);
         // It yields to what the centre draws (the clock, or the activity pill across the whole
-        // lane), not to the lane kept for an activity: at a laptop's width that lane alone left the
+        // area), not to the area kept for an activity: at a laptop's width that area alone left the
         // notice no room for its words.
         let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
         // No room for the words: the bouncing face says it alone.

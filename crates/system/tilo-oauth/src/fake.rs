@@ -32,19 +32,19 @@ struct State {
     access_token: Option<String>,
     /// When set, token requests must carry this `client_secret`.
     client_secret: Option<String>,
-    token_gate: Option<Arc<ExchangeGate>>,
+    token_hold: Option<Arc<ExchangeHold>>,
 }
 
 #[derive(Default)]
-struct ExchangeGate {
+struct ExchangeHold {
     state: Mutex<(bool, bool)>,
     changed: Condvar,
 }
 
 /// Holds a real fixture token exchange until its owner releases it. Dropping
-/// the gate releases the handler too, so a failed assertion cannot strand it.
-pub struct TokenExchangeGate(Arc<ExchangeGate>);
-impl TokenExchangeGate {
+/// the check releases the handler too, so a failed assertion cannot strand it.
+pub struct TokenExchangeHold(Arc<ExchangeHold>);
+impl TokenExchangeHold {
     pub fn wait_for_exchange(&self, timeout: Duration) -> bool {
         let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
         let (state, _) = self
@@ -63,7 +63,7 @@ impl TokenExchangeGate {
         self.0.changed.notify_all();
     }
 }
-impl Drop for TokenExchangeGate {
+impl Drop for TokenExchangeHold {
     fn drop(&mut self) {
         self.release();
     }
@@ -104,10 +104,10 @@ impl FakeAuthorizationServer {
         Self { responder, state }
     }
 
-    pub fn hold_token_exchange(&self) -> TokenExchangeGate {
-        let gate = Arc::new(ExchangeGate::default());
-        self.state.lock_recover().token_gate = Some(gate.clone());
-        TokenExchangeGate(gate)
+    pub fn hold_token_exchange(&self) -> TokenExchangeHold {
+        let check = Arc::new(ExchangeHold::default());
+        self.state.lock_recover().token_hold = Some(check.clone());
+        TokenExchangeHold(check)
     }
 
     pub fn provider(&self) -> Provider {
@@ -193,13 +193,14 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
         .map_or(request.target.as_str(), |(path, _)| path);
     if request.method == "POST"
         && path == "/token"
-        && let Some(gate) = shared.lock_recover().token_gate.clone()
+        && let Some(check) = shared.lock_recover().token_hold.clone()
     {
-        let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = check.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.0 = true;
-        gate.changed.notify_all();
+        check.changed.notify_all();
         drop(
-            gate.changed
+            check
+                .changed
                 .wait_while(state, |state| !state.1)
                 .unwrap_or_else(PoisonError::into_inner),
         );

@@ -243,6 +243,8 @@ mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod page_activity;
 #[cfg(target_arch = "wasm32")]
+mod page_agents;
+#[cfg(target_arch = "wasm32")]
 mod pages;
 #[cfg(target_arch = "wasm32")]
 pub use page_activity::{LoadActivity, defer_activity_pane};
@@ -254,7 +256,7 @@ pub use host_services::{MODEL_CLIENTS, ModelClients, builtin_model_clients};
 mod link;
 // A pairing link drawn as the code a phone reads.
 #[cfg(target_arch = "wasm32")]
-mod mount_service_custody;
+mod mount_service_lease;
 #[cfg(target_arch = "wasm32")]
 mod qr_code;
 // The page's user root: the envelope it is kept in, and what it signs.
@@ -279,7 +281,7 @@ mod person_settings;
 // run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod identity_api;
-// The page's collaboration plane: the session's sync over this page's endpoint.
+// The page's peer network: the session's sync over this page's endpoint.
 #[cfg(target_arch = "wasm32")]
 mod peer_sync;
 // What the page says of itself, as its live layer hands it back: its tests
@@ -299,6 +301,16 @@ mod sign_in_page;
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod person_resources;
+// Who may read what a page holds of another app's documents: its tests are built natively too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page answers a window's reads; natively only its tests do"
+    )
+)]
+mod read_bounds;
 // What a page times of the members' presence itself: its tests run on the
 // host too.
 #[cfg(any(target_arch = "wasm32", test))]

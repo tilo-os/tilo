@@ -76,9 +76,9 @@ struct World {
     enrolments: BTreeMap<[u8; 32], UnlockEnrolment>,
     auto_approvals: BTreeMap<[u8; 32], AutoApproval>,
     /// What the person's devices answered, as their fabric carries it.
-    decisions: BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    decisions: BTreeMap<DecisionKey, UnlockDecisionEntry>,
     secret_sync: SecretKey,
-    custodian: bool,
+    key_holder: bool,
 }
 
 impl World {
@@ -108,7 +108,7 @@ impl World {
             auto_approvals: BTreeMap::new(),
             decisions: BTreeMap::new(),
             secret_sync,
-            custodian: true,
+            key_holder: true,
         }
     }
 
@@ -118,8 +118,8 @@ impl World {
             enrolments: &self.enrolments,
             auto_approvals: &self.auto_approvals,
             decisions: &self.decisions,
-            custodian: self.custodian,
-            secret_sync: self.custodian.then_some(&self.secret_sync),
+            key_holder: self.key_holder,
+            secret_sync: self.key_holder.then_some(&self.secret_sync),
         }
     }
 
@@ -447,7 +447,7 @@ fn a_device_removed_from_the_fleet_is_refused() {
 }
 
 #[test]
-fn wrong_slot_unknown_key_and_non_custodians_are_refused() {
+fn wrong_slot_unknown_key_and_non_key_holders_are_refused() {
     let cert = boot_cert(None);
     let mut world = World::new(&cert);
     let mut service = UnlockSibling::new(sibling());
@@ -497,10 +497,10 @@ fn wrong_slot_unknown_key_and_non_custodians_are_refused() {
     );
 
     // A sibling without the person's root cannot open halves.
-    world.custodian = false;
+    world.key_holder = false;
     assert_eq!(
         service.hello(&boot.hello, &world.view(), [13; 32], NOW),
-        SiblingFrame::Refused(RefusalReason::NotACustodian)
+        SiblingFrame::Refused(RefusalReason::NotAKeyHolder)
     );
 }
 

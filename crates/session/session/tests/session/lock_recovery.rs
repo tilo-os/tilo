@@ -8,7 +8,7 @@ use super::lock::{
 };
 use super::*;
 
-use tilo_session::ActionPlane;
+use tilo_session::AppSocket;
 
 const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
 
@@ -194,7 +194,7 @@ fn a_session_left_locked_comes_back_locked() {
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
                 collab: false,
-                action_plane: ActionPlane::At(home.path().join("collab.sock")),
+                app_socket: AppSocket::At(home.path().join("collab.sock")),
                 surfaces: vec![lock_screen()],
                 recovery: Some(recovery),
                 ..Options::default()

@@ -142,7 +142,7 @@ def digest(path):
         raise RuntimeError('owned regular review input required')
     metadata = path.stat()
     if metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
-        raise RuntimeError('private review custody required')
+        raise RuntimeError('private review ownership required')
     return {'bytes': metadata.st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
@@ -209,10 +209,10 @@ def main():
         executable = root / 'aot-factory'
     else:
         artifact = root / 'factory-output/needle.aot'
-        custody = json.loads((root / 'aot-receipt.json').read_text())
-        if (factory_identity(custody['source_build']) != factory_identity(receipt)
-                or digest(artifact) != custody['artifact']):
-            raise RuntimeError('AOT artifact lost factory custody')
+        ownership = json.loads((root / 'aot-receipt.json').read_text())
+        if (factory_identity(ownership['source_build']) != factory_identity(receipt)
+                or digest(artifact) != ownership['artifact']):
+            raise RuntimeError('AOT artifact lost factory ownership')
         if not args.manifest:
             parser.error('recognition needs the pinned public manifest')
         fixture, language, sha, pcm_sha, seconds = scope.verified_fixture(args.manifest, args.case)
@@ -232,7 +232,7 @@ def main():
             executable = root / 'aot-worker'
             command += ['--ro-bind', str(pcm), '/review/audio.s16',
                         '--ro-bind', str(peer), '/review/peer.py', *tail,
-                        'python3', '/review/peer.py', custody['artifact']['sha256'],
+                        'python3', '/review/peer.py', ownership['artifact']['sha256'],
                         receipt['files']['aot-bridge.so']['sha256'], language, args.mode,
                         'trace' if args.trace else 'plain']
         else:
@@ -241,7 +241,7 @@ def main():
             pcm.write_bytes(struct.pack('<' + 'f' * len(samples), *(x / 32768 for x in samples)))
             executable = root / 'aot-review'
             command += ['--ro-bind', str(pcm), '/review/audio.f32', *tail,
-                        '/review/aot-review', '/review/needle.aot', custody['artifact']['sha256'],
+                        '/review/aot-review', '/review/needle.aot', ownership['artifact']['sha256'],
                         '/review/whistle.cact', '/review/aot-bridge.so',
                         receipt['files']['aot-bridge.so']['sha256'], '/review/audio.f32',
                         digest(pcm)['sha256'], language]

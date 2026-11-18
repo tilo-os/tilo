@@ -29,8 +29,8 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_client::Host;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
@@ -201,20 +201,20 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     // A workspace anyone may walk into: it sends a device its records when it opens them, so a
     // page that just came in holds none of them.
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();

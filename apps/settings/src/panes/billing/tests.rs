@@ -1,6 +1,6 @@
 //! What Billing says of an account and which of the provider's pages it opens.
 
-use ui::tilo_actions::remote::host_account::HostKind;
+use ui::tilo_actions::remote::server_account::ServerKind;
 
 use super::*;
 
@@ -8,7 +8,7 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-fn account(scenario: &str) -> HostAccount {
+fn account(scenario: &str) -> ServerAccount {
     crate::scenarios::billing_fixture(Some(scenario)).expect("a billing scenario")
 }
 
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
     phase a_self_hosted_host_sells_nothing;
     {
         en();
-        let own = HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
+        let own = ServerAccount::sells_nothing("Ada's server", ServerKind::SelfHosted);
         assert!(!own.sells());
         assert!(page_of(&own, BillingEffect::ManageBilling).is_err());
     }
@@ -92,15 +92,15 @@ tilo_test_env::scenario! {
     {
         en();
         let mut cloud = account("billing");
-        let line = |cloud: &HostAccount| card_line(cloud);
+        let line = |cloud: &ServerAccount| card_line(cloud);
         assert_eq!(line(&cloud), "Visa ·· 4242");
-        let standing = cloud.standing.as_mut().unwrap();
-        standing.payment_method = Some(PaymentMethod {
+        let subscription = cloud.subscription.as_mut().unwrap();
+        subscription.payment_method = Some(PaymentMethod {
             brand: None,
             last4: Some("0005".into()),
         });
         assert_eq!(line(&cloud), "Card ·· 0005");
-        cloud.standing.as_mut().unwrap().payment_method = Some(PaymentMethod::default());
+        cloud.subscription.as_mut().unwrap().payment_method = Some(PaymentMethod::default());
         assert_eq!(line(&cloud), "On file");
     }
 }

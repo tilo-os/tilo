@@ -6,7 +6,7 @@
 //! shows of the page again, once, instead of reading on a timer:
 //!
 //! - the page's review, when it is open, reads the page's forms, fields and
-//!   record again ([`super::page_review_view`]);
+//!   resource again ([`super::page_review_view`]);
 //! - the window's own read of the page's forms is due again when the engine
 //!   names a form that is not the one the page publishes: one the page drew
 //!   later, one that asks or offers something else, one that is gone

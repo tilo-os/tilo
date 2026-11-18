@@ -93,7 +93,7 @@ canonical desktop (`src/desktop.rs`: `tilo-desktop-surface` over a
 and each tab's record are kept per workspace in the profile's storage and
 committed with the records themselves, so a reload restores the same
 windows on the same documents. Who is here is the session's own: a started
-peer runs `tilo_session::sync::Client` over the page's live plane, so the
+peer runs `tilo_session::sync::Client` over the page's live session, so the
 board, its schedule and the certificates, waves and calls on it are the
 desktop's (`src/peer_sync.rs`). With `peer`, a started certified peer, the
 mount's records and desktop replicate through that peer's workspace, and
@@ -141,7 +141,7 @@ budget.
 
 `crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
 apps, headless Chrome pages and a host agent in one workspace of a local
-`tilo-relay dev` host on spare ports, and checks what a person would see: the
+`tilo-server dev` host on spare ports, and checks what a person would see: the
 same record on every side; edits native to browser, browser to native and
 browser to browser, with the time until the other side shows them; named
 cursors and carets both ways; a page that joins late; an agent's edit and
@@ -153,7 +153,7 @@ spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app
 table) under `--out` and stops everything it started.
 
 ```sh
-cargo build --release -p tilo-relay --features web,agents
+cargo build --release -p tilo-server --features web,agents
 cargo build -p tilo-runtime --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
 crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
 node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
@@ -162,7 +162,7 @@ node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle
 
 `--build` runs those builds itself (the bundle with `--profile dev` into
 `OUT/bundle` when `--bundle` is not given); `--no-agent` leaves the agent out
-for a relay without `agents`. The native window is read and edited from
+for a server without `agents`. The native window is read and edited from
 outside the process through the macOS accessibility API
 (`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
 running the script needs Accessibility permission; the native pointer moves
@@ -175,7 +175,7 @@ on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
 ## The first visit, with a real agent
 
 `crates/browser/tilo-web-desktop/scripts/agent-shell.mjs` walks the first
-visit a person makes on a hosted Tilo, on this machine: a `tilo-relay workspace`
+visit a person makes on a hosted Tilo, on this machine: a `tilo-server workspace`
 host with a workspace of its own for each person, the site in front of it (the
 desktop bundle with a deployment's `entry.json`), and a first visit in headless
 Chrome. It presses "Set up with your agent", reads the code out of the prompt
@@ -202,12 +202,12 @@ CHROME=/usr/lib64/chromium-browser/chromium-browser \
 On a machine with a GPU, headless Chrome still draws WebGPU with SwiftShader
 unless told otherwise: `TILO_CHROME_ARGS="--enable-gpu --use-angle=vulkan
 --enable-features=Vulkan --ignore-gpu-blocklist"` gives it the GPU (on a laptop
-with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A relay built on another
+with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A server built on another
 machine finds no font catalog of its own; `TILO_FONT_CATALOG` names one
 (`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope
 fixtures` prints it).
 
-`--build` builds the relay (features `web,agents`), the CLI and the bundle;
+`--build` builds the server (features `web,agents`), the CLI and the bundle;
 the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
 gst-launch-1.0 (the build container has the latter); without either, the
 screencast's frames are kept instead.

@@ -35,8 +35,6 @@ mod common;
 mod a11y_export;
 #[path = "acceptance.rs"]
 mod acceptance;
-#[path = "action_plane.rs"]
-mod action_plane;
 #[path = "agent_control.rs"]
 mod agent_control;
 #[path = "agent_environments.rs"]
@@ -49,6 +47,8 @@ mod app_records;
 mod app_sheets;
 #[path = "app_side_records.rs"]
 mod app_side_records;
+#[path = "app_socket.rs"]
+mod app_socket;
 #[path = "ask.rs"]
 mod ask;
 #[path = "atspi_bus.rs"]
@@ -129,6 +129,8 @@ mod invitations;
 mod invite;
 #[path = "join.rs"]
 mod join;
+#[path = "kept_apps.rs"]
+mod kept_apps;
 #[path = "launch.rs"]
 mod launch;
 #[path = "layout.rs"]
@@ -155,8 +157,6 @@ mod lounge_e2e;
 mod machine_isolation;
 #[path = "mcp_server_workspace.rs"]
 mod mcp_server_workspace;
-#[path = "mention_notice.rs"]
-mod mention_notice;
 #[path = "network_agent_questions.rs"]
 mod network_agent_questions;
 #[path = "network_unlock.rs"]
@@ -171,6 +171,8 @@ mod origin_connector;
 mod overlays;
 #[path = "overlays_styles.rs"]
 mod overlays_styles;
+#[path = "own_api.rs"]
+mod own_api;
 #[path = "owner_control.rs"]
 mod owner_control;
 #[path = "palette_captures.rs"]
@@ -277,6 +279,8 @@ mod window_menu_probe;
 mod window_share_live;
 #[path = "window_switcher.rs"]
 mod window_switcher;
+#[path = "windows_compat.rs"]
+mod windows_compat;
 #[path = "workspace_agents.rs"]
 mod workspace_agents;
 #[path = "workspaces.rs"]

@@ -432,7 +432,7 @@ struct Piece {
 }
 
 /// How far inside an output's edges a changed window group's columns are looked for
-/// ([`cover_lane`]): the columns a change can round onto a tile just past the group it
+/// ([`cover_section`]): the columns a change can round onto a tile just past the group it
 /// belongs to, where the output's own edge is not.
 const COLUMN_EDGE: u32 = 16;
 
@@ -652,7 +652,7 @@ fn pan_work(
 }
 
 /// The strips that show in the row `y0..y1`: every strip whose band holds the row.
-fn cover_lane(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<Piece> {
+fn cover_section(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<Piece> {
     pieces
         .iter()
         .filter(|piece| piece.band.1 <= y0 && piece.band.3 >= y1 && piece.band.0 < piece.band.2)
@@ -675,7 +675,7 @@ fn cover_lane(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<Piece> {
 }
 
 fn runs(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<(u32, u32, Vec<Piece>)> {
-    let in_row = cover_lane(pieces, y0, y1, width);
+    let in_row = cover_section(pieces, y0, y1, width);
     let mut xs: Vec<u32> = in_row
         .iter()
         .flat_map(|piece| [piece.band.0, piece.band.2])

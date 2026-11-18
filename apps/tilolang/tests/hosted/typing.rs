@@ -1,5 +1,5 @@
-//! A person's typing into a bound field: every letter is a change of the record the moment it is
-//! typed — kept with the record, and on its way to every peer — and the burst of them is one step
+//! A person's typing into a bound field: every letter is a change of the document the moment it is
+//! typed — kept with the document, and on its way to every peer — and the burst of them is one step
 //! of the person's: one entry in History, one undo.
 
 use super::*;
@@ -8,7 +8,7 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::ResourceRef;
 
-/// A person at a Notes window of the notebook the record `chunks` holds, as one opens it again
+/// A person at a Notes window of the notebook the document `chunks` holds, as one opens it again
 /// after closing it: what a window kept of a workspace they had open before.
 fn notes_over(route: &RouteSpec, chunks: Chunks) -> Session {
     let mut session = Session::brokered(
@@ -24,12 +24,12 @@ fn notes_over(route: &RouteSpec, chunks: Chunks) -> Session {
     session
 }
 
-/// The record's heads now: what the changes a peer takes start after.
+/// The document's heads now: what the changes a peer takes start after.
 fn marks(session: &Session) -> Stamps {
     session.instance().record().marks()
 }
 
-/// The changes the window's record holds past `marks`, as the workspace hands them to a peer.
+/// The changes the window's document holds past `marks`, as the workspace hands them to a peer.
 fn changes_since(session: &Session, marks: &Stamps) -> Vec<u8> {
     session.instance().record().changes_since(marks)
 }
@@ -39,22 +39,22 @@ fn after_a_pause(session: &Session, pause: std::time::Duration) {
     store(session).set_edit_pause(pause);
 }
 
-/// Another device of the workspace, reading the record as it receives it: what a peer sees of what
+/// Another device of the workspace, reading the document as it receives it: what a peer sees of what
 /// the person types, one sync turn at a time.
 struct Peer {
     host: Host,
-    /// This device's copy of the record, as the changes arrive.
+    /// This device's copy of the document, as the changes arrive.
     doc: automerge::AutoCommit,
-    /// What this device has taken of the window's record.
+    /// What this device has taken of the window's document.
     taken: Stamps,
 }
 
 impl Peer {
-    /// This device over the record `session`'s window holds now, running the notes package the
+    /// This device over the document `session`'s window holds now, running the notes package the
     /// window runs.
     fn over(session: &Session) -> Self {
         let held = record(session);
-        let doc = held.first().expect("the record is held").clone();
+        let doc = held.first().expect("the document is held").clone();
         let host = Host::new(
             &doc,
             tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
@@ -73,7 +73,7 @@ impl Peer {
         }
     }
 
-    /// Take what the window's record holds past what this device took, and bring its store up to
+    /// Take what the window's document holds past what this device took, and bring its store up to
     /// date with it: one sync turn. Whether anything arrived.
     fn take(&mut self, session: &Session) -> bool {
         let changes = changes_since(session, &self.taken);
@@ -85,7 +85,7 @@ impl Peer {
         self.doc
             .load_incoming_whole(&changes)
             .expect("a peer takes every change");
-        // The peer replays the action each change records and gets that change, to the byte.
+        // The peer replays the action each change documents and gets that change, to the byte.
         replayed(&mut self.doc, &held, &self.host);
         self.host.sync_from(&self.doc);
         self.host.wait_index();
@@ -133,7 +133,7 @@ impl Peer {
     }
 
     /// The gestures the note's versions name, oldest first: the acts its History folds them
-    /// into, as this device reads them from the record.
+    /// into, as this device reads them from the document.
     fn gestures(&self) -> Vec<Option<String>> {
         self.host
             .store()
@@ -158,13 +158,16 @@ fn history_acts(session: &mut Session) -> usize {
         .unwrap_or_else(|| panic!("the note's History counts what was done to it: {page:?}"))
 }
 
-/// The steps the person `person` has in effect in the record, newest first, each the number of
+/// The steps the person `person` has in effect in the document, newest first, each the number of
 /// changes it takes back: one for the burst of their typing, however many letters it was.
 fn steps(session: &Session, person: &str) -> Vec<usize> {
     let scope = ui::history_source::steps::Scope::Invoker(
         ui::tilo_actions::MemberId::person(person).into(),
     );
-    let doc = record(session).first().expect("the record is held").clone();
+    let doc = record(session)
+        .first()
+        .expect("the document is held")
+        .clone();
     ui::history_source::steps::steps_in_effect(&doc, &|version| scope.owns(version), 16)
         .iter()
         .map(Vec::len)
@@ -192,7 +195,7 @@ fn click_title(session: &mut Session) {
     session.settle();
 }
 
-/// Twenty keystrokes into a note's body are twenty changes of the record — every letter is kept
+/// Twenty keystrokes into a note's body are twenty changes of the document — every letter is kept
 /// and sent as it is typed, so nothing typed is only in memory — and one step of the person's: one
 /// entry in History, and one undo takes the whole burst back.
 fn typing_a_body_is_one_step_of_however_many_letters(mut session: Session) {
@@ -205,7 +208,7 @@ fn typing_a_body_is_one_step_of_however_many_letters(mut session: Session) {
     assert_eq!(
         changes(&session),
         before + "twenty characters in".len(),
-        "every letter is a change of the record as it is typed"
+        "every letter is a change of the document as it is typed"
     );
     assert_eq!(
         body_text(&mut session).trim_end(),
@@ -355,7 +358,7 @@ fn a_title_typed_right_after_new_note_reaches_a_peer(same_turn: bool) {
     let title = peer.host.runtime().read(&peer.note(), "title");
     assert!(
         matches!(&title, Ok(Value::Text(title)) if title == "Groceries"),
-        "the record holds the title as typed: {title:?}"
+        "the document holds the title as typed: {title:?}"
     );
 }
 
@@ -370,23 +373,23 @@ fn a_title_typed_in_the_same_turn_as_new_note_reaches_a_peer() {
 }
 
 /// A window dropped with the keyboard still in a field keeps every letter: each was a change of the
-/// record as it was typed, so another device reads the whole burst — one step as far as history
+/// document as it was typed, so another device reads the whole burst — one step as far as history
 /// and undo go.
 #[test]
 fn a_window_dropped_mid_burst_keeps_every_letter() {
     let mut session = Session::notes();
     new_note_with_title(&mut session, "Groceries");
-    // The window goes away before any pause would end the burst: only the record holds the letters.
+    // The window goes away before any pause would end the burst: only the document holds the letters.
     after_a_pause(&session, std::time::Duration::from_secs(600));
     let written = store(&session).stats().written_once;
     let before = record(&session);
     session.window.type_text("twenty characters in");
     session.settle();
-    // Letters the record takes in one turn are each written once, as the change each makes.
+    // Letters the document takes in one turn are each written once, as the change each makes.
     assert_eq!(
         store(&session).stats().written_once,
         written + 20,
-        "every letter is written into the record once"
+        "every letter is written into the document once"
     );
     let host = session.instance_host();
     let mut reproduced = 0;
@@ -399,14 +402,14 @@ fn a_window_dropped_mid_burst_keeps_every_letter() {
     assert_eq!(reproduced, 20, "a peer reproduces every letter");
     let route = session.instance().record().route().clone();
     let held = record(&session);
-    // What the record holds, as another device of the workspace reads it.
+    // What the document holds, as another device of the workspace reads it.
     let mut reader = Peer::over(&session);
     assert_eq!(
         reader.body().trim_end(),
         "twenty characters in",
-        "every letter typed is the record's before any window writes it"
+        "every letter typed is the document's before any window writes it"
     );
-    // The window goes away without a flush: nothing writes the store's memory to the record now.
+    // The window goes away without a flush: nothing writes the store's memory to the document now.
     drop(session);
     let mut again = notes_over(&route, held);
     assert_eq!(
@@ -451,7 +454,7 @@ fn a_peer_sees_each_letter_and_one_undo_takes_the_burst_back_on_both() {
         assert_eq!(
             store(&session).stats().written_once,
             written + 1,
-            "the letter is written into the record once, as the change it makes"
+            "the letter is written into the document once, as the change it makes"
         );
         assert!(peer.take(&session), "the letter reached the peer");
         assert_eq!(
@@ -465,7 +468,7 @@ fn a_peer_sees_each_letter_and_one_undo_takes_the_burst_back_on_both() {
         typed,
         "the person's own window reads the same"
     );
-    // Every letter is a version of the note in the peer's record, and all of them name one act:
+    // Every letter is a version of the note in the peer's document, and all of them name one act:
     // the peer's History folds the burst into one entry, as the person's does.
     let gestures = peer.gestures();
     let typed_gestures = &gestures[before.len()..];

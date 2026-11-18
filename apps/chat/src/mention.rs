@@ -3,7 +3,7 @@
 //! A mention is **not** a string that happens to start with `@`. It is a
 //! resolved pointer to one member of the workspace, minted when the message is
 //! authored and stored in the shared CRDT next to the body (see
-//! [`crate::record`]). That is what lets anything else — the person mentioned, an
+//! [`crate::chat`]). That is what lets anything else — the person mentioned, an
 //! agent watching the workspace, a notification badge, a search index — ask a
 //! message *who it mentions* without re-parsing prose and re-guessing which
 //! "@ada" meant which Ada.
@@ -43,7 +43,7 @@
 
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
-use ui::tilo_resource::{self, Atom, JsonSchema};
+use ui::tilo_resource::{self, Atom, JsonSchema, MemberId};
 
 /// A structured reference to one workspace member inside a message body.
 ///
@@ -85,10 +85,10 @@ impl Mention {
 /// binds `@Ada Lovelace` to the longer one rather than to "Ada" plus stray
 /// prose. An `@` that matches nobody is left as ordinary text — no mention is
 /// invented for a name the workspace does not have.
-pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
+pub fn resolve(text: &str, people: &[(MemberId, String)]) -> Vec<Mention> {
     // Longest first so "Ada Lovelace" wins over "Ada" at the same offset.
-    let mut by_len: Vec<&crate::record::Person> = people.iter().collect();
-    by_len.sort_by_key(|p| std::cmp::Reverse(p.name.len()));
+    let mut by_len: Vec<&(MemberId, String)> = people.iter().collect();
+    by_len.sort_by_key(|(_, name)| std::cmp::Reverse(name.len()));
 
     // Case-insensitive matching runs against a lowered copy. `to_lowercase` can
     // change byte length for a few scripts, which would make offsets computed on
@@ -119,19 +119,19 @@ pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
         }
         let after = at + '@'.len_utf8();
         let mut matched: Option<usize> = None;
-        let mut who: Option<&crate::record::Person> = None;
-        for p in &by_len {
-            if p.name.is_empty() {
+        let mut who: Option<&MemberId> = None;
+        for (id, name) in &by_len {
+            if name.is_empty() {
                 continue;
             }
-            let lowered_name = p.name.to_lowercase();
+            let lowered_name = name.to_lowercase();
             let needle: &str = if fold {
-                if lowered_name.len() != p.name.len() {
+                if lowered_name.len() != name.len() {
                     continue;
                 }
                 &lowered_name
             } else {
-                &p.name
+                name
             };
             // `haystack` may be a lowercased copy: even with a matching total
             // byte length, its char boundaries at `after` aren't guaranteed to
@@ -155,17 +155,17 @@ pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
                 .is_none_or(|c| !c.is_alphanumeric());
             if boundary {
                 matched = Some(needle.len());
-                who = Some(p);
+                who = Some(id);
                 break;
             }
         }
         match (matched, who) {
             (Some(n), Some(p)) => {
                 out.push(Mention {
-                    user: p.id.clone(),
+                    user: p.clone(),
                     start: at,
                     len: '@'.len_utf8() + n,
-                    is_agent: p.is_agent(),
+                    is_agent: !p.is_person(),
                 });
                 cursor = after + n;
             }
@@ -178,20 +178,19 @@ pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_resource::MemberId;
 
-    fn workspace() -> Vec<crate::record::Person> {
+    fn workspace() -> Vec<(MemberId, String)> {
         [
             ("u_ada", "Ada"),
             ("u_lovelace", "Ada Lovelace"),
             ("agent:agent_scribe", "Scribe"),
         ]
         .into_iter()
-        .map(|(id, name)| crate::record::Person {
-            name: name.into(),
-            ..crate::record::Person::unnamed(
+        .map(|(id, name)| {
+            (
                 id.strip_prefix("agent:")
                     .map_or_else(|| MemberId::person(id), MemberId::agent),
+                name.to_owned(),
             )
         })
         .collect()

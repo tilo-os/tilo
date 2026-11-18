@@ -2,7 +2,7 @@
 //!
 //! Everything here is plain data + serde so the entire app state can be
 //! round-tripped through Automerge scalars. Rendering, probing and the
-//! write/install seam live in sibling modules — this file knows nothing
+//! write/install boundary live in sibling modules — this file knows nothing
 //! about vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
@@ -207,7 +207,7 @@ pub struct TiloRelease {
     pub image_sha256: String,
     /// Exact target consumer proof authenticated with the media catalog's image digest.
     #[serde(default)]
-    pub account_custody: Option<crate::account_admission::ConsumerCapability>,
+    pub account_credentials: Option<crate::account_admission::ConsumerCapability>,
     /// Home archive consumers authenticated with the selected image digest.
     #[serde(default)]
     pub home_archive: Option<crate::home_admission::ConsumerCapability>,
@@ -497,7 +497,7 @@ impl Action {
 ///   Source → Drive → Customize → Confirm → Write → Done
 ///
 /// * **Confirm** is the last screen before anything destructive happens: a
-///   read-only review of every choice plus the typed device-name gate.
+///   read-only review of every choice plus the typed device-name check.
 /// * **Write** shows live progress; the read-back verify is a phase *within*
 ///   it (so "writing" and "verifying" share one station).
 /// * **Done** is the terminal outcome (verified / failed) with a fresh-start
@@ -1054,7 +1054,7 @@ pub fn sample_releases() -> Vec<TiloRelease> {
             archive_sha256: String::new(),
             archive_size: 0,
             image_sha256: "1111111111111111111111111111111111111111111111111111111111111111".into(),
-            account_custody: None,
+            account_credentials: None,
             home_archive: None,
             applications: None,
             original_source: None,
@@ -1071,7 +1071,7 @@ pub fn sample_releases() -> Vec<TiloRelease> {
             archive_sha256: String::new(),
             archive_size: 0,
             image_sha256: "2222222222222222222222222222222222222222222222222222222222222222".into(),
-            account_custody: None,
+            account_credentials: None,
             home_archive: None,
             applications: None,
             original_source: None,

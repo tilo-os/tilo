@@ -1,4 +1,4 @@
-//! Installed Copy on the existing private Shell/root request and person gate; source and output work
+//! Installed Copy on the existing private Shell/root request and person check; source and output work
 //! and importer retirement stay owned until an observed stop.
 use super::*;
 use crate::setup::{
@@ -118,7 +118,7 @@ fn run_current(
         std::thread::park_timeout(Duration::from_millis(50));
     }
     // The transaction, signed runs, output issue and real importer leave their slots before any source
-    // or person custody is consumed.
+    // or person ownership is consumed.
     if actor.retire().is_err() {
         loop {
             std::thread::park_timeout(Duration::from_millis(50));
@@ -229,7 +229,7 @@ fn run_reviewed(
         Ok(artifacts) if control_error.is_none() && !cancel.load(Ordering::Acquire) => artifacts,
         result => {
             drop(result);
-            // Shut down exactly this importer transport: its gate stop watcher cancels and joins any
+            // Shut down exactly this importer transport: its check stop watcher cancels and joins any
             // owned adoption worker before exit.
             let _ = receiver.stop_installed_copy_transport();
             drop(receiver);
@@ -308,7 +308,7 @@ fn run_reviewed(
                         && applications_cipher_sha256 == applications =>
                     {
                         // Complete stays successful even if material retirement fails; keep the root task
-                        // and owned permit alive, since process exit would lose uncertain custody.
+                        // and owned permit alive, since process exit would lose uncertain ownership.
                         return finish_cleanup(
                             &completion,
                             &tx,
@@ -336,7 +336,7 @@ fn run_reviewed(
         }
     }
 }
-/// Refusal and cancellation stay errors; the caller keeps root custody and exposes cleanup separately
+/// Refusal and cancellation stay errors; the caller keeps root ownership and exposes cleanup separately
 /// from Complete.
 fn finish_cleanup(
     completion: &Arc<crate::setup::home_capture::InstalledCopyCompletion>,
@@ -438,7 +438,7 @@ fn retire_completed_copy(
     unreachable!("bounded cleanup loop always returns on its final attempt")
 }
 /// Durable Complete cannot become Failed or authorize a fresh export; the executing root task keeps
-/// the same opaque completion and its custody while ACK or retirement is uncertain.
+/// the same opaque completion and its ownership while ACK or retirement is uncertain.
 fn park_completed_copy(completion: &Arc<crate::setup::home_capture::InstalledCopyCompletion>) -> ! {
     let _held = completion.clone();
     loop {

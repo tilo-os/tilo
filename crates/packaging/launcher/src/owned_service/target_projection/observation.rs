@@ -157,7 +157,7 @@ fn serve_measurement(
                     .raw_os_error()
                     .is_some_and(|code| (1..=4095).contains(&code)) =>
         {
-            // Actual native operation refusal keeps FUSE/session custody; it is neither an object
+            // Actual native operation refusal keeps FUSE/session ownership; it is neither an object
             // measurement nor a source grant.
             super::shim::verify_dropped(record.uid, record.gid)?;
             if namespaces()? != record.namespaces {

@@ -19,15 +19,15 @@ thread_local! {
 }
 
 /// The content store of the window the code on this thread runs as, opened the first time it is
-/// asked for: its scope entered and its store registered for it, sealed as a record's store is.
+/// asked for: its scope entered and its store registered for it, sealed as a document's store is.
 /// An action too large to record whole keeps its large parts there and every read of one finds
-/// them, as the host lends each window its record's store.
+/// them, as the host lends each window its document's store.
 #[must_use]
 pub fn store() -> tilo_content::ContentStore {
     WINDOW.with(|(_, content, _)| content.clone())
 }
 
-/// What the change `change` decodes as in `peer`, a replica of the record as it holds it, its
+/// What the change `change` decodes as in `peer`, a replica of the document as it holds it, its
 /// action's large parts read from `store` alone: on a thread no window lent a store.
 pub fn decoded(
     mut peer: AutoCommit,

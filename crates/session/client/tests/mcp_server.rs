@@ -21,9 +21,10 @@ use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::mcp_server::{self, Server};
 use tilo_actions::remote::{
-    ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
+    settle_with,
 };
-use tilo_relay_client::revoke_device;
+use tilo_server_client::revoke_device;
 use tilo_session_client::device::session_as_agent;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::RevocationReason::Retired;
@@ -187,7 +188,7 @@ async fn revoked_by_someone_else(
         .unwrap();
     other.send(Cmd::Revoke(theirs.clone())).unwrap();
     wait_for("the host to keep their own revocation", || {
-        let logged = tilo_relay::store::load_revocations(state);
+        let logged = tilo_server::store::load_revocations(state);
         let theirs = theirs.clone();
         async move {
             logged
@@ -196,7 +197,7 @@ async fn revoked_by_someone_else(
         }
     })
     .await;
-    let logged = tilo_relay::store::load_revocations(state).unwrap();
+    let logged = tilo_server::store::load_revocations(state).unwrap();
     assert!(
         logged
             .iter()
@@ -230,7 +231,7 @@ async fn the_persons_api_lists_stops_and_revokes_their_agent_and_nobody_elses() 
     let workspace = crate::support::workspace();
     let mut peers = Vec::new();
     for device in [&browser, &computer] {
-        place(&host.relay, &device.cert).await;
+        place(&host.server, &device.cert).await;
         let peer = start_peer(
             host.iroh(),
             device.cert.clone(),

@@ -1,7 +1,7 @@
 //! Input→display latency of Notes on an owned notebook, through the path a
 //! host drives an app it shows.
 //!
-//! The window is the real Notes window over a real record
+//! The window is the real Notes window over a real resource
 //! ([`ui::framework::testing::drive_live_window`]). Its notebook is written
 //! with Notes' own actions: 27 notes holding 838 blocks between them
 //! (headings, paragraphs, list items), the size of the notebook the Notes
@@ -299,9 +299,12 @@ fn body(note: usize, blocks: usize) -> String {
 /// Apply `action` through the window's local action actions, as the palette or
 /// an agent does.
 fn apply(app: &mut App, action: &notes::actions::Action) -> Result<(), Failure> {
-    let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(action)?;
-    app.invoke_local_resource_action(&invoke.address(), &invoke.arguments)
-        .map_err(|error| format!("{}: {error:?}", invoke.id))?;
+    let invoke = ui::tilo_resource::Invoke::<notes::PagePart>::apply(action)?;
+    app.invoke_local_resource_action(
+        &invoke.address_on(notes::part::chain_resource()),
+        &invoke.arguments,
+    )
+    .map_err(|error| format!("{}: {error:?}", invoke.id))?;
     Ok(())
 }
 

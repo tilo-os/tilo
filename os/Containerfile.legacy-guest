@@ -9,8 +9,8 @@ ARG BASE_REF
 # The pinned builder os/Containerfile builds bootc in.
 ARG SATELLITE_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
-# xwayland-satellite with the clipboard handoff fix
-# (os/external-assets/xwayland-satellite/README.md): Fedora's 0.8.2
+# xwayland-satellite at the pinned upstream commit with the clipboard handoff
+# fix (os/external-assets/xwayland-satellite/README.md): Fedora's 0.8.2
 # drops a paste in flight while the host's clipboard manager takes over an X11
 # selection. Once a satellite release contains
 # https://github.com/Supreeeme/xwayland-satellite/pull/527, install Fedora's

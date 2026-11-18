@@ -4,7 +4,7 @@
 //! message list threaded by conversation (`list.rs`) and the reader (`reader.rs`); a compose
 //! window and an account sheet layer on top.
 //!
-//! Per-message flags, the reader's folders and the active draft live in the mailbox record
+//! Per-message flags, the reader's folders and the active draft live in the mailbox resource
 //! ([`resource::Mail`]), so they sync and undo. Account identities, endpoints and credentials
 //! are device-local: the shared account store and the encrypted vault. The message corpus is
 //! hydrated into `model::Mailbox`.
@@ -32,6 +32,7 @@
 )]
 
 pub mod account;
+pub(crate) mod account_secrets;
 pub mod actions;
 pub(crate) mod address_book;
 pub mod app;
@@ -42,7 +43,6 @@ pub mod compose;
 #[cfg(feature = "live")]
 pub(crate) mod connect;
 pub mod copies;
-pub(crate) mod custody;
 pub mod engine;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
 #[allow(
@@ -69,6 +69,7 @@ pub mod list;
 pub mod model;
 pub mod notice;
 pub mod oauth;
+pub mod part;
 pub mod reader;
 pub mod resource;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]

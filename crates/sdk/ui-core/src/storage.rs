@@ -1,21 +1,21 @@
-//! Where an app keeps what is not a document: one seam for app files,
+//! Where an app keeps what is not a document: one boundary for app files,
 //! preferences and secrets, the same on Linux, macOS and the web.
 //!
-//! | What | Seam | Backed by |
+//! | What | Boundary | Backed by |
 //! |---|---|---|
 //! | Documents (collaborative, synced) | resources and records | Automerge records |
-//! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
-//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the shell settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
-//! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
+//! | App files (caches, imports, databases) | [`AppFiles`], [`ProcessContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
+//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`ProcessContext::settings`] | the shell settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
+//! | Secrets | [`secrets`], [`ProcessContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
 //!
 //! [`AppStorage`] bundles the three for one app; framework views and surfaces get it from
-//! their context instead of building paths. Code with a [`HostContext`] uses its methods,
+//! their context instead of building paths. Code with a [`ProcessContext`] uses its methods,
 //! which are scoped to the app the host prepared.
 //!
-//! [`HostContext`]: crate::application::HostContext
-//! [`HostContext::files`]: crate::application::HostContext::files
-//! [`HostContext::settings`]: crate::application::HostContext::settings
-//! [`HostContext::secrets`]: crate::application::HostContext::secrets
+//! [`ProcessContext`]: crate::application::ProcessContext
+//! [`ProcessContext::files`]: crate::application::ProcessContext::files
+//! [`ProcessContext::settings`]: crate::application::ProcessContext::settings
+//! [`ProcessContext::secrets`]: crate::application::ProcessContext::secrets
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -294,6 +294,50 @@ impl SettingsDocument {
             )
         })?;
         store.edit_document(name, origin, edit)
+    }
+
+    /// Change both documents (`Holder::Person`'s and `Holder::Device`'s) through `edit`,
+    /// as one change made by `origin`: one step they are undone together with, for a
+    /// choice kept half on each (which model the agent answers with). `edit` refused, the
+    /// write failed, or this process holds only the values of the settings.
+    pub fn edit_documents(
+        &self,
+        origin: &settings_store::ChangeOrigin,
+        edit: impl Fn(
+            &mut automerge::AutoCommit,
+            settings_store::placement::Holder,
+        ) -> Result<(), String>,
+    ) -> std::io::Result<()> {
+        let source = self
+            .source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        let store = source.store().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the settings' history is kept by the session",
+            )
+        })?;
+        store.edit_documents(origin, edit)
+    }
+
+    /// Merge `sections` into the document as one change made by `origin`: a choice whose
+    /// leaves are held by this device's document and the person's both (which model the
+    /// agent answers with) is one step history takes back together.
+    pub fn update_sections(
+        &self,
+        sections: Vec<(String, Map<String, Value>)>,
+        origin: &settings_store::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let source = self
+            .source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        let store = source.store().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the settings' history is kept by the session",
+            )
+        })?;
+        store.update_sections(sections, origin)
     }
 }
 
@@ -795,7 +839,7 @@ pub fn settings_at(root: &Path) -> Map<String, Value> {
 /// This app's secrets in the store the current host provides.
 #[must_use]
 pub fn secrets(app_id: &str) -> crate::secrets::SecretStore {
-    crate::host::current().secrets.store(app_id)
+    crate::process::current().secrets.store(app_id)
 }
 
 #[cfg(test)]

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use http_body_util::BodyExt as _;
 use rustls::pki_types::ServerName;
 use sha2::Digest as _;
-use tilo_relay_client::https::{HttpClient, HttpFuture};
-use tilo_relay_client::{Answer, AnswerFuture};
+use tilo_server_client::https::{HttpClient, HttpFuture};
+use tilo_server_client::{Answer, AnswerFuture};
 
 /// HTTPS to `addr`, pinned to one certificate.
 pub struct DevHttps {
@@ -59,7 +59,7 @@ impl DevHttps {
             .headers()
             .get(hyper::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
-            .and_then(tilo_relay_client::https::retry_after);
+            .and_then(tilo_server_client::https::retry_after);
         let body = response
             .into_body()
             .collect()

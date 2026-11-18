@@ -22,7 +22,7 @@
 
 use tilo_session::Session;
 
-use crate::common::{CANVAS, Repl, on_screen, placed_resources, private_home, until};
+use crate::common::{Api, CANVAS, on_screen, placed_resources, private_home, until};
 
 /// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
@@ -71,9 +71,7 @@ fn youtube_videos_of_a_creator_places_the_channel_and_its_page_draws() {
             .filter(|(kind, _)| kind.starts_with(&format!("tl.{TUBE}.")))
             .collect::<Vec<_>>()
     );
-
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
     let (answer, failed) = repl.run(
         &mut session,
         &format!(
@@ -115,8 +113,7 @@ fn youtube_places_the_client_and_its_feed_draws() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     let (answer, failed) = repl.run(
         &mut session,
@@ -163,8 +160,7 @@ fn the_watch_history_is_published_and_a_video_it_names_opens() {
         entries > 0,
         "the client publishes the watch entries its scenario seeded"
     );
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
     // The video the person watched part way, by the title its history row shows.
     let (answer, failed) = repl.run(
         &mut session,

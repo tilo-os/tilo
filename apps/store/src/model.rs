@@ -78,7 +78,7 @@ pub enum InstalledState {
         available: String,
         #[serde(default)]
         pinned: bool,
-        /// Whether this package can be changed through the app-host
+        /// Whether this package can be changed through the package-service
         /// capability. Immutable system RPM packages are launchable but
         /// cannot be pinned or removed from the user store.
         #[serde(default = "default_user_managed")]
@@ -145,7 +145,7 @@ pub enum ActionKind {
     ///
     /// It opens **unconfined**: a Flatpak brings its own sandbox and
     /// cannot run inside Tilo's, so the launch goes through
-    /// `tilo-launcher run-host`, which says so. See `launcher::host`.
+    /// `tilo-launcher machine-app`, which says so. See `launcher::host`.
     FlatpakOpen,
     FlatpakRemove,
     NeedsFlatpakHost,

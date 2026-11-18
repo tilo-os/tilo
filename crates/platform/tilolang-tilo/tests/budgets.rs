@@ -1,11 +1,11 @@
 //! The runtime's budgets (`tilolang_tilo::bench`), held by the
 //! bench's own scenarios. A tilolang app that misses one is a runtime bug.
 //!
-//! The gate holds the work each scenario does, in counts that do not depend on the machine or
-//! its load ([`Work`]), as docs/measurements/performance.md has pull requests gate: what a
+//! The check holds the work each scenario does, in counts that do not depend on the machine or
+//! its load ([`Work`]), as docs/measurements/performance.md has pull requests check: what a
 //! window shows, and what a change re-renders, patches and reads, is the same in a workspace of 10k
 //! items as in one of 1k. Opening over the index a workspace kept reads no more of it at 10k than at
-//! 1k: the pages of the rows it shows, and nothing of the workspace's record.
+//! 1k: the pages of the rows it shows, and nothing of the workspace's document.
 //!
 //! The budgets in time and memory depend on the machine and what else runs on it, so no test
 //! asserts them: the bench checks and records them on the machine they are for,
@@ -13,7 +13,7 @@
 //! --budgets`.
 //!
 //! Its own test target: the allocation counts are those of this work alone (they are counted per
-//! thread, so the apps' tests may run side by side). The runs do the work the gate counts and
+//! thread, so the apps' tests may run side by side). The runs do the work the check counts and
 //! nothing that is only timed ([`BenchConfig::timings`]).
 
 #![allow(clippy::panic, reason = "test assertions")]
@@ -33,14 +33,14 @@ use tilolang_tilo::host::Host;
 
 mod window;
 
-/// The notes app, whose notebook's export the gate holds.
+/// The notes app, whose notebook's export the check holds.
 const NOTES: &str = "so.tilo.lang.notes";
 
-/// Counted, so the records hold the allocations each scenario made.
+/// Counted, so the documents hold the allocations each scenario made.
 #[global_allocator]
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
-/// The sizes the gate compares: a scenario does at 10k what it does at 1k.
+/// The sizes the check compares: a scenario does at 10k what it does at 1k.
 const SMALL: usize = 1000;
 const LARGE: usize = 10_000;
 
@@ -90,7 +90,7 @@ fn bench_at(app: &str, sizes: Vec<usize>, samples: usize) -> Vec<Record> {
     run(&config, &mut |_| {}).unwrap_or_else(|e| panic!("{app}: {e}"))
 }
 
-/// The record of `scenario` at the size `size` names (`10k`).
+/// The document of `scenario` at the size `size` names (`10k`).
 fn find<'a>(records: &'a [Record], scenario: &str, size: &str) -> Option<&'a Record> {
     let prefix = format!("tilolang.{scenario}.");
     let suffix = format!(".{size}");
@@ -100,8 +100,8 @@ fn find<'a>(records: &'a [Record], scenario: &str, size: &str) -> Option<&'a Rec
 }
 
 /// The counts of what a scenario shows and changes: the boundaries it renders, the item
-/// references it builds, the patches it sends, what it reads of the record one by one, the
-/// index's directories, pages and fields it reads, and the records publication looked at.
+/// references it builds, the patches it sends, what it reads of the document one by one, the
+/// index's directories, pages and fields it reads, and the documents publication looked at.
 fn shown(work: Work) -> [(&'static str, u64); 10] {
     [
         ("renders", work.renders),
@@ -117,13 +117,13 @@ fn shown(work: Work) -> [(&'static str, u64); 10] {
     ]
 }
 
-/// What would read a collection's items as a whole: its entries walked in the record, and the
+/// What would read a collection's items as a whole: its entries walked in the document, and the
 /// items a filter no column answers is evaluated on.
 fn loaded(work: Work) -> [(&'static str, u64); 2] {
     [("entries", work.entries), ("evaluated", work.evaluated)]
 }
 
-/// The work `of` reads off the record of `scenario`, at 1k and at 10k.
+/// The work `of` reads off the document of `scenario`, at 1k and at 10k.
 fn both(
     records: &[Record],
     scenario: &str,
@@ -156,9 +156,9 @@ fn same_shown(app: &str, label: &str, (small, large): (Work, Work), misses: &mut
     }
 }
 
-fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
+fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
     // Opening over the workspace's index shows the same at 10k as at 1k and reads the same: of the
-    // index, the directories and pages of what it shows; of the record, nothing that grows.
+    // index, the directories and pages of what it shows; of the document, nothing that grows.
     for scenario in ["open", "thread_open"] {
         let Some((small, large)) = both(records, scenario, Work::of_record) else {
             continue;
@@ -210,7 +210,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
                     ));
                 }
             }
-            // Automerge's columns are a few levels deeper in a larger record: a few percent
+            // Automerge's columns are a few levels deeper in a larger document: a few percent
             // more, never in proportion to the items.
             let limit = small
                 .allocations
@@ -223,9 +223,9 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
                 ));
             }
         }
-        // The first change, which brings a writer new to the record: the same on screen and in
+        // The first change, which brings a writer new to the document: the same on screen and in
         // what the runtime reads. What Automerge does to take a new actor in grows with the
-        // record (its allocations are not held here).
+        // document (its allocations are not held here).
         if matches!(*scenario, "scroll" | "thread_scroll") {
             // Scrolling writes nothing: it has no first change.
             continue;
@@ -244,7 +244,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
 /// The runtime does the work of what `app` shows, whatever the size of its workspace.
 fn the_runtime_does_the_work_of_what_it_shows(app: &str) {
     let mut misses = Vec::new();
-    gate(app, &bench(app), &mut misses);
+    check(app, &bench(app), &mut misses);
     assert!(
         misses.is_empty(),
         "more work in a larger workspace:\n{}",
@@ -323,13 +323,13 @@ fn chat_does_the_work_of_what_it_shows() {
 }
 
 // Mail's root holds the workspace's accounts, and what people read is the conversations in
-// one: the harness reaches them ([`Shape`]'s holders), so the gate holds them too.
+// one: the harness reaches them ([`Shape`]'s holders), so the check holds them too.
 #[test]
 fn mail_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("mail");
 }
 
-/// A keystroke is a change of the record the moment it is typed — that is what keeps every letter
+/// A keystroke is a change of the document the moment it is typed — that is what keeps every letter
 /// and sends it to the other devices at once — and the burst of them is one step of history and
 /// undo. One letter is one change, and it reads nothing of the workspace: no collection's entries,
 /// no listing of it, no filter evaluated on an item.
@@ -354,8 +354,8 @@ fn a_keystroke_is_one_cheap_change() {
     let (small, large) = (work("200"), work("2k"));
     let mut misses = Vec::new();
     for (size, at, first) in [("200", small, first("200")), ("2k", large, first("2k"))] {
-        // One letter is one change of the record, never one per thing it touched, and never
-        // none: a letter the record does not hold is a letter the person lost.
+        // One letter is one change of the document, never one per thing it touched, and never
+        // none: a letter the document does not hold is a letter the person lost.
         for (which, at) in [("a steady keystroke", at), ("the first", first)] {
             if at.commits != 1 {
                 misses.push(format!(
@@ -365,7 +365,7 @@ fn a_keystroke_is_one_cheap_change() {
             }
         }
         // Nothing of the workspace is read for the letter: no collection's entries listed, no
-        // filter evaluated on an item, and no resource found by walking the record beyond the
+        // filter evaluated on an item, and no resource found by walking the document beyond the
         // one the change derives.
         for (name, count, most) in [
             ("located", at.located, 2),
@@ -425,7 +425,7 @@ impl BlobHost for Kept {
 /// What one export read of the workspace, in the runtime's own counts.
 #[derive(Clone, Copy, Debug, Default)]
 struct Read {
-    /// Resources found by walking the record, and the field values it read.
+    /// Resources found by walking the document, and the field values it read.
     located: u64,
     fields: u64,
     /// The items a filter was evaluated on one by one, which an index's column answers.
@@ -481,7 +481,7 @@ fn export_work(packages: &[Compiled], n: usize) -> Read {
     }
 }
 
-/// The counts of one export, in the order the gate reads them.
+/// The counts of one export, in the order the check reads them.
 fn counts(read: Read) -> [(&'static str, u64); 4] {
     [
         ("located", read.located),
@@ -520,7 +520,7 @@ fn exporting_a_notebook_costs_its_notes() {
 }
 
 /// One action that adds every item of a workspace at once, as an import of ten thousand tasks
-/// does: past a few hundred items it is more than a change records whole, and keeps its large
+/// does: past a few hundred items it is more than a change documents whole, and keeps its large
 /// parts as content. Opening such a workspace builds its index in what its items cost, and an
 /// item's history says the import created it, when the import says it did.
 #[test]
@@ -562,8 +562,8 @@ fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
         (built, versions)
     };
     let imported = |n: usize| {
-        // The window that runs the import keeps its large parts in its record's content store,
-        // and opening the record there reads the import back as it ran.
+        // The window that runs the import keeps its large parts in its document's content store,
+        // and opening the document there reads the import back as it ran.
         let store = crate::window::store();
         let mut doc = tilolang_tilo::bench::seeded_record_in_one_action(&packages, n)
             .unwrap_or_else(|e| panic!("{n} tasks: {e}"));
@@ -582,7 +582,7 @@ fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
         assert_eq!(
             verified,
             tilo_actions::Verified::Reproduced,
-            "at {n}, the import decodes from the record's store"
+            "at {n}, the import decodes from the document's store"
         );
         open(n, doc)
     };

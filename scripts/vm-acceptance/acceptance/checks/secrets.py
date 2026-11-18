@@ -1,10 +1,10 @@
-"""Secret custody: what the compositor keeps reaches tilo-secret-service, not a plain file.
+"""Secret ownership: what the compositor keeps reaches tilo-secret-service, not a plain file.
 
 The compositor loads the device key, which makes it non-dumpable: no other process,
 the store included, can read its `/proc/<pid>/exe`. It proves on each bus connection
 that it holds the device key instead (`so.tilo.Secrets1.CallerChallenge`/`ProveCaller`,
 docs/identity-security.md, "Callers the store cannot examine"), and the store then
-answers it as `binary:/usr/bin/tilo-session`. `crates/system/secret-service/tests/identity_custody.rs`
+answers it as `binary:/usr/bin/tilo-session`. `crates/system/secret-service/tests/identity_ownership.rs`
 proves that protocol with the production client code; these checks prove it with the
 real compositor on the installed image.
 
@@ -22,7 +22,7 @@ Settings > Users shows as "Secret Service + app-scoped signing broker") with no 
 beside it. An account's throwaway identity keeps its private share in owner-only files by
 design (tilo-vm guide driving), so only a person's login can show this. Then it signs out
 and in again: the new compositor still finds what the store keeps for it, with no
-custody warning, and the sealed MLS state is still there.
+ownership warning, and the sealed MLS state is still there.
 
 No check prints a secret: a portal secret is compared with itself inside the guest, and
 the evidence names presence, sizes, modes and owners only.
@@ -45,7 +45,7 @@ COMPOSITOR_APP = "binary:/usr/bin/tilo-session"
 PORTAL_APP = "so.tilo.passwords"
 MLS_UNAVAILABLE = "MLS collaboration unavailable"
 # The compositor's warnings when it could not use what the store keeps for it.
-CUSTODY_WARNINGS = (MLS_UNAVAILABLE, "channel encryption unavailable", "MLS key")
+OWNERSHIP_WARNINGS = (MLS_UNAVAILABLE, "channel encryption unavailable", "MLS key")
 SESSION_LOG = ".local/state/tilo/session-logs/latest.log"
 SECRET_LEN = 32
 
@@ -73,7 +73,7 @@ echo "UNIT=$(as_user systemctl --user show tilo-secret-service.service -p Active
 """
 
 # As root: the MLS state directory's entries (mode, owner, size, path; digests of the
-# sealed files, which are ciphertext), and how often the session log names a custody
+# sealed files, which are ciphertext), and how often the session log names an ownership
 # warning.
 MLS_STATE = r"""
 d=__STATE__/tilo/collaboration/mls
@@ -204,7 +204,7 @@ def mls_state(ctx, state_home: str, label: str) -> dict:
 
 
 def log_warnings(ctx, uid: int) -> dict:
-    greps = "\n".join(f"echo {shlex.quote(w)}=$(grep -cF {shlex.quote(w)} \"$log\")" for w in CUSTODY_WARNINGS)
+    greps = "\n".join(f"echo {shlex.quote(w)}=$(grep -cF {shlex.quote(w)} \"$log\")" for w in OWNERSHIP_WARNINGS)
     text = ctx.vm.root_exec(LOG_WARNINGS.replace("__UID__", str(uid)).replace("__LOG__", SESSION_LOG)
                             .replace("__GREPS__", greps), timeout=60)
     if "NO-LOG" in text:
@@ -212,7 +212,7 @@ def log_warnings(ctx, uid: int) -> dict:
     counts = {}
     for line in text.splitlines():
         name, _, count = line.rpartition("=")
-        if name in CUSTODY_WARNINGS:
+        if name in OWNERSHIP_WARNINGS:
             counts[name] = int(count or 0)
     return counts
 
@@ -259,7 +259,7 @@ def compositor_secrets_in_the_store(ctx, res):
 
     warnings = log_warnings(ctx, uid)
     res.metrics["log_warnings"] = warnings
-    expect(not any(warnings.values()), f"the session log names a custody failure: {warnings}")
+    expect(not any(warnings.values()), f"the session log names an ownership failure: {warnings}")
     mls = mls_state(ctx, comp["state_home"], "C01-before")
     res.metrics["mls_dir"] = mls["dir"]
     expect(mls["dir"] is not None, "the compositor made no MLS state directory")
@@ -433,7 +433,7 @@ def person_identity_in_the_store(ctx, res):
         res.metrics["compositor_row"] = {k: row.get(k) for k in ("id", "access", "items", "uses")}
         warnings = log_warnings(ctx, uid)
         res.metrics["log_warnings"] = warnings
-        expect(not any(warnings.values()), f"{user}'s session log names a custody failure: {warnings}")
+        expect(not any(warnings.values()), f"{user}'s session log names an ownership failure: {warnings}")
         mls = mls_state(ctx, comp["state_home"], "C02-before")
         expect(mls["dir"] is not None and mls["dir"][0] == "700",
                f"{user}'s MLS state directory is missing or not owner-only: {mls['dir']}")
@@ -454,7 +454,7 @@ def person_identity_in_the_store(ctx, res):
         later_warnings = log_warnings(ctx, uid)
         res.metrics["log_warnings_again"] = later_warnings
         expect(not any(later_warnings.values()),
-               f"after signing in again, {user}'s session log names a custody failure: {later_warnings}")
+               f"after signing in again, {user}'s session log names an ownership failure: {later_warnings}")
         mls_again = mls_state(ctx, again["state_home"], "C02-again")
         gone = sorted(set(mls["digests"]) - set(mls_again["digests"]))
         res.metrics["mls_files"] = [len(mls["digests"]), len(mls_again["digests"])]

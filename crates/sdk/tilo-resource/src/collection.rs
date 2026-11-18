@@ -119,6 +119,22 @@ impl Model for Id {
 pub(crate) const ORDER: &str = "k";
 pub(crate) const VALUE: &str = "v";
 
+/// The keys from the document's root down to the map `obj`, as a model names its fields: an
+/// item's id for each collection on the way, never the entry key its value is kept under (`issues/<issue>/comments`
+/// for the comments of an issue). `None` where a list stands on the way.
+pub fn path_to(doc: &impl ReadDoc, obj: &ObjId) -> Option<Vec<String>> {
+    let mut path = Vec::new();
+    for parent in doc.parents(obj).ok()? {
+        match parent.prop {
+            automerge::Prop::Map(key) if key == VALUE => {}
+            automerge::Prop::Map(key) => path.push(key),
+            automerge::Prop::Seq(_) => return None,
+        }
+    }
+    path.reverse();
+    Some(path)
+}
+
 /// An ordered collection of items addressed by [`Id`].
 ///
 /// Stored as a map from id to `{ k: order key, v: value }`. Editing an item
@@ -1417,6 +1433,12 @@ impl<T: Model> crate::items::ItemSource for Collection<T> {
 pub trait ItemList {
     fn count(&self) -> usize;
     fn item(&self, at: usize) -> Option<(Id, &dyn Any)>;
+    /// Whether `id` is an item kept out of the list because it no longer
+    /// reads ([`Collection::quarantined`]).
+    fn quarantines(&self, id: &str) -> bool {
+        let _ = id;
+        false
+    }
 }
 
 impl<T: Model> crate::table::PublishedItems for Collection<T> {
@@ -1431,6 +1453,10 @@ impl<T: 'static> ItemList for Collection<T> {
     fn item(&self, at: usize) -> Option<(Id, &dyn Any)> {
         let entry = self.items.get(at)?;
         Some((entry.id.clone(), &*entry.item as &dyn Any))
+    }
+
+    fn quarantines(&self, id: &str) -> bool {
+        self.quarantine.iter().any(|held| held.id.as_str() == id)
     }
 }
 
@@ -1449,7 +1475,7 @@ pub(crate) fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
         record.label.is_some() || record.label_with.is_some() || !record.label_parts.is_empty()
     });
     if names_itself {
-        return crate::word!("record-unnamed-item").read();
+        return crate::word!("resource-unnamed-item").read();
     }
     let mut text = Vec::new();
     (item.ops.collect_text)(item, value, &mut text);

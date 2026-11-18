@@ -57,7 +57,7 @@ def main():
             raise RuntimeError('private source/executable receipt differs')
     for name, digest in receipt['sources'].items():
         if hashlib.sha256((root / 'source' / name).read_bytes()).hexdigest() != digest:
-            raise RuntimeError('review source differs from compiled witness')
+            raise RuntimeError('review source differs from compiled proof')
     fixture, language, sha, pcm_sha, seconds = scope.verified_fixture(args.manifest, args.case)
     requested_language = 'auto' if args.automatic_language else language
     with wave.open(str(fixture), 'rb') as audio:

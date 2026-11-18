@@ -36,8 +36,8 @@ use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, WindowWidth,
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup;
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, Elsewhere, NeighbourMsg, PeerStreamStart, Standing, TileSource,
-    WorkspaceShare, seed_tree,
+    DesktopHandle, DesktopSurface, Elsewhere, NeighbourMsg, PeerStreamStart, StreamState,
+    TileSource, WorkspaceShare, seed_tree,
 };
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Point, Rect};
@@ -289,8 +289,8 @@ fn stream_start(tab: TabId, device: &str) -> PeerStreamStart {
 
 /// What a device that lists the window shows in its tab.
 enum Tabbed {
-    /// No share stands in the tab, and the session reads the window as standing so.
-    Standing(Elsewhere),
+    /// No share stands in the tab, and the session reads the window so.
+    Elsewhere(Elsewhere),
     /// Its share started, and nothing of the window is here yet.
     Starting,
     /// Its share was here, and this device let the window go.
@@ -314,13 +314,13 @@ fn watching(
         WorkspaceShare::default(),
         None,
     );
-    let standing = match tabbed {
-        Tabbed::Standing(standing) => standing.clone(),
+    let state = match tabbed {
+        Tabbed::Elsewhere(state) => state.clone(),
         Tabbed::Starting | Tabbed::LetGo => Elsewhere::Awaited {
             waiting_for: String::new(),
         },
     };
-    handle.set_elsewhere(vec![(id, standing)]);
+    handle.set_elsewhere(vec![(id, state)]);
     if matches!(tabbed, Tabbed::Starting | Tabbed::LetGo) {
         handle
             .show_peer_surface(&stream_start(id, device))
@@ -337,9 +337,9 @@ fn watching(
         )
     };
     match tabbed {
-        Tabbed::Standing(_) => {}
+        Tabbed::Elsewhere(_) => {}
         Tabbed::Starting => {
-            if handle.peer_surface_read(id).map(|read| read.standing) != Some(Standing::Started) {
+            if handle.peer_surface_read(id).map(|read| read.state) != Some(StreamState::Started) {
                 return Err("the share did not start in the window's tab".into());
             }
             if shows(&frame, &where_it_runs) {
@@ -529,18 +529,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (
                     "not-shared",
                     "Laptop",
-                    Tabbed::Standing(Elsewhere::NotShared),
+                    Tabbed::Elsewhere(Elsewhere::NotShared),
                 ),
-                ("unnamed", "", Tabbed::Standing(Elsewhere::NotShared)),
+                ("unnamed", "", Tabbed::Elsewhere(Elsewhere::NotShared)),
                 (
                     "awaited",
                     "Laptop",
-                    Tabbed::Standing(Elsewhere::Awaited {
+                    Tabbed::Elsewhere(Elsewhere::Awaited {
                         waiting_for: String::new(),
                     }),
                 ),
-                ("away", "Laptop", Tabbed::Standing(Elsewhere::Away)),
-                ("left", "Laptop", Tabbed::Standing(Elsewhere::Left)),
+                ("away", "Laptop", Tabbed::Elsewhere(Elsewhere::Away)),
+                ("left", "Laptop", Tabbed::Elsewhere(Elsewhere::Left)),
                 ("starting", "Laptop", Tabbed::Starting),
                 ("let-go", "Laptop", Tabbed::LetGo),
             ];

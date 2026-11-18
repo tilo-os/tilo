@@ -3,7 +3,7 @@
 //! An agent holds no authority of its own. It acts inside a turn, and a turn
 //! is caused by a person's message in a conversation the agent takes part in.
 //! Its authority is that person's grants, capped at
-//! [`roles::agent_policy::ROLE_CAP`], narrowed by the bound the agent's record
+//! [`roles::agent_policy::ROLE_CAP`], narrowed by the bound the agent's resource
 //! keeps ([`roles::agent_grants`]).
 //!
 //! Every one of those four facts is checked here, in one place, so every action API
@@ -51,7 +51,7 @@ pub struct Looked {
     pub player: bool,
     /// Whether the turn ended: its work is done, or a person stopped it.
     pub ended: bool,
-    /// What the agent's record bounds it to; empty follows the record's
+    /// What the agent's resource bounds it to; empty follows the resource's
     /// default.
     pub bound: Vec<crate::Rule>,
 }
@@ -142,7 +142,7 @@ impl std::fmt::Display for Held {
 }
 
 /// The authority agent `agent` acts with for `person` on `turn` in `workspace`:
-/// the person's grants, capped and narrowed by the agent's record, once the
+/// the person's grants, capped and narrowed by the agent's resource, once the
 /// turn is admitted.
 ///
 /// `looked` is what the receiver found for the turn's own cause, asked with
@@ -203,7 +203,7 @@ mod tests {
 
         phase a_turn_gives_the_grants_of_the_person_whose_message_caused_it;
         // The turn's authority is the person's grants, capped at Editor and
-        // narrowed by the record: Bob's message gives what Bob may do, Ada's
+        // narrowed by the resource: Bob's message gives what Bob may do, Ada's
         // what Ada may.
         {
             let turn = Turn::new("chat/workspace/channels/1", "m1");
@@ -332,8 +332,8 @@ mod tests {
             );
         }
 
-        phase the_records_bound_narrows_the_turn;
-        // A bound the record keeps narrows the turn; it never widens it.
+        phase the_resources_bound_narrows_the_turn;
+        // A bound the resource keeps narrows the turn; it never widens it.
         {
             let turn = Turn::new("chat/workspace/channels/1", "m1");
             let notes = node(WORKSPACE, "so.tilo.notes", "document");

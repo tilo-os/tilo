@@ -1,7 +1,7 @@
 //! Certify the protected-grant protocol of the actual loaded native SDK.
 //!
 //! Build with the runtime's thin-app graph and include in its signed inventory.
-//! Account custody lives in the accounts engine library, which this binary
+//! Account credentials lives in the accounts engine library, which this binary
 //! links as Mail and Settings do, so its non-inlined function call resolves
 //! through the very `libtilo_accounts_engine.so` the runtime ships; the
 //! service-session capability resolves through `libruntime_dylib.so`. The
@@ -28,7 +28,7 @@ fn main() -> ExitCode {
     if !args.is_empty() {
         return ExitCode::from(64);
     }
-    let protocol = tilo_accounts_engine::account_custody::protected_grant_protocol();
+    let protocol = tilo_accounts_engine::account_credentials::protected_grant_protocol();
     println!("{{\"schema\":1,\"protected_grant_protocol\":{protocol}}}");
     ExitCode::SUCCESS
 }

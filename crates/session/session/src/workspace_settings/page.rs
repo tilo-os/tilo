@@ -126,10 +126,6 @@ mod tests {
         fn manages(&self, _: &Workspace, _: &UserId) -> bool {
             true
         }
-
-        fn writes_grants(&self) -> bool {
-            false
-        }
     }
 
     /// The names the tab lists.
@@ -177,7 +173,6 @@ mod tests {
             &Ask::AddAgent {
                 name: "Scout".to_owned(),
                 model: String::new(),
-                colour: String::new(),
             }
         ));
         assert_eq!(listed(&agents), ["Scout"]);
@@ -195,8 +190,35 @@ mod tests {
         let limit = review.limit.expect("its daily limit");
         assert!(limit.summary.contains('5'), "{}", limit.summary);
         assert!(limit.can_choose, "its keeper sets its limit");
-        assert!(!review.editable, "a page changes no grants of its own");
+        assert!(review.editable, "a page bounds the agent in its list");
         assert!(review.can_retire);
+        agents.ask(
+            &state,
+            &Ask::SetAgentAnswer {
+                agent: key.clone(),
+                scope: "app:so.tilo.notes".to_owned(),
+                kind: "change".to_owned(),
+                answer: "deny".to_owned(),
+            },
+        );
+        let notes = agents
+            .pane()
+            .review
+            .expect("the agent's review")
+            .apps
+            .into_iter()
+            .find(|app| app.scope == "app:so.tilo.notes")
+            .expect("the review lists the app its bound names");
+        assert!(notes.customised, "the bound sets what it may do in Notes");
+        assert_eq!(
+            notes
+                .kinds
+                .iter()
+                .find(|line| line.kind == "change")
+                .map(|line| line.answer),
+            Some(2),
+            "it may change nothing there"
+        );
 
         agents.ask(
             &state,

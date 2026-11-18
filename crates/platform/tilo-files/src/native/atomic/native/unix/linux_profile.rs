@@ -31,7 +31,7 @@ pub(super) enum Use {
 /// How an object's access is decided, where the filesystem lets it vary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum AclModel {
-    /// Mode bits, with POSIX access ACLs gated by the mask if any.
+    /// Mode bits, with POSIX access ACLs guarded by the mask if any.
     Posix,
     /// NFS version 4 ACLs, which decide access whatever the mode bits say.
     Nfs4,

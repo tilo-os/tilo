@@ -102,7 +102,7 @@ pub(crate) fn observe(app: &App) -> serde_json::Value {
 fn fill(app: &mut App, blocks: Vec<ClipBlock>) {
     let caret = observe(app)["caret_block"]
         .as_str()
-        .expect("the empty record has a paragraph")
+        .expect("the empty resource has a paragraph")
         .to_owned();
     let paste = RichTextAction::PasteFragment {
         region: RegionKind::Body,

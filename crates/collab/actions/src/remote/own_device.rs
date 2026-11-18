@@ -16,10 +16,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionHostError, InvokeArgument, InvokeRequest, RemoteActionTarget};
+use super::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use crate::api::ActionAddress;
 
-/// The provider the host answers own-device invocations under.
+/// The provider that answers own-device invocations under.
 pub const PROVIDER: &str = "tilo.own-device";
 /// The resource the invocation is an action of.
 pub const RESOURCE: &str = "identity.device";
@@ -62,8 +62,8 @@ pub struct Checked {
     pub argument: InvokeArgument,
 }
 
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.to_owned(),
     }
 }
@@ -82,8 +82,8 @@ impl Invocation {
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::InvalidRequest`] when the argument is not one.
-    pub fn from_argument(argument: &InvokeArgument) -> Result<Self, ActionHostError> {
+    /// [`ActionCallError::InvalidRequest`] when the argument is not one.
+    pub fn from_argument(argument: &InvokeArgument) -> Result<Self, ActionCallError> {
         let InvokeArgument::Json(map) = argument else {
             return Err(invalid("an own-device invocation takes JSON arguments"));
         };
@@ -96,8 +96,8 @@ impl Invocation {
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::InvalidRequest`] naming the part that is not.
-    pub fn check(&self) -> Result<Checked, ActionHostError> {
+    /// [`ActionCallError::InvalidRequest`] naming the part that is not.
+    pub fn check(&self) -> Result<Checked, ActionCallError> {
         let device = decode_device(&self.device).ok_or_else(|| invalid("not a device key"))?;
         if self.app.is_empty() || self.app.contains(':') {
             return Err(invalid("not an application id"));
@@ -122,14 +122,14 @@ impl Checked {
     /// The request the other device is sent: the application's action in
     /// workspace `workspace`, which both devices share, under the original
     /// invocation's id so a retry there observes the first run. A
-    /// confirmation this device witnessed names an answer only this device
+    /// confirmation this device approved names an answer only this device
     /// knows, so it is not carried; a person's own word is.
     #[must_use]
     pub fn forwarded(&self, workspace: &str, original: &InvokeRequest) -> InvokeRequest {
         let confirmation = original
             .confirmation
             .clone()
-            .filter(|confirmation| !matches!(confirmation, super::Confirmation::Witnessed(_)));
+            .filter(|confirmation| !matches!(confirmation, super::Confirmation::Approved(_)));
         InvokeRequest {
             on_behalf_of: None,
             invocation: original.invocation,
@@ -248,7 +248,7 @@ mod tests {
                 target: target(),
                 argument: InvokeArgument::None,
                 context: None,
-                confirmation: Some(Confirmation::Witnessed("local-token".into())),
+                confirmation: Some(Confirmation::Approved("local-token".into())),
                 revision: None,
                 wait_ms: Some(1),
                 appearance: None,

@@ -44,7 +44,7 @@ extern "C" {
     fn pending_acknowledgements() -> bool;
 }
 
-/// Read or durably initialize custody under the browser's app lock. `None` forbids
+/// Read or durably initialize ownership under the browser's app lock. `None` forbids
 /// creation, for an existing encrypted vault, and concurrent creators receive the same
 /// committed value.
 pub async fn get_or_create(

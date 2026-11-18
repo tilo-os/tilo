@@ -354,8 +354,8 @@ tilo_test_env::scenario! {
         assert!(after.clip(lone.id).is_none());
         assert_eq!(after.clips.len(), sample.clips.len() - 1);
 
-        // A ripple delete closes it: later clips on the lane move left by the
-        // clip's length, clips on other lanes stay.
+        // A ripple delete closes it: later clips on the track move left by the
+        // clip's length, clips on other tracks stay.
         let mut replica = holding(&sample);
         replica
             .apply_confirmed(Project::CLOSE_GAP.with(id(lone.id)))
@@ -491,17 +491,17 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_mix_is_trimmed_by_what_was_measured_and_lanes_stay_in_range;
+    phase the_mix_is_trimmed_by_what_was_measured_and_tracks_stay_in_range;
     {
-        let (mut p, mix, lanes) = clipped_mix(4.0);
+        let (mut p, mix, tracks) = clipped_mix(4.0);
         p.tracks
             .iter_mut()
-            .find(|t| t.id == lanes[0])
+            .find(|t| t.id == tracks[0])
             .unwrap()
             .gain_db = 2.0;
         p.tracks
             .iter_mut()
-            .find(|t| t.id == lanes[1])
+            .find(|t| t.id == tracks[1])
             .unwrap()
             .gain_db = -5.0;
         let ctx = VideoResourceCtx {
@@ -529,8 +529,8 @@ tilo_test_env::scenario! {
                 .unwrap();
             let state = replica.state().unwrap();
             (
-                state.track(lanes[0]).unwrap().gain_db,
-                state.track(lanes[1]).unwrap().gain_db,
+                state.track(tracks[0]).unwrap().gain_db,
+                state.track(tracks[1]).unwrap().gain_db,
             )
         };
         let over = ctx.mix.worst_over_db();
@@ -549,27 +549,27 @@ tilo_test_env::scenario! {
         let (none, _) = run(-6.0);
         assert!((none - a1).abs() < 1e-6, "headroom below zero is none");
 
-        // A lane's level and pan are fields; out of range is refused, and
+        // A track's level and pan are fields; out of range is refused, and
         // `reset-mix` puts both back in one step.
-        let a1 = lanes[0];
+        let a1 = tracks[0];
         let mut replica = holding(&p);
-        let lane = Project::paths().tracks.item(&id(a1));
+        let track = Project::paths().tracks.item(&id(a1));
         replica
-            .apply(Invoke::edit(&lane.gain_db.set(-6.0)).unwrap())
+            .apply(Invoke::edit(&track.gain_db.set(-6.0)).unwrap())
             .unwrap();
         replica
-            .apply(Invoke::edit(&lane.pan.set(-1.0)).unwrap())
+            .apply(Invoke::edit(&track.pan.set(-1.0)).unwrap())
             .unwrap();
         let t = replica.state().unwrap().track(a1).unwrap().clone();
         assert_eq!((t.gain_db, t.pan), (-6.0, -1.0));
         assert!(
             replica
-                .apply(Invoke::edit(&lane.gain_db.set(MAX_GAIN_DB + 1.0)).unwrap())
+                .apply(Invoke::edit(&track.gain_db.set(MAX_GAIN_DB + 1.0)).unwrap())
                 .is_err()
         );
         assert!(
             replica
-                .apply(Invoke::edit(&lane.pan.set(-9.0)).unwrap())
+                .apply(Invoke::edit(&track.pan.set(-9.0)).unwrap())
                 .is_err()
         );
         replica.apply(Project::RESET_MIX.with(id(a1))).unwrap();
@@ -683,7 +683,7 @@ tilo_test_env::scenario! {
             assert_eq!(replica.state().unwrap(), before);
         }
 
-        // Unlinking stops edits following the sound, so its locked lane no
+        // Unlinking stops edits following the sound, so its locked track no
         // longer prevents editing the picture alone.
         project.unlink_clips(&[clip]);
         let mut replica = holding(&project);
@@ -759,7 +759,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A project with two audio lanes, and the mix measured `over_db` over.
+/// A project with two audio tracks, and the mix measured `over_db` over.
 fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) {
     let (mut p, _) = one_clip();
     let mid = Uuid::new_v4();
@@ -771,7 +771,7 @@ fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) 
         path: "media/a.wav".into(),
         ..Default::default()
     });
-    let mut lanes = Vec::new();
+    let mut tracks = Vec::new();
     for index in 1..=2u32 {
         let tid = Uuid::new_v4();
         p.tracks.push(Track {
@@ -782,7 +782,7 @@ fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) 
             ..Default::default()
         });
         p.add_clip(tid, mid, 0.0).unwrap();
-        lanes.push(tid);
+        tracks.push(tid);
     }
     let peak = crate::model::db_to_linear(over_db) as f32;
     let meters = crate::audio::MixMeters::new();
@@ -790,7 +790,7 @@ fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) 
         2.0,
         &crate::audio::MixReport {
             master: crate::audio::BlockMeter { peak: [peak, peak] },
-            tracks: lanes
+            tracks: tracks
                 .iter()
                 .map(|t| {
                     (
@@ -803,7 +803,7 @@ fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) 
                 .collect(),
         },
     );
-    (p, meters.snapshot(), lanes)
+    (p, meters.snapshot(), tracks)
 }
 
 tilo_test_env::scenario! {
@@ -928,10 +928,10 @@ tilo_test_env::scenario! {
         let mut b = a.fork();
         let first = sample.clips[0].id;
         let second = sample.clips[1].id;
-        let lane = Project::paths().clips;
-        b.apply(Invoke::edit(&lane.item(&id(first)).start.set(42.0)).unwrap())
+        let track = Project::paths().clips;
+        b.apply(Invoke::edit(&track.item(&id(first)).start.set(42.0)).unwrap())
             .unwrap();
-        a.apply(Invoke::edit(&lane.item(&id(second)).opacity.set(0.5)).unwrap())
+        a.apply(Invoke::edit(&track.item(&id(second)).opacity.set(0.5)).unwrap())
             .unwrap();
         a.sync_with(&mut b).unwrap();
         let merged = a.state().unwrap();

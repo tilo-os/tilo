@@ -80,6 +80,8 @@ fn hint(
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: workspace,
         endpoint_addr: addr(endpoint),
         user_public_key: certificate.user_public_key,
@@ -138,7 +140,7 @@ async fn joins(
     invitation: String,
     service: std::sync::Arc<dyn LocalJoinService>,
 ) {
-    let identity = HostIdentity::kept(cert.clone(), key.clone());
+    let identity = DeviceIdentity::kept(cert.clone(), key.clone());
     let enrollment = enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,
@@ -161,12 +163,7 @@ async fn joins(
 /// Commit `value` to the test record of `workspace` as `owner`'s device,
 /// numbered from the durable view as a session's engine does (the record's
 /// first write founds it empty).
-fn commit_record(
-    owner: &NativeWorkspaceOwner,
-    workspace: Workspace,
-    key: &SigningKey,
-    value: &str,
-) {
+fn commit_entry(owner: &NativeWorkspaceOwner, workspace: Workspace, key: &SigningKey, value: &str) {
     let now = SystemTime::now();
     let message = owner
         .with_current(workspace, |view| {
@@ -200,7 +197,7 @@ fn commit_record(
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: APP.into(),
-                    record: RECORD.into(),
+                    document: RECORD.into(),
                     envelope,
                     own: None,
                 },
@@ -338,10 +335,10 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     )
     .await
     .expect("the workspace is founded on the separate host");
-    commit_record(&host, here, &host_key, "founded here");
-    commit_record(&far, elsewhere, &far_key, "founded elsewhere");
+    commit_entry(&host, here, &host_key, "founded here");
+    commit_entry(&far, elsewhere, &far_key, "founded elsewhere");
 
-    // The separate host serves its workspaces on the direct lane, as a device
+    // The separate host serves its workspaces on the direct connection, as a device
     // holding workspaces does.
     let far_frames = tempfile::tempdir().expect("a frames directory");
     let far_store = std::sync::Arc::new(
@@ -425,7 +422,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     let (cmd, actor) = Actor::spawn_serving(
         host_endpoint.clone(),
         host_lookup,
-        Some(HostIdentity::kept(host_cert.clone(), host_key.clone())),
+        Some(DeviceIdentity::kept(host_cert.clone(), host_key.clone())),
         std::sync::Arc::new(Mutex::new(Vec::new())),
         tilo_endpoint_reachability::Reachability::default(),
         vec![(

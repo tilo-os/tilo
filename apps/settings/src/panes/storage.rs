@@ -1346,7 +1346,7 @@ mod tests {
     }
 
     /// Opening the page changes nothing of the person's: nothing about looking at a page is a
-    /// change of one of their records, so nothing is offered to their history.
+    /// change of one of their resources, so nothing is offered to their history.
     #[test]
     fn opening_the_storage_page_writes_no_change() {
         fn documents(
@@ -1368,7 +1368,7 @@ mod tests {
         let after = documents(&app);
         assert_eq!(
             before, after,
-            "opening the page wrote a change to the window's records"
+            "opening the page wrote a change to the window's resources"
         );
     }
 
@@ -1587,7 +1587,7 @@ mod tests {
             assert_eq!(cache_size(Some(123)), None);
         }
     }
-    struct StalledStorage(Gate);
+    struct StalledStorage(Check);
 
     impl StalledStorage {
         fn wait(&self) -> Result<(), String> {
@@ -1636,13 +1636,13 @@ mod tests {
         }
     }
 
-    type Gate = std::sync::Arc<crate::stall::Stall>;
+    type Check = std::sync::Arc<crate::stall::Stall>;
 
-    fn stalled_window() -> (ui::framework::testing::TestApp<crate::SettingsShell>, Gate) {
+    fn stalled_window() -> (ui::framework::testing::TestApp<crate::SettingsShell>, Check) {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let gate = crate::stall::Stall::new();
-        let stalled = std::sync::Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = std::sync::Arc::clone(&check);
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
             settings
                 .areas()
@@ -1651,22 +1651,22 @@ mod tests {
                 .use_device(std::sync::Arc::new(StalledStorage(stalled)));
         })
         .expect("the Settings window is mounted");
-        (app, gate)
+        (app, check)
     }
 
     #[test]
     fn a_stalled_disk_walk_never_holds_the_window() {
-        let (mut app, gate) = stalled_window();
+        let (mut app, check) = stalled_window();
         crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("opening the pane");
+        check.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("settings-pane-reading")), "{frame}");
         assert!(!frame.contains(STALLED_APP), "{frame}");
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
@@ -1678,7 +1678,7 @@ mod tests {
 
     #[test]
     fn a_stalled_shell_never_holds_the_window() {
-        let (mut app, gate) = stalled_window();
+        let (mut app, check) = stalled_window();
         let invocation = app
             .start_effect(&crate::effects::SettingsEffect::from(
                 StorageEffect::OpenDisks,
@@ -1687,7 +1687,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("the click");
+        check.assert_held("the click");
         let ended = |updates: &[ui::tilo_actions::InvocationUpdate]| {
             updates
                 .iter()
@@ -1698,7 +1698,7 @@ mod tests {
             "the job waits for the shell"
         );
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| ended(

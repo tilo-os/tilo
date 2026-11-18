@@ -140,7 +140,7 @@ impl OpenControls {
     /// One row while the path keeps `path_room` beside the two buttons, two when it does not: at a
     /// large text scale in a long language the three controls do not fit side by side.
     fn at(
-        lane: Rect,
+        column: Rect,
         y: f64,
         h: f64,
         gap: f64,
@@ -148,26 +148,26 @@ impl OpenControls {
         open_w: f64,
         path_room: f64,
     ) -> Self {
-        let room = lane.width() - choose_w - open_w - 2.0 * gap;
-        let path_room = path_room.min(lane.width() / 2.0);
+        let room = column.width() - choose_w - open_w - 2.0 * gap;
+        let path_room = path_room.min(column.width() / 2.0);
         if room >= path_room {
-            let open = Rect::new(lane.x1 - open_w, y, lane.x1, y + h);
+            let open = Rect::new(column.x1 - open_w, y, column.x1, y + h);
             let choose = Rect::new(open.x0 - gap - choose_w, y, open.x0 - gap, y + h);
             return Self {
-                field: Rect::new(lane.x0, y, choose.x0 - gap, y + h),
+                field: Rect::new(column.x0, y, choose.x0 - gap, y + h),
                 choose,
                 open,
             };
         }
         let choose = Rect::new(
-            lane.x0,
+            column.x0,
             y + h + gap,
-            (lane.x0 + choose_w).min(lane.x1),
+            (column.x0 + choose_w).min(column.x1),
             y + 2.0 * h + gap,
         );
         Self {
-            field: Rect::new(lane.x0, y, lane.x1, y + h),
-            open: Rect::new(lane.x1 - open_w, choose.y0, lane.x1, choose.y1),
+            field: Rect::new(column.x0, y, column.x1, y + h),
+            open: Rect::new(column.x1 - open_w, choose.y0, column.x1, choose.y1),
             choose,
         }
     }
@@ -325,7 +325,7 @@ pub(crate) struct GitClientState {
     preferences: Option<ui::framework::Setting<Settings>>,
     control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
-    /// No repository is bound: keep the empty state until an explicit path or the restored record
+    /// No repository is bound: keep the empty state until an explicit path or the restored resource
     /// selects one.
     awaiting_repo: bool,
     focus: Option<Field>,
@@ -523,7 +523,7 @@ impl GitClientState {
 /// record the document holds.
 pub struct GitClientApp {
     state: Rc<RefCell<GitClientState>>,
-    /// The record as the document holds it, shown as it changes; `None` for a window outside the
+    /// The resource as the document holds it, shown as it changes; `None` for a window outside the
     /// framework.
     document: Option<Live<crate::resource::GitClient>>,
     presented: Option<(u64, u64)>,
@@ -1919,7 +1919,7 @@ impl GitClientState {
         self.model = model;
         self.diffs = diffs;
         self.graph_layout = graph::layout(&mut self.model.commits);
-        self.model.graph_width = self.graph_layout.lanes;
+        self.model.graph_width = self.graph_layout.columns;
         self.selected_change = first_change(&self.model);
         if self.selected_commit >= self.model.commits.len() {
             self.selected_commit = 0;

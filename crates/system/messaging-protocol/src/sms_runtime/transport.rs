@@ -269,9 +269,10 @@ impl DbusTransport {
         if timestamp.len() > 64 {
             return Err(Error::InvalidFrame);
         }
-        let time =
-            chrono::DateTime::parse_from_rfc3339(&timestamp).map_err(|_| Error::InvalidFrame)?;
-        let timestamp_ms = u64::try_from(time.timestamp_millis())
+        let time = timestamp
+            .parse::<jiff::Timestamp>()
+            .map_err(|_| Error::InvalidFrame)?;
+        let timestamp_ms = u64::try_from(time.as_millisecond())
             .ok()
             .filter(|time| *time > 0)
             .ok_or(Error::InvalidFrame)?;

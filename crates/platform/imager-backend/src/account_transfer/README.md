@@ -48,18 +48,18 @@ status responses or migration manifests.
   account and reads its modern account-ID HTTP credential through the owner
   Secret Service. The upstream QtKeychain key and attributes are matched exactly;
   selection metadata is checked again after lookup before canonical Nextcloud
-  custody is written. Repeated imports are idempotent, source bytes stay unchanged,
+  ownership is written. Repeated imports are idempotent, source bytes stay unchanged,
   and deleting the copied grant never revokes the original. Discovery alone does
   not inspect the keychain or establish a usable login. Missing/ambiguous entries,
-  legacy keys, direct KWallet-only custody and client certificates require sign-in.
+  legacy keys, direct KWallet-only ownership and client certificates require sign-in.
 - `import_tilo(source_tilo_root, account_id)` imports an already-Tilo local
   account and its available explicit-root vault credential. Accounts owned by
   other members are excluded. A source with unavailable device/system
-  key custody requires reconnection; encrypted bytes alone are insufficient.
+  key storage requires reconnection; encrypted bytes alone are insufficient.
   Guided selection uses `import_tilo_reviewed`: it checks the reviewed metadata
-  fingerprint before and after opening source custody, reads the existing vault
+  fingerprint before and after opening source ownership, reads the existing vault
   without creating keys or changing source permissions, and reseals the selected
-  grant into destination custody. Durable copied provenance remains sealed through
+  grant into destination ownership. Durable copied provenance remains sealed through
   refresh and transport, so removing that copy does not revoke the source.
   Owned prepared-stage handoff preserves fresh versus copied provenance rather
   than marking every newly authorized connection as a source copy.
@@ -98,10 +98,10 @@ status responses or migration manifests.
   retains the stage through compensation of a returned new app password.
 
 Provider grants and browser sessions have separate consumers. This account
-module imports supported provider grants into canonical account custody. The
+module imports supported provider grants into canonical account credentials. The
 adjacent `service_sessions` module captures explicitly selected Slack/Discord
 browser or application sessions, seals them into PreparedSetup, and imports them
-into protected browser-session custody. Browser's `OpenServiceSession` action
+into protected browser-session ownership. Browser's `OpenServiceSession` action
 consumes those sessions through the shell's private broker. Installing session
 material locally does not prove the provider will accept it on another OS/device;
 expired or rejected sessions require sign-in. Configuring/sealing a password is
@@ -119,11 +119,11 @@ Common application authentication limits:
   Pinned librespot supports reusable `Credentials` caches, but Tilo's current
   native playback consumer accepts only MusicStreaming OAuth and separately
   verifies catalogue/playback Web API identities. Cache import remains unsupported
-  until a typed reusable-session adapter can satisfy that identity gate.
+  until a typed reusable-session adapter can satisfy that identity check.
 - Browser profiles: selected bookmarks, history and folder structure have
   separate source parsing and Browser import actions. Whole-profile preservation
   does not establish a login. Session import supports specific source formats;
-  unsupported encryption/custody and rejected sessions require reconnection.
+  unsupported encryption/ownership and rejected sessions require reconnection.
 
 Sources for the external formats:
 
@@ -169,16 +169,16 @@ an unreadable or unsupported sidecar publishes no fake contacts or events.
 
 The backend refuses copied destination config/vault symlinks and malformed
 existing account stores. Parent coordination must keep home copying and account
-writes sequential, and retain its destination directory custody throughout.
+writes sequential, and retain its destination directory ownership throughout.
 
 `journey::accounts::Accounts` supplies the account decision pages and private
 controller. Choosing or rendering an account never starts authorization; the
 explicit Connect action invokes the shared URI portal. The controller stages
 credentials in an owned private temporary home outside the source, retains
-worker custody until they finish, and records only safe receipts in its public
+worker ownership until they finish, and records only safe receipts in its public
 projection. Back cancels browser authorization; a completed authorization that
 races cancellation is revoked best effort and removed from the private stage.
-Closing during token exchange also retains private worker custody through
+Closing during token exchange also retains private worker ownership through
 new-grant cleanup; accepted prepared receipts transfer that responsibility to
 the retained selection. Failed cleanup must be retried before continuing. Back
 during an already-started saved credential import preserves its completed
@@ -187,7 +187,7 @@ selection.
 The transfer controller retains `prepared_handle()` without consuming the
 account decisions, then calls `merge_into` after home transfer into the
 destination settles. That method reseals selected
-accounts into destination custody; source and unrelated destination accounts
+accounts into destination ownership; source and unrelated destination accounts
 remain protected. Retain the handle on failure for retry. Portable media needs
 authenticated account transport or reconnection on the destination: neither
 staging paths nor vault keys belong in the public installer profile.
@@ -201,7 +201,7 @@ versioned manifest with canonical identity and password-wrapped account artifact
 `Connector::import_sealed_accounts` authenticates all entries and
 preflights all target conflicts, then reseals into the target canonical vault.
 The target caller must supply a reviewed, privately owned destination through
-existing destination custody. Exact metadata/secret retries finish partial
+existing destination ownership. Exact metadata/secret retries finish partial
 vault-before-metadata persistence; differing credentials or accounts are refused.
 Source vault ciphertext and source vault keys are never a transport format.
 
@@ -216,7 +216,7 @@ content key and wraps it using canonical password sealing under the distinct
 `tilo-prepared-account-key/v1` domain plus explicit operation binding.
 `PasswordSealedAccounts::{as_bytes,from_bytes}` and `read_artifact` support
 bounded artifact handoff, and `Connector::import_password_sealed_accounts` opens
-and reseals it. The codec itself lives in `account_custody::portable`; this
+and reseals it. The codec itself lives in `account_credentials::portable`; this
 backend adds only the pinned reads and atomic publication of the artifact file.
 Version 1 accepts only the canonical default Argon2 policy before derivation,
 refusing untrusted resource-expensive KDF parameters. The transport password
@@ -235,7 +235,7 @@ bounded private file and invokes the authenticated canonical import.
 `Connector::import_selected_accounts_matching` checks the complete authenticated
 ID set against an outer manifest before any destination writes. Missing, extra
 or duplicate selections fail closed. `PasswordSealedAccounts::verify_selection`
-performs this check without opening target custody. The in-memory matching
+performs this check without opening target ownership. The in-memory matching
 import supports the Linux `prepared_setup::PreparedSetupReview` consumer, which
 authenticates a Purpose::PreparedSetup package, quarantines exact manifest/
 identity/account files, and verifies both inner artifacts before explicit
@@ -254,7 +254,7 @@ handled by `service_sessions`, and selected browser bookmarks/history by
 `browser_transfer`; neither is imported by this account module. Local session
 installation and provider acceptance require distinct verification. GNOME Online
 Accounts and ordinary rclone cloud OAuth refresh grants retain their original approved client
-registration in canonical sealed custody; unsupported registrations/flows require
+registration in canonical sealed ownership; unsupported registrations/flows require
 reconnection. Selected reusable
 rclone DAV app passwords, recognized Linux Nextcloud Secret Service HTTP
 credentials and supported own Tilo vault credentials are actually extracted. Spotify connects through its own Tilo
@@ -276,10 +276,10 @@ never activates a persona or mints a replacement identity; shell onboarding
 owns canonical activation, device provisioning and completion.
 
 Copied OAuth grants/original-client registrations and copied iCloud sessions now
-use protected wire kinds. Legacy custodians refuse them rather than silently
+use protected wire kinds. Legacy owners refuse them rather than silently
 ignoring provenance or using a different client. Copied DAV/Nextcloud passwords
 are held inside the protected sealed token with an empty outer password; only
-updated canonical custody (including the Settings DAV probe) unwraps them.
+updated canonical ownership (including the Settings DAV probe) unwraps them.
 Fresh Tilo OAuth/iCloud grants and ordinary non-DAV password representations keep
 legacy compatibility. An old target therefore requires an updated consumer to
 use these copied connections; refusal is safe, not successful migration.
@@ -294,7 +294,7 @@ before identity/account writes; a newer staged importer is not consumer proof.
 The verifier checks the actual credential helper and signed SDK-linked probe.
 Fresh legacy grants need no protected protocol requirement. Desktop distribution
 receipt publication and pre-write raw/USB target admission still need separate
-qualification; the installed consumer gate must not be mistaken for those proofs.
+qualification; the installed consumer check must not be mistaken for those proofs.
 
 
 ## Detected Spotify profiles
@@ -306,7 +306,7 @@ retained. It offers only configured library/playback grants, including a
 playback-only registration. Back preserves the candidate until returning to the
 source list; stale or withdrawn configuration refuses the semantic action before
 OAuth work. The page explicitly says the existing session will not move. A new
-connection still uses canonical OAuth custody and the existing verified Spotify
+connection still uses canonical OAuth ownership and the existing verified Spotify
 identity checks; this route does not prove a migrated session or provider acceptance.
 
 [librespot 0.8.0 cache implementation](https://github.com/librespot-org/librespot/blob/v0.8.0/core/src/cache.rs)
@@ -321,7 +321,7 @@ admitted by this backend.
 
 Reusable-session migration therefore still needs an independently recognized,
 reviewed source cache and a typed supported credential adapter, sealed portable
-custody, and a native consumer that independently verifies catalogue/playback
+ownership, and a native consumer that independently verifies catalogue/playback
 account identity. Arbitrary cache paths, opaque desktop cookie/token blobs and
 librespot authentication bytes are not imported as OAuth grants. Existing local
 Tilo Spotify imports remain the supported reusable-credential path.

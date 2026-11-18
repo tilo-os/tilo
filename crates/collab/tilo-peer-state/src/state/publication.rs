@@ -220,9 +220,16 @@ impl PeerPublicationMut<'_> {
         {
             return Err("publication cannot replace the session namespace".into());
         }
-        self.peer
-            .permissions(key.device_public_key(), now)
-            .map_err(|error| error.to_string())?;
+        // A holder that is no member takes in what the members write and
+        // publishes only its own changes: the row saying where its copy
+        // stands ([`crate::workspace::SenderAccess::Holder`]).
+        let device = key.device_public_key();
+        if let Err(error) = self.peer.permissions(device, now) {
+            if self.peer.holder_certificate(&device).is_none() {
+                return Err(error.to_string());
+            }
+            return Ok(self.holder_publication(before, &device));
+        }
         if self.peer.incomplete_reason().is_some() {
             return Err("cannot publish incomplete encryption state".into());
         }
@@ -330,5 +337,32 @@ impl PeerPublicationMut<'_> {
         messages.extend(candidate.own_sealed_publications(key.device_public_key(), Some(before)));
         *self.peer = candidate;
         Ok(messages)
+    }
+
+    /// What a holder that is no member, `device`, publishes of the workspace
+    /// since `before`: the changes it made itself, never the members' it took
+    /// in, which their own writers published.
+    fn holder_publication(&self, before: &StatePeer, device: &[u8; 32]) -> Vec<NeighbourMsg> {
+        let (Some(before), Some(workspace)) = (
+            before.core.workspace_doc.as_deref(),
+            self.peer.core.workspace_doc.as_deref(),
+        ) else {
+            return Vec::new();
+        };
+        let own = self.peer.workspace_actor_for(device);
+        let changes = workspace
+            .clone()
+            .get_changes(&before.clone().get_heads())
+            .into_iter()
+            .filter(|change| change.actor_id() == &own)
+            .map(crate::workspace::sent_change)
+            .collect::<Vec<_>>();
+        if changes.is_empty() {
+            return Vec::new();
+        }
+        vec![NeighbourMsg::SyncResp {
+            changes,
+            workspace: self.peer.core.workspace.clone(),
+        }]
     }
 }

@@ -3,12 +3,12 @@
 //!
 //! Notes makes the note through its own published action and the tracker
 //! links it through its own, both for whoever asked: the person at the
-//! palette, an agent working on the issue, another member. Each app records
+//! palette, an agent working on the issue, another member. Each app resources
 //! its part once in its own history, where that person's undo takes it
 //! back, and the host decides each part with that person's grants. Nothing
 //! here knows how Notes keeps a note.
 //!
-//! The effect vocabulary is the record's ([`crate::model::TasksEffect`]),
+//! The effect vocabulary is the resource's ([`crate::model::TasksEffect`]),
 //! shared with whatever else reads the tracker; this module is where Tasks
 //! answers it.
 
@@ -22,10 +22,19 @@ pub use crate::model::TasksEffect;
 use crate::model::{NOTES, Tracker};
 use crate::part::IssuePart;
 
-/// Its notebook, the resource that makes a note.
-const NOTEBOOK: &str = "notes.notebook";
-/// The notebook's action that makes a note with a title.
+/// The kind of the resource that makes a note: the pages Notes keeps its
+/// notes in, published as one resource.
+const PAGES: &str = "notes.pages";
+/// Its action that makes a note with a title.
 const NEW_NOTE: &str = "create-page";
+
+/// Where Notes publishes the pages it keeps its notes in.
+fn notes_pages() -> String {
+    ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
+        "pages",
+        &ui::resource::DocumentId::workspace_default(),
+    ))
+}
 
 /// Answer `effect`.
 pub(crate) fn handle(
@@ -57,8 +66,8 @@ fn write_note(cx: &mut EffectCx<Tracker>, window: &crate::Window, issue: Id) -> 
         })
         .ok_or_else(|| "There is no such issue".to_owned())?;
     let linking = window.clone();
-    let notebook = ResourceRef::whole(NOTEBOOK, NOTEBOOK, crate::tr("tasks-notebook"));
-    let note = Call::on(NOTES, None, &notebook, NEW_NOTE).with(json!({ "title": title }));
+    let pages = ResourceRef::whole(PAGES, notes_pages(), crate::tr("tasks-notebook"));
+    let note = Call::on(NOTES, None, &pages, NEW_NOTE).with(json!({ "title": title }));
     Ok(cx.call(&note, move |(), made, cx| {
         let made = made?;
         let note = made

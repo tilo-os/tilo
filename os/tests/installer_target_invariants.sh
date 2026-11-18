@@ -355,7 +355,7 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
       "$repo_root/.forgejo/workflows/release-imager.yml"; then
-  ok "release prediction path uses systemd-measure and a broker signer without private-key custody"
+  ok "release prediction path uses systemd-measure and a broker signer without private-key storage"
 else
   bad "release PCR prediction path can bypass authoritative measurement or protected signing"
 fi
@@ -633,7 +633,7 @@ fi
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
   ok "durable-identity services stay quiet only on disposable installer media"
 else
-  bad "a durable-identity service has an incorrect live-installer gate"
+  bad "a durable-identity service has an incorrect live-installer check"
 fi
 
 exit "$fail"

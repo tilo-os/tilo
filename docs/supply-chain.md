@@ -92,7 +92,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
   four independent operators and requires at least two selectable sources.
   It imports no DHCP, pool, peer, or configuration-directory sources, so an
   unauthenticated network time response cannot advance this persistent floor.
-  Immediately before verification, the staged-image gate revalidates that
+  Immediately before verification, the staged-image check revalidates that
   owner-controlled configuration and requires `chronyc waitsync` to report
   less than 100 ms remaining correction. An unsynchronized future RTC therefore
   cannot become the durable trusted-time floor during early boot.
@@ -166,7 +166,13 @@ operate it. Companion to `docs/security/design-rationale.md`.
   `set-<fingerprint>-<arch>`, where the fingerprint hashes both architectures'
   package sets, `BASE_REF`, and the files that shape the snapshot
   (`os/dev/rpm-snapshot-fingerprint.py`), and the suffix says which
-  architecture's image the tag names. Builds call
+  architecture's image the tag names. The set a tree resolves is mirrored into
+  the registry by `rpms-mirror-<arch>` as soon as a main head first resolves it
+  (`dev-set-<fingerprint>-<arch>`, written once like the published tag, unsigned),
+  and the images copy whichever the registry holds by digest (`image-rpms-<arch>`);
+  an OS image build of an unchanged tree is then a copy, not another resolution.
+  A branch may not write there: it reads the published set, or builds its own.
+  Builds that install from the published set call
   `os/dev/resolve-rpm-snapshot.sh --arch <arch>`, which looks up that tag and
   verifies signature, provenance and the image's own architecture before printing
   the digest. Every `os/Containerfile` `dnf install` mounts that repo and installs
@@ -184,9 +190,10 @@ operate it. Companion to `docs/security/design-rationale.md`.
   published by a dispatch on a node of that architecture); a fingerprint already
   published is never published again. There is no hand-kept pin file
   and no pin pull request. The kernel does not build against this snapshot.
-  Until the matching tag exists the build fails `No match for argument: <pkg>`
-  (or resolve fails closed). The package list is auto-derived from
-  `os/Containerfile`, so there is no separate list to maintain.
+  Until the matching tag exists, images install from the mirrored development
+  snapshot of the same package set (unsigned), and a release tag publishes that
+  set under its own tag before anything derives from it. The package list is
+  auto-derived from `os/Containerfile`, so there is no separate list to maintain.
   Before publishing, the snapshot replays the image's erase of base packages it
   later needs again (the pkgconf family) and re-resolves the whole package set
   offline, so an incomplete snapshot fails in CI rather than in an image build.
@@ -266,13 +273,13 @@ operate it. Companion to `docs/security/design-rationale.md`.
   ensure step refuses a `BASE_SOURCE`
   whose digest no longer matches the pin, so a silent major bump fails closed
   instead of shipping.
-  The server images that ship without a bootc base (the relay, the API server,
+  The server images that ship without a bootc base (the server, the API server,
   the VM host) run on `fedora-minimal` instead, pinned by digest from
   `registry.fedoraproject.org`, which keeps the digests quay.io prunes. Their
   runtime packages come from the same frozen snapshot as the OS, so all of them
-  share one base and one package set; `tools/ci/publish/relay-build.sh`,
+  share one base and one package set; `tools/ci/publish/server-build.sh`,
   `api-build.sh` and `vm-host-build.sh` are the build path they share.
-  Every one of their programs is compiled by t (`relay-binaries`,
+  Every one of their programs is compiled by t (`server-binaries`,
   `api-binaries`, `vm-host-binaries`,
   tools/ci/publish/server-binaries.sh) and the images only package the result,
   so no image build compiles Rust: a change costs that crate's compile and a
@@ -308,7 +315,7 @@ to a **signed** image. There is a transition window: any image published
 (correctly) refused. **Resolution:** ensure CI has published at least one signed
 `:latest` (the signing + attest steps are green) before relying on auto-update on
 an installed machine. New installs are fine — they install from the local booted
-image, and only *future* upgrades are gated.
+image, and only *future* upgrades are guarded.
 
 ## Key rotation / revocation
 
@@ -326,8 +333,8 @@ anchor on installed systems; only replacing the root does.
   each update's Rekor signed entry timestamp, which proves the log accepted the
   signature; it does not fetch a fresh inclusion proof and checkpoint, so it
   cannot detect a log that shows different views to different clients.
-- **Independent transparency witness.** Rekor provides public append-only
-  evidence, but the repository has no separately administered witness key and
+- **Independent transparency approval.** Rekor provides public append-only
+  evidence, but the repository has no separately administered approval key and
   checkpoint/freshness service yet. That independent operator is still needed
   for robust split-view and freeze detection; the existing release-signed
   freshness attestation is only the migration anchor, not an independent vote.

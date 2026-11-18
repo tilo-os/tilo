@@ -10,7 +10,7 @@
 //! never opened Chat still finds its messages, a conversation or an agent,
 //! and one that deletes a message has it gone from search with it.
 //!
-//! What is read is what this device holds: [`RecordSource`] is the session's
+//! What is read is what this device holds: [`DocumentSource`] is the session's
 //! owner, so a workspace this device does not keep, a sealed record whose
 //! keys are not here, and a record it may not read are all nothing to index —
 //! the device's appetite decides, not a list of apps.
@@ -30,7 +30,7 @@ use ui::search::index_publication::{IndexEntry, IndexState, Publisher};
 
 /// What the indexer reads: the workspaces this device holds, and the records within them, as the
 /// owner last admitted them.
-pub(crate) trait RecordSource: Send + Sync + 'static {
+pub(crate) trait DocumentSource: Send + Sync + 'static {
     /// The workspaces this device holds.
     fn workspaces(&self) -> Vec<String>;
 
@@ -48,7 +48,7 @@ pub(crate) trait RecordSource: Send + Sync + 'static {
     fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
 }
 
-impl RecordSource for crate::engine::Engine {
+impl DocumentSource for crate::engine::Engine {
     fn workspaces(&self) -> Vec<String> {
         self.workspaces()
             .into_iter()
@@ -171,7 +171,7 @@ impl RecordReader for AppReader {
 
 /// The records whose content search offers, read from the records themselves.
 pub(crate) struct RecordIndex {
-    source: Arc<dyn RecordSource>,
+    source: Arc<dyn DocumentSource>,
     reader: Arc<dyn RecordReader>,
     /// The index search reads; `None` on a session that keeps none.
     content: Option<Arc<AppContentIndex>>,
@@ -192,7 +192,7 @@ impl RecordIndex {
     /// Index what `source` holds, reading each record through `reader` and publishing to `content`
     /// , and follow every later change.
     pub(crate) fn start(
-        source: Arc<dyn RecordSource>,
+        source: Arc<dyn DocumentSource>,
         reader: Arc<dyn RecordReader>,
         content: Option<Arc<AppContentIndex>>,
         changes: crate::platform::records::Changes,

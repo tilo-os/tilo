@@ -116,7 +116,7 @@ fn push_with_device(
 pub(crate) fn device_key() -> Option<[u8; 32]> {
     static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
     *KEY.get_or_init(|| {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .ok()
             .map(|key| key.verifying_key().to_bytes())
@@ -531,7 +531,7 @@ mod tests {
             .expiring(Expiry::EndOfSession);
             let device_only = CapOverride::grant(
                 Grantee::person(PERSON),
-                Scope::Device("camera".into()),
+                Scope::Device(collab_types::caps::DeviceCap::Camera),
                 Access::Read,
             )
             .through("so.tilo.notes");
@@ -666,17 +666,17 @@ mod tests {
     fn a_daemon_that_is_not_serving_yet_is_tried_until_it_is() {
         let dir = tempfile::tempdir().unwrap();
         let (script, seen) = stand_in(dir.path());
-        let gate = dir.path().join("gate");
-        // The daemon refuses every list until the gate exists, and says it was asked.
+        let check = dir.path().join("check");
+        // The daemon refuses every list until the check exists, and says it was asked.
         std::fs::write(
             &script,
             format!(
                 "#!/bin/sh\n\
-             if [ ! -e {gate} ]; then echo refused >> {seen}/refused; exit 1; fi\n\
+             if [ ! -e {check} ]; then echo refused >> {seen}/refused; exit 1; fi\n\
              n=$(cat {seen}/count 2>/dev/null || echo 0)\n\
              n=$((n+1))\n\
              echo \"$n\" > {seen}/count\n",
-                gate = gate.display(),
+                check = check.display(),
                 seen = seen.display()
             ),
         )
@@ -693,7 +693,7 @@ mod tests {
             dir.path().join("config/fs-capabilities.json"),
         );
         publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None));
-        // The first attempt is refused before the gate exists: the daemon's own word for that is
+        // The first attempt is refused before the check exists: the daemon's own word for that is
         // what this waits on, so nothing here races the clock.
         tilo_test_env::wait_until("the daemon refusing the first attempt", || {
             seen.join("refused").is_file()
@@ -704,7 +704,7 @@ mod tests {
             !publisher.unpublished(),
             "a worker is still trying the list"
         );
-        std::fs::write(&gate, b"").unwrap();
+        std::fs::write(&check, b"").unwrap();
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published once the daemon served");

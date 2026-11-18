@@ -160,7 +160,7 @@ impl ProjectionFilesystemAccess {
             let result = mount();
             root()?;
             if filesystem_ids() != (0, self.root_gid) || capabilities()? != self.capabilities {
-                return Err(refused("Mount filesystem custody changed"));
+                return Err(refused("Mount filesystem ownership changed"));
             }
             let mut actual = groups()?;
             let mut expected = self.root_groups.clone();
@@ -184,7 +184,7 @@ impl ProjectionFilesystemAccess {
             || filesystem_ids() != (self.uid, self.gid)
             || capabilities()? != self.capabilities
         {
-            return Err(refused("Scoped projection credential custody changed"));
+            return Err(refused("Scoped projection credential storage changed"));
         }
         let mut current = groups()?;
         let mut expected = self.groups.clone();

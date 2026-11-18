@@ -177,7 +177,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # os/scripts/verify-no-ui-toolkits.sh). Fedora's GTK sound-event helper and
     # desktop-portal backend supplement GTK 3; Tilo plays event sounds with pw-play
     # and serves its own portal backend, so the transactions that could pull them
-    # in exclude them, and the toolkit gate fails the build if one still arrives.
+    # in exclude them, and the toolkit check fails the build if one still arrives.
     && dnf install -y --setopt=reposdir=/repo \
     --exclude=libcanberra-gtk3 \
     --exclude=xdg-desktop-portal-gtk \

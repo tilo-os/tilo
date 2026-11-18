@@ -1,5 +1,5 @@
 //! The `GStreamer` features select native backends. They compile to nothing on
-//! the web, so code gates on these cfgs rather than on the features.
+//! the web, so code waits for these cfgs rather than on the features.
 
 fn main() {
     let web = std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32");

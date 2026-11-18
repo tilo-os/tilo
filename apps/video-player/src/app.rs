@@ -95,7 +95,7 @@ const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 mod opening;
 
 use opening::{PendingMediaOpen, PendingPortalOpen, Picked, PickerChannel, PortalOpenOutcome};
-/// A file-backed local record. The source stays in this process; published rows expose an
+/// A file-backed local resource. The source stays in this process; published rows expose an
 /// opaque `id` and the basename.
 #[derive(Clone)]
 struct LocalMediaEntry {
@@ -310,7 +310,7 @@ pub(crate) struct PlayerState {
     preferences: PlaybackPreferences,
     /// This device's settings; `None` for a capture or a past version.
     setting: Option<Setting<PlayerSettings>>,
-    /// The recent videos record and this device's id; `None` for a capture or a past
+    /// The recent videos resource and this device's id; `None` for a capture or a past
     /// version.
     recents: Option<(PersonResource<RecentVideos>, String)>,
     /// Where each video left off on this device, by its opaque identity.
@@ -529,7 +529,7 @@ impl PlayerState {
         // Tests exercise the real request and completion paths; a recording host answers
         // every picker so no desktop chooser opens.
         #[cfg(test)]
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         let preferences = PlaybackPreferences::default();
         let player = configured_player(mode, preferences);
         Self::from_prepared(player, preferences, RecentEntries::default(), mode)

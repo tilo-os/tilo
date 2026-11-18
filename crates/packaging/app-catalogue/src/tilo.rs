@@ -7,7 +7,7 @@ use crate::entry::{CatalogueAction, CatalogueEntry, ResourceType, Source};
 
 /// The catalogue entry for the registry row `app`: what the registry signed (name, tag line,
 /// description, artwork, category) comes first, and the fleet's manifest metadata adds the other
-/// names, keywords, documents and offered actions, standing in for a tag line the registry left
+/// names, keywords, documents and offered actions, in place of a tag line the registry left
 /// empty.
 #[must_use]
 pub fn entry(app: &CatalogueApp) -> CatalogueEntry {

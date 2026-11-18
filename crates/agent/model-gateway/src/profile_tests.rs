@@ -293,7 +293,7 @@ fn child_follows_settings_and_vault() {
         complete_error("test-provider", "missing").kind,
         ErrorKind::InvalidRequest
     );
-    // Establish local test custody explicitly, never use an ambient keyring.
+    // Establish local test ownership explicitly, never use an ambient keyring.
     let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
     let profile = configured_profile("test-provider").unwrap();
     let (reference, authorization) = credential_binding(&profile).unwrap();
@@ -399,23 +399,23 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
 }
 
 fn seal_grant(profile_id: &str, refresh_token: &str) {
-    let tokens = account_custody::TokenSet {
+    let tokens = account_credentials::TokenSet {
         access_token: "minted-access-token".into(),
         scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
         refresh_token: refresh_token.into(),
         expires_in: 3600,
         obtained_at: tilo_clock::unix_now(),
     };
-    Custodian::live()
+    CredentialStore::live()
         .seal_oauth(&grant_id(profile_id).unwrap(), &tokens)
         .unwrap();
 }
 
 /// The production path for a Google sign-in over real files: the gateway
-/// takes the access token custody holds, Settings and the agent see it as
+/// takes the access token ownership holds, Settings and the agent see it as
 /// configured, and once the grant is revoked every one of them says to
 /// sign in again; the profile's API-key slot is never consulted.
-fn child_mints_from_custody() {
+fn child_mints_from_ownership() {
     let mut profile = ProviderProfile::google_vertex("tilo-509618", "global", "gemini-4-argon");
     profile.id = "vertex-provider".into();
     let model = profile.default_model.clone().unwrap();
@@ -464,7 +464,7 @@ fn child_mints_from_custody() {
         "a sign-in never writes the legacy API-key slot"
     );
 
-    // Phase: a revoked grant (custody keeps it empty) means sign in again.
+    // Phase: a revoked grant (ownership keeps it empty) means sign in again.
     seal_grant("vertex-provider", "");
     signed_in(false);
     assert_eq!(
@@ -475,16 +475,16 @@ fn child_mints_from_custody() {
 }
 
 #[test]
-fn a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again() {
+fn a_google_sign_in_is_minted_by_ownership_and_reports_sign_in_again() {
     if std::env::var_os("PROFILE_TEST_CHILD").is_some() {
-        child_mints_from_custody();
+        child_mints_from_ownership();
         return;
     }
     let root = tempfile::tempdir().unwrap();
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "service::profile_tests::a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again",
+            "service::profile_tests::a_google_sign_in_is_minted_by_ownership_and_reports_sign_in_again",
             "--nocapture",
         ])
         // No ambient credentials, settings path, or secret-tool.

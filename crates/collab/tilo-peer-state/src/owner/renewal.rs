@@ -1,6 +1,6 @@
 //! A renewed device certificate in the workspaces this device joined. A
 //! certificate that expires is renewed by its person's root before it runs
-//! out (`tilo_identity_host`); the device proves its membership again with
+//! out (`tilo_identity`); the device proves its membership again with
 //! the renewed one, the workspace's governor puts it in place of the one the
 //! workspace held, and the workspace's record here follows. The device stays the same
 //! member, with its role and everything it wrote.
@@ -11,7 +11,7 @@ use web_time::SystemTime;
 
 /// Whether `renewed` is a later certificate of `held`'s device from the same
 /// person's root. The certificates' signatures are checked where each is
-/// taken in: the device's custody and the workspace's governance.
+/// taken in: the device's ownership and the workspace's governance.
 #[must_use]
 pub fn renews(renewed: &DeviceCert, held: &DeviceCert) -> bool {
     renewed.renews(held)

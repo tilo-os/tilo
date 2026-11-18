@@ -32,7 +32,7 @@ use collab_types::DocumentMutation;
 use fs_protocol::TreeChunk;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::{DocumentAnswer, WorkspaceId};
+use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
 
@@ -107,7 +107,7 @@ pub(crate) fn route(workspace: WorkspaceId, chunk: TreeChunk) -> DocumentRoute {
     reason = "each is a fact `tilo status` reports on its own"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct Standing {
+pub(crate) struct TreeStatus {
     /// The workspace's host answered for the tree: what it holds is merged.
     pub(crate) opened: bool,
     /// Every change made here was handed to the session.
@@ -126,7 +126,7 @@ pub(crate) struct Standing {
 /// One workspace's tree, held while this value lives.
 pub(crate) struct TreeReplica {
     pub(crate) namespace: Arc<Mutex<Namespace>>,
-    standing: Arc<Mutex<Standing>>,
+    status: Arc<Mutex<TreeStatus>>,
     paused: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
     task: tokio::task::JoinHandle<()>,
@@ -186,7 +186,7 @@ impl TreeReplica {
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
         };
         let namespace = Arc::new(Mutex::new(namespace));
-        let standing = Arc::new(Mutex::new(Standing::default()));
+        let status = Arc::new(Mutex::new(TreeStatus::default()));
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
         let sync = Sync {
@@ -207,21 +207,21 @@ impl TreeReplica {
             pulling: Paced::new(LOOK_AGAIN),
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
-            standing: Arc::clone(&standing),
+            status: Arc::clone(&status),
             content,
         };
         let task = tokio::spawn(sync.run());
         Ok(Self {
             namespace,
-            standing,
+            status,
             paused,
             wake,
             task,
         })
     }
 
-    pub(crate) fn standing(&self) -> Standing {
-        self.standing.lock_recover().clone()
+    pub(crate) fn status(&self) -> TreeStatus {
+        self.status.lock_recover().clone()
     }
 
     /// Stop syncing (changes made here wait to go out, and none come in), or
@@ -253,9 +253,9 @@ struct Held {
 }
 
 /// How long writes of a record the host refused wait before the next goes out. A refusal says
-/// the host takes changes slower than this device made them, or not at all as they were:
-/// waiting coalesces what is made meanwhile into one write, and each refusal in a row doubles
-/// the wait, up to [`MOST_REFUSED_WAIT`]; a write that lands ends the run.
+/// the host does not take the changes as they were (the workspace is full, or a grant is
+/// missing): waiting coalesces what is made meanwhile into one write, and each refusal in a row
+/// doubles the wait, up to [`MOST_REFUSED_WAIT`]; a write that lands ends the run.
 #[derive(Debug, Default)]
 struct Refusals {
     /// The wait the last refusal set; zero when the last write landed.
@@ -264,33 +264,21 @@ struct Refusals {
     until: Option<Instant>,
 }
 
-/// How long the host said to wait before it takes the next write, when it said.
-fn host_wait(refusal: &tilo_relay_protocol::refusal::Refusal) -> Option<Duration> {
-    use tilo_relay_protocol::refusal::Refusal;
-    match refusal {
-        Refusal::TooFast { wait_ms } | Refusal::TooMuchContent { wait_ms } => {
-            Some(Duration::from_millis(*wait_ms))
-        }
-        _ => None,
-    }
-}
-
 /// The first wait after a refusal.
 const FIRST_REFUSED_WAIT: Duration = Duration::from_secs(1);
 /// The longest wait after refusals in a row.
 const MOST_REFUSED_WAIT: Duration = Duration::from_secs(30);
 
 impl Refusals {
-    /// A write was refused at `now`: the next waits as long as the host said, or else twice
-    /// as long as the last. Whether it is the first of a run.
-    fn refused(&mut self, now: Instant, said: Option<Duration>) -> bool {
+    /// A write was refused at `now`: the next waits twice as long as the last. Whether it is
+    /// the first of a run.
+    fn refused(&mut self, now: Instant) -> bool {
         let first = self.wait.is_zero();
-        let doubled = if first {
+        self.wait = if first {
             FIRST_REFUSED_WAIT
         } else {
             self.wait.saturating_mul(2).min(MOST_REFUSED_WAIT)
         };
-        self.wait = said.unwrap_or(doubled).max(FIRST_REFUSED_WAIT);
         self.until = now.checked_add(self.wait);
         first
     }
@@ -333,9 +321,9 @@ struct Sync {
     keeping: Paced,
     counting: Paced,
     pulling: Paced,
-    /// The heads the files and bytes in `standing` were counted at.
+    /// The heads the files and bytes in `status` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
-    standing: Arc<Mutex<Standing>>,
+    status: Arc<Mutex<TreeStatus>>,
     content: Arc<SessionContent>,
 }
 
@@ -417,7 +405,7 @@ impl Sync {
             .link
             .send(Cmd::OpenDocumentAt(self.workspace, route.clone()));
         let _ = self.link.send(Cmd::OpenRoute(route.clone()));
-        // And on the workspace's plane, whose host answers what it holds.
+        // And on the workspace's live session, whose host answers what it holds.
         let _ = self.link.engine().open_resource(
             &self.workspace.to_string(),
             &route.app_id,
@@ -447,7 +435,7 @@ impl Sync {
                         .flatten()
                         .map(|hash| automerge::ChangeHash(*hash))
                         .collect();
-                    if held.refused.refused(Instant::now(), host_wait(&refusal)) {
+                    if held.refused.refused(Instant::now()) {
                         tracing::warn!(%refusal, workspace = %self.workspace, record = %route.document, "the workspace refused a change to its files; it goes again after a wait");
                     }
                 }
@@ -477,7 +465,7 @@ impl Sync {
                     // A host that sent some of the tree holds one, which this device reads
                     // before it writes: a tree it founded beside that one would go out whole.
                     if chunk == 0 && holds_none(Some(answer)) {
-                        self.standing.lock_recover().opened = true;
+                        self.status.lock_recover().opened = true;
                     }
                 }
             }
@@ -545,7 +533,7 @@ impl Sync {
                             &route.document,
                         ))
                     {
-                        self.standing.lock_recover().opened = true;
+                        self.status.lock_recover().opened = true;
                     }
                 }
             }
@@ -585,7 +573,7 @@ impl Sync {
         };
         for (chunk, heads, _) in readings {
             if chunk == 0 {
-                self.standing.lock_recover().opened = true;
+                self.status.lock_recover().opened = true;
             }
             let held = self.records.entry(chunk).or_default();
             // What the record holds is not this device's to send again; what only this
@@ -612,7 +600,7 @@ impl Sync {
     /// Hand the session what the namespace changed since it last did, once the batch the
     /// first of those changes started is due: one write per record that changed.
     fn push(&mut self) {
-        if !self.standing.lock_recover().opened {
+        if !self.status.lock_recover().opened {
             // The host has not said what it holds: a tree written now could found a second
             // one beside it.
             return;
@@ -739,14 +727,14 @@ impl Sync {
         });
         let durable = !self.records.keys().any(|chunk| self.holding(*chunk))
             && self.link.outgoing_pending() == 0;
-        let mut standing = self.standing.lock_recover();
+        let mut status = self.status.lock_recover();
         if let Some((files, bytes)) = counted {
-            standing.files = files;
-            standing.bytes = bytes;
+            status.files = files;
+            status.bytes = bytes;
         }
-        standing.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
-        standing.sent = sent;
-        standing.durable = durable;
+        status.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
+        status.sent = sent;
+        status.durable = durable;
     }
 
     /// The files the tree names and their bytes: a walk of every node.
@@ -833,7 +821,7 @@ fn holds_none(answer: Option<DocumentAnswer>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use tilo_relay_protocol::DocumentAnswer;
+    use tilo_server_protocol::DocumentAnswer;
 
     #[test]
     fn a_refused_record_waits_longer_each_time_until_a_write_lands() {
@@ -846,12 +834,12 @@ mod tests {
             "nothing refused: writes go out"
         );
         assert!(
-            refusals.refused(start, None),
+            refusals.refused(start),
             "the first refusal of a run is said"
         );
         assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
         assert!(
-            !refusals.refused(start, None),
+            !refusals.refused(start),
             "the rest of the run is not said again"
         );
         assert_eq!(
@@ -859,7 +847,7 @@ mod tests {
             Some(start + FIRST_REFUSED_WAIT * 2)
         );
         for _ in 0..10 {
-            refusals.refused(start, None);
+            refusals.refused(start);
         }
         assert_eq!(refusals.held_until(start), Some(start + MOST_REFUSED_WAIT));
         assert_eq!(
@@ -868,22 +856,8 @@ mod tests {
             "the wait ends"
         );
         refusals.landed();
-        assert!(
-            refusals.refused(start, None),
-            "a write that landed ends the run"
-        );
+        assert!(refusals.refused(start), "a write that landed ends the run");
         assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
-        let said = std::time::Duration::from_secs(7);
-        refusals.refused(start, Some(said));
-        assert_eq!(
-            refusals.held_until(start),
-            Some(start + said),
-            "a wait the host said is the wait"
-        );
-        assert_eq!(
-            super::host_wait(&tilo_relay_protocol::refusal::Refusal::TooFast { wait_ms: 7000 }),
-            Some(said)
-        );
     }
 
     #[test]

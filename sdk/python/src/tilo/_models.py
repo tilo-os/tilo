@@ -194,13 +194,13 @@ class Usage:
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> Usage:
-        standing = raw.get("standing")
-        standing = standing if isinstance(standing, Mapping) else {}
-        usage = standing.get("usage")
+        subscription = raw.get("subscription")
+        subscription = subscription if isinstance(subscription, Mapping) else {}
+        usage = subscription.get("usage")
         usage = usage if isinstance(usage, Mapping) else {}
         return cls(
             host=str(raw.get("host") or ""),
-            plan=_text(standing.get("plan")),
+            plan=_text(subscription.get("plan")),
             workspaces=tuple(
                 WorkspaceUsage.of(row)
                 for row in usage.get("workspaces") or []
@@ -484,7 +484,7 @@ class InvocationList:
         return cls(
             invocations=[
                 InvocationInfo.of(listed)
-                for listed in raw.get("invocations") or []
+                for listed in raw.get("items") or []
                 if isinstance(listed, Mapping)
             ],
             total=_int(raw.get("total")) or 0,

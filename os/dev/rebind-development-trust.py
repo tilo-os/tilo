@@ -109,7 +109,7 @@ def replace(image_root, *, disposable, old_bundle, old_manifest, old_target,
             finally:
                 Path(temporary_path).unlink(missing_ok=True)
         # Check replacement consistency only. Do not call or bypass the shared
-        # acceptance gate: this deliberately remains a rejected pending root.
+        # acceptance check: this deliberately remains a rejected pending root.
         if hardware.development_origin(root) != new_target:
             raise ValueError('replacement origin differs')
         updated_profile = hardware.read_profile(root)

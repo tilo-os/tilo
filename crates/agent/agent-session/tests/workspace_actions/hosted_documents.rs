@@ -6,7 +6,7 @@
 //! reads both, lists the form's fields and fills them, writes a cover
 //! letter and exports it as Word and as PDF. Only then does a reviewer's
 //! page open the workspace: it sees the filled values, each change grouped
-//! under the agent's run, and undoes the run from the records' own
+//! under the agent's invocation, and undoes it from the resources' own
 //! history. The workspace's shell, where commands and VMs run, is never
 //! asked.
 //!
@@ -29,10 +29,10 @@ use tilo_session_client::remote::SessionActions;
 pub const PDF: &str = "so.tilo.pdf-viewer";
 pub const WRITER: &str = "so.tilo.word-processor";
 
-/// The agent's run, as the client names it: the host names the run itself.
-pub const RUN: &str = "visa-run-1";
-/// The agent the session runs, as History names its run.
-pub const RUN_LABEL: &str = "Visa agent";
+/// The agent's invocation, as the client names it: the host names the group itself.
+pub const INVOCATION: &str = "visa-run-1";
+/// The agent the session runs, as History names its invocation.
+pub const INVOCATION_LABEL: &str = "Visa agent";
 
 /// The form an applicant fills: text fields, a choice and a checkbox, each
 /// with a widget on its one page.
@@ -224,8 +224,8 @@ pub async fn form_fields(server: &McpServer<SessionActions>) -> BTreeMap<String,
         .collect()
 }
 
-/// The runs the changes of `route` the page received are grouped under.
-fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
+/// The invocations the changes of `route` the page received are grouped under.
+fn invocations_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
     page.pump();
     let mut doc = automerge::AutoCommit::new();
     for (_, bytes) in page.documents.get(route).into_iter().flatten() {
@@ -326,9 +326,9 @@ async fn indexed(
     }
 }
 
-/// Undo `run` in the record `route` names, through the history `undo` the
+/// Undo `invocation` in the record `route` names, through the history `undo` the
 /// record publishes, as the activity's undo asks it.
-async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, run: &str) {
+async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, invocation: &str) {
     let provider = tilo_agent_session::record_provider(route);
     let rows = page
         .catalogue(CatalogueQuery {
@@ -344,15 +344,16 @@ async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, run: &str) {
         .into_iter()
         .filter_map(|row| row.action)
         .find(|action| {
-            action.address.action == "undo" && action.params.iter().any(|param| param.name == "run")
+            action.address.action == "undo"
+                && action.params.iter().any(|param| param.name == "invocation")
         })
         .unwrap_or_else(|| panic!("{} publishes no history undo", route.app_id))
         .address;
     let mut argument = serde_json::Map::new();
-    argument.insert("run".into(), run.into());
+    argument.insert("invocation".into(), invocation.into());
     page.invoke_on(&provider, address, InvokeArgument::Json(argument))
         .await
-        .unwrap_or_else(|error| panic!("the run is undone in {}: {error}", route.app_id));
+        .unwrap_or_else(|error| panic!("the invocation is undone in {}: {error}", route.app_id));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -372,7 +373,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         &host,
         state.path(),
         Options {
-            shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
+            shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )
@@ -383,7 +384,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     // person's page is open.
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, RUN_LABEL).await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, INVOCATION_LABEL).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
@@ -391,7 +392,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_session(RUN, RUN_LABEL);
+    .with_agent_session(INVOCATION, INVOCATION_LABEL);
 
     // 1. The applicant's files go into the workspace.
     let application = put(&server, &application_pdf()).await;
@@ -571,27 +572,29 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // History names the agent's run for every edit: one run, the host's,
-    // whatever the client called it.
-    let mut run = None;
+    // History names the agent's invocation for every edit: one invocation,
+    // the host's, whatever the client called it.
+    let mut invocation = None;
     for route in [&pdf, &writer] {
-        let runs = runs_of(&mut page, route);
-        let id = runs.first().map(|first| first.id.clone());
+        let invocations = invocations_of(&mut page, route);
+        let id = invocations.first().map(|first| first.id.clone());
         assert!(
-            !runs.is_empty()
-                && runs.iter().all(|each| {
+            !invocations.is_empty()
+                && invocations.iter().all(|each| {
                     Some(&each.id) == id.as_ref()
-                        && each.id != RUN
+                        && each.id != INVOCATION
                         && each.id.starts_with("agent-session:")
-                        && each.label == RUN_LABEL
+                        && each.label == INVOCATION_LABEL
                 })
-                && run.as_ref().is_none_or(|run| Some(run) == id.as_ref()),
-            "{} keeps its changes as the agent's run: {runs:?}",
+                && invocation
+                    .as_ref()
+                    .is_none_or(|invocation| Some(invocation) == id.as_ref()),
+            "{} keeps its changes as the agent's invocation: {invocations:?}",
             route.app_id
         );
-        run = id;
+        invocation = id;
     }
-    let run = run.expect("the agent's run");
+    let invocation = invocation.expect("the agent's invocation");
 
     // The reviewer finds the form by its name: the workspace's PDF index
     // names the record the agent made, under what PDF Viewer calls it, and
@@ -609,9 +612,9 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         "the row is the agent's form"
     );
 
-    // Undoing the run takes the agent's edits back.
-    undo_invocation(&mut page, &pdf, &run).await;
-    undo_invocation(&mut page, &writer, &run).await;
+    // Undoing the invocation takes the agent's edits back.
+    undo_invocation(&mut page, &pdf, &invocation).await;
+    undo_invocation(&mut page, &writer, &invocation).await;
     loop {
         let values = form_values(&mut page, &pdf);
         let text = writer_text(&mut page, &writer);
@@ -620,7 +623,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         }
         assert!(
             Instant::now() < deadline,
-            "the run was never undone: {values:?} / {text}"
+            "the invocation was never undone: {values:?} / {text}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

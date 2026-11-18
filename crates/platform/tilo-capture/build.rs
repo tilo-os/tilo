@@ -1,7 +1,7 @@
 //! Which backend serves each capability. The features select a native
 //! backend (`GStreamer`, or `AVFoundation` on macOS) and compile to nothing on
 //! the web, where the page's media devices serve every capability; code
-//! gates on these cfgs.
+//! waits for these cfgs.
 
 fn main() {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();

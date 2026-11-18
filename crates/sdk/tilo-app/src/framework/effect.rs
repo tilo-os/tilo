@@ -173,7 +173,7 @@ pub struct Progress {
     events: Sender<JobEvent>,
     cancelled: Arc<AtomicBool>,
     wake: WakeHandle,
-    custody: Option<ResourceEffectScope>,
+    ownership: Option<ResourceEffectScope>,
 }
 
 // Written out rather than derived: a derived `clone` is inlined into every
@@ -185,7 +185,7 @@ impl Clone for Progress {
             events: self.events.clone(),
             cancelled: Arc::clone(&self.cancelled),
             wake: self.wake.clone(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
         }
     }
 }
@@ -217,7 +217,7 @@ impl Progress {
 
     /// Share the actual job's cancellation flag with blocking native I/O.
     /// This is explicit cancellation, not authority: callers still use
-    /// [`Self::with_effect`] at work boundaries to recheck current custody.
+    /// [`Self::with_effect`] at work boundaries to recheck current ownership.
     /// Treat the returned flag as read-only.
     #[must_use]
     pub fn cancellation_signal(&self) -> Arc<AtomicBool> {
@@ -245,8 +245,8 @@ impl Progress {
             }
             effect()
         };
-        match &self.custody {
-            Some(custody) => custody.with_effect(admitted),
+        match &self.ownership {
+            Some(ownership) => ownership.with_effect(admitted),
             None => admitted(),
         }
     }
@@ -325,7 +325,7 @@ use job::{JobCore, Tracking, track_for};
 /// What [`JobCore::next`] found.
 enum Next {
     Progress(Polled),
-    /// The job failed or lost its custody: it is over.
+    /// The job failed or lost its ownership: it is over.
     Failed(ActionFailure),
     Finished(Box<dyn Any + Send>),
 }
@@ -370,29 +370,32 @@ impl Job {
     }
 }
 
-/// The custody a job runs under: its worker's, and the invocation's its
+/// The ownership a job runs under: its worker's, and the invocation's its
 /// completion is checked against.
-struct JobCustody {
+struct JobOwnership {
     worker: Option<ResourceEffectScope>,
-    custody: Option<ResourceInvocationScope>,
+    ownership: Option<ResourceInvocationScope>,
 }
 
-impl JobCustody {
-    /// The custody of a job an effect running under `worker` and `custody`
+impl JobOwnership {
+    /// The ownership of a job an effect running under `worker` and `ownership`
     /// starts.
     #[inline(never)]
-    fn of(worker: Option<&ResourceEffectScope>, custody: Option<&ResourceInvocationScope>) -> Self {
+    fn of(
+        worker: Option<&ResourceEffectScope>,
+        ownership: Option<&ResourceInvocationScope>,
+    ) -> Self {
         Self {
             worker: worker.cloned(),
-            custody: custody.cloned(),
+            ownership: ownership.cloned(),
         }
     }
 }
 
-/// `custody` owned, for an effect context to keep.
+/// `ownership` owned, for an effect context to keep.
 #[inline(never)]
-fn owned_scope(custody: Option<&ResourceInvocationScope>) -> Option<ResourceInvocationScope> {
-    custody.cloned()
+fn owned_scope(ownership: Option<&ResourceInvocationScope>) -> Option<ResourceInvocationScope> {
+    ownership.cloned()
 }
 
 /// Start tracking a job in `started` for `owner`, with the completion
@@ -401,7 +404,7 @@ fn owned_scope(custody: Option<&ResourceInvocationScope>) -> Option<ResourceInvo
 fn track_job(
     started: &mut Option<Job>,
     wake: &WakeHandle,
-    custody: JobCustody,
+    ownership: JobOwnership,
     then: Option<Box<dyn Any>>,
     owner: std::any::TypeId,
     cancel_by: Option<Arc<AtomicBool>>,
@@ -412,7 +415,7 @@ fn track_job(
         events,
         cancelled: Arc::clone(&signals.cancelled),
         wake: wake.clone(),
-        custody: custody.worker,
+        ownership: ownership.worker,
     };
     if let Some(previous) = started.replace(Job {
         core: JobCore::of(
@@ -421,7 +424,7 @@ fn track_job(
                 cancel_by,
                 ..signals
             },
-            custody.custody,
+            ownership.ownership,
         ),
         then,
         owner,
@@ -432,24 +435,47 @@ fn track_job(
     progress
 }
 
+/// How an outbox entry, or work a chain owes, starts: `work` given the value
+/// in an effect context of its invocation, under its ownership.
+fn start_entry<R: Resource + 'static, T: 'static>(
+    starting: EffectEnv<R>,
+    mut work: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+) -> StartEntry {
+    Box::new(move |id, value, invocation, ownership| {
+        let Ok(value) = value.downcast::<T>() else {
+            return Err("an outbox entry is of another type".into());
+        };
+        let mut cx = EffectCx::invoked(
+            starting.clone(),
+            ownership_parts(invocation, owned_scope(ownership))?,
+        );
+        let mut value = Some(*value);
+        let answer = run_under(invocation, ownership, &mut || match value.take() {
+            Some(value) => work(id, value, &mut cx),
+            None => Err("an outbox entry ran twice".into()),
+        });
+        Ok((answer, cx.inv.started.take()))
+    })
+}
+
 /// Run `run`, a handler or a completion, for `invocation` and under
-/// `custody` when it has one: it fails once the custody is gone.
+/// `ownership` when it has one: it fails once the ownership is gone.
 fn run_under(
     invocation: Option<InvocationId>,
-    custody: Option<&ResourceInvocationScope>,
+    ownership: Option<&ResourceInvocationScope>,
     run: &mut dyn FnMut() -> EffectAnswer,
 ) -> EffectAnswer {
     let _acting = ActingFor::enter(invocation);
-    match custody {
-        Some(custody) => custody
+    match ownership {
+        Some(ownership) => ownership
             .with_effect(run)
-            .and_then(|answer| custody.check().map(|()| answer)),
+            .and_then(|answer| ownership.check().map(|()| answer)),
         None => run(),
     }
 }
 
 /// A job's completion run: the completion, what the job finished with, its
-/// custody and the invocation it answers; what it answered and the job it
+/// ownership and the invocation it answers; what it answered and the job it
 /// chained, if any.
 type Complete<'a> = dyn FnMut(
         Box<dyn Any>,
@@ -466,14 +492,14 @@ fn complete<R: Resource, H: 'static>(
     host: &mut H,
     then: Box<dyn Any>,
     value: Box<dyn Any + Send>,
-    custody: Option<ResourceInvocationScope>,
+    ownership: Option<ResourceInvocationScope>,
     invocation: Option<InvocationId>,
 ) -> Result<(EffectAnswer, Option<Job>), String> {
     let Ok(then) = then.downcast::<Then<R, H>>() else {
         return Err("a job's completion is of another type".into());
     };
-    let scope = owned_scope(custody.as_ref());
-    let mut cx = EffectCx::<R, H>::invoked(env.clone(), custody_parts(invocation, custody)?);
+    let scope = owned_scope(ownership.as_ref());
+    let mut cx = EffectCx::<R, H>::invoked(env.clone(), ownership_parts(invocation, ownership)?);
     let mut then = Some(*then);
     let mut value = Some(value);
     let answer = run_under(
@@ -564,8 +590,8 @@ struct Answering {
     document: Option<Rc<RefCell<tilo_resource::Doc>>>,
     /// The lent document's heads, taken when it was lent.
     heads: Vec<ui_core::automerge::ChangeHash>,
-    custody: Option<ResourceInvocationScope>,
-    worker_custody: Option<ResourceEffectScope>,
+    ownership: Option<ResourceInvocationScope>,
+    worker_ownership: Option<ResourceEffectScope>,
     /// The invocation the host delivered for someone that this answers:
     /// what another resource's action this effect calls continues
     /// ([`EffectCx::call`]). `None` for the person at this device acting
@@ -589,8 +615,8 @@ impl Answering {
             started: None,
             document: None,
             heads: Vec::new(),
-            custody: None,
-            worker_custody: None,
+            ownership: None,
+            worker_ownership: None,
             delivered: None,
             target: None,
             place: None,
@@ -643,7 +669,7 @@ type BoxedFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn An
 /// An effect's blocking work, its output boxed.
 type BoxedWork = Box<dyn FnOnce(Progress) -> Box<dyn Any + Send> + Send>;
 
-/// Run an effect's future on the app runtime, polled under its custody, and
+/// Run an effect's future on the app runtime, polled under its ownership, and
 /// deliver what it finished with. Every effect's future runs through this
 /// one function and task type.
 fn spawn_future(progress: Progress, future: BoxedFuture) -> ui_core::rt::JoinHandle<()> {
@@ -665,7 +691,7 @@ fn spawn_future(progress: Progress, future: BoxedFuture) -> ui_core::rt::JoinHan
 }
 
 /// Run an effect's blocking work on the app runtime's blocking threads,
-/// under its custody, and deliver what it finished with ([`spawn_future`]).
+/// under its ownership, and deliver what it finished with ([`spawn_future`]).
 fn spawn_work(progress: Progress, work: BoxedWork) -> ui_core::rt::JoinHandle<()> {
     ui_core::rt::app().spawn_blocking(move || {
         match progress.with_effect(|| Ok(work(progress.clone()))) {
@@ -688,7 +714,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     fn invoked(mut env: EffectEnv<R>, parts: InvocationParts) -> Self {
         let InvocationParts { inv, lent } = parts;
         if let Some(scope) = lent {
-            env.dispatch = env.dispatch.for_custody(scope);
+            env.dispatch = env.dispatch.for_ownership(scope);
         }
         Self {
             env,
@@ -787,8 +813,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         operation: registry_types::ExternalModerationOperation,
     ) -> Result<ui_core::invocation_scope::ExternalModerationFuture, String> {
-        if let Some(custody) = &self.inv.custody {
-            return custody.external_moderation(operation);
+        if let Some(ownership) = &self.inv.ownership {
+            return ownership.external_moderation(operation);
         }
         let target = self
             .inv
@@ -810,15 +836,15 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// folder covers what is under it), before writing them: when an agent
     /// acting for the session's person invoked it, the versions those
     /// writes make record that agent, for its person. The host takes who
-    /// acted from its own custody of the invocation, never from here. Wait
+    /// acted from its own ownership of the invocation, never from here. Wait
     /// on the receipt where the writes run (a [`Self::thread`]), then write
     /// whatever it answered. `None` when there is nobody to name: no
-    /// invocation's custody, or one that is not an agent's.
+    /// invocation's ownership, or one that is not an agent's.
     pub fn attribute_writes(
         &self,
         paths: Vec<String>,
     ) -> Option<ui_core::invocation_scope::WriteAttributionReceipt> {
-        match self.inv.custody.as_ref()?.attribute_writes(paths) {
+        match self.inv.ownership.as_ref()?.attribute_writes(paths) {
             Ok(receipt) => receipt,
             Err(error) => {
                 // The write stays its person's in file history, which reads
@@ -836,8 +862,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         check_id: &str,
     ) -> Result<ui_core::invocation_scope::ApprovedCheckFuture, String> {
-        if let Some(custody) = &self.inv.custody {
-            return custody.approved_check(check_id);
+        if let Some(ownership) = &self.inv.ownership {
+            return ownership.approved_check(check_id);
         }
         let target = self
             .inv
@@ -867,8 +893,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         + use<R, H>,
         String,
     > {
-        let checked = if let Some(custody) = &self.inv.custody {
-            custody.approved_check_reported(check_id)?
+        let checked = if let Some(ownership) = &self.inv.ownership {
+            ownership.approved_check_reported(check_id)?
         } else {
             let target = self
                 .inv
@@ -898,8 +924,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             &mut Tracking {
                 started: &mut self.inv.started,
                 wake: &self.env.wake,
-                worker: self.inv.worker_custody.as_ref(),
-                custody: self.inv.custody.as_ref(),
+                worker: self.inv.worker_ownership.as_ref(),
+                ownership: self.inv.ownership.as_ref(),
                 scope: self.env.scope.as_ref(),
                 cancel_by: self.inv.cancel_by.as_ref(),
                 owner: std::any::TypeId::of::<Then<R, H>>(),
@@ -996,7 +1022,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Answer later, then settle the successful receipt on the UI thread
     /// under this effect's retained invocation. Refusal skips the completion
-    /// and preserves its structured failure. Cancellation and current custody
+    /// and preserves its structured failure. Cancellation and current ownership
     /// are checked by the same job path as [`Self::spawn`].
     pub fn reply_then(
         &mut self,
@@ -1242,8 +1268,8 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
             &self.jobs.queue,
             &mut self.running,
             std::any::TypeId::of::<Then<R, H>>(),
-            &mut |then, value, custody, invocation| {
-                complete::<R, H>(&env, host, then, value, custody, invocation)
+            &mut |then, value, ownership, invocation| {
+                complete::<R, H>(&env, host, then, value, ownership, invocation)
             },
         );
     }
@@ -1596,7 +1622,7 @@ impl<K: JobKey> Running<K> {
         let Some(then) = job.then else {
             return Some(answered(value));
         };
-        let (answer, next) = match complete(then, value, job.core.custody, invocation) {
+        let (answer, next) = match complete(then, value, job.core.ownership, invocation) {
             Ok(completed) => completed,
             Err(error) => return Some(Polled::Finished(Some(Err(failure(error))))),
         };
@@ -1679,7 +1705,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         doc: Option<&tilo_resource::Doc>,
         handle: impl FnOnce(&mut H, E, &mut EffectCx<R, H>) -> EffectAnswer,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let (request, custody) = op.with_custody();
+        let (request, ownership) = op.with_ownership();
         if request.type_id != E::OPERATION {
             return Ok(None);
         }
@@ -1696,7 +1722,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         let mut handling = Some((handle, effect));
         let answer = run_under(
             Some(request.invocation),
-            custody,
+            ownership,
             &mut || match handling.take() {
                 Some((handle, effect)) => handle(host, effect, &mut cx),
                 None => Err("an effect's handler ran twice".into()),
@@ -1716,8 +1742,8 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             Tracking {
                 started: &mut cx.inv.started,
                 wake: &cx.env.wake,
-                worker: cx.inv.worker_custody.as_ref(),
-                custody: cx.inv.custody.as_ref(),
+                worker: cx.inv.worker_ownership.as_ref(),
+                ownership: cx.inv.ownership.as_ref(),
                 scope: cx.env.scope.as_ref(),
                 cancel_by: cx.inv.cancel_by.as_ref(),
                 owner: std::any::TypeId::of::<Then<R, H>>(),
@@ -1740,22 +1766,22 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             &mut self.jobs,
             invocation,
             cancel,
-            &mut |then, value, custody, invocation| {
-                complete::<R, H>(env, host, then, value, custody, invocation)
+            &mut |then, value, ownership, invocation| {
+                complete::<R, H>(env, host, then, value, ownership, invocation)
             },
         )
     }
 }
 
-/// The scope a worker runs under for `custody`, and the custody the
+/// The scope a worker runs under for `ownership`, and the ownership the
 /// effect's dispatcher keeps.
-fn custody_scopes(
-    custody: Option<&ResourceInvocationScope>,
+fn ownership_scopes(
+    ownership: Option<&ResourceInvocationScope>,
 ) -> Result<(Option<ResourceEffectScope>, Option<ResourceInvocationScope>), String> {
-    let Some(custody) = custody else {
+    let Some(ownership) = ownership else {
         return Ok((None, None));
     };
-    Ok((Some(custody.effect_scope()?), Some(custody.clone())))
+    Ok((Some(ownership.effect_scope()?), Some(ownership.clone())))
 }
 
 /// A snapshot of `doc` to lend an effect's handler, and its heads.
@@ -1867,7 +1893,7 @@ fn settle_start(
 /// outside the generic code so it is compiled once.
 struct InvocationParts {
     inv: Answering,
-    /// The custody the effect's dispatcher keeps, when it has one.
+    /// The ownership the effect's dispatcher keeps, when it has one.
     lent: Option<ResourceInvocationScope>,
 }
 
@@ -1879,10 +1905,10 @@ fn invocation_parts(
     doc: Option<&tilo_resource::Doc>,
     place: Option<tilo_resource::Place>,
 ) -> Result<InvocationParts, String> {
-    let (request, custody) = op.with_custody();
-    let custody = owned_scope(custody);
-    let (worker_custody, lent) = custody_scopes(custody.as_ref())?;
-    let delivered = custody
+    let (request, ownership) = op.with_ownership();
+    let ownership = owned_scope(ownership);
+    let (worker_ownership, lent) = ownership_scopes(ownership.as_ref())?;
+    let delivered = ownership
         .as_ref()
         .map(ResourceInvocationScope::invocation)
         .or_else(ui_core::invocation_scope::delivered_invocation)
@@ -1897,8 +1923,8 @@ fn invocation_parts(
             started: None,
             document,
             heads,
-            custody,
-            worker_custody,
+            ownership,
+            worker_ownership,
             delivered,
             target: op.target().cloned(),
             place,
@@ -1909,16 +1935,16 @@ fn invocation_parts(
 }
 
 /// The parts of the context of a completion or an outbox entry run for
-/// `invocation`, under `custody`: no document, target or place.
+/// `invocation`, under `ownership`: no document, target or place.
 #[inline(never)]
-fn custody_parts(
+fn ownership_parts(
     invocation: Option<InvocationId>,
-    custody: Option<ResourceInvocationScope>,
+    ownership: Option<ResourceInvocationScope>,
 ) -> Result<InvocationParts, String> {
-    let (worker_custody, lent) = custody_scopes(custody.as_ref())?;
+    let (worker_ownership, lent) = ownership_scopes(ownership.as_ref())?;
     let mut inv = Answering::of(invocation);
-    inv.custody = custody;
-    inv.worker_custody = worker_custody;
+    inv.ownership = ownership;
+    inv.worker_ownership = worker_ownership;
     Ok(InvocationParts { inv, lent })
 }
 
@@ -1940,7 +1966,7 @@ fn finish_start(
         started,
         wake,
         worker,
-        custody,
+        ownership,
         scope,
         cancel_by,
         owner,
@@ -1954,7 +1980,7 @@ fn finish_start(
                     started: &mut *started,
                     wake,
                     worker,
-                    custody,
+                    ownership,
                     scope,
                     cancel_by,
                     owner,
@@ -2123,7 +2149,7 @@ trait Drainer {
 /// The pending entries a resource state (as `&dyn Any`) holds that this
 /// device owns, each boxed; `None` for the state of another resource.
 type OwnedEntries = Box<dyn Fn(&dyn Any) -> Option<Vec<(Id, Box<dyn Any>)>>>;
-/// Run one entry (boxed) as an invocation under a custody: what it answered
+/// Run one entry (boxed) as an invocation under an ownership: what it answered
 /// and the job it started.
 type StartEntry = Box<
     dyn FnMut(
@@ -2218,6 +2244,19 @@ where
         })
 }
 
+/// The work each part of a chain owes, by part, with the part's state it
+/// was read from: read again only when that part changed.
+type OwedParts<P, J> = Rc<RefCell<HashMap<u64, (Rc<<P as Resource>::State>, Vec<(Id, Id, J)>)>>>;
+
+/// What a job of owed work is told by: the item it names and what it asks,
+/// so a new ask of the same item is a new job.
+fn job_key<J: serde::Serialize>(item: &Id, job: &J) -> Id {
+    use std::hash::Hasher as _;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(serde_json::to_string(job).unwrap_or_default().as_bytes());
+    Id::from_raw(format!("{}#{:016x}", item.as_str(), hasher.finish()))
+}
+
 /// What an outbox entry abandoned by whoever it was for settles with.
 fn abandoned<O: serde::Serialize + Default>() -> Option<serde_json::Value> {
     serde_json::to_value(Settled::<O>::failed("cancelled")).ok()
@@ -2259,16 +2298,16 @@ impl OutboxDrain {
         (self.owned)(state)
     }
 
-    /// Run `value` (the entry `id`) as `invocation`, under its custody when
+    /// Run `value` (the entry `id`) as `invocation`, under its ownership when
     /// it has one. Whether it finished at once.
     fn start_entry(
         &mut self,
         id: Id,
         value: Box<dyn Any>,
         invocation: Option<InvocationId>,
-        custody: Option<&ResourceInvocationScope>,
+        ownership: Option<&ResourceInvocationScope>,
     ) -> Result<(), String> {
-        let (answer, started) = (self.start)(&id, value, invocation, custody)?;
+        let (answer, started) = (self.start)(&id, value, invocation, ownership)?;
         match (answer, started) {
             (Ok(Effected::Pending), Some(started)) => self.jobs.insert(id, started),
             (answer, started) => {
@@ -2539,7 +2578,7 @@ impl<R: Resource> Effects<R> {
         alive: Weak<()>,
         outbox: Path<R, Outbox<T, O>>,
         owns: impl Fn(&R::State, &T) -> bool + 'static,
-        run: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+        work: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
         awaited: bool,
     ) -> Projection
     where
@@ -2561,23 +2600,7 @@ impl<R: Resource> Effects<R> {
                     .collect()
             }))
         });
-        let mut run = run;
-        let starting = env.clone();
-        let start: StartEntry = Box::new(move |id, value, invocation, custody| {
-            let Ok(value) = value.downcast::<T>() else {
-                return Err("an outbox entry is of another type".into());
-            };
-            let mut cx = EffectCx::invoked(
-                starting.clone(),
-                custody_parts(invocation, owned_scope(custody))?,
-            );
-            let mut value = Some(*value);
-            let answer = run_under(invocation, custody, &mut || match value.take() {
-                Some(value) => run(id, value, &mut cx),
-                None => Err("an outbox entry ran twice".into()),
-            });
-            Ok((answer, cx.inv.started.take()))
-        });
+        let start = start_entry(env.clone(), work);
         let dispatch = env.dispatch.clone();
         let settle: SettleEntry = Box::new(move |id, answer| {
             let settled = answer.and_then(|output| settlement::<O>(&output))?;
@@ -2593,9 +2616,10 @@ impl<R: Resource> Effects<R> {
             Ok(Some((apply, told)))
         });
         let completing = env;
-        let complete: Box<Complete<'static>> = Box::new(move |then, value, custody, invocation| {
-            complete::<R, ()>(&completing, &mut (), then, value, custody, invocation)
-        });
+        let complete: Box<Complete<'static>> =
+            Box::new(move |then, value, ownership, invocation| {
+                complete::<R, ()>(&completing, &mut (), then, value, ownership, invocation)
+            });
         let drain = Rc::new(RefCell::new(OutboxDrain {
             kind: R::KIND,
             owned,
@@ -2616,6 +2640,109 @@ impl<R: Resource> Effects<R> {
                 .causal
                 .register_drainer(alive.clone(), Box::new(Rc::clone(&drain)));
         }
+        inner.drains.push(Drains {
+            alive,
+            drain: Box::new(drain),
+        });
+        inner.drained = None;
+        Projection {
+            outside_changed: Some(Rc::clone(&inner.outside_changed)),
+        }
+    }
+
+    /// Carry out the outside work the parts of `chain` owe, on the device
+    /// that owns it ([`ResourceEnv::owed`](super::ResourceEnv::owed)).
+    ///
+    /// The work is derived from each part as it is ([`owed`]): read again
+    /// only for a part that changed, so a chain of thousands of items costs
+    /// what its changed part holds. A job is told by the item it names and
+    /// what it asks, so asking something else of the same item is new work;
+    /// it is carried out once while owed, and is owed no more once the app's
+    /// own confirmation (an action on the part) says the outside holds it. A
+    /// job that failed for now is tried again once the chain moved on or the
+    /// outside changed.
+    pub(crate) fn owed<P, J>(
+        &self,
+        alive: Weak<()>,
+        chain: super::Chain<P>,
+        owed: impl Fn(&P::State) -> Vec<(Id, J)> + 'static,
+        owns: impl Fn(&J) -> bool + 'static,
+        work: impl FnMut(&Id, J, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: 'static,
+        P: super::Chained,
+        J: serde::Serialize + Clone + 'static,
+    {
+        let Some(env) = self.working_env().cloned() else {
+            return Projection::default();
+        };
+        let derived: OwedParts<P, J> = Rc::new(RefCell::new(HashMap::new()));
+        let pending_of: OwnedEntries = Box::new(move |_state: &dyn Any| {
+            let parts = chain.parts();
+            let mut derived = derived.borrow_mut();
+            derived.retain(|index, _| parts.iter().any(|(held, _)| held == index));
+            let mut pending = Vec::new();
+            for (index, part) in &parts {
+                let fresh = derived
+                    .get(index)
+                    .is_some_and(|(seen, _)| Rc::ptr_eq(seen, part));
+                if !fresh {
+                    let jobs = owed(part)
+                        .into_iter()
+                        .map(|(item, job)| (job_key(&item, &job), item, job))
+                        .collect();
+                    derived.insert(*index, (Rc::clone(part), jobs));
+                }
+                if let Some((_, jobs)) = derived.get(index) {
+                    pending.extend(jobs.iter().filter(|(_, _, job)| owns(job)).map(
+                        |(key, item, job)| {
+                            (
+                                key.clone(),
+                                Box::new((item.clone(), job.clone())) as Box<dyn Any>,
+                            )
+                        },
+                    ));
+                }
+            }
+            Some(pending)
+        });
+        let mut work = work;
+        let start = start_entry(env.clone(), move |_, (item, job): (Id, J), cx| {
+            work(&item, job, cx)
+        });
+        // Nothing to write: the app's confirmation is what settles the work.
+        // A failure for good is not tried again here while it stays owed.
+        let settle: SettleEntry = Box::new(|_, answer| match answer?.value {
+            Some(value) => match serde_json::from_value::<Settled<()>>(value) {
+                Ok(Settled::Failed { reason, .. }) => {
+                    tracing::warn!(%reason, "owed work failed");
+                    Ok(None)
+                }
+                _ => Ok(None),
+            },
+            None => Ok(None),
+        });
+        let completing = env;
+        let complete: Box<Complete<'static>> =
+            Box::new(move |then, value, ownership, invocation| {
+                complete::<R, ()>(&completing, &mut (), then, value, ownership, invocation)
+            });
+        let drain = Rc::new(RefCell::new(OutboxDrain {
+            kind: P::KIND,
+            owned: pending_of,
+            start,
+            settle,
+            complete,
+            abandoned: abandoned::<()>,
+            jobs: Running::default(),
+            retry: HashMap::new(),
+            settled: std::collections::HashSet::new(),
+            caused: HashMap::new(),
+            revision: 0,
+            settling: Rc::clone(&self.inner.borrow().settling),
+        }));
+        let mut inner = self.inner.borrow_mut();
         inner.drains.push(Drains {
             alive,
             drain: Box::new(drain),
@@ -2655,7 +2782,7 @@ impl<R: Resource> Effects<R> {
         doc: &tilo_resource::Doc,
         view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let operation = op.with_custody().0.type_id;
+        let operation = op.with_ownership().0.type_id;
         self.with_handlers(|handlers| {
             for entry in handlers {
                 if operation == entry.operation

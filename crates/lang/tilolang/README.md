@@ -844,7 +844,7 @@ measures it in, read as one with `Duration(n)`.
   action on an item while that item has the keyboard, an action on the app's root window-wide.
   The host's bar and menus show it, and so does the palette. The key is checked when the app
   compiles, and two actions of one target cannot answer the same keys.
-- A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
+- A slot that holds a component (`ui.BoardList` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
   on its target. Where it would be offered on the target (`actions(r)`: the host's bar and a
@@ -947,7 +947,7 @@ The table is sorted by inclusive fuel, so a unit that calls others carries their
 how often the unit ran, so a requirement evaluated for every item shows the count grow with the
 workspace rather than with the rows a person can see.
 
-The counts do not depend on the machine or its load, so they gate: a test records the costs of
+The counts do not depend on the machine or its load, so they check: a test records the costs of
 an interaction (`Runtime::record_costs`, `::reset_costs`, `::costs`) and holds them
 (`tilolang_runtime::assert_costs("open", &costs, |c| c.calls("Task.due_today requirement") <= rows)`),
 failing with the whole table. Fuel is a function of the code run, in the engine's own units: a
@@ -973,7 +973,7 @@ and writes each as a signed `.tapp`:
   uses as `reads`), and the icon.
 
 The runtime compiles nothing: it loads the one module it was started for, under the id the
-package was signed as. Each app has its own window, record, custody and permissions. It reads
+package was signed as. Each app has its own window, record, ownership and permissions. It reads
 another app's records only as its surface declares (`reads`), read-only; it changes another
 app's resources only by invoking that app's actions.
 

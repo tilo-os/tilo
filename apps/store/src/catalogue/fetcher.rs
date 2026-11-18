@@ -121,7 +121,7 @@ fn search(query: String, locale: &str) -> Fetched {
     let items = match crate::flathub_client::search_localized(&query, locale) {
         Ok(records) => records
             .iter()
-            .map(|record| crate::sources::flathub_record_to_item(record, &[]))
+            .map(|record| crate::sources::flathub_resource_to_item(record, &[]))
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "could not search Flathub");

@@ -504,7 +504,7 @@ impl Core {
             filter: Filter::All,
             selected: None,
             settings: ReadSettings::default(),
-            now: ui::clock::local_now().timestamp(),
+            now: ui::clock::local_now().timestamp().as_second(),
             list: ListState::default(),
             reader: ReaderState::default(),
             pending_modal: None,
@@ -737,7 +737,7 @@ impl Core {
 
     /// Show what the workspace answered of this window's changes: one it kept
     /// is said done ("Article starred"), and one it refused, which the
-    /// record withdrew, says why instead.
+    /// resource withdrew, says why instead.
     pub(crate) fn announce_answers(&mut self) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
@@ -771,7 +771,7 @@ impl Core {
     }
 
     /// [`Self::perform`] of a change that is nobody's step (what a refresh
-    /// fetched), which leaves an offered Undo standing.
+    /// fetched), which leaves an offered Undo in place.
     fn submit(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
@@ -1399,7 +1399,7 @@ impl Core {
             }
         };
         // What a feed brought in is nobody's step: it leaves an Undo
-        // offered for the person's last change standing. What the feed says
+        // offered for the person's last change as it is. What the feed says
         // of itself is the library's; what it brought is the parts'.
         if landing.title.is_some() || landing.certificate_pin.is_some() {
             self.submit(
@@ -1426,7 +1426,7 @@ impl Core {
     /// persist queued writes, drain portals and follow out-of-band changes.
     fn sync_document(&mut self, _doc: &AutoCommit) {
         self.background_poll_deadline.set(None);
-        self.now = ui::clock::local_now().timestamp();
+        self.now = ui::clock::local_now().timestamp().as_second();
         self.synced = true;
         self.adopt_read_settings();
         self.drain_fetches_live();

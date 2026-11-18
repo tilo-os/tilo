@@ -23,7 +23,7 @@ use ui::widget::{
     EmptyStateContent, MediaArt,
 };
 
-/// The skeleton standing for the messages of an earlier part on their way.
+/// The skeleton for the messages of an earlier part on their way.
 const EARLIER_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 3 };
 
 use super::agent_work::{draw_agent_work, measure_agent_work};
@@ -754,6 +754,7 @@ impl ChatApp {
                 0.0
             },
             question_h: self.row_question_height(m, editing, text_w, tr, theme),
+            view_h: Self::row_view_height(m, editing, tr, theme),
             att_h,
             react_h,
             edited_h,
@@ -865,9 +866,55 @@ impl ChatApp {
             let place = (column.text_x, f64::from(column.text_width));
             self.draw_question(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
         }
+        if rm.view_h > 0.0 {
+            Self::draw_view_line(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y);
+        }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
         parts
+    }
+
+    /// The height the line that says `m` carries a view takes, the air under it included;
+    /// zero for a message that carries none, and while it is edited.
+    fn row_view_height(m: &Message, editing: bool, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        if editing || m.view.is_none() {
+            return 0.0;
+        }
+        line_of(tr, &theme.text(TextRole::Caption)) + f64::from(theme.tokens.spacing.s1)
+    }
+
+    /// The line that says the message `m` carries a view, and of which apps, under what it
+    /// says. Advances `*y` past it.
+    fn draw_view_line(
+        mut paint: PaintCtx<'_>,
+        rm: &RowM,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+    ) {
+        let Some(view) = m.view.as_ref() else {
+            return;
+        };
+        let theme = paint.theme;
+        let style = theme.text(TextRole::Caption);
+        let label = crate::message_view::line(view);
+        let width = f64::from(column.text_width);
+        let band = Rect::new(
+            column.text_x,
+            *y,
+            column.text_x + width,
+            *y + rm.view_h - f64::from(theme.tokens.spacing.s1),
+        );
+        line_in(
+            &mut paint,
+            &label,
+            &style,
+            theme.text_tertiary,
+            column.text_x,
+            band,
+            width,
+        );
+        *y += rm.view_h;
     }
 
     /// The button that shows or hides the reasoning an agent's provider
@@ -1113,7 +1160,7 @@ impl ChatApp {
         // hovered and to assistive technology.
         parts.service = line
             .badge
-            .zip(self.message_author(m, "", "", None).service_tip());
+            .zip(self.message_author(m, "", None).service_tip());
         parts.time = Some((
             Rect::new(
                 clock_x,
@@ -1452,11 +1499,8 @@ impl ChatApp {
         for pid in parts.iter().take(3) {
             // An agent who answered wears its own face, as its byline does.
             let name = self.display_name(pid);
-            let mut face = AvatarFace::new(&name, pid.id());
-            if !pid.is_person() {
-                face = face.agent();
-            }
-            face.presence(self.identity_colour(pid))
+            AvatarFace::member(&name, pid)
+                .presence(self.identity_colour(pid))
                 .ringed_on(if open || self.hovered(bar) {
                     ground
                 } else {
@@ -1572,7 +1616,7 @@ impl ChatApp {
                 self.paint_attachment_open(&mut ctx, att, card);
                 card
             }
-            // A chip is drawn by the row above; a record or quote holding no
+            // A chip is drawn by the row above; a resource or quote holding no
             // bytes leaves no card here.
             tilo_reference::Attached::Resource { .. } | tilo_reference::Attached::Text { .. } => {
                 Rect::new(origin.x, origin.y, origin.x, origin.y)

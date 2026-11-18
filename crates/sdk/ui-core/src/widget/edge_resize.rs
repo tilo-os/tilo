@@ -33,7 +33,7 @@ pub struct EdgeGrab {
 }
 
 impl EdgeGrab {
-    /// The window on the other side of this edge, if the edge is a seam: `count` windows in
+    /// The window on the other side of this edge, if the edge is a border: `count` windows in
     /// the run, so the first window's leading edge and the last one's trailing edge have
     /// none.
     #[must_use]
@@ -45,10 +45,10 @@ impl EdgeGrab {
     }
 }
 
-/// The two windows either side of a seam, as laid out on screen: the strip's `left`-th
+/// The two windows either side of a border, as laid out on screen: the strip's `left`-th
 /// window and the one after it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seam {
+pub struct Border {
     pub left: usize,
     pub left_rect: Rect,
     pub left_focused: bool,
@@ -56,21 +56,21 @@ pub struct Seam {
     pub right_focused: bool,
 }
 
-/// **The seam rule**: whose edge a point `x` on the seam between two windows is.
+/// **The border rule**: whose edge a point `x` on the border between two windows is.
 #[must_use]
-pub fn seam_owner(seam: &Seam, x: f64) -> EdgeGrab {
+pub fn border_owner(border: &Border, x: f64) -> EdgeGrab {
     let left = EdgeGrab {
-        group: seam.left,
+        group: border.left,
         edge: WindowEdge::Trailing,
     };
     let right = EdgeGrab {
-        group: seam.left.saturating_add(1),
+        group: border.left.saturating_add(1),
         edge: WindowEdge::Leading,
     };
-    match (seam.left_focused, seam.right_focused) {
+    match (border.left_focused, border.right_focused) {
         (true, false) => left,
         (false, true) => right,
-        _ if x < f64::midpoint(seam.left_rect.x1, seam.right_rect.x0) => left,
+        _ if x < f64::midpoint(border.left_rect.x1, border.right_rect.x0) => left,
         _ => right,
     }
 }
@@ -81,7 +81,7 @@ pub enum ResizeMode {
     /// A plain drag: only the grabbed window changes; the strip grows or
     /// shrinks by the same amount.
     Push,
-    /// Shift+drag: what one of the two windows at the seam gains, the other
+    /// Shift+drag: what one of the two windows at the border gains, the other
     /// loses. The only redistribution there is.
     ZeroSum,
 }
@@ -262,8 +262,8 @@ impl EdgeDrag {
         };
         let lo = (left.limits.min - left.width).max(right.width - right.limits.max);
         let hi = (left.limits.max - left.width).min(right.width - right.limits.min);
-        let seam = if lo <= hi { travel.clamp(lo, hi) } else { 0.0 };
-        let (left_w, right_w) = (left.width + seam, right.width - seam);
+        let border = if lo <= hi { travel.clamp(lo, hi) } else { 0.0 };
+        let (left_w, right_w) = (left.width + border, right.width - border);
         let (width, other_width) = match self.edge {
             WindowEdge::Trailing => (left_w, right_w),
             WindowEdge::Leading => (right_w, left_w),
@@ -285,9 +285,9 @@ mod tests {
         max: f64::INFINITY,
     };
 
-    fn seam(left_focused: bool, right_focused: bool) -> Seam {
+    fn border(left_focused: bool, right_focused: bool) -> Border {
         // Two windows 8 px apart: the gap's centre is at 604.
-        Seam {
+        Border {
             left: 3,
             left_rect: Rect::new(0.0, 0.0, 600.0, 400.0),
             left_focused,
@@ -318,31 +318,31 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn an_edge_drag_moves_the_grabbed_edge_within_its_limits;
 
-        phase the_seam_belongs_to_the_window_you_are_in_else_half_to_each;
+        phase the_border_belongs_to_the_window_you_are_in_else_half_to_each;
         {
             {
-                let s = seam(false, false);
-                assert_eq!(seam_owner(&s, 594.0), LEFT_TRAILING, "inside the left grip");
-                assert_eq!(seam_owner(&s, 603.9), LEFT_TRAILING, "left half of the gap");
+                let s = border(false, false);
+                assert_eq!(border_owner(&s, 594.0), LEFT_TRAILING, "inside the left grip");
+                assert_eq!(border_owner(&s, 603.9), LEFT_TRAILING, "left half of the gap");
                 assert_eq!(
-                    seam_owner(&s, 604.0),
+                    border_owner(&s, 604.0),
                     RIGHT_LEADING,
                     "right half of the gap"
                 );
                 assert_eq!(
-                    seam_owner(&s, 613.0),
+                    border_owner(&s, 613.0),
                     RIGHT_LEADING,
                     "inside the right grip"
                 );
             }
             {
-                let files_on_the_right = seam(false, true);
+                let files_on_the_right = border(false, true);
                 for x in [594.0, 600.0, 603.0, 604.0, 613.0] {
-                    assert_eq!(seam_owner(&files_on_the_right, x), RIGHT_LEADING, "x = {x}");
+                    assert_eq!(border_owner(&files_on_the_right, x), RIGHT_LEADING, "x = {x}");
                 }
-                let files_on_the_left = seam(true, false);
+                let files_on_the_left = border(true, false);
                 for x in [594.0, 604.0, 607.0, 613.0] {
-                    assert_eq!(seam_owner(&files_on_the_left, x), LEFT_TRAILING, "x = {x}");
+                    assert_eq!(border_owner(&files_on_the_left, x), LEFT_TRAILING, "x = {x}");
                 }
             }
             {
@@ -352,7 +352,7 @@ mod tests {
                     group: 0,
                     edge: WindowEdge::Leading,
                 };
-                assert_eq!(first.across(5), None, "the strip's start is no seam");
+                assert_eq!(first.across(5), None, "the strip's start is no border");
                 let last = EdgeGrab {
                     group: 4,
                     edge: WindowEdge::Trailing,
@@ -394,7 +394,7 @@ mod tests {
             }
         }
 
-        phase shift_drag_trades_width_between_the_two_windows_at_the_seam_only;
+        phase shift_drag_trades_width_between_the_two_windows_at_the_border_only;
         {
             {
                 let drag = EdgeDrag {
@@ -454,7 +454,7 @@ mod tests {
                 assert_eq!(
                     (r.width, r.other_width),
                     (580.0, Some(320.0)),
-                    "the neighbour bottoms out, so the seam stops"
+                    "the neighbour bottoms out, so the border stops"
                 );
                 let r = drag.resize(-1000.0);
                 assert_eq!((r.width, r.other_width), (160.0, Some(740.0)));

@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
             "at rest: what it shows"
         );
         let keys = |list: &VirtualList<VecListModel<u64, u64>>| {
-            list.mounted.iter().map(|row| row.key).collect::<Vec<_>>()
+            list.mounted.iter().map(|row| row.key.typed::<u64>()).collect::<Vec<_>>()
         };
 
         list.set_scroll_offset(20.0);
@@ -50,8 +50,8 @@ tilo_test_env::scenario! {
         let _ = lay_out(&mut list, 300.0);
         assert_eq!(list.mounted_range, 18..43);
         assert_eq!(
-            list.mounted.first().map(|row| row.key),
-            Some(18),
+            list.mounted.first().map(|row| row.key.clone()),
+            Some(ListKey::new(18u64)),
             "rows behind let go"
         );
 
@@ -107,7 +107,7 @@ tilo_test_env::scenario! {
                 1,
                 "only the changed row is built again"
             );
-            assert!(list.mounted.iter().any(|row| row.key == 3));
+            assert!(list.mounted.iter().any(|row| row.key == ListKey::new(3u64)));
         }
     }
 
@@ -232,7 +232,8 @@ tilo_test_env::scenario! {
             assert_eq!(builds.get(), list.mounted_len());
             assert!(list.visible_range().len() <= 10);
             let top = list.scrollbar_thumb().expect("overflow has a scrollbar");
-            list.set_scroll_offset(list.max_scroll_offset());
+            let offset = list.max_scroll_offset();
+            list.set_scroll_offset(offset);
             let bottom = list.scrollbar_thumb().expect("scrollbar remains visible");
             assert!(bottom.y0 > top.y0);
             let track = crate::widget::scrollbar::vertical_track(list.rect, list.gutter);

@@ -1,4 +1,4 @@
-//! The bridge bot end to end: its program installed in a workspace on a relay,
+//! The bridge bot end to end: its program installed in a workspace on a server,
 //! the `discord-worker` binary under the connector host, and fake-discord
 //! as the server. A message crosses in both directions, each side showing
 //! who wrote it, and edits, replies, reactions and deletes follow.
@@ -19,15 +19,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use automerge::AutoCommit;
-use discord::record::{Guild, MappedKind, Ownership, guild};
+use discord::guild::{Guild, MappedKind, Ownership, guild};
 use ed25519_dalek::SigningKey;
 use fake_discord::{CHANNEL_GENERAL, FakeDiscord, GUILD, TOKEN, User};
 use serde_json::Value;
 use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
-use tilo_relay::workspace_bots::installed::{self, BotRunner};
-use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::workspaces::Workspaces;
+use tilo_server::workspace_bots::installed::{self, BotRunner};
+use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
+use tilo_server::workspaces::{AddMemberRequest, MemberPlace, Workspaces};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
@@ -61,8 +61,8 @@ impl BlobAccess for Blobs {
     }
 }
 
-/// The relay's device, certified to own the workspaces it governs: their
-/// records are the sealed channels a Lounge's are, and everything that reads
+/// The server's device, certified to own the workspaces it governs: their
+/// resources are the sealed channels a Lounge's are, and everything that reads
 /// or writes them — the bridge included — goes through their keys.
 fn governor() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -81,7 +81,7 @@ fn governor() -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// The workspace's records, read as the governor's copy holds them.
+/// The workspace's documents, read as the governor's copy holds them.
 struct Workspace {
     workspaces: Workspaces,
     id: String,
@@ -123,7 +123,7 @@ impl Workspace {
     }
 
     /// Do `invoke` to the chat's messages as `author`, as their page does: a
-    /// view of the chat record and the parts of its messages the workspace
+    /// view of the chat resource and the parts of its messages the workspace
     /// holds, the verb going through the chain to the part it changes
     /// (starting the first), each changed part carried to the workspace on its
     /// own route. The ids of the messages it added.
@@ -234,7 +234,7 @@ impl Workspace {
         Guild::read(&self.doc(APP).await).unwrap()
     }
 
-    /// Change the Chat record as `author`, as their own device would.
+    /// Change the Chat resource as `author`, as their own device would.
     async fn chat_as<T: Send + 'static>(
         &self,
         change: impl FnOnce(&mut AutoCommit) -> Result<T, String> + Send + 'static,
@@ -388,7 +388,7 @@ struct Bridge {
     /// The Chat channel Discord's #general is bridged to.
     general: String,
     ada: String,
-    _relay: tilo_relay::daemon::Relay,
+    _server: tilo_server::daemon::Server,
     _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
 }
@@ -399,7 +399,7 @@ impl Bridge {
     }
 
     /// The bridge as `setup` has it: confined to one channel both in its
-    /// record and in its worker, opted into more, or on a server laid out before it.
+    /// resource and in its worker, opted into more, or on a server laid out before it.
     async fn start_with(setup: Setup) -> (Self, BotRunner) {
         let only = setup.only;
         let fake = if setup.existing {
@@ -421,18 +421,18 @@ impl Bridge {
         // The host decides what members and the bot change against the
         // surfaces of the apps it runs, as a workspace host does.
         let _ = AppCatalogue::native();
-        tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
+        tilo_server::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
         // The host takes a packet relay on this machine's loopback as its
         // home. A host told to use no relay still waits out the whole relay
         // probe before it opens its workspaces: five seconds in which nothing
         // of the bridge runs.
         let packet_relay = tilo_test_env::relay::relay().await;
-        let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-            tilo_relay::RelayConfig {
-                state_root: scratch.path().join("relay"),
+        let server = tilo_server::daemon::Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
+                state_root: scratch.path().join("server"),
                 ..Default::default()
             },
-            tilo_relay::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
                 device_cert: cert.clone(),
@@ -442,7 +442,7 @@ impl Bridge {
         )
         .await
         .unwrap();
-        let workspaces = relay.workspaces().unwrap().clone();
+        let workspaces = server.workspaces().unwrap().clone();
         let workspace = Workspace {
             id: workspaces.create("Bridged").await.unwrap().workspace,
             workspaces,
@@ -451,19 +451,51 @@ impl Bridge {
         };
         let owner = hex::encode(cert.user_public_key);
         let ada = hex::encode(ADA);
+        // Ada is a member of the workspace: what the bridge shows as the author of what
+        // she writes in Chat is the workspace's name for her.
+        let mut request_id = [0_u8; 32];
+        getrandom::fill(&mut request_id).unwrap();
+        workspace
+            .workspaces
+            .add_member(
+                &workspace.id,
+                &cert,
+                AddMemberRequest {
+                    request_id,
+                    user_public_key: ADA,
+                    place: MemberPlace::parse("editor").unwrap(),
+                    name: Some("Ada".into()),
+                },
+            )
+            .await
+            .unwrap();
 
         workspace
             .workspaces
             .prepare_application(&workspace.id, &cert, &workspace.catalogue, CHAT, "")
             .await
             .unwrap();
+        // Ada is a member of the workspace, as anyone who writes in its Chat
+        // is: its members are what every name it shows comes from.
+        workspace
+            .workspaces
+            .add_member(
+                &workspace.id,
+                &cert,
+                tilo_server::workspaces::AddMemberRequest {
+                    request_id: [2; 32],
+                    user_public_key: ADA,
+                    place: tilo_server::workspaces::MemberPlace::parse("editor").unwrap(),
+                    name: Some("Ada".into()),
+                },
+            )
+            .await
+            .unwrap();
         workspace
             .chat_as({
-                let (owner, ada) = (owner.clone(), ada.clone());
+                let owner = owner.clone();
                 move |doc| {
                     lay_out_with_general_and_lounge(doc, &owner)?;
-                    chat::demo::introduce(doc, &ada, "Ada", "AD")
-                        .map_err(|error| error.to_string())?;
                     if setup.existing {
                         seed_channels(doc, &owner)?;
                     }
@@ -598,7 +630,7 @@ impl Bridge {
             blobs,
             general,
             ada,
-            _relay: relay,
+            _server: server,
             _packet_relay: packet_relay,
             _scratch: scratch,
         };
@@ -667,7 +699,7 @@ impl Bridge {
             .expect("the post is in a part")
     }
 
-    async fn chat_message(&self, text: &str) -> Option<(String, chat::record::Message)> {
+    async fn chat_message(&self, text: &str) -> Option<(String, chat::chat::Message)> {
         chat::messages::read_part(&self.workspace.part().await)
             .messages
             .iter()
@@ -699,8 +731,8 @@ impl Bridge {
 /// A message crosses each way, each side showing who wrote it.
 ///
 /// The host owns the workspace it governs, as a Lounge's does, so every
-/// record of its Chat is a sealed channel. The bridge runs on that host and
-/// reads and writes those records as the workspace's own member — through the
+/// resource of its Chat is a sealed channel. The bridge runs on that host and
+/// reads and writes those resources as the workspace's own member — through the
 /// membership and keys every member uses, no exception for it — and the
 /// message still crosses each way, written sealed from end to end.
 #[tokio::test(flavor = "multi_thread")]
@@ -1184,7 +1216,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
 }
 
 /// Reactions cross both ways, each Discord member their own reaction in
-/// Tilo, the server's custom emoji standing for the workspace's emoji of
+/// Tilo, the server's custom emoji for the workspace's emoji of
 /// the same name, and nothing mirrored in going back out.
 #[tokio::test(flavor = "multi_thread")]
 async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
@@ -1535,7 +1567,7 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
         .unwrap();
     bridge
         .as_ada(
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                 name: "ideas".parse().unwrap(),
                 category: Some(channels),
                 kind: None,
@@ -1740,7 +1772,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
     // #goal one place down, below #roadmap; "chat" above "Channels".
     bridge
         .as_ada(
-            chat::Chat::MOVE_CHANNEL.with(chat::record::chat::MoveChannel {
+            chat::Chat::MOVE_CHANNEL.with(chat::chat::chat::MoveChannel {
                 channel: named("goal"),
                 up: false,
             }),
@@ -1748,7 +1780,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
         .await;
     bridge
         .as_ada(
-            chat::Chat::MOVE_CATEGORY.with(chat::record::chat::MoveCategory {
+            chat::Chat::MOVE_CATEGORY.with(chat::chat::chat::MoveCategory {
                 category: category("chat"),
                 up: true,
             }),
@@ -1765,7 +1797,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
     // A channel made in Chat at the top of "Channels" is made there.
     bridge
         .as_ada(
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                 name: "ideas".parse().unwrap(),
                 category: Some(category("Channels")),
                 kind: None,
@@ -1787,7 +1819,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
     for _ in 0..3 {
         bridge
             .as_ada(
-                chat::Chat::MOVE_CHANNEL.with(chat::record::chat::MoveChannel {
+                chat::Chat::MOVE_CHANNEL.with(chat::chat::chat::MoveChannel {
                     channel: ideas.clone(),
                     up: true,
                 }),
@@ -1837,7 +1869,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel { channel }),
+            chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel { channel }),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -1845,7 +1877,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::DELETE_CATEGORY.with(chat::record::chat::DeleteCategory { category }),
+            chat::Chat::DELETE_CATEGORY.with(chat::chat::chat::DeleteCategory { category }),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -1856,7 +1888,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
+            chat::Chat::CREATE_CATEGORY.with(chat::chat::chat::CreateCategory {
                 name: category.parse().unwrap(),
             }),
         )
@@ -1870,7 +1902,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                 name: channel.parse().unwrap(),
                 category: made,
                 kind: Some(kind),
@@ -1902,7 +1934,7 @@ fn seed_as_a_workspace(doc: &mut AutoCommit, owner: &str) -> Result<(), String> 
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel { channel }),
+            chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel { channel }),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -1910,7 +1942,7 @@ fn seed_as_a_workspace(doc: &mut AutoCommit, owner: &str) -> Result<(), String> 
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::DELETE_CATEGORY.with(chat::record::chat::DeleteCategory { category }),
+            chat::Chat::DELETE_CATEGORY.with(chat::chat::chat::DeleteCategory { category }),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -1931,7 +1963,7 @@ fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
         chat::demo::apply_as(
             doc,
             owner,
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                 name: name.parse().unwrap(),
                 category: category.clone(),
                 kind: None,
@@ -1951,9 +1983,9 @@ fn picture(fill: u8) -> Vec<u8> {
 }
 
 impl Bridge {
-    /// Ada changes the workspace's emoji (Chat's workspace record, which
+    /// Ada changes the workspace's emoji (Chat's workspace document, which
     /// every app of the workspace opens) from her own device: `change` makes the
-    /// invocation, applied to the record as the workspace holds it now.
+    /// invocation, applied to the resource as the workspace holds it now.
     async fn ada_emoji(
         &self,
         change: impl FnOnce() -> Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
@@ -1982,7 +2014,7 @@ impl Bridge {
             .unwrap();
     }
 
-    /// The emoji record `saved` with Ada's `invoke` applied, saved.
+    /// The emoji resource `saved` with Ada's `invoke` applied, saved.
     fn emoji_changed(
         &self,
         record: &str,
@@ -2042,7 +2074,7 @@ impl Bridge {
 /// The workspace's emoji reach the server as emoji the bridge uploads,
 /// renames and deletes, and stand for `:name:` in reactions and messages;
 /// the server's own emoji are never touched; a permission the bot lacks or
-/// a full server is said on the bridge's record, and reactions carry on.
+/// a full server is said on the bridge's resource, and reactions carry on.
 #[tokio::test(flavor = "multi_thread")]
 async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
     let (bridge, mut runner) = Bridge::start().await;
@@ -2130,7 +2162,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
         "the server's own emoji is never changed"
     );
 
-    // Without Create Expressions: said on the bridge's record, nothing
+    // Without Create Expressions: said on the bridge's resource, nothing
     // uploaded, and the bridge carries on.
     bridge.fake.set_expressions(false, false, 50);
     bridge.ada_adds_emoji("cat", 3).await;

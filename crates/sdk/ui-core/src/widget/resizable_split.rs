@@ -1125,7 +1125,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         }
     }
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1461,7 +1461,7 @@ impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::Publ
 {
 }
 
-impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGated
+impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGuarded
     for ResizableSplit<L, R>
 {
 }

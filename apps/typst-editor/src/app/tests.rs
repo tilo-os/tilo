@@ -159,11 +159,11 @@ fn file_effects_save_and_export_real_files() {
     {
         let (mut app, doc) = fresh();
         let before = shown_source(&app, &doc);
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
-        ui::host::scoped(&services, || app.open());
+        ui::process::scoped(&services, || app.open());
         work.run_pending();
         app.sync(&doc, &ROOT);
         assert!(app.opening.is_none());
@@ -181,7 +181,7 @@ struct PathlessHost {
     saved: Kept,
 }
 
-impl ui::host::FilePicker for PathlessHost {
+impl ui::process::FilePicker for PathlessHost {
     fn pick(&self, _: PickRequest) -> ui::portal::PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
         let _ = tx.send(ui::portal::PortalOutcome::Failed("no paths".into()));
@@ -240,8 +240,8 @@ fn open_save_and_export_work_where_files_have_no_paths() {
         opened: Some(("notes.typ".into(), b"= Notes\nHello".to_vec())),
         saved: std::sync::Arc::clone(&saved),
     });
-    let services = ui::host::HostServices::null().with_files(host);
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_files(host);
+    let _host = ui::process::enter(&services);
     let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
     app.effect(&TypstEffect::OpenFile { path: None })
         .expect("the open lands");
@@ -550,10 +550,10 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
     {
         let (mut app, doc) = fresh();
         assert!(app.next_wake_deadline().is_none());
-        let (services, _recorder) = ui::host::HostServices::recording();
+        let (services, _recorder) = ui::process::ProcessServices::recording();
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
-        ui::host::scoped(&services, || app.open());
+        ui::process::scoped(&services, || app.open());
         let deadline = app
             .next_wake_deadline()
             .expect("file dialogs must complete without animation or further input");

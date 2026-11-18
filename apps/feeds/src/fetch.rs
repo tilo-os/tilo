@@ -179,7 +179,7 @@ impl FetchWorker {
     /// deterministically: enqueue requests (which never touch the network),
     /// inject `FetchResult`s through the returned sender exactly as a real
     /// fetch task would, and assert the UI drains them. `send()` here only
-    /// records `pending` — proving that queuing a refresh is a constant-time,
+    /// resources `pending` — proving that queuing a refresh is a constant-time,
     /// network-free operation.
     #[cfg(test)]
     pub fn for_test() -> (Self, Sender<FetchResult>) {
@@ -393,7 +393,7 @@ async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Found,
         title: title.clone().unwrap_or_else(|| url.to_string()),
         author: String::new(),
         url: url.to_string(),
-        published: ui::clock::local_now().timestamp(),
+        published: ui::clock::local_now().timestamp().as_second(),
         summary,
         blocks,
     };
@@ -543,7 +543,7 @@ mod tests {
 
         {
             fn worker_send_is_nonblocking_and_poll_drains() {
-                // A worker that records requests instead of fetching them.
+                // A worker that resources requests instead of fetching them.
                 let (mut w, res_tx) = FetchWorker::for_test();
                 for n in 0..50 {
                     w.send(FetchRequest::Refresh {

@@ -2,7 +2,7 @@
 """Finalize retained development rootfs artifacts without application compilation.
 
 Eight resumable immutable checkpoints. Interrupted signing is never retried
-implicitly. Publication remains unsigned; registry signing, disk installation and boot are separate gates.
+implicitly. Publication remains unsigned; registry signing, disk installation and boot are separate checks.
 """
 import argparse
 import fcntl

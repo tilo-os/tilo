@@ -25,7 +25,7 @@ use collab_types::caps::Access;
 use tilo_clock::unix_now;
 use tilo_environment::{Environment, ToolBuilder, host_arch};
 
-use crate::audit::{AuditLog, AuditRecord};
+use crate::audit::{AuditEntry, AuditLog};
 use crate::policy::Policy;
 use crate::records::Records;
 
@@ -312,7 +312,7 @@ pub struct SessionStatus {
     pub landlock: String,
     pub trusted_dirs: Vec<String>,
     pub readable_dirs: Vec<String>,
-    pub audit_records: usize,
+    pub audit_entries: usize,
     pub network: NetworkStatus,
 }
 
@@ -797,13 +797,13 @@ impl BrokerState {
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect(),
-            audit_records: self.audit.read_all().len(),
+            audit_entries: self.audit.read_all().len(),
             network: NetworkStatus::of(self.egress.as_deref()),
         }
     }
 
     fn log(&self, request: &str, subject: Option<&str>, allowed: bool, detail: Option<&str>) {
-        let mut rec = AuditRecord::new(&self.session_id, &self.environment.key, request, allowed);
+        let mut rec = AuditEntry::new(&self.session_id, &self.environment.key, request, allowed);
         if let Some(s) = subject {
             rec = rec.about(s);
         }
@@ -1068,7 +1068,7 @@ pub(crate) struct Shared {
     stop: AtomicBool,
     /// Rung once, when the broker stops, and never drained.
     pub(crate) stopping: WakeFd,
-    host_updates: HostUpdateGate,
+    host_updates: HostUpdateLock,
 }
 
 impl Shared {
@@ -1076,7 +1076,7 @@ impl Shared {
         Ok(Self {
             stop: AtomicBool::new(false),
             stopping: WakeFd::new()?,
-            host_updates: HostUpdateGate::new()?,
+            host_updates: HostUpdateLock::new()?,
         })
     }
 
@@ -1092,7 +1092,7 @@ impl Shared {
 
 /// Keeps host updates one at a time. A waiting update sleeps until the
 /// running one lets go (`released` rings) or its own guest leaves.
-struct HostUpdateGate {
+struct HostUpdateLock {
     lock: Mutex<()>,
     released: WakeFd,
 }
@@ -1109,7 +1109,7 @@ impl Drop for HostUpdateGuard<'_> {
     }
 }
 
-impl HostUpdateGate {
+impl HostUpdateLock {
     fn new() -> std::io::Result<Self> {
         Ok(Self {
             lock: Mutex::new(()),
@@ -1272,11 +1272,11 @@ fn acquire_host_mutation<'a>(
     if !command.mutating {
         return Ok(None);
     }
-    let gate = &shared.host_updates;
+    let check = &shared.host_updates;
     let mut told = false;
     loop {
-        gate.released.drain();
-        if let Some(guard) = gate.try_acquire() {
+        check.released.drain();
+        if let Some(guard) = check.try_acquire() {
             return Ok(Some(guard));
         }
         if !told {
@@ -1292,7 +1292,7 @@ fn acquire_host_mutation<'a>(
         let mut fds = [
             pollfd(writer.as_raw_fd(), GUEST_GONE),
             pollfd(shared.stopping.fd().as_raw_fd(), libc::POLLIN),
-            pollfd(gate.released.fd().as_raw_fd(), libc::POLLIN),
+            pollfd(check.released.fd().as_raw_fd(), libc::POLLIN),
         ];
         if poll_fds(&mut fds, None).is_err() {
             return Err(Cancelled);
@@ -1550,7 +1550,7 @@ fn pump_host_command(
 }
 
 /// The mutation has finished before the guest can observe its completion.
-/// A slow response reader must not retain the host's update serialization gate.
+/// A slow response reader must not retain the host's update serialization check.
 fn complete_host_command(
     writer: &mut UnixStream,
     response: Response,
@@ -2086,7 +2086,7 @@ pub(crate) mod tests {
             drop(broker);
         }
 
-        phase completed_host_command_releases_gate_before_a_blocked_completion_frame;
+        phase completed_host_command_releases_check_before_a_blocked_completion_frame;
         {
             let dir = tempfile::tempdir().unwrap();
             fake_host_program(dir.path(), "tilo", "#!/bin/sh\nexit 7\n");
@@ -2141,7 +2141,7 @@ pub(crate) mod tests {
             );
             assert!(
                 released,
-                "completed command retained the host mutation gate while sending its response"
+                "completed command retained the host mutation check while sending its response"
             );
         }
 

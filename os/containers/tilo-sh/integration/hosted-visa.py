@@ -42,17 +42,21 @@ agent take there, with the person's answering device held by the check
      it releases: this window's next page action, and a Linux command in the
      same workspace's VM.
 
-usage: hosted-visa.py API_URL SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
+usage: hosted-visa.py API_URL SERVER_KEY OUT_DIR FORM_URL [--open|--page|--fill]
+
+`--page` opens the visa test page in the window `--open` made and stops
+there, so what renders in the VM is what its proofs of the sandbox and the
+memory read.
 
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
 History, the questions the person was asked, and its report. TILO_INVITEE
 names the stack's reviewer helper (integration/reviewer.py); the person is
 answered for by HOSTED_VISA_APPROVER (`tilo-approve`), in the identity root
-HOSTED_VISA_ROOT, through the host HOSTED_VISA_RELAY names as
+HOSTED_VISA_ROOT, through the host HOSTED_VISA_SERVER names as
 `KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
-not operate web pages in Browser. HOSTED_VISA_SITE and HOSTED_VISA_SITE_RELAY
-are the site and the relay a person enters through, for the person who watches
+not operate web pages in Browser. HOSTED_VISA_SITE and HOSTED_VISA_SITE_SERVER
+are the site and the server a person enters through, for the person who watches
 the page on their shell (integration/person.mjs).
 
 Prints one JSON line with the timings and what it asserted.
@@ -82,12 +86,12 @@ REVIEWER_EMAIL = "rosa@example.com"
 APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
 UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
-HOST = os.environ.get("HOSTED_VISA_RELAY", "")
+HOST = os.environ.get("HOSTED_VISA_SERVER", "")
 # The person in their own browser, watching the hosted Browser's page on their
-# shell: the site they arrive at, the relay it enters through, and the window
+# shell: the site they arrive at, the server it enters through, and the window
 # they watch, by the name the shell gives the app that hosts it.
 SITE = os.environ.get("HOSTED_VISA_SITE", "")
-SITE_RELAY = os.environ.get("HOSTED_VISA_SITE_RELAY", "")
+SITE_SERVER = os.environ.get("HOSTED_VISA_SITE_SERVER", "")
 SHELL_EMAIL = "shell-person@example.invalid"
 # The tile on their shell, by the name the shell gives it: the hosted window is
 # the workspace's Browser, and a shell that names it by the page it shows names
@@ -283,7 +287,7 @@ class PairedBrowser(PagePerson):
     shows another workspace, so what the agent holds is put to this one."""
 
     def __init__(self, link: str, directory: str, watcher: Person) -> None:
-        check(bool(SITE and SITE_RELAY), "the check names the site and the relay the person's browsers enter through")
+        check(bool(SITE and SITE_SERVER), "the check names the site and the server the person's browsers enter through")
         Path(directory).mkdir(parents=True, exist_ok=True)
         self.log = Path(directory) / "browser.log"
         self.out = Path(directory) / "browser.out"
@@ -302,7 +306,7 @@ class PairedBrowser(PagePerson):
         self.stdout = open(self.out, "w")
         self.stderr = open(self.log, "w")
         self.ran = subprocess.Popen(
-            ["node", str(PERSON_PAGE), SITE, SITE_RELAY, directory, "--pair-link", link,
+            ["node", str(PERSON_PAGE), SITE, SITE_SERVER, directory, "--pair-link", link,
              "--answer", asks],
             stdout=self.stdout, stderr=self.stderr,
         )
@@ -403,14 +407,14 @@ class Shell:
     and not only the fact that they could have looked."""
 
     def __init__(self, link: str) -> None:
-        check(bool(SITE and SITE_RELAY), "the check names the site and the relay a person enters through")
+        check(bool(SITE and SITE_SERVER), "the check names the site and the server a person enters through")
         self.lines = Path(OUT) / "shell.jsonl"
         self.log = Path(OUT) / "shell.log"
         self.out = open(self.lines, "w")
         self.err = open(self.log, "w")
         self.seen = 0
         self.ran = subprocess.Popen(
-            ["node", str(PERSON_PAGE), SITE, SITE_RELAY, str(Path(OUT) / "shell"),
+            ["node", str(PERSON_PAGE), SITE, SITE_SERVER, str(Path(OUT) / "shell"),
              "--follow", link, "--page", SHELL_WINDOW, "--changes", "8"],
             stdout=self.out, stderr=self.err,
         )
@@ -474,7 +478,7 @@ class Shell:
 async def open_browser(workspace: object) -> tuple[Page, float]:
     """Open the workspace's Browser and answer its window once it is live.
 
-    The open runs until the window is live (the relay places the session and
+    The open runs until the window is live (the server places the session and
     waits for it), so following its run to its end is the time from the open
     to a live window. The window's actions reach the workspace a moment after,
     so the listing is asked again until they do, and the last refusal is what
@@ -578,6 +582,26 @@ async def open_phase(report: dict[str, object]) -> int:
         )
     await agent.aclose()
     await backend.aclose()
+    return 0
+
+
+async def page_phase(report: dict[str, object]) -> int:
+    """The visa page open in the window the open made: what renders in the
+    VM, which is what the proofs of its sandbox and memory read."""
+    with open(os.path.join(OUT, "open.json")) as opened:
+        state = json.load(opened)
+    agent = AsyncTilo(key=state["key"], url=API_URL)
+    aws = agent.workspace(state["workspace"])
+    page = Page(aws, str(state["window"]))
+    say("b. the agent opens the visa form in the window")
+    began = time.perf_counter()
+    await outcome(page.do("navigate", url=FORM_URL))
+    await outcome(page.do("wait-page-settled", quiet_ms=300, timeout_ms=60000))
+    title = await page.title()
+    check("Visa application" in title, f"the form is the page the agent opened ({title!r})")
+    report["page_seconds"] = round(time.perf_counter() - began, 2)
+    say("   open", f"the form was open in the window in {report['page_seconds']} s")
+    await agent.aclose()
     return 0
 
 
@@ -879,6 +903,8 @@ async def main() -> int:
     try:
         if phase == "--open":
             status = await open_phase(report)
+        elif phase == "--page":
+            status = await page_phase(report)
         elif phase == "--fill":
             status = await fill_phase(report)
         else:

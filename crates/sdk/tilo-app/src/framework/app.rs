@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
-    AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, HostContext,
-    LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, LaunchTarget,
+    ProcessContext, RestoreInput,
 };
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
@@ -24,7 +24,7 @@ use ui_core::widget::{Element, IconDescriptor};
 #[cfg(not(target_arch = "wasm32"))]
 use {
     ui_core::application::{
-        ApplicationHost, Capture, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
+        ApplicationOwner, Capture, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
     },
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
@@ -158,12 +158,12 @@ pub trait ResourceApp: 'static {
         None
     }
 
-    /// Import a former document format using host-local custody, before typed
+    /// Import a former document format using host-local ownership, before typed
     /// projection or resource publication. Unlike schema evolution this may
     /// depend on device services. A pending or failed import must leave the
     /// document unchanged; returning an error withholds the resource. Reopening
     /// retries the import, so retain acknowledged writes across pending retries.
-    fn import_resource(context: &HostContext) -> Result<(), String> {
+    fn import_resource(context: &ProcessContext) -> Result<(), String> {
         let _ = context;
         Ok(())
     }
@@ -361,12 +361,12 @@ pub trait ResourceApp: 'static {
     /// and `tilo-app surface` commits its surface with the app's.
     ///
     /// ```ignore
-    /// fn records(records: &mut Records<'_>) {
-    ///     records.person::<WatchHistory>().settings::<Playback>();
+    /// fn resources(resources: &mut Resources<'_>) {
+    ///     resources.person::<WatchHistory>().settings::<Playback>();
     /// }
     /// ```
-    fn records(records: &mut super::Records<'_>) {
-        let _ = records;
+    fn resources(resources: &mut super::Resources<'_>) {
+        let _ = resources;
     }
 
     /// The person's own records the app keeps
@@ -466,7 +466,7 @@ pub struct FileHistory {
 pub struct SeedCx<'a> {
     pub(crate) me: &'a MemberId,
     pub(crate) device: &'a str,
-    pub(crate) host: Option<&'a HostContext>,
+    pub(crate) host: Option<&'a ProcessContext>,
 }
 
 impl SeedCx<'_> {
@@ -483,7 +483,7 @@ impl SeedCx<'_> {
 
     /// The app's host on this device; `None` for a member without a
     /// window.
-    pub fn host(&self) -> Option<&HostContext> {
+    pub fn host(&self) -> Option<&ProcessContext> {
         self.host
     }
 
@@ -495,7 +495,7 @@ impl SeedCx<'_> {
     /// left as they were. Empty for any other record, and without a host.
     pub fn window_resources(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
         self.host
-            .map(HostContext::window_resources)
+            .map(ProcessContext::window_resources)
             .unwrap_or_default()
     }
 }
@@ -619,7 +619,7 @@ pub(crate) struct AppHooks {
     /// Initialize a record the launch created: the resource's own
     /// initialization, the launch's genesis and the creator's seed.
     new_resource: NewResource,
-    prepare_capture: fn(&mut HostContext, Option<&str>) -> Result<Run, LaunchError>,
+    prepare_capture: fn(&mut ProcessContext, Option<&str>) -> Result<Run, LaunchError>,
     /// Read the record `context` opened, build the root over it and take
     /// the launch's actions on it; or why the record does not read.
     open: OpenRoot,
@@ -629,12 +629,12 @@ pub(crate) struct AppHooks {
     pub(crate) opening: fn(&OpeningCx<'_>) -> Option<Box<dyn OpeningView>>,
     pub(crate) action_registry: fn() -> tilo_actions::ActionRegistry,
     history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
-    file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
+    file_history_observation: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
 
 /// [`AppHooks::new_resource`] — the context, and what the launch named.
 type NewResource = fn(
-    &mut HostContext,
+    &mut ProcessContext,
     &[String],
     Option<&ui_core::application::OpenFile>,
     &[ui_core::application::LaunchOption],
@@ -643,7 +643,7 @@ type NewResource = fn(
 /// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
 type OpenRoot = fn(
-    &mut HostContext,
+    &mut ProcessContext,
     Editing,
     bool,
     bool,
@@ -681,7 +681,7 @@ impl<A: ResourceApp> Hooks<A> {
         opening: A::opening,
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
-        file_history_witness: super::preview::file_history_witness::<A>,
+        file_history_observation: super::preview::file_history_observation::<A>,
     };
 }
 
@@ -906,8 +906,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
-        A::records(
-            &mut super::Records::new(&storage)
+        A::resources(
+            &mut super::Resources::new(&storage)
                 .with_base(live.clone(), dispatch.clone())
                 .at(run.launched.record.as_ref()),
         );
@@ -1068,7 +1068,7 @@ fn write_genesis<R: Resource>(
 /// initialization and the launch's [`ResourceApp::genesis`] in the
 /// genesis, then the creator's [`ResourceApp::seed`].
 fn new_resource<A: ResourceApp>(
-    context: &mut HostContext,
+    context: &mut ProcessContext,
     arguments: &[String],
     file: Option<&ui_core::application::OpenFile>,
     options: &[ui_core::application::LaunchOption],
@@ -1116,7 +1116,7 @@ type ResourceWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<()
 /// then `seed`. Not generic over the app, so the record store's
 /// initialization is compiled once.
 fn initialize_resource(
-    context: &mut HostContext,
+    context: &mut ProcessContext,
     genesis: ResourceWrite<'_>,
     seed: ResourceWrite<'_>,
 ) -> Result<(), LaunchError> {
@@ -1130,7 +1130,7 @@ fn initialize_resource(
 /// needs it is written to: opening another view of a current record must not
 /// commit what one already open has pending.
 fn migrate_older(
-    context: &HostContext,
+    context: &ProcessContext,
     needs: fn(&tilo_resource::Doc) -> bool,
     migrate: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<bool, String>,
 ) -> Result<Result<(), String>, LaunchError> {
@@ -1153,7 +1153,7 @@ fn migrate_older(
 /// folder), which a screenshot must not depend on. A capture launched on a
 /// file takes that file, as the command line does.
 fn open_root<A: ResourceApp>(
-    context: &mut HostContext,
+    context: &mut ProcessContext,
     editing: Editing,
     capture: bool,
     created: bool,
@@ -1204,7 +1204,7 @@ fn open_root<A: ResourceApp>(
 /// builds it, which takes `view` over ([`super::Opened`]).
 fn opening_component(
     app: &'static AppHooks,
-    mut context: HostContext,
+    mut context: ProcessContext,
     view: Box<dyn OpeningView>,
     record: ui_core::resource::ResourceOpening,
     restore: &RestoreInput,
@@ -1240,7 +1240,7 @@ fn opening_component(
 }
 
 /// What a window's root keeps of the person and the device.
-pub(crate) fn hosted(context: &HostContext) -> super::settings::Hosted {
+pub(crate) fn hosted(context: &ProcessContext) -> super::settings::Hosted {
     super::settings::Hosted {
         // A private window keeps nothing of the person's: their own
         // records are not even opened.
@@ -1261,7 +1261,7 @@ pub(crate) fn hosted(context: &HostContext) -> super::settings::Hosted {
 }
 
 /// The window of a record that does not read as the app's resource.
-fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent {
+fn unopened(app: &AppHooks, context: ProcessContext, reason: &str) -> AppComponent {
     let unopened = super::root::Unopened::new(
         app.title(),
         icon(app),
@@ -1288,7 +1288,7 @@ fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent 
     reason = "the toolkit's ComponentFactory signature passes the target owned"
 )]
 fn create<A: ResourceApp>(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -1297,7 +1297,7 @@ fn create<A: ResourceApp>(
 
 fn create_component(
     app: &'static AppHooks,
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: &LaunchTarget,
     restore: &RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -1350,7 +1350,7 @@ struct Starting {
 /// file, its arguments and options, and start the run they go with.
 fn start_resource(
     app: &'static AppHooks,
-    context: &mut HostContext,
+    context: &mut ProcessContext,
     target: &LaunchTarget,
 ) -> Result<Starting, LaunchError> {
     // A record of its own, or the workspace's record an app keeps one of
@@ -1418,7 +1418,7 @@ fn start_resource(
         .showing_file_history(
             files
                 .clone()
-                .map(|source| (source, (app.file_history_witness)())),
+                .map(|source| (source, (app.file_history_observation)())),
         )
         .showing_folder_history(folder.clone().map(|source| (source, (app.history)())));
     let editing = Editing::Live {
@@ -1440,7 +1440,7 @@ fn start_resource(
 /// document History its versions go to, and the step a replay opens at.
 fn window(
     app: &'static AppHooks,
-    mut context: HostContext,
+    mut context: ProcessContext,
     starting: Starting,
 ) -> Result<AppComponent, LaunchError> {
     let Starting {
@@ -1490,7 +1490,7 @@ fn window(
 /// new record, or bytes that are no recording.
 fn replay_of(
     app: &AppHooks,
-    context: &mut HostContext,
+    context: &mut ProcessContext,
     file: &ui_core::application::OpenFile,
     created: bool,
 ) -> Result<tilo_resource::recording::Recording, LaunchError> {
@@ -1531,7 +1531,7 @@ fn revealed(target: &LaunchTarget) -> Option<String> {
 /// content the record references and this device lacks is asked of the
 /// route, and content the app stores reaches the record's other readers.
 /// A capture keeps its fixture's store as it is: it reaches nothing outside.
-fn document_content(context: &mut HostContext) -> Result<(), LaunchError> {
+fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
     if context.capture().is_some() {
         return Ok(());
     }
@@ -1539,16 +1539,16 @@ fn document_content(context: &mut HostContext) -> Result<(), LaunchError> {
         return Ok(());
     };
     let route = resource_route(context)?;
-    let lane = ui_core::collaboration::document_content::ContentLane::of_window();
-    // The window keeps its lane: another window of the app on this thread
+    let link = ui_core::collaboration::document_content::ContentLink::of_window();
+    // The window keeps its content link: another window of the app on this thread
     // reads its own, never this one's queue of wants.
-    ui_core::collaboration::document_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
+    ui_core::collaboration::document_content::keep_link(&context.wake_handle(), Arc::clone(&link));
     // Whatever carries the record's content for the process (a browser
     // page's replication) asks for and hands over this window's too, and
     // what it stores is sealed for the members of the record's workspace.
-    ui_core::collaboration::document_content::ContentLane::show_on_route(&route, &lane);
+    ui_core::collaboration::document_content::ContentLink::show_on_route(&route, &link);
     context.provide_content(
-        ui_core::collaboration::document_content::DocumentContent::store(local, lane),
+        ui_core::collaboration::document_content::DocumentContent::store(local, link),
     );
     Ok(())
 }
@@ -1563,7 +1563,7 @@ fn document_content(context: &mut HostContext) -> Result<(), LaunchError> {
 /// A record whose workspace this host cannot name: a window opened outside
 /// every workspace, or on a profile opened by a name rather than an id.
 pub(super) fn resource_route(
-    context: &HostContext,
+    context: &ProcessContext,
 ) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
     let record = context.record();
     context.records().wire_route(&record.id).map_err(|error| {
@@ -1577,7 +1577,7 @@ pub(super) fn resource_route(
 /// Prepare a capture's scene before its view is built: the app's fixture,
 /// then the versions other people wrote, merged as their changes arrive.
 fn prepare_capture<A: ResourceApp>(
-    context: &mut HostContext,
+    context: &mut ProcessContext,
     scenario: Option<&str>,
 ) -> Result<Run, LaunchError> {
     let mut fixture =
@@ -1599,7 +1599,7 @@ fn prepare_capture<A: ResourceApp>(
 /// Merge into the record `context` opened what `write` writes into a fork
 /// of it, as another member's changes arrive.
 fn merge_peer(
-    context: &HostContext,
+    context: &ProcessContext,
     write: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>,
 ) -> Result<(), LaunchError> {
     let mut peer = context
@@ -1632,7 +1632,7 @@ pub(crate) fn role_permissions(
 /// the instance showed last, else the workspace's default.
 #[cfg(tilo_native_runner)]
 pub(crate) fn prepare_on(
-    host: &mut ApplicationHost,
+    host: &mut ApplicationOwner,
     definition: &ApplicationDefinition,
     instance: u64,
     named: Option<DocumentId>,
@@ -1683,7 +1683,7 @@ fn prepare_hooked(
         && !isolated(args, app.private_windows && args.has(PRIVATE_FLAG))
         && args.value("--data-dir").is_none()
     {
-        NativeProcessHost::window_shows(definition)?
+        NativeProcess::window_shows(definition)?
             .map(|path| vec![path.to_string_lossy().into_owned()])
     } else {
         None
@@ -1795,7 +1795,7 @@ pub(crate) fn hand_launch(
 fn hand_launch_to(
     definition: &ApplicationDefinition,
     arguments: &[String],
-    context: &mut HostContext,
+    context: &mut ProcessContext,
 ) -> Result<(), LaunchError> {
     // A URL (`https://…`, `file://…`) is an argument for the app to resolve,
     // not a path on this device.
@@ -1955,7 +1955,7 @@ fn prepare_named(
         // its own members' keys, so what its windows store is sealed once for
         // it and reaches nothing outside ([`super::headless::hold_workspace_keys`]).
         let workspace = tilo_resource::fresh_uuid().to_string();
-        let mut host = ApplicationHost::new_with_profile_lifetime(
+        let mut host = ApplicationOwner::new_with_profile_lifetime(
             root,
             "capture-device".into(),
             &workspace,
@@ -2023,12 +2023,12 @@ fn prepare_named(
         )?;
         return Ok(prepared);
     }
-    let mut prepared = NativeProcessHost::prepare_window(definition, named, inputs)?;
+    let mut prepared = NativeProcess::prepare_window(definition, named, inputs)?;
     prepared
         .context
         .provide_content(tilo_content_device::for_app());
     // A launch outside every workspace keeps this device's own records, whose
-    // keys no collaboration plane holds: the window seals what it stores under
+    // keys no peer network holds: the window seals what it stores under
     // the workspace's own secret ([`super::headless::hold_workspace_keys`]). A window of a
     // collaboration workspace holds its members' secret instead, once its route
     // carries their keys.

@@ -76,17 +76,20 @@ pub(crate) fn css_variables(theme: &ui::Theme) -> Vec<(&'static str, String)> {
 
 /// The page's accessibility inputs, from which media queries `matches`
 /// (the browser's `matchMedia`) holds.
-pub(crate) fn accessibility(matches: impl Fn(&str) -> bool) -> ui::host::AccessibilityInputs {
-    ui::host::AccessibilityInputs {
+pub(crate) fn accessibility(matches: impl Fn(&str) -> bool) -> ui::process::AccessibilityInputs {
+    ui::process::AccessibilityInputs {
         reduce_motion: matches(REDUCED_MOTION),
         high_contrast: matches(MORE_CONTRAST),
-        ..ui::host::AccessibilityInputs::default()
+        ..ui::process::AccessibilityInputs::default()
     }
 }
 
 /// `base` (the theme the settings name) with the host's `accessibility`
 /// on top, as a native window applies them.
-pub(crate) fn themed(base: ui::Theme, accessibility: ui::host::AccessibilityInputs) -> ui::Theme {
+pub(crate) fn themed(
+    base: ui::Theme,
+    accessibility: ui::process::AccessibilityInputs,
+) -> ui::Theme {
     base.with_a11y(
         &ui::a11y::A11ySettings {
             high_contrast: accessibility.high_contrast,
@@ -103,7 +106,7 @@ pub(crate) fn themed(base: ui::Theme, accessibility: ui::host::AccessibilityInpu
 pub(crate) fn current() -> ui::Theme {
     themed(
         ui::Theme::configured_from(&settings_store::load()),
-        ui::host::environment().accessibility,
+        ui::process::environment().accessibility,
     )
 }
 
@@ -129,9 +132,9 @@ pub(crate) fn changed() {
 pub(crate) fn install(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
     use wasm_bindgen::JsCast as _;
     let apply = || {
-        ui::host::install_environment(ui::host::HostEnvironment {
+        ui::process::install_environment(ui::process::ProcessEnvironment {
             accessibility: accessibility(browser_matches),
-            ..ui::host::HostEnvironment::default()
+            ..ui::process::ProcessEnvironment::default()
         });
         // What the browser answers for light or dark, so every theme resolved
         // from here on draws it, from the first frame.

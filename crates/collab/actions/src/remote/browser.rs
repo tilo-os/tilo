@@ -1,10 +1,10 @@
 //! A workspace's Browser, started on the member device that runs
 //! the workspace's VM (`docs/hosted-browser.md`, "Where it runs").
 //!
-//! A workspace hosted on a relay opens Browser like any app, and the page has
+//! A workspace hosted on a server opens Browser like any app, and the page has
 //! to run somewhere: in the workspace's own VM, on the host that
-//! keeps that VM. The relay asks that host's member device over
-//! the device plane, as the device it is, the way it asks for a shell command
+//! keeps that VM. The server asks that host's member device over
+//! the device action service, as the device it is, the way it asks for a shell command
 //! ([`environment_commands`](super::environment_commands)):
 //!
 //! - [`target`] names a Browser open, an action of the workspace's
@@ -14,7 +14,7 @@
 //!   attached to the one already serving the workspace, and the provider
 //!   token of the window it holds (what a page action names). A host with no
 //!   room answers
-//!   [`Unavailable`](super::ActionHostError::Unavailable) with the words to
+//!   [`Unavailable`](super::ActionCallError::Unavailable) with the words to
 //!   wait on.
 //! - [`STOP`] ends the session; the VM then sleeps like any idle VM.
 //!
@@ -172,7 +172,7 @@ pub fn stop_target() -> RemoteActionTarget {
 pub struct OpenBrowser {
     /// The workspace whose Browser it opens: the caller's.
     pub workspace: String,
-    /// Who the machine's time is booked to, as the relay knows the account.
+    /// Who the machine's time is booked to, as the server knows the account.
     #[serde(default)]
     pub account: String,
     /// What the session joins the workspace with — the workspace, the record

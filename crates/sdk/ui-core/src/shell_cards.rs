@@ -19,7 +19,7 @@ use crate::winit::event::{ElementState, WindowEvent};
 
 /// One card an app presents over the shell.
 #[derive(Debug)]
-struct Standing {
+struct PresentedCard {
     /// The presentation's id, as the app names it.
     id: String,
     /// What the card says it is, for the column's order.
@@ -39,7 +39,7 @@ struct Standing {
     told: Option<Rect>,
 }
 
-impl Standing {
+impl PresentedCard {
     /// The card `request` asks the shell to stand.
     fn of(request: &FloatingSurfaceRequest) -> Self {
         let body = request.preferred_size;
@@ -81,7 +81,7 @@ impl Standing {
 /// not placed yet, and the card the keys go to.
 #[derive(Debug, Default)]
 pub struct ShellCards {
-    shown: Vec<Standing>,
+    shown: Vec<PresentedCard>,
     /// Requests that arrived before the shell knew its area: the first frame
     /// with an area places them.
     asked: Vec<FloatingSurfaceRequest>,
@@ -131,7 +131,7 @@ impl ShellCards {
         for request in std::mem::take(&mut self.asked) {
             if active.contains(&request.id) && !self.shown.iter().any(|card| card.id == request.id)
             {
-                self.shown.push(Standing::of(&request));
+                self.shown.push(PresentedCard::of(&request));
             }
         }
         self.stand(surface, work, bar) || changed
@@ -143,7 +143,7 @@ impl ShellCards {
         if self.shown.is_empty() {
             return false;
         }
-        let column: Vec<Card> = self.shown.iter().map(Standing::card).collect();
+        let column: Vec<Card> = self.shown.iter().map(PresentedCard::card).collect();
         let placement = Placement {
             work,
             bar,

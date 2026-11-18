@@ -263,8 +263,8 @@ mod tests {
             }
             {
                 let runtime = app();
-                let (release, gate) = mpsc::channel::<()>();
-                let blocked = runtime.spawn_blocking(move || gate.recv().unwrap());
+                let (release, check) = mpsc::channel::<()>();
+                let blocked = runtime.spawn_blocking(move || check.recv().unwrap());
                 // With the blocking call parked, the runtime thread still serves
                 // other tasks.
                 assert_eq!(runtime.block_on(async { 5 }).unwrap(), 5);

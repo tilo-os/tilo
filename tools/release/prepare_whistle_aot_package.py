@@ -42,11 +42,11 @@ def verified(path, size, digest):
 
 
 def prepare(runtime, notices, destination):
-    ledger = json.loads((ROOT / 'docs/architecture/dictation-whistle-aot-review.json').read_text())
-    receipt = ledger['runtime']
+    log = json.loads((ROOT / 'docs/architecture/dictation-whistle-aot-review.json').read_text())
+    receipt = log['runtime']
     if (receipt['source_commit'] != SOURCE_COMMIT or receipt['version'] != '49.0.2'
             or receipt['target'] != 'x86-64-v3' or not receipt['signals_and_spectre_defaults']
-            or not ledger['qualification_only'] or ledger['production_activation']):
+            or not log['qualification_only'] or log['production_activation']):
         raise ValueError('qualified source configuration required')
     native = {}
     for name, (size, digest) in OBJECTS.items():
@@ -94,10 +94,10 @@ def prepare(runtime, notices, destination):
                   for name, (size, digest) in OBJECTS.items()},
         'notices': {name: {'size_bytes': size, 'sha256': digest}
                     for name, (size, digest) in NOTICES.items()},
-        'source_build': receipt, 'factory': ledger['factory'],
+        'source_build': receipt, 'factory': log['factory'],
         'admission_required': 'Existing immutable image provenance; root-owned package files; '
                               'exact native pins; compatible CPU; signed model catalogue and '
-                              'participant licence acceptance. This candidate grants none.',
+                              "a person's licence acceptance. This candidate grants none.",
     }
     path = provenance / 'manifest.json'
     path.write_text(json.dumps(manifest, indent=2) + '\n')

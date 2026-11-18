@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use account_custody::hugging_face::{self, HubCredential, HubSignIn};
+use account_credentials::hugging_face::{self, HubCredential, HubSignIn};
 use accounts::{CredentialRef, ServiceAuthorization, ServiceCredentials};
 use agent_provider_config::local::hub::{
     HUB_ORIGIN, HubAccount, HubTokenState, TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE,

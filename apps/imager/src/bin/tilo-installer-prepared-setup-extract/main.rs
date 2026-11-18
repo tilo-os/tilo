@@ -1,4 +1,4 @@
-//! Bounded, descriptor-relative custody of opaque prepared installer payloads.
+//! Bounded, descriptor-relative ownership of opaque prepared installer payloads.
 //! Authentication and completed-generation authority stay with the native issuer.
 #[cfg(target_os = "linux")]
 mod linux;
@@ -11,7 +11,7 @@ fn main() -> std::process::ExitCode {
     // Neither parser errors, NSS records, helper stderr nor hostile JSON are
     // echoed: authenticated input can contain private setup material.
     eprintln!(
-        "Prepared setup custody could not continue. Verify the selected medium and installer grants."
+        "Prepared setup ownership could not continue. Verify the selected medium and installer grants."
     );
     std::process::ExitCode::FAILURE
 }

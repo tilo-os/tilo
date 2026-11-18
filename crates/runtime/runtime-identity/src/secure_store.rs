@@ -9,7 +9,7 @@
 //! either its path or its bytes. macOS always has the Keychain, so there a
 //! failing Keychain fails the operation.
 //!
-//! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
+//! `SecretProvider` is the hardware-backed boundary. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
 use std::fs::{self, OpenOptions};

@@ -479,7 +479,7 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
         seen_args.len() == kernel_args.len(),
         "hardware definition kernel arguments must be unique",
     )?;
-    validate_crash_record(&data, &seen_args, schema_number == Some(2))?;
+    validate_crash_report(&data, &seen_args, schema_number == Some(2))?;
     Ok(data)
 }
 
@@ -527,9 +527,9 @@ fn validate_hardening_defaults(data: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-/// `validate_crash_record`: the board says where its crash record goes, what resets it
+/// `validate_crash_report`: the board says where its crash record goes, what resets it
 /// and what panics first, and its kernel arguments agree.
-fn validate_crash_record(
+fn validate_crash_report(
     data: &Map<String, Value>,
     kernel_args: &BTreeSet<&str>,
     required: bool,

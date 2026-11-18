@@ -64,14 +64,14 @@ DENIED = {
     "tilo-fs": "the FUSE filesystem daemon",
     "fuser": "the FUSE filesystem daemon's kernel binding",
     "launcher": "the sandbox launcher",
-    "app-host": "the app host daemon (apps use its client side)",
+    "package-service": "the app host daemon (apps use its client side)",
     "app-cli": "the install and registry CLI",
     "app-registry": "the registry client edges behind the installer",
     "install": "the package installer (tilo-install)",
     "iroh": "the peer transport, owned by the runtime daemon",
     "iroh-blobs": "the content store's transfer protocol",
     "tilo-runtime": "the per-user runtime daemon",
-    "tilo-relay": "the relay service",
+    "tilo-server": "the server service",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
     "tilo-model-gateway": "the model service implementation (apps use tilo-model-client)",
@@ -100,16 +100,16 @@ ENGINES = {
     "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
-    "account-custody": "online-account custody, which Mail, Settings and Calendar load from "
+    "account-credentials": "online-account credentials, which Mail, Settings and Calendar load from "
                        "libtilo_accounts_engine.so",
-    "tilo-oauth": "the OAuth client under account-custody, in libtilo_accounts_engine.so",
-    "cloud-source-dropbox": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-gdrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-icloud": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-onedrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "tilo-oauth": "the OAuth client under account-credentials, in libtilo_accounts_engine.so",
+    "cloud-source-dropbox": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-gdrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-icloud": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-onedrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
     "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
     "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
-    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account custody, which "
+    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, which "
                 "Calendar and Settings load from libtilo_accounts_engine.so",
     "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
     "chrono-tz": "the time-zone database, which Calendar and Clocks load from "
@@ -147,8 +147,8 @@ ENGINES = {
     "browser-continuity": "the import from another browser's profile, which Browser loads from "
                           "libtilo_browser_import_engine.so (the runtime keeps "
                           "browser-continuity-core)",
-    "tilo-app-host-engine": "the app host client's engine library (libtilo_app_host_engine.so)",
-    "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_host_engine.so",
+    "tilo-app-process-engine": "the app host client's engine library (libtilo_app_process_engine.so)",
+    "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_process_engine.so",
     "tilo-mail-engine": "Mail's engine library (libtilo_mail_engine.so)",
     "mail-parser": "Mail's message reader, which Mail loads from libtilo_mail_engine.so",
     "mail-builder": "Mail's message writer, which Mail loads from libtilo_mail_engine.so",

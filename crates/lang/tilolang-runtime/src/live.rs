@@ -1059,6 +1059,7 @@ impl Live {
             window: &window,
             depth,
         };
+        let held = self.lists_of(id);
         let mut builder = Builder {
             live: self,
             core,
@@ -1086,6 +1087,9 @@ impl Live {
         let Builder {
             old, new, loops, ..
         } = builder;
+        let met = &self.row_changes;
+        self.lists
+            .retain(|list, _| !held.contains(list) || met.contains_key(list));
         // Calls that are gone take their subtrees with them.
         let kept: HashSet<BoundId> = new.iter().copied().collect();
         for gone in old.values().filter(|c| !kept.contains(c)) {
@@ -1132,6 +1136,13 @@ impl Live {
         }
         self.dirty.remove(&id);
         Ok(root)
+    }
+
+    /// The virtual lists the boundary `id` holds. One its next render no longer builds left the
+    /// tree, and the rows it kept for the person go with it: a list there again is a new one.
+    fn lists_of(&self, id: BoundId) -> Vec<String> {
+        let held = self.lists.iter().filter(|(_, list)| list.holder == id);
+        held.map(|(key, _)| key.clone()).collect()
     }
 
     fn add_bound(&mut self, b: Bound) -> BoundId {
@@ -1308,7 +1319,7 @@ impl Live {
     /// two branches, a row called twice), and a boundary freed and handed to another call can
     /// keep a key the tree now holds elsewhere. Asking [`Self::by_key`] whose the fragment is,
     /// and refusing when it is not this boundary's, keeps a stale boundary from writing over
-    /// the content the boundary standing there now owns.
+    /// the content the boundary there now owns.
     fn placed(&self, id: BoundId, path: &[usize]) -> bool {
         let Some(b) = self.bound(id) else {
             return false;

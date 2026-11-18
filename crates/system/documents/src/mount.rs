@@ -963,7 +963,7 @@ mod tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// The mount, when this machine can mount FUSE; a missing `/dev/fuse`
-    /// skips, unless `TILO_REQUIRE_FUSE=1` says this lane has it.
+    /// skips, unless `TILO_REQUIRE_FUSE=1` says this job has it.
     fn mounted(documents: &Documents) -> Option<(tempfile::TempDir, Mounted)> {
         let at = tempfile::tempdir().unwrap();
         match mount(documents.clone(), &at.path().join("documents")) {

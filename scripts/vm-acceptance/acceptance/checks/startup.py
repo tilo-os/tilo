@@ -128,7 +128,7 @@ def report(result):
 while True:
     clients = []
     for bus, pid in m.bus_pids(address).items():
-        app = m.app_process(pid)
+        app = m.package_service(pid)
         cmd = m.process_command(app).split()
         own = bool(cmd) and cmd[0].rsplit("/", 1)[-1] == program
         try:
@@ -402,7 +402,7 @@ def gpu_adapters(ctx, res):
     res.detail = why
 
 
-# -- warm opens and every launch of the run (the installed-desktop startup gate) ----
+# -- warm opens and every launch of the run (the installed-desktop startup check) ----
 
 WARM_APPS = ("so.tilo.file-explorer", "so.tilo.notes", "so.tilo.settings")
 WARM_LAUNCHES = 10
@@ -646,7 +646,7 @@ def warm_opens(ctx, res):
 
 @check("A16", "apps", "Every Tilo app the run launched drew its first frame within its budget")
 def every_launch(ctx, res):
-    """The installed-desktop gate's judgement (app_startup_check.py) over this session:
+    """The installed-desktop check's judgement (app_startup_check.py) over this session:
     each `APP-STARTUP` line against its app's budget on the renderer its window used,
     History opens within 1 s, and Notes among the launches."""
     log = ctx.vm.exec(app_startup.PROBE, timeout=90, check=False)

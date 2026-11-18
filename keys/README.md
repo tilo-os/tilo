@@ -59,7 +59,7 @@ Two tiers, so that no key CI can use is a trust anchor on installed systems:
 - **Installed systems verify release → operational certificate → root.**
   `bootc upgrade` goes through `/etc/containers/policy.json`, whose
   `sigstoreSigned` requirement uses containers/image's native `fulcio` mode with
-  the release root standing in for a Fulcio CA (`caPath`), the purpose
+  the release root state in for a Fulcio CA (`caPath`), the purpose
   identity (`subjectEmail`) and epoch (`oidcIssuer`), and Rekor's key
   (`rekorPublicKeyPath`). The certificate must be valid at the time Rekor
   logged the signature, so releases stay verifiable after their certificate
@@ -94,7 +94,7 @@ public anyway (images, their digests, the operational certificates).
 **What this does not cover, and why:**
 
 - **CI-internal artifacts** (the RPM, kernel and buildroot snapshots, the
-  env-runtime, the builder, the relay, the imager, the SLSA and freshness
+  env-runtime, the builder, the server, the imager, the SLSA and freshness
   attestations) are verified only by this repository's workflows and scripts,
   against `cosign.pub`. That pin lives here, so changing it is a commit, not a
   trust-anchor change on any installed system.
@@ -273,7 +273,7 @@ it is ever exposed.
   fingerprint with `tilo-crypto certificate-sha256 keys/efi-signing.crt`
   before enrolling it; see `docs/security/boot-chain.md`.
 
-## Custody
+## Ownership
 
 The file-based keys are a development-only compatibility path, git-excluded and
 `chmod 600`. Production signing is AWS KMS-backed (account 125650147312,

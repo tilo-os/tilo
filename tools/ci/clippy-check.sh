@@ -5,7 +5,7 @@
 #   clippy-check.sh --workspace
 #
 # The workspace lint table in Cargo.toml is the policy, and every workspace
-# member satisfies it, so the gate is absolute: `-D warnings` over the selected
+# member satisfies it, so the check is absolute: `-D warnings` over the selected
 # packages and every workspace member they build on. It does not compare
 # against a base revision. `cargo clippy` applies `-D warnings` to workspace
 # members only; warnings in registry and vendored dependencies are not ours and
@@ -113,7 +113,7 @@ raise SystemExit(1)
 PY
 }
 
-gate() {
+check() {
     if run_clippy "$@"; then
         return 0
     fi
@@ -134,12 +134,12 @@ gate() {
 }
 
 status=0
-gate "$@" || status=1
+check "$@" || status=1
 # tools/ci/lint-affected.sh runs each default build beside this one, in a target
 # directory of its own, and sets CLIPPY_CHECK_DEFAULT_BUILDS=0 here.
 [ "${CLIPPY_CHECK_DEFAULT_BUILDS:-1}" = 1 ] || default_builds=()
 for package in "${default_builds[@]}"; do
     echo "Clippy over $package's default build:" >&2
-    gate -p "$package" || status=1
+    check -p "$package" || status=1
 done
 exit "$status"

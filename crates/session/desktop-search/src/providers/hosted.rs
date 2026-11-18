@@ -170,10 +170,10 @@ impl Source for HostSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::remote::{ActionHostError, Pending, pending};
+    use tilo_actions::remote::{ActionCallError, Pending, pending};
 
     /// Where the host's answer to one query is completed.
-    type Answer = tilo_actions::remote::Completer<Result<Vec<Found>, ActionHostError>>;
+    type Answer = tilo_actions::remote::Completer<Result<Vec<Found>, ActionCallError>>;
 
     /// A host whose answers the test hands over.
     #[derive(Default)]
@@ -182,7 +182,7 @@ mod tests {
     }
 
     impl ResourceSearch for Host {
-        fn find(&self, _: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionHostError>> {
+        fn find(&self, _: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
             let (done, answer) = pending();
             self.asked
                 .lock()
@@ -215,6 +215,7 @@ mod tests {
             arguments: serde_json::Map::new(),
             app: Some("so.tilo.notes".into()),
             provider: Some("record:so.tilo.notes:1".into()),
+            when: None,
         }
     }
 

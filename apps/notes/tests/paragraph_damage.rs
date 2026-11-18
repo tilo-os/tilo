@@ -10,11 +10,11 @@ use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
-struct DamageWitness {
+struct DamageObservation {
     inner: Box<dyn Widget>,
     damage: Rc<RefCell<Vec<Rect>>>,
 }
-impl ui::widget::Decorator for DamageWitness {
+impl ui::widget::Decorator for DamageObservation {
     type Inner = dyn Widget;
     fn inner(&self) -> &Self::Inner {
         self.inner.as_ref()
@@ -71,7 +71,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     f.write_page(f.child, body.as_bytes());
     let checkout = notebook(&f);
     let damage = Rc::new(RefCell::new(Vec::new()));
-    let witness = Rc::clone(&damage);
+    let observation = Rc::clone(&damage);
     let mut inputs = runner_inputs();
     inputs.theme.reduce_motion = reduce_motion;
     let background = inputs.theme.tokens.colors.surfaces.content;
@@ -80,9 +80,9 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         (1200, 900),
         inputs,
         move |inner| {
-            Box::new(DamageWitness {
+            Box::new(DamageObservation {
                 inner,
-                damage: witness,
+                damage: observation,
             })
         },
     )
@@ -106,7 +106,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // or its completion would land in the typing measured below.
     tilo_test_env::wait_until("the edit's write lands", || {
         driver.settle_for_capture(ui::time::Duration::from_millis(100));
-        f.records.save_status(&checkout.id).ok() == Some(ui::resource::ResourceSaveStatus::Saved)
+        f.store.save_status(&checkout.id).ok() == Some(ui::resource::ResourceSaveStatus::Saved)
     });
     let started = ui::time::now();
     let settled = driver.settle_for_capture(tilo_test_env::hang_bound());
@@ -115,7 +115,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
             "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",
             started.elapsed(),
         );
-        report_unsettled_scene(&driver, &f.records, &checkout.id, background);
+        report_unsettled_scene(&driver, &f.store, &checkout.id, background);
     }
     assert!(
         settled,
@@ -131,8 +131,8 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     damage.borrow_mut().clear();
     let _moved_on = type_with_timestamp(&mut driver, key, advance_timestamp, &mut clock);
     let actual = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             read::page_block_snapshots(doc, f.child)
                 .into_iter()
                 .map(|(_, text)| text)
@@ -147,7 +147,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     let damage = damage.borrow().clone();
     assert!(
         !damage.is_empty(),
-        "the actual outer component records changed paint"
+        "the actual outer component resources changed paint"
     );
     assert!(
         damage.iter().map(Rect::area).sum::<f64>() < 1200.0 * 900.0 / 2.0,

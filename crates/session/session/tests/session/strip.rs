@@ -79,7 +79,7 @@ fn assert_pair_stands_in_the_strip([first, last]: [Placed; 2]) {
     );
     assert!(
         WIDTH - gutter - (last.0 + last.2) < 2 && first.0 - gutter < 2,
-        "the pair fills the strip's usable width, both gutters standing: \
+        "the pair fills the strip's usable width, both gutters access: \
          {first:?} and {last:?}"
     );
     // The bar's band, then the step of wallpaper between it and the strip,

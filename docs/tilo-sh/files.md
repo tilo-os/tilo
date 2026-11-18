@@ -87,6 +87,51 @@ And an action that makes a file answers its reference instead of a value: Writer
 (`format`: `docx`, `pdf`, `odt`, `md`, `html`, `rtf` and `txt`; PDF is export only), Notes'
 `export-markdown-content`, a Browser page's `capture-page`.
 
+## Folders, moves and the trash
+
+The workspace's folder is on no one computer. So Files' verbs take a path in the workspace
+(`Tasks/12 Plan/notes.md`) and no device, and they work whether or not a computer of yours is on:
+
+| To | Action |
+| :--- | :--- |
+| Make a folder, with the folders on the way to it | `files#new-folder` with `parent` and `name` |
+| Move entries into a folder, making it when it is not there | `files#move` with `from`, `entries` and `to` |
+| Rename an entry | `files#rename` with `folder`, `entry` and `name` |
+| Copy entries, a folder with all it holds | `files#copy-into` with `from`, `entries` and `to` |
+| Put entries in the trash | `files#trash` with `folder` and `entries` |
+| Bring them back to where they were | `files#restore` with `entries` |
+| See what a folder holds | `files#list` with `folder`; `trash: true` for what the trash holds |
+| Read what a file says | `files#read-text` with `file`, its path |
+| Write a file | `files#write-file` with `folder`, `name`, and its `text` or its `content` |
+
+A path starts at the workspace's folder, with no leading `/` and no `..`, and `""` is that folder
+itself. No verb writes over a file: a name that is taken is refused, and a copy beside what it
+copies becomes `plan (2).md`. Each answers the entries it touched with where they were and where
+they are, and as `undo` the one call that takes it back. Naming a `device` and absolute paths
+instead changes that computer's own disk, through Files on it.
+
+`list` answers the folder's entries by name, each with its `name`, its `path`, its `kind` (`folder`
+or `file`), a file's `size` in bytes and `changed`, the time it last changed in milliseconds since
+1970. It answers 200 at a time: `next` is the `from` of the page after it, `limit` asks for fewer,
+and `total` is how many the folder holds. With `trash: true` it answers what the trash holds, each
+with the `id` that `files#restore` brings it back by and where it `was`.
+
+`read-text` answers a file's `text`, 65 536 characters at a time, with `next` and `total` the same
+way. It reads text up to one mebibyte: a document, a spreadsheet, a PDF or a picture is refused
+with the name of what reads it. Both read where the workspace is kept, so neither opens a window
+nor needs a computer of yours to be on.
+
+A bare name (`notes.md`, with no folder before it) that an agent asks on a computer where Files
+is open is first the entry by that name of the folder Files shows there, as the agent sees it
+listed. A name that folder does not hold, every path with a folder in it, and every name asked
+where Files is not open (an agent working on your server) is a file of the workspace's folder.
+
+`write-file` writes a file into a folder, making the folders on the way: from `text`, up to 256
+KiB, or from `content`, the `tilo.content:` reference an upload or another app's export answered,
+so a PDF Writer made lands in a task's folder. A name that is taken is refused; `replace: true`
+gives that file the new content. Like the verbs it answers as `undo` the one call that takes it
+back: the trash for a new file, and for one written over the write of what it held before.
+
 ## The round trip
 
 Upload a file, make one, and read it back:

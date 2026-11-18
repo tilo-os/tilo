@@ -376,7 +376,7 @@ pub fn reserved_action_ids() -> Vec<String> {
 type WorkspaceArrival = ui_core::widget::ArrivingView;
 
 /// The app's view in `content`, once it shows: `content` itself, or the
-/// view standing in the window's arrival once that arrived. The arrival
+/// view in the window's arrival once that arrived. The arrival
 /// answers for nothing of the view (a traversal meets the view as its
 /// descendant, once), so what the root asks of the app's view it asks here.
 fn app_view_in(content: &dyn Widget) -> Option<&dyn Widget> {
@@ -1185,7 +1185,13 @@ impl ResourceRoot {
         let head = self.refresh_bindings(self.retained_head());
         self.typed.follow_change(doc, &self.followed);
         self.feeds.refresh(doc);
-        self.typed.drain(self.typed.revision());
+        // Work a chain's parts owe is drained as they change too.
+        self.typed.drain(
+            self.typed
+                .revision()
+                .wrapping_mul(31)
+                .wrapping_add(self.storage.chains_revision()),
+        );
         head
     }
 }
@@ -1719,7 +1725,7 @@ impl RootModel for ResourceRoot {
         );
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
-        handlers.insert(super::record::RESOURCE_ACTION_TYPE.to_owned());
+        handlers.insert(super::resources::RESOURCE_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_READ_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
@@ -1755,6 +1761,7 @@ impl RootModel for ResourceRoot {
             }
         }
         handlers.extend(self.nested_views().iter().cloned());
+        handlers.extend(self.storage.view_types_beside());
         handlers
     }
 
@@ -1923,7 +1930,7 @@ impl ResourceRoot {
         };
         let output = if request.type_id == super::history::VIEW_TYPE {
             super::history::answer(doc, request.payload)?
-        } else if request.type_id == super::record::RESOURCE_ACTION_TYPE {
+        } else if request.type_id == super::resources::RESOURCE_ACTION_TYPE {
             self.storage
                 .resource_action(self.dispatch.me(), request.payload)?
         } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
@@ -2244,6 +2251,7 @@ impl RootPublishes for ResourceRoot {
     ) -> Vec<ResourceSpec> {
         // What surfaces bind to where someone is, they bind to this
         // member's view.
+        let _profile = tilo_resource::profiling::Phase::start("framework.resources_for");
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
@@ -2312,6 +2320,7 @@ impl RootPublishes for ResourceRoot {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<ResourceSpec> {
+        let _profile = tilo_resource::profiling::Phase::start("framework.resource_for");
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
@@ -2446,7 +2455,7 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
                     .map(Some)
             }
             None => match &self.run.folder_history {
-                // The folder History lists is the window's own: the root witnesses the
+                // The folder History lists is the window's own: the root observations the
                 // source its runner registered.
                 Some((source, definition)) => {
                     let scopes = definition.scopes.iter().map(|scope| {
@@ -2568,18 +2577,18 @@ impl RootApp for ResourceRoot {
         request(self.content.as_mut(), self.resource.id)
     }
 
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
         fn take(
             widget: &mut dyn Widget,
             resource: std::any::TypeId,
-        ) -> Option<ui_core::widget::AppHostIntent> {
+        ) -> Option<ui_core::widget::AppProcessIntent> {
             if let Some(surface) = surface_mut(widget, resource)
-                && let Some(intent) = surface.take_host_intent()
+                && let Some(intent) = surface.take_process_intent()
             {
                 return Some(intent);
             }
             // A view whose app runs elsewhere asks through its own API.
-            if let Some(intent) = ui_core::component_lifecycle::take_host_intent(widget) {
+            if let Some(intent) = ui_core::component_lifecycle::take_process_intent(widget) {
                 return Some(intent);
             }
             widget

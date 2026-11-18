@@ -1,6 +1,6 @@
 //! The dialog's own controls as the host reaches them: its close control
 //! ([`ModalDialog::on_dismiss`]) and its footer buttons, each published as an action of
-//! control `<dialog>.<close|primary|secondary|tertiary>`; the host's custody of the close
+//! control `<dialog>.<close|primary|secondary|tertiary>`; the host's ownership of the close
 //! control's emitter; and the operations that run them.
 
 use crate::i18n::widget_text;
@@ -116,16 +116,16 @@ impl ModalDialog<dyn Widget> {
         close.into_iter().chain(footer).collect()
     }
 
-    fn install_dismissal_custody(
+    fn install_dismissal_ownership(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(dismiss) = self.dismiss.as_mut() {
-            dismiss.install_custody(domain, attachment);
+            dismiss.attach(domain, attachment);
         }
         for child in self.children_mut() {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -210,13 +210,13 @@ impl<C: Widget + 'static> crate::resources::PublishesResources for ModalDialog<C
 }
 
 impl<C: Widget + 'static> crate::widget::controls::ActionControls for ModalDialog<C> {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         self.as_dyn_mut()
-            .install_dismissal_custody(domain, attachment);
+            .install_dismissal_ownership(domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

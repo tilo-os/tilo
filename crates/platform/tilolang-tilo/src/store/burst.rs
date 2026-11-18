@@ -2,7 +2,7 @@
 //! take as one step.
 //!
 //! A bound control hands over the whole of what it holds on every keystroke, so typing into one
-//! field is one change per letter. Each of them is a change of the record as any other — written
+//! field is one change per letter. Each of them is a change of the document as any other — written
 //! into the chunk that holds the resource, kept on disk with it, and sent on the route in the
 //! frame that made it — so the person, every other view of it and every peer sees the letter at
 //! once, and nothing typed is ever only in memory. What makes the burst read as one act is its
@@ -52,7 +52,7 @@ impl Typing {
     /// What the transaction `state`, committed with `note`, types into: the field a bound
     /// control handed over a whole text as (a keystroke, a paste, a mark, a paragraph), and
     /// nothing else. `None` for anything else — an action, a toggle, a collection's change, a
-    /// write that reaches outside the record.
+    /// write that reaches outside the document.
     pub(super) fn of(state: &TxnState, note: &ChangeNote) -> Option<Self> {
         if note.action != super::RUNTIME_EDIT
             || !note.effects.is_empty()

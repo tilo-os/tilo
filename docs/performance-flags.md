@@ -187,9 +187,9 @@ corresponding instrumentation automatically.
 | `TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB`        | Warm-to-final RSS increase, KiB                | u64; zero allowed, invalid ignored; negative growth treated as zero        |
 | `TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES`      | Warm-to-final known GPU increase, bytes        | u64; zero allowed, invalid ignored; negative growth treated as zero        |
 
-Always check that the expected gate actually printed a result: a misspelled
-budget or an invalid value in an ignore-on-error parser is not a passing gate. A
-16,667 µs p99 gate is a useful 60 Hz screen, not proof that every frame met its
+Always check that the expected check actually printed a result: a misspelled
+budget or an invalid value in an ignore-on-error parser is not a passing check. A
+16,667 µs p99 check is a useful 60 Hz screen, not proof that every frame met its
 deadline. The million-event frozen test measures **zero redraws**, not a million
 rendered frames. Source:
 [dashboard harness](../crates/dev/ui-examples/examples/dashboard_perf_bench.rs).
@@ -386,7 +386,7 @@ application can enable them through dependency feature unification):
 | `ui/dmabuf-import`          | Off                        | Vulkan external-memory import of a compatible DMA-BUF; avoids a CPU pixel round-trip. Requires supported formats/modifiers/device sharing; enabling the feature does not guarantee successful zero-copy import. |
 | `ui/gpu-video`              | Off                        | Enables DMA-BUF import plus NV12/P010-to-RGB GPU conversion. Conversion is still GPU work even when no CPU pixel copy occurs.                                                                                   |
 | `media/realtime`            | Off (the session enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry.                      |
-| `tilo-session/dev-overrides` | Off                       | The test-control socket `tilo-vm` and the capture harnesses drive a desktop through, and the deterministic seams `shots` and the integration tests need. A dev image builds it; a production image never does. Not a frame-rate optimization. |
+| `tilo-session/dev-overrides` | Off                       | The test-control socket `tilo-vm` and the capture harnesses drive a desktop through, and the deterministic boundaries `shots` and the integration tests need. A dev image builds it; a production image never does. Not a frame-rate optimization. |
 
 See [UI features](../crates/sdk/ui-core/Cargo.toml) and
 [session features](../crates/session/session/Cargo.toml). `--no-default-features`
@@ -395,7 +395,7 @@ than silently comparing different feature sets.
 
 ## Optimizations without environment flags
 
-Dirty/animation gating, retained widget/resource caches, allocation-free child
+Dirty/animation guarding, retained widget/resource caches, allocation-free child
 traversal, retained scene sections, bounded queues/image caches/undo history,
 shared image storage, GPU buffer/bind-group reuse, and DRM recovery checks are
 code paths or fixed bounds, not hidden tunables. Do not invent flags for cache

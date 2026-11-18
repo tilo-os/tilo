@@ -129,7 +129,7 @@ fn as_map<'a>(value: &'a Value, what: &str) -> Result<&'a Map<String, Value>> {
     value.as_object().ok_or_else(|| attribute_error(what))
 }
 
-/// The development target behind the VM-only gate.
+/// The development target behind the VM-only check.
 fn development_target(host: &dyn Host, root: &Path) -> Result<Map<String, Value>> {
     let marker = host.dev_vm_marker();
     let flavour = host.dev_flavour();

@@ -111,7 +111,7 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
     Some(RuntimeState { dir, masked })
 }
 
-/// The consent-gated NTFS mount service's runtime directory, holding its control socket
+/// The consent-guarded NTFS mount service's runtime directory, holding its control socket
 /// (`ntfs_mount::protocol::SOCKET_PATH`).
 pub const NTFS_MOUNT_DIR: &str = "/run/tilo-ntfs-mount";
 

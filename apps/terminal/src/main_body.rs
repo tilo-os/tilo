@@ -287,7 +287,7 @@ struct MenuRows {
 }
 
 /// A terminal emulator as a `ui` widget: a process behind a PTY, its parser, and the cell grid the
-/// session record shares. A host gives it a region with [`place_at`](Self::place_at) and pumps it
+/// session resource shares. A host gives it a region with [`place_at`](Self::place_at) and pumps it
 /// with [`Widget::sync`].
 #[allow(
     clippy::struct_excessive_bools,
@@ -331,7 +331,7 @@ pub struct TerminalWidget {
     /// The theme's terminal palette, its default background set to the window's background.
     palette: ui::tokens::TerminalPalette,
 
-    /// The process's output and the screen it shows: live, never in the session record.
+    /// The process's output and the screen it shows: live, never in the session resource.
     emulator: crate::emulator::Emulator,
     mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
     emulating: bool,
@@ -401,22 +401,22 @@ pub struct TerminalWidget {
     /// Latched once any output arrived: the empty-state watermark shows only before that.
     ever_nonblank: bool,
 
-    /// Window title from OSC 0/2, in the record so members see it.
+    /// Window title from OSC 0/2, in the resource so members see it.
     title: String,
     links: HashMap<u16, String>,
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
-    /// Images decode locally from content addresses; the record holds no pixels.
+    /// Images decode locally from content addresses; the resource holds no pixels.
     images: crate::image_loads::ImageLoads,
 
     /// Scopes this pane's presence, so a peer's caret is attributed to this pane.
     pane_id: String,
-    /// The record's dispatcher: the framework's, a parent's, or none (then nothing is recorded).
+    /// The resource's dispatcher: the framework's, a parent's, or none (then nothing is recorded).
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
 
     /// Wakes the host when the reader has output, so an idle terminal does not poll.
     waker: Arc<Mutex<ui::WakeHandle>>,
-    /// Buttons held while a program has mouse tracking on: local input state, never in the record.
+    /// Buttons held while a program has mouse tracking on: local input state, never in the resource.
     mouse_buttons: u8,
     focused: bool,
     sessions: crate::sessions::Sessions,
@@ -465,7 +465,7 @@ struct CommandState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Held {
-    pub(crate) refusal: ui::tilo_actions::remote::host_account::Refusal,
+    pub(crate) refusal: ui::tilo_actions::remote::server_account::Refusal,
     /// An agent asked for the run: the shell does not wait, the agent has
     /// the refusal, and the prompt is the person's to act on or dismiss.
     pub(crate) agent: bool,
@@ -2285,7 +2285,7 @@ impl TerminalWidget {
         edits: &mut ui::widget::Edits<'_>,
     ) {
         for (run, asked) in std::mem::take(&mut self.commands.ended) {
-            // Runs name their output by the content store's reference: a record's content travels sealed.
+            // Runs name their output by the content store's reference: a resource's content travels sealed.
             let output = if run.output.is_empty() {
                 None
             } else {
@@ -2323,7 +2323,7 @@ impl TerminalWidget {
                 exit: run.exit,
                 truncated: run.truncated,
                 request: request.clone(),
-                run: id.clone(),
+                id: id.clone(),
             };
             let ran = crate::history::Ran {
                 command: finished.command.clone(),
@@ -2347,11 +2347,11 @@ impl TerminalWidget {
             match &recorded {
                 Ok(()) if job => {}
                 Ok(()) => self.remember(ran),
-                Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
+                Err(error) => tracing::warn!(%error, "terminal session resource refused a run"),
             }
             if let Some(asked) = asked {
                 let answer = crate::resource::CommandAnswer {
-                    run: recorded.is_ok().then_some(asked.request.clone()),
+                    id: recorded.is_ok().then_some(asked.request.clone()),
                     exit: Some(run.exit),
                     refusal: run.refusal.as_deref().cloned(),
                 };
@@ -2429,7 +2429,7 @@ impl TerminalWidget {
         };
         for action in std::mem::take(&mut self.pending_actions) {
             if let Err(error) = dispatch.submit_now(edits, action) {
-                tracing::warn!(%error, "terminal session record refused a change");
+                tracing::warn!(%error, "terminal session resource refused a change");
             }
         }
         self.record_commands(&dispatch, edits);
@@ -3078,7 +3078,7 @@ impl Widget for TerminalWidget {
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
-        // The prompt: the line input goes in, where a record's run is shown landing. It carries no verb:
+        // The prompt: the line input goes in, where a resource's run is shown landing. It carries no verb:
         // typing reaches the process as keys.
         if self.run_action.is_some() {
             transcript.children.push(
@@ -4844,7 +4844,7 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
 }
 
 /// Snap `rect` to whole device pixels so a cell fill has crisp edges and adjacent runs tile without
-/// a seam.
+/// a boundary.
 pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     let [sx, _, _, sy, tx, ty] = transform.as_coeffs();
     if sx == 0.0 || sy == 0.0 {
@@ -4979,7 +4979,7 @@ impl TerminalBackend {
                 // session's key, as it does for the supervisor's sessions.
                 let key = program.is_empty().then(crate::commands::new_key);
                 if let Some(key) = &key {
-                    cmd.env("TILO_USH_RUNS", key);
+                    cmd.env("TILO_USH_MARKS", key);
                 } else {
                     cmd.arg("-c");
                     cmd.arg(exec_script(&program));
@@ -5428,7 +5428,7 @@ pub(crate) fn ush_request(
         // and an environment that could not be set up says so on the tab.
         fields.insert("end_report".to_string(), serde_json::json!(true));
         if let Some(key) = commands {
-            fields.insert("runs".to_string(), serde_json::json!(key));
+            fields.insert("commands".to_string(), serde_json::json!(key));
         }
     }
     crate::sessions::with_workspace(&mut request, workspace);
@@ -5451,7 +5451,7 @@ struct UshSessionReply {
     relay_session: Option<String>,
     /// The session's shell marks its runs with the key the request named.
     #[serde(default)]
-    runs: bool,
+    commands: bool,
     #[serde(default)]
     editor_protocol: Option<u8>,
     /// The control protocol that granted this session's private lease.
@@ -5584,7 +5584,7 @@ pub(crate) fn ush_backend_on(
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
         supervisor_session: Some(response.session),
-        commands: response.runs.then_some(key),
+        commands: response.commands.then_some(key),
         native_editor,
         service_lifetime: Some(lifetime),
     })
@@ -5613,7 +5613,7 @@ impl TopBanner {
 
     /// The prompt of a run its host holds.
     fn held(held: &Held) -> Self {
-        use ui::tilo_actions::remote::host_account::Reason;
+        use ui::tilo_actions::remote::server_account::Reason;
         let (title, message) = match held.refusal.reason {
             Reason::NoPaymentMethod => (
                 t("terminal-held-title"),
@@ -5643,7 +5643,7 @@ impl TopBanner {
 impl Held {
     /// The provider's page to add a card on: only a secure web page.
     pub(crate) fn add_card_url(&self) -> Option<&str> {
-        use ui::tilo_actions::remote::host_account::NextStepKind;
+        use ui::tilo_actions::remote::server_account::NextStepKind;
         self.refusal
             .step(NextStepKind::AddPaymentMethod)
             .and_then(|step| step.url.as_deref())
@@ -5962,7 +5962,7 @@ impl TerminalWidget {
         Ok(widget)
     }
 
-    /// Keep program pictures in `content`, the window's store, which carries them to the record's other
+    /// Keep program pictures in `content`, the window's store, which carries them to the resource's other
     /// readers; without it they stay in memory.
     #[must_use]
     pub fn with_content(mut self, content: ContentStore) -> Self {

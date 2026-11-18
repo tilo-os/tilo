@@ -69,7 +69,7 @@ printer list without consent.
 
 Enforcement, concretely:
 
-- `Capability::Print` never becomes a bind: `tilo-launcher` turns grants into
+- `DeviceCap::Printer` never becomes a bind: `tilo-launcher` turns grants into
   binds in `launcher::capabilities`, which binds only filesystem paths,
   devices and network access. Granting print permission — at any scope,
   however broadly — adds no bind mount. There is no code path that puts the

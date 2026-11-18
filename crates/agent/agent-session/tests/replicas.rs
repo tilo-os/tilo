@@ -84,7 +84,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_api() {
     chat::demo::apply_as(
         &mut doc,
         "ada",
-        chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
+        chat::Chat::CREATE_CATEGORY.with(chat::chat::chat::CreateCategory {
             name: "Resource view fixture".parse().unwrap(),
         }),
     )
@@ -164,8 +164,11 @@ fn an_agent_mount_and_a_person_mount_converge() {
     assert!(matches!(snapshot, DocumentMutation::Snapshot(_)));
     let mut agent = crate::common::open(
         app,
-        &MemberId::person("writer"),
-        ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![bytes(snapshot)],
@@ -248,8 +251,11 @@ fn joined(
         catalogue,
         page.app_id(),
         WORKSPACE,
-        &MemberId::person("writer"),
-        ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![changes],
@@ -336,8 +342,11 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     let app = "so.tilo.word-processor";
     let mut agent = crate::common::open(
         app,
-        &MemberId::person("writer"),
-        ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap();
@@ -358,7 +367,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         .presence()
         .expect("the append leaves the agent somewhere");
     let (key, start, end) =
-        tilo_relay_protocol::live::read_presence_anchors(&anchor, &head).unwrap();
+        tilo_server_protocol::live::read_presence_anchors(&anchor, &head).unwrap();
     let last = agent
         .read(|doc| {
             let state = <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
@@ -369,7 +378,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         .unwrap();
     // The paragraph it wrote, as the record's own item: the key every
     // member's Writer draws a member's caret under (as its
-    // digest, when the key outgrows the live plane's anchor).
+    // digest, when the key outgrows the live session's anchor).
     let written = ui::presence::PresenceKey::Resource {
         app: app.to_owned(),
         id: last,
@@ -388,8 +397,11 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
 fn an_agent_removes_a_clip_it_placed_without_being_asked() {
     let mut agent = crate::common::open(
         "so.tilo.video-editor",
-        &MemberId::person("editor"),
-        ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        ReplicaActor::Agent {
+            person: MemberId::person("editor"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap();
@@ -417,9 +429,9 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
     assert!(!body(&agent).contains(&clip), "the clip is gone");
 }
 
-fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
+fn bot_access(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::MemberAccess {
     use ui::permissions::policy::{
-        Actor, Answer, Grant, Grantee, MemberId, Standing, TreePath, WorkspacePolicy,
+        Actor, Answer, Grant, Grantee, MemberAccess, MemberId, TreePath, WorkspacePolicy,
     };
     let bot = Grantee::bot("b1");
     let grant = Grant::new(
@@ -430,7 +442,7 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
         Answer::Allow,
         Grantee::person("ada"),
     );
-    Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+    MemberAccess::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
         .acting_as(Actor::Member(MemberId::bot("b1")), vec![grant])
 }
 
@@ -451,7 +463,7 @@ fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica
         ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
-            standing: bot_standing(kinds),
+            access: bot_access(kinds),
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -553,10 +565,10 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
         ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
-            standing: {
+            access: {
                 use ui::permissions::policy::{
-                    Actor, Answer, Grant, Grantee, KindSet, Level, MemberId, Standing, TreePath,
-                    WorkspacePolicy,
+                    Actor, Answer, Grant, Grantee, KindSet, Level, MemberAccess, MemberId,
+                    TreePath, WorkspacePolicy,
                 };
                 let bot = Grantee::bot("b1");
                 let read = Grant::new(
@@ -570,7 +582,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
                     Answer::Allow,
                     Grantee::person("ada"),
                 );
-                Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+                MemberAccess::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
                     .acting_as(Actor::Member(MemberId::bot("b1")), vec![read])
             },
         },
@@ -656,9 +668,9 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     // What a program that posts derives: posting on the chat's messages.
-    let standing = {
+    let access = {
         use ui::permissions::policy::{
-            Actor, Answer, Grant, Grantee, KindSet, Level, MemberId, Standing, TreePath,
+            Actor, Answer, Grant, Grantee, KindSet, Level, MemberAccess, MemberId, TreePath,
             WorkspacePolicy,
         };
         let bot = Grantee::bot("b1");
@@ -676,7 +688,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             Answer::Allow,
             Grantee::person("ada"),
         );
-        Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+        MemberAccess::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
             .acting_as(Actor::Member(MemberId::bot("b1")), vec![post])
     };
     let mut bot = crate::common::open(
@@ -685,7 +697,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
-            standing,
+            access,
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -750,18 +762,18 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    let standing = ui::permissions::PermissionContext::member_of(
+    let access = ui::permissions::PermissionContext::member_of(
         WORKSPACE,
         &MemberId::person("ada"),
         ui::permissions::Role::Owner,
     )
-    .standing()
+    .access()
     .clone();
     let mut agent = crate::common::open(
         "so.tilo.notes",
         &MemberId::person("ada"),
         ReplicaActor::Member {
-            standing,
+            access,
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
             agent: Some("Claude Code".into()),
@@ -775,18 +787,19 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     )
     .unwrap();
     let _ = agent.take_mutation();
-    let new_note = agent
+    // A tag is written to the notebook itself; its notes live in parts beside it.
+    let new_tag = agent
         .survey()
         .into_iter()
-        .find(|descriptor| descriptor.address.action == "new-note")
-        .expect("the notebook offers the agent a new note")
+        .find(|descriptor| descriptor.address.action == "new-tag")
+        .expect("the notebook offers the agent a new tag")
         .address;
-    let arguments = serde_json::json!({"title": "Launch plan"});
+    let arguments = serde_json::json!({"name": "Launch plan"});
     agent
-        .invoke(&new_note, arguments.as_object().unwrap(), false)
+        .invoke(&new_tag, arguments.as_object().unwrap(), false)
         .unwrap();
     let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation().unwrap() else {
-        panic!("the agent's note is handed back to be saved");
+        panic!("the agent's tag is handed back to be saved");
     };
     let mut doc = automerge::AutoCommit::new();
     tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &genesis).unwrap();
@@ -838,12 +851,12 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    let standing = ui::permissions::PermissionContext::member_of(
+    let access = ui::permissions::PermissionContext::member_of(
         WORKSPACE,
         &MemberId::person("ada"),
         ui::permissions::Role::Owner,
     )
-    .standing()
+    .access()
     .clone();
     let mut wrote = Vec::new();
     for title in ["Launch plan", "Retro notes"] {
@@ -851,7 +864,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
             "so.tilo.notes",
             &MemberId::person("ada"),
             ReplicaActor::Member {
-                standing: standing.clone(),
+                access: access.clone(),
                 sandbox: Vec::new(),
                 unix_time: 1_900_000_000,
                 agent: Some("Claude Code".into()),
@@ -865,18 +878,18 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
         )
         .unwrap();
         let _ = agent.take_mutation();
-        let new_note = agent
+        let new_tag = agent
             .survey()
             .into_iter()
-            .find(|descriptor| descriptor.address.action == "new-note")
-            .expect("the notebook offers the agent a new note")
+            .find(|descriptor| descriptor.address.action == "new-tag")
+            .expect("the notebook offers the agent a new tag")
             .address;
-        let arguments = serde_json::json!({ "title": title });
+        let arguments = serde_json::json!({ "name": title });
         agent
-            .invoke(&new_note, arguments.as_object().unwrap(), false)
+            .invoke(&new_tag, arguments.as_object().unwrap(), false)
             .unwrap();
         let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation().unwrap() else {
-            panic!("the agent's note is handed back to be saved");
+            panic!("the agent's tag is handed back to be saved");
         };
         wrote.push(changes);
     }

@@ -77,7 +77,7 @@ impl crate::widget::AppWidget for StrokeProbe {
 }
 
 fn stroke_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -113,7 +113,7 @@ fn deliver_routed(app: &mut App, surface: &dyn AppSurface, event: WindowEvent) {
 fn paced_pen_stroke_attributes_banked_input_per_event_and_phase() {
     use crate::native_scenario::Input;
 
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(stroke_factory);
     let target = crate::application::LaunchTarget::New;
     let context = host

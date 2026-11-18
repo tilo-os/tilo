@@ -112,9 +112,9 @@ fn find(library: &Replica<Ebook>, test: impl Fn(&Annotation) -> bool) -> Annotat
         .expect("the annotation is there")
 }
 
-/// A built-in's name is read where a person reads it: one shared record names
+/// A built-in's name is read where a person reads it: one shared resource names
 /// its faces and pages in each member's language, and a name someone gave one
-/// travels with the record instead.
+/// travels with the resource instead.
 #[test]
 fn built_in_names_read_in_each_members_language() {
     let font = |record: &Ebook, id: &str| {
@@ -172,7 +172,7 @@ fn built_in_names_read_in_each_members_language() {
     assert_eq!(
         font(&seeded, "default").title(),
         "Default",
-        "the German name a record carries reads in the language of whoever reads it"
+        "the German name a resource carries reads in the language of whoever reads it"
     );
     assert_eq!(scheme(&seeded, "dark").title(), "Dark");
 
@@ -195,7 +195,7 @@ fn note_paths(id: Uuid) -> <Mark as Model>::Paths<Ebook> {
 }
 
 /// The library as a device creates it on its own: the genesis every
-/// device writes alike for one record, then this device's own changes.
+/// device writes alike for one resource, then this device's own changes.
 fn started_apart(device: &[u8]) -> Replica<Ebook> {
     let mut doc = ui::automerge::AutoCommit::new()
         .with_actor(ui::automerge::ActorId::from(b"ebook-genesis".as_slice()));

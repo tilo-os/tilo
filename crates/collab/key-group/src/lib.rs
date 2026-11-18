@@ -27,7 +27,7 @@
 //!
 //! This crate does not support external commits or joins, epoch rotation
 //! outside membership changes, or direct-share/cross-workspace envelopes.
-//! Sealed persistence exists, but vault-key custody belongs to the
+//! Sealed persistence exists, but vault-key storage belongs to the
 //! production identity service.
 //!
 //! One fixed ciphersuite: [`crypto::CIPHERSUITE`] =
@@ -67,10 +67,11 @@ pub mod content;
 pub mod crypto;
 pub mod endpoint;
 pub mod errors;
-pub mod gate;
 pub mod group;
 pub mod peer;
 pub mod persistence;
+pub mod released_text;
+pub mod seal_check;
 pub mod signer;
 pub mod welcome;
 
@@ -78,12 +79,13 @@ pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::{ContentKeys, MEDIA_STREAM_TAG_LEN, SenderMediaKeys};
 pub use errors::{Error, Result, WelcomeRefusal};
-pub use gate::SealGate;
 pub use group::{KeyGroup, MemberAddition};
 #[cfg(not(target_arch = "wasm32"))]
 pub use peer::Files;
 pub use peer::{Access, GroupPeer, PeerEvent, PeerStates, Reconciled, backs};
 pub use persistence::VaultKey;
+pub use released_text::{MAX_RELEASED_TEXT, ReleasedFor, open_released_text, seal_released_text};
+pub use seal_check::SealCheck;
 pub use signer::{DeviceSigner, SignFuture};
 // Re-exported so callers can take/return KeyPackage values without
 // pulling openmls into their own Cargo.toml — a version-pinning

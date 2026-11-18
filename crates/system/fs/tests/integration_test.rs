@@ -2071,7 +2071,7 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     let len = data.len() as u64;
     let keeper_store = Arc::new(ContentStore::memory());
     let hash = keeper_store.write_content(&data).await.unwrap().unwrap();
-    let keeper = test_relay::direct_endpoint().await;
+    let keeper = test_server::direct_endpoint().await;
     let router = iroh::protocol::Router::builder(keeper.clone())
         .accept(iroh_blobs::ALPN, keeper_store.blobs_protocol(None))
         .spawn();

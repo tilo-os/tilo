@@ -16,13 +16,13 @@
 //! as content this one does not have.
 //!
 //! Who may: the host's own person and their agents, and any member of the
-//! workspace, or an agent of theirs, as their standing there is now: one who
+//! workspace, or an agent of theirs, as their member access there is now: one who
 //! may change its records (an editor, an agent of one) puts files, and one
 //! who may read it gets them. A viewer only reads.
 
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use tilo_actions::remote::{
-    ActionHostError, CONTENT_GETS_UNAVAILABLE, Caller, ContentGetAnswer, ContentPiece, ContentPut,
+    ActionCallError, CONTENT_GETS_UNAVAILABLE, Caller, ContentGetAnswer, ContentPiece, ContentPut,
     ContentPutStep, ContentPuts, MAX_CONTENT_FRAME_BYTES, Pending, RemoteActionMessage, pending,
 };
 use tilo_content::ContentStore;
@@ -30,7 +30,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::{Job, Worker, WorkspaceActions};
 use crate::worker::ConfinedReplica;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::permissions::policy::ActionKind;
 
 /// The most bytes one upload into a workspace's store takes. A file goes up
@@ -52,19 +52,19 @@ fn piece(
     content: &str,
     offset: u64,
     length: u64,
-) -> Result<ContentPiece, ActionHostError> {
+) -> Result<ContentPiece, ActionCallError> {
     let length = if length == 0 {
         MAX_CONTENT_FRAME_BYTES as u64
     } else {
         length
     };
     if length > MAX_CONTENT_FRAME_BYTES as u64 {
-        return Err(ActionHostError::InvalidRequest {
+        return Err(ActionCallError::InvalidRequest {
             reason: format!("a piece carries at most {MAX_CONTENT_FRAME_BYTES} bytes"),
         });
     }
     let hash =
-        tilo_actions::content_hash(content).ok_or_else(|| ActionHostError::InvalidRequest {
+        tilo_actions::content_hash(content).ok_or_else(|| ActionCallError::InvalidRequest {
             reason: format!("{content} is not a tilo.content:<hash> reference"),
         })?;
     // Only the piece is read: a caller downloading a file of hundreds of
@@ -77,7 +77,7 @@ fn piece(
         // whole and sliced here.
         let bytes = store
             .read(hash)
-            .ok_or_else(|| ActionHostError::InvalidRequest {
+            .ok_or_else(|| ActionCallError::InvalidRequest {
                 reason: format!("this workspace's store holds no {content}"),
             })?;
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
@@ -86,7 +86,7 @@ fn piece(
         (size, bytes.get(from..to).unwrap_or_default().to_vec())
     };
     if offset > size {
-        return Err(ActionHostError::InvalidRequest {
+        return Err(ActionCallError::InvalidRequest {
             reason: format!("the content is {size} bytes: an offset of {offset} is past its end"),
         });
     }
@@ -101,16 +101,16 @@ fn piece(
 struct StorePuts(ContentStore);
 
 impl ContentPuts for StorePuts {
-    fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
+    fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         if size > MAX_PUT_BYTES {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "one file is at most {}: split the archive, or keep the piece the workspace needs",
                     ui::format::memory(MAX_PUT_BYTES)
                 ),
             });
         }
-        let spool = tempfile::tempfile().map_err(|error| ActionHostError::Unavailable {
+        let spool = tempfile::tempfile().map_err(|error| ActionCallError::Unavailable {
             reason: format!("the host has nowhere to keep an upload: {error}"),
         })?;
         Ok(Box::new(StorePut {
@@ -141,9 +141,9 @@ impl ContentPut for StorePut {
         self.written
     }
 
-    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
+    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
         if offset != self.written {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "the upload has {} bytes: append at offset {}",
                     self.written, self.written
@@ -154,29 +154,29 @@ impl ContentPut for StorePut {
             .written
             .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
         if after > self.size {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!("the upload began with {} bytes", self.size),
             });
         }
         self.spool
             .write_all(chunk)
-            .map_err(|error| ActionHostError::Refused {
+            .map_err(|error| ActionCallError::Refused {
                 reason: format!("the host could not keep the upload's bytes: {error}"),
             })?;
         self.written = after;
         Ok(after)
     }
 
-    fn finish(mut self: Box<Self>) -> Result<String, ActionHostError> {
+    fn finish(mut self: Box<Self>) -> Result<String, ActionCallError> {
         if self.written != self.size {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "the upload has {} of {} bytes: append the rest at offset {}",
                     self.written, self.size, self.written
                 ),
             });
         }
-        let kept = |error: String| ActionHostError::Refused {
+        let kept = |error: String| ActionCallError::Refused {
             reason: format!("the workspace could not keep the file: {error}"),
         };
         // What the bytes are decides the media type the store keeps them
@@ -196,7 +196,7 @@ impl ContentPut for StorePut {
             .store
             .put_reader(&mut self.spool, &mime)
             .map_err(|error| kept(error.to_string()))?;
-        tilo_actions::content_resource(&stored.hash).ok_or_else(|| ActionHostError::Refused {
+        tilo_actions::content_resource(&stored.hash).ok_or_else(|| ActionCallError::Refused {
             reason: "the store named no content".into(),
         })
     }
@@ -223,7 +223,7 @@ fn read_up_to(file: &mut std::fs::File, into: &mut [u8]) -> std::io::Result<usiz
 impl WorkspaceActions {
     /// Answer `step` of an upload `caller` asks of the host in
     /// `workspace_id`. The host's own person and their agents put files; a
-    /// member, or an agent of theirs, puts them where their standing lets
+    /// member, or an agent of theirs, puts them where their access lets
     /// them change the workspace's records, which the service's thread reads
     /// when the upload begins. Its later steps go to the upload they began.
     pub(super) fn content_put(
@@ -239,7 +239,7 @@ impl WorkspaceActions {
         };
         let checked = !self.authorized(caller) && matches!(step, ContentPutStep::Begin { .. });
         if checked && !super::speaks_for_a_member(caller) {
-            return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
+            return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
         if let Some(store) = self.known_store(workspace_id).filter(|_| !checked) {
             return Pending::ready(respond(self.shared.puts.step(
@@ -256,7 +256,7 @@ impl WorkspaceActions {
             done,
         };
         if let Err(Job::Content { done, .. }) = self.submit(job) {
-            done.complete(Err(ActionHostError::Unavailable {
+            done.complete(Err(ActionCallError::Unavailable {
                 reason: "the host's workspace actions are not running".into(),
             }));
         }
@@ -265,7 +265,7 @@ impl WorkspaceActions {
 
     /// Answer `caller`'s request for a piece of `content` from the content
     /// store of the host's workspace `workspace_id`: the host's own person
-    /// and their agents, and anyone whose standing there lets them read it,
+    /// and their agents, and anyone whose member access there lets them read it,
     /// which the service's thread reads.
     pub(super) fn content_get(
         &self,
@@ -280,7 +280,7 @@ impl WorkspaceActions {
         };
         let owner = self.authorized(caller);
         if !owner && !super::speaks_for_a_member(caller) {
-            return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
+            return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
         if let Some(store) = self.known_store(workspace_id).filter(|_| owner) {
             return Pending::ready(respond(
@@ -297,7 +297,7 @@ impl WorkspaceActions {
             done,
         };
         if let Err(Job::ContentGet { done, .. }) = self.submit(job) {
-            done.complete(Err(ActionHostError::Unavailable {
+            done.complete(Err(ActionCallError::Unavailable {
                 reason: "the host's workspace actions are not running".into(),
             }));
         }
@@ -306,7 +306,7 @@ impl WorkspaceActions {
 
     /// Answer `caller`'s request for a link to content of the host's
     /// workspace `workspace_id`: anyone who may read it, as the service's
-    /// thread reads their standing.
+    /// thread reads their access.
     pub(super) fn content_link(
         &self,
         workspace_id: WorkspaceId,
@@ -319,10 +319,10 @@ impl WorkspaceActions {
             result,
         };
         if !self.authorized(caller) && !super::speaks_for_a_member(caller) {
-            return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
+            return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
         if let Err(reason) = link.check() {
-            return Pending::ready(respond(Err(ActionHostError::InvalidRequest { reason })));
+            return Pending::ready(respond(Err(ActionCallError::InvalidRequest { reason })));
         }
         let (done, answer) = pending();
         let job = Job::ContentLink {
@@ -332,7 +332,7 @@ impl WorkspaceActions {
             done,
         };
         if let Err(Job::ContentLink { done, .. }) = self.submit(job) {
-            done.complete(Err(ActionHostError::Unavailable {
+            done.complete(Err(ActionCallError::Unavailable {
                 reason: "the host's workspace actions are not running".into(),
             }));
         }
@@ -370,15 +370,15 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         step: ContentPutStep,
-    ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionHostError> {
+    ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionCallError> {
         if matches!(step, ContentPutStep::Begin { .. })
             && !self.may_across(workspace_id, caller, ActionKind::Undoable)
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let store =
             self.workspace_content(workspace_id)
-                .ok_or_else(|| ActionHostError::Unavailable {
+                .ok_or_else(|| ActionCallError::Unavailable {
                     reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
                 })?;
         self.shared.puts.step(&StorePuts(store), caller, step)
@@ -392,13 +392,13 @@ impl Worker {
         caller: &Caller,
         content: &str,
         (offset, length): (u64, u64),
-    ) -> Result<ContentGetAnswer, ActionHostError> {
+    ) -> Result<ContentGetAnswer, ActionCallError> {
         if !self.may_across(workspace_id, caller, ActionKind::Read) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let store =
             self.workspace_content(workspace_id)
-                .ok_or_else(|| ActionHostError::Unavailable {
+                .ok_or_else(|| ActionCallError::Unavailable {
                     reason: CONTENT_GETS_UNAVAILABLE.into(),
                 })?;
         ContentGetAnswer::new(piece(&store, content, offset, length)?)
@@ -411,11 +411,11 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         link: &tilo_actions::remote::ContentLinkAsk,
-    ) -> Result<tilo_actions::remote::ContentLink, ActionHostError> {
+    ) -> Result<tilo_actions::remote::ContentLink, ActionCallError> {
         if !self.may_across(workspace_id, caller, ActionKind::Read) {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
-        let unavailable = || ActionHostError::Unavailable {
+        let unavailable = || ActionCallError::Unavailable {
             reason: tilo_actions::remote::CONTENT_LINKS_UNAVAILABLE.into(),
         };
         let store = self
@@ -428,10 +428,15 @@ impl Worker {
             .ok_or_else(unavailable)
     }
 
-    /// `replica`, a record of the workspace `workspace` names, lent the
-    /// workspace's content store when this host keeps one.
+    /// `replica`, a record of the workspace `workspace` names, lent the workspace's members when
+    /// this host joined it and its content store when this host keeps one.
     pub(super) fn lend(&self, replica: ConfinedReplica, workspace: &str) -> ConfinedReplica {
-        match WorkspaceId::parse(workspace).and_then(|id| self.workspace_content(id)) {
+        let id = WorkspaceId::parse(workspace);
+        let replica = match id.and_then(|id| self.workspaces.get(&id)) {
+            Some(held) => replica.knowing(std::sync::Arc::clone(held.peer.engine())),
+            None => replica,
+        };
+        match id.and_then(|id| self.workspace_content(id)) {
             Some(store) => replica.lending(store),
             None => replica,
         }

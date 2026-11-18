@@ -915,7 +915,7 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 f"t=$(date -d {shlex.quote(first.group(1))} +%s); journalctl --no-pager -o short-precise "
                 "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
                 "| tail -n 30 | cut -c1-300", timeout=120, check=False)
-        running = app_processes(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
+        running = package_servicees(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
         # The session started with the launcher keeping its apps' own output (run.py's drop-in), so
         # Chat says itself why it shows nothing.
         evidence = chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
@@ -1339,10 +1339,10 @@ def app_output(ctx, ws: dict, app: str) -> str:
     return "switch: " + debug_switch(ctx)[-600:] + "\n" + ctx.vm.root_exec(
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
-        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + app_processes(ctx, app)[-3000:]
+        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + package_servicees(ctx, app)[-3000:]
 
 
-def app_processes(ctx, app: str) -> str:
+def package_servicees(ctx, app: str) -> str:
     """`app`'s running processes: each one's threads, what they wait in, and what its scope
     logged, whatever words it used. For an app whose window never came."""
     return ctx.vm.root_exec(
@@ -1658,14 +1658,14 @@ def agent_in_branch(ctx, res):
            f"initialize was not answered after the person allowed it: {str(reply)[:300]}")
     agent.send("notifications/initialized", notify=True)
     res.metrics["sheet"] = dialog
-    # The shell seats the agent in the branch's environment: the session whose environment_id is
+    # The shell registers the agent in the branch's environment: the session whose environment_id is
     # the TILO_ENVIRONMENT its shell reads (the agent API is the MCP server since a3a6caf4255).
     environment = agent.hello.get("environment", "")
-    seated = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
+    registered = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
                                  and environment and a.get("environment_id") == environment] or None,
                         30, interval=1.0) or []
-    res.metrics["seated"] = [{k: a.get(k) for k in ("key", "name", *ae.WHERE)} for a in seated]
-    problems.want(len(seated) == 1, f"the shell seats {len(seated)} agents in {environment!r}: "
+    res.metrics["registered"] = [{k: a.get(k) for k in ("key", "name", *ae.WHERE)} for a in registered]
+    problems.want(len(registered) == 1, f"the shell registers {len(registered)} agents in {environment!r}: "
                                     f"{[{k: a.get(k) for k in ('key', 'name', *ae.WHERE)} for a in ae.agent_sessions(ctx)]}")
     problems.want(environment.startswith(f"{tid}/"),
                   f"the agent's TILO_ENVIRONMENT {environment!r} is not of its branch {tid}")

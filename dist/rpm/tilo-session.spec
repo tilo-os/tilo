@@ -201,9 +201,10 @@ makes before it execs anything.
 %install
 install -Dpm 0755 bin/tilo-session           %{buildroot}%{_bindir}/tilo-session
 install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
+install -Dpm 0755 bin/tilolang-process          %{buildroot}%{_bindir}/tilolang-process
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
-install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_libexecdir}/tilo/tilo-relay-admin
-ln -s ../libexec/tilo/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
+install -Dpm 0755 bin/tilo-server-admin %{buildroot}%{_libexecdir}/tilo/tilo-server-admin
+ln -s ../libexec/tilo/tilo-server-admin %{buildroot}%{_bindir}/tilo-server-admin
 install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_libexecdir}/tilo/tilo-enroll
 ln -s ../libexec/tilo/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
@@ -258,11 +259,11 @@ ln -s ../libexec/tilo/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gatew
 install -Dpm 0755 apps/bin/tilo-model-http %{buildroot}%{_libexecdir}/tilo/tilo-model-http
 ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
-install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
+install -Dpm 0755 apps/libexec/tilo-package-service %{buildroot}%{_libexecdir}/tilo-package-service
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
 install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_libexecdir}/tilo/tilo-legacy
 ln -s ../libexec/tilo/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
     install -Dpm 0644 apps/systemd-user/$unit.socket \
@@ -283,11 +284,12 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
 # Files readiness and normal same-person enrollment are first-party tools.
 # Keep automatic ELF requirements enabled for these host executables; only the
 # separately signed private app/runtime stores are excluded above.
-for program in fs tilo-relay-admin tilo-enroll; do
+for program in fs tilo-server-admin tilo-enroll; do
     test -x %{buildroot}%{_bindir}/$program
 done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
 test -x %{buildroot}%{_bindir}/tilo
+test -x %{buildroot}%{_bindir}/tilolang-process
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 %{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
 # A session entry that names a binary the package does not install is the
@@ -344,7 +346,7 @@ grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for it.
 test -x %{buildroot}%{_bindir}/tilo-legacy
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
     test -f %{buildroot}%{_userunitdir}/$unit.socket
     grep -q "^Service=$unit.service$" %{buildroot}%{_userunitdir}/$unit.socket
@@ -354,9 +356,10 @@ done
 %dir %{_libexecdir}/tilo
 %{_bindir}/tilo-session
 %{_bindir}/tilo
+%{_bindir}/tilolang-process
 %{_bindir}/fs
-%{_bindir}/tilo-relay-admin
-%{_libexecdir}/tilo/tilo-relay-admin
+%{_bindir}/tilo-server-admin
+%{_libexecdir}/tilo/tilo-server-admin
 %{_bindir}/tilo-enroll
 %{_libexecdir}/tilo/tilo-enroll
 %{_userunitdir}/tilo-files-workspace.service
@@ -394,12 +397,12 @@ done
 %{_bindir}/tilo-model-http
 %{_libexecdir}/tilo/tilo-model-http
 %{_libexecdir}/tilo-cli-shim
-%{_libexecdir}/tilo-app-host
+%{_libexecdir}/tilo-package-service
 %{_libexecdir}/tilo-ush
 %{_bindir}/tilo-legacy
 %{_libexecdir}/tilo/tilo-legacy
-%{_userunitdir}/tilo-app-host.service
-%{_userunitdir}/tilo-app-host.socket
+%{_userunitdir}/tilo-package-service.service
+%{_userunitdir}/tilo-package-service.socket
 %{_userunitdir}/tilo-models.service
 %{_userunitdir}/tilo-models.socket
 %{_userunitdir}/tilo-model-gateway.service

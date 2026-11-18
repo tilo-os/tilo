@@ -1,11 +1,11 @@
 //! The socket of an app's origin connector: the process the session's launcher starts for a
 //! tilolang app whose types hold an outside service's resources (a mail server), in the app's
-//! sandbox with the network and custody its manifest declares for that origin. It runs whether
+//! sandbox with the network and ownership its manifest declares for that origin. It runs whether
 //! or not a window of the app is open.
 //!
 //! Each instance of the app a tilolang host runs reaches the connector over a connection of its
 //! own: the session makes a pair, hands one end to the instance with the instance's other
-//! connections (`crate::tilolang_host::InstanceFds::origin`) and the other to the connector on
+//! connections (`crate::tilolang_process::InstanceFds::origin`) and the other to the connector on
 //! this socket, as one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
 //! [`ATTACH_VERB`] with the one descriptor.
 

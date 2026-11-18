@@ -392,7 +392,7 @@ mod tests {
             assert_eq!(later.lasting, AddDevice::of(&first.link, 9).lasting);
         }
 
-        phase the_seat_shows_the_link_the_session_made;
+        phase the_device_shows_the_link_the_session_made;
         // The sheet the session hands the state is the one it shows: a press copies exactly the link
         // on screen, never one that was replaced under it.
         {

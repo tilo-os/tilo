@@ -6,7 +6,7 @@ import {existsSync} from 'node:fs';
 import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, refusalCopy, fill,
   FIRST_VISIT_SECONDS, entryLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
-  STEP_NOTES, stoppedInside} from './arrival.mjs';
+  STEP_NOTES, stoppedInside, visitorLocale} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
@@ -252,15 +252,21 @@ test('both locales have jokes and the same tips, in lines short enough to read a
   }
 });
 
-test('the page speaks the desktop\'s language, not the browser\'s', () => {
+test('the arrival screen speaks the desktop\'s language, the refusal the visitor\'s', () => {
   assert.equal(arrivalLocale(), 'en-US', 'the desktop starts in English, whatever the browser speaks');
   assert.equal(arrivalLocale('de-AT'), 'de-DE');
   assert.equal(arrivalLocale('de'), 'de-DE');
   assert.equal(arrivalLocale('fr-FR'), 'en-US');
   assert.equal(arrivalLocale(null), 'en-US');
   // A German browser opening the English desktop is greeted, and told of a
-  // failure, in English: nothing on the page reads the browser's language.
-  assert.ok(!readFileSync(here('arrival.mjs'), 'utf8').includes('navigator?.languages'));
+  // failure, in English. One the entry turns away has no desktop behind the
+  // refusal, so the refusal speaks the visitor's language.
+  assert.equal(visitorLocale({navigator: {languages: ['de-DE', 'en-US']}}), 'de-DE');
+  assert.equal(visitorLocale({navigator: {languages: ['fr-FR', 'de-AT']}}), 'de-DE',
+    'the first of its languages this page has a catalogue for, not the browser\'s first');
+  assert.equal(visitorLocale({navigator: {languages: ['fr-FR'], language: 'fr-FR'}}), 'en-US');
+  assert.equal(visitorLocale({navigator: {language: 'de'}}), 'de-DE', 'a browser that names only its language');
+  assert.equal(visitorLocale({}), 'en-US');
 });
 
 test('every step note the entry pages write is one the screen leaves to screen readers', () => {

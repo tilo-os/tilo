@@ -52,7 +52,7 @@ assert any(
 )
 
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-# The native lanes the fleet serves: the release and large ARM classes.
+# The native jobs the fleet serves: the release and large ARM classes.
 for runner, architecture in (
     ("runner-release", "x86_64"),
     ("runner-large-arm64", "aarch64"),
@@ -148,14 +148,14 @@ assert "brew tap tilo/" not in imager_workflow
 
 # Every host/architecture the install contract declares is one the release
 # workflow builds and requires, and every download it declares is a file the
-# publication gate carries and the landing-page promotion links. A host whose
+# publication check carries and the landing-page promotion links. A host whose
 # artifacts are declared and built but never mapped is how Windows ARM64 stayed
 # declared, built, and absent from the download matrix.
 required_matrix = imager_workflow.split("          required=(\n", 1)[1].split("          )\n", 1)[0]
 required_assets = {
     line.strip() for line in required_matrix.splitlines() if line.strip()
 }
-assert required_assets, "the publication gate requires no artifact"
+assert required_assets, "the publication check requires no artifact"
 
 declared_entries = {}
 for host in contract["imager"]["hosts"]:
@@ -170,10 +170,10 @@ for host in contract["imager"]["hosts"]:
             assert release_file in required_assets, f"{release_file} is not a release prerequisite"
             runner = "windows" if host["os"].startswith("Windows") else host["os"].lower()
             if runner == "linux":
-                # The Linux lanes come from the plan's native runner matrix,
+                # The Linux jobs come from the plan's native runner matrix,
                 # not a per-host label.
-                lane = {"x86_64": "runner-release", "aarch64": "runner-large-arm64"}[architecture]
-                assert f'"arch":"{architecture}","runner":"{lane}"' in imager_workflow, release_file
+                job = {"x86_64": "runner-release", "aarch64": "runner-large-arm64"}[architecture]
+                assert f'"arch":"{architecture}","runner":"{job}"' in imager_workflow, release_file
             else:
                 assert f"runner: imager-{runner}-{architecture}" in imager_workflow, release_file
             arch_key = "X64" if architecture == "x86_64" else "Arm64"
@@ -182,7 +182,7 @@ for host in contract["imager"]["hosts"]:
             declared_entries[entry] = release_file
 
 # Windows ARM64 was the host this gap dropped: declared, built by its own
-# runner, required by the publication gate, and absent from the page.
+# runner, required by the publication check, and absent from the page.
 assert {
     entry: release_file
     for entry, release_file in declared_entries.items()
@@ -208,7 +208,7 @@ for entry in declared_entries:
 # `tilo-clipboard` and never enter non-Linux builds through ui or tilo-host.
 for manifest in (
     "crates/sdk/ui-core/Cargo.toml",
-    "crates/sdk/tilo-host/Cargo.toml",
+    "crates/sdk/tilo-process-services/Cargo.toml",
     "crates/platform/tilo-clipboard/Cargo.toml",
 ):
     parsed = tomllib.loads((ROOT / manifest).read_text())
@@ -222,16 +222,16 @@ linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "li
 assert "smithay-clipboard" in linux_clipboard_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
-# The package lanes build the same immutable app store as releases. Exercise the lane's own
+# The package jobs build the same immutable app store as releases. Exercise the job's own
 # preflight before it fetches or compiles anything: an absent authority must fail at once,
 # without weakening the staging checks (dist/rpm/stage-app-store.sh).
-package_lane = (ROOT / "dist/ci/package-lane.sh").read_text()
-lane_preflight, lane_expensive = package_lane.split("\nrequire_registry_owner\n", 1)
-assert "bash dist/ci/fetch-package-env-runtime.sh" in lane_expensive
-assert "dist/ci/run-package-job.sh" in lane_expensive
-assert "fetch-package-env-runtime" not in lane_preflight
-assert "run-package-job" not in lane_preflight
-owner_check = "require_registry_owner() {" + lane_preflight.split("require_registry_owner() {", 1)[1]
+package_job = (ROOT / "dist/ci/package-job.sh").read_text()
+job_preflight, job_expensive = package_job.split("\nrequire_registry_owner\n", 1)
+assert "bash dist/ci/fetch-package-env-runtime.sh" in job_expensive
+assert "dist/ci/run-package-job.sh" in job_expensive
+assert "fetch-package-env-runtime" not in job_preflight
+assert "run-package-job" not in job_preflight
+owner_check = "require_registry_owner() {" + job_preflight.split("require_registry_owner() {", 1)[1]
 owner_check += "\nrequire_registry_owner\n"
 for owner, accepted in (
     (None, False),
@@ -248,7 +248,7 @@ for owner, accepted in (
     if owner is not None:
         check_env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
     result = subprocess.run(["bash", "-c", owner_check], env=check_env, capture_output=True)
-    assert (result.returncode == 0) == accepted, "package-lane registry-owner preflight"
+    assert (result.returncode == 0) == accepted, "package-job registry-owner preflight"
 
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
@@ -325,7 +325,7 @@ assert "cmp -- \"$expected_repo\" \"$release_dir/tilo-fedora-44.repo\"" in rpm_r
 trust_pin = "%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt"
 assert f"%config(noreplace) {trust_pin}" not in rpm_spec
 assert f"\n{trust_pin}\n" in rpm_spec
-assert "Select native release lanes" in session_workflow
+assert "Select native release jobs" in session_workflow
 assert 'TILO_DESKTOP_ARM64_RELEASES: "1"' in session_workflow
 assert '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
 for desktop in contract["desktopSession"]:
@@ -337,11 +337,11 @@ assert "arm64_runner=runner-large-arm64" in session_workflow
 assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
 assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
 
-# Workflow enablement is not a support claim. The ARM64 lanes are enabled, so no
+# Workflow enablement is not a support claim. The ARM64 jobs are enabled, so no
 # page may still describe them as switched off or name a pool the workflow does
-# not ask for, and none may turn an enabled lane into a supported public
+# not ask for, and none may turn an enabled job into a supported public
 # platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
-# that names the release lane says a tag or `full_native` is what selects it.
+# that names the release job says a tag or `full_native` is what selects it.
 for desktop in contract["desktopSession"]:
     assert any(
         arch in desktop["plannedArchitectures"]
@@ -357,7 +357,7 @@ for name, page in (
     ("docs/release-pipeline.md", release_pipeline),
 ):
     assert "when enabled" not in page, name
-    assert "not release-gated" not in page, name
+    assert "not release-guarded" not in page, name
 assert "releases build and install-test ARM64" in getting_started
 assert "x86-64 currently" in getting_started
 assert "not a qualified public platform yet" in getting_started
@@ -368,14 +368,14 @@ assert "runner-large-arm64" in packaging_docs
 assert "runner-arm64" not in packaging_docs
 assert "not a release qualification" in packaging_docs
 assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
-assert "native `runner-large-arm64` package lanes" in release_flat
+assert "native `runner-large-arm64` package jobs" in release_flat
 assert "still marks ARM64 desktop sessions as" in release_pipeline
 
-# Workflow enablement is not a support claim. The ARM64 lanes are enabled, so no
+# Workflow enablement is not a support claim. The ARM64 jobs are enabled, so no
 # page may still describe them as switched off or name a pool the workflow does
-# not ask for, and none may turn an enabled lane into a supported public
+# not ask for, and none may turn an enabled job into a supported public
 # platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
-# that names the release lane says a tag or `full_native` is what selects it.
+# that names the release job says a tag or `full_native` is what selects it.
 for desktop in contract["desktopSession"]:
     assert any(
         arch in desktop["plannedArchitectures"]
@@ -391,7 +391,7 @@ for name, page in (
     ("docs/release-pipeline.md", release_pipeline),
 ):
     assert "when enabled" not in page, name
-    assert "not release-gated" not in page, name
+    assert "not release-guarded" not in page, name
 assert "releases build and install-test ARM64" in getting_started
 assert "x86-64 currently" in getting_started
 assert "not a qualified public platform yet" in getting_started
@@ -402,7 +402,7 @@ assert "runner-large-arm64" in packaging_docs
 assert "runner-arm64" not in packaging_docs
 assert "not a release qualification" in packaging_docs
 assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
-assert "native `runner-large-arm64` package lanes" in release_flat
+assert "native `runner-large-arm64` package jobs" in release_flat
 assert "still marks ARM64 desktop sessions as" in release_pipeline
 package_targets = (ROOT / "dist/ci/package-targets.txt").read_text()
 assert "amd64|arch|docker.io/menci/archlinuxarm@sha256:" in package_targets
@@ -410,10 +410,10 @@ assert "arm64|arch|docker.io/gomasy/archlinuxarm@sha256:" in package_targets
 assert "amd64_targets=$(dist/ci/package-targets.sh amd64)" in session_workflow
 assert "arm64_targets=$(dist/ci/package-targets.sh arm64)" in session_workflow
 assert "release_arches=amd64,arm64" in session_workflow
-assert "release_arches: ${{ steps.lanes.outputs.release_arches }}" in session_workflow
+assert "release_arches: ${{ steps.jobs.outputs.release_arches }}" in session_workflow
 assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session_workflow
 assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
-assert "TILO_LANE_TARGETS" in session_workflow
+assert "TILO_JOB_TARGETS" in session_workflow
 assert "while IFS='|' read -r distro image revision" in session_workflow
 assert 'echo "::endgroup::"\n              exit 1' in session_workflow
 assert "max-parallel:" not in session_workflow
@@ -436,4 +436,4 @@ for item in targets.values():
     assert len(item["plannedArchitectures"]) == 1
     assert item["package"] == "tilo-session"
 
-print("install contract matches the current Imager and desktop-session release lanes")
+print("install contract matches the current Imager and desktop-session release jobs")

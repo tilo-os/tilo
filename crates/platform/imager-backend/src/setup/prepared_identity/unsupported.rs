@@ -1,9 +1,9 @@
-//! No provider exists on this host. Public metadata never grants identity custody.
+//! No provider exists on this host. Public metadata never grants identity storage.
 use super::{
     CurrentDeviceDeclaration, CurrentDeviceReference, EnrolledDevice, TransportReceipt, unsupported,
 };
 use std::{io, path::Path, sync::Arc};
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use zeroize::Zeroizing;
 
 enum Never {}
@@ -103,7 +103,7 @@ impl PreparedIdentity {
         let _ = (directory, expected_public_key);
         Err(unsupported())
     }
-    pub fn custody_directory(&self) -> &Path {
+    pub fn ownership_directory(&self) -> &Path {
         match self.never {}
     }
     pub fn enrolled_device_label(&self) -> Option<&str> {

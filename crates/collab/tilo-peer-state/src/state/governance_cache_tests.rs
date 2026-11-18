@@ -109,17 +109,17 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
 /// does, and returns the workspace message that carries them.
 fn publish_receipts(governor: &mut StatePeer, receipts: &[(&str, &[u8])]) -> NeighbourMsg {
     let workspace = governor.core.workspace_doc.as_deref_mut().unwrap();
-    let ledger = match workspace.get(ROOT, "effect_receipts_v1").unwrap() {
+    let log = match workspace.get(ROOT, "effect_receipts_v1").unwrap() {
         Some((_, object)) => object,
         None => workspace
             .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
             .unwrap(),
     };
     // The governor's own slice: who recorded them is not what is measured.
-    let object = match workspace.get(&ledger, "governor").unwrap() {
+    let object = match workspace.get(&log, "governor").unwrap() {
         Some((_, object)) => object,
         None => workspace
-            .put_object(&ledger, "governor", ObjType::Map)
+            .put_object(&log, "governor", ObjType::Map)
             .unwrap(),
     };
     for (key, bytes) in receipts {
@@ -174,7 +174,7 @@ fn sync_resp_decodes_each_receipt_once() {
     assert_eq!(receipt_decodes(), 1, "only the new receipt is decoded");
     assert_eq!(replica.core.receipts.len(), first.len() + 1);
 
-    // A ledger row an older version stored re-encoded is still the same
+    // A log row an older version stored re-encoded is still the same
     // evidence: it is compared by value once and then kept as received.
     let legacy: serde_json::Value = serde_json::from_slice(&first[0].1).unwrap();
     replica
@@ -361,7 +361,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         let message = governor.workspace_message();
         let _ = crate::governance_work::take();
         page.receive_from_report(
-            TransportOrigin::RelayDelta(owner.device_public_key),
+            TransportOrigin::ServerDelta(owner.device_public_key),
             message,
             now,
         )

@@ -18,14 +18,14 @@ use super::{ApiAsk, SessionServices, WAIT};
 fn installed_apps(
     kept: &BTreeSet<String>,
 ) -> (
-    Vec<runtime_portal::tilolang_host::App>,
+    Vec<runtime_portal::tilolang_process::App>,
     BTreeMap<String, String>,
 ) {
-    use runtime_portal::tilolang_host::App;
+    use runtime_portal::tilolang_process::App;
     let mut apps = Vec::new();
     let mut documents_under = BTreeMap::new();
     let mut named: BTreeSet<String> = kept.clone();
-    for package in tilo_app_launch::tilolang_hosts::task_packages() {
+    for package in tilo_app_launch::tilolang_processes::task_packages() {
         if !named.insert(package.app.clone()) {
             continue;
         }
@@ -86,7 +86,7 @@ impl TaskCatalogue for SessionCatalogue {
         Catalogue {
             apps,
             documents_under,
-            changed_at_record: kept,
+            changed_at_document: kept,
         }
     }
 }

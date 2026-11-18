@@ -12,6 +12,10 @@ used in code.
   certified. Per workspace a device either holds the keys (reads and runs work) or only stores
   ciphertext. A device setting says which work it takes, from whom, and when (charging, energy
   mode, free resources).
+- **Server**: a device that serves workspaces for people other than its owner. It stores their
+  ciphertext, and holds a workspace's keys only where it was made a member. A server a workspace's
+  owner names to keep that workspace is made a member of it, and holds its keys. tilo.coffee runs
+  one.
 - **Agent**: a model-driven member. It does what members ask, in the workspace, like a person. A
   person adds it and picks the device it runs on. Claude Code connected over MCP is an agent.
 - **Agent session**: one context of one agent: a conversation with a Tilo agent, or one Claude
@@ -24,6 +28,10 @@ used in code.
   invocation. Not a member.
 - **Member**: a person, agent or bot in a workspace, with a role.
 - **Role**: what a member may do in a workspace.
+- **Member access**: who acts in a workspace and what its policy and grants let them do there.
+  Every change is checked against it.
+- **Approval**: a person's answer, given on their own device, that lets one action run that
+  someone acting for them asked for.
 - **Presence**: one member in one open view (a window, an agent's private view). A member can have
   several.
 
@@ -41,8 +49,21 @@ the graph may make it.
 - **Target**: the resource an action is offered on: its first parameter.
 - **Personal resources**: resources that belong to no workspace: a person's devices and keys,
   logins, settings that apply everywhere, browsing history, signature.
+- **Live session**: one device's sealed `moq-lite` session in one workspace: the presence, call
+  audio, pictures, shared windows and pages it publishes and hears. The device serving the workspace
+  copies them to the others (its live origin).
+- **Peer network**: the devices of a workspace reaching each other directly over their iroh
+  endpoints, and what the session says and hears on it.
+- **Action service**: how a device answers the action requests other devices of its workspaces
+  send it, and sends its own.
+- **Action provider**: what answers a device's action calls (`ActionProvider`): a peer's remote
+  calls, and a window's own to its app.
+- **App action server**: what answers the remote actions that reach a serving device for its apps.
+- **App wire**: the socket a session serves its apps' calls on.
 - **Document**: internal storage of one or more resources (an automerge document). Apps never see it.
 - **App**: what a person installs and runs. Identified by `AppId` (`so.tilo.chat`).
+- **App process**: the process an app runs in; it loads the app, gives it the toolkit and the
+  action service, and draws its windows.
 - **Package**: the signed file an app ships in. `PackageId` names one build.
 
 ## Screen
@@ -62,8 +83,10 @@ the graph may make it.
 
 ## Not used
 
-Old names: room, desk, space, channel (except Chat's channels), principal, subject, collaborator,
-participant, host, relay (except iroh's NAT relay), run, seat, arrangement, record, slot.
+Old names: room, desk, space, channel (except Chat's channels), principal, subject,
+collaborator, participant, host (except a network host name, the verb, and the machine running a
+VM), relay (except iroh's NAT and packet relay, and the device relaying a live session), run, seat,
+arrangement, record, slot.
 
 Vague metaphors: door, gate, plane, lane, custody, standing, ledger, witness, seam. Name the thing.
 

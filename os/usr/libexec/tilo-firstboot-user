@@ -206,7 +206,7 @@ if [ -z "$lock_value" ]; then
   # Do not replace an unexpected intent; create it before useradd can succeed.
   # The helper returns only once the record and its directory entry are
   # synced: a power loss must not leave an account with no durable ownership
-  # witness.
+  # proof.
   printf '%s:%s\n' "$user" "$lock_value" | "$FILES_HELPER" intent "$TRANSACTION"
 fi
 
@@ -347,13 +347,13 @@ if [ -e /var/lib/tilo/prepared-setup ] || [ -L /var/lib/tilo/prepared-setup ]; t
   fi
 fi
 
-# Selected encrypted data changes custody without a second archive allocation.
+# Selected encrypted data changes ownership without a second archive allocation.
 # Failure retains the root metadata and account seed, as for prepared setup.
 if [ -e /var/lib/tilo/prepared-home ] || [ -L /var/lib/tilo/prepared-home ] \
     || [ -e /var/lib/tilo/prepared-applications ] || [ -L /var/lib/tilo/prepared-applications ] \
     || [ -e /var/lib/tilo/prepared-browser ] || [ -L /var/lib/tilo/prepared-browser ]; then
   if ! /etc/tilo/prepared-setup-transport deliver-home-user --username "$user"; then
-    echo "tilo-firstboot-user: portable data custody delivery failed; account remains locked" >&2
+    echo "tilo-firstboot-user: portable data ownership delivery failed; account remains locked" >&2
     exit 1
   fi
 fi

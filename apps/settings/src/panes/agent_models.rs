@@ -1014,7 +1014,7 @@ impl AgentModelsArea {
             })
             .collect();
         // In-process models run inside the apps that use them on any CPU, so
-        // neither the hardware fit nor accelerator setup gates them.
+        // neither the hardware fit nor accelerator setup blocks them.
         for local in &model.snapshot.in_process {
             let mut row = LiveRow::new(
                 format!("settings.agent-model:{}", local.package.id),
@@ -1087,7 +1087,7 @@ pub struct AgentModelsModel {
     vertex_keys: HashMap<String, Result<bool, String>>,
     vertex_reads: Rereads<HashMap<String, Result<bool, String>>>,
     forgetting: Vec<(bool, crate::device_read::Landing)>,
-    custodian: account_custody::Custodian,
+    credential_store: account_credentials::CredentialStore,
     opener: Arc<dyn BrowserOpener>,
     hub_userinfo: String,
     vertex_commit: Option<(String, Option<ProviderProfile>)>,
@@ -1160,9 +1160,9 @@ impl AgentModelsModel {
             vertex_keys: HashMap::new(),
             vertex_reads: Rereads::default(),
             forgetting: Vec::new(),
-            custodian: account_custody::Custodian::live(),
+            credential_store: account_credentials::CredentialStore::live(),
             opener: Arc::new(PortalOpener),
-            hub_userinfo: account_custody::hugging_face::USERINFO_ENDPOINT.into(),
+            hub_userinfo: account_credentials::hugging_face::USERINFO_ENDPOINT.into(),
             vertex_commit: None,
             hub: hub::HubBrowser::new(read.hub_token),
             sign_in: None,
@@ -1184,14 +1184,14 @@ impl AgentModelsModel {
             .filter(|profile| profile.sign_in.is_some())
             .map(|profile| profile.id.clone())
             .collect();
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         if let Some(keys) = self.vertex_reads.ask(move || {
             crate::device_read::off_ui_thread();
             ids.into_iter()
                 .map(|id| {
-                    let result = custodian
+                    let result = credential_store
                         .oauth_grant_state(&agent_vertex::grant_id(&id))
-                        .map(|state| state == account_custody::GrantState::Usable)
+                        .map(|state| state == account_credentials::GrantState::Usable)
                         .map_err(|error| error.to_string());
                     (id, result)
                 })
@@ -1220,13 +1220,13 @@ impl AgentModelsModel {
     }
 
     fn forget_grant(&mut self, profile: &str, report: bool) {
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         let grant = agent_vertex::grant_id(profile);
         self.forgetting.push((
             report,
             crate::device_read::Landing::start(move || -> Result<(), String> {
                 crate::device_read::off_ui_thread();
-                custodian
+                credential_store
                     .forget_oauth(&grant)
                     .map_err(|error| error.to_string())
             }),
@@ -1281,7 +1281,7 @@ impl AgentModelsModel {
                 }
             }
         };
-        setup.begin(&self.custodian, &self.opener);
+        setup.begin(&self.credential_store, &self.opener);
         self.vertex = Some(setup);
         self.changed = true;
         Ok(())
@@ -1542,7 +1542,7 @@ impl AgentModelsModel {
             ),
         };
         // A provider being added is chosen for only once its sign-in
-        // sealed the grant: asking custody again would open the vault here.
+        // sealed the grant: asking ownership again would open the vault here.
         if !existing
             && !self
                 .vertex
@@ -2227,7 +2227,7 @@ fn phase_status(phase: &LocalModelPhase) -> String {
 }
 
 /// Boundary implemented by Tilo' model service. The production adapter is a
-/// deliberately tiny JSON CLI seam so Settings does not acquire downloader,
+/// deliberately tiny JSON CLI boundary so Settings does not acquire downloader,
 /// container-runtime, GPU-driver, or privilege-management dependencies.
 #[allow(
     clippy::missing_errors_doc,

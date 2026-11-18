@@ -113,7 +113,7 @@ fn sorting_and_hiding_finished_books_treat_books_elsewhere_as_books_here() {
 
 #[test]
 fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
-    use ui::collaboration::document_content::{ContentLane, DocumentContent};
+    use ui::collaboration::document_content::{ContentLink, DocumentContent};
 
     let mut app = fresh();
     let bytes = crate::test_epub::long_classic(6, 3);
@@ -133,10 +133,10 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     app.invoke(Invoke::edit(&Ebook::paths().progress.set(progress)).unwrap())
         .unwrap();
     app.settle();
-    let lane = std::sync::Arc::new(ContentLane::default());
+    let link = std::sync::Arc::new(ContentLink::default());
     books(&mut app).content = Some(DocumentContent::store(
         tilo_content::ContentStore::memory(),
-        std::sync::Arc::clone(&lane),
+        std::sync::Arc::clone(&link),
     ));
 
     let place = crate::resource::book_place_resource(&entry.id);
@@ -152,7 +152,7 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     assert_ne!(books(&mut app).view, View::Reader);
     assert_eq!(shelf(&mut app), ["The Test Odyssey"], "its tile stays");
 
-    lane.arrive(tilo_content::hash_bytes(&bytes), bytes);
+    link.arrive(tilo_content::hash_bytes(&bytes), bytes);
     for _ in 0..3 {
         books(&mut app).settle_query();
         app.settle();
@@ -217,7 +217,7 @@ fn tile_status(app: &mut TestApp<EbookShell>, title: &str) -> Option<(String, Op
 
 #[test]
 fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
-    use ui::collaboration::document_content::{ContentLane, DocumentContent};
+    use ui::collaboration::document_content::{ContentLink, DocumentContent};
 
     let mut app = fresh();
     let bytes = crate::test_epub::long_classic(6, 3);
@@ -238,10 +238,10 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
     app.invoke(Invoke::edit(&Ebook::paths().progress.set(progress)).unwrap())
         .unwrap();
     app.settle();
-    let lane = std::sync::Arc::new(ContentLane::default());
+    let link = std::sync::Arc::new(ContentLink::default());
     books(&mut app).content = Some(DocumentContent::store(
         tilo_content::ContentStore::memory(),
-        std::sync::Arc::clone(&lane),
+        std::sync::Arc::clone(&link),
     ));
     let settle = |app: &mut TestApp<EbookShell>| {
         for _ in 0..3 {
@@ -252,7 +252,7 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
 
     books(&mut app).open_hit(&crate::resource::book_place_resource(&entry.id));
     settle(&mut app);
-    lane.stands(hash.clone(), tilo_content::ContentState::Waiting);
+    link.stands(hash.clone(), tilo_content::ContentState::Waiting);
     settle(&mut app);
     {
         assert_eq!(
@@ -278,7 +278,7 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
     }
     assert_eq!(shelf(&mut app), ["The Test Odyssey"], "its tile stays");
 
-    lane.stands(hash.clone(), tilo_content::ContentState::Pending);
+    link.stands(hash.clone(), tilo_content::ContentState::Pending);
     settle(&mut app);
     {
         assert_eq!(tile_status(&mut app, "The Test Odyssey"), None);
@@ -289,7 +289,7 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
         );
     }
 
-    lane.arrive(hash, bytes);
+    link.arrive(hash, bytes);
     settle(&mut app);
     let books = books(&mut app);
     assert_eq!(books.view, View::Reader, "it opens once its text is here");

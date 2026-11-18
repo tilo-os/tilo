@@ -216,10 +216,10 @@ class AdmissionTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, 'assembly identities'):
                             admission.verify(args)
                     else:
-                        provenance, checked, gate = admission.verify(args)
+                        provenance, checked, check = admission.verify(args)
                         self.assertIsNone(provenance['key_sha256'])
                         self.assertEqual(checked['schema'], 'tilo.windows-vm-install-proof-check.v4')
-                        self.assertEqual(gate['development_admission']['board_ci'], ci)
+                        self.assertEqual(check['development_admission']['board_ci'], ci)
                     self.assertEqual(live.call_count, 2)
 
     def test_reviewed_profile_packaging_compatibility_uses_immutable_git_bytes(self):
@@ -284,17 +284,17 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(record['file_diff_sha256'], admission.SEALED_FIX_DIFFS)
                 self.assertEqual(record['runtime_file_sha256'], admission.SEALED_FIX_BLOBS)
 
-    def test_pagefile_is_only_a_shrink_gate(self):
-        common = admission.module('common_gate', 'windows-direct-common.py')
+    def test_pagefile_is_only_a_shrink_check(self):
+        common = admission.module('common_check', 'windows-direct-common.py')
         state = {'volume_status': 1, 'protection_status': 0, 'encryption_percentage': 100,
                  'lock_status': 0, 'system_pagefile_count': 1}
         with patch.object(common, 'ps_json', return_value=state):
             with self.assertRaisesRegex(ValueError, 'pagefile'):
-                common.windows_install_gate()
-            common.windows_install_gate(require_no_pagefile=False)
+                common.windows_install_check()
+            common.windows_install_check(require_no_pagefile=False)
         with patch.object(common, 'ps_json', return_value={**state, 'protection_status': 1}):
             with self.assertRaisesRegex(ValueError, 'explicitly suspended'):
-                common.windows_install_gate(require_no_pagefile=False)
+                common.windows_install_check(require_no_pagefile=False)
 
 
 if __name__ == '__main__':

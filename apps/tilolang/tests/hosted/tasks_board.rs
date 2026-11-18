@@ -1,5 +1,5 @@
 //! The Tasks package as the UI host runs it, on a project shown as a board: a card dragged
-//! within its lane or into another lands where it was dropped, through the lane's drop, the
+//! within its list or into another lands where it was dropped, through the list's drop, the
 //! window and the app's `place` action. And the Today list, which reads the person's day, takes
 //! in the next day's tasks when their midnight passes: the window sleeps until then and wakes
 //! for it.
@@ -23,7 +23,7 @@ use ui::framework::testing::TestApp;
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
 
-/// The project board scenario staged, and the project's bar switched to its board: a lane of no
+/// The project board scenario staged, and the project's bar switched to its board: a list of no
 /// section and two sections with tasks.
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
     crate::support::installed("tasks");
@@ -81,14 +81,14 @@ fn cards(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
         .collect()
 }
 
-/// The titles of the cards whose left edge is at `x`, top to bottom: one lane.
-fn lane(app: &mut TestApp<TlApp>, x: f64) -> Vec<String> {
-    let mut lane: Vec<(String, [f64; 4])> = cards(app)
+/// The titles of the cards whose left edge is at `x`, top to bottom: one list.
+fn list(app: &mut TestApp<TlApp>, x: f64) -> Vec<String> {
+    let mut list: Vec<(String, [f64; 4])> = cards(app)
         .into_iter()
         .filter(|(_, rect)| (rect[0] - x).abs() < 1.0)
         .collect();
-    lane.sort_by(|a, b| a.1[1].total_cmp(&b.1[1]));
-    lane.into_iter().map(|(name, _)| name).collect()
+    list.sort_by(|a, b| a.1[1].total_cmp(&b.1[1]));
+    list.into_iter().map(|(name, _)| name).collect()
 }
 
 fn rect_of(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
@@ -107,7 +107,7 @@ fn drag(app: &mut TestApp<TlApp>, title: &str, onto: &str, below: bool) {
     } else {
         to[1] + 6.0
     };
-    // A lane the window cuts off is reached where it shows the card: the board scrolls across,
+    // A list the window cuts off is reached where it shows the card: the board scrolls across,
     // and the pointer a person drags with stays in the window.
     let x = (to[0] + to[2] / 2.0).min(f64::from(DESKTOP.0) - 8.0);
     app.harness()
@@ -115,8 +115,8 @@ fn drag(app: &mut TestApp<TlApp>, title: &str, onto: &str, below: bool) {
     settle(app);
 }
 
-fn names(lane: &[String]) -> Vec<&str> {
-    lane.iter()
+fn names(list: &[String]) -> Vec<&str> {
+    list.iter()
         .map(|name| {
             [
                 "Measure the new bedroom",
@@ -133,7 +133,7 @@ fn names(lane: &[String]) -> Vec<&str> {
         .collect()
 }
 
-/// The fields a board draws for a person to add from: each lane's entry, where it is drawn.
+/// The fields a board draws for a person to add from: each list's entry, where it is drawn.
 fn entries(app: &mut TestApp<TlApp>) -> Vec<ui::kurbo::Rect> {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
@@ -156,16 +156,16 @@ fn entries(app: &mut TestApp<TlApp>) -> Vec<ui::kurbo::Rect> {
         .collect()
 }
 
-/// A lane adds at its foot, in its own place: each lane ends in its entry rather than carrying an
-/// add in its heading, and what is typed in one makes a card of that lane.
+/// A list adds at its foot, in its own place: each list ends in its entry rather than carrying an
+/// add in its heading, and what is typed in one makes a card of that list.
 #[test]
-fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
+fn a_lists_foot_adds_a_card_to_the_list_it_is_in() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let packing_x = rect_of(&mut app, "Pack the kitchen")[0];
     let booked_x = rect_of(&mut app, "Book the van")[0];
     let bedroom_x = rect_of(&mut app, "Measure the new bedroom")[0];
-    // One entry per lane, at the lane's foot under its cards.
+    // One entry per list, at the list's foot under its cards.
     let found: Vec<ui::kurbo::Rect> = entries(&mut app)
         .into_iter()
         .filter(|rect| {
@@ -177,7 +177,7 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
     assert_eq!(
         found.len(),
         3,
-        "the three lanes each end in their entry: {found:?}"
+        "the three lists each end in their entry: {found:?}"
     );
     for x in [packing_x, booked_x, bedroom_x] {
         let lowest = cards(&mut app)
@@ -189,10 +189,10 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
             found
                 .iter()
                 .any(|rect| (rect.x0 - x).abs() < 1.0 && rect.y0 > lowest),
-            "the lane at {x} ends in its entry, under its cards: {found:?}"
+            "the list at {x} ends in its entry, under its cards: {found:?}"
         );
     }
-    // The window's bar carries the one add of the window, above the board: no lane's heading
+    // The window's bar carries the one add of the window, above the board: no list's heading
     // carries one of its own.
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
@@ -218,14 +218,14 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
         .fold(f64::INFINITY, f64::min);
     assert!(
         adds[0][1] + adds[0][3] <= top,
-        "the add is the window's, above the board rather than in a lane: {adds:?}"
+        "the add is the window's, above the board rather than in a list: {adds:?}"
     );
 
-    // Typed into the Packing lane's entry, the card lands in Packing.
+    // Typed into the Packing list's entry, the card lands in Packing.
     let entry = found
         .iter()
         .find(|rect| (rect.x0 - packing_x).abs() < 1.0)
-        .expect("the Packing lane ends in its entry");
+        .expect("the Packing list ends in its entry");
     app.harness().click_at(
         f64::midpoint(entry.x0, entry.x1),
         f64::midpoint(entry.y0, entry.y1),
@@ -233,7 +233,7 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
     app.harness().type_text("Buy tape");
     app.harness().key("Enter");
     settle(&mut app);
-    // The card joins the lane in place: the board stays where it is.
+    // The card joins the list in place: the board stays where it is.
     let added = cards(&mut app)
         .into_iter()
         .find(|(name, _)| name.contains("Buy tape"))
@@ -242,42 +242,42 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
                 .into_iter()
                 .filter_map(|node| node.name)
                 .collect();
-            panic!("the lane shows the card that was typed: {names:?}")
+            panic!("the list shows the card that was typed: {names:?}")
         });
     assert!(
         (added.1[0] - packing_x).abs() < 1.0,
-        "the card is in the lane typed in: {added:?}"
+        "the card is in the list typed in: {added:?}"
     );
 }
 
 #[test]
-fn a_card_dragged_within_its_lane_and_into_another_lands_where_it_was_dropped() {
+fn a_card_dragged_within_its_list_and_into_another_lands_where_it_was_dropped() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let packing_x = rect_of(&mut app, "Order boxes and tape")[0];
     let booked_x = rect_of(&mut app, "Book the van")[0];
     assert_eq!(
-        names(&lane(&mut app, packing_x)),
+        names(&list(&mut app, packing_x)),
         ["Order boxes and tape", "Pack the kitchen"],
-        "a lane shows its open tasks in order"
+        "a list shows its open tasks in order"
     );
-    // Within its lane: the last card above the first.
+    // Within its list: the last card above the first.
     drag(&mut app, "Pack the kitchen", "Order boxes and tape", false);
     assert_eq!(
-        names(&lane(&mut app, packing_x)),
+        names(&list(&mut app, packing_x)),
         ["Pack the kitchen", "Order boxes and tape"]
     );
-    // Into another lane, between its two cards.
+    // Into another list, between its two cards.
     drag(&mut app, "Order boxes and tape", "Give notice", false);
     assert_eq!(
-        names(&lane(&mut app, booked_x)),
+        names(&list(&mut app, booked_x)),
         [
             "Book the van",
             "Order boxes and tape",
             "Give notice to the electricity company"
         ]
     );
-    assert_eq!(names(&lane(&mut app, packing_x)), ["Pack the kitchen"]);
+    assert_eq!(names(&list(&mut app, packing_x)), ["Pack the kitchen"]);
 }
 
 /// What an agent's run did in Tasks is marked where the person sees it: the tasks it added and
@@ -476,13 +476,10 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
 
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
-fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
-    use chrono::TimeZone as _;
-    let at = chrono::Local
-        .with_ymd_and_hms(2026, month, day, hour, minute, second)
-        .earliest()
+fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
+    let at = ui::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
         .expect("the time exists where the person is");
-    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+    let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
         .checked_add(ui::time::Duration::from_millis(ms))
         .expect("the clock reaches it")
@@ -989,7 +986,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     let edit = action_id(&mut app, &task, "Edit a text field");
     let (agent, ambient) = crate::change_marks::run();
     let mut args = serde_json::Map::new();
-    // A caller names the field as the type declares it; the record keeps it under its id.
+    // A caller names the field as the type declares it; the document keeps it under its id.
     args.insert("field".to_owned(), "title".into());
     args.insert("value".to_owned(), "Buy oat milk and bread".into());
     let event = agent_acting(&mut app, &task, &edit);

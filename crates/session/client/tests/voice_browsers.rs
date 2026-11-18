@@ -25,12 +25,12 @@ use key_group::{ContentKeys, KeyGroup, MemberKey};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_live::live::Track;
-use tilo_live::plane::Heard;
-use tilo_live::plane::{Join, Plane};
+use tilo_live::live_session::Heard;
+use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::roster::Roster;
 use tilo_live::video::{Codec, Layer, Source, VideoObject};
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 /// One tick of the native member: a page publishes its pictures as its
@@ -49,8 +49,8 @@ fn group_keys(channel: collab_types::WorkspaceId) -> ContentKeys {
         .unwrap()
 }
 
-/// The workspace scope's record: its channel's keys seal the plane's tracks.
-fn plane_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
+/// The workspace scope's record: its channel's keys seal the live session's tracks.
+fn live_session_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: workspace.to_owned(),
@@ -190,13 +190,13 @@ impl Page {
 }
 
 /// The device at the other end of the page's call: a native session, as one
-/// is. It joins the workspace's plane with its own device key, shows the
+/// is. It joins the workspace's live session with its own device key, shows the
 /// page's camera, sends its own and collects what the page sent. Nothing of
-/// it goes through the host: the plane seals with the workspace's keys, and
+/// it goes through the host: the live session seals with the workspace's keys, and
 /// the host only carries what it cannot open.
 struct Native {
     _endpoint: Endpoint,
-    plane: Plane,
+    live_session: LiveSession,
     device: [u8; 32],
     /// The page's device: who its pictures come from.
     page: [u8; 32],
@@ -238,8 +238,8 @@ impl Native {
             Vec::new(),
         )
         .expect("a native grant");
-        let carrier = tilo_live::native::Iroh::new(endpoint.clone(), governed.relay.node_addr());
-        let plane = Plane::join(
+        let carrier = tilo_live::native::Iroh::new(endpoint.clone(), governed.server.node_addr());
+        let live_session = LiveSession::join(
             std::sync::Arc::new(carrier),
             &grant.encode(),
             Join {
@@ -252,13 +252,13 @@ impl Native {
             },
         )
         .await
-        .expect("the native device's plane");
+        .expect("the native device's live session");
         // The page's camera is shown here: what makes it encode, and at which
         // layer.
-        plane.show(page, &[Track::Camera(Layer::Low)]);
+        live_session.show(page, &[Track::Camera(Layer::Low)]);
         Self {
             _endpoint: endpoint,
-            plane,
+            live_session,
             device,
             page,
             pictures: Vec::new(),
@@ -272,7 +272,7 @@ impl Native {
     /// camera picture, and take what the page sent.
     fn step(
         &mut self,
-        client: &tilo_relay::RelayClient,
+        client: &tilo_server::ServerClient,
         workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],
@@ -300,9 +300,12 @@ impl Native {
                 payload: vec![0x40; 64],
             };
             self.sequence = self.sequence.saturating_add(1);
-            self.started = self.plane.send_picture(Source::Camera, &object).is_ok();
+            self.started = self
+                .live_session
+                .send_picture(Source::Camera, &object)
+                .is_ok();
         }
-        while let Some(heard) = self.plane.try_recv() {
+        while let Some(heard) = self.live_session.try_recv() {
             if matches!(heard.track, Track::Camera(_) | Track::Screen(_)) {
                 self.pictures.push(heard);
             }
@@ -333,12 +336,12 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     page.peer.send(Cmd::Join(governed.workspace_id)).unwrap();
     crate::support::ready(&[&page.peer]).await;
 
-    // The plane's frames are sealed with the workspace scope's keys; the page
+    // The live session's frames are sealed with the workspace scope's keys; the page
     // holds them as a workspace member, and so does the device it calls.
     let keys = group_keys(collab_types::WorkspaceId::new());
     page.peer
         .send(Cmd::InstallGroupKeys(
-            plane_route(&governed.cluster_id),
+            live_session_route(&governed.cluster_id),
             keys.clone(),
         ))
         .unwrap();
@@ -346,7 +349,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     settles.await.unwrap().unwrap();
 
     // Alice's own laptop takes part in the call, in the workspace it belongs
-    // to: its plane joins on its own device key, as any device's does.
+    // to: its live session joins on its own device key, as any device's does.
     let mut native = Native::start(&governed, page_device, &keys).await;
     governed
         .owner
@@ -430,7 +433,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                 server_page.peer.send(Cmd::Reconnect).unwrap();
             } else if op == "pictures" {
                 // The pictures the page's encoders made, as they are made:
-                // published on the workspace's plane as the page's device.
+                // published on the workspace's live session as the page's device.
                 let Ok(pictures) = serde_json::from_slice::<Vec<Value>>(&request.body) else {
                     return Some(Reply::status(400));
                 };
@@ -454,7 +457,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                     .send(Cmd::CallPictures(workspace, pictures))
                     .unwrap();
             } else if op == "showing" {
-                // What the page draws of the call's devices: the plane reads
+                // What the page draws of the call's devices: the live session reads
                 // exactly those layers.
                 let Ok(shown) = serde_json::from_slice::<Vec<Value>>(&request.body) else {
                     return Some(Reply::status(400));

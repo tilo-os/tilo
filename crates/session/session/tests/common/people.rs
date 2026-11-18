@@ -9,7 +9,7 @@
 //! own, with its own home, its own identity root and its own state, as a
 //! device on someone's shell does.
 //!
-//! A workspace lives at a site ([`Site`]): a relay of this machine that
+//! A workspace lives at a site ([`Site`]): a server of this machine that
 //! governs it, hosts it for the people in it, admits people at the entry it
 //! serves the way a site's entry admits them, and keeps what its people record
 //! while they are away. The site is one person's own, as a home peer is: its
@@ -46,9 +46,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_relay_protocol::directory::{EntryJoin, Listing, entry_path};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
+use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -76,13 +76,13 @@ pub fn joined_within() -> Duration {
     tilo_session::sync::JOIN_PATIENCE.saturating_add(tilo_test_env::hang_bound())
 }
 
-/// A site: a relay of this machine that governs one workspace, hosts it for the people in it and
+/// A site: a server of this machine that governs one workspace, hosts it for the people in it and
 /// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
-    relay: Option<tilo_relay::daemon::Relay>,
+    server: Option<tilo_server::daemon::Server>,
     /// The workspaces this site governs.
-    pub workspaces: tilo_relay::workspaces::Workspaces,
+    pub workspaces: tilo_server::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
     pub owner: [u8; 32],
     /// The site's device, the one it governs and signs with — a device of [`Self::owner`], as a
@@ -109,19 +109,19 @@ impl Site {
     /// Stop the site's host, as a site that went away: what its people's devices hold of the
     /// workspace, they read of their own.
     pub fn stop(&mut self) {
-        if let Some(relay) = self.relay.take() {
-            self.runtime.block_on(relay.shutdown());
+        if let Some(server) = self.server.take() {
+            self.runtime.block_on(server.shutdown());
         }
     }
 
-    /// `owner`'s site: a relay of this machine governing the workspace `name`,
+    /// `owner`'s site: a server of this machine governing the workspace `name`,
     /// listening on loopback with its directory and entry served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
         // The site runs in this process: its log is this test's stderr.
         install_log();
         // The site keeps the keys of the channels it seals in the platform secret store, which this
         // process keeps in memory: a site without one can host no sealed record, and its people's
-        // devices reach no plane.
+        // devices reach no app wire.
         tilo_secrets::keep_in_memory_for_process();
         let state = tempfile::tempdir().expect("a directory for the site's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -135,16 +135,16 @@ impl Site {
         let host = owner.certify_as_host(&paths, "The site");
         let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
-        let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-                tilo_relay::RelayConfig {
+        let (server, workspaces, workspace) = runtime.block_on(async {
+            let server = tilo_server::daemon::Server::start_with_relay_mode(
+                tilo_server::ServerConfig {
                     state_root: state.path().join("host"),
                     // Devices of this machine find the site on loopback, as they do on a person's
                     // own network.
                     iroh_listen: "127.0.0.1:0".parse().expect("a loopback address"),
-                    ..tilo_relay::RelayConfig::default()
+                    ..tilo_server::ServerConfig::default()
                 },
-                tilo_relay::daemon::RelayIdentity {
+                tilo_server::daemon::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),
                     device_cert: host.clone(),
@@ -152,11 +152,11 @@ impl Site {
                 },
                 // The site relays through this machine's loopback relay, as its people's devices
                 // do: neither side reaches number 0.
-                test_relay::relay_mode(),
+                test_server::relay_mode(),
             )
             .await
             .expect("the site's host");
-            let workspaces = relay
+            let workspaces = server
                 .workspaces()
                 .expect("the site governs workspaces")
                 .clone();
@@ -171,13 +171,13 @@ impl Site {
                 .enter(&workspace, &host)
                 .await
                 .expect("the site's device is in its workspace");
-            (relay, workspaces, workspace)
+            (server, workspaces, workspace)
         });
         let responder = entry_responder(&workspace, name);
         let entry = format!("{}/", responder.url());
         Self {
             runtime,
-            relay: Some(relay),
+            server: Some(server),
             workspaces,
             owner: owner.public,
             host,
@@ -196,11 +196,11 @@ impl Site {
             .expect("the site deletes its workspace");
     }
 
-    /// Where the site's relay is reached, as a link to something it hands out names it.
+    /// Where the site's server is reached, as a link to something it hands out names it.
     pub fn node_addr(&self) -> iroh::EndpointAddr {
-        self.relay
+        self.server
             .as_ref()
-            .expect("the site's relay runs")
+            .expect("the site's server runs")
             .node_addr()
     }
 
@@ -270,7 +270,7 @@ impl Site {
             .block_on(self.workspaces.set_member_role(
                 &self.workspace,
                 &self.host,
-                tilo_relay::workspaces::SetMemberRoleRequest {
+                tilo_server::workspaces::SetMemberRoleRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
                     role,
@@ -304,7 +304,7 @@ impl Site {
     /// and whether they are removed.
     pub fn members(
         &self,
-    ) -> std::collections::BTreeMap<String, tilo_relay::workspaces::MemberMark> {
+    ) -> std::collections::BTreeMap<String, tilo_server::workspaces::MemberMark> {
         self.runtime
             .block_on(self.workspaces.membership(&self.workspace))
             .expect("the site's members")
@@ -328,7 +328,7 @@ impl Site {
             .block_on(self.workspaces.remove_member(
                 &self.workspace,
                 &self.host,
-                tilo_relay::workspaces::RemoveMemberRequest {
+                tilo_server::workspaces::RemoveMemberRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
                 },
@@ -698,12 +698,12 @@ fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Perso
 }
 
 /// Tell each of `devices` about the rest of the person's fleet, as the machine that enrolls a
-/// device does ([`tilo_identity_host::provisioning`]): a device admits what the fleet names, and
+/// device does ([`tilo_identity::provisioning`]): a device admits what the fleet names, and
 /// dials the siblings it holds, so what the person records reaches their other devices.
 pub fn share_the_fleet(person: &Person, devices: &[&Device]) {
     let identity_id = hex::encode(person.public);
     for device in devices {
-        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(
+        let fleet = tilo_identity::device_fleet::DeviceFleetStore::at(
             device.directory().join("config/tilo/identity"),
             device.identity(),
         );
@@ -769,7 +769,7 @@ fn entry_responder(workspace: &str, name: &str) -> Responder {
     responder
 }
 
-/// The log of what runs in this test's own process — the site's relay above all — as `RUST_LOG`
+/// The log of what runs in this test's own process — the site's server above all — as `RUST_LOG`
 /// asks for it, warnings and worse by default: what the host did with a change a device published
 /// is only said there.
 pub fn install_log() {
@@ -813,7 +813,7 @@ impl Person {
                 .set("XDG_CACHE_HOME", identity.path().join("cache"))
                 .set("TILO_IDENTITY_ROOT", &system)
                 .set(FILE_SECRETS_ENV, "1");
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &config.join("tilo/identity"),
                 &IdentityPaths::under(&system),
                 IdentityStorage::Files,
@@ -921,7 +921,7 @@ impl Person {
         );
         // This device relays through this machine's loopback relay, as the site does: no session
         // of a test reaches the person's relays or their directory out on the internet.
-        test_relay::relay_through_loopback_in(&root.join("config"));
+        test_server::relay_through_loopback_in(&root.join("config"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {
@@ -1321,7 +1321,7 @@ impl Device {
                 SESSION_LOG.get().map_or(
                     "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
                      tilo_session::layout=debug,tilo_network_actor::native_ingress=debug,\
-                     tilo_peer_state::owner::publication=debug,tilo_session_client::custody=debug",
+                     tilo_peer_state::owner::publication=debug,tilo_session_client::ownership=debug",
                     String::as_str,
                 ),
             )
@@ -1499,7 +1499,7 @@ impl Device {
             .join("\n")
     }
 
-    /// The publisher this device's session goes by at its own seat: what every other device in a
+    /// The publisher this device's session goes by on its own device: what every other device in a
     /// workspace it is in knows it as.
     pub fn publisher(&self) -> Option<String> {
         let own = &self.state()["state"]["peers"]["own"];
@@ -1534,7 +1534,7 @@ impl Device {
 
     /// Wait until this device says the device `publisher` is present in `workspace` , failing with
     /// who it does say is there if it never does: presence reaches a device by itself, on the
-    /// workspace's own plane.
+    /// workspace's own app wire.
     pub fn wait_present(&self, workspace: &str, publisher: &str) {
         struct Present<'a> {
             device: &'a Device,
@@ -2139,19 +2139,13 @@ impl HeldChat {
     /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
     /// conversation's messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
-        use chat::record::Chat;
-        let people = self.chat["people"]
-            .as_object()
-            .filter(|people| !people.is_empty());
-        let Some(people) = people else {
-            return Err("the workspace's people are not in Chat's record yet".into());
-        };
+        use chat::chat::Chat;
         let me = tilo_actions::policy::MemberId::person(self.me.clone());
         let them = tilo_actions::policy::MemberId::person(peer);
         let slot = |member: &tilo_actions::policy::MemberId| {
-            chat::record::member_slot(member).as_str().to_owned()
+            chat::chat::member_slot(member).as_str().to_owned()
         };
-        if peer == self.me || people.get(&slot(&them)).is_none() {
+        if peer == self.me {
             return Err(format!("Chat knows no person {peer}"));
         }
         // A message keeps its author as the member's JSON, in a string.

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use super::migration::{CopyProgress, CopyReport, copy_folder_with_journal, resume_folder};
 use super::migration_durability;
-use super::migration_store::{OperationRecord, StoreWriter};
+use super::migration_store::{OperationEntry, StoreWriter};
 
 const RUNNING: u8 = 0;
 const CANCELLATION_REQUESTED: u8 = 1;
@@ -123,7 +123,7 @@ pub enum WorkerOutcome {
 pub enum WorkerEvent {
     Progress(CopyProgress),
     Finished(WorkerOutcome),
-    Stored(Box<OperationRecord>),
+    Stored(Box<OperationEntry>),
 }
 
 pub struct MigrationWorker {
@@ -142,7 +142,7 @@ impl MigrationWorker {
     pub fn start_persisted(
         job: MigrationJob,
         writer: StoreWriter,
-        operations: Vec<OperationRecord>,
+        operations: Vec<OperationEntry>,
         index: usize,
     ) -> Result<Self, String> {
         if index >= operations.len() {
@@ -153,7 +153,7 @@ impl MigrationWorker {
 
     fn start_inner(
         job: MigrationJob,
-        persistence: Option<(StoreWriter, Vec<OperationRecord>, usize)>,
+        persistence: Option<(StoreWriter, Vec<OperationEntry>, usize)>,
     ) -> Result<Self, String> {
         let progress_slot = Arc::new(Mutex::new(None));
         let worker_progress = Arc::clone(&progress_slot);

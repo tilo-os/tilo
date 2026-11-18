@@ -73,6 +73,8 @@ pub(crate) struct Kept {
     pub modal: bool,
     /// The icon the app set on this toplevel, as its last commit left it.
     pub icon: Option<std::sync::Arc<smithay::wayland::xdg_toplevel_icon::ToplevelIconData>>,
+    /// The icon of the X11 window this toplevel of the X11 server shows.
+    pub x11_icon: Option<std::sync::Arc<Vec<tilo_x11_transfer::windows::IconImage>>>,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -99,6 +101,7 @@ impl Kept {
             shortcuts_inhibitor: None,
             modal: false,
             icon: None,
+            x11_icon: None,
             role: Role::None,
             up: None,
         }
@@ -232,6 +235,8 @@ pub(crate) struct UpSurface {
     /// The desktop's icon object and whether one was sent.
     pub icon: Option<crate::toplevel_icon::UpIcon>,
     pub icon_pushed: bool,
+    /// The desktop's colour objects for this surface.
+    pub color: crate::color::UpSurfaceColor,
 }
 
 pub(crate) enum UpRole {
@@ -294,6 +299,8 @@ pub(crate) struct Pushed {
     fullscreen: Option<(bool, Option<String>)>,
     viewport: Option<crate::viewporter::Viewport>,
     content_type: Option<u32>,
+    /// The image description (by identity) and rendering intent the desktop's surface was given.
+    pub color: Option<Option<(u32, u32)>>,
 }
 
 /// Whether `value` differs from what was pushed, recording it as pushed.
@@ -327,6 +334,19 @@ pub(crate) struct Buffers {
     by_client: HashMap<ObjectId, u64>,
     kept: HashMap<u64, KeptBuffer>,
     pools: HashMap<(u64, u64), KeptPool>,
+}
+
+impl Buffers {
+    /// The size in pixels of the held buffer `key`.
+    pub(crate) fn size_of(&self, key: u64) -> Option<(i32, i32)> {
+        match &self.kept.get(&key)?.source {
+            Source::Shm { width, height, .. } => Some((*width, *height)),
+            Source::Dmabuf(dmabuf) => {
+                let size = dmabuf.size();
+                Some((size.w, size.h))
+            }
+        }
+    }
 }
 
 struct KeptBuffer {
@@ -583,8 +603,20 @@ impl Buffers {
             }
             Source::Dmabuf(dmabuf) => {
                 let factory = up.dmabuf.as_ref()?;
-                let params = factory.create_params(&up.qh, ());
                 let format = dmabuf.format();
+                if !up
+                    .dmabuf_formats
+                    .as_ref()
+                    .is_some_and(|formats| formats.contains(&format))
+                {
+                    tracing::warn!(
+                        ?format,
+                        "this desktop takes no dma-buf of the app's format; it shows on the next \
+                         commit in one it does"
+                    );
+                    return None;
+                }
+                let params = factory.create_params(&up.qh, ());
                 let modifier = u64::from(format.modifier);
                 for (plane, ((fd, offset), stride)) in dmabuf
                     .handles()
@@ -846,6 +878,7 @@ impl State {
             modal_sent: None,
             icon: None,
             icon_pushed: false,
+            color: crate::color::UpSurfaceColor::default(),
         });
         self.request_surface_feedback(id);
         self.request_fractional_scale(id);
@@ -854,6 +887,7 @@ impl State {
         self.ensure_shortcuts_inhibitor(id);
         self.ensure_dialog(id);
         self.push_icon(id);
+        self.ensure_up_feedback(id);
         true
     }
 
@@ -861,24 +895,33 @@ impl State {
     /// desktop's surface that mirrors it. The answer is kept while no desktop is attached and
     /// asked again on the next one.
     pub(crate) fn request_surface_feedback(&mut self, id: &ObjectId) {
+        let wanted = self.surfaces.get(id).is_some_and(|kept| {
+            with_states(&kept.surface, |states| {
+                smithay::wayland::dmabuf::SurfaceDmabufFeedbackState::from_states(states).is_some()
+            })
+        });
+        if wanted {
+            self.ask_surface_feedback(id);
+        }
+    }
+
+    /// Ask the desktop for the feedback of the surface mirroring `id`. Also called while
+    /// smithay holds the surface's state for the app's own request, so it reads none of it.
+    pub(crate) fn ask_surface_feedback(&mut self, id: &ObjectId) {
         let Some(up) = self.up.as_ref() else {
             return;
         };
         let Some(dmabuf) = up.dmabuf.clone() else {
             return;
         };
-        let Some(kept) = self.surfaces.get(id) else {
+        let Some(surface) = self
+            .surfaces
+            .get(id)
+            .and_then(|kept| kept.up.as_ref())
+            .map(|up| up.surface.clone())
+        else {
             return;
         };
-        let Some(surface) = kept.up.as_ref().map(|up| up.surface.clone()) else {
-            return;
-        };
-        let wanted = with_states(&kept.surface, |states| {
-            smithay::wayland::dmabuf::SurfaceDmabufFeedbackState::from_states(states).is_some()
-        });
-        if !wanted {
-            return;
-        }
         self.surface_feedback.entry(id.clone()).or_default();
         dmabuf.get_surface_feedback(&surface, &up.qh, SurfaceRef(id.clone()));
     }
@@ -905,6 +948,11 @@ impl State {
         }
         // A window's own requests (title, parent, size limits) go before its commit.
         self.push_toplevel_meta(id);
+        if self.surfaces.get(id).is_some_and(|kept| {
+            matches!(kept.role, Role::Toplevel(_)) && self.xdnd.is_server(&kept.surface)
+        }) {
+            self.match_x11_windows(false);
+        }
         self.push_icon(id);
         self.push_attributes(id);
         self.push_content(id);
@@ -1068,6 +1116,7 @@ impl State {
             }
         }
         self.push_protocol_state(id, viewport, content_type);
+        self.push_color(id);
     }
 
     /// A surface's viewport and content type, which the desktop has objects of its own for.
@@ -1119,6 +1168,11 @@ impl State {
     /// The surface's content: its buffer when it changed (or the desktop never had it), the
     /// damage, the frame callbacks this desktop was not asked for yet, and the commit.
     fn push_content(&mut self, id: &ObjectId) {
+        // A surface whose image description is not ready on the desktop yet shows nothing new
+        // until it is, so no frame is ever shown in the wrong colour.
+        if self.color_waits(id) {
+            return;
+        }
         let Some(up) = self.up.as_ref() else {
             return;
         };
@@ -1512,8 +1566,10 @@ impl State {
             us.surface.destroy();
         }
         self.surface_feedback.remove(id);
+        self.color_surface_gone(id);
         self.presentation_surface_gone(id);
         self.seat.surface_gone(id);
+        self.xdnd_surface_gone(id);
     }
 
     /// Recreate every held surface on a desktop that was just attached, oldest first.

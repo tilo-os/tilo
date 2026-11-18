@@ -1,7 +1,7 @@
 //! The tilolang runtime as a framework app: the installed package, shown through the framework's
 //! root like every native app.
 //!
-//! The root brings the content ground and the unreadable-record state; the window
+//! The root brings the content ground and the unreadable-document state; the window
 //! ([`crate::hosted::HostedWindow`]) shows the package's instance, which a tilolang host runs: the
 //! session's, or one in this process without a session.
 //!
@@ -47,7 +47,7 @@ impl ResourceApp for TlApp {
     const ID: &'static str = crate::UNBUNDLED_ID;
     const TITLE: &'static str = "tilolang";
     const ICON: Option<&'static str> = Some("code-editor");
-    // The record is the workspace's: every package keeps its resources in it.
+    // The document is the workspace's: every package keeps its resources in it.
     const WORKSPACE_RESOURCE: bool = true;
 
     fn named() -> Option<AppName> {
@@ -56,8 +56,8 @@ impl ResourceApp for TlApp {
             id: &meta.app,
             title: &meta.title,
             icon: meta.icon.as_deref().map(crate::icon_name),
-            // A package declaring `records: .own` keeps each member's records in their own.
-            own_resources: meta.own_records,
+            // A package declaring `documents: .own` keeps each member's documents in their own.
+            own_resources: meta.own_resources,
         })
     }
 
@@ -73,10 +73,10 @@ impl ResourceApp for TlApp {
         installed().map_or(&[], scenario_names)
     }
 
-    // The first frame shows what the workspace's indexes hold; the record is read off the frame.
+    // The first frame shows what the workspace's indexes hold; the document is read off the frame.
     const OPENS_BEFORE_RESOURCE: bool = true;
 
-    /// The window, before the record: in a session, the one whose instance its tilolang host
+    /// The window, before the document: in a session, the one whose instance its tilolang host
     /// runs; without one, the window running its instance in this process.
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
         crate::i18n::ensure();
@@ -100,7 +100,7 @@ impl ResourceApp for TlApp {
         crate::i18n::ensure();
         #[cfg(target_os = "linux")]
         {
-            // The window shown before the record, taken over with what the person did in it.
+            // The window shown before the document, taken over with what the person did in it.
             let opened = cx
                 .take_lent::<ui::framework::Opened>()
                 .and_then(|opened| opened.take::<crate::hosted::HostedWindow>());
@@ -131,7 +131,7 @@ impl ResourceApp for TlApp {
             if cx.mode() == ui::framework::RunMode::Live {
                 live_origins(&mut window, cx.storage().config_root());
             }
-            window.follow_standing(cx.standing());
+            window.follow_access(cx.access());
             // A search hit, or an agent's `open`, shows the resource it names.
             if let Some(reveals) = window.reveals() {
                 cx.on_open(move |anchor: &str| reveals.borrow_mut().push(anchor.to_owned()));
@@ -164,7 +164,7 @@ impl ResourceApp for TlApp {
 }
 
 /// The window of the installed package for `me` in `workspace`, running its instance in this
-/// process over the app's record on this device, kept in the app's data area (`files`): a
+/// process over the app's document on this device, kept in the app's data area (`files`): a
 /// window without a session (`tilolang dev`, a capture). `None` when nothing is installed, or
 /// the instance does not start.
 #[cfg(target_os = "linux")]
@@ -177,24 +177,24 @@ fn in_process(
         tracing::error!("no package is installed in this runtime");
         return None;
     };
-    // The record is this device's alone: its route only names where it is kept, one per
+    // The document is this device's alone: its route only names where it is kept, one per
     // workspace, whether the profile names its workspace by id or by name (`personal`).
     let workspace_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes());
     let storage = match files.paths().data().native_path() {
         Ok(data) => Some(data.join("tilolang")),
         Err(error) => {
-            tracing::warn!(%error, "no data area for the app's record: it is kept in memory");
+            tracing::warn!(%error, "no data area for the app's document: it is kept in memory");
             None
         }
     };
-    let route = tilolang_host::route_of(&bundle.meta, workspace_id, me);
-    let spec = tilolang_host::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
-    let kind = tilolang_tilo::meta::MetaExt::record_kind(&bundle.meta);
+    let route = tilolang_process::route_of(&bundle.meta, workspace_id, me);
+    let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
+    let kind = tilolang_tilo::meta::MetaExt::resource_type(&bundle.meta);
     let person = me.to_owned();
     crate::hosted::HostedWindow::in_process(
         spec,
         |kept| {
-            tilolang_tilo::instance::record::InstanceRecord::open_local(
+            tilolang_tilo::instance::document::InstanceDocument::open_local(
                 route,
                 &kept.documents,
                 person,

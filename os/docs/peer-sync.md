@@ -21,11 +21,11 @@ authenticates with its device certificate and sends durable collaboration
 messages to the host in addition to the direct gossip path. The host pins
 configured workspaces and store-and-forwards updates to offline devices.
 
-The home-server deployment combines `tilo-relay` with the authenticated
+The home-server deployment combines `tilo-server` with the authenticated
 filesystem replica. Pairing it in Settings transfers its certified identity,
 workspace bindings, and full-replication configuration; it then retains CRDT
 state, app checkpoints, file bytes, and thumbnails around the clock. The
-container deployment is documented in `os/containers/tilo-relay/README.md`.
+container deployment is documented in `os/containers/tilo-server/README.md`.
 
 The identity files are created together by `tilo-session --provision-identity`:
 
@@ -68,7 +68,7 @@ Transfer `home-peer.toml` to the host as `/etc/tilo/home-peer.toml` and restart
 complete set: it runs a durable worker for every entry using the enrolled
 device identity, keeps each namespace plus all manifests, chunks, and
 thumbnails under its configured cache, and serves them through the bundled
-capability policy. `tilo-relay-admin status` reports `full_content_replication: true`
+capability policy. `tilo-server-admin status` reports `full_content_replication: true`
 only after the atomic aggregate status confirms every configured workspace is
 complete.
 
@@ -78,13 +78,13 @@ A Fedora Desktop may have an enrolled home peer but no local Files daemon or
 namespace. Do not infer a new empty workspace from this, or from an offline
 peer. The saved `home-peers.json` under the host's existing identity root
 (`$XDG_DATA_HOME/tilo`, normally `~/.local/share/tilo`) identifies the enrolled
-device, relay service and relay workspace IDs to probe:
+device, server service and server workspace IDs to probe:
 
 ```sh
-tilo-relay-admin home-peer-files-status \
+tilo-server-admin home-peer-files-status \
   --identity-root "$HOME/.local/share/tilo" \
-  --device ENROLLED_DEVICE_PUBLIC_KEY --service RELAY_SERVICE_PUBLIC_KEY \
-  --workspace-id REGISTERED_RELAY_WORKSPACE_ID
+  --device ENROLLED_DEVICE_PUBLIC_KEY --service SERVER_SERVICE_PUBLIC_KEY \
+  --workspace-id REGISTERED_SERVER_WORKSPACE_ID
 ```
 
 This read-only command uses the existing device key, verified certificate and
@@ -96,7 +96,7 @@ create an identity, grant access, or start a Files mount. A timeout or denied
 query leaves the existence of remote data unknown. Probe the saved candidate
 workspaces before deciding whether explicit new initialization is appropriate.
 
-The relay workspace ID is a routing key, not a Files namespace UUID. A successful
+The server workspace ID is a routing key, not a Files namespace UUID. A successful
 probe identifies a recovery source; actual namespace recovery must still use
 the existing authenticated Files join path and corresponding authority.
 
@@ -111,7 +111,7 @@ changes which registry other services use.
 ## Fedora primary Files service and explicit first run
 
 The Fedora host payload includes the existing `fs` daemon and
-`tilo-relay-admin`, plus the user service `tilo-files-workspace.service`.
+`tilo-server-admin`, plus the user service `tilo-files-workspace.service`.
 It belongs to `tilo-graphical-session.target`; installation alone does not
 initialize storage, enroll a device, or grant Files access. The image's system
 `fs.service` remains the image path.
@@ -128,7 +128,7 @@ an empty mount. The service suppresses the daemon's ticket-bearing stdout.
 For an already prepared primary:
 
 ```sh
-tilo-relay-admin files-workspace-check \
+tilo-server-admin files-workspace-check \
   --identity-root "$HOME/.local/share/tilo" \
   --cache-dir "$HOME/.local/state/tilo/files"
 systemctl --user start tilo-files-workspace.service
@@ -159,7 +159,7 @@ When recovery cannot supply a verified copy and the user has explicitly chosen
 a new empty primary namespace, the source controller supports:
 
 ```sh
-tilo-relay-admin files-workspace-initialize \
+tilo-server-admin files-workspace-initialize \
   --identity-root "$HOME/.local/share/tilo" \
   --identity-dir "$HOME/.config/tilo/identity" \
   --cache-dir "$HOME/.local/state/tilo/files" \
@@ -180,12 +180,12 @@ still requires its existing signing ceremony.
 
 Saved signed authority can now resume in the daemon without a raw root key
 file. Subsequent ordinary permission publication uses the host's existing
-protected signing session through `tilo-relay-admin publish-authority --acl`;
+protected signing session through `tilo-server-admin publish-authority --acl`;
 concurrent revision conflicts fail and retry rather than overwriting newer
 signed policy.
 
 The read-only candidate probe still discards returned tickets. A separate
-`tilo-relay-admin files-workspace-join` source path restores an explicitly
+`tilo-server-admin files-workspace-join` source path restores an explicitly
 selected existing namespace into an absent absolute cache directory. It requires
 the existing certified person/device, the exact enrolled host/service/workspace,
 `--files-workspace-id` and `--confirm-existing-files-access`, and both the existing

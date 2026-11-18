@@ -1,4 +1,4 @@
-//! Ephemeral signed-model witness for the actual default-off image handler.
+//! Ephemeral signed-model approval for the actual default-off image handler.
 //! Runs only as mapped root in a one-user namespace, never on the host as root.
 use ed25519_dalek::{Signer as _, SigningKey};
 use local_model_service::catalog::{

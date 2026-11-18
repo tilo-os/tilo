@@ -2,7 +2,7 @@
 //! `--shots --scenario NAME` writes, composed by the framework from the
 //! scenario's actions, staging and input, checked against the notebook it
 //! wrote and the window's accessibility tree. Each capture is isolated (its
-//! own profile, record store and harness), so they run on several threads;
+//! own profile, resource store and harness), so they run on several threads;
 //! the test reserves the runner in `.config/nextest.toml`.
 
 #![allow(
@@ -151,14 +151,14 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     let mut app = TestApp::<NotesShell>::capture_at(scenario, viewport)
         .map_err(|error| format!("capture failed: {error:?}"))?;
     let Some(title) = shown_title(scenario) else {
-        let pages = app.read_document(notes::read::list_pages);
+        let pages = crate::framework_support::notes_doc(&app, notes::read::list_pages);
         return if pages.is_empty() {
             Ok(())
         } else {
             Err("a first note starts from an empty notebook".into())
         };
     };
-    let panel = app.read_document(|doc| {
+    let panel = crate::framework_support::notes_doc(&app, |doc| {
         let workspace = notes::read::project(doc)?;
         let page = workspace
             .pages()
@@ -166,7 +166,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
             .find(|page| page.title == title)
             .ok_or_else(|| format!("note {title:?} missing"))?;
         let mut panel = notes::MainPanel::new();
-        panel.bind_canonical_page(doc, page.id, title)?;
+        panel.bind_canonical_page(doc, page.id, None, title)?;
         Ok::<_, String>(panel)
     })?;
     let blocks = panel.editor().blocks();

@@ -58,9 +58,9 @@ mod session_actions;
 // actions: the session keeps them in its settings service, so the answer is this host's.
 #[cfg(target_os = "linux")]
 mod settings_steps;
-// What a message from another member is, and whether the workspace's policy grants it: the gate
-// table every host asks, named here as the session always has.
-pub use tilo_session_client::gate as workspace_gate;
+// What a message from another member is, and whether the workspace's policy grants it: the
+// table every host asks.
+pub use tilo_session_client::message_policy;
 // This device's workspaces, and the sealed channels their records travel in.
 pub use tilo_session_client::{engine, membership, workspace_keys};
 
@@ -79,6 +79,8 @@ mod agents;
 #[cfg(target_os = "linux")]
 mod ambient_brightness;
 #[cfg(target_os = "linux")]
+mod api_server;
+#[cfg(target_os = "linux")]
 mod app_icons;
 #[cfg(target_os = "linux")]
 mod app_liveness;
@@ -89,6 +91,8 @@ mod app_sheets;
 pub mod app_tabs;
 #[cfg(target_os = "linux")]
 mod app_tiers;
+#[cfg(target_os = "linux")]
+mod app_wire;
 #[cfg(target_os = "linux")]
 pub mod apps;
 #[cfg(target_os = "linux")]
@@ -105,6 +109,8 @@ mod bars;
 mod bluetooth_handoff;
 #[cfg(target_os = "linux")]
 mod boot_join;
+#[cfg(target_os = "linux")]
+mod broker_services;
 #[cfg(target_os = "linux")]
 mod calls;
 #[cfg(target_os = "linux")]
@@ -218,8 +224,6 @@ mod governance;
 mod held;
 mod here;
 #[cfg(target_os = "linux")]
-mod host_account;
-#[cfg(target_os = "linux")]
 mod host_shell;
 #[cfg(target_os = "linux")]
 pub mod hosted_browser;
@@ -237,6 +241,8 @@ mod input_method;
 #[cfg(target_os = "linux")]
 mod input_sources;
 pub mod invite;
+#[cfg(target_os = "linux")]
+mod item_lending;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
 mod keyboard_shortcuts;
@@ -270,6 +276,8 @@ pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
 mod network;
 #[cfg(target_os = "linux")]
+mod network_reach;
+#[cfg(target_os = "linux")]
 pub mod night_light;
 #[cfg(target_os = "linux")]
 pub mod notices;
@@ -301,8 +309,6 @@ mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
 mod personal;
-#[cfg(target_os = "linux")]
-mod plane;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]
@@ -338,12 +344,12 @@ mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]
-mod seams;
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub mod seeded_apps;
 #[cfg(target_os = "linux")]
 mod send_to;
+#[cfg(target_os = "linux")]
+mod server_account;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 #[cfg(target_os = "linux")]
@@ -366,7 +372,7 @@ mod sheets;
 #[cfg(target_os = "linux")]
 pub mod shell;
 #[cfg(target_os = "linux")]
-mod shell_record;
+mod shell_document;
 #[cfg(target_os = "linux")]
 mod shortcut_guide;
 #[cfg(target_os = "linux")]
@@ -424,6 +430,8 @@ mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
 pub mod windows;
+#[cfg(target_os = "linux")]
+mod windows_compat;
 #[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]

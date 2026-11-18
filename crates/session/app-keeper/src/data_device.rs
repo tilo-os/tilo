@@ -6,9 +6,18 @@
 //! desktop like any other, including one over another window of the same app.
 //!
 //! Across a desktop restart the app's own selection is kept (`owner`): its source object and its
-//! formats survive, and the first keyboard focus the new desktop gives is used to set it again,
-//! because a desktop takes a selection only from the client holding focus. A selection or drag
+//! formats survive, and it is offered to the new desktop as soon as that desktop attaches. The
+//! compositor takes it from the connection the session handed this keeper within a short while
+//! after the attach, when nothing else owns the selection yet, with the time the app's copy was
+//! made as the request's serial; a newer copy from anywhere else replaces it. The first keyboard
+//! focus remains a second way to offer it, for a desktop whose window it is. A selection or drag
 //! the old desktop had offered is cancelled to the app when it goes away.
+//!
+//! Text is offered under every name it goes by, both ways (`tilo_x11_transfer`): the X11 server
+//! of a kept launch passes its programs' names through as they are, so an old program's
+//! `UTF8_STRING` copy is offered to the desktop as `text/plain;charset=utf-8` and `text/plain`
+//! too, and a desktop copy offered only as `text/plain` reaches X11 programs under their names.
+//! A request for one name is passed on as the best name the other side offered.
 
 use std::collections::HashMap;
 use std::os::fd::AsFd as _;
@@ -27,12 +36,36 @@ use smithay::reexports::wayland_server::{
 use wayland_client::protocol as c;
 use wayland_client::{Connection, Proxy as _, QueueHandle, WEnum, event_created_child};
 
+use tilo_x11_transfer::{names_added, pick_format, with_text_names};
+
 use crate::state::State;
 use crate::surfaces::Role;
 use crate::upstream::SurfaceRef;
 
+/// The name a request for `wanted` is passed on as, out of the names the other side `offered`.
+pub(crate) fn served_as(wanted: String, offered: &[String]) -> String {
+    pick_format(&wanted, offered).unwrap_or(wanted)
+}
+
 /// The `wl_data_device_manager` version the app is offered and the desktop's is bound at.
 const MANAGER_VERSION: u32 = 3;
+
+/// Milliseconds of the machine's monotonic clock, in the low 32 bits: when the app's source was
+/// set. Two keepers' claims meet within seconds of each other, and the wrap every 49 days is the
+/// one a `Serial` already orders.
+pub(crate) fn now_ms() -> u32 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the pointer names the timespec the call fills.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return 0;
+    }
+    let seconds = u32::try_from(now.tv_sec).unwrap_or(0);
+    let millis = u32::try_from(now.tv_nsec / 1_000_000).unwrap_or(0);
+    seconds.wrapping_mul(1000).wrapping_add(millis)
+}
 
 /// A data source the app created.
 struct Source {
@@ -57,8 +90,21 @@ struct Offer {
 struct UpOffer {
     offer: c::wl_data_offer::WlDataOffer,
     mimes: Vec<String>,
+    /// The actions a drag's source allows, as `wl_data_device_manager.dnd_action` bits.
+    source_actions: u32,
     /// The offers made to the app from it.
     apps: Vec<ObjectId>,
+}
+
+impl UpOffer {
+    fn new(offer: c::wl_data_offer::WlDataOffer) -> Self {
+        Self {
+            offer,
+            mimes: Vec::new(),
+            source_actions: 0,
+            apps: Vec::new(),
+        }
+    }
 }
 
 /// The clipboard and drag-and-drop state of both sides.
@@ -73,10 +119,16 @@ pub(crate) struct DataDevice {
     focus: Option<ClientId>,
     /// The app's source that owns the clipboard, kept to offer it again after a restart.
     owner: Option<ObjectId>,
+    /// When that source was set, in milliseconds of the machine's monotonic clock: the time the
+    /// new desktop compares two keepers' claims by.
+    owner_at: u32,
     /// The app's source of the drag that runs now.
     drag: Option<ObjectId>,
     /// The app surface the desktop's drag entered, and the app devices told of it.
     entered: Option<(ObjectId, Vec<ObjectId>)>,
+    /// The desktop's drag was dropped on the app: its offers live on until the app, done
+    /// reading, destroys them.
+    dropped: bool,
 }
 
 impl DataDevice {
@@ -90,8 +142,10 @@ impl DataDevice {
             clipboard: None,
             focus: None,
             owner: None,
+            owner_at: 0,
             drag: None,
             entered: None,
+            dropped: false,
         }
     }
 
@@ -136,8 +190,8 @@ impl State {
                 continue;
             };
             device.data_offer(&offer);
-            for mime in &mimes {
-                offer.offer(mime.clone());
+            for mime in with_text_names(&mimes) {
+                offer.offer(mime);
             }
             device.selection(Some(&offer));
             let id = offer.id();
@@ -228,12 +282,22 @@ impl State {
     /// still paste after the desktop restarted. The desktop takes it from the client holding
     /// focus, with the first serial that focus arrived with.
     fn reoffer_owner(&mut self) {
-        self.offer_owner(false);
+        self.offer_owner(false, None);
+    }
+
+    /// Offer the app's selection to the desktop as soon as it attaches, before the app's window
+    /// has the focus: the compositor takes it from a session-handed connection for a short while
+    /// after it arrives, when nothing else owns the selection yet, and a keeper whose app copied
+    /// later wins over one whose app copied earlier.
+    pub(crate) fn reassert_owner(&mut self) {
+        let at = self.data_device.owner_at;
+        self.offer_owner(false, Some(at));
     }
 
     /// Offer the app's selection to the desktop: `force` replaces the twin already there (the app
-    /// set a new selection), otherwise a twin that lives is left alone (a focus change).
-    fn offer_owner(&mut self, force: bool) {
+    /// set a new selection), otherwise a twin that lives is left alone (a focus change). `claim`
+    /// is the time the app's copy was made, when this is the first offer after an attach.
+    fn offer_owner(&mut self, force: bool, claim: Option<u32>) {
         let Some(owner) = self.data_device.owner.clone() else {
             return;
         };
@@ -243,7 +307,7 @@ impl State {
         };
         let (has_twin, mimes, actions) =
             (source.up.is_some(), source.mimes.clone(), source.actions);
-        if self.data_device.focus.is_none() || (has_twin && !force) {
+        if (claim.is_none() && self.data_device.focus.is_none()) || (has_twin && !force) {
             return;
         }
         if force
@@ -253,7 +317,7 @@ impl State {
             twin.destroy();
         }
         let actions = c::wl_data_device_manager::DndAction::from_bits_truncate(actions);
-        let serial = self.seat.last_serial();
+        let serial = claim.unwrap_or_else(|| self.seat.last_serial());
         let Some(up) = self.up.as_ref() else {
             return;
         };
@@ -261,7 +325,7 @@ impl State {
             return;
         };
         let twin = manager.create_data_source(&up.qh, ());
-        for mime in mimes {
+        for mime in with_text_names(&mimes) {
             twin.offer(mime);
         }
         twin.set_actions(actions);
@@ -337,7 +401,8 @@ impl State {
             return;
         }
         self.data_device.owner = Some(id);
-        self.offer_owner(true);
+        self.data_device.owner_at = now_ms();
+        self.offer_owner(true, None);
     }
 
     fn app_started_drag(
@@ -363,7 +428,7 @@ impl State {
                 .unwrap_or_default();
             let manager = up.data_device_manager.as_ref()?;
             let twin = manager.create_data_source(&up.qh, ());
-            for mime in mimes {
+            for mime in with_text_names(&mimes) {
                 twin.offer(mime);
             }
             twin.set_actions(c::wl_data_device_manager::DndAction::from_bits_truncate(
@@ -431,11 +496,7 @@ impl State {
         self.data_device
             .up_offers
             .entry(id)
-            .or_insert_with(|| UpOffer {
-                offer,
-                mimes: Vec::new(),
-                apps: Vec::new(),
-            });
+            .or_insert_with(|| UpOffer::new(offer));
         self.data_device.clipboard = Some(id);
         if let Some(client) = self.data_device.focus.clone() {
             self.offer_clipboard_to(&client);
@@ -457,6 +518,16 @@ impl State {
         let Some(app) = self.surfaces.get(&id).map(|kept| kept.surface.clone()) else {
             return;
         };
+        if self.xdnd.is_server(&app) {
+            let mimes = offer
+                .as_ref()
+                .and_then(|offer| self.data_device.up_offers.remove(&offer.id().protocol_id()))
+                .map(|up| (up.mimes, up.source_actions))
+                .unwrap_or_default();
+            if self.x11_drag_enter(serial, &app, (x, y), offer.clone(), mimes) {
+                return;
+            }
+        }
         let Some(client) = app.client().map(|c| c.id()) else {
             return;
         };
@@ -466,11 +537,7 @@ impl State {
             self.data_device
                 .up_offers
                 .entry(up)
-                .or_insert_with(|| UpOffer {
-                    offer,
-                    mimes: Vec::new(),
-                    apps: Vec::new(),
-                });
+                .or_insert_with(|| UpOffer::new(offer));
             let Some(mimes) = self
                 .data_device
                 .up_offers
@@ -491,8 +558,8 @@ impl State {
                     continue;
                 };
                 device.data_offer(&app_offer);
-                for mime in &mimes {
-                    app_offer.offer(mime.clone());
+                for mime in with_text_names(&mimes) {
+                    app_offer.offer(mime);
                 }
                 device.enter(serial, &app, x, y, Some(&app_offer));
                 let offer_id = app_offer.id();
@@ -517,13 +584,21 @@ impl State {
             }
         }
         self.data_device.entered = Some((id, devices));
+        self.data_device.dropped = false;
     }
 
     fn upstream_leave(&mut self) {
+        if self.x11_drag_leave() {
+            return;
+        }
         let Some((id, devices)) = self.data_device.entered.take() else {
             return;
         };
-        self.clear_drag_offers();
+        // Destroying a dropped offer before the app finished would cancel the drop at its
+        // source, and the app could not read it any more.
+        if !std::mem::take(&mut self.data_device.dropped) {
+            self.clear_drag_offers();
+        }
         if !self.surfaces.contains_key(&id) {
             return;
         }
@@ -534,7 +609,17 @@ impl State {
         }
     }
 
-    fn upstream_drag(&self, at: SurfacePoint) {
+    fn upstream_drag(&mut self, at: SurfacePoint) {
+        let carried = match at {
+            SurfacePoint::Motion { time, x, y } => self.x11_drag_motion(time, (x, y)),
+            SurfacePoint::Drop => self.x11_drag_drop(),
+        };
+        if carried {
+            return;
+        }
+        if matches!(at, SurfacePoint::Drop) {
+            self.data_device.dropped = true;
+        }
         let Some((id, devices)) = self.data_device.entered.clone() else {
             return;
         };
@@ -694,10 +779,12 @@ impl Dispatch<WlDataSource, ()> for State {
                     .sources
                     .get(&id)
                     .and_then(|held| held.up.clone());
-                if let Some(twin) = twin {
-                    twin.offer(mime_type.clone());
-                }
                 if let Some(held) = state.data_device.sources.get_mut(&id) {
+                    if let Some(twin) = twin {
+                        for name in names_added(&held.mimes, &mime_type) {
+                            twin.offer(name);
+                        }
+                    }
                     held.mimes.push(mime_type);
                 }
             }
@@ -762,20 +849,20 @@ impl Dispatch<WlDataOffer, ()> for State {
         let Some(held) = state.data_device.offers.get(&id) else {
             return;
         };
-        let Some(up) = state
+        let Some((up, mimes)) = state
             .data_device
             .up_offers
             .get(&held.up)
-            .map(|up| up.offer.clone())
+            .map(|up| (up.offer.clone(), up.mimes.clone()))
         else {
             return;
         };
         match request {
             wl_data_offer::Request::Accept { serial, mime_type } => {
-                up.accept(serial, mime_type);
+                up.accept(serial, mime_type.map(|mime| served_as(mime, &mimes)));
             }
             wl_data_offer::Request::Receive { mime_type, fd } => {
-                up.receive(mime_type, fd.as_fd());
+                up.receive(served_as(mime_type, &mimes), fd.as_fd());
             }
             wl_data_offer::Request::Destroy => state.forget_offer(&id, false),
             wl_data_offer::Request::Finish => {
@@ -839,14 +926,10 @@ impl wayland_client::Dispatch<c::wl_data_device::WlDataDevice, ()> for State {
         use c::wl_data_device::Event;
         match event {
             Event::DataOffer { id } => {
-                state.data_device.up_offers.insert(
-                    id.id().protocol_id(),
-                    UpOffer {
-                        offer: id,
-                        mimes: Vec::new(),
-                        apps: Vec::new(),
-                    },
-                );
+                state
+                    .data_device
+                    .up_offers
+                    .insert(id.id().protocol_id(), UpOffer::new(id));
             }
             Event::Selection { id } => state.upstream_selection(id),
             Event::Enter {
@@ -887,18 +970,34 @@ impl wayland_client::Dispatch<c::wl_data_offer::WlDataOffer, ()> for State {
                 let Some(up) = state.data_device.up_offers.get_mut(&id) else {
                     return;
                 };
-                up.mimes.push(mime_type.clone());
+                let added = names_added(&up.mimes, &mime_type);
+                up.mimes.push(mime_type);
                 let apps = up.apps.clone();
                 for app in apps {
                     if let Some(offer) = state.data_device.offers.get(&app) {
-                        offer.resource.offer(mime_type.clone());
+                        for name in &added {
+                            offer.resource.offer(name.clone());
+                        }
                     }
                 }
             }
             Event::SourceActions { source_actions } => {
+                if let WEnum::Value(actions) = source_actions {
+                    if state.x11_drag_offer_actions(offer, actions.bits(), false) {
+                        return;
+                    }
+                    if let Some(up) = state.data_device.up_offers.get_mut(&id) {
+                        up.source_actions = actions.bits();
+                    }
+                }
                 state.upstream_offer_actions(id, source_actions, false);
             }
             Event::Action { dnd_action } => {
+                if let WEnum::Value(action) = dnd_action
+                    && state.x11_drag_offer_actions(offer, action.bits(), true)
+                {
+                    return;
+                }
                 state.upstream_offer_actions(id, dnd_action, true);
             }
             _ => {}
@@ -916,19 +1015,22 @@ impl wayland_client::Dispatch<c::wl_data_source::WlDataSource, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         use c::wl_data_source::Event;
+        let Some(event) = state.x11_drag_source_event(source, event) else {
+            return;
+        };
         let Some(app) = state.data_device.app_source_of(source.id().protocol_id()) else {
             return;
         };
-        let Some(source) = state
+        let Some((source, mimes)) = state
             .data_device
             .sources
             .get(&app)
-            .map(|held| held.resource.clone())
+            .map(|held| (held.resource.clone(), held.mimes.clone()))
         else {
             return;
         };
         match event {
-            Event::Send { mime_type, fd } => source.send(mime_type, fd.as_fd()),
+            Event::Send { mime_type, fd } => source.send(served_as(mime_type, &mimes), fd.as_fd()),
             Event::Cancelled => {
                 source.cancelled();
                 if state.data_device.owner == Some(app.clone()) {

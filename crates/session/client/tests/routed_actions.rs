@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{CataloguePage, CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::remote::Heard;
 use tilo_session_client::{Cmd, Event, InboundActions, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -73,7 +73,7 @@ async fn a_request_addressed_to_this_device_is_served_here_and_answered_to_the_a
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    place(&host.relay, &window.cert).await;
+    place(&host.server, &window.cert).await;
     let start = |device: &Device| {
         start_peer(
             host.iroh(),

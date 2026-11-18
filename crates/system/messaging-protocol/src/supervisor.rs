@@ -1,4 +1,4 @@
-//! Native lifecycle gate for one existing certified account assembly.
+//! Native lifecycle check for one existing certified account assembly.
 //! It owns no credentials and creates no grants. The caller supplies an already
 //! authenticated adapter and retains current account/credential authority.
 use std::sync::{Arc, Mutex};
@@ -198,7 +198,7 @@ impl AccountSupervisor {
     /// and retain its independent receive worker before publishing Ready.
     /// # Errors
     /// Refuses another owner/service, duplicate installation or failed native
-    /// custody/subscription/durable inbox setup. Creates no credential grant.
+    /// ownership/subscription/durable inbox setup. Creates no credential grant.
     #[cfg(all(target_os = "linux", feature = "sms-dbus"))]
     pub async fn install_sms_receiving(
         &self,
@@ -227,7 +227,7 @@ impl AccountSupervisor {
     /// Bind durable inbox admission and install recipient receipts before
     /// publishing the already linked `WhatsApp` adapter as ready. The SDK must
     /// have been built with this hook before any connection. The host supplies
-    /// current caller/grant custody; this never connects or logs in.
+    /// current caller/grant ownership; this never connects or logs in.
     #[cfg(feature = "whatsapp-sdk")]
     pub async fn install_whatsapp(
         self: &Arc<Self>,

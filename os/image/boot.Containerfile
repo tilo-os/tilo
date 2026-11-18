@@ -59,7 +59,7 @@ ARG TILO_SEAL_GENERATION=1
 ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
-# the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
+# the install check, so this stage no longer needs a rootfs-sized /var/tmp cache.
 # /target holds only uki-input's files, so bootc's own digest of it would be
 # wrong: the digest must be given.
 # Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from

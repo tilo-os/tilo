@@ -2,7 +2,7 @@
 
 impl App {
     /// Prepare and mount an application on its already admitted collaboration manager.
-    /// Host preparation runs inside the existing native read custody. The original
+    /// Host preparation runs inside the existing native read ownership. The original
     /// record binding is checked before the component factory runs, and the same
     /// manager and wake scope transfer into the mounted application exactly once.
     /// Construct the host and its record owners inside `prepare_host`, where
@@ -19,7 +19,7 @@ impl App {
             crate::launch::LaunchError,
         >,
         instantiate: impl FnOnce(
-            crate::application::HostContext,
+            crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
         )
@@ -29,7 +29,7 @@ impl App {
     }
 
     /// [`Self::from_prepared_component_with_collaboration`] for a window as
-    /// the live native launch prepares it (`ApplicationHost::prepare_default`):
+    /// the live native launch prepares it (`ApplicationOwner::prepare_default`):
     /// a workspace record the workspace does not hold yet is new, and the component
     /// makes it, its seed included. For tests that launch an app the way the
     /// session does, without a process of its own.
@@ -44,7 +44,7 @@ impl App {
             crate::launch::LaunchError,
         >,
         instantiate: impl FnOnce(
-            crate::application::HostContext,
+            crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
         )
@@ -63,7 +63,7 @@ impl App {
             crate::launch::LaunchError,
         >,
         instantiate: impl FnOnce(
-            crate::application::HostContext,
+            crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
         )
@@ -577,7 +577,7 @@ impl App {
         };
         let Some(route) = manager
             .primary_route()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
         else {
             return false;
         };
@@ -694,12 +694,12 @@ impl App {
             // it will not produce a new connection-state transition.
             // Query/resolve remain bounded reads; this refresh runs even with
             // no directory requests or inbound events, and skips stable idle.
-            // The same pump already reconciled custody for its document drain.
+            // The same pump already reconciled ownership for its document drain.
             self.publish_action_surface_after_refresh();
         }
         // Before-action diagnostics use the existing launcher-owned startup
         // checkpoint, never a published resource or a document mutation.
-        let diagnostics = &crate::host::environment().diagnostics;
+        let diagnostics = &crate::process::environment().diagnostics;
         // Ordinary launched workers have no synthetic native scenario. Their
         // explicit timing flag must still export the before-action checkpoint.
         if diagnostics.presentation_timing || diagnostics.presentation_profile {
@@ -829,20 +829,20 @@ impl App {
         (any, action_surface_may_have_changed)
     }
 
-    /// The lanes `route`'s record has its content on in this process: the
+    /// The content links `route`'s record has its content on in this process: the
     /// record's own, and each window's showing it
-    /// ([`ContentLane::on_route`](crate::collaboration::document_content::ContentLane::on_route)).
-    fn lanes_on_route(
+    /// ([`ContentLink::on_route`](crate::collaboration::document_content::ContentLink::on_route)).
+    fn links_on_route(
         route: &crate::collaboration::RouteSpec,
-    ) -> Vec<std::sync::Arc<crate::collaboration::document_content::ContentLane>> {
-        crate::collaboration::document_content::ContentLane::on_route(route)
+    ) -> Vec<std::sync::Arc<crate::collaboration::document_content::ContentLink>> {
+        crate::collaboration::document_content::ContentLink::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's
     /// route: content it lacks, and content it stored for the record's
     /// other readers. See [`crate::collaboration::document_content`].
     fn pump_document_content(&mut self) {
-        use crate::collaboration::document_content::ContentLane;
+        use crate::collaboration::document_content::ContentLink;
         if !self.collaboration.manager.is_connected() {
             return;
         }
@@ -850,37 +850,37 @@ impl App {
             .collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
         else {
             return;
         };
-        // The window's own lane, the one its record content travels on:
+        // The window's own content link, the one its record content travels on:
         // what another window of this app in this process asked for is not
         // this window's to send.
         let own = {
             let _entry = self.enter_wake_scope();
-            ContentLane::of_window()
+            ContentLink::of_window()
         };
-        let lanes = std::iter::once((None, own)).chain(
-            ContentLane::routed(&route.app_id)
+        let links = std::iter::once((None, own)).chain(
+            ContentLink::routed(&route.app_id)
                 .into_iter()
-                .map(|(route, lane)| (Some(route), lane)),
+                .map(|(route, link)| (Some(route), link)),
         );
-        for (route, lane) in lanes {
+        for (route, link) in links {
             {
                 let _entry = self.enter_wake_scope();
-                lane.attach(crate::WakeHandle::new());
+                link.attach(crate::WakeHandle::new());
             }
-            self.send_lane_requests(route.as_ref(), &lane);
+            self.send_link_requests(route.as_ref(), &link);
         }
     }
 
-    /// Send what `lane` queued: on the window's own route, or on `route`
+    /// Send what `link` queued: on the window's own route, or on `route`
     /// for a record that is not the window's.
-    fn send_lane_requests(
+    fn send_link_requests(
         &mut self,
         route: Option<&crate::collaboration::RouteSpec>,
-        lane: &crate::collaboration::document_content::ContentLane,
+        link: &crate::collaboration::document_content::ContentLink,
     ) {
         let mut send = |request: CollabRequest| match route {
             Some(route) => self
@@ -889,11 +889,11 @@ impl App {
                 .try_send_to_route(route.clone(), request),
             None => self.collaboration.manager.try_send(request),
         };
-        let requests = lane.take_requests();
+        let requests = link.take_requests();
         for hash in requests.wants {
             if let Err(error) = send(CollabRequest::WantContent { hash: hash.clone() }) {
                 tracing::debug!(%error, "collab: record content request deferred");
-                lane.retry_want(hash);
+                link.retry_want(hash);
             }
         }
         for (hash, bytes) in requests.offers {
@@ -902,7 +902,7 @@ impl App {
                 bytes: bytes.clone(),
             }) {
                 Ok(()) | Err(crate::collaboration::CollabSendError::TooLarge { .. }) => {}
-                Err(_) => lane.retry_offer(hash, bytes),
+                Err(_) => link.retry_offer(hash, bytes),
             }
         }
     }
@@ -946,16 +946,16 @@ impl App {
                 self.respond_document_snapshot(&route);
             }
             CollabEvent::DocumentContent { route, hash, bytes } => {
-                // The record's content reaches every lane carrying it, the
-                // windows' own included: a window's store reads the lane it
+                // The record's content reaches every content link carrying it, the
+                // windows' own included: a window's store reads the content link it
                 // keeps, never the record's.
-                for lane in Self::lanes_on_route(&route) {
-                    lane.arrive(hash.clone(), bytes.clone());
+                for link in Self::links_on_route(&route) {
+                    link.arrive(hash.clone(), bytes.clone());
                 }
             }
             CollabEvent::DocumentContentState { route, hash, state } => {
-                for lane in Self::lanes_on_route(&route) {
-                    lane.stands(hash.clone(), state);
+                for link in Self::links_on_route(&route) {
+                    link.stands(hash.clone(), state);
                 }
             }
             CollabEvent::RemoteCursorMoved { member, x, y } => {
@@ -1194,6 +1194,7 @@ impl App {
             .pending_application_launches
             .remove(&request_id)
         else {
+            self.settle_own_refusal(request_id, &result);
             return;
         };
         let Some(pending) = self.actions.directed_invocations.remove(&invocation) else {
@@ -1241,8 +1242,14 @@ impl App {
 
     /// The self row carries the address others use for this member (so
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
-    /// host-assigned name; it never enters the roster itself.
+    /// host-assigned name; it never enters the roster itself. The records this window runs read
+    /// every member by the name the list gives them ([`tilo_resource::members`]).
     fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
+        tilo_resource::members::know(
+            members
+                .iter()
+                .map(|member| (member.id.clone(), member.name.clone())),
+        );
         self.presence_ctx.apply_members(members);
     }
 
@@ -1258,12 +1265,8 @@ impl App {
                 Heard::Members(members) => self.apply_collab_context(members),
                 // The app's connection heard it on the app's own resources: it is this window's.
                 Heard::Interaction(interaction) => {
-                    match self.presence_ctx.apply_interaction(interaction.clone()) {
-                        Ok(true) => self.announce_interaction(&interaction),
-                        Ok(false) => tracing::debug!("a relayed step of an action changed nothing"),
-                        Err(error) => {
-                            tracing::debug!(?error, "a relayed step of an action was refused");
-                        }
+                    if self.presence_ctx.apply_interaction(interaction.clone()) == Ok(true) {
+                        self.announce_interaction(&interaction);
                     }
                 }
             }

@@ -1,5 +1,5 @@
 //! How the Host's interactive shell starts: `bash` reads one rc file, [`bash_rc`], with
-//! what `bash --login` reads and then the marks of [`crate::runs`] when Terminal asked for
+//! what `bash --login` reads and then the marks of [`crate::command_marks`] when Terminal asked for
 //! them; any other shell starts with `-l`.
 
 use std::ffi::OsString;
@@ -16,7 +16,7 @@ pub fn bash_rc(marks: bool) -> String {
     let mut rc = String::from("# ush: the session's interactive login shell\n");
     rc.push_str(LOGIN);
     if marks {
-        rc.push_str(crate::runs::MARKS);
+        rc.push_str(crate::command_marks::MARKS);
     }
     rc
 }
@@ -35,7 +35,7 @@ fi
 #[must_use]
 pub fn interactive_args(shell: &Path, rc: Option<&Path>) -> Vec<OsString> {
     match rc {
-        Some(rc) if crate::runs::is_bash(shell) => {
+        Some(rc) if crate::command_marks::is_bash(shell) => {
             vec!["--rcfile".into(), rc.as_os_str().to_owned(), "-i".into()]
         }
         _ => vec!["-l".into()],
@@ -68,9 +68,9 @@ mod tests {
         {
             let rc = bash_rc(true);
             let profile = rc.find(". /etc/profile").unwrap();
-            let marks = rc.find("__ush_runs_key").unwrap();
+            let marks = rc.find("__ush_marks_key").unwrap();
             assert!(profile < marks, "{rc}");
-            assert!(!bash_rc(false).contains("__ush_runs_key"));
+            assert!(!bash_rc(false).contains("__ush_marks_key"));
         }
     }
 }

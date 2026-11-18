@@ -11,7 +11,7 @@
 //! end — the endpoint's id is its device key — and the store admits only
 //! certificates the person's identity root signed. The devices it dials are
 //! the person's own as the identity's device fleet lists them
-//! ([`tilo_identity_host::device_fleet`]): the same certificates and
+//! ([`tilo_identity::device_fleet`]): the same certificates and
 //! revocations every other device check uses. No roster, invite, role or host
 //! takes part, and no workspace exists in the flow.
 
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use tilo_action_policy::{Standing, WorkspacePolicy};
+use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::DeviceCert;
 
@@ -54,7 +54,7 @@ pub struct Person {
     /// Their identity root, which their store and their own cluster derive
     /// from.
     pub root: [u8; 32],
-    /// The actor their records' standing is decided for.
+    /// The actor their records' member access is decided for.
     pub actor: String,
 }
 
@@ -216,7 +216,7 @@ async fn keep_links(endpoint: iroh::Endpoint, sync: PersonalSync, person: Person
 /// admits and the revocations it holds are the fleet's, so a device enrolled
 /// or revoked elsewhere reaches the store on the next call.
 pub fn admit_fleet(sync: &PersonalSync, person: &Person) -> Vec<[u8; 32]> {
-    let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+    let fleet = tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .and_then(|fleets| fleets.load(&person.identity_id));
     let Ok(fleet) = fleet else {
         tracing::debug!("the identity's device fleet could not be read");
@@ -276,7 +276,7 @@ async fn deliver(
         // Who wrote it was decided by the link: the store admits no write
         // whose certificate the person's root did not sign. What it changes,
         // it changes as theirs.
-        let author = Standing::person(WorkspacePolicy::new(&cluster, &person), person.clone());
+        let author = MemberAccess::person(WorkspacePolicy::new(&cluster, &person), person.clone());
         let delivered = collab_inbound::deliver(
             &channels,
             &fanout,

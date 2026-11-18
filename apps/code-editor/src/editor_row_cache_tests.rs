@@ -4,7 +4,7 @@
 //! A kept row must paint exactly what a frame with nothing kept paints, so
 //! every test compares the two: the same view drawn once with the rows it
 //! kept and once with [`EditorView::forget_rows_kept`]. A change that the
-//! cache does not witness shows up as a kept row painting last frame's
+//! cache does not observation shows up as a kept row painting last frame's
 //! pixels, and a frame that reuses nothing shows up in the counts.
 
 use super::super::Caret;

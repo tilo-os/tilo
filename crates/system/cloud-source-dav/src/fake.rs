@@ -16,8 +16,9 @@ use std::time::{Duration, SystemTime};
 use test_http::{Reply, Request, Responder};
 use tilo_dav::Url;
 
-use crate::paths::{format_http_date, percent_decode};
+use crate::paths::percent_decode;
 use crate::{DavConfig, Flavor};
+use cloud_source::http::format_http_date;
 
 pub const USER: &str = "ada";
 pub const PASSWORD: &str = "correct horse";

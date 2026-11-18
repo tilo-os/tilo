@@ -86,19 +86,18 @@ fn provision_device(
     directory(&config);
     environment.set("XDG_CONFIG_HOME", &config);
     environment.set("TILO_IDENTITY_ROOT", root.join("system"));
-    let record = identity.custody_directory().join("primary.json");
-    let mut registry = tilo_identity_host::registry::IdentityRegistry::default();
+    let record = identity.ownership_directory().join("primary.json");
+    let mut registry = tilo_identity::registry::IdentityRegistry::default();
     let id = registry.register_record(&record).unwrap().id.clone();
-    tilo_identity_host::registry::IdentityRegistryStore::from_env()
+    tilo_identity::registry::IdentityRegistryStore::from_env()
         .unwrap()
         .save(&registry)
         .unwrap();
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let cert_path =
-        tilo_identity_host::provisioning::ensure_device_certificate_for_record(&record, &paths)
-            .unwrap();
+        tilo_identity::provisioning::ensure_device_certificate_for_record(&record, &paths).unwrap();
     let cert = tilo_user_identity::persist::read_device_cert(&cert_path).unwrap();
-    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+    tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .unwrap()
         .remember_certificate(&id, cert)
         .unwrap();
@@ -118,7 +117,7 @@ impl Fixture {
             &root.join("identity"),
             "Ada",
             [1, 2, 3],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         provision_device(&root, &identity, &mut environment);
@@ -240,7 +239,7 @@ fn canonical_headless_activation_and_retry_verify_original_ciphertext_and_output
     let cert: tilo_user_identity::DeviceCert =
         tilo_user_identity::canonical::from_canonical_bytes(completion.certificate()).unwrap();
     tilo_user_identity::verify_device_cert(&cert).unwrap();
-    tilo_identity_host::certificates::authorize_join("", &cert).unwrap();
+    tilo_identity::certificates::authorize_join("", &cert).unwrap();
     assert_eq!(
         completion
             .verify_projection(cert.device_public_key)
@@ -420,9 +419,9 @@ fn prepared_identity_import_returns_the_authenticated_browser_declaration() {
 }
 
 #[test]
-fn missing_certified_device_custody_cannot_publish_success_or_a_completion_signature() {
+fn missing_certified_device_ownership_cannot_publish_success_or_a_completion_signature() {
     let fixture = Fixture::new();
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let key = fs::read(&paths.device_privkey).unwrap();
     fs::remove_file(&paths.device_privkey).unwrap();
     let mut output = Vec::new();

@@ -22,8 +22,8 @@ mod cases {
     use launcher::capture::CaptureCancellation;
     use thumbnail::batch::{ENTRYPOINT, PACKAGE, output_name, thumbnail_batch};
     use tilo_app_package::{Manifest, SigningIdentity, Verification, pack, tapp, verify};
-    use tilo_relay::compute::COMPUTE_JOB_SCHEMA_VERSION;
-    use tilo_relay::{
+    use tilo_server::compute::COMPUTE_JOB_SCHEMA_VERSION;
+    use tilo_server::{
         ComputeContentStore, ComputeJobLifecycle, ComputeJobPhase, ComputeJobResult,
         ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeWorker,
         InstalledComputeCatalogue, LauncherComputeSandbox, PowerAvailability, ServerAdvertisement,
@@ -38,7 +38,7 @@ mod cases {
 
     const REQUESTER: [u8; 32] = [1; 32];
     const WORKER: [u8; 32] = [2; 32];
-    const WORKSPACE: tilo_relay::WorkspaceId = tilo_relay::WorkspaceId::from_u128(7);
+    const WORKSPACE: tilo_server::WorkspaceId = tilo_server::WorkspaceId::from_u128(7);
 
     const CASES: &[(&str, fn())] = &[
         (

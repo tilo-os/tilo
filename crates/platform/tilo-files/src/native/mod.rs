@@ -38,6 +38,8 @@ pub mod retained_home;
 #[cfg(unix)]
 pub mod socket;
 pub mod tree;
+#[cfg(unix)]
+pub mod x11_authority;
 
 /// Whether the native path itself names a regular file, without following a symlink.
 pub fn is_regular_file(path: &std::path::Path) -> std::io::Result<bool> {

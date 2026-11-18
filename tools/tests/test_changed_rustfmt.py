@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -151,6 +152,50 @@ class ChangedRustfmtTests(unittest.TestCase):
 
             self.assertIn("no hand-written Rust files", result.stdout)
             self.assertFalse(self.arguments.exists())
+
+
+class ChildModuleTests(unittest.TestCase):
+    """rustfmt formats the modules a file declares with it; only the changed files count."""
+
+    def setUp(self) -> None:
+        if shutil.which("rustfmt") is None:
+            self.skipTest("needs rustfmt")
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        for command in (["init", "-q"], ["config", "user.email", "ci@example.invalid"],
+                        ["config", "user.name", "CI"]):
+            subprocess.run(["git", *command], cwd=self.root, check=True)
+        (self.root / "src").mkdir()
+        (self.root / "src/lib.rs").write_text("mod child;\npub fn parent() {}\n", encoding="utf-8")
+        # Unformatted, by someone else, before this change.
+        (self.root / "src/child.rs").write_text("pub fn   child( ) {}\n", encoding="utf-8")
+        self.commit("base")
+        self.base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+    def commit(self, message: str) -> None:
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", message], cwd=self.root, check=True)
+
+    def check(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["bash", str(SCRIPT), self.base, "HEAD"], text=True, capture_output=True,
+                              env={**os.environ, "TILO_REPO_ROOT": str(self.root)})
+
+    def test_an_untouched_child_module_is_not_the_changes_to_format(self) -> None:
+        (self.root / "src/lib.rs").write_text("mod child;\npub fn parent() {}\npub fn more() {}\n",
+                                              encoding="utf-8")
+        self.commit("change the parent")
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("modules these files declare", result.stdout)
+
+    def test_a_changed_file_that_is_not_formatted_still_fails(self) -> None:
+        (self.root / "src/lib.rs").write_text("mod child;\npub fn   parent( ) {}\n", encoding="utf-8")
+        self.commit("unformat the parent")
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("lib.rs", result.stdout)
+        self.assertNotIn("child.rs", result.stdout)
 
 
 if __name__ == "__main__":

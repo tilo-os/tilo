@@ -1,7 +1,5 @@
 //! [`TimePicker`] as a described component.
 
-use chrono::Timelike;
-
 use crate::component::{Bound, Component, Described, Event};
 use crate::widget::TimeValue;
 
@@ -36,16 +34,16 @@ impl Default for TimePickerProps {
 /// Today at `time`, as the instant a bound moment holds.
 fn instant_today(time: TimeValue) -> String {
     let day = crate::clock::today();
-    let at = day
-        .and_hms_opt(
-            u32::from(time.hours),
-            u32::from(time.minutes),
-            u32::from(time.seconds.unwrap_or(0)),
-        )
-        .unwrap_or_default()
-        .and_utc();
-    let at = at.with_nanosecond(0).unwrap_or(at);
-    at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    let at = jiff::civil::Time::new(
+        i8::try_from(time.hours).unwrap_or(0),
+        i8::try_from(time.minutes).unwrap_or(0),
+        i8::try_from(time.seconds.unwrap_or(0)).unwrap_or(0),
+        0,
+    )
+    .unwrap_or(jiff::civil::Time::midnight());
+    day.to_datetime(at)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 impl Described for TimePicker {

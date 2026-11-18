@@ -1,12 +1,14 @@
 //! Page actions as an agent reaches them: published on `browser.page`, admitted
-//! through the resource operation lane, answered by the engine and reported through the
+//! through the resource operation path, answered by the engine and reported through the
 //! invocation's terminal update.
 
 use std::sync::Arc;
 
+use crate::page_resource::agent_handle;
+
 use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationId, InvocationUpdate};
 use ui::webview::{
-    FrameId, PageFailure, PageKey, PageNavigation, PageResourceNote, WebViewEngine as _,
+    FrameId, PageActor, PageFailure, PageKey, PageNavigation, PageResourceNote, WebViewEngine as _,
 };
 
 use super::page_turns::{MAX_WAITING_PAGE_ACTIONS, PAGE_TURN_WAIT};
@@ -188,6 +190,7 @@ fn page_actions_publish_programmatic_write_contracts() {
         "read-page-fields",
         "find-page-text",
         "read-page-forms",
+        "read-page-table",
         "fill-page-form",
         "capture-page",
     ] {
@@ -1154,7 +1157,7 @@ fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
 #[test]
 fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
     use ui::permissions::policy::Answer::{Allow, Ask};
-    const OBSERVE: [&str; 12] = [
+    const OBSERVE: [&str; 13] = [
         "read-page",
         "capture-page",
         "find-page-element",
@@ -1167,6 +1170,7 @@ fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
         "read-page-fields",
         "find-page-text",
         "read-page-forms",
+        "read-page-table",
     ];
     const ACT: [&str; 13] = [
         "click-page",
@@ -1351,8 +1355,8 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     )
     .unwrap();
     succeeded(settled(&mut widget, &doc, &root, click));
-    // An actor longer than the engine takes is shortened the same way
-    // every time, so one actor keeps one name.
+    // An actor of any length is the same handle every time, so one actor
+    // keeps one name.
     let long = agent(&"x".repeat(120));
     for _ in 0..2 {
         let read = start_as(
@@ -1379,17 +1383,16 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     assert_eq!(
         asks[..3],
         [
-            (Some("agent:ada".to_owned()), "outline"),
+            (Some(agent_handle("ada")), "outline"),
             (None, "outline"),
-            (Some("agent:task-7".to_owned()), "click"),
+            (Some(agent_handle("task-7")), "click"),
         ]
     );
     let shortened = asks[3]
         .0
         .clone()
         .expect("a long actor still names its actor");
-    assert_eq!(shortened.encode_utf16().count(), 64);
-    assert!(shortened.starts_with("agent:xxxx"), "{shortened}");
+    assert_eq!(shortened, agent_handle(&"x".repeat(120)));
     assert_eq!(asks[4].0.as_ref(), Some(&shortened));
     assert_eq!(asks[5], (None, "outline"));
 }
@@ -1428,7 +1431,7 @@ fn a_second_actors_action_waits_its_turn_and_answers_its_own_invocation() {
     // One request is with the engine; the others have reached nothing.
     assert_eq!(
         page_asks(&engine),
-        vec![(Some("agent:ada".to_owned()), "fill")]
+        vec![(Some(agent_handle("ada")), "fill")]
     );
     assert!(widget.poll_invocation(click).is_none());
     assert!(widget.poll_invocation(select).is_none());
@@ -1454,9 +1457,9 @@ fn a_second_actors_action_waits_its_turn_and_answers_its_own_invocation() {
     assert_eq!(
         page_asks(&engine),
         vec![
-            (Some("agent:ada".to_owned()), "fill"),
-            (Some("agent:ben".to_owned()), "click"),
-            (Some("agent:cy".to_owned()), "select"),
+            (Some(agent_handle("ada")), "fill"),
+            (Some(agent_handle("ben")), "click"),
+            (Some(agent_handle("cy")), "select"),
         ]
     );
     assert!(widget.page_waiting.is_empty());
@@ -1510,7 +1513,7 @@ fn a_waiting_action_whose_caller_gives_up_never_reaches_the_engine() {
     }
     assert_eq!(
         page_asks(&engine),
-        vec![(Some("agent:ada".to_owned()), "fill")],
+        vec![(Some(agent_handle("ada")), "fill")],
         "the cancelled click never reached the engine"
     );
     assert!(
@@ -1557,8 +1560,8 @@ fn stopping_the_running_action_names_its_request_and_the_next_takes_its_turn() {
     assert_eq!(
         page_asks(&engine),
         vec![
-            (Some("agent:ada".to_owned()), "fill"),
-            (Some("agent:ben".to_owned()), "outline"),
+            (Some(agent_handle("ada")), "fill"),
+            (Some(agent_handle("ben")), "outline"),
         ]
     );
     assert_eq!(page_cancels(&engine).len(), 1, "nothing else was stopped");
@@ -1589,7 +1592,7 @@ fn a_tab_with_its_turns_taken_turns_the_next_action_away_saying_who_holds_it() {
         "{refused}"
     );
     assert!(
-        refused.contains("fill by \"agent:ada\""),
+        refused.contains("fill by agent ada"),
         "it says who holds the tab: {refused}"
     );
     assert_eq!(widget.page_waiting.len(), MAX_WAITING_PAGE_ACTIONS);
@@ -1642,7 +1645,7 @@ fn an_action_that_waited_too_long_is_answered_as_never_run() {
     assert!(
         busy.message
             .contains(&format!("{} seconds", PAGE_TURN_WAIT.as_secs()))
-            && busy.message.contains("fill by \"agent:ada\""),
+            && busy.message.contains("fill by agent ada"),
         "it says how long it waited and behind whom: {}",
         busy.message
     );
@@ -1665,25 +1668,25 @@ fn an_action_that_waited_too_long_is_answered_as_never_run() {
     assert_eq!(
         page_asks(&engine),
         vec![
-            (Some("agent:ada".to_owned()), "fill"),
-            (Some("agent:cy".to_owned()), "outline"),
+            (Some(agent_handle("ada")), "fill"),
+            (Some(agent_handle("cy")), "outline"),
         ],
         "neither click reached the engine"
     );
 }
 
-/// The tab's record and the review of its fields are page reads like the
+/// The tab's resource and the review of its fields are page reads like the
 /// others: typed requests, answered in the shape every page read has.
 #[test]
-fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
+fn the_resource_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/form");
     let record = serde_json::json!({
         "entries": [
-            {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": "agent:ada", "action": "fill",
+            {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": agent_handle("ada"), "action": "fill",
                 "ok": true, "message": "Filled textbox \"Email\"",
                 "url": "https://shop.test/form", "navigation": "possible",
                 "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
-            {"seq": 2, "time_ms": 1_700_000_000_500_u64, "actor": "agent:ben",
+            {"seq": 2, "time_ms": 1_700_000_000_500_u64, "actor": agent_handle("ben"),
                 "action": "select", "ok": true, "url": "https://shop.test/form",
                 "target": {"role": "combobox", "name": "Country"}, "values": ["Belgium"]},
         ],
@@ -1691,9 +1694,9 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     });
     let review = serde_json::json!({"fields": [
         {"role": "textbox", "name": "Email", "value": "ada@example.org", "required": true,
-            "set": {"how": "action", "by": "agent:ada", "seq": 1}},
+            "set": {"how": "action", "by": agent_handle("ada"), "seq": 1}},
         {"role": "searchbox", "name": "Search", "value": "toaster",
-            "set": {"how": "action", "by": "agent:ada", "seq": 5, "changed": true}},
+            "set": {"how": "action", "by": agent_handle("ada"), "seq": 5, "changed": true}},
         {"role": "textbox", "name": "Password", "value": "<14 characters hidden>",
             "set": {"how": "input"}},
     ]});
@@ -1730,8 +1733,8 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     assert_eq!(
         page_requests(&engine),
         vec![
-            PageRequest::Ledger { since: 0 },
-            PageRequest::Ledger { since: 2 },
+            PageRequest::Log { since: 0 },
+            PageRequest::Log { since: 2 },
             PageRequest::Fields { frame: None },
             PageRequest::Fields {
                 frame: Some(FrameId::parse("1.2").unwrap()),
@@ -1744,11 +1747,15 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
         assert!(value["message"].is_string() && value["title"].is_string());
         assert_eq!(value["navigation"], "none");
     }
-    // The record is who did what, by the description that still names the
+    // The resource is who did what, by the description that still names the
     // element later, with what was written.
     assert_eq!(answers[0]["message"], "2 actions");
-    assert_eq!(answers[0]["data"], record);
-    assert_eq!(answers[0]["data"]["entries"][0]["actor"], "agent:ada");
+    // Each actor is answered as the actor it is, never as the engine's handle.
+    let ada_actor = serde_json::json!({"member": {"agent": "ada"}});
+    let mut typed = record;
+    crate::page_resource::name_listed(Some(&mut typed));
+    assert_eq!(answers[0]["data"], typed);
+    assert_eq!(answers[0]["data"]["entries"][0]["actor"], ada_actor);
     assert_eq!(
         answers[0]["data"]["entries"][0]["target"],
         serde_json::json!({"role": "textbox", "name": "Email"})
@@ -1756,7 +1763,10 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     assert_eq!(answers[1]["data"]["entries"], serde_json::json!([]));
     assert_eq!(answers[1]["data"]["next"], 2);
     // The review is every field with what it holds now and who set it.
-    assert_eq!(answers[2]["data"], review);
+    let mut typed_review = review;
+    typed_review["fields"][0]["set"]["by"] = ada_actor.clone();
+    typed_review["fields"][1]["set"]["by"] = ada_actor.clone();
+    assert_eq!(answers[2]["data"], typed_review);
     assert!(
         answers[2]["outline"]
             .as_str()
@@ -1764,7 +1774,7 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     );
     assert_eq!(
         answers[2]["data"]["fields"][1]["set"],
-        serde_json::json!({"how": "action", "by": "agent:ada", "seq": 5, "changed": true})
+        serde_json::json!({"how": "action", "by": ada_actor, "seq": 5, "changed": true})
     );
     assert_eq!(answers[3]["data"]["fields"], serde_json::json!([]));
     // A frame the outline never printed is refused before the page is asked.
@@ -1780,11 +1790,11 @@ fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
     assert_eq!(page_requests(&engine).len(), 4);
 }
 
-/// Reading the record takes no turn: it reads nothing of the page, so it is
+/// Reading the resource takes no turn: it reads nothing of the page, so it is
 /// with the engine at once whatever holds the tab, and whoever reviews a tab
 /// is never queued behind the actors they are watching.
 #[test]
-fn reading_the_record_takes_no_turn() {
+fn reading_the_resource_takes_no_turn() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/");
     let (ada, ben, rev) = (
         agent("ada"),
@@ -1816,10 +1826,13 @@ fn reading_the_record_takes_no_turn() {
     assert_eq!(
         page_asks(&engine),
         vec![
-            (Some("agent:ada".to_owned()), "fill"),
-            (Some("rev".to_owned()), "ledger"),
+            (Some(agent_handle("ada")), "fill"),
+            (
+                PageActor::of(&rev.acting.by).map(|handle| handle.as_str().to_owned()),
+                "log"
+            ),
         ],
-        "the record is asked for while the fill still runs, ahead of what waits"
+        "the resource is asked for while the fill still runs, ahead of what waits"
     );
     assert_eq!(
         widget.page_waiting.len(),
@@ -1832,7 +1845,7 @@ fn reading_the_record_takes_no_turn() {
     let value = succeeded(
         widget
             .poll_invocation(record)
-            .expect("the record answers whatever runs"),
+            .expect("the resource answers whatever runs"),
     );
     assert_eq!(value["data"]["next"], 7);
     assert_eq!(value["data"]["waiting"], 2);
@@ -1846,10 +1859,10 @@ fn reading_the_record_takes_no_turn() {
             .into_iter()
             .map(|(_, action)| action)
             .collect::<Vec<_>>(),
-        vec!["fill", "ledger", "click", "outline"]
+        vec!["fill", "log", "click", "outline"]
     );
 
-    // A caller that gives up on a read of the record stops that request and
+    // A caller that gives up on a read of the resource stops that request and
     // no other.
     let running = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
     let given_up = start_as(
@@ -1862,7 +1875,7 @@ fn reading_the_record_takes_no_turn() {
     let stopped = failed(
         widget
             .poll_invocation_cancelling(given_up, true)
-            .expect("a read of the record is answered when its caller gives up"),
+            .expect("a read of the resource is answered when its caller gives up"),
     );
     assert_eq!(stopped.code, "browser.page.cancelled");
     assert_eq!(stopped.details.unwrap()["outcome"], "not_run");
@@ -1870,6 +1883,21 @@ fn reading_the_record_takes_no_turn() {
     assert_eq!(page_cancels(&engine), vec![*asked.last().unwrap()]);
     succeeded(settled(&mut widget, &doc, &root, running));
     assert!(widget.poll_invocation(given_up).is_none(), "answered once");
+}
+
+/// `entries` as an actor is told of them: each by the actor the engine's handle names.
+fn told_as_actors(entries: &serde_json::Value) -> serde_json::Value {
+    let mut result = Ok(PageReply {
+        record: PageResourceNote {
+            others: entries.as_array().cloned().unwrap_or_default(),
+            ..PageResourceNote::default()
+        },
+        ..answer("")
+    });
+    crate::page_resource::name_actors(&mut result);
+    result
+        .map(|reply| reply.record.others.into())
+        .unwrap_or_default()
 }
 
 /// An actor learns the tab moved under it from the answer it was waiting for
@@ -1880,9 +1908,9 @@ fn what_the_others_did_reaches_the_callers_output() {
     let (engine, mut widget, doc, root) = page_on("https://shop.test/form");
     let ada = agent("ada");
     let theirs = serde_json::json!([
-        {"seq": 4, "actor": "agent:ben", "action": "fill", "ok": true,
+        {"seq": 4, "actor": agent_handle("ben"), "action": "fill", "ok": true,
             "target": {"role": "textbox", "name": "Email"}, "text": "ben@example.org"},
-        {"seq": 5, "actor": "agent:ben", "action": "click", "ok": true,
+        {"seq": 5, "actor": agent_handle("ben"), "action": "click", "ok": true,
             "target": {"role": "button", "name": "Next"},
             "url": "https://shop.test/form", "to_url": "https://shop.test/pay"},
     ]);
@@ -1904,8 +1932,8 @@ fn what_the_others_did_reaches_the_callers_output() {
     .unwrap();
     let value = succeeded(settled(&mut widget, &doc, &root, fill));
     assert_eq!(value["message"], "Filled searchbox \"Search\"");
-    assert_eq!(value["seq"], 6, "its own place in the record");
-    assert_eq!(value["others"], theirs);
+    assert_eq!(value["seq"], 6, "its own place in the resource");
+    assert_eq!(value["others"], told_as_actors(&theirs));
     assert_eq!(value["others_earlier"], 3);
     assert_eq!(
         value["provenance"], "web-content",
@@ -1946,7 +1974,10 @@ fn what_the_others_did_reaches_the_callers_output() {
         .details
         .expect("the refusal says what the others did");
     assert_eq!(details["seq"], 7);
-    assert_eq!(details["others"], serde_json::json!([theirs[1]]));
+    assert_eq!(
+        details["others"],
+        told_as_actors(&serde_json::json!([theirs[1]]))
+    );
     assert!(details.get("others_earlier").is_none());
 }
 
@@ -2337,7 +2368,7 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
             .is_some_and(|outline| outline.contains("signature=5f1c2a9be0"))
     );
     // What came of each answer, what the form asks now, and the action's
-    // place in the tab's record.
+    // place in the tab's resource.
     assert_eq!(answers[1]["data"], placed);
     assert_eq!(answers[1]["data"]["results"][3]["code"], "secret_field");
     assert_eq!(
@@ -2507,7 +2538,7 @@ fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
         "submitted": true, "now_asks": [], "unanswered": [],
     });
     let theirs = serde_json::json!([
-        {"seq": 1, "actor": "agent:ada", "action": "click", "ok": true,
+        {"seq": 1, "actor": agent_handle("ada"), "action": "click", "ok": true,
             "target": {"role": "checkbox", "name": "Accept terms"}},
     ]);
     engine.push_page_reply(Ok(PageReply {
@@ -2539,7 +2570,7 @@ fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
     .expect("answering a form waits its turn behind the click");
     assert_eq!(
         page_asks(&engine),
-        vec![(Some("agent:ada".to_owned()), "click")],
+        vec![(Some(agent_handle("ada")), "click")],
         "the form's answers have reached nothing yet"
     );
     assert!(widget.poll_invocation(form).is_none());
@@ -2549,8 +2580,8 @@ fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
     assert_eq!(
         page_asks(&engine),
         vec![
-            (Some("agent:ada".to_owned()), "click"),
-            (Some("agent:ben".to_owned()), "fill_form"),
+            (Some(agent_handle("ada")), "click"),
+            (Some(agent_handle("ben")), "fill_form"),
         ]
     );
     assert!(
@@ -2569,9 +2600,10 @@ fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
     );
     assert_eq!(value["data"], sent);
     assert_eq!(value["data"]["submitted"], true);
-    assert_eq!(value["seq"], 2, "it took a place in the tab's record");
+    assert_eq!(value["seq"], 2, "it took a place in the tab's resource");
     assert_eq!(
-        value["others"], theirs,
+        value["others"],
+        told_as_actors(&theirs),
         "and was told of the click before it"
     );
 }
@@ -2630,5 +2662,78 @@ fn the_new_page_actions_declare_what_they_take() {
     assert_eq!(
         types("read-page-forms"),
         vec![("frame".to_owned(), ParamType::Text)]
+    );
+    assert_eq!(
+        types("read-page-table"),
+        vec![
+            ("element".to_owned(), ParamType::Text),
+            ("from".to_owned(), ParamType::Integer),
+            ("frame".to_owned(), ParamType::Text),
+        ]
+    );
+}
+
+/// A table is read as rows: every table of the page, or the one a ref names
+/// from the row an answer that stopped short named. What the engine read
+/// reaches the caller whole, as the page's own words.
+#[test]
+fn a_pages_tables_are_read_as_rows_and_read_on_from_a_row() {
+    let (engine, mut widget, mut doc, root) = page_on("https://prices.test/plans");
+    let tables = serde_json::json!({"tables": [{
+        "element": "d1e7", "name": "Plans and prices",
+        "columns": ["Plan", "Price / Monthly", "Price / Yearly"],
+        "from": 1, "total_rows": 450, "next": 201,
+        "rows": [["Free", "EUR 0", "EUR 0"], ["Team", "EUR 12", "EUR 120"]],
+    }]});
+    engine.set_page_data("table", tables.clone());
+    let mut answers = Vec::new();
+    for args in [
+        serde_json::json!({}),
+        serde_json::json!({"element": "d1e7", "from": 201}),
+        serde_json::json!({"frame": "2"}),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, "read-page-table", &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Table {
+                element: None,
+                from: None,
+                frame: None,
+            },
+            PageRequest::Table {
+                element: Some("d1e7".into()),
+                from: Some(201),
+                frame: None,
+            },
+            PageRequest::Table {
+                element: None,
+                from: None,
+                frame: FrameId::parse("2"),
+            },
+        ]
+    );
+    // The rows as the engine read them, told as what a page wrote.
+    for value in &answers[..2] {
+        assert_eq!(value["data"], tables, "{value}");
+    }
+    for value in &answers {
+        assert_eq!(value["provenance"], "web-content", "{value}");
+    }
+    // A table named by something that is no ref, and a row before the first,
+    // never reach the page.
+    for args in [
+        serde_json::json!({"element": "the first table"}),
+        serde_json::json!({"element": "d1e7", "from": 0}),
+    ] {
+        let refused = start(&mut widget, &mut doc, &root, "read-page-table", &args).unwrap_err();
+        assert!(!refused.is_empty(), "{args}");
+    }
+    assert_eq!(
+        page_requests(&engine).len(),
+        3,
+        "refused requests reached the page"
     );
 }

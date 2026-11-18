@@ -177,7 +177,7 @@ impl Widget for Column {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 

@@ -189,18 +189,18 @@ pub fn window_title(widget: &(impl Widget + ?Sized)) -> Option<&str> {
 }
 
 /// A presentation whose app runs elsewhere (a tilolang host's instance) can ask the shell for what only
-/// it does, as an app surface asks ([`crate::widget::AppHostIntent`]): show a task run's log when a
+/// it does, as an app surface asks ([`crate::widget::AppProcessIntent`]): show a task run's log when a
 /// change mark is activated.
 pub trait HostIntents {
     /// Consume one request for the shell.
-    fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent>;
+    fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent>;
 }
 
 /// Consume one request `widget` has for the shell, through its capability API.
-pub fn take_host_intent(
+pub fn take_process_intent(
     widget: &mut (impl Widget + ?Sized),
-) -> Option<crate::widget::AppHostIntent> {
-    capability_mut::<dyn HostIntents>(widget).and_then(HostIntents::take_host_intent)
+) -> Option<crate::widget::AppProcessIntent> {
+    capability_mut::<dyn HostIntents>(widget).and_then(HostIntents::take_process_intent)
 }
 
 /// What the connection of an app that runs elsewhere (a tilolang host's instance) heard of the

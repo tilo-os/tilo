@@ -37,7 +37,7 @@ pub(super) enum Event {
     },
     Namespace {
         operation: String,
-        custody: Namespace,
+        ownership: Namespace,
     },
     Response {
         operation: String,
@@ -294,7 +294,7 @@ fn run() -> io::Result<()> {
     let monitors = Arc::new(Mutex::new(None));
     let connected_monitors = monitors.clone();
     let connected = Box::new(move |endpoint: owned_service::ServiceEndpoint| {
-        let facts = endpoint.custody()?;
+        let facts = endpoint.ownership()?;
         let mut channel = connected_stream
             .lock()
             .map_err(|_| failure("capture host channel poisoned"))?;
@@ -302,7 +302,7 @@ fn run() -> io::Result<()> {
             &mut channel,
             &Event::Namespace {
                 operation: connected_operation.clone(),
-                custody: Namespace {
+                ownership: Namespace {
                     init_pid: facts.init_pid,
                     start_ticks: facts.start_ticks,
                     namespace_dev: facts.namespace_dev,
@@ -313,7 +313,7 @@ fn run() -> io::Result<()> {
         let mut ack = [0];
         channel.read_exact(&mut ack)?;
         if ack != [1] {
-            return Err(failure("capture namespace custody was not acknowledged"));
+            return Err(failure("capture namespace ownership was not acknowledged"));
         }
         // After durable ACK, only cancellation/EOF arrives in this direction.
         let mut control = channel.try_clone()?;
@@ -451,7 +451,7 @@ fn run() -> io::Result<()> {
         completed_job,
     );
     let completed = match result {
-        Ok(witness) if completed_job.is_ok() && witness.matches(&key, working.path(), PACKAGE) => {
+        Ok(proof) if completed_job.is_ok() && proof.matches(&key, working.path(), PACKAGE) => {
             write_event(&mut channel, &Event::Complete { operation })?;
             true
         }

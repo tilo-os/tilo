@@ -57,8 +57,12 @@ impl TimeStyle {
 
     /// `time` in this style.
     #[must_use]
-    pub fn format(self, time: &impl chrono::Timelike, words: &dyn Words) -> String {
-        self.format_hm(time.hour(), time.minute(), words)
+    pub fn format(self, time: jiff::civil::Time, words: &dyn Words) -> String {
+        self.format_hm(
+            u32::from(time.hour().unsigned_abs()),
+            u32::from(time.minute().unsigned_abs()),
+            words,
+        )
     }
 
     /// `hour:minute` (hour `0..24`) in this style.

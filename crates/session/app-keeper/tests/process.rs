@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tilo_app_keeper::wire::{self, End, FromKeeper, ToKeeper};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// A desktop dispatched on a thread of its own for as long as the value lives.
 struct Desktop {
@@ -77,7 +78,7 @@ impl Keeper {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("the keeper starts");
         let started = Instant::now();
         while !dir.join("control").exists() {

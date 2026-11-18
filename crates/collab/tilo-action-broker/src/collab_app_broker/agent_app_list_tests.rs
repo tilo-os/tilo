@@ -9,7 +9,7 @@ use crate::test_support::{
 };
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, ActionHostError, Caller, CataloguePage,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, ActionCallError, Caller, CataloguePage,
     CatalogueQuery, workspace_provider,
 };
 
@@ -88,7 +88,7 @@ fn broker(
         attached.then(|| tree.authority()),
         None,
         None,
-        crate::services::HostServices {
+        crate::services::ProcessServices {
             launcher: Some(Arc::new(Installed(apps))),
             ..Default::default()
         },
@@ -102,7 +102,7 @@ fn installed(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     workspace: &str,
-) -> Result<CataloguePage, ActionHostError> {
+) -> Result<CataloguePage, ActionCallError> {
     state
         .action_query(
             caller,
@@ -123,7 +123,7 @@ fn installed(
 fn publishers(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
-) -> Result<CataloguePage, ActionHostError> {
+) -> Result<CataloguePage, ActionCallError> {
     state
         .action_query(
             caller,
@@ -200,8 +200,8 @@ tilo_test_env::scenario! {
 
     phase an_agent_that_cannot_reach_its_workspace_is_told_why;
     {
-        let reason = |result: Result<CataloguePage, ActionHostError>| match result {
-            Err(ActionHostError::Unavailable { reason }) => reason,
+        let reason = |result: Result<CataloguePage, ActionCallError>| match result {
+            Err(ActionCallError::Unavailable { reason }) => reason,
             other => panic!("an unreachable workspace answered {other:?}"),
         };
         let workspace = workspace();

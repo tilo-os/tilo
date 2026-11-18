@@ -1,5 +1,5 @@
-//! A program's `find` over an app's records, from the person's REPL and from an agent of theirs,
-//! both admitted at the session's MCP server.
+//! A program's `find` over an app's records, from the person's REPL at the session's API and from
+//! an agent of theirs admitted at its MCP server.
 //!
 //! A task's programs read each app's record as the API hands it over
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app"): every tilolang
@@ -17,10 +17,7 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-use serde_json::json;
-use tilo_sheets::portal::PortalEffect;
-
-use crate::common::{Repl, on_screen, press_sheet, private_home, seeded_session, until};
+use crate::common::{Agent, Api, on_screen, private_home, seeded_session, until};
 
 /// A task the tasks app's first scenario seeded, by its title: found through `find(tasks.Task)`,
 /// whichever of its fields a program reads.
@@ -37,8 +34,7 @@ fn the_persons_repl_finds_the_workspaces_tasks() {
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     let (found, failed) = repl.run(&mut session, "find(tasks.Task)");
     assert!(!failed, "the REPL's find ran: {found}");
@@ -62,16 +58,7 @@ fn an_agents_run_at_the_api_finds_the_workspaces_tasks() {
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut agent = Repl::asking(&root.path().join("agent.sock"), false);
-    until(&mut session, "the API's question", |session| {
-        session
-            .portal()
-            .and_then(tilo_sheets::portal::PortalState::dialog)
-            .is_some()
-    });
-    press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 0}));
-    press_sheet(&mut session, PortalEffect::CONFIRM.id, &json!({}));
-    agent.opened(&mut session);
+    let mut agent = Agent::admitted(&mut session, &root.path().join("agent.sock"));
 
     let (found, failed) = agent.run(&mut session, "find(tasks.Task)");
     assert!(!failed, "the agent's find ran: {found}");

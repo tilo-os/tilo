@@ -206,7 +206,7 @@ fn bookmark_rows_are_reversible_uniquely_addressed_actions() {
 )]
 fn downloads_cancel_reject_and_keep_stable_actions() {
     {
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         engine.send(WebViewCommand::StartDownload {
@@ -226,7 +226,7 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
     }
 
     {
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         engine.send(WebViewCommand::StartDownload {

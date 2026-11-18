@@ -270,9 +270,12 @@ where
     if let Some(subscribe) = subscribe {
         client = client.with_subscriber(subscribe);
     }
+    // The session's clock is made with the first time of the pace its driver
+    // is polled at: one clock for both, and no poll earlier than this.
+    let mut pace = crate::pace::Pace::new();
     let (session, driver) = n0_future::time::timeout(
         SETUP_BUDGET,
-        client.connect_lite(moq_net::time::Instant::now(), transport.clone()),
+        client.connect_lite(pace.now(), transport.clone()),
     )
     .await
     .map_err(|_| AdmissionError::Unavailable)?
@@ -293,7 +296,7 @@ where
             std::future::pending::<()>().await;
         };
         let running = async {
-            let _ = moq_net::time::run(driver).await;
+            let _ = pace.drive(driver).await;
         };
         n0_future::future::or(running, revoked).await;
     });
@@ -332,16 +335,16 @@ pub trait Dial: Send + Sync + 'static {
     ) -> Dialling<'a>;
 
     /// Whether this dial opens another carrier after the one it opened is gone. A connection
-    /// dialled between two endpoints can be dialled again, so a plane whose network dropped is
+    /// dialled between two endpoints can be dialled again, so a live session whose network dropped is
     /// carried again without anyone above it noticing. A carrier the caller already opened
-    /// ([`Opened`]) is handed over once: a plane on one ends with it, and what holds the plane
+    /// ([`Opened`]) is handed over once: a live session on one ends with it, and what holds the live session
     /// joins again, proving itself anew.
     fn redials(&self) -> bool {
         false
     }
 }
 
-/// A carrier the caller already opened, handed to the plane once: a
+/// A carrier the caller already opened, handed to the live session once: a
 /// transport whose dial runs steps of its own before the admission (a
 /// WebTransport session the device first proved itself on). A second dial
 /// finds nothing to hand over and is unavailable.
@@ -392,7 +395,7 @@ impl OriginTask {
     pub fn produce(config: moq_net::origin::Config) -> (moq_net::origin::Producer, Self) {
         let (producer, driver) = moq_net::origin::Producer::new(config);
         let task = n0_future::task::spawn(async move {
-            let _ = moq_net::time::run(driver).await;
+            let _ = crate::pace::Pace::new().drive(driver).await;
         });
         (producer, Self(Some(task)))
     }

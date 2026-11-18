@@ -1,17 +1,17 @@
-//! How a record's documents are read: the resources it holds, the fields a change reached, and
+//! How a document's documents are read: the resources it holds, the fields a change reached, and
 //! an index built from it whole.
 
 use super::*;
 use crate::chunk::{Chunks, Stamps};
 
 /// Every resource of `doc`, with its app and type id. Every copy of the levels above the
-/// resources is read ([`crate::containers::reach`]): a record a replica wrote before it met the
-/// others is in the map the document does not keep, and it is the record all the same.
+/// resources is read ([`crate::containers::reach`]): a document a replica wrote before it met the
+/// others is in the map the document does not keep, and it is the document all the same.
 pub(super) fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
     let mut out = BTreeMap::new();
-    for records in crate::containers::maps(doc, &automerge::ROOT, RECORDS_KEY) {
+    for records in crate::containers::maps(doc, &automerge::ROOT, RESOURCES_KEY) {
         for stored in doc.keys(&records) {
-            // Records stored under an id their app had before (`previously:`) are that app's.
+            // Documents stored under an id their app had before (`previously:`) are that app's.
             let app = crate::schema::successor(&stored);
             let own = app == stored;
             for app_obj in crate::containers::maps(doc, &records, &stored) {
@@ -46,7 +46,7 @@ pub(super) fn json_of_scalar(scalar: &Scalar) -> Json {
     }
 }
 
-/// The path from a record's map to the field `field` of a resource of it, whose own map the
+/// The path from a document's map to the field `field` of a resource of it, whose own map the
 /// path `prefix` reaches ([`Inner::prefix_of`]).
 pub(super) fn path_to(prefix: &[Segment], field: &str) -> Vec<Segment> {
     let mut path = prefix.to_vec();
@@ -59,7 +59,7 @@ pub(super) fn path_to(prefix: &[Segment], field: &str) -> Vec<Segment> {
 /// Under an actor of its own, each of the mirror's transactions would add that actor to the
 /// document and its rollback remove it again, and Automerge renumbers every op's actor column
 /// for each: two passes over the whole document per keystroke. The mirror never commits (its
-/// writes are taken back before any change of the record is applied, see
+/// writes are taken back before any change of the document is applied, see
 /// [`TiloStore::sync`]), so its ops under a borrowed actor never meet that actor's next
 /// real change.
 pub(super) fn write_as_a_known_actor(mirror: &mut Doc) {
@@ -74,11 +74,11 @@ pub(super) fn write_as_a_known_actor(mirror: &mut Doc) {
     }
 }
 
-/// `record`'s committed changes, to write into.
+/// `document`'s committed changes, to write into.
 pub(super) fn mirror_of(record: Doc) -> Doc {
     let mut mirror = record;
-    // Only the record's committed changes are the mirror's: an open transaction of the
-    // record arrives as a change once the framework commits it.
+    // Only the document's committed changes are the mirror's: an open transaction of the
+    // document arrives as a change once the framework commits it.
     mirror.rollback();
     write_as_a_known_actor(&mut mirror);
     mirror
@@ -113,12 +113,12 @@ pub(super) fn version_fields(resource: &str, end: &idx::reflect::Ends) -> Vec<Fi
     fields
 }
 
-/// The fields of the versions `ends` the record's changes made that read differently from the
+/// The fields of the versions `ends` the document's changes made that read differently from the
 /// ones `told`, which the store's own writes of those changes told when their actions committed
 /// ([`Inner::provisional_versions`]): the versions themselves, which name the change that made
 /// each now, and each end of a resource a different invocation made — the time a field was last
-/// changed that the record says changed and the provisional versions did not name, say. The
-/// rest reads as told: the record's versions carry the invocation's own time.
+/// changed that the document says changed and the provisional versions did not name, say. The
+/// rest reads as told: the document's versions carry the invocation's own time.
 pub(super) fn told_differently(ends: &Ends, told: &Ends) -> BTreeMap<DocId, Vec<FieldKey>> {
     let mut docs = BTreeMap::new();
     for (resource, end) in ends {
@@ -148,7 +148,7 @@ pub(super) fn told_differently(ends: &Ends, told: &Ends) -> BTreeMap<DocId, Vec<
     docs
 }
 
-/// Name each resource in `ends` as changed in its versions ([`version_fields`]): the record's
+/// Name each resource in `ends` as changed in its versions ([`version_fields`]): the document's
 /// changes made them, and a change reaches the views of a resource even when the values it
 /// writes read as the ones the store already held, as they do when the steps were written
 /// locally first. A document the change reached whole names no field and is left as it is:
@@ -192,7 +192,7 @@ pub(super) fn collections_by_doc<'a>(
     collections
 }
 
-/// Every record of `app` in `docs`, reached as a whole, with those of `before` that are gone:
+/// Every document of `app` in `docs`, reached as a whole, with those of `before` that are gone:
 /// what derives a package's index anew where it stands.
 pub(super) fn everything(
     before: &BTreeMap<DocId, (AppId, TypeId)>,

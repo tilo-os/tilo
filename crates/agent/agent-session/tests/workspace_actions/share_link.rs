@@ -26,7 +26,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let state = crate::support::scratch_dir();
     let hosted = start_browser(&owner, &host, state.path(), Some("https://entry.example")).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Links")
@@ -113,5 +113,5 @@ async fn the_host_mints_a_message_link_with_its_range() {
     publisher.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }

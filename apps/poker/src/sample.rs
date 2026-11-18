@@ -1,5 +1,5 @@
 //! What the capture scenarios stage: a table with the person at it, and a hand under way.
-//! Never written into a real workspace's table. It is then staged as the record's start,
+//! Never written into a real workspace's table. It is then staged as the resource's start,
 //! since a capture cannot wait twelve seconds into a turn.
 
 use ui::prelude::*;

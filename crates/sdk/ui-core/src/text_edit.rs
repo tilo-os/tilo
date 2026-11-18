@@ -295,13 +295,13 @@ impl EditCore {
         self.place_position(target, extend);
     }
 
-    /// Seat the caret from a click at byte `byte`; `extend` (shift-click) keeps the
+    /// Place the caret from a click at byte `byte`; `extend` (shift-click) keeps the
     /// anchor so the selection grows.
     pub fn place(&mut self, byte: usize, extend: bool) {
         self.place_position(TextPosition::new(byte), extend);
     }
 
-    /// Seat the caret from an exact shaped position.
+    /// Place the caret from an exact shaped position.
     pub fn place_position(&mut self, position: TextPosition, extend: bool) {
         if extend {
             self.sel.extend_to(position.byte);

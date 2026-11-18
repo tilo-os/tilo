@@ -36,9 +36,9 @@ test('final strict transaction atomically stores records and removes complete st
  assert.equal((await lease.hydrate())[0].revision,'5');assert.equal((await lease.transfers.status(h)).nextOffset,4);
  lease.abortNext=true;await assert.rejects(lease.commit([row('6')],{transfer:h}),/abort/i);
  assert.equal((await lease.hydrate())[0].revision,'5');assert.equal((await lease.transfers.status(h)).nextOffset,4);
- const gate=idb.gateNextCommit();let finished=false;const commit=lease.commit([row('6')],{transfer:h}).then(()=>{finished=true;});await gate.held;
+ const hold=idb.holdNextCommit();let finished=false;const commit=lease.commit([row('6')],{transfer:h}).then(()=>{finished=true;});await hold.held;
  assert.equal(finished,false);assert.equal(idb.rows().find(r=>r.namespace===lease.namespace).revision,'5');assert.equal(idb.rows().filter(r=>r.blob).length,1);
- gate.release();await commit;assert.equal((await lease.hydrate())[0].revision,'6');
+ hold.release();await commit;assert.equal((await lease.hydrate())[0].revision,'6');
  await assert.rejects(lease.transfers.status(h),/missing|unknown/i);assert.equal(idb.rows().filter(r=>r.blob).length,0);
 });
 test('complete reservation is global across namespaces and crash reopen rebinds only exact descriptors',async t=>{
@@ -64,11 +64,11 @@ test('descriptor limits, two namespace reservations and immutable handles fail c
 });
 test('inline FIFO joins raw writes before drop/release and bounds pending chunk copies',async t=>{
  const {idb,lease,locks}=await fixture(t);assert.ok(lease.transfers);
- const h=await lease.transfers.open(descriptor());const gate=idb.gateNextCommit();
- const bytes=Uint8Array.of(1,2,3,4);const writing=lease.transfers.write(h,0,bytes);bytes.fill(0);await gate.held;
+ const h=await lease.transfers.open(descriptor());const hold=idb.holdNextCommit();
+ const bytes=Uint8Array.of(1,2,3,4);const writing=lease.transfers.write(h,0,bytes);bytes.fill(0);await hold.held;
  const reading=lease.transfers.read(h,0,4);await assert.rejects(lease.transfers.status(h),e=>e.name==='QuotaExceededError');
  let released=false;const release=lease.release().then(()=>{released=true;});await settle();assert.equal(released,false);assert.equal(locks.held().length,1);
- await assert.rejects(lease.transfers.drop(h),/closing|closed/i);gate.release();await writing;assert.deepEqual(await reading,Uint8Array.of(1,2,3,4));await release;
+ await assert.rejects(lease.transfers.drop(h),/closing|closed/i);hold.release();await writing;assert.deepEqual(await reading,Uint8Array.of(1,2,3,4));await release;
 });
 test('worker stage survives crash fallback in same epoch, final commit/drop and close remain ordered',async t=>{
  const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});
@@ -92,7 +92,7 @@ test('reload discovers only bounded inert metadata, rejects old lease and rebind
 test('flush includes page-queued operations before worker dispatch',async t=>{
  const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});
  const access=createStorageAccess({createWorker:workers.createWorker,onFallback:()=>{}}),lease=await access.acquireStorage('p','d');t.after(async()=>{await lease.release();workers.dispose();});
- const gate=idb.gateNextCommit(),writing=lease.commit([row()]);let flushed=false;const flush=access.flush().then(()=>{flushed=true;});await gate.held;await settle();try{assert.equal(flushed,false,'flush must not overtake a page-queued write');}finally{gate.release();await Promise.all([writing,flush]);}
+ const hold=idb.holdNextCommit(),writing=lease.commit([row()]);let flushed=false;const flush=access.flush().then(()=>{flushed=true;});await hold.held;await settle();try{assert.equal(flushed,false,'flush must not overtake a page-queued write');}finally{hold.release();await Promise.all([writing,flush]);}
 });
 test('global count is 32 without eviction and namespace quota is independent of storage epochs',async t=>{
  const {storage,lease}=await fixture(t);const leases=[lease];
@@ -115,7 +115,7 @@ test('worker crash aborts in-flight chunk transaction and reopen exposes only du
  const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});
  const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb}),delay:()=>settle(),onFallback:()=>{}}),lease=await access.acquireStorage('p','d');
  t.after(async()=>{await lease.release();workers.dispose();});const h=await lease.transfers.open(descriptor());
- const gate=idb.gateNextCommit(),write=lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));const failure=assert.rejects(write,e=>e.name==='StorageWorkerError');await gate.held;workers.workers[0].crash();gate.release();await failure;
+ const hold=idb.holdNextCommit(),write=lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));const failure=assert.rejects(write,e=>e.name==='StorageWorkerError');await hold.held;workers.workers[0].crash();hold.release();await failure;
  const list=await lease.transfers.list();assert.equal(list[0].nextOffset,0);assert.equal(list[0].epoch,h.epoch);
  await assert.rejects(lease.transfers.read(h,0,1),/incomplete/i);
  await lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));assert.deepEqual(await lease.transfers.read(h,0,4),Uint8Array.of(1,2,3,4));
@@ -134,8 +134,8 @@ test('both reader generations leave private Blob contents unread and canonical h
 test('page facade validates closed bounded metadata before clone and preserves inputs rejected by queue pressure',async t=>{
  const idb=fakeIndexedDB(),locks=fakeLocks(),access=createStorageAccess({createWorker:()=>null,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb})}),lease=await access.acquireStorage('p','d');t.after(()=>lease.release());
  await assert.rejects(lease.transfers.open({...descriptor(),scope:'x'.repeat(4097),uncloneable:()=>{}}),e=>e.name==='InvalidStateError');
- const h=await lease.transfers.open(descriptor()),gate=idb.gateNextCommit();const a=lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));await gate.held;
- const b=lease.transfers.status(h),bytes=Uint8Array.of(1,2,3,4);try{await assert.rejects(lease.transfers.write(h,0,bytes),e=>e.name==='QuotaExceededError');assert.equal(bytes.byteLength,4);}finally{gate.release();await Promise.all([a,b]);}
+ const h=await lease.transfers.open(descriptor()),hold=idb.holdNextCommit();const a=lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));await hold.held;
+ const b=lease.transfers.status(h),bytes=Uint8Array.of(1,2,3,4);try{await assert.rejects(lease.transfers.write(h,0,bytes),e=>e.name==='QuotaExceededError');assert.equal(bytes.byteLength,4);}finally{hold.release();await Promise.all([a,b]);}
 });
 test('wire-legal stream whose headers exceed actual 256MiB reservation reports storage pressure',async t=>{
  const {lease}=await fixture(t);await assert.rejects(lease.transfers.open({...descriptor(1,MAX),totalBytes:MAX+45}),e=>e.name==='QuotaExceededError');
@@ -155,9 +155,9 @@ test('a stale dirty record aborts the entire final cursor/journal commit and pre
 });
 test('active worker drains write then drop before releasing the exclusive storage lease',async t=>{
  const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb}),access=createStorageAccess({createWorker:workers.createWorker,onFallback:()=>{}}),lease=await access.acquireStorage('p','d');
- t.after(async()=>{await lease.release();workers.dispose();});const h=await lease.transfers.open(descriptor()),gate=idb.gateNextCommit();
- const writing=lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));await gate.held;const dropping=lease.transfers.drop(h);let closed=false;const close=lease.release().then(()=>{closed=true;});await settle();
- try{assert.equal(closed,false);assert.equal(locks.held().length,1);await assert.rejects(lease.transfers.status(h),/closing/i);}finally{gate.release();await Promise.all([writing,dropping,close]);}
+ t.after(async()=>{await lease.release();workers.dispose();});const h=await lease.transfers.open(descriptor()),hold=idb.holdNextCommit();
+ const writing=lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));await hold.held;const dropping=lease.transfers.drop(h);let closed=false;const close=lease.release().then(()=>{closed=true;});await settle();
+ try{assert.equal(closed,false);assert.equal(locks.held().length,1);await assert.rejects(lease.transfers.status(h),/closing/i);}finally{hold.release();await Promise.all([writing,dropping,close]);}
  assert.equal(idb.rows().filter(r=>r.blob).length,0);assert.equal(locks.held().length,0);
 });
 test('legacy empty commit remains a no-op and does not consume the next transaction fault',async t=>{
@@ -210,8 +210,8 @@ for(const worker of [false,true])test(`resume CAS ${worker?'worker':'direct'} us
  await assert.rejects(lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'x'.repeat(4097)),e=>e.name==='InvalidStateError');
  idb.failNextPut('QuotaExceededError');await assert.rejects(lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'failed'),e=>e.name==='QuotaExceededError');
  assert.equal((await lease.transfers.status(h)).resumeDigest,h.cutToken);
- const gate=idb.gateNextCommit(),changing=lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'renewed-A');await gate.held;
- let released=false;const closing=lease.release().then(()=>{released=true;});await settle();try{assert.equal(released,false);assert.equal(locks.held().length,1);}finally{gate.release();await changing;await closing;}
+ const hold=idb.holdNextCommit(),changing=lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'renewed-A');await hold.held;
+ let released=false;const closing=lease.release().then(()=>{released=true;});await settle();try{assert.equal(released,false);assert.equal(locks.held().length,1);}finally{hold.release();await changing;await closing;}
  const next=await access.acquireStorage('p','d');t.after(()=>next.release());const current=(await next.transfers.list())[0];assert.equal(current.resumeDigest,'renewed-A');await next.release();
 });
 test('resume CAS validates opaque byte bounds and open cannot replace mutable resume metadata',async t=>{
@@ -229,8 +229,8 @@ test('worker crash aborts resume CAS and original handle still commits after fal
  const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});
  const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb}),delay:()=>settle(),onFallback:()=>{}}),lease=await access.acquireStorage('p','d');
  t.after(async()=>{await lease.release();workers.dispose();});const h=await lease.transfers.open(descriptor());await lease.transfers.write(h,0,Uint8Array.of(1,2,3,4));
- const gate=idb.gateNextCommit(),change=lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'uncommitted');
- const failure=assert.rejects(change,e=>e.name==='StorageWorkerError');await gate.held;workers.workers[0].crash();gate.release();await failure;
+ const hold=idb.holdNextCommit(),change=lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'uncommitted');
+ const failure=assert.rejects(change,e=>e.name==='StorageWorkerError');await hold.held;workers.workers[0].crash();hold.release();await failure;
  const current=(await lease.transfers.list())[0];assert.equal(current.resumeDigest,h.cutToken);assert.equal(current.nextOffset,4);assert.equal(current.epoch,h.epoch);
  await lease.transfers.compareAndSwapResumeDigest(h,h.cutToken,'durable renewal');
  await lease.commit([row()],{transfer:h});assert.deepEqual(await lease.transfers.list(),[]);assert.equal(idb.rows().filter(r=>r.blob).length,0);assert.equal((await lease.hydrate()).length,1);

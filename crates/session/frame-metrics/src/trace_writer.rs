@@ -125,11 +125,11 @@ mod tests {
         {
             // The sink stands for a disk that does not answer: it takes nothing
             // until the test lets it.
-            let (open_gate, gate) = channel::<()>();
+            let (open_check, check) = channel::<()>();
             let written = Arc::new(Mutex::new(Vec::<u8>::new()));
             let seen = Arc::clone(&written);
             let mut trace = TraceWriter::with_sink(move |job| {
-                let _ = gate.recv();
+                let _ = check.recv();
                 let (Job::Append(bytes) | Job::Replace(bytes)) = job;
                 seen.lock().expect("sink").extend_from_slice(&bytes);
                 Ok(())
@@ -147,9 +147,9 @@ mod tests {
             );
             // The disk comes back; every byte arrives, in order.
             for _ in 0..64 {
-                let _ = open_gate.send(());
+                let _ = open_check.send(());
             }
-            drop(open_gate);
+            drop(open_check);
             trace.close().expect("close");
             let bytes = written.lock().expect("sink").clone();
             let text = String::from_utf8(bytes).expect("utf8");

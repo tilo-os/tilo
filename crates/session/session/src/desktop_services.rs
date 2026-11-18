@@ -57,10 +57,7 @@ pub struct DesktopServices {
     /// tasks alive.
     session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
     /// The applications' tray items, and what keeps their watcher served.
-    tray: Option<(
-        Arc<tilo_tray_host::Tray>,
-        tilo_tray_host::watcher::WatcherHandle,
-    )>,
+    tray: Option<(Arc<tilo_tray::Tray>, tilo_tray::watcher::WatcherHandle)>,
     /// The apps the session sees run, by process: what names a notification's sender, shared with
     /// the daemon.
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
@@ -153,7 +150,7 @@ impl DesktopServices {
         &self.questions
     }
 
-    /// The person's access decisions, which the portal gates its requests with: another service of
+    /// The person's access decisions, which the portal checks its requests with: another service of
     /// the session that asks about a capability asks through these, so an answer given to one
     /// stands for the other.
     #[must_use]
@@ -181,9 +178,9 @@ impl DesktopServices {
             services.push(Box::new(portal.clone()));
         }
         if let Some((tray, _)) = &self.tray {
-            services.push(Box::new(tilo_tray_host::service::TrayService::new(
-                Arc::clone(tray),
-            )));
+            services.push(Box::new(tilo_tray::service::TrayService::new(Arc::clone(
+                tray,
+            ))));
         }
         services
     }
@@ -191,7 +188,7 @@ impl DesktopServices {
     /// The applications' tray items, once their watcher serves; the bar draws them and the person's
     /// clicks go back through it.
     #[must_use]
-    pub fn tray(&self) -> Option<&Arc<tilo_tray_host::Tray>> {
+    pub fn tray(&self) -> Option<&Arc<tilo_tray::Tray>> {
         self.tray.as_ref().map(|(tray, _)| tray)
     }
 
@@ -406,21 +403,18 @@ async fn connect(bus: &Bus, system: bool) -> Option<zbus::Connection> {
 async fn tray_on(
     bus: &Bus,
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
-) -> Option<(
-    Arc<tilo_tray_host::Tray>,
-    tilo_tray_host::watcher::WatcherHandle,
-)> {
+) -> Option<(Arc<tilo_tray::Tray>, tilo_tray::watcher::WatcherHandle)> {
     let builder = match bus {
         Bus::None => return None,
         Bus::Default => zbus::connection::Builder::session(),
         Bus::Address(address) => zbus::connection::Builder::address(address.as_str()),
     };
-    let tray = tilo_tray_host::Tray::with_owner_resolver(
+    let tray = tilo_tray::Tray::with_owner_resolver(
         Arc::new(crate::app_icons::tray_raster),
         tray_owner_resolver(running),
     );
     let served = match builder {
-        Ok(builder) => tilo_tray_host::watcher::serve(builder, Arc::clone(&tray)).await,
+        Ok(builder) => tilo_tray::watcher::serve(builder, Arc::clone(&tray)).await,
         Err(error) => Err(error),
     };
     served
@@ -434,7 +428,7 @@ async fn tray_on(
 /// item proves nothing, and an item's own claim is never taken for it.
 fn tray_owner_resolver(
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
-) -> tilo_tray_host::OwnerResolver {
+) -> tilo_tray::OwnerResolver {
     Arc::new(move |pid| {
         tilo_notifications_service::verified_flatpak_app_id(pid)
             .or_else(|| running.lock_recover().get(&pid).cloned())
@@ -500,9 +494,7 @@ async fn on_session_bus(
     // What shares the session's screens, drives its seat and passes its selection.
     .with_streams(side.streams())
     .with_input(side.input())
-    .with_clipboard(side.clipboard())
-    // A workspace already granting an app what it asks for answers for the person.
-    .with_consent_grants(side.grants());
+    .with_clipboard(side.clipboard());
     // The desktop's selection moves when the person copies outside any portal ask: the apps holding
     // its clipboard hear of the move, and the offer a remote session made ends.
     let clipboards = portal.clipboards().clone();
@@ -601,7 +593,7 @@ async fn network_secrets(
     questions: Questions,
     roaming: RoamingWifiSlot,
 ) -> zbus::Result<tilo_network_secret_agent::service::AgentHandle> {
-    // Choosing the vault's custody probes the secret store over a blocking D-Bus call, which must
+    // Choosing the vault's ownership probes the secret store over a blocking D-Bus call, which must
     // not run on a runtime thread.
     let store = tokio::task::spawn_blocking(move || VaultStore::for_session(roaming))
         .await

@@ -180,7 +180,7 @@ pub fn tilo_install_bin() -> String {
     tilo_install_bin_from(package_store::dev_env::dev_override(INSTALL_BIN_ENV))
 }
 
-/// [`tilo_install_bin`] given the override the build's gate let through.
+/// [`tilo_install_bin`] given the override the build's check let through.
 fn tilo_install_bin_from(allowed_override: Option<std::ffi::OsString>) -> String {
     allowed_override
         .and_then(|value| value.into_string().ok())
@@ -1167,17 +1167,17 @@ mod tests {
             );
         }
 
-        phase app_host_stages_verified_downloads_in_private_state_without_writable_home;
+        phase package_service_stages_verified_downloads_in_private_state_without_writable_home;
         {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
 
-            let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
+            let unit = include_str!("../../package-service/systemd/tilo-package-service.service");
             let setting = unit
                 .lines()
                 .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
                 .expect("the hardened host must explicitly locate writable download state");
-            assert_eq!(setting, "%S/tilo-app-host/cache");
+            assert_eq!(setting, "%S/tilo-package-service/cache");
             assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
             let writes = unit
                 .lines()
@@ -1186,7 +1186,7 @@ mod tests {
             assert!(
                 writes
                     .split_whitespace()
-                    .any(|path| path == "%S/tilo-app-host")
+                    .any(|path| path == "%S/tilo-package-service")
             );
             assert!(
                 !writes
@@ -1322,8 +1322,8 @@ mod tests {
         {
             {
                 use package_store::dev_env::dev_override_from;
-                let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
-                assert_eq!(tilo_install_bin_from(gated), installed_install_bin());
+                let guarded = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
+                assert_eq!(tilo_install_bin_from(guarded), installed_install_bin());
                 let honoured =
                     dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
                 assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");

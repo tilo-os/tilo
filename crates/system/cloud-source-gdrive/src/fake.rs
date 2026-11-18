@@ -1715,9 +1715,7 @@ fn parse_unary(tokens: &[Token], at: &mut usize) -> Result<Query, ()> {
     }
 }
 
-fn format_rfc3339(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
+use cloud_source::http::format_rfc3339_millis as format_rfc3339;
 
 #[cfg(test)]
 mod tests {

@@ -30,7 +30,7 @@ accepts its changes. Everything else holds a replica or a cache.
   random number, the time. An action says it needs these (`uses web`, `uses random`,
   `uses time`), and the compiler enforces it.
 - **What the person saw is an argument.** A default like `done: Bool = not item.done` is
-  evaluated when the action is invoked and recorded. Two people ticking the same box both record
+  evaluated when the action is invoked and recorded. Two people ticking the same box both resource
   `done: true`, so they agree instead of cancelling out. Positions are the same: a move
   may name a neighbour (`move(item, after: other)`) or a place (`move(item, to: 2)`, as a drag
   gives one), and a place is resolved when the action runs, against the list the person saw,
@@ -181,18 +181,18 @@ it stands with `delivery(r)`: `.none` until the resource's actions queued one, e
   collection, and history follows the one item through its moves. Moves stay within the
   document, the unit an origin orders.
 - **Concurrent changes merge:**
-  - The placement is one register. Of two concurrent moves of an item, the last in the record's
+  - The placement is one register. Of two concurrent moves of an item, the last in the resource's
     order wins: parent, field and place together, never a mix of both.
   - A field edit writes the item, not its placement, so an edit made while someone moves the
     item is kept, wherever the item ends up.
   - Removing an item writes its placement as removed; everything placed in it goes with it.
-    Nothing is deleted from the record, so undoing the removal brings it back with all it held.
+    Nothing is deleted from the resource, so undoing the removal brings it back with all it held.
   - An item moved out of a container before it is removed, or at the same time, is no longer in
     it and stays where it was moved. An item moved or inserted into a container while it is
     removed goes with it, as an edit inside it does. A removal and a move of the same item: the
     last wins.
   - Concurrent moves can put two items inside each other. In such a cycle the move that is last
-    in the record's order does not take effect, and its item stays where that move took it from
+    in the resource's order does not take effect, and its item stays where that move took it from
     (the placement records it). Should that place be in a cycle too, the item is in no
     collection until someone moves it. A single action that would move an item into itself is
     refused.
@@ -204,7 +204,7 @@ it stands with `delivery(r)`: `.none` until the resource's actions queued one, e
     stands at the top. Moving an item in an outline — a drag, `Tab`, Shift-Tab — sets its new
     parent and its place among the new siblings in one action, recorded by the neighbour it
     goes before, so two moves at once leave the item in one place and under one parent.
-- **Records written before items were flat** held each item inside the collection it was
+- **Resources written before items were flat** held each item inside the collection it was
   inserted into. They are read where they are: each nested item by its id, placed in the
   collection and at the order key it has, until a move or removal writes its placement into its
   map. Nothing is copied or rewritten, so no edit is lost to the migration and every id stays.
@@ -233,6 +233,6 @@ it stands with `delivery(r)`: `.none` until the resource's actions queued one, e
   last write wins and the person is told, or both versions are kept.
 - A package changing where its items live says so itself. The store maps the older layout to the
   flat one; which collection an item belongs in under a new schema is the package's to say, with
-  a migration of its own records (authority.md, "Versions"): Board keeps the field that held each
+  a migration of its own documents (authority.md, "Versions"): Board keeps the field that held each
   card's column, and its migration moves the cards of a board written before into their columns'
   collections, each keeping its id and history.

@@ -9,8 +9,8 @@ use std::path::Path;
 
 pub const WORK_EMAIL: &str = "ada@example.com";
 pub const HOME_EMAIL: &str = "ada.home@example.org";
-pub const WORK_HOST: &str = "imap.example.com";
-pub const HOME_HOST: &str = "imap.example.org";
+pub const WORK_SERVER: &str = "imap.example.com";
+pub const HOME_SERVER: &str = "imap.example.org";
 /// The password Thunderbird saved for the work account's servers.
 pub const WORK_PASSWORD: &str = "work-fixture-password";
 /// The password Thunderbird saved for the home account's servers.
@@ -54,7 +54,7 @@ pub fn write_sample_profile(home: &Path) {
 
     write(
         &profile,
-        &format!("ImapMail/{WORK_HOST}/INBOX"),
+        &format!("ImapMail/{WORK_SERVER}/INBOX"),
         [
             message(
                 "work-1",
@@ -76,7 +76,7 @@ pub fn write_sample_profile(home: &Path) {
     );
     write(
         &profile,
-        &format!("ImapMail/{WORK_HOST}/Sent"),
+        &format!("ImapMail/{WORK_SERVER}/Sent"),
         message(
             "work-sent-1",
             WORK_EMAIL,
@@ -88,12 +88,12 @@ pub fn write_sample_profile(home: &Path) {
     // Thunderbird keeps an index beside every mbox; it is not mail.
     write(
         &profile,
-        &format!("ImapMail/{WORK_HOST}/INBOX.msf"),
+        &format!("ImapMail/{WORK_SERVER}/INBOX.msf"),
         "index",
     );
     write(
         &profile,
-        &format!("ImapMail/{HOME_HOST}/INBOX"),
+        &format!("ImapMail/{HOME_SERVER}/INBOX"),
         [
             message(
                 "home-1",
@@ -114,7 +114,7 @@ pub fn write_sample_profile(home: &Path) {
     );
     write(
         &profile,
-        &format!("ImapMail/{HOME_HOST}/Sent"),
+        &format!("ImapMail/{HOME_SERVER}/Sent"),
         message(
             "home-sent-1",
             HOME_EMAIL,
@@ -140,13 +140,13 @@ pub fn write_sample_profile(home: &Path) {
     write_logins(
         &profile,
         &[
-            (format!("imap://{WORK_HOST}"), WORK_EMAIL, WORK_PASSWORD),
+            (format!("imap://{WORK_SERVER}"), WORK_EMAIL, WORK_PASSWORD),
             (
                 "smtp://smtp.example.com".to_owned(),
                 WORK_EMAIL,
                 WORK_PASSWORD,
             ),
-            (format!("imap://{HOME_HOST}"), HOME_EMAIL, HOME_PASSWORD),
+            (format!("imap://{HOME_SERVER}"), HOME_EMAIL, HOME_PASSWORD),
             (
                 "smtp://smtp.example.org".to_owned(),
                 HOME_EMAIL,
@@ -168,6 +168,64 @@ pub fn write_sample_profile(home: &Path) {
                  'BEGIN:VEVENT\r\nUID:holiday@example.com\r\nSUMMARY:Company holiday\r\nDTSTART;VALUE=DATE:20261224\r\nDTEND;VALUE=DATE:20261227\r\nEND:VEVENT');",
         )
         .expect("write calendar events");
+}
+
+/// The sample profile where Flatpak keeps Thunderbird: under the
+/// application's `.var/app/org.mozilla.Thunderbird`, which is a link to the
+/// package's own directory, as Flatpak leaves it when it names an app
+/// directory after a package rather than its application id.
+///
+/// # Panics
+/// The fixture's application directory or its link could not be created.
+#[cfg(unix)]
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot write its files panics with the path"
+)]
+pub fn write_flatpak_profile(home: &Path) {
+    let app = home.join(".var/app");
+    let package = app.join("org.mozilla.thunderbird_esr");
+    std::fs::create_dir_all(&package).expect("create the Flatpak application directory");
+    std::os::unix::fs::symlink(
+        "org.mozilla.thunderbird_esr",
+        app.join("org.mozilla.Thunderbird"),
+    )
+    .expect("link the Flatpak application directory");
+    write_sample_profile(&app.join("org.mozilla.Thunderbird"));
+}
+
+/// The sample profile as Thunderbird leaves it when the profile was copied in
+/// from another Thunderbird location: `prefs.js` still names the old mail
+/// directories, both absolutely and relative to that place, where nothing is
+/// any more, while the mail itself lies in `ImapMail/` where Thunderbird lays
+/// it out. The old paths stay stale, not wrong: reading the profile must still
+/// find its mail, and must not follow a path out of the profile.
+///
+/// # Panics
+/// The sample profile's `prefs.js` could not be read or written.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot write its files panics with the path"
+)]
+pub fn write_stale_mail_directories(home: &Path) {
+    use std::fmt::Write as _;
+
+    let profile = home.join(".thunderbird/fx8r2l9p.default-release");
+    let old = home.join("thunderbird-before-flatpak/fx8r2l9p.default-release");
+    let prefs = profile.join("prefs.js");
+    let mut text = std::fs::read_to_string(&prefs).expect("read the fixture's prefs.js");
+    for (server, name) in [("server1", WORK_SERVER), ("server2", HOME_SERVER)] {
+        let _ = writeln!(
+            text,
+            "user_pref(\"mail.server.{server}.directory\", \"{}/ImapMail/{name}\");",
+            old.display()
+        );
+        let _ = writeln!(
+            text,
+            "user_pref(\"mail.server.{server}.directory-rel\", \"[ProfD]../../thunderbird-before-flatpak/fx8r2l9p.default-release/ImapMail/{name}\");"
+        );
+    }
+    std::fs::write(&prefs, text).expect("write the fixture's prefs.js");
 }
 
 #[expect(

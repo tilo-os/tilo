@@ -1,4 +1,4 @@
-//! A package whose field changed from `Text` to `RichText`: the records keep their words.
+//! A package whose field changed from `Text` to `RichText`: the documents keep their words.
 //!
 //! A binary of its own: the packages register their schemas in a table shared by the whole
 //! process, and this one loads Notes with a note's body kept as rich text, so it must not share

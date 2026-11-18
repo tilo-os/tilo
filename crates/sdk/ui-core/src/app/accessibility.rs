@@ -1069,8 +1069,8 @@ impl App {
         }
     }
 
-    /// Gated on the focus-trap signal, not `modal_capture`: that governs only
-    /// pointer click-through — gating Tab on it instead either froze focus
+    /// Depends on the focus-trap signal, not `modal_capture`: that governs only
+    /// pointer click-through — guarding Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     #[cfg(feature = "native")]
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
@@ -1101,7 +1101,7 @@ impl App {
                 &[],
             );
         }
-        // The box standing with no menu around it is read over the app, as it is drawn.
+        // The box with no menu around it is read over the app, as it is drawn.
         if self.window_box.is_drawn() && self.history.is_none() {
             let roots: [&dyn Widget; 2] = [self.root_widget.as_ref(), &self.window_box];
             return crate::accesskit_bridge::build_presentation_with_resources_bound(
@@ -1256,7 +1256,7 @@ impl App {
             .nodes
             .into_iter()
             .find(|(id, _)| *id == target)?;
-        // The box standing with no menu around it is no widget of the layout: what it names is
+        // The box with no menu around it is no widget of the layout: what it names is
         // pressed on it, as its own keys and pointer reach it.
         if self.window_box.is_open()
             && let Some(control) = Widget::accessibility(&self.window_box)
@@ -1554,7 +1554,7 @@ impl App {
     /// refresh while one is up walks again, and so does the first after it.
     /// A framework History at rest is tracked: what changes it refreshes it
     /// (`refresh_framework_history`), and that invalidates the widgets.
-    /// A send-to box standing with no menu around it is one.
+    /// A send-to box with no menu around it is one.
     fn semantic_tree_untracked(&self) -> bool {
         self.window_box.is_drawn()
             || self.close_admission.dialog.is_some()
@@ -1614,7 +1614,7 @@ impl App {
                 &[],
             );
         }
-        // The box standing with no menu around it has the pointer and the keys: while it stands,
+        // The box with no menu around it has the pointer and the keys: while it stands,
         // it is what the window offers, as the palette is.
         if self.window_box.is_drawn() {
             let delta = self.accessibility.semantic_tree.refresh_bound(
@@ -2025,7 +2025,7 @@ enum CommitKind {
 #[path = "history_sweep_tests.rs"]
 mod history_sweep_tests;
 
-/// What the box standing with no menu around it calls the control `node` describes: the target of
+/// What the box with no menu around it calls the control `node` describes: the target of
 /// its own control of the same name, which its keys and pointer reach as well.
 fn box_control(described: &crate::a11y::AccessNode, node: &accesskit::Node) -> Option<String> {
     described.children.iter().find_map(|child| {

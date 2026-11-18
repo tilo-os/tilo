@@ -114,7 +114,7 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
     let (first, _) = frames.draw(&mut app);
     assert!(
         first.measured > 0 && first.measured < 300,
-        "the first frame measures the rows standing in view, not every row: {first:?}"
+        "the first frame measures the rows in view, not every row: {first:?}"
     );
     settle(&mut app, &mut frames);
     // The pointer rests over the timeline's gutter, where no row lifts.
@@ -382,7 +382,7 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
 
 #[test]
 fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_inline() {
-    use crate::record::Chat;
+    use crate::chat::Chat;
     use ui::tilo_resource::Id;
 
     let mut doc = crate::testing::demo_doc();

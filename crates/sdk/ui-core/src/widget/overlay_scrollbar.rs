@@ -1,6 +1,6 @@
 //! The overlay scroll bar for a host that scrolls and paints its own content (a terminal's
 //! scrollback, a canvas): the thumb a [`Scrollable`] shows, laid over the content's trailing
-//! edge instead of standing in a gutter beside it, shown while the content scrolls or the
+//! edge instead of in a gutter beside it, shown while the content scrolls or the
 //! pointer is at it and faded out at rest ([`BarFade`]); always shown under reduced motion.
 
 use std::cell::Cell;
@@ -20,7 +20,7 @@ pub struct OverlayScrollbar {
     fade: Cell<BarFade>,
     painted_offset: Cell<Option<f64>>,
     pointer_near: bool,
-    /// The lane's width (`metrics.scrollbar_gutter`).
+    /// The bar_area's width (`metrics.scrollbar_gutter`).
     gutter: f64,
     /// The thumb's thickness (`metrics.scroll_thumb`).
     thumb: f64,
@@ -55,10 +55,10 @@ impl OverlayScrollbar {
         self.reduce_motion = theme.reduce_motion;
     }
 
-    /// The lane along the trailing edge of `area` the bar lies in, over
+    /// The bar_area along the trailing edge of `area` the bar lies in, over
     /// the content: the pointer there holds the bar shown.
     #[must_use]
-    pub fn lane(&self, area: Rect) -> Rect {
+    pub fn bar_area(&self, area: Rect) -> Rect {
         Rect::new(
             (area.x1 - self.gutter).max(area.x0),
             area.y0,
@@ -69,7 +69,7 @@ impl OverlayScrollbar {
 
     #[must_use]
     pub fn track(&self, area: Rect) -> Rect {
-        self.bar.track_of_thickness(self.lane(area), self.thumb)
+        self.bar.track_of_thickness(self.bar_area(area), self.thumb)
     }
 
     pub fn wake(&self) {
@@ -92,11 +92,11 @@ impl OverlayScrollbar {
     }
 
     /// Follow the pointer at `cursor` over `area`: the thumb under it
-    /// brightens and the bar stays shown while it is in the lane. Returns
+    /// brightens and the bar stays shown while it is in the bar_area. Returns
     /// whether anything the bar paints changed.
     pub fn update_pointer(&mut self, area: Rect, metrics: ScrollMetrics, cursor: Point) -> bool {
         let mut changed = self.bar.update_hover(self.track(area), metrics, cursor);
-        let near = metrics.overflows() && self.lane(area).contains(cursor);
+        let near = metrics.overflows() && self.bar_area(area).contains(cursor);
         if near != self.pointer_near {
             self.pointer_near = near;
             self.wake();
@@ -258,7 +258,7 @@ mod tests {
 
             theme.reduce_motion = false;
             bar.set_theme(&theme);
-            assert!(bar.update_pointer(AREA, overflowing(0.0), bar.lane(AREA).center()));
+            assert!(bar.update_pointer(AREA, overflowing(0.0), bar.bar_area(AREA).center()));
             assert!(bar.held(), "the pointer at the bar holds it");
             assert!(bar.opacity() > 0.99);
             assert!(bar.pointer_left());
@@ -270,15 +270,15 @@ mod tests {
             let theme = Theme::dark();
             let mut bar = OverlayScrollbar::vertical();
             bar.set_theme(&theme);
-            let lane = bar.lane(AREA);
-            assert_eq!(lane.x1, AREA.x1);
+            let bar_area = bar.bar_area(AREA);
+            assert_eq!(bar_area.x1, AREA.x1);
             assert_eq!(
-                lane.width(),
+                bar_area.width(),
                 f64::from(theme.tokens.metrics.scrollbar_gutter)
             );
             assert_eq!(
                 bar.track(AREA),
-                Scrollbar::vertical().track_in(lane, &theme),
+                Scrollbar::vertical().track_in(bar_area, &theme),
                 "the thumb stands where a Scrollable's does"
             );
         }

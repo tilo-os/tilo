@@ -61,7 +61,7 @@ impl SelectedGrant {
                 &directory.join("identity"),
                 "Owned selected application person",
                 [1, 2, 3],
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )?;
             let password = Zeroizing::new(
                 String::from_utf8(b"owned retained source fixture installation words".to_vec())

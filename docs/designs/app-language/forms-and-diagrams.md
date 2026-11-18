@@ -107,7 +107,7 @@ Rust, and apps describe data.
 |---|---|---|
 | `ui.Chart` | line, area, bar, scatter; several series | axes, ticks, units and locale formatting picked from the data |
 | `ui.Graph` | nodes and edges | `.layered` (dependencies, flows), `.tree`, `.force`, or `.free` (positions stored on the resource) |
-| `ui.Timeline` | items with spans in lanes | time axis that zooms from hours to years |
+| `ui.Timeline` | items with spans in rows | time axis that zooms from hours to years |
 | `ui.Sparkline` | one small series inside text or a row | fills its slot |
 
 ### Data in, actions out
@@ -139,7 +139,7 @@ view done_per_week(p: Project, weeks: Collection<WeekCount>) {
 
 - **Free layout** stores positions on the resource. A `Point` field gets
   `ui.GraphNode(item: n, at: n.at)` plus `on moved(n: Card, to: Point): n.at = to`. While a node
-  is dragged, the UI host moves it locally at native refresh. The release commits one edit.
+  is dragged, the app window moves it locally at native refresh. The release commits one edit.
 - **Selection, hover and focus** are view state, so others' selections show as presence. A
   hover shows the item's title and its type's filter fields by default.
 - **Accessibility:** each node is focusable with its view's semantics, and arrow keys follow
@@ -164,7 +164,7 @@ view done_per_week(p: Project, weeks: Collection<WeekCount>) {
 Each component draws only what changed and only what's visible. A graph past a few hundred
 nodes clusters out of view, and a chart with more points than pixels draws the min and max per
 pixel column. The perf matrix (components.md §5) gains 10k-point chart and 1k-node graph cases,
-gated like lists.
+guarded like lists.
 
 ## 4. Order
 
@@ -174,4 +174,4 @@ gated like lists.
 3. `ui.Chart`, first used by Tasks' project page (done per week).
 4. `ui.Graph`, first used by Tasks' dependencies (`blocked_by`).
 5. `ui.Timeline`, first used by Tasks' project schedule.
-6. `tilolang layout-check` (layout.md §6) gates all of these from its first landing.
+6. `tilolang layout-check` (layout.md §6) checks all of these from its first landing.

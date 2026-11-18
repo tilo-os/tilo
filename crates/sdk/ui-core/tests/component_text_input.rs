@@ -2,14 +2,14 @@
 //! and keyboard platform events through `send_host_event`, text through IME
 //! commits.
 
-use tilo_ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use tilo_ui::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 
-use crate::support::application::{ProbeHost, definition, editor_permissions, runner_inputs};
+use crate::support::application::{ProbeHarness, definition, editor_permissions, runner_inputs};
 
 struct Page(tilo_ui::widget::Element);
 
@@ -113,7 +113,7 @@ impl Widget for Page {
     reason = "a component factory takes its inputs by value"
 )]
 fn create(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
@@ -157,7 +157,7 @@ fn create(
     ))
 }
 
-fn harness(host: &ProbeHost) -> FrameHarness {
+fn harness(host: &ProbeHarness) -> FrameHarness {
     static DEFINITION: std::sync::OnceLock<tilo_ui::application::ApplicationDefinition> =
         std::sync::OnceLock::new();
     let definition = DEFINITION.get_or_init(|| definition(create));
@@ -198,7 +198,7 @@ fn title(frame: &FrameHarness) -> String {
 
 #[test]
 fn a_pointer_press_focuses_a_components_text_input_and_ime_commits_edit_it() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let mut frame = harness(&host);
     let rect = input_rect(&frame);
     press(&mut frame, rect.center().x, rect.center().y);
@@ -216,7 +216,7 @@ fn a_pointer_press_focuses_a_components_text_input_and_ime_commits_edit_it() {
 
 #[test]
 fn tab_reaches_a_components_text_input() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let mut frame = harness(&host);
     let order = frame.tab_through();
     assert!(
@@ -234,7 +234,7 @@ const CREATE_AMBIGUOUS_LOCUS: tilo_ui::application::ComponentFactory =
     |context, target, _| locus_component(context, &target, 2);
 
 fn locus_component(
-    context: HostContext,
+    context: ProcessContext,
     target: &LaunchTarget,
     count: usize,
 ) -> Result<AppComponent, LaunchError> {
@@ -248,7 +248,7 @@ const CREATE_HIDDEN_SCROLL_LOCUS: tilo_ui::application::ComponentFactory =
     |context, target, _| locus_component_with_scroll(context, &target, 1, Some(140.0));
 
 fn locus_component_with_scroll(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: &LaunchTarget,
     count: usize,
     scroll_gap: Option<f32>,
@@ -313,7 +313,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
             None,
         ),
     ] {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(factory);
         let context = host
             .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
@@ -368,7 +368,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
 
 #[test]
 fn component_publication_locus_checks_owner_record_and_lifetime_without_input() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let definition = definition(CREATE_LOCUS);
     let context = host
         .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
@@ -473,7 +473,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
         CREATE_LOCUS as tilo_ui::application::ComponentFactory,
         CREATE_AMBIGUOUS_LOCUS,
     ] {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(factory);
         let context = host
             .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
@@ -593,7 +593,7 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use tilo_ui::widget::{Column, TileHost, resource_actions};
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let definition = definition(CREATE_LOCUS);
     let mut column = Column::new();
     let mut owners = Vec::new();

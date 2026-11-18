@@ -1530,7 +1530,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       const auto action=d->GetString("action").ToString();
       if(action=="console" || action=="network") agent_log_->Request(d);
       // The tab's own record of what was done in it reads nothing of the page.
-      else if(action=="ledger") page_automation_->Ledger(d);
+      else if(action=="log") page_automation_->Log(d);
       else { agent_log_->Activate();page_automation_->Request(d); }
     }
     else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel(d->HasKey("request_id")?d->GetInt("request_id"):0);}
@@ -2938,11 +2938,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
        action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find" &&
-       action!="ledger" && action!="fields" && action!="forms" && action!="fill_form" && action!="search")return false;
+       action!="log" && action!="fields" && action!="forms" && action!="fill_form" && action!="search" && action!="table")return false;
     const bool elementless=action=="find" || action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
       action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture" ||
-      action=="ledger" || action=="fields" || action=="forms" || action=="fill_form" || action=="search";
+      action=="log" || action=="fields" || action=="forms" || action=="fill_form" || action=="search" || action=="table";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2963,6 +2963,15 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
     for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;
+    // A text released for one site says the origin it was released for and
+    // the kind of field it is for. Only a fill of a secret carries either.
+    if(d->HasKey("at") && (action!="fill" || !type("at",VTYPE_STRING) || d->GetString("at").empty() || d->GetString("at").length()>300 ||
+       !type("secret",VTYPE_BOOL) || !d->GetBool("secret")))return false;
+    if(d->HasKey("into")) {
+      if(!d->HasKey("at") || !type("into",VTYPE_STRING))return false;
+      const auto into=d->GetString("into").ToString();
+      if(into!="password" && into!="code" && into!="value")return false;
+    }
     // A frame is named as the outline printed it, or not at all.
     if(d->HasKey("frame") && (!type("frame",VTYPE_STRING) || d->GetString("frame").empty() || d->GetString("frame").length()>16))return false;
     if(action=="at" && (!number("x") || !number("y") || Number(d,"x")<0 || Number(d,"y")<0 || Number(d,"x")>100000 || Number(d,"y")>100000))return false;
@@ -2983,7 +2992,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     }
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
-    if((action=="console" || action=="network" || action=="ledger") && (!number("since") || Number(d,"since")<0))return false;
+    if((action=="console" || action=="network" || action=="log") && (!number("since") || Number(d,"since")<0))return false;
     // Who asks, when the caller says: a name the tab keeps each actor's own
     // read baseline under and sets its actions down by.
     if(d->HasKey("actor") && (!type("actor",VTYPE_STRING) || d->GetString("actor").empty() || d->GetString("actor").length()>64))return false;
@@ -2993,8 +3002,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
        (!type("max_width",VTYPE_INT) || d->GetInt("max_width")<1 || d->GetInt("max_width")>CAPTURE_MAX_WIDTH))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
     // A read of the outline may read on from a line an earlier read or a
-    // search named; a search says the words it looks for.
-    if(d->HasKey("from") && (action!="outline" || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
+    // search named, and a read of a table from a row an earlier read named; a
+    // search says the words it looks for.
+    if(d->HasKey("from") && ((action!="outline" && action!="table") || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
     if(action=="search" && (!type("text",VTYPE_STRING) || d->GetString("text").empty() || d->GetString("text").length()>200))return false;
     // A find or a search may be asked to look in the frames the page shows.
     if(d->HasKey("frames") && (!type("frames",VTYPE_BOOL) || (action!="find" && action!="search")))return false;

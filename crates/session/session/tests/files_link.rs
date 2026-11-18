@@ -1,9 +1,9 @@
 //! A device's files daemon reaches the network through the session's endpoint: the device has one
-//! endpoint id, so a relay never sees two endpoints under its key replace each other, and a file's
+//! endpoint id, so a server never sees two endpoints under its key replace each other, and a file's
 //! bytes still travel both ways between the device and a peer elsewhere.
 //!
 //! The daemon here is the one `fs serve --session-link` runs, in this test's process: its link to
-//! the session, the content plane it serves and the hydrator it fetches with. The session is a
+//! the session, the content store it serves and the hydrator it fetches with. The session is a
 //! real device's, started as the login starts it.
 
 #![cfg(target_os = "linux")]
@@ -83,13 +83,13 @@ fn the_files_daemon_reaches_peers_through_the_sessions_endpoint() {
 
     // A peer elsewhere, on the relay the laptop uses.
     let peer_key = iroh::SecretKey::generate();
-    let relay: iroh::RelayUrl = test_relay::loopback_url()
+    let relay: iroh::RelayUrl = test_server::loopback_url()
         .parse()
         .expect("the loopback relay's address");
     let theirs = Arc::new(fs::ContentStore::memory());
     let (peer, there, _peer_workspace) = runtime.block_on(async {
         let peer = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(test_relay::relay_mode())
+            .relay_mode(test_server::relay_mode())
             .secret_key(peer_key.clone())
             .bind()
             .await
@@ -103,7 +103,7 @@ fn the_files_daemon_reaches_peers_through_the_sessions_endpoint() {
         (peer, there, workspace)
     });
 
-    // The daemon fetches the peer's file through the session, from the relay alone.
+    // The daemon fetches the peer's file through the session, from the server alone.
     let fetched = runtime
         .block_on(
             fs::Hydrator::new(net.clone(), Arc::new(fs::ContentStore::memory())).fetch_from(
@@ -114,7 +114,7 @@ fn the_files_daemon_reaches_peers_through_the_sessions_endpoint() {
         .expect("the peer's file reaches the laptop");
     assert_eq!(&fetched[..], b"written elsewhere");
 
-    // The peer fetches the laptop's file, reaching the device by its one id on the relay.
+    // The peer fetches the laptop's file, reaching the device by its one id on the server.
     let fetched = runtime
         .block_on(
             fs::Hydrator::new(peer, Arc::new(fs::ContentStore::memory())).fetch_from(

@@ -30,7 +30,7 @@ pub struct SelectedDescriptor {
     pub path: Vec<u8>,
     /// The app passes the descriptor open in its process; on the wire this is
     /// the number of the duplicate handed over on the connection's descriptor
-    /// lane (`runtime_portal::descriptor_lane`), never a descriptor the host
+    /// descriptor stream (`runtime_portal::descriptors`), never a descriptor the host
     /// reaches into the app for.
     pub descriptor: u32,
     pub expected: ObjectIdentity,

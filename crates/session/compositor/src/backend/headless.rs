@@ -724,6 +724,56 @@ impl Backend for HeadlessBackend {
             rgba,
         })
     }
+
+    fn set_output_description(
+        &mut self,
+        name: &str,
+        description: &str,
+    ) -> Result<(), BackendError> {
+        let output = self
+            .outputs
+            .iter()
+            .find(|output| output.output.name() == name)
+            .ok_or_else(|| BackendError(format!("no output named {name}")))?;
+        output.output.set_description(description);
+        Ok(())
+    }
+
+    /// What the scene shows with the pointer and every pen's cursor drawn in front, as a display
+    /// has them: what a test reads to see a cursor where the scene alone shows a window.
+    fn screenshot_with_cursor(
+        &mut self,
+        state: &mut State,
+        name: &str,
+    ) -> Result<Screenshot, BackendError> {
+        let output = self
+            .outputs
+            .iter()
+            .find(|output| output.output.name() == name)
+            .map(|output| output.output.clone())
+            .ok_or_else(|| BackendError(format!("no output named {name}")))?;
+        let size = output
+            .current_mode()
+            .map(|mode| Size::<i32, Buffer>::from((mode.size.w, mode.size.h)))
+            .ok_or_else(|| BackendError(format!("{name}: no mode")))?;
+        let scale = output.current_scale().fractional_scale();
+        let mut elements = state.cursor_elements(&mut self.renderer, &output);
+        elements.extend(output_elements(&mut self.renderer, state, &output));
+        let rgba = render_to_memory::<_, GlesTexture, _>(
+            &mut self.renderer,
+            Size::from((size.w, size.h)),
+            scale,
+            Transform::Normal,
+            &elements,
+            BACKGROUND,
+        )
+        .map_err(|error| BackendError(format!("{name}: {error}")))?;
+        Ok(Screenshot {
+            width: u32::try_from(size.w).map_err(|error| failed("width", error))?,
+            height: u32::try_from(size.h).map_err(|error| failed("height", error))?,
+            rgba,
+        })
+    }
 }
 
 #[cfg(test)]

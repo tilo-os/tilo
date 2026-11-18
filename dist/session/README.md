@@ -147,7 +147,7 @@ requires a separate cache rather than loading it under another authority.
 
 A recovery launch uses the ordinary daemon with
 `serve --require-existing-workspace --cache-dir /path/to/existing/cache` and
-the mount, certified identity root, existing ACL and data-plane arguments for
+the mount, certified identity root, existing ACL and backend arguments for
 that installation. The guard runs before identity loading, transport binding
 or cache creation. Once admitted, the ordinary daemon validates/recovers the
 namespace and authenticates remote peers; the preflight is not a permission

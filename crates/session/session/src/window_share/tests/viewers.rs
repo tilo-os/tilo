@@ -1,23 +1,23 @@
 //! A third session joins the two: two members show the one window a device shares at the same
-//! time, each a viewer of its own. Each asks the workspace's live plane for the window's track and
+//! time, each a viewer of its own. Each asks the workspace's live session for the window's track and
 //! acts in the window through a seat of its own, and one that stops showing it ends its own view
 //! and nothing of the other's.
 
 use super::super::{VIEW_AGAIN, VIEW_EXPIRY};
 use super::*;
 
-/// What the planes carried to one member of a shared window it shows.
+/// What the live sessions carried to one member of a shared window it shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Carried {
-    /// The objects the member's live plane opened: the pictures of the one window it asks for.
+    /// The objects the member's live session opened: the pictures of the one window it asks for.
     pictures: u64,
     /// How often the sharing device told it the window's share ended.
     ends: usize,
 }
 
-/// Hand what `from` would have sent on the state plane to each of `to` it was for, as [`carry`]
+/// Hand what `from` would have sent on the state protocol to each of `to` it was for, as [`carry`]
 /// does for one member: a control message to the device it names, and nothing to anyone else. The
-/// window's pictures travel the live plane. Answers how often each of `to` was told a window's
+/// window's pictures travel the live session. Answers how often each of `to` was told a window's
 /// share ended, in their order.
 fn carry_to_each(from: &mut Member, to: &[&Member]) -> Vec<usize> {
     let mut ends = vec![0; to.len()];
@@ -37,15 +37,15 @@ fn carry_to_each(from: &mut Member, to: &[&Member]) -> Vec<usize> {
     ends
 }
 
-/// How many objects `member` 's live plane opened in the workspace. A member that shows one shared
-/// window asks its plane for that window's track and no other, so these are the window's pictures.
+/// How many objects `member` 's live session opened in the workspace. A member that shows one shared
+/// window asks its live session for that window's track and no other, so these are the window's pictures.
 pub(super) fn pictures_heard(member: &Member) -> u64 {
-    crate::calls::planes_of(&member.sync)
+    crate::calls::live_sessions_of(&member.sync)
         .get(WORKSPACE)
-        .map_or(0, |plane| plane.heard_total())
+        .map_or(0, |live_session| live_session.heard_total())
 }
 
-/// The tracks `member` asks the workspace's live plane for of the windows `host` shares.
+/// The tracks `member` asks the workspace's live session for of the windows `host` shares.
 fn tracks_asked(member: &Member, host: &Member) -> Vec<tilo_live::live::Track> {
     member
         .session
@@ -60,8 +60,8 @@ fn tracks_asked(member: &Member, host: &Member) -> Vec<tilo_live::live::Track> {
 }
 
 /// Three devices of one workspace: one shares a window of its shell, and the two others show it.
-/// Their live planes meet on the test's relay, which carries the window's pictures; no transport
-/// runs between the three state planes either, so every pass carries what each of them said to the
+/// Their live sessions meet on the test's relay, which carries the window's pictures; no transport
+/// runs between the three state live sessions either, so every pass carries what each of them said to the
 /// device it was for. Each member is kept on the heap: three sessions side by side are more than a
 /// test's stack holds.
 struct Three {
@@ -100,7 +100,7 @@ impl Three {
         }
     }
 
-    /// One pass of the client and of each of the three sessions, with what their planes said
+    /// One pass of the client and of each of the three sessions, with what their live sessions said
     /// carried after it.
     fn pass(&mut self) {
         if let Some(client) = self.window.as_mut() {
@@ -131,8 +131,8 @@ impl Three {
         carry_to_each(second, &[&*self.host, &**first]);
     }
 
-    /// What the planes carried to each viewer so far, in their order: the window's pictures its
-    /// live plane opened, and the ends of the share it was told.
+    /// What the live sessions carried to each viewer so far, in their order: the window's pictures its
+    /// live session opened, and the ends of the share it was told.
     fn carried(&self) -> [Carried; 2] {
         [0, 1].map(|at| Carried {
             pictures: pictures_heard(&self.viewers[at]),
@@ -273,7 +273,7 @@ fn unwatch(member: &mut Member, tab: u64) {
 }
 
 /// One session shares a window of its shell and two others ask to view it at the same time: each
-/// asks the workspace's live plane for the window's track and is carried its pictures as a viewer
+/// asks the workspace's live session for the window's track and is carried its pictures as a viewer
 /// of its own, each tab holds the picture decoded from them, and the sharing device's account and
 /// its bar name both.
 #[test]
@@ -289,19 +289,19 @@ fn a_shared_window_reaches_both_members_showing_it() {
         "the two members are two viewers, each with a handle of its own"
     );
     for (viewer, carried) in three.viewers.iter().zip(three.carried()) {
-        // The live plane carries a window's pictures only to the planes that ask for its track:
-        // what was counted here this member's own plane asked for and opened.
+        // The live session carries a window's pictures only to the live sessions that ask for its track:
+        // what was counted here this member's own live session asked for and opened.
         assert_eq!(
             tracks_asked(viewer, &three.host),
             [tilo_live::live::Track::Window(
                 tab,
                 tilo_live::video::Layer::High
             )],
-            "the member asks the plane for the window's pictures, as a viewer of its own"
+            "the member asks the live session for the window's pictures, as a viewer of its own"
         );
         assert!(
             carried.pictures > 0,
-            "the window's pictures were carried to the member's own plane: {carried:?}"
+            "the window's pictures were carried to the member's own live session: {carried:?}"
         );
 
         let reading = shares(&viewer.session);
@@ -349,8 +349,8 @@ fn a_shared_window_reaches_both_members_showing_it() {
         assert_eq!(read.app_id, APP, "the window it shows");
         assert_eq!(read.peer, sharer, "the device sharing it");
         assert_eq!(
-            read.standing,
-            tilo_desktop_surface::Standing::Pictured,
+            read.state,
+            tilo_desktop_surface::StreamState::Pictured,
             "the tile reads as a picture of the window"
         );
         let (width, height, bytes) = read.picture.expect("the picture the tile decoded");
@@ -574,7 +574,7 @@ fn two_members_reach_the_shared_window_each_through_a_seat_of_its_own() {
 }
 
 /// Of two members showing a window a third device shares, one stops: that member's view ends
-/// alone. It asks the plane for the window no longer and is carried nothing more of it, and the
+/// alone. It asks the live session for the window no longer and is carried nothing more of it, and the
 /// sharing device names only the other, which goes on being carried the window's pictures.
 #[test]
 fn a_member_that_stops_showing_a_shared_window_ends_its_own_stream_only() {
@@ -623,7 +623,7 @@ fn a_member_that_stops_showing_a_shared_window_ends_its_own_stream_only() {
     });
     assert!(
         tracks_asked(&three.viewers[1], &three.host).is_empty(),
-        "the member that stopped showing the window asks the plane for none of it"
+        "the member that stopped showing the window asks the live session for none of it"
     );
     assert_eq!(
         three.carried()[1],

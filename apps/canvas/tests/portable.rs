@@ -94,7 +94,7 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
         let Shape::Image { src, .. } = &art.mark(id).unwrap().shape else {
             panic!("{id} is not a picture");
         };
-        // The record names the reference the window's store answered: it
+        // The resource names the reference the window's store answered: it
         // carries the key of content the workspace keeps sealed.
         let reference = ui::tilo_actions::content_hash(src).expect("a content address");
         assert!(tilo_content::is_sealed(reference), "{src}");

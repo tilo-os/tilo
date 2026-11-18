@@ -116,9 +116,9 @@ fn failed_composition_retains_request_until_actual_success() {
 }
 
 #[test]
-fn hidden_suspended_and_gpu_absent_host_custody_keeps_real_layout_demand_until_composition() {
+fn hidden_suspended_and_gpu_absent_host_ownership_keeps_real_layout_demand_until_composition() {
     use super::owner_background_work::{Presentation, run};
-    use super::owner_mount_service_custody::Lease;
+    use super::owner_mount_service_lease::Lease;
     use std::cell::RefCell;
     use std::collections::HashSet;
     for presentation in [
@@ -164,7 +164,7 @@ fn hidden_suspended_and_gpu_absent_host_custody_keeps_real_layout_demand_until_c
 }
 #[test]
 fn refused_host_acquisition_restores_mount_without_consuming_original_composition_demand() {
-    use super::owner_mount_service_custody::Lease;
+    use super::owner_mount_service_lease::Lease;
     use std::cell::RefCell;
     use std::collections::HashSet;
     let (frame, demand) = fixture();

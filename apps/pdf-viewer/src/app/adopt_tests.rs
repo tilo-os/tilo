@@ -116,7 +116,7 @@ fn annotated_fixture(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     let mut app = tests::open_settled(path)?;
     let mut state = crate::scenarios::record_state();
-    tests::settle_record(&mut app, &mut state);
+    tests::settle_resource(&mut app, &mut state);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
@@ -127,9 +127,9 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
 fn helper_sets_appearance_text() -> bool {
     const WHAT: &str = "appearance text in the helper's pinned fonts";
     match tilo_pdf::sandboxed_for_test(tilo_pdf::Engine::shared(), WHAT) {
-        tilo_pdf::HelperGate::Sandboxed(_) => true,
-        tilo_pdf::HelperGate::StandDown => false,
-        tilo_pdf::HelperGate::Failed(e) => {
+        tilo_pdf::HelperCheck::Sandboxed(_) => true,
+        tilo_pdf::HelperCheck::StandDown => false,
+        tilo_pdf::HelperCheck::Failed(e) => {
             eprintln!("SKIPPING {WHAT}: no PDF engine on this host ({e})");
             false
         }
@@ -218,7 +218,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         );
         assert!(
             app.reader_markup_hidden,
-            "page images leave the taken-over markup to the records"
+            "page images leave the taken-over markup to the resources"
         );
         app.existing_request = None;
         app.sync(doc, &state.root);
@@ -293,7 +293,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         assert_eq!(note_thread.comment.replies.len(), 2);
     }
 
-    eprintln!("phase form_values_in_the_file_become_records_and_only_changes_are_written");
+    eprintln!("phase form_values_in_the_file_become_resources_and_only_changes_are_written");
     'phase: {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("form.pdf");
@@ -356,7 +356,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         assert_eq!(
             PdfMarkup::of(&left).list_annotations().len(),
             1,
-            "one record, not two"
+            "one resource, not two"
         );
         assert_eq!(
             PdfMarkup::of(&left)
@@ -411,7 +411,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         let free = stored
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::FreeText { .. }))
-            .expect("the free text is a record");
+            .expect("the free text is a resource");
         let AnnoKind::FreeText { text, size, .. } = &free.kind else {
             unreachable!()
         };

@@ -109,11 +109,11 @@ pub fn requested_instance() -> Option<u64> {
 /// The variable a launch names the item its window opens on in, for a process the shell
 /// starts for that window rather than one it asks for it: a window link request cannot
 /// reach a window that is already being built.
-pub const REVEAL_ENV: &str = crate::host::REVEAL_ENV;
+pub const REVEAL_ENV: &str = crate::process::REVEAL_ENV;
 
 /// The variable the session sets on a launch it makes with no window: the app answers its
 /// actions and serves no window link, and its first window is the first one the shell asks for here.
-pub const WINDOWLESS_ENV: &str = crate::host::WINDOWLESS_ENV;
+pub const WINDOWLESS_ENV: &str = crate::process::WINDOWLESS_ENV;
 
 /// The item the window being built opens on: what the shell's request named for a window
 /// of a process already running, or, for the process's first window, the item its launch
@@ -125,7 +125,7 @@ pub fn requested_reveal() -> Option<String> {
         if transport::is_building() {
             return transport::requested_reveal();
         }
-        let environment = crate::host::environment();
+        let environment = crate::process::environment();
         environment
             .reveal
             .as_deref()

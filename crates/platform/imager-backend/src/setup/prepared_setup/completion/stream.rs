@@ -1,8 +1,8 @@
-//! Only the fixed native-issued installer selection may reacquire payload custody.
+//! Only the fixed native-issued installer selection may reacquire payload ownership.
 use super::*;
 use super::{
     boot_review::review_declared_source,
-    handoff::{Member, Payload, RunCustody, open_payload, snapshot},
+    handoff::{Member, Payload, RunOwnership, open_payload, snapshot},
 };
 use crate::setup::{
     media_setup::{boot_medium::with_boot_medium, protected_output::PendingArea},
@@ -14,8 +14,8 @@ use std::{
 };
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
 pub fn run(kind: &str, output: &mut impl Write, cancel: &AtomicBool) -> io::Result<()> {
-    let custody = RunCustody::open()?.ok_or_else(invalid)?;
-    let member = custody
+    let ownership = RunOwnership::open()?.ok_or_else(invalid)?;
+    let member = ownership
         .record
         .members
         .iter()
@@ -26,7 +26,7 @@ pub fn run(kind: &str, output: &mut impl Write, cancel: &AtomicBool) -> io::Resu
         .into_iter()
         .filter(|t| {
             t.stable_id.as_deref()
-                == Some(custody.record.selection.medium.target_stable_id.as_str())
+                == Some(ownership.record.selection.medium.target_stable_id.as_str())
         });
     let target = targets.next().ok_or_else(invalid)?;
     if targets.next().is_some() {
@@ -44,11 +44,11 @@ pub fn run(kind: &str, output: &mut impl Write, cancel: &AtomicBool) -> io::Resu
             let (selected, home, _, _lease) = review_declared_source(
                 root,
                 binding,
-                &custody.record.declaration()?,
-                &custody.record.selection.pending_setup,
+                &ownership.record.declaration()?,
+                &ownership.record.selection.pending_setup,
                 cancel,
             )?;
-            if selected != custody.record.selection {
+            if selected != ownership.record.selection {
                 return Err(changed("Completed selected medium changed"));
             }
             match &member.payload {
@@ -64,8 +64,8 @@ pub fn run(kind: &str, output: &mut impl Write, cancel: &AtomicBool) -> io::Resu
             let (after, _, _, _after_lease) = review_declared_source(
                 root,
                 binding,
-                &custody.record.declaration()?,
-                &custody.record.selection.pending_setup,
+                &ownership.record.declaration()?,
+                &ownership.record.selection.pending_setup,
                 cancel,
             )?;
             if after != selected {
@@ -76,7 +76,7 @@ pub fn run(kind: &str, output: &mut impl Write, cancel: &AtomicBool) -> io::Resu
     });
     // with_boot_medium returned only after the actual owned mount retired.
     result?;
-    custody.validate()?;
+    ownership.validate()?;
     crate::setup::read_media::attest_boot_descriptor(&target, &raw)?;
     check_cancel(cancel)?;
     output.flush()

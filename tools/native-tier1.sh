@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the native data plane's privileged acceptance suites on loop-mounted
+# Run the native backend's privileged acceptance suites on loop-mounted
 # Btrfs store volumes: `fs --test it native_tier1::` (two daemons on two
 # stores: placeholders, leases, SQLite, git sync, crash recovery) and
 # `fs-native --test it` (capture, journal, pre-content hydration).

@@ -28,7 +28,7 @@ use legacy_vm::hosted::plan::{Plan, Plans, Sells};
 use legacy_vm::hosted::service::{Service, ServiceConfig};
 use legacy_vm::hosted::size::VmSize;
 use legacy_vm::hosted::vm::{Settings, system_clock};
-use tilo_actions::remote::host_account::{NextStepKind, Reason};
+use tilo_actions::remote::server_account::{NextStepKind, Reason};
 use ush::hosted_vm::HostedTarget;
 use ush::workspace_shell::WorkspaceShells;
 
@@ -91,7 +91,7 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
             idle_suspend: Duration::from_secs(2),
             self_exe: env_path("TILO_LEGACY_BIN"),
             jail,
-            relay: None,
+            server: None,
             templates: None,
         },
     };

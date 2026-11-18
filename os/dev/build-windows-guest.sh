@@ -45,7 +45,7 @@ chroot /guestroot /usr/bin/localedef -i en_US -f UTF-8 en_US.UTF-8
 chroot /guestroot /usr/bin/locale -a | grep -qi '^en_US\.utf8$'
 
 # Keep the uniform upstream pair separate from specially marked Fedora Wine
-# builtins. Runtime prefix installation/overrides are a separate acceptance gate.
+# builtins. Runtime prefix installation/overrides are a separate acceptance check.
 python3 /tilo/install-windows-guest-dxvk.py /guestroot /tilo-assets /tilo/external-assets.tsv
 python3 /tilo/validate-windows-guest.py /guestroot > "$metadata/payload.json"
 # Preserve the complete validated installroot. Any FEX-specific runtime view

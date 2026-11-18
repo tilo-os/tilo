@@ -3,7 +3,7 @@
 A Tilo app can run as a standalone Android app: the same code, the same
 toolkit and the same widgets, drawn with wgpu on Vulkan in a `NativeActivity`.
 Every app `tilo-app new` scaffolds builds for Android with no Android code of
-its own. This is the app host only; the compositor, `fs`, sandboxing and
+its own. This is the app process only; the compositor, `fs`, sandboxing and
 collaboration are Linux services and do not exist on Android (see
 [Limits](#limits)).
 
@@ -170,7 +170,7 @@ way instead:
    ```
 
 When an app declares that example the CLI builds it with `--features
-android`; otherwise it builds the library. The CI lane below selects every
+android`; otherwise it builds the library. The CI job below selects every
 affected app that declares the example.
 
 Everything the toolkit writes to stdout and stderr, including `tracing` and
@@ -207,7 +207,7 @@ reports the window's system-bar, cutout and keyboard insets, which the runner
 keeps content out of.
 
 **JNI in both directions.** Rust calls Java through the `JavaVM` and activity
-that android-activity publishes in `ndk_context` (`tilo-host`'s
+that android-activity publishes in `ndk_context` (`tilo-process-services`'s
 `native/android/mod.rs`, `with_activity`). Java calls Rust in two ways:
 
 - `TiloActivity` calls `System.loadLibrary` before `NativeActivity` starts, so
@@ -217,13 +217,13 @@ that android-activity publishes in `ndk_context` (`tilo-host`'s
 - The helper classes are loaded through the activity's class loader, since
   `FindClass` on a thread Rust attached sees only system classes, and their
   natives are bound with `RegisterNatives` when first loaded
-  (`tilo-host/src/native/android/bridge.rs`,
+  (`tilo-process-services/src/native/android/bridge.rs`,
   `ui-core/src/app/android_text_input/bridge.rs`).
 
 A native method runs on the UI thread and can run before `android_main` has
 started, so the Rust side records what it is given and wakes the event loop
 rather than touching the toolkit. A chooser's or the location service's
-answer is sent through `tilo_host::wake::reply()`, which wakes the loop once
+answer is sent through `tilo_process_services::wake::reply()`, which wakes the loop once
 the answer is queued.
 
 **Input.** Touches reach the toolkit as winit `Touch` events, and
@@ -248,9 +248,9 @@ The first start of each catalog version copies it into the app's files
 directory, since fontdb cannot map a file inside an APK; the device's
 `/system/fonts` cover the scripts the catalog does not.
 
-## Host services
+## Process services
 
-`tilo-host`'s `native/android` implements `HostServices`:
+`tilo-process-services`'s `native/android` implements `ProcessServices`:
 
 | Service | Android implementation |
 | --- | --- |
@@ -260,7 +260,7 @@ directory, since fontdb cannot map a file inside an APK; the device's
 | Speech | The system `TextToSpeech` engine |
 | Notifications | `NotificationManager`, asking for `POST_NOTIFICATIONS` at runtime |
 | Location | `LocationManager`, asking for the location permission at runtime |
-| Media sessions, screen capture | Not implemented; they return `HostServices::null`'s refusals |
+| Media sessions, screen capture | Not implemented; they return `ProcessServices::null`'s refusals |
 
 ## Limits
 

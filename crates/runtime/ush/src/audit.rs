@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tilo_clock::unix_now;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AuditRecord {
+pub struct AuditEntry {
     pub at: u64,
     pub session: String,
     pub environment: String,
@@ -23,7 +23,7 @@ pub struct AuditRecord {
     pub detail: Option<String>,
 }
 
-impl AuditRecord {
+impl AuditEntry {
     pub fn new(session: &str, environment: &str, request: &str, allowed: bool) -> Self {
         Self {
             at: unix_now(),
@@ -74,13 +74,13 @@ impl AuditLog {
     /// records what the broker did, not a precondition for doing it — refusing
     /// a legitimate request over a full disk would turn that into a denial of
     /// service.
-    pub fn append(&self, record: &AuditRecord) {
+    pub fn append(&self, record: &AuditEntry) {
         if let Err(e) = self.try_append(record) {
             tracing::warn!(error = %e, "could not write the audit record; the decision still stands");
         }
     }
 
-    fn try_append(&self, record: &AuditRecord) -> std::io::Result<()> {
+    fn try_append(&self, record: &AuditEntry) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         let mut line = serde_json::to_vec(record)?;
         line.push(b'\n');
@@ -94,7 +94,7 @@ impl AuditLog {
 
     /// Read the whole log, oldest first. Malformed lines are skipped rather
     /// than aborting the read — one bad line must not hide the rest.
-    pub fn read_all(&self) -> Vec<AuditRecord> {
+    pub fn read_all(&self) -> Vec<AuditEntry> {
         let mut files: Vec<PathBuf> = match std::fs::read_dir(&self.dir) {
             Ok(entries) => entries
                 .flatten()
@@ -110,7 +110,7 @@ impl AuditLog {
                 continue;
             };
             for line in text.lines() {
-                if let Ok(rec) = serde_json::from_str::<AuditRecord>(line) {
+                if let Ok(rec) = serde_json::from_str::<AuditEntry>(line) {
                     out.push(rec);
                 }
             }
@@ -119,7 +119,7 @@ impl AuditLog {
         out
     }
 
-    pub fn tail(&self, n: usize) -> Vec<AuditRecord> {
+    pub fn tail(&self, n: usize) -> Vec<AuditEntry> {
         let all = self.read_all();
         let skip = all.len().saturating_sub(n);
         all.into_iter().skip(skip).collect()
@@ -145,10 +145,10 @@ mod tests {
                 let log = AuditLog::at(dir.path().join("audit"));
 
                 log.append(
-                    &AuditRecord::new("s1", "default", "trust-dir", true).about("/var/home/you/src"),
+                    &AuditEntry::new("s1", "default", "trust-dir", true).about("/var/home/you/src"),
                 );
                 log.append(
-                    &AuditRecord::new("s1", "default", "trust-dir", false)
+                    &AuditEntry::new("s1", "default", "trust-dir", false)
                         .about("/usr")
                         .because("the overlay owns this subtree"),
                 );
@@ -172,7 +172,7 @@ mod tests {
             {
                 let dir = tempfile::tempdir().unwrap();
                 let log = AuditLog::at(dir.path().join("audit"));
-                log.append(&AuditRecord::new("s1", "default", "pkg-install", false).about("nethack"));
+                log.append(&AuditEntry::new("s1", "default", "pkg-install", false).about("nethack"));
                 let all = log.read_all();
                 assert_eq!(all.len(), 1);
                 assert!(!all[0].allowed);
@@ -183,7 +183,7 @@ mod tests {
                 let log = AuditLog::at(dir.path().join("audit"));
                 for i in 0..5 {
                     log.append(
-                        &AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}")),
+                        &AuditEntry::new("s1", "default", "pkg-install", true).about(format!("p{i}")),
                     );
                 }
                 assert_eq!(log.read_all().len(), 5);
@@ -194,14 +194,14 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let audit = dir.path().join("audit");
                 let log = AuditLog::at(&audit);
-                log.append(&AuditRecord::new("s1", "default", "trust-dir", true));
+                log.append(&AuditEntry::new("s1", "default", "trust-dir", true));
                 std::fs::OpenOptions::new()
                     .append(true)
                     .open(log.file_for(unix_now()))
                     .unwrap()
                     .write_all(b"{ truncated\n")
                     .unwrap();
-                log.append(&AuditRecord::new("s1", "default", "pkg-install", true));
+                log.append(&AuditEntry::new("s1", "default", "pkg-install", true));
                 assert_eq!(log.read_all().len(), 2);
             }
         }
@@ -213,7 +213,7 @@ mod tests {
                 let log = AuditLog::at(dir.path().join("audit"));
                 for i in 0..10 {
                     let mut r =
-                        AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}"));
+                        AuditEntry::new("s1", "default", "pkg-install", true).about(format!("p{i}"));
                     r.at = 1_000_000 + i;
                     log.append(&r);
                 }

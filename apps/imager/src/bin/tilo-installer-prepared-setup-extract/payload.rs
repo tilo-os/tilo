@@ -272,7 +272,7 @@ fn stream_completed(
         Ok(())
     })();
     // Closing the reader signals BrokenPipe, but never kills the issuer before
-    // its authenticated mount leases retire. EOF alone is not custody success.
+    // its authenticated mount leases retire. EOF alone is not ownership success.
     drop(pipe);
     let status = child.wait()?;
     result?;
@@ -324,9 +324,9 @@ pub fn retain(source: &str, target: &str, kind: &str) -> Result<()> {
     let Some(value) = staged(source, kind)? else {
         return Ok(());
     };
-    let (_, _, custody) = names(kind)?;
+    let (_, _, ownership) = names(kind)?;
     let expected = value.get("expectation").ok_or_else(invalid)?;
-    let components = ["lib", "tilo", custody];
+    let components = ["lib", "tilo", ownership];
     let destination = fs::chain(target, &components, fs::uid(), fs::gid())?;
     let filename = expected
         .get("filename")
@@ -356,10 +356,10 @@ pub fn retain(source: &str, target: &str, kind: &str) -> Result<()> {
     )
 }
 pub fn deliver_to(source: &str, home: &str, uid: u32, gid: u32, kind: &str) -> Result<Value> {
-    let (_, _, custody) = names(kind)?;
+    let (_, _, ownership) = names(kind)?;
     let source_fd = fs::directory(source)?;
     fs::protected(&source_fd, fs::uid(), true)?;
-    let components = [".local", "state", "tilo", custody];
+    let components = [".local", "state", "tilo", ownership];
     let destination = fs::chain(home, &components, uid, gid)?;
     let expected = fs::json_required(&source_fd, "expectation.json", 16384, Some(fs::uid()), true)?;
     validate::expectation(&expected, kind)?;

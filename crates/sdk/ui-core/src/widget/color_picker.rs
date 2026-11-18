@@ -119,7 +119,7 @@ pub struct ColorPicker {
     hex_input_rect: Rect,
     /// Set by `set_hex_text_for_test` so tests can drive a parse pass
     /// without faking IME keystrokes; drained inside `handle_event`.
-    /// Gated to test/debug builds so the test surface doesn't leak into prod.
+    /// Guarded to test/debug builds so the test surface doesn't leak into prod.
     #[cfg(any(test, debug_assertions))]
     hex_input_force_dirty_for_test: bool,
     /// Stashed mid-`handle_event` when the embedded hex input asked for
@@ -542,7 +542,7 @@ impl ColorPicker {
         }
         self.color = new_color;
         self.publish_local_state();
-        // Record for the poll-based `take_changed()` seam (retained-mode
+        // Record for the poll-based `take_changed()` path (retained-mode
         // apps) and fire the optional callback (imperative callers).
         self.changed = Some(self.color);
         if let Some(cb) = self.on_change.as_mut() {
@@ -1642,7 +1642,7 @@ mod tests {
                 );
             }
 
-            /// The `on_change` callback and the `take_changed` poll seam observe
+            /// The `on_change` callback and the `take_changed` poll path observe
             /// the SAME choke point, so both fire for one user edit — an app can
             /// pick whichever integration style fits.
             fn on_change_callback_and_take_changed_agree() {
@@ -1667,9 +1667,9 @@ mod tests {
                 dispatch(&mut p, &cursor_moved(r_x, r_y));
                 dispatch(&mut p, &mouse_press());
 
-                let poll = p.take_changed().expect("poll seam saw the change");
+                let poll = p.take_changed().expect("poll path saw the change");
                 let cb = seen.borrow().expect("callback saw the change");
-                assert_eq!(poll, cb, "both seams observe the identical colour");
+                assert_eq!(poll, cb, "both paths observe the identical colour");
             }
 
             fn local_state_keeps_color_pickers_in_sync() {

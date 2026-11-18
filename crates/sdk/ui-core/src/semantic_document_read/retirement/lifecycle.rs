@@ -1,7 +1,7 @@
-//! Negative-only custody for an actual SDK mount; no Source or reader authority.
+//! Negative-only ownership for an actual SDK mount; no Source or reader authority.
 use super::{RetirementHandle, RetirementOwner};
 
-/// Negative custody consumed before the real component factory.
+/// Negative ownership consumed before the real component factory.
 pub struct MountRetirement {
     owner: RetirementOwner,
     app: Option<RootRetirementPrelude>,
@@ -35,7 +35,7 @@ impl Drop for RootRetirementPrelude {
     }
 }
 
-/// Borrowed construction guard; private, negative-only, with no gate/callback API.
+/// Borrowed construction guard; private, negative-only, with no check/callback API.
 pub(crate) struct MountConstructionRetirement<'a> {
     retirement: Option<&'a MountRetirement>,
 }

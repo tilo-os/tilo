@@ -33,7 +33,7 @@
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
 #     --etc-overlay DIR       add files to THIS disk's installed /etc (release
-#                            gate only; os/dev/validation-access.sh). Limited to
+#                            check only; os/dev/validation-access.sh). Limited to
 #                            systemd/system, verity.d, pam.d/sshd, and the
 #                            validation-only boot diagnostic script
 #     --raw                   leave the raw image, skip the qcow2 conversion
@@ -212,7 +212,7 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
     || die "--firstboot-seed must contain a complete SHA-512 crypt hash"
 fi
 
-# The overlay only ever adds validation access to a gate's own disk copy: a
+# The overlay only ever adds validation access to a check's own disk copy: a
 # unit, the trust anchor for its extension, sshd's PAM stack, and its boot
 # diagnostic script. Anything else is refused rather than silently written
 # into an installed /etc.
@@ -991,7 +991,7 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   msg "seeded $firstboot_user for first-boot account creation"
 fi
 
-# Validation access for the release gate, written into this disk copy only and
+# Validation access for the release check, written into this disk copy only and
 # listed in the log. The image, its UKI and any published disk never see it.
 if [ -n "$ETC_OVERLAY" ]; then
   t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
@@ -1133,7 +1133,7 @@ if [ "$ESP_STAGED" = 1 ]; then
   msg "verified ESP payload and removed its temporary staging mount"
 fi
 
-# Only the optional dev-disk lane requests this. Read the actual installed
+# Only the optional dev-disk job requests this. Read the actual installed
 # ESP while the loop device is still attached, so the bundle cannot drift
 # from the disk that will be published. The native CI runner mounts vfat;
 # do not silently export from the temporary WSL ESP staging copy.
@@ -1205,7 +1205,7 @@ else
   rm -f "$RAW"
   # Write the image out now. Otherwise gigabytes of it are still dirty in the
   # host's page cache when a VM boots it, and the guest's first flush (the
-  # sync() at switch-root) waits for that writeback: the release gate's boot
+  # sync() at switch-root) waits for that writeback: the release check's boot
   # budget then measured the host's disk, not the OS (run 60770, 47 s).
   inenv "sync -- '$QCOW'"
   msg "DONE: $QCOW"

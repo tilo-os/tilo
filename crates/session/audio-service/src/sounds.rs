@@ -41,7 +41,7 @@ impl SystemSounds {
     pub fn play(&self, event: SystemSoundEvent) -> bool {
         let document = settings_store::load();
         let prefs = SystemSoundPrefs::from_document(&document);
-        let quiet = quiet_state(&document, chrono::Local::now());
+        let quiet = quiet_state(&document, &jiff::Zoned::now());
         plays(event, &prefs, quiet) && self.player.play(cue(event, &prefs))
     }
 }
@@ -81,13 +81,16 @@ pub fn cue(event: SystemSoundEvent, prefs: &SystemSoundPrefs) -> SoundCue {
 /// policy: Do Not Disturb, and focus time at `now`.
 fn quiet_state(
     document: &serde_json::Map<String, serde_json::Value>,
-    now: chrono::DateTime<chrono::Local>,
+    now: &jiff::Zoned,
 ) -> QuietState {
-    use chrono::{Datelike as _, Timelike as _};
     let policy = NotificationPolicy::from_document(document);
-    let minute =
-        u16::try_from(now.hour().saturating_mul(60).saturating_add(now.minute())).unwrap_or(0);
-    let weekday = u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(0);
+    let minute = u16::try_from(
+        i16::from(now.hour())
+            .saturating_mul(60)
+            .saturating_add(i16::from(now.minute())),
+    )
+    .unwrap_or(0);
+    let weekday = u8::try_from(now.weekday().to_monday_zero_offset()).unwrap_or(0);
     QuietState {
         do_not_disturb: policy.do_not_disturb,
         focus: policy.focus.active_at(minute, weekday),
@@ -164,13 +167,12 @@ mod tests {
 
         phase focus_time_is_read_from_the_persons_schedule;
         {
-            use chrono::TimeZone as _;
-            let now = chrono::Local
-                .with_ymd_and_hms(2026, 11, 2, 10, 30, 0)
-                .single()
+            let now = jiff::civil::date(2026, 11, 2)
+                .at(10, 30, 0, 0)
+                .to_zoned(jiff::tz::TimeZone::system())
                 .expect("an unambiguous local time");
             let mut document = serde_json::Map::new();
-            assert_eq!(quiet_state(&document, now), QuietState::default());
+            assert_eq!(quiet_state(&document, &now), QuietState::default());
             document.insert(
                 "notifications".into(),
                 serde_json::json!({
@@ -178,7 +180,7 @@ mod tests {
                     "focus": {"enabled": true, "start_minute": 540, "end_minute": 720}
                 }),
             );
-            let quiet = quiet_state(&document, now);
+            let quiet = quiet_state(&document, &now);
             assert!(quiet.do_not_disturb);
             assert!(quiet.focus, "10:30 is inside the 09:00-12:00 focus period");
             assert!(

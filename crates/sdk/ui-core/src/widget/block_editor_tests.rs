@@ -1966,8 +1966,8 @@ tilo_test_env::scenario! {
             }
         }
         let clipboard = Arc::new(Clipboard::default());
-        let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = crate::host::enter(&services);
+        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = crate::process::enter(&services);
         let mut editor = crate::math::edit::Editor::from_linear("x + y");
         editor.select_all();
         let before = editor.to_linear();

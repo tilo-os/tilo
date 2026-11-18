@@ -28,7 +28,7 @@ fn secret_of(
         Ok(crate::engine::SealKeys::Here(keys)) => keys.document_content_secret().ok(),
         Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
         Err(error) => {
-            // A session that takes no part in the collaboration plane keeps no channel of its
+            // A session that takes no part in the peer network keeps no channel of its
             // own: what it stores is sealed under a fresh key until it does.
             tilo_failure::ignored!(
                 "a session with no channel service seals each part under a key of its own",
@@ -93,8 +93,8 @@ impl Session {
             tracing::error!(%error, "a package's records are not followed");
         }
         services.poll();
-        if let Some(plane) = &self.action_plane {
-            plane.link.serve(&mut services);
+        if let Some(app_wire) = &self.app_wire {
+            app_wire.link.serve(&mut services);
         }
         // What the answers wrote (an agent's record of its work) reaches the workspace in this
         // pass, not in the next one's.
@@ -104,7 +104,7 @@ impl Session {
     /// Keep each record the services keep themselves in the content store of the workspace it
     /// stands in: the session's own records' large parts are offered on their routes, where the
     /// workspace's devices fetch them, sealed under the secret its members hold
-    /// ([`crate::content::Plane::store`]).
+    /// ([`crate::content::ContentService::store`]).
     fn lend_record_content(&self, services: &mut tilo_service::Services) {
         let Some(workspace) = self
             .shared
@@ -255,7 +255,7 @@ impl Session {
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.published);
         // The windows shared with the workspaces: what the person asked,
-        // what the plane brought, and the frames of the ones on screen.
+        // what the live session brought, and the frames of the ones on screen.
         self.follow_window_shares();
         self.follow_text_inputs();
         self.follow_notifications();
@@ -330,7 +330,7 @@ impl Session {
         Ok(())
     }
 
-    /// The windows shared with the workspaces: what the person asked, what the plane brought, and
+    /// The windows shared with the workspaces: what the person asked, what the live session brought, and
     /// the frames of the ones on screen.
     fn follow_window_shares(&mut self) {
         let sync = self.shared.sync.clone();
@@ -683,9 +683,9 @@ impl Session {
         // The person's list is kept on the hosts of their workspaces through the sessions the
         // broker reaches them on.
         let hosted = self
-            .action_plane
+            .app_wire
             .as_ref()
-            .and_then(crate::plane::Plane::action_broker)
+            .and_then(crate::app_wire::AppWire::action_broker)
             .and_then(|broker| broker.hosted_workspaces());
         self.shared.follow_records(hosted.as_deref());
         // What was sent since the last look, by a box, an agent or a script.
@@ -730,8 +730,8 @@ impl Session {
         self.feed_window_artwork();
         // What Files copied goes on the desktop's clipboard, as a file manager's copy does: the
         // person pastes it into any app.
-        if let Some(plane) = &self.action_plane {
-            for files in plane.file_clipboard.take_published() {
+        if let Some(app_wire) = &self.app_wire {
+            for files in app_wire.file_clipboard.take_published() {
                 crate::clipboard::offer_files(&mut self.compositor, &files);
             }
         }
@@ -766,7 +766,7 @@ impl Session {
         // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
         // the clipboard panel a key asked for goes up beside the caret: the session this pass lays out
         // and publishes names them, not the one after. Under the shell the chrome draws nothing:
-        // the session's search it runs for the launcher is no surface the person sees, and standing in
+        // the session's search it runs for the launcher is no surface the person sees, and in
         // the stack it would take the launcher down.
         if !self.shared.surfaces.shell {
             self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
@@ -909,5 +909,6 @@ fn session<'a>(
         pointer_shown: compositor.pointer_shown(),
         clipboard: &shared.clipboard,
         shared_input: shared.keyboard_and_pointer.as_deref(),
+        notifications: shared.notifications.borrow().desktop(),
     }
 }

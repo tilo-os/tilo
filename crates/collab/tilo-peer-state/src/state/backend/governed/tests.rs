@@ -25,7 +25,7 @@ fn original_import(
         .collect::<Result<Vec<_>, _>>()?;
     for (key, values) in workspace::invitation_receipts(doc)? {
         for bytes in values {
-            let receipt: RedemptionReceipt = crate::state::LedgerReceipt::decode(&bytes)
+            let receipt: RedemptionReceipt = crate::state::StoredReceipt::decode(&bytes)
                 .map_err(err)?
                 .receipt;
             if key != hex::encode(receipt.invite_id) {
@@ -259,13 +259,13 @@ tilo_test_env::scenario! {
     {
         let (peer, _, _, member, now) = crate::admission_tests::seeded();
         let mut workspace = peer.admitted_workspace().unwrap().clone();
-        let ledger = workspace
+        let log = workspace
             .get(automerge::ROOT, "invitation_receipts_v1")
             .unwrap()
             .unwrap()
             .1;
-        workspace.put(&ledger, "a", vec![b'{']).unwrap();
-        workspace.put(&ledger, "z", "not bytes").unwrap();
+        workspace.put(&log, "a", vec![b'{']).unwrap();
+        workspace.put(&log, "z", "not bytes").unwrap();
         workspace.commit();
         assert!(matches!(
             compare_case(&peer, &workspace, now),
@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
             workspace.commit();
             assert!(matches!(
                 compare_case(&peer, &workspace, now),
-                Err(ImportError::LedgerShape)
+                Err(ImportError::LogShape)
             ));
             let mut workspace = peer.admitted_workspace().unwrap().clone();
             workspace

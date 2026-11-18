@@ -28,7 +28,7 @@ impl Planner for Refusing {
 }
 
 /// The seeded Chat workspace: the team's channels and their messages, as its first scenario makes
-/// them, and the root record's id.
+/// them, and the root document's id.
 fn seeded_chat() -> (Replica, String) {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[CHAT]);
     let meta = loaded.last().unwrap().meta.clone();

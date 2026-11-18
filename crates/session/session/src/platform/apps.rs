@@ -3,7 +3,7 @@
 //! Search, the palette and the app sheets name apps and offer them as sources; which apps a host
 //! has — the ones installed here, the machine's own, the ones a person can get — and what each is
 //! called is the host's. On a Linux desktop that is the packaging this session runs
-//! ([`crate::lists`]); on the web it is the registry the page reads. A role names this seam and
+//! ([`crate::lists`]); on the web it is the registry the page reads. A role names this service and
 //! never the platform behind it.
 
 use std::sync::Arc;

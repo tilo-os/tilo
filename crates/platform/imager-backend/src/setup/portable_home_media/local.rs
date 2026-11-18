@@ -3,7 +3,7 @@
 //! before anything consumes it. A retry reopens the sealed unit instead of reading the source again.
 use super::{Expectation, HomeSource, MediaGrant};
 use crate::setup::{
-    home_transfer::promotion::AdoptionWitness,
+    home_transfer::promotion::AdoptionProof,
     migration::{PinnedDirectory, changed},
     portable_transfer::{ExportSummary, ImportReview, Observer, Purpose},
 };
@@ -113,16 +113,16 @@ impl SealedHome {
     pub fn reopen_adopted(
         workspace: &Path,
         root: &Path,
-        witness: &AdoptionWitness,
+        proof: &AdoptionProof,
         applications: bool,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
         let record = record(workspace)?.ok_or_else(|| changed("Sealed Home unit is missing"))?;
         let mut review = authenticate(workspace, &record, cancel)?;
         if applications {
-            review.verify_adoption_after_applications(witness, cancel)?;
+            review.verify_adoption_after_applications(proof, cancel)?;
         } else {
-            review.verify_adoption(witness, cancel)?;
+            review.verify_adoption(proof, cancel)?;
         }
         Ok(Self {
             root: root.to_path_buf(),

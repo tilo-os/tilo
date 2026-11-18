@@ -2020,7 +2020,7 @@ impl Resolver<'_> {
         for item in roots_first {
             match item {
                 Item::Root(r) => {
-                    let Some(key) = self.own_record(&r.ty, "root") else {
+                    let Some(key) = self.own_document(&r.ty, "root") else {
                         continue;
                     };
                     if let Some(name) = &r.name {
@@ -2069,7 +2069,8 @@ impl Resolver<'_> {
                         },
                         _ => None,
                     };
-                    let Some(key) = named.or_else(|| self.own_record(&d.ty, "default view")) else {
+                    let Some(key) = named.or_else(|| self.own_document(&d.ty, "default view"))
+                    else {
                         continue;
                     };
                     if self.env.default_views.iter().any(|(k, _)| *k == key) {
@@ -2136,7 +2137,7 @@ impl Resolver<'_> {
     }
 
     /// The own record type a package declaration names.
-    fn own_record(&mut self, te: &TypeExpr, what: &str) -> Option<TypeKey> {
+    fn own_document(&mut self, te: &TypeExpr, what: &str) -> Option<TypeKey> {
         match self.resolve_type(te, false) {
             Ty::Record(key) if key.app == self.env.app => Some(key),
             Ty::Error => None,

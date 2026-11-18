@@ -1,5 +1,5 @@
-//! A person's device hosts a workspace with the same host a relay runs, and a
-//! key of theirs uses it with the same calls it uses on a relay: it opens a
+//! A person's device hosts a workspace with the same host a server runs, and a
+//! key of theirs uses it with the same calls it uses on a server: it opens a
 //! session with the device, lists their workspaces there, enters the
 //! workspace (the host invites it on the session and it redeems there), and
 //! runs a record action addressed to the host's own device, which the
@@ -22,7 +22,7 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus,
 };
@@ -34,7 +34,7 @@ use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
-use tilo_workspace_host::host::{HostConfig, HostIdentity, WorkspaceHost};
+use tilo_workspace_service::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
 /// The app the device runs, which a key lists and acts on.
 const NOTES: &str = "so.tilo.notes";
@@ -125,12 +125,12 @@ struct Broker {
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
 }
 
-impl ActionHost for Broker {
+impl ActionProvider for Broker {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let page = match query.provider.as_deref() {
             None => CataloguePage {
@@ -158,7 +158,7 @@ impl ActionHost for Broker {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
@@ -196,7 +196,7 @@ impl ActionHost for Broker {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }
@@ -227,7 +227,7 @@ impl Sessions for DeviceRuns {
 
 /// The person's device, hosting a workspace for them on its endpoint.
 struct Box_ {
-    host: Arc<WorkspaceHost>,
+    host: Arc<WorkspaceService>,
     cert: DeviceCert,
     endpoint: Endpoint,
     workspace: String,
@@ -241,8 +241,8 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
     let key_sessions = KeySessions::new();
-    // A host opens only after its endpoint had its whole wait to reach a relay
-    // (`tilo_workspace_host::workspaces::Workspaces::open`), and this endpoint has
+    // A host opens only after its endpoint had its whole wait to reach a server
+    // (`tilo_workspace_service::workspaces::Workspaces::open`), and this endpoint has
     // none to reach. A test on a runtime whose clock it can hold holds it over
     // the open: the same wait runs on that clock, which passes it when nothing
     // else can run instead of five seconds later.
@@ -254,16 +254,16 @@ async fn device_host(root: &SigningKey) -> Box_ {
         tokio::time::pause();
     }
     let host = Arc::new(
-        WorkspaceHost::open(
-            HostConfig {
+        WorkspaceService::open(
+            ServiceConfig {
                 apps: Some(Arc::clone(&key_sessions)
-                    as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
-                ..HostConfig::new(
+                    as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+                ..ServiceConfig::new(
                     state.path().join("workspace-host"),
-                    tilo_relay_protocol::WorkSetting::none(),
+                    tilo_server_protocol::WorkSetting::none(),
                 )
             },
-            HostIdentity {
+            ServiceIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
                 device_cert: cert.clone(),
@@ -320,7 +320,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
 async fn session(device: &Box_, key: &(SigningKey, DeviceCert)) -> Device {
     let session = Device::over(
         PeerConfig {
-            host: tilo_relay_client::Host::at(addr(&device.endpoint)),
+            host: tilo_server_client::Host::at(addr(&device.endpoint)),
             cert: key.1.clone(),
             host_cert: device.cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
@@ -359,7 +359,7 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     // The person's workspaces, as the host lists them to a key of theirs.
     let listed = key
         .personal_list(
-            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -430,8 +430,8 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
     // The device's host said so itself, and why: a session that never reached
     // it, or an answer that never came, is no refusal of this key.
     assert_eq!(
-        tilo_relay_session::workspaces::Refusal::from_reason(&refused.message),
-        Some(tilo_relay_session::workspaces::Refusal::NotYourOwn),
+        tilo_server_session::workspaces::Refusal::from_reason(&refused.message),
+        Some(tilo_server_session::workspaces::Refusal::NotYourOwn),
         "{refused:?}"
     );
     assert!(

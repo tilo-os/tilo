@@ -16,14 +16,14 @@ pub enum CodeEditorEffect {
     #[effect(row, kind = "read")]
     #[effect(icon = "file-code")]
     ShowFile {
-        #[param("The file record's id")]
+        #[param("The file resource's id")]
         file: String,
     },
     /// Show location.
     #[effect(job, kind = "read")]
     #[effect(icon = "locate-fixed")]
     Reveal {
-        #[param("The file record's id, when the location is in a project file")]
+        #[param("The file resource's id, when the location is in a project file")]
         file: Option<String>,
         #[param("Absolute path of the file, for a location the tree has not read yet")]
         path: Option<ui::tilo_resource::AbsolutePath>,
@@ -61,7 +61,7 @@ pub enum CodeEditorEffect {
     #[effect(keywords = "write file, save changes")]
     #[effect(icon = "hard-drive")]
     Save {
-        #[param("The file record's id; omit for the active file")]
+        #[param("The file resource's id; omit for the active file")]
         file: Option<String>,
         #[param("Absolute path to write it to; omit to save in place")]
         path: Option<ui::tilo_resource::AbsolutePath>,
@@ -159,7 +159,7 @@ pub enum CodeEditorEffect {
     #[effect(row, kind = "read", returns, idempotent)]
     #[effect(icon = "file-text")]
     ReadText {
-        #[param("The file record's id")]
+        #[param("The file resource's id")]
         file: String,
         #[param("Zero-based position in Unicode scalar values")]
         start_chars: usize,

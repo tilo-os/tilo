@@ -42,7 +42,7 @@ fn review(preview: &mut InstallerPreview, directory: &Path) {
 tilo_test_env::scenario! {
     fn the_recovery_copy_never_waives_review_or_the_source;
 
-    phase semantic_shortage_destination_verified_copy_never_waives_review_or_source_custody;
+    phase semantic_shortage_destination_verified_copy_never_waives_review_or_source_ownership;
     {
         crate::setup::test_support::isolated("semantic-recovery", || {
             let temp = tempfile::tempdir().unwrap();

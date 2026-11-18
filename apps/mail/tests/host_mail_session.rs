@@ -8,7 +8,7 @@
 )]
 
 use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, ReadMail, SearchMail, SendMail};
-use tilo_mail_session::{Attachment, LiveMailSession, MailSession};
+use tilo_mail_session::{Attachment, Leaving, LiveMailSession, MailSession};
 
 use mail::fake_imap::{FakeImap, Layout};
 use mail::fake_servers::{FakeSmtp, server_identity};
@@ -295,7 +295,7 @@ Content-Type: text/plain\r\n\r\nHello Ada,\r\n\r\nThe draft is ready.\r\n",
         .send(
             &account,
             &secret,
-            &SendMail {
+            &Leaving::read(SendMail {
                 account: "ada@example.test".into(),
                 from_name: Some("Ada".into()),
                 from_address: "ada@example.test".into(),
@@ -303,7 +303,8 @@ Content-Type: text/plain\r\n\r\nHello Ada,\r\n\r\nThe draft is ready.\r\n",
                 subject: "Re: Contract for review".into(),
                 body: "Thanks, reviewing today.".into(),
                 ..SendMail::default()
-            },
+            })
+            .expect("the message reads"),
             &[],
             None,
         )
@@ -633,7 +634,13 @@ fn a_sent_message_is_filed_once_where_the_server_files_none() {
         let session = LiveMailSession::also_trusting(vec![certificate]);
         for round in 1..=2 {
             let sent = session
-                .send(&account, &secret, &filed_once(), &[], None)
+                .send(
+                    &account,
+                    &secret,
+                    &Leaving::read(filed_once()).expect("the message reads"),
+                    &[],
+                    None,
+                )
                 .expect("the message is sent");
             assert_eq!(sent.unfiled, None, "{layout:?}");
             assert_eq!(smtp.sent().len(), round, "{layout:?}: it left each time");
@@ -674,7 +681,13 @@ fn a_message_leaves_though_its_copy_cannot_be_filed() {
     let session = LiveMailSession::also_trusting(vec![certificate]);
 
     let sent = session
-        .send(&account, &secret, &filed_once(), &[], None)
+        .send(
+            &account,
+            &secret,
+            &Leaving::read(filed_once()).expect("the message reads"),
+            &[],
+            None,
+        )
         .expect("the message is sent");
     assert_eq!(smtp.sent().len(), 1, "the message left");
     assert!(imap.messages("Sent").is_empty());
@@ -749,7 +762,7 @@ fn a_message_with_a_file_reads_back_with_the_file_intact() {
         .send(
             &account,
             &secret,
-            &SendMail {
+            &Leaving::read(SendMail {
                 account: "ada@example.test".into(),
                 from_name: Some("Ada".into()),
                 from_address: "ada@example.test".into(),
@@ -757,7 +770,8 @@ fn a_message_with_a_file_reads_back_with_the_file_intact() {
                 subject: "Contract".into(),
                 body: "Attached.".into(),
                 ..SendMail::default()
-            },
+            })
+            .expect("the message reads"),
             &[Attachment {
                 filename: "contract.pdf".into(),
                 mime: "application/pdf".into(),

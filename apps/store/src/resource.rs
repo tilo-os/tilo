@@ -1123,17 +1123,17 @@ mod tests {
         });
     }
 
-    struct CatalogueHost {
+    struct CatalogueServer {
         installs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         browses: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        registry_gate: Option<std::sync::Arc<CatalogueGate>>,
+        registry_hold: Option<std::sync::Arc<CatalogueHold>>,
         account: bool,
         failed_repository: bool,
         disabled: std::sync::atomic::AtomicBool,
     }
 
     #[derive(Default)]
-    struct CatalogueGate {
+    struct CatalogueHold {
         entered: std::sync::atomic::AtomicBool,
         released: std::sync::atomic::AtomicBool,
         calls: std::sync::atomic::AtomicUsize,
@@ -1143,7 +1143,7 @@ mod tests {
         registry_count: usize,
     }
 
-    impl CatalogueGate {
+    impl CatalogueHold {
         fn retire_waiter(&self) {
             let wakers = std::mem::take(&mut *self.waker.lock().unwrap());
             drop(wakers);
@@ -1159,7 +1159,7 @@ mod tests {
         }
     }
 
-    struct PendingCatalogue(std::sync::Arc<CatalogueGate>);
+    struct PendingCatalogue(std::sync::Arc<CatalogueHold>);
 
     impl Drop for PendingCatalogue {
         fn drop(&mut self) {
@@ -1171,7 +1171,7 @@ mod tests {
         }
     }
 
-    impl app_host::wire::Host for CatalogueHost {
+    impl package_service::wire::Server for CatalogueServer {
         #[expect(
             clippy::too_many_lines,
             reason = "one fake host answering every request the catalogue tests make"
@@ -1182,10 +1182,11 @@ mod tests {
         )]
         fn handle(
             self: std::rc::Rc<Self>,
-            request: app_host::wire::Operation,
-        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+            request: package_service::wire::Operation,
+            _progress: package_service::wire::Sink,
+        ) -> impl core::future::Future<Output = Result<package_service::wire::Answer, String>> + 'static
         {
-            use app_host::wire::{Action, Answer, Catalogue, Operation, Resource};
+            use package_service::wire::{Action, Answer, Catalogue, Operation, Resource};
             async move {
                 match request {
                     Operation::Invoke(Action::Flatpak {
@@ -1193,7 +1194,7 @@ mod tests {
                         app_id,
                         reference,
                     }) => {
-                        assert_eq!(verb, app_host::wire::FlatpakVerb::Install);
+                        assert_eq!(verb, package_service::wire::FlatpakVerb::Install);
                         assert_eq!(app_id, "org.example.Editor");
                         assert!(reference.is_empty());
                         self.installs
@@ -1205,8 +1206,8 @@ mod tests {
                     }
                     Operation::Read(Resource::Packages) => Ok(Answer::Packages(Vec::new())),
                     Operation::Read(Resource::Repositories) => {
-                        let json = if let Some(gate) = &self.registry_gate {
-                            let count = gate.registry_count.max(1);
+                        let json = if let Some(check) = &self.registry_hold {
+                            let count = check.registry_count.max(1);
                             let registries = (0..count).map(|index| serde_json::json!({
                                 "name": format!("slow-{index}"), "base_url": "https://registry.example",
                                 "owner_pubkey_hex": "11".repeat(32), "enabled": true
@@ -1218,15 +1219,18 @@ mod tests {
                         Ok(Answer::Text(json.to_string()))
                     }
                     Operation::Read(Resource::RegistryCatalogue { .. }) => {
-                        let gate = std::sync::Arc::clone(self.registry_gate.as_ref().unwrap());
-                        let call = gate.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if call < gate.registry_count.max(1) {
-                            let _pending = PendingCatalogue(std::sync::Arc::clone(&gate));
-                            gate.entered
+                        let check = std::sync::Arc::clone(self.registry_hold.as_ref().unwrap());
+                        let call = check
+                            .calls
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if call < check.registry_count.max(1) {
+                            let _pending = PendingCatalogue(std::sync::Arc::clone(&check));
+                            check
+                                .entered
                                 .store(true, std::sync::atomic::Ordering::SeqCst);
                             std::future::poll_fn(|cx| {
-                                let mut waker = gate.waker.lock().unwrap();
-                                if gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                                let mut waker = check.waker.lock().unwrap();
+                                if check.released.load(std::sync::atomic::Ordering::SeqCst) {
                                     std::task::Poll::Ready(())
                                 } else {
                                     if !waker.iter().any(|waiting| waiting.will_wake(cx.waker())) {
@@ -1236,7 +1240,8 @@ mod tests {
                                 }
                             })
                             .await;
-                            gate.completed
+                            check
+                                .completed
                                 .store(true, std::sync::atomic::Ordering::SeqCst);
                         }
                         Ok(Answer::Catalogue(Catalogue::Rows("[]".into())))
@@ -1248,7 +1253,7 @@ mod tests {
                             } else {
                                 ""
                             };
-                        let mut row = if self.registry_gate.is_some() || self.failed_repository {
+                        let mut row = if self.registry_hold.is_some() || self.failed_repository {
                             let scope = if self.account { "user" } else { "system" };
                             let disabled =
                                 if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1279,7 +1284,7 @@ mod tests {
                             "the immutable device source cannot be changed"
                         );
                         assert_eq!(name, "flathub");
-                        assert_eq!(verb, app_host::wire::RemoteVerb::Disable);
+                        assert_eq!(verb, package_service::wire::RemoteVerb::Disable);
                         self.disabled
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                         Ok(Answer::Text("Source disabled.".into()))
@@ -1291,7 +1296,7 @@ mod tests {
                         if self.failed_repository && remote == "fedora" {
                             return Err("Unable to load summary".into());
                         }
-                        let name = if self.registry_gate.is_some() || self.failed_repository {
+                        let name = if self.registry_hold.is_some() || self.failed_repository {
                             "flathub"
                         } else {
                             "tools"
@@ -1307,7 +1312,7 @@ mod tests {
                             "org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\t{name}\n"
                         ))))
                     }
-                    other => app_host::testing::refuse(&other),
+                    other => package_service::testing::refuse(&other),
                 }
             }
         }
@@ -1359,26 +1364,27 @@ mod tests {
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
         app.harness().resize((1472, 920)).unwrap();
-        let gate = std::sync::Arc::new(CatalogueGate {
+        let check = std::sync::Arc::new(CatalogueHold {
             registry_count: 6,
-            ..CatalogueGate::default()
+            ..CatalogueHold::default()
         });
         let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::default(),
-            browses: std::sync::Arc::clone(&browses),
-            registry_gate: Some(std::sync::Arc::clone(&gate)),
-            account: false,
-            failed_repository: false,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::default(),
+                browses: std::sync::Arc::clone(&browses),
+                registry_hold: Some(std::sync::Arc::clone(&check)),
+                account: false,
+                failed_repository: false,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         assert!(
             app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-                gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+                check.entered.load(std::sync::atomic::Ordering::SeqCst)
             }),
             "the actual native catalogue RPC is pending"
         );
@@ -1413,7 +1419,7 @@ mod tests {
         assert_visible_owner_control(&mut app, "Editor");
         assert_bar_search_reaches_the_store(&mut app);
         assert!(browses.load(std::sync::atomic::Ordering::SeqCst) > before);
-        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
         app.effect(&StoreEffect::SetSearch {
             query: "Editor".into(),
         })
@@ -1435,7 +1441,7 @@ mod tests {
                         .any(|item| item["id"] == "org.example.Editor")
             },
         );
-        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(
             app.with_surface::<StoreApp, _>(|surface| surface.state().query().to_owned()),
             Some("Editor".to_owned())
@@ -1450,7 +1456,7 @@ mod tests {
         );
         assert_visible_owner_control(&mut app, "Editor");
         assert_bar_search_reaches_the_store(&mut app);
-        assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &gate);
+        assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &check);
         service.shutdown().unwrap();
     }
 
@@ -1458,7 +1464,7 @@ mod tests {
         app: &mut TestApp<StoreShell>,
         remote: &str,
         contract: &ui::tilo_actions::ActionContract,
-        gate: &CatalogueGate,
+        check: &CatalogueHold,
     ) {
         let selected = ui::i18n::I18nManager::current_locale();
         let pseudo = ui::i18n::I18nManager::pseudo_locale();
@@ -1480,13 +1486,13 @@ mod tests {
             .value
             .unwrap();
         assert_eq!(inspector["worker_busy"], true);
-        let calls = gate.calls.load(std::sync::atomic::Ordering::SeqCst);
+        let calls = check.calls.load(std::sync::atomic::Ordering::SeqCst);
         assert!(
             (2..=4).contains(&calls),
             "several native sources remain bounded and pending: {calls}"
         );
-        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
-        gate.release();
+        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
+        check.release();
         settle_catalogue_worker(app);
         let actual = app
             .effect(&StoreEffect::InspectCatalogue { app: None })
@@ -1506,16 +1512,17 @@ mod tests {
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
-        let gate = std::sync::Arc::new(CatalogueGate::default());
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::default(),
-            browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            registry_gate: Some(std::sync::Arc::clone(&gate)),
-            account: true,
-            failed_repository: false,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let check = std::sync::Arc::new(CatalogueHold::default());
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::default(),
+                browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                registry_hold: Some(std::sync::Arc::clone(&check)),
+                account: true,
+                failed_repository: false,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
@@ -1523,7 +1530,7 @@ mod tests {
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| {
-                    gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+                    check.entered.load(std::sync::atomic::Ordering::SeqCst)
                         && find(&harness.resources(), remote).is_some()
                 })
         );
@@ -1544,7 +1551,7 @@ mod tests {
             )
             .unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             app.with_surface::<StoreApp, _>(|surface| surface
                 .state()
@@ -1557,10 +1564,10 @@ mod tests {
         );
         // The old bounded server call really completes late. Its response
         // cannot overwrite the mutation's newer source state.
-        gate.release();
+        check.release();
         settle_catalogue_worker(&mut app);
-        assert!(gate.completed.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(gate.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+        assert!(check.completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(check.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
         assert!(
             app.with_surface::<StoreApp, _>(|surface| surface
                 .state()
@@ -1579,26 +1586,27 @@ mod tests {
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
-        let gate = std::sync::Arc::new(CatalogueGate::default());
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::default(),
-            browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            registry_gate: Some(std::sync::Arc::clone(&gate)),
-            account: false,
-            failed_repository: false,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let check = std::sync::Arc::new(CatalogueHold::default());
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::default(),
+                browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                registry_hold: Some(std::sync::Arc::clone(&check)),
+                account: false,
+                failed_repository: false,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         assert!(app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-            gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+            check.entered.load(std::sync::atomic::Ordering::SeqCst)
         }));
         service.shutdown().unwrap();
-        gate.retire_waiter();
+        check.retire_waiter();
         settle_catalogue_worker(&mut app);
-        assert!(gate.canceled.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(check.canceled.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             app.with_surface::<StoreApp, _>(|surface| {
                 surface.state().inspect_catalogue(None).unwrap()["error"]
@@ -1616,15 +1624,16 @@ mod tests {
         let _feed = available_feed(&mut environment);
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::default(),
-            browses: std::sync::Arc::default(),
-            registry_gate: None,
-            account: false,
-            failed_repository: true,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::default(),
+                browses: std::sync::Arc::default(),
+                registry_hold: None,
+                account: false,
+                failed_repository: true,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
@@ -1736,15 +1745,16 @@ mod tests {
         let _feed = available_feed(&mut environment);
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::default(),
-            browses: std::sync::Arc::default(),
-            registry_gate: None,
-            account: false,
-            failed_repository: true,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::default(),
+                browses: std::sync::Arc::default(),
+                registry_hold: None,
+                account: false,
+                failed_repository: true,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
@@ -1777,15 +1787,16 @@ mod tests {
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
         let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::default(),
-            browses: std::sync::Arc::clone(&browses),
-            registry_gate: None,
-            account: false,
-            failed_repository: false,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::default(),
+                browses: std::sync::Arc::clone(&browses),
+                registry_hold: None,
+                account: false,
+                failed_repository: false,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
@@ -1851,17 +1862,18 @@ mod tests {
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
         let installs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let gate = std::sync::Arc::new(CatalogueGate::default());
-        gate.release();
-        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
-            installs: std::sync::Arc::clone(&installs),
-            browses: std::sync::Arc::default(),
-            registry_gate: Some(gate),
-            account: false,
-            failed_repository: false,
-            disabled: std::sync::atomic::AtomicBool::new(false),
-        })
-        .unwrap();
+        let check = std::sync::Arc::new(CatalogueHold::default());
+        check.release();
+        let (service, connection) =
+            package_service::testing::ConnectedService::start(CatalogueServer {
+                installs: std::sync::Arc::clone(&installs),
+                browses: std::sync::Arc::default(),
+                registry_hold: Some(check),
+                account: false,
+                failed_repository: false,
+                disabled: std::sync::atomic::AtomicBool::new(false),
+            })
+            .unwrap();
         app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();

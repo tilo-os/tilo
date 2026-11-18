@@ -4,39 +4,34 @@
 //! them.
 use std::collections::{HashMap, HashSet};
 
-use super::{
-    ListModel, ListModelChange, MountedRow, MountedRowState, RowBuild, RowSelection, VirtualList,
-    groups,
-};
+use super::{ListKey, VirtualRows};
+use super::{ListModelChange, MountedRow, MountedRowState, RowBuild, RowSelection, groups};
 use crate::virtual_viewport::SparseAnchor;
 
-impl<M: ListModel> VirtualList<M> {
-    pub fn update_model<R>(&mut self, update: impl FnOnce(&mut M) -> R) -> R {
-        let anchor = self.capture_anchor();
-        let result = update(&mut self.model);
+impl VirtualRows {
+    /// Follow a model replaced in place ([`VirtualList::update_model`]), from where the
+    /// rows stood before it.
+    pub(super) fn model_updated(&mut self, anchor: Option<&SparseAnchor<ListKey>>) {
         self.forget_tree();
         let dropped = std::mem::take(&mut self.mounted);
         self.let_go_of_rows(dropped);
         self.structure_dirty = true;
-        self.reconcile_model(anchor.as_ref());
-        result
+        self.reconcile_model(anchor);
     }
 
-    pub fn update_model_changes<R>(
+    /// Follow `changes` to the model ([`VirtualList::update_model_changes`]), from where the
+    /// rows stood before them.
+    pub(super) fn model_changed(
         &mut self,
-        changes: &[ListModelChange<M::Key>],
-        update: impl FnOnce(&mut M) -> R,
-    ) -> R {
-        let anchor = self.capture_anchor();
-        self.capture_list_change(changes);
-        let result = update(&mut self.model);
+        changes: &[ListModelChange<ListKey>],
+        anchor: Option<&SparseAnchor<ListKey>>,
+    ) {
         self.forget_tree();
         self.apply_model_changes(changes);
-        self.reconcile_model(anchor.as_ref());
-        result
+        self.reconcile_model(anchor);
     }
 
-    pub(super) fn reconcile_model(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
+    pub(super) fn reconcile_model(&mut self, anchor: Option<&SparseAnchor<ListKey>>) {
         self.regrouped();
         self.close_open_leaving();
         self.viewport
@@ -48,7 +43,7 @@ impl<M: ListModel> VirtualList<M> {
             .take()
             .filter(|key| self.model.index_of(key).is_some());
         self.focused_group = self.focused_group.take().filter(|(heading, index)| {
-            groups::group_of(&self.model, *index, self.tail_title.as_deref())
+            groups::group_of(&*self.model, *index, self.tail_title.as_deref())
                 .is_some_and(|group| group.heading == *heading)
         });
         self.request_dirty = true;
@@ -56,7 +51,7 @@ impl<M: ListModel> VirtualList<M> {
         self.visible_window_changed();
     }
 
-    fn capture_list_change(&mut self, changes: &[ListModelChange<M::Key>]) {
+    pub(super) fn capture_list_change(&mut self, changes: &[ListModelChange<ListKey>]) {
         let structural = changes.iter().any(|change| {
             matches!(
                 change,
@@ -68,7 +63,7 @@ impl<M: ListModel> VirtualList<M> {
         let resets = changes
             .iter()
             .any(|change| matches!(change, ListModelChange::Reset));
-        let source = crate::collection_transition::RowMotions::<M::Key>::caused_by_hand(
+        let source = crate::collection_transition::RowMotions::<ListKey>::caused_by_hand(
             crate::time::now(),
             self.reduce_motion,
         )
@@ -91,7 +86,7 @@ impl<M: ListModel> VirtualList<M> {
         self.row_motion.start(shown, motion, crate::time::now());
     }
 
-    fn apply_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
+    fn apply_model_changes(&mut self, changes: &[ListModelChange<ListKey>]) {
         if changes
             .iter()
             .any(|change| matches!(change, ListModelChange::Reset))
@@ -120,7 +115,7 @@ impl<M: ListModel> VirtualList<M> {
         self.mounted = kept;
     }
 
-    fn let_go_of_rows(&mut self, dropped: Vec<MountedRow<M::Key>>) {
+    fn let_go_of_rows(&mut self, dropped: Vec<MountedRow<ListKey>>) {
         for row in dropped {
             let place = row.index;
             if let Some(laid_out) = row.laid_out() {
@@ -134,7 +129,7 @@ impl<M: ListModel> VirtualList<M> {
         self.reconcile_model(anchor.as_ref());
     }
 
-    pub fn notify_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
+    pub fn notify_model_changes(&mut self, changes: &[ListModelChange<ListKey>]) {
         if changes.is_empty() {
             return;
         }
@@ -167,7 +162,7 @@ impl<M: ListModel> VirtualList<M> {
         self.reconcile_model(anchor.as_ref());
     }
 
-    /// Close the row standing open when its item left the list: what the person is reading
+    /// Close the row held open when its item left the list: what the person is reading
     /// where it stands is always a row of the list they see, so an item that goes — to another
     /// place, another query, away — closes with it.
     ///
@@ -216,7 +211,7 @@ impl<M: ListModel> VirtualList<M> {
         self.report_open();
     }
 
-    pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
+    pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = ListKey>) {
         let keys = keys.into_iter().collect::<HashSet<_>>();
         self.regroup_keys(keys.iter());
         let before = self.invalidated.len();
@@ -232,7 +227,7 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    pub(super) fn capture_anchor(&self) -> Option<SparseAnchor<M::Key>> {
+    pub(super) fn capture_anchor(&self) -> Option<SparseAnchor<ListKey>> {
         self.viewport
             .capture_anchor(|index| self.model.key_at(index))
     }
@@ -358,7 +353,7 @@ impl<M: ListModel> VirtualList<M> {
                     replaced = true;
                     let widget = match &mounted_state {
                         MountedRowState::Ready => (self.row_builder)(
-                            &self.model,
+                            &*self.model,
                             index,
                             &key,
                             RowBuild {

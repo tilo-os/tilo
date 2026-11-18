@@ -1,4 +1,4 @@
-"""Read-only kernel witnesses for actual signed Browser/CEF namespace isolation.
+"""Read-only kernel proofs for actual signed Browser/CEF namespace isolation.
 
 No PID is signalled here. The existing source/target namespace owner retains
 failure cleanup, and normal desktop window close owns the launched programs.
@@ -78,7 +78,7 @@ def coordinate(account):
     try:
         before = os.fstat(fd)
         require(before.st_uid == account.pw_uid and not before.st_mode & 0o022,
-                'actual account custody directory owner differs')
+                'actual account credentials directory owner differs')
         buffer = ctypes.create_string_buffer(256)
         libc = ctypes.CDLL(None, use_errno=True)
         require(libc.statx(fd, b'', 0x1000, 0x1000, buffer) == 0,
@@ -108,7 +108,7 @@ def no_vault(table, vault):
             continue
         root = PurePosixPath(row['root'])
         require(not sensitive.is_relative_to(root) and not root.is_relative_to(sensitive),
-                'actual Browser/CEF namespace exposes account custody')
+                'actual Browser/CEF namespace exposes account credentials')
 
 
 def process_start(raw):
@@ -229,7 +229,7 @@ def hold_profile_parent(observations, selected):
             descriptor = child
         require(live(row['pidfd']) and row['start'] == process_start(
                     file_bytes('/proc/' + str(row['pid']) + '/stat', 8192)),
-                'revocation engine changed before profile witness')
+                'revocation engine changed before profile proof')
         result, descriptor = descriptor, None
         return result
     finally:

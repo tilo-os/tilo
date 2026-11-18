@@ -14,13 +14,13 @@ pub(crate) mod folders;
 pub(crate) mod records;
 pub(crate) mod triggers;
 
+use crate::platform::records::{Changes, Source};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike as _, Timelike as _};
 use settings_store::hardware::{ActionChord, KeyChord};
 use settings_store::notification_policy::NotificationPolicy;
 use tilo_action_broker::automation::chord_target;
@@ -112,8 +112,8 @@ pub struct Automation {
 /// notification policy, what each of its workspaces revokes, and which of the person's devices are
 /// online to run a schedule.
 pub struct Feeds {
-    /// The store the workspaces' records are kept in, and the stream their changes are noted in.
-    pub records: Option<(crate::platform::Store, crate::platform::records::Changes)>,
+    /// What the workspaces hold, and the stream its changes are noted in.
+    pub held: Option<(Source, Changes)>,
     pub fabric: Option<crate::platform::fabric::SharedLink>,
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
@@ -121,7 +121,7 @@ pub struct Feeds {
 }
 
 impl Automation {
-    /// The trigger host of a session whose shell is `handle` , keeping its schedule ledger under
+    /// The trigger host of a session whose shell is `handle` , keeping its schedule log under
     /// `state` in the file the shell kept it in.
     #[must_use]
     pub fn new(
@@ -132,7 +132,7 @@ impl Automation {
         feeds: Feeds,
     ) -> Self {
         let Feeds {
-            records,
+            held,
             fabric,
             launches,
             policy,
@@ -143,7 +143,7 @@ impl Automation {
         triggers.set_devices(Arc::clone(&devices) as Arc<dyn triggers::DeviceDirectory>);
         Self {
             triggers,
-            feed: records::RecordFeed::start(records, wake),
+            feed: records::RecordFeed::start(held, wake),
             followed: BTreeSet::new(),
             broker: None,
             devices,
@@ -179,7 +179,7 @@ impl Automation {
     /// which cannot read this one.
     /// The shell belongs to the loop ([`DesktopHandle`] hands it out here only) and `shell` reads it
     /// on the broker's thread, so the loop hands over a copy when the shell moved.
-    pub(crate) fn publish_layout(&mut self, shell: Option<&crate::plane::LayoutAuthority>) {
+    pub(crate) fn publish_layout(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
         let Some(shell) = shell else {
             return;
         };
@@ -193,7 +193,7 @@ impl Automation {
 
     /// Take what the broker finished, show the schedules the passing of time, and start whatever
     /// fired. Once per pass.
-    pub fn settle(&mut self, shell: Option<&crate::plane::LayoutAuthority>) {
+    pub fn settle(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
         self.keep_finished();
         // What fired while the broker was starting starts now that it serves. What it fired was
         // decided against a shell this loop had already published, so the broker knows the workspace
@@ -202,7 +202,7 @@ impl Automation {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
             self.start(waiting);
         }
-        // A schedule firing waits for the ledger that records it: the write wakes the loop, and its
+        // A schedule firing waits for the log that records it: the write wakes the loop, and its
         // firings start then rather than a tick later.
         let settled = self.triggers.take_settled_firings();
         if !settled.is_empty() {
@@ -241,7 +241,7 @@ impl Automation {
                 _ => None,
             })
             .min()
-            .and_then(|due| due.signed_duration_since(now).to_std().ok())
+            .and_then(|due| std::time::Duration::try_from(due.duration_since(now)).ok())
             .and_then(|wait| Instant::now().checked_add(wait));
         // A shortcut armed with a trigger other than a schedule (an app running, a folder changing,
         // a workspace focused) fires on the tick: with nothing armed, the passing of time is
@@ -292,7 +292,7 @@ impl Automation {
 
     /// Arm the shortcuts the shell shows, show every source what this device sees now, and start
     /// what fired. `tick` says the passing of time came round, which the schedules alone are shown.
-    fn observe(&mut self, tick: bool, shell: Option<&crate::plane::LayoutAuthority>) {
+    fn observe(&mut self, tick: bool, shell: Option<&crate::app_wire::LayoutAuthority>) {
         self.devices.set(devices_of(self.fabric.as_ref()));
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);
@@ -362,14 +362,14 @@ impl Automation {
     /// and the schedule at this device's local time.
     fn focus_state(&self) -> FocusState {
         let now = self.triggers.clock().now();
-        let local = now.with_timezone(&self.triggers.clock().offset_at(now));
-        let minute = local
-            .hour()
-            .checked_mul(60)
-            .and_then(|minutes| minutes.checked_add(local.minute()))
-            .and_then(|minute| u16::try_from(minute).ok())
-            .unwrap_or(0);
-        let weekday = u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0);
+        let local = now.to_zoned(self.triggers.clock().zone());
+        let minute = u16::try_from(
+            i32::from(local.hour())
+                .saturating_mul(60)
+                .saturating_add(i32::from(local.minute())),
+        )
+        .unwrap_or(0);
+        let weekday = u8::try_from(local.weekday().to_monday_zero_offset()).unwrap_or(0);
         let policy = self.policy.lock_recover();
         FocusState {
             do_not_disturb: policy.do_not_disturb,

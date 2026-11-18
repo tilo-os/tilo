@@ -1,12 +1,12 @@
-# %i's node session: the headless Tilo session beside the node's relay that
+# %i's node session: the headless Tilo session beside the node's server that
 # runs the person's apps and streams their windows to the person's web pages.
 # As one of the person's devices it enters each workspace in their list, the
 # node's included, as the list brings it.
 # Started by tilo-node-session@%i.path once the session is certified.
 [Unit]
 Description=Tilo node session for %i
-Requires=tilo-node-relay@%i.service
-After=tilo-node-relay@%i.service systemd-user-sessions.service systemd-logind.service
+Requires=tilo-node-server@%i.service
+After=tilo-node-server@%i.service systemd-user-sessions.service systemd-logind.service
 ConditionPathExists=/var/lib/tilo-node/%i/session/device/cert.bin
 StartLimitIntervalSec=0
 
@@ -20,7 +20,7 @@ ExecStartPre=/bin/sh -c 'exec /usr/bin/systemctl start "user@$(id -u %i).service
 # %i, apart from any desktop session the account has (XDG_CONFIG_HOME holds
 # the identity directory, TILO_IDENTITY_ROOT the device key and certificate).
 # The session lives exactly as long as this unit: a session left from an
-# earlier start (its relay restarted) is stopped first, and this one stops
+# earlier start (its server restarted) is stopped first, and this one stops
 # with the unit.
 ExecStartPre=-/usr/bin/systemctl --machine=%i@ --user stop tilo-node-session.service
 ExecStopPost=-/usr/bin/systemctl --machine=%i@ --user stop tilo-node-session.service

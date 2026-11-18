@@ -65,12 +65,12 @@ pub use workspace::paint_tilo_mark;
 /// Where a layout stood the bar: in the column above the windows, or over it, hidden by the person
 /// and shown while reached for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BarStanding {
+enum BarPlacement {
     InColumn,
     OverColumn,
 }
 
-impl BarStanding {
+impl BarPlacement {
     fn of(overlays: bool) -> Self {
         if overlays {
             Self::OverColumn
@@ -133,7 +133,7 @@ fn bar_style(presence: TopBarPresence, theme: &Theme) -> Style {
     }
 }
 
-/// Below this width the bar narrows its centre lane to the time alone,
+/// Below this width the bar narrows its centre area to the time alone,
 /// leaving the rest to the workspace name and the people beside it.
 const NARROW_MENU_BAR_PX: f64 = 720.0;
 
@@ -144,7 +144,7 @@ const BAR_CONTROL_LOGICAL: f32 =
     ui::tokens::Metrics::BASE.bar_control_height - ui::tokens::Spacing::BASE.s1;
 const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
 
-/// Inset of a lane-filling centre widget (the system monitor, the calendar, a live activity) from
+/// Inset of an area-filling centre widget (the system monitor, the calendar, a live activity) from
 /// its pill's ends, the same each side so the content is centred in the band.
 const CENTER_INSET_PX: f64 = 12.0;
 
@@ -169,7 +169,7 @@ struct CacheFingerprint {
     strip_name: Option<String>,
     face_initials: Vec<char>,
     face_names: Vec<String>,
-    face_agents: Vec<bool>,
+    face_members: Vec<tilo_action_policy::MemberId>,
     face_overflow: usize,
     /// How many of the people present the bar stood faces for: a narrower bar folds more of them
     /// into the count badge, which repaints the bar.
@@ -183,7 +183,7 @@ struct CacheFingerprint {
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_visible: bool,
-    /// Whether the middle lane is the following banner's rather than the clock's.
+    /// Whether the middle area is the following banner's rather than the clock's.
     following: bool,
     time_bucket: u64,
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32` volume that would never match
@@ -336,13 +336,13 @@ pub struct TopBarChrome {
     explicit_local_user: Option<String>,
     rect: Rect,
     /// Where the last layout stood the bar.
-    laid_out: BarStanding,
+    laid_out: BarPlacement,
     /// The compact bar a display other than the primary carries: workspace navigation and the
     /// centre widget only. Session controls, the tray and who is here live on the primary
     /// display's full bar.
     variant: BarVariant,
     /// The display a compact bar stands on, as [`Placement`] names it; the full bar carries none,
-    /// standing on the display in use.
+    /// on the display in use.
     display: Option<u32>,
     /// Docked in the column, hidden, or shown over the window covering the display, as the host
     /// says.
@@ -369,8 +369,8 @@ pub struct TopBarChrome {
     /// Same index as `face_initials` . The workspace's colour for each, else
     /// [`ui::presence::member_color`].
     face_colors: Vec<Color>,
-    /// Same index as `face_initials` : drawn with the agent mark.
-    face_agents: Vec<bool>,
+    /// Same index as `face_initials` : who each face is, which picks how it is drawn.
+    face_members: Vec<tilo_action_policy::MemberId>,
     /// Same index as `face_initials` : the roster id presence knows them by (idle, in a
     /// call, a wave's bounce).
     face_ids: Vec<String>,
@@ -381,7 +381,7 @@ pub struct TopBarChrome {
     /// How many of the people present the last draw stood a face for: the rest the "+N" badge
     /// counts. The bar stands as many as it has room for, the one this person follows first.
     faces_shown: usize,
-    /// Whether this person's view follows someone here: the bar's middle lane then belongs to the
+    /// Whether this person's view follows someone here: the bar's middle area then belongs to the
     /// banner that says whose view it is and offers Stop, so the clock stands aside rather than
     /// under it.
     following: bool,
@@ -423,7 +423,7 @@ pub struct TopBarChrome {
     tilo_mark: Option<bool>,
     /// Whether the device the bar is drawn on shows the time itself at phone width, as a phone
     /// does above a web page ([`TopBarChrome::with_device_clock`]): the bar's clock then gives way
-    /// there, and the workspace name gets its lane.
+    /// there, and the workspace name gets its area.
     device_clock: bool,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
@@ -496,15 +496,15 @@ pub struct TopBarChrome {
     /// it.
     with_window: ui::motion::Presence,
     /// The centre selector's width following its content (the time, or a live activity filling the
-    /// lane) on the standard expand/collapse motion (`ui::motion::Extent`), so the selector grows
-    /// into the lane and shrinks back to the time rather than jumping.
+    /// area) on the standard expand/collapse motion (`ui::motion::Extent`), so the selector grows
+    /// into the area and shrinks back to the time rather than jumping.
     center_width: ui::motion::Extent,
     /// The centre selector as painted and hit-tested: as wide as its content needs, never wider
-    /// than [`Self::center_lane`].
+    /// than [`Self::center_area`].
     center_rect: Rect,
-    /// The centre lane the bar reserves for the selector (see [`Self::center_band_width`]). Its
-    /// neighbours lay out against the lane, so they hold still while the selector changes widget.
-    center_lane: Rect,
+    /// The centre area the bar reserves for the selector (see [`Self::center_band_width`]). Its
+    /// neighbours lay out against the area, so they hold still while the selector changes widget.
+    center_area: Rect,
     /// winit delivers position with `CursorMoved` but not `MouseInput`,
     /// so it's cached here for click hit-testing.
     last_cursor: Option<Point>,
@@ -537,7 +537,7 @@ impl TopBarChrome {
         let mut this = Self {
             explicit_local_user,
             rect: Rect::ZERO,
-            laid_out: BarStanding::InColumn,
+            laid_out: BarPlacement::InColumn,
             variant: BarVariant::Full,
             display: None,
             presence: TopBarPresence::Docked,
@@ -552,7 +552,7 @@ impl TopBarChrome {
             face_initials: Vec::new(),
             face_names: Vec::new(),
             face_colors: Vec::new(),
-            face_agents: Vec::new(),
+            face_members: Vec::new(),
             face_ids: Vec::new(),
             face_presence: Vec::new(),
             face_looks: Vec::new(),
@@ -609,7 +609,7 @@ impl TopBarChrome {
             with_window: ui::motion::Presence::opened(),
             center_width: ui::motion::Extent::default(),
             center_rect: Rect::ZERO,
-            center_lane: Rect::ZERO,
+            center_area: Rect::ZERO,
             last_cursor: None,
             focused: false,
             focused_control: None,
@@ -640,7 +640,7 @@ impl TopBarChrome {
             strip_name: self.strip_name().map(str::to_owned),
             face_initials: self.face_initials.clone(),
             face_names: self.face_names.clone(),
-            face_agents: self.face_agents.clone(),
+            face_members: self.face_members.clone(),
             face_overflow: self.face_overflow,
             faces_shown: self.faces_shown,
             latest: self.latest_active,
@@ -819,7 +819,7 @@ impl TopBarChrome {
     /// [`Self::place_session_clusters`] left it. It stands left of everything else there: the
     /// faces, the people button and the notices keep their places, and the ask takes the room left
     /// of them — the band's own, or, where that room cannot hold its words, the band itself — and
-    /// waits as the avatar's dot where even the band cannot. Laid out after the clock, whose lane
+    /// waits as the avatar's dot where even the band cannot. Laid out after the clock, whose area
     /// it may take.
     fn place_ask_beside(
         &mut self,
@@ -862,15 +862,15 @@ impl TopBarChrome {
         }
         let left = self.ws_pill_rect.x1.max(self.ws_strip_rect.x1) + gap;
         if self.center_rect.x0 + dx < left {
-            // Its lane closes up where the names end: what yields to the clock (the ask) still
+            // Its area closes up where the names end: what yields to the clock (the ask) still
             // stops there.
-            self.center_lane = Rect::new(left, self.center_lane.y0, left, self.center_lane.y1);
+            self.center_area = Rect::new(left, self.center_area.y0, left, self.center_area.y1);
             self.center_rect = Rect::ZERO;
             return None;
         }
         let moved = Affine::translate((dx, 0.0));
         self.center_rect = moved.transform_rect_bbox(self.center_rect);
-        self.center_lane = moved.transform_rect_bbox(self.center_lane);
+        self.center_area = moved.transform_rect_bbox(self.center_area);
         Some(dx)
     }
 
@@ -1047,7 +1047,7 @@ impl TopBarChrome {
         self.face_initials.clear();
         self.face_names.clear();
         self.face_colors.clear();
-        self.face_agents.clear();
+        self.face_members.clear();
         self.face_ids.clear();
         self.face_presence.clear();
         // Everyone here, the one this person follows first: the bar stands as many faces as it has
@@ -1078,7 +1078,7 @@ impl TopBarChrome {
             self.face_names.push(member.name.clone());
             let (r, g, b) = collab_types::presence::identity_rgb(member.colour);
             self.face_colors.push(Color::from_rgb8(r, g, b));
-            self.face_agents.push(!member.id.is_person());
+            self.face_members.push(member.id.clone());
             self.face_ids.push(present.device.clone());
             self.face_presence
                 .push(Some((present.availability, present.call.is_some())));
@@ -1147,7 +1147,7 @@ impl TopBarChrome {
 
     /// Whether the last layout stood the bar in or over the column other than it stands now.
     fn overlay_layout_stale(&self) -> bool {
-        self.laid_out != BarStanding::of(self.presence().overlays())
+        self.laid_out != BarPlacement::of(self.presence().overlays())
     }
 
     /// Whether the bar, hidden by the person, must stay shown for its own sake: the keyboard is in
@@ -1301,7 +1301,7 @@ impl Widget for TopBarChrome {
         // over the column rather than in it: the window keeps its whole size,
         // and showing the bar later moves nothing.
         let overlays = self.presence().overlays();
-        self.laid_out = BarStanding::of(overlays);
+        self.laid_out = BarPlacement::of(overlays);
         let style = bar_style(self.presence(), theme);
         let node = match taffy.new_leaf(style) {
             Ok(node) => node,
@@ -1592,8 +1592,8 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        // The time: read, not pressed. While following, the middle lane is the banner's, and where
-        // the device shows the time itself the lane stands empty: no time stands in it then, so a
+        // The time: read, not pressed. While following, the middle area is the banner's, and where
+        // the device shows the time itself the area stands empty: no time stands in it then, so a
         // reader is not told one the person cannot see.
         if !self.following && !self.clock_gives_way() {
             children.push(

@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::{Map, Value};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Completer, InvocationReceipt, InvocationState, InvokeArgument,
+    ActionCallError, Caller, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, pending,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -86,9 +86,9 @@ impl Follow {
 struct State {
     follows: HashMap<InvocationId, Follow>,
     asks: Vec<ActivityAsk>,
-    /// The revision the model's reads were last served at: how a host knows that what an app
-    /// follows may read differently.
-    served: Option<u64>,
+    /// How many new results the model's reads have sent: how the session knows that what an app
+    /// follows reads differently.
+    served: u64,
 }
 
 /// The windows' end: what [`super::DesktopSession`] routes to under [`wire::PROVIDER`].
@@ -116,8 +116,8 @@ fn is_person(caller: &Caller) -> bool {
     caller.acting().is_person() && caller.acting().app().is_none()
 }
 
-fn refused(reason: String) -> ActionHostError {
-    ActionHostError::Refused { reason }
+fn refused(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
 }
 
 impl Api {
@@ -144,17 +144,17 @@ impl Api {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         let action = request.target.address.action;
         if request.target.address.resource != wire::RESOURCE {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let arguments = match request.argument {
             InvokeArgument::None => Map::new(),
             InvokeArgument::Json(arguments) => arguments,
             InvokeArgument::Text(_) => {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
                     reason: "workspace activity takes typed arguments".into(),
                 }));
             }
@@ -168,7 +168,7 @@ impl Api {
             return Pending::ready(self.follow(caller, invocation, action, arguments));
         }
         if !is_personal(&action) && !is_document_write(&action) && action != wire::OPEN {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let (answer, ran) = pending();
         self.ask(ActivityAsk::Act {
@@ -203,14 +203,14 @@ impl Api {
         invocation: InvocationId,
         action: String,
         arguments: Map<String, Value>,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Result<InvocationReceipt, ActionCallError> {
         let mut state = self.state.lock_recover();
         if let Some(open) = state.follows.get(&invocation) {
             return if open.caller == *caller && open.action == action && open.arguments == arguments
             {
                 Ok(InvocationState::new(invocation, open.update.clone()).receipt())
             } else {
-                Err(ActionHostError::InvocationConflict)
+                Err(ActionCallError::InvocationConflict)
             };
         }
         // Only the person reading what is new makes it seen; an agent that reads the summary
@@ -263,13 +263,13 @@ impl Api {
         Some(changed)
     }
 
-    pub(super) fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+    pub(super) fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionCallError> {
         let mut state = self.state.lock_recover();
         let open = state
             .follows
             .get_mut(id)
             .filter(|open| open.caller == *caller)
-            .ok_or(ActionHostError::UnknownInvocation)?;
+            .ok_or(ActionCallError::UnknownInvocation)?;
         if open.finished() {
             return Ok(());
         }
@@ -326,7 +326,7 @@ impl ActivityRequests {
         invocation: InvocationId,
         action: &str,
         arguments: Map<String, Value>,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.api
             .follow(caller, invocation, action.to_owned(), arguments)
             .map(|_| ())
@@ -344,10 +344,11 @@ impl ActivityRequests {
         }
     }
 
-    /// The revision the model last served its reads at: a host that tells apps when what they
-    /// follow may read differently watches it.
+    /// How many new results the model's reads have sent: a session that tells apps when what they
+    /// follow reads differently watches it. A read followed after the model last moved still
+    /// counts its first result.
     #[must_use]
-    pub fn served_revision(&self) -> Option<u64> {
+    pub fn served_revision(&self) -> u64 {
         self.api.state.lock_recover().served
     }
 
@@ -377,7 +378,7 @@ impl ActivityRequests {
         let read_at = model.revision();
         let mut woken = Vec::new();
         let mut state = self.api.state.lock_recover();
-        state.served = Some(read_at);
+        let mut answered = 0_u64;
         for (invocation, value) in reads {
             let Some(open) = state.follows.get_mut(&invocation) else {
                 continue;
@@ -408,8 +409,10 @@ impl ActivityRequests {
                     };
                 }
             }
+            answered = answered.wrapping_add(1);
             woken.append(&mut open.waiters);
         }
+        state.served = state.served.wrapping_add(answered);
         drop(state);
         wake(woken);
     }
@@ -438,7 +441,7 @@ impl ActivityRequests {
         &self,
         caller: &Caller,
         invocation: &InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.api.cancel(caller, invocation)
     }
 }
@@ -449,4 +452,48 @@ impl ActivityRequests {
 #[must_use]
 pub fn activity_requests(woken: Arc<AtomicBool>) -> ActivityRequests {
     Api::new(woken).requests()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A model that answers every read with its action and never moves.
+    struct Still;
+
+    impl ActivityReads for Still {
+        fn revision(&self) -> u64 {
+            7
+        }
+        fn read(&mut self, action: &str, _arguments: &Map<String, Value>) -> Result<Value, String> {
+            Ok(Value::String(action.to_owned()))
+        }
+    }
+
+    #[test]
+    fn a_read_followed_after_the_model_settled_still_tells_the_session() {
+        let requests = activity_requests(Arc::new(AtomicBool::new(false)));
+        let caller = Caller::local_person("ben");
+        let follow = |action: &str| {
+            let invocation = InvocationId::new();
+            requests
+                .follow(&caller, invocation, action, Map::new())
+                .expect("followed");
+            invocation
+        };
+        follow(wire::SUMMARY);
+        requests.serve(&mut Still);
+        let told = requests.served_revision();
+        let feed = follow(wire::FEED);
+        requests.serve(&mut Still);
+        assert_eq!(
+            requests.served(&feed),
+            Some(Ok(Value::String(wire::FEED.into())))
+        );
+        assert_ne!(
+            requests.served_revision(),
+            told,
+            "the session learns that the new read has its answer"
+        );
+    }
 }

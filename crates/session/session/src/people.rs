@@ -1,9 +1,9 @@
 //! Who is here: the roster the bar's faces open, and every other person's pointer where they are
 //! working. The roster can also be kept on screen, waiting at an edge of the shell with a mirror of
 //! each person's screen beside their row, pressed to follow them.
-//! The roster reads the shell's member rows and presence, which the collaboration plane writes each frame
+//! The roster reads the shell's member rows and presence, which the peer network writes each frame
 //! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
-//! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
+//! Everyone's pointer is the live session's tile pointer, drawn over the tile of the tab they are on, in
 //! their own colour.
 
 use std::cell::{Cell, RefCell};
@@ -72,7 +72,7 @@ pub enum PeopleAsk {
     /// app, as following them brings it forward once.
     GoTo { who: String },
     /// Ask this of the agent of `client`, whose card stands for the member `who` (by its presence
-    /// key): an agent this device seats is stopped here, anything else through its card in Console.
+    /// key): an agent this device started is stopped here, anything else through its card in Console.
     Agent {
         who: String,
         client: String,
@@ -247,7 +247,7 @@ struct Shown {
 }
 
 impl Shown {
-    /// Close the roster and any card standing in its place, for the next opening to find empty.
+    /// Close the roster and any card in its place, for the next opening to find empty.
     fn close(&mut self) {
         self.expanded = None;
         self.card_of = None;
@@ -258,7 +258,7 @@ impl Shown {
 
     /// Whether the roster stands kept at an edge of the shell, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
-    fn standing(&self) -> bool {
+    fn is_kept(&self) -> bool {
         !self.sheet()
             && self
                 .pinned
@@ -337,9 +337,9 @@ fn keep_pinned(pinned: bool, edge: DockEdge) {
 impl People {
     /// Open the roster, or close it again: what the bar's faces do.
     pub fn toggle(&self) {
-        // Kept on screen and standing, the roster is already where the faces would open it: they
+        // Kept on screen and open, the roster is already where the faces would open it: they
         // have nothing to do, and the panel's own button puts it back in the bar.
-        if self.shown.borrow().standing() {
+        if self.shown.borrow().is_kept() {
             return;
         }
         // Their press closed it a moment ago: this is that press, not another.
@@ -461,7 +461,7 @@ impl Published for People {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        if !self.open.get() && !self.shown.borrow().standing() {
+        if !self.open.get() && !self.shown.borrow().is_kept() {
             return None;
         }
         self.layer().and_then(|layer| layer.a11y_tree())
@@ -472,7 +472,7 @@ impl Published for People {
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        (self.open.get() || self.shown.borrow().standing())
+        (self.open.get() || self.shown.borrow().is_kept())
             && self
                 .layer()
                 .is_some_and(|layer| layer.a11y_action(target, action))
@@ -486,14 +486,14 @@ impl Published for People {
     /// the host drew.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         match self.layer() {
-            Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.controls(),
+            Some(layer) if self.open.get() || self.shown.borrow().is_kept() => layer.controls(),
             _ => Vec::new(),
         }
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
         match self.layer() {
-            Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.press(name),
+            Some(layer) if self.open.get() || self.shown.borrow().is_kept() => layer.press(name),
             _ => Err(format!("no control named {name}")),
         }
     }
@@ -502,7 +502,7 @@ impl Published for People {
     /// where they are. While a person's card stands in the roster's place, there are no rows to
     /// read: the card is what is read, and what is read is what the host drew of it.
     fn accessible_labels(&mut self) -> Vec<String> {
-        if !self.open.get() && !self.shown.borrow().standing() {
+        if !self.open.get() && !self.shown.borrow().is_kept() {
             return Vec::new();
         }
         if self.shown.borrow().card_open.is_some() {
@@ -556,7 +556,7 @@ pub struct Given {
     pub apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
     /// The shell the roster is drawn over.
     pub handle: DesktopHandle,
-    /// Who is here, when this session takes part in the collaboration plane.
+    /// Who is here, when this session takes part in the peer network.
     pub sync: Option<Rc<crate::sync::Client>>,
     /// Who is here, written into a copy of the layout as its members and their presence: what the bar's
     /// faces are drawn from, so the roster they open lists the same people. A host that hears
@@ -746,15 +746,15 @@ impl Panel {
             let _ = self.profile.take_choice();
             shown.card_open = None;
         }
-        // The card standing is someone else's: what the roster says of them now is what it says,
+        // The card shown is someone else's: what the roster says of them now is what it says,
         // beside the row under it (an agent narrates every action). Built before the card is laid
         // out, as it is opened here, never while the frame draws.
-        let standing = shown
+        let card = shown
             .card_open
             .clone()
             .filter(|who| who != SELF_CARD)
             .and_then(|who| self.person_model(&who, &shown.rows));
-        if let Some(model) = standing {
+        if let Some(model) = card {
             self.profile.updated(&model);
         }
         let asked = if std::mem::take(&mut shown.own_card) {
@@ -786,7 +786,7 @@ impl Panel {
         shown.close_card || shown.own_card || shown.card_opening.is_some()
     }
 
-    /// Draw the card standing in the roster's place. Answers whether one stands there.
+    /// Draw the card in the roster's place. Answers whether one stands there.
     fn draw_card(
         &mut self,
         scene: &mut ui::vello::Scene,
@@ -821,9 +821,9 @@ impl Panel {
             .unwrap_or_default();
         // A conversation is Chat's, on the root key both people know: a guest this session knows no
         // key for, and a device without Chat, have none to open.
-        let can_message = !row.is_agent && key.is_some() && self.chat_installed();
+        let can_message = !row.is_agent() && key.is_some() && self.chat_installed();
         // Their devices are the person's, whichever of them the roster lists.
-        let devices = if row.is_agent {
+        let devices = if row.is_agent() {
             Vec::new()
         } else {
             here.devices_of(&row.id)
@@ -841,7 +841,7 @@ impl Panel {
                 status: row.status.clone(),
                 // A person's card says which record they look at; an agent's, the app it works
                 // in beside the record its line names.
-                place: if row.is_agent {
+                place: if row.is_agent() {
                     row.working_app
                         .as_deref()
                         .map(|app| self.app_called(app))
@@ -849,13 +849,13 @@ impl Panel {
                 } else {
                     row.activity.clone()
                 },
-                presence: (!row.is_agent).then_some(row.availability),
+                presence: (!row.is_agent()).then_some(row.availability),
                 following: sync.own().following.as_deref() == Some(row.id.as_str()),
                 can_follow: row.followable,
                 can_message,
                 linked,
                 agent: row
-                    .is_agent
+                    .is_agent()
                     .then(|| tilo_desktop::profile_card::AgentFacts {
                         client: ui::presence::agent_client(&row.label).to_owned(),
                     }),
@@ -1083,7 +1083,7 @@ impl Panel {
         }
     }
 
-    /// Read who is here, as the plane wrote them into the shell's member rows this frame: the
+    /// Read who is here, as the live session wrote them into the shell's member rows this frame: the
     /// roster, each person's screen with its windows named by the records this session shows, and the
     /// workspace it is of: the panel's title, kept on screen or opened from the bar.
     fn read_roster(&self, shown: &mut Shown) {
@@ -1133,7 +1133,7 @@ impl Panel {
         shown.rows = rows;
         shown.screens = screens;
         shown.workspace = workspace;
-        // The card standing is someone else's: when what the rows say of them moved (an agent
+        // The card shown is someone else's: when what the rows say of them moved (an agent
         // narrates each action), this frame asks for the layout that builds the card with it.
         // Widgets are never built while the frame draws ([`Self::settle_card`]).
         if let Some(who) = shown.card_open.clone().filter(|who| who != SELF_CARD)
@@ -1475,7 +1475,7 @@ impl Panel {
             return;
         }
         let area = shown.area;
-        let standing = {
+        let placed = {
             let Some(pin) = shown.pinned.as_mut() else {
                 return;
             };
@@ -1498,7 +1498,7 @@ impl Panel {
             );
             (pose, pin.panel)
         };
-        let (pose, slot) = standing;
+        let (pose, slot) = placed;
         let placed = pose.applied_to(transform);
         scene.push_layer(
             Fill::NonZero,
@@ -1835,7 +1835,7 @@ impl Widget for Panel {
         let shown = self.shown.borrow();
         // Each control says where it stands and carries what pressing it does, so a reader
         // presses the roster's own buttons as the person does.
-        let roster = ((self.open.get() || shown.standing()) && !self.profile.is_open())
+        let roster = ((self.open.get() || shown.is_kept()) && !self.profile.is_open())
             .then(|| shown.overlay.accessibility_with_targets());
         drop(shown);
         // The banner stands beside the windows, so it is read whether the roster is up or not: a
@@ -1971,7 +1971,7 @@ impl Widget for Panel {
         }
         // Kept on screen, the roster is pressed by the person's own pointer: it draws and answers
         // where it stands, and never takes the keyboard.
-        let kept = self.shown.borrow().standing();
+        let kept = self.shown.borrow().is_kept();
         if !self.open.get() && !kept {
             self.handle_pinned(event, ctx);
             return;
@@ -2004,7 +2004,7 @@ impl Widget for Panel {
             if !self.profile.is_open() {
                 // The card closed itself. Its place is the roster's, so the roster stands there
                 // again when the card's choice asks for everyone here; a choice that takes the
-                // person elsewhere (a conversation, an agent's card) leaves nothing standing here.
+                // person elsewhere (a conversation, an agent's card) leaves nothing here.
                 if self.shown.borrow().card_open.is_some() {
                     self.dismiss();
                     *ctx.handled = true;
@@ -2031,7 +2031,7 @@ impl Widget for Panel {
         }
         // Kept on screen, a press on its header drags it to another edge: a card's own press is
         // the card's.
-        let drags = shown.standing()
+        let drags = shown.is_kept()
             && shown
                 .cursor
                 .is_some_and(|point| shown.overlay.header_rect().contains(point));

@@ -1,4 +1,4 @@
-//! What a member remembers of the workspaces its relay would not enter it
+//! What a member remembers of the workspaces its server would not enter it
 //! into, so nothing that names a workspace makes it ask again and again.
 #![allow(
     clippy::unwrap_used,
@@ -20,10 +20,10 @@ tilo_test_env::scenario! {
         let workspace = WorkspaceId::new();
         assert_eq!(refusals.reason(workspace), None);
         let at = Instant::now();
-        refusals.remember_at(workspace, at, "the relay does not govern it".into());
+        refusals.remember_at(workspace, at, "the server does not govern it".into());
         assert_eq!(
             refusals.reason_at(workspace, at),
-            Some("the relay does not govern it".into())
+            Some("the server does not govern it".into())
         );
         assert_eq!(
             refusals.reason_at(workspace, at + REFUSED_FOR),
@@ -32,17 +32,17 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase each_workspace_keeps_the_answer_the_relay_gave_for_it;
+    phase each_workspace_keeps_the_answer_the_server_gave_for_it;
     {
         let refusals = Refusals::default();
         let (first, second) = (WorkspaceId::new(), WorkspaceId::new());
         let at = Instant::now();
-        refusals.remember_at(first, at, "the relay does not govern it".into());
+        refusals.remember_at(first, at, "the server does not govern it".into());
         refusals.remember_at(second, at, "no such workspace".into());
-        refusals.remember_at(first, at, "the relay does not govern it".into());
+        refusals.remember_at(first, at, "the server does not govern it".into());
         assert_eq!(
             refusals.reason_at(first, at).unwrap(),
-            "the relay does not govern it"
+            "the server does not govern it"
         );
         assert_eq!(refusals.reason_at(second, at).unwrap(), "no such workspace");
         assert_eq!(

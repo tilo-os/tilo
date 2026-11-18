@@ -1,9 +1,8 @@
 //! Where the boxes a list draws for its rows stand, and which rows take a lift: the strip a
-//! selection paints, the band over a group and the seam a drop lands on all read the view's
+//! selection paints, the band over a group and the boundary a drop lands on all read the view's
 //! tops, and a list that follows its end stands its rows down at its foot.
 
-use super::ListModel;
-use super::VirtualList;
+use super::VirtualRows;
 use crate::widget::RowSelection;
 use crate::widget::row_selection::selection_sink;
 use vello::kurbo::Rect;
@@ -21,7 +20,7 @@ pub(super) fn selection_around(row: Rect, content: Rect, bleed: f64) -> Rect {
     )
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn shown_top(&self, top: f64) -> f64 {
         self.rect.y0 + self.end_slack() + top
     }
@@ -84,7 +83,7 @@ mod tests {
     use vello::kurbo::Rect;
 
     /// The choice a list paints for a row stands around what the row shows, grown by the bleed
-    /// the row grows its own face by and no further: a row standing at a page's measure inside a
+    /// the row grows its own face by and no further: a row at a page's measure inside a
     /// wider list paints its selection inset like the rows in every other list, never across the
     /// gutters beside it.
     #[test]

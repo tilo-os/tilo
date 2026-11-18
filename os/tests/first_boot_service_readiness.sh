@@ -91,7 +91,7 @@ if exactly_once "$fs_unit" 'ConditionPathExists=/var/lib/tilo/device/cert.bin' \
    && exactly_once "$fs_timer" 'Unit=fs.service'; then
   ok 'QuickFS waits cleanly for identity and starts on certificate creation'
 else
-  bad 'QuickFS readiness gate or identity activation path is incomplete'
+  bad 'QuickFS readiness check or identity activation path is incomplete'
 fi
 
 # A permanently true PathExists path would bypass RestartSec after a real fs

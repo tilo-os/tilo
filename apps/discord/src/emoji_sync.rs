@@ -5,7 +5,7 @@
 //! Tilo shows as that emoji in Discord.
 //!
 //! Only emoji the bridge uploaded itself are ever renamed or deleted; it
-//! keeps their ids in its record's map (`MappedKind::Emoji`). Where the
+//! keeps their ids in its resource's map (`MappedKind::Emoji`). Where the
 //! server already has an emoji of its own under a workspace emoji's name,
 //! that one stands for it and nothing is uploaded. The plan compares the
 //! workspace's emoji with what the bridge uploaded, so running it again
@@ -22,7 +22,7 @@ use serde_json::Value;
 use ui::tilo_resource::{self, JsonSchema};
 
 use crate::emoji::discord_name;
-use crate::record::{Guild, MappedKind, Mapping};
+use crate::guild::{Guild, MappedKind, Mapping};
 
 /// One workspace emoji as the workspace's host hands it to the bridge: its name
 /// and the content address of its picture, which the host keeps in its

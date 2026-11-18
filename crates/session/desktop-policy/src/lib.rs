@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tilo_desktop_model::apps::app_ids_match;
 use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, Workspace, WorkspaceId,
@@ -183,14 +184,15 @@ type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
 
 /// A tab held for a window of an app that is on its way: the tab it takes
 /// when it maps (`None` until the desktop makes it), whether it takes focus
-/// there, and the one window it is held for, when that is known (a kept app's
+/// there, the one window it is held for, when that is known (a kept app's
 /// window after a restart of the desktop) rather than any next window of the
-/// app.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// app, and the item that window opens on, kept as its tab's view.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct HeldTab {
     tab: Option<TabId>,
     background: bool,
     window: Option<KeptWindow>,
+    shows: String,
 }
 
 /// The tabs held for each app's coming windows, oldest first: an app's next
@@ -304,6 +306,7 @@ impl TileSource for Windows {
                 .iter_mut()
                 .find(|record| record.tab.is_none())?;
             record.tab = Some(id);
+            let shows = record.shows.clone();
             drop(held);
             // The tab is the window's instance: the session starts the window it planned for it
             // now that the shell holds the place it takes.
@@ -312,7 +315,10 @@ impl TileSource for Windows {
                 tab: Some(id),
                 beside: true,
             });
-            let tab = self.place(id, app);
+            let tab = Tab {
+                view: shows,
+                ..self.place(id, app)
+            };
             self.titles
                 .borrow_mut()
                 .entry(app.to_owned())
@@ -354,8 +360,7 @@ impl TileSource for Windows {
                 .or_default()
                 .push(HeldTab {
                     tab: Some(id),
-                    background: false,
-                    window: None,
+                    ..HeldTab::default()
                 });
             self.launches.borrow_mut().push(LaunchAsk {
                 app: asked.to_owned(),
@@ -385,8 +390,7 @@ impl TileSource for Windows {
             .or_default()
             .push(HeldTab {
                 tab: Some(tab.id),
-                background: false,
-                window: None,
+                ..HeldTab::default()
             });
         self.launches.borrow_mut().push(LaunchAsk {
             app: app_id.clone(),
@@ -637,6 +641,36 @@ impl DesktopPolicy {
         // The tab's content stood from the frame it was opened in: the
         // answer takes its place on the shell's next pass.
         self.handle.rebuild(tab);
+    }
+
+    /// Say `answer` in every tab that answers for `asked`, as a [`Self::failed_at`] left them.
+    pub fn answer_again(&mut self, asked: &str, answer: Outcome) {
+        self.answers.borrow_mut().insert(asked.to_owned(), answer);
+        for tab in self.answering(asked) {
+            self.handle.rebuild(tab);
+        }
+    }
+
+    /// Close every tab that answers for `asked`: what it said is over, and nothing comes into it.
+    pub fn close_answers(&mut self, asked: &str) {
+        for tab in self.answering(asked) {
+            let Some(route) = self.handle.read(|tree| route_of(tree, tab)) else {
+                continue;
+            };
+            let _ = self.handle.dispatch(LayoutEffect::CloseTab {
+                tab: route.tab.to_string(),
+            });
+        }
+    }
+
+    /// The tabs that answer for `asked`.
+    fn answering(&self, asked: &str) -> Vec<TabId> {
+        self.crashed
+            .borrow()
+            .iter()
+            .filter(|(_, known)| known.as_str() == asked)
+            .map(|(tab, _)| *tab)
+            .collect()
     }
 
     /// The name the person knows `asked` by, for the words its answer uses:
@@ -911,14 +945,26 @@ impl DesktopPolicy {
         self.handle.read(|tree| anchor_for(tree, app))
     }
 
+    /// The tab of `app` whose window shows `item` (its view): one window per item, so a second
+    /// send into a conversation raises the window it stands in.
+    #[must_use]
+    pub fn tab_showing(&self, app: &str, item: &str) -> Option<TabId> {
+        self.app_tab(app, |tab| tab.view == item)
+    }
+
     /// The tab of `app` the window `instance` runs in, when the shell shows it:
     /// the tab a window is given is the window's instance ([`LaunchAsk::tab`]).
     #[must_use]
     pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
+        self.app_tab(app, |tab| tab.id == instance)
+    }
+
+    /// The first tab of `app` on the shell that `pick` takes.
+    fn app_tab(&self, app: &str, pick: impl Fn(&Tab) -> bool) -> Option<TabId> {
         self.handle.read(|tree| {
             tabs(tree)
                 .find(|tab| {
-                    tab.id == instance
+                    pick(tab)
                         && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
                             .is_some_and(|id| app_ids_match(&id, app))
                 })
@@ -953,10 +999,14 @@ impl DesktopPolicy {
         self.handle.dispatch(command).is_ok()
     }
 
-    /// Put the shown workspace's most recently closed tab back where it was,
-    /// as an app's reopen asks.
-    pub fn reopen_closed(&mut self) -> bool {
-        self.handle.dispatch(ChromeEffect::ReopenClosed).is_ok()
+    /// Put `app`'s most recently closed tab in the shown workspace back where
+    /// it was, as the app's reopen asks: an app reopens only its own windows.
+    pub fn reopen_closed_of(&mut self, app: &str) -> bool {
+        self.handle
+            .dispatch(ChromeEffect::ReopenClosed {
+                app: Some(app.to_owned()),
+            })
+            .is_ok()
     }
 
     /// Step the group in front on by one tab, as an app's own tab chord asks
@@ -1009,14 +1059,16 @@ impl DesktopPolicy {
     /// `background`. It lands right after `anchor` (the tab [`Self::anchor_for`] finds when none is
     /// named), and — `floated` — stands over the shell beside it instead: the window a send landed
     /// in, which the shell gives the strip's room to so the card it draws at stands beside the window
-    /// that sent rather than over it. The session starts that window when the shell asks back for the
+    /// that sent rather than over it. The tab is born showing `shows`, the item the window opens
+    /// on (the conversation a send landed in), so every device's window of it opens there too.
+    /// The session starts that window when the shell asks back for the
     /// tab ([`Self::take_launches`]). False when the desktop holds no tab of `app` to open beside.
     pub fn hold(
         &mut self,
         app: &str,
         anchor: Option<TabId>,
-        background: bool,
-        floated: bool,
+        (background, floated): (bool, bool),
+        shows: Option<&str>,
     ) -> bool {
         let beside = if floated {
             None
@@ -1035,7 +1087,7 @@ impl DesktopPolicy {
             background: Some(background),
             float: floated.then_some(true),
         };
-        self.hold_launch(app, command, background)
+        self.hold_launch(app, command, background, shows.unwrap_or_default())
     }
 
     /// Hold a tab for the next window of `app` where a launch lands, taking focus unless
@@ -1047,13 +1099,13 @@ impl DesktopPolicy {
             background: Some(background),
             float: None,
         };
-        self.hold_launch(app, command, background)
+        self.hold_launch(app, command, background, "")
     }
 
     /// Ask the shell for `command`'s window and keep the place it makes for
     /// `app`. The desktop makes the tab on its next pass: the place is asked
     /// for here, so one that never comes can be given up before then.
-    fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool) -> bool {
+    fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool, shows: &str) -> bool {
         if self.handle.dispatch(command).is_err() {
             return false;
         }
@@ -1065,6 +1117,7 @@ impl DesktopPolicy {
                 tab: None,
                 background,
                 window: None,
+                shows: shows.to_owned(),
             });
         true
     }
@@ -1148,6 +1201,7 @@ impl DesktopPolicy {
                 tab: Some(tab),
                 background,
                 window,
+                ..HeldTab::default()
             });
         true
     }
@@ -1664,6 +1718,33 @@ impl DesktopPolicy {
         }
     }
 
+    /// The windows the person can see: each shown window that stands at least partly on a display,
+    /// and each dialog floating over one. A strip lays out every window group on it, so the ones
+    /// scrolled past are shown windows that stand off every display; they are not in view. With
+    /// no display known yet, every shown window is.
+    #[must_use]
+    pub fn in_view(&self) -> Vec<u64> {
+        let placement = self.placement();
+        let views: Vec<Rect> = self
+            .displays
+            .iter()
+            .map(tilo_desktop_surface::display_rect)
+            .collect();
+        placement
+            .shown
+            .into_iter()
+            .chain(placement.floating)
+            .filter(|(_, rect)| {
+                views.is_empty()
+                    || views.iter().any(|view| {
+                        let on = view.intersect(*rect);
+                        on.width() > 0.0 && on.height() > 0.0
+                    })
+            })
+            .map(|(window, _)| window)
+            .collect()
+    }
+
     /// Each window floating over the shell, and the rect the shell draws over the windows under
     /// it for that window: the whole of its bar and body, which it paints opaque, in surface
     /// coordinates. What lies under it there is drawn around it.
@@ -1746,8 +1827,7 @@ fn ask_again(
     if !queue.iter().any(|record| record.tab == Some(tab)) {
         queue.push(HeldTab {
             tab: Some(tab),
-            background: false,
-            window: None,
+            ..HeldTab::default()
         });
     }
     drop(held);
@@ -1852,15 +1932,6 @@ fn tab_mut(tree: &mut Layout, window: u64) -> Option<&mut Tab> {
 fn comes(tab: &Tab, held: &BTreeMap<String, Vec<HeldTab>>) -> bool {
     matches!(tab.tile, TileContent::Foreign { .. })
         || held.values().flatten().any(|held| held.tab == Some(tab.id))
-}
-
-/// Whether the app a window announces is the app a request named: the id
-/// itself, or the short name it ends with (`so.tilo.notes` is `notes`).
-#[must_use]
-pub fn app_ids_match(announced: &str, asked: &str) -> bool {
-    let announced = announced.to_ascii_lowercase();
-    let asked = asked.to_ascii_lowercase();
-    announced == asked || asked.rsplit('.').next() == Some(announced.as_str())
 }
 
 /// Where `tab` sits, for the command naming it.

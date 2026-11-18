@@ -1,4 +1,4 @@
-//! Native capture launcher custody. Frontends retain this handle, never a
+//! Native capture launcher ownership. Frontends retain this handle, never a
 //! launcher authority implementation or a freely assembled service launch.
 use launcher::{
     owned_service::{
@@ -39,7 +39,7 @@ struct Installation {
     package_hash: String,
 }
 impl CaptureHostOwner {
-    /// Verify actual native source custody and the independently pinned runtime.
+    /// Verify actual native source ownership and the independently pinned runtime.
     /// Serialized source labels alone cannot create this owner. The publisher
     /// must come from the host's embedded signed-service policy, as before.
     pub fn verify(runtime: &Path, publisher: &str, source: File, uid: u32) -> io::Result<Self> {
@@ -96,14 +96,14 @@ impl CaptureHostOwner {
         self.cancellation.clone()
     }
 
-    /// Correlate the eventual canonical quiescence witness with this launch.
+    /// Correlate the eventual canonical quiescence proof with this launch.
     pub fn lease_key(&self) -> ServiceLeaseKey {
         self.key.clone()
     }
 
     /// Launch only the admitted fixed worker with offline service policy. The
     /// canonical launcher still checks source owner, package and namespace
-    /// admission before effects, and retains custody until quiescence.
+    /// admission before effects, and retains ownership until quiescence.
     pub fn run(
         self,
         working: &Path,

@@ -7,7 +7,7 @@
 //! should carry as written, the turn asks its agent to take the oldest of it in ([`Fold`]): the
 //! summary grows from where it stood, and nothing reads the conversation from its start again.
 //!
-//! [`told`] is all of it, a function of the records alone. The device that hands a turn to its
+//! [`told`] is all of it, a function of the resources alone. The device that hands a turn to its
 //! agent and the host that does so with no device online both call it where they build the turn's
 //! request, so a turn knows the same wherever it is answered.
 
@@ -20,8 +20,8 @@ use ui::collaboration::recall::{
 use ui::tilo_resource::Id;
 use ui::tilo_workspace_agent::learned::Learned;
 
+use crate::chat::{Chat, Message, Summary, member_slot};
 use crate::parts::ChatPart;
-use crate::record::{Chat, Message, Summary, member_slot};
 
 /// The most of the last stretch a turn is told as written, in bytes, all messages together.
 pub const STRETCH_BYTES: usize = 12 * 1024;
@@ -37,7 +37,7 @@ pub const KEPT_BYTES: usize = 4 * 1024;
 /// Room kept for the line that says how many messages a turn is not told.
 const NOTE_BYTES: usize = 64;
 /// The most of what was learned about the person a turn is told, in bytes: the newest facts
-/// first, and a line that says how many more the record keeps.
+/// first, and a line that says how many more the resource keeps.
 pub const LEARNED_BYTES: usize = 4 * 1024;
 
 /// A turn's instruction with the conversation before it, and what the turn asks its agent to take
@@ -150,8 +150,8 @@ pub fn told(
     Told { instruction, fold }
 }
 
-/// What the person's record of what was learned about them tells a turn: the newest facts first,
-/// each with where it came from, within [`LEARNED_BYTES`], and how many more the record keeps.
+/// What the person's resource of what was learned about them tells a turn: the newest facts first,
+/// each with where it came from, within [`LEARNED_BYTES`], and how many more the resource keeps.
 /// Empty where nothing was learned.
 fn known(learned: &Learned) -> String {
     let mut facts: Vec<_> = learned
@@ -181,7 +181,7 @@ fn known(learned: &Learned) -> String {
     }
     let more = facts.len().saturating_sub(shown);
     if more > 0 {
-        let _ = write!(told, "\n({more} more are kept in the record)");
+        let _ = write!(told, "\n({more} more are kept in the resource)");
     }
     format!("{INSTRUCTION_LEARNED}{told}")
 }
@@ -280,7 +280,7 @@ mod tests {
     use ui::tilo_resource::Replica;
 
     use super::*;
-    use crate::record::chat;
+    use crate::chat::chat;
 
     const AGENT: &str = "tide";
     const ME: &str = "u_me";
@@ -298,7 +298,7 @@ mod tests {
         Chat::direct_id([me(), agent()])
     }
 
-    /// A conversation between a person and their agent, as the records hold it: Chat's record as
+    /// A conversation between a person and their agent, as the resources hold it: Chat's resource as
     /// the agent's runtime writes to it, and the newest part of the messages.
     struct Thread {
         chat: Replica<Chat>,
@@ -600,7 +600,7 @@ mod tests {
     /// turn asks it for none: it is told the last stretch and how much it is not told.
     #[test]
     fn an_agent_only_named_in_a_channel_is_asked_for_no_summary() {
-        let channel = Id::from_raw(crate::record::CHAT_CHANNEL);
+        let channel = Id::from_raw(crate::chat::CHAT_CHANNEL);
         let mut part = ChatPart::default();
         let long = "a long line in the channel ".repeat(40);
         for n in 0..40_i64 {
@@ -792,7 +792,7 @@ mod tests {
             thread
                 .chat
                 .apply(Chat::KEEP_SUMMARY.with(chat::KeepSummary {
-                    conversation: Id::from_raw(crate::record::CHAT_CHANNEL),
+                    conversation: Id::from_raw(crate::chat::CHAT_CHANNEL),
                     through: "m1".into(),
                     through_ts: 10,
                     text: "The whole workspace's channel.".into(),

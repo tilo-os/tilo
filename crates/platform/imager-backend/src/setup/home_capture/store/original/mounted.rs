@@ -13,7 +13,7 @@ use crate::setup::{
 pub(in crate::setup::home_capture) use epoch::MountedReadEpoch;
 use sha2::Digest;
 use std::os::unix::fs::MetadataExt;
-use volumes::{VolumeReads, VolumeStores, VolumeWitness};
+use volumes::{VolumeProof, VolumeReads, VolumeStores};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,33 +21,33 @@ pub(super) struct MountedEntry {
     placement: NativePath,
     pub(super) binding: EntryBinding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    volume: Option<VolumeWitness>,
+    volume: Option<VolumeProof>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MountedRecord {
     schema: u32,
     kind: String,
-    primary: SourceWitness,
+    primary: SourceProof,
     pub(super) caller: OriginalCallerFacts,
     pub(super) entries: Vec<MountedEntry>,
 }
 /// A hint authenticates only after reopening the protected SAME-source record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MountedWitness {
+pub struct MountedProof {
     schema: u32,
-    primary: SourceWitness,
+    primary: SourceProof,
     sha256: [u8; 32],
 }
-impl MountedWitness {
-    pub fn primary(&self) -> &SourceWitness {
+impl MountedProof {
+    pub fn primary(&self) -> &SourceProof {
         &self.primary
     }
-    pub fn matches_source(&self, source: &SourceWitness) -> io::Result<()> {
+    pub fn matches_source(&self, source: &SourceProof) -> io::Result<()> {
         if self.schema != 1 || &self.primary != source || self.sha256 == [0; 32] {
             return Err(failure(
-                "Mounted witness differs from original source declaration",
+                "Mounted proof differs from original source declaration",
             ));
         }
         Ok(())
@@ -61,7 +61,7 @@ impl MountedRecord {
         primary.validate()?;
         if !matches!(self.schema, 1 | 2)
             || self.kind != "original-mounted-root-set"
-            || self.primary != primary.witness()?
+            || self.primary != primary.proof()?
             || self.caller != primary.original
             || self.entries.is_empty()
             || self.entries.len() > 256
@@ -99,7 +99,7 @@ impl MountedRecord {
                 .any(|old: &PathBuf| placement.starts_with(old) || old.starts_with(&placement))
             {
                 return Err(failure(
-                    "Mounted roots overlap or lack same-source protected custody",
+                    "Mounted roots overlap or lack same-source protected ownership",
                 ));
             }
             if placements
@@ -112,8 +112,8 @@ impl MountedRecord {
         }
         Ok(())
     }
-    fn witness(&self) -> io::Result<MountedWitness> {
-        Ok(MountedWitness {
+    fn proof(&self) -> io::Result<MountedProof> {
+        Ok(MountedProof {
             schema: 1,
             primary: self.primary.clone(),
             sha256: sha2::Sha256::digest(serde_json::to_vec(self)?).into(),
@@ -166,10 +166,10 @@ impl Store {
         roots: &GrantedHomeRoots,
         peer: &HostChannel,
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> io::Result<MountedWitness> {
+    ) -> io::Result<MountedProof> {
         roots.with_roots(cancel, |granted| {
             self.register_mounted_entries(home, plan, granted, peer, cancel)
-                .map(|(witness, _custody, _file, _bytes)| witness)
+                .map(|(proof, _ownership, _file, _bytes)| proof)
         })
     }
     pub(in crate::setup::home_capture) fn register_transferred_mounted_roots(
@@ -210,14 +210,14 @@ impl Store {
         let roots =
             crate::setup::migration_review::TransferredHomeRoots::admit(report, inputs, cancel)?;
         roots.with_roots(cancel, |granted| {
-            let (witness, volumes, aggregate_file, aggregate_bytes) =
+            let (proof, volumes, aggregate_file, aggregate_bytes) =
                 self.register_mounted_entries(home, plan, granted, peer, cancel)?;
             Ok(MountedRegistration {
                 primary: self.clone(),
                 volumes,
                 aggregate_file,
                 aggregate_bytes,
-                witness,
+                proof,
                 peer: peer.original_peer(),
             })
         })
@@ -229,7 +229,7 @@ impl Store {
         granted: &[crate::setup::GrantedRoot<'_>],
         peer: &HostChannel,
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> io::Result<(MountedWitness, VolumeStores, File, Vec<u8>)> {
+    ) -> io::Result<(MountedProof, VolumeStores, File, Vec<u8>)> {
         if rustix::process::geteuid().as_raw() != 0 || self.operation != plan.operation_id {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -295,7 +295,7 @@ impl Store {
                 root.file(),
                 kind,
             )?;
-            let volume = volumes.witness_for(&binding);
+            let volume = volumes.proof_for(&binding);
             if binding.volume() == &primary.home.home.volume {
                 if NativePath::encode(&crate::setup::migration_handoff::mounted_record_namespace(
                     &binding,
@@ -323,7 +323,7 @@ impl Store {
                 1
             },
             kind: "original-mounted-root-set".into(),
-            primary: primary.witness()?,
+            primary: primary.proof()?,
             caller: caller.clone(),
             entries,
         };
@@ -373,51 +373,51 @@ impl Store {
         }
         self.records.validate_destination()?;
         volumes.verify(self, &peer.original_peer(), cancel)?;
-        Ok((record.witness()?, volumes, named, bytes))
+        Ok((record.proof()?, volumes, named, bytes))
     }
 }
 impl SourceReadContext {
     /// Actual source inputs for the namespace bootstrap. This callback retains
-    /// protected record and readonly source custody throughout use. Caller IDs
+    /// protected record and readonly source ownership throughout use. Caller IDs
     /// remain the original admitted reader, not any mounted-entry owner.
     #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup::home_capture) fn with_mounted_sources<T>(
         &self,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         cancel: &std::sync::atomic::AtomicBool,
         use_sources: impl FnOnce(&[OriginalMountedSource]) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.retain_mounted_sources(witness, cancel)?
+        self.retain_mounted_sources(proof, cancel)?
             .with_sources(cancel, use_sources)
     }
 
-    /// Native retained custody for the later signed namespace admission. JSON
-    /// witnesses only select an exact independently verified protected record.
+    /// Native retained ownership for the later signed namespace admission. JSON
+    /// proofs only select an exact independently verified protected record.
     #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup::home_capture) fn retain_mounted_sources(
         &self,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<MountedReadEpoch> {
-        MountedReadEpoch::reopen(self, witness, cancel)
+        MountedReadEpoch::reopen(self, proof, cancel)
     }
 
     /// Explicit boot export action: protected records must authenticate before
     /// any missing foreign volume is mounted through the existing UDisks owner.
     pub(in crate::setup::home_capture) fn retain_mounted_for_export(
         &self,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<MountedReadEpoch> {
-        MountedReadEpoch::reopen_for_export(self, witness, cancel)
+        MountedReadEpoch::reopen_for_export(self, proof, cancel)
     }
     pub fn append_mounted_source_geometry(
         &self,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         plans: &mut Vec<Vec<u8>>,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<()> {
-        let epoch = Arc::new(self.retain_mounted_for_export(witness, cancel)?);
+        let epoch = Arc::new(self.retain_mounted_for_export(proof, cancel)?);
         let result = epoch.append_source_geometry(plans, cancel);
         epoch.retire()?;
         result
@@ -426,19 +426,19 @@ impl SourceReadContext {
     /// Reopen the finite mounted record in this existing readonly same-source
     /// lease. Returned data contains metadata, not a group-setting capability.
     #[cfg(all(test, feature = "native-capture-qualification"))]
-    pub(in crate::setup::home_capture) fn verify_mounted_witness(
+    pub(in crate::setup::home_capture) fn verify_mounted_proof(
         &self,
-        witness: &MountedWitness,
+        proof: &MountedProof,
     ) -> io::Result<()> {
         self.revalidate()?;
-        if witness.schema != 1 || witness.primary != self.intent.witness()? {
-            return Err(failure("Mounted witness belongs to another source intent"));
+        if proof.schema != 1 || proof.primary != self.intent.proof()? {
+            return Err(failure("Mounted proof belongs to another source intent"));
         }
         let namespace = self.intent.namespace.decode().map_err(io::Error::other)?;
         let file = self.source.open_original_mounted_record(&namespace)?;
         let bytes = read_private(&file)?;
-        if <[u8; 32]>::from(sha2::Sha256::digest(&bytes)) != witness.sha256 {
-            return Err(failure("Mounted witness protected bytes differ"));
+        if <[u8; 32]>::from(sha2::Sha256::digest(&bytes)) != proof.sha256 {
+            return Err(failure("Mounted proof protected bytes differ"));
         }
         let record: MountedRecord = serde_json::from_slice(&bytes)?;
         record.validate(&self.intent)?;
@@ -485,14 +485,14 @@ fn same_entry(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
         )
 }
 
-/// Device-local custody only. Never Serialize/Deserialize and never constructed
-/// from a witness: the actual operation and per-volume leases survive RPC ACK.
+/// Device-local ownership only. Never Serialize/Deserialize and never constructed
+/// from a proof: the actual operation and per-volume leases survive RPC ACK.
 pub(in crate::setup::home_capture) struct MountedRegistration {
     primary: Arc<Store>,
     volumes: VolumeStores,
     aggregate_file: File,
     aggregate_bytes: Vec<u8>,
-    witness: MountedWitness,
+    proof: MountedProof,
     peer: crate::capture::process::OriginalCaller,
 }
 impl MountedRegistration {
@@ -501,8 +501,8 @@ impl MountedRegistration {
     ) -> io::Result<OriginalCallerFacts> {
         self.peer.original_caller_facts()
     }
-    pub(in crate::setup::home_capture) fn witness(&self) -> &MountedWitness {
-        &self.witness
+    pub(in crate::setup::home_capture) fn proof(&self) -> &MountedProof {
+        &self.proof
     }
     pub(in crate::setup::home_capture) fn validate_ack(
         &self,

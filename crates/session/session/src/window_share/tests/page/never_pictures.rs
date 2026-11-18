@@ -56,12 +56,12 @@ fn before_any_share(seeds: [u8; 2]) -> Two {
     }
 }
 
-/// The windows `host`'s plane is asked for pictures of: what a watching shell asks for while no
+/// The windows `host`'s live session is asked for pictures of: what a watching shell asks for while no
 /// page of the window is announced to it.
 fn pictures_wanted(host: &Member) -> Vec<u64> {
-    crate::calls::planes_of(&host.sync)
+    crate::calls::live_sessions_of(&host.sync)
         .get(WORKSPACE)
-        .map(|plane| plane.wanted_windows())
+        .map(|live_session| live_session.wanted_windows())
         .unwrap_or_default()
 }
 
@@ -89,7 +89,7 @@ fn starting_row(host: &Member, tab: u64) -> Option<Value> {
 /// so, and the page is what the sharing device says it sends.
 fn page_drawn(two: &Two) -> bool {
     two.tile()
-        .is_some_and(|tile| tile.page && tile.standing == Standing::Pictured)
+        .is_some_and(|tile| tile.page && tile.state == StreamState::Pictured)
         && two.received().is_some_and(|stream| {
             stream["pictured"] == true && stream["codec"].as_str() == Some(CODEC)
         })
@@ -139,7 +139,7 @@ fn share_and_tell(two: &mut Two, host: u8) {
 /// and says it draws a page on the connection its launcher made, which names no tab, so the
 /// session takes the offer up for neither. One of the two is shared then, and a device asks for
 /// it. The share waits and says what for: no picture of the window is captured, announced or
-/// sent, though the watching device's plane asks for its pictures. When the window names itself
+/// sent, though the watching device's live session asks for its pictures. When the window names itself
 /// the offer is taken up, the share is the page's, and the watching shell draws the page.
 ///
 /// Before, the session decided once, when the share started: no page was offered for the tab, so
@@ -176,7 +176,7 @@ fn a_window_shared_while_its_apps_offer_names_no_window_waits_for_its_page() {
             heard(&two.viewer, HOST, "Framework");
             pictures_wanted(&two.host) == [front]
         }),
-        "the watching device never asked for the window: the sharing device's plane is asked \
+        "the watching device never asked for the window: the sharing device's live_session is asked \
          for pictures of {:?}; the watching device says {}",
         pictures_wanted(&two.host),
         shares(&two.viewer.session)
@@ -206,11 +206,11 @@ fn a_window_shared_while_its_apps_offer_names_no_window_waits_for_its_page() {
         shares(&two.viewer.session)
     );
     assert_eq!(
-        crate::calls::planes_of(&two.viewer.sync)
+        crate::calls::live_sessions_of(&two.viewer.sync)
             .get(WORKSPACE)
-            .map_or(0, |plane| plane.heard_total()),
+            .map_or(0, |live_session| live_session.heard_total()),
         0,
-        "the watching device's plane opened an object of a window that waits for its page"
+        "the watching device's live session opened an object of a window that waits for its page"
     );
     let waits = starting_row(&two.host, front).expect("the share that waits");
     assert_eq!(waits["awaits_page"], true, "it waits for its page: {waits}");
@@ -254,7 +254,7 @@ fn a_window_shared_while_its_apps_offer_names_no_window_waits_for_its_page() {
             .session
             .handle()
             .peer_surface_read(front)
-            .is_some_and(|tile| tile.page && tile.standing == Standing::Pictured)
+            .is_some_and(|tile| tile.page && tile.state == StreamState::Pictured)
     };
     assert!(
         two.within(LINK, &mut [&mut app], |two, _| {
@@ -278,7 +278,7 @@ fn a_window_shared_while_its_apps_offer_names_no_window_waits_for_its_page() {
 /// it draws a page, so it goes out as pictures and the watching shell decodes them. Then the app
 /// says it draws a page. In that pass the pictures end: the sharing device captures the window
 /// no longer, shares it as its page and says so, and the watching shell lets the pictures' tile
-/// go, asks the plane for the page and draws it, with the page's words on its screen.
+/// go, asks the live session for the page and draws it, with the page's words on its screen.
 ///
 /// Before, nothing turned a share of pictures into a share of the page: the window went on as
 /// pictures until its share was stopped.
@@ -335,7 +335,7 @@ fn a_page_offered_while_its_window_is_shared_as_pictures_takes_the_share_over() 
         "nobody controls a page: {shared}"
     );
 
-    // The watching shell is announced the page over the pictures, and asks the plane for it.
+    // The watching shell is announced the page over the pictures, and asks the live session for it.
     assert!(
         two.within(LINK, false, |two| {
             heard(&two.viewer, HOST, "Framework");
@@ -344,12 +344,12 @@ fn a_page_offered_while_its_window_is_shared_as_pictures_takes_the_share_over() 
                 && two.asked() == [Track::Page(two.tab)]
                 && two.tile().is_some_and(|tile| tile.page)
         }),
-        "the page did not take the pictures' place on the watching shell: it asks the plane for \
+        "the page did not take the pictures' place on the watching shell: it asks the live_session for \
          {:?}:{}",
         two.asked(),
         two.said()
     );
-    // What it asks the plane for reaches the sharing device's plane through their relay: once
+    // What it asks the live session for reaches the sharing device's live session through their relay: once
     // it does, nobody asks for the window's pictures any more.
     assert!(
         two.within(LINK, false, |two| {

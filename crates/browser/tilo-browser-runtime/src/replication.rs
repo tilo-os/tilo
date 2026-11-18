@@ -1,5 +1,5 @@
 //! A certified workspace's documents in the page: every record a mount has open
-//! and the workspace's desktop, replicated through the relay session in host
+//! and the workspace's desktop, replicated through the server session in host
 //! order.
 //!
 //! One [`Joined`] exists per started peer and joined workspace. It owns an event
@@ -46,12 +46,12 @@ use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{DocumentAnswer, Events, Link};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
-use ui::collaboration::document_content::ContentLane;
+use ui::collaboration::document_content::ContentLink;
 use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_DOCUMENT};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
@@ -75,6 +75,7 @@ pub(crate) fn install() {
         attach,
         detach,
         publish,
+        permits_due,
         follow_answers,
         ask_content,
         device_of,
@@ -83,6 +84,7 @@ pub(crate) fn install() {
         resource_document,
         record_since,
         record_heads,
+        reads_alone: crate::browser::Mount::answer_reads_alone,
         content,
         permit,
         host_then,
@@ -175,8 +177,8 @@ pub(crate) struct Joined {
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The role the workspace last answered this page's person holds: the
     /// attached desktop's, so its policy offers what the workspace allows.
-    standing: crate::desktop::Standing,
-    /// The standing the mounts' permissions were last set to.
+    role: crate::desktop::SharedRole,
+    /// The member access the mounts' permissions were last set to.
     followed: u8,
     /// Nodes below the workspace the page's windows asked whether its person may
     /// change (an item someone shares), with the asked node's text form and
@@ -215,7 +217,7 @@ pub(crate) fn open(
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
     let workspace_id =
-        tilo_relay_protocol::WorkspaceId::parse(workspace).ok_or("a workspace must be a uuid")?;
+        tilo_server_protocol::WorkspaceId::parse(workspace).ok_or("a workspace must be a uuid")?;
     peer.send(Cmd::KeepContent(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),
@@ -246,7 +248,7 @@ pub(crate) fn open(
         invitable: Arc::default(),
         administers: Arc::default(),
         moderation_due_ms: Arc::default(),
-        standing: crate::desktop::Standing::unknown(),
+        role: crate::desktop::SharedRole::unknown(),
         followed: 0,
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
@@ -418,6 +420,25 @@ pub(crate) fn record_heads(
     )
 }
 
+/// The role the workspace last answered the person of peer `id` holds, as
+/// [`crate::desktop::SharedRole::code`] counts it: 0 until it has, and for a page that joined
+/// no workspace.
+pub(crate) fn role_code(id: u32) -> u8 {
+    replica_of(id).map_or(0, |joined| joined.borrow().role.code())
+}
+
+/// Who mount `mount` of peer `id` shows its workspace to, and what the workspace lets them do
+/// there: what the mount attached with. `None` for a mount this replication does not hold.
+pub(crate) fn reader(id: u32, mount: u64) -> Option<(String, ui::permissions::SharedPermissions)> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    let mounted = joined.mounts.get(&mount)?;
+    Some((
+        mounted.attachment.author.clone(),
+        mounted.attachment.permissions.clone(),
+    ))
+}
+
 /// The name the workspace in front is called on peer `id`: its governance's, which every device
 /// and every list of it reads.
 pub(crate) fn workspace_name(id: u32) -> Option<String> {
@@ -547,8 +568,8 @@ pub(crate) fn host_then(
 /// once it comes.
 fn ask_then(
     peer: &Link,
-    request: tilo_relay_protocol::workspaces::WorkspacesRequest,
-    answered: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
+    request: tilo_server_protocol::workspaces::WorkspacesRequest,
+    answered: impl FnOnce(Result<tilo_server_protocol::workspaces::WorkspacesReply, String>) + 'static,
 ) -> Result<(), tilo_session::sync::Closed> {
     let receipt = peer.ask_workspaces(request)?;
     wasm_bindgen_futures::spawn_local(async move {
@@ -570,11 +591,23 @@ pub(crate) fn permit(id: u32, node: &str, may: bool) {
     };
     let mut joined = joined.borrow_mut();
     if joined.note_permit(node, may) {
-        joined.apply_standing();
+        joined.apply_role();
         for mounted in joined.mounts.values() {
             (mounted.attachment.notify)();
         }
     }
+}
+
+/// When peer `id`'s page must ask the workspace again what its person may do
+/// there, in Unix milliseconds (`0` is now), or `None` for a peer no mount is
+/// attached to. The page's loop wakes for it: the question is asked as part of
+/// a frame's pass, and a page whose own people and windows change nothing
+/// draws none, so an idle page would otherwise wait for someone else's change
+/// to hear that its person was promoted.
+pub(crate) fn permits_due(id: u32) -> Option<u64> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    (!joined.mounts.is_empty()).then(|| joined.moderation_due_ms.load(Ordering::Relaxed))
 }
 
 /// Attach mount `mount` to peer `id`'s workspace.
@@ -595,7 +628,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             joined.moderates = Arc::clone(&shared.moderates);
             joined.invitable = Arc::clone(&shared.invitable);
             joined.administers = Arc::clone(&shared.administers);
-            joined.standing.share(&shared.standing);
+            joined.role.share(&shared.role);
         }
         joined.moderation_due_ms.store(0, Ordering::Relaxed);
         // The new mount's apps learn what the workspace answered.
@@ -649,8 +682,8 @@ pub(crate) fn publish(id: u32) {
         joined.ask_content();
         // Every frame passes here, so the workspace is asked again on time
         // whether or not anything arrived from it.
-        joined.ask_standing_when_due();
-        joined.follow_standing();
+        joined.ask_role_when_due();
+        joined.follow_role();
     }
 }
 
@@ -660,7 +693,7 @@ pub(crate) fn publish(id: u32) {
 /// idle page draws it at once instead of whenever something else wakes it.
 pub(crate) fn follow_answers(id: u32) {
     if let Some(joined) = replica_of(id) {
-        joined.borrow_mut().follow_standing();
+        joined.borrow_mut().follow_role();
     }
 }
 
@@ -693,8 +726,14 @@ impl Joined {
     /// close and move what others made on its shared desktop) and govern
     /// it. The answers set the desktop's flag and the role the mounts' apps
     /// follow, and wake them.
-    fn ask_standing_when_due(&self) {
+    fn ask_role_when_due(&self) {
         if !self.ready || self.mounts.is_empty() {
+            // A workspace the page has not joined yet has nothing to answer:
+            // ask again shortly, rather than on every pass of the page's loop.
+            self.moderation_due_ms.store(
+                crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                Ordering::Relaxed,
+            );
             return;
         }
         let now = crate::shell::now_ms();
@@ -729,16 +768,16 @@ impl Joined {
         for (index, node) in asked.into_iter().enumerate() {
             let answers = Arc::clone(&answers);
             let moderates = Arc::clone(&self.moderates);
-            let standing = self.standing.clone();
+            let shared_role = self.role.clone();
             let due = Arc::clone(&self.moderation_due_ms);
             let wake = wake.clone();
-            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+            let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
                 workspace: self.uuid.clone(),
                 node: node.to_string(),
             };
             if let Err(error) = ask_then(&self.peer, request, move |answer| {
                 let may = match &answer {
-                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                    Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
                     Ok(other) => {
                         warn(&format!(
                             "the workspace did not say what this page may do: {other:?}"
@@ -765,7 +804,7 @@ impl Joined {
                 };
                 let role = tilo_action_policy::roles::role_answered([writes, moderating, governs]);
                 let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
-                if standing.set(Some(role)) || moved {
+                if shared_role.set(Some(role)) || moved {
                     for wake in &wake {
                         wake();
                     }
@@ -784,7 +823,7 @@ impl Joined {
     /// Ask the workspace whether this page's person may invite others here:
     /// the node its governance decides inviting by. Its bar's invite button
     /// and its invite sheet offer a link only where the workspace says so,
-    /// asked again with the rest of the standing, so a role granted while
+    /// asked again with the rest of the role, so a role granted while
     /// the page is open reaches it.
     ///
     /// Whether they may make administrators is asked the same way, of the
@@ -797,13 +836,13 @@ impl Joined {
             .values()
             .map(|mounted| Arc::clone(&mounted.attachment.notify))
             .collect();
-        let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+        let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
             workspace: self.uuid.clone(),
             node: node.to_string(),
         };
         if let Err(error) = ask_then(&self.peer, request, move |answer| {
             let may = match &answer {
-                Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
                 Ok(other) => {
                     warn(&format!(
                         "the workspace did not say whether this page may invite: {other:?}"
@@ -859,12 +898,13 @@ impl Joined {
                 .values()
                 .map(|mounted| Arc::clone(&mounted.attachment.notify))
                 .collect();
-            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+            let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
                 workspace: self.uuid.clone(),
                 node: node.clone(),
             };
             if let Err(error) = ask_then(&self.peer, request, move |answer| {
-                if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) = answer {
+                if let Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) = answer
+                {
                     answers
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -909,7 +949,7 @@ impl Joined {
 
     /// Give every mount's apps the role the workspace last answered, once per
     /// answer that changed it.
-    fn follow_standing(&mut self) {
+    fn follow_role(&mut self) {
         let answers = std::mem::take(
             &mut *self
                 .permit_answers
@@ -921,25 +961,25 @@ impl Joined {
             changed |= self.note_permit(&node, may);
         }
         if changed {
-            self.apply_standing();
+            self.apply_role();
             for mounted in self.mounts.values() {
                 (mounted.attachment.notify)();
             }
         }
-        let standing = self.standing.code();
-        if standing == self.followed {
+        let role = self.role.code();
+        if role == self.followed {
             return;
         }
-        self.apply_standing();
+        self.apply_role();
     }
 
     /// Set every mount's permissions to the role the workspace last answered,
     /// with what it permits beyond it.
-    fn apply_standing(&mut self) {
-        let Some(role) = self.standing.role() else {
+    fn apply_role(&mut self) {
+        let Some(role) = self.role.role() else {
             return;
         };
-        self.followed = self.standing.code();
+        self.followed = self.role.code();
         for mounted in self.mounts.values() {
             let attachment = &mounted.attachment;
             attachment
@@ -1000,7 +1040,7 @@ impl Joined {
 
     /// Every record a mount has open in this workspace, as wire `(app, record)`.
     /// The route record `record` (its wire name) of app `app` travels on in
-    /// this workspace: its content lanes are this workspace's alone.
+    /// this workspace: its content content links are this workspace's alone.
     fn content_route(&self, app: &str, record: &str) -> ui::collaboration::RouteSpec {
         ui::collaboration::RouteSpec::document(app, self.cluster, record)
     }
@@ -1080,10 +1120,6 @@ impl Joined {
                 } if route.cluster_id == self.uuid => {
                     refusals.push((route, changes, refusal));
                 }
-                Event::ContentRefused {
-                    ws: workspace_id,
-                    refusal,
-                } if workspace_id == self.workspace => self.content_refused(&refusal),
                 Event::DocumentOpened {
                     ws: workspace_id,
                     route: Some(route),
@@ -1204,7 +1240,7 @@ impl Joined {
     }
 
     /// Ask the workspace for the content open records' windows lack: what they
-    /// queued on the records' lanes ([`ContentLane`]). Content a window
+    /// queued on the records' content links ([`ContentLink`]). Content a window
     /// stored for others is not offered from a page.
     fn ask_content(&mut self) {
         if !self.ready {
@@ -1214,9 +1250,9 @@ impl Joined {
         let now = crate::shell::now_ms();
         let records: BTreeSet<(String, String)> = self.open_resources().collect();
         for (app, record) in records {
-            // The record's windows each queue on a lane of their own.
-            for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
-                for hash in lane.take_requests().wants {
+            // The record's windows each queue on a content link of their own.
+            for link in ContentLink::on_route(&self.content_route(&app, &record)) {
+                for hash in link.take_requests().wants {
                     let Some(request) = self.content.ask(
                         &device,
                         (app.clone(), record.clone()),
@@ -1231,7 +1267,7 @@ impl Joined {
                         .send(Cmd::WantContent(self.workspace, request))
                         .is_err()
                     {
-                        lane.retry_want(hash);
+                        link.retry_want(hash);
                     }
                 }
             }
@@ -1239,7 +1275,7 @@ impl Joined {
     }
 
     /// Keep a piece of content a member sent; whether it completed content
-    /// a record's window asked for, now on the record's lane.
+    /// a record's window asked for, now on the record's content link.
     fn content_piece(&mut self, frame: &[u8]) -> bool {
         let device = self.peer.status().device;
         let Some(arrived) = self
@@ -1249,24 +1285,10 @@ impl Joined {
             return false;
         };
         let (app, record) = arrived.tag;
-        for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
-            lane.arrive(arrived.hash.clone(), arrived.bytes.clone());
+        for link in ContentLink::on_route(&self.content_route(&app, &record)) {
+            link.arrive(arrived.hash.clone(), arrived.bytes.clone());
         }
         true
-    }
-
-    /// The host did not pass on content this page shared: say so over every desktop the page
-    /// shows, with when to try again, as the host said it.
-    fn content_refused(&self, refusal: &tilo_relay_protocol::refusal::Refusal) {
-        warn(&format!(
-            "the workspace did not pass on shared content: {refusal}"
-        ));
-        let plain = refusal.plain();
-        for mounted in self.mounts.values() {
-            if let Some((handle, _)) = &mounted.attachment.desktop {
-                handle.acknowledge(plain.to_string());
-            }
-        }
     }
 
     /// Withdraw what the host refused of `route` from the open record that
@@ -1277,7 +1299,7 @@ impl Joined {
         &mut self,
         route: &DocumentRoute,
         changes: &[[u8; 32]],
-        refusal: &tilo_relay_protocol::refusal::Refusal,
+        refusal: &tilo_server_protocol::refusal::Refusal,
         woken: &mut HashSet<u64>,
     ) {
         warn(&format!(
@@ -1384,7 +1406,7 @@ impl Joined {
         }
     }
 
-    /// Merge `bytes`, the replica's whole document of `route`, standing at `heads`, into the
+    /// Merge `bytes`, the replica's whole document of `route`, at `heads`, into the
     /// open record, the desktop, or the record's stored document for whoever opens it.
     fn apply(
         &mut self,
@@ -1629,6 +1651,9 @@ impl Joined {
         // hold yet as this page's person's own: a window someone else opened would
         // read as one this person attributed to them.
         self.desktop_sending = DesktopSending::Changes;
+        // A view asked of this person's layout (an agent's open, from a device that holds no
+        // layout) is put on it here, as this person's change, and sent with the next one.
+        self.place_asked();
         let Some(value) = desktop_value(self.desktop.document()) else {
             return Ok(());
         };
@@ -1643,6 +1668,34 @@ impl Joined {
         }
         self.desktop_value = Some(value);
         Ok(())
+    }
+
+    /// Put the views asked of this page's person's layout on the layout this page holds
+    /// ([`tilo_desktop_model::asked`]), as that person's change. Says whether it placed any.
+    fn place_asked(&mut self) -> bool {
+        let Some(author) = self.mounts.values().find_map(|mounted| {
+            mounted
+                .attachment
+                .desktop
+                .as_ref()
+                .map(|_| mounted.attachment.author.clone())
+        }) else {
+            return false;
+        };
+        let doc = self.desktop.document_mut();
+        match tilo_desktop_model::asked::place_asked(doc, &author) {
+            Ok(true) => {
+                tilo_desktop_surface::history_log::commit(doc, &author, ui::time::unix_now_i64());
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                warn(&format!(
+                    "a view asked of this layout was not placed: {error}"
+                ));
+                false
+            }
+        }
     }
 
     fn send(&mut self) {
@@ -1868,13 +1921,30 @@ impl Joined {
         );
         if wrote {
             tilo_desktop_surface::history_log::commit(doc, &author, ui::time::unix_now_i64());
+            // A view asked before this page had a layout to put it on is put there now.
+            if self.place_asked()
+                && let Some(placed) = desktop_value(self.desktop.document())
+            {
+                for mounted in self.mounts.values() {
+                    if let Some((handle, shared)) = &mounted.attachment.desktop {
+                        if let Err(error) = crate::desktop::apply_shared(handle, shared, &placed) {
+                            warn(&format!("an asked view did not show: {error}"));
+                        }
+                        (mounted.attachment.notify)();
+                    }
+                }
+            }
         }
         if wrote && joined {
             // Windows opened, closed, moved or renamed: the person's own
             // work on the desktop.
             self.authored = self.authored.saturating_add(1);
         }
-        if !wrote && self.desktop_sending == DesktopSending::Changes {
+        // Nothing new from the shell, and nothing placed here since the last send either.
+        if !wrote
+            && self.desktop_sending == DesktopSending::Changes
+            && self.desktop.pending_outbound_delta().0.is_empty()
+        {
             self.local_value = Some(value);
             return;
         }
@@ -1921,7 +1991,6 @@ pub(crate) fn takes(event: &Event) -> bool {
             | Event::Landed { .. }
             | Event::DocumentContent { .. }
             | Event::Refused { .. }
-            | Event::ContentRefused { .. }
             | Event::DocumentOpened { .. }
     )
 }

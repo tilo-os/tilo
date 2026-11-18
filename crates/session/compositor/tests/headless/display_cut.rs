@@ -48,7 +48,7 @@ impl WindowPolicy for Cut {
 fn a_window_cut_to_its_display_shows_and_takes_the_pointer_there_only() {
     let mut compositor = headless(Box::new(Cut));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(
+    compositor.add_surface(Rc::new(RefCell::new(
         Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log)).below(),
     )));
     let mut client = mapped_client(&mut compositor, "cut", (200, 100), [255, 0, 0, 255]);
@@ -82,8 +82,8 @@ fn a_window_cut_to_its_display_shows_and_takes_the_pointer_there_only() {
 /// The desktop under the windows, which carries a window pressed with Super held.
 struct Carrier(Square);
 
-impl SurfaceHost for Carrier {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Carrier {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         self.0.layers()
     }
 
@@ -112,7 +112,7 @@ impl SurfaceHost for Carrier {
 fn a_press_with_super_over_a_window_is_the_desktops_until_it_ends() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Carrier(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Carrier(Square::new(
         (0, 0, 640, 480),
         [0, 0, 255, 255],
         Rc::clone(&log),

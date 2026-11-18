@@ -8,11 +8,11 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
+    ActionCallError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
     PendingPoll, RemoteActionTarget, settings_resources,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -42,8 +42,8 @@ fn fixture() -> Fixture {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", &xdg)
         .set("TILO_IDENTITY_ROOT", &system)
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &xdg.join("tilo/identity"),
         &IdentityPaths::under(&system),
         IdentityStorage::Files,
@@ -82,7 +82,7 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 std::time::SystemTime::now(),
             )
@@ -107,9 +107,9 @@ fn shell(fixture: &Fixture) -> Layout {
     }
 }
 
-/// A headless session keeping the person's settings, its broker on `plane`: what every control of
+/// A headless session keeping the person's settings, its broker on `app_wire`: what every control of
 /// Settings' window reaches.
-fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
+fn serving(fixture: &Fixture, app_wire: &Path) -> crate::Session {
     let mut session = crate::Session::headless(
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -117,7 +117,7 @@ fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
             person: person_id(&fixture.cert.user_public_key),
             collab: false,
             state: Some(fixture.state.clone()),
-            action_plane: crate::ActionPlane::At(plane.join("collab.sock")),
+            app_socket: crate::AppSocket::At(app_wire.join("collab.sock")),
             ..crate::Options::default()
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -131,7 +131,7 @@ fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
 }
 
 /// The person at this desktop, in the workspace in front: whose own click a control's action is.
-fn seat(session: &crate::Session) -> Caller {
+fn local_person(session: &crate::Session) -> Caller {
     Caller::local_person(session.shared.person.clone()).in_workspace(WORKSPACE)
 }
 
@@ -139,8 +139,8 @@ fn seat(session: &crate::Session) -> Caller {
 /// invocation are read on the loop, which steps here until the answer is in.
 fn answered<T: Send + 'static>(
     session: &mut crate::Session,
-    ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionHostError>>,
-) -> Result<T, ActionHostError> {
+    ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionCallError>>,
+) -> Result<T, ActionCallError> {
     let (done, mut answered) = tilo_actions::remote::pending();
     ask().then(move |answer| done.complete(answer));
     let deadline = tilo_test_env::hang_deadline();
@@ -150,7 +150,7 @@ fn answered<T: Send + 'static>(
             return answer.expect("the broker answers");
         }
     }
-    Err(ActionHostError::Refused {
+    Err(ActionCallError::Refused {
         reason: "the session did not answer".to_owned(),
     })
 }
@@ -188,17 +188,17 @@ fn stored(session: &crate::Session, section: &str, field: &str) -> Value {
 fn settings_controls_change_the_settings_the_session_keeps() {
     let _settled = ui::motion::testing::settled();
     let fixture = fixture();
-    let plane = tempfile::tempdir().expect("a directory to serve the broker in");
+    let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
     std::fs::set_permissions(
-        plane.path(),
+        app_wire.path(),
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     )
     .expect("the broker's directory is this user's");
-    let mut session = serving(&fixture, plane.path());
+    let mut session = serving(&fixture, app_wire.path());
     let broker = session
         .action_broker()
         .expect("the session serves a broker");
-    let person = seat(&session);
+    let person = local_person(&session);
 
     // The sections Settings' panes show stand under the provider its controls name, each with the
     // field edit they bind to: the same resources, and the same action, as the settings the
@@ -266,7 +266,7 @@ fn settings_controls_change_the_settings_the_session_keeps() {
         matches!(
             answered(&mut session, || broker
                 .action_invoke_local_person(&person, &later)),
-            Err(ActionHostError::ConfirmationRequired { .. })
+            Err(ActionCallError::ConfirmationRequired { .. })
         ),
         "locking later waits for the person's answer"
     );

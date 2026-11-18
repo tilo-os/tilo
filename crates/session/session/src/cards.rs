@@ -203,7 +203,7 @@ impl Cards {
             return false;
         }
         card.told = at;
-        // A card that moves, or comes back from standing down, is a window whose first frame the
+        // A card that moves, or comes back from being brought down, is a window whose first frame the
         // app has not seen yet.
         card.adopted = false;
         true
@@ -320,7 +320,7 @@ impl Cards {
         Some(card.clone())
     }
 
-    /// The app presents the activity in the card again after standing it down: while the layer
+    /// The app presents the activity in the card again after bringing it down: while the layer
     /// shows the card it draws the activity there once more. Returns whether that is news.
     pub(crate) fn presented_again(&self, app: &str, connection: u64, activity: &str) -> bool {
         let mut shared = self.shared.borrow_mut();
@@ -551,7 +551,7 @@ mod tests {
             );
         }
 
-        phase a_card_its_app_presents_again_after_standing_it_down_is_drawn_again;
+        phase a_card_its_app_presents_again_after_closing_it_is_drawn_again;
         {
             let cards = Cards::new();
             cards

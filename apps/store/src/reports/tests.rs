@@ -19,7 +19,7 @@ fn note(reports: &Replica<Reports>) -> String {
 }
 
 tilo_test_env::scenario! {
-    fn reports_and_cases_are_bounded_records;
+    fn reports_and_cases_are_bounded_resources;
 
     phase report_drafts_carry_a_bounded_collaborative_note;
     // A draft starts with an empty note, keeps a note it already has, bounds
@@ -136,9 +136,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_moderation_case_record_is_bounded_field_by_field;
-    // A case record is taken whole or refused whole: its app, its case id and
-    // its status are each bounded, and a refused record leaves the report as
+    phase a_moderation_case_resource_is_bounded_field_by_field;
+    // A case resource is taken whole or refused whole: its app, its case id and
+    // its status are each bounded, and a refused resource leaves the report as
     // it was.
     {
         // A case id and a status are each at most 128 characters.

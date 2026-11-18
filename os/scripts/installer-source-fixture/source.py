@@ -106,7 +106,7 @@ def held_bytes(path, maximum):
     try:
         before = os.fstat(descriptor)
         require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
-                and 0 < before.st_size <= maximum, 'source observation file custody/bound')
+                and 0 < before.st_size <= maximum, 'source observation file ownership/bound')
         data = bytearray()
         while part := os.read(descriptor, min(65536, maximum + 1 - len(data))):
             data.extend(part)
@@ -470,7 +470,7 @@ def copy_public_candidate(candidate, public):
         current = Path(parent)
         metadata = current.lstat()
         require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == 0 and not metadata.st_mode & 0o022,
-                'candidate public directory custody')
+                'candidate public directory ownership')
         destination = public / current.relative_to(candidate)
         destination.mkdir(mode=0o755, exist_ok=True)
         for directory in directories:
@@ -484,7 +484,7 @@ def copy_public_candidate(candidate, public):
             total += info.st_size
             require(count <= 65536 and total <= 2 << 30 and stat.S_ISREG(info.st_mode)
                     and info.st_uid == 0 and not info.st_mode & 0o022,
-                    'candidate public artifact tree exceeds custody/bounds')
+                    'candidate public artifact tree exceeds ownership/bounds')
             raw = held_bytes(path, 512 << 20)
             target = destination / filename
             write_new(target, raw, mode=0o555 if info.st_mode & 0o111 else 0o444)

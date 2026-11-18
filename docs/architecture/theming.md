@@ -21,7 +21,7 @@ The rules:
    adds programs: part painters, state transitions, scroll feel and assets
    (§ "Part painters").
 3. **Safety comes from the sandbox, not from being data.** A theme's
-   programs run as wasm in the UI host with no I/O, no secrets and a measured
+   programs run as wasm in the app process with no I/O, no secrets and a measured
    frame budget; they draw parts and nothing else. The danger KDE's 2024
    store theme showed was authority (a script that deleted files), which a
    painter never holds.
@@ -280,7 +280,7 @@ focused, selected, disabled, dragging, changed-by-someone).
   pixelation, hatching or refractive glass.
 - **The painted shape is the hit area.** A triangle button takes clicks inside
   the triangle only; focus rings and accessibility bounds follow the shape.
-- **Motion** belongs to the UI host's clock. A theme declares how each state
+- **Motion** belongs to the app process's clock. A theme declares how each state
   changes (spring, stepped, duration, curve, or none); the painter only draws
   a given moment. Reduce motion replaces every transition with its end state.
 - **Scroll feel** is a part too: overscroll (rubber band or hard stop), snapping,

@@ -45,7 +45,7 @@ pub enum Showing {
 struct Reveal {
     showing: Showing,
     revision: u64,
-    /// Whether a failure shows its face here: the first box in its region standing for its read does;
+    /// Whether a failure shows its face here: the first box in its region for its read does;
     /// the others keep their reserved space.
     speaks: bool,
 }

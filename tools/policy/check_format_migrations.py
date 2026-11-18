@@ -19,7 +19,7 @@ the file, not a number it assumed, so a file of another version is refused
 rather than read as this one; and no loader calls ``migrate``, which brings
 bytes up but keeps no copy of what the file held. A loader that brought up
 only the first version's file and read a later one as it was refused a whole
-relay's state at start.
+server's state at start.
 
 ``against BASE`` (run against main before landing) fails when the golden bytes
 of a version this build still declares changed. A format may bring up fewer
@@ -33,7 +33,7 @@ A version is pinned by the bytes it wrote. Postcard reads a field added,
 removed or retyped without a word as long as the types line up, so a layout
 that changed under the same version number goes unnoticed until a machine's
 file stops reading (a device's certificate, a workspace's record and a
-relay's invitations each did). So ``check`` also fails a format whose crate
+server's invitations each did). So ``check`` also fails a format whose crate
 keeps no ``golden/<name>/v<version>.hex`` (the name lowercased, each run of
 other characters a ``-``; the bytes as lowercase hex pairs, 16 to a line), or no test of the crate that reads that path: the
 test hands it to ``assert_golden_bytes``, which fails when this build reads

@@ -404,8 +404,8 @@ mod tests {
             assert!(app.restore_call_continuation(&metadata, &doc));
             app.realtime.offer = Some(("target-session".into(), offered));
             app.realtime.accepted_target = true;
-            let (services, recorder) = ui::host::HostServices::recording();
-            ui::host::scoped(&services, || Widget::sync(&mut app, &doc, &ROOT));
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            ui::process::scoped(&services, || Widget::sync(&mut app, &doc, &ROOT));
             assert!(recorder.screen_capture_requests().is_empty());
             assert!(!app.call.sharing);
             assert!(!app.realtime_target_media_ready());

@@ -1,6 +1,6 @@
 //! Private, bounded transport for live-session accounts. Only the installed user
 //! opens the sealed bundle; the privileged installer merely carries its bytes.
-use account_custody::portable::SealedAccounts;
+use account_credentials::portable::SealedAccounts;
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Write};
 use tilo_seal::SymmetricKey;
@@ -69,7 +69,7 @@ impl InstallAccounts {
     pub fn import_for_user(
         &self,
         root: &std::path::Path,
-        binding: &account_custody::portable::PortableBinding,
+        binding: &account_credentials::portable::PortableBinding,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if rustix::process::getuid().as_raw() != binding.target_uid()
             || rustix::process::geteuid().as_raw() != binding.target_uid()
@@ -83,11 +83,11 @@ impl InstallAccounts {
     fn import_authenticated(
         &self,
         root: &std::path::Path,
-        binding: &account_custody::portable::PortableBinding,
+        binding: &account_credentials::portable::PortableBinding,
     ) -> Result<(), Box<dyn std::error::Error>> {
         validate_destination(root)?;
         let sealed = SealedAccounts::from_bytes(&self.ciphertext)?;
-        account_custody::portable::import_sealed_accounts(
+        account_credentials::portable::import_sealed_accounts(
             root,
             &sealed,
             &self.key,
@@ -97,7 +97,7 @@ impl InstallAccounts {
     }
 }
 
-// Refuse pre-existing custody aliases, including aliases left in a migrated
+// Refuse pre-existing ownership aliases, including aliases left in a migrated
 // home. Import must never follow a link back to a source account's credentials.
 fn validate_destination(root: &std::path::Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -131,7 +131,9 @@ fn validate_destination(root: &std::path::Path) -> io::Result<()> {
                     || (directory && !info.is_dir())
                     || (!directory && (!info.is_file() || info.nlink() != 1)) =>
             {
-                return Err(io::Error::other("redirected or foreign account custody"));
+                return Err(io::Error::other(
+                    "redirected or foreign account credentials",
+                ));
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -157,7 +159,7 @@ pub fn target_fingerprint(size: u64, major_minor: &str, wwn: &str, serial: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use account_custody::portable::{self, PortableBinding};
+    use account_credentials::portable::{self, PortableBinding};
     use accounts::{Account, AccountId, AccountStore, AccountTypeId, Secret, SecretVault};
 
     fn assert_destination_rejects_alias_and_conflict(

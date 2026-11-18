@@ -7,7 +7,7 @@ use std::time::Duration;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_actions::remote::InvokeArgument;
-use ui::tilo_actions::remote::host_account::{self, HostAccount, InvoiceStatus, PaymentMethod};
+use ui::tilo_actions::remote::server_account::{self, InvoiceStatus, PaymentMethod, ServerAccount};
 use ui::tilo_resource;
 use ui::widget::Element;
 
@@ -53,13 +53,13 @@ pub(crate) fn answer(
 
 /// The provider's page `effect` opens, as the host answered it for `account`: only a web page
 /// the provider serves over https, never anything else an answer might name.
-fn page_of(account: &HostAccount, effect: BillingEffect) -> Result<String, String> {
+fn page_of(account: &ServerAccount, effect: BillingEffect) -> Result<String, String> {
     let url = match effect {
         BillingEffect::ManageBilling => account.manage_billing.clone(),
         BillingEffect::OpenInvoice { invoice } => account
-            .standing
+            .subscription
             .as_ref()
-            .and_then(|standing| standing.invoices.iter().find(|i| i.id == invoice))
+            .and_then(|subscription| subscription.invoices.iter().find(|i| i.id == invoice))
             .map(|invoice| invoice.url.clone()),
     };
     url.filter(|url| url.starts_with("https://"))
@@ -79,7 +79,7 @@ pub fn area(app: &SettingsApp) -> Option<&BillingArea> {
 
 pub struct BillingArea {
     remote: ui::RemoteActions,
-    scene: Option<HostAccount>,
+    scene: Option<ServerAccount>,
     model: OnceCell<Rc<RefCell<BillingModel>>>,
     shown: LocalState<u64>,
 }
@@ -116,7 +116,7 @@ impl BillingArea {
 pub struct BillingModel {
     following: Option<ui::Followed>,
     seen: u64,
-    account: Option<HostAccount>,
+    account: Option<ServerAccount>,
     error: Option<String>,
 }
 
@@ -124,7 +124,7 @@ impl BillingModel {
     fn following(remote: &ui::RemoteActions) -> Self {
         Self {
             following: Some(remote.follow(
-                host_account::target(host_account::ACCOUNT),
+                server_account::target(server_account::ACCOUNT),
                 InvokeArgument::None,
             )),
             seen: 0,
@@ -133,7 +133,7 @@ impl BillingModel {
         }
     }
 
-    fn shown(account: HostAccount) -> Self {
+    fn shown(account: ServerAccount) -> Self {
         Self {
             following: None,
             seen: 0,
@@ -168,7 +168,7 @@ impl BillingModel {
             }
             ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => return false,
         };
-        match serde_json::from_value::<HostAccount>(value) {
+        match serde_json::from_value::<ServerAccount>(value) {
             Ok(account) => {
                 self.account = Some(account);
                 self.error = None;
@@ -191,11 +191,8 @@ impl BillingModel {
         };
         if !account.sells() {
             return page(vec![section(
-                &account.host,
-                rows(vec![note(&t_args(
-                    "settings-billing-sells-nothing",
-                    &[("host", account.host.clone().into())],
-                ))]),
+                &account.server,
+                rows(vec![note(&t("settings-billing-sells-nothing"))]),
             )]);
         }
         page(vec![
@@ -216,8 +213,8 @@ fn vm_time(seconds: u64) -> String {
     )
 }
 
-fn facts(account: &HostAccount) -> Vec<(String, String)> {
-    let standing = account.standing.as_ref();
+fn facts(account: &ServerAccount) -> Vec<(String, String)> {
+    let subscription = account.subscription.as_ref();
     let plan = match account.plan() {
         Some(plan) => match &plan.price {
             Some(price) => t_args(
@@ -235,9 +232,9 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
         (t("settings-billing-plan"), plan),
         (t("settings-billing-card"), card_line(account)),
     ];
-    if let Some(standing) = standing {
-        let seconds = standing.usage.vm_seconds();
-        let included = standing
+    if let Some(subscription) = subscription {
+        let seconds = subscription.usage.vm_seconds();
+        let included = subscription
             .limits
             .as_ref()
             .and_then(|limits| limits.included_vm_seconds);
@@ -253,22 +250,22 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
             None => vm_time(seconds),
         };
         facts.push((t("settings-billing-usage"), usage));
-        if let Some(credit) = &standing.credit {
+        if let Some(credit) = &subscription.credit {
             facts.push((t("settings-billing-credit"), credit.clone()));
         }
     }
     facts
 }
 
-fn card(account: &HostAccount) -> Option<&PaymentMethod> {
-    account.standing.as_ref()?.payment_method.as_ref()
+fn card(account: &ServerAccount) -> Option<&PaymentMethod> {
+    account.subscription.as_ref()?.payment_method.as_ref()
 }
 
-fn has_card(account: &HostAccount) -> bool {
+fn has_card(account: &ServerAccount) -> bool {
     card(account).is_some()
 }
 
-fn card_line(account: &HostAccount) -> String {
+fn card_line(account: &ServerAccount) -> String {
     let Some(card) = card(account) else {
         return t("settings-billing-card-none");
     };
@@ -289,7 +286,7 @@ fn card_line(account: &HostAccount) -> String {
     }
 }
 
-fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSection {
+fn account_section(cx: &ViewCx<Settings>, account: &ServerAccount) -> SettingsSection {
     let card = has_card(account);
     let mut items: Vec<_> = facts(account)
         .iter()
@@ -299,7 +296,7 @@ fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSect
         items.push(note(&t("settings-billing-card-when")));
     }
     if account.manage_billing.is_none() {
-        return section(&account.host, rows(items));
+        return section(&account.server, rows(items));
     }
     let label = t(if card {
         "settings-billing-manage"
@@ -307,7 +304,7 @@ fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSect
         "settings-billing-add-card"
     });
     section_action(
-        &account.host,
+        &account.server,
         cx.actions().bind_effect_invocation(
             ui::widget::Button::new("settings.billing.manage", &label),
             &SettingsEffect::from(BillingEffect::ManageBilling),
@@ -316,11 +313,11 @@ fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSect
     )
 }
 
-fn invoices_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSection {
+fn invoices_section(cx: &ViewCx<Settings>, account: &ServerAccount) -> SettingsSection {
     let invoices = account
-        .standing
+        .subscription
         .as_ref()
-        .map(|standing| standing.invoices.as_slice())
+        .map(|subscription| subscription.invoices.as_slice())
         .unwrap_or_default();
     let items = if invoices.is_empty() {
         vec![note(&t("settings-billing-no-invoices"))]

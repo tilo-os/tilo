@@ -2,7 +2,7 @@
 //! behind those APIs lives in Tilo's platform crates.
 //!
 //! The rules come from `tools/policy/app_portability_rules.toml`, the table
-//! `tilo-app check --lint --all` (the repository gate, run by `lint.yml`)
+//! `tilo-app check --lint --all` (the repository check, run by `lint.yml`)
 //! counts against its baseline. The lint reads an app's shipped Rust sources
 //! (the module tree reachable from its library and binary roots, minus
 //! `#[cfg(test)]` items) and its Cargo manifest, and reports every site with
@@ -15,7 +15,7 @@
 //! run-time traps when web is not a target, platform paths and OS tools for
 //! `tilo-os` apps. An app with two surfaces selects them with a feature: a
 //! web build compiles only the features its `web-features` names, so the
-//! code its desktop defaults gate is never the page's.
+//! code its desktop defaults check is never the page's.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -638,7 +638,7 @@ fn counted(counts: &mut Counts, section: &str, package: &str, rule: &str) {
 pub fn render_baseline(counts: &Counts) -> String {
     let mut text = String::from(
         "# Platform code that apps and the SDK's portable crates still contain\n\
-         # (the `portability` gate in `tilo-app check --lint --all`, rules in\n\
+         # (the `portability` check in `tilo-app check --lint --all`, rules in\n\
          # app_portability_rules.toml). Keyed package -> rule -> count. Counts may\n\
          # only fall: lower an entry when you remove sites (`tilo-app check --lint\n\
          # --all --print-baseline` prints the tightened table); never add one. A new\n\
@@ -758,13 +758,13 @@ pub struct PackageFinding {
     pub finding: PortabilityFinding,
 }
 
-/// The workspace's app portability gate: every app, app model crate and
+/// The workspace's app portability check: every app, app model crate and
 /// portable SDK crate, its sites counted against the shrink-only baseline.
 ///
 /// The apps' own reports come with it, so one run both tells a developer what
 /// to move and whether the repository's counts grew.
 #[derive(Debug)]
-pub struct PortabilityGate {
+pub struct PortabilityCheck {
     counts: Counts,
     baseline: Counts,
     apps: Vec<PortabilityReport>,
@@ -773,7 +773,7 @@ pub struct PortabilityGate {
     strict: bool,
 }
 
-impl PortabilityGate {
+impl PortabilityCheck {
     /// Whether the tree holds no more sites than the baseline allows, no app
     /// breaks a strict rule, and no entry has room to fall.
     #[must_use]
@@ -792,7 +792,7 @@ impl PortabilityGate {
         render_baseline(&self.counts)
     }
 
-    /// Prints every failing app's sites and the gate's own summary; returns
+    /// Prints every failing app's sites and the check's own summary; returns
     /// what failed, empty when the tree passes.
     pub fn print_failures(&self) -> Vec<String> {
         let mut failures = Vec::new();
@@ -828,7 +828,7 @@ impl PortabilityGate {
         text
     }
 
-    /// What the gate has to say: why it failed, with the sites and the table
+    /// What the check has to say: why it failed, with the sites and the table
     /// to commit; or how many sites the tree is allowed.
     #[must_use]
     pub fn render(&self) -> String {
@@ -891,7 +891,7 @@ impl PortabilityGate {
 
 /// The platform code of every app, app model crate and portable SDK crate in
 /// the workspace containing `start`, counted against its baseline.
-pub fn gate(start: &Path) -> Result<PortabilityGate> {
+pub fn check(start: &Path) -> Result<PortabilityCheck> {
     let table = rules()?;
     let (root, _workspace) = workspace_dir(start)?;
     let mut counts = Counts::new();
@@ -999,7 +999,7 @@ pub fn gate(start: &Path) -> Result<PortabilityGate> {
         }
     }
 
-    Ok(PortabilityGate {
+    Ok(PortabilityCheck {
         baseline: load_baseline(&root.join(BASELINE))?,
         counts,
         apps,
@@ -1454,7 +1454,7 @@ pub(crate) fn manifest_key_line(text: &str, table: &str, key: &str) -> usize {
     1
 }
 
-/// Features that name a platform other than the web: the code they gate is
+/// Features that name a platform other than the web: the code they check is
 /// compiled for that platform alone, never for the web.
 const NOT_WEB_FEATURES: &[&str] = &["tilo-os", "linux", "macos"];
 

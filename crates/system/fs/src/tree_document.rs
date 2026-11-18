@@ -41,9 +41,9 @@ use crate::namespace::{Namespace, ResourceWrite};
 /// endpoint.
 pub use fs_protocol::tree::FILES_APP;
 
-/// The record a workspace's tree is, as the device that publishes it names it.
+/// The document a workspace's tree is, as the device that publishes it names it.
 #[must_use]
-pub fn record() -> String {
+pub fn document_id() -> String {
     fs_protocol::tree::document_id()
 }
 
@@ -589,7 +589,7 @@ impl TreePublisher {
             (None, Access::Unsealed) => Open::Opened(op.payload.clone()),
             (_, Access::Waiting) => Open::Later,
             // A change that does not go as this record's route does is another workspace's:
-            // cleartext into a workspace that seals is the downgrade the gate refuses, and sealed
+            // cleartext into a workspace that seals is the downgrade the check refuses, and sealed
             // content on a route with no keys to open it is not this tree's.
             (None, Access::Sealed) | (Some(_), Access::Unsealed) => Open::Never,
             (Some(metadata), Access::Sealed) => {

@@ -1,7 +1,7 @@
 //! The store's open writes, as the index would hold them: what the store wrote into its
-//! mirror and the record does not hold yet, derived field by field like the index
+//! mirror and the document does not hold yet, derived field by field like the index
 //! ([`super::derive`]), over the index as its last commit left it. Reading through it is
-//! reading the index as the writes leave it; the record's next change drops it, as the mirror
+//! reading the index as the writes leave it; the document's next change drops it, as the mirror
 //! drops its open transaction.
 
 use std::collections::{BTreeSet, HashMap};
@@ -343,7 +343,7 @@ impl Sink for OverlaySink<'_> {
 
     fn remove(&mut self, resource: &str) -> Result<(), IndexError> {
         // The links it made leave their targets' lists; the ones its items made are dropped
-        // with the open writes and read from the index until the record holds the removal.
+        // with the open writes and read from the index until the document holds the removal.
         super::derive::unlink(self, resource)?;
         self.drop_filters(resource)?;
         self.overlay.drop_within(resource);

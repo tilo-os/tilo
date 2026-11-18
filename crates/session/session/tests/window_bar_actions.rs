@@ -20,7 +20,7 @@
 use serde_json::Value;
 use tilo_session::Session;
 
-use crate::common::{Repl, on_screen, until};
+use crate::common::{Api, on_screen, until};
 
 /// The pill at the trailing end of a window's bar: the window's own actions, width, focus and
 /// pin commands. The shell names it for what it opens, on every style's window bar.
@@ -59,8 +59,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
             .run_shell_action("apply", vec![Value::from("windows_desktop")])
             .unwrap_or_else(|why| panic!("the shell shows {preset}: {why}"));
     } else {
-        let mut repl = Repl::connect(&root.join("agent.sock"));
-        repl.opened(session);
+        let mut repl = Api::open(session, root);
         let (answer, failed) = repl.run(
             session,
             &format!(
@@ -78,7 +77,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
             crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
         });
     } else {
-        // The canvas's bar keeps no switch (`canvas.md` §7): the canvas standing under it says
+        // The canvas's bar keeps no switch (`canvas.md` §7): the canvas under it says
         // the Frames shell is shown.
         until(session, &format!("the {preset} shell"), |session| {
             crate::common::preset_menu(session).as_deref() == Some(&format!("Showing {preset}"))
@@ -189,7 +188,7 @@ const KEY_ESCAPE: u32 = 1;
 fn strip_of(session: &Session, record: &str) -> String {
     crate::common::places(session)
         .into_iter()
-        .find(|place| place.record == record)
+        .find(|place| place.resource == record)
         .map_or_else(
             || panic!("the shell holds a place for {record}"),
             |place| place.strip,
@@ -197,10 +196,9 @@ fn strip_of(session: &Session, record: &str) -> String {
 }
 
 /// Show the strip `strip` as the one in front, as a press on its window's "Bring to front" does:
-/// the shell's own `focus_strip`, through the MCP server.
+/// the shell's own `focus_strip`, through the API.
 fn focus_strip(session: &mut Session, root: &std::path::Path, strip: &str) {
-    let mut repl = Repl::connect(&root.join("agent.sock"));
-    repl.opened(session);
+    let mut repl = Api::open(session, root);
     let (answer, failed) = repl.run(
         session,
         &format!(r#"shell.focus_strip(shell.viewing, strip: "{strip}")"#),

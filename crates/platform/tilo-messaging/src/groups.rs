@@ -83,7 +83,7 @@ pub type MembershipFuture =
     Pin<Box<dyn Future<Output = Result<GroupMembership, SendError>> + Send>>;
 
 /// Supplied by the original account host; every read rechecks credential and
-/// network custody and authenticated self membership. A snapshot grants neither
+/// network ownership and authenticated self membership. A snapshot grants neither
 /// permission to send nor membership in a workspace.
 pub trait GroupHost: Send + Sync {
     fn list(&self) -> GroupsFuture;

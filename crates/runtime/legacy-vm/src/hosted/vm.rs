@@ -20,7 +20,7 @@ use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
 use super::memory;
-use super::meter::{Ledger, Meter, RunEnd, UsageRecord, VmIdentity};
+use super::meter::{Log, Meter, RunEnd, UsageEntry, VmIdentity};
 use super::network::Endpoint;
 use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
@@ -85,7 +85,7 @@ pub struct Settings {
     /// internet. A relay on the host's own loopback (a local stack) is reached through
     /// [`super::network::HOST_LOOPBACK`]; anywhere else the VM dials it as it is. `None`: the host
     /// serves no Browser.
-    pub relay: Option<Endpoint>,
+    pub server: Option<Endpoint>,
     /// Where the templates a new VM is cloned from are kept, one per size. Only jailed VMs are
     /// cloned: a jail names a VM's disk and sockets at the same path for every VM, which a snapshot
     /// records. `None`: every new VM boots cold.
@@ -161,7 +161,7 @@ struct ShareServer {
 pub struct HostedVm {
     files: VmFiles,
     settings: Arc<Settings>,
-    ledger: Option<Ledger>,
+    log: Option<Log>,
     clock: Clock,
     meter: Meter,
     life: Lifecycle,
@@ -186,13 +186,13 @@ impl HostedVm {
         identity: VmIdentity,
         files: VmFiles,
         settings: Arc<Settings>,
-        ledger: Option<Ledger>,
+        log: Option<Log>,
         clock: Clock,
     ) -> Result<Self, VmError> {
         std::fs::create_dir_all(&files.state)?;
         let mut meter = Meter::load(&files.meter()).unwrap_or_else(|| Meter::new(identity));
         kill_stray(&files, settings.jail.as_deref());
-        resource_in(ledger.as_ref(), meter.recover().as_ref())?;
+        resource_in(log.as_ref(), meter.recover().as_ref())?;
         meter.save(&files.meter())?;
         let mut life = Lifecycle::new(settings.idle_suspend.as_secs());
         let disk = files.disk().is_file();
@@ -208,7 +208,7 @@ impl HostedVm {
         Ok(Self {
             files,
             settings,
-            ledger,
+            log,
             clock,
             meter,
             life,
@@ -325,6 +325,18 @@ impl HostedVm {
         Ok(())
     }
 
+    /// The size a command runs this VM at: `size` when the VM can take it — it
+    /// has no disk yet, or it is asleep — and the size it has when it is awake,
+    /// since a command does not resize a machine that is running. A host that
+    /// places a workspace's VM fixes its size; the size a command names is what
+    /// the VM would be made at.
+    pub fn want_size(&mut self, size: VmSize) -> Result<(), VmError> {
+        match self.resize(size) {
+            Err(VmError::Lifecycle(LifecycleError::Busy)) if self.awake() => Ok(()),
+            other => other,
+        }
+    }
+
     /// Look at the running VM: is it alive, what runs in it. Suspends it
     /// once it has been idle for the limit. `sessions` is how many sessions the
     /// host started in it that are still running (a browser's, the apps'): they
@@ -437,6 +449,25 @@ impl HostedVm {
         }
     }
 
+    /// Keep the disk still while `work` reads it: the guest flushes what it wrote, a VM that is
+    /// awake is paused for the call and goes on after it, and one that is asleep is read as it
+    /// is. A VM that does not go on is ended, as a wake that failed half-way is.
+    pub fn holding_disk<R>(&mut self, work: impl FnOnce() -> R) -> Result<R, VmError> {
+        self.reap();
+        if !self.awake() {
+            return Ok(work());
+        }
+        self.sync_guest()?;
+        let api = Api::new(self.files.api_socket());
+        api.pause()?;
+        let result = work();
+        if let Err(error) = api.resume().or_else(|_| api.resume()) {
+            self.fail();
+            return Err(error.into());
+        }
+        Ok(result)
+    }
+
     /// Sync the guest, pause it, copy its disk and let it run on. The sync puts on the disk what
     /// the guest had written, and the pause holds the disk still while it is copied: a write after
     /// the sync is either on the copy whole or a journal replays it away at the branch's boot.
@@ -539,7 +570,7 @@ impl HostedVm {
                     sockets,
                     guest: guest.as_ref(),
                 },
-                settings.relay,
+                settings.server,
             )
         } else {
             let argv = if self.restoring {
@@ -680,7 +711,7 @@ impl HostedVm {
 
     /// Set a restored guest's clock from the host's. A clone resumes with the clock its template was
     /// snapshotted at, which is behind the host's by however long the template has been kept: a
-    /// certificate the relay issued this moment is then "not yet valid" inside the VM, and the
+    /// certificate the server issued this moment is then "not yet valid" inside the VM, and the
     /// session that scans it refuses its own identity. What reads a clock in the guest — the
     /// session's identity, its history, a program's timestamps — reads the host's time instead.
     fn set_guest_clock(&self) {
@@ -794,18 +825,18 @@ impl HostedVm {
         snapshot.complete()?;
         let now = (self.clock)();
         let record = self.meter.snapshot_taken(now, snapshot.bytes_on_disk());
-        resource_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.log.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         self.life.suspended();
         self.link = None;
         Ok(())
     }
 
-    fn ended(&mut self, how: RunEnd) -> Result<Option<UsageRecord>, VmError> {
+    fn ended(&mut self, how: RunEnd) -> Result<Option<UsageEntry>, VmError> {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
         let record = self.meter.stopped((self.clock)(), how);
-        resource_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.log.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(record)
     }
@@ -813,7 +844,7 @@ impl HostedVm {
     fn drop_snapshot(&mut self) -> Result<(), VmError> {
         self.files.snapshot().discard()?;
         let record = self.meter.snapshot_dropped((self.clock)());
-        resource_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.log.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(())
     }
@@ -959,9 +990,9 @@ pub fn forget_source_argv() -> Vec<String> {
         .to_vec()
 }
 
-fn resource_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
-    match (ledger, record) {
-        (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
+fn resource_in(log: Option<&Log>, record: Option<&UsageEntry>) -> Result<(), VmError> {
+    match (log, record) {
+        (Some(log), Some(record)) => Ok(log.append(record)?),
         _ => Ok(()),
     }
 }

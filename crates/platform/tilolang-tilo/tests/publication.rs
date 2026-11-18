@@ -1,5 +1,5 @@
 //! A tilolang action is published as the catalogue entry a native `#[resource]` verb of the same
-//! shape is: an enum parameter as its cases, a record parameter as a pick of a resource of its
+//! shape is: an enum parameter as its cases, a document parameter as a pick of a resource of its
 //! kind, a destructive action with its risk, kind and confirmation.
 
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::argument_json;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
-    ActionTypes, Moved, PlanRequest, Planner, action_type, open_with_id, publish_record,
+    ActionTypes, Moved, PlanRequest, Planner, action_type, open_with_id, publish_resource,
 };
 use tilolang_tilo::surface::package_surfaces;
 
@@ -254,7 +254,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_record_parameter_is_published_as_a_pick_of_its_kind;
+    phase a_document_parameter_is_published_as_a_pick_of_its_kind;
     {
         let meta = shapes();
         for (name, id) in [("pin", "pin"), ("remove", "remove")] {
@@ -451,7 +451,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_planner_takes_the_arguments_as_published;
-    // What the API binds is what the planner takes: a case by its name, a record by the
+    // What the API binds is what the planner takes: a case by its name, a document by the
     // catalogue's reference, refused when it names a resource of another kind.
     {
         let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);
@@ -498,7 +498,7 @@ tilo_test_env::scenario! {
         let meta = shapes();
         let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
         let types = ActionTypes::new(&meta, &planner, &SourceWords);
-        let shelf = publish_record(&types, "Shelf", "s", "My shelf");
+        let shelf = publish_resource(&types, "Shelf", "s", "My shelf");
         let id = |name: &str| {
             meta.views
                 .iter()
@@ -566,7 +566,7 @@ tilo_test_env::scenario! {
             shelf.views
         );
         // A view is listed on the type it shows: an item has none of its own.
-        let item = publish_record(&types, "Item", "i", "An item");
+        let item = publish_resource(&types, "Item", "i", "An item");
         assert!(item.views.is_empty(), "{:?}", item.views);
     }
 
@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
         let list = "tl:tasks:task";
         let task = "tl:tasks:task/1";
         // A requirement that read a task's own field is read again when that field moves, or when the
-        // task is replaced whole; another field of the same task leaves the answer standing.
+        // task is replaced whole; another field of the same task leaves the answer as it is.
         assert!(reached(field(task, "done"), &field(task, "done")));
         assert!(reached(field(task, "*"), &field(task, "done")));
         assert!(reached(field(task, "done"), &field(task, "*")));

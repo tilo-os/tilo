@@ -1,9 +1,9 @@
-//! This desktop's half of the collaboration plane: the peer actor on this device's own iroh
-//! endpoint, the live plane, the workspaces this session holds and their channels, the person's
+//! This desktop's half of the peer network: the peer actor on this device's own iroh
+//! endpoint, the live session, the workspaces this session holds and their channels, the person's
 //! device fabric, the transfers between their devices, and the roster the bar draws.
 //!
 //! The member itself is `tilo_session_client::Client`, which every host links. [`Client`] here
-//! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a gate
+//! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a check
 //! and its relays held back ([`tilo_endpoint_reachability`]): a desktop with nobody else in its
 //! workspaces publishes nothing and keeps no relay.
 
@@ -28,14 +28,14 @@ use tilo_desktop_surface::DesktopHandle;
 #[cfg(target_os = "linux")]
 use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
-use tilo_live::plane::Heard;
+use tilo_live::live_session::Heard;
 #[cfg(target_os = "linux")]
-use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
+use tilo_server_protocol::live::{LiveFrame, OpsFrame};
 use tilo_session_client::client::Host;
 #[cfg(target_os = "linux")]
-use tilo_session_client::client::Shell as GateShell;
+use tilo_session_client::client::Shell as PolicyShell;
 #[cfg(target_os = "linux")]
-use tilo_session_client::gate::WorkspaceAction;
+use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
 use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
@@ -61,19 +61,19 @@ use tilo_action_broker::document_content::ContentSources;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
 
 #[cfg(target_os = "linux")]
 mod adopt;
 #[cfg(target_os = "linux")]
-mod plane;
+mod network;
 
 #[cfg(target_os = "linux")]
-pub(crate) use plane::Reached;
+pub(crate) use network::Reached;
 #[cfg(target_os = "linux")]
-use plane::{Serving, Wire, run};
+use network::{Serving, Wire, run};
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
@@ -100,8 +100,8 @@ fn wait_for_bound(
         .map_err(std::io::Error::other)
 }
 
-/// Hand what the endpoint that bound carries to what speaks on it: the live plane takes it, the
-/// channels' link says through it, and this device's presence is the live plane's own.
+/// Hand what the endpoint that bound carries to what speaks on it: the live session takes it, the
+/// channels' link says through it, and this device's presence is the live session's own.
 #[cfg(target_os = "linux")]
 fn attach_bound(
     live: &mut Option<crate::live::Live>,
@@ -153,15 +153,15 @@ pub(crate) struct ReceivedSurface {
     pub(crate) msg: NeighbourMsg,
 }
 
-/// What this desktop's endpoint carries beside the client's own commands: the custody sessions and
+/// What this desktop's endpoint carries beside the client's own commands: the ownership sessions and
 /// records its workspaces are held through, its device fabric, and the transfers between the
 /// person's devices.
 #[derive(Debug)]
 #[cfg(target_os = "linux")]
 pub(crate) enum HostCmd {
     /// One of the client's own commands.
-    Plane(Cmd),
-    /// Take part in a workspace through this device's own custody session with its host.
+    Network(Cmd),
+    /// Take part in a workspace through this device's own ownership session with its host.
     TakePart(native_ingress::Connect),
     /// Send one piece of a record's content to the device of the workspace that asked for it.
     Content(tilo_network_actor::RecordContentDelivery),
@@ -195,7 +195,7 @@ pub(crate) struct HostOutbox {
 #[cfg(target_os = "linux")]
 impl Outbox for HostOutbox {
     fn send(&self, command: Cmd) -> Result<(), tilo_session_client::Closed> {
-        self.plane(command)
+        self.network(command)
             .then_some(())
             .ok_or(tilo_session_client::Closed)
     }
@@ -203,19 +203,19 @@ impl Outbox for HostOutbox {
 
 #[cfg(target_os = "linux")]
 impl HostOutbox {
-    /// An outbox over `commands`, for a service that speaks the plane's vocabulary and nothing
+    /// An outbox over `commands`, for a service that speaks the peer network's vocabulary and nothing
     /// else.
     #[cfg(test)]
     pub(crate) fn of(commands: tokio::sync::mpsc::UnboundedSender<HostCmd>) -> Self {
         Self { commands }
     }
 
-    /// Say one of the client's own commands to the plane; `false` when the transport is gone.
-    pub(crate) fn plane(&self, command: Cmd) -> bool {
-        self.say(HostCmd::Plane(command))
+    /// Say one of the client's own commands to the peer network; `false` when the transport is gone.
+    pub(crate) fn network(&self, command: Cmd) -> bool {
+        self.say(HostCmd::Network(command))
     }
 
-    /// Say one command of this desktop's own to the plane.
+    /// Say one command of this desktop's own to the peer network.
     pub(crate) fn say(&self, command: HostCmd) -> bool {
         self.commands.send(command).is_ok()
     }
@@ -305,7 +305,7 @@ impl SiblingDials {
         }
     }
 
-    /// Dial `device` as a sibling, unless it is this device. The plane dials again whatever has no
+    /// Dial `device` as a sibling, unless it is this device. The peer network dials again whatever has no
     /// session, for as long as that lasts.
     pub(crate) fn dial(&self, device: [u8; 32]) {
         if device == self.ours {
@@ -323,8 +323,8 @@ impl SiblingDials {
     }
 }
 
-/// Everything this device keeps of the plane beside the client's boards: who is here as the bar
-/// lists them, the workspaces' state and channels, the live plane, the fabric and the transfers.
+/// Everything this device keeps of the peer network beside the client's boards: who is here as the bar
+/// lists them, the workspaces' state and channels, the live session, the fabric and the transfers.
 #[cfg(target_os = "linux")]
 pub(crate) struct Local {
     /// The session this session shows, whose workspaces' policies every message from another member is
@@ -341,14 +341,14 @@ pub(crate) struct Local {
     /// The window streams that reached this device: their frames, starts, ends and control, which
     /// the shares take ([`Self::take_surfaces`]).
     surfaces: RefCell<Vec<ReceivedSurface>>,
-    /// The call audio the workspaces' live planes heard since the last call, each with the
+    /// The call audio the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in: what the calls playing it take ([`Self::take_call_audio`]).
     call_audio: RefCell<Vec<(String, Heard)>>,
-    /// The call pictures the workspaces' live planes heard since the last call, each with the
+    /// The call pictures the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in: what the calls playing there draw
     /// ([`Self::take_call_pictures`]).
     call_pictures: RefCell<Vec<(String, Heard)>>,
-    /// The shared windows' pictures and pages the workspaces' live planes heard since the last
+    /// The shared windows' pictures and pages the workspaces' live sessions heard since the last
     /// call, each with the workspace it was heard in: what the sessions showing those windows draw
     /// ([`Self::take_window_objects`]).
     window_objects: RefCell<Vec<(String, Heard)>>,
@@ -357,15 +357,15 @@ pub(crate) struct Local {
     deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
     /// This device's workspaces: `None` when the session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
-    /// What the session's channels hear and say on this plane. What the engine holds, so a session
+    /// What the session's channels hear and say on this peer network. What the engine holds, so a session
     /// that runs no channel service has none.
     link: Option<Arc<KeyLink>>,
-    /// The member's devices the plane heard at another peer protocol version since the last
+    /// The member's devices the peer network heard at another peer protocol version since the last
     /// call: what the person is answered.
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     /// The records' content this session keeps and asks the workspaces for: `None` until the
-    /// session hands its plane over ([`Self::attach_content`]).
-    content: RefCell<Option<Arc<content::Plane>>>,
+    /// session hands its content service over ([`Self::attach_content`]).
+    content: RefCell<Option<Arc<content::ContentService>>>,
     /// The devices each workspace's record content reaches this one from: those heard on its topic,
     /// and its hosts.
     topologies: RefCell<std::collections::BTreeMap<WorkspaceId, content::Topology>>,
@@ -383,12 +383,13 @@ pub(crate) struct Local {
     /// This device's relays, held back until a workspace this session takes part in has someone
     /// else in it.
     reachability: RefCell<Reachability>,
-    /// The workspaces' live plane: their relays and this device's sessions in them.
+    /// The workspaces' live session: their relays and this device's sessions in them.
     live: RefCell<Option<crate::live::Live>>,
-    /// Planes a test joined this session to, by workspace, in place of the live plane's, and the
+    /// Live sessions a test joined this session to, by workspace, in place of the live session's, and the
     /// runtime they run on.
     #[cfg(test)]
-    test_planes: RefCell<std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>>>,
+    test_live_sessions:
+        RefCell<std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>>>,
     #[cfg(test)]
     test_runtime: RefCell<Option<tokio::runtime::Handle>>,
 }
@@ -402,7 +403,7 @@ impl std::fmt::Debug for Local {
 
 #[cfg(target_os = "linux")]
 impl Local {
-    /// What this desktop's plane does with one message of the client's own.
+    /// What this desktop's peer network does with one message of the client's own.
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
         // What a workspace says of its channels' governance is the session's channels' to take in,
         // wherever the message came from; a record a host answered for decides what a reading of it
@@ -448,7 +449,7 @@ impl Local {
         if self.keep_surface(event) {
             return true;
         }
-        // What a workspace's members say about a record's content is the records' own plane's to
+        // What a workspace's members say about a record's content is the records' own content service's to
         // take, and the devices it can be handed over from follow them.
         self.follow_content_sources(event, client);
         if self.keep_content(event, client) {
@@ -481,7 +482,7 @@ impl Local {
         true
     }
 
-    /// Hand `event` to the content plane when it is one of a record's content messages; whether it
+    /// Hand `event` to the content store when it is one of a record's content messages; whether it
     /// was, in which case nothing else here takes it. Every such message reached here through the
     /// workspace's policy, which admitted the device that sent it.
     fn keep_content(&self, event: &Event, client: &SessionClient) -> bool {
@@ -499,7 +500,7 @@ impl Local {
 
     /// Keep what reached here of the devices a workspace's content can be handed over from: those
     /// that said anything on its topic, the hosts that serve it and the members they report, and
-    /// those that left. A record's content follows them ([`content::Plane::sources_changed`]).
+    /// those that left. A record's content follows them ([`content::ContentService::sources_changed`]).
     fn follow_content_sources(&self, event: &Event, client: &SessionClient) {
         let Some(content) = self.content.borrow().clone() else {
             return;
@@ -593,7 +594,7 @@ impl Local {
         std::mem::take(&mut *self.deleted.borrow_mut())
     }
 
-    /// Take the call audio the workspaces' live planes heard since the last call, each with the
+    /// Take the call audio the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in and already opened. A call plays the frames of the devices its
     /// channel says are in it.
     #[must_use]
@@ -602,7 +603,7 @@ impl Local {
         std::mem::take(&mut *self.call_audio.borrow_mut())
     }
 
-    /// Take the call pictures the workspaces' live planes heard since the last call, each with the
+    /// Take the call pictures the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in and already opened. A call draws the pictures of the devices its
     /// channel says are in it.
     #[must_use]
@@ -611,15 +612,15 @@ impl Local {
         std::mem::take(&mut *self.call_pictures.borrow_mut())
     }
 
-    /// Take the shared windows' pictures and pages the workspaces' live planes heard since the last
+    /// Take the shared windows' pictures and pages the workspaces' live sessions heard since the last
     /// call, each with the workspace it was heard in and already opened: what the session showing that
     /// window draws.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_window_objects(&self) -> Vec<(String, Heard)> {
         #[cfg(test)]
-        for (workspace, plane) in self.test_planes.borrow().iter() {
-            while let Some(heard) = plane.try_recv() {
+        for (workspace, live_session) in self.test_live_sessions.borrow().iter() {
+            while let Some(heard) = live_session.try_recv() {
                 if matches!(heard.track, Track::Page(_) | Track::Window(..)) {
                     self.window_objects
                         .borrow_mut()
@@ -630,61 +631,59 @@ impl Local {
         std::mem::take(&mut *self.window_objects.borrow_mut())
     }
 
-    /// The workspaces' live planes this session is in now, by workspace.
+    /// The workspaces' live sessions this session is in now, by workspace.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn planes(
+    pub(crate) fn live_sessions(
         &self,
-    ) -> std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>> {
+    ) -> std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>> {
         #[cfg(test)]
-        if !self.test_planes.borrow().is_empty() {
-            return self.test_planes.borrow().clone();
+        if !self.test_live_sessions.borrow().is_empty() {
+            return self.test_live_sessions.borrow().clone();
         }
         self.live()
             .map(|live| {
-                live.planes()
+                live.live_sessions()
                     .into_iter()
-                    .map(|(workspace, plane)| (workspace.to_string(), plane))
+                    .map(|(workspace, live_session)| (workspace.to_string(), live_session))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Moves whenever a workspace's live plane stands otherwise or opened again
-    /// ([`crate::live::Live::standings_revision`]): what [`Self::live_standings`] and
-    /// [`Self::planes`] are read again on. It never moves for a session that runs no live plane.
+    /// Moves whenever a workspace's live session stands otherwise or opened again
+    /// ([`crate::live::Live::states_revision`]): what [`Self::live_states`] and
+    /// [`Self::live_sessions`] are read again on. It never moves for a session that runs no live session.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn live_revision(&self) -> u64 {
         #[cfg(test)]
-        if !self.test_planes.borrow().is_empty() {
-            // A test's planes are joined before its session runs, and stay.
+        if !self.test_live_sessions.borrow().is_empty() {
+            // A test's live sessions are joined before its session runs, and stay.
             return 1;
         }
-        self.live().map_or(0, |live| live.standings_revision())
+        self.live().map_or(0, |live| live.states_revision())
     }
 
-    /// How far each workspace's live plane came on this device, by workspace
-    /// ([`crate::live::Standing`]): nothing for a session that runs no live plane.
+    /// How far each workspace's live session came on this device, by workspace
+    /// ([`crate::live::LiveState`]): nothing for a session that runs no live session.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn live_standings(
-        &self,
-    ) -> std::collections::BTreeMap<String, crate::live::Standing> {
+    pub(crate) fn live_states(&self) -> std::collections::BTreeMap<String, crate::live::LiveState> {
         #[cfg(test)]
-        if !self.test_planes.borrow().is_empty() {
-            // A test's planes are joined on a relay of the test's own: open, as this device's.
+        if !self.test_live_sessions.borrow().is_empty() {
+            // A test's live sessions are joined on a relay of the test's own: open, as this device's.
             return self
-                .test_planes
+                .test_live_sessions
                 .borrow()
                 .iter()
-                .map(|(workspace, plane)| {
+                .map(|(workspace, live_session)| {
                     let relay = crate::live::Relayer {
-                        device: plane.device(),
+                        device: live_session.device(),
                         name: String::new(),
                         here: true,
                     };
-                    let open = crate::live::Standing::Open {
+                    let open = crate::live::LiveState::Open {
                         relay,
                         epoch: 0,
                         lent: false,
@@ -695,17 +694,17 @@ impl Local {
         }
         self.live()
             .map(|live| {
-                live.standings()
+                live.states()
                     .into_iter()
-                    .map(|(workspace, standing)| (workspace.to_string(), standing))
+                    .map(|(workspace, state)| (workspace.to_string(), state))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// The endpoints this device's relay turned away from each workspace's live plane and has not
+    /// The endpoints this device's relay turned away from each workspace's live session and has not
     /// let in since, by workspace, and why ([`crate::live::TurnedAway`]): nothing for a session
-    /// that runs no live plane.
+    /// that runs no live session.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn live_turned_away(
@@ -721,12 +720,12 @@ impl Local {
             .unwrap_or_default()
     }
 
-    /// Show `tracks` of `sender` on `plane`, and no other of its tracks: the plane's readers start
-    /// on the runtime the planes run on, not on the session's own thread.
+    /// Show `tracks` of `sender` on `live_session`, and no other of its tracks: the live session's readers start
+    /// on the runtime the live sessions run on, not on the session's own thread.
     #[cfg(target_os = "linux")]
     pub(crate) fn show_tracks(
         &self,
-        plane: &tilo_live::plane::Plane,
+        live_session: &tilo_live::live_session::LiveSession,
         sender: [u8; 32],
         tracks: &[Track],
     ) {
@@ -736,7 +735,7 @@ impl Local {
         let runtime = None;
         let runtime = runtime.or_else(|| self.live().and_then(|live| live.runtime()));
         let _entered = runtime.as_ref().map(tokio::runtime::Handle::enter);
-        plane.show(sender, tracks);
+        live_session.show(sender, tracks);
     }
 
     /// Send one message of `surface`'s stream on the topic of the workspace it is shared in, to
@@ -812,11 +811,15 @@ impl Local {
         self.nearby.replace(Some(nearby));
     }
 
-    /// Hand the records' content plane its place on this client: the workspaces' topics are the
+    /// Hand the records' content store its place on this client: the workspaces' topics are the
     /// records' routes, and what it asks for and answers there travels with this device's own
     /// messages.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(&self, content: Arc<content::Plane>, publisher: EndpointId) {
+    pub(crate) fn attach_content(
+        &self,
+        content: Arc<content::ContentService>,
+        publisher: EndpointId,
+    ) {
         content.bind(
             HostOutbox {
                 commands: self.commands.clone(),
@@ -876,7 +879,7 @@ impl Local {
         rest
     }
 
-    /// The workspaces' live plane: what this session says into and hears from each of them, and the
+    /// The workspaces' live session: what this session says into and hears from each of them, and the
     /// relay each one is carried by; `None` when this session holds no workspaces.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -890,7 +893,7 @@ impl Local {
         self.engine.as_ref()
     }
 
-    /// The member's devices the plane heard at another peer protocol version since the last
+    /// The member's devices the peer network heard at another peer protocol version since the last
     /// call, each once per device and version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
@@ -922,7 +925,7 @@ impl Local {
             .need(Need::Session, self.reachability_need(client));
     }
 
-    /// Take every object the workspaces' live planes heard since the last call: a member's presence
+    /// Take every object the workspaces' live sessions heard since the last call: a member's presence
     /// frame, or a call's voice or pictures. Whether any did.
     fn hear_live(&self, client: &SessionClient) -> bool {
         let held = self.live.borrow();
@@ -1003,7 +1006,7 @@ pub(crate) struct Roster {
     for_apps: RefCell<Vec<(String, tilo_actions::SemanticInteraction)>>,
 }
 
-/// What this session keeps of the plane beside the client's boards: the roster every surface reads,
+/// What this session keeps of the peer network beside the client's boards: the roster every surface reads,
 /// and, on a desktop, the peer actor's own half.
 pub(crate) struct Hosting {
     roster: Rc<Roster>,
@@ -1144,7 +1147,7 @@ impl Roster {
     }
 
     #[cfg(target_os = "linux")]
-    /// Take one semantic frame the plane heard: an agent's narrated action in a workspace's record.
+    /// Take one semantic frame the peer network heard: an agent's narrated action in a workspace's record.
     /// The work is admitted only from a member the workspace's board knows as an agent
     /// ([`tilo_session_client::narration::Held`]) and bound to that member. Each app here keeps its
     /// own presence, so the work is kept for the apps too ([`Client::take_narrated`]), which draw
@@ -1259,7 +1262,7 @@ impl Host for Hosting {
     }
 }
 
-/// The session a session shows, as the workspace gate reads it.
+/// The session a session shows, as the workspace check reads it.
 /// A page's host: the roster, over the transport the page brings.
 #[cfg(not(target_os = "linux"))]
 impl Host for Hosting {
@@ -1270,20 +1273,21 @@ impl Host for Hosting {
 }
 
 #[cfg(target_os = "linux")]
-struct Gate {
+struct MessagePolicy {
     session: DesktopHandle,
 }
 
 #[cfg(target_os = "linux")]
-impl GateShell for Gate {
+impl PolicyShell for MessagePolicy {
     fn allows(&self, workspace: &str, person: &str, required: &WorkspaceAction, now: u64) -> bool {
-        self.session
-            .read(|tree| tilo_session_client::gate::allows(tree, workspace, person, required, now))
+        self.session.read(|tree| {
+            tilo_session_client::message_policy::allows(tree, workspace, person, required, now)
+        })
     }
 }
 
-/// The session's client of the collaboration plane: the member's own client, and the desktop
-/// host that carries it — the peer actor, the live plane, this device's workspaces and channels,
+/// The session's client of the peer network: the member's own client, and the desktop
+/// host that carries it — the peer actor, the live session, this device's workspaces and channels,
 /// its fabric and its transfers.
 pub struct Client {
     inner: SessionClient,
@@ -1299,9 +1303,9 @@ pub struct Client {
     /// watcher, which keeps the endpoint's socket open until it goes.
     #[cfg(target_os = "linux")]
     own_address: Option<tokio::task::AbortHandle>,
-    /// Where this device was given and reached its hosts ([`plane::Reached`]).
+    /// Where this device was given and reached its hosts ([`live_session::Reached`]).
     #[cfg(target_os = "linux")]
-    reached: plane::Reached,
+    reached: network::Reached,
 }
 
 impl std::fmt::Debug for Client {
@@ -1322,7 +1326,7 @@ impl Drop for Client {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         {
-            // The live planes dial through this endpoint: they end before it does,
+            // The live sessions dial through this endpoint: they end before it does,
             // and before the thread that holds it joins.
             if let Some(following) = self.own_address.take() {
                 following.abort();
@@ -1336,14 +1340,14 @@ impl Drop for Client {
     }
 }
 
-/// What this device brings as it enters the collaboration plane: the identity its endpoint runs on,
+/// What this device brings as it enters the peer network: the identity its endpoint runs on,
 /// where it dials, and how it hears back.
 #[cfg(target_os = "linux")]
 pub struct Entry {
     /// This device's collaboration identity, on whose key the endpoint runs: with it, every
     /// workspace is told which device and which person is here. Without one — a test, a stand-in
     /// session — the session is a device nobody certified and stays anonymous in workspaces.
-    pub identity: Option<HostIdentity>,
+    pub identity: Option<DeviceIdentity>,
     /// What the person's settings say this device says of them here.
     pub own: OwnPresence,
     /// The hosts the person points this device at.
@@ -1366,7 +1370,7 @@ pub struct Entry {
 }
 
 impl Client {
-    /// Take part in the collaboration plane: bind this device's endpoint, start the peer actor,
+    /// Take part in the peer network: bind this device's endpoint, start the peer actor,
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
     /// serves on that endpoint (its protocols are fixed once it binds), and `documents` is where
     /// what admission takes in from another device goes.
@@ -1407,16 +1411,16 @@ impl Client {
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
         let versions = crate::network::install(fabric.as_ref(), questions);
-        // The channels' side of the plane is the engine's, opened before the plane starts.
+        // The channels' side of the peer network is the engine's, opened before the peer network starts.
         let link = engine.as_ref().and_then(|engine| engine.link());
-        let plane_link = link.clone();
+        let network_link = link.clone();
         let enrolling = engine.clone();
         let device_actions = Arc::new(std::sync::OnceLock::new());
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
-        let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
+        let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         let reached = binding.reached.clone();
-        // The live plane's relay role, when this device may serve one, is one more protocol on the
+        // The live session's relay role, when this device may serve one, is one more protocol on the
         // endpoint this session binds.
         let mut live = engine
             .as_ref()
@@ -1439,7 +1443,7 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(binding, plane_link, serving, beside, documents),
+                    Serving::new(binding, network_link, serving, beside, documents),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
@@ -1497,7 +1501,7 @@ impl Client {
     /// hands it is what the session shows. The transport's own commands stay the client's, so a
     /// host that reads them off its end reads what this session said.
     #[must_use]
-    pub fn over(plane: Transport, device: Device, own: OwnPresence) -> Self {
+    pub fn over(transport: Transport, device: Device, own: OwnPresence) -> Self {
         #[cfg(target_os = "linux")]
         let host = {
             let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
@@ -1505,8 +1509,8 @@ impl Client {
             Rc::new(Local::bare(commands, host_arrived))
         };
         #[cfg(target_os = "linux")]
-        let outgoing = std::sync::Arc::clone(&plane.outgoing);
-        let inner = SessionClient::over(plane, device, own);
+        let outgoing = std::sync::Arc::clone(&transport.outgoing);
+        let inner = SessionClient::over(transport, device, own);
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
             #[cfg(target_os = "linux")]
@@ -1523,11 +1527,11 @@ impl Client {
             #[cfg(target_os = "linux")]
             own_address: None,
             #[cfg(target_os = "linux")]
-            reached: plane::Reached::default(),
+            reached: network::Reached::default(),
         }
     }
 
-    /// A session taking part in a plane with no transport, for tests that hand it what it would
+    /// A session taking part in a peer network with no transport, for tests that hand it what it would
     /// have heard and read what it would have said.
     #[cfg(test)]
     #[cfg(target_os = "linux")]
@@ -1535,21 +1539,21 @@ impl Client {
         publisher: EndpointId,
         own: OwnPresence,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
-        Self::planeless(publisher, own, Vec::new())
+        Self::without_network(publisher, own, Vec::new())
     }
 
     /// A client taking part in no transport: it publishes nowhere and hears only what it is handed.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn untethered(publisher: EndpointId, own: OwnPresence) -> Self {
-        Self::planeless(publisher, own, Vec::new()).0
+        Self::without_network(publisher, own, Vec::new()).0
     }
 
-    /// A client of a plane with no transport: what both the real client and [`Self::untethered`]
-    /// are, at their middle. A test that reads what one plane would have sent to another takes the
+    /// A client of a peer network with no transport: what both the real client and [`Self::untethered`]
+    /// are, at their middle. A test that reads what one peer network would have sent to another takes the
     /// receiver.
     #[cfg(target_os = "linux")]
-    pub(crate) fn planeless(
+    pub(crate) fn without_network(
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
@@ -1586,7 +1590,7 @@ impl Client {
             outgoing: outbox,
             thread: None,
             own_address: None,
-            reached: plane::Reached::default(),
+            reached: network::Reached::default(),
         };
         for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
@@ -1594,8 +1598,8 @@ impl Client {
         (client, said)
     }
 
-    /// The same plane, taken part in as `person` (their user root, hex): what a device's
-    /// certificate says of it on a plane that has one, and what the workspaces' policies hold its
+    /// The same peer network, taken part in as `person` (their user root, hex): what a device's
+    /// certificate says of it on a peer network that has one, and what the workspaces' policies hold its
     /// members' messages to.
     #[cfg(test)]
     #[cfg(target_os = "linux")]
@@ -1626,14 +1630,14 @@ impl Client {
         self.hosting.local.take_deleted()
     }
 
-    /// Take the call audio the workspaces' live planes heard since the last call, already opened.
+    /// Take the call audio the workspaces' live sessions heard since the last call, already opened.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_call_audio(&self) -> Vec<(String, Heard)> {
         self.hosting.local.take_call_audio()
     }
 
-    /// Take the call pictures the workspaces' live planes heard since the last call, already
+    /// Take the call pictures the workspaces' live sessions heard since the last call, already
     /// opened.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -1641,7 +1645,7 @@ impl Client {
         self.hosting.local.take_call_pictures()
     }
 
-    /// Take the shared windows' pictures and pages the workspaces' live planes heard since the last
+    /// Take the shared windows' pictures and pages the workspaces' live sessions heard since the last
     /// call, already opened.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -1649,35 +1653,33 @@ impl Client {
         self.hosting.local.take_window_objects()
     }
 
-    /// The workspaces' live planes this session is in now, by workspace: what a call's voice and
+    /// The workspaces' live sessions this session is in now, by workspace: what a call's voice and
     /// pictures and a shared window's pictures and pages travel.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn planes(
+    pub(crate) fn live_sessions(
         &self,
-    ) -> std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>> {
-        self.hosting.local.planes()
+    ) -> std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>> {
+        self.hosting.local.live_sessions()
     }
 
-    /// Moves whenever a workspace's live plane stands otherwise or opened again: what
-    /// [`Self::live_standings`] and [`Self::planes`] are read again on.
+    /// Moves whenever a workspace's live session stands otherwise or opened again: what
+    /// [`Self::live_states`] and [`Self::live_sessions`] are read again on.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn live_revision(&self) -> u64 {
         self.hosting.local.live_revision()
     }
 
-    /// How far each workspace's live plane came on this device, by workspace: open, or what it
-    /// waits for ([`crate::live::Standing`]).
+    /// How far each workspace's live session came on this device, by workspace: open, or what it
+    /// waits for ([`crate::live::LiveState`]).
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn live_standings(
-        &self,
-    ) -> std::collections::BTreeMap<String, crate::live::Standing> {
-        self.hosting.local.live_standings()
+    pub(crate) fn live_states(&self) -> std::collections::BTreeMap<String, crate::live::LiveState> {
+        self.hosting.local.live_states()
     }
 
-    /// The endpoints this device's relay turned away from each workspace's live plane and has not
+    /// The endpoints this device's relay turned away from each workspace's live session and has not
     /// let in since, by workspace, and why ([`crate::live::TurnedAway`]).
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -1687,29 +1689,32 @@ impl Client {
         self.hosting.local.live_turned_away()
     }
 
-    /// Join this session to `planes`, by workspace, running on `runtime`, in place of a live plane
+    /// Join this session to `live_sessions`, by workspace, running on `runtime`, in place of a live session
     /// of its own: what a test's sessions meet on.
     #[cfg(test)]
     #[cfg(target_os = "linux")]
-    pub(crate) fn on_planes(
+    pub(crate) fn on_live_sessions(
         self,
-        planes: std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>>,
+        live_sessions: std::collections::BTreeMap<
+            String,
+            Arc<tilo_live::live_session::LiveSession>,
+        >,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        *self.hosting.local.test_planes.borrow_mut() = planes;
+        *self.hosting.local.test_live_sessions.borrow_mut() = live_sessions;
         *self.hosting.local.test_runtime.borrow_mut() = Some(runtime);
         self
     }
 
-    /// Show `tracks` of `sender` on `plane`, and no other of its tracks ([`Local::show_tracks`]).
+    /// Show `tracks` of `sender` on `live_session`, and no other of its tracks ([`Local::show_tracks`]).
     #[cfg(target_os = "linux")]
     pub(crate) fn show_tracks(
         &self,
-        plane: &tilo_live::plane::Plane,
+        live_session: &tilo_live::live_session::LiveSession,
         sender: [u8; 32],
         tracks: &[Track],
     ) {
-        self.hosting.local.show_tracks(plane, sender, tracks);
+        self.hosting.local.show_tracks(live_session, sender, tracks);
     }
 
     /// Say `msg` to `target` alone, as a workspace-control message on `ws`'s topic: a shared
@@ -1723,8 +1728,8 @@ impl Client {
         });
     }
 
-    /// This device came to hold another workspace: its live plane opens that workspace's plane
-    /// now ([`crate::live::Live::workspace_arrived`]). Nothing to tell on a session with no plane.
+    /// This device came to hold another workspace: its live session opens that workspace's live session
+    /// now ([`crate::live::Live::workspace_arrived`]). Nothing to tell on a session with no live session.
     #[cfg(target_os = "linux")]
     pub(crate) fn workspace_arrived(&self) {
         if let Some(live) = self.hosting.local.live() {
@@ -1732,9 +1737,9 @@ impl Client {
         }
     }
 
-    /// Have this session's live plane lent its own streams' media keys by `lender` in every
+    /// Have this session's live session lent its own streams' media keys by `lender` in every
     /// workspace whose keys it may hold none of ([`crate::live::Live::lend_media_keys`]): false when
-    /// it has no plane yet, and nothing was handed over.
+    /// it has no live session yet, and nothing was handed over.
     #[cfg(target_os = "linux")]
     pub(crate) fn lend_media_keys(&self, lender: Arc<dyn crate::live::MediaKeysLender>) -> bool {
         let Some(live) = self.hosting.local.live() else {
@@ -1807,7 +1812,7 @@ impl Client {
         self.hosting.local.device_actions()
     }
 
-    /// The member's devices the plane heard at another peer protocol version.
+    /// The member's devices the peer network heard at another peer protocol version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
         self.hosting.local.take_version_mismatches()
@@ -1857,19 +1862,19 @@ impl Client {
         }
     }
 
-    /// Hand the workspace gate the session this session shows: whose workspaces' policies hold every
+    /// Hand the workspace check the session this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     #[cfg(target_os = "linux")]
     pub fn attach_shell(&self, session: DesktopHandle) {
-        self.inner.attach_shell(Rc::new(Gate {
+        self.inner.attach_shell(Rc::new(MessagePolicy {
             session: session.clone(),
         }));
         *self.hosting.local.session.borrow_mut() = Some(session);
     }
 
-    /// Hand the records' content plane its place on this client.
+    /// Hand the records' content store its place on this client.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(&self, content: Arc<content::Plane>) {
+    pub(crate) fn attach_content(&self, content: Arc<content::ContentService>) {
         self.hosting.local.attach_content(content, self.publisher());
     }
 
@@ -1891,7 +1896,7 @@ impl Client {
     /// what it held before. [`Self::take_enrolled`] says what became of it.
     ///
     /// # Errors
-    /// The plane takes no enrollment: this session holds no workspaces, or it has stopped.
+    /// The peer network takes no enrollment: this session holds no workspaces, or it has stopped.
     #[cfg(target_os = "linux")]
     pub fn enroll(&self, request: Enrolling) -> Result<(), String> {
         if self.hosting.local.engine.is_none() {
@@ -1901,7 +1906,7 @@ impl Client {
             .local
             .commands
             .send(HostCmd::Enroll(request))
-            .map_err(|_| "the collaboration plane is gone".to_owned())
+            .map_err(|_| "the peer network is gone".to_owned())
     }
 
     /// Take `request`'s workspace in as this person's further device, off the loop: what the
@@ -1909,7 +1914,7 @@ impl Client {
     /// became of it.
     ///
     /// # Errors
-    /// The plane takes no entry: this session holds no workspaces, or it has stopped.
+    /// The peer network takes no entry: this session holds no workspaces, or it has stopped.
     #[cfg(target_os = "linux")]
     pub fn enter(&self, request: Entering) -> Result<(), String> {
         if self.hosting.local.engine.is_none() {
@@ -1919,7 +1924,7 @@ impl Client {
             .local
             .commands
             .send(HostCmd::Enter(Box::new(request)))
-            .map_err(|_| "the collaboration plane is gone".to_owned())
+            .map_err(|_| "the peer network is gone".to_owned())
     }
 
     /// Say this person's workspaces to their other devices, each with where this device's are
@@ -2030,7 +2035,7 @@ impl Client {
 
 #[cfg(target_os = "linux")]
 /// What a desktop's host runs beside: the thread's channels, its workspaces, its channels'
-/// service, its fabric, its action plane, its relays and its live planes.
+/// service, its fabric, its app wire, its relays and its live sessions.
 #[cfg(target_os = "linux")]
 struct Hosted {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
@@ -2084,14 +2089,14 @@ impl Local {
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
                 #[cfg(test)]
-                test_planes: RefCell::default(),
+                test_live_sessions: RefCell::default(),
                 #[cfg(test)]
                 test_runtime: RefCell::default(),
             }),
         })
     }
 
-    /// A local with no plane of its own: what a client takes part in over a transport another host
+    /// A local with no peer network of its own: what a client takes part in over a transport another host
     /// brings.
     fn bare(
         commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
@@ -2120,7 +2125,7 @@ impl Local {
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),
             #[cfg(test)]
-            test_planes: RefCell::default(),
+            test_live_sessions: RefCell::default(),
             #[cfg(test)]
             test_runtime: RefCell::default(),
         }
@@ -2133,7 +2138,7 @@ impl Local {
 /// and stays anonymous until the person sets a device up.
 #[must_use]
 #[cfg(target_os = "linux")]
-pub fn device_identity() -> Option<HostIdentity> {
+pub fn device_identity() -> Option<DeviceIdentity> {
     tilo_session_client::identity::device_identity()
 }
 
@@ -2181,7 +2186,7 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
 /// named says no name: the stand-in its certificate carries is no word of theirs, and every reader
 /// says which device it is in its own language.
 #[cfg(target_os = "linux")]
-fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
+fn certified_as(identity: Option<&DeviceIdentity>) -> (Option<[u8; 32]>, String) {
     identity.map_or_else(
         || (None, String::new()),
         |identity| {
@@ -2202,7 +2207,7 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
 /// something else at, and refuse.
 #[cfg(target_os = "linux")]
 fn restored_fabric(
-    identity: Option<&HostIdentity>,
+    identity: Option<&DeviceIdentity>,
     outgoing: HostOutbox,
     continuity: Continuity,
     state: Option<std::path::PathBuf>,
@@ -2247,7 +2252,7 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
 /// takes part as nobody and stays on this machine's loopback.
 #[cfg(target_os = "linux")]
 fn endpoint_for(
-    identity: Option<&HostIdentity>,
+    identity: Option<&DeviceIdentity>,
     relays: &tilo_endpoint_reachability::EndpointRelays,
     lan: &tilo_endpoint_reachability::Nearby,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
@@ -2263,7 +2268,7 @@ fn endpoint_for(
         &identity
             .signer
             .endpoint_secret()
-            .ok_or("this device's key dials only through its custody")?,
+            .ok_or("this device's key dials only through its ownership")?,
     );
     // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network until a workspace this
@@ -2361,7 +2366,7 @@ impl PeerDocuments {
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-mod custody_tests;
+mod membership_check_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]

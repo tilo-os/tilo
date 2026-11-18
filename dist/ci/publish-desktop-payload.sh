@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the OS desktop payloads a desktop package lane built (dist/ci-output/fedora-44-*/
+# Publish the OS desktop payloads a desktop package job built (dist/ci-output/fedora-44-*/
 # tilo-desktop-os-<arch>.tar.gz) as immutable generic packages, and write the `desktop-payload`
 # pointer an OS build takes them from.
 #

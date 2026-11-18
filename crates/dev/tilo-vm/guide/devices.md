@@ -189,7 +189,7 @@ work on a device too, beside the device's session.
   recently used) under the image's digest, so swapping the same build again
   costs one registry lookup (`skopeo inspect --raw`) and no pull, and no
   upload either when the device still holds that layer (after a rollback, say). The aarch64
-  lane builds the newest main commit only, so check that a commit has arm64
+  job builds the newest main commit only, so check that a commit has arm64
   first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
 - **Your worktree on a remote builder of the device's architecture**
   (`--builder remote`, the default for a device whose architecture has a
@@ -385,6 +385,25 @@ where it is recorded with the route, so tilo-vm uses it too.
 - The swap says the session did not start: `tilo-vm logs device` names the
   cause; `tilo-vm rollback --account device` brings the previous build back.
 - A layer is refused with `target`: it was built for another architecture.
+
+## The machine's GPU (`--gl`)
+
+`vm create <name> --gl` renders the VM's desktop on the machine's GPU through virgl.
+NVIDIA's EGL stack initialises no context virglrenderer can render on
+(`EGL_NOT_INITIALIZED`), and libvirt otherwise picks the node the firmware
+initialised, which on a laptop with a discrete NVIDIA card is that card. So
+tilo-vm picks the first render node whose driver is not NVIDIA, keeps it on
+the VM and says so when it creates it:
+
+```
+GL renders on /dev/dri/renderD128 (the first render node whose driver is not NVIDIA; amdgpu serves virglrenderer where NVIDIA's EGL stack does not)
+```
+
+Name another with `--render-node /dev/dri/renderD128` when more than one is
+usable. A `--gl` VM's scanout lives in a GL context outside the guest, so `tilo-vm vm shot`
+cannot capture it (`no surface`); use `tilo-vm shot` for the compositor's own
+frame, or a VM without `--gl` when a frame from outside the guest is what a test needs
+(`tilo-vm guide driving`).
 
 Enable a supported active connection's magic-packet wake without reconnecting:
 

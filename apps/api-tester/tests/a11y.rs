@@ -565,7 +565,7 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
         "the real response tabs select Headers"
     );
     // Response presentation changes do not save a request. Open the form
-    // through the real request Save control before checking resize custody.
+    // through the real request Save control before checking resize ownership.
     d.click_named("api.save-request").unwrap();
     d.wait_for_named("api.form-name", tilo_test_env::hang_bound())
         .expect("the published Save control opens the request form");

@@ -493,7 +493,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase development_transport_requires_the_vm_gate;
+    phase development_transport_requires_the_vm_check;
     {
         let dir = tempfile::tempdir().unwrap();
         let mut target = fixture(dir.path());

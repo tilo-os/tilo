@@ -357,18 +357,36 @@ that workspace environment's own, never in a guest sharing the host's kernel
   more VM, the always-up one first. Each host reports the memory its awake VMs
   really take — what the kernel measures each Firecracker process at, not the
   size the VM may grow into — and what waiting wakes ask for. The placer
-  starts another host once the awake VMs pass three quarters of the hosts'
+  starts another machine once the awake VMs pass three quarters of the hosts'
   memory, or a VM waits, and never takes one away itself. A wake with no room
   waits, a person's and an agent's alike, after one line ("Starting another
   machine for it, about 3 minutes."); it is never refused for room.
 - **Eviction:** a host the cloud takes back at short notice (an Azure Spot
   VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
   by whatever watches the cloud's notice). It then wakes no more VMs, saying
-  the VM is moving to another host, and suspends every awake one at once onto
+  the VM is moving to another machine, and suspends every awake one at once onto
   its state directory, which lives on storage that outlives the host. The
   next host to open that directory restores each VM on its next command. A VM
   lost before its suspend has no valid snapshot and boots afresh from its
   disk, so old memory never meets a newer disk.
+- **Moving a VM:** a machine told to drain — the same entry the eviction notice
+  uses, asked for by an action, so a rolling update calls it — takes no more
+  wakes and suspends every awake VM onto its state directory, then moves each
+  VM, its disk, its snapshot and its meter, to the machine the placer names. The
+  bytes go over the connection the two machines already keep, a block at a time: a
+  transfer cut short carries on from its last whole block, a disk's holes arrive
+  as holes, and the machine taking a file uses it only once every block and the
+  file's digest are what was offered. The VM arrives asleep and restores on its
+  next command; one whose suspend failed moves its disk alone and boots afresh.
+  The machine it left keeps the fact that it left, so a wake placed there says the
+  VM moved rather than making an empty machine in its place.
+- **A lost machine:** each VM's disk and latest snapshot are copied in the
+  background to a second machine, a block at a time, so only the blocks that
+  changed since the copy before travel. A VM that is running is paused for its
+  copy and goes on, so its copy is a disk and no snapshot; one that was asleep
+  sends its snapshot too. A restore never pairs an old snapshot with a newer
+  disk — taking a newer disk drops the memory that came before it — and boots
+  the disk afresh. Losing a machine loses the work since the last copy.
 - **Files:** the environment's granted directories, at the same paths, served
   over vsock (the agent mounts them as FUSE). Each is served by its own host
   process held to that directory by Landlock, in user, mount, network and IPC
@@ -396,20 +414,20 @@ that workspace environment's own, never in a guest sharing the host's kernel
   so the host routes and translates nothing, and in Kubernetes the pod's
   network policy applies to VM traffic too. Every VM has the same address
   (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A VM
-  is allowed one destination besides the internet: the relay its Browser
+  is allowed one destination besides the internet: the server its Browser
   session joins the workspace through
-  (`--relay-endpoint`/`TILO_VM_RELAY_ENDPOINT`, a public address or the
-  stack's cluster address), and a relay on a local host's loopback is
+  (`--server-endpoint`/`TILO_VM_SERVER_ENDPOINT`, a public address or the
+  stack's cluster address), and a server on a local host's loopback is
   reached at 10.0.2.4, which `pasta` maps there. Firecracker's rate
   limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
   usage record (VM, workspace, account, size, start, end, seconds) in the
-  account's ledger, billed per second with the sub-second rest carried to
+  account's log, billed per second with the sub-second rest carried to
   the next run. A stopped or suspended VM costs nothing.
 - **Plans:** an account's plan bounds its running VMs, its VMs kept and the
   sizes it may use. A refused program says why in plain words, and what to
   do, and the refusal is typed
-  (`tilo_actions::remote::host_account::Refusal`: a reason and the next
+  (`tilo_actions::remote::server_account::Refusal`: a reason and the next
   steps, each with the provider's page).
 - **Selling VMs:** a host that sells them says so in its plans file
   (`sells`: its name, the plans it offers, the pages where a card is added,
@@ -422,11 +440,11 @@ that workspace environment's own, never in a guest sharing the host's kernel
   prices, credit, rate limits, fraud checks) is the provider's: it only
   writes the plans file and answers its pages.
 - **The account, live:** the session serves the person's account with its
-  host (`tilo.hosting`, `host.account/account`) as a live read: the plans
-  offered, the account's standing, usage per workspace, limits, credit,
+  server (`tilo.server`, `server.account/account`) as a live read: the plans
+  offered, the account's access, usage per workspace, limits, credit,
   invoices and where billing is managed, sent again whenever the plans file
-  changes (`crates/hosting/tilo-host-account`). A host that sells nothing
-  answers no plans and no standing.
+  changes (`crates/server/tilo-server-account`). A host that sells nothing
+  answers no plans and no access.
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
   `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`, and `TILO_HOSTED_PLANS`, the
@@ -463,7 +481,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   its desktop file) starts a second headless session in the same VM, as the
   tenant, with Xwayland ([`hosted-browser.md`](../hosted-browser.md#linux-apps)).
   It joins the workspace as a device like Browser's and shares every window
-  its apps open with the workspace's members, over the live plane. Opening one
+  its apps open with the workspace's members, over the live session. Opening one
   is a Linux action: it needs the plan and the card.
 - **Served runs:** a program that needs what only its host may hold (a
   person's model, the workspace's actions, a sign-in) is started through the
@@ -487,14 +505,14 @@ that workspace environment's own, never in a guest sharing the host's kernel
   endpoint gives is bounded on the host, where the person and their limits
   are known. The host's side is `ush::served_runs`; a coding agent is the
   first program run this way
-  ([`coding_agents.rs`](../../crates/hosting/tilo-relay/src/coding_agents.rs)).
+  ([`coding_agents.rs`](../../crates/server/tilo-server/src/coding_agents.rs)).
 
 ## Members that take work
 
 A member with the take-work appetite serves its workspace's environments the
 way a device serves its own:
 
-- The action plane carries a request to open a session (`OpenEnvironment {
+- The action service carries a request to open a session (`OpenEnvironment {
   record, cols, rows }`) and the accepting member answers with a pty stream
   over iroh. It builds the guest exactly as a device does, with images fetched
   from the registry.
@@ -504,19 +522,33 @@ way a device serves its own:
 - A legacy launch goes to a member that advertises `kvm`; its windows reach
   the requester as a window stream (`surface_stream`), with input routed back.
 
-A member holds a workspace as any device does, so its device plane admits the
-relay's runs. A member that runs the workspace's VMs also answers its browser
+A member holds a workspace as any device does, so its action service admits the
+server's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
-hosted-VM service starts beside the Linux VM; the relay asks for them the way
+hosted-VM service starts beside the Linux VM; the server asks for them the way
 it asks for a shell command, placing `<workspace>/browser` first
-(`crates/hosting/tilo-relay/src/placed_browsers.rs`). The first time the relay
+(`crates/server/tilo-server/src/placed_browsers.rs`). The first time the server
 asks about a workspace it placed on the member, the member enters it: it asks
-the relay's own `workspace.enter`, which answers an invitation naming the member's
-person, and redeems it as a device joins any workspace. The relay decides
+the server's own `workspace.enter`, which answers an invitation naming the member's
+person, and redeems it as a device joins any workspace. The server decides
 which member may enter which workspace, never the request: a device of another
-person asking the member gets nothing from it, and a workspace the relay does
+person asking the member gets nothing from it, and a workspace the server does
 not govern is refused there and remembered for a while, so nothing that names
 workspaces makes the member ask again and again.
+
+A member also starts the programs its workspaces' server serves
+(`tilo_actions::remote::environment_programs`). A coding agent's program needs
+its person's model and the workspace's actions, which only the server holds,
+and where the workspace's machine is on a VM host the server cannot start it
+beside itself. So it asks that VM host's member to start the program in the
+machine, paid for by the account the server names, and the member holds it for
+the server (`crates/runtime/ush/src/environment_programs.rs`,
+`crates/server/tilo-server/src/placed_programs.rs`): what the program sends
+is kept, numbered, until the server says it has taken it, and what the server
+sends is handed to the program in order, each frame once. Only the workspace's
+server may ask, as a device of the member's own operator, and only as the
+program's own workspace. The member ends a program its server cancelled, and
+one its server has not asked after for ninety seconds.
 
 ## Terminal
 

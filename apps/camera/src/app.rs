@@ -43,14 +43,14 @@ use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, Widge
 use winit::event::WindowEvent;
 
 use crate::actions::CameraEffect;
+#[cfg(test)]
+use crate::camera::Camera;
 use crate::frame::{self, FrameBuf};
 use crate::library;
 use crate::model::{
     CameraDevicePreferences, Capture, CaptureKind, CaptureMode, CapturePreferences, CodeKind,
     Facing, PhotoFormat, Resolution, ScanEntry, ScannedCode, Screen, Settings, Timer,
 };
-#[cfg(test)]
-use crate::record::Record as Camera;
 
 mod document_view;
 mod hud;
@@ -399,8 +399,8 @@ pub struct CameraApp {
     active_touch: Option<TouchTarget>,
     dirty: bool,
 
-    sample_captures: Vec<crate::record::SharedCapture>,
-    dispatcher: Option<ui::framework::Dispatcher<crate::record::Record>>,
+    sample_captures: Vec<crate::camera::SharedCapture>,
+    dispatcher: Option<ui::framework::Dispatcher<crate::camera::Camera>>,
     store: store::Shared,
     bar: window_bar::Bar,
     clock: Option<i64>,
@@ -423,7 +423,7 @@ impl CameraApp {
     }
 
     /// Keep captures in `content`: the store the host lends the window,
-    /// which carries them on the camera record's route.
+    /// which carries them on the camera resource's route.
     #[must_use]
     pub fn with_content(mut self, content: tilo_content::ContentStore) -> Self {
         self.content = content;
@@ -1057,7 +1057,7 @@ impl CameraApp {
     }
 
     #[cfg(not(test))]
-    fn unattached_dispatcher() -> Option<ui::framework::Dispatcher<crate::record::Record>> {
+    fn unattached_dispatcher() -> Option<ui::framework::Dispatcher<crate::camera::Camera>> {
         None
     }
 
@@ -1067,7 +1067,7 @@ impl CameraApp {
         clippy::unnecessary_wraps,
         reason = "the same signature as the build without tests, where nothing is attached yet"
     )]
-    fn unattached_dispatcher() -> Option<ui::framework::Dispatcher<crate::record::Record>> {
+    fn unattached_dispatcher() -> Option<ui::framework::Dispatcher<crate::camera::Camera>> {
         Some(ui::framework::Dispatcher::detached(
             "so.tilo.camera",
             &ui::tilo_resource::MemberId::person("test-author"),
@@ -1077,13 +1077,13 @@ impl CameraApp {
     fn invoke_on(&mut self, row: &str, effect: &CameraEffect) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.effect_on(row, effect),
-            None => self.toast.show("Camera is not open on a record"),
+            None => self.toast.show("Camera is not open on a resource"),
         }
     }
 
     pub(crate) fn attach_actions(
         &mut self,
-        actions: &ui::framework::Actions<crate::record::Record>,
+        actions: &ui::framework::Actions<crate::camera::Camera>,
     ) {
         self.settings_sheet.attach(actions);
         self.document_controls.attach(actions);
@@ -1091,7 +1091,7 @@ impl CameraApp {
 
     pub(crate) fn attach_dispatcher(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::record::Record>,
+        dispatcher: ui::framework::Dispatcher<crate::camera::Camera>,
     ) {
         self.bar.attach(dispatcher.clone());
         self.dispatcher = Some(dispatcher);
@@ -1103,7 +1103,7 @@ impl CameraApp {
 
     /// Stage a screenshot scenario (`None` for a plain `--shots`): the
     /// screen it shows and what is happening on it. Mode, timer and the
-    /// recent capture are the record's already.
+    /// recent capture are the resource's already.
     pub(crate) fn stage_scene(&mut self, scenario: Option<&str>) {
         match scenario.unwrap_or_default() {
             "scanner" => self.screen = Screen::Scanner,
@@ -1142,12 +1142,12 @@ impl CameraApp {
         self.clock.unwrap_or_else(unix_now_i64)
     }
 
-    /// Apply one of the record's verbs, the single mutation path shared with the
+    /// Apply one of the resource's verbs, the single mutation path shared with the
     /// palette and agents, through the framework's dispatcher.
     fn perform_action(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::record::Record>,
+        submit: impl ui::framework::Submit<crate::camera::Camera>,
     ) {
         if let Err(error) = self.try_perform_action(doc, submit) {
             self.toast.fail(format!("Couldn't save change: {error}"));
@@ -1159,10 +1159,10 @@ impl CameraApp {
     fn try_perform_action(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::record::Record>,
+        submit: impl ui::framework::Submit<crate::camera::Camera>,
     ) -> Result<(), String> {
         let Some(dispatcher) = &self.dispatcher else {
-            return Err("Camera is not open on a record".into());
+            return Err("Camera is not open on a resource".into());
         };
         dispatcher
             .submit_now(doc, submit)
@@ -1172,8 +1172,8 @@ impl CameraApp {
     /// Record the scanned code `raw` in the history, and show the history
     /// it leaves.
     fn record_scan(&mut self, doc: &mut ui::widget::Edits<'_>, raw: String) {
-        self.perform_action(doc, crate::record::Record::RECORD_SCAN.with(raw));
-        if let Ok(record) = <crate::record::Record as ui::tilo_resource::Resource>::read(doc) {
+        self.perform_action(doc, crate::camera::Camera::RECORD_SCAN.with(raw));
+        if let Ok(record) = <crate::camera::Camera as ui::tilo_resource::Resource>::read(doc) {
             self.scans = record.scans;
         }
     }
@@ -1817,7 +1817,7 @@ impl CameraApp {
         self.settings
     }
 
-    pub(crate) fn present_record(&mut self, state: &crate::record::Record) {
+    pub(crate) fn present_resource(&mut self, state: &crate::camera::Camera) {
         self.scans.clone_from(&state.scans);
         // Camera retains exactly one collaborative handoff. Photos and Video
         // Player own collection browsing, deletion, favorites, and metadata.
@@ -1861,7 +1861,7 @@ impl CameraApp {
                 let media_id = crate::media::store(&self.content, &bytes)
                     .ok_or_else(|| "the sample photo was not stored".to_owned())?;
                 let (w, h) = self.settings.resolution.dims();
-                self.sample_captures.push(crate::record::SharedCapture {
+                self.sample_captures.push(crate::camera::SharedCapture {
                     id: format!(
                         "IMG_{}.{}",
                         self.now_secs(),
@@ -2433,7 +2433,7 @@ impl CameraApp {
             }
             match result.result {
                 Ok(saved) => {
-                    let action = crate::record::SharedCapture {
+                    let action = crate::camera::SharedCapture {
                         id: saved.name.clone(),
                         media_id: saved.media_id.clone(),
                         kind: CaptureKind::Photo,
@@ -2446,7 +2446,7 @@ impl CameraApp {
                     };
                     if let Err(error) = self.try_perform_action(
                         state,
-                        crate::record::Record::REGISTER_CAPTURE.with(action),
+                        crate::camera::Camera::REGISTER_CAPTURE.with(action),
                     ) {
                         if let Some(path) = &saved.local_path {
                             crate::files::remove(path);
@@ -2502,7 +2502,7 @@ impl CameraApp {
             }
             match result.result {
                 Ok(saved) => {
-                    let action = crate::record::SharedCapture {
+                    let action = crate::camera::SharedCapture {
                         id: saved.name.clone(),
                         media_id: saved.media_id.clone(),
                         kind: CaptureKind::Video,
@@ -2515,7 +2515,7 @@ impl CameraApp {
                     };
                     if let Err(error) = self.try_perform_action(
                         state,
-                        crate::record::Record::REGISTER_CAPTURE.with(action),
+                        crate::camera::Camera::REGISTER_CAPTURE.with(action),
                     ) {
                         if let Some(path) = &saved.local_path {
                             crate::files::remove(path);
@@ -2690,7 +2690,7 @@ impl Widget for CameraApp {
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.forget_cancelled();
         self.poll_document_job();
-        // An empty record already reads as Photo / Back / default settings.
+        // An empty resource already reads as Photo / Back / default settings.
         // Writing those defaults would be a phantom history entry.
         self.poll_countdown();
         self.poll_photo_results(state);
@@ -2702,7 +2702,7 @@ impl Widget for CameraApp {
         }
         for capture in std::mem::take(&mut self.sample_captures) {
             if let Err(error) = self
-                .try_perform_action(state, crate::record::Record::REGISTER_CAPTURE.with(capture))
+                .try_perform_action(state, crate::camera::Camera::REGISTER_CAPTURE.with(capture))
             {
                 self.toast.fail(format!("Save failed: {error}"));
             }
@@ -3269,7 +3269,7 @@ impl ui::widget::controls::ActionControls for CameraApp {
 // ====================================================================
 
 fn now_secs() -> i64 {
-    ui::clock::local_now().timestamp()
+    ui::clock::local_now().timestamp().as_second()
 }
 
 #[cfg(test)]
@@ -3561,7 +3561,7 @@ mod tests {
 
     fn present(app: &mut CameraApp, doc: &AutoCommit) {
         let state = <Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
-        app.present_record(&state);
+        app.present_resource(&state);
     }
 
     impl CameraApp {
@@ -3575,7 +3575,7 @@ mod tests {
     }
 
     #[test]
-    fn the_camera_record_holds_no_preferences() {
+    fn the_camera_resource_holds_no_preferences() {
         use automerge::ReadDoc as _;
         let (app, doc, root) = sample_app();
         let keys: Vec<String> = doc.keys(&root).collect();
@@ -3866,9 +3866,9 @@ mod tests {
             // The bar's Open Photos asks the window's session to open Photos,
             // and the bar says so.
             let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
-            let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+            let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
             app.harness().set_session_api(
-                ui::RemoteActions::with_host(
+                ui::RemoteActions::with_provider(
                     session.clone(),
                     ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
                         .in_workspace(TEST_WORKSPACE),
@@ -4816,7 +4816,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_preferences_and_screens_change_no_record() {
+    fn capture_preferences_and_screens_change_no_resource() {
         {
             let (mut app, mut doc, root) = sample_app();
             let before = doc.get_heads();
@@ -4853,7 +4853,7 @@ mod tests {
     }
 
     #[test]
-    fn scanned_codes_record_history_and_scanner_actions_are_searchable() {
+    fn scanned_codes_resource_history_and_scanner_actions_are_searchable() {
         {
             let mut app = CameraApp::sample();
             let mut doc = AutoCommit::new();
@@ -4869,7 +4869,7 @@ mod tests {
                 corners: [(0.0, 0.0); 4],
             });
             app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root);
-            let scans = <crate::record::Record as ui::tilo_resource::Resource>::read(&doc)
+            let scans = <crate::camera::Camera as ui::tilo_resource::Resource>::read(&doc)
                 .unwrap()
                 .scans;
             assert_eq!(scans.len(), 1);
@@ -4906,8 +4906,8 @@ mod tests {
                 symbology: "QR Code".into(),
                 corners: [(0.0, 0.0); 4],
             });
-            let (services, recorder) = ui::host::HostServices::recording();
-            ui::host::scoped(&services, || {
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            ui::process::scoped(&services, || {
                 app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root); // "Connect"
             });
             assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
@@ -4957,8 +4957,8 @@ mod tests {
             unix_now_i64()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
 
         let payload = "https://example.test/scanned-from-a-saved-photo";
@@ -5024,9 +5024,9 @@ mod tests {
             "{refused}"
         );
 
-        let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+        let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
         app.harness().set_session_api(
-            ui::RemoteActions::with_host(
+            ui::RemoteActions::with_provider(
                 session.clone(),
                 ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
                     .in_workspace(TEST_WORKSPACE),

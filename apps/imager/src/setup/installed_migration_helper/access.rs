@@ -1,4 +1,4 @@
-//! Explicit access actor; source custody lasts until the controlling pipe closes.
+//! Explicit access actor; source ownership lasts until the controlling pipe closes.
 use super::*;
 struct Access {
     grants: Grants,

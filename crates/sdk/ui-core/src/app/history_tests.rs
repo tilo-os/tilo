@@ -217,7 +217,7 @@ fn routed_document(
     )
 }
 #[test]
-fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
+fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
     {
         use automerge::ReadDoc;
         let mut app = App::new_with_controlled_inputs(
@@ -225,7 +225,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
             Box::new(crate::widget::Text::new("root")),
         );
         let installed = crate::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: installed.clone(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -355,7 +355,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         assert_eq!(
             super::document_routes::DOCUMENT_ROUTE_REFRESHES.get(),
             reconciles + 1,
-            "one app pump reconciles document custody exactly once"
+            "one app pump reconciles document ownership exactly once"
         );
         assert_eq!(
             crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get(),
@@ -593,7 +593,9 @@ pub(crate) struct RoutedOwners {
 }
 impl RoutedOwners {
     pub(crate) fn new() -> Self {
-        use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+        use crate::application::{
+            LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
+        };
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
@@ -613,9 +615,9 @@ impl RoutedOwners {
         let mut root = crate::widget::Column::new();
         let mut bindings = vec![];
         for instance in [10, 11] {
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records: records.clone(),
                     views: views.clone(),
                     device_id: "D".into(),
@@ -640,7 +642,7 @@ impl RoutedOwners {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         let (manager, hold_join) = CollaborationManager::connected_holding_joins_for_test();
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
                 uuid::Uuid::parse_str(workspace).unwrap(),
@@ -984,7 +986,7 @@ impl PrimaryMetadataShape {
 
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn primary_routed_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,
     restore: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -1010,7 +1012,7 @@ struct RoutedPrimary {
 impl RoutedPrimary {
     fn new(shape: PrimaryMetadataShape) -> Self {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().to_path_buf());
@@ -1038,9 +1040,9 @@ impl RoutedPrimary {
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "D".into(),
@@ -1081,7 +1083,7 @@ impl RoutedPrimary {
             Box::new(crate::widget::BoundAppWidget::new(component)),
         );
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -2918,14 +2920,14 @@ struct ComponentControlHandle {
     payloads: Rc<RefCell<Vec<serde_json::Value>>>,
 }
 
-struct CustodyEnteredOperation {
+struct OwnershipEnteredOperation {
     receiver: std::sync::mpsc::Receiver<()>,
     active: Option<tilo_actions::InvocationId>,
     completions: Rc<Cell<usize>>,
 }
 
 struct ComponentControlOwner {
-    entered: Option<CustodyEnteredOperation>,
+    entered: Option<OwnershipEnteredOperation>,
     emitter: Option<
         Rc<RefCell<crate::widget::ActionEmitter<serde_json::Map<String, serde_json::Value>>>>,
     >,
@@ -3072,7 +3074,7 @@ fn bridge_registration(binding: &crate::bound_dispatch::CallbackBinding) -> Hist
 }
 
 fn runner_component(
-    host: &crate::application_test_support::ProbeHost,
+    host: &crate::application_test_support::ProbeHarness,
     instance: u64,
 ) -> crate::application::AppComponent {
     use crate::application::{LaunchTarget, RestoreInput};
@@ -3100,13 +3102,16 @@ struct BridgeComponent {
     starts: Rc<Cell<usize>>,
     payloads: Rc<RefCell<Vec<serde_json::Value>>>,
     // Keeps the record and view stores alive for the whole test.
-    host: crate::application_test_support::ProbeHost,
+    host: crate::application_test_support::ProbeHarness,
 }
 
 /// `in_domain` binds the emitter to the component's control domain; otherwise
 /// the emitter is plain and relies on the widget bridge to forward intents.
-fn bridge_component(entered: Option<CustodyEnteredOperation>, in_domain: bool) -> BridgeComponent {
-    let host = crate::application_test_support::ProbeHost::new();
+fn bridge_component(
+    entered: Option<OwnershipEnteredOperation>,
+    in_domain: bool,
+) -> BridgeComponent {
+    let host = crate::application_test_support::ProbeHarness::new();
     let mut component = runner_component(&host, 1971);
     let mut live = ComponentControlOwner::new(
         "actual-bridge",
@@ -3495,13 +3500,13 @@ fn component_control_root(
             closing: Rc::new(Cell::new(false)),
             registry_owner: Rc::downgrade(&registry_owner),
             lifetime_id: uuid::Uuid::new_v4(),
-            control_domain: crate::control_custody::WeakControlDomain::default(),
+            control_domain: crate::control_domain::WeakControlDomain::default(),
             queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
             search_requests: Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
             device_id: "test-device".into(),
-            host_person: crate::permissions::MemberId::person("component-control-author"),
+            local_person: crate::permissions::MemberId::person("component-control-author"),
             records: records.clone(),
             checkout,
             permissions: crate::permissions::SharedPermissions::new(
@@ -3824,7 +3829,7 @@ fn activate_component_palette(
 tilo_test_env::scenario! {
     fn palette_round_trips_through_history_keep_the_exact_owner_and_draft;
 
-    phase palette_two_round_trips_preserve_original_exact_witness;
+    phase palette_two_round_trips_preserve_original_exact_observation;
     {
         for changed in ["target", "handler", "unsupported"] {
             let state = PaletteContinuationState::stable();
@@ -3854,13 +3859,13 @@ tilo_test_env::scenario! {
             palette_confirm(&mut app);
             assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
             assert!(
-                retained.history_witness == original.history_witness,
-                "immutable witness: {changed}"
+                retained.history_seen == original.history_seen,
+                "immutable observation: {changed}"
             );
             let refused =
                 crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
             assert_eq!(refused.wire_argument().as_deref(), Some("production"));
-            assert!(refused.history_witness == original.history_witness);
+            assert!(refused.history_seen == original.history_seen);
         }
     }
 
@@ -3993,11 +3998,11 @@ tilo_test_env::scenario! {
         let retained =
             crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
         assert_eq!(retained.wire_argument(), original.wire_argument());
-        assert!(retained.history_witness == original.history_witness);
+        assert!(retained.history_seen == original.history_seen);
         let Some(crate::bound_dispatch::local_target::LocalResourceTarget::Component(target)) =
             retained.history_target
         else {
-            panic!("original component custody remains inspectable")
+            panic!("original component ownership remains inspectable")
         };
         assert!(target.binding.same_component(&old[0].binding));
     }
@@ -4037,7 +4042,7 @@ tilo_test_env::scenario! {
 }
 
 /// The held controls without their names. A control whose declaration did
-/// not resolve when it was captured (its custody failed) is named once it
+/// not resolve when it was captured (its ownership failed) is named once it
 /// resolves on a later History visit (`name_pending_controls`): a name is
 /// how the review row reads, not what the control would do, so it is not a
 /// rebaseline of the original.
@@ -4238,7 +4243,7 @@ tilo_test_env::scenario! {
         layout(&mut app);
         assert!(
             failed.get(),
-            "custody remains unreachable throughout public return"
+            "ownership remains unreachable throughout public return"
         );
         assert!(
             !app.framework_input.get(),
@@ -4499,7 +4504,7 @@ tilo_test_env::scenario! {
         ));
         assert!(
             !called.get(),
-            "invalid custody must refuse before input construction"
+            "invalid ownership must refuse before input construction"
         );
     }
 
@@ -4526,13 +4531,13 @@ tilo_test_env::scenario! {
     }
 }
 
-struct CustodyDeniedRoot {
+struct OwnershipDeniedRoot {
     child: Box<dyn crate::widget::Widget>,
     denied: Rc<Cell<bool>>,
     exit_callback: Option<Box<dyn FnMut()>>,
 }
 
-impl crate::widget::Widget for CustodyDeniedRoot {
+impl crate::widget::Widget for OwnershipDeniedRoot {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn name(&self) -> &str {
@@ -4602,7 +4607,7 @@ impl crate::widget::Widget for CustodyDeniedRoot {
     }
 }
 
-impl crate::widget::controls::ActionControls for CustodyDeniedRoot {
+impl crate::widget::controls::ActionControls for OwnershipDeniedRoot {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if self.denied.get() {
             None
@@ -4612,10 +4617,10 @@ impl crate::widget::controls::ActionControls for CustodyDeniedRoot {
     }
 }
 
-/// The bridge component behind a custody-denying root whose armed exit
+/// The bridge component behind an ownership-denying root whose armed exit
 /// callback emits once from inside the return layout pass.
 struct DeniedBridge {
-    root: Box<CustodyDeniedRoot>,
+    root: Box<OwnershipDeniedRoot>,
     registration: HistoryRegistration,
     emitter: ControlEmitter,
     denied: Rc<Cell<bool>>,
@@ -4623,7 +4628,7 @@ struct DeniedBridge {
     exit_calls: Rc<Cell<usize>>,
     starts: Rc<Cell<usize>>,
     payloads: Rc<RefCell<Vec<serde_json::Value>>>,
-    host: crate::application_test_support::ProbeHost,
+    host: crate::application_test_support::ProbeHarness,
 }
 
 fn denied_bridge_with_exit_emission() -> DeniedBridge {
@@ -4653,7 +4658,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
             }
         })
     };
-    let root = Box::new(CustodyDeniedRoot {
+    let root = Box::new(OwnershipDeniedRoot {
         child: Box::new(
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
@@ -4677,7 +4682,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
     }
 }
 
-struct CustodyControlsRoot {
+struct DomainControlsRoot {
     draw_callback: Option<Box<dyn FnMut()>>,
     overlay_callback: Option<Box<dyn FnMut()>>,
     mark_drawn_callback: Option<Box<dyn FnMut()>>,
@@ -4686,10 +4691,10 @@ struct CustodyControlsRoot {
     record: Option<Rc<RefCell<Option<crate::DocumentCheckout>>>>,
     child: Box<dyn crate::widget::Widget>,
     resources: Vec<tilo_actions::ResourceSpec>,
-    ledger: Rc<RefCell<Vec<serde_json::Value>>>,
+    log: Rc<RefCell<Vec<serde_json::Value>>>,
 }
 
-impl crate::widget::Widget for CustodyControlsRoot {
+impl crate::widget::Widget for DomainControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
@@ -4779,7 +4784,7 @@ impl crate::widget::Widget for CustodyControlsRoot {
     }
 }
 
-impl crate::widget::ResourceOperations for CustodyControlsRoot {
+impl crate::widget::ResourceOperations for DomainControlsRoot {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = crate::widget::resource_operation_handlers(&*self.child);
         handlers.insert("fixture.control".into());
@@ -4803,7 +4808,7 @@ impl crate::widget::ResourceOperations for CustodyControlsRoot {
                 path,
             );
         };
-        self.ledger
+        self.log
             .borrow_mut()
             .push(serde_json::from_slice(request.payload).unwrap());
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -4812,7 +4817,7 @@ impl crate::widget::ResourceOperations for CustodyControlsRoot {
     }
 }
 
-impl crate::resource::capability::ResourceScoped for CustodyControlsRoot {
+impl crate::resource::capability::ResourceScoped for DomainControlsRoot {
     fn record_intent(&self) -> Option<crate::DocumentCheckout> {
         self.record
             .as_ref()
@@ -4820,19 +4825,19 @@ impl crate::resource::capability::ResourceScoped for CustodyControlsRoot {
     }
 }
 
-impl crate::resources::PublishesResources for CustodyControlsRoot {
+impl crate::resources::PublishesResources for DomainControlsRoot {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.resources.clone()
     }
 }
 
-impl crate::widget::controls::ActionControls for CustodyControlsRoot {
-    fn install_control_custody(
+impl crate::widget::controls::ActionControls for DomainControlsRoot {
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        crate::widget::controls::install_control_custody(self.child.as_mut(), domain, attachment);
+        crate::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
         if let Some(output) = &self.installed_output {
             if output.borrow().is_none() {
                 *output.borrow_mut() =
@@ -4842,7 +4847,7 @@ impl crate::widget::controls::ActionControls for CustodyControlsRoot {
     }
 }
 
-fn custody_matrix_spec(kind: &str) -> tilo_actions::ResourceSpec {
+fn ownership_matrix_spec(kind: &str) -> tilo_actions::ResourceSpec {
     use tilo_actions::*;
     let parameter = match kind {
         "Checkbox" | "Toggle" => Some(ParamType::Boolean),
@@ -4880,7 +4885,7 @@ fn custody_matrix_spec(kind: &str) -> tilo_actions::ResourceSpec {
     ResourceSpec::new("fixture:control", "fixture", "Fixture").with_action(spec)
 }
 
-fn custody_matrix_binding<I: serde::Serialize + 'static>(
+fn ownership_matrix_binding<I: serde::Serialize + 'static>(
     resource: &tilo_actions::ResourceSpec,
 ) -> tilo_actions::ActionBinding<I> {
     tilo_actions::ActionBinding::new(resource, &resource.actions[0], |value| {
@@ -4892,17 +4897,17 @@ fn custody_matrix_binding<I: serde::Serialize + 'static>(
     .unwrap()
 }
 
-fn custody_matrix_app(kind: &str) -> (App, Rc<RefCell<Vec<serde_json::Value>>>) {
-    custody_matrix_app_with_confirmation(kind, tilo_actions::ConfirmationPolicy::None)
+fn ownership_matrix_app(kind: &str) -> (App, Rc<RefCell<Vec<serde_json::Value>>>) {
+    ownership_matrix_app_with_confirmation(kind, tilo_actions::ConfirmationPolicy::None)
 }
 
-fn custody_matrix_app_with_confirmation(
+fn ownership_matrix_app_with_confirmation(
     kind: &str,
     confirmation: tilo_actions::ConfirmationPolicy,
 ) -> (App, Rc<RefCell<Vec<serde_json::Value>>>) {
     use crate::widget::toggle_group::Segment;
     use crate::widget::*;
-    let mut resource = custody_matrix_spec(kind);
+    let mut resource = ownership_matrix_spec(kind);
     resource.actions[0].type_mut().contract.confirmation = confirmation;
     let unit = || {
         tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |()| {
@@ -4910,51 +4915,51 @@ fn custody_matrix_app_with_confirmation(
         })
         .unwrap()
     };
-    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::new(RefCell::new(Vec::new()));
     let control: Box<dyn Widget> = match kind {
         "Button" => Box::new(Button::new("control", "Control").on_action(unit())),
         "Checkbox" => Box::new(
             Checkbox::new("control", "unused")
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "Toggle" => Box::new(
             Toggle::new("control", "unused")
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "Slider" => Box::new(
             Slider::new("control", "unused")
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "NumberInput" => Box::new(
             NumberInput::new(0.0)
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "Dropdown" => Box::new(
             Dropdown::new(vec!["Alpha".into(), "Beta".into()], "unused")
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "TextInput" => Box::new(
             TextInput::local_with_language("en-US")
                 .with_spellcheck(false)
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "ToggleGroup" => Box::new(
             ToggleGroup::new(vec![Segment::new("Zero"), Segment::new("One")], 0)
                 .with_id("control")
-                .on_action(custody_matrix_binding(&resource)),
+                .on_action(ownership_matrix_binding(&resource)),
         ),
         "ToggleGroupView" => {
-            let ledger = ledger.clone();
+            let log = log.clone();
             Box::new(
                 ToggleGroup::new(vec![Segment::new("Zero"), Segment::new("One")], 0)
                     .on_view("control", move |index| {
-                        ledger.borrow_mut().push(serde_json::json!({"value":index}))
+                        log.borrow_mut().push(serde_json::json!({"value":index}))
                     }),
             )
         }
@@ -4971,7 +4976,7 @@ fn custody_matrix_app_with_confirmation(
     } else {
         vec![resource]
     };
-    let root = Box::new(CustodyControlsRoot {
+    let root = Box::new(DomainControlsRoot {
         draw_callback: None,
         overlay_callback: None,
         mark_drawn_callback: None,
@@ -4982,7 +4987,7 @@ fn custody_matrix_app_with_confirmation(
             Button::new("pulse", "Live pulse").on_effect(|| {}),
         ))),
         resources,
-        ledger: ledger.clone(),
+        log: log.clone(),
     });
     let registration = HistoryRegistration::new(
         &HISTORY,
@@ -5005,10 +5010,10 @@ fn custody_matrix_app_with_confirmation(
     layout(&mut app);
     // The matrix control and the live pulse beside it both publish a route.
     assert_eq!(app.control_coverage().registered, 2, "{kind}");
-    (app, ledger)
+    (app, log)
 }
 
-fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_json::Value {
+fn ownership_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_json::Value {
     use crate::a11y::Action;
     let node = app
         .layout
@@ -5070,7 +5075,7 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
     expected
 }
 
-const CUSTODY_MATRIX: &[&str] = &[
+const OWNERSHIP_MATRIX: &[&str] = &[
     "Button",
     "Checkbox",
     "Toggle",
@@ -5083,25 +5088,25 @@ const CUSTODY_MATRIX: &[&str] = &[
     "EmptyState",
 ];
 
-impl crate::widget::AppWidget for CustodyControlsRoot {
+impl crate::widget::AppWidget for DomainControlsRoot {
     fn app_kind(&self) -> crate::widget::AppKind {
         crate::widget::AppKind::Editor
     }
     fn app_title(&self) -> &str {
-        "Custody controls"
+        "Ownership controls"
     }
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
     }
 }
 
-fn custody_owned_button(
+fn ownership_owned_button(
     label: &str,
-    ledger: Rc<RefCell<Vec<serde_json::Value>>>,
-) -> CustodyControlsRoot {
-    let resource = custody_matrix_spec("Button");
+    log: Rc<RefCell<Vec<serde_json::Value>>>,
+) -> DomainControlsRoot {
+    let resource = ownership_matrix_spec("Button");
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
-    CustodyControlsRoot {
+    DomainControlsRoot {
         draw_callback: None,
         overlay_callback: None,
         mark_drawn_callback: None,
@@ -5110,14 +5115,14 @@ fn custody_owned_button(
         record: None,
         child: Box::new(crate::widget::Button::new(label, label).on_action(binding)),
         resources: vec![resource],
-        ledger,
+        log,
     }
 }
 
 tilo_test_env::scenario! {
-    fn control_custody_core_seals_pending_values_and_keeps_live_semantics;
+    fn control_ownership_core_seals_pending_values_and_keeps_live_semantics;
 
-    phase control_custody_core_seals_and_discards_through_unreachable_private_routes;
+    phase control_ownership_core_seals_and_discards_through_unreachable_private_routes;
     {
         // Native App: output queued before entry is sealed, hidden and exit
         // output is discarded, and only the sealed entry continues.
@@ -5251,29 +5256,29 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase control_custody_core_all_shared_controls_keep_ordinary_live_behavior;
+    phase control_ownership_core_all_shared_controls_keep_ordinary_live_behavior;
     {
-        for kind in CUSTODY_MATRIX {
-            let (mut app, ledger) = custody_matrix_app(kind);
-            let first = custody_matrix_activate(&mut app, kind, false);
+        for kind in OWNERSHIP_MATRIX {
+            let (mut app, log) = ownership_matrix_app(kind);
+            let first = ownership_matrix_activate(&mut app, kind, false);
             let named_action_target = named(&mut app, "Live pulse");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            assert_eq!(&*ledger.borrow(), &[first], "before History: {kind}");
+            assert_eq!(&*log.borrow(), &[first], "before History: {kind}");
             palette_history_round_trip(&mut app);
-            let second = custody_matrix_activate(&mut app, kind, true);
+            let second = ownership_matrix_activate(&mut app, kind, true);
             let named_action_target = named(&mut app, "Live pulse");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            assert_eq!(ledger.borrow().len(), 2, "after return: {kind}");
-            assert_eq!(ledger.borrow()[1], second, "fresh typed value: {kind}");
+            assert_eq!(log.borrow().len(), 2, "after return: {kind}");
+            assert_eq!(log.borrow()[1], second, "fresh typed value: {kind}");
             assert!(app.pending_history_controls().is_empty());
         }
     }
 
-    phase control_custody_core_shared_controls_seal_exact_pending_values;
+    phase control_ownership_core_shared_controls_seal_exact_pending_values;
     {
-        for kind in CUSTODY_MATRIX {
-            let (mut app, ledger) = custody_matrix_app(kind);
-            let expected = custody_matrix_activate(&mut app, kind, false);
+        for kind in OWNERSHIP_MATRIX {
+            let (mut app, log) = ownership_matrix_app(kind);
+            let expected = ownership_matrix_activate(&mut app, kind, false);
             let named_action_target = named(&mut app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
@@ -5294,7 +5299,7 @@ tilo_test_env::scenario! {
             layout(&mut app);
             let named_action_target = named(&mut app, "Live pulse");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            assert!(ledger.borrow().is_empty(), "return cannot admit {kind}");
+            assert!(log.borrow().is_empty(), "return cannot admit {kind}");
             assert_eq!(
                 app.pending_history_controls()[0].invocation,
                 saved[0].invocation
@@ -5302,7 +5307,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase control_custody_core_first_emission_after_return_keeps_live_semantics;
+    phase control_ownership_core_first_emission_after_return_keeps_live_semantics;
     {
         let (complete_tx, complete_rx) = std::sync::mpsc::channel();
         let completions = Rc::new(Cell::new(0));
@@ -5315,7 +5320,7 @@ tilo_test_env::scenario! {
             payloads,
             host: _host,
         } = bridge_component(
-            Some(CustodyEnteredOperation {
+            Some(OwnershipEnteredOperation {
                 receiver: complete_rx,
                 active: None,
                 completions: completions.clone(),
@@ -5323,7 +5328,7 @@ tilo_test_env::scenario! {
             true,
         );
         let denied = Rc::new(Cell::new(false));
-        let root = Box::new(CustodyDeniedRoot {
+        let root = Box::new(OwnershipDeniedRoot {
             child: Box::new(
                 crate::widget::Column::new()
                     .push(Box::new(crate::widget::BoundAppWidget::new(component)))
@@ -5391,14 +5396,14 @@ tilo_test_env::scenario! {
             2,
             "current owner revocation remains canonical"
         );
-        let (mut confirming, confirmed_ledger) =
-            custody_matrix_app_with_confirmation("Button", tilo_actions::ConfirmationPolicy::Confirm);
+        let (mut confirming, confirmed_log) =
+            ownership_matrix_app_with_confirmation("Button", tilo_actions::ConfirmationPolicy::Confirm);
         palette_history_round_trip(&mut confirming);
-        custody_matrix_activate(&mut confirming, "Button", false);
+        ownership_matrix_activate(&mut confirming, "Button", false);
         let named_action_target = named(&mut confirming, "Live pulse");
         confirming.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
         assert!(
-            confirmed_ledger.borrow().is_empty(),
+            confirmed_log.borrow().is_empty(),
             "fresh F still requires current confirmation"
         );
         assert_eq!(editor_snapshot(&confirming).2, "confirmation");
@@ -5409,19 +5414,19 @@ tilo_test_env::scenario! {
             .unwrap()
             .set_query("CONFIRM");
         palette_enter(&mut confirming);
-        assert_eq!(&*confirmed_ledger.borrow(), &[serde_json::json!({})]);
+        assert_eq!(&*confirmed_log.borrow(), &[serde_json::json!({})]);
     }
 
-    phase control_custody_core_mounted_modelview_hidden_builder_and_fresh_button;
+    phase control_ownership_core_mounted_modelview_hidden_builder_and_fresh_button;
     {
         let scope = crate::WakeScope::new();
         let _entry = scope.enter();
-        let domain = crate::control_custody::ControlDomain::outer();
+        let domain = crate::control_domain::ControlDomain::outer();
         let key = Rc::new(Cell::new(false));
         let projection = key.clone();
         let retained = Rc::new(RefCell::new(None));
         let output = retained.clone();
-        let resource = custody_matrix_spec("Button");
+        let resource = ownership_matrix_spec("Button");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
         let view = crate::widget::ModelView::from_document_in(
             &domain,
@@ -5433,15 +5438,15 @@ tilo_test_env::scenario! {
                 let outbox = domain.producer(crate::ControlProducerDiscipline::ReplaceOne);
                 assert_eq!(
                     outbox.emit(binding.invoke(()).unwrap()),
-                    Ok(crate::control_custody::LocalEmission::Suppressed),
+                    Ok(crate::control_domain::LocalEmission::Suppressed),
                     "builder sees covering lease before emitting"
                 );
                 *output.borrow_mut() = Some(outbox);
                 Box::new(crate::widget::Button::new("dynamic", "Dynamic").on_action(binding.clone()))
             },
         );
-        let ledger = Rc::new(RefCell::new(Vec::new()));
-        let root = CustodyControlsRoot {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = DomainControlsRoot {
             draw_callback: None,
             overlay_callback: None,
             mark_drawn_callback: None,
@@ -5450,10 +5455,10 @@ tilo_test_env::scenario! {
             record: None,
             child: Box::new(view),
             resources: vec![resource],
-            ledger: ledger.clone(),
+            log: log.clone(),
         };
         let mut app =
-            App::from_scoped_parts_with_controlled_custody(scope, State::new(), Box::new(root), domain);
+            App::from_scoped_parts_with_controlled_ownership(scope, State::new(), Box::new(root), domain);
         app.install_history(
             HistoryRegistration::new(
                 &HISTORY,
@@ -5484,20 +5489,20 @@ tilo_test_env::scenario! {
         let named_action_target = named(&mut app, "History");
         app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
         layout(&mut app);
-        assert!(ledger.borrow().is_empty());
+        assert!(log.borrow().is_empty());
         assert!(app.pending_history_controls().is_empty());
         let named_action_target = named(&mut app, "Dynamic");
         app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
         assert_eq!(
-            &*ledger.borrow(),
+            &*log.borrow(),
             &[serde_json::json!({})],
             "new passive shared control uses ordinary canonical api"
         );
     }
 
-    phase control_custody_core_unbound_tile_foreign_attachment_preserves_owner;
+    phase control_ownership_core_unbound_tile_foreign_attachment_preserves_owner;
     {
-        use crate::control_custody::{ControlDomain, CustodyAttachment, LocalEmission};
+        use crate::control_domain::{ControlDomain, DomainAttachment, LocalEmission};
         use crate::widget::Widget;
         for suspended in [false, true] {
             let a = ControlDomain::outer();
@@ -5506,7 +5511,7 @@ tilo_test_env::scenario! {
                 address: tilo_actions::ActionAddress::new("fixture:control", "run"),
                 arguments: serde_json::Map::new(),
             };
-            let origin_key = |item: &crate::control_custody::OwnedControl| {
+            let origin_key = |item: &crate::control_domain::OwnedControl| {
                 let crate::history_mode::pending_controls::PendingControlOrigin::Outer {
                     root_lifetime,
                 } = &item.origin
@@ -5521,15 +5526,15 @@ tilo_test_env::scenario! {
             let left = a.child();
             let right = a.child();
             let output = Rc::new(RefCell::new(None::<crate::ControlOutbox>));
-            let mut live = custody_owned_button("A", Default::default());
+            let mut live = ownership_owned_button("A", Default::default());
             live.installed_output = Some(output.clone());
             let mut tile =
                 crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
             assert!(tile.history_owner().is_none(), "actual unbound TileHost");
-            crate::widget::controls::install_control_custody(
+            crate::widget::controls::attach_controls(
                 &mut tile,
                 &left,
-                CustodyAttachment::Initial,
+                DomainAttachment::Initial,
             );
             a.finish_initial_installation();
             b.finish_initial_installation();
@@ -5548,7 +5553,7 @@ tilo_test_env::scenario! {
             } else {
                 (None, vec![])
             };
-            crate::widget::controls::install_control_custody(&mut tile, &b, CustodyAttachment::Dynamic);
+            crate::widget::controls::attach_controls(&mut tile, &b, DomainAttachment::Dynamic);
             assert!(
                 b.drain_live().is_empty(),
                 "foreign B must not adopt queued shared-control E"
@@ -5588,10 +5593,10 @@ tilo_test_env::scenario! {
                 "old retained raw handle cannot route to B"
             );
             drop(lease);
-            crate::widget::controls::install_control_custody(
+            crate::widget::controls::attach_controls(
                 &mut tile,
                 &right,
-                CustodyAttachment::Dynamic,
+                DomainAttachment::Dynamic,
             );
             activate(&mut tile);
             assert_eq!(

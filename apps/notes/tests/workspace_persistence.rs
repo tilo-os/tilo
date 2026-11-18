@@ -1,5 +1,5 @@
 //! The notebook outlives the window: notes, their tree and their bodies are
-//! the record's, and the note left open opens again.
+//! the resource's, and the note left open opens again.
 
 use crate::framework_support::{add_note, apply, body, notes, open, surface};
 use notes::PageId;

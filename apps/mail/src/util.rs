@@ -1,10 +1,10 @@
 //! Date labels for the message list and reader header. Calendar arithmetic
-//! comes from `ui::date`, so the app needs no `chrono`/`time` dependency.
+//! comes from `ui::date`.
 
 use ui::date::civil_from_days;
 
 pub fn local_minutes(utc_min: i64) -> i64 {
-    let offset = ui::clock::local_now().offset().local_minus_utc();
+    let offset = ui::clock::local_now().offset().seconds();
     utc_min.saturating_add(i64::from(offset) / 60)
 }
 
@@ -21,15 +21,24 @@ pub fn format_absolute(ts_min: i64) -> String {
     })
 }
 
-fn wall(local_min: i64) -> Option<ui::format::NaiveDateTime> {
+fn wall(local_min: i64) -> Option<ui::format::DateTime> {
     let day = local_min.div_euclid(1440);
     let mins = local_min.rem_euclid(1440);
     let (y, mo, d) = civil_from_days(day);
-    ui::format::NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, mo, d)?.and_hms_opt(
-        ui::num::u32_of_i64(mins / 60),
-        ui::num::u32_of_i64(mins % 60),
+    let day = ui::format::Date::new(
+        i16::try_from(y).ok()?,
+        i8::try_from(mo).ok()?,
+        i8::try_from(d).ok()?,
+    )
+    .ok()?;
+    let time = ui::format::Time::new(
+        i8::try_from(mins / 60).ok()?,
+        i8::try_from(mins % 60).ok()?,
+        0,
         0,
     )
+    .ok()?;
+    Some(day.to_datetime(time))
 }
 
 #[cfg(test)]

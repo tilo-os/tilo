@@ -1,5 +1,5 @@
 //! The person's speaker sets as outputs of Sound: read from the shell's speaker
-//! lane, and chosen through it.
+//! queue, and chosen through it.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpeakerSetOutput {

@@ -320,7 +320,7 @@ fn owned_private(file: &File, private: bool) -> io::Result<()> {
     let uid = rustix::process::geteuid().as_raw();
     if metadata.uid() != uid || metadata.mode() & if private { 0o077 } else { 0o022 } != 0 {
         return Err(invalid(
-            "migration startup policy has foreign or public custody",
+            "migration startup policy has foreign or public ownership",
         ));
     }
     Ok(())

@@ -73,7 +73,7 @@ fn main() -> std::process::ExitCode {
         // A session installed on another distribution keeps its device identity where that login
         // can write, and every child it starts — the launcher, the brokers — reads the same tree.
         // This runs before anything here starts a thread, as it requires.
-        match tilo_onboarding_host::identity_provisioning::configure_host_identity_root() {
+        match tilo_onboarding_session::identity_provisioning::configure_host_identity_root() {
             Ok(root) => eprintln!(
                 "Tilo host session: device identity will be stored under {}",
                 root.display()
@@ -223,9 +223,9 @@ struct CommandLine {
 #[cfg(target_os = "linux")]
 fn device_owner() -> std::io::Result<bool> {
     let identity_dir = runtime_identity::identity_dir_from_env()?;
-    tilo_identity_host::provisioning::active_identity_owns_device(
+    tilo_identity::provisioning::active_identity_owns_device(
         &identity_dir,
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        &tilo_identity::provisioning::collaboration_identity_paths(),
     )
 }
 
@@ -605,7 +605,7 @@ fn start(
     tilo_startup_metrics::mark("services-start");
     // A session in a workspace's VM takes the device identity its host handed it before it
     // reads anything of itself: the workspace, the record whose window it opens and the key it acts
-    // with are the relay's placement record, the first line of its standard input
+    // with are the server's placement record, the first line of its standard input
     // (`docs/hosted-browser.md`, "What the session in the VM is handed").
     let hosted_browser = match tilo_session::hosted_browser::handed() {
         Ok(hosted) => hosted,
@@ -683,7 +683,7 @@ fn start(
         services,
         wake,
         // A session in a workspace's VM is not a first use of a computer: its identity is the
-        // one the relay handed it, so nothing is left to set up and nothing stands over the window
+        // one the server handed it, so nothing is left to set up and nothing stands over the window
         // it was started for.
         setup: (!serves_an_environment)
             .then(|| tilo_session::startup::before_shell(identity, host_desktop))
@@ -759,6 +759,8 @@ fn start(
                 return ExitCode::FAILURE;
             }
         }
+        // Only the machine's own desktop is what the wrapper restarts in place.
+        options.teardown = Box::new(tilo_session::restart::teardown);
     }
     // The wrapper announces an in-place restart in the login's private channel before it stops
     // the compositor; the login's own desktop reads the marker once, so it knows it continues the
@@ -776,6 +778,7 @@ fn start(
         }
     );
     let mcp_server = options.mcp_server.clone();
+    let api_server = options.api_server.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
@@ -791,13 +794,13 @@ fn start(
     watch_the_loop(backend, &mut session);
     // The apps that are not Tilo's start behind a keeper, which this desktop attaches; after an
     // in-place restart the ones the run before left running are taken back.
-    if let Some(keeper) = tilo_app_launch::kept::find_keeper() {
-        let connector = session.compositor().client_connector();
-        launch.keep_behind(tilo_app_launch::kept::Keeping {
-            keeper,
-            root: tilo_app_launch::kept::root(),
-            desktop: std::sync::Arc::new(move |pid| connector.connect_for(pid)),
-        });
+    let connector = session.compositor().client_connector();
+    if let Some(keeping) =
+        tilo_app_launch::kept::Keeping::installed(std::sync::Arc::new(move |pid| {
+            connector.connect_for(pid)
+        }))
+    {
+        launch.keep_behind(keeping);
     }
     launch.take_up_kept(restarting);
     // The bus the session serves its desktop services on is the one its apps reach: a launch
@@ -822,6 +825,7 @@ fn start(
             agent: mcp_server.as_deref(),
             test_control: test_control.as_deref(),
             admin: admin_control.as_deref(),
+            api: api_server.as_deref(),
         },
     )
 }
@@ -835,6 +839,8 @@ struct Sockets<'a> {
     test_control: Option<&'a std::path::Path>,
     /// The owner's control socket (`TILO_ADMIN_CONTROL=`).
     admin: Option<&'a std::path::Path>,
+    /// Tilo's API for the person's own programs (`TILO_API_SOCKET=`).
+    api: Option<&'a std::path::Path>,
 }
 
 /// The session on `backend` 's displays, at `size` where the backend runs in one. `restart` is
@@ -964,6 +970,11 @@ fn run(
     // started.
     if let Some(agent) = sockets.agent.filter(|agent| agent.exists()) {
         println!("TILO_MCP_SERVER={}", agent.display());
+    }
+    // Where a program of this login answers as the person, against the workspaces this device
+    // holds: `tilolang repl` and `tilo` reach it there (`tilo_api::client::desktop_socket`).
+    if let Some(api) = sockets.api.filter(|api| api.exists()) {
+        println!("{}={}", tilo_api::client::DESKTOP_ENV, api.display());
     }
     // Where `tilo-control` drives it, in a development build started with one.
     if let Some(control) = sockets.test_control.filter(|control| control.exists()) {
@@ -1105,7 +1116,7 @@ fn device_options(
     config: tilo_session::SessionConfig,
 ) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, Options, Vpn,
+        AppSocket, Options, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
@@ -1120,10 +1131,14 @@ fn device_options(
         // The apps this session starts reach its services over the socket the launcher hands them;
         // a session inside another desktop's window serves them on a socket of its own, leaving
         // that desktop's alone.
-        action_plane: ActionPlane::for_machine(machine),
-        // A program of this login asks the person at the seat's MCP server to work in a workspace
+        app_socket: AppSocket::for_machine(machine),
+        // A program of this login asks the MCP server of the person at this device to work in a workspace
         // as an agent; a session in another desktop's window serves none.
         mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),
+        // The person's own programs reach this desktop through Tilo's API in the login's private
+        // directory: a nested session's is its own.
+        api_server: tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))
+            .map(|directory| directory.join(tilo_paths::login::API_SOCKET_FILE)),
         // A session in another desktop's window dims none of the window's machine: the display it
         // draws in is that desktop's.
         backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),
@@ -1230,7 +1245,7 @@ fn services(
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
-    services.push(Box::new(tilo_crash_records::CrashRecords::new()));
+    services.push(Box::new(tilo_crash_reports::CrashReports::new()));
     if !machine.is_owned() {
         return (services, following);
     }

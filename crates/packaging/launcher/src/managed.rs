@@ -383,7 +383,7 @@ impl ProcessIdentity {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = pid;
-            Err("kernel managed custody requires Linux".into())
+            Err("kernel managed ownership requires Linux".into())
         }
     }
     pub fn is_current(self) -> bool {
@@ -674,7 +674,7 @@ impl VerifiedManagedSupervisor {
     pub fn runtime_facts(&self) -> Result<ManagedRuntimeFacts, String> {
         self.record.runtime.revalidate()
     }
-    /// Check that `binding` and `process` are still this supervisor's live custody.
+    /// Check that `binding` and `process` are still this supervisor's live ownership.
     pub fn revalidate(
         &self,
         binding: &ManagedBinding,
@@ -698,7 +698,7 @@ impl VerifiedManagedSupervisor {
             .get(&process)
             .is_some_and(|record| Arc::ptr_eq(record, &self.record))
         {
-            return Err("managed process custody retired".into());
+            return Err("managed process ownership retired".into());
         }
         #[cfg(target_os = "linux")]
         if let Some(agent) = &self.record.agent {
@@ -1388,10 +1388,10 @@ impl VerifiedManagedProcess {
             channel_id: evidence.channel_id.clone(),
         })
     }
-    /// Managed process custody is Linux-only.
+    /// Managed process ownership is Linux-only.
     #[cfg(not(target_os = "linux"))]
     pub fn facts(&self) -> Result<ChannelProcessFacts, String> {
-        Err("managed process custody requires Linux".into())
+        Err("managed process ownership requires Linux".into())
     }
     pub fn binding(&self) -> &ManagedBinding {
         self.0.binding()
@@ -1399,7 +1399,7 @@ impl VerifiedManagedProcess {
     pub fn process(&self) -> ProcessIdentity {
         self.0.process()
     }
-    /// Check that `binding` and `process` are still this process's live custody.
+    /// Check that `binding` and `process` are still this process's live ownership.
     pub fn revalidate(
         &self,
         binding: &ManagedBinding,

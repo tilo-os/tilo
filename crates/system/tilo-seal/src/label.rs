@@ -3,11 +3,11 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Label {
-    RelayEnrollOffer,
-    RelayEnrollRequest,
-    /// A relay enrollment response (certificate, configuration) sealed to
+    ServerEnrollOffer,
+    ServerEnrollRequest,
+    /// A server enrollment response (certificate, configuration) sealed to
     /// the joining device.
-    RelayEnrollResponse,
+    ServerEnrollResponse,
     DeviceFabricSecret,
     IdentityBackup,
     MigrationPackage,
@@ -55,13 +55,19 @@ pub enum Label {
     /// One sender's media keys, sealed to the device that may publish with
     /// them and to no other.
     SenderMediaKeys,
+    /// A text a person's vault released for one site's page, sealed to the
+    /// device that holds that page's window and to no other.
+    ReleasedPageText,
+    /// The private half of a person's rollback floor key, sealed to their
+    /// secret-sync key.
+    RollbackFloorKey,
 }
 
 impl Label {
-    pub const ALL: [Self; 29] = [
-        Self::RelayEnrollOffer,
-        Self::RelayEnrollRequest,
-        Self::RelayEnrollResponse,
+    pub const ALL: [Self; 31] = [
+        Self::ServerEnrollOffer,
+        Self::ServerEnrollRequest,
+        Self::ServerEnrollResponse,
         Self::DeviceFabricSecret,
         Self::IdentityBackup,
         Self::MigrationPackage,
@@ -88,15 +94,17 @@ impl Label {
         Self::SealedInvitation,
         Self::DocumentContent,
         Self::SenderMediaKeys,
+        Self::ReleasedPageText,
+        Self::RollbackFloorKey,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
     /// these makes every existing ciphertext for that purpose unreadable.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::RelayEnrollOffer => "tilo-seal/v1/relay-enroll-offer",
-            Self::RelayEnrollRequest => "tilo-seal/v1/relay-enroll-request",
-            Self::RelayEnrollResponse => "tilo-seal/v1/relay-enroll-response",
+            Self::ServerEnrollOffer => "tilo-seal/v1/server-enroll-offer",
+            Self::ServerEnrollRequest => "tilo-seal/v1/server-enroll-request",
+            Self::ServerEnrollResponse => "tilo-seal/v1/server-enroll-response",
             Self::DeviceFabricSecret => "tilo-seal/v1/device-fabric-secret",
             Self::IdentityBackup => "tilo-seal/v1/identity-backup",
             Self::MigrationPackage => "tilo-seal/v1/migration-package",
@@ -123,6 +131,8 @@ impl Label {
             Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
             Self::DocumentContent => "tilo-seal/v1/record-content",
             Self::SenderMediaKeys => "tilo-seal/v1/sender-media-keys",
+            Self::ReleasedPageText => "tilo-seal/v1/released-page-text",
+            Self::RollbackFloorKey => "tilo-seal/v1/rollback-floor-key",
         }
     }
 

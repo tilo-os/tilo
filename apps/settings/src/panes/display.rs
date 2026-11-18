@@ -198,7 +198,7 @@ pub(crate) fn answer(
             .borrow()
             .host_command(&effect)?;
         let inspect = effect == DisplayEffect::InspectDisplayConfiguration;
-        // Only a delivered invocation can name broker-retained original custody.
+        // Only a delivered invocation can name broker-retained original ownership.
         // Physical UI effects have no remote invoker and use the certified local channel.
         let original = if ui::invocation_scope::current_invoker().is_some() {
             ui::collaboration::DisplayOrigin::Published(

@@ -415,11 +415,11 @@ impl Project {
     pub fn record_terminal_run(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The run, as the session marked it", flatten)] run: FinishedCommand,
+        #[param("The command, as the session marked it", flatten)] finished: FinishedCommand,
     ) -> Result<(), Refusal> {
         self.terminal_panel
             .get_or_insert_with(Terminal::default)
-            .record_command(cx, run)
+            .record_command(cx, finished)
     }
 }
 
@@ -688,7 +688,7 @@ pub fn text_digest(text: &str) -> String {
 /// A file's text: collaborative text, read only while a view shows it.
 ///
 /// Read from a document it holds no text until [`Project::load_texts`]
-/// reads it; a new value ([`Source::new`]) writes its text when the record
+/// reads it; a new value ([`Source::new`]) writes its text when the resource
 /// is stored. A value read from a document never writes back.
 #[derive(Clone, Debug, Default)]
 pub struct Source {

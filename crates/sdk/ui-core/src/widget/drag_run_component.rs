@@ -142,7 +142,7 @@ impl Described for DragRun {
                     .fire(Some(crate::component::Value::Text(key.to_owned())));
             }
         });
-        // A drop reports the item moved and its place, as a board's lane reports
+        // A drop reports the item moved and its place, as a board's list reports
         // a card and its place: the event carries `[value, at]`.
         let items = std::rc::Rc::new(run.item_ids().into_iter().collect::<Vec<_>>());
         run = run.on_drop(move |dropped: &DragDrop| {
@@ -220,7 +220,7 @@ impl Described for DragRun {
                     .fire(Some(crate::component::Value::Text(key.to_owned())));
             }
         })));
-        // A drop reports the item moved and its place, as a board's lane reports
+        // A drop reports the item moved and its place, as a board's list reports
         // a card and its place: the event carries `[value, at]`.
         let items = std::rc::Rc::new(self.item_ids().into_iter().collect::<Vec<_>>());
         self.replace_reporter(Some(Box::new(move |dropped: &DragDrop| {

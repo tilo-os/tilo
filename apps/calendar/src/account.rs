@@ -87,6 +87,12 @@ pub struct CalendarAccount {
     pub calendars: Vec<RemoteCalendar>,
     #[serde(default)]
     pub collapsed: bool,
+    /// Whether the account is connected for reading only: nothing is ever
+    /// written to its calendar server, by anybody. Every calendar of such an
+    /// account is kept as one that cannot be written, whatever its server
+    /// would let the person do there ([`Self::kept_calendars`]).
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl CalendarAccount {
@@ -101,6 +107,7 @@ impl CalendarAccount {
             config,
             calendars: Vec::new(),
             collapsed: false,
+            read_only: false,
         }
     }
 
@@ -114,6 +121,22 @@ impl CalendarAccount {
         }
     }
 
+    /// The account's calendars as they are kept and read: each one read
+    /// only where the account is connected for reading only. The account's
+    /// word decides, so a look at what its server holds, which answers what
+    /// that server would let the person do, lifts none of them.
+    #[must_use]
+    pub fn kept_calendars(&self) -> Vec<RemoteCalendar> {
+        self.calendars
+            .iter()
+            .cloned()
+            .map(|mut calendar| {
+                calendar.read_only |= self.read_only;
+                calendar
+            })
+            .collect()
+    }
+
     /// The opaque, secret-free config payload persisted into a shared
     /// [`StoredAccount`]. The `#[serde(skip)]` password keeps the credential
     /// out of this JSON; it lives only in the vault.
@@ -122,8 +145,9 @@ impl CalendarAccount {
         stored.display_name = self.label().to_string();
         stored.set_config(&StoredConfig {
             config: self.config.clone(),
-            calendars: self.calendars.clone(),
+            calendars: self.kept_calendars(),
             collapsed: self.collapsed,
+            read_only: self.read_only,
         });
         stored
     }
@@ -143,7 +167,7 @@ impl CalendarAccount {
         if config.display_name.is_empty() {
             config.display_name.clone_from(&stored.display_name);
         }
-        if let Some(secret) = vault.and_then(|vault| vault.get(&stored.id)) {
+        if let Some(secret) = vault.and_then(|vault| vault.get_for(stored)) {
             #[cfg(feature = "live")]
             {
                 config.password = tilo_dav::oauth::calendar_password(&secret);
@@ -164,12 +188,15 @@ impl CalendarAccount {
             config.oauth_account_id = Some(stored.id.to_string());
             config.password.clear();
         }
-        Some(Self {
+        let mut account = Self {
             id: stored.id.to_string(),
             config,
             calendars: payload.calendars,
             collapsed: payload.collapsed,
-        })
+            read_only: payload.read_only,
+        };
+        account.calendars = account.kept_calendars();
+        Some(account)
     }
 }
 
@@ -181,6 +208,10 @@ struct StoredConfig {
     calendars: Vec<RemoteCalendar>,
     #[serde(default)]
     collapsed: bool,
+    /// Whether the account is connected for reading only, beside its server
+    /// and its user name. An account that is written to says nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    read_only: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -289,10 +320,13 @@ impl AccountStore {
                     .as_object_mut()
                     .ok_or_else(|| std::io::Error::other("Nextcloud settings are not an object"))?;
                 if let Some(calendar) = config.get_mut("calendar") {
-                    calendar["calendars"] = serde_json::to_value(&acct.calendars)?;
+                    calendar["calendars"] = serde_json::to_value(acct.kept_calendars())?;
                     calendar["collapsed"] = acct.collapsed.into();
                 } else {
-                    config.insert("calendars".into(), serde_json::to_value(&acct.calendars)?);
+                    config.insert(
+                        "calendars".into(),
+                        serde_json::to_value(acct.kept_calendars())?,
+                    );
                     config.insert("collapsed".into(), acct.collapsed.into());
                 }
                 shared.upsert(stored);
@@ -303,8 +337,8 @@ impl AccountStore {
             if acct.config.password.is_empty() {
                 vault.remove(&id);
             } else {
-                vault.put(
-                    &id,
+                vault.put_for(
+                    &acct.to_stored(),
                     &accounts::Secret::password(acct.config.password.clone()),
                 );
             }
@@ -346,6 +380,7 @@ impl AccountStore {
                         },
                     ],
                     collapsed: false,
+                    read_only: false,
                 },
                 CalendarAccount {
                     id: "me@icloud.example".into(),
@@ -373,6 +408,7 @@ impl AccountStore {
                         },
                     ],
                     collapsed: false,
+                    read_only: false,
                 },
             ],
         }
@@ -419,7 +455,7 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        phase legacy_account_credentials_load_and_damaged_custody_is_reported;
+        phase legacy_account_credentials_load_and_damaged_ownership_is_reported;
         {
             let root = temp_root();
             let id = AccountId::from("legacy@example.test");
@@ -546,6 +582,110 @@ mod tests {
                 assert_eq!(visible, 3);
             }
         }
+
+        phase an_account_connected_for_reading_only_is_kept_so_with_every_calendar_of_it;
+        {
+            let root = temp_root();
+            let team = |read_only| RemoteCalendar {
+                id: "work/team".into(),
+                name: "Team".into(),
+                color: 1,
+                visible: true,
+                read_only,
+            };
+            let mut reading = CalendarAccount::new(cfg("Work", "a@x.example"));
+            reading.read_only = true;
+            // Its server would let the person write this calendar.
+            reading.calendars.push(team(false));
+            let mut writing = CalendarAccount::new(cfg("Home", "b@y.example"));
+            writing.calendars.push(team(false));
+            let mut store = AccountStore::new();
+            store.upsert(reading);
+            store.upsert(writing);
+            store.persist_in(&root).expect("persist");
+
+            // The account's settings say it, beside its server and its user name, and so
+            // does every calendar of it. An account that is written to says nothing new.
+            let reading_id = AccountId::from("a@x.example");
+            let shared = SharedStore::load_in(&root);
+            let kept = shared.get(&reading_id).expect("kept").config.clone();
+            assert_eq!(kept["read_only"], true, "{kept}");
+            assert_eq!(kept["calendars"][0]["read_only"], true, "{kept}");
+            let other = shared
+                .get(&AccountId::from("b@y.example"))
+                .expect("kept")
+                .config
+                .clone();
+            assert!(other.get("read_only").is_none(), "{other}");
+            assert_eq!(other["calendars"][0]["read_only"], false, "{other}");
+
+            // Read back, changed as a look at its server's calendars changes an account,
+            // and saved again: the account's word stays, and no calendar of it is lifted.
+            let mut back = AccountStore::load_from_settings_in(&root);
+            assert!(back.accounts[0].read_only && back.accounts[0].calendars[0].read_only);
+            assert!(!back.accounts[1].read_only && !back.accounts[1].calendars[0].read_only);
+            back.accounts[0].calendars = vec![team(false)];
+            back.accounts[0].collapsed = true;
+            back.persist_in(&root).expect("persist again");
+            let again = AccountStore::load_from_settings_in(&root);
+            assert!(again.accounts[0].read_only && again.accounts[0].collapsed);
+            assert!(again.accounts[0].calendars[0].read_only);
+            assert!(!again.accounts[1].read_only && !again.accounts[1].calendars[0].read_only);
+
+            // Settings in which a calendar lost its own mark and the account kept its word
+            // read as an account none of whose calendars can be written.
+            let mut shared = SharedStore::load_in(&root);
+            let mut stored = shared.get(&reading_id).expect("kept").clone();
+            stored.config["calendars"][0]["read_only"] = false.into();
+            shared.upsert(stored);
+            shared.save_in(&root).expect("save");
+            let read = AccountStore::load_from_settings_in(&root);
+            assert!(read.accounts[0].read_only && read.accounts[0].calendars[0].read_only);
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// A password is typed for the server its account names then. However
+    /// the account comes to name another server, the password is joined to
+    /// it no more: the next sync would send it there.
+    #[test]
+    fn a_password_typed_for_one_server_is_not_joined_to_an_account_that_names_another() {
+        let root = temp_root();
+        let mut typed = cfg("Work", "me@example.test");
+        typed.server_url = "https://caldav.example/dav/me/".into();
+        typed.password = "typed-for-caldav-example".into();
+        let mut store = AccountStore::new();
+        store.upsert(CalendarAccount::new(typed));
+        store.persist_in(&root).unwrap();
+        let joined = |address: &str| {
+            let mut shared = SharedStore::load_in(&root);
+            let mut account = shared.all()[0].clone();
+            account.config["server_url"] = address.into();
+            shared.upsert(account);
+            let vault = AccountCredentials::open_in(&root).unwrap();
+            AccountStore::from_store(&shared, &vault).accounts[0]
+                .config
+                .password
+                .clone()
+        };
+        assert_eq!(
+            joined("https://caldav.example/calendars/"),
+            "typed-for-caldav-example",
+            "another path on its server is still its server"
+        );
+        for elsewhere in [
+            "https://dav.elsewhere.example/dav/me/",
+            "https://caldav.example:8443/dav/me/",
+            "http://caldav.example/dav/me/",
+        ] {
+            assert_eq!(
+                joined(elsewhere),
+                "",
+                "the password typed for https://caldav.example was joined to an account at \
+                 {elsewhere}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn cfg(name: &str, user: &str) -> CalDavConfig {

@@ -674,8 +674,8 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             .get_rect()
             .x1; // docked rail width (86)
         let viewport_h = f64::from(VIEWPORT.1);
-        let lane_left = content_left;
-        let lane_right =
+        let gutter_left = content_left;
+        let gutter_right =
             f64::from(VIEWPORT.0) - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
 
         let aspect = player.width() / player.height();
@@ -690,20 +690,20 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
             player.height()
         );
-        let lane_center = f64::midpoint(lane_left, lane_right);
+        let gutter_center = f64::midpoint(gutter_left, gutter_right);
         assert!(
-            (player.center().x - lane_center).abs() < 3.0,
-            "player centered in the content lane (center.x={}, lane center {lane_center})",
+            (player.center().x - gutter_center).abs() < 3.0,
+            "player centered in the content gutter (center.x={}, gutter center {gutter_center})",
             player.center().x
         );
         assert!(
-            player.x1 <= lane_right + 0.5,
-            "player right edge {} must stay left of the scrollbar lane ({lane_right})",
+            player.x1 <= gutter_right + 0.5,
+            "player right edge {} must stay left of the scrollbar gutter ({gutter_right})",
             player.x1
         );
         assert!(
-            player.x0 >= lane_left - 0.5,
-            "player left edge {} stays right of the nav rail ({lane_left})",
+            player.x0 >= gutter_left - 0.5,
+            "player left edge {} stays right of the nav rail ({gutter_left})",
             player.x0
         );
     }
@@ -1137,7 +1137,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         assert_eq!(
             model.channel("UC_A").unwrap().avatar_url,
             avatar_url,
-            "reconcile stamps the same-name record's avatar onto the primary record",
+            "reconcile stamps the same-name resource's avatar onto the primary resource",
         );
 
         let app = TubeApp::sample()

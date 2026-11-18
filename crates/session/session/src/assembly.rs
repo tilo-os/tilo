@@ -5,7 +5,7 @@
 //!
 //! A role in this crate takes `&Shared` or `&mut Session` and reaches an effect only through a
 //! field that every host has; what only one host can do stays behind `cfg(target_os = "linux")`
-//! here until its concern has a seam in [`crate::platform`].
+//! here until its concern has a service in [`crate::platform`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,7 +49,7 @@ pub(crate) type Observed = RefCell<Vec<(usize, u64)>>;
 pub(crate) struct Shared {
     pub(crate) handle: DesktopHandle,
     #[cfg(target_os = "linux")]
-    pub(crate) desktop: crate::platform::surfaces::DesktopHost,
+    pub(crate) desktop: crate::platform::surfaces::ShellDesktop,
     /// The workspace's activity: the session's changes, and the records its
     /// apps keep.
     #[cfg(target_os = "linux")]
@@ -152,7 +152,7 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) window_shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// The windows whose apps hand over their page as a paint stream: what
-    /// this session publishes on the workspace's live plane while someone
+    /// this session publishes on the workspace's live session while someone
     /// shows them.
     #[cfg(target_os = "linux")]
     pub(crate) pages: Rc<RefCell<crate::page_track::PageTracks>>,
@@ -208,7 +208,7 @@ pub(crate) struct Shared {
     pub(crate) music: tilo_desktop::widgets::Music,
     /// The power menu, workspace settings, the questions the session asks
     /// for apps and services, and the one deleting a workspace asks, by
-    /// their seats.
+    /// their mounts.
     #[cfg(target_os = "linux")]
     pub(crate) power: Option<tilo_sheets::power::PowerState>,
     #[cfg(target_os = "linux")]
@@ -295,7 +295,7 @@ pub(crate) struct Shared {
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     #[cfg(target_os = "linux")]
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     /// The pictures the session shows, by workspace.
     #[cfg(target_os = "linux")]
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
@@ -330,7 +330,7 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) asker: crate::questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
-    /// takes part in the collaboration plane.
+    /// takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// This device's workspaces: what the session shows of them, and what a join takes in.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
@@ -399,7 +399,7 @@ pub(crate) struct Shared {
     /// The chrome above the windows as the session hosts it: where its
     /// bars stand on the displays, read back for the tests that drive them.
     #[cfg(target_os = "linux")]
-    pub(crate) chrome: Rc<RefCell<crate::platform::surfaces::WidgetHost>>,
+    pub(crate) chrome: Rc<RefCell<crate::platform::surfaces::WidgetSurface>>,
     /// Who is here, as the bar's faces open it: the roster it shows and
     /// where everyone else's pointer is.
     #[cfg(target_os = "linux")]
@@ -420,7 +420,7 @@ pub(crate) struct Shared {
     /// The controller the person last drove the desktop with: the guide
     /// leads with its buttons until a key of their own is pressed.
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed now are a controller's own, standing
+    /// Whether the keys being routed now are a controller's own,
     /// for its presses: those say nothing about a keyboard.
     pub(crate) controller_keys: Rc<Cell<bool>>,
     /// The questions about the person's apps: whether to add a program they
@@ -515,6 +515,9 @@ pub struct Session {
     /// to it, and a session that ends without doing so comes back locked.
     #[cfg(target_os = "linux")]
     pub(crate) recovery: Option<crate::recovery::Recovery>,
+    /// How the session ends ([`crate::Options::teardown`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) teardown: Box<dyn Fn() -> tilo_app_launch::Teardown>,
     /// The login's record that this desktop is usable, published once every
     /// output draws and the windows are being restored; it is removed with
     /// the session that wrote it.
@@ -598,15 +601,15 @@ pub struct Session {
     /// in one of the launcher's sandboxes.
     #[cfg(target_os = "linux")]
     pub(crate) launches: std::sync::Arc<crate::launches::Launches>,
-    /// The plane the apps it runs read and invoke its services on, while it
+    /// The app wire the apps it runs read and invoke its services on, while it
     /// serves one.
     #[cfg(target_os = "linux")]
-    pub(crate) action_plane: Option<crate::plane::Plane>,
+    pub(crate) app_wire: Option<crate::app_wire::AppWire>,
     /// The content its workspaces' records reference, and what a window it
     /// does not run is pictured into: the address is read by any caller of
     /// the action protocol.
     #[cfg(target_os = "linux")]
-    pub(crate) content: std::sync::Arc<crate::content::Plane>,
+    pub(crate) content: std::sync::Arc<crate::content::ContentService>,
     /// The control socket `tilo-control` drives this session over: the
     /// development and the device admin's sockets, when the launcher names
     /// them, and the one a program inside an app reaches.

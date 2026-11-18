@@ -1,7 +1,7 @@
 //! Pure data model for the chat workspace.
 //!
 //! These types are the in-memory projection of the Automerge document
-//! (see [`crate::record`]). The convergent state — channels, messages,
+//! (see [`crate::chat`]). The convergent state — channels, messages,
 //! reactions, edit history, threads, attachments — lives in the CRDT;
 //! this module is just the strongly-typed view the renderer consumes,
 //! plus the pure helper logic (message grouping, reply counts, reaction
@@ -208,7 +208,6 @@ pub struct User {
     pub id: MemberId,
     pub name: String,
     pub initials: String,
-    pub color_idx: usize,
     pub status: Presence,
     /// An automated agent acting in the workspace rather than a person. The
     /// roster draws the distinction; a mention carries it forward.
@@ -221,7 +220,7 @@ pub type Reaction = ui::tilo_resource::ReactionGroup;
 
 /// One prior version of a message body, captured when the author edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EditRecord {
+pub struct EditEntry {
     pub ts: i64,
     pub text: String,
 }
@@ -239,25 +238,25 @@ pub struct Message {
     /// written before bodies were rich, shown from `text` ([`Self::blocks`]).
     pub body: Vec<ui::widget::BlockContent>,
     pub edited: bool,
-    pub history: Vec<EditRecord>,
+    pub history: Vec<EditEntry>,
     /// `Some(parent_id)` when this message is a threaded reply.
     pub parent: Option<Id>,
     /// The run of the answered message it quotes, when it answers a span rather than the whole
     /// message: the words as they read, and where they stand in the answered message.
-    pub quoted: Option<crate::record::Quote>,
+    pub quoted: Option<crate::chat::Quote>,
     pub reactions: Vec<Reaction>,
     /// Who this message refers to, resolved at authoring time. Structure, not
     /// prose: a consumer asks the message who it mentions instead of scanning
     /// `text` for `@`. See [`crate::mention`].
     pub mentions: Vec<crate::mention::Mention>,
-    /// What it carries besides its words: the records and parts of records
+    /// What it carries besides its words: the resources and parts of resources
     /// it was written by sharing, the words it quotes, and the files it
     /// posts, each in the terms of the app that keeps it.
     pub attachments: Vec<tilo_reference::Attached>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
     pub pinned: bool,
-    /// An agent's record of what it did with the message this one replies to.
+    /// An agent's resource of what it did with the message this one replies to.
     ///
     /// Present only on a reply an agent authored when it took a summons, and
     /// updated in place by that agent as the work proceeds. `None` on every
@@ -272,11 +271,13 @@ pub struct Message {
     /// The name the author went by where it wrote, for an author that is not a person.
     pub author_name: Option<String>,
     /// The window it shares live, and whether it still does.
-    pub share: Option<crate::record::WindowShare>,
+    pub share: Option<crate::chat::WindowShare>,
     /// What it asks one person, and where that question stands.
     pub question: Option<crate::question::Question>,
     /// What started the turn it asks for, when a person did not type it.
     pub cause: Option<crate::cause::Cause>,
+    /// The view it carries, written in the app language.
+    pub view: Option<crate::message_view::View>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
@@ -300,7 +301,7 @@ impl Message {
         self.parent.is_none()
     }
 
-    /// The first thing it carries that lives in an app: the record and the
+    /// The first thing it carries that lives in an app: the resource and the
     /// part of it. What its share card names and its chip opens.
     pub fn resource(&self) -> Option<&tilo_reference::ResourceAt> {
         self.attachments.iter().find_map(|attached| match attached {
@@ -319,7 +320,7 @@ impl Message {
             .filter(|attached| attached.blob().is_some())
     }
 
-    /// Whether any of it shows as a chip: a record, or words quoted from one.
+    /// Whether any of it shows as a chip: a resource, or words quoted from one.
     pub fn carries_a_chip(&self) -> bool {
         self.attachments
             .iter()
@@ -345,7 +346,7 @@ impl Message {
 /// It says what happened and when, never that anything is happening *now*.
 /// Liveness is a different question with a different answer — whether the
 /// agent is still in the workspace, which presence answers — because a process that
-/// dies mid-instruction cannot retract a record, and a record that claimed to
+/// dies mid-instruction cannot retract a resource, and a resource that claimed to
 /// be live would go on claiming it forever.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWork {
@@ -355,7 +356,7 @@ pub struct AgentWork {
     pub state: AgentWorkState,
     /// Epoch seconds at which the agent entered `state`.
     pub since: i64,
-    /// The run's working record of a failure, for whoever debugs it later: the
+    /// The run's working resource of a failure, for whoever debugs it later: the
     /// transport's error, the partial answer, the provider's exposed reasoning.
     /// Never the reply's words, and shown only behind a disclosure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -462,7 +463,7 @@ impl AgentStepOutcome {
 impl AgentWork {
     /// What an agent reports of its work, refusing a state or outcome
     /// it does not name.
-    pub fn from_update(update: &crate::record::WorkUpdate) -> Result<Self, String> {
+    pub fn from_update(update: &crate::chat::WorkUpdate) -> Result<Self, String> {
         let text = |value: &Option<String>| value.clone().unwrap_or_default();
         let state = match update.state.as_str() {
             "taken" => AgentWorkState::Taken,
@@ -541,7 +542,7 @@ impl AgentWork {
         }
     }
 
-    /// The same record carrying `trace`.
+    /// The same resource carrying `trace`.
     #[must_use]
     pub fn with_trace(mut self, trace: Vec<AgentStep>) -> Self {
         self.trace = trace;
@@ -563,7 +564,7 @@ impl AgentWork {
         }
     }
 
-    /// Whether the agent has stopped. A finished record is the end of the
+    /// Whether the agent has stopped. A finished resource is the end of the
     /// story; an unfinished one is the agent's last word on it, which is not
     /// the same as a promise that more is coming.
     pub fn finished(&self) -> bool {
@@ -740,6 +741,7 @@ mod tests {
             share: None,
             question: None,
             cause: None,
+            view: None,
             attempts: 0,
             sending: false,
         }
@@ -860,7 +862,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod agent_record_tests {
+mod agent_resource_tests {
     use super::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
 
     fn step(resource: &str, label: &str, outcome: AgentStepOutcome) -> AgentStep {
@@ -868,27 +870,27 @@ mod agent_record_tests {
     }
 
     tilo_test_env::scenario! {
-        fn agent_work_records_keep_their_wire_shape_across_versions;
+        fn agent_work_resources_keep_their_wire_shape_across_versions;
 
-        phase a_record_without_a_trace_still_parses;
-        // A record written by an older agent — one without it — still
-        // reads. The whole record travels as a single JSON scalar in the shared
-        // document, and a record that will not parse is deliberately read as no
+        phase a_resource_without_a_trace_still_parses;
+        // A resource written by an older agent — one without it — still
+        // reads. The whole resource travels as a single JSON scalar in the shared
+        // document, and a resource that will not parse is deliberately read as no
         // claim about the agent at all; adding a field must not be what causes
         // that.
         {
             let old = r#"{"state":{"state":"taken"},"since":1000}"#;
-            let work: AgentWork = serde_json::from_str(old).expect("an older record still reads");
+            let work: AgentWork = serde_json::from_str(old).expect("an older resource still reads");
             assert_eq!(work.state, AgentWorkState::Taken);
             assert_eq!(work.since, 1000);
             assert!(work.trace.is_empty());
             // Pinned as a literal, not round-tripped from `to_string`: a test that
             // generated the input with today's code would go on passing after a
-            // change that stopped yesterday's records from reading at all.
+            // change that stopped yesterday's resources from reading at all.
             assert_eq!(
                 serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).unwrap(),
                 old,
-                "the wire shape of a plain record changed"
+                "the wire shape of a plain resource changed"
             );
         }
 

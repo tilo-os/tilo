@@ -1,5 +1,6 @@
 //! The snippet library's model: what is stored, and the pure queries the window asks of it.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use ui::tilo_resource::{self, Atom, Collection, Counter, Id, Model, Refusal, Set};
@@ -7,10 +8,12 @@ use ui::tilo_resource::{self, Atom, Collection, Counter, Id, Model, Refusal, Set
 pub type SnippetId = Id;
 
 /// The syntax a snippet body is written in.
-#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Language {
     #[default]
     #[model(rename = "text")]
+    #[serde(rename = "text")]
     PlainText,
     Shell,
     Rust,
@@ -18,6 +21,7 @@ pub enum Language {
     Git,
     Python,
     #[model(rename = "javascript")]
+    #[serde(rename = "javascript")]
     JavaScript,
     Json,
     Yaml,

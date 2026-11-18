@@ -21,6 +21,7 @@ use tilo_doc::model::Region;
 use tilo_doc::snapshot::BlockView;
 use ui::PresenceCtx;
 use ui::paint::with_alpha;
+use ui::permissions::MemberId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -1162,66 +1163,12 @@ impl Editor {
                 presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
             }
         }
-        let now = ui::time::now();
-        for interaction in presence.interactions_for_resource("word-processor.document", now) {
-            let ranges = match &interaction.anchor {
-                tilo_actions::InteractionAnchor::Objects { ids } => ids
-                    .iter()
-                    .filter_map(|id| {
-                        self.blocks
-                            .iter()
-                            .find(|block| block.id == *id)
-                            .map(|block| (id.as_str(), 0, block.text.chars().count()))
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let mut rects = self
-                .semantic_text_rects(&interaction.anchor, ctf, canvas_clip)
-                .unwrap_or_default();
-            for (block, start, end) in ranges {
-                let Some(l) = self.laid.iter().find(|laid| laid.id == block) else {
-                    continue;
-                };
-                let Some((_, layout)) = self.layout_cache.get(block) else {
-                    continue;
-                };
-                let (start, end) = (l.layout_byte(start), l.layout_byte(end));
-                rects.extend(layout.selection_rects(start, end).into_iter().map(
-                    |(x0, y0, x1, y1)| {
-                        Rect::new(
-                            l.text_x + f64::from(x0),
-                            l.y_top + f64::from(y0),
-                            l.text_x + f64::from(x1),
-                            l.y_top + f64::from(y1),
-                        )
-                    },
-                ));
-            }
-            if rects.is_empty() {
-                continue;
-            }
-            let Some(user) = interaction.actor.by.member_id() else {
-                continue;
-            };
-            for rect in &rects {
-                presence.draw_peer_selection(scene, theme, ctf, user, *rect);
-            }
-            if let Some(bounds) = rects.first().copied() {
-                let label = presence.display_name(user);
-                presence.draw_peer_outline_labeled(
-                    &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
-                    user,
-                    &label,
-                    bounds,
-                    3.0,
-                );
-            }
-        }
+        let writing =
+            self.draw_written_text(scene, ctf, canvas_clip, text_renderer, theme, presence);
         // A name pill is window chrome: page zoom moves it, but does not magnify it.
         let page_to_window = self.zoom.transform(Affine::IDENTITY);
         let window = ctf * page_to_window.inverse();
-        for c in &remote_carets {
+        for c in remote_carets.iter().filter(|c| !writing.contains(&c.user)) {
             presence.draw_peer_caret_labeled(
                 scene,
                 theme,
@@ -1233,5 +1180,89 @@ impl Editor {
             );
         }
         scene.pop_layer();
+    }
+
+    /// What each action wrote into the body's text, drawn where it stands by the shared presence
+    /// path ([`PresenceCtx::draw_writes_in`]): its characters washed in the writer's colour with
+    /// its caret and what it did there while it arrives, and an agent's last write keeping a
+    /// quiet wash after that until the person edits that block or reaches into the write.
+    fn draw_written_text(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        canvas_clip: Rect,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Vec<MemberId> {
+        let content_clip = ctf.inverse().transform_rect_bbox(canvas_clip);
+        let mut writing = Vec::new();
+        for l in &self.laid {
+            let Some((_, layout)) = self.layout_cache.get(&l.id) else {
+                continue;
+            };
+            // A block split over pages draws once per slice: keep each slice's bands in its own
+            // band, and the caret only on the slice it stands on.
+            let band = l
+                .clip
+                .map_or(content_clip, |clip| clip.intersect(content_clip));
+            if band.width() <= 0.0 || band.height() <= 0.0 {
+                continue;
+            }
+            let edited = self
+                .edited_at
+                .as_ref()
+                .filter(|(block, _)| *block == l.id)
+                .map(|(_, at)| *at);
+            let selected = self
+                .lifecycle
+                .focused
+                .then(|| self.selection_bytes_for(&l.id, &l.text))
+                .flatten()
+                .or_else(|| {
+                    (self.lifecycle.focused && self.inner.caret.block == l.id).then(|| {
+                        let byte = l.caret_byte(self.inner.caret.offset);
+                        (byte, byte)
+                    })
+                });
+            let ly = l.layout_y;
+            writing.extend(presence.draw_writes_in(
+                &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
+                (Some("body"), &l.id, &l.text),
+                (edited, selected),
+                &mut |_, _, start, end| {
+                    let (start, end) = (l.shown(start), l.shown(end));
+                    let rects = layout
+                        .selection_rects(start, end)
+                        .into_iter()
+                        .map(|(x0, y0, x1, y1)| {
+                            Rect::new(
+                                l.text_x + f64::from(x0),
+                                ly + f64::from(y0),
+                                l.text_x + f64::from(x1),
+                                ly + f64::from(y1),
+                            )
+                        })
+                        .filter_map(|rect| {
+                            let visible = rect.intersect(band);
+                            (visible.width() > 0.0 && visible.height() > 0.0).then_some(visible)
+                        })
+                        .collect();
+                    let (cx, cy, ch) = layout.caret_geometry(end);
+                    let caret = Rect::new(
+                        l.text_x + f64::from(cx),
+                        ly + f64::from(cy),
+                        l.text_x + f64::from(cx) + CARET_WIDTH,
+                        ly + f64::from(cy) + f64::from(ch),
+                    );
+                    (
+                        rects,
+                        band.contains(caret.center())
+                            .then(|| ui::presence::LabeledCaret::within(caret, l.y_top)),
+                    )
+                },
+            ));
+        }
+        writing
     }
 }

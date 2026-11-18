@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
-description = "A device's workspace engine: its admitted replicas, their durable owner record, enrollment, outgoing custody and sessions with hosts."
+description = "A device's workspace engine: its admitted replicas, their durable owner record, enrollment, outgoing ownership and sessions with hosts."
 
 [features]
 # Fixtures and internals the desktop session's own owner tests assert on.
@@ -54,10 +54,10 @@ tilo-automation = { path = "../automation" }
 registry-types = { path = "../../packaging/registry-types" }
 # Document frames are sealed and opened with a route's channel content keys.
 key-group = { path = "../key-group" }
-# The relay's workspace a peer syncs through, and a frame's retained entry id.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The server's workspace a peer syncs through, and a frame's retained entry id.
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 parking_lot.workspace = true
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
@@ -80,8 +80,8 @@ tilo-content = { path = "../../system/content" }
 # The random id of each enrollment challenge request.
 getrandom.workspace = true
 rand_core.workspace = true
-# The device custody an enrollment presents to the issuing host.
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The device identity an enrollment presents to the issuing host.
+tilo-identity = { path = "../../runtime/tilo-identity" }
 
 [dev-dependencies]
 # The closure-built action host a test dispatcher is.
@@ -97,8 +97,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # Where that record API keeps a device's records in the test: in memory.
 durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true
-# The governed-workspace acceptance test runs against a real relay.
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The governed-workspace acceptance test runs against a real server.
+tilo-server = { path = "../../server/tilo-server" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../dev/test-env" }
@@ -113,7 +113,7 @@ tilo-desktop-surface = { path = "../../session/desktop-surface" }
 
 # The workspace engine's integration tests: one binary, its files included as
 # modules by `tests/it.rs` (a file per binary linked the whole crate once
-# each), gated on the fixtures its joins are answered with.
+# each), depending on the fixtures its joins are answered with.
 [[test]]
 name = "it"
 path = "tests/it.rs"

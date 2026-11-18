@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tilo_actions::remote::mcp_server::{self, GrantRef};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
@@ -32,7 +32,7 @@ pub(crate) use crate::shell::Revoking;
 
 /// The MCP server as the page's desktop asks it.
 struct PageApi {
-    host: SessionActions,
+    provider: SessionActions,
     /// Where agents connect over MCP, as the page names it.
     endpoint: Option<String>,
     revoked: Revoked,
@@ -42,13 +42,13 @@ struct PageApi {
 
 impl PageApi {
     fn new(
-        host: SessionActions,
+        provider: SessionActions,
         endpoint: Option<String>,
         revoked: Revoked,
         woken: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            host,
+            provider,
             endpoint: endpoint.filter(|endpoint| !endpoint.is_empty()),
             revoked,
             woken,
@@ -56,7 +56,7 @@ impl PageApi {
     }
 
     /// Hand the page the grant `request` takes back.
-    fn revoke(&self, request: &InvokeRequest) -> Result<InvocationReceipt, ActionHostError> {
+    fn revoke(&self, request: &InvokeRequest) -> Result<InvocationReceipt, ActionCallError> {
         let InvokeArgument::Json(argument) = &request.argument else {
             return Err(invalid("a revoke names its grant"));
         };
@@ -136,18 +136,18 @@ pub(crate) fn serve(
     revoked
 }
 
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.to_owned(),
     }
 }
 
-impl ActionHost for PageApi {
+impl ActionProvider for PageApi {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage {
             exhausted: true,
             ..CataloguePage::default()
@@ -158,24 +158,24 @@ impl ActionHost for PageApi {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if request.target == mcp_server::target(mcp_server::REVOKE) {
             return Pending::ready(self.revoke(&request));
         }
-        self.host.invoke(caller, request)
+        self.provider.invoke(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.host
+        self.provider
             .observe(caller, id)
             .map(|state| self.with_endpoint(state))
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.host.next_change(caller, id)
+        self.provider.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        self.host.cancel(caller, id)
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.provider.cancel(caller, id)
     }
 }

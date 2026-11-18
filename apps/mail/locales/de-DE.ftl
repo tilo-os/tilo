@@ -280,11 +280,14 @@ mail-effects-draft-reply = Antwort entwerfen
 mail-effects-open-attachment = Anhang öffnen
 mail-effects-content = Inhalt abrufen
 mail-effects-export-content = Inhalt exportieren
+mail-messages = Nachrichten
+mail-messages-mark-read = Als gelesen markieren
+mail-messages-trash = In den Papierkorb
+mail-messages-move-messages = Nachrichten verschieben
+mail-messages-ingest = Abgerufene Nachrichten übernehmen
+mail-messages-server-applied = Server hat die Änderung übernommen
+mail-messages-deliver-message = Nachricht zustellen
 mail-mailbox = E-Mail
-mail-mailbox-mark-read = Als gelesen markieren
-mail-mailbox-trash = In den Papierkorb
-mail-mailbox-move-messages = Nachrichten verschieben
-mail-mailbox-ingest = Abgerufene Nachrichten übernehmen
 mail-mailbox-server-applied = Server hat die Änderung übernommen
 mail-mailbox-start-draft-body = Entwurfstext beginnen
 mail-mailbox-create-draft = Neuer Entwurf
@@ -292,7 +295,6 @@ mail-mailbox-show-draft = Entwurf anzeigen
 mail-mailbox-attach = An Entwurf anhängen
 mail-mailbox-send-message = Nachricht senden
 mail-mailbox-check-mail = Auf neue Mail prüfen
-mail-mailbox-deliver-message = Nachricht zustellen
 mail-mailbox-draft-message = Nachricht entwerfen
 mail-trusted-senders = Vertrauenswürdige Absender
 mail-trusted-senders-trust = Diesem Absender vertrauen
@@ -300,7 +302,7 @@ mail-trusted-senders-distrust = Diesem Absender nicht mehr vertrauen
 
 ## What the app is called in a window and in the launcher
 mail-app-title = Mail
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 mail-copies = Mail auf deinen Geräten
 mail-copies-keep-copies = Abgerufene Mails behalten
 mail-copies-forget-copies = Abgerufene Mails vergessen

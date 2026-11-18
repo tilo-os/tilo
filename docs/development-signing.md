@@ -54,7 +54,7 @@ an installable OS image, or hardware compatibility.
 `os/dev/development-trust.py` prepares and validates a public-only bundle from
 existing development public keys and a certificate. It does not generate keys,
 sign images, inject image trust, or enroll firmware certificates. Private key
-generation and custody remain outside this helper and outside the checkout.
+generation and ownership remain outside this helper and outside the checkout.
 
 ```sh
 python3 os/dev/development-trust.py create \
@@ -505,4 +505,4 @@ trusts tilo/tilo `main` and `v*` tags:
    placeholders to invent beforehand.
 7. Complete installer/media, update/rollback and physical hardware acceptance.
    Confirm a recoverable backup before any destructive installation step.
-   Development signature tests do not remove any of these release gates.
+   Development signature tests do not remove any of these release checks.

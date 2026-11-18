@@ -656,9 +656,16 @@ impl Widget for BannerBody {
             self.geometry(text, theme, width)
         });
         let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        // Its geometry is the banner's own; the page places its parts in the window.
+        let at = vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0 + dy);
+        let x = g.text.x + at.x;
+        // Its icon as painted, where it stands; its buttons are the banner's own widgets.
+        if !g.icon.is_zero_area() {
+            cx.part("icon", "BannerPart", g.icon + at).painted(0);
+        }
         let on_well = theme.on_ground(well);
         let text_width = f64::from(g.text_width);
-        let mut y = g.text.y + dy;
+        let mut y = g.text.y + at.y;
         if let Some(source) = content.source_line() {
             let look = TextLook::new(
                 source.to_owned(),
@@ -668,7 +675,7 @@ impl Widget for BannerBody {
             cx.words(
                 "source",
                 "p",
-                Rect::new(g.text.x, y, g.text.x + text_width, y + g.source_h),
+                Rect::new(x, y, x + text_width, y + g.source_h),
                 look,
             );
             y += g.source_h;
@@ -681,7 +688,7 @@ impl Widget for BannerBody {
         cx.words(
             "title",
             "p",
-            Rect::new(g.text.x, y, g.text.x + text_width, y + g.title_h),
+            Rect::new(x, y, x + text_width, y + g.title_h),
             look,
         );
         y += g.title_h;
@@ -694,7 +701,7 @@ impl Widget for BannerBody {
             cx.words(
                 "message",
                 "p",
-                Rect::new(g.text.x, y, g.text.x + text_width, self.rect.y1 - dy),
+                Rect::new(x, y, x + text_width, self.rect.y1 - dy),
                 look,
             );
         }
@@ -1286,6 +1293,16 @@ impl Widget for Banner {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("aside");
         cx.children();
+        // Its buttons stand where it lays them, over its body.
+        for (key, button) in [
+            ("secondary", &self.secondary),
+            ("action", &self.action),
+            ("dismiss", &self.dismiss),
+        ] {
+            if let Some(button) = button {
+                cx.part_widget(key, button);
+            }
+        }
     }
 
     crate::described!();
@@ -1661,14 +1678,14 @@ mod tests;
 /// The dismiss control is a part of the banner: what the view bound to it is carried out here,
 /// where the banner's controls answer for it.
 impl crate::widget::controls::ActionControls for Banner {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.dismiss_press.install_custody(domain, attachment);
+        self.dismiss_press.attach(domain, attachment);
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

@@ -8,9 +8,9 @@
 //! ([`tilo_action_broker::document_content`]). The workspace's host keeps the
 //! record with the workspace's other records and hands it whole to a device
 //! that joins, and it carries content requests between the members. A device
-//! taking part needs nothing else: no ticket, no peer addresses, no sync plane
+//! taking part needs nothing else: no ticket, no peer addresses, no sync protocol
 //! of its own. That is why a joined workspace's files take this path rather
-//! than the device-to-device sync plane a person's own mounts use
+//! than the device-to-device sync protocol a person's own mounts use
 //! ([`tilo_fs::sync`]): a member of a hosted workspace reaches the others only
 //! through the host, and the record path is the one the host already serves.
 //!

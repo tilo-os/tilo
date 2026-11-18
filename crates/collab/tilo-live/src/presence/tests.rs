@@ -48,7 +48,7 @@ tilo_test_env::scenario! {
         board.hear(
             [1; 32],
             &said(Payload::Status {
-                text: "  Wiring the plane  ".into(),
+                text: "  Wiring the live session  ".into(),
                 automatic: true,
             }),
             3.0,
@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             member.status,
             Some(Status {
-                text: "Wiring the plane".into(),
+                text: "Wiring the live session".into(),
                 automatic: true,
             }),
             "what the device read off their steps stays told apart from their own words"
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
         assert_eq!(json["activity"], "Reading");
     }
 
-    phase this_seats_own_row_is_what_this_device_said_here;
+    phase this_devices_own_row_is_what_this_device_said_here;
     {
         let mut board = board();
         let own = Own {
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
         let own = Own {
             label: "Quinten".into(),
             status: Some(Status {
-                text: "Wiring the plane".into(),
+                text: "Wiring the live session".into(),
                 automatic: false,
             }),
             ..Own::default()
@@ -512,8 +512,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_member_whose_presence_ended_is_taken_down_at_once;
-    // The plane says a member's presence ended with their session (an empty body,
-    // `plane::Heard::left`): the board takes them down at once, without waiting
+    // The live session says a member's presence ended with their session (an empty body,
+    // `live_session::Heard::left`): the board takes them down at once, without waiting
     // out their silence, and a later word of theirs is a new stay.
     {
         let mut board = board();

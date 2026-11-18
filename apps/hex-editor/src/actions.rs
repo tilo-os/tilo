@@ -1,5 +1,5 @@
 //! The editor's effects: work outside the buffer (open and save) and the window's
-//! views (search, go to offset). The byte edits are the record's.
+//! views (search, go to offset). The byte edits are the resource's.
 //!
 //! The cursor, selection, scroll position, insert mode and hex-or-ASCII focus stay
 //! in the view.

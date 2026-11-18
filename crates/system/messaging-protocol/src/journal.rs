@@ -68,7 +68,7 @@ impl Drop for Entry {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Ledger {
+struct Log {
     version: u32,
     owner: Owner,
     operations: BTreeMap<String, Entry>,
@@ -78,7 +78,7 @@ struct Ledger {
 pub struct EncryptedJournal {
     path: PathBuf,
     key: VaultKey,
-    ledger: Ledger,
+    log: Log,
     usable: bool,
     _lock: FileLock,
 }
@@ -95,7 +95,7 @@ impl Owner {
 
 impl EncryptedJournal {
     /// Open under an already provisioned OS-keychain key. This runtime path
-    /// never creates a key, migrates a local key or weakens custody when locked.
+    /// never creates a key, migrates a local key or weakens ownership when locked.
     /// Provisioning belongs to the separately authorized linking workflow.
     pub fn open_system(root: &Path, owner: &Owner) -> Result<Self, JournalError> {
         let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
@@ -105,7 +105,7 @@ impl EncryptedJournal {
         Self::open_existing_in(root, owner, &store)
     }
 
-    /// Host-injected custody, for hosts supplying their own existing store.
+    /// Host-injected ownership, for hosts supplying their own existing store.
     /// No missing key is created, including for a new journal directory.
     pub fn open_existing_in(
         root: &Path,
@@ -124,7 +124,7 @@ impl EncryptedJournal {
 
     /// The frozen authority bound to this journal, never inferred from labels.
     pub fn owner(&self) -> &Owner {
-        &self.ledger.owner
+        &self.log.owner
     }
 
     /// Open a host-selected private directory under its supplied key/authority.
@@ -145,18 +145,17 @@ impl EncryptedJournal {
             .map_err(|_| JournalError::Unavailable)?;
         let lock = FileLock::try_exclusive(lock).map_err(|_| JournalError::Unavailable)?;
         let path = root.join(secret_vault::VAULT_FILE);
-        let original = read_ledger(&path, &key)?;
+        let original = read_log(&path, &key)?;
         let mut changed = original.is_none();
-        let mut ledger = original.unwrap_or_else(|| Ledger {
+        let mut log = original.unwrap_or_else(|| Log {
             version: 1,
             owner: owner.clone(),
             operations: BTreeMap::new(),
         });
-        if ledger.version != 1 || &ledger.owner != owner || ledger.operations.len() > MAX_OPERATIONS
-        {
+        if log.version != 1 || &log.owner != owner || log.operations.len() > MAX_OPERATIONS {
             return Err(JournalError::Unavailable);
         }
-        for entry in ledger.operations.values_mut() {
+        for entry in log.operations.values_mut() {
             if entry.route.service() != owner.service
                 || entry.route.account() != owner.account
                 || entry.payload.len() > crate::signal::MAX_FRAME_BYTES
@@ -176,7 +175,7 @@ impl EncryptedJournal {
         let mut journal = Self {
             path,
             key,
-            ledger,
+            log,
             usable: true,
             _lock: lock,
         };
@@ -187,7 +186,7 @@ impl EncryptedJournal {
     }
 
     pub fn status(&self, operation: &str) -> Option<Status> {
-        self.ledger
+        self.log
             .operations
             .get(operation)
             .map(|entry| entry.status.clone())
@@ -200,7 +199,7 @@ impl EncryptedJournal {
         timestamps: &[u64],
     ) -> Result<Vec<String>, JournalError> {
         if !self.usable
-            || self.ledger.owner.service != Service::Signal
+            || self.log.owner.service != Service::Signal
             || timestamps.is_empty()
             || timestamps.len() > 512
             || timestamps.contains(&0)
@@ -209,7 +208,7 @@ impl EncryptedJournal {
         }
         let mut matched: BTreeMap<u64, Option<String>> =
             timestamps.iter().map(|time| (*time, None)).collect();
-        for (operation, entry) in &self.ledger.operations {
+        for (operation, entry) in &self.log.operations {
             if &entry.route != route {
                 continue;
             }
@@ -235,13 +234,13 @@ impl EncryptedJournal {
         if !self.usable {
             return None;
         }
-        self.ledger.operations.get(operation)?.recipient_evidence
+        self.log.operations.get(operation)?.recipient_evidence
     }
 
     pub fn check_observation(&self, operation: &str, route: &Route) -> Result<(), JournalError> {
         if !self.usable
             || self
-                .ledger
+                .log
                 .operations
                 .get(operation)
                 .is_none_or(|entry| &entry.route != route)
@@ -261,7 +260,7 @@ impl EncryptedJournal {
     ) -> Result<(), JournalError> {
         self.check_observation(operation, route)?;
         let entry = self
-            .ledger
+            .log
             .operations
             .get_mut(operation)
             .ok_or(JournalError::Unavailable)?;
@@ -277,7 +276,7 @@ impl EncryptedJournal {
 
     /// Exact frozen bytes for host reconciliation, never a new submission.
     pub fn payload(&self, operation: &str) -> Option<Zeroizing<Vec<u8>>> {
-        self.ledger
+        self.log
             .operations
             .get(operation)
             .map(|entry| Zeroizing::new(entry.payload.as_bytes().to_vec()))
@@ -292,9 +291,8 @@ impl EncryptedJournal {
     }
 
     fn write_snapshot(&self) -> Result<(), JournalError> {
-        let encoded = Zeroizing::new(
-            serde_json::to_vec(&self.ledger).map_err(|_| JournalError::Unavailable)?,
-        );
+        let encoded =
+            Zeroizing::new(serde_json::to_vec(&self.log).map_err(|_| JournalError::Unavailable)?);
         if encoded.len() > MAX_JOURNAL_BYTES {
             return Err(JournalError::Unavailable);
         }
@@ -315,20 +313,20 @@ impl SendJournal for EncryptedJournal {
     ) -> Result<(), JournalError> {
         if !self.usable
             || !crate::identifier(operation)
-            || route.account() != self.ledger.owner.account
-            || route.service() != self.ledger.owner.service
+            || route.account() != self.log.owner.account
+            || route.service() != self.log.owner.service
             || payload.len() > crate::signal::MAX_FRAME_BYTES
-            || self.ledger.operations.len() >= MAX_OPERATIONS
+            || self.log.operations.len() >= MAX_OPERATIONS
         {
             return Err(JournalError::Unavailable);
         }
-        if self.ledger.operations.contains_key(operation) {
+        if self.log.operations.contains_key(operation) {
             return Err(JournalError::AlreadyReserved);
         }
         let payload = std::str::from_utf8(payload)
             .map_err(|_| JournalError::Unavailable)?
             .to_owned();
-        self.ledger.operations.insert(
+        self.log.operations.insert(
             operation.into(),
             Entry {
                 route: route.clone(),
@@ -345,12 +343,12 @@ impl SendJournal for EncryptedJournal {
             return Err(JournalError::Unavailable);
         }
         if let Completion::Acknowledged(reference) | Completion::Submitted(reference) = &result
-            && !reference.valid_for(self.ledger.owner.service)
+            && !reference.valid_for(self.log.owner.service)
         {
             return Err(JournalError::Unavailable);
         }
         let entry = self
-            .ledger
+            .log
             .operations
             .get_mut(operation)
             .ok_or(JournalError::Unavailable)?;
@@ -366,7 +364,7 @@ impl SendJournal for EncryptedJournal {
     }
 }
 
-fn read_ledger(path: &Path, key: &VaultKey) -> Result<Option<Ledger>, JournalError> {
+fn read_log(path: &Path, key: &VaultKey) -> Result<Option<Log>, JournalError> {
     let file = match tilo_files::native::private::open_owned_for_read(
         path,
         (MAX_JOURNAL_BYTES + 1024) as u64,
@@ -484,7 +482,7 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
             journal.begin("op", &route(), b"private").unwrap();
-            let mut legacy = serde_json::to_value(&journal.ledger).unwrap();
+            let mut legacy = serde_json::to_value(&journal.log).unwrap();
             legacy["owner"].as_object_mut().unwrap().remove("actor");
             drop(journal);
             let encoded = Zeroizing::new(serde_json::to_vec(&legacy).unwrap());
@@ -531,7 +529,7 @@ mod tests {
             );
         }
 
-        phase corrupt_ciphertext_never_resets_the_send_ledger;
+        phase corrupt_ciphertext_never_resets_the_send_log;
         {
             let root = tempfile::tempdir().unwrap();
             let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
@@ -562,7 +560,7 @@ mod tests {
             assert_eq!(journal.status("op"), Some(Status::Started));
         }
 
-        phase existing_custody_is_lookup_only_and_missing_keys_do_not_reset_journals;
+        phase existing_ownership_is_lookup_only_and_missing_keys_do_not_reset_journals;
         {
             let root = tempfile::tempdir().unwrap();
             let store = tilo_secrets::SecretStore::memory("so.tilo.messaging-broker");
@@ -585,7 +583,7 @@ mod tests {
             assert!(!root.path().join(secret_vault::KEY_FILE).exists());
         }
 
-        phase system_runtime_refuses_local_or_memory_custody_and_wrong_store_scope;
+        phase system_runtime_refuses_local_or_memory_ownership_and_wrong_store_scope;
         {
             let root = tempfile::tempdir().unwrap();
             let _scope = tilo_secrets::scope_thread(tilo_secrets::memory_backend());

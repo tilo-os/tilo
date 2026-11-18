@@ -100,7 +100,7 @@ mod tests {
         fn a_windows_menu_reads_its_share_as_it_stands;
 
         phase a_session_in_no_workspace_reads_no_share_for_a_menu;
-        // A session with no collaboration plane takes part in no workspace: it reads no share for a
+        // A session with no peer network takes part in no workspace: it reads no share for a
         // window's menu, so no window offers one.
         {
             let shares = Rc::new(RefCell::new(WindowShares::default()));

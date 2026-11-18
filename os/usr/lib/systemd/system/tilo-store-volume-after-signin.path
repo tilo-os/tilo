@@ -18,7 +18,7 @@ Documentation=file:///usr/libexec/tilo-store-volume
 #     a device where no account has proved itself yet.
 #
 # The preparation finds the person, mounts and prepares the store, and (as
-# fs.service is already running) restarts it onto the native data plane. The
+# fs.service is already running) restarts it onto the native backend. The
 # paths stay armed, so another account proving itself — after a join, or on a
 # shared device — prepares it again.
 ConditionKernelCommandLine=!tilo.install

@@ -35,7 +35,7 @@ fn open_readonly_without_symlinks(_path: &Path) -> std::io::Result<File> {
     ))
 }
 
-/// Duplicate an already-held exclusive transaction lock, preserving parent custody.
+/// Duplicate an already-held exclusive transaction lock, preserving parent ownership.
 /// Closing the returned descriptor never explicitly unlocks its open description.
 ///
 /// # Errors

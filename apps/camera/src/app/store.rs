@@ -18,8 +18,8 @@ use ui::widget::Element;
 
 use super::{CameraApp, ChooserOpen};
 use crate::actions::{CameraEffect, CameraResourceCtx};
+use crate::camera::Camera;
 use crate::model::{CameraDevicePreferences, CaptureMode, CapturePreferences};
-use crate::record::Record;
 use crate::resource::ShotClock;
 
 /// What the view asked of the window, done when it next looks.
@@ -38,9 +38,9 @@ pub(crate) struct Store {
     pub(super) shown: CameraResourceCtx,
     lists_devices: bool,
     scan_import_pending: Rc<Cell<bool>>,
-    document: Option<Live<Record>>,
+    document: Option<Live<Camera>>,
     presented: Option<(u64, u64)>,
-    jobs: Option<Jobs<Record>>,
+    jobs: Option<Jobs<Camera>>,
 }
 
 /// The [`Store`] as the window and the view share it.
@@ -62,7 +62,7 @@ impl Store {
     }
 
     /// Switching between photo and video stops nothing: while a video
-    /// records, the switch is unavailable.
+    /// resources, the switch is unavailable.
     fn statuses(&self) -> Vec<EffectStatus> {
         if !self.shown.recording {
             return Vec::new();
@@ -78,7 +78,7 @@ impl Store {
 /// Hand one [`CameraEffect`], invoked by a control, the palette, an agent or
 /// a script, to the window. A job's caller hears back once its work
 /// settles.
-fn answer(store: &Shared, effect: CameraEffect, cx: &mut EffectCx<Record>) -> EffectAnswer {
+fn answer(store: &Shared, effect: CameraEffect, cx: &mut EffectCx<Camera>) -> EffectAnswer {
     let job = match &effect {
         CameraEffect::UseMode { .. } if store.borrow().shown.recording => {
             return Err("Stop recording to switch modes".into());
@@ -116,7 +116,7 @@ fn answer(store: &Shared, effect: CameraEffect, cx: &mut EffectCx<Record>) -> Ef
 
 /// Ask for an image with the file chooser and have the window scan the
 /// code in it. The caller hears back once the scan settles.
-fn import_image(store: &Shared, cx: &mut EffectCx<Record>) -> EffectAnswer {
+fn import_image(store: &Shared, cx: &mut EffectCx<Camera>) -> EffectAnswer {
     let pending = Rc::clone(&store.borrow().scan_import_pending);
     let Some(open) = ChooserOpen::open(&pending) else {
         return Err("An image picker is already open".into());
@@ -167,7 +167,7 @@ impl CameraApp {
                 .and_then(|document| document.changed_since(&mut store.presented))
         };
         if let Some(record) = changed {
-            self.present_record(&record);
+            self.present_resource(&record);
         }
     }
 
@@ -234,7 +234,7 @@ impl CameraApp {
             return refuse(reply, "Capture a page before exporting");
         }
         let Some(jobs) = self.state().jobs.clone() else {
-            return refuse(reply, "Camera is not open on a record");
+            return refuse(reply, "Camera is not open on a resource");
         };
         let Some(open) = ChooserOpen::open(&self.document_export_pending) else {
             return refuse(reply, "The save location chooser is already open");
@@ -266,11 +266,11 @@ impl CameraApp {
     }
 }
 
-/// The view of the camera: `app` follows the record, and the view hands it
+/// The view of the camera: `app` follows the resource, and the view hands it
 /// the effects and publishes its rows. A live window follows the person's
 /// and this device's capture preferences; a capture shows its scenario's;
 /// a past version the defaults.
-pub(crate) fn window(cx: &ViewCx<Record>, mut app: CameraApp) -> Element {
+pub(crate) fn window(cx: &ViewCx<Camera>, mut app: CameraApp) -> Element {
     match cx.mode() {
         RunMode::Capture => {
             if let Some(clock) = cx.fixture::<ShotClock>() {

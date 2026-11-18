@@ -1,4 +1,4 @@
-//! Guided Desktop package setup retains prepared custody until native delivery completes.
+//! Guided Desktop package setup retains prepared ownership until native delivery completes.
 use super::*;
 use crate::setup::journey::prepared_media::PreparedMedia;
 
@@ -18,7 +18,7 @@ impl SetupApp {
         app.desktop_only = true;
         app.experience = Some(Experience::Desktop);
         app.desktop_flow
-            .require_account_protocol(prepared.account_custody_protocol());
+            .require_account_protocol(prepared.account_credentials_protocol());
         app.desktop_flow
             .require_service_session_protocol(prepared.service_session_protocol());
         app.guided_desktop = Some(DesktopPreparation {
@@ -69,8 +69,11 @@ impl SetupApp {
             return false;
         }
         let expected_consumer = match self.desktop_flow.selection().and_then(|selection| {
-            (preparation.prepared.account_custody_protocol().is_some())
-                .then(|| selection.release.account_custody.clone())
+            (preparation
+                .prepared
+                .account_credentials_protocol()
+                .is_some())
+            .then(|| selection.release.account_credentials.clone())
         }) {
             Some(Some(proof)) => Some(proof),
             Some(None) => {
@@ -212,7 +215,7 @@ mod tests {
             &root.join("identity"),
             "Chosen person",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         PreparedMedia::prepare(

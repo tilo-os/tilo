@@ -1,4 +1,4 @@
-//! Browser receipt bridge to protected native staging custody.
+//! Browser receipt bridge to protected native staging ownership.
 use super::RecordStore;
 use imager_backend::setup::browser_transfer::Expectation;
 use std::io;

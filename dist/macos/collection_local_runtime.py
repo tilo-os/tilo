@@ -337,7 +337,7 @@ def stage(out, plan, guard, resume=False):
         records = inspect_payload(work, plan)
         write_receipt(work, plan, 'local-runtime', {'images': records,
                       'original_images': 41, 'adapter_images': 2,
-                      'signing_and_runtime_validation': 'pending explicit interactive gate',
+                      'signing_and_runtime_validation': 'pending explicit interactive check',
                       'not_an_app_or_installer': True})
 
 

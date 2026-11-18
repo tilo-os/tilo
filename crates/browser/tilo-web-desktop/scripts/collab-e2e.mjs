@@ -1,5 +1,5 @@
 // Collaboration end to end: native macOS apps, headless Chrome pages and a
-// host agent in one workspace of a local `tilo-relay dev` host.
+// host agent in one workspace of a local `tilo-server dev` host.
 //
 // For each app it starts the native shell in the workspace (TILO_COLLAB_HOST), two
 // Chrome pages (two certified devices), later a third, and an agent spawned
@@ -23,13 +23,13 @@
 // runs this needs Accessibility permission (System Settings > Privacy).
 //
 // usage: node collab-e2e.mjs --bundle DIR [--apps notes,sheets,scratchpad]
-//          [--out DIR] [--relay BIN] [--bin-dir DIR] [--no-agent] [--build]
+//          [--out DIR] [--server BIN] [--bin-dir DIR] [--no-agent] [--build]
 //   --bundle   build.sh --bundle desktop output (with --build and no
 //              --bundle: built into OUT/bundle with --profile dev)
-//   --relay    tilo-relay with features web,agents (default: target/release,
+//   --server    tilo-server with features web,agents (default: target/release,
 //              else target/debug)
 //   --bin-dir  tilo-runtime-mcp and the app binaries (default: target/debug)
-//   --build    cargo build the relay, runtime and apps first
+//   --build    cargo build the server, runtime and apps first
 // Exits 1 when a check fails. macOS only.
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, openSync} from 'node:fs';
@@ -156,7 +156,7 @@ const cargo = args => {
   if (result.status !== 0) throw new Error(`cargo ${args.join(' ')} failed`);
 };
 if (flag('--build')) {
-  cargo(['build', '-p', 'tilo-relay', '--bin', 'tilo-relay', '--features', 'web,agents']);
+  cargo(['build', '-p', 'tilo-server', '--bin', 'tilo-server', '--features', 'web,agents']);
   cargo(['build', '-p', 'tilo-runtime', '--bin', 'tilo-runtime-mcp', ...appNames.flatMap(a => ['-p', APPS[a].bin, '--bin', APPS[a].bin])]);
 }
 let bundle = option('--bundle');
@@ -167,9 +167,9 @@ if (!bundle && flag('--build')) {
 }
 if (!bundle || !existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'))) throw new Error('--bundle DIR (build.sh --bundle desktop output) is required');
 bundle = resolve(bundle);
-const relayBin = resolve(option('--relay', [join(repo, 'target/release/tilo-relay'), join(repo, 'target/debug/tilo-relay')].find(existsSync) ?? 'tilo-relay'));
+const serverBin = resolve(option('--server', [join(repo, 'target/release/tilo-server'), join(repo, 'target/debug/tilo-server')].find(existsSync) ?? 'tilo-server'));
 const runtimeBin = join(binDir, 'tilo-runtime-mcp');
-for (const bin of [relayBin, runtimeBin, ...appNames.map(a => join(binDir, APPS[a].bin))]) {
+for (const bin of [serverBin, runtimeBin, ...appNames.map(a => join(binDir, APPS[a].bin))]) {
   if (!existsSync(bin)) throw new Error(`missing ${bin}; build it or pass --build`);
 }
 
@@ -186,7 +186,7 @@ if (/"CGSSessionScreenIsLocked"\s*=\s*Yes/.test(execFileSync('ioreg', ['-n', 'Ro
 // ---------------------------------------------------------------------------
 // The host, the native runtime daemon and the page server.
 
-const summary = {started: new Date().toISOString(), repo, revision: '', out, bundle, relay: relayBin, binDir, apps: {}};
+const summary = {started: new Date().toISOString(), repo, revision: '', out, bundle, server: serverBin, binDir, apps: {}};
 try {
   summary.revision = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {cwd: repo, encoding: 'utf8'}).trim() +
     (execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {cwd: repo, encoding: 'utf8'}).trim() ? ' (dirty)' : '');
@@ -211,12 +211,12 @@ for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
 try {
   const q = new URLSearchParams(location.search);
   const {connectPeer} = await import('./peer.mjs');
-  const {openDeviceCustody, idbStorage} = await import('./device-custody.mjs');
+  const {openDeviceKey, idbStorage} = await import('./device-key.mjs');
   const profile = q.get('profile');
-  const custody = await openDeviceCustody({profile, storage: idbStorage()});
+  const deviceKey = await openDeviceKey({profile, storage: idbStorage()});
   const peer = globalThis.peer = await connectPeer({
     origin: q.get('origin'), userPublicKey: q.get('user'), label: q.get('label'), workspace: q.get('workspace'),
-    custody, profile, displayName: q.get('label'),
+    deviceKey, profile, displayName: q.get('label'),
   });
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {apps: [q.get('app')]});
   globalThis.harnessReady = true;
@@ -235,13 +235,13 @@ const pages = createServer((request, response) => {
 }).listen(staticPort, '127.0.0.1');
 const pagesOrigin = `http://127.0.0.1:${staticPort}`;
 
-const relayPort = await freePort();
-const relayState = join(out, 'relay-state');
-const relay = detached('relay', relayBin, ['dev', '--state', relayState, '--web', `127.0.0.1:${relayPort}`,
+const serverPort = await freePort();
+const serverState = join(out, 'server-state');
+const server = detached('server', serverBin, ['dev', '--state', serverState, '--web', `127.0.0.1:${serverPort}`,
   '--allowed-origin', pagesOrigin, ...(withAgent ? ['--agents', '--agent-model', 'scripted'] : [])],
-{env: {TILO_RELAY_LOG: process.env.COLLAB_E2E_RELAY_LOG ?? 'tilo_relay=info,warn'}});
-const hostLine = await until(async () => read(relay.stdout).split('\n').find(l => l.startsWith('{')), 120000, 200);
-if (!hostLine) throw new Error(`the relay did not start: ${read(relay.stderr).slice(-600)}`);
+{env: {TILO_SERVER_LOG: process.env.COLLAB_E2E_SERVER_LOG ?? 'tilo_server=info,warn'}});
+const hostLine = await until(async () => read(server.stdout).split('\n').find(l => l.startsWith('{')), 120000, 200);
+if (!hostLine) throw new Error(`the server did not start: ${read(server.stderr).slice(-600)}`);
 const host = JSON.parse(hostLine);
 summary.host = {origin: host.origin, userPublicKey: host.userPublicKey, agents: withAgent};
 log('host', host.origin, 'pages', pagesOrigin);
@@ -258,7 +258,7 @@ const pageArgs = [pinnedCertificates([{...hostCertificate, sha256: host.certific
 const NATIVE_LABEL = 'Mac native';
 async function startNative(name) {
   const profile = join(out, name, 'native-profile');
-  const seed = readFileSync(join(relayState, 'dev-identity.bin')).subarray(0, 32);
+  const seed = readFileSync(join(serverState, 'dev-identity.bin')).subarray(0, 32);
   const identity = join(profile, 'config', 'tilo', 'identity');
   mkdirSync(identity, {recursive: true, mode: 0o700});
   for (const dir of [profile, join(profile, 'config'), join(profile, 'config', 'tilo'), identity]) chmodSync(dir, 0o700);
@@ -642,7 +642,7 @@ async function runApp(name) {
 
     // 9. Page B reloads: same device, still a member.
     await phase('reloaded page edits reach browser and native', async () => {
-      const certifications = () => (read(relay.stdout).match(/certifying a browser device=Browser-B\b/g) ?? []).length;
+      const certifications = () => (read(server.stdout).match(/certifying a browser device=Browser-B\b/g) ?? []).length;
       const before = certifications();
       const reloaded = Date.now();
       await ready(b, () => b.tab.reload());

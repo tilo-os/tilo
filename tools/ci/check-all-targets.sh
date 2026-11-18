@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Type-check every target of the selected packages, the feature-gated ones too.
+# Type-check every target of the selected packages, the feature-dependent ones too.
 #
 #   check-all-targets.sh [-p NAME ...] [--receipt PATH]
 #

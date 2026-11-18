@@ -1,11 +1,11 @@
-//! A hosted window over a workspace whose tasks span more than one chunk of its record: every
+//! A hosted window over a workspace whose tasks span more than one chunk of its document: every
 //! task is listed, in order, and a chunk that reaches this device after the window opened shows
 //! in it without the window being opened again.
 
 use super::*;
 
 use super::cost::{number_of, own, seeded_tasks};
-use tilolang_host::testing::delivered;
+use tilolang_process::testing::delivered;
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 
 /// Tasks enough to fill the first chunk the list's run is kept in and spill into a second.
@@ -13,7 +13,7 @@ fn spanning() -> usize {
     usize::try_from(chunk::ITEMS).expect("items a chunk holds") + 40
 }
 
-/// The chunks the list's tasks are kept in, the first first: the record's own chunk holds none.
+/// The chunks the list's tasks are kept in, the first first: the document's own chunk holds none.
 fn task_chunks(chunks: &Chunks) -> Vec<ChunkNo> {
     chunks
         .numbers()
@@ -120,8 +120,8 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
     let [first, away] = task_chunks(whole)[..] else {
         panic!("the tasks span two chunks");
     };
-    // This device holds the record and the first chunk of tasks; the second is a peer's.
-    let mut here = Chunks::of(whole.first().expect("the record").clone());
+    // This device holds the document and the first chunk of tasks; the second is a peer's.
+    let mut here = Chunks::of(whole.first().expect("the document").clone());
     here.insert(first, whole.mirror(first).expect("the first chunk").clone());
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_launched(&route, here, None);
@@ -142,7 +142,7 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
     let chunk_route = RouteSpec::document(
         route.app_id.clone(),
         route.cluster_id,
-        chunk::record_id(route.document.as_deref().unwrap_or(""), away),
+        chunk::document_id(route.document.as_deref().unwrap_or(""), away),
     );
     let snapshot = DocumentMutation::Snapshot(
         whole
@@ -165,7 +165,7 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
 
 /// The workspace whose tasks span two chunks is seeded once for both windows: the one handed
 /// both chunks opens a copy of its own, and the one a chunk reaches later holds its own copies
-/// of the record and the first chunk and is sent a snapshot of the second.
+/// of the document and the first chunk and is sent a snapshot of the second.
 #[test]
 fn tasks_that_span_two_chunks_are_listed_whole_with_both_here_and_when_one_arrives_later() {
     let n = spanning();
@@ -185,7 +185,7 @@ fn a_chunk_that_arrives_after_the_live_window_opened_is_caught_up_off_its_frame(
     let [first, away] = task_chunks(&whole)[..] else {
         panic!("the tasks span two chunks");
     };
-    let mut here = Chunks::of(whole.first().expect("the record").clone());
+    let mut here = Chunks::of(whole.first().expect("the document").clone());
     here.insert(first, whole.mirror(first).expect("the first chunk").clone());
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::brokered(&route, TASKS, "ada", "en-US", here, None, Window::live);
@@ -193,7 +193,7 @@ fn a_chunk_that_arrives_after_the_live_window_opened_is_caught_up_off_its_frame(
     let chunk_route = RouteSpec::document(
         route.app_id.clone(),
         route.cluster_id,
-        chunk::record_id(route.document.as_deref().unwrap_or(""), away),
+        chunk::document_id(route.document.as_deref().unwrap_or(""), away),
     );
     let snapshot = DocumentMutation::Snapshot(
         whole

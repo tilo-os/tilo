@@ -5,15 +5,15 @@ The native service core is `service::Gateway`. It accepts a host-authenticated
 adapter and command line remain available as `tilo-model-gateway`.
 
 `http_service::HttpService` is a small HTTP/1 adapter with an injected
-`SessionAuthorizer`. A relay or another authenticated host can mount `handle`
-or pass an accepted TLS stream to `serve_io`; no relay/node runtime is required.
+`SessionAuthorizer`. A server or another authenticated host can mount `handle`
+or pass an accepted TLS stream to `serve_io`; no server/node runtime is required.
 The authorizer must validate session audience and revocation, and origin/CSRF
 when using cookies. Settings identity alone is insufficient for credential
 status/set/remove: the session must explicitly grant credential management.
 There is no credential-read operation.
 
 The service is single-user: caller roles are capabilities, not tenant identities.
-Run separate processes with isolated configuration, storage and credential custody
+Run separate processes with isolated configuration, storage and credential storage
 for different users, and route each authenticated session only to its user's
 instance. Do not put grants for unrelated users in one session directory.
 
@@ -105,7 +105,7 @@ not rolled back by disconnect/revocation.
 
 Native launcher-bound clients and browser host-injected clients share this
 service core. Chat's standalone bootstrap installs `Models::from_launcher()`;
-component mounts capture `HostContext::models()` independently. Agent consumes
+component mounts capture `ProcessContext::models()` independently. Agent consumes
 the portable stream and publishes negotiated, authenticated task presentation,
 so Chat readers need no provider connection. The explicit Chat assistant controls
 use a separate prose-only capability; Agent's action-capable loop uses the
@@ -152,7 +152,7 @@ when the transport proves no request was sent, or when the provider explicitly
 refuses an unprocessed request. Unknown outcomes and interrupted generation are
 not automatically replayed.
 
-Signed-in providers carry no key: the gateway asks account custody for a
+Signed-in providers carry no key: the gateway asks account credentials for a
 current access token for the profile's own grant (`sign_in_grant_id`),
 refreshed there when due, and keeps it no longer than its expiry. A Google
 sign-in adds the billing project; a ChatGPT sign-in speaks Responses to the

@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
 
         // Reopening finds it under the new id; a different file later found at
         // the same path names the same former record, and the first successor
-        // keeps custody of it.
+        // keeps owning it.
         let mut owners = ResourceOwners::new(root);
         let store = owners.open(package, workspace).unwrap();
         assert!(matches!(
@@ -346,7 +346,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn a_record_has_one_route_and_the_custody_key_is_none() {
+fn a_record_has_one_route_and_the_ownership_key_is_none() {
     let primary = DocumentId::package_primary();
     assert_eq!(primary.route(), "");
     assert_eq!(DocumentId::from_route(""), Some(primary.clone()));

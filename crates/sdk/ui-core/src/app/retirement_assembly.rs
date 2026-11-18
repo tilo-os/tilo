@@ -1,4 +1,4 @@
-//! Inner ownership during callback-bearing App assembly. No gate is held here.
+//! Inner ownership during callback-bearing App assembly. No check is held here.
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 use super::native_runner;
 use super::{
@@ -9,12 +9,12 @@ use super::{
 };
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
 
-pub(super) struct ComponentAssemblyCustody {
+pub(super) struct ComponentAssemblyOwnership {
     pub component: Option<crate::application::AppComponent>,
     pub scope: Option<crate::wake::WakeScope>,
     pub retirement: Option<RootRetirementPrelude>,
 }
-impl Drop for ComponentAssemblyCustody {
+impl Drop for ComponentAssemblyOwnership {
     fn drop(&mut self) {
         if let Some(retirement) = &self.retirement {
             retirement.retire();
@@ -22,7 +22,7 @@ impl Drop for ComponentAssemblyCustody {
     }
 }
 
-pub(super) struct AppAssemblyCustody {
+pub(super) struct AppAssemblyOwnership {
     pub retirement: Option<RootRetirementPrelude>,
     pub root: Option<Box<dyn Widget>>,
     pub wake: Option<crate::wake::WakeScope>,
@@ -32,26 +32,26 @@ pub(super) struct AppAssemblyCustody {
     pub configured_theme: Option<Theme>,
     #[expect(
         clippy::option_option,
-        reason = "the outer Option is the custody slot; the inner one is the host's optional screen reader"
+        reason = "the outer Option is the ownership slot; the inner one is the host's optional screen reader"
     )]
     pub screen_reader: Option<Option<crate::screen_reader::ScreenReader>>,
     pub values: AppAssemblyValues,
 }
-impl AppAssemblyCustody {
+impl AppAssemblyOwnership {
     pub fn retire(&self) {
         if let Some(retirement) = &self.retirement {
             retirement.retire();
         }
     }
 }
-impl Drop for AppAssemblyCustody {
+impl Drop for AppAssemblyOwnership {
     fn drop(&mut self) {
         self.retire();
     }
 }
 
 // Each evaluated value enters this owned staging area immediately. A later
-// initializer panic cannot drop these values before AppAssemblyCustody::drop.
+// initializer panic cannot drop these values before AppAssemblyOwnership::drop.
 // Every field is an empty-or-staged slot for the App field of the same name,
 // so an optional App field is staged as `Option<Option<T>>`.
 #[expect(
@@ -137,7 +137,7 @@ impl Drop for ValidationRetirement<'_> {
     clippy::unreachable,
     reason = "both callers stage the root, state and inputs before assembly; a missing slot is a construction bug that retires first"
 )]
-pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
+pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
     let _entry = assembly.wake.as_ref().map_or_else(
         crate::wake::WakeScope::enter_detached,
         crate::wake::WakeScope::enter,
@@ -153,12 +153,12 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         inputs
             .control_domain
             .clone()
-            .unwrap_or_else(crate::control_custody::ControlDomain::outer),
+            .unwrap_or_else(crate::control_domain::ControlDomain::outer),
     );
-    crate::widget::controls::install_control_custody(
+    crate::widget::controls::attach_controls(
         root.as_mut(),
         control,
-        crate::control_custody::CustodyAttachment::Initial,
+        crate::control_domain::DomainAttachment::Initial,
     );
     control.finish_initial_installation();
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]

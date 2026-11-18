@@ -107,7 +107,7 @@ fn revision_of(heads: &[automerge::ChangeHash]) -> [u8; 32] {
     crate::committed_document_revision(heads)
 }
 
-/// The revision a record standing at the sorted `heads` reads at, as a read names it.
+/// The revision a record at the sorted `heads` reads at, as a read names it.
 #[must_use]
 pub fn revision_of_heads(heads: &[[u8; 32]]) -> [u8; 32] {
     revision_of_sorted(heads)

@@ -6,7 +6,7 @@ use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
 use std::rc::Weak;
 
-/// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until they choose, then whether
+/// The person's answer to [`AppProcessIntent::AllowHostShell`]: `None` until they choose, then whether
 /// the device's own shell was allowed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostShellAllow {
@@ -15,7 +15,7 @@ pub struct HostShellAllow {
 
 /// A typed, device-local request from app content to shell chrome.
 #[derive(Debug, Clone)]
-pub enum AppHostIntent {
+pub enum AppProcessIntent {
     ShowWorkspaceActivity {
         resource_id: String,
         version_id: Option<[u8; 16]>,
@@ -33,7 +33,7 @@ pub enum AppHostIntent {
     },
 }
 
-impl PartialEq for AppHostIntent {
+impl PartialEq for AppProcessIntent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -163,12 +163,12 @@ pub trait AppWidget: Widget {
     }
 
     /// Drain a one-shot request for shell-owned chrome.
-    fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<AppProcessIntent> {
         None
     }
 
     /// The component to show in this one's place, built now: what a root shown before its record
-    /// ([`crate::application::HostContext::resource_opening`]) answers once the record is had.
+    /// ([`crate::application::ProcessContext::resource_opening`]) answers once the record is had.
     fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
@@ -231,12 +231,12 @@ pub struct WindowPublication {
 }
 
 mod component_adapter {
-    use super::{AppHostIntent, AppWidget, IconDescriptor, Widget};
+    use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::DrawChild;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
-        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
+        AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
         CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
         FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
         Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
@@ -253,8 +253,8 @@ mod component_adapter {
         save_status_shown: bool,
         /// What the root's last pass read, as it stood once the pass ended: a pass that would read the same
         /// is skipped ([`crate::component_inputs`]).
-        witness: Option<crate::component_inputs::Witness>,
-        /// The root asked for its next sync whatever its witness says: it was laid out anew, its update or
+        observation: Option<crate::component_inputs::Observation>,
+        /// The root asked for its next sync whatever its observation says: it was laid out anew, its update or
         /// a deadline changed it.
         owes_sync: bool,
         /// A sync ran since the last settle: what it took up is written by the next settle.
@@ -273,7 +273,7 @@ mod component_adapter {
                 component,
                 relayout: false,
                 save_status_shown: false,
-                witness: None,
+                observation: None,
                 owes_sync: true,
                 owes_settle: true,
                 laid_out: None,
@@ -290,17 +290,17 @@ mod component_adapter {
                 document: binding
                     .read_document(outer, |document, _| crate::doc::settle_mark(document))
                     .ok(),
-                standing: Self::standing(&self.component, &binding),
+                inputs: Self::inputs(&self.component, &binding),
             }
         }
 
-        fn standing(
+        fn inputs(
             component: &AppComponent,
             binding: &crate::bound_dispatch::CallbackBinding,
-        ) -> crate::component_inputs::Standing {
-            crate::component_inputs::Standing {
-                owner: crate::bound_dispatch::OwnerStanding {
-                    permissions: binding.permissions.borrow().directory_witness(),
+        ) -> crate::component_inputs::PassInputs {
+            crate::component_inputs::PassInputs {
+                owner: crate::bound_dispatch::OwnerInputs {
+                    permissions: binding.permissions.borrow().directory_observation(),
                     save: component.record_save_now().ok_or_else(String::new),
                 },
                 locale: crate::i18n::I18nManager::revision(),
@@ -313,7 +313,7 @@ mod component_adapter {
             if self.owes_sync || crate::component_inputs::forced() {
                 return false;
             }
-            let Some(witness) = &self.witness else {
+            let Some(observation) = &self.observation else {
                 return false;
             };
             let binding = self.component.callback_binding();
@@ -331,7 +331,7 @@ mod component_adapter {
                 return false;
             }
             drop(_entry);
-            let moved = witness.moved(&self.inputs_now(outer));
+            let moved = observation.moved(&self.inputs_now(outer));
             if let Some(why) = moved {
                 drop(tilo_resource::profiling::Phase::start(why));
             }
@@ -415,7 +415,7 @@ mod component_adapter {
             // Work off the frame that lands while the check's own pass runs
             // (a save the store finished) wakes the component for its next
             // frame: what the pass shows of it was not owed yet. So does a
-            // language that moves while it runs: the witness the pass ends
+            // language that moves while it runs: the observation the pass ends
             // with is the language it read, so the next pass reads it again.
             let crossed = self.component.callback_binding().lifetime.crossed();
             let locale = crate::i18n::I18nManager::revision();
@@ -427,7 +427,7 @@ mod component_adapter {
                 });
                 ((before, shown(self)), reads)
             });
-            self.witness_pass(state, reads);
+            self.observation_pass(state, reads);
             let consistent = before == after
                 || self.component.callback_binding().lifetime.crossed() != crossed
                 || crate::i18n::I18nManager::revision() != locale;
@@ -472,9 +472,9 @@ mod component_adapter {
         }
 
         /// Note what the pass that just ran read: `reads` outside the component, and what stands now.
-        fn witness_pass(&mut self, outer: &AutoCommit, reads: crate::component_inputs::Reads) {
+        fn observation_pass(&mut self, outer: &AutoCommit, reads: crate::component_inputs::Reads) {
             if self.in_root(|root| Self::busy(root)).unwrap_or(true) {
-                self.witness = None;
+                self.observation = None;
                 return;
             }
             let now = self.inputs_now(outer);
@@ -482,7 +482,7 @@ mod component_adapter {
                 Some(update) => reads.join(update),
                 None => reads,
             };
-            let reads = match self.witness.take() {
+            let reads = match self.observation.take() {
                 Some(previous) if self.owes_settle => previous.reads.join(reads),
                 Some(previous) => reads.carry(previous.reads),
                 None => reads,
@@ -490,19 +490,19 @@ mod component_adapter {
             // The language that stands now: a pass words loaded while it ran
             // read in two languages, and proves nothing (see `PassReading`),
             // so the next pass shows them in the one that stands.
-            let locale = now.standing.locale;
-            self.witness = match (now.revision, now.document) {
-                (Some(revision), Some(document)) => Some(crate::component_inputs::Witness {
+            let locale = now.inputs.locale;
+            self.observation = match (now.revision, now.document) {
+                (Some(revision), Some(document)) => Some(crate::component_inputs::Observation {
                     revision,
                     document,
-                    standing: crate::component_inputs::Standing {
-                        owner: crate::bound_dispatch::OwnerStanding {
+                    inputs: crate::component_inputs::PassInputs {
+                        owner: crate::bound_dispatch::OwnerInputs {
                             save: self
                                 .component
                                 .sampled_resource_save()
                                 .cloned()
                                 .ok_or_else(String::new),
-                            ..now.standing.owner
+                            ..now.inputs.owner
                         },
                         locale,
                     },
@@ -699,9 +699,9 @@ mod component_adapter {
                 .flatten()
         }
 
-        fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-            self.in_root_mut(|root| root.take_capture_studio_request())
-                .flatten()
+        fn take_pip_area_request(&mut self) -> bool {
+            self.in_root_mut(|root| root.take_pip_area_request())
+                .unwrap_or(false)
         }
 
         fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
@@ -912,13 +912,14 @@ mod component_adapter {
             dyn crate::widget::controls::ActionControls,
             dyn crate::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
-            dyn crate::permissions::capability::PermissionGated,
+            dyn crate::permissions::capability::PermissionGuarded,
             dyn crate::presence::capability::PublishesPresence,
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::component_lifecycle::WindowActivation,
             dyn crate::component_lifecycle::WindowTitle,
+            dyn crate::component_lifecycle::HearsElsewhere,
             dyn crate::undo::UndoPoints,
             dyn crate::widget::ResourceOperations
         );
@@ -1054,17 +1055,17 @@ mod component_adapter {
                 self.sync_root(state);
             });
             self.owes_sync = false;
-            self.witness_pass(state, reads);
+            self.observation_pass(state, reads);
             self.owes_settle = true;
         }
         fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
             // Owed by a sync of this frame or the last: what it writes is
-            // what that sync took up, and the witness follows it, unless
+            // what that sync took up, and the observation follows it, unless
             // something reached the component since that sync, which only
             // the next sync takes up.
             let owed = self.owes_settle
-                && self.witness.as_ref().is_some_and(|witness| {
-                    witness
+                && self.observation.as_ref().is_some_and(|observation| {
+                    observation
                         .moved(&self.inputs_now(edits.document_mut()))
                         .is_none()
                 });
@@ -1076,7 +1077,7 @@ mod component_adapter {
                 self.settle_root(edits);
             });
             if owed {
-                self.witness_pass(edits.document_mut(), reads);
+                self.observation_pass(edits.document_mut(), reads);
             }
             self.owes_settle = false;
         }
@@ -1662,6 +1663,15 @@ mod component_adapter {
         }
     }
 
+    /// What the connection of the component's app heard elsewhere (the app's instance in its own
+    /// process) of the people at it: the app's root hands it over.
+    impl crate::component_lifecycle::HearsElsewhere for BoundAppWidget {
+        fn take_heard(&mut self) -> Vec<crate::component_lifecycle::Heard> {
+            self.in_root_mut(|root| crate::component_lifecycle::take_heard(root))
+                .unwrap_or_default()
+        }
+    }
+
     impl crate::component_lifecycle::ComponentLifecycle for BoundAppWidget {
         fn unsaved_documents(
             &self,
@@ -1724,7 +1734,7 @@ mod component_adapter {
         }
     }
 
-    impl crate::permissions::capability::PermissionGated for BoundAppWidget {
+    impl crate::permissions::capability::PermissionGuarded for BoundAppWidget {
         fn permission_scope(&self) -> Option<PermissionScope> {
             self.in_root(|root| crate::permissions::capability::permission_scope(root))
                 .flatten()
@@ -1881,16 +1891,16 @@ mod component_adapter {
     }
 
     impl crate::widget::controls::ActionControls for BoundAppWidget {
-        fn install_control_custody(
+        fn attach_controls(
             &mut self,
             parent: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
+            attachment: crate::control_domain::DomainAttachment,
         ) {
             let binding = self.component.callback_binding();
             if let Some(domain) = binding.control_domain.upgrade() {
                 let _ = domain.attach_to(parent);
                 if let Some(root) = self.component.root.as_deref_mut() {
-                    crate::widget::controls::install_control_custody(root, &domain, attachment);
+                    crate::widget::controls::attach_controls(root, &domain, attachment);
                 }
             }
         }
@@ -2081,13 +2091,13 @@ mod component_adapter {
             self.in_root_mut(AppWidget::request_device_shell)
                 .unwrap_or_default()
         }
-        fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+        fn take_process_intent(&mut self) -> Option<AppProcessIntent> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             if let Some(request) = binding.take_search_request() {
-                return Some(AppHostIntent::OpenSearch(request));
+                return Some(AppProcessIntent::OpenSearch(request));
             }
-            self.component.root.as_deref_mut()?.take_host_intent()
+            self.component.root.as_deref_mut()?.take_process_intent()
         }
     }
 }
@@ -2155,7 +2165,7 @@ mod native_lifecycle_tests {
                     true
                 }
             }
-            let host = probe::ProbeHost::new();
+            let host = probe::ProbeHarness::new();
             let mut component =
                 probe::instantiate_probe(&host, 42, LaunchTarget::New, RestoreInput::None).unwrap();
             let reads = Rc::new(Cell::new(0));
@@ -2192,7 +2202,7 @@ mod native_lifecycle_tests {
 
         phase free_native_lifecycle_walk_enters_bound_owner_once_and_refuses_closed_owner;
         {
-            let host = probe::ProbeHost::new();
+            let host = probe::ProbeHarness::new();
             let component =
                 probe::instantiate_probe(&host, 41, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();

@@ -21,14 +21,14 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::device_admin;
+use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_session::workspaces::PersonalList;
+use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_session_client::remote::SessionActions;
@@ -51,7 +51,7 @@ struct Inner {
     /// What serves what another device addresses to this device through a
     /// host of its, once the session's broker can answer it
     /// ([`crate::device_inbox`]).
-    inbound: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    inbound: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
 }
 
 /// This device's session with one host, and the workspaces it entered there.
@@ -66,7 +66,7 @@ struct Host {
 impl Host {
     /// Serve what another device addresses to this device through this host, on
     /// this device's own session with it, and answer on that same session.
-    fn serve_inbound(&self, actions: &Arc<dyn ActionHost + Send + Sync>) {
+    fn serve_inbound(&self, actions: &Arc<dyn ActionProvider + Send + Sync>) {
         let session = self.device.session();
         let outbox = Arc::clone(session.outbox());
         session.serve_inbound(Arc::new(crate::device_inbox::Inbox::new(
@@ -92,7 +92,7 @@ impl HostedWorkspaces {
     ///
     /// `endpoint` is where this session's own endpoint lands once it bound, and `None` for a
     /// session that binds none: this device's key names one endpoint, and one bound beside it for
-    /// a host's session took this device's place at its relay, so the person's other devices
+    /// a host's session took this device's place at its server, so the person's other devices
     /// reached nothing of it there once they started, or came back, after it.
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
@@ -112,27 +112,31 @@ impl HostedWorkspaces {
     /// a listing of a window's resources, a page action on it. Installed once the
     /// session's broker can answer, on every session this device holds with a host
     /// and on each it opens from now on.
-    pub(crate) fn serve_inbound(&self, actions: Arc<dyn ActionHost + Send + Sync>) {
+    pub(crate) fn serve_inbound(&self, actions: Arc<dyn ActionProvider + Send + Sync>) {
         for host in self.0.hosts.lock_recover().values() {
             host.serve_inbound(&actions);
         }
         *self.0.inbound.lock_recover() = Some(actions);
     }
 
-    /// Where `workspace` is placed, when a host other than this device runs its records.
+    /// Where `workspace` is placed, when a holder other than this device takes its work: any
+    /// holder that does, the workspace's holders being equal.
     fn placed(&self, workspace: &str) -> Option<Placed> {
         let id = WorkspaceId::parse(workspace)?;
-        let hint = self
+        let hints = self
             .0
             .engine
             .owner()
-            .with_current(id, |view| Ok(view.transport_hint()?.clone()))
+            .with_current(id, |view| Ok(view.keeping_devices()))
             .ok()?;
         let own = self.0.engine.identity().device_cert.device_public_key;
-        placed_on_host(&hint, own).map(|host| Placed {
-            workspace: workspace.to_owned(),
-            workspace_id: host.workspace_id,
-            host,
+        hints.iter().find_map(|hint| {
+            let host = placed_on_host(hint, own)?;
+            Some(Placed {
+                workspace: workspace.to_owned(),
+                workspace_id: host.workspace_id,
+                host,
+            })
         })
     }
 
@@ -149,10 +153,10 @@ impl HostedWorkspaces {
         let identity = self.0.engine.identity();
         // It reads and asks with this device's own keys, and dials from this device's own
         // endpoint: the device holds one place in each workspace's key group, and one connection
-        // per relay, which a second key service or endpoint of its own would take.
+        // per server, which a second key service or endpoint of its own would take.
         let device = Device::over_lent(
             PeerConfig {
-                host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
+                host: tilo_server_client::Host::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
                 host_cert: placed.host.device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
@@ -183,7 +187,7 @@ impl HostedWorkspaces {
     }
 
     /// `workspace`'s actions on its host, when a host other than this device runs its records.
-    fn actions_of(&self, workspace: &str) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+    fn actions_of(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         let placed = self.placed(workspace)?;
         let host = self.host(&placed);
         Some(Arc::new(OnHost {
@@ -211,7 +215,7 @@ impl HostedWorkspaces {
                 Some(actions.invoke(
                     &Caller::local_person("tilo"),
                     record_request(
-                        tilo_relay_session::workspaces::LIST_PERSONAL,
+                        tilo_server_session::workspaces::LIST_PERSONAL,
                         serde_json::Map::new(),
                     ),
                 ))
@@ -336,9 +340,9 @@ fn record_request(
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
+            provider: tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
-                tilo_relay_session::workspaces::HOST_WORKSPACES_RESOURCE,
+                tilo_server_session::workspaces::HOST_WORKSPACES_RESOURCE,
                 step,
             ),
         },
@@ -358,7 +362,7 @@ fn record_request(
 pub(crate) fn keep_on_hosts(
     hosted: &dyn tilo_action_broker::services::HostedWorkspaces,
     engine: &Engine,
-    list: &tilo_relay_session::workspaces::PersonalList,
+    list: &tilo_server_session::workspaces::PersonalList,
 ) {
     let Ok(value) = serde_json::to_value(list) else {
         return;
@@ -369,7 +373,7 @@ pub(crate) fn keep_on_hosts(
         };
         let mut arguments = serde_json::Map::new();
         arguments.insert("list".to_owned(), value.clone());
-        let request = record_request(tilo_relay_session::workspaces::KEEP_PERSONAL, arguments);
+        let request = record_request(tilo_server_session::workspaces::KEEP_PERSONAL, arguments);
         let label = host.device_certificate.device_label.clone();
         actions.invoke(&Caller::local_person("tilo"), request).then(
             move |answered| match answered {
@@ -392,7 +396,7 @@ pub(crate) fn keep_on_hosts(
 }
 
 impl tilo_action_broker::services::HostedWorkspaces for HostedWorkspaces {
-    fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+    fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         self.actions_of(workspace)
     }
 }
@@ -418,8 +422,8 @@ impl OnHost {
     /// Ask `ask` of the workspace's actions on the host once this device is in it there.
     fn asking<T: Send + 'static>(
         &self,
-        ask: impl FnOnce(SessionActions) -> Pending<Result<T, ActionHostError>> + Send + 'static,
-    ) -> Pending<Result<T, ActionHostError>> {
+        ask: impl FnOnce(SessionActions) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+    ) -> Pending<Result<T, ActionCallError>> {
         let (answer, answered) = pending();
         let host = Arc::clone(&self.host);
         let workspace = self.workspace.clone();
@@ -433,7 +437,7 @@ impl OnHost {
                 }
             };
             answer.complete(ask(actions).await.unwrap_or_else(|| {
-                Err(ActionHostError::Unavailable {
+                Err(ActionCallError::Unavailable {
                     reason: "the workspace's host did not answer".into(),
                 })
             }));
@@ -447,7 +451,7 @@ async fn enter(
     host: &Host,
     workspace: &str,
     workspace_id: WorkspaceId,
-) -> Result<SessionActions, ActionHostError> {
+) -> Result<SessionActions, ActionCallError> {
     let _entering = host.entering.lock().await;
     if let Some(actions) = host.entered.lock_recover().get(&workspace_id) {
         return Ok(actions.clone());
@@ -456,7 +460,7 @@ async fn enter(
         host.device
             .join(workspace)
             .await
-            .map_err(|error| ActionHostError::Unavailable {
+            .map_err(|error| ActionCallError::Unavailable {
                 reason: format!("the workspace's host did not let this device in: {error}"),
             })?;
     let actions = host.device.actions(entered);
@@ -466,12 +470,12 @@ async fn enter(
     Ok(actions)
 }
 
-impl ActionHost for OnHost {
+impl ActionProvider for OnHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let caller = caller.clone();
         self.asking(move |actions| actions.query(&caller, query))
     }
@@ -480,7 +484,7 @@ impl ActionHost for OnHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let caller = caller.clone();
         self.asking(move |actions| actions.invoke(&caller, request))
     }
@@ -493,10 +497,10 @@ impl ActionHost for OnHost {
         self.entered()?.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         match self.entered() {
             Some(actions) => actions.cancel(caller, id),
-            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+            None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
 
@@ -508,7 +512,7 @@ impl ActionHost for OnHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         let caller = caller.clone();
         let request = request.clone();
         self.asking(move |actions| actions.confirm(&caller, &request))
@@ -547,6 +551,8 @@ mod tests {
             version: 1,
             holds_keys: true,
             runs_work,
+            label: String::new(),
+            cloud: false,
             workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).unwrap(),
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&cert.device_public_key).unwrap(),

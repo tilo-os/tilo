@@ -178,12 +178,13 @@ tilo_test_env::scenario! {
         let who = app
             .members()
             .into_iter()
-            .find(|member| !app.is_me(&member.id) && member.name.len() > 2)
+            .find(|(id, name)| !app.is_me(id) && name.len() > 2)
             .expect("the demo workspace has someone to mention");
-        let prefix: String = who.name.chars().take(2).collect();
+        let (who, who_name) = who;
+        let prefix: String = who_name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
         feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
-        let label = format!("@{}", who.name);
+        let label = format!("@{who_name}");
         assert_eq!(app.composer_main.value(), format!("ping {label} "));
         type_str(&mut app, &mut doc, "now");
         feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
@@ -193,13 +194,13 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(sent.text, format!("ping {label} now"));
         assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
-        assert_eq!(sent.mentions[0].user, who.id);
+        assert_eq!(sent.mentions[0].user, who);
         assert_eq!(sent.mentions[0].slice(&sent.text), label);
         assert!(
             sent.blocks()[0]
                 .marks
                 .iter()
-                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.clone())),
+                .any(|span| span.mark == ui::widget::Mark::Mention(who.clone())),
             "the body keeps the mention as written"
         );
         // Rendered through the read-only view, it lays out at its width.
@@ -284,8 +285,7 @@ tilo_test_env::scenario! {
     phase the_at_list_offers_the_workspaces_agents;
     {
         let (mut app, mut doc) = app_with_doc();
-        app.workspace_agent_names
-            .insert("planner".to_owned(), "Planner".to_owned());
+        crate::testing::agent_member(&mut app, "planner", "Planner");
         app.focus = Focus::Main;
         app.set_composer_focus();
         // The editor learns who is offered at `@` as it is drawn.
@@ -295,7 +295,15 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|person| person.id == MemberId::agent("planner")
                     && person.name == "Planner"),
-            "the workspace's agent record names it for the @ list"
+            "the member list names it for the @ list"
+        );
+        let ada = MemberId::person("ad".repeat(32));
+        app.workspace_names.insert(ada.clone(), "Ada".to_owned());
+        assert!(
+            app.mention_people()
+                .iter()
+                .any(|person| person.id == ada && person.name == "Ada"),
+            "a person the member list names is offered beside the agent"
         );
         // Typing the name opens the list, and a pick writes the agent's name: what the page's
         // composer draws is this same list.
@@ -307,8 +315,7 @@ tilo_test_env::scenario! {
     phase a_name_typed_without_the_picker_asks_the_agent;
     {
         let (mut app, mut doc) = app_with_doc();
-        app.workspace_agent_names
-            .insert("planner".to_owned(), "Planner".to_owned());
+        crate::testing::agent_member(&mut app, "planner", "Planner");
         app.active_channel = "c_general".into();
         app.focus = Focus::Main;
         app.thread_open = None;
@@ -457,7 +464,7 @@ tilo_test_env::scenario! {
     /// names the cases that failed.
     fn the_roster_and_voice_channel_show_who_the_workspace_says_is_here;
 
-    phase the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves;
+    phase the_roster_shows_who_the_workspace_says_is_here_not_everyone_it_lists;
     {
         use crate::model::Presence;
         let (mut app, _) = app_with_doc();
@@ -477,7 +484,7 @@ tilo_test_env::scenario! {
                 .find(|(u, _)| u.id == *id)
                 .map(|(u, _)| u.status)
         };
-        // Without a workspace the record's word stands.
+        // Without a workspace's answer, the listed status stands.
         assert_eq!(status(&app, &others[1]), Some(Presence::Online));
         // The workspace knows the first person is here; the second has left.
         app.workspace_names.insert(others[0].clone(), "Here".into());
@@ -496,8 +503,8 @@ tilo_test_env::scenario! {
 
     phase a_workspace_whose_answer_names_nobody_marks_everyone_else_offline;
     // A workspace that answers with nobody in it — every visitor closed their tab,
-    // or this is the first one in — reads as empty rather than as everybody who
-    // ever introduced themselves still being online.
+    // or this is the first one in — reads as empty rather than as everybody
+    // the member list names still being online.
     {
         use crate::model::Presence;
         let (mut app, _) = app_with_doc();
@@ -526,9 +533,9 @@ tilo_test_env::scenario! {
         assert_eq!(app.live_status(&me), Presence::Online, "I am here");
     }
 
-    phase an_agent_is_named_with_the_person_it_acts_for;
-    // An agent a person admitted is named with them, as presence knows whom it acts for: "Helper
-    // for Ada" to everyone else, "Helper for you" to Ada.
+    phase an_agent_is_named_by_its_own_name_to_everyone;
+    // An agent a person admitted reads by its own name, to everyone else and to that person
+    // alike, as its chip, its caret tag and its history rows do.
     {
         use ui::permissions::MemberId;
         let (mut app, _) = app_with_doc();
@@ -537,9 +544,9 @@ tilo_test_env::scenario! {
         presence.set_display_name(MemberId::agent("helper"), "Helper");
         presence.set_acting_for(MemberId::agent("helper"), Some(MemberId::person("ada")));
         app.adopt_workspace(&presence);
-        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper for Ada");
+        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper");
         app.me.id = MemberId::person("ada");
-        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper for you");
+        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper");
     }
 
     phase the_workspaces_call_places_its_people_in_the_voice_channel_by_person;
@@ -568,9 +575,9 @@ tilo_test_env::scenario! {
 #[test]
 fn a_private_workspace_keeps_collaboration_controls_out_of_the_header() {
     let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, model::ME, "You", "QD");
+    crate::testing::starter(&mut doc, model::ME, "You");
     let mut app = ChatApp::new_ephemeral();
-    app.active_channel = crate::record::CHAT_CHANNEL.into();
+    app.active_channel = crate::chat::CHAT_CHANNEL.into();
     app.thread_open = None;
     app.reload(&doc);
     render_frame(&mut app, 1280.0, 720.0);

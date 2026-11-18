@@ -24,7 +24,7 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus,
 };
@@ -162,12 +162,12 @@ fn notebook(action: Option<&str>) -> CatalogueRow {
     }
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let page = match query.provider.as_deref() {
             None => CataloguePage {
@@ -195,7 +195,7 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
@@ -233,7 +233,7 @@ impl ActionHost for Host {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }
@@ -248,7 +248,7 @@ struct Server {
     /// Each connection's serving thread, which ends when it does.
     served: Arc<Mutex<Vec<std::thread::JoinHandle<std::io::Result<()>>>>>,
     /// The person's workspace list, as B holds it.
-    list: Arc<Mutex<Option<tilo_relay_session::workspaces::PersonalList>>>,
+    list: Arc<Mutex<Option<tilo_server_session::workspaces::PersonalList>>>,
 }
 
 impl Arrivals for Server {
@@ -278,7 +278,7 @@ impl Arrivals for Server {
         Ok(())
     }
 
-    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+    fn listed(&self) -> Option<tilo_server_session::workspaces::PersonalList> {
         self.list.lock().unwrap().clone()
     }
 }
@@ -709,11 +709,11 @@ fn grant(
 }
 
 const SHELL: &str = "11111111-1111-4111-8111-111111111111";
-const ON_RELAY: &str = "22222222-2222-4222-8222-222222222222";
+const ON_SERVER: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_one_else_does() {
-    use tilo_relay_session::workspaces::{PersonalList, PersonalWorkspace, WorkspaceHostAddress};
+    use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalList, PersonalWorkspace};
     let person = Person::new();
     let b = b(&person, &[]).await;
     let all = grant(
@@ -730,16 +730,16 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
     let entry = |workspace: &str, host: &str| PersonalWorkspace {
         workspace: workspace.into(),
         name: workspace.into(),
-        host: Some(WorkspaceHostAddress {
+        host: Some(KeepingDeviceAddress {
             name: host.into(),
             hint: Some("00".into()),
         }),
         role: Some("owner".into()),
-        labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+        labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
         unattended: false,
     };
     let held = PersonalList {
-        workspaces: vec![entry(SHELL, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
+        workspaces: vec![entry(SHELL, "Build box"), entry(ON_SERVER, "eu1.tilo.sh")],
         ..PersonalList::default()
     };
     *b.server.list.lock().unwrap() = Some(held.clone());
@@ -787,7 +787,7 @@ async fn a_revoked_key_reads_no_workspace_list() {
         tilo_user_identity::AgentScope::AllWorkspaces,
     );
     let b = b(&person, &[&revoked.1]).await;
-    *b.server.list.lock().unwrap() = Some(tilo_relay_session::workspaces::PersonalList::default());
+    *b.server.list.lock().unwrap() = Some(tilo_server_session::workspaces::PersonalList::default());
     let refused = read_list(&endpoint(&revoked.0).await, addr(&b.endpoint), &revoked.1)
         .await
         .unwrap_err();
@@ -799,11 +799,13 @@ fn address_on_b(
     person: &Person,
     b: &B,
     workspace: &str,
-) -> tilo_relay_session::workspaces::WorkspaceHostAddress {
+) -> tilo_server_session::workspaces::KeepingDeviceAddress {
     let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: tilo_desktop_model::WorkspaceId::parse(workspace).unwrap(),
         endpoint_addr: addr(&b.endpoint),
         user_public_key: person.b.1.user_public_key,
@@ -812,7 +814,7 @@ fn address_on_b(
     }
     .transport_hint(&person.b.0)
     .unwrap();
-    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(
+    tilo_server_session::workspaces::KeepingDeviceAddress::of_hint(
         &postcard::to_stdvec(&hint).unwrap(),
     )
     .unwrap()
@@ -868,7 +870,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
     assert_eq!(arrived[0].workspace.as_deref(), Some(SHELL));
 
     // An address names one workspace: another's is not entered with it.
-    assert!(enter(&dialing, &key, ON_RELAY, &address).await.is_err());
+    assert!(enter(&dialing, &key, ON_SERVER, &address).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -885,7 +887,7 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
     let elsewhere = grant(
         &person.root,
         11,
-        tilo_user_identity::AgentScope::parse(ON_RELAY).unwrap(),
+        tilo_user_identity::AgentScope::parse(ON_SERVER).unwrap(),
     );
     let refused = enter(
         &endpoint(&elsewhere.0).await,

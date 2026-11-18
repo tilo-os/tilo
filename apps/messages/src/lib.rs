@@ -20,7 +20,7 @@ use ui::i18n::EmbeddedCatalog;
 use ui::prelude::*;
 use ui::widget::Element;
 
-/// The record holds only conversations put into it on purpose (delivered or queued, see
+/// The resource holds only conversations put into it on purpose (delivered or queued, see
 /// [`conversations`]); private external histories remain the broker's account-owned data,
 /// reached through effects.
 pub use conversations::Messages;
@@ -189,7 +189,7 @@ pub enum MessagesEffect {
     ReadOlderHistory { choice: String },
     #[effect(view, idempotent)]
     Back,
-    /// This records an address-book decision; the adapter must separately verify current
+    /// This resources an address-book decision; the adapter must separately verify current
     /// provider identity before I/O.
     #[effect(destructive)]
     ConfirmAccount { person: String, choice: String },

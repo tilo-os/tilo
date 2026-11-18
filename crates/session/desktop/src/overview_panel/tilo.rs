@@ -26,17 +26,14 @@ use crate::overview_tilo::{TiloFace, TiloItem, TiloMark, TiloRow};
 const ACTION_WIDTH: f64 = 148.0;
 const ACTION_HEIGHT: f64 = 28.0;
 
-/// A face at a row's leading edge, drawn by presence so it looks as that person or agent does in
-/// every stack: a person's circle or an agent's rounded square, in the colour it wears.
+/// An agent's face at a row's leading edge, as presence draws it in every stack.
 fn worn_face(worn: &TiloFace) -> ui::presence::Face<'_> {
-    ui::presence::Face {
-        is_agent: worn.is_agent,
-        ..ui::presence::Face::new(
-            &worn.name,
-            &worn.identity,
-            ui::presence::presence_colour(worn.colour),
-        )
-    }
+    ui::presence::Face::new(
+        &worn.name,
+        &worn.identity,
+        ui::presence::presence_colour(worn.colour),
+    )
+    .agent()
 }
 
 /// A row's leading mark: the glyph it names itself with, or the face presence draws for it. Both

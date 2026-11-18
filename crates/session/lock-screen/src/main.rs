@@ -14,21 +14,21 @@ use std::cell::RefCell;
 
 use tilo_sheets::lock::{self, LockState, Shown};
 use ui::application::{
-    ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
+    ApplicationDefinition, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
 };
 use ui::launch::{LaunchArgs, LaunchError};
 
 thread_local! {
     /// What the app is lent: the state the lock screen shows in and takes
     /// the person's password through.
-    static SEAT: RefCell<Option<LockState>> = const { RefCell::new(None) };
+    static STATE: RefCell<Option<LockState>> = const { RefCell::new(None) };
 }
 
 fn main() {
     let state = LockState::default();
     state.show(shown());
     lock_session::serve(&state);
-    SEAT.with(|slot| *slot.borrow_mut() = Some(state));
+    STATE.with(|slot| *slot.borrow_mut() = Some(state));
     // The standard launch of any app — its record, its capture scenarios and
     // its launch modes — with this process's host in place of the usual one,
     // because the state is lent per process.
@@ -42,8 +42,8 @@ fn prepared(
     _args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    let mut prepared = NativeProcessHost::prepare_window(definition, None, inputs)?;
-    if let Some(state) = SEAT.with(|slot| slot.borrow_mut().take()) {
+    let mut prepared = NativeProcess::prepare_window(definition, None, inputs)?;
+    if let Some(state) = STATE.with(|slot| slot.borrow_mut().take()) {
         prepared.context.lend(state);
     }
     Ok(prepared)
@@ -53,7 +53,7 @@ fn prepared(
 /// it says, arrives with the session's first reading.
 fn shown() -> Shown {
     Shown {
-        clock: ui::clock::time_of_day(&ui::clock::local_now()),
+        clock: ui::clock::time_of_day(ui::clock::local_now()),
         date: ui::format::day_heading(ui::clock::today(), false),
         ..Shown::default()
     }

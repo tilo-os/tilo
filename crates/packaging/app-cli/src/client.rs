@@ -897,7 +897,7 @@ mod tests {
     }
 
     /// The registry checkpoint is the device's anti-rollback record, kept by
-    /// the checkpoint custodian outside every app sandbox: an app granted its
+    /// the checkpoint owner outside every app sandbox: an app granted its
     /// own directory can neither list what lies outside it nor write, lock or
     /// replace the checkpoint.
     #[cfg(target_os = "linux")]

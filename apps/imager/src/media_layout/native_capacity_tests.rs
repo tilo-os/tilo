@@ -167,7 +167,7 @@ impl Disposable {
         }
         fixture.number = Some(metadata.rdev());
         fixture.held = Some(held);
-        fixture.verify_custody()?;
+        fixture.verify_ownership()?;
         fixture.receipt("attested-before-format")?;
         let mut args = block_devices::migration_ext4::MKFS_ARGS.to_vec();
         args.extend(["-q", "-L", "Tilo migration"]);
@@ -193,7 +193,7 @@ impl Disposable {
         let root = self
             .root
             .as_ref()
-            .ok_or_else(|| failure("fixture root custody lost"))?;
+            .ok_or_else(|| failure("fixture root ownership lost"))?;
         let metadata = self.backing.metadata()?;
         let bytes = serde_json::to_vec(
             &serde_json::json!({"schema":1,"phase":phase,"image":"migration.ext4","mount":"mount","device":self.device,"rdev":self.number,"backing_dev":metadata.dev(),"backing_inode":metadata.ino(),"allocation_started":self.allocation_started,"construction_finished":self.construction_finished}),
@@ -212,7 +212,7 @@ impl Disposable {
         file.sync_all()?;
         File::open(root.path())?.sync_all()
     }
-    fn verify_custody(&self) -> io::Result<()> {
+    fn verify_ownership(&self) -> io::Result<()> {
         let held = self
             .held
             .as_ref()
@@ -240,7 +240,7 @@ impl Disposable {
         Ok(())
     }
     fn device_command(&self, program: &str, args: &[&str], tail: Option<&Path>) -> io::Result<()> {
-        self.verify_custody()?;
+        self.verify_ownership()?;
         let held = self
             .held
             .as_ref()
@@ -263,10 +263,10 @@ impl Disposable {
             });
         }
         run(&mut command)?;
-        self.verify_custody()
+        self.verify_ownership()
     }
     fn available(&self) -> io::Result<u64> {
-        self.verify_custody()?;
+        self.verify_ownership()?;
         let file = File::open(&self.mount)?;
         let mut facts = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         // SAFETY: live mounted directory FD and writable output.
@@ -284,7 +284,7 @@ impl Disposable {
         if self.released {
             return Ok(());
         }
-        self.verify_custody()?;
+        self.verify_ownership()?;
         if self.mounted {
             run(tool("umount")?.arg("--").arg(&self.mount))?;
             self.mounted = false;

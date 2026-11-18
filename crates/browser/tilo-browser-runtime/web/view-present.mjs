@@ -32,6 +32,9 @@ const ARIA_ROLES = {
   ProgressBar: 'progressbar', Tooltip: 'tooltip', Image: 'img', Group: 'group', Dialog: 'dialog',
 };
 
+// The roles that are on or off.
+const CHECKABLE_ROLES = new Set(['Checkbox', 'Switch', 'RadioButton']);
+
 // The roles whose value is a number on a range.
 const RANGED_ROLES = new Set(['Slider', 'Separator', 'ProgressBar', 'SpinButton']);
 
@@ -58,6 +61,10 @@ function byteToUnit(text, byte) {
 function unitToByte(text, unit) {
   return new TextEncoder().encode(text.slice(0, unit)).length;
 }
+
+// How much wider than the layout measured them the page may set words before
+// it cuts them short: its glyph metrics differ from the layout's by less.
+const SLACK = 4;
 
 const rgba = color => color ? `rgba(${color[0]},${color[1]},${color[2]},${(color[3] / 255).toFixed(3)})` : '';
 
@@ -202,6 +209,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (inFlow) {
       // A flex item of its parent, at the size the shared layout gave it.
       css += `position:relative;flex:none;width:${w}px;height:${h}px;`;
+      // The room it keeps from its siblings, as its layout node keeps it.
+      const margin = /(?:^|;)margin:([^;]*)/.exec(node.layout ?? '')?.[1];
+      if (margin) css += `margin:${margin};`;
     } else {
       const ox = outer ? outer.rect[0] : 0;
       const oy = outer ? outer.rect[1] - (scrolledBy ?? 0) : 0;
@@ -217,13 +227,36 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (node.ground) {
       const {fill, edge, radius} = node.ground;
       if (fill) css += `background:${rgba(fill)};`;
-      if (edge) css += `box-shadow:inset 0 0 0 1px ${rgba(edge)};`;
+      // A window or a panel casts its shadow on what it floats over.
+      const shadows = node.floats ? [FLOATING_SHADOW] : [];
+      if (edge) shadows.push(`inset 0 0 0 1px ${rgba(edge)}`);
+      if (shadows.length) css += `box-shadow:${shadows.join(',')};`;
       if (radius) css += `border-radius:${radius}px;`;
     }
-    if (node.own?.kind === 'text') css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own);
-    else if (node.own?.kind === 'face') css += faceCss(node.own);
-    else if (node.own?.kind === 'control') css += 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
-    else if (node.own?.kind === 'field') css += textStyle(node.own.look) + 'margin:0;padding:0;border:0;outline:none;background:transparent;font-family:inherit;';
+    if (node.own?.kind === 'text') {
+      css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own, w, h);
+      // One line of words in a slot taller than the line (a count on its ground, a table's
+      // cell, a part a widget lays out itself) stands in the slot's middle, as painted.
+      const line = node.own.size * node.own.line_height;
+      if ((node.ground || node.path.includes('#')) && !node.children?.length && h > line + 0.5 && (node.own.max_lines === 1 || Math.floor((h + 0.5) / line) <= 1)) css += `line-height:${h}px;`;
+    }
+    else if (node.own?.kind === 'face') {
+      css += faceCss(node.own);
+      // A face that hugs its words grows a little rather than cutting them short.
+      if (!node.own.spread && node.own.label) css += slack(w, SLACK * 2);
+    }
+    else if (node.own?.kind === 'control') {
+      // A switch with a caption: the caption leads, the switch keeps the trailing edge.
+      const captioned = node.own.controls?.some(control => control.kind === 'check' && control.style === 'switch' && control.label);
+      css += captioned
+        ? 'display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;'
+        : 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
+    }
+    else if (node.own?.kind === 'field') {
+      const [ix, iy] = node.own.inset ?? [0, 0];
+      css += textStyle(node.own.look) + `margin:0;padding:${iy}px ${ix}px;border:0;outline:none;font-family:inherit;resize:none;`;
+      if (!node.ground) css += 'background:transparent;';
+    }
     write(element, 'css', css);
     // What it is, for assistive technology and for the page's own find,
     // selection and focus.
@@ -262,6 +295,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     // A control's own element carries its role (a box, a range, a chooser's
     // list): the wrapper around it is no control of its own.
     if (node.own?.kind === 'control') write(element, '@role', null);
+    // A box, a switch or a radio the widget draws itself says
+    // whether it is on, as an <input> of its own would.
+    const checks = role && CHECKABLE_ROLES.has(role.name) && node.own?.kind !== 'control';
+    const checked = semantics?.state?.mixed ? 'mixed' : semantics?.state?.checked;
+    write(element, '@aria-checked', checks && checked !== undefined && checked !== null ? String(checked) : null);
     // What only its own kind of element carries (an <img>'s source, a <progress>'s value).
     const attrs = new Set();
     for (const [name, value] of node.attrs ?? []) {
@@ -328,12 +366,31 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     return css;
   }
 
-  function textCss(look) {
-    const clamp = look.max_lines ? (look.max_lines === 1
-      ? 'white-space:pre;overflow:hidden;text-overflow:ellipsis;'
-      : `display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${look.max_lines};overflow:hidden;white-space:pre-wrap;`)
-      : 'white-space:pre-wrap;';
-    return textStyle(look) + clamp + 'margin:0;overflow-wrap:anywhere;';
+  // Words in the box the shared layout measured for them. The page's
+  // glyphs come out a hair wider or narrower than the layout's, so the box
+  // never decides a line break on its own: words the layout set on one line
+  // stay on one (spilling a pixel rather than wrapping a word in two), and
+  // words it cut short get a few pixels of slack before the ellipsis.
+  function textCss(look, w, h) {
+    const line = look.size * look.line_height;
+    const lines = look.max_lines ?? Math.max(1, Math.floor((h + 0.5) / line));
+    let fit;
+    if (lines === 1) {
+      fit = look.max_lines === 1
+        ? `white-space:pre;overflow:hidden;text-overflow:ellipsis;${slack(w)}`
+        : 'white-space:pre;';
+    } else {
+      fit = look.max_lines
+        ? `display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${look.max_lines};overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;`
+        : 'white-space:pre-wrap;overflow-wrap:break-word;';
+    }
+    return textStyle(look) + fit;
+  }
+
+  // A one-line run that may be cut short: as wide as its words up to a few
+  // pixels past the width the layout measured, never narrower.
+  function slack(w, by = SLACK) {
+    return `width:max-content;min-width:${w}px;max-width:${w + by}px;`;
   }
 
   function showText(element, look) {
@@ -542,8 +599,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         input.disabled = disabled;
         write(input, '@aria-label', control.label ? null : (node.semantics?.name ?? null));
         mark(input, 'toggle', target);
-        out.push(input);
-        if (control.label) out.push(wordsFor(`${key}:label`, control.label, next));
+        const label = control.label && wordsFor(`${key}:label`, control.label, next);
+        if (label && control.style === 'switch') out.push(label, input);
+        else out.push(input, ...(label ? [label] : []));
         return;
       }
       if (control.kind === 'range') {
@@ -558,6 +616,14 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         input.disabled = disabled;
         mark(input, 'value', target);
         out.push(input);
+        // What it is at, said beside it as the canvas says it.
+        if (control.text && control.shown) {
+          const said = elementFor(`${key}:said`, 'span', next);
+          write(said, 'css', 'flex:none;min-width:40px;text-align:end;font-size:13px;font-variant-numeric:tabular-nums;color:var(--tilo-text-dim,#6e6e73);');
+          write(said, 'text', control.text);
+          write(said, '@aria-hidden', 'true');
+          out.push(said);
+        }
         return;
       }
       if (control.kind === 'entry') {
@@ -620,10 +686,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
           write(quiet, 'text', control.placeholder);
           runs.push(quiet);
         }
-        const chevron = elementFor(`${key}:chevron`, 'span', next);
-        write(chevron, 'css', 'flex:none;margin-left:auto;color:var(--tilo-text-dim,#6e6e73);');
-        write(chevron, 'text', '▾');
-        runs.push(chevron);
+        if (control.chevron) {
+          const chevron = glyph(`${key}:chevron`, control.chevron, next);
+          chevron.style.marginLeft = 'auto';
+          runs.push(chevron);
+        }
         place(button, runs);
         const parts = [button];
         if (control.open && control.options.length) {
@@ -643,8 +710,24 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         // A menu and a list of options stand in a column; a toolbar, a tab
         // strip, a group of swatches or radios, a row.
         const column = control.list === 'menu' || control.list === 'listbox';
-        write(box, 'css', `display:flex;gap:2px;min-width:0;flex-wrap:wrap;${column ? 'flex-direction:column;align-items:stretch;' : 'align-items:center;'}`);
-        const rows = control.options.map((option, row) => optionRow(`${key}:choice:${row}`, option, target, next, control.item));
+        // Choices the widget places itself (a toolbar's tools around its spacers) stand there,
+        // a separator where it draws one.
+        const placed = control.options.length > 0 && control.options.every((option) => typeof option.at === 'number');
+        write(box, 'css', placed
+          ? 'position:relative;width:100%;height:100%;min-width:0;'
+          : `display:flex;gap:2px;min-width:0;flex-wrap:wrap;${column ? 'flex-direction:column;align-items:stretch;' : 'align-items:center;'}`);
+        const rows = [];
+        control.options.forEach((option, row) => {
+          const path = `${key}:choice:${row}`;
+          if (placed && typeof option.rule === 'number') {
+            const rule = elementFor(`${path}:rule`, 'span', next);
+            write(rule, '@aria-hidden', 'true');
+            write(rule, 'css', `position:absolute;left:${option.rule - 0.5}px;top:25%;width:1px;height:50%;background:var(--tilo-border,rgba(127,127,127,.3));`);
+            rows.push(rule);
+          }
+          rows.push(optionRow(path, option, target, next, control.item,
+            placed ? `position:absolute;left:${option.at}px;top:50%;transform:translateY(-50%);` : ''));
+        });
         if (control.label) rows.unshift(wordsFor(`${key}:label`, control.label, next));
         place(box, rows);
         out.push(box);
@@ -655,32 +738,48 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   }
 
   // One choice of a control: an option of a chooser's list, a tab, a menu row.
-  function optionRow(path, option, fallback, next, role) {
+  function optionRow(path, option, fallback, next, role, at = '') {
     const item = elementFor(path, role === 'option' ? 'li' : 'button', next);
     write(item, '@role', role);
     write(item, '@aria-selected', role === 'radio' ? null : String(Boolean(option.selected)));
     if (role === 'radio' || role === 'option') write(item, '@aria-checked', role === 'radio' ? String(Boolean(option.selected)) : null);
     write(item, '@aria-disabled', option.disabled ? 'true' : null);
-    write(item, 'css', 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''));
+    // A tool on a toolbar is its icon; its name is what a reader hears and a tooltip says.
+    const iconOnly = role === 'button' && Boolean(option.icon);
+    write(item, '@aria-label', iconOnly ? option.label : null);
+    write(item, '@title', iconOnly ? option.label : null);
+    write(item, 'css', (iconOnly
+      ? 'display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:6px;cursor:pointer;' + (option.selected ? 'background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 14%,transparent);' : '')
+      : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''))
+      + (option.dot ? 'position:relative;' : '') + at);
     item.disabled = Boolean(option.disabled);
-    const runs = [];
+    const shown = [];
     if (option.colour) {
       const dot = elementFor(`${path}:colour`, 'span', next);
       write(dot, 'css', `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
-      runs.push(dot);
+      shown.push(dot);
     }
-    if (option.icon) runs.push(glyph(`${path}:icon`, option.icon, next));
-    const label = elementFor(`${path}:label`, 'span', next);
-    write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
-    write(label, 'text', option.label);
-    runs.push(label);
+    if (option.icon) shown.push(glyph(`${path}:icon`, option.icon, next));
+    if (!iconOnly) {
+      const label = elementFor(`${path}:label`, 'span', next);
+      write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
+      write(label, 'text', option.label);
+      shown.push(label);
+    }
     if (option.detail) {
       const detail = elementFor(`${path}:detail`, 'span', next);
       write(detail, 'css', 'flex:none;color:var(--tilo-text-dim,#6e6e73);white-space:pre;');
       write(detail, 'text', option.detail);
-      runs.push(detail);
+      shown.push(detail);
     }
-    place(item, runs);
+    if (option.dot) {
+      // Something new behind it: the accent dot at its corner, as painted.
+      const dot = elementFor(`${path}:dot`, 'span', next);
+      write(dot, '@aria-hidden', 'true');
+      write(dot, 'css', 'position:absolute;right:5px;top:5px;width:6px;height:6px;border-radius:50%;background:var(--tilo-accent,#2f6fed);');
+      shown.push(dot);
+    }
+    place(item, shown);
     if (option.value !== undefined && option.value !== null) mark(item, 'value', fallback, option.value);
     else mark(item, 'activate', option.target ?? fallback);
     return item;
@@ -815,10 +914,22 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   };
 }
 
+// The lift a window or a panel stands at over the shell.
+const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.08),0 10px 28px rgba(0,0,0,.12)';
+
 // How the rendered composition looks beyond what each widget declares: the
 // document's blocks, the caret, the page's own selection. Colours and sizes
 // come from the theme's variables the runtime publishes on the layer.
 export const VIEW_CSS = `
+/* Every size the composition gives is the layout's, which counts padding in. */
+.tilo-view,.tilo-view *{box-sizing:border-box;}
+/* A row's or a place's controls show while the pointer is over it or focus is in it, as painted. */
+.tilo-view [data-hover-controls]:not(:hover):not(:focus-within) [data-widget=HoverToolbarFace]{opacity:0;pointer-events:none;}
+.tilo-view [data-hover-controls]:is(:hover,:focus-within) [data-widget=HoverToolbarFace]{transition:opacity .12s ease;}
+/* An entry scrolls its words without a bar of its own, as painted. */
+.tilo-view textarea{scrollbar-width:none;}
+/* A scroller's bar is a thin quiet thumb, not the platform's arrows and trough. */
+.tilo-view{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 35%,transparent) transparent;}
 .tilo-view{font-family:var(--tilo-faces,"Tilo Sans",system-ui,sans-serif);color:var(--tilo-text,#1d1d1f);--tilo-mono:ui-monospace,"SF Mono",Menlo,monospace;font-synthesis:none;-webkit-font-smoothing:antialiased;}
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
 .tilo-link{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;cursor:pointer;}
@@ -826,7 +937,39 @@ export const VIEW_CSS = `
 .tilo-view [aria-disabled=true]{opacity:.45;}
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
-.tilo-view ul{margin:0;padding:0;list-style:none;}
+.tilo-view ul,.tilo-view ol{margin:0;padding:0;list-style:none;}
+/* A page's own boxes, switches, radios and ranges, set in the toolkit's look: a box that
+   fills with the accent and its tick, a switch whose knob slides, a range in the accent. */
+.tilo-view input[type=checkbox],.tilo-view input[type=radio]{appearance:none;-webkit-appearance:none;margin:0;flex:none;width:18px;height:18px;border-radius:5px;background:var(--tilo-raised,#f1f2f4);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 55%,transparent);display:grid;place-content:center;cursor:pointer;transition:background .15s ease,box-shadow .15s ease;}
+.tilo-view input[type=radio]{border-radius:50%;}
+.tilo-view input[type=checkbox]:checked,.tilo-view input[type=radio]:checked,.tilo-view input[type=checkbox]:indeterminate{background:var(--tilo-accent,#2f6fed);box-shadow:none;}
+.tilo-view input[type=checkbox]:checked::after{content:"";width:9px;height:5px;border:2px solid var(--tilo-on-accent,#fff);border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg);}
+.tilo-view input[type=checkbox]:indeterminate::after{content:"";width:9px;height:2px;background:var(--tilo-on-accent,#fff);border-radius:1px;}
+.tilo-view input[type=radio]:checked::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--tilo-on-accent,#fff);}
+.tilo-view input[role=switch]{width:36px;height:22px;border-radius:11px;place-content:center start;padding:0 3px;}
+.tilo-view input[role=switch]::after{content:"";width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .18s ease;}
+.tilo-view input[role=switch]:checked::after{width:16px;height:16px;border:0;transform:translateX(14px);}
+.tilo-view input:disabled{cursor:default;}
+/* A box or switch the person cannot change is grey where it would be the accent, as painted. */
+.tilo-view input[type=checkbox]:disabled:checked,.tilo-view input[type=radio]:disabled:checked,.tilo-view input[type=checkbox]:disabled:indeterminate{background:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 60%,transparent);}
+.tilo-view input[type=checkbox]:disabled:not(:checked),.tilo-view input[type=radio]:disabled:not(:checked){opacity:.5;}
+.tilo-view input[type=checkbox]:focus-visible,.tilo-view input[type=radio]:focus-visible,.tilo-view input[type=range]:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:2px;}
+.tilo-view input[type=range]{flex:1;min-width:0;margin:0;accent-color:var(--tilo-accent,#2f6fed);cursor:pointer;}
+/* Entries, choosers and strips of choices on the raised well the canvas paints them on. */
+.tilo-view [data-tilo-act=step]{width:28px!important;height:28px!important;background:var(--tilo-raised,#f1f2f4)!important;color:var(--tilo-text,#1d1d1f)!important;font-size:15px!important;}
+.tilo-view [data-tilo-act=step]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%)!important;}
+.tilo-view [data-tilo-act=step]:disabled{opacity:.45;}
+.tilo-view [data-tilo-act=value][role=spinbutton],.tilo-view input[type=date],.tilo-view input[type=time],.tilo-view input[type=search]{height:28px;border-radius:6px!important;background:var(--tilo-raised,#f1f2f4)!important;padding:0 8px!important;text-align:center;}
+.tilo-view input[type=search]{text-align:start;}
+.tilo-view [role=combobox]{background:var(--tilo-raised,#f1f2f4);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view [role=combobox]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%);}
+.tilo-view [role=radiogroup]{background:var(--tilo-raised,#f1f2f4);border-radius:var(--tilo-radius,8px);padding:2px;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));flex-wrap:nowrap!important;}
+.tilo-view [role=radiogroup]>button,.tilo-view [role=tablist]>button,.tilo-view [role=menu]>button,.tilo-view li[role=option]{font-size:13px;font-weight:500;line-height:1.3;}
+.tilo-view [role=radiogroup]>button{padding:4px 14px!important;color:var(--tilo-text-dim,#6e6e73);background:transparent!important;}
+.tilo-view [role=radiogroup]>button[aria-checked=true]{background:var(--tilo-ground,#fff)!important;color:var(--tilo-text,#1d1d1f);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12);}
+.tilo-view [role=tablist]{flex-wrap:nowrap!important;}
+.tilo-view [role=tablist]>button{color:var(--tilo-text-dim,#6e6e73);}
+.tilo-view [role=tablist]>button[aria-selected=true]{color:var(--tilo-text,#1d1d1f);font-weight:600;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
 /* What the shell paints as cards, rows and keys, as elements: the lift and the edge
    come from the theme's own variables, the words from each part's own look. */
 .tilo-view [data-widget=NotificationBanner]{box-sizing:border-box;padding:12px 14px;background:var(--tilo-raised,rgba(127,127,127,.08));color:var(--tilo-text,#1d1d1f);border-radius:var(--tilo-radius,8px);box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));overflow:hidden;}
@@ -839,15 +982,22 @@ export const VIEW_CSS = `
 .tilo-view [data-widget=PowerMenuTitle]{box-sizing:border-box;padding:0 12px;display:flex;align-items:center;}
 .tilo-view [data-widget=PasscodeKey]{box-sizing:border-box;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:var(--tilo-radius,8px);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));display:flex;align-items:center;justify-content:center;}
 .tilo-view li{list-style:none;box-sizing:border-box;}
-.tilo-view li:has(>.tilo-words){display:flex;align-items:center;padding:0 12px;border-radius:var(--tilo-radius,8px);}
+.tilo-view li:has(>.tilo-words){display:flex;align-items:center;border-radius:var(--tilo-radius,8px);}
 .tilo-view li[aria-selected=true]{background:var(--tilo-raised);}
-.tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
+.tilo-view li:hover:not(:has(li:hover)){background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
-.tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
+.tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view h5,.tilo-view h6,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
 .tilo-view hr{border:0;border-top:1px solid var(--tilo-border,rgba(127,127,127,.25));margin:0;align-self:stretch;}
 .tilo-view dl,.tilo-view dd{margin:0;}
+/* A table's head stands over a rule, and its chosen row on the selection's tint, as painted. */
+.tilo-view thead{box-shadow:inset 0 -1px 0 var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view tr[aria-selected=true]{background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 10%,transparent);border-radius:var(--tilo-radius,8px);}
+.tilo-view img{object-fit:cover;overflow:clip;}
+.tilo-view img[data-fit=contain]{object-fit:contain;}
+.tilo-view img[data-fit=fill]{object-fit:fill;}
 .tilo-view progress{accent-color:var(--tilo-accent,#2f6fed);}
-.tilo-view [data-widget=Spinner]{box-sizing:border-box;border-radius:50%;border:2px solid color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 28%,transparent);border-top-color:var(--tilo-text-dim,#6e6e73);animation:tilo-spin .8s linear infinite;}
+/* Four dots orbit, the leading one full and each after it fainter, as painted. */
+.tilo-view [data-widget=Spinner]{background:radial-gradient(10% 10% at 50% 15%,var(--tilo-accent,#2f6fed) 90%,transparent 100%),radial-gradient(10% 10% at 85% 50%,color-mix(in srgb,var(--tilo-accent,#2f6fed) 75%,transparent) 90%,transparent 100%),radial-gradient(10% 10% at 50% 85%,color-mix(in srgb,var(--tilo-accent,#2f6fed) 50%,transparent) 90%,transparent 100%),radial-gradient(10% 10% at 15% 50%,color-mix(in srgb,var(--tilo-accent,#2f6fed) 25%,transparent) 90%,transparent 100%);animation:tilo-spin 1.5s linear infinite reverse;}
 .tilo-view [data-widget=Skeleton]{background:var(--tilo-raised,rgba(127,127,127,.1));border-radius:6px;overflow:hidden;position:relative;}
 .tilo-view [data-widget=Skeleton]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 10%,transparent),transparent);transform:translateX(-100%);animation:tilo-shimmer 1.6s ease-in-out infinite;}
 @keyframes tilo-spin{to{transform:rotate(1turn);}}

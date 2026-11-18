@@ -1,19 +1,19 @@
-//! Inventory storage derived only from the acknowledged preparation custody.
+//! Inventory storage derived only from the acknowledged preparation ownership.
 use super::draft::{DraftStatus, DraftStore, ReadyDraft};
 #[cfg(all(test, feature = "native-capture-qualification"))]
 use imager_backend::migration::PinnedDirectory;
 use imager_backend::{
     migration::changed,
-    migration_review::{InventoryScratch, InventoryScratchCustody},
+    migration_review::{InventoryScratch, InventoryScratchOwnership},
     prepared_identity::PreparedIdentity,
 };
 use std::{io, sync::Arc};
 
-struct PreparationCustody {
+struct PreparationOwnership {
     prepared: Arc<PreparedIdentity>,
     ready: ReadyDraft,
 }
-impl InventoryScratchCustody for PreparationCustody {
+impl InventoryScratchOwnership for PreparationOwnership {
     fn check(&self) -> io::Result<()> {
         let _current = self.ready.acquire_preparation_current()?;
         self.prepared.metadata().map(|_| ())
@@ -30,14 +30,14 @@ pub(super) fn review(prepared: Arc<PreparedIdentity>) -> io::Result<Arc<Inventor
     let current = ready.acquire_preparation_current()?;
     let operation = ready.operation_directory();
     if ready.acknowledged_public_key() != Some(prepared.public_key())
-        || acknowledged.custody_directory() != prepared.custody_directory()
+        || acknowledged.ownership_directory() != prepared.ownership_directory()
         || acknowledged.enrolled_device_public_key() != prepared.enrolled_device_public_key()
     {
-        return Err(changed("Inventory preparation custody differs"));
+        return Err(changed("Inventory preparation ownership differs"));
     }
     imager_backend::setup::inventory_storage::review(
         &operation,
-        Arc::new(PreparationCustody { prepared, ready }),
+        Arc::new(PreparationOwnership { prepared, ready }),
         current,
     )
 }
@@ -47,7 +47,7 @@ mod tests {
     use super::*;
     use crate::setup::journey::draft::{DestinationChoice, IdentityKind, PublicChoices};
     use std::{fs, os::unix::fs::PermissionsExt, sync::atomic::AtomicBool};
-    use tilo_identity_host::provisioning::IdentityStorage;
+    use tilo_identity::provisioning::IdentityStorage;
 
     #[test]
     fn acknowledged_live_preparation_spills_and_retirement_revokes_storage() {

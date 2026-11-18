@@ -504,7 +504,7 @@ fn build_meta(
         icon: module.app.icon.clone(),
         category: module.app.category.clone(),
         previously: module.app.previously.clone(),
-        own_records: module.app.own_records,
+        own_resources: module.app.own_resources,
         web: module.app.web.clone(),
         ..PackageMeta::default()
     };

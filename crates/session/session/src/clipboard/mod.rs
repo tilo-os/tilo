@@ -615,7 +615,7 @@ impl Clipboard {
     /// Make the field that holds the keyboard paste: the app in front with the chord it pastes
     /// with, or a field of the session's own (the shell's search) with Ctrl+V.
     fn paste_into_focus(compositor: &mut Compositor) {
-        let window = if compositor.host_takes_keys() {
+        let window = if compositor.surface_takes_keys() {
             None
         } else {
             compositor.focused_window()

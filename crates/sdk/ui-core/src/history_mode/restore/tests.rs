@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
             "future_root",
             "notes_import_v1",
             "tilo:group:a",
-            "tilo:run:a",
+            "tilo:invocation:a",
             "editor_disk_base",
         ] {
             doc.put(ROOT, key, "old").unwrap();
@@ -310,7 +310,7 @@ tilo_test_env::scenario! {
             "future_root",
             "notes_import_v1",
             "tilo:group:a",
-            "tilo:run:a",
+            "tilo:invocation:a",
             "editor_disk_base",
         ] {
             doc.put(ROOT, key, "current").unwrap();
@@ -332,7 +332,7 @@ tilo_test_env::scenario! {
             "future_root",
             "notes_import_v1",
             "tilo:group:a",
-            "tilo:run:a",
+            "tilo:invocation:a",
             "editor_disk_base",
         ] {
             assert_eq!(
@@ -677,7 +677,7 @@ tilo_test_env::scenario! {
     {
         let (mut doc, target, live) = text_fixture();
         let prepared = prepare_content_restore(&doc, &TEXT, &live, &target).unwrap();
-        doc.put(ROOT, "tilo:run:new", "metadata only").unwrap();
+        doc.put(ROOT, "tilo:invocation:new", "metadata only").unwrap();
         let mut before = doc.clone();
         assert_eq!(
             apply_prepared_content_restore(&mut doc, &prepared).unwrap_err(),

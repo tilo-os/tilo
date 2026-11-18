@@ -1,5 +1,5 @@
 //! Read-only native Nextcloud HTTP credential migration after exact account selection.
-//! Upstream custody key: <https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp>
+//! Upstream ownership key: <https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp>
 use super::{Candidate, ConnectionError, Connector, Origin, Provider, SourceRoots};
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -31,7 +31,7 @@ impl Keychain for NativeKeychain {
     }
 }
 impl Connector {
-    /// Read one owner-selected native Nextcloud HTTP credential into sealed Tilo custody.
+    /// Read one owner-selected native Nextcloud HTTP credential into sealed Tilo ownership.
     pub fn import_nextcloud(
         &self,
         roots: &SourceRoots,
@@ -200,11 +200,11 @@ mod tests {
             );
             assert_eq!(account.config["use_files"], true);
             assert!(account.config.get("app_password").is_none());
-            assert!(account_custody::is_copied_secret(
+            assert!(account_credentials::is_copied_secret(
                 &SecretVault::open_in(&fixture.target).get(&id).unwrap()
             ));
             assert_eq!(
-                account_custody::password_credential(
+                account_credentials::password_credential(
                     &SecretVault::open_in(&fixture.target).get(&id).unwrap()
                 )
                 .to_string(),

@@ -103,7 +103,7 @@ class Answer(TypedDict):
 class PageAction(TypedDict):
     seq: int
     time_ms: int
-    actor: str
+    actor: str | None
     device: str
     device_name: str
     device_unknown: bool
@@ -235,7 +235,7 @@ ClearHistoryArgs = TypedDict("ClearHistoryArgs", {
 
 class Application(Resource):
     """Browser — `browser.application`."""
-    __surface__ = "so.tilo.browser@118ee95647821b37"
+    __surface__ = "so.tilo.browser@fa66efeb75407ac8"
     bookmarks: list[Entry[Bookmark]]
     preferences: Settings
     @property
@@ -333,7 +333,7 @@ class Application(Resource):
 
 class PersonalBookmarks(Resource):
     """Personal bookmarks — `browser.personal-bookmarks`."""
-    __surface__ = "so.tilo.browser@118ee95647821b37"
+    __surface__ = "so.tilo.browser@fa66efeb75407ac8"
     @property
     def added(self) -> dict[str, Added]:
         """Read only."""
@@ -406,7 +406,7 @@ class PersonalBookmarks(Resource):
 
 class BrowsingHistory(Resource):
     """Browsing history — `browser.browsing-history`."""
-    __surface__ = "so.tilo.browser@118ee95647821b37"
+    __surface__ = "so.tilo.browser@fa66efeb75407ac8"
     @property
     def visits(self) -> dict[str, Visit]:
         """Read only."""
@@ -479,8 +479,8 @@ class BrowsingHistory(Resource):
 
 
 class PageRecord(Resource):
-    """Page record — `browser.page-record`."""
-    __surface__ = "so.tilo.browser@118ee95647821b37"
+    """Page resource — `browser.page-record`."""
+    __surface__ = "so.tilo.browser@fa66efeb75407ac8"
     @property
     def actions(self) -> dict[str, PageAction]:
         """Read only."""
@@ -493,7 +493,7 @@ class PageRecord(Resource):
 
 class AddressBook(Resource):
     """Address book — `browser.address-book`."""
-    __surface__ = "so.tilo.browser@118ee95647821b37"
+    __surface__ = "so.tilo.browser@fa66efeb75407ac8"
     enabled: bool
     profiles: list[Entry[AddressProfile]]
 

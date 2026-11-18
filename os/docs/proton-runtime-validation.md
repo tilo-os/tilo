@@ -159,7 +159,7 @@ that identity.
   writable storage.
 - Validate the complete nested runtime under Tilo Landlock, syscall policy,
   network grants, and graphics selection before changing production launch
-  plans. The offline console test does not establish those integration gates.
+  plans. The offline console test does not establish those integration checks.
 
 ## Production runtime mount preparation
 

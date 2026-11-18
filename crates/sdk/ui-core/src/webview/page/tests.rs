@@ -917,48 +917,36 @@ tilo_test_env::scenario! {
     // record and its fields are requests like any other, and an answer says
     // where its action stands and what the others did.
     {
-        assert_eq!(PageActor::named(""), None, "nobody is the unnamed actor");
-        assert_eq!(PageActor::named("agent:ada").unwrap().as_str(), "agent:ada");
-        for actor in [
+        assert_eq!(PageActor::listed(""), None, "nobody is the unnamed actor");
+        let nobody = tilo_actions::Actor::from(tilo_actions::MemberId::person(""));
+        assert_eq!(PageActor::of(&nobody), None);
+        let actors = [
             tilo_actions::Actor::from(tilo_actions::MemberId::person("ad".repeat(32))),
             tilo_actions::MemberId::agent("ada").into(),
+            tilo_actions::MemberId::agent("x".repeat(120)).into(),
             tilo_actions::MemberId::bot("relay").into(),
             tilo_actions::Actor::automation("nightly"),
             tilo_actions::Actor::App("so.tilo.notes".into()),
-        ] {
-            let name = PageActor::of(&actor).unwrap();
-            assert_eq!(PageActor::actor_of(name.as_str()), Some(actor));
+        ];
+        let mut handles = Vec::new();
+        for actor in &actors {
+            let handle = PageActor::of(actor).unwrap();
+            assert!(handle.as_str().encode_utf16().count() <= MAX_ACTOR_UNITS);
+            assert_eq!(Some(&handle), PageActor::of(actor).as_ref(), "one actor, one handle");
+            let listed = PageActor::listed(handle.as_str()).unwrap();
+            assert_eq!(listed.actor().as_ref(), Some(actor));
+            handles.push(handle);
         }
-        let long = tilo_actions::Actor::from(tilo_actions::MemberId::agent("x".repeat(120)));
-        let short = PageActor::of(&long).unwrap();
-        assert_eq!(PageActor::actor_of(short.as_str()), None, "{short}");
-        let longest = "p".repeat(MAX_ACTOR_UNITS);
-        assert_eq!(PageActor::named(&longest).unwrap().as_str(), longest);
-        // A longer actor is shortened the same way every time, and
-        // two that begin alike still get two names.
-        let ada = format!("agent:{}:ada", "x".repeat(80));
-        let ben = format!("agent:{}:ben", "x".repeat(80));
-        let short = PageActor::named(&ada).unwrap();
-        assert_eq!(short, PageActor::named(&ada).unwrap());
-        assert_ne!(short, PageActor::named(&ben).unwrap());
-        assert_eq!(short.as_str().encode_utf16().count(), MAX_ACTOR_UNITS);
-        assert!(
-            short.as_str().starts_with(&ada[..ACTOR_HEAD_UNITS]),
-            "{short}"
-        );
-        assert_eq!(short.as_str().as_bytes()[ACTOR_HEAD_UNITS], b'~');
-        // The engine counts UTF-16 units, and a name never ends inside a
-        // character: one outside the basic plane counts two.
-        let wide = "\u{1F600}".repeat(40);
-        let name = PageActor::named(&wide).unwrap();
-        assert!(name.as_str().encode_utf16().count() <= MAX_ACTOR_UNITS);
-        assert!(name.as_str().starts_with(&"\u{1F600}".repeat(15)));
+        handles.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        handles.dedup();
+        assert_eq!(handles.len(), actors.len(), "two actors, two handles");
+        assert_eq!(PageActor::listed("not-named-here").unwrap().actor(), None);
     }
 
     phase the_actor_travels_with_the_request_and_is_absent_without_one;
     {
         let read = PageRequest::Changes { frame: None };
-        let ada = PageActor::named("agent:ada");
+        let ada = PageActor::listed("agent:ada");
         assert_eq!(
             encode_request(3, ada.as_ref(), &read),
             serde_json::json!({"op":"page","request_id":3,"action":"changes",
@@ -969,14 +957,14 @@ tilo_test_env::scenario! {
 
     phase the_record_and_the_fields_are_reads_of_their_own;
     {
-        let record = PageRequest::Ledger { since: 12 };
+        let record = PageRequest::Log { since: 12 };
         assert!(record.valid() && record.only_observes());
         assert_eq!(record.element(), None);
         assert_eq!(record.frame(), None);
         assert_eq!(record.described(), "Read who did what in the tab");
         assert_eq!(
             encode_request(4, None, &record),
-            serde_json::json!({"op":"page","request_id":4,"action":"ledger","since":12})
+            serde_json::json!({"op":"page","request_id":4,"action":"log","since":12})
         );
         let fields = PageRequest::Fields { frame: None };
         assert!(fields.valid() && fields.only_observes());
@@ -990,7 +978,7 @@ tilo_test_env::scenario! {
         };
         assert!(framed.valid());
         assert_eq!(
-            encode_request(6, PageActor::named("rev").as_ref(), &framed),
+            encode_request(6, PageActor::listed("rev").as_ref(), &framed),
             serde_json::json!({"op":"page","request_id":6,"action":"fields",
                 "frame":"1.2","actor":"rev"})
         );
@@ -1172,7 +1160,7 @@ tilo_test_env::scenario! {
                 frames: false,
             };
             assert_eq!(
-                encode_request(6, PageActor::named("agent:ada").as_ref(), &framed),
+                encode_request(6, PageActor::listed("agent:ada").as_ref(), &framed),
                 serde_json::json!({"op":"page","request_id":6,"action":"search","text":"Total",
                     "frame":"2","actor":"agent:ada"})
             );
@@ -1218,6 +1206,60 @@ tilo_test_env::scenario! {
             assert_eq!(encode_request(8, None, &framed)["frame"], "1");
             assert_eq!(framed.main_frame(), forms);
         }
+        // phase: a_table_is_read_as_rows_and_read_on_from_a_row
+        {
+            let tables = PageRequest::Table {
+                element: None,
+                from: None,
+                frame: None,
+            };
+            assert!(tables.valid() && tables.only_observes());
+            assert_eq!(tables.action(), "table");
+            assert_eq!(tables.element(), None);
+            assert_eq!(tables.described(), "Read the page's tables");
+            assert_eq!(
+                encode_request(9, None, &tables),
+                serde_json::json!({"op":"page","request_id":9,"action":"table"})
+            );
+            let on = PageRequest::Table {
+                element: Some("d1e7".into()),
+                from: Some(201),
+                frame: FrameId::parse("2"),
+            };
+            assert!(on.valid() && on.only_observes());
+            assert_eq!(on.element(), Some("d1e7"));
+            assert_eq!(on.described(), "Read table d1e7");
+            assert_eq!(
+                encode_request(10, PageActor::listed("agent:ada").as_ref(), &on),
+                serde_json::json!({"op":"page","request_id":10,"action":"table",
+                    "element":"d1e7","from":201,"frame":"2","actor":"agent:ada"})
+            );
+            assert_eq!(
+                on.main_frame(),
+                PageRequest::Table {
+                    element: Some("d1e7".into()),
+                    from: Some(201),
+                    frame: None,
+                }
+            );
+            // A row is named from 1 within the bound a line is, and a table
+            // by a ref a read printed.
+            for (element, from) in [
+                (None, Some(0)),
+                (None, Some(MAX_OUTLINE_FROM + 1)),
+                (Some("the first table"), None),
+            ] {
+                assert!(
+                    !PageRequest::Table {
+                        element: element.map(str::to_owned),
+                        from,
+                        frame: None,
+                    }
+                    .valid(),
+                    "{element:?} {from:?}"
+                );
+            }
+        }
         // phase: a_form_is_answered_by_name_and_sent_one_way
         {
             let given = serde_json::json!({
@@ -1257,7 +1299,7 @@ tilo_test_env::scenario! {
             assert_eq!(first["submit"], serde_json::json!(true));
             let named = encode_request(
                 11,
-                PageActor::named("agent:ada").as_ref(),
+                PageActor::listed("agent:ada").as_ref(),
                 &fill(FormSubmit::Button("Send application".into()), true),
             );
             assert_eq!(named["submit"], serde_json::json!("Send application"));

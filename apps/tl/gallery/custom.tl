@@ -89,6 +89,25 @@ view custom(c: Custom) {
                 top_label: .some("48"),
                 bottom_label: .some("0"),
             )
+            ui.BarChart(
+                [
+                    .bars(values: [4.0, 6.0, 5.0, 8.0], label: "Closed"),
+                    .bars(values: [2.0, 1.0, 3.0, 1.0], label: "Opened"),
+                ],
+                categories: ["Week 1", "Week 2", "Week 3", "Week 4"],
+                title: .some("Issues each week"),
+                layout: .stacked,
+            )
+            ui.PieChart(
+                [
+                    .slice(label: "Design", value: 38.0),
+                    .slice(label: "Engineering", value: 31.0),
+                    .slice(label: "Research", value: 19.0),
+                ],
+                title: .some("Hours by team"),
+                ring: true,
+                total: .some("88 hours"),
+            )
             ui.GraphCanvas(
                 name: .some("Release pipeline"),
                 connections: [

@@ -637,13 +637,15 @@ mod tests {
     }
 
     /// A host answering with what the shell's `issue-invitation` answers.
-    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestHost> {
-        std::sync::Arc::new(tilo_actions::remote::TestHost::new().completing(move |_| {
-            tilo_actions::ActionOutput {
-                value: Some(value.clone()),
-                resources: Vec::new(),
-            }
-        }))
+    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestProvider> {
+        std::sync::Arc::new(
+            tilo_actions::remote::TestProvider::new().completing(move |_| {
+                tilo_actions::ActionOutput {
+                    value: Some(value.clone()),
+                    resources: Vec::new(),
+                }
+            }),
+        )
     }
 
     fn share_invite(args: &serde_json::Value) -> Vec<u8> {

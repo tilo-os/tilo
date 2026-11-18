@@ -10,9 +10,8 @@ pub use sandbox_core::seccomp::{
 };
 pub use sandbox_core::seccomp::{SeccompProfile, SyscallGrants};
 
-/// The manifest capability that lets an app use `io_uring`
-/// (`sandbox_core::seccomp::IO_URING_SYSCALLS`).
-pub const IO_URING: &str = "io-uring";
+/// The device that lets an app use `io_uring` (`sandbox_core::seccomp::IO_URING_SYSCALLS`).
+pub const IO_URING: collab_types::caps::DeviceCap = collab_types::caps::DeviceCap::IoUring;
 
 /// The syscalls one launch of `manifest` may make beyond the baseline.
 #[must_use]
@@ -21,11 +20,11 @@ pub fn syscall_grants(
     plan: &crate::capabilities::CapabilityPlan,
     image_shipped: bool,
 ) -> SyscallGrants {
-    let declared = manifest.declares_capability(IO_URING);
-    let granted = image_shipped || plan.devices.iter().any(|device| device == IO_URING);
+    let declared = crate::capabilities::declares(manifest, IO_URING);
+    let granted = image_shipped || plan.devices.contains(&IO_URING);
     if declared && !granted {
         eprintln!(
-            "tilo-launcher: {} declares {IO_URING} but holds no grant for it in this workspace; \
+            "tilo-launcher: {} declares io-uring but holds no grant for it in this workspace; \
              io_uring is refused (EPERM) and the app falls back to epoll",
             manifest.package_id
         );
@@ -233,7 +232,7 @@ mod tests {
                 "[entrypoint]\nbin = \"bin/app\"\n",
             );
             let granted = CapabilityPlan {
-                devices: vec![IO_URING.to_string()],
+                devices: vec![IO_URING],
                 ..CapabilityPlan::empty()
             };
             let none = CapabilityPlan::empty();
@@ -241,7 +240,7 @@ mod tests {
             // Undeclared: never, whatever the workspace or the image says.
             assert!(!syscall_grants(&manifest, &granted, true).io_uring);
 
-            manifest.capabilities = vec![IO_URING.to_string()];
+            manifest.capabilities = vec!["io-uring".to_owned()];
             assert!(
                 !syscall_grants(&manifest, &none, false).io_uring,
                 "a user-installed app without the workspace's grant is refused"

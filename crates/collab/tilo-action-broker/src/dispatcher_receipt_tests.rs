@@ -65,7 +65,7 @@ async fn actor_only_local_dispatch_never_receives_certified_evidence() {
             let record = receipt_record(&rig, delivered.id);
             assert!(
                 record.admission.is_none(),
-                "an actor string is not authenticated custody"
+                "an actor string is not authenticated ownership"
             );
             assert!(record.terminal.is_none());
             drop(job);
@@ -117,7 +117,7 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
         actor: delivered.actor,
         presence: None,
     })
-    .expect("the worker accepts the dispatcher's original custody");
+    .expect("the worker accepts the dispatcher's original ownership");
     lease.check().unwrap();
     (delivered.id, receipt_record(rig, delivered.id))
 }
@@ -303,7 +303,7 @@ async fn an_authenticated_dispatch_without_a_host_signer_is_refused() {
             let env = Environment::new();
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
-            let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+            let paths = tilo_identity::provisioning::collaboration_identity_paths();
             std::fs::remove_file(paths.device_privkey).unwrap();
             let before = receipt_barriers(&rig);
             let receipt = ask_own_read(&rig, own_read("unsigned")).await;
@@ -515,7 +515,7 @@ async fn dispatcher_terminal_without_signer_retains_outcome_without_fabricating_
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
             let (wire, admitted) = dispatch_receipt_read(&rig).await;
-            let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+            let paths = tilo_identity::provisioning::collaboration_identity_paths();
             std::fs::remove_file(paths.device_privkey).unwrap();
             let before = receipt_barriers(&rig);
             rig.worker

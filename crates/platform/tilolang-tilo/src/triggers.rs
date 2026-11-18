@@ -1,13 +1,13 @@
 //! Triggers: a package's declaration that one of its actions runs by itself, every so often or
-//! at the time a record's field names, for each of its records of a type.
+//! at the time a document's field names, for each of its documents of a type.
 //!
 //! The host runs a trigger as the app's own invocation of its action ([`crate::authority`]'s
 //! `trigger:` actor), on the workspace's origin, with the app's authority and declared
-//! effects, and the change records in the same edit what the trigger last did for the record
+//! effects, and the change documents in the same edit what the trigger last did for the document
 //! ([`crate::action::TRIGGERS_KEY`]): the period it ran in, or the instant it fired at. A second
 //! run of the same period or instant is refused there, so a trigger runs once across the
 //! workspace's devices, and a run a device missed while everything was off runs once when one
-//! comes up. The run it is is named by the trigger, the record and the instant ([`Due::run`]),
+//! comes up. The run it is is named by the trigger, the document and the instant ([`Due::run`]),
 //! so two devices that each come to run that instant before they have met — a workspace whose
 //! origin moved — write one notice and queue one effect between them.
 
@@ -95,8 +95,8 @@ pub(crate) fn next_due(host: &Host, schedule: &Schedule, now: i64) -> Option<i64
 }
 
 /// Run what `host`'s packages declare due at `now` (seconds since the epoch): each trigger, for
-/// each record of the type it runs for, as the app's own invocation. Returns how many ran. A
-/// run that is refused or fails leaves its record as it is, to be tried again the next time.
+/// each document of the type it runs for, as the app's own invocation. Returns how many ran. A
+/// run that is refused or fails leaves its document as it is, to be tried again the next time.
 pub fn run(host: &Host, now: i64) -> usize {
     let mut ran: usize = 0;
     for due in due(host, now) {
@@ -124,10 +124,10 @@ pub fn run(host: &Host, now: i64) -> usize {
 }
 
 /// The next instant strictly after `now` at which a trigger of `host`'s packages has something
-/// to run: the start of the next period an `every` trigger covers, or the time a record's field
+/// to run: the start of the next period an `every` trigger covers, or the time a document's field
 /// names while that is still to come. `None` when no trigger will come due again.
 ///
-/// The time a record's field names is the first of the type's when the index keeps its column,
+/// The time a document's field names is the first of the type's when the index keeps its column,
 /// so a trigger over a large collection costs the pages up to its next instant, not the
 /// collection.
 #[must_use]
@@ -160,22 +160,22 @@ pub fn next(host: &Host, now: i64) -> Option<i64> {
     next
 }
 
-/// The first record of the type `ty` whose time in `field` is after `now`, as the index keeps it.
+/// The first document of the type `ty` whose time in `field` is after `now`, as the index keeps it.
 fn later(host: &Host, ty: &str, field: &str, now: i64) -> Option<ResourceRef> {
     let pred = time_where(field, CmpOp::Gt, now);
     let out = host.store().first(&ty.to_owned(), &pred, None);
     out.ok().flatten()
 }
 
-/// Every record of the type `ty` whose time in `field` has come at `now`, as the index keeps it.
+/// Every document of the type `ty` whose time in `field` has come at `now`, as the index keeps it.
 fn come(host: &Host, ty: &str, field: &str, now: i64) -> Vec<ResourceRef> {
     let pred = time_where(field, CmpOp::Le, now);
     let out = host.store().select(&ty.to_owned(), &pred, None);
     out.unwrap_or_default()
 }
 
-/// The records of the type `ty` whose time in `field` compares with the instant `now` by `op`:
-/// a range of the field's column, which the index answers without reading the records.
+/// The documents of the type `ty` whose time in `field` compares with the instant `now` by `op`:
+/// a range of the field's column, which the index answers without reading the documents.
 fn time_where(field: &str, op: CmpOp, now: i64) -> Pred {
     Pred::Cmp(
         op,
@@ -200,7 +200,7 @@ struct Due {
 }
 
 impl Due {
-    /// The run this is, by name: the trigger, the record it runs for and the instant it fires
+    /// The run this is, by name: the trigger, the document it runs for and the instant it fires
     /// at. A device that comes to run the same one runs the same run, so the notice it tells
     /// and the effects it queues are the ones the device that ran it first made, held once.
     fn run(&self) -> String {
@@ -263,7 +263,7 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
     out
 }
 
-/// The instant the field `field` holds in the record `at`: `Time`, or an `Option<Time>` with a
+/// The instant the field `field` holds in the document `at`: `Time`, or an `Option<Time>` with a
 /// time in it.
 fn time_of(host: &Host, at: &ResourceRef, field: &str) -> Option<i64> {
     let spec = FieldSpec {
@@ -280,7 +280,7 @@ fn time_of(host: &Host, at: &ResourceRef, field: &str) -> Option<i64> {
     instant(&text)
 }
 
-/// The arguments the trigger passes to its action: the record it runs for, and each root it
+/// The arguments the trigger passes to its action: the document it runs for, and each root it
 /// names.
 fn arguments(
     host: &Host,
@@ -293,7 +293,7 @@ fn arguments(
         match arg {
             TriggerArgMeta::Target => out.push(Value::resource(target)),
             TriggerArgMeta::Root(ty) => {
-                let root = host.root_record(app, ty).ok()?;
+                let root = host.root_resource(app, ty).ok()?;
                 out.push(Value::resource(&root));
             }
         }

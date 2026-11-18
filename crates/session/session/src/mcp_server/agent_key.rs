@@ -41,7 +41,7 @@ const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// Where the grant stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Standing {
+enum GrantState {
     /// Not certified yet: the session has not learnt who its person is.
     Uncertified,
     /// Certified by the person's root, of the identity `identity`, until `expires_at_ns`.
@@ -59,7 +59,7 @@ enum Standing {
 pub(crate) struct AgentKey {
     /// The grant's public key, derived from the secret in the file.
     grant: [u8; 32],
-    standing: Standing,
+    state: GrantState,
 }
 
 /// Why a client presenting a key is refused.
@@ -124,16 +124,15 @@ impl super::Loop {
             }
         };
         let (workspace, name) =
-            match super::where_it_works(handle, person, &facts, false, asked.as_deref()) {
+            match super::where_it_works(handle, person, &facts, asked.as_deref()) {
                 Ok(found) => found,
                 Err(reason) => {
                     let _ = decide.send(super::Consent::Refuse(reason));
                     return;
                 }
             };
-        let (instance, shown) = self.agent_of(&agent, &facts);
-        tracing::info!(client = %facts.client, pid = facts.pid, %instance, %workspace, "MCP server: the person's agent key admits this client");
-        let consent = super::as_member(members, &facts, (&workspace, person), shown);
+        tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: the person's agent key admits this client");
+        let consent = super::as_member(members, &facts, (&workspace, person));
         self.sessions.admit(&session, &consent, &agent, &name);
         let _ = decide.send(consent);
     }
@@ -177,11 +176,11 @@ impl AgentKey {
         }
         Ok(Self {
             grant: grant_key(&key),
-            standing: Standing::Uncertified,
+            state: GrantState::Uncertified,
         })
     }
 
-    /// The agent the grant admits clients as, before their place and instance: named for its key,
+    /// The agent the grant admits clients as: named for its key,
     /// so what it does is attributed to this grant and no other.
     pub(crate) fn agent(&self) -> String {
         let short = hex::encode(self.grant);
@@ -192,17 +191,17 @@ impl AgentKey {
     /// already, revoked, or certifying failed: once per session start, when the session first
     /// knows who its person is.
     pub(crate) fn certify(&mut self, person: &str) {
-        if self.standing != Standing::Uncertified {
+        if self.state != GrantState::Uncertified {
             return;
         }
-        self.standing = match certify(self.grant, person) {
-            Ok(standing) => standing,
+        self.state = match certify(self.grant, person) {
+            Ok(state) => state,
             Err(why) => {
                 tracing::warn!(%why, "MCP server: the agent key's grant is not certified");
-                Standing::Failed(why)
+                GrantState::Failed(why)
             }
         };
-        if let Standing::Certified { expires_at_ns, .. } = &self.standing {
+        if let GrantState::Certified { expires_at_ns, .. } = &self.state {
             tracing::info!(
                 agent = %self.agent(),
                 expires_at_ns,
@@ -216,19 +215,19 @@ impl AgentKey {
         if grant_key(presented) != self.grant {
             return Err(KeyRefusal::NotThisSessions);
         }
-        match &self.standing {
-            Standing::Uncertified => Err(KeyRefusal::Uncertified(
+        match &self.state {
+            GrantState::Uncertified => Err(KeyRefusal::Uncertified(
                 "the session has not certified it yet; try again shortly".into(),
             )),
-            Standing::Failed(why) => Err(KeyRefusal::Uncertified(why.clone())),
-            Standing::Revoked => Err(KeyRefusal::Revoked),
-            Standing::Certified {
+            GrantState::Failed(why) => Err(KeyRefusal::Uncertified(why.clone())),
+            GrantState::Revoked => Err(KeyRefusal::Revoked),
+            GrantState::Certified {
                 identity,
                 expires_at_ns,
             } => {
                 // The person may have revoked it since, from their device list.
                 if revoked(identity, &self.grant) {
-                    self.standing = Standing::Revoked;
+                    self.state = GrantState::Revoked;
                     return Err(KeyRefusal::Revoked);
                 }
                 if now_ns() >= *expires_at_ns {
@@ -242,7 +241,7 @@ impl AgentKey {
     /// Take the grant back: what the agent's card's Revoke does. Its root signs the revocation,
     /// which is kept with the person's devices, and no client of the key is admitted again.
     pub(crate) fn revoke(&mut self) {
-        if let Standing::Certified { identity, .. } = &self.standing {
+        if let GrantState::Certified { identity, .. } = &self.state {
             let revoked = crate::identity_admin::fleet_store().and_then(|fleets| {
                 fleets
                     .revoke(
@@ -257,7 +256,7 @@ impl AgentKey {
                 tracing::warn!(%why, "MCP server: the agent key's revocation was not signed");
             }
         }
-        self.standing = Standing::Revoked;
+        self.state = GrantState::Revoked;
     }
 }
 
@@ -285,8 +284,8 @@ fn revoked(identity: &str, grant: &[u8; 32]) -> bool {
 
 /// Certify `grant` as an agent's grant of the person `person` (their root key in hex), or find it
 /// certified for long enough already, or revoked.
-fn certify(grant: [u8; 32], person: &str) -> Result<Standing, String> {
-    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
+fn certify(grant: [u8; 32], person: &str) -> Result<GrantState, String> {
+    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
         .and_then(|store| store.load_reconciled())
         .map_err(|error| format!("the person's identities could not be read: {error}"))?;
     let profile = registry
@@ -300,7 +299,7 @@ fn certify(grant: [u8; 32], person: &str) -> Result<Standing, String> {
     let now = now_ns();
     if let Ok(fleet) = fleets.load(&profile.id) {
         if fleet.is_revoked(&grant) {
-            return Ok(Standing::Revoked);
+            return Ok(GrantState::Revoked);
         }
         let lasting = fleet
             .certificates
@@ -310,7 +309,7 @@ fn certify(grant: [u8; 32], person: &str) -> Result<Standing, String> {
             .max()
             .filter(|expires| expires.saturating_sub(now) > RENEW_WITHIN_NS);
         if let Some(expires_at_ns) = lasting {
-            return Ok(Standing::Certified {
+            return Ok(GrantState::Certified {
                 identity: profile.id,
                 expires_at_ns,
             });
@@ -327,7 +326,7 @@ fn certify(grant: [u8; 32], person: &str) -> Result<Standing, String> {
             expires_at_ns,
         )
         .map_err(|error| format!("the person's root did not certify it here: {error}"))?;
-    Ok(Standing::Certified {
+    Ok(GrantState::Certified {
         identity: profile.id,
         expires_at_ns,
     })
@@ -368,7 +367,7 @@ mod tests {
             key.admits(text.trim()),
             Err(KeyRefusal::Uncertified(_))
         ));
-        key.standing = Standing::Failed("no root here".into());
+        key.state = GrantState::Failed("no root here".into());
         assert_eq!(
             key.admits(&text),
             Err(KeyRefusal::Uncertified("no root here".into()))

@@ -175,7 +175,7 @@ mod tests {
         let eio = std::io::Error::from_raw_os_error(5);
         assert!(
             read_failure(&path, &eio).starts_with("cannot read"),
-            "a file with no availability record keeps its error"
+            "a file with no availability resource keeps its error"
         );
         let availability = |last_error: Option<&str>| {
             serde_json::to_vec(&serde_json::json!({

@@ -8,8 +8,8 @@ use so.tilo.lang.tasks as tasks
 /// out by `tilolang layout-check` with nothing running.
 ///
 /// They are seed data for shots, tests and benchmarks, never a person's: a real first launch
-/// starts empty. They stage the places over notes and chat records, which is why only they use
-/// those apps: the shell itself draws any app's records through that app's own views.
+/// starts empty. They stage the places over notes and chat documents, which is why only they use
+/// those apps: the shell itself draws any app's documents through that app's own views.
 /// An afternoon of work: three workspaces, four strips of the one in front with windows in
 /// each, two people working alongside and a task running. The shell at rest.
 scenario "an afternoon of work" {
@@ -1399,7 +1399,7 @@ action a_front_workspace(a: Layout, name: Text) -> Text {
     r.key
 }
 
-/// Adds a strip named `name` to `row`, standing at `width`, and returns its key.
+/// Adds a strip named `name` to `row` at `width`, and returns its key.
 action a_strip(a: Layout, row: Text, name: Text, width: Int) -> Text {
     let s = a.strips.insert(
         LayoutStrip(
@@ -1422,7 +1422,7 @@ action a_note_place(a: Layout, strip: Text, index: Int) -> Text {
                 key: "p-{index}",
                 strip: strip,
                 shows: "so.tilo.lang.notes",
-                record: n.id(),
+                resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
                 shell: "so.tilo.shell.strips",
@@ -1433,7 +1433,7 @@ action a_note_place(a: Layout, strip: Text, index: Int) -> Text {
     ""
 }
 
-/// A place of a kind this build has no record for: it stands as it is, which is what a place
+/// A place of a kind this build has no document for: it stands as it is, which is what a place
 /// another shell made looks like.
 action a_foreign_place(a: Layout, strip: Text, index: Int, title: Text) -> Text {
     let p = a.places.insert(
@@ -1532,7 +1532,7 @@ scenario "a layout of places" -> Layout {
             key: "n-1",
             strip: narrow,
             shows: "so.tilo.lang.tasks",
-            record: tasks.tasks.id(),
+            resource: tasks.tasks.id(),
             title: "Tasks",
             name: "Tasks",
             shell: "so.tilo.shell.strips",
@@ -1553,7 +1553,7 @@ scenario "a layout of places" -> Layout {
                 key: "d-{i}",
                 strip: held,
                 shows: "so.tilo.lang.notes",
-                record: n.id(),
+                resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
                 shell: "so.tilo.shell.strips",
@@ -1609,7 +1609,7 @@ scenario "an empty strip" -> Layout {
     a
 }
 
-/// A place standing in for a search: what a person typed into it, and the matches the notes app
+/// A place for a search: what a person typed into it, and the matches the notes app
 /// answered, each a press that shows it in the same place (`query_view`).
 scenario "a place finding what to show" -> Layout {
     let v = viewing
@@ -1659,7 +1659,7 @@ scenario "a reference lands beside its place" -> Layout {
             key: "ch",
             strip: talks,
             shows: "so.tilo.lang.chat",
-            record: design?.id() ?? "",
+            resource: design?.id() ?? "",
             title: "design",
             name: "design — Chat",
             shell: "so.tilo.shell.strips",
@@ -1700,7 +1700,7 @@ scenario "a canvas of clusters" -> Layout {
                 strip: s,
                 shows: "so.tilo.lang.notes",
                 shown_as: "note_editor",
-                record: n.id(),
+                resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
                 shell: "so.tilo.shell.strips",
@@ -1724,7 +1724,7 @@ scenario "a canvas of clusters" -> Layout {
 /// The frameless canvas: the same places with no frame around them, so a resource's view stands
 /// as content and nearness groups it. Each note is its app's editor composed in place; the
 /// terminal beside them is a window, shown in its well.
-scenario "resources standing as content" -> Layout {
+scenario "resources shown as content" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:frameless"
     let a = root Layout
@@ -1746,7 +1746,7 @@ scenario "resources standing as content" -> Layout {
                 strip: s,
                 shows: "so.tilo.lang.notes",
                 shown_as: "note_editor",
-                record: n.id(),
+                resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
                 shell: "so.tilo.shell.strips",
@@ -1768,7 +1768,7 @@ scenario "resources standing as content" -> Layout {
 }
 
 /// The traditional desktop: the preset furthest from the strips and the canvas, staged with
-/// real records. Three windows stand where the person left them over the shell — a note, the
+/// real documents. Three windows stand where the person left them over the shell — a note, the
 /// note beside it and a chat channel — the note in front over the corners of the other two as a
 /// person working leaves them, each still named by its own bar; the in-front place's own resource publishes the commands the top bar's
 /// action strip draws (the notes app's `group:` runs), and the dock rides the foot. The style
@@ -1871,7 +1871,7 @@ scenario "the traditional desktop" {
                 key: "p1",
                 strip: main,
                 shows: "so.tilo.lang.notes",
-                record: n.id(),
+                resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
                 shell: "so.tilo.shell.strips",
@@ -1884,7 +1884,7 @@ scenario "the traditional desktop" {
                 key: "p2",
                 strip: behind,
                 shows: "so.tilo.lang.notes",
-                record: n.id(),
+                resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
                 shell: "so.tilo.shell.strips",
@@ -1897,7 +1897,7 @@ scenario "the traditional desktop" {
                 key: "p3",
                 strip: talk,
                 shows: "so.tilo.lang.chat",
-                record: c.id(),
+                resource: c.id(),
                 title: c.name,
                 name: "{c.name} — Chat",
                 shell: "so.tilo.shell.strips",
@@ -1910,7 +1910,7 @@ scenario "the traditional desktop" {
     v.focused = main
 }
 
-/// The traditional desktop with a terminal in front: a window the shell has no record for, so
+/// The traditional desktop with a terminal in front: a window the shell has no document for, so
 /// the top bar offers the shell's own commands on it — its name, moving it to another row and
 /// closing it — where an app's window would offer the app's.
 scenario "the traditional desktop, a terminal in front" {
@@ -1994,7 +1994,7 @@ scenario "the agents on the bar" {
     if let part = s.bar_parts.find(p -> p.kind == BarPartKind.agent) { show_part(s, part, true) }
 }
 
-/// The text channel named `name` in the chat's sidebar, standing alone or in a category.
+/// The text channel named `name` in the chat's sidebar, on its own or in a category.
 fn channel_named(name: Text) -> Option<chat.TextChannel> {
     for x in chat.conversations.channels {
         match x {

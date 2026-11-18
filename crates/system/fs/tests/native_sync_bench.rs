@@ -283,7 +283,7 @@ impl Daemon {
             .arg(&cache)
             .arg("--acl")
             .arg(dir.join("acl.json"))
-            .args(["--data-plane", "native", "--store"])
+            .args(["--backend", "native", "--store"])
             .arg(store)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

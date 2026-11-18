@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use tilo_identity_host::provisioning::{IdentityStorage, ensure_throwaway_test_identity};
+use tilo_identity::provisioning::{IdentityStorage, ensure_throwaway_test_identity};
 use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::standalone::Standalone;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -83,7 +83,7 @@ fn admit_as_child() -> Result<()> {
         .set("XDG_CACHE_HOME", root.join("cache"))
         .set("XDG_STATE_HOME", root.join("state"))
         .set("TILO_IDENTITY_ROOT", root.join("identity"))
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     match Standalone::start_admission_reporting(&root, 1000, &mut |_| {}) {
         Ok(session) => {
             ensure!(case == "owner", "{case} identity was incorrectly admitted");
@@ -93,7 +93,7 @@ fn admit_as_child() -> Result<()> {
                 "the owner has no workspace"
             );
             ensure!(
-                session.action_host().is_ok(),
+                session.action_provider().is_ok(),
                 "the actual semantic broker must be available"
             );
             ensure!(

@@ -5,14 +5,14 @@
 //! offer round sends it to the device that wins the round: it asks the
 //! workspace's other devices what would run ([`Route`]) and what it reads
 //! ([`Work`]), and picks one among the willing ones that beat the run where
-//! it was asked ([`pick`](crate::placement::pick)).
+//! it was asked ([`pick`](neighbour_wire::placement::pick)).
 //!
-//! The devices asked are the ones the requesting device's own plane resolves
-//! in the workspace ([`ActionPlane::key_holders`](crate::actions::ActionPlane::key_holders)):
+//! The devices asked are the ones the requesting device's own action service resolves
+//! in the workspace ([`ActionService::key_holders`](crate::actions::ActionService::key_holders)):
 //! certified, unrevoked, unexpired, their person a member. An app names no
 //! device and no address. [`OffloadPeers`] is what such a route needs of that
-//! plane — the asking and the running — so the route can live where the
-//! content it weighs does, and a host supplies both from the one plane it
+//! action service — the asking and the running — so the route can live where the
+//! content it weighs does, and a host supplies both from the one action service it
 //! serves.
 //!
 //! Nothing here carries authority: the device that wins the round decides the
@@ -25,7 +25,7 @@ use tilo_actions::ActionOutput;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{InvokeRequest, Pending};
 
-use crate::placement::Choice;
+use neighbour_wire::placement::Choice;
 
 /// What running an offloadable invocation on another device came to.
 #[derive(Clone, Debug, PartialEq)]

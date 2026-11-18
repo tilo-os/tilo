@@ -2,11 +2,11 @@
 //!
 //! The session's own actions — the layout, its undo, the windows, the notices — are decided
 //! by the broker like any other step and carried out on the session's pass, where the layout
-//! lives on the thread that shows it. A role that offers them names this seam; the host's own
+//! lives on the thread that shows it. A role that offers them names this service; the host's own
 //! APIs answer it (the native session's API queue, the page's own).
 
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::{ActionHostError, Completer};
+use tilo_actions::remote::{ActionCallError, Completer};
 
 /// A step of the session's own actions, answered on its pass.
 pub(crate) trait SessionSteps: Send + Sync {
@@ -25,6 +25,6 @@ pub(crate) trait SessionSteps: Send + Sync {
         slot: Option<String>,
         beside: String,
         run: Option<tilo_actions::WorkGroup>,
-        done: Completer<Result<Option<tilo_actions::ActionOutput>, ActionHostError>>,
+        done: Completer<Result<Option<tilo_actions::ActionOutput>, ActionCallError>>,
     );
 }

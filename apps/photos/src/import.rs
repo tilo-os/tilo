@@ -642,7 +642,7 @@ mod tests {
             assert!(read_exif(&path).is_none());
         }
 
-        phase import_keeps_addressed_source_bytes_but_records_upright_dimensions;
+        phase import_keeps_addressed_source_bytes_but_resources_upright_dimensions;
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("portrait.jpg");

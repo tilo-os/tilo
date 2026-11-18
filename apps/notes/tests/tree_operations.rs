@@ -6,42 +6,58 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use notes::actions;
-use notes::{Notebook, PageId, Workspace};
-use ui::tilo_resource::Replica;
+use std::rc::Rc;
 
-fn create(notebook: &mut Replica<Notebook>, parent: Option<PageId>) -> PageId {
+use notes::actions;
+use notes::{Notebook, PageId, PagePart, Pages, Workspace};
+use ui::framework::Chain;
+
+/// The notes as one window holds them, each action carried out as the window
+/// carries it out.
+fn notes() -> Chain<PagePart> {
+    Chain::detached(
+        ui::apps::NOTES,
+        &ui::tilo_resource::MemberId::person("tree-author"),
+        || Rc::new(Notebook::default()),
+    )
+    .unwrap()
+}
+
+fn apply(notes: &Chain<PagePart>, action: &actions::Action) {
+    notes.apply(action).unwrap();
+}
+
+fn create(notes: &Chain<PagePart>, parent: Option<PageId>) -> PageId {
     let id = PageId::new_v4();
-    notebook
-        .apply_action(&actions::create_page_action(id, parent, "Untitled"))
-        .unwrap();
+    apply(notes, &actions::create_page_action(id, parent, "Untitled"));
     id
 }
 
-fn shown(notebook: &Replica<Notebook>) -> Workspace {
-    Workspace::of(&notebook.state().unwrap(), &Workspace::default())
+fn shown(notes: &Chain<PagePart>) -> Workspace {
+    Workspace::of(&Notebook::default(), &notes.parts(), &Workspace::default())
 }
 
 /// Every note's parent is a note of the notebook.
-fn assert_valid(notebook: &Replica<Notebook>) {
-    let workspace = shown(notebook);
-    let state = notebook.state().unwrap();
-    for (_, page) in state.pages.iter() {
+fn assert_valid(notes: &Chain<PagePart>) {
+    let workspace = shown(notes);
+    let parts = notes.parts();
+    let pages = Pages::of(&parts);
+    for (_, page) in pages.iter() {
         if let Some(parent) = &page.parent {
-            assert!(state.pages.contains(parent), "{parent} is a note");
+            assert!(pages.contains(parent), "{parent} is a note");
         }
     }
-    assert_eq!(workspace.pages().len(), state.pages.len());
+    assert_eq!(workspace.pages().len(), pages.len());
 }
 
 #[test]
 fn tree_operations_keep_shape_and_order() {
     eprintln!("phase create_child_of_selected_appends_under_parent");
     {
-        let mut notebook = Replica::<Notebook>::new();
-        let parent = create(&mut notebook, None);
-        let child_a = create(&mut notebook, Some(parent));
-        let child_b = create(&mut notebook, Some(parent));
+        let notebook = notes();
+        let parent = create(&notebook, None);
+        let child_a = create(&notebook, Some(parent));
+        let child_b = create(&notebook, Some(parent));
         let ids: Vec<_> = shown(&notebook)
             .children_of(Some(parent))
             .iter()
@@ -53,12 +69,10 @@ fn tree_operations_keep_shape_and_order() {
 
     eprintln!("phase rename_keeps_tree_shape");
     {
-        let mut notebook = Replica::<Notebook>::new();
-        let id = create(&mut notebook, None);
-        let other = create(&mut notebook, None);
-        notebook
-            .apply_action(&actions::rename_page_action(id, "Renamed"))
-            .unwrap();
+        let notebook = notes();
+        let id = create(&notebook, None);
+        let other = create(&notebook, None);
+        apply(&notebook, &actions::rename_page_action(id, "Renamed"));
         let workspace = shown(&notebook);
         assert_eq!(workspace.get(id).unwrap().title, "Renamed");
         assert_eq!(
@@ -74,16 +88,14 @@ fn tree_operations_keep_shape_and_order() {
 
     eprintln!("phase delete_removes_descendants_and_keeps_sibling_order");
     {
-        let mut notebook = Replica::<Notebook>::new();
-        let a = create(&mut notebook, None);
-        let b = create(&mut notebook, None);
-        let c = create(&mut notebook, None);
-        let b_child = create(&mut notebook, Some(b));
-        let b_grand = create(&mut notebook, Some(b_child));
+        let notebook = notes();
+        let a = create(&notebook, None);
+        let b = create(&notebook, None);
+        let c = create(&notebook, None);
+        let b_child = create(&notebook, Some(b));
+        let b_grand = create(&notebook, Some(b_child));
 
-        notebook
-            .apply_action(&actions::delete_page_action(b))
-            .unwrap();
+        apply(&notebook, &actions::delete_page_action(b));
         let workspace = shown(&notebook);
         for gone in [b, b_child, b_grand] {
             assert!(workspace.get(gone).is_none());
@@ -96,18 +108,16 @@ fn tree_operations_keep_shape_and_order() {
 
     eprintln!("phase no_orphans_after_repeated_delete");
     {
-        let mut notebook = Replica::<Notebook>::new();
-        let root = create(&mut notebook, None);
-        let mid = create(&mut notebook, Some(root));
-        let _leaf = create(&mut notebook, Some(mid));
-        notebook
-            .apply_action(&actions::delete_page_action(mid))
-            .unwrap();
+        let notebook = notes();
+        let root = create(&notebook, None);
+        let mid = create(&notebook, Some(root));
+        let _leaf = create(&notebook, Some(mid));
+        apply(&notebook, &actions::delete_page_action(mid));
         assert_valid(&notebook);
         assert!(
             shown(&notebook).children_of(Some(root)).is_empty(),
             "no surviving descendants of `root` after deleting `mid`"
         );
-        assert_eq!(notebook.state().unwrap().pages.len(), 1);
+        assert_eq!(Pages::of(&notebook.parts()).len(), 1);
     }
 }

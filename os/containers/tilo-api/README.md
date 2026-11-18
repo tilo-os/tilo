@@ -1,10 +1,10 @@
 # Tilo API server
 
-The MCP endpoint of hosted Tilo (`crates/hosting/tilo-api`): the URL an
+The MCP endpoint of hosted Tilo (`crates/server/tilo-api`): the URL an
 agent is told to add, with OAuth 2.1 for agents, sign-in with one of the
 person's devices, and routing of each session to the runtime of the
-workspace's host. It runs in the same namespace as the tilo.sh relay, behind
-the relay's Caddy, which terminates TLS; the server serves plain HTTP.
+workspace's host. It runs in the same namespace as the tilo.sh server, behind
+the server's Caddy, which terminates TLS; the server serves plain HTTP.
 
 ## What the pod needs
 
@@ -23,7 +23,7 @@ the relay's Caddy, which terminates TLS; the server serves plain HTTP.
   | `TILO_API_LISTEN` | `HOST:PORT` to listen on, e.g. `0.0.0.0:8080` |
   | `TILO_API_ORIGIN` | the origin agents reach, e.g. `https://mcp.tilo.sh` |
   | `TILO_API_WEB_ENTRY` | the person's Tilo on the web, e.g. `https://tilo.sh` |
-  | `TILO_API_HOST` | the public origin of the relay their workspaces live on, e.g. `https://eu1.tilo.sh` |
+  | `TILO_API_HOST` | the public origin of the server their workspaces live on, e.g. `https://eu1.tilo.sh` |
   | `TILO_API_STATE` | the state file, e.g. `/state/api.json` |
 
 | | |

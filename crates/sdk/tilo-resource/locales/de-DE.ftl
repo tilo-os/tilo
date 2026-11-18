@@ -14,4 +14,4 @@ example-backups-back-up = Jetzt sichern
 example-backups-restore = Einen Stand wiederherstellen
 
 # Der Name, unter dem ein Eintrag angeboten wird, den niemand benannt hat.
-record-unnamed-item = Ohne Titel
+resource-unnamed-item = Ohne Titel

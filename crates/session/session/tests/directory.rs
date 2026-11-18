@@ -43,10 +43,10 @@ use tilo_desktop_model::{
     WorkspaceId, shared_resource,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::workspaces::RemoveMemberRequest;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server::workspaces::RemoveMemberRequest;
+use tilo_server_client::Host;
+use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
+use tilo_server_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::SheetState as _;
@@ -79,7 +79,7 @@ const AFTER_THE_REMOVAL: Duration = Duration::from_secs(10);
 const COMMUNITY_WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
 
-/// A session on the headless backend, taking no part in the collaboration plane.
+/// A session on the headless backend, taking no part in the peer network.
 fn session() -> Session {
     crate::common::headless(Options {
         collab: false,
@@ -301,16 +301,16 @@ fn ask_to_join(session: &mut Session, key: &str) {
     // carried out says why instead of waiting out the suite's bound for a join never asked for.
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let standing = session
+        let state = session
             .workspace_directory()
             .expect("the session hosts the workspace directory")
             .directory();
-        if standing.listings.iter().any(|listing| listing.key == key) {
+        if state.listings.iter().any(|listing| listing.key == key) {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the sheet lists the workspace to join: {standing:?}"
+            "the sheet lists the workspace to join: {state:?}"
         );
         session.step(Duration::from_millis(10)).unwrap();
     }
@@ -692,7 +692,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    // This computer's certificate lasted a day, and it ran out twelve hours ago: custody starts
+    // This computer's certificate lasted a day, and it ran out twelve hours ago: ownership starts
     // holding one the host would refuse for having run out.
     let (person_hex, expired_paths) = expired_throwaway_identity(&mut home);
     let person = hex::decode(&person_hex)
@@ -720,7 +720,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     look_up_site(&mut session, &lounge.entry);
     ask_to_join(&mut session, &lounge.workspace);
     wait_until_the_lounge_is_here(&mut session, &lounge);
-    // What the join presented was the renewal, not the certificate that had run out: custody holds
+    // What the join presented was the renewal, not the certificate that had run out: ownership holds
     // a certificate issued since, and the workspace holds this device under it.
     let presented = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
         .expect("the presented certificate");
@@ -754,11 +754,11 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
 fn expired_throwaway_identity(
     home: &mut tilo_test_env::TestHome,
 ) -> (String, tilo_user_identity::IdentityPaths) {
-    use tilo_identity_host::provisioning::IdentityStorage;
+    use tilo_identity::provisioning::IdentityStorage;
     let system = home.root().join("system");
     let paths = tilo_user_identity::IdentityPaths::under(&system);
     let identity_dir = home.config().join("tilo").join("identity");
-    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+    tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity_dir,
         &paths,
         IdentityStorage::Files,
@@ -803,14 +803,14 @@ fn expired_throwaway_identity(
     (hex::encode(aged.user_public_key), paths)
 }
 
-/// A session that takes part in the collaboration plane, keeping the workspaces it holds beside
+/// A session that takes part in the peer network, keeping the workspaces it holds beside
 /// `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
         collab: true,
         // This machine's loopback relay, as the lounge's host is: nothing here reaches the
         // person's relays out on the internet.
-        relays: Some(test_relay::loopback()),
+        relays: Some(test_server::loopback()),
         state: Some(state.to_path_buf()),
         ..Options::default()
     })
@@ -831,13 +831,13 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<Link>,
-    relay: Option<tilo_relay::daemon::Relay>,
+    server: Option<tilo_server::daemon::Server>,
     _entry: Responder,
     /// The host's web listener, which serves the entry's host (`/host`) a device asks before its
     /// session enters through the entry.
-    _web: tilo_relay::web::WebHandle,
+    _web: tilo_server::web::WebHandle,
     runtime: tokio::runtime::Runtime,
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the workspace before anyone
     /// joined.
@@ -874,7 +874,7 @@ impl RunOn for tokio::runtime::Handle {
 /// Run `work` on `runtime` , giving up after the suite's hang bound.
 /// The lounge's host, its pages and its governance live on runtimes of their own, so what a test
 /// waits for there is not a step of the session the suite's waits drive: a loaded machine takes a
-/// while over a relay's start, a page's write and a governance change, and a wait with no bound at
+/// while over a server's start, a page's write and a governance change, and a wait with no bound at
 /// all reports nothing when one of them never comes back.
 #[track_caller]
 fn block_on_within<T>(
@@ -896,11 +896,11 @@ fn block_on_within<T>(
 impl Drop for Lounge {
     fn drop(&mut self) {
         drop(self.page.take());
-        let Some(relay) = self.relay.take() else {
+        let Some(server) = self.server.take() else {
             return;
         };
         if std::thread::panicking() {
-            // A test that already failed leaves with its report: the relay's own shutdown is not
+            // A test that already failed leaves with its report: the server's own shutdown is not
             // waited for on the way out of a panic, where a second panic would take the report
             // away.
             return;
@@ -908,7 +908,7 @@ impl Drop for Lounge {
         block_on_within(
             &self.runtime,
             "the lounge's relay to shut down",
-            relay.shutdown(),
+            server.shutdown(),
         );
     }
 }
@@ -946,7 +946,7 @@ impl Lounge {
         let (site, web, entry) = host.serve_site(&runtime, state.path(), admission);
         Self {
             page: Some(page),
-            relay: Some(host.relay),
+            server: Some(host.server),
             _entry: site,
             _web: web,
             runtime,
@@ -971,11 +971,11 @@ fn lounge_key() -> [u8; 32] {
     key
 }
 
-/// The host behind the lounge's site: a relay of this machine, certified under a key root of the
+/// The host behind the lounge's site: a server of this machine, certified under a key root of the
 /// test's own, which governs the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
-    relay: tilo_relay::daemon::Relay,
-    workspaces: tilo_relay::workspaces::Workspaces,
+    server: tilo_server::daemon::Server,
+    workspaces: tilo_server::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
     /// anyone joined.
@@ -1002,24 +1002,24 @@ impl LoungeHost {
             "The lounge's page",
             tilo_user_identity::DeviceCapabilities::member(),
         );
-        let (relay, workspaces, workspace) =
+        let (server, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
-                let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-                    tilo_relay::RelayConfig {
+                let server = tilo_server::daemon::Server::start_with_relay_mode(
+                    tilo_server::ServerConfig {
                         state_root: state.join("host"),
-                        ..tilo_relay::RelayConfig::default()
+                        ..tilo_server::ServerConfig::default()
                     },
-                    tilo_relay::daemon::RelayIdentity {
+                    tilo_server::daemon::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),
                         device_cert: host_cert.clone(),
                         revocations: tilo_user_identity::RevocationList::new(),
                     },
-                    test_relay::relay_mode(),
+                    test_server::relay_mode(),
                 )
                 .await
                 .expect("the lounge's host");
-                let workspaces = relay
+                let workspaces = server
                     .workspaces()
                     .expect("the host governs workspaces")
                     .clone();
@@ -1033,10 +1033,10 @@ impl LoungeHost {
                     .enter(&workspace, &page_device)
                     .await
                     .expect("the site's page is in its workspace");
-                (relay, workspaces, workspace)
+                (server, workspaces, workspace)
             });
         Self {
-            relay,
+            server,
             workspaces,
             host_cert,
             page_key,
@@ -1059,13 +1059,13 @@ impl LoungeHost {
             let _entered = runtime.enter();
             let page = tilo_session_client::start_session(
                 PeerConfig {
-                    host: Host::at(self.relay.node_addr()),
+                    host: Host::at(self.server.node_addr()),
                     cert: self.page_device.clone(),
                     host_cert: self.host_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                     entering: None,
                 },
-                Arc::new(self.page_key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
+                Arc::new(self.page_key.clone()) as Arc<dyn tilo_server_client::DeviceSigner>,
                 Arc::new(MemoryPeerStore::default()),
             );
             page.join_placed(&self.workspace, "Lounge")
@@ -1112,14 +1112,14 @@ impl LoungeHost {
         runtime: &tokio::runtime::Runtime,
         state: &std::path::Path,
         admission: LoungeAdmission,
-    ) -> (Responder, tilo_relay::web::WebHandle, String) {
+    ) -> (Responder, tilo_server::web::WebHandle, String) {
         let web = block_on_within(runtime, "the lounge's host to serve its web", async {
             if admission != LoungeAdmission::Private {
                 self.workspaces
                     .publish(
                         &self.workspace,
                         &self.host_cert,
-                        tilo_relay_protocol::directory::Listing {
+                        tilo_server_protocol::directory::Listing {
                             description: "Where the site's people talk".to_owned(),
                             default_role: Role::Editor,
                         },
@@ -1133,10 +1133,10 @@ impl LoungeHost {
                     .await
                     .expect("the lounge takes people by invitation");
             }
-            self.relay
-                .serve_web(tilo_relay::web::WebConfig {
+            self.server
+                .serve_web(tilo_server::web::WebConfig {
                     listen: "127.0.0.1:0".parse().expect("an address"),
-                    tls: tilo_relay::web::TlsSource::Development {
+                    tls: tilo_server::web::TlsSource::Development {
                         hosts: vec!["localhost".into(), "127.0.0.1".into()],
                         store: Some(state.join("web-dev-identity")),
                     },
@@ -1156,7 +1156,7 @@ impl LoungeHost {
             web.plain_origin
                 .as_deref()
                 .expect("the host's loopback listener"),
-            tilo_relay_protocol::web::API_PREFIX,
+            tilo_server_protocol::web::API_PREFIX,
             entry_path(&self.workspace)
         );
         let origin = Arc::new(Mutex::new(String::new()));
@@ -1729,7 +1729,7 @@ fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
 fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.send(Cmd::Presence(
-        tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
+        tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::desktop(
             &lounge.workspace,
             collab_types::PeerPresencePayload::Arrived,
@@ -1742,7 +1742,7 @@ fn other_member_arrives(lounge: &Lounge) {
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.send(Cmd::Presence(
-        tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
+        tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::pointing(
             &lounge.workspace,
             tab,
@@ -1786,7 +1786,7 @@ fn wait_until_their_pointer(
             std::time::Instant::now() < deadline,
             "gave up waiting for {what} after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer).\n\
              the shell's refusals: {:?}\nthe session says: {:?}\nthe pointers drawn: {:?}\n\
-             the other member's channels and planes: {}",
+             the other member's channels and app_wires: {}",
             tilo_test_env::hang_bound(),
             session.shell_refusals(),
             session.accessible_labels(),

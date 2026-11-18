@@ -10,8 +10,8 @@
 //! persistent Windows user session are mutually isolated.
 //!
 //! Connections are tasks on the process's shared egress runtime
-//! ([`launcher::netgate::egress_runtime`]), at most
-//! [`launcher::netgate::MAX_CONNECTIONS`] at once; past that the listener
+//! ([`launcher::egress_proxy::egress_runtime`]), at most
+//! [`launcher::egress_proxy::MAX_CONNECTIONS`] at once; past that the listener
 //! stops accepting and further guest connections wait in its backlog.
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use launcher::netgate::{Destination, EgressPolicy, NetHostPattern, connect_upstream_async};
+use launcher::egress_proxy::{Destination, EgressPolicy, NetHostPattern, connect_upstream_async};
 use rand::Rng as _;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -103,7 +103,7 @@ impl GuestNetworkProxy {
             address,
             hosts,
             require_guest_peer,
-            launcher::netgate::MAX_CONNECTIONS,
+            launcher::egress_proxy::MAX_CONNECTIONS,
         )
     }
 
@@ -119,7 +119,8 @@ impl GuestNetworkProxy {
         listener
             .set_nonblocking(true)
             .map_err(GuestNetworkError::Bind)?;
-        let runtime = launcher::netgate::egress_runtime().map_err(GuestNetworkError::Runtime)?;
+        let runtime =
+            launcher::egress_proxy::egress_runtime().map_err(GuestNetworkError::Runtime)?;
         let listener = {
             let _entered = runtime.enter();
             tokio::net::TcpListener::from_std(listener).map_err(GuestNetworkError::Bind)?

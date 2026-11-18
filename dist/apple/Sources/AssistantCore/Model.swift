@@ -35,9 +35,70 @@ public struct Person: Identifiable, Hashable, Sendable {
 public enum Session: Equatable, Sendable {
     /// Nobody is signed in on this device. The window shows the way in.
     case signedOut
+    /// A link was taken, and Tilo asks before anything else: whose devices this one would join
+    /// and which server adds it. The window shows what Tilo says and goes on only when the
+    /// person presses.
+    case asked(PairingAsk)
     /// A link was taken, and a device where the person is signed in has yet to say yes.
     case pairing
+    /// A device where the person is signed in asks whether it shows this code. The window shows
+    /// it, so the person compares the two before they approve there.
+    case confirming(code: String)
     case signedIn(Person)
+}
+
+/// What Tilo asks a person before a device is paired with a link, in Tilo's own sentences and
+/// with its own words for the two ways on. A link is written by whoever made it, so the person
+/// reads whose devices this one would join, and on which server, before anyone is asked.
+public struct PairingAsk: Equatable, Sendable {
+    public var heading: String
+    /// Whose device this becomes, which server adds it, and what follows from that.
+    public var said: [String]
+    /// What going on is called, and what stopping is called.
+    public var go: String
+    public var stop: String
+
+    public init(heading: String, said: [String], go: String, stop: String) {
+        self.heading = heading
+        self.said = said
+        self.go = go
+        self.stop = stop
+    }
+}
+
+/// What stands between the person and their assistant's first answer, in the order it is
+/// settled: the assistant itself, then a provider of their own, then a model of it.
+public enum Setup: Equatable, Sendable {
+    /// Not known yet, or nothing to say of it: the main chat shows nothing.
+    case unknown
+    /// The person's assistant is being found, or made where they keep none.
+    case findingAssistant
+    /// As `findingAssistant`, where their server has been making their own workspace for a
+    /// while: the first time it is asked for, that can take minutes, and the main chat says so.
+    case makingWorkspace
+    /// It could not be found or made. The sentence says why, in Tilo's own words where it has any.
+    case noAssistant(String)
+    /// No provider is linked. These can be, each with a key of the person's own.
+    case needsProvider([ProviderChoice])
+    /// A provider is linked and no model answers in the main chat yet. These are offered.
+    case needsModel([ModelChoice])
+    case ready
+}
+
+/// A model provider the person can link with a key of their own.
+public struct ProviderChoice: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<ProviderChoice>
+    public var id: ID
+    public var name: String
+    /// Whether the person's vault keeps a key for it already: it is linked, and a key typed
+    /// for it takes that key's place.
+    public var isLinked: Bool
+
+    public init(id: ID, name: String, isLinked: Bool = false) {
+        self.id = id
+        self.name = name
+        self.isLinked = isLinked
+    }
 }
 
 /// Whether the person's Tilo answers right now.
@@ -65,9 +126,19 @@ public struct Item: Identifiable, Equatable, Sendable {
     /// What a notification says of this piece, in the assistant's words, where that is shorter
     /// than the piece. Nil: the piece's own words.
     public var notice: String?
+    /// What the person can do about this piece with one press where they are told of it, as
+    /// their Tilo offers it there. Empty: the piece's own first answer, where it asks something.
+    public var offers: [Offer]
+    /// How often the person's Tilo told them of this again because it insists. A piece whose
+    /// count went up is told once more.
+    public var raised: Int
+    /// The name a push gives this piece on this device, where the person's Tilo told them of it
+    /// and the device may be told while the app is closed. The system keeps the piece's notice
+    /// under it, so a push for the same piece takes that notice's place.
+    public var toldAs: String?
 
     public init(id: ID, at: Date, _ content: Content, task: TaskLine? = nil, isImportant: Bool = false,
-                keptQuiet: String? = nil, notice: String? = nil) {
+                keptQuiet: String? = nil, notice: String? = nil, offers: [Offer] = [], raised: Int = 0) {
         self.id = id
         self.at = at
         self.content = content
@@ -75,6 +146,8 @@ public struct Item: Identifiable, Equatable, Sendable {
         self.isImportant = isImportant
         self.keptQuiet = keptQuiet
         self.notice = notice
+        self.offers = offers
+        self.raised = raised
     }
 
     public enum Content: Equatable, Sendable {
@@ -101,20 +174,20 @@ public struct Item: Identifiable, Equatable, Sendable {
 public struct TaskLine: Equatable, Sendable {
     public var task: AssistantTask.ID
     public var title: String
-    public var standing: Standing
+    public var state: State
 
-    public init(task: AssistantTask.ID, title: String, standing: Standing = .none) {
+    public init(task: AssistantTask.ID, title: String, state: State = .none) {
         self.task = task
         self.title = title
-        self.standing = standing
+        self.state = state
     }
 
     /// What the line says after the task's name.
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case none
         /// It came at its time. The words say how often, as the source says it: "every day".
         case scheduled(String)
-        /// The assistant acted alone, on a standing instruction.
+        /// The assistant acted alone, on a lasting instruction.
         case actedAlone
         /// The task has this many replies, more than stand here.
         case replies(Int)
@@ -177,11 +250,15 @@ public struct LiveThing: Identifiable, Hashable, Sendable {
     public var title: String
     /// Whatever the source needs to find it again. Nothing but the source's own view reads it.
     public var reference: String
+    /// Whether the source's view says how tall the thing is, as a view on live data does. One that
+    /// does not is given the height every live thing has.
+    public var sizesItself: Bool
 
-    public init(id: ID, title: String, reference: String) {
+    public init(id: ID, title: String, reference: String, sizesItself: Bool = false) {
         self.id = id
         self.title = title
         self.reference = reference
+        self.sizesItself = sizesItself
     }
 }
 
@@ -198,6 +275,66 @@ public struct Choice: Identifiable, Equatable, Sendable {
         self.id = id
         self.title = title
         self.isMain = isMain
+    }
+}
+
+/// Something the person can do about a piece with one press where they are told of it: a
+/// button under its notification. Their Tilo says what it does; the frame shows it and hands
+/// the press back.
+public struct Offer: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Offer>
+    public var id: ID
+    /// What happens, in the words of whoever offers it: "Send it".
+    public var title: String
+    /// The one expected first.
+    public var isMain: Bool
+    /// The agent that offered it, by name. Nil for what Tilo offers itself.
+    public var by: String?
+
+    public init(id: ID, title: String, isMain: Bool = false, by: String? = nil) {
+        self.id = id
+        self.title = title
+        self.isMain = isMain
+        self.by = by
+    }
+}
+
+/// What the person was told while no device of theirs was looking, as their Tilo counts it at
+/// their first look after: one message at the top of the new stretch of the main chat.
+public struct SinceLeft: Equatable, Sendable {
+    /// When the person left.
+    public var left: Date
+    /// What still waits for them: a question not answered, a thing that insists and was not seen.
+    public var waits: [Line]
+    /// What the assistant did without asking, because something of theirs came.
+    public var didAlone: [Line]
+    /// Everything else they were told meanwhile.
+    public var cameIn: [Line]
+
+    public init(left: Date, waits: [Line] = [], didAlone: [Line] = [], cameIn: [Line] = []) {
+        self.left = left
+        self.waits = waits
+        self.didAlone = didAlone
+        self.cameIn = cameIn
+    }
+
+    /// Nothing happened meanwhile: the conversation says nothing of the absence.
+    public var isEmpty: Bool { waits.isEmpty && didAlone.isEmpty && cameIn.isEmpty }
+
+    public struct Line: Identifiable, Equatable, Sendable {
+        public var id: String
+        /// Plain words, as the person was told them.
+        public var words: String
+        /// The piece of the main chat it is about, where that piece is held.
+        public var item: Item.ID?
+        public var isImportant: Bool
+
+        public init(id: String, words: String, item: Item.ID? = nil, isImportant: Bool = false) {
+            self.id = id
+            self.words = words
+            self.item = item
+            self.isImportant = isImportant
+        }
     }
 }
 
@@ -231,17 +368,17 @@ public struct SecretRequest: Identifiable, Equatable, Sendable {
     public var name: String
     /// The person's password manager by name, when one is connected.
     public var manager: String?
-    public var standing: Standing
+    public var state: State
 
-    public init(id: ID, text: String, name: String, manager: String? = nil, standing: Standing = .waiting) {
+    public init(id: ID, text: String, name: String, manager: String? = nil, state: State = .waiting) {
         self.id = id
         self.text = text
         self.name = name
         self.manager = manager
-        self.standing = standing
+        self.state = state
     }
 
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case waiting
         /// The vault has it now.
         case kept
@@ -257,19 +394,26 @@ public struct ConnectionOffer: Identifiable, Equatable, Sendable {
     public var text: String
     /// The service's name.
     public var name: String
-    /// How many commands it offers once the person is signed in, when it says so.
+    /// How many commands it offers, when it says so before anyone signed in.
     public var commands: Int?
-    public var standing: Standing
+    /// Whether the service wants the person to sign in before it is used.
+    public var needsSignIn: Bool
+    /// The site that sign-in happens at, by name, when the service names it.
+    public var signInAt: String?
+    public var state: State
 
-    public init(id: ID, text: String, name: String, commands: Int? = nil, standing: Standing = .waiting) {
+    public init(id: ID, text: String, name: String, commands: Int? = nil, needsSignIn: Bool = true, signInAt: String? = nil,
+                state: State = .waiting) {
         self.id = id
         self.text = text
         self.name = name
         self.commands = commands
-        self.standing = standing
+        self.needsSignIn = needsSignIn
+        self.signInAt = signInAt
+        self.state = state
     }
 
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case waiting
         case connected
         case declined
@@ -287,6 +431,11 @@ public struct EventCard: Equatable, Sendable {
     public var choices: [Choice]
     public var answer: Choice.ID?
 
+    /// What the event keeps for its answers, once the person asked to see it: Markdown.
+    public var shown: String?
+    /// Where the card stands once something the person pressed was carried out.
+    public var settled: Settled?
+
     public init(text: String, automation: Automation, question: Question.ID, choices: [Choice],
                 answer: Choice.ID? = nil) {
         self.text = text
@@ -294,6 +443,13 @@ public struct EventCard: Equatable, Sendable {
         self.question = question
         self.choices = choices
         self.answer = answer
+    }
+
+    public enum Settled: Equatable, Sendable {
+        /// Its person took back that it may act alone: it asks them each time.
+        case asksEachTime
+        /// Its person undid it: it is removed.
+        case undone
     }
 }
 
@@ -322,7 +478,7 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
     public var title: String
     /// What the main agent made it: "Coder". Empty until it has chosen.
     public var role: String
-    public var standing: Standing
+    public var state: State
     /// What runs it and where: "Claude Code on the cloud machine".
     public var runsOn: String
     public var started: Date
@@ -332,12 +488,12 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
     /// A live view of what it works on, when the source has one.
     public var live: LiveThing?
 
-    public init(id: ID, title: String, role: String = "", standing: Standing = .working, runsOn: String = "",
+    public init(id: ID, title: String, role: String = "", state: State = .working, runsOn: String = "",
                 started: Date, startedBy: Starter = .mainAgent, finished: Date? = nil, live: LiveThing? = nil) {
         self.id = id
         self.title = title
         self.role = role
-        self.standing = standing
+        self.state = state
         self.runsOn = runsOn
         self.started = started
         self.startedBy = startedBy
@@ -345,7 +501,7 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
         self.live = live
     }
 
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case working
         case needsYou
         case done
@@ -366,24 +522,24 @@ public struct AssistantTask: Identifiable, Equatable, Sendable {
     public typealias ID = Identifier<AssistantTask>
     public var id: ID
     public var title: String
-    public var standing: Standing
+    public var state: State
     public var isImportant: Bool
     /// What it waits for, or one line about it: "Two versions exist. Which one?"
     public var note: String?
     /// Where it stands in the main chat, when it does.
     public var item: Item.ID?
 
-    public init(id: ID, title: String, standing: Standing, isImportant: Bool = false, note: String? = nil,
+    public init(id: ID, title: String, state: State, isImportant: Bool = false, note: String? = nil,
                 item: Item.ID? = nil) {
         self.id = id
         self.title = title
-        self.standing = standing
+        self.state = state
         self.isImportant = isImportant
         self.note = note
         self.item = item
     }
 
-    public enum Standing: Equatable, Sendable, CaseIterable {
+    public enum State: Equatable, Sendable, CaseIterable {
         case readyForReview
         case needsInput
         case inProgress
@@ -483,8 +639,12 @@ public struct Supervision: Equatable, Sendable {
     }
 
     public struct Usage: Equatable, Sendable {
-        public var messagesToday: Int
-        public var tokensToday: Int
+        /// What the assistant wrote today, as the person's server counted it. Nil where their
+        /// server keeps no such count: the view says so then, and shows no number.
+        public var messagesToday: Int?
+        /// The tokens of the day's model calls, as the person's server counted them. Nil where
+        /// their server keeps no such count.
+        public var tokensToday: Int?
         /// Spent today, in millionths of the currency.
         public var spentTodayMicros: Int
         /// The most it may spend in a day. Nil for no limit.
@@ -492,7 +652,7 @@ public struct Supervision: Equatable, Sendable {
         /// The currency's sign as the person reads it: "$".
         public var currency: String
 
-        public init(messagesToday: Int = 0, tokensToday: Int = 0, spentTodayMicros: Int = 0,
+        public init(messagesToday: Int? = nil, tokensToday: Int? = nil, spentTodayMicros: Int = 0,
                     dailyLimitMicros: Int? = nil, currency: String = "$") {
             self.messagesToday = messagesToday
             self.tokensToday = tokensToday
@@ -508,12 +668,16 @@ public struct Supervision: Equatable, Sendable {
         public var name: String
         public var added: Date
         public var commands: Int
+        /// Whether nobody is signed in to it: its person never did, or the service no longer
+        /// takes their sign-in. It offers nothing until they are.
+        public var needsSignIn: Bool
 
-        public init(id: ID, name: String, added: Date, commands: Int) {
+        public init(id: ID, name: String, added: Date, commands: Int, needsSignIn: Bool = false) {
             self.id = id
             self.name = name
             self.added = added
             self.commands = commands
+            self.needsSignIn = needsSignIn
         }
     }
 

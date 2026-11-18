@@ -321,7 +321,7 @@ impl Interface {
                 let owner = self.schedule_owner(&message.header(), connection).await?;
                 // What is due now is delivered first, so the answer is
                 // what is still to come.
-                self.notifications.deliver_due(&chrono::Local::now());
+                self.notifications.deliver_due(&jiff::Zoned::now());
                 self.notifications
                     .schedules()
                     .pending(&owner)
@@ -329,7 +329,7 @@ impl Interface {
             }),
             "XTiloScheduledAlarms" => reply_to(connection, message, async move {
                 let owner = self.schedule_owner(&message.header(), connection).await?;
-                self.notifications.deliver_due(&chrono::Local::now());
+                self.notifications.deliver_due(&jiff::Zoned::now());
                 self.notifications
                     .schedules()
                     .alarm_states(&owner)
@@ -632,7 +632,7 @@ pub async fn serve(
 /// scheduled it waits for a deadline to be added.
 async fn deliver(notifications: Notifications) {
     loop {
-        let next = notifications.deliver_due(&chrono::Local::now());
+        let next = notifications.deliver_due(&jiff::Zoned::now());
         let changed = notifications.schedules().changed();
         match next {
             Some(next) => {

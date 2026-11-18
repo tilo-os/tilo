@@ -27,13 +27,13 @@ pub const METADATA_XATTR: &str = "user.tilo.metadata";
 /// manifest is deliberately tiny; pages are requested as
 /// `user.tilo.record-index.v2.<revision>.<offset>`. A stale revision is absent
 /// rather than silently serving a different ordering.
-pub const RECORD_INDEX_V2_XATTR: &str = "user.tilo.record-index.v2";
+pub const DOCUMENT_INDEX_V2_XATTR: &str = "user.tilo.record-index.v2";
 /// Opaque-cursor record index for ACL mounts; pages are requested as
 /// `user.tilo.record-index.v3.<revision>.<cursor>`.
-pub const RECORD_INDEX_V3_XATTR: &str = "user.tilo.record-index.v3";
+pub const DOCUMENT_INDEX_V3_XATTR: &str = "user.tilo.record-index.v3";
 /// Exact record resolution is separate from pagination so a late resource can
 /// be reopened without materialising a mount catalogue.
-pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.tilo.record-index.by-id.";
+pub const DOCUMENT_INDEX_BY_ID_XATTR_PREFIX: &str = "user.tilo.record-index.by-id.";
 /// Versioned availability snapshot. Unlike [`SYNC_XATTR`], this distinguishes
 /// transfer, retention policy, replica evidence, and freshness.
 pub const AVAILABILITY_XATTR: &str = "user.tilo.availability";
@@ -48,13 +48,13 @@ pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
 pub const METADATA_PROJECTION_VERSION: u16 = 1;
 pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
-pub const RECORD_INDEX_V2_VERSION: u16 = 2;
-pub const RECORD_INDEX_V3_VERSION: u16 = 3;
+pub const DOCUMENT_INDEX_V2_VERSION: u16 = 2;
+pub const DOCUMENT_INDEX_V3_VERSION: u16 = 3;
 /// Keep a worst-case ordinary page within a single Linux filesystem xattr
 /// block. Some supported hosts (including ext4-backed containers) reject
 /// larger values with `ENOSPC` even when the volume has free space.
-pub const RECORD_INDEX_PAGE_ENTRIES: usize = 32;
-pub const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
+pub const DOCUMENT_INDEX_PAGE_ENTRIES: usize = 32;
+pub const MAX_DOCUMENT_INDEX_PAGE_BYTES: usize = 48 * 1024;
 pub const AVAILABILITY_PROJECTION_VERSION: u16 = 1;
 /// Hard input/output bound for the availability xattr. Parsing an untrusted
 /// value cannot allocate in proportion to an arbitrary value.
@@ -259,10 +259,10 @@ impl DocumentIndexManifestV2 {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != RECORD_INDEX_V2_VERSION
+        if self.schema_version != DOCUMENT_INDEX_V2_VERSION
             || !valid_document_index_revision(&self.revision)
             || self.page_entries == 0
-            || self.page_entries > RECORD_INDEX_PAGE_ENTRIES
+            || self.page_entries > DOCUMENT_INDEX_PAGE_ENTRIES
         {
             return Err("invalid record-index manifest");
         }
@@ -278,10 +278,10 @@ impl DocumentIndexPageV2 {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != RECORD_INDEX_V2_VERSION
+        if self.schema_version != DOCUMENT_INDEX_V2_VERSION
             || !valid_document_index_revision(&self.revision)
-            || self.records.len() > RECORD_INDEX_PAGE_ENTRIES
-            || !self.offset.is_multiple_of(RECORD_INDEX_PAGE_ENTRIES)
+            || self.records.len() > DOCUMENT_INDEX_PAGE_ENTRIES
+            || !self.offset.is_multiple_of(DOCUMENT_INDEX_PAGE_ENTRIES)
         {
             return Err("invalid record-index page");
         }
@@ -296,7 +296,7 @@ impl DocumentIndexPageV2 {
             return Err("record-index identities are not canonical and unique");
         }
         if self.next_offset.is_some_and(|next| {
-            next <= self.offset || !next.is_multiple_of(RECORD_INDEX_PAGE_ENTRIES)
+            next <= self.offset || !next.is_multiple_of(DOCUMENT_INDEX_PAGE_ENTRIES)
         }) {
             return Err("record-index page continuation is invalid");
         }
@@ -312,7 +312,7 @@ impl DocumentIndexExactV2 {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != RECORD_INDEX_V2_VERSION
+        if self.schema_version != DOCUMENT_INDEX_V2_VERSION
             || !valid_document_index_revision(&self.revision)
             || !valid_document_index_path(&self.record.path)
         {
@@ -330,10 +330,10 @@ impl DocumentIndexManifestV3 {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != RECORD_INDEX_V3_VERSION
+        if self.schema_version != DOCUMENT_INDEX_V3_VERSION
             || !valid_document_index_revision(&self.revision)
             || self.initial_cursor.len() != 36
-            || self.page_entries != RECORD_INDEX_PAGE_ENTRIES
+            || self.page_entries != DOCUMENT_INDEX_PAGE_ENTRIES
         {
             return Err("invalid opaque record-index manifest");
         }
@@ -349,9 +349,9 @@ impl DocumentIndexPageV3 {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != RECORD_INDEX_V3_VERSION
+        if self.schema_version != DOCUMENT_INDEX_V3_VERSION
             || !valid_document_index_revision(&self.revision)
-            || self.records.len() > RECORD_INDEX_PAGE_ENTRIES
+            || self.records.len() > DOCUMENT_INDEX_PAGE_ENTRIES
             || self
                 .next_cursor
                 .as_ref()
@@ -622,7 +622,7 @@ mod tests {
                 schema_version: 2,
                 revision: revision.clone(),
                 records: 1,
-                page_entries: RECORD_INDEX_PAGE_ENTRIES,
+                page_entries: DOCUMENT_INDEX_PAGE_ENTRIES,
             }
         );
         round_trip!(
@@ -631,7 +631,7 @@ mod tests {
                 schema_version: 2,
                 revision: revision.clone(),
                 offset: 0,
-                next_offset: Some(RECORD_INDEX_PAGE_ENTRIES),
+                next_offset: Some(DOCUMENT_INDEX_PAGE_ENTRIES),
                 records: vec![record.clone()],
             }
         );
@@ -649,7 +649,7 @@ mod tests {
                 schema_version: 3,
                 revision: revision.clone(),
                 initial_cursor: Uuid::from_u128(11).to_string(),
-                page_entries: RECORD_INDEX_PAGE_ENTRIES,
+                page_entries: DOCUMENT_INDEX_PAGE_ENTRIES,
             }
         );
         round_trip!(

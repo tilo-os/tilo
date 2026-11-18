@@ -39,16 +39,7 @@ pub const BOOKKEEPING_PREFIX: &str = "tilo:";
 pub const MAX_CHECKPOINT_NAME: usize = 80;
 /// The group kind of an agent session's invocations.
 pub const AGENT_SESSION: &str = tilo_actions::context::AGENT_SESSION_GROUP;
-/// The group kind of one command line a shell ran: every file action it and
-/// the commands it dispatched carried out, undone as one.
-pub const COMMAND_GROUP: &str = "command";
-
-/// Whether a group of this kind names a session that undo can name: an agent's
-/// connection, or one command line of a shell.
-#[must_use]
-pub fn names_a_session(kind: &str) -> bool {
-    kind == AGENT_SESSION || kind == COMMAND_GROUP
-}
+pub use tilo_actions::context::{COMMAND_GROUP, names_a_session};
 
 /// Whose steps an undo or redo takes back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,7 +221,7 @@ pub fn is_bookkeeping(patch: &Patch) -> bool {
     root_key(patch).is_some_and(|key| key.starts_with(BOOKKEEPING_PREFIX))
 }
 
-fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
+pub(crate) fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
     classified(doc.committed_document(), version)
 }
 
@@ -336,15 +327,15 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
                     return Kind::Bookkeeping;
                 }
                 OpType::Put(_) | OpType::Make(_) | OpType::Delete => {
-                    let ledger = if matches!(op.action, OpType::Delete) {
+                    let log = if matches!(op.action, OpType::Delete) {
                         &mut redone
                     } else {
                         &mut undone
                     };
                     if let Some(hash) = key.strip_prefix(UNDONE_KEY)
-                        && !ledger.iter().any(|known| known == hash)
+                        && !log.iter().any(|known| known == hash)
                     {
-                        ledger.push(hash.to_owned());
+                        log.push(hash.to_owned());
                     }
                     Some(key.to_string())
                 }
@@ -404,7 +395,7 @@ fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
         .map(|meta| meta.deps.clone())
         .unwrap_or_default();
     let patches = doc.diff(&deps, &[version.hash]);
-    let ledger = |put: bool| -> Vec<String> {
+    let log = |put: bool| -> Vec<String> {
         patches
             .iter()
             .filter(|patch| patch.path.is_empty())
@@ -427,11 +418,11 @@ fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
         // document patch whose inverse could bypass native compensation.
         return Kind::Bookkeeping;
     }
-    let undone = ledger(true);
+    let undone = log(true);
     if !undone.is_empty() {
         return Kind::Undo(undone);
     }
-    let redone = ledger(false);
+    let redone = log(false);
     if !redone.is_empty() {
         return Kind::Redo(redone);
     }
@@ -599,9 +590,9 @@ pub struct StepIndex {
     /// change already has is in `colliding`.
     positions: std::collections::HashMap<u64, u32>,
     colliding: std::collections::HashMap<ChangeHash, u32>,
-    /// Where each gesture's first entry sits, by its author and gesture:
-    /// what a continuation of it reads as.
-    firsts: std::collections::HashMap<(u32, tilo_actions::ActionId), u32>,
+    /// Where each author's last whole entry sits: what a continuation of
+    /// theirs reads as, under its own gesture.
+    firsts: std::collections::HashMap<u32, u32>,
     /// The kinds read so far, by position.
     kinds: std::collections::HashMap<u32, Kind>,
     heads: Vec<ChangeHash>,
@@ -646,27 +637,21 @@ impl StepIndex {
             };
             let position = u32::try_from(self.steps.len()).unwrap_or(u32::MAX);
             // Only what a step keeps of its entry is read; a continuation is
-            // its gesture's first entry again, read before it in causal order.
+            // its author's last whole entry again, read before it in causal
+            // order, under its own gesture.
             let message = meta.message.as_deref();
-            let context = match message {
-                Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
-                    ActionContext::continued_gesture(text)
-                        .and_then(|gesture| self.firsts.get(&(actor, gesture)))
-                        .and_then(|&first| self.version_at(first as usize))
-                        .and_then(|first| first.context)
-                }
-                text => text.and_then(ActionContext::head_of_change_message),
+            let continued = message.and_then(ActionContext::continued_gesture);
+            let context = match continued {
+                Some(gesture) => self
+                    .firsts
+                    .get(&actor)
+                    .and_then(|&first| self.version_at(first as usize))
+                    .and_then(|first| first.context)
+                    .map(|first| first.in_gesture(Some(gesture))),
+                None => message.and_then(ActionContext::head_of_change_message),
             };
-            if let Some(gesture) =
-                context
-                    .as_ref()
-                    .and_then(|context| context.gesture)
-                    .filter(|_| {
-                        !message
-                            .is_some_and(|text| text.starts_with(tilo_actions::CONTINUATION_PREFIX))
-                    })
-            {
-                self.firsts.insert((actor, gesture), position);
+            if context.is_some() && continued.is_none() {
+                self.firsts.insert(actor, position);
             }
             let mut version = Version {
                 hash: meta.hash,

@@ -20,14 +20,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use crate::platform::surfaces::DesktopHost;
+use crate::platform::surfaces::ShellDesktop;
 use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
 use tilo_app_launch::{Connects, Launch, Open};
 use tilo_compositor::{Compositor, ReadableWatch};
 
 use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop_policy::{DesktopPolicy, app_ids_match};
+use tilo_desktop_model::apps::app_ids_match;
 use ui::Theme;
 use ui::WindowAppearance;
 use ui::floating_surface::{
@@ -101,16 +101,9 @@ impl ServiceLinks {
             let mut stream = tilo_files::native::socket::connect(&launcher::services::socket_for(
                 SHELL_UI_SERVICE,
             ))?;
-            let mut frame = serde_json::to_vec(&serde_json::json!({
-                "protocol": SHELL_UI_LAUNCH_PROTOCOL,
-                "app_id": app,
-                // What the app may know of the network was decided for its launch; the window does
-                // not widen it.
-                "network_status_allowed": false,
-            }))
-            .map_err(std::io::Error::other)?;
-            frame.push(b'\n');
-            stream.write_all(&frame)?;
+            // What the app may know of the network was decided for its launch; the window does not
+            // widen it.
+            stream.write_all(&launcher::services::shell_ui_handshake(app, false))?;
             stream.flush()?;
             Ok::<_, std::io::Error>(stream)
         })();
@@ -347,7 +340,7 @@ impl AppTabs {
     pub(crate) fn follow(
         &mut self,
         shared: &crate::Shared,
-        desktop: &DesktopHost,
+        desktop: &ShellDesktop,
         apps: Option<&Apps>,
         compositor: &mut Compositor,
         services: Option<&DesktopServices>,
@@ -392,16 +385,16 @@ impl AppTabs {
 
     /// Publish the pages someone shows, and tell the apps how their windows are watched: a window
     /// that gained a viewer is asked for a whole frame and starts sending, one that lost its last
-    /// viewer is told to stop, and a window's whole frame the plane needs again (a viewer joined, or
+    /// viewer is told to stop, and a window's whole frame the live session needs again (a viewer joined, or
     /// lost the chain of changes) is asked for as the app can only answer. The app is asked on the
     /// connection it offered the page on, which for an app's first window is the one its launcher
     /// made and names no tab; an app that hands nothing over is asked again
     /// ([`crate::page_track::HAND_OVER_BOUND`]).
     fn follow_pages(&mut self, shared: &crate::Shared) {
-        let planes = shared
+        let live_sessions = shared
             .sync
             .as_deref()
-            .map(crate::calls::planes_of)
+            .map(crate::calls::live_sessions_of)
             .unwrap_or_default();
         let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
         // Only a window shared as its page goes out, and only in the workspace it is shared
@@ -411,7 +404,7 @@ impl AppTabs {
         let asks = shared
             .pages
             .borrow_mut()
-            .step(&planes, &shared_pages, now_us);
+            .step(&live_sessions, &shared_pages, now_us);
         for (tab, watch) in asks {
             let offered = self
                 .links
@@ -452,7 +445,7 @@ impl AppTabs {
     /// computer sends reports — or saying it is told nowhere, and still sending to an agent or a
     /// person. A window whose app cannot take a box — it never said it opens one, or it is gone —
     /// leaves the gesture to Chat, which a send has always opened.
-    fn deliver_box(&self, shared: &crate::Shared, desktop: &DesktopHost, compositor: &Compositor) {
+    fn deliver_box(&self, shared: &crate::Shared, desktop: &ShellDesktop, compositor: &Compositor) {
         let Some(ask) = shared.take_box_ask() else {
             return;
         };
@@ -479,7 +472,7 @@ impl AppTabs {
     /// never said it does is never sent a box it would not draw. A session that cannot tell which
     /// window is in front answers with its one window that takes boxes, and none when it holds
     /// more.
-    fn link_in_front(&self, desktop: &DesktopHost, compositor: &Compositor) -> Option<&Link> {
+    fn link_in_front(&self, desktop: &ShellDesktop, compositor: &Compositor) -> Option<&Link> {
         let ready = || self.links.iter().filter(|(_, link)| link.selection);
         // The window in front is the tab exactly one connection speaks for: another window of
         // the same app — one parked after its tab closed, one on another strip — is another
@@ -523,7 +516,7 @@ impl AppTabs {
     ///
     /// The layer decides the place; the app's own geometry is a request it
     /// made when presenting, and its window is laid out by what this says.
-    fn follow_cards(&self, desktop: &DesktopHost, compositor: &mut Compositor) {
+    fn follow_cards(&self, desktop: &ShellDesktop, compositor: &mut Compositor) {
         let placements = self.cards.placements();
         // The windows on the shell this pass, and the launch each belongs to: what tells whether the
         // very window that draws an activity is on screen, rather than another window of the same
@@ -713,7 +706,7 @@ impl AppTabs {
 /// stands in front says nothing about who is talking.
 fn window_of(
     links: &BTreeMap<u64, Link>,
-    desktop: &DesktopHost,
+    desktop: &ShellDesktop,
     connection: u64,
     app: &str,
 ) -> Option<u64> {
@@ -737,7 +730,7 @@ fn window_of(
 /// What one pass of answers reaches: the shell, the services the person answers through, and the
 /// connections the answers go back on.
 struct Answers<'a> {
-    desktop: &'a DesktopHost,
+    desktop: &'a ShellDesktop,
     /// The launches of this session, which a window an app asks for starts through: it is planned
     /// here and started once the shell asks back for the tab it takes.
     apps: Option<&'a Apps>,
@@ -826,7 +819,7 @@ impl Answers<'_> {
 
     /// The payload a frame of the page of `tab` completes: the frame's own, or the one whose
     /// last part it brings ([`ui::floating_surface::PaintPart`]); `None` while parts are still
-    /// to come. A payload that says it is larger than the plane carries is not waited for: its
+    /// to come. A payload that says it is larger than the live session carries is not waited for: its
     /// first part is enough to say so ([`PageTracks::too_large`]). Parts that do not follow
     /// each other join nothing, and the window is asked for a whole frame again.
     fn page_payload(
@@ -994,7 +987,8 @@ impl Answers<'_> {
                 self.desktop.with_policy(|policy| policy.close_tab_of(&app));
             }
             FloatingSurfaceClientMessage::ReopenClosedTab => {
-                self.desktop.with_policy(DesktopPolicy::reopen_closed);
+                self.desktop
+                    .with_policy(|policy| policy.reopen_closed_of(&app));
             }
             FloatingSurfaceClientMessage::CycleTab { forward, .. } => {
                 self.desktop
@@ -1054,11 +1048,16 @@ impl Answers<'_> {
             },
             FloatingSurfaceClientMessage::AllowHostShell => {
                 // The person allows the device's own shell, and the runtime (`ush`) records their
-                // answer; the app hears it here.
-                host_shell.ask(self.services, &app, connection, Arc::clone(&reply));
+                // answer; the app hears it here. Only an app whose launches are handed `ush` has a
+                // use for it, so no other app puts the question in front of the person.
+                if !host_shell.ask(self.services, &app, connection, Arc::clone(&reply)) {
+                    refuse(&reply, &app, &name, NO_USH);
+                }
             }
-            FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => match self.studio {
-                Some(studio) => studio.open_asked(mode),
+            // The person picks the area in the session's own studio, so the app opens a chooser
+            // and is given nothing it did not pick.
+            FloatingSurfaceClientMessage::PickPictureInPictureArea => match self.studio {
+                Some(studio) => studio.open_asked(ui::widget::CaptureMode::Pip),
                 None => refuse(&reply, &app, &name, NO_CAPTURE),
             },
             // A window paints its own action markers, at the control an agent would press, so
@@ -1087,7 +1086,7 @@ impl Answers<'_> {
                 }
             }
             // The app's own geometry is a request: the layer's place stands. A card it presents
-            // again after standing it down draws the activity there once more.
+            // again after bringing it down draws the activity there once more.
             FloatingSurfaceClientMessage::SurfaceGeometry { id, .. } => {
                 self.cards.presented_again(&app, connection, &id);
             }
@@ -1112,10 +1111,6 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::UpdateRegion { .. } => {
                 refuse(&reply, &app, &name, NO_REGION);
             }
-            // The record a window shows, as its app holds it: the one source of what a window
-            // shows, which its place, the layout kept beside it and where anyone here is read
-            // from. An app that keeps one document for the whole workspace speaks on a channel
-            // that names no record, so the window itself has to say it.
             // The record a window shows, as its app holds it. An app that keeps one document for
             // the whole workspace has no record id to name it by (its route is empty), so the
             // document's kind names it: the same on every device, and the same for every window
@@ -1151,7 +1146,7 @@ impl Answers<'_> {
             }
             // A window that runs a page engine offers its page as the thing the
             // workspace sees of it: what it draws is published on the live
-            // plane as its window's page track, and only while a member shows
+            // live session as its window's page track, and only while a member shows
             // it. Tilo apps' own views are never streamed, and neither is
             // anything but a page.
             //
@@ -1257,7 +1252,7 @@ impl Answers<'_> {
 
     /// Open a window of `app` beside the one that sent from its box, showing
     /// the item `anchor` names: the conversation a message from that box
-    /// landed in. It opens in a window of its own, standing over the shell as
+    /// landed in. It opens in a window of its own, over the shell as
     /// the chord floats a window — over the place its strip gave it, the strip
     /// sharing out the card it draws at, so it stands beside what the person
     /// was reading instead of over it. The workspace's record keeps it there
@@ -1270,12 +1265,12 @@ impl Answers<'_> {
         // One window per item: the conversation a window already shows is that window, so a
         // second send into it raises the window it stands in instead of opening another on the
         // same conversation.
-        if let Some(tab) = apps.window_on(app, anchor) {
-            if self.desktop.with_policy(|policy| policy.focus_tab(tab)) {
-                return;
-            }
-            // Its window closed: the item stands nowhere, and a window opens for it again.
-            apps.forget_window_on(app, anchor);
+        if self.desktop.with_policy(|policy| {
+            policy
+                .tab_showing(app, anchor)
+                .is_some_and(|tab| policy.focus_tab(tab))
+        }) {
+            return;
         }
         // The tab is there from this frame and the window starts once the shell asks back, so the
         // tab is the window's instance.
@@ -1385,6 +1380,9 @@ const OTHER_WINDOW: &str = "this connection offered another window's page";
 /// An app asked for the capture studio where the session has none.
 const NO_CAPTURE: &str = "this session has no capture studio";
 
+/// An app that is handed no `ush` asked for the device's own shell.
+const NO_USH: &str = "only an app handed the device's shell (`ush`) asks for it";
+
 /// An app asked to float a surface over the desktop, which this session has
 /// no layer for.
 const NO_REGION: &str = "this session mirrors no floating surface's region";
@@ -1476,7 +1474,7 @@ fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, ap
 /// or closes.
 fn withhold(
     withheld: &mut BTreeMap<u64, String>,
-    desktop: &DesktopHost,
+    desktop: &ShellDesktop,
     compositor: &mut Compositor,
     connection: u64,
     app: &str,
@@ -1526,9 +1524,9 @@ struct Socket {
     /// What ends the loop's wait while an app connects or writes.
     watch: Option<ReadableWatch>,
     path: PathBuf,
-    /// The socket standing at `path` when it was bound: a session that takes the path later binds
-    /// one of its own, which this one leaves standing.
-    standing: Option<(u64, u64)>,
+    /// The socket at `path` when it was bound: a session that takes the path later binds
+    /// one of its own, which this one leaves in place.
+    inode: Option<(u64, u64)>,
     /// The connection number the next connection taken is given.
     next: AtomicU64,
     /// The launches a connection is checked against, the channel its asks arrive on, and the wake
@@ -1550,7 +1548,7 @@ impl Socket {
             .set_nonblocking(true)
             .map_err(|error| format!("serve the shell-ui socket: {error}"))?;
         Ok(Self {
-            standing: standing(&path),
+            inode: inode_of(&path),
             listener,
             watch: None,
             path,
@@ -1593,17 +1591,17 @@ impl Socket {
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        // A session started while this one ran takes the path for its own: the socket standing
+        // A session started while this one ran takes the path for its own: the socket
         // there is that session's, and stays.
-        if standing(&self.path) == self.standing {
+        if inode_of(&self.path) == self.inode {
             let _ = std::fs::remove_file(&self.path);
         }
     }
 }
 
-/// The socket standing at `path` , as the file system names it: the device and inode of the node
+/// The socket at `path` , as the file system names it: the device and inode of the node
 /// there. A bound socket's own file descriptor names an inode of the socket layer, not this one.
-fn standing(path: &std::path::Path) -> Option<(u64, u64)> {
+fn inode_of(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::symlink_metadata(path).ok()?;
     Some((meta.dev(), meta.ino()))
@@ -1894,14 +1892,7 @@ mod tests {
 
     /// What the launcher writes before an app's sandbox starts.
     fn handshake(app: &str) -> Vec<u8> {
-        let mut frame = serde_json::to_vec(&serde_json::json!({
-            "protocol": SHELL_UI_LAUNCH_PROTOCOL,
-            "app_id": app,
-            "network_status_allowed": false,
-        }))
-        .unwrap();
-        frame.push(b'\n');
-        frame
+        launcher::services::shell_ui_handshake(app, false)
     }
 
     /// A socket on a path of the test's own, with the channel its asks land on and a wake that does
@@ -1920,7 +1911,7 @@ mod tests {
     }
 
     /// A session started while another ran takes the shell-ui path for itself. The one that lost it
-    /// ends without a client waking a thread for it, and leaves the socket standing there alone.
+    /// ends without a client waking a thread for it, and leaves the socket in place there alone.
     #[test]
     fn a_session_ending_leaves_the_socket_another_one_took() {
         let dir = tempfile::tempdir().unwrap();
@@ -2021,10 +2012,8 @@ mod tests {
                 "allow_host_shell"
             );
             assert_eq!(
-                name_of(&FloatingSurfaceClientMessage::OpenCaptureStudio {
-                    mode: ui::floating_surface::CaptureStudioProtocolMode::PictureInPicture,
-                }),
-                "open_capture_studio"
+                name_of(&FloatingSurfaceClientMessage::PickPictureInPictureArea),
+                "pick_picture_in_picture_area"
             );
         }
 

@@ -1,5 +1,5 @@
 //! [`ActionEmitter`] — the reusable action-intent queue shared controls use, kept apart from the widget
-//! toolkit itself so a control only pulls in the custody and binding it queues through.
+//! toolkit itself so a control only pulls in the ownership and binding it queues through.
 
 use std::collections::HashSet;
 
@@ -7,12 +7,12 @@ use crate::widget::{ControlBindingKind, ControlBindingMetadata};
 
 /// A reusable action-intent queue for controls, including custom widgets.
 /// Widgets call [`emit`](Self::emit) from any interaction path. Mounted shared
-/// controls install independent host custody; custom producers should use
+/// controls install independent host ownership; custom producers should use
 /// [`new_in`](Self::new_in) with their actual owner domain. The private `take`
 /// path remains only as explicitly unqualified migration compatibility.
 pub struct ActionEmitter<I> {
     binding: tilo_actions::ActionBinding<I>,
-    pending: crate::control_custody::ControlHolder,
+    pending: crate::control_domain::ControlHolder,
     available: bool,
 }
 
@@ -22,8 +22,8 @@ impl<I> ActionEmitter<I> {
     pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::unowned(
-                crate::control_custody::ControlProducerDiscipline::Fifo {
+            pending: crate::control_domain::ControlHolder::unowned(
+                crate::control_domain::ControlProducerDiscipline::Fifo {
                     limit: ACTION_EMITTER_QUEUE_LIMIT,
                 },
             ),
@@ -37,8 +37,8 @@ impl<I> ActionEmitter<I> {
     pub fn new_replace_one(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::unowned(
-                crate::control_custody::ControlProducerDiscipline::ReplaceOne,
+            pending: crate::control_domain::ControlHolder::unowned(
+                crate::control_domain::ControlProducerDiscipline::ReplaceOne,
             ),
             available: true,
         }
@@ -46,19 +46,19 @@ impl<I> ActionEmitter<I> {
 
     pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
         let mut emitter = Self::new(binding);
-        emitter.pending = crate::control_custody::ControlHolder::in_domain(
+        emitter.pending = crate::control_domain::ControlHolder::in_domain(
             domain,
-            crate::control_custody::ControlProducerDiscipline::Fifo {
+            crate::control_domain::ControlProducerDiscipline::Fifo {
                 limit: ACTION_EMITTER_QUEUE_LIMIT,
             },
         );
         emitter
     }
-    pub fn install_custody(
+    pub fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) -> Result<(), crate::control_custody::CustodyError> {
+        attachment: crate::control_domain::DomainAttachment,
+    ) -> Result<(), crate::control_domain::AttachError> {
         self.pending.install(domain, attachment)
     }
 

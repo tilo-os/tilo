@@ -97,8 +97,12 @@ impl AgentModelsModel {
         }
         self.cancel_vertex();
         self.cancel_sign_in();
-        let mut setup =
-            SignInSetup::begin(service, profile.as_ref(), &self.custodian, &self.opener)?;
+        let mut setup = SignInSetup::begin(
+            service,
+            profile.as_ref(),
+            &self.credential_store,
+            &self.opener,
+        )?;
         setup.reply = reply;
         self.sign_in = Some(setup);
         self.changed = true;
@@ -367,7 +371,7 @@ impl AgentModelsModel {
         let mut services = Row::new();
         for (index, service) in agent_sign_in::Service::ALL
             .into_iter()
-            .filter(|service| service.available(&self.custodian))
+            .filter(|service| service.available(&self.credential_store))
             .enumerate()
         {
             if index > 0 {
@@ -435,7 +439,7 @@ mod tests {
     use super::super::tests::{announced, hosted_model, mock, model_over, snapshot};
     use super::*;
     use crate::panes::agent_vertex;
-    use account_custody::{Capability, Custodian, GrantState, OAuthIssuer, OAuthUse};
+    use account_credentials::{Capability, CredentialStore, GrantState, OAuthIssuer, OAuthUse};
     use std::sync::Arc;
 
     struct Browser;
@@ -457,11 +461,12 @@ mod tests {
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
         let vault = tempfile::tempdir().unwrap();
         let (_app, mut pane) = hosted_model(mock(snapshot(None)));
-        pane.custodian = Custodian::for_root(Some(vault.path().to_path_buf())).with_use(
-            OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models),
-            server.provider(),
-            "fake-client",
-        );
+        pane.credential_store = CredentialStore::for_root(Some(vault.path().to_path_buf()))
+            .with_use(
+                OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models),
+                server.provider(),
+                "fake-client",
+            );
         pane.opener = Arc::new(Browser);
         pane.sign_in_to("chatgpt", None, None).unwrap();
         let id = pane.sign_in.as_ref().unwrap().profile_id.clone();
@@ -495,7 +500,7 @@ mod tests {
         );
         assert!(stored.validation_errors().is_empty());
         assert_eq!(
-            pane.custodian
+            pane.credential_store
                 .oauth_grant_state(&agent_vertex::grant_id(&id))
                 .unwrap(),
             GrantState::Usable
@@ -514,7 +519,7 @@ mod tests {
         assert!(pane.sign_in.is_none());
         super::super::tests::forgotten(&mut pane);
         assert_eq!(
-            pane.custodian
+            pane.credential_store
                 .oauth_grant_state(&agent_vertex::grant_id(&cancelled))
                 .unwrap(),
             GrantState::Missing

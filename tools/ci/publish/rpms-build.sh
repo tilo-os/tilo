@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# The build half of the frozen RPM snapshot for this node's architecture: every package the
-# Containerfiles name, signature-checked and laid out as a repository image, into OUT. Holds no
-# secrets.
+# The resolution half of the frozen RPM snapshot for this node's architecture: this tree's
+# package set as the registry holds it — the published snapshot where a release tag published
+# one, else the development snapshot an earlier job mirrored there — and, where neither exists,
+# resolved from Fedora here. Either way it leaves the digest-pinned reference (OUT/ref), so
+# every read of the snapshot after this one is a copy by digest (rpms-copy.sh) and t can serve
+# it for an unchanged tree. Holds no secrets.
 #
-# Where this architecture's set is already published, the published snapshot IS this output: it is
-# verified (signature, provenance of this architecture's package set, the image's own architecture)
-# and copied rather than resolved from Fedora again, which takes a minute where a resolution takes
-# tens of minutes and would in any case produce a different snapshot of the same package set,
-# since Fedora's repositories move. Where it is not published yet, os/Containerfile.rpms is built
-# from the live repositories here (oci-build.sh), and a release tag publishes the result.
+# Where the registry has no set for this tree it leaves the snapshot it built instead
+# (image.oci.tar, digest), which is what a local build installs from, and which the mirror check
+# (rpms-mirror.sh) mirrors when the job is trusted to write it. --ref-only is that pair's: it
+# copies nothing, and leaves the built snapshot where the registry could take none.
 #
-# usage: rpms-build.sh ARCH OUT
-#
-# OUT/epoch is the snapshot's clock: the newest signature among its packages (snapshot_epoch).
+# usage: rpms-build.sh ARCH OUT [--ref-only]
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-arch=${1:?usage: rpms-build.sh ARCH OUT}
+arch=${1:?usage: rpms-build.sh ARCH OUT [--ref-only]}
 out=${2:?}
+ref_only=0
+[[ ${3:-} == --ref-only ]] && ref_only=1
 case $arch in
   x86_64) platform=linux/amd64 ;;
   aarch64) platform=linux/arm64 ;;
@@ -26,92 +27,58 @@ esac
 cd "$repo_root"
 mkdir -p "$out"
 . os/base-snapshot.env
-# The newest signature among the packages of the snapshot archive $1, as seconds: the clock an OS
-# build from the unpublished snapshot takes (with its base's date), which rpm refuses a package
-# signed after. The image itself is dated when it was resolved, which a build of the same packages
-# minutes later moves, and with it every layer built on it; this moves only with the packages.
-snapshot_epoch() {
-  local dir blob epoch
-  dir=$(mktemp -d "$scratch/snapshot.XXXXXX")
-  mkdir "$dir/oci" "$dir/root"
-  tar -C "$dir/oci" -xf "$1"
-  for blob in "$dir"/oci/blobs/sha256/*; do
-    [[ $(head -c 2 "$blob" | od -An -tx1 | tr -d ' \n') == 1f8b ]] || continue
-    tar -C "$dir/root" -xzf "$blob"
-  done
-  epoch=$(LC_ALL=C TZ=UTC rpm -qp --nosignature --nodigest --qf '%{RSAHEADER:pgpsig}\n' "$dir"/root/repo/*.rpm \
-    | sed -n 's/^[^,]*, \(.*\), Key ID .*/\1/p' | TZ=UTC date -f - +%s | sort -n | tail -n 1)
-  rm -rf -- "$dir"
-  [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "no signed package in $1 to date the snapshot by"
-  printf '%s\n' "$epoch"
+fingerprint=$(python3 os/dev/rpm-snapshot-fingerprint.py)
+[[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || die 'no valid package-set fingerprint'
+# Both tags are written `once` (oci-publish.sh): a package set is published once, so a tag names
+# one digest forever and a read of it is a read of content the tree names.
+published=registry.tilo.so/tilo/rpms:set-$fingerprint-$arch
+mirrored=registry.tilo.so/tilo/rpms:dev-set-$fingerprint-$arch
+# The digest TAG names; 1 when the registry has no such manifest, as resolve-rpm-snapshot.sh
+# tells them apart.
+tagged() {
+  local status=0 digest
+  digest=$(python3 "$repo_root/os/dev/registry-manifest.py" digest "$1" 2>"$scratch/registry.err") || status=$?
+  case $status in
+    0) printf '%s' "$digest" ;;
+    1) return 1 ;;
+    *) die "could not ask the registry for $1: $(tail -n 1 "$scratch/registry.err")" ;;
+  esac
 }
 
-# A published snapshot for this package set IS this check's output, so reuse it instead of
-# resolving Fedora again. The job still reaches the registry, so t never serves this check's
-# result (a job that connects out is keyed by every file of its state and not served); that is why
-# the copy matters: it is the honest floor for a check that must ask the network.
-status=0
-bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --exists --arch "$arch" || status=$?
-case $status in
-  0)
-    # resolve-rpm-snapshot.sh verifies the published snapshot against this architecture's package
-    # set, its base and its own architecture. It reads the registry's JSON with jq and copies with
-    # skopeo, and this check image carries neither (the images resolve their snapshot in ci-fast),
-    # so take them here: a few seconds against the resolution they save.
-    if ! command -v jq >/dev/null || ! command -v skopeo >/dev/null; then
-      dnf install -y --setopt=install_weak_deps=False jq skopeo >/dev/null 2>&1 \
-        || die 'could not install jq and skopeo to verify and copy the published snapshot'
-    fi
-    use_cosign
-    ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --arch "$arch")
-    [[ $ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $ref"
-    digest=${ref##*@}
-    # skopeo copies blobs and manifest verbatim, so the layout holds the published digest; buildah
-    # rewrites the manifest, which would make this a second snapshot of the same package set. The
-    # layout is packed here rather than by skopeo's oci-archive:, whose tar carries the time of
-    # the copy: the same snapshot left a different archive in every run, and every check that
-    # needs this one was keyed anew by it (t keys a check by its needs' outputs).
-    layout=$(mktemp -d "$scratch/published.XXXXXX")
-    skopeo copy --quiet "docker://$ref" "oci:$layout"
-    rm -f "$out/image.oci.tar"
-    tar -C "$layout" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
-      --mode=u=rwX,go=rX -cf "$out/image.oci.tar" oci-layout index.json blobs
-    rm -rf -- "$layout"
-    [[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] \
-      || die "the copy of $digest is not the published image"
-    printf '%s\n' "$digest" > "$out/digest"
-    snapshot_epoch "$out/image.oci.tar" > "$out/epoch"
-    printf 'reused the published snapshot %s (%s); dated %s by its newest package signature\n' \
-      "$ref" "$arch" "$(cat "$out/epoch")"
-    exit 0 ;;
-  1)
-    : ;; # not published: resolve Fedora below
-  *) die 'could not ask the registry for the published RPM snapshot' ;;
-esac
-
-# The package set rpm-package-set derived from the OS Containerfiles, where the check gave it:
-# the snapshot is keyed by that list, not by the Containerfiles, which change far more often than
-# the packages they name. Derived here otherwise (a build outside t).
-set_file=${RPM_PACKAGE_SET:-/target/publish/rpm-package-set/$arch.txt}
-if [[ -s $set_file ]]; then
-  packages=$(tr '\n' ' ' < "$set_file")
+ref=
+if digest=$(tagged "$published"); then
+  ref=registry.tilo.so/tilo/rpms@$digest
+elif digest=$(tagged "$mirrored"); then
+  ref=registry.tilo.so/tilo/rpms@$digest
 else
-  packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' ')
+  # The package set rpm-package-set derived from the OS Containerfiles, where the check gave it:
+  # the snapshot is keyed by that list, not by the Containerfiles, which change far more often
+  # than the packages they name. Derived here otherwise (a build outside t).
+  set_file=${RPM_PACKAGE_SET:-/target/publish/rpm-package-set/$arch.txt}
+  if [[ -s $set_file ]]; then
+    packages=$(tr '\n' ' ' < "$set_file")
+  else
+    packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' ')
+  fi
+  [[ -n ${packages// /} ]] || die "no packages for $arch"
+  assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)
+  # The image is dated when its packages were resolved, not by the commit oci-build.sh would read
+  # from the log: an OS build from the snapshot sets its offline dnf clock to the newest of its
+  # base's and its snapshot's dates (os/dev/image-epoch.sh), and rpm refuses a package signed
+  # after that clock. Given as SOURCE_DATE_EPOCH, so nothing reads Git and the check's key is not
+  # its commit's.
+  # The image's last instruction copies only the repository metadata, so a layer per instruction
+  # gives consumers of the snapshot that small layer to read (verify-rpm-snapshot-buildkit.py)
+  # instead of streaming the multi-GB package layer.
+  export TILO_OCI_LAYERS=1
+  SOURCE_DATE_EPOCH=$(date -u +%s) bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" \
+    --platform "$platform" --build-context "github-assets=$assets" \
+    --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$packages"
+  printf 'no tag holds this package set yet: %s keeps the snapshot this job built\n' "$out"
 fi
-[[ -n ${packages// /} ]] || die "no packages for $arch"
-assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)
-# The image is dated when its packages were resolved, not by the commit oci-build.sh would read
-# from the log: an OS build from the published snapshot sets its offline dnf clock to the newest
-# of its base's and its snapshot's dates (os/dev/image-epoch.sh), and rpm refuses a package signed
-# after that clock, as every update signed since the base was mirrored is. A build from this
-# unpublished one takes OUT/epoch instead. Given as SOURCE_DATE_EPOCH, so nothing reads Git and the
-# check's key is not its commit's (t.toml, image-rpms-ARCH).
-# The image's last instruction copies only the repository metadata, so a layer per instruction
-# gives consumers of the snapshot that small layer to read (verify-rpm-snapshot-buildkit.py)
-# instead of streaming the multi-GB package layer.
-export TILO_OCI_LAYERS=1
-SOURCE_DATE_EPOCH=$(date -u +%s) bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" \
-  --platform "$platform" --build-context "github-assets=$assets" \
-  --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$packages"
-snapshot_epoch "$out/image.oci.tar" > "$out/epoch"
-printf 'dated %s by its newest package signature\n' "$(cat "$out/epoch")"
+if [[ -n $ref ]]; then
+  printf '%s\n' "$ref" > "$out/ref"
+  printf 'the snapshot %s is at %s\n' "$arch" "$ref"
+fi
+((ref_only)) && exit 0
+bash tools/ci/publish/rpms-copy.sh "$arch" "$out" "$out"

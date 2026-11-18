@@ -1,16 +1,16 @@
-//! An app's window as the UI host shows it, with nothing on screen: its instance over a workspace of
-//! its own, staged with a scenario, sending its views over the patch protocol to the UI host's
-//! half of the window (`tilo_ui_host::AppWindow`), which the toolkit's frame pipeline lays out
+//! An app's window as the app window shows it, with nothing on screen: its instance over a workspace of
+//! its own, staged with a scenario, sending its views over the patch protocol to the app window's
+//! half of the window (`tilo_app_window::AppWindow`), which the toolkit's frame pipeline lays out
 //! (`ui::headless::FrameHarness`). Nothing is rasterised and no GPU is opened.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::memory::MemoryRecord;
+use tilolang_tilo::instance::memory::MemoryDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::tilolang::Compiled;
 use ui::headless::FrameHarness;
@@ -69,9 +69,9 @@ impl Platform for Packages {
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
+            .map(|(name, value)| (name.as_str(), tilo_app_window::i18n::value_of(value)))
             .collect();
-        tilo_ui_host::i18n::t_args(id, &args)
+        tilo_app_window::i18n::t_args(id, &args)
     }
 
     /// The package's words, and the one language its window is laid out in: the person's when the
@@ -80,7 +80,7 @@ impl Platform for Packages {
         if window {
             ui::i18n::speak_window_language(catalogues);
         } else {
-            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+            tilo_app_window::i18n::add_shared_catalogues(catalogues);
         }
     }
 
@@ -89,15 +89,13 @@ impl Platform for Packages {
     /// days the app reads and the days its window writes both come
     /// from.
     fn now(&self) -> String {
-        ui::clock::local_now()
-            .to_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        format!("{:.0}", ui::clock::local_now().timestamp())
     }
 
     /// The person's zone, as a window knows it: a seed's wall-clock time and every day the window
     /// shows are read in it, so the layout is the one a person in their zone sees.
     fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().local_minus_utc())
+        i64::from(ui::clock::local_now().offset().seconds())
     }
 
     fn zone_name(&self) -> Option<String> {
@@ -107,7 +105,7 @@ impl Platform for Packages {
     /// A day or a time of day in a sentence, as the toolkit's lists show them, so a row's line and
     /// a notice carry no stored text.
     fn shown(&self, kind: &str, value: &str) -> String {
-        tilo_ui_host::date::shown_text(kind, value)
+        tilo_app_window::date::shown_text(kind, value)
     }
 
     /// The time of day as the person reads a clock, in the style they chose.
@@ -250,7 +248,7 @@ impl Staged {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 root: tilolang_tilo::host::RootView {
                     root: staging.root.clone(),
                     view: None,
@@ -264,7 +262,7 @@ impl Staged {
             names,
             Box::new(app_end),
         );
-        let mut record = MemoryRecord::new(staging.record.unwrap_or_default(), ME.to_owned());
+        let mut record = MemoryDocument::new(staging.record.unwrap_or_default(), ME.to_owned());
 
         instance.sync(Some(record.doc()));
         // The window is laid out for a still picture: no frame comes to take in the indexes its
@@ -291,7 +289,7 @@ impl Staged {
                     .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
             });
             for ty in roots {
-                host.root_record(app, &ty)
+                host.root_resource(app, &ty)
                     .map_err(|error| format!("a root could not be made: {error}"))?;
             }
         }
@@ -433,7 +431,7 @@ impl Staged {
             field("Layout", "places"),
             field("LayoutPlace", "key"),
             field("LayoutPlace", "shows"),
-            field("LayoutPlace", "record"),
+            field("LayoutPlace", "resource"),
         ) else {
             return Vec::new();
         };
@@ -450,7 +448,7 @@ impl Staged {
         let Some(tilolang_tilo::DynValue::Collection(items)) = held.get(&places) else {
             return Vec::new();
         };
-        let text = |item: &tilolang_tilo::DynRecord, id: &str| -> String {
+        let text = |item: &tilolang_tilo::DynResource, id: &str| -> String {
             match item.get(id) {
                 Some(tilolang_tilo::DynValue::Text(said)) => said.clone(),
                 Some(tilolang_tilo::DynValue::Register(serde_json::Value::String(said))) => {
@@ -544,7 +542,7 @@ impl Staged {
                 _ => {}
             }
         }
-        fn in_node(node: &tilo_ui_host::UiNode, out: &mut Vec<ResourceRef>) {
+        fn in_node(node: &tilo_app_window::UiNode, out: &mut Vec<ResourceRef>) {
             node.props.values().for_each(|value| in_value(value, out));
             node.children.iter().for_each(|child| in_node(child, out));
         }
@@ -603,7 +601,7 @@ impl Staged {
 
     /// The resource the lists of `tree` stand on: the item a list of a window whose page is its own
     /// shows, by the list's own selection.
-    fn chosen_in(tree: &tilo_ui_host::UiNode) -> Option<ResourceRef> {
+    fn chosen_in(tree: &tilo_app_window::UiNode) -> Option<ResourceRef> {
         let chosen = match tree.props.get("selection") {
             Some(Value::List(items)) => items.iter().find_map(|item| match item {
                 Value::Ref(reference) => Some(reference.clone()),
@@ -617,14 +615,14 @@ impl Staged {
     /// The tree the window composed from what the app sent, as sent: every view that ran is in it,
     /// keyed by its view, even one that drew nothing (a bare `if let` whose value is absent leaves
     /// an empty fragment), where the laid-out widgets keep no trace of it.
-    pub fn composed(&mut self) -> Option<tilo_ui_host::UiNode> {
+    pub fn composed(&mut self) -> Option<tilo_app_window::UiNode> {
         self.window()?.composed().cloned()
     }
 
     /// The trees of the rows the window's lists show, each with its key, in the order the window
-    /// lists them: the lists of the window's own lane first and the lists of every other lane after
-    /// them, each lane's by key, and each list's rows as its own model orders them.
-    pub fn rows(&mut self) -> Vec<(String, tilo_ui_host::UiNode)> {
+    /// lists them: the lists of the window's own level first and the lists of every other level after
+    /// them, each level's by key, and each list's rows as its own model orders them.
+    pub fn rows(&mut self) -> Vec<(String, tilo_app_window::UiNode)> {
         let Some(window) = self.window() else {
             return Vec::new();
         };
@@ -634,7 +632,7 @@ impl Staged {
             .map(|list| {
                 let elsewhere = window
                     .rows_of(&list)
-                    .is_some_and(|rows| rows.borrow().lane() != tilo_ui_host::Lane::Root);
+                    .is_some_and(|rows| rows.borrow().level() != tilo_app_window::Level::Root);
                 (elsewhere, list)
             })
             .collect();
@@ -779,7 +777,7 @@ impl Staged {
     }
 
     /// Show `resource` with the view `view` (an id) in the window's detail
-    /// lane: a view the system shows on a surface of its own (a row view as
+    /// level: a view the system shows on a surface of its own (a row view as
     /// a search result, a proposal view in its card), laid out as a window
     /// is.
     pub fn open_with(&mut self, resource: &ResourceRef, view: &str) {
@@ -930,7 +928,7 @@ mod tests {
     /// offers none of them again: what does not fit the row goes behind the row's one overflow button.
     #[test]
     fn the_window_shows_each_control_once() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let (width, height) = (960, 1080);
@@ -986,7 +984,7 @@ mod tests {
     /// room for the words or not, while a window with an account offers it as the primary button.
     #[test]
     fn a_mail_window_with_no_account_offers_no_new_message() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("mail");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let shown = |scenario: &str, (width, height): (u32, u32), text: f32| {
@@ -1033,7 +1031,7 @@ mod tests {
     /// page opened over the feed does.
     #[test]
     fn a_window_on_its_own_root_offers_no_way_back() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tube");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let back = |scenario: &str| -> bool {
@@ -1063,7 +1061,7 @@ mod tests {
         };
         assert!(
             !back("YouTube cannot be reached"),
-            "a window standing where the app opens has nothing to go back to"
+            "a window where the app opens has nothing to go back to"
         );
         assert!(
             back("a channel"),
@@ -1072,7 +1070,7 @@ mod tests {
     }
 
     /// Every notice's message under `node`, its whole tree walked.
-    fn notice_said(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    fn notice_said(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
         if node.kind == "ui.Banner"
             && let Some(Value::Text(said)) = node.props.get("message")
         {
@@ -1088,7 +1086,7 @@ mod tests {
     /// reads the times of its messages.
     #[test]
     fn a_notice_says_the_time_in_the_clock_the_person_reads() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = app_packages("mail");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1220,7 +1218,7 @@ mod tests {
     /// instead.
     #[test]
     fn a_press_on_the_button_an_app_binds_runs_its_action_once_through_the_api() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("counter");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let (width, height) = (900, 600);
@@ -1393,7 +1391,7 @@ mod tests {
     /// closes with the task reminded, with nothing else to press.
     #[test]
     fn a_quick_choice_answers_a_one_question_form_in_one_press() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let (width, height) = (390, 844);
@@ -1454,7 +1452,7 @@ mod tests {
     /// confirm button stands beside Cancel for the moment typed, and pressing it reminds.
     #[test]
     fn a_moment_typed_into_the_form_is_confirmed_by_its_button() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let (width, height) = (390, 844);
@@ -1515,11 +1513,11 @@ mod tests {
     fn composed_menu(
         staged: &mut Staged,
         wanted: &dyn Fn(&[String]) -> bool,
-    ) -> Option<(tilo_ui_host::UiNode, Vec<String>)> {
+    ) -> Option<(tilo_app_window::UiNode, Vec<String>)> {
         fn find(
-            node: &tilo_ui_host::UiNode,
+            node: &tilo_app_window::UiNode,
             wanted: &dyn Fn(&[String]) -> bool,
-        ) -> Option<tilo_ui_host::UiNode> {
+        ) -> Option<tilo_app_window::UiNode> {
             if node.kind == "ui.MenuButton" && wanted(&menu_rows_of(node)) {
                 return Some(node.clone());
             }
@@ -1531,8 +1529,8 @@ mod tests {
         Some((menu, rows))
     }
 
-    fn menu_rows_of(node: &tilo_ui_host::UiNode) -> Vec<String> {
-        fn rows(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    fn menu_rows_of(node: &tilo_app_window::UiNode) -> Vec<String> {
+        fn rows(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
             if node.kind == "ui.MenuItem" {
                 if let Some(Value::Text(label)) = node.props.get("label") {
                     out.push(label.clone());
@@ -1553,7 +1551,7 @@ mod tests {
     /// person's press is the action's own route.
     #[test]
     fn a_press_on_a_menu_row_the_app_binds_runs_its_action_once_through_the_api() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let task_type = packages
@@ -1663,7 +1661,7 @@ mod tests {
     /// heading's button is a part of the list, and the person's press is the action's own route.
     #[test]
     fn a_press_on_a_sections_add_the_app_binds_runs_its_action_once_through_the_api() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let (width, height) = (1280, 800);
@@ -1725,7 +1723,7 @@ mod tests {
     /// own.
     #[test]
     fn a_press_on_a_rows_check_box_runs_the_actions_the_app_binds_to_it() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let mut staged = Staged::over(
@@ -1764,7 +1762,7 @@ mod tests {
 
     #[test]
     fn a_press_on_a_tasks_row_opens_it_where_it_stands() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         // The task the scenario answers with is the one open;
@@ -1872,7 +1870,7 @@ mod tests {
     /// stands: the window a script answers in is the list, not a page laid over it.
     #[test]
     fn a_scenario_that_answers_with_a_task_shows_its_row_open_in_its_place() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let label = "Call the landlord about the boiler";
@@ -1913,7 +1911,7 @@ mod tests {
                     shown_named(root, "Subtasks"),
                     "the row holds the task's document at {width}×{height}"
                 );
-                // The document lists the task's subtasks: a list inside the row standing open gets
+                // The document lists the task's subtasks: a list inside the row held open gets
                 // its rows, and the row grows to hold them.
                 let outline =
                     named(root, &[ui::a11y::Role::Tree], "Subtasks").expect("the task's outline");
@@ -1931,14 +1929,14 @@ mod tests {
                         row.rect,
                         outline.rect
                     );
-                    // The row standing open folds its branch: a step
+                    // The row held open folds its branch: a step
                     // its document lists does not stand in the list
                     // again.
                     assert_eq!(
                         count_named(root, ROWS, subtask),
                         1,
                         "{subtask:?} stands once at {width}×{height}: in the document of the \
-                         row standing open, or in the list, never both"
+                         row state open, or in the list, never both"
                     );
                 }
                 // The outline's row says how far its branch got, as the list's row of the same task
@@ -1983,7 +1981,7 @@ mod tests {
     /// (`a_step_due_another_day_stands_at_its_lists_first_level`).
     #[test]
     fn a_tasks_steps_that_fold_nothing_stand_on_their_sections_column() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let task = "Call the landlord about the boiler";
@@ -2105,7 +2103,7 @@ mod tests {
     /// list.
     #[test]
     fn a_row_opens_as_a_page_and_back_returns_to_the_list_with_the_row_open() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let task_type = packages
@@ -2217,7 +2215,7 @@ mod tests {
 
     /// Whether a row of a list says `label` as its own title: a subtask's row names the task it
     /// stands under beside it, and is not that task's row.
-    fn holds_title(node: &tilo_ui_host::UiNode, label: &str) -> bool {
+    fn holds_title(node: &tilo_app_window::UiNode, label: &str) -> bool {
         node.props.get("title") == Some(&Value::text(label))
             || node.children.iter().any(|child| holds_title(child, label))
     }
@@ -2276,8 +2274,8 @@ mod tests {
     /// The rows of the menus a row carries: the one its
     /// view places on it, and the actions the host adds to
     /// it.
-    fn menu_labels(row: &tilo_ui_host::UiNode) -> Vec<String> {
-        fn labeled(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    fn menu_labels(row: &tilo_app_window::UiNode) -> Vec<String> {
+        fn labeled(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
             if node.kind == "ui.MenuItem"
                 && let Some(Value::Text(label)) = node.props.get("label")
             {
@@ -2285,7 +2283,7 @@ mod tests {
             }
             node.children.iter().for_each(|child| labeled(child, out));
         }
-        fn collect(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+        fn collect(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
             if node.kind == "part" && node.props.get("name") == Some(&Value::text("menu")) {
                 labeled(node, out);
             }
@@ -2296,7 +2294,7 @@ mod tests {
         out
     }
 
-    /// Whether a list shows `label` as a row standing open into its item: the node the list
+    /// Whether a list shows `label` as a row held open into its item: the node the list
     /// publishes for that row, which is where a screen reader reads it.
     fn shows_open(node: &ui::headless::InspectionNode, label: &str) -> bool {
         let published = node.semantics.as_ref().is_some_and(|semantics| {
@@ -2317,7 +2315,7 @@ mod tests {
     /// same frame on every run, whatever thread finished when.
     #[test]
     fn a_staged_window_settles_on_the_workspace_before_its_frame_is_read() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         for scenario in ["a task that is late", "a busy week"] {
@@ -2407,7 +2405,7 @@ mod tests {
     /// in.
     #[test]
     fn a_tasks_check_box_is_a_target_at_every_layout_a_finger_reaches_it_in() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
         let mut short = Vec::new();
@@ -2493,7 +2491,7 @@ mod tests {
     /// width.
     #[test]
     fn a_service_notice_keeps_one_gutter_over_and_under_it() {
-        tilo_ui_host::i18n::ensure();
+        tilo_app_window::i18n::ensure();
         let gaps = |packages: &Rc<Packages>, scenario: &str, (width, height): (u32, u32)| {
             let id = packages.0.last().expect("the app").meta.app.clone();
             let theme = ui::Theme::light();

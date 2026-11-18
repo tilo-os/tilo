@@ -508,11 +508,11 @@ tilo_test_env::scenario! {
     {
         let base = "type Card {\n    title: Text\n}\ntype B {\n    cards: Collection<Card>\n}\nview line(c: Card) {\n    row(c.title)\n}\n";
         let good = format!(
-            "{base}view tile(c: Card) {{\n    ui.BoardCard(c) {{\n        line(c)\n    }}\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
+            "{base}view tile(c: Card) {{\n    ui.BoardCard(c) {{\n        line(c)\n    }}\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardList(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
         );
         assert!(codes(&good).is_empty(), "{:?}", codes(&good));
         let bad = format!(
-            "{base}view tile(c: Card) {{\n    text(c.title)\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
+            "{base}view tile(c: Card) {{\n    text(c.title)\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardList(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
         );
         assert!(codes(&bad).iter().any(|c| c == "E063"), "{:?}", codes(&bad));
     }

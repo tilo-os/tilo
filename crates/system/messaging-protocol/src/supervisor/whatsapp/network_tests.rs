@@ -39,8 +39,8 @@ use crate::supervisor::whatsapp::WhatsappBootstrap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_messaging::SendError;
 
-pub(in super::super) struct Gate(pub(in super::super) AtomicBool);
-impl AccountAuthority for Gate {
+pub(in super::super) struct Hold(pub(in super::super) AtomicBool);
+impl AccountAuthority for Hold {
     fn check(&self) -> Result<(), SendError> {
         if self.0.load(Ordering::SeqCst) {
             Ok(())
@@ -50,7 +50,7 @@ impl AccountAuthority for Gate {
     }
 }
 struct Pipe {
-    gate: Arc<Gate>,
+    check: Arc<Hold>,
     writes: AtomicUsize,
     closes: AtomicUsize,
     revoke_on_write: bool,
@@ -60,7 +60,7 @@ impl Transport for Pipe {
     async fn send(&self, _: whatsapp_rust::bytes::Bytes) -> whatsapp_rust::anyhow::Result<()> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         if self.revoke_on_write {
-            self.gate.0.store(false, Ordering::SeqCst);
+            self.check.0.store(false, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -69,7 +69,7 @@ impl Transport for Pipe {
     }
 }
 pub(in super::super) struct Provider {
-    gate: Arc<Gate>,
+    check: Arc<Hold>,
     pipe: Arc<Pipe>,
     exchanges: AtomicUsize,
     creates: AtomicUsize,
@@ -80,7 +80,7 @@ impl HttpClient for Provider {
     async fn execute(&self, _: HttpRequest) -> whatsapp_rust::anyhow::Result<HttpResponse> {
         self.exchanges.fetch_add(1, Ordering::SeqCst);
         if self.revoke_on_call {
-            self.gate.0.store(false, Ordering::SeqCst);
+            self.check.0.store(false, Ordering::SeqCst);
         }
         Ok(HttpResponse {
             status_code: 200,
@@ -98,7 +98,7 @@ impl TransportFactory for Provider {
     )> {
         self.creates.fetch_add(1, Ordering::SeqCst);
         if self.revoke_on_call {
-            self.gate.0.store(false, Ordering::SeqCst);
+            self.check.0.store(false, Ordering::SeqCst);
         }
         let (_, receiver) = whatsapp_rust::async_channel::bounded(1);
         Ok((self.pipe.clone(), receiver))
@@ -107,16 +107,16 @@ impl TransportFactory for Provider {
 pub(in super::super) fn fixture(
     revoke_on_call: bool,
     revoke_on_write: bool,
-) -> (Arc<Gate>, Arc<Provider>, Network) {
-    let gate = Arc::new(Gate(AtomicBool::new(true)));
+) -> (Arc<Hold>, Arc<Provider>, Network) {
+    let check = Arc::new(Hold(AtomicBool::new(true)));
     let pipe = Arc::new(Pipe {
-        gate: gate.clone(),
+        check: check.clone(),
         writes: AtomicUsize::new(0),
         closes: AtomicUsize::new(0),
         revoke_on_write,
     });
     let provider = Arc::new(Provider {
-        gate: gate.clone(),
+        check: check.clone(),
         pipe,
         exchanges: AtomicUsize::new(0),
         creates: AtomicUsize::new(0),
@@ -126,12 +126,12 @@ pub(in super::super) fn fixture(
         http: provider.clone(),
         transport: provider.clone(),
     }
-    .guarded(gate.clone());
-    (gate, provider, network)
+    .guarded(check.clone());
+    (check, provider, network)
 }
 
 #[tokio::test]
-async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_network() {
+async fn native_profile_bootstrap_refuses_revocation_before_sdk_ownership_or_network() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("sdk");
     let owner = crate::journal::Owner {
@@ -141,15 +141,15 @@ async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_netwo
         account: "profile-account".into(),
         linking_generation: 1,
     };
-    let (gate, provider, network) = fixture(false, false);
-    gate.0.store(false, Ordering::SeqCst);
+    let (check, provider, network) = fixture(false, false);
+    check.0.store(false, Ordering::SeqCst);
     assert!(
         WhatsappBootstrap::open_profile(
             &root,
             owner.clone(),
             secret_vault::VaultKey::from_bytes([23; 32]),
             network,
-            gate,
+            check,
         )
         .await
         .is_err()
@@ -157,13 +157,13 @@ async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_netwo
     assert!(!root.exists());
     assert_eq!(provider.exchanges.load(Ordering::SeqCst), 0);
     assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
-    let (gate, provider, network) = fixture(false, false);
+    let (check, provider, network) = fixture(false, false);
     let bootstrap = WhatsappBootstrap::open_profile(
         &root,
         owner,
         secret_vault::VaultKey::from_bytes([23; 32]),
         network,
-        gate,
+        check,
     )
     .await
     .unwrap();
@@ -176,8 +176,8 @@ async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_netwo
 
 #[tokio::test]
 async fn revoked_native_network_never_reaches_http_or_connection_factory() {
-    let (gate, provider, network) = fixture(false, false);
-    gate.0.store(false, Ordering::SeqCst);
+    let (check, provider, network) = fixture(false, false);
+    check.0.store(false, Ordering::SeqCst);
     assert!(
         network
             .http
@@ -211,13 +211,13 @@ async fn transport_created_during_revocation_is_closed_and_not_lent() {
 }
 #[tokio::test]
 async fn existing_sdk_transport_rechecks_each_write_and_permits_teardown() {
-    let (gate, provider, network) = fixture(false, false);
+    let (check, provider, network) = fixture(false, false);
     let (transport, _) = network.transport.create_transport().await.unwrap();
     transport
         .send(whatsapp_rust::bytes::Bytes::from_static(b"fixture frame"))
         .await
         .unwrap();
-    gate.0.store(false, Ordering::SeqCst);
+    check.0.store(false, Ordering::SeqCst);
     assert!(
         transport
             .send(whatsapp_rust::bytes::Bytes::from_static(b"refused frame"))

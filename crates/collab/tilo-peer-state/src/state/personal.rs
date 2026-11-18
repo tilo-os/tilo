@@ -833,9 +833,9 @@ impl PersonalStore {
                 cert,
                 revocations,
             } => {
-                // A device at another peer protocol version is admitted to
-                // nothing: what it says is not read at this one.
-                if protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+                // A device at a peer protocol version this one does not work
+                // with is admitted to nothing: what it says is not read here.
+                if !neighbour_wire::works_with_peer_version(protocol) {
                     return Err(format!(
                         "the device speaks peer protocol {protocol}, this one {}",
                         neighbour_wire::PEER_PROTOCOL_VERSION
@@ -1486,7 +1486,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_persons_records_are_written_and_held_only_by_their_standing_devices;
+        fn a_persons_records_are_written_and_held_only_by_their_current_devices;
 
         phase a_record_written_on_one_device_is_read_on_another_of_the_same_identity;
         {

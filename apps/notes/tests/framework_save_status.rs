@@ -1,5 +1,5 @@
 //! The framework-hosted app reports the durability the host measures: a note
-//! written to the record's storage reads "Saved", never the session-only
+//! written to the resource's storage reads "Saved", never the session-only
 //! warning, and is still there after the app is closed and reopened.
 
 use notes::actions::create_page_action;
@@ -35,8 +35,11 @@ fn save_labels(app: &mut TestApp<NotesShell>) -> Vec<String> {
 fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.invoke(Invoke::apply(&create_page_action(PageId::new_v4(), None, "Groceries")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(PageId::new_v4(), None, "Groceries")).unwrap(),
+    )
+    .unwrap();
     app.flush().unwrap();
     app.settle();
     assert_eq!(
@@ -46,7 +49,7 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     );
 
     let mut app = app.reopen().unwrap();
-    let titles = app.read_document(|doc| {
+    let titles = crate::framework_support::notes_doc(&app, |doc| {
         read::list_pages(doc)
             .into_iter()
             .map(|page| page.title)
@@ -68,9 +71,9 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
 }
 
 /// Run frames only when the live host would: for queued work (a wake the
-/// record's store raised once a write landed among it), an animation or a
+/// resource's store raised once a write landed among it), an animation or a
 /// due wake deadline, each followed by the idle pass that hands edits to the
-/// record's writer. Returns once `until` holds or `budget` runs out.
+/// resource's writer. Returns once `until` holds or `budget` runs out.
 fn idle(
     app: &mut TestApp<NotesShell>,
     budget: std::time::Duration,

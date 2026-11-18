@@ -109,7 +109,7 @@ impl FormRun {
 
 /// How a published form is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum FormSource {
     /// The page was read and asks it.
     Read,
     /// The site was read on an earlier visit; this page has not been.
@@ -441,22 +441,22 @@ fn finished(
     id: String,
     label: String,
     description: String,
-    standing: Standing,
+    source: FormSource,
 ) -> ActionSpec {
     let ty = spec.type_mut();
     ty.id = id;
     ty.label = label;
     let spec = spec.with_description(description);
-    match standing {
-        Standing::Changed => spec.unavailable(FORM_CHANGED, withdrawn()),
-        Standing::Read | Standing::Remembered => spec,
+    match source {
+        FormSource::Changed => spec.unavailable(FORM_CHANGED, withdrawn()),
+        FormSource::Read | FormSource::Remembered => spec,
     }
 }
 
 /// What the action of `form` says of itself.
 fn answer_description(
     form: &RememberedForm,
-    standing: Standing,
+    source: FormSource,
     then: &[String],
     same: usize,
 ) -> String {
@@ -486,7 +486,7 @@ fn answer_description(
              fill-page-form answers another by its id."
         ));
     }
-    if standing == Standing::Remembered {
+    if source == FormSource::Remembered {
         said.push(
             "Published from what was remembered of this site, before this page was read: a \
              form that has changed since is refused with form_changed and nothing is placed."
@@ -508,7 +508,7 @@ fn answer_description(
 /// bound to this form and asking for its questions.
 fn answer_action(
     form: &RememberedForm,
-    standing: Standing,
+    source: FormSource,
     then: &[String],
     same: usize,
 ) -> ActionSpec {
@@ -528,15 +528,15 @@ fn answer_action(
         spec,
         answer_id(&form.signature),
         label,
-        answer_description(form, standing, then, same),
-        standing,
+        answer_description(form, source, then, same),
+        source,
     )
 }
 
 /// The action that sends `form`, when the form has a button that does: the
 /// effect that sends a form, bound to this form, its button one of the
 /// form's own and asked for only when the form has several.
-fn send_action(form: &RememberedForm, standing: Standing) -> Option<ActionSpec> {
+fn send_action(form: &RememberedForm, source: FormSource) -> Option<ActionSpec> {
     let buttons = distinct(&form.submit);
     if buttons.is_empty() {
         return None;
@@ -574,7 +574,7 @@ fn send_action(form: &RememberedForm, standing: Standing) -> Option<ActionSpec> 
             "its button"
         }
     )];
-    if standing == Standing::Remembered {
+    if source == FormSource::Remembered {
         said.push(
             "Published from what was remembered of this site, before this page was read: a \
              form that has changed since is refused with form_changed and nothing is sent."
@@ -586,7 +586,7 @@ fn send_action(form: &RememberedForm, standing: Standing) -> Option<ActionSpec> 
         send_id(&form.signature),
         label,
         said.join(" "),
-        standing,
+        source,
     ))
 }
 
@@ -653,9 +653,9 @@ impl PageForms {
 
     /// The forms the page at `place` publishes, how each is known, and how
     /// many forms of the page ask the same.
-    fn published(&self, place: &Place) -> Vec<(&RememberedForm, Standing, usize)> {
+    fn published(&self, place: &Place) -> Vec<(&RememberedForm, FormSource, usize)> {
         if let Some(forms) = self.reading(place) {
-            let mut listed: Vec<(&RememberedForm, Standing, usize)> = Vec::new();
+            let mut listed: Vec<(&RememberedForm, FormSource, usize)> = Vec::new();
             for form in forms {
                 if let Some((_, _, same)) = listed
                     .iter_mut()
@@ -663,12 +663,12 @@ impl PageForms {
                 {
                     *same += 1;
                 } else {
-                    let standing = if form.changed {
-                        Standing::Changed
+                    let source = if form.changed {
+                        FormSource::Changed
                     } else {
-                        Standing::Read
+                        FormSource::Read
                     };
-                    listed.push((&form.shape, standing, 1));
+                    listed.push((&form.shape, source, 1));
                 }
             }
             return listed;
@@ -681,21 +681,21 @@ impl PageForms {
                     .iter()
                     .any(|(at, signature)| at == place && *signature == form.signature)
             })
-            .map(|form| (form, Standing::Remembered, 1))
+            .map(|form| (form, FormSource::Remembered, 1))
             .collect()
     }
 
     fn build(&self, place: &Place) -> Vec<ActionSpec> {
         let mut actions = Vec::new();
-        for (form, standing, same) in self.published(place) {
+        for (form, source, same) in self.published(place) {
             let then: Vec<String> =
                 site_memory::followers(&self.memory, &place.origin, &form.signature)
                     .into_iter()
                     .filter(|next| !next.label.is_empty())
                     .map(|next| next.label.clone())
                     .collect();
-            actions.push(answer_action(form, standing, &then, same));
-            actions.extend(send_action(form, standing));
+            actions.push(answer_action(form, source, &then, same));
+            actions.extend(send_action(form, source));
         }
         actions
     }
@@ -727,11 +727,11 @@ impl PageForms {
 
     /// How the form `signature` of the page at `place` is published, if it
     /// is.
-    pub fn standing(&self, place: &Place, signature: &str) -> Option<Standing> {
+    pub fn source(&self, place: &Place, signature: &str) -> Option<FormSource> {
         self.published(place)
             .into_iter()
             .find(|(form, _, _)| form.signature == signature)
-            .map(|(_, standing, _)| standing)
+            .map(|(_, source, _)| source)
     }
 
     /// `answers`, given by the parameters of the action of the form
@@ -964,9 +964,9 @@ impl PageForms {
     /// form changed, or this page never held it. Its action is withdrawn
     /// until the page is read, which its window does next. Answers the
     /// form's name and how it was known.
-    pub fn heard_gone(&mut self, place: &Place, signature: &str) -> (String, Standing) {
+    pub fn heard_gone(&mut self, place: &Place, signature: &str) -> (String, FormSource) {
         let mut label = String::new();
-        let mut standing = Standing::Remembered;
+        let mut source = FormSource::Remembered;
         if !self.left.get()
             && let Some((read_at, forms)) = &mut self.read
             && read_at == place
@@ -977,10 +977,10 @@ impl PageForms {
             {
                 form.changed = true;
                 label.clone_from(&form.shape.label);
-                standing = Standing::Read;
+                source = FormSource::Read;
             }
         }
-        if standing == Standing::Remembered {
+        if source == FormSource::Remembered {
             if let Some(known) = site_memory::get(&self.memory, &place.origin, signature) {
                 label.clone_from(&known.label);
             }
@@ -996,7 +996,7 @@ impl PageForms {
             }
         }
         self.generation += 1;
-        (label, standing)
+        (label, source)
     }
 }
 
@@ -1356,14 +1356,14 @@ mod tests {
                 }),
             );
             assert!(heard.grew && heard.learned.is_none() && heard.then.is_empty());
-            assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
+            assert_eq!(forms.source(&at, "5f1c2a9b"), Some(FormSource::Changed));
             let withdrawn = &forms.actions(&at)[0];
             assert!(!withdrawn.contract.availability.is_available());
             let mut grown = visa();
             grown["forms"][0]["signature"] = "0badc0de".into();
             let shapes = forms.heard_read(&at, &grown);
             assert_eq!(shapes[0].grew_from, "5f1c2a9b");
-            assert_eq!(forms.standing(&at, "0badc0de"), Some(Standing::Read));
+            assert_eq!(forms.source(&at, "0badc0de"), Some(FormSource::Read));
         }
 
         phase a_field_the_typed_path_refused_is_no_parameter_afterwards;
@@ -1445,14 +1445,14 @@ mod tests {
             ] {
                 let heard = forms.heard_answer(&at, &answered(became.clone()));
                 assert_eq!((heard.grew, heard.refresh), (grew, refresh), "{became}");
-                assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Read));
+                assert_eq!(forms.source(&at, "5f1c2a9b"), Some(FormSource::Read));
             }
             let heard = forms.heard_answer(
                 &at,
                 &answered(serde_json::json!({"signature": "0badc0de", "offers": "bbbb2222"})),
             );
             assert!(heard.grew && !heard.refresh);
-            assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
+            assert_eq!(forms.source(&at, "5f1c2a9b"), Some(FormSource::Changed));
         }
     }
 }

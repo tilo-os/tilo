@@ -108,8 +108,8 @@ external_units = ["greetd.service"]
 name = "tilo-session"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk"]
-bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk"]
+packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk", "tilolang-process"]
+bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk", "tilolang-process"]
 # A dev image's session is the desktop `tilo-vm shot|input|control` and the
 # capture harnesses drive: it opens the test-control socket at
 # `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, or where
@@ -118,6 +118,9 @@ dev_features = ["tilo-session/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
+  # The program a task's tilolang programs run in: the session and `tilo` start it beside
+  # themselves.
+  { from = "tilolang-process", to = "/usr/bin/tilolang-process", mode = "0755" },
   # The PAM entry point and compositor share the session-recovery contract.
   # A fresh account login must run this source's wrapper, not the base image's.
   { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
@@ -279,10 +282,10 @@ files = [
 # tilo-session records each login through the flight recorder; the report
 # summarises those records. The host packages install the same two programs.
 [[component]]
-name = "session-record"
+name = "flight-log"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session-record"]
+packages = ["tilo-flight-log"]
 bins = ["tilo-flight-recorder", "tilo-session-report"]
 layer = "desktop-binaries"
 files = [
@@ -377,16 +380,16 @@ files = [
 ]
 
 [[component]]
-name = "app-host"
+name = "package-service"
 kind = "userspace"
 scope = "session"
-packages = ["app-host"]
-bins = ["tilo-app-host"]
-user_units = ["tilo-app-host.service"]
+packages = ["package-service"]
+bins = ["tilo-package-service"]
+user_units = ["tilo-package-service.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-app-host", to = "/usr/libexec/tilo-app-host", mode = "0755" },
-  { from = "@manifest/usr/lib/systemd/user/tilo-app-host.service", to = "/usr/lib/systemd/user/tilo-app-host.service", mode = "0644" },
+  { from = "tilo-package-service", to = "/usr/libexec/tilo-package-service", mode = "0755" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-package-service.service", to = "/usr/lib/systemd/user/tilo-package-service.service", mode = "0644" },
 ]
 
 [[component]]
@@ -468,7 +471,8 @@ features = [
   "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
   "tube/runtime-engine", "mail/live", "disks/live", "video-editor/decode",
   "video-editor/gst", "typst-editor/runtime-engine", "canvas/runtime-engine",
-  "mail/runtime-engine", "settings/runtime-engine", "calendar/runtime-engine",
+  "mail/runtime-engine", "settings/runtime-engine",
+  "model-providers/runtime-engine", "calendar/runtime-engine",
   "clocks/runtime-engine", "contacts/runtime-engine", "messages/runtime-engine",
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
   "print-centre/runtime-engine", "sheets/runtime-engine", "agent/runtime-engine",
@@ -511,7 +515,7 @@ files = [
 name = "account-credential"
 kind = "userspace"
 scope = "session"
-packages = ["account-custody"]
+packages = ["account-credentials"]
 bins = ["tilo-account-credential"]
 layer = "desktop-binaries"
 files = [
@@ -568,27 +572,27 @@ files = [
 ]
 
 [[component]]
-name = "relay"
+name = "server"
 kind = "userspace"
 scope = "vm"
-packages = ["tilo-relay"]
-# As the image builds it: the relay serves browsers (`run --web`, a node).
-features = ["tilo-relay/web"]
-bins = ["tilo-relay", "tilo-relay-admin", "tilo-enroll", "tilo-home-peer-control"]
-units = ["tilo-relay.service"]
+packages = ["tilo-server"]
+# As the image builds it: the server serves browsers (`run --web`, a node).
+features = ["tilo-server/web"]
+bins = ["tilo-server", "tilo-server-admin", "tilo-enroll", "tilo-home-peer-control"]
+units = ["tilo-server.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-relay", to = "/usr/libexec/tilo/tilo-relay", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-relay" },
-  { from = "tilo-relay-admin", to = "/usr/libexec/tilo/tilo-relay-admin", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-relay-admin" },
+  { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-server" },
+  { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-server-admin" },
   { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node.
-  { from = "@manifest/usr/lib/tilo/node-relay.toml", to = "/usr/lib/tilo/node-relay.toml", mode = "0644" },
-  { from = "@manifest/usr/lib/sysusers.d/tilo-relay.conf", to = "/usr/lib/sysusers.d/tilo-relay.conf", mode = "0644" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-relay@.service", to = "/usr/lib/systemd/system/tilo-node-relay@.service", mode = "0644" },
+  { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644" },
+  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-server@.service", to = "/usr/lib/systemd/system/tilo-node-server@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644" },
@@ -616,7 +620,7 @@ files = [
 name = "identity-cli"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-identity-host"]
+packages = ["tilo-identity"]
 bins = ["tilo-identity"]
 layer = "desktop-binaries"
 files = [
@@ -694,7 +698,7 @@ files = [
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_agent", layer = "desktop-binaries" },
 ]
 
-# Consent-gated NTFS access: the root service the shell asks to open a drive
+# Consent-guarded NTFS access: the root service the shell asks to open a drive
 # after the person agreed, and the library its confined userspace driver is
 # started with. Socket-activated, so a swap takes effect at its next start.
 [[component]]

@@ -1,4 +1,4 @@
-//! The `tasks.tracker` record, as the app that draws it and the agent that works its issues
+//! The `tasks.tracker` resource, as the app that draws it and the agent that works its issues
 //! both read it.
 
 pub mod model;

@@ -2,7 +2,7 @@
 
 use crate::component::{Bound, Component, Described, Event, Person};
 
-use super::{Autocomplete, RowRole, Suggestion, SuggestionPerson};
+use super::{Autocomplete, RowRole, Suggestion};
 use crate::widget::TextInput;
 
 crate::component::part_type!(SuggestionProps);
@@ -82,11 +82,7 @@ impl From<SuggestionProps> for Suggestion {
             suggestion = suggestion.with_icon(icon);
         }
         if let Some(who) = props.who {
-            suggestion = suggestion.with_person(SuggestionPerson {
-                identity: who.identity,
-                hue: who.hue,
-                agent: false,
-            });
+            suggestion = suggestion.with_person(who);
         }
         suggestion.role = RowRole::Item;
         suggestion

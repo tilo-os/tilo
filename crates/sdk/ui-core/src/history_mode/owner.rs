@@ -1,4 +1,4 @@
-//! Opaque custody witnesses. These never enter historical presentation inputs.
+//! Opaque ownership observations. These never enter historical presentation inputs.
 use super::{HistoryRegistrationError, HistoryResource};
 use crate::{
     bound_dispatch::CallbackBinding,
@@ -39,18 +39,18 @@ impl ResourceOwnerLifetime {
         Rc::new(Self {
             active: Cell::new(true),
             id: uuid::Uuid::new_v4(),
-            control_domain: crate::control_custody::ControlDomain::new(),
+            control_domain: crate::control_domain::ControlDomain::new(),
         })
     }
 }
 
-/// Captured by the actual mounted owner; callers cannot manufacture custody.
+/// Captured by the actual mounted owner; callers cannot manufacture ownership.
 #[derive(Clone)]
 pub struct HistoryOwner(pub(crate) OwnerKind);
 #[derive(Clone)]
 #[allow(
     clippy::large_enum_variant,
-    reason = "avoid a heap allocation for each captured component custody witness"
+    reason = "avoid a heap allocation for each captured component ownership observation"
 )]
 pub(crate) enum OwnerKind {
     Component(CallbackBinding),
@@ -211,7 +211,7 @@ impl HistoryOwner {
             checkout.id.clone(),
         ))
     }
-    /// Read the committed frontier through the same custody and record loan as `document`.
+    /// Read the committed frontier through the same ownership and record loan as `document`.
     pub(crate) fn committed_heads(
         &self,
         outer: &AutoCommit,

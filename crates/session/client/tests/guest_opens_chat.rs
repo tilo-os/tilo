@@ -33,7 +33,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
@@ -104,14 +104,14 @@ async fn arrive(
 /// A person coming through `workspace`'s entry with a device of their own,
 /// leaving no session behind: the member the workspace made of them.
 async fn through_the_entry(
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     name: &str,
 ) {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     let root = new_key();
     let key = new_key();
-    let cert = tilo_relay_client::invite::guest_certificate(
+    let cert = tilo_server_client::invite::guest_certificate(
         &root,
         key.verifying_key().to_bytes(),
         "Browser",
@@ -122,7 +122,7 @@ async fn through_the_entry(
     let (issued, token) = workspaces
         .admit_listed(
             workspace,
-            &tilo_relay_protocol::directory::EntryJoin {
+            &tilo_server_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(cert.user_public_key),
                 display_name: name.to_owned(),
             },
@@ -226,20 +226,20 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let chat = DocumentRoute {

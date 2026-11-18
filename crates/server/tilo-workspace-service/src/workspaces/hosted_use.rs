@@ -1,0 +1,1360 @@
+//! A secret used by reference by a turn this server carries out itself.
+//!
+//! An agent a person keeps on this server works with every device of theirs
+//! off, so no transport verified a device behind what it asks, and the check
+//! a device's request passes ([`Workspaces::asking_for_person`]) has nothing
+//! to compare. This is the server's own entry for such a turn. It is reached
+//! from no transport: only the code that carries out the turn calls it, with
+//! the very caller the turn's tools act as and what the workspace's list of
+//! its agents says of the agent ([`HostedTurn`]).
+//!
+//! The rule is the vault's own, and nothing here hands a secret to whoever
+//! asks. A reference becomes its secret only inside this server, only in the
+//! vault of the person the turn acts for, only for the kind the use needs
+//! and only at the places the use sends it to, with the use written down
+//! first ([`accounts::vault_items::VaultItems::use_as`]). The caller is
+//! answered what the person would be: the account, the provider.
+//!
+//! Before the vault is opened a turn is refused unless it is its keeper's
+//! own ([`Workspaces::keepers_turn`]):
+//!
+//! - the caller is an agent a person's session was handed to, working
+//!   inside a turn, confined to this workspace. A bot, an app, an agent
+//!   admitted as a member and a person asking for themselves are not turns
+//!   this server carries out;
+//! - the workspace admits that person now, on the device the caller names:
+//!   a person removed from it leaves their agent nothing;
+//! - the agent's keeper is that person. Whoever else writes to the agent
+//!   makes its turn act for them, and then it uses nothing: not its
+//!   keeper's vault, which is not theirs, and not their own, which the
+//!   agent is not kept for.
+//!
+//! That check is the same for everything of a person's own that a turn on
+//! this server reaches. It does not say that the keeper made the agent or
+//! agreed to it, so it is never the whole rule. Here, an agent that anything
+//! narrows (what its entry bounds it to; a sub-agent) must hold a rule that
+//! names exactly this use ([`HostedTurn::may_take`]), and nothing is used
+//! unasked.
+//!
+//! A turn the server carries out is unattended. So a use is made unasked
+//! only where the item keeps a leave for this agent, this use and these
+//! places ([`accounts::vault_items::VaultItems::stands`]). Otherwise the
+//! server keeps what was asked ([`OpenAsk`]: the action and its arguments,
+//! which hold the reference and no secret) and answers that the person must
+//! be asked ([`TurnUse::Asks`]). Whoever carries out the turn puts the
+//! question to them and reads their own answer back
+//! ([`Workspaces::answer_use`]). What is carried out then is what this
+//! server kept under the ask, never what a conversation says was asked: a
+//! question an agent wrote itself has nothing kept here and uses nothing,
+//! and one that shows something else than this server asked is refused. An
+//! answer is carried out at most once.
+//!
+//! Another use by reference (a key added to a web call, a variable handed
+//! to a command) is one more arm of [`Use`]: what it wants of the vault and
+//! how it is carried out. The refusals, the asking and the leave are the
+//! same for every use.
+//!
+//! A page's field is the one use whose secret is not used inside this
+//! server: the page is in a window, and only its engine writes into it. So
+//! the text is released to whoever sends it on to that window
+//! ([`Workspaces::release_for_turn`]), for the one site the window's engine
+//! says its page is at, through the same refusals, the same asking and the
+//! same leave. A person's "allow" fills nothing by itself, since the page
+//! may be gone by then: it lets that agent's next fill of that item at that
+//! site through, once.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use tilo_action_policy::{ActionKind, Answer, PersonId, Rule, TreePath};
+use tilo_actions::remote::ActionCallError::{
+    self, InvalidRequest, NotPermitted, Refused, UnknownAction,
+};
+use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
+use tilo_actions::remote::person_models::{self, SetKeyFromItem};
+use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
+use tilo_actions::remote::{
+    Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
+use tilo_lock::MutexRecover as _;
+
+use super::{WorkspaceId, Workspaces};
+
+mod web_call;
+
+/// A person's mail as such a turn reaches it: after [`Workspaces::keepers_turn`], their own
+/// word on which agent of theirs may use which account ([`Workspaces::mail_for_turn`]).
+pub use super::person_settings::turn_mail::{AskedSend, SEND_CARRIER, TurnMail};
+
+/// A person's calendars as such a turn reads them ([`Workspaces::calendars_for_turn`]): the
+/// resource they are asked under, and the read whose answer holds what other people wrote.
+#[cfg(feature = "agents")]
+pub use super::person_settings::calendars::{ENTRIES as CALENDAR_ENTRIES, RESOURCE as CALENDARS};
+
+/// Where a person's asks are kept, under their own root.
+const ASKS_DIR: &str = "vault-asks";
+/// The most asks that wait for one person at a time: an agent that goes on
+/// asking is told so instead of filling their conversation.
+const MAX_OPEN_ASKS: usize = 32;
+
+/// What [`Workspaces::answer_use`] refuses a second reader of one answer
+/// with: the first is carrying it out, or did.
+pub const CARRIED_OUT: &str = "That answer was carried out already";
+/// What [`Workspaces::answer_use`] refuses an ask this server keeps nothing
+/// under with.
+pub const NOTHING_WAITS: &str = "Nothing waits for an answer under that question";
+
+/// A turn this server carries out for a person, as the code that carries it out knows it.
+#[derive(Clone, Copy, Debug)]
+pub struct HostedTurn<'a> {
+    /// The workspace the turn works in.
+    pub workspace: WorkspaceId,
+    /// The caller the turn's tools act as: the person's session, handed to
+    /// the agent on this turn.
+    pub caller: &'a Caller,
+    /// The agent's keeper, as the workspace's list of its agents names
+    /// them.
+    pub keeper: &'a str,
+    /// The rules the turn is decided by, where anything narrows its agent:
+    /// what its entry bounds it to and, for a sub-agent, what keeps it from
+    /// whoever started it. `None` for an agent nothing narrows.
+    pub bound: Option<&'a [Rule]>,
+}
+
+impl HostedTurn<'_> {
+    /// Whether the rules that narrow the turn's agent let it take `target`
+    /// in `workspace`: an agent nothing narrows may, a narrowed one only
+    /// where a rule names this very action and does not deny it.
+    #[must_use]
+    pub fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
+        let Some(bound) = self.bound else {
+            return true;
+        };
+        let node = TreePath::workspace(workspace)
+            .app(target.provider.clone())
+            .kind(target.address.resource.clone())
+            .resource(target.address.resource.clone())
+            .action(target.address.action.clone());
+        let granted = tilo_automation::grant_answer(bound, &node, ActionKind::Outside);
+        granted.names_action && granted.answer != Answer::Deny
+    }
+}
+
+/// How a use a hosted turn asked for went.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TurnUse {
+    /// It was carried out: what its action answers, never a secret.
+    Done(Value),
+    /// Its person is asked first, and this server keeps what was asked.
+    Asks(Box<OpenAsk>),
+    /// Its person was asked the same before and has not answered yet.
+    Waits,
+}
+
+/// What a person answered about a use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseAnswer {
+    /// Carry it out this once.
+    Once,
+    /// Carry it out, and from now on without asking: this agent, this use,
+    /// this item, these places.
+    Always,
+    /// Do not carry it out.
+    No,
+}
+
+/// A use this server keeps while its person is asked about it. Nothing in it
+/// is a secret: its arguments name the vault item by reference.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAsk {
+    /// The ask's own id, which the question carries.
+    pub ask: String,
+    /// The workspace it was asked in.
+    pub workspace: String,
+    /// The person asked: their root key, hex.
+    pub person: String,
+    /// The agent that asked, by its id.
+    pub agent: String,
+    /// The name its person knows it under.
+    pub name: String,
+    /// Why it says it needs the item, in its own words; empty when it gave
+    /// none.
+    pub reason: String,
+    /// Where whoever carries out the turn put the question: theirs to read, kept
+    /// here so it is found again after a restart.
+    pub asked_in: Value,
+    /// What the person is shown: the question's detail, exactly as it must
+    /// stand when they answer.
+    pub detail: Value,
+    /// Whether an answer is being carried out: said before it starts, so
+    /// an answer is carried out at most once whatever interrupts this server.
+    pub started: bool,
+    /// Whether this server stopped while an answer was being carried out: the
+    /// ask was read back started from its disk, and nobody carries it out
+    /// now.
+    #[serde(skip)]
+    pub interrupted: bool,
+    /// When it was asked, in nanoseconds since the Unix epoch.
+    pub asked_at_ns: u64,
+    provider: String,
+    resource: String,
+    action: String,
+    arguments: Map<String, Value>,
+}
+
+impl OpenAsk {
+    fn target(&self) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: self.provider.clone(),
+            address: tilo_actions::ActionAddress::new(self.resource.clone(), self.action.clone()),
+        }
+    }
+
+    /// Whether its person's "Always" may stand for what is asked. It may
+    /// not for a web call, which is asked about each time: whoever puts the
+    /// question offers that answer only where this says so.
+    #[must_use]
+    pub fn takes_always(&self) -> bool {
+        self.target() != person_vault::call_target()
+    }
+}
+
+/// What uses of a vault item by reference keep on this server: what proves a
+/// sign-in at its server before an account is kept, and the asks that wait
+/// for their person's answer, read from the server's disk once.
+pub(super) struct Uses {
+    /// The web calls people allowed once and that were not made yet.
+    calls: web_call::AllowedOnce,
+    pub(super) prover: std::sync::RwLock<std::sync::Arc<dyn tilo_account_probe::AccountTester>>,
+    asks: Mutex<Option<Vec<OpenAsk>>>,
+    /// What people allowed for one fill of a page and no more, until each is
+    /// spent or too old. Kept in memory alone: after a restart they are asked
+    /// again.
+    once: Mutex<Vec<OnceLeave>>,
+}
+
+/// A person's "allow" for one fill: `agent` may fill what `item` keeps into
+/// a page at `site` once, until `until_ns`.
+struct OnceLeave {
+    person: String,
+    workspace: String,
+    agent: String,
+    item: String,
+    site: String,
+    until_ns: u64,
+}
+
+/// How long a person's "allow" for one fill is good.
+const ONCE_LEAVE_NS: u64 = 15 * 60 * 1_000_000_000;
+/// The most such allows this server keeps at a time: the newest of them.
+const MAX_ONCE_LEAVES: usize = 64;
+
+/// The kind of field a released text is for, in the words a window's engine
+/// knows it by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageField {
+    /// A login's password: only a password field takes it.
+    Password,
+    /// A code generator's code of this moment.
+    Code,
+    /// A kept value.
+    Value,
+}
+
+impl PageField {
+    /// The engine's word for it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Code => "code",
+            Self::Value => "value",
+        }
+    }
+}
+
+/// A text this server released for one site, for whoever sends it on to the
+/// window that holds that site's page. It prints nothing of the text, and
+/// what holds it is wiped when it is dropped.
+#[derive(Debug)]
+pub enum PageText {
+    /// What a login or a value keeps.
+    Item(vault_items::Released),
+    /// A code generator's code of this moment.
+    Code(vault_items::Code),
+}
+
+impl PageText {
+    /// The text, for the one write into the page.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Item(released) => released.secret.as_str(),
+            Self::Code(code) => code.digits(),
+        }
+    }
+
+    /// The kind of field it is for.
+    #[must_use]
+    pub fn field(&self) -> PageField {
+        match self {
+            Self::Item(released) => match released.kind {
+                vault_items::ItemKind::Value => PageField::Value,
+                _ => PageField::Password,
+            },
+            Self::Code(_) => PageField::Code,
+        }
+    }
+}
+
+/// How a page fill a hosted turn asked for went.
+#[derive(Debug)]
+pub enum TurnRelease {
+    /// The text, for the page at the site it was released for.
+    Released(PageText),
+    /// Its person is asked first, and this server keeps what was asked.
+    Asks(Box<OpenAsk>),
+    /// Its person was asked the same before and has not answered yet.
+    Waits,
+}
+
+impl Default for Uses {
+    fn default() -> Self {
+        Self {
+            calls: web_call::AllowedOnce::default(),
+            prover: std::sync::RwLock::new(std::sync::Arc::new(
+                tilo_account_probe::LiveAccountTester,
+            )),
+            asks: Mutex::default(),
+            once: Mutex::default(),
+        }
+    }
+}
+
+/// Whose turn a turn on this server is, where it is its keeper's own: what
+/// [`Workspaces::keepers_turn`] answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeepersTurn {
+    /// The person the turn acts for and whose agent it is: their key.
+    pub person: [u8; 32],
+    /// The workspace, as the caller names it.
+    pub workspace: String,
+    /// The agent, by its id.
+    pub agent: String,
+    /// The agent's name, as its person reads it.
+    pub name: String,
+}
+
+/// One use by reference this server carries out.
+enum Use {
+    /// A mail account added with the sign-in an item keeps.
+    Mail(AddMailWithItem),
+    /// A provider's key kept from an item.
+    Key(SetKeyFromItem),
+    /// A web call made with a key.
+    Call(web_call::WebCall),
+}
+
+impl Use {
+    /// The use `target` names with `arguments`. The reason never quotes the
+    /// arguments.
+    fn read(
+        target: &RemoteActionTarget,
+        arguments: &Map<String, Value>,
+    ) -> Result<Self, ActionCallError> {
+        let invalid = |what: &str| InvalidRequest {
+            reason: what.to_owned(),
+        };
+        let arguments = Value::Object(arguments.clone());
+        match (target.provider.as_str(), target.address.action.as_str()) {
+            (person_accounts::PROVIDER, person_accounts::ADD_MAIL_WITH_ITEM) => {
+                serde_json::from_value(arguments).map(Self::Mail).map_err(|_| {
+                    invalid(
+                        "a mail account to add names its address, its servers and the vault item that is its password",
+                    )
+                })
+            }
+            (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM) => {
+                serde_json::from_value(arguments).map(Self::Key).map_err(|_| {
+                    invalid("a key to keep names its provider and the vault item that is the key")
+                })
+            }
+            (person_vault::PROVIDER, person_vault::WEB_CALL) => {
+                serde_json::from_value(arguments).map(Self::Call).map_err(|_| {
+                    invalid("a web call names its address and the vault item that is its key")
+                })
+            }
+            _ => Err(UnknownAction),
+        }
+    }
+
+    /// What it wants of the vault under `root`: the item, the kind it must
+    /// be, and every place its secret would be sent to.
+    fn wanted(&self, root: &Path) -> Result<(ItemId, vault_items::ItemKind, Vec<Place>), String> {
+        let id = |item: &ItemRef| {
+            ItemId::parse(item.id()).ok_or_else(|| vault_items::ItemError::NotFound.to_string())
+        };
+        match self {
+            Self::Mail(adding) => {
+                let server = |scheme: &str, name: &str, port: u16| {
+                    Place::server(scheme, name, port).map_err(|error| error.to_string())
+                };
+                Ok((
+                    id(&adding.password)?,
+                    vault_items::ItemKind::Login,
+                    vec![
+                        server("imap", &adding.incoming_host, adding.incoming_port)?,
+                        server("smtp", &adding.outgoing_host, adding.outgoing_port)?,
+                    ],
+                ))
+            }
+            Self::Key(setting) => {
+                let config = super::person_settings::provider_config(root);
+                let profile = config
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == setting.provider)
+                    .ok_or_else(|| "That provider is not kept here".to_owned())?;
+                let endpoint =
+                    Place::parse(&profile.endpoint).map_err(|error| error.to_string())?;
+                Ok((
+                    id(&setting.key)?,
+                    vault_items::ItemKind::Key,
+                    vec![endpoint],
+                ))
+            }
+            Self::Call(call) => web_call::wanted(call),
+        }
+    }
+
+    /// Why whoever asks says it needs the item.
+    fn reason(&self) -> &str {
+        match self {
+            Self::Mail(adding) => adding.reason.trim(),
+            Self::Key(setting) => setting.reason.trim(),
+            Self::Call(call) => call.reason.trim(),
+        }
+    }
+
+    /// Whether its person's "Always" may stand for it: not for a call,
+    /// whose request the agent writes anew each time.
+    const fn takes_leave(&self) -> bool {
+        !matches!(self, Self::Call(_))
+    }
+
+    /// What else it would be refused for when it is carried out, with the
+    /// vault under `root`: said before anyone is asked about it.
+    fn sendable(&self, workspaces: &Workspaces, root: &Path) -> Result<(), String> {
+        match self {
+            Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), root),
+            Self::Mail(_) | Self::Key(_) => Ok(()),
+        }
+    }
+
+    /// Whether its person allowed `using` this very use once, where their
+    /// allow carries nothing out by itself: it is spent by being found.
+    fn allowed_once(
+        &self,
+        uses: &Uses,
+        using: &KeepersTurn,
+        arguments: &Map<String, Value>,
+    ) -> bool {
+        matches!(self, Self::Call(_)) && uses.calls.spend(using, arguments)
+    }
+
+    /// Carry it out for `by` with what the vault under `root` keeps: the
+    /// one place the reference becomes its secret, inside the code that
+    /// signs in. What it is used for and how its person allowed it
+    /// (`purpose`) is written down with the use.
+    async fn carry_out(
+        self,
+        workspaces: &Workspaces,
+        root: &Path,
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<Value, String> {
+        match self {
+            Self::Mail(adding) => {
+                let kept = super::person_vault::mail_with_item(
+                    workspaces.account_tester(),
+                    root,
+                    adding,
+                    by,
+                    purpose,
+                )
+                .await?;
+                workspaces.person_settings_changed();
+                serde_json::to_value(kept).map_err(|error| error.to_string())
+            }
+            Self::Key(setting) => {
+                let kept = super::person_vault::key_from_item(root, &setting, by, purpose)?;
+                serde_json::to_value(kept).map_err(|error| error.to_string())
+            }
+            Self::Call(call) => {
+                web_call::send(workspaces.call_reach(), root, call, by, purpose).await
+            }
+        }
+    }
+}
+
+/// The item and the site a page fill names. A text is written only into a
+/// page that arrived over https.
+fn page_wanted(fill: &FillPage) -> Result<(ItemId, Place), String> {
+    let item = ItemId::parse(fill.item.id())
+        .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
+    let site = Place::parse(&fill.site).map_err(|error| error.to_string())?;
+    if site.scheme() != "https" {
+        return Err("A vault item is filled only into a page that arrived over https".to_owned());
+    }
+    Ok((item, site))
+}
+
+/// The kind of field an item of `kind` fills, when it fills one.
+fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
+    match kind {
+        vault_items::ItemKind::Login => Ok(PageField::Password),
+        vault_items::ItemKind::CodeGenerator => Ok(PageField::Code),
+        vault_items::ItemKind::Value => Ok(PageField::Value),
+        vault_items::ItemKind::Key | vault_items::ItemKind::SshKey => {
+            Err("Only a login, a code generator or a value is filled into a page".to_owned())
+        }
+    }
+}
+
+/// Hand out what the item `item` fills a page's field at `site` with, for
+/// `by`: a code generator's code of this moment, else what the item keeps.
+/// The use is written down first, as every use is.
+fn page_text(
+    root: &Path,
+    item: &ItemId,
+    kind: vault_items::ItemKind,
+    site: &Place,
+    by: &str,
+) -> Result<PageText, String> {
+    let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+    match kind {
+        vault_items::ItemKind::CodeGenerator => items.code_at(item, site, by).map(PageText::Code),
+        kind => items
+            .use_as(item, kind, std::slice::from_ref(site), by)
+            .map(PageText::Item),
+    }
+    .map_err(|error| error.to_string())
+}
+
+/// What a person is shown of the site a page fill names: its name, and its
+/// origin whole.
+fn shown_site(target: &RemoteActionTarget, arguments: &Map<String, Value>) -> Option<Value> {
+    if *target != person_vault::page_target() {
+        return None;
+    }
+    let origin = arguments.get("site")?.as_str()?;
+    Some(json!({"name": site_name(origin), "origin": origin}))
+}
+
+/// The name in the origin `origin`: without its scheme and its port.
+fn site_name(origin: &str) -> &str {
+    let named = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    match named.rsplit_once(':') {
+        Some((name, port))
+            if !port.is_empty() && port.bytes().all(|digit| digit.is_ascii_digit()) =>
+        {
+            name
+        }
+        _ => named,
+    }
+}
+
+fn refused(reason: impl Into<String>) -> ActionCallError {
+    Refused {
+        reason: reason.into(),
+    }
+}
+
+/// The arguments `request` carries.
+fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
+    match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => Map::new(),
+    }
+}
+
+/// Whether `ask` is an ask's id: what names a file here.
+fn is_ask_id(ask: &str) -> bool {
+    ask.len() == 32
+        && ask
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn ask_path(root: &Path, ask: &str) -> PathBuf {
+    root.join(ASKS_DIR).join(format!("{ask}.json"))
+}
+
+/// Keep `ask` under its person's `root`, readable by this server alone.
+fn keep(root: &Path, ask: &OpenAsk) -> Result<(), String> {
+    let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &ask_path(root, &ask.ask),
+        &bytes,
+        0o600,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// The ask kept at `path`. One that does not read is said and left out: it
+/// uses nothing, and its question is answered as no longer kept.
+fn read_kept(path: &Path) -> Option<OpenAsk> {
+    let read = std::fs::read(path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
+    match read {
+        Ok(ask) => Some(ask),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "a kept ask about a vault use does not read");
+            None
+        }
+    }
+}
+
+/// Every ask kept under the people's roots in `people`.
+fn kept_under(people: &Path) -> Vec<OpenAsk> {
+    let mut asks: Vec<OpenAsk> = std::fs::read_dir(people)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|person| {
+            std::fs::read_dir(person.path().join(ASKS_DIR))
+                .into_iter()
+                .flatten()
+        })
+        .flatten()
+        .filter_map(|file| read_kept(&file.path()))
+        .filter(|ask: &OpenAsk| is_ask_id(&ask.ask))
+        .map(|mut ask| {
+            ask.interrupted = ask.started;
+            ask
+        })
+        .collect();
+    asks.sort_by(|a, b| {
+        a.asked_at_ns
+            .cmp(&b.asked_at_ns)
+            .then_with(|| a.ask.cmp(&b.ask))
+    });
+    asks
+}
+
+impl Workspaces {
+    /// The asks this server keeps, read from its disk the first time.
+    fn hosted_asks(&self) -> MutexGuard<'_, Option<Vec<OpenAsk>>> {
+        let mut asks = self.inner.vault_uses.asks.lock_recover();
+        if asks.is_none() {
+            *asks = Some(kept_under(&self.inner.dir.join("people")));
+        }
+        asks
+    }
+
+    /// Forget the ask `ask` of `person`: nothing is carried out for it any more.
+    fn forget_use(&self, person: &str, ask: &str) {
+        if let Some(asks) = self.hosted_asks().as_mut() {
+            asks.retain(|kept| kept.ask != ask);
+        }
+        let mut root = [0; 32];
+        if is_ask_id(ask) && hex::decode_to_slice(person, &mut root).is_ok() {
+            let _ = std::fs::remove_file(ask_path(&self.person_settings_root(&root), ask));
+        }
+    }
+
+    /// Whose turn `turn` is, where it is one this server carries out for its
+    /// agent's keeper: the first check of everything of a person's own that
+    /// such a turn reaches. Unknown and forbidden are the same answer.
+    ///
+    /// It holds where the caller is an agent on a turn, on an agent session
+    /// its person handed it, and no app; the caller's workspace is the
+    /// turn's; the device the caller names is the one the workspace admits
+    /// that person with now; and the agent's keeper is that person. It does
+    /// not say that the keeper made the agent or agreed to it, so whatever
+    /// uses or hands out something of the person's decides that by a rule of
+    /// its own after this one.
+    ///
+    /// # Errors
+    /// [`UnknownAction`] for every other caller.
+    pub async fn keepers_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+    ) -> Result<KeepersTurn, ActionCallError> {
+        let caller = turn.caller;
+        let acting = caller.acting();
+        // An agent a person's own session was handed to, inside a turn:
+        // nothing else is a turn this server carries out.
+        if acting.app().is_some()
+            || !acting.is_agent()
+            || !caller.is_session_delegated()
+            || caller.turn().is_none()
+        {
+            return Err(UnknownAction);
+        }
+        let (Some(person), Some(device), Some(agent), Some(workspace)) = (
+            caller.user_public_key().copied(),
+            caller.device_public_key().copied(),
+            acting.agent_id(),
+            caller.workspace(),
+        ) else {
+            return Err(UnknownAction);
+        };
+        if WorkspaceId::parse(workspace) != Some(turn.workspace) {
+            return Err(UnknownAction);
+        }
+        // Whether the workspace admits the person now, on the device the
+        // turn names: a person it no longer admits leaves their agent
+        // nothing.
+        if self.person_device(turn.workspace, person).await != Some(device) {
+            return Err(UnknownAction);
+        }
+        // The agent acts for its keeper and for nobody else.
+        let Ok(keeper) = PersonId::parse(turn.keeper) else {
+            return Err(UnknownAction);
+        };
+        if keeper.root() != Some(person) {
+            return Err(UnknownAction);
+        }
+        Ok(KeepersTurn {
+            person,
+            workspace: workspace.to_owned(),
+            agent: agent.to_owned(),
+            name: caller.agent_name().unwrap_or(agent).to_owned(),
+        })
+    }
+
+    /// [`Self::keepers_turn`] for a use by reference: an agent that anything
+    /// narrows also holds a rule that names `target`.
+    async fn turn_uses_for(
+        &self,
+        turn: &HostedTurn<'_>,
+        target: &RemoteActionTarget,
+    ) -> Result<KeepersTurn, ActionCallError> {
+        let using = self.keepers_turn(turn).await?;
+        if !turn.may_take(&using.workspace, target) {
+            return Err(NotPermitted);
+        }
+        Ok(using)
+    }
+
+    /// The uses by reference `turn` is offered, as a catalogue lists them:
+    /// each one it would not be refused before the vault is opened.
+    pub async fn uses_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+        let mut offered = Vec::new();
+        for row in person_vault::use_rows() {
+            let Some(action) = &row.action else {
+                continue;
+            };
+            let target = RemoteActionTarget {
+                provider: row.provider.clone(),
+                address: action.address.clone(),
+            };
+            if self.turn_uses_for(turn, &target).await.is_ok() {
+                offered.push(row);
+            }
+        }
+        offered
+    }
+
+    /// The calls that send what a vault item keeps out with a request of
+    /// the agent's own making, which `turn` is offered as a catalogue lists
+    /// them: each one it would not be refused before the vault is opened.
+    /// They are listed apart from [`Self::uses_offered`]: no "Always"
+    /// stands for one.
+    pub async fn calls_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+        let mut offered = Vec::new();
+        for row in person_vault::call_rows() {
+            let Some(action) = &row.action else {
+                continue;
+            };
+            let target = RemoteActionTarget {
+                provider: row.provider.clone(),
+                address: action.address.clone(),
+            };
+            if self.turn_uses_for(turn, &target).await.is_ok() {
+                offered.push(row);
+            }
+        }
+        offered
+    }
+
+    /// Take the use by reference `request` asks for, for `turn`.
+    ///
+    /// Carried out at once where the item keeps a leave for this
+    /// agent, this use and these places. Otherwise nothing is used: the server
+    /// keeps what was asked, with `asked_in` (where the caller will put the
+    /// question, its own to read), and answers [`TurnUse::Asks`] with what
+    /// to show the person. A caller that cannot put the question says so
+    /// ([`Self::use_not_asked`]).
+    ///
+    /// # Errors
+    /// The turn is none this server carries out for the item's person
+    /// ([`UnknownAction`]), its agent is narrowed and holds
+    /// no rule for this use ([`NotPermitted`]), the
+    /// arguments do not read, or the vault refuses the use: no such item in
+    /// that person's vault, another kind, a place it does not belong to.
+    pub async fn use_for_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+        request: &InvokeRequest,
+        asked_in: Value,
+    ) -> Result<TurnUse, ActionCallError> {
+        let using = self.turn_uses_for(turn, &request.target).await?;
+        let arguments = arguments_of(request);
+        let wanted = Use::read(&request.target, &arguments)?;
+        let root = self.person_settings_root(&using.person);
+        let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+        let word = person_vault::use_word(&request.target);
+        // What the use would be refused for is said before anyone is asked,
+        // in the vault's own words; the vault is closed again before
+        // anything is waited for.
+        let stands = {
+            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
+            items
+                .fits(&item, kind, &places)
+                .and_then(|_| items.stands(&item, &places, &using.agent, &word))
+                .map_err(|error| refused(error.to_string()))?
+        };
+        wanted.sendable(self, &root).map_err(refused)?;
+        // A leave that covers the use is what allowed it; else an allow its
+        // person gave this very use, which is spent by being found.
+        let allowed = if stands {
+            Some(Allowance::Always)
+        } else if wanted.allowed_once(&self.inner.vault_uses, &using, &arguments) {
+            Some(Allowance::Once)
+        } else {
+            None
+        };
+        if allowed.is_some() {
+            let purpose = UsedFor {
+                using: &word,
+                what: "",
+                allowed,
+            };
+            return wanted
+                .carry_out(self, &root, &using.name, purpose)
+                .await
+                .map(TurnUse::Done)
+                .map_err(refused);
+        }
+        let belongs = places.iter().map(ToString::to_string).collect();
+        self.ask_first(
+            &root,
+            using,
+            (request, arguments),
+            (kind, belongs),
+            (wanted.reason().to_owned(), asked_in),
+        )
+    }
+
+    /// Keep what `using` asked for with `request` until its person answers:
+    /// the ask, and what to show them. `shown` is the kind of the item and
+    /// the places the use would send its secret to.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the ask is looked for and kept under one lock, so the same use asked twice at once is kept once"
+    )]
+    fn ask_first(
+        &self,
+        root: &Path,
+        using: KeepersTurn,
+        (request, arguments): (&InvokeRequest, Map<String, Value>),
+        (kind, belongs): (vault_items::ItemKind, Vec<String>),
+        (reason, asked_in): (String, Value),
+    ) -> Result<TurnUse, ActionCallError> {
+        let person = hex::encode(using.person);
+        let mut asks = self.hosted_asks();
+        let open = asks.get_or_insert_with(Vec::new);
+        // Asked the same again while its person has not answered: the one
+        // question stands.
+        if open.iter().any(|kept| {
+            kept.person == person
+                && kept.agent == using.agent
+                && kept.workspace == using.workspace
+                && kept.target() == request.target
+                && kept.arguments == arguments
+        }) {
+            return Ok(TurnUse::Waits);
+        }
+        if open.iter().filter(|kept| kept.person == person).count() >= MAX_OPEN_ASKS {
+            return Err(refused(
+                "Too many questions already wait for this person's answer",
+            ));
+        }
+        let Some(described) = person_vault::described_use(&request.target) else {
+            return Err(UnknownAction);
+        };
+        let asked_at_ns = tilo_clock::unix_now_ns();
+        let ask: String = blake3::hash(
+            format!(
+                "{person}\0{}\0{:?}\0{asked_at_ns}",
+                using.agent, request.invocation
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .chars()
+        .take(32)
+        .collect();
+        let mut shown = Map::new();
+        shown.insert("ask".into(), json!(ask));
+        shown.insert("item".into(), json!({"kind": kind, "belongsTo": belongs}));
+        // A page's field: its person is shown where, by the site's name and
+        // by its origin whole.
+        if let Some(site) = shown_site(&request.target, &arguments) {
+            shown.insert("site".into(), site);
+        }
+        let detail = json!({
+            "draft": tilo_actions::Draft::render(&described, &arguments),
+            "use": shown,
+        });
+        let kept = OpenAsk {
+            ask,
+            workspace: using.workspace,
+            person,
+            agent: using.agent,
+            name: using.name,
+            reason,
+            asked_in,
+            detail,
+            started: false,
+            interrupted: false,
+            asked_at_ns,
+            provider: request.target.provider.clone(),
+            resource: request.target.address.resource.clone(),
+            action: request.target.address.action.clone(),
+            arguments,
+        };
+        keep(root, &kept).map_err(refused)?;
+        open.push(kept.clone());
+        Ok(TurnUse::Asks(Box::new(kept)))
+    }
+
+    /// The question about `ask` could not be put to its person: nothing
+    /// waits for an answer, and the use is asked for again when it is
+    /// needed.
+    pub fn use_not_asked(&self, ask: &OpenAsk) {
+        self.forget_use(&ask.person, &ask.ask);
+    }
+
+    /// The asks kept for `workspace`, oldest first: what whoever carries out its
+    /// agents reads answers for. Cheap where none waits.
+    #[must_use]
+    pub fn open_use_asks(&self, workspace: &str) -> Vec<OpenAsk> {
+        self.hosted_asks()
+            .as_ref()
+            .map(|asks| {
+                asks.iter()
+                    .filter(|ask| ask.workspace == workspace)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// An answer to `ask` was being carried out when this server stopped:
+    /// nobody carries it out now, and it is not carried out a second time.
+    pub fn use_interrupted(&self, ask: &OpenAsk) {
+        if ask.interrupted {
+            self.forget_use(&ask.person, &ask.ask);
+        }
+    }
+
+    /// Carry out the person's answer to the ask `ask`: `shown` is the
+    /// detail of the question as the conversation they answered keeps it,
+    /// and `turn` is the asking agent's turn as this server reads it now.
+    ///
+    /// The caller read the answer from what the person wrote themselves; this
+    /// server decides what comes of it. What is carried out is the use kept under the
+    /// ask, held to every refusal of [`Self::use_for_turn`] again, for the
+    /// person and the agent that asked. [`UseAnswer::Always`] writes the
+    /// item's leave first. Answers what the use answered, `None`
+    /// after [`UseAnswer::No`]. Whatever comes of it, the ask is spent.
+    ///
+    /// # Errors
+    /// Nothing is kept under that ask, an answer to it was carried out
+    /// already, the question shows something else than this server asked,
+    /// the turn is not the asker's or is refused now, or the vault refuses
+    /// the use.
+    pub async fn answer_use(
+        &self,
+        turn: &HostedTurn<'_>,
+        ask: &str,
+        shown: &Value,
+        answer: UseAnswer,
+    ) -> Result<Option<Value>, ActionCallError> {
+        let claimed = self.claim_use(ask)?;
+        self.carry_out_use(turn, &claimed, shown, answer).await
+    }
+
+    /// Claim the ask `ask` for the one reader of its answer that carries it
+    /// out. It is said in this server's memory and on its disk before
+    /// anything else is said or done, so two readers of one answer carry it
+    /// out once, and a server that stops finds it started. Whoever claimed
+    /// it carries it out ([`Self::carry_out_use`]).
+    ///
+    /// # Errors
+    /// Nothing is kept under that ask ([`NOTHING_WAITS`]), another reader
+    /// claimed it ([`CARRIED_OUT`]), or the claim could not be written down.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
+    )]
+    pub fn claim_use(&self, ask: &str) -> Result<OpenAsk, ActionCallError> {
+        let claimed = {
+            let mut asks = self.hosted_asks();
+            let Some(kept) = asks
+                .as_mut()
+                .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
+            else {
+                return Err(refused(NOTHING_WAITS));
+            };
+            if kept.started {
+                return Err(refused(CARRIED_OUT));
+            }
+            kept.started = true;
+            kept.clone()
+        };
+        let mut person = [0; 32];
+        let said = hex::decode_to_slice(&claimed.person, &mut person)
+            .map_err(|error| error.to_string())
+            .and_then(|()| keep(&self.person_settings_root(&person), &claimed));
+        if let Err(error) = said {
+            self.forget_use(&claimed.person, &claimed.ask);
+            return Err(refused(error));
+        }
+        Ok(claimed)
+    }
+
+    /// Carry out the answer to the ask `claimed` ([`Self::claim_use`]), as
+    /// [`Self::answer_use`] says. Whatever comes of it, the ask is spent.
+    ///
+    /// # Errors
+    /// As [`Self::answer_use`].
+    pub async fn carry_out_use(
+        &self,
+        turn: &HostedTurn<'_>,
+        claimed: &OpenAsk,
+        shown: &Value,
+        answer: UseAnswer,
+    ) -> Result<Option<Value>, ActionCallError> {
+        let carried = self.carry_out(turn, claimed, shown, answer).await;
+        self.forget_use(&claimed.person, &claimed.ask);
+        carried
+    }
+
+    /// [`Self::answer_use`] for the ask it claimed.
+    async fn carry_out(
+        &self,
+        turn: &HostedTurn<'_>,
+        kept: &OpenAsk,
+        shown: &Value,
+        answer: UseAnswer,
+    ) -> Result<Option<Value>, ActionCallError> {
+        let mut person = [0; 32];
+        hex::decode_to_slice(&kept.person, &mut person).map_err(|_| UnknownAction)?;
+        let root = self.person_settings_root(&person);
+        if kept.detail != *shown {
+            return Err(refused(
+                "The question is not the one this server asked: nothing was used",
+            ));
+        }
+        let target = kept.target();
+        let using = self.turn_uses_for(turn, &target).await?;
+        if using.person != person || using.agent != kept.agent || using.workspace != kept.workspace
+        {
+            return Err(UnknownAction);
+        }
+        if answer == UseAnswer::No {
+            return Ok(None);
+        }
+        if target == person_vault::page_target() {
+            return self
+                .page_answered(&root, &using, kept, answer)
+                .map(Some)
+                .map_err(refused);
+        }
+        let wanted = Use::read(&target, &kept.arguments)?;
+        let word = person_vault::use_word(&target);
+        let always = answer == UseAnswer::Always && wanted.takes_leave();
+        if always {
+            let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+            let mut items =
+                VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
+            // A leave is given only for a use the item allows.
+            items
+                .fits(&item, kind, &places)
+                .and_then(|_| items.let_always(&item, &places, (&using.agent, &using.name), &word))
+                .map_err(|error| refused(error.to_string()))?;
+        }
+        if matches!(wanted, Use::Call(_)) {
+            // What a call answers goes to whoever made it, so nothing is
+            // sent now: that agent's same call goes through, once.
+            self.inner.vault_uses.calls.allow(&using, &kept.arguments);
+            return Ok(Some(json!({"allowed": "once"})));
+        }
+        let purpose = UsedFor {
+            using: &word,
+            what: "",
+            allowed: Some(if always {
+                Allowance::Always
+            } else {
+                Allowance::Once
+            }),
+        };
+        wanted
+            .carry_out(self, &root, &using.name, purpose)
+            .await
+            .map(Some)
+            .map_err(refused)
+    }
+}
+
+impl super::GovernedWorkspace {
+    /// The device of `person`'s own this workspace certified most recently and admits now: the
+    /// one an agent this server runs for them works on, so what the agent may do is the
+    /// person's access here at every step, and a person removed from the workspace leaves
+    /// their agent nothing.
+    ///
+    /// A device this server placed itself (`placed`) is never that device. It is certified in
+    /// the person's name for a window in the workspace's machine, later than any device of
+    /// their own, and it is confined to that window: a person with no other device here has
+    /// none.
+    pub(super) fn person_device(
+        &self,
+        person: &[u8; 32],
+        placed: impl Fn(&[u8; 32]) -> bool,
+    ) -> Option<[u8; 32]> {
+        let peer = self.peer();
+        let now = tilo_clock::wall();
+        peer.certificates()
+            .iter()
+            .filter(|cert| &cert.user_public_key == person)
+            .filter(|cert| !placed(&cert.device_public_key))
+            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
+            .max_by_key(|cert| cert.issued_at_ns)
+            .map(|cert| cert.device_public_key)
+    }
+}
+
+impl Workspaces {
+    /// [`GovernedWorkspace::person_device`] in the workspace `workspace` governed here: `None` for
+    /// a workspace not governed here, or a person it admits on no device of their own. The
+    /// devices this server placed are those its own list of them holds
+    /// ([`crate::environment::EnvironmentRegistry`]).
+    pub async fn person_device(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        self.device_beside(workspace, person, None).await
+    }
+
+    /// The device of `person`'s own that something read for them alone acts as in `workspace`:
+    /// the one it certified most recently and admits now that is neither this server's own
+    /// device nor one this server placed.
+    ///
+    /// This server's own device is a member of every workspace it governs, and on a person's
+    /// own server it is certified in that person's name: [`Self::person_device`] answers it
+    /// where it is their newest, and a turn in that workspace acts as it. A read for a person
+    /// in another workspace of theirs never does, or it would read with the server's own
+    /// membership there. `None` for a workspace not governed here, or a person it admits on
+    /// no other device.
+    pub async fn persons_own_device(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let never = self.governor().device_public_key;
+        self.device_beside(workspace, person, Some(never)).await
+    }
+
+    /// [`GovernedWorkspace::person_device`] in `workspace`, where neither a device this server
+    /// placed nor `never` is the one.
+    async fn device_beside(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+        never: Option<[u8; 32]>,
+    ) -> Option<[u8; 32]> {
+        let governed = self.held(workspace).await?;
+        let runtime = governed.lock().await;
+        let placed = &self.inner.host.environments;
+        let now_ns = tilo_clock::unix_now_ns();
+        runtime.person_device(&person, |device| {
+            never.as_ref() == Some(device) || placed.of(device, now_ns).is_some()
+        })
+    }
+}
+
+impl Workspaces {
+    /// Whether `turn` may ask for a page's field to be filled from its person's vault at
+    /// all: what [`Self::release_for_turn`] refuses before the vault is opened, asked before
+    /// any window is.
+    ///
+    /// # Errors
+    /// As [`Self::keepers_turn`], and [`NotPermitted`] for a narrowed agent that holds no
+    /// rule for this use.
+    pub async fn may_fill_pages(&self, turn: &HostedTurn<'_>) -> Result<(), ActionCallError> {
+        self.turn_uses_for(turn, &person_vault::page_target())
+            .await
+            .map(drop)
+    }
+
+    /// Release what the item `fill` names keeps, for the page at the site
+    /// `fill` names, to whoever sends it on to that page's window, for
+    /// `turn`. `invocation` is the page action that asked.
+    ///
+    /// Released at once where the item keeps a leave for this agent, this
+    /// use and this site, or its person allowed this agent one fill of it
+    /// there, which is spent by this. Otherwise nothing is released: the
+    /// server keeps what was asked, with `asked_in`, and answers
+    /// [`TurnRelease::Asks`] with what to show the person. The use is written
+    /// down before anything is handed out.
+    ///
+    /// # Errors
+    /// As [`Self::use_for_turn`], and the vault's own refusals: no such item
+    /// in that person's vault, a site it does not belong to or that did not
+    /// arrive over https, an item that is no login, code generator or value.
+    pub async fn release_for_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+        fill: &FillPage,
+        invocation: tilo_actions::InvocationId,
+        asked_in: Value,
+    ) -> Result<TurnRelease, ActionCallError> {
+        let target = person_vault::page_target();
+        let using = self.turn_uses_for(turn, &target).await?;
+        let root = self.person_settings_root(&using.person);
+        let (item, site) = page_wanted(fill).map_err(refused)?;
+        let word = person_vault::use_word(&target);
+        // What the fill would be refused for is said before anyone is asked,
+        // and the vault is closed again before anything is waited for.
+        let (kind, stands) = {
+            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
+            let facts = items
+                .belongs_at(&item, &site)
+                .map_err(|error| refused(error.to_string()))?;
+            page_field(facts.kind).map_err(refused)?;
+            let stands = items
+                .stands(&item, std::slice::from_ref(&site), &using.agent, &word)
+                .map_err(|error| refused(error.to_string()))?;
+            (facts.kind, stands)
+        };
+        if stands || self.once_allowed(&using, &item, &site) {
+            return page_text(&root, &item, kind, &site, &using.name)
+                .map(TurnRelease::Released)
+                .map_err(refused);
+        }
+        let reason = fill.reason.trim();
+        let mut arguments = Map::new();
+        arguments.insert("site".into(), json!(site.as_str()));
+        arguments.insert("item".into(), json!(fill.item.to_string()));
+        if !reason.is_empty() {
+            arguments.insert("reason".into(), json!(reason));
+        }
+        let request = InvokeRequest {
+            invocation,
+            target,
+            argument: InvokeArgument::Json(arguments.clone()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let asked = self.ask_first(
+            &root,
+            using,
+            (&request, arguments),
+            (kind, vec![site.to_string()]),
+            (reason.to_owned(), asked_in),
+        )?;
+        Ok(match asked {
+            TurnUse::Asks(open) => TurnRelease::Asks(open),
+            TurnUse::Done(_) | TurnUse::Waits => TurnRelease::Waits,
+        })
+    }
+
+    /// What a person's allow of the page fill kept under `kept` comes to.
+    /// Nothing is filled here. [`UseAnswer::Always`] is the item's own leave,
+    /// read and taken back like any; an allow for once lets that agent's next
+    /// fill of that item at that site through.
+    fn page_answered(
+        &self,
+        root: &Path,
+        using: &KeepersTurn,
+        kept: &OpenAsk,
+        answer: UseAnswer,
+    ) -> Result<Value, String> {
+        let fill: FillPage = serde_json::from_value(Value::Object(kept.arguments.clone()))
+            .map_err(|_| "What was asked does not read as a page to fill".to_owned())?;
+        let (item, site) = page_wanted(&fill)?;
+        let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+        let facts = items
+            .belongs_at(&item, &site)
+            .map_err(|error| error.to_string())?;
+        page_field(facts.kind)?;
+        let allowed = if answer == UseAnswer::Always {
+            items
+                .let_always(
+                    &item,
+                    std::slice::from_ref(&site),
+                    (&using.agent, &using.name),
+                    &person_vault::use_word(&kept.target()),
+                )
+                .map_err(|error| error.to_string())?;
+            "always"
+        } else {
+            self.allow_once(using, &item, &site);
+            "once"
+        };
+        Ok(json!({"allowed": allowed, "site": site.as_str()}))
+    }
+
+    /// Keep a person's allow for one fill by `using` of `item` at `site`.
+    fn allow_once(&self, using: &KeepersTurn, item: &ItemId, site: &Place) {
+        let now = tilo_clock::unix_now_ns();
+        let mut once = self.inner.vault_uses.once.lock_recover();
+        once.retain(|leave| leave.until_ns > now);
+        if once.len() >= MAX_ONCE_LEAVES {
+            once.remove(0);
+        }
+        once.push(OnceLeave {
+            person: hex::encode(using.person),
+            workspace: using.workspace.clone(),
+            agent: using.agent.clone(),
+            item: item.as_str().to_owned(),
+            site: site.as_str().to_owned(),
+            until_ns: now.saturating_add(ONCE_LEAVE_NS),
+        });
+    }
+
+    /// Whether `using` holds its person's allow for one fill of `item` at
+    /// `site`: it is spent by being found.
+    fn once_allowed(&self, using: &KeepersTurn, item: &ItemId, site: &Place) -> bool {
+        let now = tilo_clock::unix_now_ns();
+        let person = hex::encode(using.person);
+        let mut once = self.inner.vault_uses.once.lock_recover();
+        once.retain(|leave| leave.until_ns > now);
+        let found = once.iter().position(|leave| {
+            leave.person == person
+                && leave.workspace == using.workspace
+                && leave.agent == using.agent
+                && leave.item == item.as_str()
+                && leave.site == site.as_str()
+        });
+        let Some(index) = found else {
+            return false;
+        };
+        once.remove(index);
+        true
+    }
+}

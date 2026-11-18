@@ -69,7 +69,7 @@ pub struct CalculatorApp {
     dragging: bool,
     drag_last: Point,
     field_dragging: bool,
-    /// Host focus selects this component's record for undo and keyboard
+    /// Host focus selects this component's resource for undo and keyboard
     /// delivery; controls remain semantic children.
     host_focused: bool,
     last_click: Option<ui::time::Instant>,
@@ -340,7 +340,7 @@ impl CalculatorApp {
     /// agents and scripts. It applies inside the event, so a formula's next
     /// keystroke builds on it, and the caller updates the model for feedback.
     ///
-    /// Only for an action that really mutates the document: the affordances gate
+    /// Only for an action that really mutates the document: the affordances check
     /// on a real change.
     fn submit(
         &self,
@@ -1757,7 +1757,7 @@ impl Widget for CalculatorApp {
         true
     }
     /// Keeps the host pumping frames while a drawer eases open or a zoom eases
-    /// toward its target; otherwise the animation freezes after one frame. Gated
+    /// toward its target; otherwise the animation freezes after one frame. Guarded
     /// by the mode, so a switch cannot pump frames forever.
     fn needs_animation_frame(&self) -> bool {
         match self.model.mode {

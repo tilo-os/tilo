@@ -54,7 +54,7 @@ pub use engine::{
     engine_ready, prepare_engine, tantivy_engine,
 };
 pub use fold::{fold, fold_char};
-pub use highlight::locate;
+pub use highlight::{excerpt, excerpt_around, locate};
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};
 pub use list::ListIndex;
 pub use query::{MIN_ALIAS_SCALARS, MIN_INFIX_SCALARS, Matching, matches_inside_words};

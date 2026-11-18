@@ -255,7 +255,7 @@ impl ServerFixture {
             assert!(
                 std::env::var("TILO_REQUIRE_CLOUD_SERVERS").as_deref() != Ok("1")
                     || prefix.starts_with("TILO_LIVE"),
-                "{prefix}_URL is required on this lane"
+                "{prefix}_URL is required on this job"
             );
             return None;
         };

@@ -1,6 +1,6 @@
 //! The host's fetch proxy: how a page reads cross-origin responses that the
 //! site does not allow it to (CORS). The workspace host the page is admitted
-//! to offers one: [`host`] is its implementation, which `tilo-relay` serves
+//! to offers one: [`host`] is its implementation, which `tilo-server` serves
 //! and, in development, `tilo-fetch-proxy`.
 
 #[cfg(all(feature = "proxy-host", not(target_family = "wasm")))]

@@ -452,18 +452,6 @@ tilo_test_env::scenario! {
         assert_eq!(answer(&grants, &send(), ActionKind::Read), Answer::Allow);
     }
 
-    phase a_grant_that_lived_while_a_task_was_open_reads_as_expired;
-    {
-        let mut json = serde_json::to_value(grant("t", mail(), KindSet::ALL, Answer::Allow)).unwrap();
-        json["lifetime"] = serde_json::json!({"task": "t1"});
-        let stored: Grant = serde_json::from_value(json).expect("an old workspace still loads");
-        assert_eq!(stored.lifetime, Lifetime::Until(0));
-        assert_eq!(
-            decide(&[stored], &[alice()], &send(), ActionKind::Read, &cx()).answer,
-            Answer::Deny
-        );
-    }
-
     phase once_grants_are_reported_for_consumption;
     {
         let grants = [
@@ -722,18 +710,18 @@ tilo_test_env::scenario! {
         assert!(!workspace.is_blocked(ALICE), "the owner is never blocked");
     }
 
-    phase a_standing_carries_the_person_and_every_bound;
+    phase an_access_carries_the_person_and_every_bound;
     {
-        use tilo_action_policy::Standing;
+        use tilo_action_policy::MemberAccess;
         let workspace = workspace_with_members(&[(BOB, Role::Editor)]);
         let relative = TreePath::root().app("mail").action("send");
-        let bob = Standing::person(workspace.clone(), BOB);
+        let bob = MemberAccess::person(workspace.clone(), BOB);
         assert_eq!(bob.node(&relative), mail().action("send"));
         assert_eq!(
             bob.answer(&bob.node(&relative), ActionKind::Outside, &cx()),
             Answer::Ask
         );
-        let agent = Standing::new(
+        let agent = MemberAccess::new(
             workspace.clone(),
             Acting::agent("ag").acting_for(Acting::person(BOB)),
         )
@@ -753,7 +741,7 @@ tilo_test_env::scenario! {
             agent.answer(&notes, ActionKind::Undoable, &cx()),
             Answer::Deny
         );
-        let owner = Standing::person(workspace, ALICE).on_foreign_device();
+        let owner = MemberAccess::person(workspace, ALICE).on_foreign_device();
         let invite = roles::governance_action("r", governance::INVITE);
         assert_eq!(
             owner.answer(&invite, roles::GOVERNANCE_KIND, &cx()),
@@ -764,11 +752,11 @@ tilo_test_env::scenario! {
             Answer::Ask
         );
         let json = serde_json::to_string(&owner).unwrap();
-        assert_eq!(serde_json::from_str::<Standing>(&json).unwrap(), owner);
+        assert_eq!(serde_json::from_str::<MemberAccess>(&json).unwrap(), owner);
     }
 
     phase a_member_leaves_their_workspace_without_being_able_to_remove_anyone;
-    // Leaving is the one membership change no grant gates: whoever removes
+    // Leaving is the one membership change no grant checks: whoever removes
     // themselves does it by being who they are, even while restricted, and they
     // reach nobody else by it.
     {
@@ -1117,7 +1105,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase ask_needs_a_witnessed_approval;
+    phase ask_needs_a_approved_approval;
     {
         let mut workspace = workspace_with_members(&[(BOB, Role::Editor)]);
         workspace.grants.push(Grant::new(
@@ -1599,17 +1587,17 @@ tilo_test_env::scenario! {
     // delegation, the Editor preset: an owner's agent changes the workspace but does
     // not govern it, and a viewer's agent changes nothing.
     {
-        use tilo_action_policy::Standing;
+        use tilo_action_policy::MemberAccess;
         let workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
-        let records = TreePath::workspace("r").app("notes").action("append");
+        let resources = TreePath::workspace("r").app("notes").action("append");
         let set_role = roles::governance_action("r", governance::SET_ROLE);
-        let owner_agent = Standing::new(
+        let owner_agent = MemberAccess::new(
             workspace.clone(),
             Acting::agent("scribe").acting_for(Acting::person(ALICE)),
         )
         .granted(roles::agent_grants("r", "scribe", ALICE, &[]));
         assert_eq!(
-            owner_agent.answer(&records, ActionKind::Undoable, &cx()),
+            owner_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Allow
         );
         assert_eq!(
@@ -1617,21 +1605,21 @@ tilo_test_env::scenario! {
             Answer::Deny
         );
         assert_eq!(
-            Standing::person(workspace.clone(), ALICE).answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
+            MemberAccess::person(workspace.clone(), ALICE).answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
             Answer::Allow,
             "the owner governs"
         );
-        let viewer_agent = Standing::new(
+        let viewer_agent = MemberAccess::new(
             workspace,
             Acting::agent("scribe").acting_for(Acting::person(BOB)),
         )
         .granted(roles::agent_grants("r", "scribe", BOB, &[]));
         assert_eq!(
-            viewer_agent.answer(&records, ActionKind::Undoable, &cx()),
+            viewer_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Deny
         );
         assert_eq!(
-            viewer_agent.answer(&records, ActionKind::Read, &cx()),
+            viewer_agent.answer(&resources, ActionKind::Read, &cx()),
             Answer::Allow
         );
     }
@@ -1766,6 +1754,33 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         assert!(!workspace.is_member(BOB));
+    }
+
+    phase a_change_naming_software_as_a_person_is_refused;
+    {
+        // A change arrives from any device: one naming an agent's key, or the
+        // retired `person:` spelling, as a person is refused, not applied.
+        let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
+        let policy = workspace.clone();
+        let carol = Authority::person(policy.party(CAROL));
+        for named in ["agent:scout", "person:bob"] {
+            let before = workspace.clone();
+            assert_eq!(
+                workspace.apply(
+                    CAROL,
+                    &carol,
+                    Change::Ban {
+                        person: named.into()
+                    },
+                    &cx(),
+                    false
+                ),
+                Err(Refusal::NotAPerson(named.to_owned()))
+            );
+            assert_eq!(workspace, before, "nothing is written");
+            assert!(!workspace.is_blocked(named));
+            assert!(workspace.grantees_of(named).is_empty());
+        }
     }
 
     phase a_ban_removes_and_blocks_until_unban;

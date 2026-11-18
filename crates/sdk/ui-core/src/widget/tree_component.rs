@@ -290,7 +290,7 @@ pub struct TreeViewProps {
     /// The nodes, in order, parents before their children.
     #[component(part(default))]
     pub nodes: TreeViewRows,
-    /// The rows standing in for nodes someone else removed that the person has not seen go:
+    /// The rows in place of nodes someone else removed that the person has not seen go:
     /// they stand after the nodes, struck, each with its mark. The UI host places them.
     #[component(part)]
     pub removed: RemovedNodes,
@@ -671,7 +671,7 @@ impl Nodes {
         self.index.get(key).and_then(|at| self.nodes.get(*at))
     }
 
-    /// The key of the node standing for the resource `id`.
+    /// The key of the node for the resource `id`.
     fn key_of_item(&self, id: &str) -> Option<String> {
         self.keys.get(id).cloned()
     }
@@ -747,7 +747,7 @@ impl ListModel for Nodes {
 }
 
 /// The rows of a tree, as its list reads them: the nodes the view gave whole, or the rows a
-/// host renders as the list shows them, and after them the rows standing in for nodes someone
+/// host renders as the list shows them, and after them the rows in place of nodes someone
 /// else removed that the person has not seen go.
 #[derive(Clone)]
 struct TreeRows {
@@ -991,7 +991,7 @@ impl TreeRows {
         }
     }
 
-    /// The struck row standing at `index`, when it is one of the rows after the nodes.
+    /// The struck row at `index`, when it is one of the rows after the nodes.
     fn removed_at(&self, index: usize) -> Option<&Node> {
         self.removed.get(index.checked_sub(self.held_len())?)
     }
@@ -1007,7 +1007,7 @@ impl TreeRows {
         }
     }
 
-    /// The key of the row standing for the resource `id`, when the tree holds one.
+    /// The key of the row for the resource `id`, when the tree holds one.
     fn key_of_item(&self, id: &str) -> Option<String> {
         match &self.rows {
             Rows::Given(nodes) => nodes.key_of_item(id),
@@ -1386,7 +1386,7 @@ impl DescribedTreeView {
         !self.marks.is_folded(&key.to_owned())
     }
 
-    /// The key of the row standing for the resource `item`, which is also the node's stable
+    /// The key of the row for the resource `item`, which is also the node's stable
     /// name on screen.
     #[cfg(test)]
     pub(crate) fn row_key(&self, item: &str) -> Option<String> {
@@ -1580,7 +1580,7 @@ impl Described for DescribedTreeView {
             let mut chosen = KeySelection::new();
             for key in selected {
                 if self.rows.holds(&key) {
-                    chosen.toggle(key);
+                    chosen.toggle(crate::widget::ListKey::new(key));
                 }
             }
             *self.list.selection_mut() = chosen;
@@ -1620,23 +1620,9 @@ impl Decorator for DescribedTreeView {
         self.list.take_structure_change()
     }
 
-    /// The tree tells the window hosting it that the person opened a row of it, as a list of
-    /// places does: what a narrow window's drawer closes on.
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn NavigationSource>() {
-            request.provide::<dyn NavigationSource>(self);
-            return;
-        }
-        self.list.provide(request);
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn NavigationSource>() {
-            request.provide::<dyn NavigationSource>(self);
-            return;
-        }
-        self.list.provide_mut(request);
-    }
+    // The tree tells the window hosting it that the person opened a row of it, as a list of
+    // places does: what a narrow window's drawer closes on.
+    crate::provides!(dyn NavigationSource; inner = list);
 }
 
 impl NavigationSource for DescribedTreeView {
@@ -2151,9 +2137,9 @@ mod tests {
     }
 
     /// A tree that fills its pane is the pane's list: its rows stand on the pane's content edge,
-    /// their lift bleeding past it, as every list in a column does — so a tree standing as a
+    /// their lift bleeding past it, as every list in a column does — so a tree shown as a
     /// phone window's screen keeps the page gutter at the glass rather than running to it. A tree
-    /// whose first level folds keeps the chevron column on that edge, as the first thing standing
+    /// whose first level folds keeps the chevron column on that edge, as the first thing
     /// there, and its rows' content one step past it.
     #[test]
     fn a_tree_that_fills_its_pane_stands_its_rows_on_the_panes_content_edge() {
@@ -2395,7 +2381,7 @@ mod tests {
             },
         );
         let rows = tree.rows();
-        assert_eq!(rows.len(), 2, "the node and the row standing in for it");
+        assert_eq!(rows.len(), 2, "the node and the row in place of it");
         let struck = rows.key_at(1).expect("the removed row");
         assert_eq!(
             rows.label(1).as_deref(),
@@ -2409,7 +2395,7 @@ mod tests {
         );
         assert!(
             !rows.has_subtasks(1),
-            "a row standing in for what left holds nothing"
+            "a row in place of what left holds nothing"
         );
         assert!(
             row_face(&tree, &struck, |row| row

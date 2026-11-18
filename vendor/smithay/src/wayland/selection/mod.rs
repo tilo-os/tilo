@@ -13,7 +13,10 @@
 
 use std::os::unix::io::OwnedFd;
 
+use wayland_server::Client;
+
 use crate::input::{Seat, SeatHandler};
+use crate::utils::Serial;
 
 pub mod data_device;
 pub mod ext_data_control;
@@ -35,6 +38,20 @@ pub trait SelectionHandler: Sized + SeatHandler {
     /// A client has set the selection
     #[allow(unused_variables)]
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, seat: Seat<Self>) {}
+
+    /// Whether `client` may set a selection although it does not hold the keyboard focus, for the
+    /// reason this compositor gives the request's `serial`. The protocol takes a selection only
+    /// from the focused client; a compositor that keeps clients through a restart of its own lets
+    /// one name again what it owned, with bounds the compositor decides. The default is no.
+    #[allow(unused_variables)]
+    fn may_set_selection_without_focus(
+        &mut self,
+        ty: SelectionTarget,
+        client: &Client,
+        serial: Serial,
+    ) -> bool {
+        false
+    }
 
     /// A client requested to read the server-set selection.
     ///

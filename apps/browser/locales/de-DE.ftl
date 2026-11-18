@@ -565,7 +565,7 @@ browser-history-paused-hint = Seiten in diesem Fenster werden nicht im Verlauf g
 browser-service-sign-in-hint = Melde dich an, um dieses Konto fertig zu verbinden.
 
 ## A window without the person's accounts
-browser-no-account-custody = Dieses Fenster surft ohne deine Anmeldungen. Öffne die Seite in einem eigenen Browser-Fenster, um dort deine Konten zu nutzen
+browser-no-account-credentials = Dieses Fenster surft ohne deine Anmeldungen. Öffne die Seite in einem eigenen Browser-Fenster, um dort deine Konten zu nutzen
 
 ## Actions
 
@@ -622,6 +622,7 @@ browser-effect-drag-page = Element ziehen
 browser-effect-pointer-path = Zeigerweg zeichnen
 browser-effect-fill-page = Feld ausfüllen
 browser-effect-fill-page-secret = Passwortfeld ausfüllen
+browser-effect-fill-page-item = Feld aus dem Tresor ausfüllen
 browser-effect-select-page = Optionen wählen
 browser-effect-fill-page-files = Dateien zum Hochladen wählen
 browser-effect-press-page = Taste drücken
@@ -638,6 +639,7 @@ browser-effect-show-personal-bookmark-folder = Lesezeichenordner öffnen
 browser-effect-read-page-record = Wer was auf der Seite getan hat
 browser-effect-read-page-fields = Felder der Seite und wer sie ausgefüllt hat
 browser-effect-read-page-forms = Formulare der Seite und was sie fragen
+browser-effect-read-page-table = Tabellen der Seite als Zeilen
 browser-effect-find-page-text = Wörter auf der Seite finden
 browser-effect-fill-page-form = Formular der Seite ausfüllen
 browser-effect-answer-form = Ein Formular der Seite ausfüllen

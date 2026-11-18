@@ -12,9 +12,9 @@
 
 pub mod app;
 pub mod apps;
+pub mod asked;
 pub mod bots;
 pub mod branch;
-pub mod capability;
 pub mod closed_tabs;
 pub mod commands;
 pub mod desktop_doc;
@@ -43,7 +43,6 @@ pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
 pub use bots::WorkspaceBot;
-pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
 pub use collab_types::{Member, Person, PersonId};
 pub use ids::{

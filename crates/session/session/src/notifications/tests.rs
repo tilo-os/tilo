@@ -438,7 +438,7 @@ tilo_test_env::scenario! {
             unasked: false,
             source: Some(tilo_desktop_surface::HostActionSource::Devices),
         };
-        let ask = Notice::asks(&action, "Pair “Phone”?", "").tagged("ask");
+        let ask = action.ask("Pair “Phone”?", "").tagged("ask");
         role.show(&ask);
         rig.step();
         let banner = rig.banner_titled("Pair “Phone”?");
@@ -454,7 +454,7 @@ tilo_test_env::scenario! {
             "put off, not answered"
         );
 
-        role.show(&Notice::asks(&action, "Pair “Phone”?", "").tagged("pairing"));
+        role.show(&action.ask("Pair “Phone”?", "").tagged("pairing"));
         rig.step();
         let key = tilo_desktop_surface::host_action_key("keep-identity");
         rig.desktop

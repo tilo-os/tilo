@@ -11,12 +11,12 @@ use tilo_messaging_protocol::supervisor::whatsapp::{Network, WhatsappBootstrap, 
 use tilo_messaging_protocol::supervisor::{AccountAuthority, AccountSupervisor};
 
 use super::consent::{self, Consent, Policy};
-use super::gate::{Gate, Running};
+use super::guard::{AccountGuard, Running};
 
 /// The SDK's network, allowed only while the person's consent and the
-/// account's gate both hold.
+/// account's check both hold.
 struct Egress {
-    account: Arc<Gate>,
+    account: Arc<AccountGuard>,
     consent: Arc<Consent>,
 }
 
@@ -29,15 +29,15 @@ impl AccountAuthority for Egress {
 
 /// A running `WhatsApp` account.
 pub(crate) struct Account {
-    gate: Arc<Gate>,
+    guard: Arc<AccountGuard>,
     supervisor: Arc<AccountSupervisor>,
     /// 0: not started; 1: starting; 2: started.
     activation: AtomicU8,
 }
 
 impl Running for Account {
-    fn gate(&self) -> &Arc<Gate> {
-        &self.gate
+    fn guard(&self) -> &Arc<AccountGuard> {
+        &self.guard
     }
     fn supervisor(&self) -> &Arc<AccountSupervisor> {
         &self.supervisor
@@ -50,7 +50,7 @@ impl Drop for Account {
     }
 }
 
-/// Marks a start that did not finish as failed (or locked, when the gate
+/// Marks a start that did not finish as failed (or locked, when the check
 /// closed), so only an explicit retry starts it again.
 struct Activation<'a> {
     account: &'a Account,
@@ -60,7 +60,7 @@ struct Activation<'a> {
 impl Drop for Activation<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            let state = if self.account.gate.check().is_err() {
+            let state = if self.account.guard.check().is_err() {
                 AccountState::Locked
             } else {
                 AccountState::Failed
@@ -72,9 +72,9 @@ impl Drop for Activation<'_> {
 }
 
 impl Account {
-    pub(crate) fn new(gate: Arc<Gate>, supervisor: Arc<AccountSupervisor>) -> Self {
+    pub(crate) fn new(guard: Arc<AccountGuard>, supervisor: Arc<AccountSupervisor>) -> Self {
         Self {
-            gate,
+            guard,
             supervisor,
             activation: AtomicU8::new(0),
         }
@@ -82,7 +82,7 @@ impl Account {
 
     /// The SDK's linking, once started.
     pub(crate) fn linking(&self) -> Result<Arc<WhatsappLinking>, SendError> {
-        self.gate.check()?;
+        self.guard.check()?;
         self.supervisor.whatsapp_linking()
     }
 
@@ -109,26 +109,26 @@ impl Account {
         scope: String,
         policy: &Policy,
     ) -> Result<(), SendError> {
-        self.gate.check()?;
-        drop(self.gate.credential.profile_key()?);
-        let consent = consent::request(self.gate.identity.clone(), policy)?;
-        self.gate.check()?;
+        self.guard.check()?;
+        drop(self.guard.credential.profile_key()?);
+        let consent = consent::request(self.guard.identity.clone(), policy)?;
+        self.guard.check()?;
         let network = Network::native(Arc::new(Egress {
-            account: self.gate.clone(),
+            account: self.guard.clone(),
             consent,
         }))?;
         if !root.is_absolute() {
             return Err(SendError::InvalidRequest);
         }
-        let network = network.guarded(self.gate.clone());
+        let network = network.guarded(self.guard.clone());
         tokio::runtime::Handle::current().block_on(self.activate(|authority| {
             assemble(
-                &self.gate.identity.owner,
+                &self.guard.identity.owner,
                 root,
                 scope,
                 network,
                 authority,
-                self.gate.clone(),
+                self.guard.clone(),
             )
         }))
     }
@@ -145,9 +145,9 @@ impl Account {
             account: self,
             finished: false,
         };
-        self.gate.check()?;
-        let (broker, bootstrap) = assemble(self.gate.clone()).await?;
-        self.gate.check()?;
+        self.guard.check()?;
+        let (broker, bootstrap) = assemble(self.guard.clone()).await?;
+        self.guard.check()?;
         self.supervisor.install_whatsapp(broker, bootstrap).await?;
         self.activation.store(2, Ordering::Release);
         activation.finished = true;
@@ -162,31 +162,31 @@ async fn assemble(
     scope: String,
     network: Network,
     authority: Arc<dyn ExternalAuthority>,
-    gate: Arc<Gate>,
+    guard: Arc<AccountGuard>,
 ) -> Result<(Arc<ExternalBroker>, WhatsappBootstrap), SendError> {
-    gate.check()?;
+    guard.check()?;
     let bootstrap = WhatsappBootstrap::open_profile(
         &root.join("sdk"),
         owner.clone(),
-        gate.credential.profile_key()?,
+        guard.credential.profile_key()?,
         network,
-        gate.clone(),
+        guard.clone(),
     )
     .await?;
-    gate.check()?;
+    guard.check()?;
     let journal = tilo_messaging_protocol::journal::EncryptedJournal::open(
         &root.join("journal"),
         owner,
-        gate.credential.profile_key()?,
+        guard.credential.profile_key()?,
     )
     .map_err(|_| SendError::Unavailable)?;
-    gate.check()?;
+    guard.check()?;
     let history = tilo_messaging_protocol::signal_broker::History::open(
         &root.join("history"),
         owner,
-        gate.credential.profile_key()?,
+        guard.credential.profile_key()?,
     )?;
-    gate.check()?;
+    guard.check()?;
     let runtime = tilo_messaging_protocol::whatsapp_runtime::WhatsappRuntime::new(
         owner.clone(),
         bootstrap.client(),
@@ -194,7 +194,7 @@ async fn assemble(
     )
     .map_err(|_| SendError::Unavailable)?;
     let broker = ExternalBroker::new(Box::new(runtime), history, scope, authority)?;
-    gate.check()?;
+    guard.check()?;
     Ok((Arc::new(broker), bootstrap))
 }
 
@@ -270,7 +270,7 @@ impl super::flow::Provider for Whatsapp {
         held: &Held,
         account: &Arc<Account>,
     ) -> Result<(), SendError> {
-        account.gate().credential.check()?;
+        account.guard().credential.check()?;
         let jid = held.jid.clone().ok_or(SendError::Revoked)?;
         if account.state() != tilo_messaging::AccountState::Ready {
             return Err(SendError::Revoked);
@@ -284,7 +284,7 @@ impl super::flow::Provider for Whatsapp {
                 kind: crate::session::PublicationKind::Whatsapp { jid },
             },
         )?;
-        account.gate().credential.check()
+        account.guard().credential.check()
     }
 
     fn resume(

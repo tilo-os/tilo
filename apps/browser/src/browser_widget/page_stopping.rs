@@ -50,12 +50,21 @@ impl BrowserWidget {
                 Some(serde_json::json!({"outcome": "not_run"})),
             ));
         }
-        // A read of the tab's record holds no turn and changes nothing.
-        if self.withdraw_page_record_read(invocation) {
+        // A fill that still waits for its vault item reached nothing either.
+        if self.withdraw_item_fill(invocation) {
             return Some(action_failed(
                 invocation,
                 "browser.page.cancelled",
-                "The read of the tab's record was cancelled before it was answered; reading \
+                "The fill was cancelled before the vault answered, so nothing was filled.",
+                None,
+            ));
+        }
+        // A read of the tab's resource holds no turn and changes nothing.
+        if self.withdraw_page_resource_read(invocation) {
+            return Some(action_failed(
+                invocation,
+                "browser.page.cancelled",
+                "The read of the tab's resource was cancelled before it was answered; reading \
                  it changes nothing.",
                 Some(serde_json::json!({"outcome": "not_run"})),
             ));

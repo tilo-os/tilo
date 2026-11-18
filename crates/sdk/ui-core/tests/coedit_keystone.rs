@@ -12,7 +12,7 @@
 //! presence path and paints into the local render
 //! (`remote_caret_presence_...`), and a signed op validates/rejects
 //! through the real `collab_types::validate_admitted_inbound_op` pipeline by
-//! role (`signed_edit_is_permission_gated`).
+//! role (`signed_edit_is_permission_guarded`).
 
 #![allow(
     clippy::unwrap_used,
@@ -274,7 +274,7 @@ fn poll_until<T>(
     reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
 )]
 #[test]
-fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
+fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
     {
         let (mut a, mut b) = two_peers();
 
@@ -518,7 +518,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 }
 
 // ---------------------------------------------------------------------
-// Permission-gated signed co-edit: drives the real
+// Permission-guarded signed co-edit: drives the real
 // `collab_types::validate_admitted_inbound_op` pipeline, not a re-implementation.
 // ---------------------------------------------------------------------
 

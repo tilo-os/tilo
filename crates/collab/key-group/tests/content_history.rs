@@ -12,7 +12,7 @@ use collab_types::{
 };
 use key_group::{Error, KeyGroup, MemberKey, VaultKey};
 
-/// The history host (broker/relay): stores signed ciphertext, never keys.
+/// The history host (broker/server): stores signed ciphertext, never keys.
 #[derive(Default)]
 struct Host {
     ops: Vec<SignedOp>,

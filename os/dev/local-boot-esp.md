@@ -1,7 +1,7 @@
 # Local ARM64 early-boot iteration
 
 Use a small, replaceable EFI System Partition (ESP) to test a candidate ARM64
-UKI without rebuilding, recopying, or modifying the full OS disk. This lane is
+UKI without rebuilding, recopying, or modifying the full OS disk. This job is
 for firmware, bootloader, UKI, kernel, initramfs, and early userspace changes.
 
 ## Build the override ESP
@@ -64,7 +64,7 @@ To exercise the live installer against a blank target, use
 - This proves the candidate through early userspace against the retained root.
   It does not replace a clean boot of the production, same-disk ESP layout.
 - A candidate that discovers root only by looking beside the loader's ESP cannot
-  use a separate ESP. Give it an explicit, verified root PARTUUID for this lane.
+  use a separate ESP. Give it an explicit, verified root PARTUUID for this job.
 - A UKI bound to a composefs digest must still match the retained root content.
   Root filesystem changes require a new matching base disk.
 - Secure Boot must be disabled for unsigned development UKIs. Signed candidates

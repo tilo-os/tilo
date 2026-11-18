@@ -50,17 +50,17 @@ use tilo_agent_session::{
     ReplicaActor, Seed, SupervisorHost,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::certify::{ApproverDecision, ApproverReply};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_client::Approver;
-use tilo_relay_client::certify;
-use tilo_relay_protocol::agents::{
+use tilo_server::certify::{ApproverDecision, ApproverReply};
+use tilo_server::daemon::{Server, ServerIdentity};
+use tilo_server::web::{TlsSource, WebConfig};
+use tilo_server_client::Approver;
+use tilo_server_client::certify;
+use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
     RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
     agent_resource,
 };
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_client::remote::Heard;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
@@ -69,23 +69,23 @@ use tilo_user_identity::{
 
 use crate::common::catalogue;
 use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
-/// Plans the task `gated` as a slow model would: only once its steps arrive
+/// Plans the task `held` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
 /// written.
-struct GatedPlanner {
+struct HeldPlanner {
     release: std::sync::mpsc::Receiver<serde_json::Value>,
     ready: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
-impl tilo_agent_session::Planner for GatedPlanner {
+impl tilo_agent_session::Planner for HeldPlanner {
     fn plan(
         &mut self,
         task: &str,
         context: &tilo_agent_session::PlanContext,
     ) -> Result<Vec<tilo_agent_session::Step>, String> {
-        if task != "gated" {
+        if task != "held" {
             return DirectPlanner.plan(task, context);
         }
         let steps = self.release.recv().map_err(|error| error.to_string())?;
@@ -98,7 +98,7 @@ impl tilo_agent_session::Planner for GatedPlanner {
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
 const OTHER_WORKSPACE: &str = "0b7f3c2e-5d41-4a8f-9e36-2c1d7a9b4e50";
 
-/// The host with its agent supervisor as the app-serving plane.
+/// The host with its agent supervisor as the app action server.
 async fn start_host(
     root: &SigningKey,
     host: &Device,
@@ -106,26 +106,26 @@ async fn start_host(
     supervisor: &Arc<AgentSupervisor>,
 ) -> TestHost {
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_relay::RelayConfig {
+    let mut cfg = tilo_server::ServerConfig {
         state_root: state.to_path_buf(),
         ..Default::default()
     };
     cfg.services.app_serving = true;
-    let relay = Relay::start_with_app_serving(
+    let server = Server::start_with_app_serving(
         cfg,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user,
             device_signing_key: host.key.clone(),
             device_cert: host.cert.clone(),
             revocations: RevocationList::new(),
         },
-        Some(Arc::new(tilo_relay::ActionHostPlane::new(SupervisorHost(
-            supervisor.clone(),
-        )))),
+        Some(Arc::new(tilo_server::ActionProviderServer::new(
+            SupervisorHost(supervisor.clone()),
+        ))),
     )
     .await
     .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: TlsSource::Development {
@@ -142,7 +142,7 @@ async fn start_host(
         })
         .await
         .unwrap();
-    TestHost { relay, web }
+    TestHost { server, web }
 }
 
 /// The laptop approves the one pending request as an agent device: a
@@ -154,7 +154,7 @@ async fn approve_agent(host: &TestHost, root: &SigningKey, laptop: &Device) -> S
         .unwrap();
     let mut approver = Approver::connect(
         &endpoint,
-        host.relay.node_addr(),
+        host.server.node_addr(),
         laptop.cert.clone(),
         &laptop.key,
         &RevocationList::new(),
@@ -339,7 +339,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -366,7 +366,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let delegation = Delegation::sign(
         &root,
         agent_cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "writer".into(),
         },
         "Writer helper",
@@ -379,7 +379,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_cert, delegation.clone())
         .await
         .unwrap();
@@ -462,7 +462,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         identity,
         control.clone(),
         catalogue.clone(),
-        Box::new(GatedPlanner {
+        Box::new(HeldPlanner {
             release,
             ready: Arc::clone(&plan_ready),
         }),
@@ -500,11 +500,12 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let carried = Delegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
-    // 5. The host keeps the agent to its delegated workspaces.
+    // 5. The agent is kept to its delegated workspaces: one outside them does not count
+    // it as a member, and its session goes on in the workspace it is delegated.
     agent
         .peer()
         .send(Cmd::Join(
-            tilo_relay_protocol::WorkspaceId::parse(OTHER_WORKSPACE).unwrap(),
+            tilo_server_protocol::WorkspaceId::parse(OTHER_WORKSPACE).unwrap(),
         ))
         .unwrap();
     wait_for(
@@ -516,7 +517,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
                 .status()
                 .failures
                 .iter()
-                .any(|failure| failure.code == "permission-required");
+                .any(|failure| failure.code == "not-admitted");
             async move { refused.then_some(()) }
         },
     )
@@ -666,7 +667,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         release_later.send(planned_steps).unwrap();
         held_past_the_bound
     });
-    let gated = control.message("gated").unwrap();
+    let held = control.message("held").unwrap();
     agent.pump();
     agent.pump();
     let _ = pumped_twice.send(());
@@ -676,14 +677,14 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             .info()
             .tasks
             .into_iter()
-            .find(|task| task.id == gated);
+            .find(|task| task.id == held);
         if first_step.is_none() && task.as_ref().is_some_and(|task| !task.steps.is_empty()) {
             first_step = Some(Instant::now());
         }
         task.is_some_and(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
     });
     let waited_for_the_planner = releaser.join().unwrap();
-    let task = ended(&gated).expect("the planned task ended");
+    let task = ended(&held).expect("the planned task ended");
     assert_eq!(task.state, TaskState::Completed, "{task:?}");
     let ready = plan_ready.lock().unwrap().expect("the plan was made");
     let to_first_step = first_step
@@ -713,7 +714,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // pause holds the late plan until resume, and a cancelled or stopped
     // task's late plan is dropped. Each step goes through the agent's
     // action API while the loop pumps.
-    let gated_edit = |text: &str| {
+    let held_edit = |text: &str| {
         let (note, arguments) = crate::common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
@@ -749,7 +750,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             host_key,
             Some(&mut agent),
             ActionAddress::new(&agent_id, MESSAGE_ACTION),
-            InvokeArgument::Text("gated".into()),
+            InvokeArgument::Text("held".into()),
         )
         .await;
         let task = completed(&given)["taskId"].as_str().unwrap().to_owned();
@@ -775,7 +776,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             .await,
         );
         let sent_at = Instant::now();
-        release_plan.send(gated_edit(text)).unwrap();
+        release_plan.send(held_edit(text)).unwrap();
         let made = || {
             plan_ready
                 .lock()
@@ -843,7 +844,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     // Every edit the host carried, the page's and the agent's, is sealed.
     let retained = host
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace())
         .await
@@ -859,5 +860,5 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     agent.close();
     browser.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

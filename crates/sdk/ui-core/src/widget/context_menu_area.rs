@@ -24,7 +24,7 @@ pub struct MenuEntry {
     item: MenuItem,
     run: Option<Rc<dyn Fn()>>,
     /// What choosing it presses, when the view bound it: the action runs through the area's
-    /// custody, so a press of the row and anyone else running the action take the one path.
+    /// ownership, so a press of the row and anyone else running the action take the one path.
     press: crate::widget::Press,
     /// An emoji bar's way to the emoji picker: set when its last cell was chosen, and where
     /// the picked emoji goes.
@@ -330,7 +330,7 @@ pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 /// keyboard opened the menu (`None`).
 pub type ContentMenuEntries = Box<dyn Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry>>;
 
-/// What opened the open menu: where it must keep standing.
+/// What opened the open menu: where it must stay.
 #[derive(Clone, Copy)]
 enum Opening {
     /// The pointer, at that point.
@@ -679,29 +679,11 @@ impl super::Decorator for ContextMenuArea {
     // row of its open menu reaches the menu even when the content answers its
     // own, and a row chosen from it hands over its action after the menu
     // closed. Every other capability is the content's.
-    fn provide<'a>(&'a self, request: &mut super::capability::Request<'a, '_>) {
-        if request.wants::<dyn super::ResourceOperations>() {
-            request.provide::<dyn super::ResourceOperations>(self);
-            return;
-        }
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            return;
-        }
-        self.content.provide(request);
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut super::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn super::ResourceOperations>() {
-            request.provide::<dyn super::ResourceOperations>(self);
-            return;
-        }
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            return;
-        }
-        self.content.provide_mut(request);
-    }
+    crate::provides!(
+        dyn super::ResourceOperations,
+        dyn crate::widget::controls::ActionControls;
+        inner = content
+    );
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -805,7 +787,7 @@ impl super::Decorator for ContextMenuArea {
 
     /// What a frame paints: the content's own change, what the menu paints
     /// over it (which is nothing while it is closed, [`ContextMenu::needs_redraw`]),
-    /// and a picker it stands open. A box standing without the menu is the
+    /// and a picker it stands open. A box without the menu is the
     /// menu's painting too.
     fn needs_redraw(&self) -> bool {
         self.content.needs_redraw()
@@ -905,16 +887,16 @@ impl super::Decorator for ContextMenuArea {
 }
 
 impl crate::widget::controls::ActionControls for ContextMenuArea {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        crate::widget::controls::install_control_custody(&mut *self.content, domain, attachment);
+        crate::widget::controls::attach_controls(&mut *self.content, domain, attachment);
         for press in &self.presses {
-            press.install_custody(domain, attachment);
+            press.attach(domain, attachment);
         }
-        crate::widget::controls::install_control_custody(&mut self.menu, domain, attachment);
+        crate::widget::controls::attach_controls(&mut self.menu, domain, attachment);
     }
 
     /// A row pressed before the menu closed hands its invocation over here.

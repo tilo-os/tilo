@@ -37,7 +37,7 @@ from rust_source import is_test_file, line_number, production_source  # noqa: E4
 
 ROOT = Path(__file__).resolve().parents[2]
 TREES = ("apps", "crates", "examples")
-LEDGER = "tools/policy/undoable-deletions.toml"
+MANIFEST = "tools/policy/undoable-deletions.toml"
 
 # Kept in step with `GENERIC_CONFIRMATION_WORDS` in
 # crates/collab/actions/src/contract.rs.
@@ -93,7 +93,7 @@ DECLARATION_OF = re.compile(
 # names a deletion of its own (`ActionSpec::typed(decl.id, …)`).
 DECLARED_ID = re.compile(r"\bActionSpec\s*::\s*typed\s*\(\s*decl\s*\.\s*id\b")
 # What such a builder is called in a finding: every declaration's own action,
-# none of which the ledger can name.
+# none of which the manifest can name.
 DECLARED_ACTION = "a declaration's own action"
 NAME_ASSIGNED = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*contract\s*\.")
 KIND_ASSIGNED = re.compile(
@@ -275,7 +275,7 @@ def names_deletion(chain: str, code: str, start: int) -> str | None:
     """The action a deletion `chain`, built at `start`, deletes: the one it
     names itself, or the one the binding it continues names (`spec` bound to
     an action built with `operation(…)`). A chain that names neither is a
-    caller's own action, built where the ledger cannot see it."""
+    caller's own action, built where the manifest cannot see it."""
     direct = declared_action(chain, code)
     if direct is not None:
         return direct
@@ -325,7 +325,7 @@ def declared_action(chain: str, code: str = "") -> str | None:
     """The action id `chain` builds: the literal it names (`operation("remove", …)`),
     the `id` its `Action` literal carries, or the constant it continues
     (`Calendar::INVITE`). `None` when the word closes a chain that names none
-    of them, which is a caller's own action built somewhere the ledger cannot
+    of them, which is a caller's own action built somewhere the manifest cannot
     see."""
     literal = re.search(r"\b(?:operation|typed_operation)\s*\(\s*\"([^\"]+)\"", chain)
     if literal is not None:
@@ -395,26 +395,26 @@ def bound_action(code: str, at: int) -> str | None:
             return action
     return None
 
-def ledger_entries(entries: list[dict], errors: list[str]) -> list[dict]:
-    """The ledger's entries, each one that names an action and says why Undo
+def manifest_entries(entries: list[dict], errors: list[str]) -> list[dict]:
+    """The manifest's entries, each one that names an action and says why Undo
     cannot bring back what it destroys."""
     kept = []
     for entry in entries:
         action = entry.get("action")
         if not isinstance(action, str) or not action:
-            errors.append(f"{LEDGER}: an entry names no action; add `action = \"<id>\"`")
+            errors.append(f"{MANIFEST}: an entry names no action; add `action = \"<id>\"`")
             continue
         reason = entry.get("reason")
         if not isinstance(reason, str) or len(reason.split()) < 8:
             errors.append(
-                f"{LEDGER}: {action}: the entry gives no reason; say what the deletion "
+                f"{MANIFEST}: {action}: the entry gives no reason; say what the deletion "
                 "loses that Undo cannot bring back"
             )
             continue
         unknown = set(entry) - {"action", "file", "resource", "effect", "reason"}
         if unknown:
             errors.append(
-                f"{LEDGER}: {action}: an entry names {', '.join(sorted(unknown))}, which "
+                f"{MANIFEST}: {action}: an entry names {', '.join(sorted(unknown))}, which "
                 "nothing reads"
             )
             continue
@@ -426,22 +426,22 @@ def ledger_entries(entries: list[dict], errors: list[str]) -> list[dict]:
         resource = entry.get("resource")
         if file is None and resource is None:
             errors.append(
-                f"{LEDGER}: {action}: an entry pins the site that builds the deletion with "
+                f"{MANIFEST}: {action}: an entry pins the site that builds the deletion with "
                 "`file`, or the resource whose builder publishes it with `resource`"
             )
             continue
         if not isinstance(file, str) and file is not None:
-            errors.append(f"{LEDGER}: {action}: `file` names the path that builds it")
+            errors.append(f"{MANIFEST}: {action}: `file` names the path that builds it")
             continue
         if resource is not None:
             if not isinstance(resource, str) or not resource or effect is not None:
                 errors.append(
-                    f"{LEDGER}: {action}: `resource` names one kind, and pins nothing else"
+                    f"{MANIFEST}: {action}: `resource` names one kind, and pins nothing else"
                 )
                 continue
         elif effect is not None and (not isinstance(effect, str) or not effect):
             errors.append(
-                f"{LEDGER}: {action}: `effect` names the variant the declaration is "
+                f"{MANIFEST}: {action}: `effect` names the variant the declaration is "
                 'written as (`effect = "Format"` for `#[effect(job, destructive)]`)'
             )
             continue
@@ -466,10 +466,10 @@ def pins(entry: dict, relative: str, action: str, effects: set[tuple[str, str]])
     return isinstance(entry.get("resource"), str) and entry["action"] == action
 
 
-def ledger_effects(
+def manifest_effects(
     entries: list[dict], deletions: list[tuple[str, str, set[str]]]
 ) -> list[tuple[str, str, set[str]]]:
-    """`deletions` with what a ledger entry naming an `effect` covers: an
+    """`deletions` with what a manifest entry naming an `effect` covers: an
     `#[effect(destructive)]` declares a deletion its surface's builder
     publishes, so the entry names the effect and its action together, and the
     effect is read where the entry's `file` declares it."""
@@ -490,7 +490,7 @@ def ledger_effects(
 
 
 def unbuilt(entries: list[dict], deletions: list[tuple[str, str, set[str]]]) -> list[str]:
-    """The ledger's entries that cover no deletion the tree builds: an entry
+    """The manifest's entries that cover no deletion the tree builds: an entry
     outlives the change that removed its deletion, and one that covers nothing
     reads as if it still did.
 
@@ -505,7 +505,7 @@ def unbuilt(entries: list[dict], deletions: list[tuple[str, str, set[str]]]) -> 
         if not found:
             where = entry.get("file") or entry.get("effect") or entry.get("resource")
             errors.append(
-                f"{LEDGER}: {action}: no deletion named `{action}` is built at {where}; "
+                f"{MANIFEST}: {action}: no deletion named `{action}` is built at {where}; "
                 "remove the entry, or name what builds it"
             )
     return errors
@@ -514,7 +514,7 @@ def unbuilt(entries: list[dict], deletions: list[tuple[str, str, set[str]]]) -> 
 def listed(
     entries: list[dict], relative: str, action: str, effects: set[tuple[str, str]]
 ) -> bool:
-    """Whether the ledger holds the deletion `action` at `relative`."""
+    """Whether the manifest holds the deletion `action` at `relative`."""
     return any(pins(entry, relative, action, effects) for entry in entries)
 
 
@@ -620,7 +620,7 @@ def check_deletions(
     relative: str, code: str, entries: list[dict], effects: set[str]
 ) -> list[str]:
     """Each deletion `code` builds that Undo cannot take back and that neither
-    tags itself irreversible nor is written down in the ledger."""
+    tags itself irreversible nor is written down in the manifest."""
     errors: list[str] = []
     seen: set[int] = set()
     for found in DESTRUCTIVE.finditer(code):
@@ -651,21 +651,21 @@ def check_deletions(
             continue
         line = line_number(code, found.start())
         # What was found and why it is refused; what to do about it is the
-        # ledger's own header, read by the person who writes the entry.
+        # manifest's own header, read by the person who writes the entry.
         if action is None:
             named = "a deletion the code does not name"
         else:
             named = f"`{action}`, a deletion"
         errors.append(
             f"{relative}:{line}: {named} Undo cannot take back and says neither "
-            f"`undo:irreversible` nor why in {LEDGER}"
+            f"`undo:irreversible` nor why in {MANIFEST}"
         )
     return errors
 
 
 def deletions_built(relative: str, text: str) -> set[str]:
     """The action each deletion in `text` names, as [`check_deletions`] reads
-    it: what a ledger entry has to be built by."""
+    it: what a manifest entry has to be built by."""
     code = production_source(text)
     return {
         action
@@ -688,23 +688,23 @@ def named_deletion(code: str, at: int) -> str | None:
     return bound_action(code, start) if action is None else action
 
 
-def load_ledger(errors: list[str]) -> list[dict]:
+def load_manifest(errors: list[str]) -> list[dict]:
     import tomllib
 
-    path = ROOT / LEDGER
+    path = ROOT / MANIFEST
     if not path.exists():
         return []
     try:
         document = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as error:
-        errors.append(f"{LEDGER}: {error}")
+        errors.append(f"{MANIFEST}: {error}")
         return []
-    return ledger_entries(document.get("deletion", []), errors)
+    return manifest_entries(document.get("deletion", []), errors)
 
 
 def main() -> int:
     errors: list[str] = []
-    entries = load_ledger(errors)
+    entries = load_manifest(errors)
     deletions: list[tuple[str, str, set[str]]] = []
     for tree in TREES:
         for path in sorted((ROOT / tree).rglob("*.rs")):
@@ -723,7 +723,7 @@ def main() -> int:
                 (relative.as_posix(), action, declared_effects(text))
                 for action in deletions_built(relative.as_posix(), text)
             )
-    errors.extend(unbuilt(entries, ledger_effects(entries, deletions)))
+    errors.extend(unbuilt(entries, manifest_effects(entries, deletions)))
     for error in errors:
         print(error)
     if errors:

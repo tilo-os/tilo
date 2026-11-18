@@ -21,11 +21,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use tilo_actions::remote::host_account::{
-    Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer,
-    Standing, Usage, WorkspaceUsage,
-};
 use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
+use tilo_actions::remote::server_account::{
+    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, ServerAccount,
+    ServerKind, Subscription, Usage, WorkspaceUsage,
+};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
@@ -97,7 +97,7 @@ fn layout_tree() -> Layout {
 
 /// Tilo Cloud selling Pro, the account on it with a card, the build box's
 /// Linux machine having run most of a working week.
-fn tilo_cloud(build_box: &str) -> HostAccount {
+fn tilo_cloud(build_box: &str) -> ServerAccount {
     let pro = Limits {
         max_running: 2,
         max_vms: 5,
@@ -105,16 +105,16 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
         included_vm_seconds: Some(100 * 3600),
         ..Limits::default()
     };
-    HostAccount {
-        host: "Tilo Cloud".into(),
-        kind: HostKind::Provider,
+    ServerAccount {
+        server: "Tilo Cloud".into(),
+        kind: ServerKind::Provider,
         plans: vec![PlanOffer {
             id: "pro".into(),
             name: "Pro".into(),
             price: Some("$20 a month".into()),
             limits: pro.clone(),
         }],
-        standing: Some(Standing {
+        subscription: Some(Subscription {
             account: "acct-ada".into(),
             plan: Some("pro".into()),
             payment_method: Some(PaymentMethod::default()),
@@ -154,7 +154,7 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
 fn tilo_shell(build_box: &str) -> TiloOverview {
     TiloOverview {
         hosts: vec![
-            HostAccount::sells_nothing("Framework 16", HostKind::Device),
+            ServerAccount::sells_nothing("Framework 16", ServerKind::Device),
             tilo_cloud(build_box),
         ],
         server: Some(Server {

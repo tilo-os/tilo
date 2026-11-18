@@ -101,14 +101,14 @@ class AllocateTests(unittest.TestCase):
                  patch.object(allocate.stage, "snapshot", side_effect=snapshot), \
                  patch.object(allocate, "windows_c_and_recovery", side_effect=lambda: {**c, "free_bytes": state["free"]}), \
                  patch.object(allocate.stage, "ps_json", side_effect=ps), \
-                 patch.object(allocate.stage, "windows_install_gate", return_value={}) as gate, \
+                 patch.object(allocate.stage, "windows_install_check", return_value={}) as check, \
                  patch.object(allocate, "c_ntfs_size", side_effect=lambda: state["ntfs"]), \
                  patch.object(allocate, "run_diskpart", side_effect=diskpart), \
                  patch.object(allocate, "raw_disk_read", side_effect=lambda _: physical.open("rb")):
                 allocate.execute(args)
             self.assertEqual(diskpart_commands,
                              ["shrink querymax", "shrink desired=35 minimum=35"])
-            self.assertEqual(gate.call_count, 2)
+            self.assertEqual(check.call_count, 2)
             self.assertEqual(json.loads(output.read_text()), plan)
 
     def test_diskpart_script_selects_only_c_volume(self):
@@ -131,7 +131,7 @@ class AllocateTests(unittest.TestCase):
         with patch.object(allocate.stage, "snapshot", side_effect=lambda _: snapshots.pop(0)), \
              patch.object(allocate, "check_gpt"), \
              patch.object(allocate, "windows_c_and_recovery", return_value=c), \
-             patch.object(allocate.stage, "windows_install_gate", return_value={}), \
+             patch.object(allocate.stage, "windows_install_check", return_value={}), \
              patch.object(allocate, "c_ntfs_size", return_value=before["partitions"][2]["size_bytes"] - MIB), \
              patch.object(allocate, "run_diskpart", return_value="") as diskpart:
             with self.assertRaisesRegex(ValueError, "preserved Windows partition"):
@@ -290,7 +290,7 @@ class AllocateTests(unittest.TestCase):
                      patch.object(allocate.stage, "snapshot", side_effect=snapshot), \
                      patch.object(allocate, "windows_c_and_recovery", side_effect=c_volume), \
                      patch.object(allocate.stage, "ps_json", side_effect=ps), \
-                     patch.object(allocate.stage, "windows_install_gate", return_value={}), \
+                     patch.object(allocate.stage, "windows_install_check", return_value={}), \
                      patch.object(allocate, "raw_disk_read", side_effect=lambda _: physical.open("rb")):
                     allocate.execute(args)
                 self.assertEqual(json.loads(output.read_text()), plan)

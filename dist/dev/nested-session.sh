@@ -44,7 +44,7 @@
 #                      the session follows this machine's configuration.
 #   --model-provider SPEC  give the session's person a model provider, as
 #                      Settings' provider pane does (provider settings, and
-#                      the key in the model gateway's own custody), before
+#                      the key in the model gateway's own ownership), before
 #                      the session starts. SPEC is PRESET:MODEL (a Settings
 #                      preset slug: anthropic, openai, gemini, openrouter,
 #                      ollama, ...) with the key from $TILO_DEV_MODEL_KEY or
@@ -382,16 +382,16 @@ runtime_id=tilo-runtime/$runtime_version
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-app
-# Beside it, the tilolang host (crates/platform/tilolang-host), which runs a workspace's tilolang
+# Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances: built without the toolkit, it runs on the app runtime's
 # loader and libraries alone.
-tilolang_host_bin=$bin/tilolang-host
+tilolang_process_bin=$bin/tilolang-process
 if [[ -f $tilolang_bin ]]; then
-    [[ -f $tilolang_host_bin ]] || die "no tilolang host at $tilolang_host_bin"
+    [[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin"
     tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
         "$repo_root/apps/tilolang/tilo-runtime.toml")
     [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
-    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_host_bin"; } | sha256sum | cut -c1-64)
+    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_process_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
           || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
         say "baking the tilolang runtime bundle"
@@ -400,7 +400,7 @@ if [[ -f $tilolang_bin ]]; then
         mkdir -p "$state/work"
         "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
             --out "$state/work/tilolang" --include-bin "$tilolang_bin" \
-            --include-bin "$tilolang_host_bin" \
+            --include-bin "$tilolang_process_bin" \
             --identity "$identity" >/dev/null
         mv "$state/work/tilolang" "$runtimes/$tilolang_version"
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
@@ -456,7 +456,7 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: the session hands a running tilolang app each
 # reinstall of its package, verified as a launch is, so `tilolang dev` swaps a
 # new build in without a restart
-# (crates/session/app-launch/src/tilolang_hosts.rs). A shipped session ignores it.
+# (crates/session/app-launch/src/tilolang_processes.rs). A shipped session ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
 # A development session logs warnings and errors unless RUST_LOG says
 # otherwise: a shipped session logs errors only, and a watch that could not
@@ -521,7 +521,12 @@ if [[ -d $build_out/language-packs ]]; then
 fi
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
-installed=$("$bin/tilo-install" list 2>/dev/null || true)
+# The tree's apps are this session's image: installed into its system store, as
+# os/scripts/pack-apps.sh installs a device's, so the launcher treats them as
+# the image's own. The person's store keeps what they install themselves.
+in_system_store() { env -u TILO_APPS_SYSTEM_DIR TILO_APPS_DATA_DIR="$system_store" "$@"; }
+installed=$(in_system_store "$bin/tilo-install" list 2>/dev/null || true)
+user_installed=$(env -u TILO_APPS_SYSTEM_DIR "$bin/tilo-install" list 2>/dev/null || true)
 # The selected apps' catalog entries, read before the loop: a failing filter
 # in a process substitution would install nothing and say nothing.
 catalog=$(jq -r '.catalog[] | select(.name | IN($ARGS.positional[]))
@@ -530,6 +535,11 @@ catalog=$(jq -r '.catalog[] | select(.name | IN($ARGS.positional[]))
     || die "cannot read the selected apps from $plan"
 while IFS=$'\t' read -r name binary id version manifest; do
     [[ -n $name ]] || continue
+    # A copy an earlier session installed into the person's store would start instead of the
+    # image's. Removed with the system store in view, so the runtime the image's apps name stays.
+    if grep -q "^$id " <<<"$user_installed"; then
+        "$bin/tilo-install" uninstall "$id" --keep-state >/dev/null
+    fi
     built=$thin/$binary
     [[ -x $built ]] || die "missing app binary $built"
     work=$state/work/app-$name
@@ -559,7 +569,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
     # --force replaces the package of the same version; app data stays. The
     # main runtime is installed above; an optional one (Browser's Chromium
     # engine) is offered for download by the app itself.
-    "$bin/tilo-install" install "$tapp" --allow-self-signed --force \
+    in_system_store "$bin/tilo-install" install "$tapp" --allow-self-signed --force \
         --ignore-missing-runtime >/dev/null
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
@@ -668,14 +678,14 @@ printf '%s\n' "$$" > "$pidfile"
 logs=$state/logs
 mkdir -p "$logs"
 
+# Until the socket is there, or the process that serves it ended: how long it
+# takes is the machine's load, not a sign that it failed.
 wait_for_socket() {
-    local path=$1 pid=$2 tries=200
-    while ((tries--)); do
-        [[ -S $path ]] && return 0
+    local path=$1 pid=$2
+    until [[ -S $path ]]; do
         kill -0 "$pid" 2>/dev/null || return 1
         sleep 0.1
     done
-    return 1
 }
 
 if ((fresh_desktop)); then
@@ -734,13 +744,6 @@ if ((!keep_identity)) && [[ ! -f $marker ]]; then
 fi
 
 # --- The session's own desktop ------------------------------------------------
-# The session places the Home workspace on this device's own room host before
-# it lets apps start, and the device's native owner is enrolled in it there.
-# The marker below says the session answers with a frame, so a check waits for
-# that rather than for a guess.
-ready_marker=$state/session-ready
-rm -f "$ready_marker"
-
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
 setsid "$bin/tilo-model-gateway" serve --socket "$runtime/tilo/services/model-gateway.sock" \
@@ -890,57 +893,33 @@ session_answers() {
         TILO_TEST_CONTROL=$control "$bin/tilo-control" windows >/dev/null 2>&1
     fi
 }
+# Where this session is, for tools that attach to it by its runtime directory
+# or control socket (`tilolang dev --session`): the same JSON as --ready.
+jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" --arg bin "$bin" \
+    '{control: $control, runtime: $runtime, state: $state, bin: $bin}' > "$runtime/session.json"
+[[ -n $ready_out ]] && rm -f "$ready_out"
+# Once the session answers, tell whoever drives it (--ready), and say which
+# piece of its desktop it could not start: the session logs the surface it
+# went without, and a desktop without one is a broken session.
 confirm_ready() {
-    local shot=$state/session-ready.png tries=600
-    while ((tries--)); do
-        kill -0 "$session_pid" 2>/dev/null || return 0
-        if session_answers "$shot"; then
-            rm -f "$shot"
-            touch "$ready_marker"
-            echo "the session answers"
-            return 0
-        fi
+    local shot=$state/session-ready.png line
+    until session_answers "$shot"; do
+        kill -0 "$session_pid" 2>/dev/null || return 1
         sleep 0.2
     done
-    echo "the session did not answer; see session.log"
-    return 1
-}
-TILO_TEST_CONTROL=$control confirm_ready > "$logs/ready.log" 2>&1 &
-# The session logs the surface it could not start; a desktop it starts without
-# one is a broken session, so say which piece is missing and where to read why.
-missing_surfaces() {
-    local tries=300 line
-    while ((tries--)) && [[ ! -f $ready_marker ]]; do
-        kill -0 "$session_pid" 2>/dev/null || break
-        sleep 0.2
-    done
+    rm -f "$shot"
+    if [[ -n $ready_out ]]; then
+        cp "$runtime/session.json" "$ready_out.partial"
+        mv "$ready_out.partial" "$ready_out"
+    fi
+    echo "the session answers after $((SECONDS - started)) s"
     while IFS= read -r line; do
         say "!! this session started without part of its desktop: $line"
     done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen' \
                  "$logs/session.log" 2>/dev/null || true)
 }
-missing_surfaces &
-# Where this session is, for tools that attach to it by its runtime directory
-# or control socket (`tilolang dev --session`): the same JSON as --ready.
-jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" --arg bin "$bin" \
-    '{control: $control, runtime: $runtime, state: $state, bin: $bin}' > "$runtime/session.json"
-# Tell whoever drives the session that it answers: the session serves its
-# control socket once it is up.
-if [[ -n $ready_out ]]; then
-    rm -f "$ready_out"
-    (
-        wait_for_socket "$control" "$session_pid" || exit 1
-        tries=600
-        shot=$state/session-ready.png
-        until session_answers "$shot"; do
-            ((tries--)) && kill -0 "$session_pid" 2>/dev/null || exit 1
-            sleep 0.2
-        done
-        rm -f "$shot"
-        cp "$runtime/session.json" "$ready_out.partial"
-        mv "$ready_out.partial" "$ready_out"
-    ) &
-fi
+started=$SECONDS
+confirm_ready > "$logs/ready.log" &
 status=0
 wait "$session_pid" || status=$?
 exit "$status"

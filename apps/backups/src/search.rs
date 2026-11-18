@@ -67,9 +67,10 @@ mod tests {
 
     fn large_catalog(corpus: Corpus) -> Catalog {
         let mut catalog = Catalog::sample(
-            chrono::DateTime::from_timestamp(1_782_835_500, 0)
+            jiff::Timestamp::from_second(1_782_835_500)
                 .expect("fixture timestamp")
-                .naive_utc(),
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .datetime(),
         );
         let template = catalog.snapshots[0].clone();
         catalog.snapshots = corpus
@@ -130,9 +131,10 @@ mod tests {
 
     fn catalog_refresh_invalidates_existing_search_cursors() {
         let catalog = Catalog::sample(
-            chrono::DateTime::from_timestamp(1_782_835_500, 0)
+            jiff::Timestamp::from_second(1_782_835_500)
                 .expect("fixture timestamp")
-                .naive_utc(),
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .datetime(),
         );
         let mut refreshed = catalog.clone();
         refreshed.snapshots[0].label = Some("changed recovery time".into());

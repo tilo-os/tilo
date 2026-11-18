@@ -1,17 +1,17 @@
 //! The tracker's issues, kept in numbered parts beside the tracker.
 //!
-//! One record cannot hold every issue a workspace ever wrote at a cost that
-//! stays flat: every reader of a record loads, verifies and diffs all of it,
+//! One resource cannot hold every issue a workspace ever wrote at a cost that
+//! stays flat: every reader of a resource loads, verifies and diffs all of it,
 //! so a change to one issue of thousands would cost thousands. The issues
-//! live in a chain of [`IssuePart`] records instead (`tilo_app`'s
+//! live in a chain of [`IssuePart`] resources instead (`tilo_app`'s
 //! `Chained`), each holding up to [`PART_ISSUES`] issues or
 //! [`PART_TEXT_BYTES`] of their text; a change touches the one part that
-//! holds its issue. The tracker's own record ([`crate::model::Tracker`])
+//! holds its issue. The tracker's own document ([`crate::model::Tracker`])
 //! keeps the projects and areas above them.
 //!
 //! - **Where a new issue goes.** To the newest part, unless it is full
 //!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same record, so their issues meet there.
+//!   start the same resource, so their issues meet there.
 //! - **Where a change goes.** To the part holding the issue it names.
 //! - **Numbers.** A part counts the issues made in it on top of the highest
 //!   number given before it started ([`IssuePart::before`]), which whoever
@@ -23,20 +23,22 @@
 //!   the top level, and an issue whose project was deleted works towards
 //!   none: read so, never rewritten in other parts ([`Issues`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
-use tilo_document::RichText;
-use tilo_reference::ResourceAt;
+use ui::framework::Parts;
+
+use tilo_rich_text::RichText;
+use ui::tilo_reference::ResourceAt;
 use ui::tilo_resource::items::Ref;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Collection, Counter, Id, Model, NonBlank, Origin, Refusal, resource,
 };
 
 use crate::model::{
-    Area, Attachment, BudgetBy, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message, NewIssue,
-    Priority, Resumed, Status, Stopped, StoppedWhy, Tracker, WaitFor, checked_address,
-    checked_assignee, checked_folder, checked_line, checked_waits,
+    Area, Attachment, BudgetBy, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, MOST_PIECES_AT_ONCE,
+    Message, NewIssue, Priority, Resumed, Status, Stopped, StoppedWhy, Tracker, WaitFor,
+    checked_address, checked_assignee, checked_folder, checked_line, checked_waits,
 };
 
 /// Issues a part holds before the next one starts.
@@ -260,14 +262,14 @@ fn closed() -> Refusal {
     Refusal::new("This issue is closed")
 }
 
-/// Refuse `by` unless it is the agent `issue` is assigned to: its runs are its
+/// Refuse `by` unless it is the agent `issue` is assigned to: its sessions are its
 /// own to count.
 fn its_agent(issue: &Issue, by: &tilo_resource::MemberId) -> Result<(), Refusal> {
     if by.is_agent() && issue.assigned_member().as_ref() == Some(by) {
         Ok(())
     } else {
         Err(Refusal::new(
-            "Only the agent an issue is assigned to counts its runs",
+            "Only the agent an issue is assigned to counts its sessions",
         ))
     }
 }
@@ -561,7 +563,7 @@ impl IssuePart {
         #[param("The resource's kind")] kind: String,
         #[param("The resource's address in its app")] resource: NonBlank,
         #[param("How the link reads")] label: String,
-        #[param("The app's record that keeps it; its record of the workspace without")]
+        #[param("The app's resource that keeps it; its resource of the workspace without")]
         record: Option<String>,
     ) -> Result<(), Refusal> {
         let id = cx.id();
@@ -586,7 +588,7 @@ impl IssuePart {
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("The note", resource = "notes.notebook.pages")] note: ResourceAt,
+        #[param("The note", resource = "notes.pages.pages")] note: ResourceAt,
     ) -> Result<(), Refusal> {
         let (Some(app), Some(resource)) = (
             NonBlank::parse(&note.app),
@@ -654,7 +656,7 @@ impl IssuePart {
     ///
     /// Say where an issue's working material is kept: a folder in the
     /// workspace's files, and the note its plan, its findings and what is
-    /// still open are written in. A later run of whoever works on it starts
+    /// still open are written in. A later session of whoever works on it starts
     /// from them.
     ///
     /// # Errors
@@ -679,7 +681,7 @@ impl IssuePart {
 
     /// Wait
     ///
-    /// Let an issue wait: for a reply, a record to change, a person's answer,
+    /// Let an issue wait: for a reply, a resource to change, a person's answer,
     /// several people, or only a moment. Any one of them ends the wait, and
     /// the moment always does. Nothing works on it while it waits.
     ///
@@ -760,7 +762,7 @@ impl IssuePart {
 
     /// Set budget
     ///
-    /// Say what an issue may cost over all its runs, in money, in working
+    /// Say what an issue may cost over all its sessions, in money, in working
     /// time, or both; what is left out stays as it was. A person sets and
     /// raises it. The agent working on it may propose one where none is set
     /// and may lower one, and holds itself to it.
@@ -774,9 +776,8 @@ impl IssuePart {
         issue: &Id,
         #[param("What the whole issue may cost, in millionths of the currency")]
         money_micros: Option<u64>,
-        #[param("How long it may be worked on over all its runs, in milliseconds")] time_ms: Option<
-            u64,
-        >,
+        #[param("How long it may be worked on over all its sessions, in milliseconds")]
+        time_ms: Option<u64>,
     ) -> Result<(), Refusal> {
         if money_micros.is_none() && time_ms.is_none() {
             return Err(Refusal::new("Give the money or the time it may take"));
@@ -806,44 +807,78 @@ impl IssuePart {
         Ok(())
     }
 
-    /// Run began
+    /// Work pieces at once
     ///
-    /// The agent an issue is assigned to says a run of it on the issue began:
-    /// the issue no longer waits and is no longer stopped. A run that began
+    /// Say how many of an issue's pieces, the issues under it, are worked on
+    /// at once by the agents they are given to: the others are begun as those
+    /// in work are through. Left out, any number is. A person says it, or the
+    /// agent the issue is given to.
+    ///
+    /// # Errors
+    /// Refuses none at a time, more than the most there may be, and an agent
+    /// the issue is not given to.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn set_pieces_at_once(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("How many of its pieces are in work at once; left out for any number")]
+        at_once: Option<u64>,
+    ) -> Result<(), Refusal> {
+        if at_once.is_some_and(|at_once| at_once == 0 || at_once > MOST_PIECES_AT_ONCE) {
+            return Err(Refusal::new(format!(
+                "Between 1 and {MOST_PIECES_AT_ONCE} pieces are in work at once"
+            )));
+        }
+        let by = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        if by.is_agent() && target.assigned_member().as_ref() != Some(&by) {
+            return Err(Refusal::new(
+                "Only a person or its own agent says how many of an issue's pieces are in work",
+            ));
+        }
+        target.work.get_or_insert_default().pieces_at_once = at_once;
+        Ok(())
+    }
+
+    /// Session began
+    ///
+    /// The agent an issue is assigned to says a session of it on the issue began:
+    /// the issue no longer waits and is no longer stopped. A session that began
     /// before and never ended is counted as lost.
     ///
     /// # Errors
     /// Refuses anyone but the agent the issue is assigned to.
     #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
-    pub fn run_began(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+    pub fn session_began(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
         let now = cx.now_ms();
         let by = author(cx)?;
         let target = self.issue_mut(issue)?;
         its_agent(target, &by)?;
         let work = target.work.get_or_insert_default();
-        if work.running_since_ms.is_some() {
+        if work.session_since_ms.is_some() {
             work.lost = work.lost.saturating_add(1);
         }
-        work.runs = work.runs.saturating_add(1);
-        work.running_since_ms = Some(now);
+        work.sessions = work.sessions.saturating_add(1);
+        work.session_since_ms = Some(now);
         work.end_wait();
         work.stopped = None;
         Ok(())
     }
 
-    /// Run ended
+    /// Session ended
     ///
-    /// The agent an issue is assigned to says its run ended, what it cost and
+    /// The agent an issue is assigned to says its session ended, what it cost and
     /// how long it worked: both count against the issue's budget.
     ///
     /// # Errors
     /// Refuses anyone but the agent the issue is assigned to.
     #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
-    pub fn run_ended(
+    pub fn session_ended(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("What the run cost, in millionths of the currency")] cost_micros: u64,
+        #[param("What the session cost, in millionths of the currency")] cost_micros: u64,
         #[param("How long it worked, in milliseconds")] worked_ms: u64,
     ) -> Result<(), Refusal> {
         let by = author(cx)?;
@@ -852,7 +887,7 @@ impl IssuePart {
         let work = target.work.get_or_insert_default();
         work.spent_micros = work.spent_micros.saturating_add(cost_micros);
         work.worked_ms = work.worked_ms.saturating_add(worked_ms);
-        work.running_since_ms = None;
+        work.session_since_ms = None;
         work.lost = 0;
         Ok(())
     }
@@ -882,7 +917,7 @@ impl IssuePart {
         }
         let work = target.work.get_or_insert_default();
         work.end_wait();
-        work.running_since_ms = None;
+        work.session_since_ms = None;
         work.stopped = Some(Stopped {
             why,
             words,
@@ -896,133 +931,422 @@ impl IssuePart {
 /// order, each found by its id, with what reads across parts (a parent that
 /// is gone, a project that was deleted) resolved the same way everywhere.
 ///
-/// Built from the parts once per change of any of them, and read by the
-/// list, the board, an issue's page and the checks an action makes where it
-/// is invoked.
-pub struct Issues<'a> {
-    /// Every issue in the tracker's order: by rank, then number, then id.
-    ordered: Vec<(&'a Id, &'a Issue)>,
-    /// Where each issue is in `ordered`, and the part that keeps it.
-    at: HashMap<&'a Id, (usize, u64)>,
-    /// The issues standing at the top, and those under each parent, by
-    /// where they are in `ordered`: read once here, so walking the tree asks
-    /// each issue for its sub-issues without reading every issue again.
-    top: Vec<usize>,
-    under: HashMap<&'a Id, Vec<usize>>,
+/// Kept, not rebuilt: [`Self::sync`] reads only the parts that changed since
+/// it last read them, issue by issue, and moves those issues in the order,
+/// among their parent's sub-issues and in the tallies the sidebar counts. A
+/// change to one issue costs the part holding it, however many issues there
+/// are.
+#[derive(Default)]
+pub struct Issues {
+    /// The parts as last read, oldest first.
+    parts: Vec<(u64, Rc<IssuePart>)>,
+    /// The slice they were read from, so reading the same parts again is free.
+    synced: Option<Parts<IssuePart>>,
+    /// Each issue held: the part keeping it and what it was filed under.
+    held: HashMap<Id, Filed>,
+    /// Every issue in the tracker's order.
+    order: BTreeSet<Place>,
+    /// The issues naming each parent, whether or not that parent is held.
+    named: HashMap<Id, BTreeSet<Place>>,
+    /// The issues at the top: those naming no parent, or one not held.
+    top: BTreeSet<Place>,
+    by_number: HashMap<u64, Id>,
+    /// How many issues there are of each kind a filter tells apart: started
+    /// or not, and whom they are assigned to.
+    kinds: HashMap<(bool, Option<String>), usize>,
+    /// How many issues carry each label.
+    labels: BTreeMap<String, usize>,
+    revision: u64,
+    /// What the read under way touched so far.
+    touching: Vec<u64>,
+    /// The numbers of the issues each recent revision moved, changed or took
+    /// out, and of their parents, whose progress moved with them: what a list
+    /// draws again, without drawing every row.
+    touched: std::collections::VecDeque<(u64, Vec<u64>)>,
 }
 
-impl<'a> Issues<'a> {
+/// How many revisions back [`Issues::touched_since`] can tell what moved.
+const TOUCHED_KEPT: usize = 64;
+
+/// Where an issue stands in the tracker's order: by rank, then number, then id.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Place {
+    rank: String,
+    number: u64,
+    id: Id,
+}
+
+/// What an issue was filed under, to take it out again without reading it.
+struct Filed {
+    part: u64,
+    place: Place,
+    parent: Option<Id>,
+    kind: (bool, Option<String>),
+    labels: Vec<String>,
+}
+
+impl Issues {
     /// The issues `parts` keep, oldest part first. An issue two parts both
     /// claim (never written so, but read safely) is the newer part's.
     #[must_use]
-    pub fn of(parts: &'a [(u64, Rc<IssuePart>)]) -> Self {
-        let mut found: HashMap<&'a Id, (&'a Issue, u64)> = HashMap::new();
+    pub fn of(parts: &[(u64, Rc<IssuePart>)]) -> Self {
+        let mut issues = Self::default();
+        issues.read(parts);
+        issues
+    }
+
+    /// Follow `parts`: what changed since the last parts read, and only that.
+    /// Whether anything did.
+    pub fn sync(&mut self, parts: &Parts<IssuePart>) -> bool {
+        if self
+            .synced
+            .as_ref()
+            .is_some_and(|synced| Rc::ptr_eq(synced, parts))
+        {
+            return false;
+        }
+        let _profile = ui::tilo_resource::profiling::Phase::start("tasks.issues_sync");
+        self.synced = Some(Rc::clone(parts));
+        self.read(parts)
+    }
+
+    /// Whether `parts` are the parts last read.
+    #[must_use]
+    pub fn follows(&self, parts: &Parts<IssuePart>) -> bool {
+        self.synced
+            .as_ref()
+            .is_some_and(|synced| Rc::ptr_eq(synced, parts))
+    }
+
+    /// A number that moves whenever an issue does.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn read(&mut self, parts: &[(u64, Rc<IssuePart>)]) -> bool {
+        let before = std::mem::replace(&mut self.parts, parts.to_vec());
+        let earlier: HashMap<u64, Rc<IssuePart>> = before.into_iter().collect();
+        let mut changed = false;
+        self.touching = Vec::new();
+        let now: std::collections::HashSet<u64> = parts.iter().map(|(index, _)| *index).collect();
+        // Parts no longer held take their issues with them.
+        for (index, part) in &earlier {
+            if !now.contains(index) {
+                for (id, _) in part.issues.iter() {
+                    changed |= self.remove(id, *index);
+                }
+            }
+        }
         for (index, part) in parts {
-            for (id, issue) in part.issues.iter() {
-                found.insert(id, (issue, *index));
+            match earlier.get(index) {
+                Some(last) if Rc::ptr_eq(last, part) => {}
+                Some(last) => {
+                    for (id, _) in last.issues.iter() {
+                        if part.issues.get(id).is_none() {
+                            changed |= self.remove(id, *index);
+                        }
+                    }
+                    for (id, issue) in part.issues.iter() {
+                        if last.issues.get(id) != Some(issue) {
+                            self.remove(id, *index);
+                            changed |= self.insert(id, issue, *index);
+                        }
+                    }
+                }
+                None => {
+                    for (id, issue) in part.issues.iter() {
+                        changed |= self.insert(id, issue, *index);
+                    }
+                }
             }
         }
-        let mut ordered: Vec<(&'a Id, &'a Issue)> =
-            found.iter().map(|(id, (issue, _))| (*id, *issue)).collect();
-        ordered.sort_by(|(a_id, a), (b_id, b)| {
-            a.rank
-                .cmp(&b.rank)
-                .then(a.number.cmp(&b.number))
-                .then_with(|| a_id.cmp(b_id))
-        });
-        let at: HashMap<&'a Id, (usize, u64)> = ordered
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+            let touched = std::mem::take(&mut self.touching);
+            self.touched.push_back((self.revision, touched));
+            while self.touched.len() > TOUCHED_KEPT {
+                self.touched.pop_front();
+            }
+        }
+        changed
+    }
+
+    /// The numbers of the issues that moved, changed or went since `revision`, and of their
+    /// parents; `None` when that is too far back to tell, and everything may have.
+    #[must_use]
+    pub fn touched_since(&self, revision: u64) -> Option<Vec<u64>> {
+        if revision == self.revision {
+            return Some(Vec::new());
+        }
+        let first = self.touched.front()?.0;
+        if revision.wrapping_add(1) < first {
+            return None;
+        }
+        Some(
+            self.touched
+                .iter()
+                .filter(|(at, _)| *at > revision)
+                .flat_map(|(_, numbers)| numbers.iter().copied())
+                .collect(),
+        )
+    }
+
+    /// Note that the issue numbered `number` moved, and its parent `parent` with it.
+    fn touch(&mut self, number: u64, parent: Option<&Id>) {
+        self.touching.push(number);
+        if let Some(filed) = parent.and_then(|parent| self.held.get(parent)) {
+            self.touching.push(filed.place.number);
+        }
+    }
+
+    /// The issue after `id` in the tracker's order.
+    #[must_use]
+    pub fn after(&self, id: &Id) -> Option<&Id> {
+        let place = &self.held.get(id)?.place;
+        self.order
+            .range((std::ops::Bound::Excluded(place), std::ops::Bound::Unbounded))
+            .next()
+            .map(|next| &next.id)
+    }
+
+    /// File `issue`, kept in part `part`, unless a newer part keeps it.
+    fn insert(&mut self, id: &Id, issue: &Issue, part: u64) -> bool {
+        if let Some(filed) = self.held.get(id) {
+            if filed.part > part {
+                return false;
+            }
+            let older = filed.part;
+            self.remove(id, older);
+        }
+        let place = Place {
+            rank: issue.rank.clone(),
+            number: issue.number,
+            id: id.clone(),
+        };
+        let kind = (
+            issue.status.started(),
+            issue.assignee.as_ref().map(|assignee| assignee.0.clone()),
+        );
+        let count = self.kinds.entry(kind.clone()).or_default();
+        *count = count.saturating_add(1);
+        let labels: Vec<String> = issue.labels.iter().cloned().collect();
+        for label in &labels {
+            let count = self.labels.entry(label.clone()).or_default();
+            *count = count.saturating_add(1);
+        }
+        self.order.insert(place.clone());
+        match &issue.parent {
+            Some(parent) => {
+                self.named
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(place.clone());
+                if !self.held.contains_key(parent) {
+                    self.top.insert(place.clone());
+                }
+            }
+            None => {
+                self.top.insert(place.clone());
+            }
+        }
+        // Its own sub-issues stood at the top while it was not held: they move
+        // under it.
+        if let Some(under) = self.named.get(id) {
+            for child in under {
+                self.top.remove(child);
+                self.touching.push(child.number);
+            }
+        }
+        self.by_number.insert(issue.number, id.clone());
+        self.touch(issue.number, issue.parent.as_ref());
+        self.held.insert(
+            id.clone(),
+            Filed {
+                part,
+                place,
+                parent: issue.parent.clone(),
+                kind,
+                labels,
+            },
+        );
+        true
+    }
+
+    /// Take out the issue `id` as part `part` filed it. Where another part
+    /// still keeps it, that part's is filed instead.
+    fn remove(&mut self, id: &Id, part: u64) -> bool {
+        if self.held.get(id).is_none_or(|filed| filed.part != part) {
+            return false;
+        }
+        let Some(Filed {
+            place,
+            parent,
+            kind,
+            labels,
+            ..
+        }) = self.held.remove(id)
+        else {
+            return false;
+        };
+        if let Some(count) = self.kinds.get_mut(&kind) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.kinds.remove(&kind);
+            }
+        }
+        for label in &labels {
+            if let Some(count) = self.labels.get_mut(label) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.labels.remove(label);
+                }
+            }
+        }
+        self.order.remove(&place);
+        self.top.remove(&place);
+        if let Some(parent) = &parent
+            && let Some(under) = self.named.get_mut(parent)
+        {
+            under.remove(&place);
+            if under.is_empty() {
+                self.named.remove(parent);
+            }
+        }
+        if self.by_number.get(&place.number) == Some(id) {
+            self.by_number.remove(&place.number);
+        }
+        self.touch(place.number, parent.as_ref());
+        // Its sub-issues stand at the top while it is gone: they moved too.
+        if let Some(under) = self.named.get(id) {
+            self.top.extend(under.iter().cloned());
+            self.touching.extend(under.iter().map(|place| place.number));
+        }
+        // An older part keeping it too is read again.
+        let older = self
+            .parts
             .iter()
-            .enumerate()
-            .filter_map(|(position, (id, _))| Some((*id, (position, found.get(id)?.1))))
-            .collect();
-        let mut top = Vec::new();
-        let mut under: HashMap<&'a Id, Vec<usize>> = HashMap::new();
-        for (position, (_, issue)) in ordered.iter().enumerate() {
-            // A parent that is gone leaves its sub-issue at the top.
-            match issue
-                .parent
-                .as_ref()
-                .and_then(|parent| at.get_key_value(parent))
-            {
-                Some((parent, _)) => under.entry(*parent).or_default().push(position),
-                None => top.push(position),
-            }
+            .rev()
+            .filter(|(index, _)| *index != part)
+            .find_map(|(index, kept)| kept.issues.get(id).map(|issue| (*index, issue.clone())));
+        if let Some((index, issue)) = older {
+            self.insert(id, &issue, index);
         }
-        Self {
-            ordered,
-            at,
-            top,
-            under,
-        }
+        true
+    }
+
+    fn part(&self, index: u64) -> Option<&IssuePart> {
+        self.parts
+            .iter()
+            .find(|(held, _)| *held == index)
+            .map(|(_, part)| &**part)
     }
 
     /// How many issues there are.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ordered.len()
+        self.held.len()
     }
 
     /// Whether there are none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ordered.is_empty()
+        self.held.is_empty()
     }
 
     /// Every issue, in the tracker's order.
-    pub fn iter(&self) -> impl Iterator<Item = (&'a Id, &'a Issue)> + '_ {
-        self.ordered.iter().copied()
+    pub fn iter(&self) -> impl Iterator<Item = (&Id, &Issue)> + '_ {
+        self.order
+            .iter()
+            .filter_map(|place| Some((&place.id, self.get(&place.id)?)))
     }
 
     /// The issue `id`, if one is.
     #[must_use]
-    pub fn get(&self, id: &Id) -> Option<&'a Issue> {
-        self.at
-            .get(id)
-            .and_then(|(position, _)| self.ordered.get(*position))
-            .map(|(_, issue)| *issue)
+    pub fn get(&self, id: &Id) -> Option<&Issue> {
+        let filed = self.held.get(id)?;
+        self.part(filed.part)?.issues.get(id)
     }
 
     /// Whether `id` is an issue here.
     #[must_use]
     pub fn contains(&self, id: &Id) -> bool {
-        self.at.contains_key(id)
+        self.held.contains_key(id)
     }
 
     /// The part that keeps the issue `id`.
     #[must_use]
     pub fn part_of(&self, id: &Id) -> Option<u64> {
-        self.at.get(id).map(|(_, part)| *part)
+        self.held.get(id).map(|filed| filed.part)
     }
 
     /// The issue numbered `number`, if one is.
     #[must_use]
-    pub fn by_number(&self, number: u64) -> Option<(&'a Id, &'a Issue)> {
-        self.iter().find(|(_, issue)| issue.number == number)
+    pub fn by_number(&self, number: u64) -> Option<(&Id, &Issue)> {
+        let id = self.by_number.get(&number)?;
+        Some((id, self.get(id)?))
+    }
+
+    /// The top-level issue the issue numbered `number` stands under, itself
+    /// when it stands at the top: read up its parents, not across the tracker.
+    #[must_use]
+    pub fn top_of(&self, number: u64) -> Option<u64> {
+        let mut id = self.by_number.get(&number)?;
+        // An issue stands at the top, or under the held parent it names; the
+        // bound keeps a cycle the parts were written into from looping.
+        for _ in 0..=self.held.len() {
+            let filed = self.held.get(id)?;
+            if self.top.contains(&filed.place) {
+                return Some(filed.place.number);
+            }
+            id = self
+                .held
+                .get_key_value(filed.parent.as_ref()?)
+                .map(|(parent, _)| parent)?;
+        }
+        None
+    }
+
+    /// The top-level issue after the top-level issue numbered `number`, in
+    /// the tracker's order; `None` after the last, or when `number` is not
+    /// at the top.
+    #[must_use]
+    pub fn top_after(&self, number: u64) -> Option<u64> {
+        let place = &self.held.get(self.by_number.get(&number)?)?.place;
+        if !self.top.contains(place) {
+            return None;
+        }
+        self.top
+            .range((std::ops::Bound::Excluded(place), std::ops::Bound::Unbounded))
+            .next()
+            .map(|place| place.number)
     }
 
     /// The parent `issue` stands under: the one it names, while that one is
     /// here.
     #[must_use]
-    pub fn parent_of(&self, issue: &Issue) -> Option<&'a Id> {
+    pub fn parent_of(&self, issue: &Issue) -> Option<&Id> {
         issue
             .parent
             .as_ref()
-            .and_then(|parent| self.at.get_key_value(parent).map(|(id, _)| *id))
+            .and_then(|parent| self.held.get_key_value(parent).map(|(id, _)| id))
     }
 
     /// The direct sub-issues of `parent` (top-level issues for `None`), in
     /// the tracker's order.
     pub fn children<'s>(
         &'s self,
-        parent: Option<&'s Id>,
-    ) -> impl Iterator<Item = (&'a Id, &'a Issue)> + 's {
-        let positions = match parent {
-            None => self.top.as_slice(),
-            Some(parent) => self.under.get(parent).map_or(&[][..], Vec::as_slice),
+        parent: Option<&Id>,
+    ) -> impl Iterator<Item = (&'s Id, &'s Issue)> + 's {
+        let places = match parent {
+            None => Some(&self.top),
+            Some(parent) if self.held.contains_key(parent) => self.named.get(parent),
+            Some(_) => None,
         };
-        positions
-            .iter()
-            .filter_map(|position| self.ordered.get(*position).copied())
+        places
+            .into_iter()
+            .flatten()
+            .filter_map(|place| Some((&place.id, self.get(&place.id)?)))
     }
 
     /// How many of `parent`'s direct sub-issues are closed, of how many.
@@ -1043,7 +1367,7 @@ impl<'a> Issues<'a> {
         let mut at = Some(issue);
         // A parent chain longer than the tracker is a cycle a merge made:
         // stop rather than loop.
-        for _ in 0..=self.ordered.len() {
+        for _ in 0..=self.held.len() {
             match at {
                 Some(id) if id == ancestor => return true,
                 Some(id) => at = self.get(id).and_then(|issue| self.parent_of(issue)),
@@ -1051,6 +1375,36 @@ impl<'a> Issues<'a> {
             }
         }
         false
+    }
+
+    /// How many issues `matches` takes, read from the tallies kept as issues
+    /// come and go: one question per kind of issue a filter tells apart (started or
+    /// not, and whom it is assigned to), not one per issue.
+    pub fn count_kinds(&self, matches: impl Fn(&Issue) -> bool) -> usize {
+        self.kinds
+            .iter()
+            .filter(|((started, assignee), _)| {
+                let issue = Issue {
+                    status: if *started {
+                        Status::InProgress
+                    } else {
+                        Status::Todo
+                    },
+                    assignee: assignee.clone().map(ui::tilo_resource::Atom),
+                    ..Issue::default()
+                };
+                matches(&issue)
+            })
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// Every label the issues carry, in the order a person reads them, with
+    /// how many carry it.
+    pub fn labels(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
+        self.labels
+            .iter()
+            .map(|(label, count)| (label.as_str(), *count))
     }
 
     /// The goal `issue` works towards: what it names, unless that is one of
@@ -1065,7 +1419,7 @@ impl<'a> Issues<'a> {
 
     /// The issues that work towards `area`, in the tracker's order: the tasks
     /// the project holds.
-    pub fn in_area<'s>(&'s self, area: &'s Id) -> impl Iterator<Item = (&'a Id, &'a Issue)> + 's {
+    pub fn in_area<'s>(&'s self, area: &'s Id) -> impl Iterator<Item = (&'s Id, &'s Issue)> + 's {
         self.iter().filter(move |(_, issue)| {
             issue.area.as_ref().is_some_and(|named| {
                 named.kind == crate::model::KIND && named.resource == area.as_str()
@@ -1411,8 +1765,9 @@ fn item_of_mut(action: &mut IssuePartAction) -> Option<&mut Id> {
         | IssuePartAction::Wait(verb::Wait { issue, .. })
         | IssuePartAction::Resume(verb::Resume { issue, .. })
         | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
-        | IssuePartAction::RunBegan(verb::RunBegan { issue })
-        | IssuePartAction::RunEnded(verb::RunEnded { issue, .. })
+        | IssuePartAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
+        | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
+        | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
         | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         _ => None,
     }
@@ -1438,8 +1793,9 @@ pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
         | IssuePartAction::Wait(verb::Wait { issue, .. })
         | IssuePartAction::Resume(verb::Resume { issue, .. })
         | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
-        | IssuePartAction::RunBegan(verb::RunBegan { issue })
-        | IssuePartAction::RunEnded(verb::RunEnded { issue, .. })
+        | IssuePartAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
+        | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
+        | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
         | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         // A field edit of one issue (its title, its description) names it
         // in its path.
@@ -1459,9 +1815,9 @@ mod listing;
 mod many;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
-/// The chain the parts belong to, beside the tracker's own record.
+/// The chain the parts belong to, beside the tracker's own document.
 #[must_use]
 pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("issues", &ui::resource::DocumentId::workspace_default())
@@ -1482,6 +1838,7 @@ impl ui::framework::Chained for IssuePart {
         action: &mut Self::Action,
         tracker: &Tracker,
         parts: &[(u64, Rc<Self>)],
+        _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         prepare(action, tracker, parts)
     }

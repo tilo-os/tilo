@@ -16,11 +16,11 @@
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{
-    ActionHostError, ActorPlace, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    ActionCallError, ActorPlace, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_content_types::{Landing, Takes};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::{Outcome, Worker, WorkspaceState, record_provider};
 
@@ -69,7 +69,7 @@ impl OpenedFile {
 }
 
 fn refused(reason: String) -> Outcome {
-    Outcome::Rejected(ActionHostError::Refused { reason })
+    Outcome::Rejected(ActionCallError::Refused { reason })
 }
 
 impl Worker {
@@ -139,7 +139,7 @@ impl Worker {
                 let body = String::from_utf8(bytes)
                     .map_err(|_| refused(format!("{} is not text", file.name)))?;
                 arguments.insert("title".into(), json!(file.name));
-                arguments.insert("body".into(), json!(body));
+                arguments.insert("markdown".into(), json!(body));
             }
             Takes::Image => {
                 let (_, width, height) =
@@ -170,6 +170,11 @@ impl Worker {
         (named, state): (&str, &WorkspaceState),
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let target = &request.target;
+        // Files' verbs on the workspace's own folder change its tree, and its reads answer
+        // what that tree holds, each by a path in it.
+        if super::tree_put::acts_on_tree(target) {
+            return self.in_tree(workspace_id, caller, request, named);
+        }
         // How a file lands is checked before any record is made for it.
         let file = OpenedFile::named(&super::invoke_arguments(&request.argument))?;
         let landing = match &file {

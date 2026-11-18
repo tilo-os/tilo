@@ -34,7 +34,7 @@
  * answering one.
  */
 
-import {openDeviceCustody, idbStorage} from './device-custody.mjs';
+import {openDeviceKey as openStoredDeviceKey, idbStorage} from './device-key.mjs';
 import {enteredWorkspaces} from './entered-workspaces.mjs';
 import {browserIdentity, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';
 import {identityProfile} from './identity-profile.mjs';
@@ -93,7 +93,7 @@ function clientName(values) {
  * service asks, or a [`SignInLinkError`] in words fit for the person.
  *
  * `now` (Unix milliseconds) decides whether a grant the link asks for is
- * still ahead; it is a seam for tests, not a value the page chooses.
+ * still ahead; it is a boundary for tests, not a value the page chooses.
  */
 export function readSignInRequest(search, {now = Date.now()} = {}) {
   const params = new URLSearchParams(search);
@@ -273,7 +273,7 @@ export function postForm({document = globalThis.document, action, fields}) {
  * what the service asked for unless the person narrowed it. `runtime` is the
  * page's bundle, loaded only now.
  */
-export async function signedAnswer(request, {identity, custody, runtime, scope = request.grantScope}) {
+export async function signedAnswer(request, {identity, deviceKey, runtime, scope = request.grantScope}) {
   const ask = {
     audience: request.audience,
     challenge: request.challenge,
@@ -288,7 +288,7 @@ export async function signedAnswer(request, {identity, custody, runtime, scope =
   };
   // A device key kept as a sealed seed is opened for the one call that
   // signs; one held by `WebCrypto` signs where it is.
-  const signer = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
+  const signer = deviceKey.kind === 'sealed-seed' ? await deviceKey.unseal() : deviceKey;
   const answer = JSON.parse(await runtime.signInAnswer(identity, signer, JSON.stringify(ask)));
   if (typeof answer?.proof !== 'string') throw new Error('Tilo could not sign this sign-in.');
   return answer;
@@ -335,10 +335,10 @@ export function signInElements(document = globalThis.document) {
  * say so. Resolves once the card is ready, not when the person decides: a
  * decision posts a form away from this page.
  *
- * The seams (all defaulted for the page): `elements` the card's own,
+ * The boundaries (all defaulted for the page): `elements` the card's own,
  * `storage` where this browser keeps its person, `local` where it keeps the
  * workspaces it entered, `identity` the person already unlocked, `loadRuntime`
- * the page's bundle, `openCustody` the device key store.
+ * the page's bundle, `openDeviceKey` the device key store.
  */
 export async function startSignInPage({
   window = globalThis,
@@ -347,7 +347,7 @@ export async function startSignInPage({
   local = globalThis.localStorage,
   identity,
   loadRuntime = async () => (await import('./host.mjs')).loadRuntime(),
-  openCustody = openDeviceCustody,
+  openDeviceKey = openStoredDeviceKey,
   signIn = signInWithPasskey,
   hosts = () => identityHosts({window, local}),
 } = {}) {
@@ -439,7 +439,7 @@ export async function startSignInPage({
     card.allow.addEventListener('click', async () => {
       decided(true);
       tell('Signing you in…');
-      let custody;
+      let deviceKey;
       try {
         const person = identity ?? await browserIdentity({storage, create: false});
         if (!person) {
@@ -452,18 +452,18 @@ export async function startSignInPage({
         }
         if (person.locked || !person.sign) throw new SignInLinkError(LOCKED);
         const runtime = await loadRuntime();
-        custody = await openCustody({
+        deviceKey = await openDeviceKey({
           profile: identityProfile(person, request.audience),
           storage: idbStorage(),
         });
-        const answer = await signedAnswer(request, {identity: person, custody, runtime, scope});
+        const answer = await signedAnswer(request, {identity: person, deviceKey, runtime, scope});
         tell('');
         postForm({document, action: request.returnTo, fields: allowFields(request, answer)});
       } catch (error) {
         decided(false);
         tell(error instanceof SignInLinkError ? error.message : 'Tilo could not answer this sign-in. Try again.');
         document.documentElement.dataset.signIn = 'failed';
-        await custody?.close?.();
+        await deviceKey?.close?.();
       }
     });
   }

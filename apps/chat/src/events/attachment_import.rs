@@ -5,7 +5,7 @@
 use crate::app::AttachmentImportResult;
 
 /// What a person reads when a file is larger than a message's attachment
-/// may be ([`crate::record::MAX_ATTACHMENT_BYTES`]).
+/// may be ([`crate::chat::MAX_ATTACHMENT_BYTES`]).
 pub(super) const TOO_BIG_TO_SHARE: &str = "files up to 32 MiB can be shared";
 
 pub(super) fn prepare_attachment_import(
@@ -20,7 +20,7 @@ pub(super) fn prepare_attachment_import(
     let Ok((dir, name)) = tilo_files::file_at(path) else {
         return fail("the file is no longer there; choose it again");
     };
-    let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+    let limit = usize::try_from(crate::chat::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
     let bytes = match tilo_files::blocking::read_bounded(&dir, &name, limit) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return fail(TOO_BIG_TO_SHARE),
@@ -47,7 +47,7 @@ pub(super) fn store_attachment(
     if bytes.is_empty() {
         return fail("the file is empty");
     }
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > crate::record::MAX_ATTACHMENT_BYTES {
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > crate::chat::MAX_ATTACHMENT_BYTES {
         return fail(TOO_BIG_TO_SHARE);
     }
     let meta = tilo_content::sniff(bytes);
@@ -66,7 +66,7 @@ pub(super) fn store_attachment(
         token,
         name,
         blob,
-        size: u64::try_from(bytes.len()).unwrap_or(crate::record::MAX_ATTACHMENT_BYTES),
+        size: u64::try_from(bytes.len()).unwrap_or(crate::chat::MAX_ATTACHMENT_BYTES),
         width: meta.w,
         height: meta.h,
         video,

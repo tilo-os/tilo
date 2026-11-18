@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use ui::tilo_resource::Id;
 
-use crate::record::Message;
+use crate::chat::Message;
 
 /// The id of a message delivered into `channel` by `author` at `ts`
 /// saying `body`: the same delivery always names the same message. Two
@@ -36,7 +36,8 @@ pub fn delivered_id(channel: &Id, author: &str, ts: i64, body: &str) -> Id {
 }
 
 /// The name readers see for `message`: the name it was delivered or
-/// bridged under, else its author's as `name` gives it.
+/// bridged under, else the name the software that wrote it for its author
+/// acted under, else its author's as `name` gives it.
 pub fn shown_author(
     message: &Message,
     name: &dyn Fn(&ui::tilo_resource::MemberId) -> String,
@@ -44,7 +45,14 @@ pub fn shown_author(
     message
         .appearance
         .as_ref()
-        .map_or_else(|| name(&message.author), |shown| shown.name.clone())
+        .map(|shown| shown.name.clone())
+        .or_else(|| {
+            message
+                .author_name
+                .clone()
+                .filter(|written| message.acting.is_some() && !written.trim().is_empty())
+        })
+        .unwrap_or_else(|| name(&message.author))
 }
 
 /// `ts` (Unix seconds) as RFC 3339 in UTC.

@@ -92,17 +92,17 @@ pub fn open() -> Result<Box<dyn Output>, String> {
         .ok_or("Governed audio output service is unavailable")?;
     factory
         .open()
-        .map(|output| Box::new(Gated { output }) as Box<dyn Output>)
+        .map(|output| Box::new(Guarded { output }) as Box<dyn Output>)
 }
 
 /// A stream that closes itself the moment the person silences output: the
 /// decision is asked at every write, so no player has to know about the
 /// policy or be restarted for it.
-struct Gated {
+struct Guarded {
     output: Box<dyn Output>,
 }
 
-impl Output for Gated {
+impl Output for Guarded {
     fn write(&mut self, samples: &[i16]) -> Result<Observation, String> {
         if is_disabled() {
             self.output.close();

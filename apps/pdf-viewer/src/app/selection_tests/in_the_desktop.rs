@@ -3,7 +3,7 @@ use std::rc::Rc;
 use serial_test::serial;
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
 use tilo_desktop_surface::{DesktopSurface, TileSource, seed_tree};
-use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
 use ui::headless::FrameHarness;
 use ui::owner_wake::OwnerWakeQueue;
 use ui::widget::{TileHost, Widget};
@@ -39,9 +39,9 @@ impl TileSource for Readers {
                 &ui::permissions::MemberId::person("reader"),
                 ui::permissions::Role::Owner,
             ));
-        let mut context = HostContext::prepare(
+        let mut context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "device".into(),

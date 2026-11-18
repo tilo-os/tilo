@@ -205,16 +205,16 @@ impl ui::widget::FullscreenProvider for PhotosApp {
 }
 
 impl ui::widget::controls::ActionControls for PhotosApp {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
+        attachment: ui::control_domain::DomainAttachment,
     ) {
         for button in self.photos.borrow_mut().retained_buttons_mut() {
-            ui::widget::controls::install_control_custody(button, domain, attachment);
+            ui::widget::controls::attach_controls(button, domain, attachment);
         }
         if let Some(empty) = &mut self.empty_state {
-            ui::widget::controls::install_control_custody(empty, domain, attachment);
+            ui::widget::controls::attach_controls(empty, domain, attachment);
         }
     }
 

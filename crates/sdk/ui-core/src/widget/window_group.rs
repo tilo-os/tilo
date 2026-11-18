@@ -842,7 +842,7 @@ impl WindowGroup {
     /// Light up (or, with `None`, put out) the edge of this window a press
     /// would resize, once the pointer has rested there for
     /// `EDGE_HOVER_DWELL`. Set by the parent row from
-    /// [`super::edge_resize::seam_owner`]; the window itself never decides.
+    /// [`super::edge_resize::boundary_owner`]; the window itself never decides.
     pub fn set_edge_highlight(&mut self, edge: Option<WindowEdge>) {
         if self.edge_highlight.map(|(edge, _)| edge) != edge {
             self.edge_highlight = edge.map(|edge| (edge, crate::time::now()));
@@ -1543,7 +1543,7 @@ impl WindowGroup {
         }
     }
 
-    fn tab_standing_in(&self) -> Option<u64> {
+    fn stand_in_tab(&self) -> Option<u64> {
         self.tab_waiting
             .filter(|&(_, to)| to == self.bar.active_id())
             .map(|(from, _)| from)
@@ -2569,9 +2569,9 @@ impl FloatingSurfaceProvider for WindowGroup {
         })
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         self.active_host_mut()
-            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+            .is_some_and(FloatingSurfaceProvider::take_pip_area_request)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
@@ -2858,7 +2858,10 @@ impl Widget for WindowGroup {
         true
     }
 
-    #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
+    #[allow(
+        private_interfaces,
+        reason = "toolkit-only checked ownership traversal"
+    )]
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -3077,8 +3080,8 @@ impl Widget for WindowGroup {
         {
             h.draw_child(scene, transform, tr, theme, presence);
         }
-        if let Some(standing_in) = self.tab_standing_in() {
-            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == standing_in) {
+        if let Some(stand_in) = self.stand_in_tab() {
+            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == stand_in) {
                 h.draw_child(scene, transform, tr, theme, presence);
             }
         } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
@@ -4327,7 +4330,7 @@ mod tests {
             );
             assert!(
                 !g.any_tile_arriving(),
-                "and must not still be standing for its own place",
+                "and must not still be there for its own place",
             );
         }
 

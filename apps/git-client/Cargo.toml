@@ -30,7 +30,7 @@ hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: the client's durable view preferences (diff layout,
-# syntax highlight, whitespace, wrap), the repository the record opens and the
+# syntax highlight, whitespace, wrap), the repository the resource opens and the
 # shared repository projection are document state, changed by replayable
 # actions the shell's Ctrl+K palette dispatches too.
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -41,7 +41,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "cred"] }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }

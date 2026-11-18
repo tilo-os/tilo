@@ -8,16 +8,12 @@ use super::ResourceRoot;
 use super::widget::RootControls;
 
 impl RootControls for ResourceRoot {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui_core::ControlDomain,
-        attachment: ui_core::control_custody::CustodyAttachment,
+        attachment: ui_core::control_domain::DomainAttachment,
     ) {
-        ui_core::widget::controls::install_control_custody(
-            self.content.as_mut(),
-            domain,
-            attachment,
-        );
+        ui_core::widget::controls::attach_controls(self.content.as_mut(), domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -47,7 +43,7 @@ impl RootControls for ResourceRoot {
         // The host delivers feedback to the exact emitting document owner;
         // forwarding stops at nested owner boundaries. Its children may have
         // arbitrary ids, including records removed since submission. Repair
-        // this owner's projection without inferring custody from an id prefix
+        // this owner's projection without inferring ownership from an id prefix
         // or retaining requests that History may capture or discard.
         if let Some(effect) = ui_core::widget::controls::result_on_behalf_of() {
             self.dispatch

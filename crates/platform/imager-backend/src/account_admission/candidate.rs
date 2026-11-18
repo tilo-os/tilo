@@ -135,16 +135,16 @@ pub(super) fn admits(
     {
         return Err(refused());
     }
-    // The existing owner holds an initial namespace witness outside this PID
+    // The existing owner holds an initial namespace proof outside this PID
     // namespace. An ordinary installed root marker cannot open this path.
     use std::os::fd::AsRawFd;
-    let witness = std::fs::OpenOptions::new()
+    let proof = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open("/run/tilo-service-initial-pidns")?;
-    if witness.metadata()?.uid() != 0
-        || witness.metadata()?.ino() == value.pid_namespace
-        || unsafe { libc::ioctl(witness.as_raw_fd(), 0xb703) } != libc::CLONE_NEWPID
+    if proof.metadata()?.uid() != 0
+        || proof.metadata()?.ino() == value.pid_namespace
+        || unsafe { libc::ioctl(proof.as_raw_fd(), 0xb703) } != libc::CLONE_NEWPID
     {
         return Err(refused());
     }

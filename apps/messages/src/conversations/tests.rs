@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// What the record holds is what the window shows, live and in a past version, where the
+/// What the resource holds is what the window shows, live and in a past version, where the
 /// person's contacts and accounts are not read.
 #[test]
 fn a_past_version_reads_and_shows_its_messages() {
@@ -356,7 +356,7 @@ fn a_past_version_reads_and_shows_its_messages() {
     app.effect(&MessagesEffect::OpenConversation {
         conversation: "Ada".into(),
     })
-    .expect("the record's conversation opens");
+    .expect("the resource's conversation opens");
     app.settle();
     let shown = live(&mut app);
     assert!(shown.contains("Conversation with Ada"), "{shown}");

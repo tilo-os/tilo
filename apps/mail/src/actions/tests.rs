@@ -5,9 +5,10 @@
 use super::*;
 use crate::app::MailApp;
 use crate::model::Folder;
+use crate::part::{MessagePart, message_part};
 use crate::resource::{
     MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, MAX_MESSAGES_PER_ACTION, Mail, MailShell,
-    MessageState, OPEN_MESSAGE_LIMIT, folder_resource, mailbox,
+    MessageState, OPEN_MESSAGE_LIMIT, mailbox,
 };
 use crate::sample::sample_mailbox;
 use crate::state::{CtxAction, MailState};
@@ -106,21 +107,31 @@ tilo_test_env::scenario! {
     }
 }
 
-fn apply(mail: &mut Replica<Mail>, invoke: Invoke<Mail>) -> Result<(), String> {
+fn apply<R>(mail: &mut Replica<R>, invoke: Invoke<R>) -> Result<(), String>
+where
+    R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model,
+{
     mail.apply(invoke)
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
-fn edit(mail: &mut Replica<Mail>, edit: &Edit<Mail>) -> Result<(), String> {
+fn edit<R>(mail: &mut Replica<R>, edit: &Edit<R>) -> Result<(), String>
+where
+    R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model,
+{
     apply(mail, Invoke::edit(edit).map_err(|error| error.to_string())?)
 }
 
-fn ingest(mail: &mut Replica<Mail>, messages: Vec<IngestBaseline>) {
-    apply(mail, Mail::INGEST.with(mailbox::Ingest { messages })).unwrap();
+fn ingest(mail: &mut Replica<MessagePart>, messages: Vec<IngestBaseline>) {
+    apply(
+        mail,
+        MessagePart::INGEST.with(message_part::Ingest { messages }),
+    )
+    .unwrap();
 }
 
-fn register(mail: &mut Replica<Mail>, id: &str, folder: Folder) {
+fn register(mail: &mut Replica<MessagePart>, id: &str, folder: Folder) {
     ingest(
         mail,
         vec![IngestBaseline {
@@ -131,12 +142,20 @@ fn register(mail: &mut Replica<Mail>, id: &str, folder: Folder) {
     );
 }
 
-fn state(mail: &Replica<Mail>, id: &str) -> Option<MessageState> {
+fn state(mail: &Replica<MessagePart>, id: &str) -> Option<MessageState> {
     mail.state().unwrap().message(id).cloned()
 }
 
-fn at(id: &str) -> <MessageState as ui::tilo_resource::Model>::Paths<Mail> {
-    Mail::paths().messages.item(&Id::from_raw(id))
+fn at(id: &str) -> <MessageState as ui::tilo_resource::Model>::Paths<MessagePart> {
+    MessagePart::paths().messages.item(&Id::from_raw(id))
+}
+
+/// What a part owes the servers of its messages.
+fn owed_of(part: &MessagePart) -> Vec<ServerUpdate> {
+    crate::part::owed(part)
+        .into_iter()
+        .map(|(_, update)| update)
+        .collect()
 }
 
 fn ids(ids: &[&str]) -> Vec<String> {
@@ -166,7 +185,7 @@ tilo_test_env::scenario! {
     phase flags_and_purges_converge_without_resurrection;
     {
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             let mut mb = sample_mailbox();
             let id = *mb.messages.keys().next().unwrap();
             mb.mark_read(id, true);
@@ -187,14 +206,14 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             let mut mailbox = sample_mailbox();
             let id = *mailbox.messages.keys().next().expect("sample message");
             let fetched = mailbox.get(id).expect("sample message").clone();
             ingest(&mut mail, vec![IngestBaseline::from_message(&fetched)]);
             apply(
                 &mut mail,
-                Mail::MARK_READ.with(mailbox::MarkRead {
+                MessagePart::MARK_READ.with(message_part::MarkRead {
                     messages: vec![id.to_string()],
                     read: true,
                 }),
@@ -209,7 +228,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             let mut mailbox = sample_mailbox();
             let id = *mailbox.messages.keys().next().expect("sample message");
             ingest(
@@ -219,12 +238,12 @@ tilo_test_env::scenario! {
             edit(&mut mail, &at(&id.to_string()).folder.set(Folder::Trash)).unwrap();
             apply(
                 &mut mail,
-                Mail::PURGE.with(mailbox::Purge {
+                MessagePart::PURGE.with(message_part::Purge {
                     messages: vec![id.to_string()],
                 }),
             )
             .unwrap_err();
-            mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
+            mail.apply_confirmed(MessagePart::PURGE.with(message_part::Purge {
                 messages: vec![id.to_string()],
             }))
             .unwrap();
@@ -250,7 +269,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             let mut mb = sample_mailbox();
             let some = *mb.messages.keys().next().unwrap();
             {
@@ -263,7 +282,7 @@ tilo_test_env::scenario! {
             register(&mut mail, &id, Folder::Inbox);
             apply(
                 &mut mail,
-                Mail::MARK_READ.with(mailbox::MarkRead {
+                MessagePart::MARK_READ.with(message_part::MarkRead {
                     messages: vec![id.clone()],
                     read: true,
                 }),
@@ -286,26 +305,26 @@ tilo_test_env::scenario! {
 
     phase server_updates_follow_the_mailbox_until_the_server_confirms;
     {
-        let mut mail = Replica::<Mail>::new();
+        let mut mail = Replica::<MessagePart>::new();
         ingest(&mut mail, vec![fetched("m1", false, Folder::Inbox)]);
-        let updates = |mail: &Replica<Mail>| mail.state().unwrap().server_updates();
+        let updates = |mail: &Replica<MessagePart>| owed_of(&mail.state().unwrap());
         assert!(updates(&mail).is_empty(), "nothing changed");
 
-        let mark = |mail: &mut Replica<Mail>, read| {
+        let mark = |mail: &mut Replica<MessagePart>, read| {
             apply(
                 mail,
-                Mail::MARK_READ.with(mailbox::MarkRead {
+                MessagePart::MARK_READ.with(message_part::MarkRead {
                     messages: ids(&["m1"]),
                     read,
                 }),
             )
             .unwrap();
         };
-        let confirm = |mail: &mut Replica<Mail>, update: &ServerUpdate| {
+        let confirm = |mail: &mut Replica<MessagePart>, update: &ServerUpdate| {
             apply(
                 mail,
-                Mail::SERVER_APPLIED.with(mailbox::ServerApplied {
-                    update: update.clone(),
+                MessagePart::SERVER_APPLIED.with(message_part::ServerApplied {
+                    updates: vec![update.clone()],
                 }),
             )
             .unwrap();
@@ -342,7 +361,7 @@ tilo_test_env::scenario! {
         confirm(&mut mail, &moved);
         assert!(updates(&mail).is_empty());
 
-        mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
+        mail.apply_confirmed(MessagePart::PURGE.with(message_part::Purge {
             messages: ids(&["m1"]),
         }))
         .unwrap();
@@ -367,12 +386,12 @@ tilo_test_env::scenario! {
     phase batch_verbs_fail_closed_and_converge;
     {
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             register(&mut mail, "inbox", Folder::Inbox);
             register(&mut mail, "trash", Folder::Trash);
             let before = mail.heads();
             assert!(
-                mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
+                mail.apply_confirmed(MessagePart::PURGE.with(message_part::Purge {
                     messages: ids(&["inbox", "missing", "trash"]),
                 }))
                 .is_err(),
@@ -383,10 +402,10 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut a = Replica::<Mail>::new();
+            let mut a = Replica::<MessagePart>::new();
             register(&mut a, "m", Folder::Trash);
             let mut b = a.fork();
-            a.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
+            a.apply_confirmed(MessagePart::PURGE.with(message_part::Purge {
                 messages: ids(&["m"]),
             }))
             .unwrap();
@@ -395,7 +414,7 @@ tilo_test_env::scenario! {
             assert!(
                 apply(
                     &mut b,
-                    Mail::MARK_READ.with(mailbox::MarkRead {
+                    MessagePart::MARK_READ.with(message_part::MarkRead {
                         messages: ids(&["m"]),
                         read: true,
                     })
@@ -406,11 +425,11 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             assert!(
                 apply(
                     &mut mail,
-                    Mail::MARK_READ.with(mailbox::MarkRead {
+                    MessagePart::MARK_READ.with(message_part::MarkRead {
                         messages: ids(&["not-a-loaded-message"]),
                         read: true,
                     })
@@ -425,24 +444,24 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut mail = Replica::<Mail>::new();
+            let mut mail = Replica::<MessagePart>::new();
             register(&mut mail, "m", Folder::Inbox);
             let many = std::iter::repeat_n("m".to_string(), MAX_MESSAGES_PER_ACTION + 20).collect();
             apply(
                 &mut mail,
-                Mail::ARCHIVE.with(mailbox::Archive { messages: many }),
+                MessagePart::ARCHIVE.with(message_part::Archive { messages: many }),
             )
             .unwrap();
             assert_eq!(state(&mail, "m").unwrap().folder, Folder::Archive);
         }
 
         {
-            let mut read_replica = Replica::<Mail>::new();
+            let mut read_replica = Replica::<MessagePart>::new();
             register(&mut read_replica, "m", Folder::Inbox);
             let mut star_replica = read_replica.fork();
             apply(
                 &mut read_replica,
-                Mail::MARK_READ.with(mailbox::MarkRead {
+                MessagePart::MARK_READ.with(message_part::MarkRead {
                     messages: ids(&["m"]),
                     read: true,
                 }),
@@ -487,13 +506,13 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
     }
 
     {
-        let mut mail = Replica::<Mail>::new();
+        let mut mail = Replica::<MessagePart>::new();
         register(&mut mail, "m1", Folder::Inbox);
         let labels = at("m1").labels;
         edit(&mut mail, &labels.insert(&"work".to_owned())).unwrap();
         edit(&mut mail, &labels.insert(&"urgent".to_owned())).unwrap();
         edit(&mut mail, &labels.insert(&"work".to_owned())).unwrap();
-        let read = |mail: &Replica<Mail>| -> Vec<String> {
+        let read = |mail: &Replica<MessagePart>| -> Vec<String> {
             state(mail, "m1").unwrap().labels.iter().cloned().collect()
         };
         assert_eq!(read(&mail), ["urgent", "work"]);
@@ -620,17 +639,17 @@ fn save(mail: &mut Replica<Mail>, draft: &Draft) {
 
 #[test]
 fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
-    let mut mail = Replica::<Mail>::new();
+    let mut mail = Replica::<MessagePart>::new();
     ingest(&mut mail, vec![fetched("m1", false, Folder::Inbox)]);
     ingest(&mut mail, vec![fetched("m1", true, Folder::Inbox)]);
     assert!(state(&mail, "m1").unwrap().read);
-    assert!(mail.state().unwrap().server_updates().is_empty());
+    assert!(owed_of(&mail.state().unwrap()).is_empty());
 
     edit(&mut mail, &at("m1").starred.set(true)).unwrap();
     ingest(&mut mail, vec![fetched("m1", true, Folder::Inbox)]);
     assert!(state(&mail, "m1").unwrap().starred);
     assert_eq!(
-        mail.state().unwrap().server_updates().len(),
+        owed_of(&mail.state().unwrap()).len(),
         1,
         "the star still has to go"
     );
@@ -763,7 +782,7 @@ fn resolve(app: &mut TestApp<MailShell>, id: &str) -> Option<ResourceSpec> {
     ui::resources::resource(harness.root_widget(), &harness.state().doc, id)
 }
 
-fn inbox_ids(mail: &Mail) -> Vec<String> {
+fn inbox_ids(mail: &MessagePart) -> Vec<String> {
     mail.messages
         .iter()
         .filter(|(_, message)| !message.purged && message.folder == Folder::Inbox)
@@ -772,11 +791,15 @@ fn inbox_ids(mail: &Mail) -> Vec<String> {
 }
 
 fn message_place(id: &str) -> String {
-    format!(
-        "{}/{}",
-        folder_resource(Folder::Inbox.as_key()),
-        crate::resource::message_place_id(id)
-    )
+    crate::part::message_resource(id)
+}
+
+/// The address the mailbox's messages are published at, beside it.
+fn messages_at(app: &mut TestApp<MailShell>) -> String {
+    crate::resource::TestMail::messages_resource(app)
+        .id
+        .as_str()
+        .to_owned()
 }
 
 #[test]
@@ -861,38 +884,30 @@ fn mailbox_publishes_bounded_stable_places() {
         let resources = published(&mut app);
         let mut registry = ActionRegistry::new();
         Mail::register(&mut registry);
+        MessagePart::register(&mut registry);
         let violations = tilo_actions::validate_surface_contracts(&resources, &registry);
         assert!(violations.is_empty(), "{violations:?}");
         let root = mailbox_root(&resources);
         let actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        for id in [
-            "archive",
-            "trash",
-            "move-messages",
-            "mark-read",
-            "purge",
-            "send-message",
-            "cancel-send",
-            "field-edit",
-        ] {
+        for id in ["send-message", "cancel-send", "field-edit"] {
             assert!(
                 actions.contains(&id),
                 "the mailbox offers {id}: {actions:?}"
             );
         }
-
-        let inbox = find(&resources, &folder_resource(Folder::Inbox.as_key()))
-            .expect("the inbox folder place");
+        let beside = crate::resource::TestMail::messages_resource(&mut app);
+        let verbs: Vec<&str> = beside.actions.iter().map(|a| a.id.as_str()).collect();
+        for id in ["archive", "trash", "move-messages", "mark-read", "purge"] {
+            assert!(verbs.contains(&id), "the messages offer {id}: {verbs:?}");
+        }
+        let places: Vec<&ResourceSpec> = beside
+            .children
+            .iter()
+            .filter(|child| child.id.as_str().contains("/derived/message:"))
+            .collect();
         assert!(
-            !inbox.children.is_empty() && inbox.children.len() <= OPEN_MESSAGE_LIMIT,
-            "the inbox publishes a bounded page of its messages"
-        );
-        assert!(
-            inbox
-                .children
-                .iter()
-                .all(|item| item.kind == "mail.mailbox.message"),
-            "an inbox child is a message"
+            !places.is_empty() && places.len() <= OPEN_MESSAGE_LIMIT,
+            "the mailbox publishes a bounded page of its messages"
         );
 
         let thread = app
@@ -905,7 +920,7 @@ fn mailbox_publishes_bounded_stable_places() {
         assert_eq!(resolved.kind, "mail.thread");
         assert_eq!(resolved.children.len(), thread.message_ids.len());
 
-        let id = inbox_ids(&app.state())[0].clone();
+        let id = inbox_ids(&crate::resource::TestMail::held_by(&app))[0].clone();
         let message = find(&resources, &message_place(&id)).expect("the message's place");
         let place_actions: Vec<&str> = message.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["open", "inspect", "reply", "mark-read", "archive", "trash"] {
@@ -930,8 +945,8 @@ fn mailbox_publishes_bounded_stable_places() {
     {
         let mut app = TestApp::<MailShell>::new().unwrap();
         let count = OPEN_MESSAGE_LIMIT * 5;
-        app.invoke(
-            Mail::INGEST.with(mailbox::Ingest {
+        app.chain_invoke(
+            &MessagePart::INGEST.with(message_part::Ingest {
                 messages: (0..count)
                     .map(|id| IngestBaseline {
                         folder: Some("inbox".into()),
@@ -941,21 +956,30 @@ fn mailbox_publishes_bounded_stable_places() {
             }),
         )
         .unwrap();
+        app.settle();
         let resources = published(&mut app);
-        let inbox = find(&resources, &folder_resource("inbox")).expect("inbox place");
-        assert_eq!(
-            inbox.children.len(),
-            OPEN_MESSAGE_LIMIT,
-            "the published page is bounded"
+        let messages = crate::resource::TestMail::messages_resource(&mut app);
+        let places = messages
+            .children
+            .iter()
+            .filter(|child| child.id.as_str().contains("/derived/message:"))
+            .count();
+        assert_eq!(places, OPEN_MESSAGE_LIMIT, "the published page is bounded");
+        let first = "0".to_owned();
+        assert!(
+            find(&resources, &message_place(&first)).is_none(),
+            "the oldest message is past the page"
         );
-        let last = (count - 1).to_string();
-        assert!(find(&resources, &message_place(&last)).is_none());
-        app.invoke(Mail::ARCHIVE.with(mailbox::Archive {
-            messages: vec![last.clone()],
+        app.chain_invoke(&MessagePart::ARCHIVE.with(message_part::Archive {
+            messages: vec![first.clone()],
         }))
         .unwrap();
+        let last = first;
         assert_eq!(
-            app.state().message(&last).unwrap().folder,
+            crate::resource::TestMail::held_by(&app)
+                .message(&last)
+                .unwrap()
+                .folder,
             Folder::Archive,
             "a message past the page is still acted on by its id"
         );
@@ -1024,18 +1048,10 @@ fn mailbox_publishes_bounded_stable_places() {
     }
 
     {
-        let mut mail = Replica::<Mail>::new();
+        let mut mail = Replica::<MessagePart>::new();
         register(&mut mail, "m", Folder::Trash);
-        let tree = mail.published().unwrap();
-        let place = find(
-            std::slice::from_ref(&tree),
-            &format!(
-                "{}/{}",
-                folder_resource("trash"),
-                crate::resource::message_place_id("m")
-            ),
-        )
-        .expect("the trashed message's place");
+        let state = mail.state().unwrap();
+        let place = crate::part::message_place("m", "m", state.message("m").unwrap()).publish();
         let purge = place
             .actions
             .iter()
@@ -1051,7 +1067,6 @@ fn mailbox_publishes_bounded_stable_places() {
 
 struct Seeded {
     app: TestApp<MailShell>,
-    trashed: String,
 }
 
 thread_local! {
@@ -1064,32 +1079,26 @@ fn with_seeded<R>(f: impl FnOnce(&mut Seeded) -> R) -> R {
 
 fn mailbox_seed() -> AutoCommit {
     let mut app = sample_window();
-    let ids = inbox_ids(&app.state());
-    let trashed = ids.last().cloned().expect("sample inbox has messages");
     let before = app.state().draft;
     let draft = before.saved(&Draft {
         to: "ada@example.test".into(),
         subject: "Plans".into(),
         ..Default::default()
     });
-    let mut edits = vec![
-        at(&trashed).folder.set(Folder::Trash),
-        at(&ids[0]).labels.insert(&"work".to_owned()),
-        Mail::paths().folders.insert_as(
-            &Id::from_raw("receipts"),
-            0,
-            &crate::resource::LocalFolder {
-                name: "Receipts".into(),
-            },
-        ),
-    ];
+    let mut edits = vec![Mail::paths().folders.insert_as(
+        &Id::from_raw("receipts"),
+        0,
+        &crate::resource::LocalFolder {
+            name: "Receipts".into(),
+        },
+    )];
     edits.extend(Mail::paths().draft.path().edits(&before, &draft));
     for change in edits {
         app.invoke(Invoke::edit(&change).unwrap()).unwrap();
     }
     app.settle();
     let doc = app.read_document(Clone::clone);
-    SEEDED.set(Some(Seeded { app, trashed }));
+    SEEDED.set(Some(Seeded { app }));
     doc
 }
 
@@ -1104,39 +1113,30 @@ fn encoded(invoke: &Invoke<Mail>) -> tilo_actions::EncodedAction {
     ui::tilo_resource::encode::<Mail>(&action).unwrap()
 }
 
-fn read(doc: &AutoCommit) -> Mail {
-    crate::resource::read_mail(doc).expect("a mailbox")
-}
-
 ui::action_contract_tests! {
     seed: mailbox_seed(),
     registry: registry(),
     resources: |_| with_seeded(|seeded| published(&mut seeded.app)),
     palette: ["Compose message", "Discard draft"],
     replay: [
-        star => |doc| {
-            let mail = read(doc);
-            let id = inbox_ids(&mail)
-                .into_iter()
-                .find(|id| mail.message(id).is_some_and(|message| !message.starred))
-                .expect("an unstarred inbox message");
-            encoded(&Invoke::edit(&at(&id).starred.set(true)).unwrap())
-        },
-        batched_archive => |doc| encoded(&Mail::ARCHIVE.with(mailbox::Archive {
-            messages: inbox_ids(&read(doc)).into_iter().take(3).collect(),
-        })),
-        add_label => |doc| encoded(&
-            Invoke::edit(&at(&inbox_ids(&read(doc))[1]).labels.insert(&"urgent".to_owned()))
-                .unwrap(),
-        ),
-        purge => |_| encoded(&Mail::PURGE.with(mailbox::Purge {
-            messages: vec![with_seeded(|seeded| seeded.trashed.clone())],
+        save_draft => |_| encoded(&Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
+            draft: None,
+            message: DraftData::from_draft(&Draft {
+                to: "grace@example.test".into(),
+                subject: "Replayed".into(),
+                ..Draft::default()
+            }),
         })),
     ],
     undo: [
-        move_to_trash => |doc| encoded(&Mail::TRASH.with(mailbox::Trash {
-            messages: vec![inbox_ids(&read(doc))[0].clone()],
-        })),
+        new_folder => |_| encoded(&Invoke::edit(&Mail::paths().folders.insert_as(
+            &Id::from_raw("projects"),
+            1,
+            &crate::resource::LocalFolder {
+                name: "Projects".into(),
+            },
+        ))
+        .unwrap()),
     ],
 }
 
@@ -1150,22 +1150,29 @@ fn the_archive_affordance_and_the_palette_edit_alike() {
         id.parse().unwrap(),
         CtxAction::Archive,
     );
-    let mut palette = Replica::<Mail>::new();
+    let mut palette = Replica::<MessagePart>::new();
     register(&mut palette, &id, Folder::Inbox);
     let state = palette.state().unwrap();
-    let place = Mail::message_place(&id, &id, state.message(&id).unwrap()).publish();
+    let place = crate::part::message_place(&id, &id, state.message(&id).unwrap()).publish();
     let archive = place
         .actions
         .iter()
         .find(|action| action.id == "archive")
         .unwrap();
-    let action: <Mail as ui::tilo_resource::Resource>::Action =
+    let action: <MessagePart as ui::tilo_resource::Resource>::Action =
         serde_json::from_slice(&archive.build_json(&serde_json::Map::new()).unwrap().payload)
             .unwrap();
     palette.apply_action(&action).unwrap();
-    let folder = |mail: &Mail| mail.message(&id).map(|message| message.folder);
-    assert_eq!(folder(&read(&doc)), Some(Folder::Archive));
-    assert_eq!(folder(&read(&doc)), folder(&palette.state().unwrap()));
+    let window = crate::resource::TestMail::get_folder_for(&st, &id);
+    assert_eq!(window, Some(Folder::Archive));
+    assert_eq!(
+        window,
+        palette
+            .state()
+            .unwrap()
+            .message(&id)
+            .map(|message| message.folder)
+    );
 }
 
 /// The outbox layout before a message said when it may leave keeps reading:
@@ -1265,13 +1272,15 @@ fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<MailShell>::new().unwrap();
-    app.invoke(Mail::INGEST.with(mailbox::Ingest {
+    app.chain_invoke(&MessagePart::INGEST.with(message_part::Ingest {
         messages: vec![IngestBaseline {
             folder: Some("inbox".into()),
             ..IngestBaseline::register_only("m1")
         }],
     }))
     .unwrap();
+    app.settle();
+    let messages = messages_at(&mut app);
     let agent = ActionInvoker::agent("claude").acting_for("ada");
     for change in [
         at("m1").starred.set(true),
@@ -1279,7 +1288,7 @@ fn history_entries_render_as_the_apps_sentences() {
     ] {
         app.call_by(
             agent.clone(),
-            "mail.mailbox",
+            &messages,
             "field-edit",
             serde_json::json!({ "edit": change }),
         )
@@ -1287,20 +1296,20 @@ fn history_entries_render_as_the_apps_sentences() {
     }
     app.call_by(
         agent.clone(),
-        "mail.mailbox",
+        &messages,
         "archive",
         serde_json::json!({ "messages": ["m1"] }),
     )
     .unwrap();
     app.call_by(
         agent,
-        "mail.mailbox",
+        &messages,
         "mark-read",
         serde_json::json!({ "messages": ["m1"], "read": true }),
     )
     .unwrap();
 
-    let sentences = app.sentences(app.history().iter().filter(|entry| {
+    let sentences = app.sentences(app.chain_history::<MessagePart>().iter().filter(|entry| {
         entry
             .invoker
             .as_ref()

@@ -9,16 +9,16 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 
 use super::*;
-use crate::platform::records::Changes;
+use crate::platform::records::{Changes, Kept};
 use ui::mentions::{MARK, reading_nothing};
 use ui::resource::{DocumentId, ResourceType};
 
 const ADA: &str = "u-ada";
 const BEA: &str = "u-bea";
 
-/// The value a mention of `person` is stored as.
-fn mention_of(person: &str) -> String {
-    tilo_reference::Embed::Member(ui::MemberId::person(person)).mark_value()
+/// A member's id as the apps keep it: a mention's mark, or an item's author.
+fn member_value(person: &str) -> String {
+    serde_json::to_string(&ui::MemberId::person(person)).expect("a member id")
 }
 const CAI: &str = "u-cai";
 const NOTE: &str = "tab:00000000000000a1";
@@ -82,23 +82,6 @@ impl Device {
         self.changes.note(WORKSPACE, app, route, true);
     }
 
-    /// `app`'s index names `route` as a record of `kind`, as its app writes it.
-    fn kind(&self, app: &str, route: &str, kind: &str) {
-        let mut doc = AutoCommit::new();
-        let named = ui::resource::index::reference(
-            &mut doc,
-            &DocumentId::parse(route).expect("a record id"),
-            &ResourceType::new(kind),
-        );
-        assert!(named, "{route} is named in {app}'s index");
-        doc.commit();
-        Self::write_doc(
-            &self.store,
-            &StorageKey::workspace_index(app, WORKSPACE),
-            &mut doc,
-        );
-    }
-
     fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
         let key = crate::platform::records::storage_key(app, WORKSPACE, route).expect("a route");
         Self::write_doc(store, &key, doc);
@@ -126,10 +109,9 @@ impl Device {
         Mentions::over(Given {
             person: vec![person.to_owned()],
             store: Some(self.store.clone()),
-            records: Some(Rc::new(crate::platform::records::Linked::over(
-                self.store.clone(),
-                self.changes.clone(),
-            )) as Rc<dyn Records>),
+            records: Some(
+                Rc::new(Kept::over(self.store.clone(), self.changes.clone())) as Rc<dyn Records>,
+            ),
             notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
             name: Rc::new(name),
             wake: None,
@@ -205,7 +187,7 @@ fn notebook_at(
     if let Some((start, end, person)) = mention {
         doc.mark(
             &block,
-            Mark::new(MARK.into(), mention_of(person), start, end),
+            Mark::new(MARK.into(), member_value(person), start, end),
             ExpandMark::None,
         )
         .unwrap();
@@ -338,7 +320,7 @@ tilo_test_env::scenario! {
         chat_part_mention(&|part, span| {
             let value = part.put_object(span, "value", ObjType::Map).unwrap();
             part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "$field/str/0", mention_of(BEA)).unwrap();
+            part.put(&value, "$field/str/0", member_value(BEA)).unwrap();
         });
     }
 
@@ -347,7 +329,7 @@ tilo_test_env::scenario! {
         chat_part_mention(&|part, span| {
             let value = part.put_object(span, "value", ObjType::Map).unwrap();
             part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "0", mention_of(BEA)).unwrap();
+            part.put(&value, "0", member_value(BEA)).unwrap();
         });
     }
 }
@@ -449,6 +431,7 @@ tilo_test_env::scenario! {
             &Look {
                 app: NOTES,
                 record: NOTE,
+                place: NOTE,
                 kind: "notes.notebook",
                 doc: &written,
                 tree: None,
@@ -463,9 +446,42 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A chat part whose message mentions Bea, its mark's value written by `write_value` into the
-/// span: the part names no kind of its own beyond its chain's, and the chain none at all.
+/// Chat's surface as this test names it: its own record's kind first, then its parts'.
+const CHAT_SURFACE: &[u8] = b"format = 2\n\n[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 1\n\n[[resources]]\nkind = \"chat.messages\"\nlabel = \"Messages\"\nversion = 1\n";
+
+/// Post message `id` by Ada in #general into `part`, a paragraph whose mark span names Bea, its
+/// value written by `write_value`.
+fn post(
+    part: &mut AutoCommit,
+    id: &str,
+    text: &str,
+    write_value: &dyn Fn(&mut AutoCommit, &ObjId),
+) {
+    let messages = match part.get(ROOT, "messages").unwrap() {
+        Some((_, messages)) => messages,
+        None => part.put_object(ROOT, "messages", ObjType::Map).unwrap(),
+    };
+    let entry = part.put_object(&messages, id, ObjType::Map).unwrap();
+    let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
+    part.put(&message, "author", member_value(ADA)).unwrap();
+    part.put(&message, "channel", "c_general").unwrap();
+    let body = part.put_object(&message, "body", ObjType::List).unwrap();
+    let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
+    part.put(&block, "text", text).unwrap();
+    let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
+    let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
+    part.put(&span, "start", 0_i64).unwrap();
+    part.put(&span, "end", 4_i64).unwrap();
+    part.put(&span, "name", MARK).unwrap();
+    write_value(part, &span);
+    part.commit();
+}
+
+/// Chat as it keeps a workspace: its own record, which names no kind, with its conversations, and a
+/// part of the chain of messages derived from it. Each message that mentions Bea is one notice,
+/// opening that message in the chat's own record as a search hit on it does.
 fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
+    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
     let entry = chat
@@ -473,66 +489,55 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         .unwrap();
     let channel = chat.put_object(&entry, "v", ObjType::Map).unwrap();
     chat.put(&channel, "name", "general").unwrap();
+    chat.commit();
 
+    let part_id = DocumentId::derived("messages", &DocumentId::workspace_default()).part(0);
+    let part_route = part_id.as_str().to_owned();
     let mut part = AutoCommit::new();
-    // The chat's own record, and the part of it a page of messages is kept in.
-    let chat_route = "tab:00000000000000c1".to_owned();
-    let part_route = DocumentId::parse(&chat_route)
-        .expect("a record id")
-        .part(0)
-        .as_str()
-        .to_owned();
     ui::resource::init(
         &mut part,
-        &DocumentId::parse(&part_route).expect("a record id"),
-        &ResourceType::new("chat.part"),
+        &part_id,
+        &ResourceType::new("chat.messages"),
         "workspace",
     );
-    let messages = part.put_object(ROOT, "messages", ObjType::Map).unwrap();
-    let entry = part.put_object(&messages, "m1", ObjType::Map).unwrap();
-    let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
-    part.put(&message, "author", ADA).unwrap();
-    part.put(&message, "channel", "c_general").unwrap();
-    let body = part.put_object(&message, "body", ObjType::List).unwrap();
-    let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
-    part.put(&block, "text", "@Bea can you look?").unwrap();
-    let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
-    let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
-    part.put(&span, "start", 0_i64).unwrap();
-    part.put(&span, "end", 4_i64).unwrap();
-    part.put(&span, "name", MARK).unwrap();
-    write_value(&mut part, &span);
+    post(&mut part, "m1", "@Bea can you look?", write_value);
 
-    let device = Device::holding(&[
-        (CHAT, &part_route, &part),
-        (CHAT, &chat_route, &chat),
-        (CHAT, &part_route, &part),
-    ]);
-    // The kind a part does not name itself: its app's index names the records it keeps.
-    device.kind(CHAT, &chat_route, "chat.workspace");
+    let device = Device::holding(&[(CHAT, "", &chat), (CHAT, &part_route, &part)]);
     let shown = Rc::new(Shown::default());
-    device.role(&shown).step();
+    let mentions = device.role(&shown);
+    mentions.step();
+    let opens = |id: &str| Place {
+        app: CHAT.into(),
+        record: String::new(),
+        resource: "chat.workspace".into(),
+        anchor: format!("chat.workspace/messages/{id}"),
+    };
+    {
+        let up = shown.up.borrow();
+        assert_eq!(up.len(), 1, "{up:?}");
+        let notice = up.values().next().unwrap();
+        assert_eq!(notice.title, "Ada mentioned you in #general");
+        assert_eq!(notice.body, "@Bea can you look?");
+        assert_eq!(notice.place, Some(opens("m1")));
+    }
 
+    // A second message in the same part is news of its own: its place is its message.
+    post(&mut part, "m2", "@Bea and this one", write_value);
+    device.writes(CHAT, &part_route, &mut part);
+    look_again(&mentions);
     let up = shown.up.borrow();
-    assert_eq!(up.len(), 1, "{up:?}");
-    let notice = up.values().next().unwrap();
-    assert_eq!(notice.title, "Ada mentioned you in #general");
-    assert_eq!(notice.body, "@Bea can you look?");
-    assert_eq!(
-        notice.place.clone().expect("it opens what it names"),
-        Place {
-            app: CHAT.into(),
-            record: chat_route,
-            resource: "chat.workspace".into(),
-            anchor: "chat.workspace/messages/m1".into(),
-        }
-    );
+    let mut places: Vec<Place> = up
+        .values()
+        .filter_map(|notice| notice.place.clone())
+        .collect();
+    places.sort();
+    assert_eq!(places, vec![opens("m1"), opens("m2")], "{up:?}");
 }
 
 /// A device's records as a page reads them: what changed of a record since some heads, apart from
 /// the record, and every whole read counted.
 struct Counted {
-    linked: crate::platform::records::Linked,
+    linked: Kept,
     store: Store,
     whole: std::cell::Cell<usize>,
 }
@@ -612,7 +617,7 @@ fn tracker(issues: usize) -> AutoCommit {
         if at == 7 {
             doc.mark(
                 &thread,
-                Mark::new(MARK.into(), mention_of(BEA), 0, 4),
+                Mark::new(MARK.into(), member_value(BEA), 0, 4),
                 ExpandMark::None,
             )
             .unwrap();
@@ -642,7 +647,12 @@ fn comment(device: &Device, doc: &mut AutoCommit, at: usize, person: Option<&str
     if let Some(person) = person {
         doc.mark(
             &thread,
-            Mark::new(MARK.into(), mention_of(person), end, end.saturating_add(4)),
+            Mark::new(
+                MARK.into(),
+                member_value(person),
+                end,
+                end.saturating_add(4),
+            ),
             ExpandMark::None,
         )
         .unwrap();
@@ -663,10 +673,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     device.already_held(TASKS, TRACKER, &mut doc);
     let shown = Rc::new(Shown::default());
     let records = Rc::new(Counted {
-        linked: crate::platform::records::Linked::over(
-            device.store.clone(),
-            device.changes.clone(),
-        ),
+        linked: Kept::over(device.store.clone(), device.changes.clone()),
         store: device.store.clone(),
         whole: std::cell::Cell::new(0),
     });
@@ -714,13 +721,13 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
         began.elapsed()
     );
 
-    // Bea's own window takes a seat and signs what it writes with her id: no mention of her.
+    // Bea's own window registers itself and signs what it writes with her id: no mention of her.
     let (_, all) = doc.get(ROOT, "issues").unwrap().unwrap();
     let (_, entry) = doc.get(&all, "i3").unwrap().unwrap();
     let (_, issue) = doc.get(&entry, "v").unwrap().unwrap();
-    doc.put(&issue, "author", BEA).unwrap();
-    let seats = doc.put_object(ROOT, "seats", ObjType::Map).unwrap();
-    doc.put(&seats, BEA, BEA).unwrap();
+    doc.put(&issue, "author", member_value(BEA)).unwrap();
+    let windows = doc.put_object(ROOT, "windows", ObjType::Map).unwrap();
+    doc.put(&windows, BEA, BEA).unwrap();
     doc.commit();
     device.writes(TASKS, TRACKER, &mut doc);
     look(&mentions);

@@ -1,4 +1,4 @@
-//! The chat app's permission gate.
+//! The chat app's permission check.
 //!
 //! Sharing a channel and embedding a blob both cross the Tilo permission
 //! boundary: a peer only sees a workspace's channels and can only hydrate a
@@ -7,20 +7,20 @@
 //! (the `PermissionContext` the compositor hands each app in `draw`), rather
 //! than a local allow-all stub.
 //!
-//! Three concrete gates:
+//! Three concrete checks:
 //! * [`ChatPermissions::can_embed`] — may this peer hydrate the bytes behind a
 //!   file/image/video attachment? Checked before the image cache requests the
 //!   blob **and** before the renderer paints it, so an ungranted embed shows a
 //!   locked card and never asks a member for bytes.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
 //!   call in the current workspace? (`Write` on the workspace.)
-//! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
+//! * [`ChatPermissions::allows`] — the call-action boundary (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
 //! The default is [`ChatPermissions::permissive`] (the local single-user
 //! admin), so the demo, `--shots`, and a normal solo install are unrestricted;
 //! a restricted `PermissionContext` (a member role without the relevant grant)
-//! gates exactly the actions it should.
+//! checks exactly the actions it should.
 
 use ui::permissions::{ActionKind, PermissionContext, PermissionScope};
 
@@ -92,7 +92,7 @@ impl ChatPermissions {
 
     /// The workspace this peer is in, as its host names it.
     pub fn workspace(&self) -> &str {
-        self.ctx.standing().workspace()
+        self.ctx.access().workspace()
     }
 
     /// May this peer remove other people's messages? Moderation in chat is
@@ -141,7 +141,7 @@ mod tests {
         /// What a role and the workspace's grants let a member do.
         fn roles_and_grants_decide_what_a_member_may_do;
 
-        phase permissions_gate_writes_by_role_but_never_reading_or_leaving;
+        phase permissions_check_writes_by_role_but_never_reading_or_leaving;
         {
             let p = ChatPermissions::permissive();
             assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
@@ -168,7 +168,7 @@ mod tests {
             assert!(p.allows(CallAction::Leave), "restricted: leave");
 
             // A member without admin still passes the View check on a workspace
-            // (they can read channels) — it's Edit that's gated.
+            // (they can read channels) — it's Edit that's guarded.
             let p = restricted_member();
             let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
             assert!(view_ok, "a member can read the workspace");

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use super::{ListModel, VirtualList};
+use super::{AnyModel, ListKey, VirtualRows};
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -42,7 +42,7 @@ pub(super) struct Groups {
     pub height: f64,
 }
 
-pub(super) fn group_of<M: ListModel>(model: &M, index: usize, tail: Option<&str>) -> Option<Group> {
+pub(super) fn group_of(model: &dyn AnyModel, index: usize, tail: Option<&str>) -> Option<Group> {
     Some(match model.group_at(index)? {
         super::RowGroup::Heading { text, tone } => Group {
             heading: text,
@@ -81,14 +81,14 @@ impl Groups {
             .unwrap_or(!group.tail)
     }
 
-    pub(super) fn shows<M: ListModel>(&self, model: &M, index: usize, tail: Option<&str>) -> bool {
+    pub(super) fn shows(&self, model: &dyn AnyModel, index: usize, tail: Option<&str>) -> bool {
         match group_of(model, index, tail) {
             None => true,
             Some(group) => self.is_open(&group),
         }
     }
 
-    pub(super) fn starts<M: ListModel>(&self, model: &M, index: usize, tail: Option<&str>) -> bool {
+    pub(super) fn starts(&self, model: &dyn AnyModel, index: usize, tail: Option<&str>) -> bool {
         let Some(group) = group_of(model, index, tail) else {
             return false;
         };
@@ -200,7 +200,7 @@ impl Groups {
     }
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     #[must_use]
     pub fn with_tail_title(mut self, title: impl Into<String>) -> Self {
         self.tail_title = Some(title.into());
@@ -253,7 +253,7 @@ impl<M: ListModel> VirtualList<M> {
         };
         let len = self.model.len();
         let tail = self.tail_title.as_deref();
-        let Some(first) = group_of(&self.model, 0, tail) else {
+        let Some(first) = group_of(&*self.model, 0, tail) else {
             return false;
         };
         let open = (0..len).filter(|index| !self.model.done(*index)).count();
@@ -261,7 +261,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         }
         (1..len).all(|index| {
-            group_of(&self.model, index, tail)
+            group_of(&*self.model, index, tail)
                 .is_some_and(|group| !group.tail && group.heading == first.heading)
         })
     }
@@ -274,7 +274,7 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(group) = self.row_groups.get(&key) {
             return group.clone();
         }
-        let group = group_of(&self.model, index, self.tail_title.as_deref());
+        let group = group_of(&*self.model, index, self.tail_title.as_deref());
         self.row_groups.insert(key, group.clone());
         group
     }
@@ -284,9 +284,9 @@ impl<M: ListModel> VirtualList<M> {
         self.heads_nothing.set(None);
     }
 
-    pub(super) fn regroup_keys<'k>(&mut self, keys: impl IntoIterator<Item = &'k M::Key>)
+    pub(super) fn regroup_keys<'k>(&mut self, keys: impl IntoIterator<Item = &'k ListKey>)
     where
-        M::Key: 'k,
+        ListKey: 'k,
     {
         self.heads_nothing.set(None);
         for key in keys {
@@ -298,14 +298,14 @@ impl<M: ListModel> VirtualList<M> {
         self.heads_nothing()
             || self
                 .groups
-                .shows(&self.model, index, self.tail_title.as_deref())
+                .shows(&*self.model, index, self.tail_title.as_deref())
     }
 
     pub(super) fn row_starts(&self, index: usize) -> bool {
         !self.heads_nothing()
             && self
                 .groups
-                .starts(&self.model, index, self.tail_title.as_deref())
+                .starts(&*self.model, index, self.tail_title.as_deref())
     }
 
     pub(super) fn grouped_height(&self, index: usize, height: f64) -> f64 {
@@ -500,7 +500,7 @@ impl<M: ListModel> VirtualList<M> {
     fn heading_under(&self, band: &Band) -> std::ops::Range<usize> {
         let len = self.model.len();
         let tail = self.tail_title.as_deref();
-        let group = |index: usize| super::groups::group_of(&self.model, index, tail);
+        let group = |index: usize| super::groups::group_of(&*self.model, index, tail);
         let same = |index: usize| group(index).is_some_and(|group| group.heading == band.heading);
         let mut start = band.index.min(len);
         while start > 0 && same(start - 1) {
@@ -562,7 +562,7 @@ pub(super) enum Stop {
     Row(usize),
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     fn heading_focus(&mut self) -> Option<(String, usize)> {
         let (heading, index) = self.focused_group.clone()?;
         if self

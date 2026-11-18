@@ -37,7 +37,7 @@ pub struct OriginalReadClaim {
 #[derive(Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalMountedClaim {
-    witness: super::super::MountedWitness,
+    proof: super::super::MountedProof,
     table_sha256: [u8; 32],
 }
 #[derive(Deserialize)]
@@ -103,20 +103,20 @@ impl<'de> Deserialize<'de> for OriginalReadClaim {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OriginalMountedClaimWire {
-    witness: super::super::MountedWitness,
+    proof: super::super::MountedProof,
     table_sha256: [u8; 32],
 }
 impl TryFrom<OriginalMountedClaimWire> for OriginalMountedClaim {
     type Error = io::Error;
 
     fn try_from(wire: OriginalMountedClaimWire) -> io::Result<Self> {
-        wire.witness.matches_source(wire.witness.primary())?;
-        super::super::operation(wire.witness.operation())?;
+        wire.proof.matches_source(wire.proof.primary())?;
+        super::super::operation(wire.proof.operation())?;
         if wire.table_sha256 == [0; 32] {
             return Err(failure("Original mounted table digest missing"));
         }
         Ok(Self {
-            witness: wire.witness,
+            proof: wire.proof,
             table_sha256: wire.table_sha256,
         })
     }
@@ -130,14 +130,14 @@ impl<'de> Deserialize<'de> for OriginalMountedClaim {
 
 impl OriginalMountedClaim {
     pub(in crate::setup::home_capture) fn admitted(
-        witness: &super::super::MountedWitness,
+        proof: &super::super::MountedProof,
         table_sha256: [u8; 32],
     ) -> io::Result<Self> {
         if rustix::process::geteuid().as_raw() != 0 || table_sha256 == [0; 32] {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         Ok(Self {
-            witness: witness.clone(),
+            proof: proof.clone(),
             table_sha256,
         })
     }
@@ -171,13 +171,13 @@ impl OriginalReadClaim {
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        if plan.source_witness().is_none() {
-            return Err(failure("Original source witness missing"));
+        if plan.source_proof().is_none() {
+            return Err(failure("Original source proof missing"));
         }
-        match (plan.mounted_witness(), mounted) {
-            (Some(expected), Some(actual)) if expected == &actual.witness => {
-                actual.witness.matches_source(
-                    plan.source_witness()
+        match (plan.mounted_proof(), mounted) {
+            (Some(expected), Some(actual)) if expected == &actual.proof => {
+                actual.proof.matches_source(
+                    plan.source_proof()
                         .ok_or_else(|| failure("Mounted original source missing"))?,
                 )?;
             }
@@ -249,9 +249,9 @@ impl OriginalReadClaim {
         {
             return Err(failure("Installed copy setup binding differs"));
         }
-        match (plan.mounted_witness(), mounted) {
-            (Some(expected), Some(actual)) if expected == &actual.witness => {
-                actual.witness.matches_source(plan.source_witness())?;
+        match (plan.mounted_proof(), mounted) {
+            (Some(expected), Some(actual)) if expected == &actual.proof => {
+                actual.proof.matches_source(plan.source_proof())?;
             }
             (None, None) => {}
             _ => {
@@ -327,7 +327,7 @@ impl OriginalReadClaim {
         crate::setup::migration_review::OriginalOmission::validate_shapes(&self.omissions)?;
         self.exclusion_paths()?;
         if let Some(mounted) = &self.mounted {
-            if mounted.table_sha256 == [0; 32] || mounted.witness.operation() != operation {
+            if mounted.table_sha256 == [0; 32] || mounted.proof.operation() != operation {
                 return Err(failure("Original mounted claim shape differs"));
             }
         }
@@ -625,7 +625,7 @@ mod tests {
                     "projections":[{"index":0,"device":9,"inode":12,"owner":1000}],
                     "selected_data_ids":["so.example.Selected"]}
             });
-            let wire = serde_json::json!({"schema":6,"operation":operation,"custody":null,
+            let wire = serde_json::json!({"schema":6,"operation":operation,"ownership":null,
                 "command":{"action":"review-original","authority":claim}});
             let request: Request = serde_json::from_value(wire.clone()).unwrap();
             request.validate_protocol().unwrap();
@@ -727,7 +727,7 @@ mod tests {
             value["export_operation"] = value["operation"].clone();
             let claim: OriginalReadClaim = serde_json::from_value(value.clone()).unwrap();
             let digest = claim.binding_sha256().unwrap();
-            // The declaration covers the authenticated SourceWitness, selected
+            // The declaration covers the authenticated SourceProof, selected
             // medium and reservation; substitutions cannot reuse the shim proof.
             for field in [
                 "declaration_sha256",
@@ -790,10 +790,10 @@ mod tests {
             assert!(serde_json::from_value::<OriginalReadClaim>(wrong_owner).is_err());
         }
 
-        phase mounted_claim_wire_rejects_missing_digest_and_invalid_witness;
+        phase mounted_claim_wire_rejects_missing_digest_and_invalid_proof;
         {
             let wire = serde_json::json!({
-                "witness": {
+                "proof": {
                     "schema": 1,
                     "primary": {
                         "schema": 1,
@@ -812,14 +812,14 @@ mod tests {
             let mut missing_table = wire.clone();
             missing_table["table_sha256"] = serde_json::json!(vec![0u8; 32]);
             assert!(serde_json::from_value::<OriginalMountedClaim>(missing_table).is_err());
-            let mut missing_witness_digest = wire.clone();
-            missing_witness_digest["witness"]["sha256"] = serde_json::json!(vec![0u8; 32]);
-            assert!(serde_json::from_value::<OriginalMountedClaim>(missing_witness_digest).is_err());
+            let mut missing_proof_digest = wire.clone();
+            missing_proof_digest["proof"]["sha256"] = serde_json::json!(vec![0u8; 32]);
+            assert!(serde_json::from_value::<OriginalMountedClaim>(missing_proof_digest).is_err());
             let mut wrong_schema = wire.clone();
-            wrong_schema["witness"]["schema"] = serde_json::json!(2);
+            wrong_schema["proof"]["schema"] = serde_json::json!(2);
             assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_schema).is_err());
             let mut wrong_operation = wire;
-            wrong_operation["witness"]["primary"]["operation"] = serde_json::json!("invalid");
+            wrong_operation["proof"]["primary"]["operation"] = serde_json::json!("invalid");
             assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_operation).is_err());
         }
 
@@ -849,7 +849,7 @@ mod tests {
             let ordinary = Request {
                 schema: WORKER_PROTOCOL,
                 operation: uuid::Uuid::new_v4().to_string(),
-                custody: None,
+                ownership: None,
                 command: Command::Review,
             };
             assert!(
@@ -862,10 +862,10 @@ mod tests {
                     .into_export(Zeroizing::new(Vec::new()))
                     .is_err()
             );
-            let mut custody = wire;
-            custody["custody"] = serde_json::json!({"preparation":{"relative":{"platform":"Unix","units":b".local/state/tilo/installer/preparations".as_slice()},"stable":[1,16832,1000,1001]},"settings_lock":null});
-            let custody: Request = serde_json::from_value(custody).unwrap();
-            assert!(custody.validate_protocol().is_err());
+            let mut ownership = wire;
+            ownership["ownership"] = serde_json::json!({"preparation":{"relative":{"platform":"Unix","units":b".local/state/tilo/installer/preparations".as_slice()},"stable":[1,16832,1000,1001]},"settings_lock":null});
+            let ownership: Request = serde_json::from_value(ownership).unwrap();
+            assert!(ownership.validate_protocol().is_err());
         }
 
         phase original_validate_refuses_cross_setup_and_package_over_authenticated_budget;
@@ -1141,7 +1141,7 @@ mod tests {
     fn original_review() -> Request {
         let operation = uuid::Uuid::new_v4().to_string();
         serde_json::from_value(serde_json::json!({
-            "schema":WORKER_PROTOCOL,"operation":operation,"custody":null,
+            "schema":WORKER_PROTOCOL,"operation":operation,"ownership":null,
             "command":{"action":"review-original","authority":{
                 "schema":2,"operation":operation,"export_operation":operation,
                 "sealed_reservation":1048576,"omissions":[],"setup_binding":"bound-setup",

@@ -1,6 +1,6 @@
 //! Interaction coverage that drives the hosted notebook surface on a live,
 //! settled taffy layout — the same five-pass cycle `ui::App` runs — so
-//! the tests exercise the *real* event path (focus gates, pointer
+//! the tests exercise the *real* event path (focus checks, pointer
 //! hit-tests, keyboard routing) rather than internal helper methods.
 //!
 //! Covers the reachability fixes:
@@ -457,7 +457,7 @@ fn dispatch(app: &mut TestApp<NotesShell>, modifiers: Modifiers, event: &WindowE
 }
 
 /// Click the centre of sidebar row `idx` to select it AND give the
-/// sidebar keyboard focus (the gate the tree's key commands require). A
+/// sidebar keyboard focus (the check the tree's key commands require). A
 /// click is a press and its release: a row is pressed once the pointer is
 /// let go over it, so a press alone can still turn into a drag.
 fn click_row(app: &mut TestApp<NotesShell>, idx: usize) -> Result<(), String> {
@@ -621,7 +621,7 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
+fn page_tree_keyboard_and_pointer_commands_require_tree_focus() {
     eprintln!("phase ctrl_n_creates_a_top_level_note_even_while_editor_is_focused");
     {
         // Handled at the app level, Ctrl+N works whichever pane holds focus.
@@ -736,7 +736,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         app.harness().relayout_at((1200, 800)).unwrap();
 
         // Row 1 is the newly-created second root page. Click focuses the
-        // tree AND selects it; then Delete removes it through the gated
+        // tree AND selects it; then Delete removes it through the guarded
         // keyboard path.
         click_row(&mut app, 1).unwrap();
         assert_eq!(n(&mut app).selected_for_test(), Some(victim));
@@ -757,11 +757,11 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         );
     }
 
-    eprintln!("phase delete_key_is_gated_on_tree_focus");
+    eprintln!("phase delete_key_requires_tree_focus");
     {
         // Without focusing the tree (editor holds focus after load), Delete
         // must NOT delete a page — it belongs to the editor. This proves the
-        // focus gate is real, not bypassed.
+        // focus check is real, not bypassed.
         let mut app = starter();
         n(&mut app).new_note_for_test(None);
         app.harness().relayout();

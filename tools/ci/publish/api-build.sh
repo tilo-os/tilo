@@ -18,6 +18,8 @@ binaries=${3:?$usage}
 out=${4:?$usage}
 cd "$repo_root"
 [[ -x $binaries/tilo-api ]] || die "no API server in $binaries"
+[[ -x $binaries/tilolang-process ]] \
+  || die "no tilolang-process in $binaries, which the API server starts a task's programs in"
 # oci-build.sh builds on this store, so an unpublished snapshot loaded here is the one FROM finds.
 use_buildah buildah overlay
 # A run that cannot publish a set (a dispatch whose signing is skipped) resolves no snapshot at
@@ -42,7 +44,7 @@ context=$scratch/api-context
 rm -rf "$context"
 mkdir -p "$context/bin"
 cp os/containers/tilo-api/Containerfile "$context/"
-cp "$binaries/tilo-api" "$context/bin/"
+cp "$binaries/tilo-api" "$binaries/tilolang-process" "$context/bin/"
 bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" \
   --platform linux/amd64 \
   --build-arg "RPMS_REF=$rpms_ref"

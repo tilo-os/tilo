@@ -8,7 +8,9 @@
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
-use tilo_actions::remote::{ActionHost, ActionHostError, Caller, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, InvokeArgument, InvokeRequest,
+};
 use tilo_actions::{InvocationId, InvocationUpdate};
 
 use super::EnvironmentCommands;
@@ -156,7 +158,7 @@ tilo_test_env::scenario! {
 
         let late = answered(runs.cancel(&host(), &id));
         assert!(
-            matches!(late, Err(ActionHostError::NotCancellable { .. })),
+            matches!(late, Err(ActionCallError::NotCancellable { .. })),
             "{late:?}"
         );
     }
@@ -168,14 +170,14 @@ tilo_test_env::scenario! {
         let stranger = Caller::authenticated([9; 32], [2; 32]).in_workspace("ws-1");
         let refused = answered(runs.invoke(&stranger, asking("echo mine")));
         assert!(
-            matches!(refused, Err(ActionHostError::NotPermitted)),
+            matches!(refused, Err(ActionCallError::NotPermitted)),
             "a member who is not the host could bill another account: {refused:?}"
         );
         let mut other = asking("echo hi");
         other.target.address.action = "open".into();
         let refused = answered(runs.invoke(&host(), other));
         assert!(
-            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            matches!(refused, Err(ActionCallError::Unavailable { .. })),
             "{refused:?}"
         );
     }
@@ -186,7 +188,7 @@ tilo_test_env::scenario! {
         let runs = member(dir.path());
         let refused = answered(runs.invoke(&host(), opening("{}")));
         assert!(
-            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            matches!(refused, Err(ActionCallError::Unavailable { .. })),
             "a host with no workspace VMs has no Browser: {refused:?}"
         );
     }
@@ -441,7 +443,7 @@ fn only_the_hosts_own_devices_branch_and_delete_a_workspaces_machine() {
     for request in [branching("ws-0"), deleting()] {
         let refused = answered(runs.invoke(&stranger, request));
         assert!(
-            matches!(refused, Err(ActionHostError::NotPermitted)),
+            matches!(refused, Err(ActionCallError::NotPermitted)),
             "a device not the host's could copy or delete a workspace's machine: {refused:?}"
         );
     }
@@ -503,7 +505,7 @@ fn a_member_that_runs_no_vms_has_no_machine_to_branch_or_delete() {
     for request in [branching("ws-0"), deleting()] {
         let refused = answered(runs.invoke(&host(), request));
         assert!(
-            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            matches!(refused, Err(ActionCallError::Unavailable { .. })),
             "{refused:?}"
         );
     }
@@ -519,7 +521,7 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
     );
     let files = dir.path().join("replicas");
     // As a VM host's member is started: its environment names the hosted-VM
-    // service and no account, since the relay names one with each run.
+    // service and no account, since the server names one with each run.
     let runs = EnvironmentCommands::new(
         WorkspaceShells::new(dir.path().join("shells"), None)
             .with_files(move |workspace| files.join(workspace))
@@ -548,7 +550,7 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
 #[test]
 fn an_account_without_a_card_is_refused_before_anything_runs_in_its_vm() {
     use legacy_vm::hosted::control::{Reply, Request};
-    use tilo_actions::remote::host_account::{Reason, Refusal};
+    use tilo_actions::remote::server_account::{Reason, Refusal};
     let dir = tempfile::tempdir().unwrap();
     // The hosted-VM service reads its plans file for the account the request
     // names, and finds no card for it.

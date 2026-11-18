@@ -402,14 +402,14 @@ impl AccountsModel {
                 translated(
                     "settings-web-accounts-incoming-address",
                     &[
-                        ("host", account.incoming_host.clone().into()),
+                        ("provider", account.incoming_host.clone().into()),
                         ("port", account.incoming_port.to_string().into()),
                     ],
                 ),
                 translated(
                     "settings-web-accounts-outgoing-address",
                     &[
-                        ("host", account.outgoing_host.clone().into()),
+                        ("provider", account.outgoing_host.clone().into()),
                         ("port", account.outgoing_port.to_string().into()),
                     ],
                 ),
@@ -573,7 +573,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use ui::tilo_actions::remote::{Caller, ReceiptStatus, TestHost};
+    use ui::tilo_actions::remote::{Caller, ReceiptStatus, TestProvider};
 
     use super::*;
 
@@ -596,8 +596,8 @@ mod tests {
 
     /// A host that keeps one account and answers every change with the
     /// value it names.
-    fn host() -> Arc<TestHost> {
-        Arc::new(TestHost::new().answering(|_, request| {
+    fn provider() -> Arc<TestProvider> {
+        Arc::new(TestProvider::new().answering(|_, request| {
             let value = match request.target.address.action.as_str() {
                 person_accounts::LIST => serde_json::to_value(MailAccounts {
                     accounts: vec![account()],
@@ -607,7 +607,7 @@ mod tests {
                 person_accounts::REMOVE => serde_json::to_value(MailAccounts::default()),
                 _ => serde_json::to_value(serde_json::Value::Null),
             }
-            .expect("the test host's answer");
+            .expect("the test provider's answer");
             ui::tilo_actions::remote::Pending::ready(Ok(
                 ui::tilo_actions::remote::InvocationReceipt {
                     invocation: request.invocation,
@@ -622,9 +622,9 @@ mod tests {
         }))
     }
 
-    fn remote(host: &Arc<TestHost>) -> ui::RemoteActions {
-        let api: Arc<dyn ui::tilo_actions::remote::ActionHost + Send + Sync> = host.clone();
-        ui::RemoteActions::with_host(api, Caller::local_person("owner"))
+    fn remote(provider: &Arc<TestProvider>) -> ui::RemoteActions {
+        let api: Arc<dyn ui::tilo_actions::remote::ActionProvider + Send + Sync> = provider.clone();
+        ui::RemoteActions::with_provider(api, Caller::local_person("owner"))
     }
 
     /// The panes bind every request to a button on Settings' own resource,
@@ -657,8 +657,8 @@ mod tests {
     #[test]
     fn the_pane_shows_what_the_host_keeps() {
         en();
-        let host = host();
-        let mut accounts = AccountsModel::new(remote(&host));
+        let provider = provider();
+        let mut accounts = AccountsModel::new(remote(&provider));
         assert!(accounts.poll());
         assert_eq!(accounts.accounts, vec![account()]);
     }
@@ -725,8 +725,8 @@ mod tests {
     #[test]
     fn adding_a_mail_account_asks_the_host_with_what_was_typed() {
         en();
-        let host = host();
-        let mut accounts = AccountsModel::new(remote(&host));
+        let provider = provider();
+        let mut accounts = AccountsModel::new(remote(&provider));
         accounts.poll();
         accounts.form_address.set("ada@example.test".into());
         accounts.form_incoming.set("imap.example.test".into());
@@ -736,11 +736,11 @@ mod tests {
             .apply(PersonSettingsEffect::AddMailAccount)
             .unwrap();
 
-        let adding = host
+        let adding = provider
             .asked()
             .into_iter()
             .find(|request| request.target.address.action == person_accounts::ADD_MAIL)
-            .expect("the page asked the host to add the account");
+            .expect("the page asked the provider to add the account");
         let InvokeArgument::Json(argument) = adding.argument else {
             panic!("the account travels as JSON");
         };

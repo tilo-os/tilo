@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
+use jiff::SignedDuration;
+use jiff::civil::{Date, DateTime, Time};
+use jiff::tz::TimeZone;
 use pim_lines::{ContentLine, escape_text as escape, fold_into, unescape_text as unescape};
 use uuid::Uuid;
 
@@ -15,7 +17,7 @@ use ui::tilo_resource::Keyed;
 
 const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
 const D_ONLY: &str = "%Y%m%d";
-type RecurrenceIdentity = (NaiveDate, Option<NaiveTime>);
+type RecurrenceIdentity = (Date, Option<Time>);
 type ParsedEvent = (Event, Option<RecurrenceIdentity>, bool);
 
 #[allow(
@@ -37,33 +39,33 @@ pub fn export(model: &Calendar) -> String {
             raw(
                 &mut out,
                 "DTSTART;VALUE=DATE",
-                &e.start.format(D_ONLY).to_string(),
+                &e.start.strftime(D_ONLY).to_string(),
             );
             raw(
                 &mut out,
                 "DTEND;VALUE=DATE",
-                &e.all_day_end_exclusive().format(D_ONLY).to_string(),
+                &e.all_day_end_exclusive().strftime(D_ONLY).to_string(),
             );
         } else if e.end_later_fold {
             emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
             raw(
                 &mut out,
                 "DURATION",
-                &format!("PT{}S", e.elapsed_duration().num_seconds()),
+                &format!("PT{}S", e.elapsed_duration().as_secs()),
             );
         } else if e.timezone == "UTC" {
             raw(
                 &mut out,
                 "DTSTART",
-                &format!("{}Z", e.start.format(DT_LOCAL)),
+                &format!("{}Z", e.start.strftime(DT_LOCAL)),
             );
-            raw(&mut out, "DTEND", &format!("{}Z", e.end.format(DT_LOCAL)));
+            raw(&mut out, "DTEND", &format!("{}Z", e.end.strftime(DT_LOCAL)));
         } else if e.timezone != "floating" {
             emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
             emit_datetime(&mut out, "DTEND", e.end, &e.timezone);
         } else {
-            raw(&mut out, "DTSTART", &e.start.format(DT_LOCAL).to_string());
-            raw(&mut out, "DTEND", &e.end.format(DT_LOCAL).to_string());
+            raw(&mut out, "DTSTART", &e.start.strftime(DT_LOCAL).to_string());
+            raw(&mut out, "DTEND", &e.end.strftime(DT_LOCAL).to_string());
         }
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
@@ -87,13 +89,13 @@ pub fn export(model: &Calendar) -> String {
                 raw(
                     &mut out,
                     "EXDATE;VALUE=DATE",
-                    &date.format(D_ONLY).to_string(),
+                    &date.strftime(D_ONLY).to_string(),
                 );
             } else {
                 emit_datetime(
                     &mut out,
                     "EXDATE",
-                    date.and_time(e.start.time()),
+                    date.to_datetime(e.start.time()),
                     &e.timezone,
                 );
             }
@@ -122,14 +124,14 @@ pub fn export(model: &Calendar) -> String {
                 emit_datetime(
                     &mut out,
                     "RECURRENCE-ID",
-                    edit.original_date.and_time(time),
+                    edit.original_date.to_datetime(time),
                     &e.timezone,
                 );
             } else {
                 raw(
                     &mut out,
                     "RECURRENCE-ID;VALUE=DATE",
-                    &edit.original_date.format(D_ONLY).to_string(),
+                    &edit.original_date.strftime(D_ONLY).to_string(),
                 );
             }
             if edit.cancelled {
@@ -137,14 +139,14 @@ pub fn export(model: &Calendar) -> String {
             }
             let edit_start = edit.start.or_else(|| {
                 edit.end_later_fold
-                    .then(|| edit.original_date.and_time(e.start.time()))
+                    .then(|| edit.original_date.to_datetime(e.start.time()))
             });
             if let Some(start) = edit_start {
                 if e.all_day {
                     raw(
                         &mut out,
                         "DTSTART;VALUE=DATE",
-                        &start.date().format(D_ONLY).to_string(),
+                        &start.date().strftime(D_ONLY).to_string(),
                     );
                 } else {
                     emit_datetime(&mut out, "DTSTART", start, &e.timezone);
@@ -152,17 +154,17 @@ pub fn export(model: &Calendar) -> String {
             }
             if let Some(end) = edit.end {
                 if e.all_day {
-                    let exclusive = if end.time() == NaiveTime::MIN
+                    let exclusive = if end.time() == Time::MIN
                         && edit.start.is_some_and(|start| end.date() > start.date())
                     {
                         end.date()
                     } else {
-                        end.date() + chrono::Duration::days(1)
+                        end.date().tomorrow().unwrap_or_else(|_| end.date())
                     };
                     raw(
                         &mut out,
                         "DTEND;VALUE=DATE",
-                        &exclusive.format(D_ONLY).to_string(),
+                        &exclusive.strftime(D_ONLY).to_string(),
                     );
                 } else if edit.end_later_fold {
                     if let Some(start) = edit_start
@@ -173,7 +175,7 @@ pub fn export(model: &Calendar) -> String {
                         raw(
                             &mut out,
                             "DURATION",
-                            &format!("PT{}S", (end - start).num_seconds()),
+                            &format!("PT{}S", end.duration_since(start).as_secs()),
                         );
                     }
                 } else {
@@ -195,7 +197,11 @@ pub fn export(model: &Calendar) -> String {
         raw(&mut out, "UID", &format!("{}@tilo", t.id));
         line(&mut out, "SUMMARY", &t.title);
         if let Some(due) = t.due {
-            raw(&mut out, "DUE;VALUE=DATE", &due.format(D_ONLY).to_string());
+            raw(
+                &mut out,
+                "DUE;VALUE=DATE",
+                &due.strftime(D_ONLY).to_string(),
+            );
         }
         if t.done {
             raw(&mut out, "STATUS", "COMPLETED");
@@ -262,7 +268,7 @@ pub fn invitation(text: &str) -> Result<Invitation, String> {
     if !lines.iter().any(|line| line.begins("VCALENDAR")) {
         return Err("an invitation is iCalendar text: it begins with BEGIN:VCALENDAR".into());
     }
-    // The method is the calendar's. An event's identity and standing are
+    // The method is the calendar's. An event's identity and status are
     // its own, and a component that names one moved occurrence is no event
     // of its own.
     let mut cancels = false;
@@ -320,6 +326,599 @@ pub fn invitation(text: &str) -> Result<Invitation, String> {
     })
 }
 
+/// `text` as a calendar keeps it: the event an invitation carried, without
+/// the `METHOD` it travelled with, which an entry a server stores may not
+/// have, and with every line that names somebody saying that the server is
+/// not the one to write to them ([`client_scheduled`]).
+#[must_use]
+pub fn kept_text(text: &str) -> String {
+    kept_beside(text, None)
+}
+
+/// `text` as a calendar keeps it at an address where its server holds `held`
+/// (`None`: nothing yet): [`kept_text`], except that a line naming somebody
+/// the server already writes to goes up exactly as the server holds it, and
+/// that its event goes by the `UID` the server holds it under.
+///
+/// A server that schedules by itself compares, for each person an entry
+/// names, what the entry said of who writes to them before a change and
+/// after it (RFC 6638, 3.2.1.2). A line that goes from left to the server to
+/// `SCHEDULE-AGENT=CLIENT` has the server tell that person the event is off,
+/// and one that goes from `CLIENT` to left to the server has it invite them.
+/// So no line changes what it said. Somebody the server holds no line for,
+/// and somebody whose line there does not leave writing to it, is marked
+/// `CLIENT`: the cells of the table that send nothing, and all a new entry
+/// has (3.2.1.1). Somebody the server writes to keeps the line it holds,
+/// where it goes on as it did and starts nothing. `SCHEDULE-FORCE-SEND`,
+/// which asks a server for a message it would not send (7.2), never goes up.
+///
+/// An event is known by its `UID`, to its server and to everybody the event
+/// was sent to. An entry another calendar program made is written out by
+/// this calendar under a `UID` of this calendar's making. Over what the
+/// server holds, that is refused (RFC 4791, 5.3.2.1), or, by a server that
+/// takes it, read as another event: the one it held called off and a new one
+/// sent out. So each event of the text goes up with the `UID` line the
+/// server holds.
+#[must_use]
+pub fn kept_beside(text: &str, held: Option<&str>) -> String {
+    kept_over_held(text, held, false)
+}
+
+/// [`kept_beside`] for a `text` this calendar wrote out from an event as it
+/// holds one ([`export`]), at an address where its server holds `held`:
+/// beside what the text says, whom `held` names that an event here cannot
+/// hold goes up as the server holds them.
+///
+/// An event here names people by a mail address, the same people on each of
+/// its occurrences. An entry may name somebody by another address, a line
+/// this calendar's reading leaves out, and on one occurrence other people
+/// than on the event. A text written out from an event has none of those
+/// lines, and a server that schedules reads a line that is gone as that
+/// person taken out: it tells them the event is off (RFC 6638, 3.2.1.2,
+/// column `<Removed>`). So they stay:
+///
+/// - on the event, each line of `held` that this calendar does not read, as
+///   it is held;
+/// - on an occurrence the server holds, the lines it holds there. Somebody
+///   the event itself named on the server and names no longer here leaves
+///   its occurrences with it, and somebody the event newly names here joins
+///   them as they join the event;
+/// - on an occurrence that stands apart only here, whom the event goes up
+///   with. A server schedules an entry where each of its parts says who
+///   organises it (3.1); an occurrence that names nobody ends that for the
+///   whole entry, which the server takes for its removal (3.2.3.1).
+#[must_use]
+pub fn exported_beside(text: &str, held: &str) -> String {
+    kept_over_held(text, Some(held), true)
+}
+
+/// What [`kept_beside`] and [`exported_beside`] answer: `text` as it goes up
+/// where its server holds `held`, with what `held` alone names where the
+/// text was written out from an event (`exported`).
+fn kept_over_held(text: &str, held: Option<&str>, exported: bool) -> String {
+    let written_for = held.map(server_written).unwrap_or_default();
+    let uid_held = held.and_then(uid_line_held);
+    let lines = pim_lines::unfold(text);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    let events_own = events_own_lines(&parsed);
+    let staying = match held {
+        Some(held) if exported => lines_that_stay(&lines, &parsed, held, &written_for),
+        _ => Vec::new(),
+    };
+    let mut out = String::new();
+    for (at, ((line, parsed), events_own)) in lines.iter().zip(&parsed).zip(events_own).enumerate()
+    {
+        // What stays of an event or an occurrence stands before its end.
+        for (_, more) in staying.iter().filter(|(end, _)| *end == at) {
+            out.push_str(more);
+        }
+        match parsed {
+            Some(parsed) if parsed.name == "METHOD" => {}
+            Some(parsed) if parsed.name == "UID" && events_own => {
+                fold_into(&mut out, uid_held.as_deref().unwrap_or(line));
+            }
+            Some(parsed) if names_somebody(parsed) => {
+                naming_line_kept(&mut out, parsed, &written_for);
+            }
+            _ => fold_into(&mut out, line),
+        }
+    }
+    out
+}
+
+/// Append `line`, which names somebody, as it goes up beside what a server
+/// holds: as held where the server writes to them, and the client's
+/// otherwise ([`kept_beside`]).
+fn naming_line_kept(out: &mut String, line: &ContentLine, written_for: &[ServerWritten]) {
+    let address = address_of(line);
+    let as_held = written_for
+        .iter()
+        .find(|held| held.property == line.name && held.address == address);
+    match as_held {
+        Some(held) => fold_into(out, &held.line),
+        None => client_scheduled(out, line),
+    }
+}
+
+/// One `VEVENT` of an iCalendar text: the event itself, or one occurrence of
+/// it that stands apart.
+struct EventOrOccurrence {
+    /// Whether it stands for one occurrence: it has a `RECURRENCE-ID`.
+    apart: bool,
+    /// The day of that occurrence, by which this calendar knows it.
+    day: Option<Date>,
+    /// Its own lines that name somebody: each as it reads, and unfolded as
+    /// it is written.
+    naming: Vec<(ContentLine, String)>,
+    /// Where its `END` stands among the text's unfolded lines.
+    end: usize,
+}
+
+/// The events and occurrences of an iCalendar text, of which `lines` are the
+/// unfolded lines and `parsed` what each reads as.
+fn event_parts(lines: &[String], parsed: &[Option<ContentLine>]) -> Vec<EventOrOccurrence> {
+    let mut parts = Vec::new();
+    // The components open around a line, innermost last: whether each is an
+    // event.
+    let mut open: Vec<bool> = Vec::new();
+    let mut part: Option<EventOrOccurrence> = None;
+    for (at, (written, line)) in lines.iter().zip(parsed).enumerate() {
+        let Some(line) = line else { continue };
+        if line.name == "BEGIN" {
+            let event = line.begins("VEVENT");
+            if event {
+                part = Some(EventOrOccurrence {
+                    apart: false,
+                    day: None,
+                    naming: Vec::new(),
+                    end: at,
+                });
+            }
+            open.push(event);
+        } else if line.name == "END" {
+            if open.pop() == Some(true)
+                && let Some(mut ended) = part.take()
+            {
+                ended.end = at;
+                parts.push(ended);
+            }
+        } else if open.last() == Some(&true)
+            && let Some(part) = &mut part
+        {
+            if line.name == "RECURRENCE-ID" {
+                part.apart = true;
+                part.day = parse_recurrence_id(line).map(|(day, _)| day);
+            } else if names_somebody(line) {
+                part.naming.push((line.clone(), written.clone()));
+            }
+        }
+    }
+    parts
+}
+
+/// Whether a line of `part` names whom `line` names, as what `line` names
+/// them: who organises, or somebody invited.
+fn part_names(part: &EventOrOccurrence, line: &ContentLine) -> bool {
+    let address = address_of(line);
+    part.naming
+        .iter()
+        .any(|(other, _)| other.name == line.name && address_of(other) == address)
+}
+
+/// Whether `part` says who organises it.
+fn part_is_organised(part: &EventOrOccurrence) -> bool {
+    part.naming.iter().any(|(line, _)| line.name == "ORGANIZER")
+}
+
+/// What stays beside the own lines of a text written out from an event
+/// ([`exported_beside`]): for each of its events and occurrences, where its
+/// `END` stands among the text's unfolded lines, and the folded lines that
+/// go up before it.
+fn lines_that_stay(
+    lines: &[String],
+    parsed: &[Option<ContentLine>],
+    held: &str,
+    written_for: &[ServerWritten],
+) -> Vec<(usize, String)> {
+    let held_lines = pim_lines::unfold(held);
+    let held_parsed: Vec<Option<ContentLine>> = held_lines
+        .iter()
+        .map(|line| ContentLine::parse(line))
+        .collect();
+    let held_parts = event_parts(&held_lines, &held_parsed);
+    let parts = event_parts(lines, parsed);
+    let event = parts.iter().find(|part| !part.apart);
+    let held_event = held_parts.iter().find(|part| !part.apart);
+    // Whom the event's server holds and this calendar does not read.
+    let mut unread = String::new();
+    for (line, written) in held_event.iter().flat_map(|held| &held.naming) {
+        let named_here = event.is_some_and(|event| {
+            part_names(event, line) || (line.name == "ORGANIZER" && part_is_organised(event))
+        });
+        if parse_participant(line).is_none() && !named_here {
+            fold_into(&mut unread, &as_it_is_held(line, written));
+        }
+    }
+    let mut staying = Vec::new();
+    for part in &parts {
+        let mut more = String::new();
+        let held_part = held_parts
+            .iter()
+            .find(|held| held.apart && held.day.is_some() && held.day == part.day);
+        if !part.apart {
+            more.push_str(&unread);
+        } else if let Some(held_part) = held_part {
+            // On an occurrence its server holds: whom the server names
+            // there, but for somebody taken out of the event here.
+            for (line, written) in &held_part.naming {
+                let taken_out = parse_participant(line).is_some()
+                    && held_event.is_some_and(|held| part_names(held, line))
+                    && !event.is_some_and(|event| part_names(event, line));
+                if !taken_out && !part_names(part, line) {
+                    fold_into(&mut more, &as_it_is_held(line, written));
+                }
+            }
+            // And whom the event newly names here, as on the event.
+            for (line, _) in event.iter().flat_map(|event| &event.naming) {
+                let new_here = !held_event.is_some_and(|held| part_names(held, line));
+                let second_organiser = line.name == "ORGANIZER"
+                    && (part_is_organised(held_part) || part_is_organised(part));
+                if new_here
+                    && !part_names(held_part, line)
+                    && !part_names(part, line)
+                    && !second_organiser
+                {
+                    naming_line_kept(&mut more, line, written_for);
+                }
+            }
+        } else {
+            // On an occurrence that stands apart only here: whom the event
+            // goes up with.
+            for (line, _) in event.iter().flat_map(|event| &event.naming) {
+                if !part_names(part, line) {
+                    naming_line_kept(&mut more, line, written_for);
+                }
+            }
+            more.push_str(&unread);
+        }
+        if !more.is_empty() {
+            staying.push((part.end, more));
+        }
+    }
+    staying
+}
+
+/// A line that names somebody as a server holds it and as it goes up again:
+/// whole, but for what forced the server to write once
+/// (`SCHEDULE-FORCE-SEND`; RFC 6638, 7.2).
+fn as_it_is_held(line: &ContentLine, written: &str) -> String {
+    if line.param("SCHEDULE-FORCE-SEND").is_some() {
+        rewritten(line, None, &["SCHEDULE-FORCE-SEND"])
+    } else {
+        written.to_owned()
+    }
+}
+
+/// For each of the unfolded `lines` of an iCalendar text, whether it is an
+/// event's own: it stands in a `VEVENT` and in nothing inside that, such as
+/// an alarm, which may go by a `UID` of its own.
+fn events_own_lines(lines: &[Option<ContentLine>]) -> Vec<bool> {
+    let mut open: Vec<bool> = Vec::new();
+    lines
+        .iter()
+        .map(|line| {
+            let Some(line) = line else {
+                return false;
+            };
+            if line.name == "BEGIN" {
+                open.push(line.begins("VEVENT"));
+                false
+            } else if line.name == "END" {
+                open.pop();
+                false
+            } else {
+                open.last().copied().unwrap_or(false)
+            }
+        })
+        .collect()
+}
+
+/// The `UID` line of the event the entry `held` holds, as it is held there.
+/// The parts of one entry go by one `UID`, so it is the first that says one.
+fn uid_line_held(held: &str) -> Option<String> {
+    let lines = pim_lines::unfold(held);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    let events_own = events_own_lines(&parsed);
+    lines
+        .into_iter()
+        .zip(parsed)
+        .zip(events_own)
+        .find_map(|((line, parsed), events_own)| {
+            let says_one = events_own
+                && parsed
+                    .is_some_and(|parsed| parsed.name == "UID" && !parsed.value.trim().is_empty());
+            says_one.then_some(line)
+        })
+}
+
+/// A line of an entry a calendar server holds that leaves writing to
+/// whoever it names to that server.
+struct ServerWritten {
+    /// `ORGANIZER` or `ATTENDEE`.
+    property: String,
+    /// Whom it names ([`address_of`]).
+    address: String,
+    /// The line as the server holds it, unfolded.
+    line: String,
+}
+
+/// The lines of `held` that leave writing to whoever they name to the server
+/// holding them, each as it is held.
+fn server_written(held: &str) -> Vec<ServerWritten> {
+    pim_lines::unfold(held)
+        .into_iter()
+        .filter_map(|line| {
+            let parsed = ContentLine::parse(&line)?;
+            if !names_somebody(&parsed) || !left_to_its_server(&parsed) {
+                return None;
+            }
+            Some(ServerWritten {
+                address: address_of(&parsed),
+                line: as_it_is_held(&parsed, &line),
+                property: parsed.name,
+            })
+        })
+        .collect()
+}
+
+/// Whether `line`, which names somebody, leaves writing to them to the
+/// server it is stored on: it says `SCHEDULE-AGENT=SERVER`, or nothing of
+/// it, which means the same (RFC 6638, 7.1).
+fn left_to_its_server(line: &ContentLine) -> bool {
+    line.param("SCHEDULE-AGENT").is_none_or(|agent| {
+        agent
+            .values
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case("SERVER"))
+    })
+}
+
+/// Whom `line` names: its value without its `mailto:`, in lower case. A
+/// value that is no mail address is kept as it is written.
+fn address_of(line: &ContentLine) -> String {
+    let value = line.value.trim();
+    value
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
+        .and_then(|_| value.get(7..))
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Whether `line` names somebody a calendar server could write to: who
+/// organises an entry, or somebody it invites.
+fn names_somebody(line: &ContentLine) -> bool {
+    matches!(line.name.as_str(), "ORGANIZER" | "ATTENDEE")
+}
+
+/// Whether `text` leaves writing to somebody it names to the calendar server
+/// it is stored on: a line that names somebody says neither
+/// `SCHEDULE-AGENT=CLIENT` nor `SCHEDULE-AGENT=NONE` (RFC 6638), so a server
+/// that schedules by itself may write to them when the entry is rewritten.
+#[must_use]
+pub fn leaves_writing_to_its_server(text: &str) -> bool {
+    pim_lines::unfold(text)
+        .iter()
+        .filter_map(|line| ContentLine::parse(line))
+        .filter(names_somebody)
+        .any(|line| {
+            line.param("SCHEDULE-AGENT").is_none_or(|agent| {
+                !agent.values.iter().any(|value| {
+                    value.eq_ignore_ascii_case("CLIENT") || value.eq_ignore_ascii_case("NONE")
+                })
+            })
+        })
+}
+
+/// Whether writing `text` where its server holds `held` ends what that
+/// server schedules of the entry. `held` says who organises it and leaves
+/// writing to somebody it names to the server, and `text` no longer says of
+/// each of its events and occurrences that they organise it (RFC 6638, 3.1).
+/// A server takes such an entry for one that was removed (3.2.3.1): where
+/// its person organises it, everybody the server wrote to is told the event
+/// is off (3.2.1.3), and where they are invited, its organiser is told that
+/// they decline (3.2.2.4).
+#[must_use]
+pub fn ends_what_its_server_schedules(text: &str, held: &str) -> bool {
+    let organised_by = named(held).organizers;
+    if organised_by.is_empty() || !leaves_writing_to_its_server(held) {
+        return false;
+    }
+    let lines = pim_lines::unfold(text);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    let parts = event_parts(&lines, &parsed);
+    parts.is_empty()
+        || !parts.iter().all(|part| {
+            part.naming.iter().any(|(line, _)| {
+                line.name == "ORGANIZER" && organised_by.contains(&address_of(line))
+            })
+        })
+}
+
+/// Append `line`, which names somebody, so that the server it is stored on
+/// writes to nobody about it: `SCHEDULE-AGENT=CLIENT` (RFC 6638) tells a
+/// server that schedules by itself that the calendar's own client does. What
+/// a text says of that itself (`SCHEDULE-AGENT`, `SCHEDULE-FORCE-SEND`) does
+/// not stay; every other parameter stays as it was.
+fn client_scheduled(out: &mut String, line: &ContentLine) {
+    let marked = rewritten(
+        line,
+        Some("CLIENT"),
+        &["SCHEDULE-AGENT", "SCHEDULE-FORCE-SEND"],
+    );
+    fold_into(out, &marked);
+}
+
+/// `line` written out again without its parameters `dropped`, saying first
+/// that `agent` is who writes to whoever it names, where one is given.
+fn rewritten(line: &ContentLine, agent: Option<&str>, dropped: &[&str]) -> String {
+    let mut marked = String::new();
+    if let Some(group) = &line.group {
+        marked.push_str(group);
+        marked.push('.');
+    }
+    marked.push_str(&line.name);
+    if let Some(agent) = agent {
+        marked.push_str(";SCHEDULE-AGENT=");
+        marked.push_str(agent);
+    }
+    for param in &line.params {
+        if dropped.contains(&param.name.as_str()) {
+            continue;
+        }
+        marked.push(';');
+        marked.push_str(&param.name);
+        for (place, value) in param.values.iter().enumerate() {
+            marked.push(if place == 0 { '=' } else { ',' });
+            marked.push_str(&pim_lines::encode_param_value(value));
+        }
+    }
+    marked.push(':');
+    marked.push_str(&line.value);
+    marked
+}
+
+/// Whom an entry's text names, each by the address the text gives, once and
+/// in the order it gives them. Every component of the text counts, since a
+/// server that writes to people reads them all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Named {
+    /// Who organises it.
+    pub organizers: Vec<String>,
+    /// Everyone it invites.
+    pub attendees: Vec<String>,
+}
+
+/// Whom the iCalendar `text` names ([`Named`]). An address is a line's value
+/// without its `mailto:`, in lower case; a value that is no mail address is
+/// kept as it is written, so nobody a text names goes unseen.
+#[must_use]
+pub fn named(text: &str) -> Named {
+    let mut named = Named::default();
+    for line in pim_lines::unfold(text) {
+        let Some(line) = ContentLine::parse(&line) else {
+            continue;
+        };
+        let list = match line.name.as_str() {
+            "ORGANIZER" => &mut named.organizers,
+            "ATTENDEE" => &mut named.attendees,
+            _ => continue,
+        };
+        let address = address_of(&line);
+        if !list.contains(&address) {
+            list.push(address);
+        }
+    }
+    named
+}
+
+/// What the entry in the iCalendar `text` says in its notes: its
+/// `DESCRIPTION`, as text. Of an entry that repeats, the notes of the
+/// series where it has any, and else those of the first occurrence that
+/// was changed. A reminder's own words are not the entry's. Empty for an
+/// entry without notes. Whoever made the entry wrote them: they are other
+/// people's words, as its title and its place are.
+#[must_use]
+pub fn notes(text: &str) -> String {
+    let (mut in_event, mut in_alarm, mut changed) = (false, false, false);
+    let mut found: Option<String> = None;
+    let mut of_a_changed_one: Option<String> = None;
+    for line in pim_lines::unfold(text) {
+        let Some(line) = ContentLine::parse(&line) else {
+            continue;
+        };
+        if line.begins("VEVENT") {
+            (in_event, in_alarm, changed, found) = (true, false, false, None);
+        } else if line.ends("VEVENT") {
+            in_event = false;
+            match found.take() {
+                Some(notes) if !changed => return notes,
+                Some(notes) if of_a_changed_one.is_none() => of_a_changed_one = Some(notes),
+                _ => {}
+            }
+        } else if line.begins("VALARM") {
+            in_alarm = true;
+        } else if line.ends("VALARM") {
+            in_alarm = false;
+        } else if in_event && !in_alarm {
+            match line.name.as_str() {
+                "RECURRENCE-ID" => changed = true,
+                "DESCRIPTION" => found = Some(unescape(&line.value)),
+                _ => {}
+            }
+        }
+    }
+    of_a_changed_one.unwrap_or_default()
+}
+
+/// `text` with its event filed under `categories`, in the property a
+/// server keeps them in, and every other line as it was: what the entry
+/// holds that this calendar does not model stays. `None` when the text
+/// holds no event.
+#[must_use]
+pub fn with_categories(text: &str, categories: &[String]) -> Option<String> {
+    let lines = pim_lines::unfold(text);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    // The event itself: the first that names no single occurrence.
+    let mut event: Option<(usize, usize)> = None;
+    let mut begun: Option<(usize, bool)> = None;
+    for (index, line) in parsed.iter().enumerate() {
+        let Some(line) = line else { continue };
+        if line.begins("VEVENT") {
+            begun = Some((index, false));
+        } else if line.name == "RECURRENCE-ID" {
+            if let Some((_, occurrence)) = &mut begun {
+                *occurrence = true;
+            }
+        } else if line.ends("VEVENT")
+            && let Some((start, false)) = begun.take()
+        {
+            event = Some((start, index));
+            break;
+        }
+    }
+    let (start, end) = event?;
+    let mut out = String::new();
+    let mut alarm = false;
+    for (index, (line, parsed)) in lines.iter().zip(&parsed).enumerate() {
+        let within = index > start && index < end;
+        if within && parsed.as_ref().is_some_and(|line| line.begins("VALARM")) {
+            alarm = true;
+        }
+        let was_filed = within
+            && !alarm
+            && parsed
+                .as_ref()
+                .is_some_and(|line| line.name == "CATEGORIES");
+        if index == end && !categories.is_empty() {
+            let listed: Vec<String> = categories.iter().map(|held| escape(held)).collect();
+            fold_into(&mut out, &format!("CATEGORIES:{}", listed.join(",")));
+        }
+        if !was_filed {
+            fold_into(&mut out, line);
+        }
+        if parsed.as_ref().is_some_and(|line| line.ends("VALARM")) {
+            alarm = false;
+        }
+    }
+    Some(out)
+}
+
 fn recurrence_rule(event: &Event) -> String {
     let mut rule = event.recurrence.to_rrule();
     if rule.is_empty() {
@@ -337,17 +936,19 @@ fn recurrence_rule(event: &Event) -> String {
     rule
 }
 
-fn series_until_value(event: &Event, until: NaiveDate) -> String {
+fn series_until_value(event: &Event, until: Date) -> String {
     if event.all_day {
-        return until.format(D_ONLY).to_string();
+        return until.strftime(D_ONLY).to_string();
     }
-    let last = until.and_time(event.start.time());
+    let last = until.to_datetime(event.start.time());
     if event.timezone == "floating" {
-        return last.format(DT_LOCAL).to_string();
+        return last.strftime(DT_LOCAL).to_string();
     }
     let instant = crate::timezone::wall_to_utc(&event.timezone, last)
-        .map_or(last, |(instant, _)| instant.naive_utc());
-    format!("{}Z", instant.format(DT_LOCAL))
+        .map_or(last, |(instant, _)| {
+            instant.to_zoned(jiff::tz::TimeZone::UTC).datetime()
+        });
+    format!("{}Z", instant.strftime(DT_LOCAL))
 }
 
 fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
@@ -446,7 +1047,7 @@ pub fn parse_calendar(text: &str) -> Parsed {
 #[derive(Default)]
 struct Zones {
     defined: HashMap<String, DefinedZone>,
-    resolved: HashMap<(String, i32), Option<String>>,
+    resolved: HashMap<(String, i16), Option<String>>,
     unknown: Vec<String>,
 }
 
@@ -473,7 +1074,7 @@ impl Zones {
             } else if let Some((tzid, zone)) = zone.as_mut() {
                 if line.begins("STANDARD") || line.begins("DAYLIGHT") {
                     observance = Some(Observance {
-                        onset: NaiveDateTime::default(),
+                        onset: DateTime::default(),
                         offset_from: i32::MIN,
                         offset_to: i32::MIN,
                         rule: None,
@@ -503,7 +1104,7 @@ impl Zones {
         }
     }
 
-    fn of(&mut self, line: &ContentLine, year: i32) -> String {
+    fn of(&mut self, line: &ContentLine, year: i16) -> String {
         if line.value.ends_with('Z') {
             return "UTC".into();
         }
@@ -563,7 +1164,7 @@ fn observance_property(observance: &mut Observance, line: &ContentLine) {
         "RDATE" => observance
             .rdates
             .extend(value.split(',').filter_map(|part| {
-                NaiveDateTime::parse_from_str(part.trim().trim_end_matches('Z'), DT_LOCAL).ok()
+                DateTime::strptime(DT_LOCAL, part.trim().trim_end_matches('Z')).ok()
             })),
         _ => {}
     }
@@ -589,10 +1190,13 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
     if !rrule_value(rule, "FREQ")?.eq_ignore_ascii_case("YEARLY") {
         return None;
     }
-    let month = rrule_u32(rule, "BYMONTH").filter(|month| (1..=12).contains(month))?;
+    let month = rrule_value(rule, "BYMONTH")?
+        .parse::<i8>()
+        .ok()
+        .filter(|month| (1..=12).contains(month))?;
     let first_month_day = rrule_value(rule, "BYMONTHDAY").and_then(|days| {
         days.split(',')
-            .filter_map(|day| day.trim().parse::<u32>().ok())
+            .filter_map(|day| day.trim().parse::<i8>().ok())
             .filter(|day| (1..=31).contains(day))
             .min()
     });
@@ -602,13 +1206,13 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
             let split = byday.len().checked_sub(2)?;
             let (ordinal, weekday) = (byday.get(..split)?, byday.get(split..)?);
             let weekday = match weekday.to_ascii_uppercase().as_str() {
-                "MO" => chrono::Weekday::Mon,
-                "TU" => chrono::Weekday::Tue,
-                "WE" => chrono::Weekday::Wed,
-                "TH" => chrono::Weekday::Thu,
-                "FR" => chrono::Weekday::Fri,
-                "SA" => chrono::Weekday::Sat,
-                "SU" => chrono::Weekday::Sun,
+                "MO" => jiff::civil::Weekday::Monday,
+                "TU" => jiff::civil::Weekday::Tuesday,
+                "WE" => jiff::civil::Weekday::Wednesday,
+                "TH" => jiff::civil::Weekday::Thursday,
+                "FR" => jiff::civil::Weekday::Friday,
+                "SA" => jiff::civil::Weekday::Saturday,
+                "SU" => jiff::civil::Weekday::Sunday,
                 _ => return None,
             };
             match (ordinal, month_day) {
@@ -628,9 +1232,9 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
     };
     let until = rrule_value(rule, "UNTIL").and_then(|until| {
         let until = until.trim().trim_end_matches('Z');
-        NaiveDateTime::parse_from_str(until, DT_LOCAL)
+        DateTime::strptime(DT_LOCAL, until)
             .ok()
-            .or_else(|| parse_cal_date(until).and_then(|date| date.and_hms_opt(23, 59, 59)))
+            .or_else(|| parse_cal_date(until).map(|date| date.at(23, 59, 59, 0)))
     });
     Some(YearlyRule { month, day, until })
 }
@@ -646,8 +1250,8 @@ fn parse_vevent(
 ) -> (Option<ParsedEvent>, usize) {
     let mut id: Option<Id> = None;
     let mut title = String::new();
-    let mut start: Option<NaiveDateTime> = None;
-    let mut end: Option<NaiveDateTime> = None;
+    let mut start: Option<DateTime> = None;
+    let mut end: Option<DateTime> = None;
     let mut duration = None;
     let mut all_day = false;
     let mut location = String::new();
@@ -765,9 +1369,9 @@ fn parse_vevent(
         i += 1;
     }
 
-    let Some(mut start) = start.or_else(|| {
-        recurrence_id.map(|(date, time)| date.and_time(time.unwrap_or(NaiveTime::MIN)))
-    }) else {
+    let Some(mut start) = start
+        .or_else(|| recurrence_id.map(|(date, time)| date.to_datetime(time.unwrap_or(Time::MIN))))
+    else {
         return (None, i);
     };
     let recurrence_until =
@@ -798,7 +1402,11 @@ fn parse_vevent(
         (None, None) => start,
     };
     if all_day && end.date() <= start.date() {
-        end = (start.date() + chrono::Duration::days(1)).and_time(NaiveTime::MIN);
+        end = start
+            .date()
+            .tomorrow()
+            .unwrap_or_else(|_| start.date())
+            .to_datetime(Time::MIN);
     }
     if timezone != "floating" {
         let Some((normalized, _)) = crate::timezone::normalize_wall(&timezone, start) else {
@@ -827,7 +1435,7 @@ fn parse_vevent(
                 recurrence_count,
                 recurrence_exdates: exdates
                     .iter()
-                    .filter_map(|value| recurrence_wall(value, &timezone).map(|wall| wall.date()))
+                    .filter_map(|value| recurrence_wall(value, &timezone).map(DateTime::date))
                     .collect(),
                 occurrence_overrides: Keyed::default(),
                 timezone,
@@ -848,7 +1456,7 @@ fn parse_vevent(
 fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, usize) {
     let mut id: Option<Id> = None;
     let mut title = String::new();
-    let mut due: Option<NaiveDate> = None;
+    let mut due: Option<Date> = None;
     let mut done = false;
     let mut priority = Priority::None;
 
@@ -909,22 +1517,22 @@ fn raw(out: &mut String, key: &str, val: &str) {
     fold_into(out, &format!("{key}:{val}"));
 }
 
-fn emit_datetime(out: &mut String, property: &str, value: NaiveDateTime, timezone: &str) {
+fn emit_datetime(out: &mut String, property: &str, value: DateTime, timezone: &str) {
     if timezone == "UTC" {
-        raw(out, property, &format!("{}Z", value.format(DT_LOCAL)));
+        raw(out, property, &format!("{}Z", value.strftime(DT_LOCAL)));
     } else if timezone == "floating" {
-        raw(out, property, &value.format(DT_LOCAL).to_string());
+        raw(out, property, &value.strftime(DT_LOCAL).to_string());
     } else {
         pim_lines::write_property(
             out,
             property,
             &[("TZID", timezone)],
-            &value.format(DT_LOCAL).to_string(),
+            &value.strftime(DT_LOCAL).to_string(),
         );
     }
 }
 
-fn parse_cal_datetime(line: &ContentLine) -> Option<(NaiveDateTime, bool)> {
+fn parse_cal_datetime(line: &ContentLine) -> Option<(DateTime, bool)> {
     let val = line.value.as_str();
     let date_valued = line
         .param_value("VALUE")
@@ -932,19 +1540,19 @@ fn parse_cal_datetime(line: &ContentLine) -> Option<(NaiveDateTime, bool)> {
     if (date_valued || val.len() == 8)
         && let Some(d) = parse_cal_date(val)
     {
-        return Some((d.and_time(NaiveTime::MIN), true));
+        return Some((d.to_datetime(Time::MIN), true));
     }
     let clean = val.trim_end_matches('Z');
-    if let Ok(dt) = NaiveDateTime::parse_from_str(clean, DT_LOCAL) {
+    if let Ok(dt) = DateTime::strptime(DT_LOCAL, clean) {
         return Some((dt, false));
     }
     if let Some(d) = parse_cal_date(val) {
-        return Some((d.and_time(NaiveTime::MIN), true));
+        return Some((d.to_datetime(Time::MIN), true));
     }
     None
 }
 
-fn parse_recurrence_id(line: &ContentLine) -> Option<(NaiveDate, Option<NaiveTime>)> {
+fn parse_recurrence_id(line: &ContentLine) -> Option<(Date, Option<Time>)> {
     let (datetime, date_only) = parse_cal_datetime(line)?;
     Some((datetime.date(), (!date_only).then_some(datetime.time())))
 }
@@ -1016,22 +1624,26 @@ fn rrule_u32(rule: &str, name: &str) -> Option<u32> {
     rrule_value(rule, name)?.parse().ok()
 }
 
-fn recurrence_wall(value: &str, zone: &str) -> Option<NaiveDateTime> {
+fn recurrence_wall(value: &str, zone: &str) -> Option<DateTime> {
     let value = value.trim();
     if let Some(date) = parse_cal_date(value) {
-        return Some(date.and_time(NaiveTime::MIN));
+        return Some(date.to_datetime(Time::MIN));
     }
     let Some(utc) = value.strip_suffix('Z') else {
-        return NaiveDateTime::parse_from_str(value, DT_LOCAL).ok();
+        return DateTime::strptime(DT_LOCAL, value).ok();
     };
-    let instant = NaiveDateTime::parse_from_str(utc, DT_LOCAL).ok()?.and_utc();
-    Some(match zone.parse::<chrono_tz::Tz>() {
-        Ok(zone) => instant.with_timezone(&zone).naive_local(),
-        Err(_) => instant.naive_utc(),
+    let wall = DateTime::strptime(DT_LOCAL, utc).ok()?;
+    Some(match crate::timezone::named(zone) {
+        Some(zone) => wall
+            .to_zoned(TimeZone::UTC)
+            .ok()?
+            .with_time_zone(zone)
+            .datetime(),
+        None => wall,
     })
 }
 
-fn series_until(value: &str, start: NaiveDateTime, zone: &str) -> Option<NaiveDate> {
+fn series_until(value: &str, start: DateTime, zone: &str) -> Option<Date> {
     if let Some(date) = parse_cal_date(value) {
         return Some(date);
     }
@@ -1039,19 +1651,19 @@ fn series_until(value: &str, start: NaiveDateTime, zone: &str) -> Option<NaiveDa
     if until.time() >= start.time() {
         Some(until.date())
     } else {
-        until.date().pred_opt()
+        until.date().yesterday().ok()
     }
 }
 
-fn parse_cal_date(val: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(val.trim(), D_ONLY).ok()
+fn parse_cal_date(val: &str) -> Option<Date> {
+    Date::strptime(D_ONLY, val.trim()).ok()
 }
 
-fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
-    duration_parts(value).filter(|(days, time)| *days > 0 || *time > chrono::Duration::zero())
+fn parse_event_duration(value: &str) -> Option<(i64, SignedDuration)> {
+    duration_parts(value).filter(|(days, time)| *days > 0 || *time > SignedDuration::ZERO)
 }
 
-fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
+fn duration_parts(value: &str) -> Option<(i64, SignedDuration)> {
     let value = value.trim();
     let value = value.strip_prefix('+').unwrap_or(value);
     let mut rest = value.strip_prefix('P')?;
@@ -1060,7 +1672,7 @@ fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
             return None;
         }
         let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;
-        return Some((days, chrono::Duration::zero()));
+        return Some((days, SignedDuration::ZERO));
     }
     let mut days = 0_i64;
     let mut seconds = 0_i64;
@@ -1098,30 +1710,30 @@ fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
         }
         rest = rest.get(digits + 1..)?;
     }
-    Some((days, chrono::Duration::try_seconds(seconds)?))
+    Some((days, SignedDuration::from_secs(seconds)))
 }
 
 fn duration_span(
-    start: NaiveDateTime,
+    start: DateTime,
     zone: &str,
     days: i64,
-    time: chrono::Duration,
-) -> Option<(NaiveDateTime, bool)> {
-    let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
+    time: SignedDuration,
+) -> Option<(DateTime, bool)> {
+    let wall = start
+        .checked_add(jiff::Span::new().try_days(days).ok()?)
+        .ok()?;
     if zone == "floating" {
-        return Some((wall.checked_add_signed(time)?, false));
+        return Some((wall.checked_add(time).ok()?, false));
     }
     let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
-    wall_in(zone, instant.checked_add_signed(time)?)
+    wall_in(zone, instant.checked_add(time).ok()?)
 }
 
-fn wall_in(zone: &str, instant: chrono::DateTime<chrono::Utc>) -> Option<(NaiveDateTime, bool)> {
+fn wall_in(zone: &str, instant: jiff::Timestamp) -> Option<(DateTime, bool)> {
     let wall = if zone == "UTC" {
-        instant.naive_utc()
+        instant.to_zoned(TimeZone::UTC).datetime()
     } else {
-        instant
-            .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
-            .naive_local()
+        instant.to_zoned(crate::timezone::named(zone)?).datetime()
     };
     let later_fold = crate::timezone::wall_to_utc(zone, wall)?.0 != instant;
     Some((wall, later_fold))
@@ -1134,7 +1746,7 @@ fn parse_trigger_minutes(v: &str) -> Option<i64> {
         None => (false, v.strip_prefix('+').unwrap_or(v)),
     };
     let (days, time) = duration_parts(duration)?;
-    let minutes = days.checked_mul(24 * 60)?.checked_add(time.num_minutes())?;
+    let minutes = days.checked_mul(24 * 60)?.checked_add(time.as_mins())?;
     (before || minutes == 0).then_some(minutes)
 }
 
@@ -1146,15 +1758,15 @@ fn color_from_name(name: &str) -> Palette {
         .unwrap_or(Palette::Indigo)
 }
 
-pub fn suggested_filename(anchor: NaiveDate) -> String {
+pub fn suggested_filename(anchor: Date) -> String {
     format!("tilo-calendar-{}-{:02}.ics", anchor.year(), anchor.month())
 }
 
-pub fn sample_ics(today: NaiveDate) -> String {
-    let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
+pub fn sample_ics(today: Date) -> String {
+    let at = |date: Date, h: i8, m: i8| -> DateTime {
+        date.to_datetime(Time::new(h, m, 0, 0).unwrap_or(Time::MIN))
     };
-    let d = |delta: i64| today + chrono::Duration::days(delta);
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
     let model = Calendar {
         projects: Keyed::default(),
         events: vec![
@@ -1197,7 +1809,6 @@ pub fn sample_ics(today: NaiveDate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Timelike as _;
 
     tilo_test_env::scenario! {
         /// Import: what an iCalendar file says becomes the events it names, at their instants.
@@ -1232,7 +1843,7 @@ mod tests {
                 assert_eq!(events.len(), 1, "{duration}");
                 assert_eq!(
                     events[0].end,
-                    expected.parse::<NaiveDateTime>().unwrap(),
+                    expected.parse::<DateTime>().unwrap(),
                     "{duration}"
                 );
                 let model = Calendar {
@@ -1270,8 +1881,8 @@ mod tests {
             assert_eq!(tasks[0].id, tasks_again[0].id);
             assert_ne!(events[0].id, tasks[0].id);
             assert_eq!(events[0].occurrence_overrides.len(), 1);
-            let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-            let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+            let from = Date::new(2026, 6, 15).unwrap();
+            let cancelled = Date::new(2026, 6, 22).unwrap();
             assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
         }
 
@@ -1298,7 +1909,7 @@ mod tests {
 
         phase date_time_series_ends_exclusions_and_due_times_import;
         {
-            let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date");
+            let date = |day| Date::new(2026, 10, day).expect("valid date");
             let weekly = |until: &str, exdate: &str| {
                 let payload = format!(
                     "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:standup@example.com\r\n\
@@ -1308,7 +1919,7 @@ mod tests {
                  {exdate}\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
                 );
                 let (events, _) = parse(&payload);
-                events[0].occurrences_in(date(1), date(31) + chrono::Duration::days(90))
+                events[0].occurrences_in(date(1), date(31) + jiff::Span::new().days(90))
             };
             assert_eq!(
                 weekly(
@@ -1353,16 +1964,16 @@ mod tests {
              RRULE:FREQ=YEARLY;INTERVAL=1;UNTIL=20320301T000000Z",
             ];
             let (from, to) = (
-                NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-                NaiveDate::from_ymd_opt(2033, 1, 1).expect("valid date"),
+                Date::new(2024, 1, 1).expect("valid date"),
+                Date::new(2033, 1, 1).expect("valid date"),
             );
             for lines in series {
                 let set: rrule::RRuleSet = lines.parse().expect("valid series");
-                let expected: Vec<NaiveDateTime> = set
+                let expected: Vec<DateTime> = set
                     .all(u16::MAX)
                     .dates
                     .into_iter()
-                    .map(|at| at.naive_local())
+                    .map(|at| at.naive_local().to_string().replace(' ', "T").parse().unwrap())
                     .collect();
                 let payload = format!(
                     "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series@example.com\r\nSUMMARY:Series\r\n{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
@@ -1370,10 +1981,10 @@ mod tests {
                 );
                 let (events, _) = parse(&payload);
                 let event = &events[0];
-                let imported: Vec<NaiveDateTime> = event
+                let imported: Vec<DateTime> = event
                     .occurrences_in(from, to)
                     .into_iter()
-                    .map(|date| date.and_time(event.start.time()))
+                    .map(|date| date.to_datetime(event.start.time()))
                     .collect();
                 assert_eq!(imported, expected, "{lines}");
             }
@@ -1381,7 +1992,7 @@ mod tests {
 
         phase outlook_invites_import_at_their_instant;
         {
-            let at_ten = "2026-11-03T09:00:00+00:00".to_string();
+            let at_ten = "2026-11-03T09:00:00Z".to_string();
             for zone in [String::new(), outlook_zone("W. Europe Standard Time")] {
                 let payload = outlook_invite(
                     &zone,
@@ -1408,7 +2019,7 @@ mod tests {
                 )),
                 (
                     "America/Los_Angeles".to_string(),
-                    "2026-07-10T16:00:00+00:00".to_string()
+                    "2026-07-10T16:00:00Z".to_string()
                 )
             );
             // A zone Outlook names after its cities, or a customised one, is
@@ -1431,17 +2042,15 @@ mod tests {
                 "20260710T100000",
                 "20260710T110000",
             ));
-            assert_eq!(instant, "2026-07-10T08:00:00+00:00");
-            let winter = NaiveDate::from_ymd_opt(2026, 1, 15)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap();
+            assert_eq!(instant, "2026-07-10T08:00:00Z");
+            let winter = Date::new(2026, 1, 15).unwrap()
+                .at(12, 0, 0, 0);
             assert_eq!(
                 crate::timezone::wall_to_utc(&zone, winter)
                     .unwrap()
                     .0
-                    .to_rfc3339(),
-                "2026-01-15T11:00:00+00:00",
+                    .to_string(),
+                "2026-01-15T11:00:00Z",
                 "{zone} keeps Central European winter time"
             );
             let sydney = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone 1\r\n\
@@ -1460,7 +2069,7 @@ mod tests {
                 )),
                 (
                     "Australia/Sydney".to_string(),
-                    "2026-11-30T22:00:00+00:00".to_string()
+                    "2026-11-30T22:00:00Z".to_string()
                 )
             );
             let located = "BEGIN:VTIMEZONE\r\nTZID:/citadel.org/20250101_1/Custom\r\n\
@@ -1495,7 +2104,7 @@ mod tests {
                 )),
                 (
                     "America/New_York".to_string(),
-                    "2026-07-10T13:00:00+00:00".to_string()
+                    "2026-07-10T13:00:00Z".to_string()
                 )
             );
         }
@@ -1514,8 +2123,8 @@ mod tests {
                 assert_eq!(parsed.unknown_zones, vec![tzid.to_string()]);
                 let event = &parsed.events[0];
                 assert_eq!(event.timezone, "floating");
-                assert_eq!(event.start.to_string(), "2026-11-03 10:00:00");
-                assert_eq!(event.end.to_string(), "2026-11-03 11:00:00");
+                assert_eq!(event.start.to_string(), "2026-11-03T10:00:00");
+                assert_eq!(event.end.to_string(), "2026-11-03T11:00:00");
                 let (import, unknown) =
                     crate::resource::import_reporting(&payload).expect("the event is imported");
                 assert_eq!(unknown, vec![tzid.to_string()]);
@@ -1539,10 +2148,10 @@ mod tests {
              END:VCALENDAR\r\n";
             let (events, _) = parse(payload);
             assert_eq!(events[0].timezone, "Europe/Berlin");
-            assert_eq!(events[0].end.to_string(), "2026-07-10 18:30:00");
+            assert_eq!(events[0].end.to_string(), "2026-07-10T18:30:00");
             assert_eq!(
-                events[0].end_instant().unwrap().to_rfc3339(),
-                "2026-07-10T16:30:00+00:00"
+                events[0].end_instant().unwrap().to_string(),
+                "2026-07-10T16:30:00Z"
             );
         }
     }
@@ -1557,7 +2166,7 @@ mod tests {
 
         phase an_events_notes_are_exported_as_its_description;
         {
-            let mut model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
             let id = model.events.iter().next().unwrap().id;
             model.notes.insert(
                 id.to_string(),
@@ -1570,10 +2179,52 @@ mod tests {
             );
         }
 
+        phase an_entrys_notes_are_read_from_its_text;
+        {
+            let entry = |more: &str| {
+                format!(
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:review-1@example.test\r\n\
+                     SUMMARY:Review\r\nDTSTART:20261118T140000Z\r\nDTEND:20261118T143000Z\r\n\
+                     {more}END:VEVENT\r\nEND:VCALENDAR\r\n"
+                )
+            };
+            // Its own words, with what the standard writes for a comma and for a line's end.
+            assert_eq!(
+                notes(&entry(
+                    "DESCRIPTION:Bring the numbers\\, all of them.\\nFourth floor\r\n"
+                )),
+                "Bring the numbers, all of them.\nFourth floor"
+            );
+            // A long line, folded as a server folds one.
+            assert_eq!(
+                notes(&entry("DESCRIPTION:Bring the num\r\n bers\r\n")),
+                "Bring the numbers"
+            );
+            // A reminder's words are not the entry's, with notes beside them and without.
+            let reminder = "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:The review is soon\r\n\
+                            TRIGGER:-PT15M\r\nEND:VALARM\r\n";
+            assert_eq!(
+                notes(&entry(&format!(
+                    "DESCRIPTION:Bring the numbers\r\n{reminder}"
+                ))),
+                "Bring the numbers"
+            );
+            assert_eq!(notes(&entry(reminder)), "");
+            assert_eq!(notes(&entry("")), "", "an entry without notes");
+            // Of an entry that repeats: the notes of the series, wherever a changed
+            // occurrence stands in the text.
+            let series = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:weekly-1@example.test\r\n\
+                          RECURRENCE-ID:20261125T140000Z\r\nSUMMARY:Review\r\nDTSTART:20261125T150000Z\r\n\
+                          DESCRIPTION:Moved this once\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\n\
+                          UID:weekly-1@example.test\r\nSUMMARY:Review\r\nDTSTART:20261118T140000Z\r\n\
+                          RRULE:FREQ=WEEKLY\r\nDESCRIPTION:Every week\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            assert_eq!(notes(series), "Every week");
+        }
+
         phase export_envelope_and_event_task_all_day_round_trips;
         {
             {
-                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
                 let ics = export(&model);
                 assert!(ics.starts_with("BEGIN:VCALENDAR\r\n"));
                 assert!(ics.contains("BEGIN:VEVENT"));
@@ -1581,7 +2232,7 @@ mod tests {
                 assert!(ics.trim_end().ends_with("END:VCALENDAR"));
             }
             {
-                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
                 let ics = export(&model);
                 let (events, tasks) = parse(&ics);
                 assert_eq!(events.len(), model.events.len());
@@ -1600,15 +2251,15 @@ mod tests {
                 assert!(offsite.all_day);
             }
             {
-                let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+                let start = Date::new(2026, 6, 15).unwrap();
                 let model = Calendar {
                     projects: Keyed::default(),
                     tasks: Keyed::default(),
                     events: vec![Event {
                         id: Uuid::new_v4(),
                         title: "Conference".into(),
-                        start: start.and_time(NaiveTime::MIN),
-                        end: (start + chrono::Duration::days(3)).and_time(NaiveTime::MIN),
+                        start: start.to_datetime(Time::MIN),
+                        end: (start + jiff::Span::new().days(3)).to_datetime(Time::MIN),
                         all_day: true,
                         ..Event::default()
                     }]
@@ -1622,11 +2273,11 @@ mod tests {
                 let (events, _) = parse(&calendar);
                 let event = events.first().expect("round-tripped event");
                 assert!(event.all_day);
-                assert!(event.occurs_on(start + chrono::Duration::days(2)));
-                assert!(!event.occurs_on(start + chrono::Duration::days(3)));
+                assert!(event.occurs_on(start + jiff::Span::new().days(2)));
+                assert!(!event.occurs_on(start + jiff::Span::new().days(3)));
             }
             {
-                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
                 let (_, tasks) = parse(&export(&model));
                 assert!(tasks.iter().any(|t| t.done));
                 assert!(tasks.iter().any(|t| t.priority == Priority::High));
@@ -1642,7 +2293,7 @@ mod tests {
         {
             {
                 let mut model =
-                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                    crate::model::seed_demo(Date::new(2026, 6, 15).expect("valid date"));
                 let event = model
                     .events
                     .iter_mut()
@@ -1658,16 +2309,16 @@ mod tests {
                 event.organizer = Some(guest.id);
                 event.attendees.push(guest.clone());
                 event.recurrence_interval = 2;
-                event.recurrence_until = NaiveDate::from_ymd_opt(2026, 12, 31);
+                event.recurrence_until = Date::new(2026, 12, 31).ok();
                 event.recurrence_count = Some(8);
-                event.recurrence_exdates = [NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date")]
+                event.recurrence_exdates = [Date::new(2026, 6, 17).expect("valid date")]
                     .into_iter()
                     .collect();
                 event.occurrence_overrides.clear();
                 event
                     .occurrence_overrides
                     .push(crate::model::OccurrenceOverride {
-                        original_date: NaiveDate::from_ymd_opt(2026, 6, 19).expect("valid date"),
+                        original_date: Date::new(2026, 6, 19).expect("valid date"),
                         original_time: None,
                         cancelled: true,
                         start: None,
@@ -1703,7 +2354,7 @@ mod tests {
                 assert_eq!(event.recurrence_count, Some(8));
                 assert_eq!(
                     event.recurrence_until,
-                    NaiveDate::from_ymd_opt(2026, 12, 31)
+                    Date::new(2026, 12, 31).ok()
                 );
                 assert_eq!(event.recurrence_exdates.len(), 1);
                 assert_eq!(event.occurrence_overrides.len(), 1);
@@ -1717,9 +2368,9 @@ mod tests {
                 let edit = &first[0].occurrence_overrides[0];
                 assert_eq!(
                     edit.original_date,
-                    NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
+                    Date::new(2026, 10, 27).unwrap()
                 );
-                assert_eq!(edit.original_time, NaiveTime::from_hms_opt(9, 0, 0));
+                assert_eq!(edit.original_time, Time::new(9, 0, 0, 0).ok());
 
                 let exported = export(&Calendar {
                     events: first.into(),
@@ -1731,7 +2382,7 @@ mod tests {
                 let (round_tripped, _) = parse(&exported);
                 assert_eq!(
                     round_tripped[0].occurrence_overrides[0].original_time,
-                    NaiveTime::from_hms_opt(9, 0, 0)
+                    Time::new(9, 0, 0, 0).ok()
                 );
             }
             {
@@ -1739,11 +2390,11 @@ mod tests {
                 let (events, _) = parse(payload);
                 assert_eq!(
                     events[0].start.time(),
-                    NaiveTime::from_hms_opt(3, 0, 0).unwrap()
+                    Time::new(3, 0, 0, 0).unwrap()
                 );
                 assert_eq!(
                     events[0].end.time(),
-                    NaiveTime::from_hms_opt(3, 30, 0).unwrap()
+                    Time::new(3, 30, 0, 0).unwrap()
                 );
             }
             {
@@ -1761,7 +2412,7 @@ mod tests {
             }
             {
                 let mut model =
-                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                    crate::model::seed_demo(Date::new(2026, 6, 15).expect("valid date"));
                 let event = model.events.first_mut().expect("demo event");
                 let guest = Attendee {
                     id: Uuid::new_v4(),
@@ -1807,7 +2458,7 @@ mod tests {
             }
             {
                 let mut model =
-                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                    crate::model::seed_demo(Date::new(2026, 6, 15).expect("valid date"));
                 model.events.first_mut().expect("demo event").title = "Line one\r\nLine two".into();
                 let exported = export(&model);
                 assert!(
@@ -1832,14 +2483,10 @@ mod tests {
                 let event = Event {
                     id: Uuid::new_v4(),
                     title: title.clone(),
-                    start: NaiveDate::from_ymd_opt(2026, 9, 15)
-                        .unwrap()
-                        .and_hms_opt(9, 0, 0)
-                        .unwrap(),
-                    end: NaiveDate::from_ymd_opt(2026, 9, 15)
-                        .unwrap()
-                        .and_hms_opt(10, 0, 0)
-                        .unwrap(),
+                    start: Date::new(2026, 9, 15).unwrap()
+                        .at(9, 0, 0, 0),
+                    end: Date::new(2026, 9, 15).unwrap()
+                        .at(10, 0, 0, 0),
                     ..Event::default()
                 };
                 let ics = export(&Calendar {
@@ -1859,7 +2506,7 @@ mod tests {
 
         phase a_timed_series_exports_its_end_and_exclusions_as_date_times;
         {
-            let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();
+            let date = |day| Date::new(2026, 10, day).unwrap();
             for (zone, all_day, until, exdate) in [
                 (
                     "Europe/Berlin",
@@ -1887,13 +2534,12 @@ mod tests {
                 ),
             ] {
                 let start = date(5)
-                    .and_hms_opt(if all_day { 0 } else { 9 }, 0, 0)
-                    .unwrap();
+                    .at(if all_day { 0 } else { 9 }, 0, 0, 0);
                 let event = Event {
                     id: Uuid::new_v4(),
                     title: "Standup".into(),
                     start,
-                    end: start + chrono::Duration::minutes(if all_day { 24 * 60 } else { 30 }),
+                    end: start + jiff::SignedDuration::from_mins(if all_day { 24 * 60 } else { 30 }),
                     all_day,
                     recurrence: Recurrence::Weekly,
                     recurrence_until: Some(date(26)),
@@ -1924,7 +2570,7 @@ mod tests {
                         &event.timezone
                     )
                 );
-                let window = (date(1), date(31) + chrono::Duration::days(60));
+                let window = (date(1), date(31) + jiff::Span::new().days(60));
                 assert_eq!(
                     back.occurrences_in(window.0, window.1),
                     vec![date(5), date(19), date(26)]
@@ -1935,6 +2581,409 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// What a calendar keeps of an invitation tells the server it is stored
+    /// on to write to nobody, whatever the text says of that itself, and
+    /// loses nothing else of the lines that name somebody.
+    #[test]
+    fn the_kept_text_of_an_invitation_leaves_writing_to_people_to_nobody() {
+        let invitation = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+             UID:offsite-9@example.org\r\nSUMMARY:Offsite\r\nDTSTART:20261119T140000Z\r\n\
+             ORGANIZER;CN=\"Bo: Ops\";SCHEDULE-AGENT=SERVER:mailto:Bo@Example.test\r\n\
+             ATTENDEE;DELEGATED-FROM=\"mailto:a@example.test\",\"mailto:b@example.test\";\
+             SCHEDULE-FORCE-SEND=REQUEST;PARTSTAT=NEEDS-ACTION:mailto:ada@example.test\r\n\
+             ATTENDEE;RSVP=TRUE:MAILTO:cy@example.test\r\n\
+             ATTENDEE:urn:uuid:5d2b\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let kept = kept_text(invitation);
+        let lines = pim_lines::unfold(&kept);
+        let holds = |line: &str| lines.iter().any(|kept| kept == line);
+        assert!(
+            !lines.iter().any(|line| line.starts_with("METHOD")),
+            "{lines:?}"
+        );
+        assert!(
+            holds("ORGANIZER;SCHEDULE-AGENT=CLIENT;CN=\"Bo: Ops\":mailto:Bo@Example.test"),
+            "{lines:?}"
+        );
+        assert!(
+            holds(
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT;DELEGATED-FROM=\"mailto:a@example.test\",\
+                 \"mailto:b@example.test\";PARTSTAT=NEEDS-ACTION:mailto:ada@example.test"
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            holds("ATTENDEE;SCHEDULE-AGENT=CLIENT;RSVP=TRUE:MAILTO:cy@example.test"),
+            "{lines:?}"
+        );
+        assert!(
+            holds("ATTENDEE;SCHEDULE-AGENT=CLIENT:urn:uuid:5d2b"),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| {
+                line.contains("SCHEDULE-AGENT=SERVER") || line.contains("SCHEDULE-FORCE-SEND")
+            }),
+            "{lines:?}"
+        );
+        // The same event either way, and the same people named.
+        assert_eq!(parse(&kept).0, parse(invitation).0);
+        let people = named(&kept);
+        assert_eq!(people.organizers, ["bo@example.test"]);
+        assert_eq!(
+            people.attendees,
+            ["ada@example.test", "cy@example.test", "urn:uuid:5d2b"]
+        );
+        assert_eq!(people, named(invitation));
+        // And it says of itself whether anything is left to a server.
+        assert!(leaves_writing_to_its_server(invitation));
+        assert!(!leaves_writing_to_its_server(&kept));
+        assert!(!leaves_writing_to_its_server(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        ));
+        assert!(!leaves_writing_to_its_server(
+            "BEGIN:VEVENT\r\nATTENDEE;schedule-agent=none:mailto:bo@example.test\r\nEND:VEVENT\r\n"
+        ));
+    }
+
+    /// Beside what its server holds, the kept text changes what no line says
+    /// of who writes to the person it names (RFC 6638, 3.2.1.2): a line the
+    /// server writes for goes up as the server holds it, whatever the text
+    /// makes of it, and everybody else is marked for the client, whatever
+    /// the text says of that itself.
+    #[test]
+    fn the_kept_text_beside_what_a_server_holds_changes_what_no_line_says_of_who_writes() {
+        let held = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:lunch-4@example.org\r\nDTSTART:20261118T120000Z\r\n\
+             ORGANIZER;CN=Ada:mailto:ada@example.test\r\n\
+             ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=\"2.0\":mailto:bo@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=SERVER;SCHEDULE-FORCE-SEND=REQUEST:MAILTO:Eve@Elsewhere.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:cy@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=NONE:mailto:di@example.test\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let changed = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+             UID:lunch-4@example.org\r\nDTSTART:20261118T130000Z\r\n\
+             ORGANIZER;SCHEDULE-AGENT=CLIENT;CN=Ada L:mailto:ada@example.test\r\n\
+             ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:BO@example.test\r\n\
+             ATTENDEE;PARTSTAT=TENTATIVE:mailto:eve@elsewhere.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=SERVER:mailto:cy@example.test\r\n\
+             ATTENDEE:mailto:di@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=SERVER;SCHEDULE-FORCE-SEND=REQUEST:mailto:fay@example.test\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let naming = |text: &str| -> Vec<String> {
+            pim_lines::unfold(text)
+                .into_iter()
+                .filter(|line| line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE"))
+                .collect()
+        };
+        let kept = kept_beside(changed, Some(held));
+        assert_eq!(
+            naming(&kept),
+            [
+                // Three the server writes for: as it holds them, and what
+                // forced it to write once does not go up again.
+                "ORGANIZER;CN=Ada:mailto:ada@example.test",
+                "ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=\"2.0\":mailto:bo@example.test",
+                "ATTENDEE;SCHEDULE-AGENT=SERVER:MAILTO:Eve@Elsewhere.test",
+                // Two it holds and does not write for, and one it does not
+                // hold: the client's, whatever the text says.
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:cy@example.test",
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:di@example.test",
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:fay@example.test",
+            ]
+        );
+        assert!(!kept.contains("METHOD"), "{kept}");
+        assert!(kept.contains("DTSTART:20261118T130000Z"), "{kept}");
+        // Where the server holds nothing, or nothing that names anybody,
+        // every line is the client's.
+        assert_eq!(kept_beside(changed, None), kept_text(changed));
+        let plain = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:lunch-4@example.org\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        assert_eq!(kept_beside(changed, Some(plain)), kept_text(changed));
+        assert!(!leaves_writing_to_its_server(&kept_text(changed)));
+    }
+
+    /// Beside what its server holds, the kept text goes by the `UID` held
+    /// there: on the event and on each of its moved occurrences the line as
+    /// the server holds it, and on nothing inside them. Where the server
+    /// holds nothing, or nothing that says a `UID`, the text keeps its own.
+    #[test]
+    fn the_kept_text_beside_what_a_server_holds_goes_by_the_uid_held_there() {
+        let held = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID;X-MADE-BY=elsewhere:6F1E2C3A-0B1D-4E5F-8A9B-0C1D2E3F4A5B\r\n\
+             DTSTART:20261118T120000Z\r\nRRULE:FREQ=WEEKLY\r\n\
+             BEGIN:VALARM\r\nUID:alarm-held\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\n\
+             END:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ours = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:6f1e2c3a-0b1d-4e5f-8a9b-0c1d2e3f4a5b@tilo\r\nDTSTART:20261118T130000Z\r\n\
+             RRULE:FREQ=WEEKLY\r\n\
+             BEGIN:VALARM\r\nUID:alarm-ours\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\n\
+             END:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\n\
+             UID:6f1e2c3a-0b1d-4e5f-8a9b-0c1d2e3f4a5b@tilo\r\n\
+             RECURRENCE-ID:20261125T130000Z\r\nDTSTART:20261125T150000Z\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let uid_lines = |text: &str| -> Vec<String> {
+            pim_lines::unfold(text)
+                .into_iter()
+                .filter(|line| line.starts_with("UID"))
+                .collect()
+        };
+        let as_held = "UID;X-MADE-BY=elsewhere:6F1E2C3A-0B1D-4E5F-8A9B-0C1D2E3F4A5B";
+        let kept = kept_beside(ours, Some(held));
+        assert_eq!(
+            uid_lines(&kept),
+            [as_held, "UID:alarm-ours", as_held],
+            "{kept}"
+        );
+        assert!(kept.contains("DTSTART:20261118T130000Z"), "{kept}");
+        // The same event to this calendar either way.
+        assert_eq!(parse(&kept).0, parse(ours).0);
+        // Nothing held, or nothing held that says a UID: its own.
+        assert_eq!(uid_lines(&kept_beside(ours, None)), uid_lines(ours));
+        let nameless =
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID: \r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(
+            uid_lines(&kept_beside(ours, Some(nameless))),
+            uid_lines(ours)
+        );
+    }
+
+    /// A repeating entry as a server holds it. Ada organises it with Bo and
+    /// Eve; two more are named by addresses this calendar does not read; and
+    /// on the one occurrence that stands apart, Dan is invited too.
+    const HELD_STANDUP: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+         UID:standup-7@example.org\r\nDTSTART:20261116T090000Z\r\nRRULE:FREQ=WEEKLY\r\n\
+         ORGANIZER:mailto:ada@example.test\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test\r\n\
+         ATTENDEE:mailto:eve@elsewhere.test\r\n\
+         ATTENDEE;CUTYPE=GROUP;SCHEDULE-FORCE-SEND=REQUEST:urn:uuid:fay-4\r\n\
+         ATTENDEE;SCHEDULE-AGENT=NONE:Mailto:Di@Example.test\r\n\
+         END:VEVENT\r\nBEGIN:VEVENT\r\nUID:standup-7@example.org\r\n\
+         RECURRENCE-ID:20261123T090000Z\r\nDTSTART:20261123T100000Z\r\n\
+         ORGANIZER:mailto:ada@example.test\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test\r\n\
+         ATTENDEE:mailto:eve@elsewhere.test\r\n\
+         ATTENDEE;RSVP=TRUE:mailto:dan@example.test\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    /// One event as this calendar writes it out.
+    fn written_out_alone(event: Event) -> String {
+        export(&Calendar {
+            events: vec![event].into(),
+            ..Calendar::default()
+        })
+    }
+
+    /// Whom each event and occurrence of a text names, in order; a line the
+    /// client writes for by its address alone.
+    fn naming_by_part(text: &str) -> Vec<Vec<String>> {
+        let mut parts: Vec<Vec<String>> = Vec::new();
+        for line in pim_lines::unfold(text) {
+            if line == "BEGIN:VEVENT" {
+                parts.push(Vec::new());
+            } else if line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE") {
+                let said = if line.contains(";SCHEDULE-AGENT=CLIENT") {
+                    format!(
+                        "the client's: {}",
+                        line.rsplit(':').next().unwrap_or_default()
+                    )
+                } else {
+                    line
+                };
+                if let Some(part) = parts.last_mut() {
+                    part.push(said);
+                }
+            }
+        }
+        parts
+    }
+
+    /// What goes up of an event this calendar wrote out keeps whom its
+    /// server holds and an event here cannot hold: somebody named by an
+    /// address this calendar does not read, as held, and on an occurrence
+    /// the lines its server holds there. An occurrence follows its event
+    /// only in whom this calendar took out of the event or newly put into
+    /// it, and an occurrence that stands apart only here names whom its
+    /// event goes up with. A text that was not written out from an event is
+    /// whole as it is.
+    #[test]
+    fn what_is_written_out_of_an_event_keeps_whom_it_cannot_hold_as_its_server_holds_them() {
+        let mut event = parse(HELD_STANDUP).0.remove(0);
+        assert_eq!(
+            event.attendees.iter().count(),
+            3,
+            "Ada, Bo and Eve are read"
+        );
+        assert_eq!(event.occurrence_overrides.iter().count(), 1);
+        // Here Eve is taken out of the event and Cy is put into it.
+        let staying: Vec<Attendee> = event
+            .attendees
+            .iter()
+            .filter(|invited| invited.email != "eve@elsewhere.test")
+            .cloned()
+            .collect();
+        event.attendees = staying.into();
+        event.attendees.push(Attendee {
+            id: Id::new_v4(),
+            name: "Cy".into(),
+            email: "cy@example.test".into(),
+            status: InviteStatus::NeedsAction,
+        });
+        // And one more occurrence is moved, which its server holds no part
+        // for.
+        event
+            .occurrence_overrides
+            .push(crate::model::OccurrenceOverride {
+                original_date: jiff::civil::date(2026, 11, 30),
+                original_time: Some(jiff::civil::time(9, 0, 0, 0)),
+                cancelled: false,
+                start: Some(jiff::civil::date(2026, 11, 30).at(11, 0, 0, 0)),
+                end: Some(jiff::civil::date(2026, 11, 30).at(11, 15, 0, 0)),
+                end_later_fold: false,
+                title: None,
+                location: None,
+            });
+        let ours = written_out_alone(event);
+        let kept = exported_beside(&ours, HELD_STANDUP);
+        assert_eq!(
+            naming_by_part(&kept),
+            [
+                vec![
+                    "ORGANIZER:mailto:ada@example.test",
+                    "the client's: ada@example.test",
+                    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test",
+                    "the client's: cy@example.test",
+                    // Two this calendar does not read: as held, and what
+                    // forced the server to write once does not go up again.
+                    "ATTENDEE;CUTYPE=GROUP:urn:uuid:fay-4",
+                    "ATTENDEE;SCHEDULE-AGENT=NONE:Mailto:Di@Example.test",
+                ],
+                vec![
+                    // As its server holds the occurrence, without Eve, who
+                    // was taken out of the event, and with Dan, who is
+                    // invited to this occurrence alone.
+                    "ORGANIZER:mailto:ada@example.test",
+                    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test",
+                    "ATTENDEE;RSVP=TRUE:mailto:dan@example.test",
+                    // And whom the event newly names here.
+                    "the client's: ada@example.test",
+                    "the client's: cy@example.test",
+                ],
+                vec![
+                    // The occurrence moved here: whom the event goes up
+                    // with.
+                    "ORGANIZER:mailto:ada@example.test",
+                    "the client's: ada@example.test",
+                    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test",
+                    "the client's: cy@example.test",
+                    "ATTENDEE;CUTYPE=GROUP:urn:uuid:fay-4",
+                    "ATTENDEE;SCHEDULE-AGENT=NONE:Mailto:Di@Example.test",
+                ],
+            ],
+            "{kept}"
+        );
+        assert!(!kept.contains("SCHEDULE-FORCE-SEND"), "{kept}");
+        assert!(kept.contains("UID:standup-7@example.org"), "{kept}");
+        // A text that was not written out from an event says all it means:
+        // nobody is put back into it.
+        let whole = kept_beside(&ours, Some(HELD_STANDUP));
+        assert!(
+            !whole.contains("fay-4") && !whole.contains("dan@example.test"),
+            "{whole}"
+        );
+    }
+
+    /// Who organises an entry stays where its server names them by an
+    /// address this calendar does not read, and is the only one to organise
+    /// it: where the event here says who organises it, that stands instead.
+    #[test]
+    fn who_organises_an_entry_by_an_address_this_calendar_does_not_read_stays() {
+        let by_other_address = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:review-5@example.org\r\n\
+             DTSTART:20261116T090000Z\r\nORGANIZER:urn:uuid:ada\r\n\
+             ATTENDEE:mailto:bo@example.test\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let mut event = parse(by_other_address).0.remove(0);
+        assert_eq!(event.organizer, None);
+        let kept = exported_beside(&written_out_alone(event.clone()), by_other_address);
+        assert_eq!(
+            naming_by_part(&kept),
+            [vec![
+                "ATTENDEE:mailto:bo@example.test",
+                "ORGANIZER:urn:uuid:ada"
+            ]],
+            "{kept}"
+        );
+        event.organizer = event.attendees.iter().next().map(|invited| invited.id);
+        let kept = exported_beside(&written_out_alone(event), by_other_address);
+        assert_eq!(
+            naming_by_part(&kept),
+            [vec![
+                "the client's: bo@example.test",
+                "ATTENDEE:mailto:bo@example.test"
+            ]],
+            "{kept}"
+        );
+    }
+
+    /// Writing an entry ends what its server schedules of it where the
+    /// server holds who organises it and writes to somebody it names, and
+    /// what is written no longer says who organises it, on the event or on
+    /// one of its occurrences (RFC 6638, 3.1 and 3.2.3.1). An entry its
+    /// server writes to nobody for, and one nobody organises, has nothing to
+    /// end.
+    #[test]
+    fn what_no_longer_says_who_organises_it_ends_what_its_server_schedules() {
+        let entry = |parts: &[&str]| {
+            let mut text = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+            for (place, people) in parts.iter().enumerate() {
+                text.push_str("BEGIN:VEVENT\r\nUID:lunch-4@example.org\r\n");
+                if place > 0 {
+                    text.push_str("RECURRENCE-ID:20261125T120000Z\r\n");
+                }
+                text.push_str("DTSTART:20261118T120000Z\r\n");
+                text.push_str(people);
+                text.push_str("END:VEVENT\r\n");
+            }
+            text.push_str("END:VCALENDAR\r\n");
+            text
+        };
+        let hers = "ORGANIZER:mailto:ada@example.test\r\nATTENDEE:mailto:bo@example.test\r\n";
+        let hers_alone = "ORGANIZER:MAILTO:Ada@Example.test\r\n";
+        let held = entry(&[hers]);
+        assert!(ends_what_its_server_schedules(&entry(&[""]), &held));
+        assert!(!ends_what_its_server_schedules(&entry(&[hers]), &held));
+        // Her guests taken out is her change to an entry she still organises.
+        assert!(!ends_what_its_server_schedules(
+            &entry(&[hers_alone]),
+            &held
+        ));
+        // Every part says it, or the entry is none its server schedules.
+        assert!(ends_what_its_server_schedules(&entry(&[hers, ""]), &held));
+        assert!(!ends_what_its_server_schedules(
+            &entry(&[hers, hers_alone]),
+            &held
+        ));
+        // Somebody else organises it and she is invited: the same.
+        let invited =
+            entry(&["ORGANIZER:mailto:eve@elsewhere.test\r\nATTENDEE:mailto:ada@example.test\r\n"]);
+        assert!(ends_what_its_server_schedules(&entry(&[""]), &invited));
+        assert!(ends_what_its_server_schedules(
+            &entry(&[hers_alone]),
+            &invited
+        ));
+        // Nothing to end: the client writes to everybody it names, nobody
+        // organises it, or it names nobody.
+        let clients = entry(&[
+            "ORGANIZER;SCHEDULE-AGENT=CLIENT:mailto:ada@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:bo@example.test\r\n",
+        ]);
+        assert!(!ends_what_its_server_schedules(&entry(&[""]), &clients));
+        let unorganised = entry(&["ATTENDEE:mailto:bo@example.test\r\n"]);
+        assert!(!ends_what_its_server_schedules(&entry(&[""]), &unorganised));
+        assert!(!ends_what_its_server_schedules(
+            &entry(&[""]),
+            &entry(&[""])
+        ));
     }
 
     fn outlook_zone(tzid: &str) -> String {
@@ -1974,7 +3023,7 @@ mod tests {
         assert_eq!(parsed.events.len(), 1, "the invite's event is kept");
         let event = &parsed.events[0];
         let instant = crate::timezone::wall_to_utc(&event.timezone, event.start)
-            .map(|(instant, _)| instant.to_rfc3339())
+            .map(|(instant, _)| instant.to_string())
             .unwrap_or_default();
         (event.timezone.clone(), instant)
     }

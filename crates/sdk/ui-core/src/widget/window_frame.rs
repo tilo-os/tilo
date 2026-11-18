@@ -1,4 +1,4 @@
-//! A window standing on a shell, as a described component: what a shell draws for a place on a
+//! A window on a shell, as a described component: what a shell draws for a place on a
 //! floating shell (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
 //! which is the same thing.
 //!
@@ -41,7 +41,7 @@ use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 
-/// A window standing on a shell: the window surface with its edge and shadow, holding the
+/// A window on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
 #[derive(Component, Default)]
 #[component(name = "WindowFrame", role = "Group", label = "name")]
@@ -612,6 +612,22 @@ impl Decorator for WindowFrame {
     /// composer or the canvas itself by its own bar (`shell.md` §8.1, "Dropping on the
     /// composer"). The tabs, the controls and the app's own header buttons take their presses
     /// first: only what the content did not take is the bar's.
+    /// What the window holds, on the window's own ground, floating over the shell; the one in
+    /// front wears the focused edge.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.layers.html(cx);
+        let theme = cx.theme();
+        let node = cx.node();
+        SurfaceLevel::Window.compose(theme, self.rect, node);
+        if self.focused
+            && let Some(ground) = node.ground.as_mut()
+        {
+            ground.edge = Some(crate::composition::rgba8(
+                theme.tokens.colors.window_edge_focused(),
+            ));
+        }
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.carries.is_none() {
             self.layers.handle_event(event, ctx);

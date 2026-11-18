@@ -166,8 +166,8 @@ tilo_test_env::scenario! {
     // the order asked: a `tilo_status` and a `tilo_cancel` answer while two
     // invokes wait, and every reply is one whole line.
     {
-        use tilo_mcp::test_hosts::{GatedHost, overlapping_lines};
-        let host = GatedHost::default();
+        use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};
+        let host = HeldHost::default();
         let server = std::sync::Arc::new(tilo_mcp::McpServer::new(
             host.clone(),
             "workspace".into(),

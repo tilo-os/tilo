@@ -17,22 +17,22 @@ use std::collections::BTreeMap;
 use ui::webview::{PageActor, PageFailure, PageReply, PageRequest};
 
 use super::{BrowserWidget, PageOperation};
-use crate::page_forms::{self, FORM_CHANGED, FormRun, Standing, answer_id};
+use crate::page_forms::{self, FORM_CHANGED, FormRun, FormSource, answer_id};
 use crate::resource::{Browser, browser};
 use crate::site_memory::{self, Place, RememberedForm};
 
 /// What a form action is refused with when the page holds no form of the
 /// signature it was made for: it holds other forms (the engine's
 /// `form_changed`), or none at all (`none`, its `no_form`).
-fn gone_message(label: &str, standing: Standing, none: bool) -> String {
+fn gone_message(label: &str, source: FormSource, none: bool) -> String {
     let name = if label.is_empty() {
         "The form".to_owned()
     } else {
         format!("The form \"{label}\"")
     };
-    let known = match standing {
-        Standing::Remembered => "remembered",
-        Standing::Read | Standing::Changed => "read",
+    let known = match source {
+        FormSource::Remembered => "remembered",
+        FormSource::Read | FormSource::Changed => "read",
     };
     let why = if none {
         "this page holds no form now"
@@ -195,19 +195,19 @@ impl BrowserWidget {
                     // `fill-page-form` named the form itself and is told
                     // what the engine said. A form the page publishes under
                     // that signature is withdrawn, and the page read again.
-                    if self.forms.standing(&place, form).is_some() {
+                    if self.forms.source(&place, form).is_some() {
                         self.forms.heard_gone(&place, form);
                         self.read_forms_again();
                     }
                     return Err(failure);
                 }
                 let none = failure.code == "no_form";
-                let (label, standing) = self.forms.heard_gone(&place, form);
+                let (label, source) = self.forms.heard_gone(&place, form);
                 // The page does not hold what it publishes: it is read again.
                 self.read_forms_again();
                 Err(PageFailure {
                     code: FORM_CHANGED.to_owned(),
-                    message: gone_message(&label, standing, none),
+                    message: gone_message(&label, source, none),
                     record: failure.record,
                 })
             }

@@ -325,11 +325,11 @@ tilo_test_env::scenario! {
 fn source_authority(source_dir: &Path) -> (SourceIdentity, [u8; 32]) {
     use std::sync::Arc;
 
-    tilo_identity_host::provisioning::create_primary_identity(
+    tilo_identity::provisioning::create_primary_identity(
         source_dir,
         "Source person",
         [10, 20, 30],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("the source identity is created");
     let signer_path = source_dir.join("primary.json");

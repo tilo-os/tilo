@@ -99,7 +99,7 @@ discord-remember-avatar = Saved a Discord avatar
 discord-finish-import = Finished importing the server
 discord-report-voice = Said whether calls reach Discord
 
-## History: changes to the server record.
+## History: changes to the server resource.
 discord-guild-name = Renamed the server to { $new }
 discord-guild-ownership = Changed how the bridge owns the server
 discord-guild-token-item = Changed the bridge's bot token

@@ -1,5 +1,5 @@
 use super::*;
-use crate::gates::Gates;
+use crate::seal_checks::SealChecks;
 use crate::testing::*;
 use collab_types::{ArtifactId, ContentRetention};
 use std::path::Path;
@@ -10,7 +10,7 @@ struct Device {
     /// created it ([`create`]).
     founds: Arc<std::sync::atomic::AtomicBool>,
     service: WorkspaceKeys,
-    gates: Arc<Gates>,
+    seal_checks: Arc<SealChecks>,
     endpoint: Endpoint,
 }
 
@@ -39,7 +39,7 @@ fn sealed_device(
     dir: &Path,
 ) -> Device {
     workspace.queues.lock().unwrap().entry(id).or_default();
-    let gates = Arc::new(Gates::default());
+    let seal_checks = Arc::new(SealChecks::default());
     // The first device created the workspace.
     let founds = Arc::new(std::sync::atomic::AtomicBool::new(id == 0));
     let service = WorkspaceKeys::open(
@@ -53,13 +53,13 @@ fn sealed_device(
             policy: policy.clone(),
             founds: Arc::clone(&founds),
         }),
-        Arc::clone(&gates) as Arc<dyn GateRegistry>,
+        Arc::clone(&seal_checks) as Arc<dyn SealCheckRegistry>,
     )
     .unwrap();
     Device {
         founds,
         service,
-        gates,
+        seal_checks,
         endpoint: Endpoint {
             workspace: Arc::clone(workspace),
             id,
@@ -95,7 +95,7 @@ fn ready_epoch(access: &KeyAccess) -> Option<u64> {
 
 fn refuses_plaintext(device: &Device) -> bool {
     !device
-        .gates
+        .seal_checks
         .allows_document(&device.endpoint.workspace_id.to_string(), None)
 }
 
@@ -235,13 +235,13 @@ fn a_new_group_is_encrypted_from_creation_and_follows_the_policy() {
     );
     assert!(
         refuses_plaintext(&laptop),
-        "gate: {:?} peer: {:?}",
+        "seal_check: {:?} peer: {:?}",
         laptop.service.registered.get(&workspace_id),
         laptop
             .service
             .peers
             .get(&workspace_id)
-            .map(|e| (e.peer.access(), e.peer.gate()))
+            .map(|e| (e.peer.access(), e.peer.seal_check()))
     );
 
     policy.allowed.lock().unwrap().remove(&public(2));
@@ -703,7 +703,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
     // Match the drainer's Notify: concurrent announcements leave one
     // pending wake, not a queue of already-reconciled epochs to pump again.
     let (woke, wakes) = std::sync::mpsc::sync_channel(1);
-    let watch = tilo_identity_host::policy_change::Watch::new(move || {
+    let watch = tilo_identity::policy_change::Watch::new(move || {
         let _ = woke.try_send(());
     });
     let parked = |owner: &SharedKeys| {
@@ -734,7 +734,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
         // owner register the expiry and park.
         policy.until.lock().unwrap().insert(public(2), expiry);
         policy.allowed.lock().unwrap().remove(&public(2));
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         parked(&owner);
         assert_eq!(
             policy.announce_at.lock().unwrap().last(),
@@ -747,7 +747,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
 
     // Short of the expiry, a pass (another announcement) keeps the member.
     tilo_clock::testing::with_wall(at(expiry - 1), || {
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         assert!(wakes.try_recv().is_ok(), "the armed watch woke");
         parked(&owner);
         let _ = laptop.pump_until_due(&laptop_endpoint);
@@ -761,7 +761,7 @@ fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
     // re-check (at most a reconcile interval after the last) removes the
     // member.
     tilo_clock::testing::with_wall(at(expiry), || {
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         assert!(wakes.try_recv().is_ok(), "the expiry woke the owner");
         tilo_test_env::wait_until("the member applied the removal", || {
             let _ = owner.pump_until_due(&owner_endpoint);
@@ -841,7 +841,7 @@ fn an_endpoint_hears_of_its_admission_and_removal() {
 #[test]
 fn a_request_waiting_for_keys_leaves_the_other_asks_answered() {
     use runtime_identity::wire::KeyAccess as Wire;
-    use tilo_identity_host::sources::GroupKeySource as _;
+    use tilo_identity::sources::GroupKeySource as _;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -1043,7 +1043,7 @@ fn delivery_survives_a_network_outage() {
 }
 
 #[test]
-fn group_state_and_gates_survive_a_restart() {
+fn group_state_and_seal_checks_survive_a_restart() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let policy = Policy::default();
@@ -1063,7 +1063,7 @@ fn group_state_and_gates_survive_a_restart() {
         let mut restarted = device(&workspace, workspace_id, id, seed, &policy, dir);
         assert!(
             refuses_plaintext(&restarted),
-            "the plaintext gate holds from the first op after a restart"
+            "the plaintext seal_check holds from the first op after a restart"
         );
         assert!(ready_epoch(&restarted.service.access(workspace_id, now)).is_some());
     }
@@ -1630,10 +1630,10 @@ fn without_a_store_nothing_is_due() {
     *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
         std::sync::atomic::AtomicU64::new(1),
     )));
-    let gates = Arc::new(Gates::default());
+    let seal_checks = Arc::new(SealChecks::default());
     let mut service = WorkspaceKeys::without_store(
         Box::new(Directory::new(policy.clone())),
-        Arc::clone(&gates) as Arc<dyn GateRegistry>,
+        Arc::clone(&seal_checks) as Arc<dyn SealCheckRegistry>,
     );
     let endpoint = Endpoint::join(&workspace, workspace_id, 0);
     let now = Instant::now();
@@ -1659,7 +1659,7 @@ fn without_a_store_nothing_is_due() {
         "no governance was sent"
     );
     // The workspace is a governed one too: still no state of its own.
-    let mut governed = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), gates);
+    let mut governed = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), seal_checks);
     assert!(matches!(
         governed.access(workspace_id, now),
         KeyAccess::NoSecretStore
@@ -1677,7 +1677,7 @@ include!("catch_up_tests.rs");
 
 include!("turn_tests.rs");
 
-/// A device key in custody that answers a signature only on a later poll, as a page's `WebCrypto`
+/// A device key held that answers a signature only on a later poll, as a page's `WebCrypto`
 /// key does.
 struct LaterSigner(ed25519_dalek::SigningKey);
 
@@ -1703,7 +1703,7 @@ impl DeviceSigner for LaterSigner {
 /// A reader whose key signs later is admitted by a key holder and opens what it seals; alone it
 /// never founds a group, and it commits nothing when the policy moves.
 #[test]
-fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
+fn a_reader_with_ownership_that_signs_later_reads_a_key_holders_group() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let artifact = collab_types::ArtifactId::new();
@@ -1722,10 +1722,10 @@ fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
                     role: KeyRole::Follower,
                 },
                 Box::new(Directory::new(policy.clone())),
-                Arc::new(Gates::default()),
+                Arc::new(SealChecks::default()),
             )
             .unwrap(),
-            gates: Arc::new(Gates::default()),
+            seal_checks: Arc::new(SealChecks::default()),
             endpoint: Endpoint::join(&workspace, workspace_id, id),
         }
     };
@@ -1738,7 +1738,7 @@ fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
     ));
     run(&mut [&mut page], &mut now, 30);
     assert!(!page.service.peers[&workspace_id].peer.knows_group());
-    assert!(page.service.signing(), "its request waits on its custody");
+    assert!(page.service.signing(), "its request waits on its ownership");
     pollster::block_on(page.service.signatures());
     assert!(!page.service.signing());
 
@@ -2072,7 +2072,7 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
 /// A member whose link to the device it reaches the workspace through was down
 /// when a channel's group changed heard nothing of the commit, which that
 /// device published once. What the device hands a member that links
-/// ([`WorkspaceKeys::standing_governance`]) makes it current again: nobody
+/// ([`WorkspaceKeys::current_governance`]) makes it current again: nobody
 /// has to commit a second time for it to leave the epoch it was left at.
 #[test]
 fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
@@ -2134,7 +2134,7 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
 
     // The phone's link is up again, and the device it reaches the workspace
     // through hands it what its channels hold.
-    let handed = owner.service.standing_governance(workspace_id);
+    let handed = owner.service.current_governance(workspace_id);
     assert!(
         handed.iter().all(|message| matches!(
             message,
@@ -2145,7 +2145,7 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
     assert!(
         owner
             .service
-            .standing_governance(WorkspaceId::new())
+            .current_governance(WorkspaceId::new())
             .is_empty(),
         "and none of another workspace's"
     );

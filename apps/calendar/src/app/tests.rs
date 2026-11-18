@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::{Palette, Recurrence};
 use automerge::ROOT;
-use chrono::Datelike;
+use jiff::ToSpan;
 use ui::headless::Framed;
 use ui::widget::DrawChild;
 use ui::widget::{Edits, ExternalDatePickerHit};
@@ -54,7 +54,7 @@ fn place_row(harness: &ui::headless::FrameHarness, place: &str) -> Rect {
 
 /// The demo calendar of one day and, once a fixture asks for it, the document that holds it.
 struct Demo {
-    today: NaiveDate,
+    today: Date,
     calendar: Calendar,
     document: std::cell::OnceCell<AutoCommit>,
 }
@@ -69,7 +69,7 @@ thread_local! {
 /// The demo calendar [`CalendarApp::new_demo`] starts from. Replaying it into a document is most
 /// of what a demo fixture costs, so a test that mounts several demo apps seeds one calendar and
 /// replays it once ([`document_of`]). A day other than the first one asked for is seeded afresh.
-pub(crate) fn demo_calendar(today: NaiveDate) -> Calendar {
+pub(crate) fn demo_calendar(today: Date) -> Calendar {
     DEMO.with(|demo| {
         let demo = demo.get_or_init(|| Demo {
             today,
@@ -136,7 +136,7 @@ fn demo_fixtures_are_separate_copies_of_one_seed() {
             .is_none(),
         "a calendar that is no longer the seed is replayed as it is"
     );
-    let tomorrow = second.today + Duration::days(1);
+    let tomorrow = second.today + 1.days();
     assert_ne!(
         demo_calendar(tomorrow),
         demo_calendar(second.today),
@@ -203,7 +203,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut app = CalendarApp::new();
         app.model = replica.state().unwrap();
-        let next = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let next = Date::new(2026, 11, 1).unwrap();
         let spans = app.timeline_spans(&[next]);
         assert_eq!(spans.len(), 1);
         assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
@@ -222,7 +222,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut app = CalendarApp::new_detached();
         app.model = replica.state().unwrap();
-        let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let day = Date::new(2026, 10, 25).unwrap();
         let id = app.model.events[0].id;
         app.show_calendar();
         app.view = View::Day;
@@ -260,19 +260,19 @@ tilo_test_env::scenario! {
         let (event, edit) = occurrence(h.doc());
         assert_eq!(
             edit.start,
-            Some(day.and_hms_opt(2, 30, 0).unwrap()),
+            Some(day.at(2, 30, 0, 0)),
             "status={:?}, selection={:?}, dispatched={:?}",
             h.app.status.text(),
             h.app.selection,
             h.app.last_dispatched()
         );
-        assert_eq!(edit.end, Some(day.and_hms_opt(2, 35, 0).unwrap()));
+        assert_eq!(edit.end, Some(day.at(2, 35, 0, 0)));
         assert!(edit.end_later_fold);
         let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
-        assert_eq!(to_at - from_at, Duration::minutes(65));
+        assert_eq!(to_at.duration_since(from_at), jiff::SignedDuration::from_mins(65));
         assert_eq!(
             event.start,
-            day.and_hms_opt(2, 45, 0).unwrap(),
+            day.at(2, 45, 0, 0),
             "the series stays"
         );
         assert_eq!(event.timezone, "Europe/Berlin");
@@ -285,17 +285,17 @@ tilo_test_env::scenario! {
         let (event, edit) = occurrence(h.doc());
         assert_eq!(
             edit.start,
-            Some(day.and_hms_opt(4, 30, 0).unwrap()),
+            Some(day.at(4, 30, 0, 0)),
             "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
             h.app.status.text(),
             h.app.selection,
             h.app.last_dispatched(),
             h.app.timeline_spans(&[day])
         );
-        assert_eq!(edit.end, Some(day.and_hms_opt(5, 35, 0).unwrap()));
+        assert_eq!(edit.end, Some(day.at(5, 35, 0, 0)));
         assert!(!edit.end_later_fold);
         let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
-        assert_eq!(to_at - from_at, Duration::minutes(65));
+        assert_eq!(to_at.duration_since(from_at), jiff::SignedDuration::from_mins(65));
         assert_eq!(event.timezone, "Europe/Berlin");
         assert!(h.app.last_dispatched().is_some());
     }
@@ -327,7 +327,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut app = CalendarApp::new();
         app.model = replica.state().unwrap();
-        let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let day = Date::new(2026, 10, 25).unwrap();
         let id = app
             .model
             .events
@@ -343,15 +343,15 @@ tilo_test_env::scenario! {
         let area = h.app.view_rect();
         let g = h.app.timeline.test_layout_geometry(area);
         let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
-        let lane = h
+        let split = h
             .app
             .timeline_spans(&[day])
             .into_iter()
             .find(|span| span.id == id)
             .unwrap()
-            .lane;
-        let lane_w = block.width() / lane.of as f64;
-        let x = block.x0 + lane_w * (lane.index as f64 + 0.5);
+            .split;
+        let split_w = block.width() / split.of as f64;
+        let x = block.x0 + split_w * (split.index as f64 + 0.5);
         h.click(Point::new(x, block.y0 + 1.0));
         h.mouse_button(ElementState::Released);
         h.relayout();
@@ -485,14 +485,13 @@ tilo_test_env::scenario! {
         }
         {
             let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
-            let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
-                .unwrap()
-                .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+            let start = jiff::civil::Date::new(2026, 6, 15).unwrap()
+                .to_datetime(Time::new(9, 0, 0, 0).unwrap());
             let ev = Event {
                 id: Uuid::new_v4(),
                 title: "Tagged".into(),
                 start,
-                end: start + Duration::hours(1),
+                end: start + jiff::SignedDuration::from_hours(1),
                 color: Palette::Red,
                 calendar_id: Some("work/oncall".into()),
                 ..Event::default()
@@ -739,7 +738,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         );
         assert!(
             !app.take_structure_dirty(),
-            "the rebuild is asked for once, even before the host lays it out"
+            "the rebuild is asked for once, even before it is laid out"
         );
 
         let mut taffy2: TaffyTree<()> = TaffyTree::new();
@@ -795,8 +794,8 @@ tilo_test_env::scenario! {
     {
         {
             let s = crate::date::week_range_short(
-                NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
-                NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+                Date::new(2026, 6, 29).unwrap(),
+                Date::new(2026, 7, 5).unwrap(),
             );
             assert!(s.contains("Jun 29"), "start kept: {s}");
             assert!(s.contains("Jul 5"), "end kept: {s}");
@@ -862,8 +861,8 @@ tilo_test_env::scenario! {
                 let mut overlapping = edited.clone();
                 overlapping.id = Id::new_v4();
                 overlapping.title = "Design review follow-up".into();
-                overlapping.start = edited.start + chrono::Duration::minutes(15);
-                overlapping.end = edited.end + chrono::Duration::minutes(30);
+                overlapping.start = edited.start + jiff::SignedDuration::from_mins(15);
+                overlapping.end = edited.end + jiff::SignedDuration::from_mins(30);
                 overlapping.recurrence = Recurrence::Weekly;
                 app.model.events.push(overlapping);
                 laid_out(&mut app, width, 844.0, text_scale);
@@ -874,7 +873,7 @@ tilo_test_env::scenario! {
                 );
                 assert!(
                     app.form.conflict.y1 <= app.form.location.y0,
-                    "warning reserves its own lane before location at {width}px / {text_scale}×"
+                    "warning reserves its own split before location at {width}px / {text_scale}×"
                 );
                 for control in event_controls(&app.form) {
                     assert!(
@@ -998,8 +997,8 @@ tilo_test_env::scenario! {
                 let theme = app.layout_theme.clone();
                 let mut text = TextRenderer::new();
                 for (rect, label) in [
-                    (app.form.start_time, crate::date::fmt_time(&event.start)),
-                    (app.form.end_time, crate::date::fmt_time(&event.end)),
+                    (app.form.start_time, crate::date::fmt_time(event.start)),
+                    (app.form.end_time, crate::date::fmt_time(event.end)),
                 ] {
                     let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
                         .intrinsic_width(&mut text, &theme);
@@ -1089,10 +1088,10 @@ tilo_test_env::scenario! {
     {
         let dir = tempfile::tempdir().expect("temporary directory");
         let invite = dir.path().join("invite.ics");
-        let today = chrono::Local::now().date_naive();
+        let today = jiff::Zoned::now().date();
         std::fs::write(&invite, crate::ics::sample_ics(today)).expect("write fixture");
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _process = ui::process::enter(&services);
 
         let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
         let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {
@@ -1494,8 +1493,8 @@ tilo_test_env::scenario! {
             started.title
         );
         assert_eq!(
-            started.end - started.start,
-            chrono::Duration::hours(1),
+            started.end.duration_since(started.start),
+            jiff::SignedDuration::from_hours(1),
             "it takes an hour, as the button's does"
         );
         assert_eq!(
@@ -1533,13 +1532,11 @@ tilo_test_env::scenario! {
             .expect("the words left after the day and time are the title");
         assert_eq!(
             added.start,
-            NaiveDate::from_ymd_opt(2026, 10, 30)
-                .unwrap_or_default()
-                .and_hms_opt(13, 0, 0)
-                .unwrap_or_default(),
+            Date::new(2026, 10, 30).unwrap_or_default()
+                .at(13, 0, 0, 0),
             "Friday at one in the afternoon"
         );
-        assert_eq!(added.end - added.start, Duration::hours(1));
+        assert_eq!(added.end.duration_since(added.start), jiff::SignedDuration::from_hours(1));
     }
 
     phase the_card_puts_away_without_writing_when_it_is_told_to;
@@ -1590,10 +1587,10 @@ tilo_test_env::scenario! {
         let draft = h.app.fresh_draft.clone().expect("a new event is opened");
         assert_eq!(
             draft.start.time(),
-            chrono::NaiveTime::from_hms_opt(14, 15, 0).unwrap_or_default(),
+            jiff::civil::Time::new(14, 15, 0, 0).unwrap_or_default(),
             "the next quarter hour after 14:07"
         );
-        assert_eq!(draft.end - draft.start, Duration::hours(1));
+        assert_eq!(draft.end.duration_since(draft.start), jiff::SignedDuration::from_hours(1));
     }
 }
 
@@ -1635,7 +1632,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     {
         let mut app =
             ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-        let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
+        let sample = crate::model::seed_demo(jiff::Zoned::now().date());
         for invoke in crate::resource::sample_invocations(&sample) {
             app.invoke(invoke).unwrap();
         }
@@ -1736,7 +1733,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         let edit = |edit: ui::tilo_resource::Edit<Calendar>| {
             ui::tilo_resource::Invoke::from(edit).arguments
         };
-        let due = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+        let due = jiff::civil::Date::new(2026, 9, 9).unwrap();
         app.apply_action(Action::SetTaskDue(Some(due)), &mut Edits::lend(&mut state));
         assert_eq!(
             app.last_dispatched().unwrap().arguments,
@@ -1933,7 +1930,7 @@ tilo_test_env::scenario! {
         for (width, height) in [(360, 800), (800, 360)] {
             let mut app = CalendarApp::new_demo();
             let open = app.selected_event().expect("the sample event is open");
-            let start = app.model.event(open).unwrap().start + Duration::minutes(30);
+            let start = app.model.event(open).unwrap().start + jiff::SignedDuration::from_mins(30);
             app.model
                 .events
                 .push(crate::resource::event_at("Overlapping", start));
@@ -2326,9 +2323,9 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
         assert_eq!(h.app.anchor.month(), m0, "'[' steps it back");
         let a0 = h.app.anchor;
         h.press_named(winit::keyboard::NamedKey::ArrowRight);
-        assert_eq!(h.app.anchor, a0 + Duration::days(1), "ArrowRight → +1 day");
+        assert_eq!(h.app.anchor, a0 + 1.days(), "ArrowRight → +1 day");
         h.press_named(winit::keyboard::NamedKey::ArrowDown);
-        assert_eq!(h.app.anchor, a0 + Duration::days(8), "ArrowDown → +7 days");
+        assert_eq!(h.app.anchor, a0 + 8.days(), "ArrowDown → +7 days");
 
         let before = h.app.model.events.len();
         h.type_char("n");
@@ -2625,7 +2622,7 @@ tilo_test_env::scenario! {
                 "starts at the drag origin (03:00)"
             );
             assert_eq!(
-                (new_ev.end - new_ev.start).num_minutes(),
+                new_ev.end.duration_since(new_ev.start).as_mins(),
                 120,
                 "spans the dragged range (03:00–05:00)"
             );
@@ -2654,7 +2651,7 @@ tilo_test_env::scenario! {
                     .iter()
                     .find(|e| e.title == "Design review")
                     .expect("seeded 11:00 event present");
-                (ev.id, ev.start, (ev.end - ev.start).num_minutes())
+                (ev.id, ev.start, ev.end.duration_since(ev.start).as_mins())
             };
             assert_eq!(start0.time(), min_to_time(11 * 60));
 
@@ -2699,7 +2696,7 @@ tilo_test_env::scenario! {
                 "rescheduled two hours later (was {start0})"
             );
             assert_eq!(
-                (end - start).num_minutes(),
+                end.duration_since(start).as_mins(),
                 dur0,
                 "duration preserved across the move"
             );
@@ -2751,8 +2748,8 @@ tilo_test_env::scenario! {
         h.relayout();
         let saved = crate::resource::read_doc(h.doc());
         let series = saved.event(before.id).expect("the series stays itself");
-        assert_eq!(series.start, before.start + Duration::hours(2));
-        assert_eq!(series.end, before.end + Duration::hours(2));
+        assert_eq!(series.start, before.start + jiff::SignedDuration::from_hours(2));
+        assert_eq!(series.end, before.end + jiff::SignedDuration::from_hours(2));
         assert_eq!(series.recurrence, before.recurrence);
         assert_eq!(series.recurrence_until, before.recurrence_until);
         assert!(
@@ -2788,7 +2785,7 @@ tilo_test_env::scenario! {
         Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
         assert_eq!(
             h.app.anchor,
-            week + Duration::days(7),
+            week + 7.days(),
             "a leftward swipe shows the next week"
         );
         Framed::harness_mut(&mut h.app).swipe_at((left, y), (right, y));
@@ -2843,7 +2840,7 @@ tilo_test_env::scenario! {
             })
             .expect("the event's chip is drawn in the month grid");
         let day = before.start.date();
-        let target = day + Duration::days(2);
+        let target = day + 2.days();
         let to = h
             .app
             .hits
@@ -2890,8 +2887,8 @@ tilo_test_env::scenario! {
             "the time of day it was made for stays"
         );
         assert_eq!(
-            moved.end - moved.start,
-            before.end - before.start,
+            moved.end.duration_since(moved.start),
+            before.end.duration_since(before.start),
             "and so does its length"
         );
         let submitted = h.app.last_dispatched().expect("the move was submitted");
@@ -3094,7 +3091,7 @@ fn event_form_fields_edit_traverse_and_pick_dates_and_times() {
         let after = h.app.model.event(id).unwrap().start.date();
         assert_eq!(
             after,
-            before.succ_opt().unwrap(),
+            before.tomorrow().unwrap(),
             "arrow-key navigation picked the next day and set the event start"
         );
     }
@@ -3131,13 +3128,10 @@ fn event_form_fields_edit_traverse_and_pick_dates_and_times() {
             "all-day flipped"
         );
         let event = h.app.model.event(id).unwrap();
-        assert_eq!(event.start.time(), NaiveTime::MIN);
-        assert_eq!(
-            event.end,
-            (start_day + Duration::days(1)).and_time(NaiveTime::MIN)
-        );
+        assert_eq!(event.start.time(), Time::MIN);
+        assert_eq!(event.end, (start_day + 1.days()).to_datetime(Time::MIN));
         assert!(event.occurs_on(start_day));
-        assert!(!event.occurs_on(start_day + Duration::days(1)));
+        assert!(!event.occurs_on(start_day + 1.days()));
     }
 }
 
@@ -3271,12 +3265,7 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
 
 fn pinned_afternoon() -> Harness {
     let mut app = CalendarApp::new_demo();
-    app.pin_now(
-        NaiveDate::from_ymd_opt(2026, 10, 28)
-            .unwrap_or_default()
-            .and_hms_opt(14, 7, 0)
-            .unwrap_or_default(),
-    );
+    app.pin_now(Date::new(2026, 10, 28).unwrap_or_default().at(14, 7, 0, 0));
     Harness::mount(app, 900, 700)
 }
 

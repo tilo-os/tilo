@@ -3,7 +3,7 @@ use crate::support::application::*;
 use automerge::{ROOT, transaction::Transactable};
 use std::rc::Rc;
 use tilo_ui::application::{
-    ApplicationCatalog, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    ApplicationCatalog, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
@@ -13,7 +13,7 @@ use tilo_ui::view::{FocusView, ThawError, View};
 #[test]
 fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let b = instantiate_probe(&host, 12, LaunchTarget::New, RestoreInput::None).unwrap();
         assert_ne!(a.record().id, b.record().id);
@@ -35,7 +35,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         assert!(matches!(
@@ -54,7 +54,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
@@ -64,9 +64,9 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
         ));
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: host.records.clone(),
                 views: host.views.clone(),
                 device_id: DEVICE.into(),
@@ -89,7 +89,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         for (root, device, workspace) in [
             (host.root().join("other-profile"), DEVICE, WORKSPACE),
             (host.root(), "other-device", WORKSPACE),
@@ -97,9 +97,9 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         ] {
             let views = Rc::new(InstanceViewStore::new(root, device, workspace).unwrap());
             assert!(matches!(
-                HostContext::prepare(
+                ProcessContext::prepare(
                     probe_definition(),
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records: host.records.clone(),
                         views,
                         device_id: DEVICE.into(),
@@ -121,7 +121,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
 /// window still open (a crash, power lost) brings it back on that record, not on a new one.
 #[test]
 fn a_window_remembers_its_record_before_it_closes() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let mut first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
     let checkout = first.record().clone();
     drop(first.close());
@@ -141,7 +141,7 @@ fn a_window_remembers_its_record_before_it_closes() {
 #[test]
 fn restore_paths_validate_bindings_and_never_roll_back_documents() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = a.record().clone();
         let mut b = instantiate_probe(&host, 12, existing(&checkout), RestoreInput::None).unwrap();
@@ -170,7 +170,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut original =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = original.record().clone();
@@ -198,7 +198,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut old = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let old_saved = old.close().recovery.unwrap();
         let original_bytes = std::fs::read(host.view_path(11)).unwrap();
@@ -229,9 +229,9 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         assert_eq!(record.id, minted.id);
         assert_eq!(body(&records, &record), "initialized");
         let target = existing(&record);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             probe_definition(),
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views: host.views,
                 device_id: DEVICE.into(),
@@ -314,7 +314,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
 
     {
         use tilo_ui::application_view::ApplicationLocalView;
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut first =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let mut saved = first.close().recovery.unwrap();
@@ -359,7 +359,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let original = envelope(DEVICE, WORKSPACE, 23.0);
         host.views.save(&original).unwrap();
         let bytes = std::fs::read(host.view_path(11)).unwrap();
@@ -386,7 +386,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
 #[test]
 fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(fail_after_initialization);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let minted = context.record().clone();
@@ -411,9 +411,9 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert_eq!(record.id, minted.id);
         assert_eq!(body(&records, &record), "initialized");
         let target = existing(&record);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             probe_definition(),
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: DEVICE.into(),
@@ -435,7 +435,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(omit_initialization);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let record = context.record().clone();
@@ -451,7 +451,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(attempt_premature_mount);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let mut component = definition
@@ -461,7 +461,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(invalid_contribution);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let checkout = context.record().clone();
@@ -495,7 +495,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut original =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let record = original.record().clone();
@@ -525,7 +525,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(foreign_component);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let expected = context.record().clone();
@@ -555,7 +555,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(initializer_failure);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let record = context.record().clone();
@@ -585,7 +585,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
 #[test]
 fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -604,7 +604,7 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         component
@@ -627,7 +627,7 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut first =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
@@ -682,7 +682,7 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
 #[test]
 fn save_and_close_failures_retain_owners_and_retry_persistence() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         component
@@ -709,7 +709,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
@@ -745,7 +745,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
     {
         use automerge::ReadDoc;
 
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -867,7 +867,7 @@ fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
 )]
 fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
     for case in ["definition", "target", "foreign", "malformed", "revoked"] {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
@@ -934,9 +934,9 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             ));
         }
         let target = existing(&checkout);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: host.records,
                 views: host.views.clone(),
                 device_id: DEVICE.into(),
@@ -1004,9 +1004,9 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             None,
         ));
         let target = existing(&record);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views: host.views,
                 device_id: DEVICE.into(),
@@ -1032,7 +1032,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
 fn destructor_panics_propagate_unconverted() {
     {
         for closing in [false, true] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let mut component =
                 instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
             panic_on_next_root_drop();
@@ -1053,7 +1053,7 @@ fn destructor_panics_propagate_unconverted() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(invalid_contribution);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         panic_on_next_root_drop();
@@ -1076,7 +1076,7 @@ fn destructor_panics_propagate_unconverted() {
 #[test]
 fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -1111,7 +1111,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
 
     {
         for native in [false, true] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let mut component = runner_probe_definition()
                 .instantiate(
                     host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -1158,7 +1158,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
 
     {
         for output_failure in [false, true] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component = runner_probe_definition()
                 .instantiate(
                     host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -1191,7 +1191,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -1292,7 +1292,7 @@ mod save_status_fixture {
         }
     }
     fn factory(
-        mut context: HostContext,
+        mut context: ProcessContext,
         target: &LaunchTarget,
         _: RestoreInput,
     ) -> Result<tilo_ui::application::AppComponent, LaunchError> {
@@ -1343,7 +1343,7 @@ mod save_status_fixture {
         outer: automerge::AutoCommit,
         checkout: DocumentCheckout,
         _clear: ClearStatusFixture,
-        host: ProbeHost,
+        host: ProbeHarness,
         edits: u64,
     }
     impl Fixture {
@@ -1359,7 +1359,7 @@ mod save_status_fixture {
                 .unwrap();
         }
         pub(super) fn new() -> Self {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let clear = ClearStatusFixture;
             STORE.with(|store| *store.borrow_mut() = Some(host.records.clone()));
             let definition =
@@ -1692,7 +1692,7 @@ mod paired_local {
         reason = "ComponentFactory has an owned target signature"
     )]
     fn factory(
-        mut context: HostContext,
+        mut context: ProcessContext,
         target: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
@@ -1710,8 +1710,12 @@ mod paired_local {
             tilo_actions::ActionRegistry::new(),
         ))
     }
-    fn fixture() -> (ProbeHost, ApplicationDefinition, Rc<RefCell<Presentation>>) {
-        let host = ProbeHost::new();
+    fn fixture() -> (
+        ProbeHarness,
+        ApplicationDefinition,
+        Rc<RefCell<Presentation>>,
+    ) {
+        let host = ProbeHarness::new();
         let state = Rc::new(RefCell::new(Presentation {
             scroll: 12.0,
             payload: 7,

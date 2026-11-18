@@ -25,7 +25,7 @@ pub trait OwnDeviceActions: Send + Sync {
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<
         tilo_actions::remote::Pending<OwnDeviceOutcome>,
-        tilo_actions::remote::ActionHostError,
+        tilo_actions::remote::ActionCallError,
     >;
 
     /// Ask the person whether `caller` — a person at a foreign device here
@@ -39,7 +39,7 @@ pub trait OwnDeviceActions: Send + Sync {
         caller: &tilo_actions::remote::Caller,
         question: &tilo_actions::remote::ConfirmationQuestion,
     ) -> Result<
-        tilo_actions::remote::Pending<Result<Confirmation, tilo_actions::remote::ActionHostError>>,
-        tilo_actions::remote::ActionHostError,
+        tilo_actions::remote::Pending<Result<Confirmation, tilo_actions::remote::ActionCallError>>,
+        tilo_actions::remote::ActionCallError,
     >;
 }

@@ -19,7 +19,7 @@ use ed25519_dalek::SigningKey;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::InputEvent;
 use tilo_desktop_model::WorkspaceId;
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::join::Role;
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
 use tilo_session::Session;
@@ -35,8 +35,8 @@ use crate::common::{HEIGHT, WIDTH};
 
 /// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
 /// device, and this one joins only what it is handed.
-fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity::kept(cert.clone(), key.clone())
+fn identity(cert: &DeviceCert, key: &SigningKey) -> DeviceIdentity {
+    DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
 fn settle(session: &mut Session) {
@@ -436,7 +436,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         "in the part the sheet asked for: {people:?}"
     );
 
-    // The session that made the link serves the workspace on the direct lane as well: her device
+    // The session that made the link serves the workspace on the direct connection as well: her device
     // dials it there, names the workspace, and is admitted as one of its devices — the same link
     // every workspace's devices sync on.
     let (_, host_addr) = hers
@@ -470,7 +470,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     assert!(
         dialed.is_err(),
         "the session keeps the workspace's direct link up, rather than refusing it or serving no \
-         such lane: {dialed:?}"
+         such link: {dialed:?}"
     );
     runtime.block_on(endpoint.close());
 }

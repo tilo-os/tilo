@@ -4,7 +4,7 @@ use crate::setup::{
     account_transfer::{self, SourceRoots},
     browser_profiles,
     browser_transfer::{self, ExportRequest},
-    // Selected browser custody is shared with the native export actor.
+    // Selected browser ownership is shared with the native export actor.
 };
 use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
 use zeroize::Zeroizing;

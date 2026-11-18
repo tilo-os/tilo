@@ -81,7 +81,7 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                     }
                     StorageRequest::RetiredBindExternalSource
                     | StorageRequest::RetiredBindExternalReadSource => {
-                        StorageResponse::Error("no external source lane is served".into())
+                        StorageResponse::Error("no external source is served".into())
                     }
                 };
                 if STORAGE_FRAMING
@@ -435,7 +435,7 @@ impl StorageAuthority {
 
     /// # Errors
     ///
-    /// Safe eviction uses the durable, exact-version record plane. It can queue
+    /// Safe eviction uses the durable, exact-version record protocol. It can queue
     /// while offline only when a fresh persisted signed receipt already proves an
     /// eligible replica; it never promotes a live Hydrator peer to durability and
     /// never directly deletes a blob.

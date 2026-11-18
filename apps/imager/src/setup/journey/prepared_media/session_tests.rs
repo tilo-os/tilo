@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
-fn selected_website_session_preparation_is_separate_authenticated_custody() {
+fn selected_website_session_preparation_is_separate_authenticated_ownership() {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     let root = tempfile::Builder::new()
@@ -33,7 +33,7 @@ fn selected_website_session_preparation_is_separate_authenticated_custody() {
         &root.path().join("identity"),
         "Ada",
         [20, 80, 140],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let password = "a sufficiently long session transport password";
@@ -59,7 +59,7 @@ fn selected_website_session_preparation_is_separate_authenticated_custody() {
     )
     .unwrap();
     assert_eq!(prepared.service_session_protocol(), Some(1));
-    assert!(prepared.account_custody_protocol().is_none());
+    assert!(prepared.account_credentials_protocol().is_none());
     assert!(prepared.manifest.units.browser().is_none());
     assert!(prepared.manifest.account_ids.is_empty());
     let declaration = prepared.manifest.units.service_sessions().unwrap();
@@ -75,7 +75,7 @@ fn selected_website_session_preparation_is_separate_authenticated_custody() {
     review
         .import_service_sessions(&root.path().join("target"), password.as_bytes())
         .unwrap();
-    let selected = account_custody::Custodian::for_root(Some(root.path().join("target")))
+    let selected = account_credentials::CredentialStore::for_root(Some(root.path().join("target")))
         .service_session(
             &accounts::AccountId::from(declaration.sessions[0].id.clone()),
             identity.public_key(),
@@ -127,7 +127,7 @@ fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_decl
         &root.path().join("identity"),
         "Ada",
         [20, 80, 140],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let password = "a sufficiently long parent exclusion password";

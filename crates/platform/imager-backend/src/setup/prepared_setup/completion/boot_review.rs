@@ -1,4 +1,4 @@
-//! Read committed setup only through genuine selected raw/GPT boot custody.
+//! Read committed setup only through genuine selected raw/GPT boot ownership.
 use super::selection_facts::{self, Committed};
 use super::*;
 use crate::setup::media_setup::{boot_medium::BootMedium, boot_review::PendingBootReview};
@@ -63,7 +63,7 @@ impl AuthenticatedCompletedSetup {
     }
 }
 /// Borrowed selected-medium scope. Constructors cannot accept a JSON receipt
-/// or a caller path as custody; all source lookups occur within BootMedium.
+/// or a caller path as ownership; all source lookups occur within BootMedium.
 pub struct CompletedBootReview<'a> {
     pub(super) medium: &'a BootMedium,
     pub(super) pending: PendingBootReview<'a>,
@@ -71,8 +71,8 @@ pub struct CompletedBootReview<'a> {
     pub(super) capsule: Arc<AuthenticatedCompletedSetup>,
 }
 impl<'a> CompletedBootReview<'a> {
-    /// A missing derived pointer first checks canonical committed custody.
-    /// Absence requires authenticated pending custody and readonly Store proof
+    /// A missing derived pointer first checks canonical committed ownership.
+    /// Absence requires authenticated pending ownership and readonly Store proof
     /// that export has not started; corrupt or started state never becomes absence.
     pub fn review_if_committed(
         medium: &'a BootMedium,

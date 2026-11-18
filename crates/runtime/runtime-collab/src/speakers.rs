@@ -1,10 +1,10 @@
-//! Settings' command lane to the shell's speaker groups.
+//! Settings' command queue to the shell's speaker groups.
 //!
 //! Speaker groups, consent and calibration are owned by the compositor; the
 //! Settings app only asks. Devices and outputs are named here by the same
 //! opaque identifiers the shell publishes in its fabric (a device id and a
 //! hex endpoint selector), so no `PipeWire` node id or node name can be
-//! represented on this lane.
+//! represented on this queue.
 
 use serde::{Deserialize, Serialize};
 

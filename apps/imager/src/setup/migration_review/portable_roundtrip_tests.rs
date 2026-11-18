@@ -1,4 +1,4 @@
-//! Portable packaging must retain user data while excluding installer custody.
+//! Portable packaging must retain user data while excluding installer ownership.
 use super::{OriginalPreparation, SourceInventory};
 use imager_backend::{
     migration::PinnedDirectory,

@@ -1,4 +1,4 @@
-//! Bounded migration values applied to Browser's real library and private person record.
+//! Bounded migration values applied to Browser's real library and private person resource.
 //! Parsing grants and authenticated installer delivery are separate from these actions.
 use ui::tilo_actions::ActionError;
 
@@ -13,7 +13,7 @@ pub trait ImportActions {
     fn bookmark_action(
         &self,
     ) -> Result<ui::tilo_resource::Invoke<crate::personal_bookmarks::PersonalBookmarks>, ActionError>;
-    /// Produce an action for the current person's private history record.
+    /// Produce an action for the current person's private history resource.
     fn history_action(
         &self,
     ) -> Result<ui::tilo_resource::Invoke<crate::history::BrowsingHistory>, ActionError>;
@@ -53,7 +53,7 @@ impl ImportActions for ImportBatch {
         })?
         .bookmark_action()
     }
-    /// Produce the action that belongs only to the current person’s history record.
+    /// Produce the action that belongs only to the current person’s history resource.
     fn history_action(
         &self,
     ) -> Result<ui::tilo_resource::Invoke<crate::history::BrowsingHistory>, ActionError> {
@@ -184,7 +184,7 @@ mod tests {
             assert!(!declaration.contract.need().privileged);
         }
 
-        phase continuity_preflight_refuses_cross_record_or_changed_source_before_any_write;
+        phase continuity_preflight_refuses_cross_resource_or_changed_source_before_any_write;
         {
             use crate::personal_bookmarks::PersonalBookmarks;
             let mut library = Replica::<PersonalBookmarks>::new();

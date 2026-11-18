@@ -1,5 +1,5 @@
 //! Real Wayland clients against a headless compositor: windows are mapped where the policy says,
-//! composited with hosted layers on top, and input reaches whoever it belongs to.
+//! composited with surface layers on top, and input reaches whoever it belongs to.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -44,7 +44,7 @@ mod window_tags;
 
 use crate::harness::{
     HostLog, Seen, Square, TestClient, headless, mapped_client, mapped_client_without_touch, pump,
-    shown,
+    shown, shown_with_cursor,
 };
 
 use std::cell::RefCell;
@@ -59,10 +59,10 @@ use tilo_compositor::{
     WindowPlacement, WindowPolicy,
 };
 use tilo_session_core::surface::{
-    BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowCover, WindowPicture,
+    BackdropImage, BackdropRequest, KeyClaim, SurfaceKey, WindowCover, WindowPicture,
 };
 use tilo_session_core::surface::{
-    HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
+    ShellSurface, SurfaceDrag, SurfaceFrame, SurfaceIme, SurfaceLayer, SurfaceTextInput,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -614,7 +614,7 @@ fn a_click_into_a_window_takes_the_keyboard_from_an_open_launcher() {
         closes_on_press_elsewhere: true,
         ..HostLog::default()
     }));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (500, 400, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -658,8 +658,8 @@ struct Chords {
     log: Rc<RefCell<HostLog>>,
 }
 
-impl SurfaceHost for Chords {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Chords {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -671,7 +671,7 @@ impl SurfaceHost for Chords {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn claim_key(&mut self, key: &HostKey, _locked: bool, inhibited: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &SurfaceKey, _locked: bool, inhibited: bool) -> KeyClaim {
         if key.keycode != KEY_X || !key.modifiers.logo {
             return KeyClaim::Pass;
         }
@@ -683,16 +683,16 @@ impl SurfaceHost for Chords {
         }
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.log.borrow_mut().keys.push(key.clone());
     }
 }
 
 #[test]
-fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
+fn a_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -749,10 +749,10 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
 }
 
 #[test]
-fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
+fn surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (300, 220, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -764,7 +764,7 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     assert_eq!(
         frame.pixel(320, 240),
         Some([0, 255, 0, 255]),
-        "hosted layer on top"
+        "surface layer on top"
     );
     assert_eq!(
         frame.pixel(250, 200),
@@ -816,10 +816,10 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
 }
 
 #[test]
-fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
+fn a_surface_apps_drag_carries_its_icon_under_the_pointer() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (0, 0, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -827,18 +827,18 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
     assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
 
     // A 20x20 yellow icon (a frame's pixels are RGBA), its hotspot two pixels in from its top left.
-    let icon = HostFrame::from_pixels((20, 20), [255, 255, 0, 255].repeat(20 * 20));
+    let icon = SurfaceFrame::from_pixels((20, 20), [255, 255, 0, 255].repeat(20 * 20));
     compositor
         .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
         .unwrap();
     assert!(
         compositor
-            .start_host_drag(HostDrag {
+            .start_surface_drag(SurfaceDrag {
                 offer: vec![("text/plain".into(), b"dragged".to_vec())],
                 icon: Some((icon, (2, 2))),
             })
             .unwrap(),
-        "the hosted app's drag starts"
+        "the surface app's drag starts"
     );
     assert_eq!(
         shown(&mut compositor, 10, 10),
@@ -997,6 +997,166 @@ fn a_pen_is_a_pointer_to_apps_without_tablet_support() {
     );
 }
 
+/// `at` as a pixel column, the positions these tests use being whole numbers.
+fn pixel(at: f64) -> u32 {
+    u32::try_from(at as i64).expect("a whole pixel")
+}
+
+/// A pen at `(x, y)` with the tool `serial` identifies, in `phase`.
+fn pen_input(phase: TabletPhase, x: f64, y: f64, serial: u64, id_wacom: u64) -> InputEvent {
+    use smithay::backend::input::{TabletToolCapabilities, TabletToolDescriptor, TabletToolType};
+    use smithay::wayland::tablet_manager::TabletDescriptor;
+
+    InputEvent::Tablet(TabletEvent {
+        tablet: TabletDescriptor {
+            name: "Pen tablet".into(),
+            usb_id: Some((0x056a, 0x0374)),
+            syspath: None,
+        },
+        tool: TabletToolDescriptor {
+            tool_type: TabletToolType::Pen,
+            hardware_serial: serial,
+            hardware_id_wacom: id_wacom,
+            capabilities: TabletToolCapabilities::empty(),
+        },
+        phase,
+        x,
+        y,
+        pressure: 0.0,
+        distance: 0.0,
+        tilt: (0.0, 0.0),
+        rotation: 0.0,
+        slider: 0.0,
+        wheel: (0.0, 0),
+        as_pointer: false,
+        tip_button: Some(BTN_LEFT),
+    })
+}
+
+#[test]
+fn a_tools_hardware_identity_reaches_its_client_whole() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), [0, 255, 0, 255]);
+    let seat = client.seen.seat.clone().expect("wl_seat");
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    let (_, (x, y, w, h)) = compositor.windows()[0].clone();
+    compositor
+        .input(pen_input(
+            TabletPhase::ProximityIn,
+            f64::from(x + w / 2),
+            f64::from(y + h / 2),
+            0x1_2345_6789,
+            0x2_0000_0802,
+        ))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.tool_entered
+    });
+    assert_eq!(
+        client.seen.tool_serial,
+        Some((0x1, 0x2345_6789)),
+        "the tool's hardware serial reaches the client as two words, whole"
+    );
+    assert_eq!(
+        client.seen.tool_wacom_id,
+        Some((0x2, 0x0000_0802)),
+        "and its Wacom id"
+    );
+}
+
+#[test]
+fn a_pens_cursor_is_drawn_where_the_pen_is_and_hides_when_it_leaves() {
+    use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
+
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+    const RED: [u8; 4] = [255, 0, 0, 255];
+
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), GREEN);
+    let seat = client.seen.seat.clone().expect("wl_seat");
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    let (_, (x, y, w, h)) = compositor.windows()[0].clone();
+    let (x, y) = (f64::from(x + w / 2), f64::from(y + h / 2));
+
+    // The pen enters a window of a client that takes tablets: its tool's cursor is a surface
+    // of its own, drawn where the pen is.
+    compositor
+        .input(pen_input(
+            TabletPhase::ProximityIn,
+            x,
+            y,
+            0x1_2345_6789,
+            0x2_0000_0802,
+        ))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.tool_entered
+    });
+    let cursor = client.tool_cursor(8, BLUE);
+    client.set_tool_cursor(&cursor, (0, 0));
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_eq!(
+        shown_with_cursor(&mut compositor, pixel(x), pixel(y)),
+        Some(BLUE),
+        "the pen's cursor is drawn at the pen"
+    );
+
+    // A named shape replaces it: what the theme draws for the shape is there, not the window.
+    client.set_tool_shape(Shape::Crosshair);
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_ne!(
+        shown_with_cursor(&mut compositor, pixel(x), pixel(y)),
+        Some(GREEN),
+        "the named shape is drawn"
+    );
+
+    // A second tool has a cursor of its own, drawn at its own place.
+    let (ex, ey) = (x - f64::from(w) / 4.0, y);
+    compositor
+        .input(pen_input(TabletPhase::ProximityIn, ex, ey, 0x99, 0x803))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.tablet_tools.len() == 2 && clients[0].seen.tool_entered
+    });
+    let eraser = client.tool_cursor(8, RED);
+    client.set_tool_cursor(&eraser, (0, 0));
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_eq!(
+        shown_with_cursor(&mut compositor, pixel(ex), pixel(ey)),
+        Some(RED),
+        "the second tool draws its own cursor"
+    );
+    assert_ne!(
+        shown_with_cursor(&mut compositor, pixel(x), pixel(y)),
+        Some(RED),
+        "the first tool's cursor is still its own"
+    );
+
+    // The pen leaving takes only its tool's cursor away.
+    compositor
+        .input(pen_input(TabletPhase::ProximityOut, ex, ey, 0x99, 0x803))
+        .unwrap();
+    crate::harness::settle(&mut compositor, &mut client);
+    assert_eq!(
+        shown_with_cursor(&mut compositor, pixel(ex), pixel(ey)),
+        Some(GREEN),
+        "the tool that left draws nothing"
+    );
+}
+
 #[test]
 fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
     use smithay::wayland::tablet_manager::{
@@ -1087,7 +1247,7 @@ fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
 fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(
+    compositor.add_surface(Rc::new(RefCell::new(
         Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log)).below(),
     )));
     let mut client = mapped_client(&mut compositor, "over", (200, 100), [255, 0, 0, 255]);
@@ -1148,7 +1308,7 @@ fn the_window_behind_a_floating_card_shows_under_its_shadow() {
     compositor.set_window_frame(WindowFrame::corners(0.0));
     let log = Rc::new(RefCell::new(HostLog::default()));
     let square = Square::new((640, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
-    compositor.add_host(Rc::new(RefCell::new(square.below())));
+    compositor.add_surface(Rc::new(RefCell::new(square.below())));
     let _under = mapped_client(&mut compositor, "under", (400, 300), [255, 0, 0, 255]);
     let _float = mapped_client(&mut compositor, "float", (200, 100), [0, 255, 0, 255]);
     let mut windows = compositor.windows();
@@ -1210,7 +1370,7 @@ fn floating_windows_stand_as_the_shell_stacks_their_cards() {
     compositor.set_window_frame(WindowFrame::corners(0.0));
     let log = Rc::new(RefCell::new(HostLog::default()));
     let square = Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
-    compositor.add_host(Rc::new(RefCell::new(square.below())));
+    compositor.add_surface(Rc::new(RefCell::new(square.below())));
     let _first = mapped_client(&mut compositor, "first", (200, 100), [0, 255, 0, 255]);
     let _second = mapped_client(&mut compositor, "second", (200, 100), [255, 255, 0, 255]);
     let windows = compositor.windows();
@@ -1398,7 +1558,7 @@ tilo_test_env::scenario! {
         // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
         // background.
         let handed = Rc::new(RefCell::new(Vec::new()));
-        compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+        compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
         compositor.draw_frame().expect("a frame");
         let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
         assert_eq!(first.texels, (40, 20));
@@ -1542,12 +1702,12 @@ fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
     assert_eq!(shown(&mut compositor, 640, 480), Some(BACKGROUND));
 }
 
-/// A hosted surface of translucent material over (200, 180, 80, 40),
+/// A surface of translucent material over (200, 180, 80, 40),
 /// keeping the backdrops it is handed.
 struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
 
-impl SurfaceHost for Frosted {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Frosted {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -1577,11 +1737,11 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let handed = Rc::new(RefCell::new(Vec::new()));
-    compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+    compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
     compositor.draw_frame().expect("a frame");
     handed.borrow_mut().clear();
 
-    // The desktop slides the window 200 px left: it now covers the left of the hosted surface's
+    // The desktop slides the window 200 px left: it now covers the left of the surface's
     // region, where nothing stood before.
     let (info, _) = compositor.windows()[0].clone();
     compositor.set_window_effect(
@@ -1674,7 +1834,7 @@ fn a_policy_that_declines_fullscreen_keeps_the_window_where_it_is() {
 }
 
 #[test]
-fn a_hosted_apps_copy_is_offered_under_every_text_name_and_read_back() {
+fn a_surface_apps_copy_is_offered_under_every_text_name_and_read_back() {
     use std::io::Read as _;
     let mut compositor = headless(Box::new(StackPolicy));
     compositor
@@ -2612,7 +2772,7 @@ fn a_confined_pointer_stops_at_the_edge_of_its_region() {
 fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_chord() {
     let log = Rc::new(RefCell::new(HostLog::default()));
     let mut compositor = headless(Box::<Columns>::default());
-    compositor.add_host(Rc::new(RefCell::new(Chords {
+    compositor.add_surface(Rc::new(RefCell::new(Chords {
         log: Rc::clone(&log),
     })));
     let mut vm = mapped_client(&mut compositor, "vm", (250, 200), [255, 0, 0, 255]);
@@ -2675,13 +2835,13 @@ fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_cho
     );
 }
 
-/// A hosted surface that only records how long the display holds a frame.
+/// A surface that only records how long the display holds a frame.
 struct Paced {
     heard: Rc<RefCell<Vec<Duration>>>,
 }
 
-impl SurfaceHost for Paced {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Paced {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -2699,7 +2859,7 @@ impl SurfaceHost for Paced {
 }
 
 #[test]
-fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
+fn a_surface_hears_how_long_the_display_holds_a_frame() {
     let heard = Rc::new(RefCell::new(Vec::new()));
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
     compositor
@@ -2708,7 +2868,7 @@ fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
             ..OutputConfig::new("HEADLESS-1", 640, 480)
         })
         .unwrap();
-    compositor.add_host(Rc::new(RefCell::new(Paced {
+    compositor.add_surface(Rc::new(RefCell::new(Paced {
         heard: Rc::clone(&heard),
     })));
     compositor.render().unwrap();

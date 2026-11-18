@@ -3,9 +3,9 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
-// The app host's client and the catalogue come from their engine library,
+// The package service's client and the catalogue come from their engine library,
 // not the tapp.
 #[cfg(feature = "runtime-engine")]
-extern crate tilo_app_host_engine;
+extern crate tilo_app_process_engine;
 
 ui::main!(store::StoreShell);

@@ -162,7 +162,7 @@ class Attachment:
                 or held.st_size != SIZE):
             raise RuntimeError('owned source backing inode changed')
         if self.pidfd is None or select.select([self.pidfd], [], [], 0)[0] or start(self.pid) != self.stamp:
-            raise RuntimeError('owned NBD process custody retired')
+            raise RuntimeError('owned NBD process ownership retired')
         # Revalidation's temporary pidfd must be closed, retaining original pin.
         check_process(self.pid, self.stamp, self.image)
         device = self.device.stat(follow_symlinks=False)
@@ -196,7 +196,7 @@ class Attachment:
 
     def cleanup(self):
         if any(target.source.attachment is self for target in _LIVE_RECEIVING.values()):
-            raise RuntimeError('receiving physical custody has not retired')
+            raise RuntimeError('receiving physical ownership has not retired')
         self.unmount_source()
         if self.partition_fd is not None:
             os.close(self.partition_fd)
@@ -427,7 +427,7 @@ class OwnedSource:
         self.attachment.verify()
         descriptor = self.attachment.partition_fd
         if descriptor is None:
-            raise RuntimeError('owned source partition custody missing')
+            raise RuntimeError('owned source partition ownership missing')
         held = os.fstat(descriptor)
         named = self.partition.stat(follow_symlinks=False)
         if not stat.S_ISBLK(named.st_mode) or named.st_rdev != held.st_rdev:

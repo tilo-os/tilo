@@ -70,8 +70,8 @@ tilo_test_env::scenario! {
 
     phase a_body_changing_from_text_to_rich_text_takes_over_in_place;
     {
-        // The one type change a record keeps its words through: the store turns the text it held
-        // into rich text, so the running app takes the new build with its records.
+        // The one type change a document keeps its words through: the store turns the text it held
+        // into rich text, so the running app takes the new build with its documents.
         let (old, new) = builds(
             V1,
             &V1.replace("  mood: Mood\n", "  mood: Mood\n  body: RichText\n"),

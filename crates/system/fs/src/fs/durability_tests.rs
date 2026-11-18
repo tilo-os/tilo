@@ -17,7 +17,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tilo_test_env::memory_tempdir().unwrap();
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));

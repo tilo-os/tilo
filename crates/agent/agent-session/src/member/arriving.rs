@@ -140,7 +140,7 @@ impl AgentMember {
     /// app that keeps one record per workspace
     /// ([`ui::application::ApplicationDefinition::keeps_workspace_resource`]),
     /// whose record the workspace may already hold.
-    pub(super) fn step_record_arriving(&mut self, step: &Step) -> bool {
+    pub(super) fn step_entry_arriving(&mut self, step: &Step) -> bool {
         let record = match (&step.record, self.keeps_workspace_resource(&step.app)) {
             (Some(record), _) if !parts::is_part(record) => record.clone(),
             (None, true) => String::new(),

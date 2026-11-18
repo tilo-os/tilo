@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
             for m in fresh.messages.values_mut() {
                 m.read = false;
             }
-            TestMail::apply_flags(&doc, &mut fresh);
+            TestMail::apply_flags(&app.shared.borrow(), &mut fresh);
             assert!(
                 fresh.get(id).unwrap().read,
                 "read flag persisted to the CRDT"
@@ -454,7 +454,7 @@ tilo_test_env::scenario! {
                 "Open dispatches the canonical mark-read action"
             );
             assert_eq!(
-                TestMail::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&app.shared.borrow(), &id.to_string()),
                 Some(true),
                 "resource Open writes the same mark-read every on-screen control does"
             );
@@ -462,7 +462,7 @@ tilo_test_env::scenario! {
                 doc.get(&automerge::ROOT, "ui")
                     .expect("document remains readable")
                     .is_none(),
-                "Open records no selection, folder, search, mode, or compose presentation state"
+                "Open resources no selection, folder, search, mode, or compose presentation state"
             );
         }
 
@@ -579,7 +579,7 @@ tilo_test_env::scenario! {
                 "unlike Open message, explicit preview never queues mark-read"
             );
             assert_ne!(
-                TestMail::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&app.shared.borrow(), &id.to_string()),
                 Some(true),
                 "a read-state-neutral preview writes no read state"
             );
@@ -637,7 +637,7 @@ tilo_test_env::scenario! {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert_eq!(TestMail::get_read(&doc, &unread.to_string()), Some(true));
+            assert_eq!(TestMail::get_read(&app.shared.borrow(), &unread.to_string()), Some(true));
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 

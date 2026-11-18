@@ -473,12 +473,7 @@ impl PeerCore {
         source: &[u8; 32],
         now: SystemTime,
     ) -> Result<&DeviceCert, CertificateLookupError> {
-        let certificate = self
-            .certificates
-            .get(source)
-            .ok_or(CertificateLookupError::Missing)?
-            .current_typed(now_ns(now))
-            .map_err(CertificateLookupError::Validity)?;
+        let certificate = self.certificate_held(source, now)?;
         if self
             .revocations
             .is_revoked(&certificate.user_public_key, source)
@@ -486,6 +481,22 @@ impl PeerCore {
             return Err(CertificateLookupError::Revoked);
         }
         Ok(certificate)
+    }
+
+    /// [`Self::certificate_typed`] of a device whether or not its person
+    /// removed it since: the certificate a write of its history is decided
+    /// with ([`crate::removals`]). Never an answer to what the device may do
+    /// now.
+    pub(super) fn certificate_held(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<&DeviceCert, CertificateLookupError> {
+        self.certificates
+            .get(source)
+            .ok_or(CertificateLookupError::Missing)?
+            .current_typed(now_ns(now))
+            .map_err(CertificateLookupError::Validity)
     }
 }
 
@@ -513,7 +524,7 @@ mod tests {
         tilo_user_identity::sign_revocation_entry(&mut entry, &SigningKey::from_bytes(&[1; 32]))
             .unwrap();
         peer.receive_from(
-            TransportOrigin::RelayDelta(peer.owner_certificates()[0].device_public_key),
+            TransportOrigin::ServerDelta(peer.owner_certificates()[0].device_public_key),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.owner_certificates()[0].clone()),

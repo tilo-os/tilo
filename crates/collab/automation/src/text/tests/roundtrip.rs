@@ -370,6 +370,14 @@ fn triggers(seed: &mut Seed) -> Vec<TriggerSpec> {
             catch_up: CatchUp::Skip,
         });
     }
+    if seed.chance() {
+        triggers.push(TriggerSpec::ResourceTime {
+            kind: "tasks.issues".into(),
+            field: "issues.*.due_ms".into(),
+            offset_secs: -3_600,
+            filter: serde_json::Map::new(),
+        });
+    }
     triggers
 }
 

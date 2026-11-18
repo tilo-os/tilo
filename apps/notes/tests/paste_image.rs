@@ -14,8 +14,11 @@ fn note() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("above");
@@ -40,8 +43,11 @@ fn png(width: u32, height: u32, noisy: bool) -> Vec<u8> {
 /// The note's image blocks, with the bytes the notebook keeps for each.
 fn images(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<u8>)> {
     let store = app.content();
-    app.read_document(|doc| {
-        let assets = notes::notebook::image_snapshot(&notes::read::notebook(doc).images, &store);
+    let assets = notes::notebook::image_snapshot(
+        &notes::part::images(&crate::framework_support::parts(app)),
+        &store,
+    );
+    crate::framework_support::part_doc(app, page, |doc| {
         read::page_block_snapshots(doc, page)
             .into_iter()
             .filter_map(|(_, text)| {
@@ -61,8 +67,8 @@ fn paste(app: &mut TestApp<NotesShell>) {
 
 #[test]
 fn ctrl_v_puts_a_copied_image_in_the_note() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     let screenshot = png(8, 6, false);
     recorder.copy_image_elsewhere(ClipboardImage {
@@ -90,8 +96,8 @@ fn ctrl_v_puts_a_copied_image_in_the_note() {
 /// look (before the notebook's bytes reached the snapshot) as a failure.
 #[test]
 fn a_pasted_screenshot_decodes_for_drawing() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     recorder.copy_image_elsewhere(ClipboardImage {
         mime: "image/png",
@@ -121,8 +127,8 @@ fn a_pasted_screenshot_decodes_for_drawing() {
 /// next input to show its picture is the grey box a person sees.
 #[test]
 fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     recorder.copy_image_elsewhere(ClipboardImage {
         mime: "image/png",
@@ -176,8 +182,8 @@ fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
 
 #[test]
 fn a_screenshot_larger_than_an_asset_is_kept_smaller() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, page) = note();
     let screenshot = png(1400, 900, true);
     assert!(screenshot.len() > notes::notebook::MAX_ASSET_BYTES);
@@ -254,8 +260,8 @@ fn an_image_a_page_drops_goes_into_the_note_from_its_bytes() {
 #[test]
 fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
     for enter_first in [false, true] {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let (mut app, page) = note();
         let mut expected = vec!["above".to_owned()];
         for n in 0..5u8 {
@@ -276,11 +282,11 @@ fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
             expected.push(format!("![Pasted image]({source})"));
             expected.push(format!("line {n}"));
         }
-        let blocks: Vec<String> = app
-            .read_document(|doc| read::page_block_snapshots(doc, page))
-            .into_iter()
-            .map(|(_, text)| text)
-            .collect();
+        let blocks: Vec<String> =
+            crate::framework_support::notes_doc(&app, |doc| read::page_block_snapshots(doc, page))
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect();
         assert_eq!(blocks, expected, "Enter before each paste: {enter_first}");
         assert_eq!(images(&app, page).len(), 5);
     }
@@ -288,7 +294,7 @@ fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
 
 /// A picture a member put in the note arrives after the note says it
 /// is there. Until it does, the window sleeps: no timer looks for it. When
-/// its bytes reach the record's content store, the sync their arrival
+/// its bytes reach the resource's content store, the sync their arrival
 /// brings draws it, with no wait.
 #[test]
 fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() {
@@ -296,8 +302,11 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
+    )
+    .unwrap();
     // Larger than what a notebook keeps inline, so the note names its bytes
     // and this device has to receive them.
     let picture = png(40, 30, true);
@@ -308,10 +317,10 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
     // The member's device keeps the bytes; this one does not.
     let theirs = ui::wake::WakeScope::new();
     ui::tilo_resource::content::register(&theirs.handle(), tilo_content::ContentStore::memory());
-    app.merge_peer_edit(|doc| {
+    crate::framework_support::part_edit(&mut app, page, |doc| {
         let _device = theirs.enter();
         // Their window keeps the picture as it places it.
-        let placed = ui::tilo_resource::Invoke::<notes::Notebook>::apply(
+        let placed = ui::tilo_resource::Invoke::<notes::PagePart>::apply(
             &notes::actions::place_image_action(page, picture.clone(), Some("their photo")),
         )
         .unwrap()
@@ -327,16 +336,16 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
             .image_decoded_for_test(&source, ui::time::Duration::ZERO),
         "the bytes are not on this device yet"
     );
-    // The lane this window keeps: what it asked for is its own to ask, not
-    // the process's lane for the record.
-    let lane = app
+    // The content link this window keeps: what it asked for is its own to ask, not
+    // the process's content link for the resource.
+    let link = app
         .harness()
-        .component_document_content_lane()
-        .expect("the window keeps a lane for its record's content");
+        .component_document_content_link()
+        .expect("the window keeps a content link for its resource's content");
     assert_eq!(
-        lane.take_requests().wants,
+        link.take_requests().wants,
         vec![digest.clone()],
-        "the window asked the record's route for the bytes"
+        "the window asked the resource's route for the bytes"
     );
     // The save the merge started shows its status for a moment, on timers
     // and a fade of its own; once they have run out the notebook must ask
@@ -353,7 +362,7 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
             "something keeps waking the notebook while the bytes are away"
         );
         // Frames only when the live host would run them, each followed by
-        // the idle pass that hands edits to the record's writer.
+        // the idle pass that hands edits to the resource's writer.
         let schedule = app.harness().frame_schedule();
         if schedule.queued_work
             || schedule.needs_animation_frame
@@ -373,7 +382,7 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
         "nothing arrived meanwhile"
     );
 
-    lane.arrive(digest, picture);
+    link.arrive(digest, picture);
     app.harness().relayout();
     assert!(
         app.surface_mut::<notes::NotesApp>()

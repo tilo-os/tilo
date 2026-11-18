@@ -339,7 +339,7 @@ class HardwareProfileTest(unittest.TestCase):
             "files": {name: hashlib.sha256((self.firmware / name).read_bytes()).hexdigest() for name in NAMES},
         }
         self.write_manifest()
-        # Architecture and privilege gates are exercised separately below. File
+        # Architecture and privilege checks are exercised separately below. File
         # validation and every actual payload write remain production behavior.
         native = patch.object(prepare.platform, "machine", return_value="aarch64")
         privileged = patch.object(prepare.os, "geteuid", return_value=0)
@@ -687,7 +687,7 @@ class HardwareProfileTest(unittest.TestCase):
                     hardware_profile.validate_definition(data)
 
 
-class CrashRecordContractTest(unittest.TestCase):
+class CrashReportContractTest(unittest.TestCase):
     """Every board says where its record of a crash goes, what resets it and
     what panics first, and the kernel arguments it ships keep that promise."""
 

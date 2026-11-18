@@ -8,21 +8,21 @@ use crate::windows_inventory::{Inventory as WindowsInventory, RootRole};
 pub fn private_windows_hints(
     selected: &[crate::windows_inventory::SelectedRoot],
     profiles: &[WindowsProfile],
-) -> Vec<account_custody::hints::AccountHint> {
+) -> Vec<account_credentials::hints::AccountHint> {
     let hints = profiles
         .iter()
         .filter(|profile| selected.iter().any(|grant| grant.path == profile.root))
-        .map(|profile| account_custody::hints::AccountHint {
-            provider: account_custody::hints::Provider::Microsoft,
+        .map(|profile| account_credentials::hints::AccountHint {
+            provider: account_credentials::hints::Provider::Microsoft,
             email: profile.email.clone(),
             server: String::new(),
-            sources: account_custody::hints::HintSources {
+            sources: account_credentials::hints::HintSources {
                 onedrive: true,
                 ..Default::default()
             },
         })
         .collect();
-    account_custody::hints::group_hints(hints)
+    account_credentials::hints::group_hints(hints)
         .into_iter()
         .take(32)
         .collect()
@@ -120,16 +120,16 @@ mod tests {
             assert!(private_windows_hints(&[], &profiles).is_empty());
             assert!(parse_profiles(br#"[{"root":"chosen","email":"a","token":"forbidden"}]"#).is_err());
             let key = tilo_seal::SymmetricKey::generate().unwrap();
-            let sealed = account_custody::hints::seal(&key, "explicit-root/read-1", &hints).unwrap();
+            let sealed = account_credentials::hints::seal(&key, "explicit-root/read-1", &hints).unwrap();
             assert!(
                 !sealed
                     .as_bytes()
                     .windows(hints[0].email.len())
                     .any(|bytes| bytes == hints[0].email.as_bytes())
             );
-            assert!(account_custody::hints::open(&key, "explicit-root/read-2", &sealed).is_err());
+            assert!(account_credentials::hints::open(&key, "explicit-root/read-2", &sealed).is_err());
             assert_eq!(
-                account_custody::hints::open(&key, "explicit-root/read-1", &sealed).unwrap()[0].email,
+                account_credentials::hints::open(&key, "explicit-root/read-1", &sealed).unwrap()[0].email,
                 hints[0].email
             );
         }

@@ -5,7 +5,7 @@
 //! `tilo-rollback unlock` rather than `systemd-cryptsetup` (see [`crate::keyslots`]).
 //!
 //! The header is plaintext, so nothing here is secret: the blobs are useless without the TPM, and
-//! the bound that gates the unseal is inside the sealed object's `authPolicy`, fixed at seal time.
+//! the bound that checks the unseal is inside the sealed object's `authPolicy`, fixed at seal time.
 //! Changing `generation` or `nv_operand` only changes the policy the unlock path builds, and a
 //! policy that does not match `authPolicy` fails. Tampering can still deny service: see
 //! [`crate::counter::MAX_INCREMENTS_PER_ADVANCE`].

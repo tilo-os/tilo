@@ -83,7 +83,7 @@ pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
 /// the accessibility tree, Ctrl+K/agent resources, and the effect handler. A
 /// malformed profile therefore never reaches an I/O constructor merely because
 /// one surface forgot a preflight check. Whether this device last saw the
-/// machine offline is not an availability gate: it is stale by design, so a
+/// machine offline is not an availability check: it is stale by design, so a
 /// deliberate reconnect is required to discover that a machine recovered.
 pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     let transport = transport_readiness(connection.kind);

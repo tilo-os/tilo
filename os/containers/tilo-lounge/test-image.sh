@@ -43,6 +43,8 @@ grep -Fqx "TILO_SOURCE_REVISION=$revision" <<<"$environment" \
   || fail "TILO_SOURCE_REVISION is not the image's revision"
 grep -Fqx 'TILO_SECRETS_DIR=/run/tilo-workspaces/secrets' <<<"$environment" \
   || fail "the host is not told where its sealed secrets live"
+grep -Fqx 'TILO_PEOPLE_KEYS=/var/lib/tilo-people-keys' <<<"$environment" \
+  || fail "the image does not say where the volume for the keys of people's sealed stores is mounted"
 
 container=$(b from --pull=never --quiet "$image")
 cleanup() { b umount "$container" >/dev/null 2>&1 || true; b rm "$container" >/dev/null 2>&1 || true; }
@@ -52,12 +54,12 @@ trap cleanup EXIT
 # does not carry dies in the loader before its main, with "error while loading
 # shared libraries: …: cannot open shared object file" on stderr and status
 # 127; no file, mode or ELF check sees that, and the deployment found it as a
-# crash loop. Both programs are answered from their main: the relay's
+# crash loop. Both programs are answered from their main: the server's
 # `--version`, and the worker's refusal of a setting it cannot take (of which
 # the loader knows nothing).
-version=$(b run "$container" -- /usr/local/bin/tilo-relay --version) \
-  || fail "tilo-relay does not start in the image"
-[[ $version == "tilo-relay "* ]] || fail "tilo-relay --version answered: $version"
+version=$(b run "$container" -- /usr/local/bin/tilo-server --version) \
+  || fail "tilo-server does not start in the image"
+[[ $version == "tilo-server "* ]] || fail "tilo-server --version answered: $version"
 worker=0
 b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local/bin/discord-worker' \
   >/dev/null || worker=$?
@@ -83,10 +85,10 @@ b run \
   -e TILO_SECRETS_DIR=/tmp/tilo-workspaces/secrets \
   -e TILO_WORKSPACES_PERSISTENT=lounge \
   -e TILO_WORKSPACES_ROOT_FILE=/tmp/tilo-secrets/workspace-root-lounge \
-  -e "TILO_WORKSPACES_RELAY_ORIGIN=https://127.0.0.1:$port" \
+  -e "TILO_WORKSPACES_SERVER_ORIGIN=https://127.0.0.1:$port" \
   -e "TILO_WORKSPACES_WEB_ENTRY=http://127.0.0.1:$port/" \
   -e "TILO_WORKSPACES_HTTP=127.0.0.1:$port" \
-  -e TILO_WORKSPACES_RELAY_PLAIN=127.0.0.1:19780 \
+  -e TILO_WORKSPACES_SERVER_PLAIN=127.0.0.1:19780 \
   -e TILO_WORKSPACES_WEB=127.0.0.1:19781 \
   -e TILO_WORKSPACES_LIVE=127.0.0.1:19782 \
   "$container" -- /usr/local/bin/tilo-lounge > "$scratch/lounge.log" 2>&1 &
@@ -110,10 +112,10 @@ trap cleanup EXIT
 root=$(b mount "$container")
 [[ -f $root/tmp/tilo-workspaces/lounge/workspace-id ]] || fail 'the Lounge kept no workspace id in its state'
 
-for program in tilo-relay discord-worker tilo-lounge; do
+for program in tilo-server discord-worker tilo-lounge; do
   [[ -x $root/usr/local/bin/$program ]] || fail "/usr/local/bin/$program is missing or not executable"
 done
-for program in tilo-relay discord-worker; do
+for program in tilo-server discord-worker; do
   # The programs are the builder's binaries, not scripts a missing copy left behind.
   [[ $(head -c 4 "$root/usr/local/bin/$program" | od -An -c | tr -d ' ') == '177ELF' ]] \
     || fail "/usr/local/bin/$program is not a program"

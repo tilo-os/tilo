@@ -2,7 +2,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "test fixtures pin original checked admission and owner custody"
+    reason = "test fixtures pin original checked admission and owner ownership"
 )]
 use std::{
     cell::{Cell, RefCell},
@@ -12,7 +12,8 @@ use std::{
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
 use tilo_desktop_surface::{DesktopSurface, TileSource, seed_tree};
 use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use ui::automerge::{ROOT, transaction::Transactable};
 use ui::owner_wake::OwnerWakeQueue;
@@ -63,7 +64,7 @@ impl AppWidget for Root {
     }
 }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
@@ -119,9 +120,9 @@ impl TileSource for Source {
             ))
             .at_unix_time(100),
         );
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "device".into(),

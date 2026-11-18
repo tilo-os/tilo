@@ -431,35 +431,35 @@ impl Scrollbar {
         }
     }
 
-    /// The track this bar takes in `lane`, the strip a scroll owner keeps free on its trailing
+    /// The track this bar takes in `bar_area`, the strip a scroll owner keeps free on its trailing
     /// (or bottom) edge (`metrics.scrollbar_gutter` wide): the thumb thickness
-    /// (`metrics.scroll_thumb`) centred across the lane, inset by the same margin at both ends.
+    /// (`metrics.scroll_thumb`) centred across the bar_area, inset by the same margin at both ends.
     #[must_use]
-    pub fn track_in(&self, lane: Rect, theme: &Theme) -> Rect {
-        self.track_of_thickness(lane, f64::from(theme.tokens.metrics.scroll_thumb))
+    pub fn track_in(&self, bar_area: Rect, theme: &Theme) -> Rect {
+        self.track_of_thickness(bar_area, f64::from(theme.tokens.metrics.scroll_thumb))
     }
 
     #[must_use]
-    pub fn track_of_thickness(&self, lane: Rect, thumb: f64) -> Rect {
+    pub fn track_of_thickness(&self, bar_area: Rect, thumb: f64) -> Rect {
         let across = if self.vertical {
-            lane.width()
+            bar_area.width()
         } else {
-            lane.height()
+            bar_area.height()
         };
         let margin = ((across - thumb) / 2.0).max(0.0);
         if self.vertical {
             Rect::new(
-                lane.x0 + margin,
-                lane.y0 + margin,
-                lane.x0 + margin + thumb.min(lane.width()),
-                (lane.y1 - margin).max(lane.y0 + margin),
+                bar_area.x0 + margin,
+                bar_area.y0 + margin,
+                bar_area.x0 + margin + thumb.min(bar_area.width()),
+                (bar_area.y1 - margin).max(bar_area.y0 + margin),
             )
         } else {
             Rect::new(
-                lane.x0 + margin,
-                lane.y0 + margin,
-                (lane.x1 - margin).max(lane.x0 + margin),
-                lane.y0 + margin + thumb.min(lane.height()),
+                bar_area.x0 + margin,
+                bar_area.y0 + margin,
+                (bar_area.x1 - margin).max(bar_area.x0 + margin),
+                bar_area.y0 + margin + thumb.min(bar_area.height()),
             )
         }
     }
@@ -601,20 +601,20 @@ mod tests {
             );
         }
 
-        phase a_track_in_a_lane_is_the_thumb_centred_with_equal_margins;
+        phase a_track_in_a_gutter_is_the_thumb_centred_with_equal_margins;
         {
             let theme = Theme::dark();
             let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
             let thumb = f64::from(theme.tokens.metrics.scroll_thumb);
-            let lane = Rect::new(100.0, 0.0, 100.0 + gutter, 300.0);
-            let track = Scrollbar::vertical().track_in(lane, &theme);
+            let bar_area = Rect::new(100.0, 0.0, 100.0 + gutter, 300.0);
+            let track = Scrollbar::vertical().track_in(bar_area, &theme);
             assert!((track.width() - thumb).abs() < 1e-9);
             let margin = (gutter - thumb) / 2.0;
-            assert!((track.x0 - lane.x0 - margin).abs() < 1e-9);
-            assert!((lane.x1 - track.x1 - margin).abs() < 1e-9);
+            assert!((track.x0 - bar_area.x0 - margin).abs() < 1e-9);
+            assert!((bar_area.x1 - track.x1 - margin).abs() < 1e-9);
             assert!((track.y0 - margin).abs() < 1e-9 && (300.0 - track.y1 - margin).abs() < 1e-9);
-            let lane = Rect::new(0.0, 200.0, 400.0, 200.0 + gutter);
-            let track = Scrollbar::horizontal().track_in(lane, &theme);
+            let bar_area = Rect::new(0.0, 200.0, 400.0, 200.0 + gutter);
+            let track = Scrollbar::horizontal().track_in(bar_area, &theme);
             assert!((track.height() - thumb).abs() < 1e-9);
         }
 

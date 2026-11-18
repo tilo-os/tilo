@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use account_custody::{Authorization, Custodian, OAuthCloud};
+use account_credentials::{Authorization, CredentialStore, OAuthCloud};
 use accounts::AccountId;
 use serde::Serialize;
 
@@ -116,7 +116,7 @@ struct Work {
 }
 
 struct WorkCancel {
-    loopback: Option<account_custody::LoopbackCancel>,
+    loopback: Option<account_credentials::LoopbackCancel>,
     nextcloud: Option<std::sync::mpsc::Sender<()>>,
     requested: Arc<AtomicBool>,
 }
@@ -158,7 +158,7 @@ pub struct AccountActions {
     pending: BTreeMap<String, PendingConnection>,
     jobs: BTreeMap<String, Work>,
     nextcloud_urls: BTreeMap<String, Receiver<String>>,
-    custodian: Option<Custodian>,
+    credential_store: Option<CredentialStore>,
     #[cfg(any(test, feature = "test-support"))]
     spotify_api: Option<String>,
     staging_lease: Option<std::sync::Arc<tempfile::TempDir>>,
@@ -173,7 +173,7 @@ impl AccountActions {
             pending: BTreeMap::new(),
             jobs: BTreeMap::new(),
             nextcloud_urls: BTreeMap::new(),
-            custodian: None,
+            credential_store: None,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
             staging_lease: None,
@@ -189,8 +189,8 @@ impl AccountActions {
     }
 
     #[must_use]
-    pub fn with_custodian(mut self, custodian: Custodian) -> Self {
-        self.custodian = Some(custodian);
+    pub fn with_credential_store(mut self, credential_store: CredentialStore) -> Self {
+        self.credential_store = Some(credential_store);
         self
     }
 
@@ -219,19 +219,19 @@ impl AccountActions {
     }
 
     pub fn connection_available(&self, provider: ConnectionProvider) -> bool {
-        let live = Custodian::live();
-        let custodian = self.custodian.as_ref().unwrap_or(&live);
+        let live = CredentialStore::live();
+        let credential_store = self.credential_store.as_ref().unwrap_or(&live);
         if let Some(cloud) = provider.cloud() {
-            custodian.is_configured(cloud.oauth_use())
+            credential_store.is_configured(cloud.oauth_use())
         } else {
             let playback = provider == ConnectionProvider::SpotifyStreaming;
-            custodian
-                .use_config(account_custody::OAuthUse::new(
-                    account_custody::OAuthIssuer::Spotify,
+            credential_store
+                .use_config(account_credentials::OAuthUse::new(
+                    account_credentials::OAuthIssuer::Spotify,
                     if playback {
-                        account_custody::Capability::MusicStreaming
+                        account_credentials::Capability::MusicStreaming
                     } else {
-                        account_custody::Capability::Music
+                        account_credentials::Capability::Music
                     },
                 ))
                 .is_ok_and(|(configured, _)| {
@@ -292,9 +292,11 @@ impl AccountActions {
                 .ok_or(ActionError::SourceChanged)?
                 .check_target(home)?;
         }
-        let connector = self.custodian.as_ref().map_or_else(
+        let connector = self.credential_store.as_ref().map_or_else(
             || Connector::new(root.clone()),
-            |custodian| Connector::with_custodian(root.clone(), custodian.clone()),
+            |credential_store| {
+                Connector::with_credential_store(root.clone(), credential_store.clone())
+            },
         );
         #[cfg(any(test, feature = "test-support"))]
         let connector = Connector {
@@ -364,7 +366,7 @@ impl AccountActions {
             if cancelled.load(Ordering::SeqCst) {
                 return Err(ConnectionError::SignInFailed);
             }
-            let flow = account_custody::nextcloud::begin(&server)
+            let flow = account_credentials::nextcloud::begin(&server)
                 .map_err(|_| ConnectionError::SignInFailed)?;
             if cancelled.load(Ordering::SeqCst)
                 || send_url.send(flow.login_url().to_owned()).is_err()
@@ -374,17 +376,17 @@ impl AccountActions {
             let login = flow
                 .wait(
                     &cancel_receiver,
-                    account_custody::nextcloud::POLL_INTERVAL,
-                    account_custody::nextcloud::FLOW_LIFETIME,
+                    account_credentials::nextcloud::POLL_INTERVAL,
+                    account_credentials::nextcloud::FLOW_LIFETIME,
                 )
                 .map_err(|_| ConnectionError::SignInFailed)?;
-            // Retain canonical custody of a returned grant before compensating cancellation.
+            // Retain canonical ownership of a returned grant before compensating cancellation.
             let grant_server = login.server.clone();
             let grant_login = login.login_name.clone();
             let grant_password = login.app_password.clone();
             let result = connector.finish_nextcloud(&label, login);
             if result.is_err() {
-                let _ = account_custody::nextcloud::revoke_app_password(
+                let _ = account_credentials::nextcloud::revoke_app_password(
                     &grant_server,
                     &grant_login,
                     &grant_password,
@@ -436,7 +438,7 @@ impl AccountActions {
             if connection.nextcloud {
                 connector.connect_nextcloud_app_password(
                     &connection.label,
-                    account_custody::nextcloud::NextcloudLogin {
+                    account_credentials::nextcloud::NextcloudLogin {
                         server: connection.server,
                         login_name: connection.username,
                         app_password: connection.password,

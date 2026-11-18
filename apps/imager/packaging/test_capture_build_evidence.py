@@ -56,7 +56,7 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                 row['profile']['test'] = False
                 self.assertIsNone(PRODUCER.select_artifact([row], role))
 
-    def test_native_custody_helpers_require_actual_compiler_roles(self):
+    def test_native_ownership_helpers_require_actual_compiler_roles(self):
         for role, package, name in (
                 ('home_seeds', 'crates/system/install-helpers', 'tilo-firstboot-home-seeds'),
                 ('prepared_extract', 'apps/imager', 'tilo-installer-prepared-setup-extract'),

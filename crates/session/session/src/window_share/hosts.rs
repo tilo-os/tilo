@@ -29,7 +29,7 @@ pub(super) struct HostedTab {
     workspace: String,
     /// The key of the device the window runs on.
     host: String,
-    standing: Elsewhere,
+    state: Elsewhere,
 }
 
 /// What this device knows of the device a window runs on, in the workspace the window stands in.
@@ -58,9 +58,9 @@ impl Host {
     }
 }
 
-/// The word the reading says a standing by: what a tool branches on, the same in every language.
-const fn word(standing: &Elsewhere) -> &'static str {
-    match standing {
+/// The word the reading gives a window's state: what a tool branches on, the same in every language.
+const fn word(state: &Elsewhere) -> &'static str {
+    match state {
         Elsewhere::Unread => "unread",
         Elsewhere::NotShared => "not-shared",
         Elsewhere::Awaited { .. } => "awaited",
@@ -71,7 +71,7 @@ const fn word(standing: &Elsewhere) -> &'static str {
 
 impl WindowShares {
     /// Read how every window that runs on another device stands on this session, and tell the shell
-    /// where that changed: each tab says it from its next pass on. A session with no plane reads
+    /// where that changed: each tab says it from its next pass on. A session with no live session reads
     /// nothing of its workspaces, and its tabs say only where their windows run.
     pub(super) fn follow_hosted(
         &mut self,
@@ -96,21 +96,21 @@ impl WindowShares {
         let read: Vec<HostedTab> = listed
             .into_iter()
             .map(|(tab, workspace, host)| {
-                let standing = sync.map_or(Elsewhere::Unread, |sync| {
-                    self.standing_of(sync, engine, now, (tab, &workspace, &host))
+                let state = sync.map_or(Elsewhere::Unread, |sync| {
+                    self.state_of(sync, engine, now, (tab, &workspace, &host))
                 });
                 HostedTab {
                     tab,
                     workspace,
                     host,
-                    standing,
+                    state,
                 }
             })
             .collect();
         if read != self.elsewhere {
             shell.set_elsewhere(
                 read.iter()
-                    .map(|hosted| (hosted.tab, hosted.standing.clone()))
+                    .map(|hosted| (hosted.tab, hosted.state.clone()))
                     .collect(),
             );
             self.elsewhere = read;
@@ -120,7 +120,7 @@ impl WindowShares {
 
     /// How the window this session lists in `tab` of `workspace`, which runs on the device `host`,
     /// stands while nothing of it is shown.
-    fn standing_of(
+    fn state_of(
         &mut self,
         sync: &Client,
         engine: Option<&Arc<Engine>>,
@@ -176,7 +176,7 @@ impl WindowShares {
                     .received
                     .values()
                     .any(|stream| stream.tab == shared && stream.shown);
-                let waiting_for = match &hosted.standing {
+                let waiting_for = match &hosted.state {
                     Elsewhere::Awaited { waiting_for } if !shown => waiting_for.as_str(),
                     _ => "",
                 };
@@ -184,7 +184,7 @@ impl WindowShares {
                     "tab": hosted.tab.to_string(),
                     "workspace": hosted.workspace,
                     "host": hosted.host,
-                    "standing": if shown { "shown" } else { word(&hosted.standing) },
+                    "state": if shown { "shown" } else { word(&hosted.state) },
                     "waiting_for": waiting_for,
                 })
             })
@@ -201,7 +201,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_hosts_standing_is_heard_and_has_a_word_of_its_own;
+        fn a_hosts_state_is_heard_and_has_a_word_of_its_own;
 
         phase a_device_is_heard_away_or_no_longer_admitted;
         // A device heard in the workspace is there, whatever the governance was last read to say; a
@@ -218,8 +218,8 @@ mod tests {
             assert_eq!(Host::of(host, &[], &admits(other)), Host::Unadmitted);
         }
 
-        phase every_standing_has_a_word_of_its_own;
-        // Every standing goes by a word of its own in the reading.
+        phase every_state_has_a_word_of_its_own;
+        // Every state goes by a word of its own in the reading.
         {
             let words = [
                 Elsewhere::Unread,
@@ -230,7 +230,7 @@ mod tests {
                 Elsewhere::Away,
                 Elsewhere::Left,
             ]
-            .map(|standing| word(&standing));
+            .map(|state| word(&state));
             assert_eq!(words, ["unread", "not-shared", "awaited", "away", "left"]);
         }
     }

@@ -13,7 +13,7 @@ use tilo_network_actor::fabric::{
 };
 
 /// Where this device's outputs stand and what their hardware says, as the person's other devices
-/// hear it: the plane they make, and one entry per output with the place it holds on it. The plane
+/// hear it: the live session they make, and one entry per output with the place it holds on it. The live session
 /// is in the device's own logical coordinates, so it is said at 1:1 while each output carries the
 /// scale it runs at. `None` when the compositor published no display to offer.
 pub(crate) fn observation(
@@ -25,15 +25,15 @@ pub(crate) fn observation(
     Vec<DisplayOutputObservation>,
 )> {
     let snapshot = snapshot?;
-    let plane = plane(snapshot)?;
+    let live_session = live_session(snapshot)?;
     let connectors = connectors(snapshot);
     let outputs = outputs(snapshot);
-    Some((plane, 1000, connectors, outputs))
+    Some((live_session, 1000, connectors, outputs))
 }
 
-/// The plane this device's outputs make: the rectangle that holds all of them, in the device's own
+/// The live session this device's outputs make: the rectangle that holds all of them, in the device's own
 /// logical coordinates.
-fn plane(snapshot: &DisplayHardwareSnapshot) -> Option<DisplayRect> {
+fn live_session(snapshot: &DisplayHardwareSnapshot) -> Option<DisplayRect> {
     let mut bounds: Option<(i32, i32, i32, i32)> = None;
     for placement in &snapshot.layout {
         let right = placement.x.checked_add_unsigned(placement.width)?;
@@ -269,16 +269,16 @@ mod tests {
                 output("eDP-1", "BOE", 0, 1.5, true),
                 output("DP-2", "", 1920, 1.0, false),
             ]);
-            let (plane, scale_milli, connectors, outputs) =
+            let (live_session, scale_milli, connectors, outputs) =
                 observation(Some(&hardware)).expect("two outputs are offered");
             assert_eq!(
-                (plane.x, plane.y, plane.width, plane.height),
+                (live_session.x, live_session.y, live_session.width, live_session.height),
                 (0, 0, 3840, 1200),
-                "the plane holds both outputs"
+                "the live session holds both outputs"
             );
             assert_eq!(
                 scale_milli, 1000,
-                "the plane is in logical coordinates; each output says its own scale"
+                "the live session is in logical coordinates; each output says its own scale"
             );
             assert_eq!(connectors[0].scale_milli, 1500, "the panel runs at 1.5x");
             assert_eq!(

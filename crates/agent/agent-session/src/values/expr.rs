@@ -12,7 +12,7 @@ use super::dates;
 pub(crate) enum Value {
     Number(f64),
     Text(String),
-    Date(chrono::NaiveDate),
+    Date(jiff::civil::Date),
     Bool(bool),
     List(Vec<Value>),
 }
@@ -90,7 +90,7 @@ impl Value {
         }
     }
 
-    pub(crate) fn date(&self) -> Result<chrono::NaiveDate, String> {
+    pub(crate) fn date(&self) -> Result<jiff::civil::Date, String> {
         match self {
             Self::Date(days) => Ok(*days),
             Self::Text(text) => {
@@ -619,7 +619,7 @@ fn add(left: &Value, right: &Value, sign: f64) -> Result<Value, String> {
 }
 
 /// `date` moved by `count` days.
-fn moved(date: chrono::NaiveDate, count: f64) -> Result<Value, String> {
+fn moved(date: jiff::civil::Date, count: f64) -> Result<Value, String> {
     dates::add_days(date, days(count)?)
         .map(Value::Date)
         .ok_or_else(|| "a date out of range".to_owned())
@@ -636,8 +636,8 @@ const fn as_f64(days: i64) -> f64 {
 fn ranges(
     function: &str,
     arguments: &[Value],
-) -> Result<Vec<(chrono::NaiveDate, chrono::NaiveDate)>, String> {
-    fn flat(value: &Value, out: &mut Vec<chrono::NaiveDate>) -> Result<(), String> {
+) -> Result<Vec<(jiff::civil::Date, jiff::civil::Date)>, String> {
+    fn flat(value: &Value, out: &mut Vec<jiff::civil::Date>) -> Result<(), String> {
         match value {
             Value::List(items) => items.iter().try_for_each(|item| flat(item, out)),
             one => {

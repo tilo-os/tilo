@@ -83,7 +83,7 @@ fn draw_frame_content_owning(
     mut culled: Option<&mut crate::draw_cull::Scenes>,
 ) -> DrawnFrame {
     // What the tree holds was drawn from the permissions of that frame. A
-    // change since moves what gated widgets paint with nothing in the tree
+    // change since moves what guarded widgets paint with nothing in the tree
     // marking it: the retained drawings go, and this frame draws them again.
     if app.permissions_moved() {
         app.root_widget.release_scene_cache();
@@ -160,6 +160,11 @@ fn draw_frame_content_owning(
     // that shows it and paints nothing of its own (or paints in a part)
     // leaves the widgets' damage the whole change.
     let history_shown = history_changed || (app.history.is_some() && !app_live);
+    // The carets and tags this frame draws are the ones its widgets note now: kept from an
+    // earlier frame, a write's caret long gone still stood on its row, and the agent's next
+    // step there was taken for wearing its tag already and drew none.
+    app.presence_ctx.clear_caret_tags();
+    app.presence_ctx.clear_presence_marks();
     if app_live {
         // What stands over the widgets and takes the keys (an open menu, a
         // dialog, the send box) holds the keyboard: the field under it keeps
@@ -617,7 +622,7 @@ fn submit_presence_damage(
 }
 
 /// Complete a native CPU frame only after drawing and damage collection.
-/// Deferred or aborted frames retain return custody for the next completed
+/// Deferred or aborted frames retain return ownership for the next completed
 /// frame, so dirty state and accessibility publication stay tied to pixels.
 #[cfg(feature = "native")]
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
@@ -1031,7 +1036,7 @@ mod rebuild_focus_tests;
 
 /// Mutating events should route through this so denied interactions
 /// short-circuit before the widget ever observes them.
-pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
+pub fn dispatch_guarded_event<W: crate::widget::Widget + ?Sized>(
     ctx: &crate::permissions::PermissionContext,
     widget: &W,
     dispatch: impl FnOnce(),

@@ -18,8 +18,9 @@ fn sheet_of<'a>(book: &'a Workbook, id: &Id) -> &'a Sheet {
 
 fn raw(book: &Replica<Workbook>, sheet: &Id, a1: &str) -> String {
     let state = book.state().unwrap();
-    sheet_of(&state, sheet)
-        .snapshot()
+    state
+        .snapshot_of(sheet)
+        .expect("the sheet")
         .raw
         .get(&a1_to_addr(a1).unwrap())
         .cloned()
@@ -38,6 +39,7 @@ fn write(book: &mut Replica<Workbook>, sheet: &Id, cells: &[(&str, &str)]) {
     book.apply(Workbook::WRITE_CELLS.with(verbs::WriteCells {
         sheet: sheet.clone(),
         cells,
+        seen: None,
     }))
     .unwrap();
 }
@@ -123,8 +125,9 @@ fn a_comment_is_signed_by_its_invoker() {
     .unwrap();
     let state = app.state();
     assert_eq!(
-        sheet_of(&state, &sheet)
-            .snapshot()
+        state
+            .snapshot_of(&sheet)
+            .expect("the sheet")
             .raw
             .get(&(1, 1))
             .map(String::as_str),
@@ -137,8 +140,9 @@ fn a_comment_is_signed_by_its_invoker() {
 fn document_scenarios_edit_through_the_dispatcher() {
     let raw = |app: &TestApp<SheetsShell>, a1: &str| {
         let state = app.state();
-        sheet_of(&state, &budget())
-            .snapshot()
+        state
+            .snapshot_of(&budget())
+            .expect("the sheet")
             .raw
             .get(&a1_to_addr(a1).unwrap())
             .cloned()
@@ -173,7 +177,7 @@ tilo_test_env::scenario! {
         assert!(!reader.last_delta().is_everything(), "read in part");
         let fresh = Workbook::read(book.doc()).unwrap();
         assert_eq!(**reader.state(), fresh);
-        let total = crate::cell_actions::shown_cells(&sheet_of(&fresh, &budget()).snapshot())
+        let total = crate::cell_actions::shown_cells(&fresh.snapshot_of(&budget()).expect("the sheet"))
             .into_iter()
             .find(|cell| (cell.col, cell.row) == (4, 1))
             .unwrap();
@@ -392,13 +396,11 @@ tilo_test_env::scenario! {
                     input: Some("too far".into()),
                     ..CellWrite::default()
                 },
-            ],
-        });
+            ], seen: None, });
         assert!(book.apply(bad).is_err());
         let huge = Workbook::WRITE_CELLS.with(verbs::WriteCells {
             sheet: budget(),
-            cells: vec![CellWrite::at((0, 0), "x".repeat(40 * 1024), None)],
-        });
+            cells: vec![CellWrite::at((0, 0), "x".repeat(40 * 1024), None)], seen: None, });
         assert!(book.apply(huge).is_err(), "a cell holds at most 32 KiB");
         let sheet = Workbook::paths().sheets.item(&budget());
         assert!(
@@ -425,7 +427,7 @@ tilo_test_env::scenario! {
         ours.sync_with(&mut theirs).unwrap();
         let state = ours.state().unwrap();
         assert_eq!(state, theirs.state().unwrap());
-        let snapshot = sheet_of(&state, &budget()).snapshot();
+        let snapshot = state.snapshot_of(&budget()).expect("the sheet");
         assert_eq!(snapshot.raw.get(&(1, 1)).map(String::as_str), Some("1250"));
         assert_eq!(snapshot.raw.get(&(2, 1)).map(String::as_str), Some("1250"));
         assert_eq!(snapshot.raw.get(&(0, 39)).map(String::as_str), Some("ours"));
@@ -447,7 +449,7 @@ tilo_test_env::scenario! {
         write(&mut ours, &budget(), &[("A40", "ours")]);
         write(&mut theirs, &budget(), &[("B40", "theirs")]);
         ours.sync_with(&mut theirs).unwrap();
-        let snapshot = sheet_of(&ours.state().unwrap(), &budget()).snapshot();
+        let snapshot = ours.state().unwrap().snapshot_of(&budget()).expect("the sheet");
         assert_eq!(snapshot.raw.get(&(0, 39)).map(String::as_str), Some("ours"));
         assert_eq!(
             snapshot.raw.get(&(1, 39)).map(String::as_str),
@@ -475,7 +477,7 @@ tilo_test_env::scenario! {
         ours.sync_with(&mut theirs).unwrap();
         let state = ours.state().unwrap();
         assert_eq!(state, theirs.state().unwrap());
-        let snapshot = sheet_of(&state, &first).snapshot();
+        let snapshot = state.snapshot_of(&first).expect("the sheet");
         let mut rows: Vec<(String, String)> = (1..3)
             .map(|row| {
                 let cell = |col| snapshot.raw.get(&(col, row)).cloned().unwrap_or_default();
@@ -510,7 +512,7 @@ fn selection_edits_are_declarations_beside_the_published_workbook() {
     let mut book = sample();
     book.apply_action(&built).unwrap();
     let state = book.state().unwrap();
-    let formats = sheet_of(&state, &budget()).snapshot().fmt;
+    let formats = state.snapshot_of(&budget()).expect("the sheet").fmt;
     for addr in [(0, 0), (1, 0), (0, 1), (1, 1)] {
         assert_eq!(formats.get(&addr), Some(&CellFormat::Percent), "{addr:?}");
     }

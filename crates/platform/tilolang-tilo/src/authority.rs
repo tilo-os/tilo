@@ -2,7 +2,7 @@
 //!
 //! The runtime asks before every invocation it makes on its own (a step of a run, an agent's block,
 //! a press in a view), and the answer is the one `tilo_action_policy` gives every api: the
-//! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
+//! person's authority in the workspace ([`MemberAccess`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
 //! the action ([`tilo_action_policy::authorship`]), the minimum winning. Code a package wrote is
 //! the person running it, as trusted as the package; code a person or an agent wrote (an embedded
@@ -10,7 +10,7 @@
 //! far as its person admitted the agent; a stranger's code asks. Trusted code still asks before
 //! reaching outside, unless the workspace grants the person that.
 //!
-//! Where the host has no standing for the person (a window outside a host, a test), the person's
+//! Where the host has no member access for the person (a window outside a host, a test), the person's
 //! own part is not decided here, as a native window's detached dispatcher does not decide it: the
 //! api decides what they commit. The agent and code bounds still are.
 //!
@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use tilo_action_policy::{
-    Answer, Authority as Policy, Context, Grant, Grantee, MemberId, Party, Standing, TreePath,
+    Answer, Authority as Policy, Context, Grant, Grantee, MemberAccess, MemberId, Party, TreePath,
     authorship, roles,
 };
 use tilolang_runtime::meta::Meta;
@@ -29,20 +29,20 @@ use tilolang_runtime::{ActionInfo, Actor, Authority, Decision, ModuleHash};
 
 use crate::meta::{MetaExt as _, action_kind};
 
-/// Where the host reads the person's standing in the workspace, each time it decides.
-pub type StandingSource = dyn Fn() -> Option<Standing>;
+/// Where the host reads the person's access in the workspace, each time it decides.
+pub type AccessSource = dyn Fn() -> Option<MemberAccess>;
 
-/// The standing of `person` holding nothing: for a host that only reads, so that nothing its
+/// The access of `person` holding nothing: for a host that only reads, so that nothing its
 /// runtime might invoke runs.
-pub fn holding_nothing(person: &str) -> impl Fn() -> Option<Standing> + 'static {
-    let standing = Standing::person(
+pub fn holding_nothing(person: &str) -> impl Fn() -> Option<MemberAccess> + 'static {
+    let access = MemberAccess::person(
         tilo_action_policy::WorkspacePolicy::new(NO_WORKSPACE, format!("{person}'s owner")),
         person,
     );
-    move || Some(standing.clone())
+    move || Some(access.clone())
 }
 
-/// The workspace a host without a standing decides in.
+/// The workspace a host without an access decides in.
 const NO_WORKSPACE: &str = "local";
 
 #[derive(Default)]
@@ -56,7 +56,7 @@ struct State {
     kinds: HashMap<String, String>,
     /// The actors the API admitted as software acting for a person, with that person.
     agents: HashMap<Actor, Option<String>>,
-    /// The packages whose records are each member's own (`records: .own`), by app id.
+    /// The packages whose documents are each member's own (`resources: .own`), by app id.
     own: HashSet<String>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
@@ -68,17 +68,17 @@ struct State {
 #[derive(Clone)]
 pub struct TiloAuthority {
     viewer: Actor,
-    standing: Rc<StandingSource>,
+    access: Rc<AccessSource>,
     state: Rc<RefCell<State>>,
 }
 
 impl TiloAuthority {
-    /// The authority of a host for `viewer`, the person at the window, whose standing in the workspace
-    /// `standing` reads.
-    pub fn new(viewer: Actor, standing: impl Fn() -> Option<Standing> + 'static) -> Self {
+    /// The authority of a host for `viewer`, the person at the window, whose member access in the workspace
+    /// `access` reads.
+    pub fn new(viewer: Actor, access: impl Fn() -> Option<MemberAccess> + 'static) -> Self {
         Self {
             viewer,
-            standing: Rc::new(standing),
+            access: Rc::new(access),
             state: Rc::default(),
         }
     }
@@ -88,7 +88,7 @@ impl TiloAuthority {
         let mut state = self.state.borrow_mut();
         state.trusted.insert(module.clone());
         state.apps.insert(module.clone(), meta.app.clone());
-        if meta.own_records {
+        if meta.own_resources {
             state.own.insert(meta.app.clone());
         }
         if !meta.web.is_empty() {
@@ -208,9 +208,9 @@ enum Author {
     Package(String),
 }
 
-/// What a package's code holds of its own app's records, trusted or not: it reads and changes
+/// What a package's code holds of its own app's documents, trusted or not: it reads and changes
 /// what the app keeps as `runner`, the person using it, and reaches nothing outside it.
-fn own_records(workspace: &str, app: &str, runner: &Grantee) -> Grant {
+fn own_resources(workspace: &str, app: &str, runner: &Grantee) -> Grant {
     Grant::new(
         format!("package-records:{app}"),
         runner.clone(),
@@ -239,12 +239,13 @@ impl Authority for TiloAuthority {
     }
 
     fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        let standing = (self.standing)();
+        let access = (self.access)();
         let state = self.state.borrow();
-        let workspace = standing.as_ref().map_or(NO_WORKSPACE, Standing::workspace);
-        let workspace_grants: &[Grant] = standing
+        let workspace = access
             .as_ref()
-            .map_or(&[], |standing| &standing.policy.grants);
+            .map_or(NO_WORKSPACE, MemberAccess::workspace);
+        let workspace_grants: &[Grant] =
+            access.as_ref().map_or(&[], |access| &access.policy.grants);
         let kind = state
             .kinds
             .get(&action.action)
@@ -253,42 +254,42 @@ impl Authority for TiloAuthority {
         let node = TreePath::workspace(workspace)
             .app(action.app.to_string())
             .kind(kind);
-        // An app whose records are each member's own acts on the record of the person at the
-        // window: whoever else invokes is decided as on anyone's own record, refused.
-        let own_record = standing
+        // An app whose documents are each member's own acts on the document of the person at the
+        // window: whoever else invokes is decided as on anyone's own document, refused.
+        let own_document = access
             .as_ref()
             .filter(|_| state.own.contains(action.app.as_str()))
-            .and_then(|standing| {
-                let person = standing.person_id()?.to_owned();
-                Some((crate::member_record_of(&action.app, &person)?, person))
+            .and_then(|access| {
+                let person = access.person_id()?.to_owned();
+                Some((crate::member_document_of(&action.app, &person)?, person))
             });
-        let node = match &own_record {
+        let node = match &own_document {
             Some((record, _)) => node.resource(record.clone()),
             None => node,
         }
         .action(&action.action);
         let agent = state.agents.get(invoker);
         // Who the person is: the one an agent acts for, or the invoker; the person at the window
-        // is the standing's person.
+        // is the access's person.
         let person = match agent {
             Some(person) => person.as_deref(),
             None => invoker.member_id().and_then(MemberId::person_id),
         };
         let viewer = self.viewer.member_id().and_then(MemberId::person_id);
-        let person = person.map(|person| match &standing {
-            Some(standing) if Some(person) == viewer => standing.person_id().unwrap_or_default(),
+        let person = person.map(|person| match &access {
+            Some(access) if Some(person) == viewer => access.person_id().unwrap_or_default(),
             _ => person,
         });
-        // An app acting by itself (a migration of its package updating its records, or one of
+        // An app acting by itself (a migration of its package updating its documents, or one of
         // its triggers) runs on the workspace's origin: no person's grants decide it, the
         // package's code still bounds it.
         let alone = invoker.app().is_some();
-        let person_party = match (&standing, person, agent) {
+        let person_party = match (&access, person, agent) {
             _ if alone => Party::default().owning(TreePath::root()),
-            (Some(standing), Some(person), _) => standing.policy.party(person),
+            (Some(access), Some(person), _) => access.policy.party(person),
             // An agent nobody delegated: only what the workspace grants it.
-            (Some(standing), None, _) => standing.policy.party_of(grantee(invoker)),
-            // No standing here: the API decides the person's own part.
+            (Some(access), None, _) => access.policy.party_of(grantee(invoker)),
+            // No member access here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
@@ -300,7 +301,7 @@ impl Authority for TiloAuthority {
         // Each author of the code that led here, once, with what it holds of its own. A block is
         // its writer's code. A package's code is the person running it, as trusted as the package
         // is: it asks before reaching outside unless the workspace grants the person that, and
-        // code nobody installed asks before everything but its own records.
+        // code nobody installed asks before everything but its own documents.
         let runner = person.map_or_else(|| grantee(invoker), Grantee::person);
         let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
         for module in chain {
@@ -317,7 +318,7 @@ impl Authority for TiloAuthority {
                     .unwrap_or_else(|| format!("tl-module:{}", module.0));
                 let mut own = authorship::code_grants(workspace, &runner, trusted);
                 if action.own && *module == action.module {
-                    own.push(own_records(workspace, &app, &runner));
+                    own.push(own_resources(workspace, &app, &runner));
                 }
                 (Author::Package(app), own)
             };
@@ -345,7 +346,7 @@ impl Authority for TiloAuthority {
             });
         }
         let mut cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
-        if let Some((record, person)) = &own_record {
+        if let Some((record, person)) = &own_document {
             cx = cx.with_own_resource(record, person);
         }
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
@@ -390,9 +391,9 @@ mod tests {
     fn authority(grants: Vec<Grant>) -> TiloAuthority {
         let mut policy = WorkspacePolicy::new(WORKSPACE, PERSON);
         policy.grants.extend(grants);
-        let standing = Standing::person(policy, PERSON);
+        let access = MemberAccess::person(policy, PERSON);
         let authority = TiloAuthority::new(Actor::from(MemberId::person(PERSON)), move || {
-            Some(standing.clone())
+            Some(access.clone())
         });
         let mut state = authority.state.borrow_mut();
         state.trusted.insert(module());
@@ -402,9 +403,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_persons_standing_and_the_workspaces_denials_decide;
+        fn a_persons_access_and_the_workspaces_denials_decide;
 
-        phase a_package_whose_records_are_each_members_own_is_its_persons_alone;
+        phase a_package_whose_documents_are_each_members_own_is_its_persons_alone;
         {
             let ada = "ab".repeat(32);
             let owner = "ef".repeat(32);
@@ -412,9 +413,9 @@ mod tests {
             policy
                 .members
                 .insert(ada.clone(), tilo_action_policy::Role::Editor);
-            let standing = Standing::person(policy, ada.clone());
+            let access = MemberAccess::person(policy, ada.clone());
             let authority =
-                TiloAuthority::new(Actor::from(MemberId::person(ada.clone())), move || Some(standing.clone()));
+                TiloAuthority::new(Actor::from(MemberId::person(ada.clone())), move || Some(access.clone()));
             {
                 let mut state = authority.state.borrow_mut();
                 state.trusted.insert(module());
@@ -427,7 +428,7 @@ mod tests {
                 authority.decide(&workspace_owner, &[module()], &change),
                 Decision::Allow
             );
-            // Each member's own, it is Ada's record: only she acts on it, not even the workspace's owner.
+            // Each member's own, it is Ada's document: only she acts on it, not even the workspace's owner.
             authority.state.borrow_mut().own.insert(APP.to_owned());
             assert_eq!(
                 authority.decide(&Actor::from(MemberId::person(ada)), &[module()], &change),
@@ -473,7 +474,7 @@ mod tests {
             );
         }
 
-        phase without_a_standing_the_bounds_still_decide;
+        phase without_a_access_the_bounds_still_decide;
         {
             let authority = TiloAuthority::new(Actor::from(MemberId::person(PERSON)), || None);
             authority.admit_agent(&Actor::from(MemberId::agent("helper")), Some(PERSON));
@@ -539,7 +540,7 @@ mod tests {
                 authority.decide(&me, &[module(), module()], &own),
                 Decision::Allow
             );
-            // Untrusted, it is still an author of its own records.
+            // Untrusted, it is still an author of its own documents.
             authority.revoke(&module());
             assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
             let foreign = info(EffectClass::Undoable, false);
@@ -713,9 +714,9 @@ mod tests {
         );
         policy.grants.extend([node_denied.clone(), editor.clone()]);
         let stored = policy.grants.clone();
-        let standing = Standing::person(policy.clone(), "bob");
+        let access = MemberAccess::person(policy.clone(), "bob");
         let bob = TiloAuthority::new(Actor::from(MemberId::person("bob")), move || {
-            Some(standing.clone())
+            Some(access.clone())
         });
         bob.load_trusted_app(&tasks, TASKS);
         assert_eq!(

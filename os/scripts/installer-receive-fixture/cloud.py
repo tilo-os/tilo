@@ -150,7 +150,7 @@ def verify(control, account, dav, services, private_log, deadline):
     local_key = vault / 'vault.key'
     info = local_key.stat(follow_symlinks=False)
     if not stat.S_ISREG(info.st_mode) or info.st_uid != account.pw_uid or info.st_mode & 0o077:
-        raise RuntimeError('genuine imported local custody not present before consumption')
+        raise RuntimeError('genuine imported local ownership not present before consumption')
     start_services(services, account, deadline)
     mount = home / 'Remote' / dav['mount_name']
     while not mounted(mount):
@@ -181,7 +181,7 @@ def verify(control, account, dav, services, private_log, deadline):
     finally:
         os.close(fd)
     if os.path.lexists(local_key) or private_bytes(vault / 'vault.enc', 16 * 1024 * 1024) != cipher:
-        raise RuntimeError('default account helper did not preserve imported grant custody')
+        raise RuntimeError('default account helper did not preserve imported grant ownership')
     if not mounted(mount):
         raise RuntimeError('cloud mount disappeared during actual receiving use')
     services.check_live()

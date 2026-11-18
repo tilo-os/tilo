@@ -180,8 +180,7 @@ fn the_first_ask_after_switching_to_frames_is_typed_and_sent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = crate::common::Api::open(&mut session, root.path());
     let (answer, failed) = repl.run(
         &mut session,
         "shell.show_style(shell.viewing, style: \"so.tilo.shell:strips\")",
@@ -249,7 +248,7 @@ fn escape_lets_go_of_the_words_typed_at_the_caret() {
 
 /// Drag a rectangle on free ground and say `text` in it: what it finds, by `needle` in its record,
 /// fills the rectangle on screen — its surface at the rectangle's corner and its size, the
-/// handle's band standing over it.
+/// handle's band over it.
 fn the_rectangle_is_filled(text: &str, needle: &str) {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
@@ -270,7 +269,7 @@ fn the_rectangle_is_filled(text: &str, needle: &str) {
     let found = wait_for(&mut session, "what it finds placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains(needle))
+            .find(|place| place.resource.contains(needle))
     });
     let (px, py, pw, ph) = wait_for(
         &mut session,
@@ -300,6 +299,87 @@ fn a_dragged_rectangle_is_filled_by_the_notes() {
     the_rectangle_is_filled("my notes", "so.tilo.lang.notes");
 }
 
+/// The first point down the column at `x` from `top` (screen logical pixels, a screen `width`
+/// wide) that is the canvas's own ground: where the card drawn at `top` ends. `None` while
+/// nothing under `top` is ground again.
+fn card_foot(session: &mut Session, (x, top): (f64, f64), width: f64) -> Option<f64> {
+    let snap = crate::common::shot(session, "card-foot");
+    let scale = f64::from(snap.width) / width.max(1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "screen pixels"
+    )]
+    let at = |y: f64| -> Option<[u8; 3]> {
+        let (px, py) = ((x * scale) as u32, (y * scale) as u32);
+        (py < snap.height).then(|| {
+            let i = ((py * snap.width + px) * 4) as usize;
+            [snap.rgba[i], snap.rgba[i + 1], snap.rgba[i + 2]]
+        })
+    };
+    let ground = at(top - 30.0)?;
+    let mut y = top + 1.0;
+    while let Some(px) = at(y) {
+        let below = at(y + 4.0);
+        if px == ground && below == Some(ground) {
+            return Some(y);
+        }
+        y += 1.0;
+    }
+    None
+}
+
+/// A rectangle dragged just under an inbox that hugs its few rows, on ground that is free on the
+/// screen though the inbox's place could grow into it: what is found there fills the rectangle,
+/// at its corner, never below the height the inbox could grow to.
+#[test]
+fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.1, y + h * 0.08), "my mails");
+    let inbox = wait_for(&mut session, "the inbox placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+    });
+    let (ix, iy, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
+        place_on_screen(session, &inbox)
+    });
+    // Where the inbox's card ends on screen: the first point under it, down a column through
+    // it, that is the canvas's own ground again.
+    // Its rows arrive after the card first draws: the foot is where the card settles, the same
+    // twice a few frames apart.
+    let mut last = None;
+    let foot = wait_for(&mut session, "the inbox's card settled", |session| {
+        let now = card_foot(session, (ix + 30.0, iy), w)?;
+        for _ in 0..20 {
+            session.step(std::time::Duration::from_millis(16)).ok()?;
+        }
+        let settled = (last == Some(now)).then_some(now);
+        last = Some(now);
+        settled
+    });
+    let from = (ix, foot + 60.0);
+    let to = (ix + w * 0.4, (from.1 + 260.0).min(y + h - 20.0));
+    frame_and_say(&mut session, from, to, "my notes");
+    let notes = wait_for(&mut session, "the notes placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
+    });
+    let (px, py, _, _) = wait_for(&mut session, "the notes on screen", |session| {
+        place_on_screen(session, &notes)
+    });
+    assert!(
+        near(px, from.0) && near(py, from.1),
+        "the notes stand at the rectangle's corner {from:?}, not below the height the inbox \
+         could grow to: {:?} (its card drawn to {foot})",
+        (px, py)
+    );
+}
+
 /// A click and what is found there: its surface's top-left stands at the point clicked, the
 /// handle's band over it.
 #[test]
@@ -313,7 +393,7 @@ fn what_is_found_at_a_click_stands_at_the_point() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     let (px, py, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -342,7 +422,7 @@ fn what_is_found_at_a_click_stands_at_the_point() {
 
 /// A click left of a place that stands already places what is found at the click (`canvas.md`
 /// §1): "my notes" said left of the inbox stands with its top-left where the person clicked,
-/// narrowed to the free room before the inbox, never below or beside the inbox instead.
+/// narrowed to the free area before the inbox, never below or beside the inbox instead.
 #[test]
 fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
     let _settled = ui::motion::testing::settled();
@@ -358,7 +438,7 @@ fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
     let notes = wait_for(&mut session, "the notes placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.notes"))
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
     });
     for _ in 0..30 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -403,14 +483,14 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     assert_eq!(inbox.title, "All inboxes", "named for its view: {inbox:?}");
     point_and_say(&mut session, (x + w * 0.65, y + h * 0.1), "my notes");
     let notes = wait_for(&mut session, "the notes placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.notes"))
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
     });
     assert_eq!(notes.title, "Notes", "named for its view: {notes:?}");
     for _ in 0..30 {
@@ -431,7 +511,7 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
         let most = strip.canvas_height as f64;
         assert!(
             ph < most * 0.9,
-            "{} hugs its rows rather than standing at its most: {ph} of {most}",
+            "{} hugs its rows rather than at its most: {ph} of {most}",
             place.title
         );
     }
@@ -442,7 +522,7 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
 fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
     places(session).iter().find_map(|place| {
         let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
-        (strip.placed && place.record.contains(needle)).then_some((
+        (strip.placed && place.resource.contains(needle)).then_some((
             strip.canvas_x,
             strip.canvas_y,
             strip.canvas_width,
@@ -537,7 +617,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     assert_eq!(
         turn.shown_as, "turn",
@@ -546,7 +626,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     assert!(
         !places(&session)
             .iter()
-            .any(|place| place.record.contains("channels")),
+            .any(|place| place.resource.contains("channels")),
         "the channel's page is not placed: {:?}",
         places(&session)
     );
@@ -642,7 +722,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
     // The rectangle's room keeps its size: what fills it does not hug.
     let filled = places(&session)
         .into_iter()
-        .find(|place| place.record.contains("so.tilo.lang.notes"))
+        .find(|place| place.resource.contains("so.tilo.lang.notes"))
         .expect("the notes' place");
     let strip =
         crate::common::strip(&session, crate::common::number(&filled.strip)).expect("its strip");
@@ -675,7 +755,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     let (tx, ty, tw, th) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
     let root_of = |session: &Session, app: &str| {
@@ -737,14 +817,14 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
         .find(|place| place.key == turn.key)
         .expect("the turn's place still stands");
     assert!(
-        still.record.starts_with("chat.workspace.turns:") && still.shown_as == "turn",
+        still.resource.starts_with("chat.workspace.turns:") && still.shown_as == "turn",
         "the turn's place still shows the turn: {still:?}"
     );
     // The `show` named no view: the mail stands as the thing, its inbox's list, never Mail's
     // whole window with its sidebar of accounts (canvas.md §7, "The thing, never the app").
     let inbox = places(&session)
         .into_iter()
-        .find(|place| place.record.contains("so.tilo.lang.mail"))
+        .find(|place| place.resource.contains("so.tilo.lang.mail"))
         .expect("the inbox's place");
     assert_eq!(
         inbox.title, "All inboxes",
@@ -797,7 +877,7 @@ fn the_whole_conversation_stands_beside_its_turn() {
     let whole = wait_for(&mut session, "the conversation placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record == "chat.workspace.channels:c_ask")
+            .find(|place| place.resource == "chat.workspace.channels:c_ask")
     });
     assert_eq!(whole.shown_as, "page", "it stands as Chat's page");
     let (cx, cy, _, _) = canvas_box(&session, "chat.workspace.channels:").expect("its box");
@@ -823,7 +903,7 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     let (px, py, pw, ph) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -887,7 +967,7 @@ fn right_click(session: &mut Session, at: (f64, f64)) {
     }
 }
 
-/// The inbox, standing in the rectangle from `from` to `to`, and where it stands on screen.
+/// The inbox, in the rectangle from `from` to `to`, and where it stands on screen.
 fn inbox_in(
     session: &mut Session,
     from: (f64, f64),
@@ -900,7 +980,7 @@ fn inbox_in(
     let inbox = wait_for(session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     let at = wait_for(session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -942,7 +1022,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
     let offered: Vec<String> = session
         .resources()
         .into_iter()
-        .find(|spec| spec.id.as_str() == inbox.record)
+        .find(|spec| spec.id.as_str() == inbox.resource)
         .map(|spec| spec.actions.iter().map(|a| a.label.clone()).collect())
         .unwrap_or_default();
     assert!(!offered.is_empty(), "the inbox offers actions: {inbox:?}");
@@ -1170,7 +1250,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     assert!(
         canvas_says(&session).is_none(),
@@ -1222,7 +1302,7 @@ fn a_turn_asked_at_the_edge_is_panned_into_view() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1274,7 +1354,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1292,7 +1372,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
             .find(|id| id.starts_with(&prefix))
             .unwrap_or_else(|| panic!("{app}'s root is published"))
     };
-    // The agent's step in the turn, standing what it shows beside the turn: in view.
+    // The agent's step in the turn shows what it shows beside the turn: in view.
     let notes = root_of(&session, "so.tilo.lang.notes");
     session
         .invoke_in_turn(
@@ -1306,7 +1386,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let placed = wait_for(&mut session, "the notes placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.notes"))
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1382,7 +1462,7 @@ fn the_whole_conversation_is_reached_from_the_turns_handle() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     let (tx, _, tw, _) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
     // What the turn's own `conversation` action runs, as its handle's menu offers it (the action
@@ -1390,12 +1470,12 @@ fn the_whole_conversation_is_reached_from_the_turns_handle() {
     session
         .layout()
         .borrow_mut()
-        .open_conversation_of(&crate::common::as_person(PERSON), &turn.record)
+        .open_conversation_of(&crate::common::as_person(PERSON), &turn.resource)
         .unwrap_or_else(|error| panic!("the turn opens its conversation: {error}"));
     let whole = wait_for(&mut session, "the conversation placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record == "chat.workspace.channels:c_ask")
+            .find(|place| place.resource == "chat.workspace.channels:c_ask")
     });
     assert_eq!(whole.shown_as, "page", "it stands as Chat's page");
     let (cx, _, _, _) = canvas_box(&session, "chat.workspace.channels:").expect("its box");
@@ -1545,7 +1625,7 @@ fn the_agents_open_of_an_apps_root_stands_its_place_view() {
     let placed = wait_for(&mut session, "the tasks placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.tasks"))
+            .find(|place| place.resource.contains("so.tilo.lang.tasks"))
     });
     // The views Tasks publishes for its root: the one marked for a place (`place view`), and its
     // default view, the whole app.
@@ -1629,7 +1709,7 @@ fn root_of(session: &Session, app: &str) -> String {
         .unwrap_or_else(|| panic!("{app}'s root is published"))
 }
 
-/// Whether the box `what` fills the room under the turn standing at `turn`.
+/// Whether the box `what` fills the room under the turn at `turn`.
 fn in_room(what: (i64, i64, i64, i64), turn: (i64, i64, i64, i64)) -> bool {
     what.0 == turn.0 && what.2 == turn.2 && what.1 >= turn.1 + turn.3
 }
@@ -1765,6 +1845,85 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
     );
 }
 
+/// A turn asked by a click is a place that hugs its words: the layout takes the height its card
+/// is drawn at, so the canvas under a short answer stays free for the next ask, rather than the
+/// next turn being put below the turn's tallest and the camera panning to it. Its caption is its
+/// question.
+#[test]
+fn a_turns_place_hugs_its_words() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, _) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(
+        &mut session,
+        (x + w * 0.2, y + 40.0),
+        "remind me about the dentist",
+    );
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|read| read["sent"].as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q30");
+    let turn = wait_for(&mut session, "the turn placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.resource.contains("chat.workspace.turns:q30"))
+    });
+    let strip =
+        crate::common::strip(&session, crate::common::number(&turn.strip)).expect("its strip");
+    assert!(
+        strip.canvas_hugs,
+        "a turn's place hugs its words: {strip:?}"
+    );
+}
+
+/// A click left of a turn, closer to it than a turn is wide: the new turn stands at the click,
+/// narrowed to the free area before the turn on its right, never moved past the screen's edge with
+/// the camera panning after it.
+#[test]
+fn a_turn_asked_left_of_another_stands_at_its_click_narrowed() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let sent = |session: &mut Session, count: usize| {
+        until(session, "the ask sent", |session| {
+            session.settle_services();
+            session
+                .read("session:send-to")
+                .and_then(|read| read["sent"].as_array().map(|sent| sent.len() >= count))
+                .unwrap_or(false)
+        });
+    };
+    point_and_say(&mut session, (x + w * 0.45, y + h * 0.3), "hi");
+    sent(&mut session, 1);
+    chat_holds(&session, CONVERSATION, "q32");
+    let (first_x, _, _, _) = wait_for(&mut session, "the first turn placed", |session| {
+        turn_box(session, "q32")
+    });
+    let at = (x + w * 0.05, y + h * 0.35);
+    point_and_say(&mut session, at, "what time is it");
+    sent(&mut session, 2);
+    chat_holds(&session, CONVERSATION, "q33");
+    let (sx, _, sw, _) = wait_for(&mut session, "the second turn placed", |session| {
+        turn_box(session, "q33")
+    });
+    #[allow(clippy::cast_possible_truncation, reason = "canvas pixels")]
+    let asked_x = (at.0 - x) as i64;
+    assert!(
+        (sx - asked_x).abs() <= 24,
+        "the second turn stands at its click ({asked_x}): {sx}"
+    );
+    assert!(
+        sx + sw <= first_x,
+        "narrowed to the area before the first turn ({first_x}): {sx}+{sw}"
+    );
+}
+
 /// The live order: one turn asked in a dragged rectangle, whose agent places a thing, then a second
 /// asked by a click elsewhere. The second turn's agent `place` stands what it shows beside the
 /// second turn: never above the first, and never at the canvas' origin as a place that names no
@@ -1813,7 +1972,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
     // A click on free canvas, below everything the first turn stood.
     let below = places(&session)
         .iter()
-        .filter_map(|place| canvas_box(&session, &place.record))
+        .filter_map(|place| canvas_box(&session, &place.resource))
         .map(|(_, py, _, ph)| py + ph)
         .max()
         .unwrap_or_default();
@@ -1835,13 +1994,15 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
             &serde_json::json!({ "resource": mails }),
         )
         .unwrap_or_else(|error| panic!("the second turn's place runs: {error}"));
-    let (mx, my, _, _) = wait_for(&mut session, "the inbox placed", |session| {
+    let (mx, my, mw, _) = wait_for(&mut session, "the inbox placed", |session| {
         canvas_box(session, "so.tilo.lang.mail")
     });
+    // Adjacent to the turn on any side, a spot in view first (canvas.md §3).
     let trailing = mx >= bx + bw && my >= by && my < by + bh;
+    let leading = mx + mw <= bx && my >= by && my < by + bh;
     let below = my >= by + bh && mx >= bx && mx < bx + bw;
     assert!(
-        trailing || below,
+        trailing || leading || below,
         "the inbox stands beside the second turn: {:?} beside {:?} (the first turn at {first:?})",
         (mx, my),
         (bx, by, bw, bh)
@@ -1853,7 +2014,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
 /// opened beside it; then "my notes" found at a click left of the inbox; then a pan and a zoom.
 /// Every frame lays out: the shell reports no frame skipped and no part that did not settle, and
 /// every place stays drawn. (The turn's long scrolling answer itself is the toolkit's, in
-/// `scrollable::lane_tests`: Chat's process is not part of this session, so its turns here stand
+/// `scrollable::gutter_tests`: Chat's process is not part of this session, so its turns here stand
 /// in for its record.)
 #[test]
 fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
@@ -1911,14 +2072,14 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     steps(&mut session);
-    let (ix, _, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
+    wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
     });
-    // Free canvas left of the inbox: a point clear of every place on screen and the caption over
-    // it, wherever the camera has framed them.
+    // Free canvas on screen: a point clear of every place there and the caption over it, wherever
+    // the camera has framed them.
     let boxes: Vec<(f64, f64, f64, f64)> = places(&session)
         .iter()
         .filter_map(|place| place_on_screen(&session, place))
@@ -1928,18 +2089,34 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
             px < bx - 24.0 || px > bx + bw + 24.0 || py < by - 48.0 || py > by + bh + 24.0
         })
     };
-    let left = (0..40)
-        .flat_map(|row| (0..40).map(move |column| (column, row)))
+    // Free canvas is where a click puts the caret, as the person finds it: a point the boxes
+    // above miss but a card covers takes no caret, and the next one is tried.
+    (0..12)
+        .flat_map(|row| (0..16).map(move |column| (column, row)))
         .map(|(column, row)| {
             (
-                x + w * 0.03 + f64::from(column) * 24.0,
-                y + h * 0.15 + f64::from(row) * 24.0,
+                x + w * 0.03 + f64::from(column) * 80.0,
+                y + h * 0.15 + f64::from(row) * 56.0,
             )
         })
-        .find(|&(px, py)| px < ix - 24.0 && py < y + h * 0.9 && clear((px, py)))
-        .unwrap_or_else(|| panic!("free canvas left of the inbox among {boxes:?}"));
+        .filter(|&(px, py)| px < x + w - 24.0 && py < y + h * 0.9 && clear((px, py)))
+        .find(|&point| {
+            click(&mut session, point);
+            // A caret stands within frames of the click, or the click took none.
+            let caret = (0..20).any(|_| {
+                session
+                    .step(std::time::Duration::from_millis(16))
+                    .expect("the session steps");
+                on_screen(&session, CANVAS_CARET).is_some()
+            });
+            if !caret {
+                key(&mut session, KEY_ESCAPE);
+            }
+            caret
+        })
+        .unwrap_or_else(|| panic!("free canvas on screen among {boxes:?}"));
 
-    point_and_say(&mut session, left, "my notes");
+    crate::common::say(&mut session, "my notes");
     until(&mut session, "the notes as rows on the canvas", |session| {
         session.shell_says(crate::common::NOTE_TITLE)
     });
@@ -1955,9 +2132,9 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     for place in places(&session) {
         assert!(
             place_on_screen(&session, &place).is_some()
-                || canvas_box(&session, &place.record).is_some(),
+                || canvas_box(&session, &place.resource).is_some(),
             "{} stays drawn",
-            place.record
+            place.resource
         );
     }
 }

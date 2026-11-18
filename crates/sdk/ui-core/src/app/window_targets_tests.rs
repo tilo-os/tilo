@@ -349,7 +349,7 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
     );
 }
 
-/// [`box_window`] with the box the shell asks for standing, drawn and described once.
+/// [`box_window`] with the box the shell asks for, drawn and described once.
 fn shells_box() -> (App, UnixStream, Rc<Cell<u32>>) {
     let (mut app, mut shell, keys) = box_window();
     drawn(&mut app);

@@ -1,6 +1,6 @@
 #!/bin/bash
 # tilo-store-volume — the dedicated Btrfs volume the storage daemon serves its
-# native data plane from.
+# native backend from.
 #
 # fanotify filesystem marks are per superblock, so the workspace trees need a
 # filesystem of their own: never a subvolume of the root filesystem, whose
@@ -24,7 +24,7 @@
 #   tilo-store-volume ensure
 #       Boot time (tilo-store-volume.service, before fs.service): give an
 #       install without a store an image-backed one, prepare the mounted
-#       volume for the local person and tell fs.service which data plane to
+#       volume for the local person and tell fs.service which backend to
 #       serve.
 #   tilo-store-volume attach | detach
 #       Attach or detach the loop device of an image-backed store.
@@ -380,18 +380,18 @@ local_person() {
 # What fs.service appends to its command line. Written fresh on every boot
 # into a root-only runtime directory, so nothing stale or session-writable
 # can reach the root daemon's arguments.
-publish_data_plane() {
+publish_backend() {
   local held
   install -d -m 0755 "$RUNTIME"
-  held="$(sed -n 's/^TILO_FS_DATA_PLANE_ARGS="\(.*\)"$/\1/p' "$RUNTIME/fs.env" 2>/dev/null || true)"
-  printf 'TILO_FS_DATA_PLANE_ARGS="%s"\n' "$1" | write_atomic "$RUNTIME/fs.env" 0644
+  held="$(sed -n 's/^TILO_FS_BACKEND_ARGS="\(.*\)"$/\1/p' "$RUNTIME/fs.env" 2>/dev/null || true)"
+  printf 'TILO_FS_BACKEND_ARGS="%s"\n' "$1" | write_atomic "$RUNTIME/fs.env" 0644
   # A preparation that ran while fs.service was already up (a sign-in re-ran
   # this unit) has to make the daemon pick up what it announced; at boot the
   # daemon reads the file as it starts, so this does nothing.
   if [ "$held" != "$1" ] && "$SYSTEMCTL" is-active --quiet fs.service 2>/dev/null; then
-    log "fs.service restarts onto the data plane this preparation announced."
+    log "fs.service restarts onto the backend this preparation announced."
     "$SYSTEMCTL" try-restart fs.service 2>/dev/null \
-      || log "fs.service could not be restarted; it picks the data plane up at the next boot."
+      || log "fs.service could not be restarted; it picks the backend up at the next boot."
   fi
 }
 
@@ -401,8 +401,8 @@ OWNER=""
 
 serve_fuse() {
   log "$1"
-  log "Files keep being served by the FUSE data plane."
-  publish_data_plane "--data-plane=fuse${OWNER:+ --native-owner=$OWNER}"
+  log "Files keep being served by the FUSE backend."
+  publish_backend "--backend=fuse${OWNER:+ --native-owner=$OWNER}"
 }
 
 # Mode, label and ownership of a mounted store. The root is root-only: people
@@ -527,7 +527,7 @@ cmd_ensure() {
           serve_fuse "The new store image did not mount; see 'systemctl status var-lib-tilo-store.mount'."
           return 0
         }
-        log "Files move to the native data plane on this start of fs.service. Nothing is copied:"
+        log "Files move to the native backend on this start of fs.service. Nothing is copied:"
         log "the daemon projects every workspace from its local content store, small files at"
         log "once and large ones as placeholders that fill from the same store on first read."
         ;;
@@ -539,8 +539,8 @@ cmd_ensure() {
   fi
 
   prepare_mounted "$owner"
-  publish_data_plane "--data-plane=auto --store=$STORE_MOUNT --native-owner=$owner"
-  log "Store volume ready at $STORE_MOUNT for $name ($owner); fs.service picks its data plane from it."
+  publish_backend "--backend=auto --store=$STORE_MOUNT --native-owner=$owner"
+  log "Store volume ready at $STORE_MOUNT for $name ($owner); fs.service picks its backend from it."
 }
 
 cmd_attach() {
@@ -573,7 +573,7 @@ cmd_status() {
     printf 'Mounted    : no\n'
   fi
   if [ -f "$RUNTIME/fs.env" ]; then
-    printf 'fs.service : %s\n' "$(sed -n 's/^TILO_FS_DATA_PLANE_ARGS="\(.*\)"$/\1/p' "$RUNTIME/fs.env")"
+    printf 'fs.service : %s\n' "$(sed -n 's/^TILO_FS_BACKEND_ARGS="\(.*\)"$/\1/p' "$RUNTIME/fs.env")"
   fi
 }
 

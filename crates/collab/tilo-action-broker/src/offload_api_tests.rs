@@ -46,7 +46,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             let base = local_directory_fixture();
             let membership = base.membership.as_ref().unwrap().clone();
             drop(base);
-            let services = HostServices {
+            let services = ProcessServices {
                 action_offload: Some(route.clone()),
                 ..membership.services()
             };

@@ -1473,7 +1473,7 @@ impl Widget for TypstApp {
 
     fn needs_redraw(&self) -> bool {
         // Pointer *moves* are only repainted when `needs_redraw` is true (the
-        // host gates them to avoid hover spam). A live drag or a hover change
+        // host checks them to avoid hover spam). A live drag or a hover change
         // sets `dirty`, so divider drags, preview text-selection, and inline
         // diagnostic tooltips all repaint smoothly.
         self.dirty || self.chrome.needs_redraw() || ui::widget::Widget::needs_animation_frame(self)

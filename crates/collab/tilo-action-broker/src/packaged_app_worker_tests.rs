@@ -86,7 +86,7 @@ fn launched_app_connection(
 /// A report of one edit on `route`, made by `env`'s person.
 fn edit_report(env: &Environment, route: &CrdtRoute) -> runtime_collab::LocalDocumentActionReport {
     let mut request = crate::local_document_action::Request {
-        custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
+        ownership: Some(runtime_collab::committed_document::ConnectionSnapshot {
             root: env.cert.user_public_key,
             device: env.cert.device_public_key,
             agent: None,
@@ -421,7 +421,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
             let (caller, evidence) = member_device_evidence(&env, 97, false);
             let host = rig
                 .state
-                .certified_local_action_host(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence)
                 .unwrap();
             let canonical = |id: &str| CatalogueQuery {
                 canonical_route: Some(CanonicalActionRoute {

@@ -440,7 +440,7 @@ impl AclHandle {
     }
 
     /// Whether `peer` reads anything here, per the ACL bound right now. Read live rather than at
-    /// connect time, so a revocation reaches the network plane on the next request.
+    /// connect time, so a revocation reaches the network backend on the next request.
     pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
         match self.acl.read() {
             Ok(acl) => acl.reads_anything(peer),

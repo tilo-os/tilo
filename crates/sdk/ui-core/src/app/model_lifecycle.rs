@@ -11,24 +11,24 @@ pub(super) struct IdleModelProgress {
 /// commits (`store::side_log`).
 fn host_perf_baseline() -> bool {
     static BASELINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *BASELINE.get_or_init(|| crate::host::environment().diagnostics.host_perf_baseline)
+    *BASELINE.get_or_init(|| crate::process::environment().diagnostics.host_perf_baseline)
 }
 
 /// `TILO_HOSTED_PUMP_TIMING=1` prints one payload-free line per hosted pump.
 fn hosted_pump_timing() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| crate::host::environment().diagnostics.hosted_pump_timing)
+    *ENABLED.get_or_init(|| crate::process::environment().diagnostics.hosted_pump_timing)
 }
 
 /// Policy meaning observed by the previous hosted pump: the App's own context
 /// and the root component owner's host-supplied context (the `Rc` replaced by
-/// `HostWorker::pump`). Directory witnesses include per-capability liveness at
+/// `HostWorker::pump`). Directory observations include per-capability liveness at
 /// a fresh policy-time sample, so expiry is a change even when the context
 /// value is identical.
 #[derive(PartialEq, Eq)]
-struct HostedAuthorityWitness {
-    app: crate::permissions::DirectoryPermissionWitness,
-    owner: Option<crate::permissions::DirectoryPermissionWitness>,
+struct HostedAuthorityObservation {
+    app: crate::permissions::DirectoryPermissionObservation,
+    owner: Option<crate::permissions::DirectoryPermissionObservation>,
 }
 
 /// Every input of `publish_action_surface` that can change without a
@@ -39,7 +39,7 @@ pub(super) struct PublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
-    route: Option<crate::collaboration::PrimaryRouteWitness>,
+    route: Option<crate::collaboration::AcceptedRoute>,
     revision: String,
 }
 
@@ -54,7 +54,7 @@ impl PublicationStamp {
 pub(super) struct HostedPumpState {
     #[cfg(test)]
     pub(super) calls: usize,
-    authority: Option<HostedAuthorityWitness>,
+    authority: Option<HostedAuthorityObservation>,
 }
 
 /// What one hosted pump did; used by focused tests and the timing trace.
@@ -74,7 +74,7 @@ impl super::App {
     }
 
     /// One wake of an app the session runs with no window
-    /// ([`crate::host::WINDOWLESS_ENV`]): the passes a frame runs before it
+    /// ([`crate::process::WINDOWLESS_ENV`]): the passes a frame runs before it
     /// paints, so it takes its actions and publishes. Answers when it wakes
     /// next.
     ///
@@ -270,19 +270,19 @@ impl super::App {
     /// or cannot be sampled (fail closed: refresh on every such pass).
     fn refresh_hosted_authority(&mut self) -> bool {
         let owner = if let Some(binding) = self.root_widget.callback_binding() {
-            let Ok(witness) = binding.permissions.borrow().directory_witness() else {
+            let Ok(observation) = binding.permissions.borrow().directory_observation() else {
                 self.actions.hosted.authority = None;
                 return true;
             };
-            Some(witness)
+            Some(observation)
         } else {
             None
         };
-        let Ok(app) = self.permission_ctx.directory_witness() else {
+        let Ok(app) = self.permission_ctx.directory_observation() else {
             self.actions.hosted.authority = None;
             return true;
         };
-        let current = HostedAuthorityWitness { app, owner };
+        let current = HostedAuthorityObservation { app, owner };
         let changed = self.actions.hosted.authority.as_ref() != Some(&current);
         self.actions.hosted.authority = Some(current);
         changed
@@ -493,7 +493,7 @@ impl super::App {
         drop(probe);
         let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
-        // existing scoped publication barrier still gates terminal success.
+        // existing scoped publication barrier still checks terminal success.
         #[cfg(feature = "native")]
         if let Err(error) = self.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");

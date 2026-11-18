@@ -50,7 +50,7 @@ use std::fmt;
 
 #[derive(Debug, Default)]
 pub struct FakeNet {
-    peers: BTreeMap<String, PeerRecord>,
+    peers: BTreeMap<String, PeerEntry>,
     /// Devices off the network: what they publish reaches nobody, and what the others publish is
     /// held for them rather than dropped.
     cut: BTreeSet<String>,
@@ -62,7 +62,7 @@ pub struct FakeNet {
 }
 
 #[derive(Debug, Default)]
-struct PeerRecord {
+struct PeerEntry {
     /// The changes this device has offered the net.
     published: Vec<Vec<u8>>,
     /// What reached this device that it has not taken in yet: what the next [`FakeNet::deliver`]

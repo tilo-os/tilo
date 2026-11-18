@@ -1,5 +1,5 @@
 //! A notebook someone has typed in for a while opens as fast as a new one.
-//! Every keystroke is a change in the record's history, so a launch that
+//! Every keystroke is a change in the resource's history, so a launch that
 //! replayed or described that history would grow with every word ever
 //! typed; the launch reads the current state and leaves the history to the
 //! History view, which describes it when opened, a page at a time.
@@ -19,7 +19,7 @@ const KEYSTROKES: usize = 4_000;
 /// hardly matters, measured beside the long one on the same machine.
 const FEW_KEYSTROKES: usize = KEYSTROKES / 100;
 
-/// Opening the notebook, from reading its record to a settled first frame,
+/// Opening the notebook, from reading its resource to a settled first frame,
 /// in an unoptimised test build on an idle runner. Describing the typed
 /// history alone took seconds per thousand changes here, so a launch that
 /// does it again fails by a wide margin.
@@ -44,9 +44,12 @@ fn typed_notebook_of(directory: &std::path::Path, keystrokes: usize) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::open_data_dir(directory).unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "Bugs")).unwrap())
-        .unwrap();
-    let mut peer = app.peer_document();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "Bugs")).unwrap(),
+    )
+    .unwrap();
+    let (part, mut peer) = crate::framework_support::peer_part(&app, page);
     let block = read::page_block_snapshots(&peer, page)[0].0.clone();
     let line = "the sidebar flickers when a note is renamed twice ";
     for (at, ch) in line.chars().cycle().take(keystrokes).enumerate() {
@@ -64,9 +67,9 @@ fn typed_notebook_of(directory: &std::path::Path, keystrokes: usize) {
         .unwrap();
         ui::tilo_resource::history::commit_stamped(&mut peer);
     }
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     app.flush().unwrap();
-    assert!(app.versions().len() >= keystrokes);
+    assert!(crate::framework_support::versions(&app).len() >= keystrokes);
 }
 
 /// How long opening the notebook in `directory` takes.

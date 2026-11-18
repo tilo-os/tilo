@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_notice_waits_acts_once_and_records_outcomes;
+        fn a_notice_waits_acts_once_and_resources_outcomes;
 
         phase a_notice_waits_with_its_button_and_acting_takes_it_down;
         {
@@ -193,7 +193,7 @@ mod tests {
         // window: it does not expire, and it asks nobody.
         {
             ui::attention::clear();
-            ui::attention::clear_ledger();
+            ui::attention::clear_log();
             let mut notice = Notice::default();
             notice.show("Couldn’t open “a.pdf”", "No app opens PDF files", None);
             notice.publish();
@@ -202,14 +202,14 @@ mod tests {
                 ui::attention::entries()
                     .iter()
                     .any(|entry| entry.what().contains("Couldn’t open")),
-                "the ledger keeps it"
+                "the log keeps it"
             );
         }
 
         phase one_outcome_is_recorded_once;
         {
             ui::attention::clear();
-            ui::attention::clear_ledger();
+            ui::attention::clear_log();
             let mut notice = Notice::default();
             notice.show("Copied 3 files", "", None);
             notice.publish();

@@ -2,7 +2,7 @@
 use super::*;
 use crate::application::{AppComponent, LaunchTarget, RestoreInput};
 use crate::application_test_support::{
-    APP, ProbeHost, runner_permissions, runner_probe_definition,
+    APP, ProbeHarness, runner_permissions, runner_probe_definition,
 };
 use crate::bound_dispatch::CallbackBinding;
 use crate::history_mode::owner::{HistoryOwner, OWNED_DOCUMENT_CLONES, ResourceOwnerLifetime};
@@ -36,11 +36,11 @@ static UNVERSIONED_DEFINITION: HistoryDefinition = HistoryDefinition {
 struct BoundFixture {
     component: AppComponent,
     binding: CallbackBinding,
-    _host: ProbeHost,
+    _host: ProbeHarness,
 }
 impl BoundFixture {
     fn new() -> Self {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = runner_probe_definition();
         let context = host
             .prepare_with_permissions(definition, 940, &LaunchTarget::New, runner_permissions())
@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 history.needs_refresh(&outer, 900.0),
-                "closed custody is not a current frontier"
+                "closed ownership is not a current frontier"
             );
         }
     }

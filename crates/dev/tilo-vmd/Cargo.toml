@@ -24,7 +24,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 clap.workspace = true
 hex.workspace = true
 libc.workspace = true
@@ -43,7 +43,7 @@ tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 onboarding-walk = { path = "../../session/onboarding-walk" }
 console-control = { path = "../../session/console-control" }
 tilo-actions = { path = "../../collab/actions" }
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 uuid.workspace = true
 zeroize.workspace = true

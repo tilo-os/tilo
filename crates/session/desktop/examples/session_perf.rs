@@ -31,7 +31,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::application::{
-    ApplicationCatalog, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget,
+    ApplicationCatalog, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
@@ -132,11 +132,11 @@ impl ComponentContextSource for Host {
         definition: &'static ApplicationDefinition,
         request: &TileRequest<'_>,
         target: &LaunchTarget,
-    ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
+    ) -> Result<(ProcessContext, RestoreInput), ui::launch::LaunchError> {
         let records = self.owners.open(definition.app_id(), "workspace").unwrap();
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views: self.views.clone(),
                 device_id: "device".into(),
@@ -230,7 +230,7 @@ fn fixture(
                             store.create_resource(&checkout).unwrap();
                             store.with(&checkout.id, |doc| match which {
                                 0 => word_processor::initialize_empty_document(doc).unwrap(),
-                                1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),
+                                1 => chat::demo::start(doc, "author").unwrap(),
                                 _ => notes::read::initialize(doc),
                             });
                         }

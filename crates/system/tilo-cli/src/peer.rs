@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_session::workspaces::PersonalList;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::device::Device as Entered;
 
 /// One workspace, as this peer shows it.
@@ -53,7 +53,7 @@ pub(crate) struct Mounted {
     /// Bytes of its files this computer holds.
     pub(crate) local_bytes: u64,
     #[serde(flatten)]
-    pub(crate) standing: tree::Standing,
+    pub(crate) status: tree::TreeStatus,
 }
 
 /// A workspace of the person's, as their list names it.
@@ -96,7 +96,7 @@ impl Peer {
         let files = device_dir.join("files");
         std::fs::create_dir_all(&files)?;
         let store = Arc::new(tilo_fs::ContentStore::open(files.join("content")).await?);
-        // The filesystem's hydrator dials peers of a sync plane this device has
+        // The filesystem's hydrator dials peers of a sync protocol this device has
         // none of: everything it lacks comes over the session. The endpoint
         // binds loopback alone and reaches nothing by itself.
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -133,7 +133,7 @@ impl Peer {
         }
         let (list, complete) = match device
             .personal_list(
-                &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                &tilo_server_session::workspaces::WorkspaceLabels::new(),
                 None,
             )
             .await
@@ -387,7 +387,7 @@ impl Peer {
                     shown: shown.showing.shown,
                     read_only: shown.read_only,
                     local_bytes: 0,
-                    standing: shown.replica.standing(),
+                    status: shown.replica.status(),
                 };
                 (mounted, hashes)
             })
@@ -566,7 +566,7 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_session::workspaces::{PersonalWorkspace, WorkspaceHostAddress};
+    use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
 
     /// The host's list names each folder after its workspace, and the folder
     /// of the workspace this device entered exists before any list names it.
@@ -578,12 +578,12 @@ mod tests {
             workspaces: vec![PersonalWorkspace {
                 workspace: second.to_owned(),
                 name: "Second".to_owned(),
-                host: Some(WorkspaceHostAddress {
+                host: Some(KeepingDeviceAddress {
                     name: "tilo.test".to_owned(),
                     hint: None,
                 }),
                 role: Some("owner".to_owned()),
-                labels: tilo_relay_session::workspaces::WorkspaceLabels::default(),
+                labels: tilo_server_session::workspaces::WorkspaceLabels::default(),
                 unattended: false,
             }],
             devices: Vec::new(),

@@ -1,7 +1,7 @@
 //! The device key as a signer rather than as bytes.
 //!
 //! A browser keeps its device key as a non-extractable `WebCrypto` key that
-//! signs through a promise, so code that signs with the device key (the relay
+//! signs through a promise, so code that signs with the device key (the server
 //! handshake, certification, a member's governance frames) asks a
 //! [`DeviceSigner`] and awaits the signature. Native devices pass their
 //! `SigningKey`, which implements the trait and answers at once.
@@ -47,7 +47,7 @@ pub trait DeviceSigner: MaybeSendSync {
     fn sign(&self, message: Vec<u8>) -> SignFuture<'_>;
     /// The secret of this device's iroh endpoint: a native device dials as its device key, so
     /// the transport names the device its certificate does. The one place the key's bytes leave
-    /// custody; nothing signs with them. A page's signer answers `None` and delegates to an
+    /// ownership; nothing signs with them. A page's signer answers `None` and delegates to an
     /// endpoint key of its own.
     fn endpoint_secret(&self) -> Option<[u8; 32]> {
         None
@@ -73,7 +73,7 @@ pub fn sign_now(signer: &dyn DeviceSigner, message: Vec<u8>) -> Result<[u8; 64],
     }
 }
 
-/// A shared handle to one device's custody signs as that custody does.
+/// A shared handle to one device's ownership signs as that ownership does.
 impl<T: DeviceSigner + ?Sized> DeviceSigner for std::sync::Arc<T> {
     fn device_public_key(&self) -> [u8; 32] {
         (**self).device_public_key()

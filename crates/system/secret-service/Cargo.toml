@@ -45,7 +45,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-# tests/identity_custody.rs: where the production identity and vault code
+# tests/identity_ownership.rs: where the production identity and vault code
 # keep their keys when this service answers, is locked, or is absent.
 runtime-identity = { path = "../../runtime/runtime-identity" }
 tilo-secret-vault = { path = "../secret-vault" }

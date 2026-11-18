@@ -1,4 +1,4 @@
-//! The live plane's namespace, its tracks and how each track is delivered.
+//! The live session's namespace, its tracks and how each track is delivered.
 //!
 //! One namespace per device per scope: `workspace/<workspace>/scope/<scope
 //! id>/device/<device hex>`. Every track of a device is published in

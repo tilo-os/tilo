@@ -249,7 +249,7 @@ impl ApprovedChecks {
         Ok(registry)
     }
 
-    /// Run by ID only. `authority` must recheck the original `EffectCx` custody
+    /// Run by ID only. `authority` must recheck the original `EffectCx` ownership
     /// before external work and while it runs; failure cancels the owned unit.
     pub fn run(
         &self,

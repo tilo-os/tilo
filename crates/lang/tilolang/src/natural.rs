@@ -574,7 +574,7 @@ pub fn dated(text: &str, now: i64, offset: i64) -> Dated {
     dated_lang(text, now, offset, Language::English)
 }
 
-/// The day `days` as a person reads it in `lang`, standing at `today`: "Today", "Tomorrow", else the
+/// The day `days` as a person reads it in `lang`, at `today`: "Today", "Tomorrow", else the
 /// weekday and the day ("Fri 30 Oct", "Fr 30. Okt").
 #[must_use]
 pub fn day_label(days: i64, today: i64, lang: Language) -> String {

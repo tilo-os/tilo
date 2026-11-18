@@ -1601,8 +1601,8 @@ mod document_tests {
 
         phase read_only_editor_refuses_middle_click_paste_and_can_be_made_editable;
         {
-            let services = crate::host::HostServices::null();
-            let _host = crate::host::enter(&services);
+            let services = crate::process::ProcessServices::null();
+            let _host = crate::process::enter(&services);
             crate::text_selection::clipboard_copy_primary("pasted");
             let mut editor = CodeEditor::local().with_initial_value("source").read_only();
             editor.set_focused(true);

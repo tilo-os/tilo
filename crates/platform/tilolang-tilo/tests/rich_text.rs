@@ -4,7 +4,7 @@
 use automerge::AutoCommit;
 use serde_json::json;
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
                 detail: None
             }
         );
-        // A record this reader does not hold (it is sent only to its readers) is only there.
+        // A document this reader does not hold (it is sent only to its readers) is only there.
         let elsewhere = Reference::resource(
             APP,
             format!("tl.{APP}.Task"),
@@ -382,7 +382,7 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
         "Could @Grace look at Fix the build"
     );
 
-    // The workspace's record holds the mention as every app's does: the system finds it without
+    // The workspace's document holds the mention as every app's does: the system finds it without
     // the app, and the task reference is a reference, not a person.
     let found = ui::mentions::in_resource(&grace.doc);
     let people: Vec<&str> = found.iter().map(|m| m.person.id()).collect();

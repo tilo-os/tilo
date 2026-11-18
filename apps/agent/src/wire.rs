@@ -189,8 +189,8 @@ impl Link {
 
     /// Subscribe to another typed route. This is used for cluster-wide
     /// discovery; mutations go through [`Self::send`] on the primary route.
-    /// A cluster route holds no record, so it names no kind: only a route
-    /// whose record a host may have to create names what it holds.
+    /// A cluster route holds no resource, so it names no kind: only a route
+    /// whose resource a host may have to create names what it holds.
     pub fn join_route(&mut self, route: RouteSpec) {
         self.manager.join_route(route, ResourceType::new(""));
     }

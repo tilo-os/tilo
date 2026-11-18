@@ -13,10 +13,10 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_relay::RelayClient;
-use tilo_relay::coedit::RelayCoeditSession;
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::CallOperation;
+use tilo_server::ServerClient;
+use tilo_server::coedit::ServerCoeditSession;
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
@@ -28,9 +28,9 @@ async fn session(
     address: iroh::EndpointAddr,
     workspace_id: WorkspaceId,
     device: &Device,
-) -> RelayClient {
-    let client = RelayCoeditSession::join(
-        RelayClient::connect_to_pinned_host(
+) -> ServerClient {
+    let client = ServerCoeditSession::join(
+        ServerClient::connect_to_pinned_host(
             endpoint(&device.key).await,
             address,
             device.cert.clone(),
@@ -59,11 +59,11 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web, .. } =
+    let TestHost { server, web, .. } =
         start_workspace_host(&alice, &host, state.path(), false).await;
-    let address = relay.node_addr();
-    let workspace = relay.workspaces().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &workspace.workspace).await;
+    let address = server.node_addr();
+    let workspace = server.workspaces().unwrap().create("Lounge").await.unwrap();
+    enter(&server, &laptop.cert, &workspace.workspace).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
         workspace.workspace_id,
@@ -84,7 +84,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
     invite(
-        &relay,
+        &server,
         &laptop.cert,
         &workspace.workspace,
         &bob,
@@ -129,7 +129,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
             &format!("alice-device-{index}"),
             DeviceCapabilities::primary(),
         );
-        enter(&relay, &device.cert, &workspace.workspace).await;
+        enter(&server, &device.cert, &workspace.workspace).await;
         links.push(session(address.clone(), workspace.workspace_id, &device).await);
     }
     let mut joined = Vec::new();
@@ -169,5 +169,5 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     assert_eq!(rejoined.members.len(), 12);
 
     drop(web);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

@@ -261,7 +261,7 @@ fn the_sidebar_is_the_navigation_list() {
 }
 
 #[test]
-fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
+fn the_editor_measures_contrast_as_the_theme_changes_and_checks_apply() {
     let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
     app.harness()
         .expect(

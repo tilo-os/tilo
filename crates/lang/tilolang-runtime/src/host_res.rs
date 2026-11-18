@@ -877,7 +877,7 @@ impl Core {
                 rec.ty
             ));
         };
-        let new = crate::store::NewRecord {
+        let new = crate::store::NewResource {
             ty: item_ty.id.clone(),
             app: AppId::default(),
             fields: item_ty.specs(),
@@ -983,6 +983,12 @@ impl Core {
             self.text(a.h(2)?)?,
         );
         let (pkg, info) = self.type_of_ref(&ty)?;
+        // A task's host reads every app's records through its store while the program runs
+        // (`Runtime::set_reader`), an app it runs no code of too: a resource of such an app is
+        // the store's, of its declared type, and not one read from a reading the session
+        // publishes, which reaches no task.
+        let held = pkg.foreign && self.reader.borrow().is_some();
+        let ty = if held { info.id.clone() } else { ty };
         // A named root of an app this runtime does not run is the resource the session
         // publishes it as: `device.sound` reads the reading of `sound`. Any other resource of
         // such an app (`resource(id, of: T)`) is the one its id names.
@@ -1004,7 +1010,11 @@ impl Core {
                 target: Rc::new(ResourceRef {
                     doc,
                     item: None,
-                    ty: format!("{}#{}", pkg.meta.app, info.name),
+                    ty: if held {
+                        ty
+                    } else {
+                        format!("{}#{}", pkg.meta.app, info.name)
+                    },
                 }),
                 author,
             }));
@@ -1132,7 +1142,7 @@ impl Core {
                 self.ret_h(Value::Text(r.target.id_string()))
             }
             // `resource(id)`: the resource the store keeps under `id`, read as its own type.
-            // A place names what it shows by the id alone (`LayoutPlace.record`), so a
+            // A place names what it shows by the id alone (`LayoutPlace.resource`), so a
             // shell reads the place's resource — its actions, its title — without knowing the
             // type ahead; a view that reads it runs again when it changes.
             Imp::ResourceRef => self.resource_by_id(a.h(0)?),

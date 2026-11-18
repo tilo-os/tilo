@@ -16,7 +16,7 @@
 //! lets them do ([`crate::ownership::act_node`]), and it binds no window to
 //! another record than the one it showed: a record route is a window's
 //! identity, so not even its maker rebinds it. Whoever holds the
-//! record decides a write with it before taking it in: a relay at its api,
+//! record decides a write with it before taking it in: a server at its api,
 //! a governor admitting it, and every device that receives it.
 
 use std::collections::BTreeSet;

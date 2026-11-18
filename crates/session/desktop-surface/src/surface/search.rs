@@ -1551,9 +1551,9 @@ impl DesktopSurface {
                 match fallback {
                     Some(fallback) => {
                         // The opener is this thread's host's, on that thread too.
-                        let host = ui::host::current();
+                        let host = ui::process::current();
                         std::thread::spawn(move || {
-                            ui::host::scoped(&host, || {
+                            ui::process::scoped(&host, || {
                                 if ui::widget::try_open_external_url(&uri).is_err() {
                                     ui::widget::open_external_url(&fallback);
                                 }

@@ -5,7 +5,7 @@
 //! person's records, kept by their session under
 //! [`settings_resources::PROVIDER`]: a window shows them and binds its controls
 //! to their field edits and verbs, but each change is the keeper's action,
-//! invoked where it is kept ([`ui::framework::Records::kept_by`]). On a page
+//! invoked where it is kept ([`ui::framework::Resources::kept_by`]). On a page
 //! the page is that session: it keeps the settings document
 //! (`crate::settings`), so it answers those actions itself, in the person's
 //! name, and the change lands in the page's settings at once.

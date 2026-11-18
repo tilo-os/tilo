@@ -7,77 +7,77 @@
 use super::*;
 
 tilo_test_env::scenario! {
-    fn a_member_takes_work_from_the_relay_its_profile_names;
+    fn a_member_takes_work_from_the_server_its_profile_names;
 
-    phase the_relay_is_named_by_its_device_key_and_where_it_is_reached;
+    phase the_server_is_named_by_its_device_key_and_where_it_is_reached;
     {
         let device = hex::encode([0x11; 32]);
-        let relay = Relay::new(&device, "127.0.0.1:7703").unwrap();
-        assert_eq!(relay.device(), [0x11; 32]);
-        assert_eq!(relay.address(), "127.0.0.1:7703");
-        let address = relay.endpoint_addr().unwrap();
+        let server = Server::new(&device, "127.0.0.1:7703").unwrap();
+        assert_eq!(server.device(), [0x11; 32]);
+        assert_eq!(server.address(), "127.0.0.1:7703");
+        let address = server.endpoint_addr().unwrap();
         assert_eq!(address.id.as_bytes(), &[0x11; 32]);
         assert!(
             address.ip_addrs().any(|socket| socket.port() == 7703),
-            "the relay is reached where its address says"
+            "the server is reached where its address says"
         );
     }
 
-    phase a_relay_named_by_something_that_is_no_device_key_is_refused;
+    phase a_server_named_by_something_that_is_no_device_key_is_refused;
     {
-        assert!(Relay::new("not hex", "relay.example:7703").is_err());
+        assert!(Server::new("not hex", "server.example:7703").is_err());
         assert!(
-            Relay::new(&hex::encode([0x11; 16]), "relay.example:7703").is_err(),
+            Server::new(&hex::encode([0x11; 16]), "server.example:7703").is_err(),
             "half a key names no device"
         );
-        assert!(Relay::new(&hex::encode([0x11; 32]), " ").is_err());
+        assert!(Server::new(&hex::encode([0x11; 32]), " ").is_err());
     }
 
-    phase a_member_is_configured_by_the_relay_it_serves;
+    phase a_member_is_configured_by_the_server_it_serves;
     {
         let device = hex::encode([0x22; 32]);
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(RELAY_ENV);
+        env.remove(SERVER_ENV);
         assert_eq!(
-            Relay::from_env().unwrap(),
+            Server::from_env().unwrap(),
             None,
             "a profile that is no member takes no work"
         );
-        env.set(RELAY_ENV, "relay.example:7703");
-        env.remove(RELAY_DEVICE_ENV);
+        env.set(SERVER_ENV, "server.example:7703");
+        env.remove(SERVER_DEVICE_ENV);
         assert!(
-            Relay::from_env().is_err(),
-            "the relay's address alone does not say which device it is"
+            Server::from_env().is_err(),
+            "the server's address alone does not say which device it is"
         );
-        env.set(RELAY_DEVICE_ENV, &device);
-        env.remove(RELAY_ENDPOINT_ENV);
-        let relay = Relay::from_env().unwrap().unwrap();
-        assert_eq!(relay.device(), [0x22; 32]);
-        assert_eq!(relay.address(), "relay.example:7703");
-        env.set(RELAY_ENV, "127.0.0.1:7704");
+        env.set(SERVER_DEVICE_ENV, &device);
+        env.remove(SERVER_ENDPOINT_ENV);
+        let server = Server::from_env().unwrap().unwrap();
+        assert_eq!(server.device(), [0x22; 32]);
+        assert_eq!(server.address(), "server.example:7703");
+        env.set(SERVER_ENV, "127.0.0.1:7704");
         let endpoint = public(3);
-        env.set(RELAY_ENDPOINT_ENV, hex::encode(endpoint));
-        let relay = Relay::from_env().unwrap().unwrap();
+        env.set(SERVER_ENDPOINT_ENV, hex::encode(endpoint));
+        let server = Server::from_env().unwrap().unwrap();
         assert_eq!(
-            relay.device(),
+            server.device(),
             [0x22; 32],
             "requests are still the device's"
         );
-        assert_eq!(relay.endpoint_addr().unwrap().id.as_bytes(), &endpoint);
-        env.set(RELAY_ENDPOINT_ENV, "not hex");
-        assert!(Relay::from_env().is_err(), "an endpoint id that is no key");
+        assert_eq!(server.endpoint_addr().unwrap().id.as_bytes(), &endpoint);
+        env.set(SERVER_ENDPOINT_ENV, "not hex");
+        assert!(Server::from_env().is_err(), "an endpoint id that is no key");
     }
 
-    phase a_tilo_relay_is_dialed_at_its_endpoint_and_its_requests_are_its_devices;
+    phase a_tilo_server_is_dialed_at_its_endpoint_and_its_requests_are_its_devices;
     {
-        // A Tilo relay keys its endpoint apart from its device: the member dials
+        // A Tilo server keys its endpoint apart from its device: the member dials
         // the endpoint, and takes requests signed by the device.
-        let relay = Relay::new(&hex::encode([0x11; 32]), "127.0.0.1:7704")
+        let server = Server::new(&hex::encode([0x11; 32]), "127.0.0.1:7704")
             .unwrap()
             .with_endpoint(&hex::encode(public(4)))
             .unwrap();
-        assert_eq!(relay.device(), [0x11; 32]);
-        let address = relay.endpoint_addr().unwrap();
+        assert_eq!(server.device(), [0x11; 32]);
+        let address = server.endpoint_addr().unwrap();
         assert_eq!(address.id.as_bytes(), &public(4));
         assert!(address.ip_addrs().any(|socket| socket.port() == 7704));
     }
@@ -99,24 +99,24 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase only_a_profile_whose_relay_is_named_takes_work;
-    // A profile takes work when its relay is named, and an admission session,
+    phase only_a_profile_whose_server_is_named_takes_work;
+    // A profile takes work when its server is named, and an admission session,
     // which is a session of an existing owner's device, never does.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(RELAY_ENV);
-        env.remove(RELAY_DEVICE_ENV);
+        env.remove(SERVER_ENV);
+        env.remove(SERVER_DEVICE_ENV);
         assert!(
             crate::standalone::taking_work(crate::standalone::Serving::Profile)
                 .unwrap()
                 .is_none()
         );
-        env.set(RELAY_ENV, "127.0.0.1:7703");
+        env.set(SERVER_ENV, "127.0.0.1:7703");
         assert!(
             crate::standalone::taking_work(crate::standalone::Serving::Profile).is_err(),
-            "a relay is named, so its device key must be"
+            "a server is named, so its device key must be"
         );
-        env.set(RELAY_DEVICE_ENV, hex::encode([0x33; 32]));
+        env.set(SERVER_DEVICE_ENV, hex::encode([0x33; 32]));
         assert!(
             crate::standalone::taking_work(crate::standalone::Serving::Profile)
                 .unwrap()
@@ -131,8 +131,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_members_endpoint_listens_where_its_relay_reaches_it;
-    // The endpoint a member's relay reaches it at: keyed by the member's device
-    // key, listening on the port the relay's members file names.
+    // The endpoint a member's server reaches it at: keyed by the member's device
+    // key, listening on the port the server's members file names.
     {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x44; 32]);
         let endpoint = crate::standalone::listen_endpoint(&key, Some(0)).unwrap();

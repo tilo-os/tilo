@@ -1,8 +1,8 @@
-//! The page's collaboration plane: the session's own sync, over this page's endpoint.
+//! The page's peer network: the session's own sync, over this page's endpoint.
 //!
 //! A started page runs the session's client as a desktop does — the board of who is here in each
 //! workspace it shows, its own word on each presence track — and supplies the transport: the
-//! certified peer's live plane. This module names the page's own values and hands the board's
+//! certified peer's live session. This module names the page's own values and hands the board's
 //! members to JavaScript as the `Shown` record every surface reads.
 
 use std::cell::RefCell;
@@ -19,13 +19,16 @@ use wasm_bindgen::prelude::*;
 
 use crate::peer::{js_error, workspace_id};
 use crate::presence_value::{JsPresence, pointer_of, shell_from_js};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
-/// A started page's plane: the session's client, the transport ends it says through, and the
+/// A started page's live session: the session's client, the transport ends it says through, and the
 /// workspaces its mounts show.
 struct Page {
     /// The device of the host this page's session is with.
     host: [u8; 32],
+    /// The person the host acts for, its root key as hex: a host serves workspaces for people
+    /// and is nobody in them itself.
+    local_person: String,
     handle: Link,
     /// The person this page belongs to, their root key as hex.
     user: String,
@@ -68,7 +71,7 @@ pub(crate) struct BoardView {
     /// Everyone here, as the board merged their words: where each of them
     /// points, on the tiles the surface passed.
     pub(crate) members: Vec<Shown>,
-    /// Why this page has no live plane at all, in the words shown in the
+    /// Why this page has no live session at all, in the words shown in the
     /// members' place.
     pub(crate) note: Option<String>,
 }
@@ -116,6 +119,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
             id,
             Page {
                 host: host.device_public_key,
+                local_person: hex::encode(host.user_public_key),
                 handle: handle.clone(),
                 user: hex::encode(cert.user_public_key),
                 device: cert.device_public_key,
@@ -145,6 +149,12 @@ pub(crate) fn handles_of(user: &str) -> Vec<Link> {
 /// The device key of the started page `id`.
 pub(crate) fn device_of(id: u32) -> Option<[u8; 32]> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.device))
+}
+
+/// The person `id`'s workspace host acts for, its root key as hex: the host serves workspaces
+/// for people and is nobody in them itself, so a list of a workspace's people never offers it.
+pub(crate) fn local_person(id: u32) -> Option<String> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.local_person.clone()))
 }
 
 /// The host handle of the started page `id`: what this page asks its session for over the peer it
@@ -310,7 +320,7 @@ pub(crate) fn narrated(
     peer: u32,
     workspace_id: WorkspaceId,
     from: [u8; 32],
-    event: &tilo_relay_protocol::live::SemanticFrame,
+    event: &tilo_server_protocol::live::SemanticFrame,
 ) {
     let admitted = PAGES.with_borrow_mut(|pages| {
         let Some(page) = pages.get_mut(&peer) else {
@@ -373,7 +383,7 @@ pub(crate) fn view(peer: u32, workspace: &str) -> Option<BoardView> {
 }
 
 /// `members` each as the person whose device they are: the workspace's governance names whose
-/// each member device is (`devices`, device to person), so a member the live plane never
+/// each member device is (`devices`, device to person), so a member the live session never
 /// certified to this page is still shown, called and counted as their person. With how many of
 /// them the governance named.
 fn with_persons(

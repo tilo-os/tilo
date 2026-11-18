@@ -1,7 +1,7 @@
 use discord_wire::event::EmojiInfo;
 
 use super::*;
-use crate::record::{Origin, map_key};
+use crate::guild::{Origin, map_key};
 
 const WAVE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CAT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

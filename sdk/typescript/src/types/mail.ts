@@ -22,22 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@3de88f51444d06e9";
-
-export interface Delivery {
-  from: string;
-  to: string | null;
-  cc: string | null;
-  subject: string;
-  body: string;
-  date: string | null;
-  folder: Folder | null;
-  read: boolean | null;
-  reply_to: string | null;
-  conversation: string | null;
-  message_id: string | null;
-  original: unknown | null;
-}
+export const SURFACE = "so.tilo.mail@854a528313f33a18";
 
 export interface DraftAttachment {
   content_id: string;
@@ -90,6 +75,35 @@ export interface DraftState {
 /** One of "inbox", "starred", "sent", "drafts", "archive", "trash", "junk". */
 export type Folder = "inbox" | "starred" | "sent" | "drafts" | "archive" | "trash" | "junk";
 
+export interface LocalFolder {
+  name: string;
+}
+
+export interface RetiredCopy {
+  account: string;
+  locator: string;
+  removed: boolean;
+}
+
+/** One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with. */
+export type ServerUpdate = Record<string, unknown>;
+
+export interface Delivery {
+  from: string;
+  to: string | null;
+  cc: string | null;
+  subject: string;
+  body: string;
+  date: string | null;
+  folder: Folder | null;
+  read: boolean | null;
+  reply_to: string | null;
+  conversation: string | null;
+  message_id: string | null;
+  original: unknown | null;
+  answers: string | null;
+}
+
 export interface HeldMessage {
   message_id: string;
   from: string;
@@ -113,10 +127,6 @@ export interface IngestBaseline {
   label: string | null;
 }
 
-export interface LocalFolder {
-  name: string;
-}
-
 export interface MessageState {
   read: boolean;
   starred: boolean;
@@ -135,9 +145,6 @@ export interface ServerCopy {
   folder: Folder;
   removed: boolean;
 }
-
-/** One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with. */
-export type ServerUpdate = Record<string, unknown>;
 
 export interface PersonAccount {
   type_id: string;
@@ -189,6 +196,43 @@ export interface NewCopy {
   folder: Folder;
   uid: number;
   uid_validity: number;
+}
+
+/** The arguments of `mark-read`. */
+export interface MarkReadArgs {
+  messages: string[];
+  read: boolean;
+}
+
+/** The arguments of `archive`. */
+export interface ArchiveArgs {
+  messages: string[];
+}
+
+/** The arguments of `trash`. */
+export interface TrashArgs {
+  messages: string[];
+}
+
+/** The arguments of `move-messages`. */
+export interface MoveMessagesArgs {
+  messages: string[];
+  to: Folder;
+}
+
+/** The arguments of `purge`. */
+export interface PurgeArgs {
+  messages: string[];
+}
+
+/** The arguments of `ingest`. */
+export interface IngestArgs {
+  messages: IngestBaseline[];
+}
+
+/** The arguments of `server-applied`. */
+export interface ServerAppliedArgs {
+  updates: ServerUpdate[];
 }
 
 /** The arguments of `publish-browser-identity`. */
@@ -313,31 +357,10 @@ export interface ForgetCopiesArgs {
 
 /** Mail — `mail.mailbox`. */
 export interface Mailbox extends tilo.Resource {
-  messages: Array<tilo.Entry<MessageState>>;
   folders: Array<tilo.Entry<LocalFolder>>;
   draft: DraftState;
   drafts: Array<tilo.Entry<DraftState>>;
-  held: Array<tilo.Entry<HeldMessage>>;
-  markRead(args: {
-    messages: string[];
-    read: boolean;
-  }): Promise<void>;
-  archive(args: {
-    messages: string[];
-  }): Promise<void>;
-  trash(args: {
-    messages: string[];
-  }): Promise<void>;
-  moveMessages(args: {
-    messages: string[];
-    to: Folder;
-  }): Promise<void>;
-  purge(args: {
-    messages: string[];
-  }): Promise<void>;
-  ingest(args: {
-    messages: IngestBaseline[];
-  }): Promise<void>;
+  readonly retired: Array<tilo.Entry<RetiredCopy>>;
   serverApplied(args: {
     update: ServerUpdate;
   }): Promise<void>;
@@ -380,20 +403,6 @@ export interface Mailbox extends tilo.Resource {
     account: string;
     folder: Folder;
   }): Promise<unknown>;
-  deliverMessage(args: {
-    from: string;
-    subject: string;
-    body: string;
-    to?: string;
-    cc?: string;
-    date?: string;
-    folder?: Folder;
-    read?: boolean;
-    reply_to?: string;
-    conversation?: string;
-    message_id?: string;
-    original?: unknown;
-  }): Promise<unknown>;
   draftMessage(args: {
     to: string;
     subject: string;
@@ -422,11 +431,78 @@ export interface Mailbox extends tilo.Resource {
 
 /** The actions `Mailbox` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAILBOX_ACTIONS = ["markRead", "archive", "trash", "moveMessages", "purge", "ingest", "serverApplied", "startDraftBody", "saveDraft", "createDraft", "showDraft", "attach", "discardDraft", "sendMessage", "checkMail", "deliverMessage", "draftMessage", "cancelSend", "searchMessages", "exportContent"] as const;
+export const MAILBOX_ACTIONS = ["serverApplied", "startDraftBody", "saveDraft", "createDraft", "showDraft", "attach", "discardDraft", "sendMessage", "checkMail", "draftMessage", "cancelSend", "searchMessages", "exportContent"] as const;
 
 /** The `mail.mailbox` kind at `path`. */
 export function mailbox(ws: tilo.Workspace, path: string): Mailbox {
   return resourceProxy(ws, path, SURFACE, MAILBOX_ACTIONS) as unknown as Mailbox;
+}
+
+/** Messages — `mail.messages`. */
+export interface Messages extends tilo.Resource {
+  messages: Array<tilo.Entry<MessageState>>;
+  readonly held: Array<tilo.Entry<HeldMessage>>;
+  markRead(args: {
+    messages: string[];
+    read: boolean;
+  }): Promise<void>;
+  /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  markReadMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
+  archive(args: {
+    messages: string[];
+  }): Promise<void>;
+  /** Runs `archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  archiveMany(items: ArchiveArgs[]): Promise<tilo.ActionAnswer[]>;
+  trash(args: {
+    messages: string[];
+  }): Promise<void>;
+  /** Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trashMany(items: TrashArgs[]): Promise<tilo.ActionAnswer[]>;
+  moveMessages(args: {
+    messages: string[];
+    to: Folder;
+  }): Promise<void>;
+  /** Runs `move-messages` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  moveMessagesMany(items: MoveMessagesArgs[]): Promise<tilo.ActionAnswer[]>;
+  purge(args: {
+    messages: string[];
+  }): Promise<void>;
+  /** Runs `purge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  purgeMany(items: PurgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  ingest(args: {
+    messages: IngestBaseline[];
+  }): Promise<void>;
+  /** Runs `ingest` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  ingestMany(items: IngestArgs[]): Promise<tilo.ActionAnswer[]>;
+  serverApplied(args: {
+    updates: ServerUpdate[];
+  }): Promise<void>;
+  /** Runs `server-applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  serverAppliedMany(items: ServerAppliedArgs[]): Promise<tilo.ActionAnswer[]>;
+  deliverMessage(args: {
+    from: string;
+    subject: string;
+    body: string;
+    to?: string;
+    cc?: string;
+    date?: string;
+    folder?: Folder;
+    read?: boolean;
+    reply_to?: string;
+    conversation?: string;
+    message_id?: string;
+    original?: unknown;
+    answers?: string;
+  }): Promise<unknown>;
+}
+
+/** The actions `Messages` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MESSAGES_ACTIONS = ["markRead", "markReadMany", "archive", "archiveMany", "trash", "trashMany", "moveMessages", "moveMessagesMany", "purge", "purgeMany", "ingest", "ingestMany", "serverApplied", "serverAppliedMany", "deliverMessage"] as const;
+
+/** The `mail.messages` kind at `path`. */
+export function messages(ws: tilo.Workspace, path: string): Messages {
+  return resourceProxy(ws, path, SURFACE, MESSAGES_ACTIONS) as unknown as Messages;
 }
 
 /** Accounts — `tilo.accounts`. */

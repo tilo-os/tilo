@@ -1,9 +1,9 @@
-//! What search finds of a workspace: the text of every record and item of every package.
+//! What search finds of a workspace: the text of every resource and item of every package.
 //!
 //! Every `Text` and `RichText` field of a type is searchable by default (a rich text by its text
 //! as the person searching reads it: a reference to a resource they hold by what it is called
 //! now, one they do not hold as not shared, never by the title it was written with,
-//! [`crate::reading`]); a hit is the record or item that holds it, found by its text, and it opens the host at that resource (its `open` view action, see
+//! [`crate::reading`]); a hit is the resource or item that holds it, found by its text, and it opens the host at that resource (its `open` view action, see
 //! [`crate::effects::OpenEffect`]). A package will be able to say which fields to index; until
 //! then all of them are, the most useful default for a notes app and a chat alike.
 //!
@@ -16,7 +16,7 @@ use tilolang_runtime::meta::Meta;
 
 use crate::host::Host;
 use crate::publish::resource_id;
-use crate::record::{DynRecord, DynValue};
+use crate::resource::{DynResource, DynValue};
 use tilo_resource::search_index::{
     IndexAction, IndexDelta, IndexEntry, IndexState, IndexWeight, Publisher,
 };
@@ -40,13 +40,13 @@ pub struct Hit {
     pub references: Vec<String>,
 }
 
-/// The searchable resources of the record `doc` and the items below it, read from the record
+/// The searchable resources of the resource `doc` and the items below it, read from the resource
 /// whole, each text as the person `reader` holds resources for reads it: what the index's hits
 /// are held to.
 #[must_use]
 pub fn hits(
     meta: &Meta,
-    record: &DynRecord,
+    record: &DynResource,
     doc: &str,
     reader: &dyn crate::reading::Holdings,
 ) -> Vec<Hit> {
@@ -57,7 +57,7 @@ pub fn hits(
 
 fn collect(
     meta: &Meta,
-    record: &DynRecord,
+    record: &DynResource,
     path: &str,
     reader: &dyn crate::reading::Holdings,
     out: &mut Vec<Hit>,
@@ -189,7 +189,7 @@ const OPEN_ACTION: &str = "open";
 
 /// Every hit of the workspace as the session's persistent search index keeps it: one [`IndexEntry`]
 /// per resource with text, short metadata only (never a prose body), keyed by the resource's
-/// published id and opening it through its record's `open` action. This is what
+/// published id and opening it through its document's `open` action. This is what
 /// a live tilolang instance publishes on its connection, so a Mail message or a note is found by
 /// a word of its body through the system's one search, whether or not the app runs.
 fn entries_of(
@@ -240,7 +240,7 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
 /// The index's entry of the resource `resource` with `texts`: short metadata first (a sender, a
 /// subject), then long prose (a body), so the index keeps a bounded number of fields
 /// ([`IndexEntry::bounded`]) with the metadata that ranks highest. A hit opens through the `open`
-/// of the record that holds the resource, which every window showing anything of the record
+/// of the document that holds the resource, which every window showing anything of the document
 /// publishes: the caller names the resource as the item to show, which no window may show yet.
 fn entry(
     resource: &str,
@@ -267,7 +267,7 @@ fn entry(
         key: resource.to_owned(),
         resource: resource.to_owned(),
         action: Some(IndexAction {
-            resource: record_of(resource).to_owned(),
+            resource: document_of(resource).to_owned(),
             action: OPEN_ACTION.to_owned(),
         }),
         title: title.to_owned(),
@@ -284,8 +284,8 @@ fn entry(
 }
 
 /// The published record that holds the published resource `resource`: an item's path goes on
-/// from its record's id after a `/`.
-fn record_of(resource: &str) -> &str {
+/// from its document's id after a `/`.
+fn document_of(resource: &str) -> &str {
     resource
         .split_once('/')
         .map_or(resource, |(record, _)| record)

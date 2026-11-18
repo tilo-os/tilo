@@ -40,7 +40,7 @@ pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<Continuatio
 /// Who this process is and which workspace it serves; every field is optional, and
 /// each reader applies its own fallback.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HostIdentity {
+pub struct ProcessIdentity {
     pub app_id: Option<String>,
     pub development_app_id: Option<String>,
     pub app_name: Option<String>,
@@ -64,7 +64,7 @@ pub fn media_player_bus_name(app_id: &str) -> String {
     format!("org.mpris.MediaPlayer2.{app_id}")
 }
 
-impl HostIdentity {
+impl ProcessIdentity {
     /// The MPRIS bus name this process's media player goes by: its app's
     /// ([`media_player_bus_name`]), else `fallback_app_id`'s, so an app run
     /// outside a launcher still names its player.
@@ -75,7 +75,7 @@ impl HostIdentity {
 }
 
 /// Env var naming the font index directory, for a process the launcher puts
-/// in a sandbox ([`HostPaths::font_index`]).
+/// in a sandbox ([`ProcessPaths::font_index`]).
 pub const FONT_INDEX_ENV: &str = "TILO_FONT_INDEX";
 
 /// `TILO_REQUIRE_FONTS=1` promises every process that sets text the product's
@@ -83,7 +83,7 @@ pub const FONT_INDEX_ENV: &str = "TILO_FONT_INDEX";
 pub const FONTS_REQUIRED_ENV: &str = "TILO_REQUIRE_FONTS";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HostPaths {
+pub struct ProcessPaths {
     pub user_home: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub config_home: Option<PathBuf>,
@@ -105,7 +105,7 @@ pub struct HostPaths {
     pub public_identity_record: Option<PathBuf>,
 }
 
-impl HostPaths {
+impl ProcessPaths {
     pub fn config_dir(&self) -> Option<PathBuf> {
         self.config_home
             .clone()
@@ -162,9 +162,9 @@ pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
 pub const WINDOWLESS_ENV: &str = "TILO_WINDOWLESS";
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct HostEnvironment {
-    pub identity: HostIdentity,
-    pub paths: HostPaths,
+pub struct ProcessEnvironment {
+    pub identity: ProcessIdentity,
+    pub paths: ProcessPaths,
     pub accessibility: AccessibilityInputs,
     /// The user's preferred locale, as a POSIX or BCP 47 tag.
     pub locale: Option<String>,
@@ -176,7 +176,7 @@ pub struct HostEnvironment {
     pub windowless: bool,
 }
 
-static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);
+static INSTALLED: RwLock<Option<Arc<ProcessEnvironment>>> = RwLock::new(None);
 
 /// A POSIX locale value (`de_DE.UTF-8`, or a `LANGUAGE` list such as
 /// `de:en_US`, whose first entry wins) as a language identifier. `C`, `POSIX`,
@@ -211,7 +211,7 @@ pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<S
     None
 }
 
-pub fn install_environment(environment: HostEnvironment) {
+pub fn install_environment(environment: ProcessEnvironment) {
     if let Ok(mut slot) = INSTALLED.write() {
         *slot = Some(Arc::new(environment));
     }
@@ -219,14 +219,14 @@ pub fn install_environment(environment: HostEnvironment) {
 
 /// The host inputs for this process: the installed ones, else (with `native`) what the
 /// runner reads from the process environment afresh on each call, else none.
-pub fn environment() -> Arc<HostEnvironment> {
+pub fn environment() -> Arc<ProcessEnvironment> {
     if let Some(installed) = INSTALLED.read().ok().and_then(|slot| slot.clone()) {
         return installed;
     }
     #[cfg(feature = "native")]
     return Arc::new(process_environment());
     #[cfg(not(feature = "native"))]
-    Arc::new(HostEnvironment::default())
+    Arc::new(ProcessEnvironment::default())
 }
 
 #[cfg(test)]
@@ -235,36 +235,36 @@ mod tests {
 
     #[test]
     fn config_dir_falls_back_to_home() {
-        let paths = HostPaths {
+        let paths = ProcessPaths {
             home: Some("/home/ada".into()),
-            ..HostPaths::default()
+            ..ProcessPaths::default()
         };
         assert_eq!(paths.config_dir(), Some(PathBuf::from("/home/ada/.config")));
-        let paths = HostPaths {
+        let paths = ProcessPaths {
             home: Some("/home/ada".into()),
             config_home: Some("/cfg".into()),
-            ..HostPaths::default()
+            ..ProcessPaths::default()
         };
         assert_eq!(paths.config_dir(), Some(PathBuf::from("/cfg")));
     }
 
     #[test]
     fn cache_dir_falls_back_to_home() {
-        let paths = HostPaths {
+        let paths = ProcessPaths {
             home: Some("/home/ada".into()),
-            ..HostPaths::default()
+            ..ProcessPaths::default()
         };
         assert_eq!(paths.cache_dir(), Some(PathBuf::from("/home/ada/.cache")));
-        let paths = HostPaths {
+        let paths = ProcessPaths {
             home: Some("/home/ada".into()),
             cache_home: Some("/run/tilo/app/.cache".into()),
-            ..HostPaths::default()
+            ..ProcessPaths::default()
         };
         assert_eq!(
             paths.cache_dir(),
             Some(PathBuf::from("/run/tilo/app/.cache"))
         );
-        assert_eq!(HostPaths::default().cache_dir(), None);
+        assert_eq!(ProcessPaths::default().cache_dir(), None);
     }
 
     #[test]

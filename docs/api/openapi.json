@@ -1613,6 +1613,170 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/hosts": {
+      "get": {
+        "operationId": "listHosts",
+        "summary": "The hosts holding the workspace, the one that governs it first",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The hosts holding the workspace, the one that governs it first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hosts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "addHost",
+        "summary": "Have another host hold the workspace as well, as that host's rules allow",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Have another host hold the workspace as well, as that host's rules allow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hosts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewHost"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/hosts/{host}": {
+      "delete": {
+        "operationId": "removeHost",
+        "summary": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "host",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The host's site (`https://tilo.sh`), or its device key as listing the hosts names it"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hosts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/members/invitations": {
       "post": {
         "operationId": "invitePerson",
@@ -2644,7 +2808,7 @@
               "string",
               "null"
             ],
-            "description": "The host that keeps it: a relay's name, or the person's device that\nhosts it; absent while none of their devices said."
+            "description": "The host that keeps it: a server's name, or the person's device that\nhosts it; absent while none of their devices said."
           },
           "role": {
             "type": [
@@ -3611,6 +3775,24 @@
         "additionalProperties": true,
         "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
       },
+      "Hosts": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "The hosts holding the workspace (`hosts`, each its `device` key, the\n`person` it runs for, and whether it `governs` the workspace: the one it\nwas made on, first), and after a removal whether that host confirmed it let\nthe workspace go (`confirmed`)."
+      },
+      "NewHost": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string",
+            "description": "The host's site, like `https://tilo.sh`. You must be let in there, and\nit may refuse by its own rules."
+          }
+        },
+        "required": [
+          "origin"
+        ],
+        "description": "Another host to hold the workspace as well."
+      },
       "Invitation": {
         "type": "object",
         "additionalProperties": true,
@@ -3677,6 +3859,9 @@
             ],
             "format": "uint64",
             "minimum": 0
+          },
+          "detail": {
+            "description": "Why it failed: the trap's words, or what did not compile."
           },
           "steps": {
             "type": "array",
@@ -3774,7 +3959,7 @@
           },
           "type": {
             "type": "string",
-            "description": "`change`, `run` or `presence`."
+            "description": "`change`, `invocation` or `presence`."
           },
           "workspace": {
             "type": "string"
@@ -3803,7 +3988,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The kinds to post (`change`, `run`, `presence`); all without it.",
+            "description": "The kinds to post (`change`, `invocation`, `presence`); all without it.",
             "default": []
           },
           "path": {
@@ -7973,46 +8158,8 @@
       },
       "chat.workspace.begin-chat.Arguments": {
         "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "initials": {
-            "type": "string"
-          },
-          "color": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "initials",
-          "color"
-        ],
-        "description": ""
-      },
-      "chat.workspace.introduce.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "initials": {
-            "type": "string"
-          },
-          "color": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "initials",
-          "color"
-        ],
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "chat.workspace.create-category.Arguments": {
@@ -8401,7 +8548,44 @@
         "type": "object",
         "properties": {
           "person": {
-            "type": "string"
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "reason": {
             "minLength": 1,
@@ -10502,6 +10686,93 @@
         ],
         "description": ""
       },
+      "chat.messages.post-view.Arguments": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "text",
+          "source",
+          "reads"
+        ],
+        "description": ""
+      },
+      "chat.messages.answer-with-view.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "say": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message",
+          "source",
+          "reads"
+        ],
+        "description": ""
+      },
+      "chat.messages.rewrite-view.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "message",
+          "source",
+          "reads"
+        ],
+        "description": ""
+      },
       "chat.messages.carry-counts.Arguments": {
         "type": "object",
         "properties": {
@@ -10674,14 +10945,6 @@
               "null"
             ]
           },
-          "colour": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "mcp_client": {
             "type": [
               "string",
@@ -10747,24 +11010,6 @@
         "required": [
           "agent",
           "on_host"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-colour.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "colour": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "agent",
-          "colour"
         ],
         "description": ""
       },
@@ -10917,6 +11162,39 @@
               "string",
               "null"
             ]
+          },
+          "coding": {
+            "additionalProperties": false,
+            "properties": {
+              "base": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harness": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -10995,6 +11273,141 @@
         "required": [
           "agent",
           "stands"
+        ],
+        "description": ""
+      },
+      "chat.agent.sub-agent-produced.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "document": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "resource"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent",
+          "kind",
+          "label"
+        ],
+        "description": ""
+      },
+      "chat.agent.sub-agent-coding.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "process": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "ended": {
+                "type": "string"
+              },
+              "ended_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "exit": {
+                "maximum": 2147483647,
+                "minimum": -2147483648,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_ms": {
+                "type": "integer"
+              },
+              "stopped_by": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "started_ms"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spent_micros": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "harness": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
         ],
         "description": ""
       },
@@ -12309,15 +12722,6 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "id",
-                    "label",
-                    "street",
-                    "city",
-                    "region",
-                    "postal",
-                    "country"
-                  ],
                   "type": "object"
                 },
                 "type": "array"
@@ -12413,8 +12817,6 @@
                     }
                   },
                   "required": [
-                    "id",
-                    "label",
                     "value"
                   ],
                   "type": "object"
@@ -12440,7 +12842,6 @@
                     }
                   },
                   "required": [
-                    "id",
                     "value"
                   ],
                   "type": "object"
@@ -12476,8 +12877,6 @@
                     }
                   },
                   "required": [
-                    "id",
-                    "label",
                     "value"
                   ],
                   "type": "object"
@@ -12494,20 +12893,6 @@
                 "type": "string"
               }
             },
-            "required": [
-              "id",
-              "first",
-              "last",
-              "org",
-              "title",
-              "website",
-              "notes",
-              "phones",
-              "emails",
-              "addresses",
-              "groups",
-              "favorite"
-            ],
             "type": [
               "object",
               "null"
@@ -16194,6 +16579,10 @@
                     "body": {
                       "type": "string"
                     },
+                    "column": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
                     "files": {
                       "items": {
                         "additionalProperties": false,
@@ -16251,10 +16640,6 @@
                     "id": {
                       "type": "string"
                     },
-                    "lane": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
                     "parents": {
                       "items": {
                         "type": "string"
@@ -16306,7 +16691,7 @@
                     "time",
                     "parents",
                     "refs",
-                    "lane",
+                    "column",
                     "files"
                   ],
                   "type": "object"
@@ -16647,158 +17032,6 @@
         },
         "required": [
           "entry_id"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.mark-read.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "read": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "messages",
-          "read"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.archive.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.trash.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.move-messages.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "to": {
-            "enum": [
-              "inbox",
-              "starred",
-              "sent",
-              "drafts",
-              "archive",
-              "trash",
-              "junk"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "messages",
-          "to"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.purge.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.ingest.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "account": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "folder": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "id": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "locator": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "read": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                },
-                "starred": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "id"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
         ],
         "description": ""
       },
@@ -17548,7 +17781,527 @@
           "null"
         ]
       },
-      "mail.mailbox.deliver-message.Arguments": {
+      "mail.mailbox.draft-message.Arguments": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "cc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "description": ""
+      },
+      "mail.mailbox.draft-message.Result": {
+        "type": "object"
+      },
+      "mail.mailbox.cancel-send.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": ""
+      },
+      "mail.mailbox.cancel-send.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "mail.mailbox.search-messages.Arguments": {
+        "type": "object",
+        "properties": {
+          "query": {},
+          "folder": {},
+          "from": {},
+          "subject": {},
+          "since": {},
+          "until": {},
+          "has_attachment": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "mail.mailbox.export-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "format": {},
+          "message": {},
+          "folder": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "mail.messages.mark-read.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "read": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "messages",
+          "read"
+        ],
+        "description": ""
+      },
+      "mail.messages.archive.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.trash.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.move-messages.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to": {
+            "enum": [
+              "inbox",
+              "starred",
+              "sent",
+              "drafts",
+              "archive",
+              "trash",
+              "junk"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "messages",
+          "to"
+        ],
+        "description": ""
+      },
+      "mail.messages.purge.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.ingest.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "account": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "folder": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "locator": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "read": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "starred": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.server-applied.Arguments": {
+        "type": "object",
+        "properties": {
+          "updates": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "Flags": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "folder": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "locator": {
+                          "type": "string"
+                        },
+                        "read": {
+                          "type": "boolean"
+                        },
+                        "starred": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "folder",
+                        "read",
+                        "starred"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Flags"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "Move": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "from": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "locator": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Move"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "Remove": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "folder": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "locator": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "folder"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Remove"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "SaveDraft": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "draft": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "attachments": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "content_id": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "mime": {
+                                    "type": "string"
+                                  },
+                                  "size": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "content_id",
+                                  "filename",
+                                  "mime",
+                                  "size"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "bcc": {
+                              "type": "string"
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "calendar_ics": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "cc": {
+                              "type": "string"
+                            },
+                            "html_body": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "sender": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "account": {
+                                  "type": "string"
+                                },
+                                "email": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "account",
+                                "email"
+                              ],
+                              "type": [
+                                "object",
+                                "null"
+                              ]
+                            },
+                            "subject": {
+                              "type": "string"
+                            },
+                            "to": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "to",
+                            "cc",
+                            "bcc",
+                            "subject",
+                            "body"
+                          ],
+                          "type": "object"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "in_reply_to": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "locator": {
+                          "type": "string"
+                        },
+                        "written": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "written",
+                        "draft"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "SaveDraft"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "updates"
+        ],
+        "description": ""
+      },
+      "mail.messages.deliver-message.Arguments": {
         "type": "object",
         "properties": {
           "from": {
@@ -17659,6 +18412,12 @@
                 ]
               }
             ]
+          },
+          "answers": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -17668,86 +18427,8 @@
         ],
         "description": ""
       },
-      "mail.mailbox.deliver-message.Result": {
+      "mail.messages.deliver-message.Result": {
         "type": "object"
-      },
-      "mail.mailbox.draft-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "to": {
-            "type": "string"
-          },
-          "subject": {
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "cc": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "notes": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "to",
-          "subject",
-          "body"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.draft-message.Result": {
-        "type": "object"
-      },
-      "mail.mailbox.cancel-send.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.cancel-send.Result": {
-        "type": [
-          "object",
-          "array",
-          "null"
-        ]
-      },
-      "mail.mailbox.search-messages.Arguments": {
-        "type": "object",
-        "properties": {
-          "query": {},
-          "folder": {},
-          "from": {},
-          "subject": {},
-          "since": {},
-          "until": {},
-          "has_attachment": {}
-        },
-        "required": [],
-        "description": ""
-      },
-      "mail.mailbox.export-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "format": {},
-          "message": {},
-          "folder": {}
-        },
-        "required": [],
-        "description": ""
       },
       "mail.trusted-senders.trust.Arguments": {
         "type": "object",
@@ -18711,12 +19392,6 @@
         ],
         "description": ""
       },
-      "model-providers.root.list-presets.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "monitor.processes.refresh.Arguments": {
         "type": "object",
         "properties": {},
@@ -18923,158 +19598,6 @@
         ],
         "description": ""
       },
-      "notes.notebook.new-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.notebook.new-note.Result": {
-        "type": "object"
-      },
-      "notes.notebook.new-child.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.notebook.new-child.Result": {
-        "type": "object"
-      },
-      "notes.notebook.rename.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.notebook.delete.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.move-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "before": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.move-up.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.move-down.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.indent.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.outdent.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.notebook.duplicate.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
       "notes.notebook.new-tag.Arguments": {
         "type": "object",
         "properties": {
@@ -19083,22 +19606,6 @@
           }
         },
         "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "notes.notebook.tag.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
           "name"
         ],
         "description": ""
@@ -19115,7 +19622,462 @@
         ],
         "description": ""
       },
-      "notes.notebook.keep-image.Arguments": {
+      "notes.notebook.export-markdown-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {},
+          "title": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "notes.pages.new-note.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": ""
+      },
+      "notes.pages.new-note.Result": {
+        "type": "object"
+      },
+      "notes.pages.new-child.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page",
+          "title"
+        ],
+        "description": ""
+      },
+      "notes.pages.new-child.Result": {
+        "type": "object"
+      },
+      "notes.pages.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "title"
+        ],
+        "description": ""
+      },
+      "notes.pages.delete.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.move-note.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.move-up.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.move-down.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.indent.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.outdent.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "place": {
+            "additionalProperties": false,
+            "properties": {
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.duplicate.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "copies": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "blocks": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "align": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "attrs": {
+                        "type": "object"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "level": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "marks": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "end": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "start": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "value": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "Bool": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "Bool"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "Int": {
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "Int"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "Str": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "Str"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "start",
+                            "end",
+                            "name",
+                            "value"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "ordered": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "text",
+                      "marks"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "parent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rank": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "rank",
+                "blocks"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "description": ""
+      },
+      "notes.pages.duplicate.Result": {
+        "type": "object"
+      },
+      "notes.pages.tag.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "page",
+          "name"
+        ],
+        "description": ""
+      },
+      "notes.pages.keep-image.Arguments": {
         "type": "object",
         "properties": {
           "bytes": {
@@ -19156,7 +20118,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.place-image.Arguments": {
+      "notes.pages.place-image.Arguments": {
         "type": "object",
         "properties": {
           "page": {
@@ -19207,7 +20169,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.create-page.Arguments": {
+      "notes.pages.create-page.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -19269,6 +20231,27 @@
               "object",
               "null"
             ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19276,10 +20259,10 @@
         ],
         "description": ""
       },
-      "notes.notebook.create-page.Result": {
+      "notes.pages.create-page.Result": {
         "type": "object"
       },
-      "notes.notebook.import-markdown.Arguments": {
+      "notes.pages.import-markdown.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -19383,6 +20366,36 @@
               "object",
               "null"
             ]
+          },
+          "reads": {
+            "additionalProperties": false,
+            "properties": {
+              "imported": {
+                "type": "boolean"
+              },
+              "links": {
+                "additionalProperties": false,
+                "properties": {
+                  "paths": {
+                    "type": "object"
+                  },
+                  "titles": {
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "rank": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rank"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19392,7 +20405,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.import-markdown-files.Arguments": {
+      "notes.pages.import-markdown-files.Arguments": {
         "type": "object",
         "properties": {
           "files": {
@@ -19468,6 +20481,30 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "ranks": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19475,7 +20512,7 @@
         ],
         "description": ""
       },
-      "notes.notebook.append-to-note.Arguments": {
+      "notes.pages.append-to-note.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -19486,6 +20523,27 @@
           },
           "markdown": {
             "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19493,10 +20551,10 @@
         ],
         "description": ""
       },
-      "notes.notebook.append-to-note.Result": {
+      "notes.pages.append-to-note.Result": {
         "type": "object"
       },
-      "notes.notebook.write-note.Arguments": {
+      "notes.pages.write-note.Arguments": {
         "type": "object",
         "properties": {
           "page": {
@@ -19504,21 +20562,27 @@
           },
           "markdown": {
             "type": "string"
+          },
+          "links": {
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "object"
+              },
+              "titles": {
+                "type": "object"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
           "page",
           "markdown"
         ],
-        "description": ""
-      },
-      "notes.notebook.export-markdown-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {},
-          "title": {}
-        },
-        "required": [],
         "description": ""
       },
       "osk.keyboard.set-layout.Arguments": {
@@ -23010,6 +24074,12 @@
               "type": "array"
             },
             "type": "array"
+          },
+          "seen": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23060,6 +24130,12 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "seen": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -26202,7 +27278,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "notes.notebook.pages",
+            "resource_kind": "notes.pages.pages",
             "type": "object"
           }
         },
@@ -26367,6 +27443,10 @@
                     {
                       "const": "people",
                       "type": "string"
+                    },
+                    {
+                      "const": "pieces",
+                      "type": "string"
                     }
                   ]
                 },
@@ -26442,7 +27522,26 @@
         ],
         "description": ""
       },
-      "tasks.issues.run-began.Arguments": {
+      "tasks.issues.set-pieces-at-once.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "at_once": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "description": ""
+      },
+      "tasks.issues.session-began.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -26454,7 +27553,7 @@
         ],
         "description": ""
       },
-      "tasks.issues.run-ended.Arguments": {
+      "tasks.issues.session-ended.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -27772,8 +28871,8 @@
         "properties": {
           "kind": {
             "enum": [
-              "Video",
-              "Audio"
+              "video",
+              "audio"
             ],
             "type": "string"
           }
@@ -27795,7 +28894,7 @@
         ],
         "description": ""
       },
-      "video-editor.project.trim-lanes.Arguments": {
+      "video-editor.project.trim-tracks.Arguments": {
         "type": "object",
         "properties": {
           "tracks": {
@@ -29805,12 +30904,6 @@
     {
       "app": "so.tilo.chat",
       "resource": "chat.workspace",
-      "action": "introduce",
-      "arguments": "#/components/schemas/chat.workspace.introduce.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
       "action": "create-category",
       "arguments": "#/components/schemas/chat.workspace.create-category.Arguments"
     },
@@ -30075,6 +31168,24 @@
     {
       "app": "so.tilo.chat",
       "resource": "chat.messages",
+      "action": "post-view",
+      "arguments": "#/components/schemas/chat.messages.post-view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "answer-with-view",
+      "arguments": "#/components/schemas/chat.messages.answer-with-view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "rewrite-view",
+      "arguments": "#/components/schemas/chat.messages.rewrite-view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
       "action": "carry-counts",
       "arguments": "#/components/schemas/chat.messages.carry-counts.Arguments"
     },
@@ -30153,12 +31264,6 @@
     {
       "app": "so.tilo.chat",
       "resource": "chat.agent",
-      "action": "set-agent-colour",
-      "arguments": "#/components/schemas/chat.agent.set-agent-colour.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
       "action": "rename-agent",
       "arguments": "#/components/schemas/chat.agent.rename-agent.Arguments"
     },
@@ -30209,6 +31314,18 @@
       "resource": "chat.agent",
       "action": "sub-agent-stands",
       "arguments": "#/components/schemas/chat.agent.sub-agent-stands.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "sub-agent-produced",
+      "arguments": "#/components/schemas/chat.agent.sub-agent-produced.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "sub-agent-coding",
+      "arguments": "#/components/schemas/chat.agent.sub-agent-coding.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -31503,42 +32620,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "mail.mailbox",
-      "action": "mark-read",
-      "arguments": "#/components/schemas/mail.mailbox.mark-read.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "archive",
-      "arguments": "#/components/schemas/mail.mailbox.archive.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "trash",
-      "arguments": "#/components/schemas/mail.mailbox.trash.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "move-messages",
-      "arguments": "#/components/schemas/mail.mailbox.move-messages.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "purge",
-      "arguments": "#/components/schemas/mail.mailbox.purge.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "ingest",
-      "arguments": "#/components/schemas/mail.mailbox.ingest.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
       "action": "server-applied",
       "arguments": "#/components/schemas/mail.mailbox.server-applied.Arguments"
     },
@@ -31593,12 +32674,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "mail.mailbox",
-      "action": "deliver-message",
-      "arguments": "#/components/schemas/mail.mailbox.deliver-message.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
       "action": "draft-message",
       "arguments": "#/components/schemas/mail.mailbox.draft-message.Arguments"
     },
@@ -31619,6 +32694,54 @@
       "resource": "mail.mailbox",
       "action": "export-content",
       "arguments": "#/components/schemas/mail.mailbox.export-content.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "mark-read",
+      "arguments": "#/components/schemas/mail.messages.mark-read.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "archive",
+      "arguments": "#/components/schemas/mail.messages.archive.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "trash",
+      "arguments": "#/components/schemas/mail.messages.trash.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "move-messages",
+      "arguments": "#/components/schemas/mail.messages.move-messages.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "purge",
+      "arguments": "#/components/schemas/mail.messages.purge.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "ingest",
+      "arguments": "#/components/schemas/mail.messages.ingest.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "server-applied",
+      "arguments": "#/components/schemas/mail.messages.server-applied.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "deliver-message",
+      "arguments": "#/components/schemas/mail.messages.deliver-message.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -32005,12 +33128,6 @@
       "arguments": "#/components/schemas/messages.drafts.drop-draft.Arguments"
     },
     {
-      "app": "so.tilo.model-providers",
-      "resource": "model-providers.root",
-      "action": "list-presets",
-      "arguments": "#/components/schemas/model-providers.root.list-presets.Arguments"
-    },
-    {
       "app": "so.tilo.monitor",
       "resource": "monitor.processes",
       "action": "refresh",
@@ -32073,74 +33190,8 @@
     {
       "app": "so.tilo.notes",
       "resource": "notes.notebook",
-      "action": "new-note",
-      "arguments": "#/components/schemas/notes.notebook.new-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "new-child",
-      "arguments": "#/components/schemas/notes.notebook.new-child.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "rename",
-      "arguments": "#/components/schemas/notes.notebook.rename.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "delete",
-      "arguments": "#/components/schemas/notes.notebook.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "move-note",
-      "arguments": "#/components/schemas/notes.notebook.move-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "move-up",
-      "arguments": "#/components/schemas/notes.notebook.move-up.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "move-down",
-      "arguments": "#/components/schemas/notes.notebook.move-down.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "indent",
-      "arguments": "#/components/schemas/notes.notebook.indent.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "outdent",
-      "arguments": "#/components/schemas/notes.notebook.outdent.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "duplicate",
-      "arguments": "#/components/schemas/notes.notebook.duplicate.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
       "action": "new-tag",
       "arguments": "#/components/schemas/notes.notebook.new-tag.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "tag",
-      "arguments": "#/components/schemas/notes.notebook.tag.Arguments"
     },
     {
       "app": "so.tilo.notes",
@@ -32151,50 +33202,116 @@
     {
       "app": "so.tilo.notes",
       "resource": "notes.notebook",
-      "action": "keep-image",
-      "arguments": "#/components/schemas/notes.notebook.keep-image.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "place-image",
-      "arguments": "#/components/schemas/notes.notebook.place-image.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "create-page",
-      "arguments": "#/components/schemas/notes.notebook.create-page.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "import-markdown",
-      "arguments": "#/components/schemas/notes.notebook.import-markdown.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "import-markdown-files",
-      "arguments": "#/components/schemas/notes.notebook.import-markdown-files.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "append-to-note",
-      "arguments": "#/components/schemas/notes.notebook.append-to-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "write-note",
-      "arguments": "#/components/schemas/notes.notebook.write-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
       "action": "export-markdown-content",
       "arguments": "#/components/schemas/notes.notebook.export-markdown-content.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "new-note",
+      "arguments": "#/components/schemas/notes.pages.new-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "new-child",
+      "arguments": "#/components/schemas/notes.pages.new-child.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "rename",
+      "arguments": "#/components/schemas/notes.pages.rename.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "delete",
+      "arguments": "#/components/schemas/notes.pages.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "move-note",
+      "arguments": "#/components/schemas/notes.pages.move-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "move-up",
+      "arguments": "#/components/schemas/notes.pages.move-up.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "move-down",
+      "arguments": "#/components/schemas/notes.pages.move-down.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "indent",
+      "arguments": "#/components/schemas/notes.pages.indent.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "outdent",
+      "arguments": "#/components/schemas/notes.pages.outdent.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "duplicate",
+      "arguments": "#/components/schemas/notes.pages.duplicate.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "tag",
+      "arguments": "#/components/schemas/notes.pages.tag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "keep-image",
+      "arguments": "#/components/schemas/notes.pages.keep-image.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "place-image",
+      "arguments": "#/components/schemas/notes.pages.place-image.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "create-page",
+      "arguments": "#/components/schemas/notes.pages.create-page.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "import-markdown",
+      "arguments": "#/components/schemas/notes.pages.import-markdown.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "import-markdown-files",
+      "arguments": "#/components/schemas/notes.pages.import-markdown-files.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "append-to-note",
+      "arguments": "#/components/schemas/notes.pages.append-to-note.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "notes.pages",
+      "action": "write-note",
+      "arguments": "#/components/schemas/notes.pages.write-note.Arguments"
     },
     {
       "app": "so.tilo.osk",
@@ -33741,14 +34858,20 @@
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.issues",
-      "action": "run-began",
-      "arguments": "#/components/schemas/tasks.issues.run-began.Arguments"
+      "action": "set-pieces-at-once",
+      "arguments": "#/components/schemas/tasks.issues.set-pieces-at-once.Arguments"
     },
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.issues",
-      "action": "run-ended",
-      "arguments": "#/components/schemas/tasks.issues.run-ended.Arguments"
+      "action": "session-began",
+      "arguments": "#/components/schemas/tasks.issues.session-began.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "session-ended",
+      "arguments": "#/components/schemas/tasks.issues.session-ended.Arguments"
     },
     {
       "app": "so.tilo.tasks",
@@ -34209,8 +35332,8 @@
     {
       "app": "so.tilo.video-editor",
       "resource": "video-editor.project",
-      "action": "trim-lanes",
-      "arguments": "#/components/schemas/video-editor.project.trim-lanes.Arguments"
+      "action": "trim-tracks",
+      "arguments": "#/components/schemas/video-editor.project.trim-tracks.Arguments"
     },
     {
       "app": "so.tilo.video-editor",

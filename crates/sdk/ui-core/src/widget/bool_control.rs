@@ -42,14 +42,14 @@ impl BoolAction {
         }
     }
 
-    pub(crate) fn install_custody(
+    pub(crate) fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         let _ = match self {
-            Self::Value(action) => action.install_custody(domain, attachment),
-            Self::Press(action) => action.install_custody(domain, attachment),
+            Self::Value(action) => action.attach(domain, attachment),
+            Self::Press(action) => action.attach(domain, attachment),
         };
     }
 
@@ -489,8 +489,8 @@ macro_rules! bool_control_widget_methods {
         fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
             if request.wants::<dyn crate::widget::controls::ActionControls>() {
                 request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
-                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGuarded>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGuarded>(self);
             } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
                 request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
             } else if self.control.view_resource.is_none() {
@@ -507,8 +507,8 @@ macro_rules! bool_control_widget_methods {
         ) {
             if request.wants::<dyn crate::widget::controls::ActionControls>() {
                 request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
-                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGuarded>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGuarded>(self);
             } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
                 request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
             } else if self.control.view_resource.is_none() {
@@ -575,7 +575,7 @@ macro_rules! bool_control_capabilities {
             }
         }
 
-        impl crate::permissions::capability::PermissionGated for $ty {
+        impl crate::permissions::capability::PermissionGuarded for $ty {
             fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
                 self.control.permission_scope.clone()
             }
@@ -607,13 +607,13 @@ macro_rules! bool_control_capabilities {
         }
 
         impl crate::widget::controls::ActionControls for $ty {
-            fn install_control_custody(
+            fn attach_controls(
                 &mut self,
                 domain: &crate::ControlDomain,
-                attachment: crate::control_custody::CustodyAttachment,
+                attachment: crate::control_domain::DomainAttachment,
             ) {
                 if let Some(action) = &mut self.control.action {
-                    action.install_custody(domain, attachment);
+                    action.attach(domain, attachment);
                 }
             }
             fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

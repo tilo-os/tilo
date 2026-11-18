@@ -1,6 +1,6 @@
 //! Input as the compositor routes it, whatever device produced it.
 //! Backends translate their devices (libinput, a host window, a test or a remote seat) into these
-//! events; the compositor routes each to the hosted surface or client it belongs to.
+//! events; the compositor routes each to the surface or client it belongs to.
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, GestureBeginEvent,

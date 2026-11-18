@@ -616,4 +616,46 @@ tilo_test_env::scenario! {
                 .is_empty()
         );
     }
+
+    phase something_new_in_a_source_fires_the_trigger_it_was_found_for_once;
+    {
+        let shortcut = program(vec![
+            watch_chat(ActorFilter::Anyone),
+            TriggerSpec::SourceChanged {
+                kind: crate::source_change::PERSON_MAIL.into(),
+                at: String::new(),
+                every_secs: None,
+                filter: Map::new(),
+            },
+        ]);
+        let found = SourceEvent {
+            workspace: "ws-1".into(),
+            trigger: 1,
+            key: "ada@example.com:7:4".into(),
+            payload: Map::from_iter([("item".to_string(), json!("ada@example.com:7:4"))]),
+        };
+        let out = dispatch(&as_bot("b1", &shortcut), Event::Source(&found));
+        assert_eq!(out.firings.len(), 1, "only the trigger it was found for: {out:?}");
+        let firing = &out.firings[0];
+        assert_eq!(firing.trigger_index, 1);
+        assert_eq!(firing.inputs["event"]["item"], "ada@example.com:7:4");
+        // Found again, it is the same invocation, so its steps act once.
+        let again = dispatch(&as_bot("b1", &shortcut), Event::Source(&found));
+        assert_eq!(again.firings[0].invocation, firing.invocation);
+        // Another thing found there is another invocation.
+        let next = SourceEvent {
+            key: "ada@example.com:7:5".into(),
+            ..found.clone()
+        };
+        let other = dispatch(&as_bot("b1", &shortcut), Event::Source(&next));
+        assert_eq!(other.firings.len(), 1, "{other:?}");
+        assert_ne!(other.firings[0].invocation, firing.invocation);
+        // Found for a trigger that waits for something else: nothing.
+        let stray = SourceEvent { trigger: 0, ..found };
+        assert!(
+            dispatch(&as_bot("b1", &shortcut), Event::Source(&stray))
+                .firings
+                .is_empty()
+        );
+    }
 }

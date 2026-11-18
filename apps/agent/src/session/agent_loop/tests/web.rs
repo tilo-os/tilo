@@ -1,5 +1,5 @@
 //! Searching the web and reading a page are the agent's own steps: the run
-//! asks them itself, in process, and its turn's record says what was asked
+//! asks them itself, in process, and its turn's resource says what was asked
 //! and which page was read.
 
 use super::*;
@@ -7,7 +7,7 @@ use super::*;
 use tilo_web_search::Engine;
 use tilo_web_search::fixtures::{FixtureServer, Route};
 
-/// The engine answers the library records, served to the agent from a server
+/// The engine answers the library resources, served to the agent from a server
 /// on this machine.
 const BRAVE: &str =
     include_str!("../../../../../../crates/platform/tilo-web-search/tests/fixtures/brave.html");
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
     // A run that looks something up: it searches, reads the page that matters,
     // and answers with what it read. Both are steps of the run — the person is
     // told what is being searched and which page is being read, the model reads
-    // their answers, and the turn's record keeps both.
+    // their answers, and the turn's resource keeps both.
     {
         let server = server();
         let mut f = fixture(
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         );
         drop(bodies);
 
-        // Both are steps of the turn's record, by what they asked and reached.
+        // Both are steps of the turn's resource, by what they asked and reached.
         let sent = f.sent.borrow();
         let records = recorded(&sent, "record-work");
         let steps = records
@@ -154,7 +154,7 @@ tilo_test_env::scenario! {
     phase a_failed_read_is_a_refused_step;
     // A search the engines could not answer is the step's own failure: the model
     // is told what went wrong, the run does not claim the step succeeded, and
-    // the turn's record says it was refused.
+    // the turn's resource says it was refused.
     {
         let server = server();
         let mut f = fixture(

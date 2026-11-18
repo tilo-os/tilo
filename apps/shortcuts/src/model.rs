@@ -45,7 +45,7 @@ pub struct Program {
 ///
 /// Each unit (an input's declaration, an argument's binding, a step's head,
 /// the output, the triggers) is written whole and kept as the automation
-/// value the run engine reads; the record stores each as its maps, lists and
+/// value the run engine reads; the resource stores each as its maps, lists and
 /// scalars.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Draft {
@@ -574,12 +574,12 @@ pub fn upgrade(
 }
 
 impl Workbench {
-    /// What the record holds: the shortcut programs being written, and the proposals turned
+    /// What the resource holds: the shortcut programs being written, and the proposals turned
     /// down.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,

@@ -20,12 +20,12 @@ use tilo_actions::api::ActionAddress;
 use tilo_agent_session::{
     AgentControl, AgentIdentity, AgentMember, MemberConfig, PlanContext, Planner, Step, StepAction,
 };
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const VIDEO: &str = "so.tilo.video-editor";
 
@@ -79,7 +79,7 @@ fn delegate_to_ed(
     Delegation::sign(
         root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "ed".into(),
         },
         "Ed",
@@ -110,10 +110,10 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let delegation = delegate_to_ed(&root, &agent_device);
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -183,7 +183,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         facts[0]
     );
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// What one plan of a coordinated task was asked and shown: its text, the
@@ -297,13 +297,13 @@ async fn ed_planning_with(
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let now = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "ed".into(),
         },
         "Ed",
@@ -316,7 +316,7 @@ async fn ed_planning_with(
         now.saturating_add(3_600_000_000_000),
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -407,5 +407,5 @@ async fn a_coordinator_s_check_sees_the_facts_and_adds_one_fix() {
         asked[3].2
     );
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

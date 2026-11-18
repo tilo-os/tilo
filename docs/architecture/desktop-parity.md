@@ -87,7 +87,7 @@ The panel is `crates/session/quick-settings`, an app of its own. The **app**
 is the same generation in both: the old shell mounted it in-process
 (`overlay_host/quick_settings.rs` `QuickSettingsPanel::mount`,
 `QUICK_SETTINGS_WINDOW`), the new session starts it as a surface app
-(`session/src/quick_settings.rs` `follow_quick_settings`, `Run::Standing`).
+(`session/src/quick_settings.rs` `follow_quick_settings`, `Run::MemberAccess`).
 What differs is the host around it.
 
 | Behaviour | Old | New | Status |
@@ -119,7 +119,7 @@ What differs is the host around it.
 | Presence: faces, agents, spectator count, invite, the person's own card | `topbar_chrome.rs`, `desktop/src/topbar/people.rs` | `desktop/src/topbar/people.rs`, `avatar_ask.rs`, `profile_card.rs` | same |
 | Status cluster: bell, volume, network, battery, and the bell alone with no Quick Settings (`TrayBell::only`) | `topbar/controls.rs` `TrayBell` | same, `TrayBell::only` intact | same |
 | Bar reveals over a window covering it (Super, top-edge touch) | `reveal.rs` | `desktop/src/topbar/reveal.rs` `Reveals` | same |
-| A compact bar on every display but the primary | `topbar_placement()` | `desktop/src/topbar/space.rs`, `desktop-surface` lanes | same |
+| A compact bar on every display but the primary | `topbar_placement()` | `desktop/src/topbar/space.rs`, `desktop-surface` sections | same |
 
 ## 5. Notifications
 
@@ -153,12 +153,12 @@ What differs is the host around it.
 | Lock screen: clock, the person, one password field, refuse paste, verify on a worker, the unlock action, the refusal shake, idle blanking | `compositor/lock_screen.rs`, `lock_controller.rs`, `lock_auth.rs`, `lock_actions.rs`, and the `so.tilo.lock` client (`sheets/src/lock.rs`) | `crates/session/lock-screen` and `crates/session/sheets/src/lock.rs`, started as the session's lock surface | same |
 | Media card on the lock: title, subtitle, previous/play/next, disabled what the player cannot do | `native/lock_media.rs` | `sheets/src/lock.rs` `Media` | same |
 | Display identify: a numbered card on every display, in the corner the focused window leaves free, for 3 s | `shell/display_identify.rs` | `desktop/src/display_identify.rs` | same |
-| Focused display, pointer moving focus between displays, menus and panels opening on the focused display | `overlay_host/displays.rs` (652-line module) | `desktop-surface/src/surface/displays.rs` `lanes()`, `display_at()`, `focus_display_at`; `desktop/src/overlays.rs` `display_for` | same |
-| Each display shows a strip of its own and moves between strips alone | `strip_rail.rs`, `focus_strip` per display, `show_strip_on(display, strip)` | `lay_out_displays` places lanes, but `show_active_strip` keys off `tree.active_strip_id()`, so every display shows the same strip | **missing** |
-| A window moved to another display, and a group carried across the seam | `move_focused_group_to_display`, `carry_focused_group_across_seam` | `desktop:shell` `move-to-display`; `surface/displays.rs` | same |
+| Focused display, pointer moving focus between displays, menus and panels opening on the focused display | `overlay_host/displays.rs` (652-line module) | `desktop-surface/src/surface/displays.rs` `sections()`, `display_at()`, `focus_display_at`; `desktop/src/overlays.rs` `display_for` | same |
+| Each display shows a strip of its own and moves between strips alone | `strip_rail.rs`, `focus_strip` per display, `show_strip_on(display, strip)` | `lay_out_displays` places sections, but `show_active_strip` keys off `tree.active_strip_id()`, so every display shows the same strip | **missing** |
+| A window moved to another display, and a group carried across the boundary | `move_focused_group_to_display`, `carry_focused_group_across_boundary` | `desktop:shell` `move-to-display`; `surface/displays.rs` | same |
 | Touch: a tap is one click where the finger was, a hold is a context menu, a drag on an edge resizes, the top edge reveals the bar | `compositor/touch_pointer.rs` `TouchPointer`, `ui-core/src/interaction.rs` `TouchPointerEmulator` | the same unchanged | same |
 | On-screen keyboard: follows touch typing and tablet mode | `compositor/input_method.rs` `osk_wanted` | unchanged | same |
-| Touchpad: three fingers the plane, four workspaces, a pinch the overview | `compositor/gestures.rs` | `compositor/src/gestures.rs`, unchanged; the **host** side lost the direct stream (§1) | worse (host only) |
+| Touchpad: three fingers the strips, four workspaces, a pinch the overview | `compositor/gestures.rs` | `compositor/src/gestures.rs`, unchanged; the **host** side lost the direct stream (§1) | worse (host only) |
 
 ## 8. The gaps, worst first
 
@@ -172,7 +172,7 @@ What differs is the host around it.
    and shown at once.
 6. **A Quick Settings section replaces the whole page** instead of unrolling
    in place under its tile.
-7. **No per-display strip lanes**: two displays show the same strip.
+7. **No per-display strip sections**: two displays show the same strip.
 8. **The now-playing card** is a page element instead of the panel's
    companion beside or under it.
 9. **`Super+V` no longer opens the clipboard at the caret.**
@@ -192,7 +192,7 @@ before at its last laid-out place and poses it away on `Snap` (a strip step)
 or `Drill::WORKSPACE` (a workspace step) while the strip chosen is already the
 one laid out and taking input. A pointer and a finger slide; a key and an
 action move within `fast`, as the design note says, and a change nobody made
-still lands. Three fingers sideways carry the shown strip: `surface-host`'s
+still lands. Three fingers sideways carry the shown strip: `shell-surface`'s
 gesture reader hands every update to `DesktopSurface::carry_strip`. Up and
 down they step the strip at the lift, which slides. Tests:
 `surface/slide_tests.rs` (a click slides across frames and never cuts, a key's
@@ -214,4 +214,4 @@ compositor hands a layer surface its logical rect and the client's buffer is
 Still open, in the order the person meets them: the entrance motion above
 (the panel still appears at once), a Quick Settings section replacing the page
 rather than unrolling under its tile, the now-playing card, per-display strip
-lanes, the horizontal strip pan following the fingers, and focus framing.
+sections, the horizontal strip pan following the fingers, and focus framing.

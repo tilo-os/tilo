@@ -205,7 +205,7 @@ impl Drop for Pending {
             return;
         }
         // Before root-journal publication no move is admitted. Keep ambiguous
-        // custody rather than unlinking a replacement or unrelated namespace.
+        // ownership rather than unlinking a replacement or unrelated namespace.
         self.temporary.take();
         if self.directory.validate_destination().is_err() {
             return;
@@ -405,7 +405,7 @@ impl Reader {
 
 impl Read for Reader {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        // An intentional custody/cancellation interruption must be terminal;
+        // An intentional ownership/cancellation interruption must be terminal;
         // Read::read_exact may retry OS Interrupted forever otherwise.
         self.read_bytes(bytes).map_err(terminal)
     }

@@ -1,6 +1,6 @@
 //! A step whose operation asks the person before it acts.
 //!
-//! An operation that asks first is shown to the person by its own app, on the record the operation
+//! An operation that asks first is shown to the person by its own app, on the resource the operation
 //! acts on; a turn's step is asked about on the system's own sheet, and the host answers the agent
 //! once the person decided there (`tilo_action_broker`'s agent connection, and the session's
 //! `step_questions`). The agent waits for that answer in the person's own time.

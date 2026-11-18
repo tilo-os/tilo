@@ -570,7 +570,7 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
 }
 
 #[test]
-fn a_file_launch_opens_the_files_own_record() {
+fn a_file_launch_opens_the_files_own_resource() {
     ui::i18n::I18nManager::init("en-US");
     let directory = tempfile::tempdir().unwrap();
     let report = directory.path().join("report.md");
@@ -585,7 +585,11 @@ fn a_file_launch_opens_the_files_own_record() {
     assert_ne!(edited, ["Report", "Our committee met."]);
 
     let app = app.relaunch(&[&report]).unwrap();
-    assert_eq!(paragraphs(&app), edited, "a reopened file keeps its record");
+    assert_eq!(
+        paragraphs(&app),
+        edited,
+        "a reopened file keeps its resource"
+    );
 
     let notes = directory.path().join("notes.txt");
     std::fs::write(&notes, "first line\nsecond line\n").unwrap();
@@ -691,7 +695,7 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
         settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
     let mut app = TestApp::<WordProcessorApp>::for_person(&"01".repeat(32)).unwrap();
-    let mut host = ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor");
+    let mut host = ui::personal_dictionary::TestSettings::new(source, "so.tilo.word-processor");
     let bias_reader = ui::personal_dictionary::reader();
     let flagged = app.with_surface(|editor: &mut WordProcessorWidget| {
         !editor.state().is_spelled_right("qwordz")
@@ -733,7 +737,7 @@ fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
 }
 
 #[test]
-fn two_sessions_creating_one_files_record_converge_on_one_document() {
+fn two_sessions_creating_one_files_resource_converge_on_one_document() {
     ui::i18n::I18nManager::init("en-US");
     let directory = tempfile::tempdir().unwrap();
     let report = directory.path().join("report.md");
@@ -769,7 +773,7 @@ fn reopening_a_file_changed_elsewhere_reads_it_again() {
     assert_eq!(
         paragraphs(&app),
         ["Edited: First draft"],
-        "an unchanged file leaves the record as it is"
+        "an unchanged file leaves the resource as it is"
     );
 
     std::fs::write(&path, "Rewritten elsewhere\n").unwrap();
@@ -953,8 +957,8 @@ fn peer_note(doc: &mut ui::tilo_resource::Doc, note: &str) {
 fn save_as_asks_where_without_a_confirmation_first() {
     let directory = tempfile::tempdir().unwrap();
     let chosen = directory.path().join("Letter.docx");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = open();
     app.harness().type_text("Dear reader");
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));

@@ -190,7 +190,7 @@ pub enum Error {
 }
 
 /// An informational copy of bytes the owned stderr capture already read. Capture
-/// stays authoritative; overflow disables only this lane.
+/// stays authoritative; overflow disables only this queue.
 #[derive(Debug)]
 pub enum StderrObservation {
     /// At most 4096 captured bytes, in stream order.
@@ -220,8 +220,8 @@ pub struct AsyncCommand {
 }
 
 impl AsyncCommand {
-    /// Poll the optional stderr lane without blocking. On overflow, pending copies
-    /// are dropped and the lane stays disabled.
+    /// Poll the optional stderr queue without blocking. On overflow, pending copies
+    /// are dropped and the queue stays disabled.
     pub fn try_stderr(&mut self) -> Option<StderrObservation> {
         let observations = self.stderr_observations.as_mut()?;
         if observations.disabled {
@@ -283,7 +283,7 @@ pub fn spawn_prepared(
 /// Spawn with a bounded nonblocking copy of the owned stderr capture.
 ///
 /// Up to sixteen 4096-byte chunks await observation; a slow observer disables this
-/// informational lane instead of blocking the child or the capture readers. Output
+/// informational queue instead of blocking the child or the capture readers. Output
 /// bytes, limits, cancellation and process-tree ownership are unchanged.
 pub fn spawn_prepared_observing_stderr(
     command: Command,
@@ -755,38 +755,38 @@ mod tests {
         phase stderr_observation_is_live_bounded_and_preserves_exact_capture;
         {
             let directory = tempfile::tempdir().unwrap();
-            let first_gate = directory.path().join("first-gate");
-            let second_gate = directory.path().join("second-gate");
+            let first_hold = directory.path().join("first-check");
+            let second_hold = directory.path().join("second-check");
             let mut command = Command::new("sh");
             command.args([
                 "-c",
                 "printf 'first\\n' >&2; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'second\\n' >&2; while [ ! -f \"$2\" ]; do sleep 0.01; done; printf stdout; exit 7",
                 "owned-observer-fixture",
-            ]).arg(&first_gate).arg(&second_gate);
+            ]).arg(&first_hold).arg(&second_hold);
             let mut child =
                 spawn_prepared_observing_stderr(command, None, 4096, UNTESTED_TIMEOUT).unwrap();
             let mut observed = Vec::new();
-            for (expected, gate) in [
-                (b"first\n".as_slice(), first_gate),
-                (b"first\nsecond\n".as_slice(), second_gate),
+            for (expected, check) in [
+                (b"first\n".as_slice(), first_hold),
+                (b"first\nsecond\n".as_slice(), second_hold),
             ] {
                 tilo_test_env::wait_until("the phase's stderr", || {
                     match child.try_stderr() {
                         Some(StderrObservation::Bytes(bytes)) => observed.extend(bytes),
-                        Some(StderrObservation::Overflow) => panic!("small gated output overflowed"),
+                        Some(StderrObservation::Overflow) => panic!("small guarded output overflowed"),
                         None => {}
                     }
                     observed.len() >= expected.len()
                 });
                 assert_eq!(
                     observed, expected,
-                    "the phase is observable before its gate is released"
+                    "the phase is observable before its check is released"
                 );
                 assert!(
                     child.try_wait().is_none(),
                     "the same owned invocation is still running"
                 );
-                fs::write(gate, b"release").unwrap();
+                fs::write(check, b"release").unwrap();
             }
             let output =
                 tilo_test_env::wait_for("the owned child to complete", || child.try_wait()).unwrap();
@@ -815,7 +815,7 @@ mod tests {
             ));
             assert!(
                 child.try_stderr().is_none(),
-                "overflow permanently disables only this lane"
+                "overflow permanently disables only this queue"
             );
             let mut overflowing = Command::new("sh");
             overflowing.args(["-c", "head -c 8192 /dev/zero >&2"]);

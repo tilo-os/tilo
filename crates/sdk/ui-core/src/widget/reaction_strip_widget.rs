@@ -283,12 +283,11 @@ impl Widget for ReactionStripWidget {
             );
         }
         if let Some(add) = self.strip.current().add_rect() {
-            let part = cx.words(
-                "add",
-                "button",
-                add,
-                TextLook::new("+".to_owned(), &style, Some(theme.text_dim)),
-            );
+            // The add button as it is painted: its face on its round ground.
+            let part = cx.part("add", "ReactionAdd", add);
+            part.tag = Some("button");
+            part.focusable = true;
+            part.painted(1);
             part.semantics = Some(
                 AccessNode::new(Role::Button)
                     .with_name(crate::i18n::widget_format("emoji-picker-add-reaction", &[])),

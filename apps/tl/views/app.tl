@@ -1,9 +1,9 @@
-app so.tilo.lang.views "Views" (icon: .eye, category: .system, records: .own)
+app so.tilo.lang.views "Views" (icon: .eye, category: .system, resources: .own)
 
 use so.tilo.lang.chat as chat
 
 /// A view of the person's own: a view written in tilolang, as an app declares one, kept as their
-/// code in their own record. They wrote it, their agent answered with it, or someone sent it to
+/// code in their own document. They wrote it, their agent answered with it, or someone sent it to
 /// them. It names no app: every
 /// app the workspace has installed is in scope by its name, checked when it is drawn, and it
 /// reads as the person reads, so it shows each person what they can see. Who wrote it, as the

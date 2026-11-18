@@ -30,7 +30,7 @@ pub fn prepare(
     let (bytes, sector) = geometry(target)?;
     if bytes != target_bytes || sector != SECTOR || stable_id.is_empty() {
         return Err(invalid(
-            "Migration media requires stable custody and native 512-byte geometry",
+            "Migration media requires stable ownership and native 512-byte geometry",
         ));
     }
     Ok(PreparedLayout {
@@ -51,7 +51,7 @@ pub fn prepare_expected(
 ) -> io::Result<PreparedLayout> {
     let (bytes, sector) = geometry(target)?;
     if bytes != target_bytes || sector != SECTOR || expected.target_stable_id.is_empty() {
-        return Err(invalid("Migration media geometry or custody changed"));
+        return Err(invalid("Migration media geometry or ownership changed"));
     }
     let guid = uuid::Uuid::parse_str(&expected.partition_guid).map_err(io::Error::other)?;
     let prepared = PreparedLayout {
@@ -118,7 +118,7 @@ impl PreparedLayout {
 /// Extend only a verified image's declared GPT into unused tail capacity.
 ///
 /// # Errors
-/// Refuses incompatible geometry, inconsistent GPT copies, missing custody,
+/// Refuses incompatible geometry, inconsistent GPT copies, missing ownership,
 /// insufficient tail capacity, cancellation, or unverified read-back.
 pub fn provision(
     file: &File,
@@ -130,7 +130,7 @@ pub fn provision(
     let (bytes, sector) = geometry(file)?;
     if bytes != target_bytes || sector != SECTOR || stable_id.is_empty() {
         return Err(invalid(
-            "Migration media requires stable custody and native 512-byte geometry",
+            "Migration media requires stable ownership and native 512-byte geometry",
         ));
     }
     if cancelled() {
@@ -148,7 +148,7 @@ pub fn binding(
 ) -> io::Result<MediaPartitionBinding> {
     let (bytes, sector) = geometry(file)?;
     if bytes != target_bytes || sector != SECTOR || stable_id.is_empty() {
-        return Err(invalid("Migration media geometry or custody changed"));
+        return Err(invalid("Migration media geometry or ownership changed"));
     }
     gpt::binding(file, target_bytes, stable_id)
 }

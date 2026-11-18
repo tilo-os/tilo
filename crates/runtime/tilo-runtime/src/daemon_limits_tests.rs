@@ -14,14 +14,14 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_actions::InvocationId;
-use tilo_mcp::test_hosts::{GatedHost, long_invoke};
+use tilo_mcp::test_hosts::{HeldHost, long_invoke};
 use tilo_mcp::{MAX_ADMITTED, MAX_WORKING, McpServer};
 
 /// An endpoint accepting on a socket of its own, over a host whose
 /// invocations end when the test says so. The accept loop runs for as long
 /// as the test process does, as a daemon's does.
-fn endpoint() -> (tempfile::TempDir, PathBuf, GatedHost) {
-    let host = GatedHost::default();
+fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
+    let host = HeldHost::default();
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("native.sock");
     let listener = UnixListener::bind(&socket).unwrap();

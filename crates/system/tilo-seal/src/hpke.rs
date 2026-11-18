@@ -184,7 +184,7 @@ mod tests {
             let bob = SecretKey::generate().unwrap();
             let sealed = seal(
                 &alice.public_key().unwrap(),
-                Label::RelayEnrollOffer,
+                Label::ServerEnrollOffer,
                 b"aad",
                 b"hello",
             )
@@ -192,7 +192,7 @@ mod tests {
             let bytes = sealed.to_bytes();
             assert_eq!(bytes.first(), Some(&SEALED_BOX_VERSION));
             assert_eq!(
-                &open_bytes(&alice, Label::RelayEnrollOffer, b"aad", &bytes)
+                &open_bytes(&alice, Label::ServerEnrollOffer, b"aad", &bytes)
                     .unwrap()
                     .as_slice(),
                 b"hello"
@@ -202,11 +202,11 @@ mod tests {
                 Err(Error::Authentication)
             );
             assert_eq!(
-                open(&alice, Label::RelayEnrollOffer, b"other", &sealed),
+                open(&alice, Label::ServerEnrollOffer, b"other", &sealed),
                 Err(Error::Authentication)
             );
             assert_eq!(
-                open(&bob, Label::RelayEnrollOffer, b"aad", &sealed),
+                open(&bob, Label::ServerEnrollOffer, b"aad", &sealed),
                 Err(Error::Authentication)
             );
             let mut tampered = bytes.clone();
@@ -214,7 +214,7 @@ mod tests {
                 *last ^= 1;
             }
             assert_eq!(
-                open_bytes(&alice, Label::RelayEnrollOffer, b"aad", &tampered),
+                open_bytes(&alice, Label::ServerEnrollOffer, b"aad", &tampered),
                 Err(Error::Authentication)
             );
             assert!(matches!(

@@ -263,7 +263,7 @@ struct World {
     turn_stopped: bool,
     /// How the desktop's open of Writer behaves.
     opens: Opens,
-    /// The record of a second Writer window (its own peer and record,
+    /// The resource of a second Writer window (its own peer and resource,
     /// the same resource ids), once an open added one.
     second_window: Option<&'static str>,
     /// A republished catalogue reaches the agent this many link polls
@@ -280,9 +280,9 @@ struct World {
     /// after the last of them started; until it has, each of them waits
     /// (at most the hang bound). A step that waited for an earlier one
     /// to settle never lets them.
-    settle_gate: usize,
-    /// The invocations the gate holds, in start order.
-    gated: Vec<tilo_actions::InvocationId>,
+    settle_hold: usize,
+    /// The invocations the hold holds, in start order.
+    held: Vec<tilo_actions::InvocationId>,
     /// A native child settles when the host takes in this re-ask of it
     /// (1-based), instead of after `settle_after`.
     settles_at_reask: Option<usize>,
@@ -661,7 +661,7 @@ impl World {
         reason = "the fixture world answers every published operation in one place"
     )]
     fn apply(&mut self, action: &str, arguments: &serde_json::Map<String, Value>) -> (Value, bool) {
-        // The conversation's reply takes the record; it is no step of the
+        // The conversation's reply takes the resource; it is no step of the
         // document the run works in.
         if action == "record-work" || action == "keep-summary" {
             return (serde_json::json!({"succeeded": {}}), false);
@@ -864,11 +864,10 @@ fn remote(message: tilo_actions::remote::RemoteActionMessage) -> CollabEvent {
 fn step_update(update: tilo_actions::InvocationUpdate) -> CollabEvent {
     remote(tilo_actions::remote::RemoteActionMessage::Update {
         invocation: update.invocation(),
-        state: Some(tilo_actions::remote::InvocationState {
+        state: Some(tilo_actions::remote::InvocationState::new(
+            update.invocation(),
             update,
-            untrusted: false,
-            left_at: None,
-        }),
+        )),
     })
 }
 
@@ -1046,7 +1045,7 @@ impl ui::collaboration::PeerTransport for Broker {
                         correlation: *correlation,
                         result: Ok(Box::new(
                             tilo_actions::remote::ConfirmedInvocation::unchanged(
-                                tilo_actions::remote::Confirmation::Witnessed("allowed".into()),
+                                tilo_actions::remote::Confirmation::Approved("allowed".into()),
                             ),
                         )),
                     }),
@@ -1073,7 +1072,7 @@ impl ui::collaboration::PeerTransport for Broker {
                     self.events.push(step_receipt(
                         invocation,
                         tilo_actions::remote::ReceiptStatus::Rejected {
-                            error: tilo_actions::remote::ActionHostError::Refused {
+                            error: tilo_actions::remote::ActionCallError::Refused {
                                 reason: "the turn this step answers is no longer going".into(),
                             },
                         },
@@ -1082,7 +1081,7 @@ impl ui::collaboration::PeerTransport for Broker {
                     self.events.push(step_receipt(
                         invocation,
                         tilo_actions::remote::ReceiptStatus::Rejected {
-                            error: tilo_actions::remote::ActionHostError::confirmation_required(),
+                            error: tilo_actions::remote::ActionCallError::confirmation_required(),
                         },
                     ));
                 } else if self.world.borrow().deny.contains(&action)
@@ -1275,25 +1274,25 @@ impl Broker {
         }
     }
 
-    /// Once the last invocation the gate holds has started, settle
+    /// Once the last invocation the hold holds has started, settle
     /// every one of them at `at`.
-    fn open_the_gate(&self, at: ui::time::Instant) {
+    fn release_the_hold(&self, at: ui::time::Instant) {
         let mut world = self.world.borrow_mut();
-        if world.gated.len() < world.settle_gate {
+        if world.held.len() < world.settle_hold {
             return;
         }
-        let gated = world.gated.clone();
-        // The gate holds the first invocations started.
+        let held = world.held.clone();
+        // The hold holds the first invocations started.
         let World {
             started,
             settling,
-            settle_gate,
+            settle_hold,
             ..
         } = &mut *world;
-        for (_, _, settles) in started.iter_mut().take(*settle_gate) {
+        for (_, _, settles) in started.iter_mut().take(*settle_hold) {
             *settles = at;
         }
-        for invocation in &gated {
+        for invocation in &held {
             if let Some((due, _)) = settling.get_mut(invocation) {
                 *due = at;
             }
@@ -1320,7 +1319,7 @@ impl Broker {
             self.events.push(step_receipt(
                 invocation,
                 tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::Refused {
+                    error: tilo_actions::remote::ActionCallError::Refused {
                         reason: format!("permission denied: the agent may not {action}"),
                     },
                 },
@@ -1346,12 +1345,12 @@ impl Broker {
         };
         let now = ui::time::now();
         let settle_after = self.world.borrow().settle_after.unwrap_or_default();
-        let gated = {
+        let held = {
             let world = self.world.borrow();
-            world.gated.len() < world.settle_gate
+            world.held.len() < world.settle_hold
         };
         let due = now
-            + if gated {
+            + if held {
                 tilo_test_env::hang_bound()
             } else {
                 settle_after
@@ -1361,9 +1360,9 @@ impl Broker {
             world.started.push((action.to_owned(), now, due));
             world.settling.insert(invocation, (due, terminal));
         }
-        if gated {
-            self.world.borrow_mut().gated.push(invocation);
-            self.open_the_gate(now + settle_after);
+        if held {
+            self.world.borrow_mut().held.push(invocation);
+            self.release_the_hold(now + settle_after);
         }
         self.events.push(step_receipt(
             invocation,
@@ -1378,6 +1377,13 @@ struct Fixture {
     world: Rc<RefCell<World>>,
     sent: Rc<RefCell<Vec<CollabRequest>>>,
     script: Arc<Script>,
+}
+
+impl Fixture {
+    /// Carry out the task this fixture answers, to its end.
+    fn carried(&mut self) {
+        self.session.run_task(&self.run).unwrap();
+    }
 }
 
 fn fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
@@ -1402,7 +1408,7 @@ fn late_chat(world: &World) -> Option<(usize, CollabEvent)> {
 
 /// The surfaces the agent reads at its first turn. When Chat republishes this
 /// run's message late, every other message it holds is published already: what
-/// is missing is the reply this run records on.
+/// is missing is the reply this run resources on.
 fn first_catalogue(world: &World) -> Vec<BrokerActionSurface> {
     let mut surfaces = world.surfaces();
     let answered = world
@@ -1570,7 +1576,7 @@ mod summary;
 #[path = "agent_loop/tests/text_answers.rs"]
 mod text_answers;
 #[path = "agent_loop/tests/turn_records.rs"]
-mod turn_records;
+mod turn_resources;
 #[path = "agent_loop/tests/unusable_answers.rs"]
 mod unusable_answers;
 #[path = "agent_loop/tests/web.rs"]
@@ -1582,7 +1588,12 @@ fn native_fixture() -> Fixture {
     fixture(
         "Prepare release notes",
         World::default(),
-        vec![turn(&[finish("Reviewed instructions", true)], 24)],
+        // Words alone for a request to do something are held once (`hold_empty_finish`): the
+        // scripted model says them again.
+        vec![
+            turn(&[finish("Reviewed instructions", true)], 24),
+            turn(&[finish("Reviewed instructions", true)], 24),
+        ],
     )
 }
 
@@ -1599,7 +1610,7 @@ tilo_test_env::scenario! {
         fixture.run.asked.instruction.clone_from(&instruction);
         fixture.session.run_task(&fixture.run).unwrap();
         let bodies = fixture.script.bodies.lock().unwrap().clone();
-        assert_eq!(bodies.len(), 1);
+        assert!(!bodies.is_empty());
         assert!(bodies[0].to_string().contains(instruction.trim()));
     }
 
@@ -1735,7 +1746,7 @@ fn a_german_desktop_reads_the_missing_model_in_german() {
     );
 }
 
-/// What the conversation was told, one entry per record, in order.
+/// What the conversation was told, one entry per resource, in order.
 fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String, Value>> {
     sent.iter()
         .filter_map(invoked)
@@ -1898,7 +1909,7 @@ fn an_open_landing_on_a_published_window_returns_at_once() {
     assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
 }
 
-/// A second window of an open application is its own peer and record,
+/// A second window of an open application is its own peer and resource,
 /// even though it publishes the same resource ids as the first: the
 /// open sees it on the catalogue that brings it, with no receipt.
 #[test]
@@ -2146,7 +2157,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|request| invoked(request).is_some())
         );
-        // The transport's own words are the record, kept for debugging; the
+        // The transport's own words are the resource, kept for debugging; the
         // sentence a person reads is what happened, in their terms.
         assert!(matches!(terminal(&f.sent.borrow()),
             TurnUpdate::Failed { message }
@@ -2404,7 +2415,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase opened_records_reads_the_desktop_receipt;
+    phase opened_resources_reads_the_desktop_receipt;
     {
         let receipt = serde_json::json!({
             "kind": "desktop.command",
@@ -2417,11 +2428,11 @@ tilo_test_env::scenario! {
             ]
         });
         assert_eq!(
-            opened_records(Some(&receipt), "so.tilo.word-processor"),
+            opened_resources(Some(&receipt), "so.tilo.word-processor"),
             ["doc-9"]
         );
-        assert!(opened_records(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
-        assert!(opened_records(None, "so.tilo.notes").is_empty());
+        assert!(opened_resources(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
+        assert!(opened_resources(None, "so.tilo.notes").is_empty());
     }
 
     phase a_single_turn_writes_and_finishes;
@@ -2686,7 +2697,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// An `invoke` of `action` on `resource` in `peer`'s record; marked
+/// An `invoke` of `action` on `resource` in `peer`'s resource; marked
 /// independent of the steps before it when `independent`.
 fn invoke_on(
     peer: u64,
@@ -2707,7 +2718,7 @@ fn invoke_on(
 
 /// Three steps on three different records: a Chat post and a paragraph
 /// in each of two Writer windows.
-fn three_records(independent: bool) -> Vec<(&'static str, Value)> {
+fn three_resources(independent: bool) -> Vec<(&'static str, Value)> {
     vec![
         invoke_on(
             CHAT_PEER,

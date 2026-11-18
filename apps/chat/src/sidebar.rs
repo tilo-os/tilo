@@ -149,11 +149,8 @@ impl ChatApp {
                 // avatar, each in the colour they wear everywhere in the workspace.
                 if let Some(with) = with {
                     item = item
-                        .person(with.id(), Some(self.identity_colour(&with)), false)
+                        .person(with.clone(), Some(self.identity_colour(&with)), false)
                         .person_face(&conversation.name, None);
-                    if !with.is_person() {
-                        item = item.agent_face();
-                    }
                 }
                 item
             })
@@ -186,7 +183,7 @@ impl ChatApp {
     /// message is found again rather than lost in a composer the person has
     /// to remember to open.
     fn draft_lines(&self) -> BTreeMap<String, String> {
-        let Some(record) = &self.drafts_record else {
+        let Some(record) = &self.drafts_resource else {
             return BTreeMap::new();
         };
         let keys: Vec<String> = record.get().drafts.keys().cloned().collect();
@@ -231,7 +228,11 @@ impl ChatApp {
                     let name = self.user_name(&person);
                     let speaking = self.speaking.level(person.id(), now) > 0.0;
                     NavItem::new(format!("in-call:{}/{}", channel.id, person.id()), name)
-                        .person(person.id(), Some(self.identity_colour(&person)), speaking)
+                        .person(
+                            person.clone(),
+                            Some(self.identity_colour(&person)),
+                            speaking,
+                        )
                         .person_face(self.user_name(&person), None)
                         .without_actions()
                 })

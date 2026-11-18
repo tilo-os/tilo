@@ -76,13 +76,13 @@ AGENT_KEY_NAME = "Jane Doe's agent"
 CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
 CLI_API_URL = os.environ.get("HOSTED_TERMINAL_API_URL", API_URL)
 # The person answering what the host asks before a command runs: a Terminal
-# run reaches outside the workspace's records, so a person's standing puts it
+# run reaches outside the workspace's records, so a person's access puts it
 # to them, and `tilo-approve` is the approving device that answers.
 APPROVER = os.environ.get("HOSTED_TERMINAL_APPROVER", "")
 PERSON_ROOT = os.environ.get("HOSTED_TERMINAL_ROOT", "")
-RELAY = os.environ.get("HOSTED_TERMINAL_RELAY", "")
+SERVER = os.environ.get("HOSTED_TERMINAL_SERVER", "")
 
-# The account the stack's relay places its workspaces' VMs for: the one the
+# The account the stack's server places its workspaces' VMs for: the one the
 # plans file admits by (os/containers/tilo-sh/vm-host.sh). The provider names
 # the plans file it writes.
 ACCOUNT = os.environ.get("HOSTED_TERMINAL_ACCOUNT", "acct-tilo-sh")
@@ -152,9 +152,9 @@ GUI_ISOLATION_COMMAND = (
     "ps -o user=,comm= -C xterm ; ps -o user=,comm= -C Xwayland"
     " ; ls /home/tilo-browser >/dev/null 2>&1 && echo browser-home-readable || echo browser-home-closed"
 )
-# The person in their own browser: the site, and the relay it enters through.
+# The person in their own browser: the site, and the server it enters through.
 SITE = os.environ.get("HOSTED_TERMINAL_SITE", "")
-SITE_RELAY = os.environ.get("HOSTED_TERMINAL_SITE_RELAY", "")
+SITE_SERVER = os.environ.get("HOSTED_TERMINAL_SITE_SERVER", "")
 PERSON_PAGE = Path(__file__).with_name("person.mjs")
 
 
@@ -220,7 +220,7 @@ async def state() -> dict[str, object]:
 
 def person() -> Person:
     """The person the check holds, as the device that answers their hosts."""
-    return Person(APPROVER, PERSON_ROOT, RELAY, check=check)
+    return Person(APPROVER, PERSON_ROOT, SERVER, check=check)
 
 
 async def asked(one: Person, call: object, answer: str = "allow", within: int = 120) -> tuple[object, list[dict]]:
@@ -355,7 +355,7 @@ async def card() -> dict[str, object]:
     """The provider puts the account on file, and what the card releases runs.
 
     The card is the account's, and one file says so: the plans file the VM
-    host admits Linux actions by and the relay counts page actions by. So the
+    host admits Linux actions by and the server counts page actions by. So the
     Browser's page action the free allowance refused a moment ago runs here
     too, when this run opened a Browser window to hold it to."""
     kept = await state()
@@ -645,10 +645,10 @@ async def vm_memory(ows: object, one: Person, what: str) -> dict[str, object]:
 def type_on_the_shell(link: str) -> dict[str, object]:
     """A person invited into the workspace, in their own browser: they follow
     the link, find the Linux app's window on their shell and type into it."""
-    check(SITE and SITE_RELAY, "the check names the site and the relay a person enters through")
+    check(SITE and SITE_SERVER, "the check names the site and the server a person enters through")
     out = Path(OUT) / "gui-person"
     ran = subprocess.run(
-        ["node", str(PERSON_PAGE), SITE, SITE_RELAY, str(out), "--follow", link,
+        ["node", str(PERSON_PAGE), SITE, SITE_SERVER, str(out), "--follow", link,
          "--window", GUI_WINDOW, "--type", GUI_TYPED],
         capture_output=True, text=True, timeout=900,
     )

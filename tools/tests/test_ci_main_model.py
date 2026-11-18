@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Main is unstable and tested per push; only `stable` publishes, and CI never writes it.
 
-These are the boundaries the model rests on: a test workflow must not gate a
+These are the boundaries the model rests on: a test workflow must not check a
 pull request, every commit on main must be covered by a window that finished, no
 workflow may move `stable` (it is cut by hand, with signed commits), and no
 publishing workflow may trigger on main. The assertions read the block-style
@@ -61,7 +61,7 @@ def block(text: str, key: str, indent: int = 0) -> str:
     return "\n".join(result)
 
 
-class MainIsNotGated(unittest.TestCase):
+class MainIsNotGuarded(unittest.TestCase):
     def test_the_test_workflows_trigger_on_main_pushes_only(self):
         for name in ("check.yml", "lint.yml"):
             with self.subTest(workflow=name):
@@ -93,7 +93,7 @@ class MainIsNotGated(unittest.TestCase):
                 self.assertIn("if: needs.supersede.outputs.superseded != 'true'", body)
 
     def test_every_push_gets_its_own_lint_verdict(self):
-        # The format, commit-message and unused-dependency gates check the
+        # The format, commit-message and unused-dependency checks check the
         # commits the push added (`github.event.before`): a push whose run was
         # stood in for by another would never have them checked.
         text = workflow("lint.yml")

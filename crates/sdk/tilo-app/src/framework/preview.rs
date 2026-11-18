@@ -29,22 +29,22 @@ use ui_core::storage::AppStorage;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
 
-struct FileWitnessKey<A>(std::marker::PhantomData<A>);
+struct FileObservationKey<A>(std::marker::PhantomData<A>);
 
 /// The file scope of `A`'s History alone: what its root declares it owns, so
 /// the runner can tell the file source it was handed is the root's.
-pub(crate) fn file_history_witness<A: ResourceApp>() -> &'static HistoryDefinition {
+pub(crate) fn file_history_observation<A: ResourceApp>() -> &'static HistoryDefinition {
     // The definition table is not reentrant: read the whole definition first.
     let definition = history_definition::<A>();
-    leaked(TypeId::of::<FileWitnessKey<A>>(), || {
-        file_witness(definition)
+    leaked(TypeId::of::<FileObservationKey<A>>(), || {
+        file_observation(definition)
     })
 }
 
-/// [`file_history_witness`] of the app whose History is `definition`. Not
+/// [`file_history_observation`] of the app whose History is `definition`. Not
 /// generic, so it is compiled once rather than for every app.
 #[inline(never)]
-fn file_witness(definition: &HistoryDefinition) -> HistoryDefinition {
+fn file_observation(definition: &HistoryDefinition) -> HistoryDefinition {
     let scopes: &'static [HistoryScopeDefinition] = Box::leak(
         definition
             .scopes

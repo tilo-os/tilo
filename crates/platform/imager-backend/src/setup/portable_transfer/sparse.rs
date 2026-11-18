@@ -22,7 +22,7 @@ pub(super) struct Sparse {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub(super) struct Witness {
+pub(super) struct Proof {
     pub sparse: Sparse,
     pub hashes: Vec<[u8; 32]>,
 }
@@ -122,19 +122,19 @@ pub(super) fn parse(keys: &BTreeMap<Vec<u8>, Vec<u8>>, stored: u64) -> io::Resul
 impl Sparse {
     fn validate(&self) -> io::Result<()> {
         if self.logical > i64::MAX as u64 || self.extents.len() > MAX_EXTENTS {
-            return Err(changed("Sparse witness exceeds bounds"));
+            return Err(changed("Sparse proof exceeds bounds"));
         }
         let mut previous = 0;
         for (index, &(offset, length)) in self.extents.iter().enumerate() {
             let end = offset
                 .checked_add(length)
-                .ok_or_else(|| changed("Sparse witness overflows"))?;
+                .ok_or_else(|| changed("Sparse proof overflows"))?;
             if offset < previous
                 || end > self.logical
                 || (length == 0
                     && (index.checked_add(1) != Some(self.extents.len()) || offset != self.logical))
             {
-                return Err(changed("Sparse witness has invalid extents"));
+                return Err(changed("Sparse proof has invalid extents"));
             }
             previous = end;
         }
@@ -173,7 +173,7 @@ impl Sparse {
             .ok_or_else(|| changed("Sparse allocation bytes overflow"))
     }
 
-    pub(super) fn hash(&self, reader: &mut impl Read, cancel: &AtomicBool) -> io::Result<Witness> {
+    pub(super) fn hash(&self, reader: &mut impl Read, cancel: &AtomicBool) -> io::Result<Proof> {
         self.validate()?;
         check_cancel(cancel)?;
         let mut hashes = Vec::with_capacity(self.extents.len());
@@ -199,7 +199,7 @@ impl Sparse {
         if reader.read(&mut trailing)? != 0 {
             return Err(changed("Sparse member contains unaccounted data"));
         }
-        Ok(Witness {
+        Ok(Proof {
             sparse: self.clone(),
             hashes,
         })
@@ -366,7 +366,7 @@ fn zero_gap(
     Ok(())
 }
 
-impl Witness {
+impl Proof {
     pub(super) fn verify(&self, file: &File, cancel: &AtomicBool) -> io::Result<()> {
         self.sparse.validate()?;
         check_cancel(cancel)?;
@@ -481,16 +481,16 @@ mod tests {
             .unwrap()
             .unwrap();
             let cancel = AtomicBool::new(false);
-            let witness = sparse.hash(&mut b"data".as_slice(), &cancel).unwrap();
-            witness.verify(&file, &cancel).unwrap();
+            let proof = sparse.hash(&mut b"data".as_slice(), &cancel).unwrap();
+            proof.verify(&file, &cancel).unwrap();
             file.write_all_at(b"x", 32 * 1024 * 1024).unwrap();
-            assert!(witness.verify(&file, &cancel).is_err());
+            assert!(proof.verify(&file, &cancel).is_err());
             file.write_all_at(&[0], 32 * 1024 * 1024).unwrap();
             file.write_all_at(b"bad!", 4096).unwrap();
-            assert!(witness.verify(&file, &cancel).is_err());
+            assert!(proof.verify(&file, &cancel).is_err());
             file.write_all_at(b"data", 4096).unwrap();
             file.set_len(logical.checked_sub(1).unwrap()).unwrap();
-            assert!(witness.verify(&file, &cancel).is_err());
+            assert!(proof.verify(&file, &cancel).is_err());
         }
     }
 }

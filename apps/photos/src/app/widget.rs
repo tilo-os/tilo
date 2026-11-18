@@ -777,7 +777,7 @@ impl Photos {
             }
             if let winit::event::WindowEvent::MouseWheel { delta, .. } = event
                 && self.people_selection.is_none()
-                && self.people_layout.lanes.contains(self.pointer)
+                && self.people_layout.sections.contains(self.pointer)
             {
                 let theme = self.layout_theme.clone();
                 self.people_scroll += wheel_pixels(delta, &theme);
@@ -827,14 +827,14 @@ impl Photos {
                     }
                 )
             {
-                let lanes = self.people_layout.lanes;
+                let sections = self.people_layout.sections;
                 pending = self
                     .people_controls
                     .iter()
                     .find(|control| {
                         control.is_card()
                             && control.bounds.contains(self.pointer)
-                            && lanes.contains(self.pointer)
+                            && sections.contains(self.pointer)
                     })
                     .map(|control| control.intent.clone());
             }

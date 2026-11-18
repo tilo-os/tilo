@@ -7,11 +7,12 @@ use ui::prelude::Effect;
 use ui::tilo_resource;
 use uuid::Uuid;
 
-use crate::resource::Notebook;
-
 /// Invoke `effect` through `dispatcher`, as the control that offers it does.
 /// What acts on one note is offered on that note, the rest on the notebook.
-pub(crate) fn request(dispatcher: &Dispatcher<Notebook>, effect: &NotesEffect) {
+pub(crate) fn request<R: tilo_resource::Resource>(
+    dispatcher: &Dispatcher<R>,
+    effect: &NotesEffect,
+) {
     match effect {
         NotesEffect::CopyLink { page }
         | NotesEffect::ExportMarkdown { page }
@@ -78,16 +79,6 @@ pub enum NotesEffect {
     #[effect(attended, job, cancellable)]
     #[effect(icon = "download")]
     ImportNotionExport,
-    /// Import Markdown content
-    ///
-    /// Add Markdown text to the notebook as a note, with no file to choose.
-    #[effect(returns, kind = "undoable", audience = "agents")]
-    ImportMarkdownContent {
-        #[param("Note title")]
-        title: String,
-        #[param("Markdown content")]
-        body: String,
-    },
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.

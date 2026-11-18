@@ -2,6 +2,7 @@
 //! the workspace's grants and its agents.
 use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use web_time::SystemTime;
@@ -15,7 +16,7 @@ pub(crate) struct StoredMembershipReceipt {
 
 impl NativeWorkspaceOwner {
     /// Commit a typed membership command as this device, signed by `signer`,
-    /// its custody of its key, outside the owner's turn: the workspace's admission decides it against the caller's
+    /// its ownership of its key, outside the owner's turn: the workspace's admission decides it against the caller's
     /// grants, here and on every device that receives it. A device of the
     /// workspace's owner publishes the governance as a checkpoint; any other
     /// member publishes the changes it made, which every key holder admits
@@ -23,7 +24,7 @@ impl NativeWorkspaceOwner {
     /// invocation reuse never changes policy.
     ///
     /// A workspace this device hosts itself has no host to publish to: its
-    /// device is its keeper, and holds no link that carries its custody. What
+    /// device is its keeper, and holds no link that carries its ownership. What
     /// the command changed goes to the members linked to this device now
     /// ([`crate::owner::NativeKeptHereObserver`]), as its record writes do; a
     /// member that links later reads it in the governance its catch-up brings.
@@ -50,16 +51,14 @@ impl NativeWorkspaceOwner {
             if key.device_public_key() != candidate.device().device_public_key {
                 return Err("membership mutation is not signed by this device".into());
             }
-            let id = serde_json::to_string(&(caller.device_public_key, invocation))
-                .map_err(|error| error.to_string())?;
-            if let Some(existing) = candidate.record.workspace_memberships.get(&id) {
-                if existing.receipt.binding != binding {
-                    return Err("membership invocation was already bound to another command".into());
-                }
-                return Ok(existing.receipt.clone());
+            let id = receipt_id(&caller, invocation, &command)?;
+            let receipts = &candidate.record.workspace_memberships;
+            let kept = receipts.get(&id).map(|kept| kept.receipt.clone());
+            if let Some(replayed) = replayed(kept.as_ref(), &binding, &command)? {
+                return Ok(replayed);
             }
-            if candidate.record.workspace_memberships.len() >= MAX_COMMANDS {
-                return Err("native membership custody capacity exhausted".into());
+            if kept.is_none() && receipts.len() >= MAX_COMMANDS {
+                return Err("native membership ownership capacity exhausted".into());
             }
             // What this device signs, it publishes: a device of the workspace's owner
             // its governance as a checkpoint, carrying its durable state; any
@@ -99,6 +98,11 @@ impl NativeWorkspaceOwner {
                 // linked to it.
                 let changes = live.workspace_changes_since(&before);
                 key.settled()?;
+                // A lease's claim renewed to the same deadline changes nothing:
+                // its receipt stays the one its publication is bound to.
+                if let Some(kept) = kept.filter(|_| changes.is_empty()) {
+                    return Ok((kept, changes));
+                }
                 record.generation = next_generation;
                 let receipt = OwnerCommitReceipt {
                     binding: binding.clone(),
@@ -134,6 +138,40 @@ impl NativeWorkspaceOwner {
             Ok(receipt)
         })
         .await
+    }
+}
+
+/// The key a command's receipt is kept under. A lease's claim is renewed
+/// for as long as the work goes on: its latest claim is the one receipt kept
+/// for it, so renewing never piles up receipts.
+fn receipt_id(
+    caller: &tilo_user_identity::DeviceCert,
+    invocation: uuid::Uuid,
+    command: &WorkspaceMembershipCommand,
+) -> Result<String, String> {
+    match command {
+        WorkspaceMembershipCommand::Lease { id, .. } => {
+            serde_json::to_string(&(caller.device_public_key, "lease", id))
+        }
+        _ => serde_json::to_string(&(caller.device_public_key, invocation)),
+    }
+    .map_err(|error| error.to_string())
+}
+
+/// The receipt an exact retry of `binding` is answered with, `kept` under
+/// its command's key. Another command under an invocation's key is refused;
+/// a lease's next claim replaces the one kept.
+fn replayed(
+    kept: Option<&OwnerCommitReceipt>,
+    binding: &crate::owner_commit::CommitBinding,
+    command: &WorkspaceMembershipCommand,
+) -> Result<Option<OwnerCommitReceipt>, String> {
+    match kept {
+        Some(kept) if kept.binding == *binding => Ok(Some(kept.clone())),
+        Some(_) if !matches!(command, WorkspaceMembershipCommand::Lease { .. }) => {
+            Err("membership invocation was already bound to another command".into())
+        }
+        _ => Ok(None),
     }
 }
 
@@ -227,8 +265,8 @@ mod tests {
         let mut changed = request;
         if let CommitOperation::WorkspaceMembershipCommand { command, .. } = &mut changed.operation
         {
-            *command = WorkspaceMembershipCommand::RetiredRemoveAgent {
-                agent: "scribe".into(),
+            *command = WorkspaceMembershipCommand::Revoke {
+                grant: tilo_action_policy::GrantId::new("another"),
             };
         }
         assert!(
@@ -327,7 +365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changed_caller_certificate_cannot_borrow_governor_signing_custody() {
+    async fn changed_caller_certificate_cannot_borrow_governor_signing_ownership() {
         let fixture = fixture();
         let mut add = request(&fixture, agent_grant());
         if let CommitOperation::WorkspaceMembershipCommand { caller, .. } = &mut add.operation {
@@ -371,7 +409,7 @@ mod tests {
             fixture
                 .governor
                 .receive(
-                    TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                    TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                     message,
                 )
                 .unwrap();
@@ -406,13 +444,17 @@ mod tests {
         let caps = agent_caps(&fixture.owner, &fixture);
         assert_eq!(caps.len(), 1, "written here at once");
         let frames = outgoing(&fixture.owner);
-        assert_eq!(frames.len(), 1, "one workspace delta to publish");
+        assert_eq!(
+            frames.len(),
+            1,
+            "one workspace delta to publish: {frames:?}"
+        );
         let message: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
         assert!(matches!(message, NeighbourMsg::SyncResp { .. }));
         fixture
             .governor
             .receive(
-                TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                 message,
             )
             .unwrap();
@@ -437,7 +479,7 @@ mod tests {
             reopened
                 .receive(
                     workspace,
-                    TransportOrigin::RetainedRelayDelta(governor),
+                    TransportOrigin::RetainedServerDelta(governor),
                     postcard::from_bytes(bytes).unwrap(),
                     fixture.now,
                 )
@@ -448,6 +490,89 @@ mod tests {
             "the workspace's governance carries it"
         );
         assert_eq!(agent_caps(&reopened, &fixture), caps);
+    }
+
+    /// A member device that does work for a workspace — keeps its VM going — claims
+    /// the work's lease as any member writes: its claim reaches the
+    /// workspace's governor, which reads it as the holder, and renewing it keeps
+    /// one receipt rather than one per renewal.
+    #[tokio::test]
+    async fn a_member_device_claims_a_lease_and_the_workspaces_governor_reads_it() {
+        let fixture = crate::owner::fixture::member_device_fixture();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let claim = |ttl_ms| {
+            request(
+                &fixture,
+                WorkspaceMembershipCommand::Lease {
+                    id: crate::vm_lease("default"),
+                    ttl_ms,
+                    rank: crate::unranked(),
+                },
+            )
+        };
+        let receipts = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_current(workspace, |view| {
+                    Ok(view.record.workspace_memberships.len())
+                })
+                .unwrap()
+        };
+        for _ in 0..3 {
+            fixture
+                .owner
+                .commit_workspace_membership_command(claim(60_000), &fixture.key, fixture.now)
+                .await
+                .unwrap();
+        }
+        assert_eq!(receipts(&fixture.owner), 1, "renewals keep one receipt");
+        let holder = fixture
+            .owner
+            .with_current(workspace, |view| {
+                Ok(view
+                    .peer()
+                    .workspace()
+                    .lease(&crate::vm_lease("default"), fixture.now)
+                    .holder)
+            })
+            .unwrap();
+        assert_eq!(
+            holder.map(|claim| claim.device),
+            Some(fixture.certificate.device_public_key)
+        );
+
+        let mut governor = fixture.governor;
+        let frames = fixture
+            .owner
+            .with_outgoing(workspace, fixture.now, |_, outgoing| {
+                Ok(outgoing
+                    .entries()
+                    .map(|entry| entry.bytes().to_vec())
+                    .collect::<Vec<_>>())
+            })
+            .unwrap();
+        assert_eq!(
+            frames.len(),
+            1,
+            "one workspace delta to publish: {frames:?}"
+        );
+        for frame in frames {
+            let message: NeighbourMsg = postcard::from_bytes(&frame).unwrap();
+            governor
+                .receive(
+                    TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
+                    message,
+                )
+                .unwrap();
+        }
+        let held = governor
+            .peer()
+            .workspace()
+            .lease(&crate::vm_lease("default"), fixture.now);
+        assert_eq!(
+            held.holder.map(|claim| claim.device),
+            Some(fixture.certificate.device_public_key),
+            "the workspace's governor reads the member's claim: {held:?}"
+        );
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@
 //! (only when the app named more than one type) and Cancel and the primary button.
 //!
 //! Constructed with "accessible roots" — the paths the caller may be given.
-//! [`FilePicker::can_navigate_to`] gates every path mutation against them so the person
+//! [`FilePicker::can_navigate_to`] checks every path mutation against them so the person
 //! can't `..` out of them, and every chosen path is checked against their real paths again
 //! before it is answered.
 
@@ -314,11 +314,10 @@ impl FileRow for PickerRow {
         }
     }
 
-    fn modified(&self) -> Option<chrono::DateTime<chrono::Local>> {
+    fn modified(&self) -> Option<jiff::Timestamp> {
         self.entry
             .modified
-            .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
-            .map(|utc| utc.with_timezone(&chrono::Local))
+            .and_then(|at| jiff::Timestamp::from_second(at).ok())
     }
 
     fn paint_name(
@@ -1028,7 +1027,8 @@ impl FilePicker {
             size: meta.map_or(0, fs::Metadata::len),
             modified: meta
                 .and_then(|m| m.modified().ok())
-                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).timestamp()),
+                .and_then(|t| jiff::Timestamp::try_from(t).ok())
+                .map(jiff::Timestamp::as_second),
             real: row.real,
         }
     }

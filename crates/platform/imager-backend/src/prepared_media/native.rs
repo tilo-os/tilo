@@ -1,5 +1,5 @@
 //! Native ciphertext authority. Neither the held file nor its constructor is
-//! exposed outside this module; receipt metadata cannot manufacture custody.
+//! exposed outside this module; receipt metadata cannot manufacture ownership.
 use super::{
     AtomicBool, CiphertextInfo, DeliveryProgress, MAX_PLAINTEXT, Observer, PreparedMediaHandle,
     check_cancel, io,
@@ -15,7 +15,7 @@ use std::{
     path::{Component, Path},
 };
 
-pub(super) struct Custody {
+pub(super) struct Ownership {
     file: File,
 }
 
@@ -107,11 +107,11 @@ pub(super) fn review(
             sealed_bytes: facts.len(),
             ciphertext_sha256: after,
         },
-        custody: Custody { file },
+        ownership: Ownership { file },
     })
 }
 
-impl Custody {
+impl Ownership {
     pub(super) fn verify(&mut self, info: &CiphertextInfo, cancel: &AtomicBool) -> io::Result<()> {
         if self.file.metadata()?.len() != info.sealed_bytes
             || hash(&mut self.file, cancel)? != info.ciphertext_sha256

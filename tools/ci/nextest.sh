@@ -85,7 +85,7 @@ tests() {
 
 # In CI, a build of named packages resolves every member's features as the whole workspace does,
 # its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
-# share each member's unit, and a test target a feature gates is a target of the run. That build
+# share each member's unit, and a test target a feature checks is a target of the run. That build
 # compiles every member, so outside CI (a developer's `cargo test -p NAME` on one incremental
 # target) an edit would rebuild every package that depends on the edited one; there the named
 # packages build alone.
@@ -142,11 +142,19 @@ if tests tilo-agent-session; then
     fi
 fi
 
-# The app-cli and app-host trust tests execute the installer, which no package
+# The app-cli and package-service trust tests execute the installer, which no package
 # depends on. A run handed it has it where the build left it, beside the tests' own build.
-if tests app-cli app-host; then
+if tests app-cli package-service; then
     path=$(handed_bin tilo-install)
     [[ -n $path ]] || cargo build --locked -p install --bin tilo-install
+fi
+
+# A task's programs run in the tilolang host's own program, which the session and an agent's
+# API start beside themselves and no package depends on. A run handed it has it where the build
+# left it, beside the tests' own build.
+if tests tilo-agent-session tilo-session; then
+    path=$(handed_bin tilolang-process)
+    [[ -n $path ]] || cargo build --locked -p tilolang-process --bin tilolang-process
 fi
 
 # The sign-in and rollback tests observe an emulated TPM, which the builder has

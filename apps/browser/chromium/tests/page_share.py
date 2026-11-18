@@ -144,7 +144,7 @@ def long_form():
 
 
 def table(rows):
-    """A large table: eight columns of what a ledger holds."""
+    """A large table: eight columns of what a log holds."""
     parts = ["<!doctype html><title>Shipments</title><style>td,th{border:1px solid #999;"
              "padding:2px 6px}</style><h1>Shipments</h1><table><tr>"]
     parts += [f"<th>Column {column + 1}</th>" for column in range(8)]
@@ -250,7 +250,7 @@ td.sum{text-align:right}
 <h1>The harbour at dawn</h1><p class="note">By the night shell</p>
 <p>The harbour kept its own hours, and <a href="/more">the people who worked it</a> had long
 since stopped arguing with the tide. The fee was <span class="old">12 crowns</span> 9 crowns,
-<em>paid at the gate</em>, and <strong>nobody</strong> waited for a receipt longer than it takes
+<em>paid at the hold</em>, and <strong>nobody</strong> waited for a receipt longer than it takes
 to read <code>tide.table</code> twice over.</p>
 <h2>What the boats carried</h2>
 <ul><li>Salt and rope</li><li>Letters for the island</li></ul>
@@ -563,7 +563,7 @@ class PageShare(unittest.TestCase):
 
     def test_a_page_larger_than_the_workspace_carries_is_said_to_be(self):
         """A table of 5000 rows is a whole frame of megabytes more than one object of the
-        workspace's live plane holds. Nothing of it is handed over as a page, and the app
+        workspace's live session holds. Nothing of it is handed over as a page, and the app
         does not keep quiet about it: it says how large the frame is, which is what the
         session tells both devices in words."""
         result = self.probe(path="/register", size=LARGE, within=LARGE_WITHIN_MS,

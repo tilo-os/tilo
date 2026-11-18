@@ -1,11 +1,11 @@
 //! Tasks: the workspace's issues, on a list and a board.
 //!
-//! The tracker is the app's record of the workspace ([`model`]): the
+//! The tracker is the app's resource of the workspace ([`model`]): the
 //! projects and areas above its issues. The issues — nested, each with a
 //! markdown description, a status, an assignee, labels, links and a thread —
 //! are kept in numbered parts beside it ([`part`]), so a change to one costs
 //! its part whatever the tracker holds. The list nests sub-issues under their parent; the board has
-//! a lane per status, and dragging a card is one `place` action; the issue
+//! a list per status, and dragging a card is one `place` action; the issue
 //! page edits the description in the shared block editor and holds the
 //! thread. An issue assigned to an agent is that agent's: it works on the
 //! issue by the tracker's own actions, from the conversation it was asked in.
@@ -64,6 +64,10 @@ pub use part::{IssuePart, Issues};
 pub(crate) struct Tasks {
     pub(crate) tracker: Rc<Tracker>,
     pub(crate) parts: Parts<IssuePart>,
+    /// The issues read across the parts, kept for every version of the
+    /// window's state: each reads it forward from what changed
+    /// ([`Issues::sync`]), never anew.
+    index: Rc<std::cell::RefCell<Issues>>,
 }
 
 impl PartialEq for Tasks {
@@ -74,8 +78,45 @@ impl PartialEq for Tasks {
 
 impl Tasks {
     /// Every issue the parts keep, read as one tracker.
-    pub(crate) fn issues(&self) -> Issues<'_> {
-        Issues::of(&self.parts)
+    pub(crate) fn issues(&self) -> IssuesRead<'_> {
+        read_issues(&self.index, &self.parts)
+    }
+}
+
+/// The issues `parts` keep, read through `index`, the window's kept reading of them: brought
+/// forward to `parts` from what changed, never read anew.
+pub(crate) fn read_issues<'a>(
+    index: &'a std::cell::RefCell<Issues>,
+    parts: &Parts<IssuePart>,
+) -> IssuesRead<'a> {
+    let behind = index.try_borrow().is_ok_and(|index| !index.follows(parts));
+    if behind && let Ok(mut index) = index.try_borrow_mut() {
+        index.sync(parts);
+    }
+    match index.try_borrow() {
+        Ok(index) if index.follows(parts) => IssuesRead::Kept(index),
+        // Read while another version's read is held: read these parts on their own.
+        _ => {
+            let _profile = ui::tilo_resource::profiling::Phase::start("tasks.issues_read_whole");
+            IssuesRead::Own(Box::new(Issues::of(parts)))
+        }
+    }
+}
+
+/// The issues as a version of the window's state reads them ([`Tasks::issues`]).
+pub(crate) enum IssuesRead<'a> {
+    Kept(std::cell::Ref<'a, Issues>),
+    Own(Box<Issues>),
+}
+
+impl std::ops::Deref for IssuesRead<'_> {
+    type Target = Issues;
+
+    fn deref(&self) -> &Issues {
+        match self {
+            Self::Kept(index) => index,
+            Self::Own(index) => index,
+        }
     }
 }
 
@@ -84,6 +125,8 @@ impl Tasks {
 #[derive(Clone)]
 pub(crate) struct Window {
     pub(crate) tasks: LocalState<Tasks>,
+    /// The issues as the window reads them, shared by every version of `tasks`.
+    pub(crate) index: Rc<std::cell::RefCell<Issues>>,
     pub(crate) chain: Option<Chain<IssuePart>>,
     /// The chain's published actions, for the controls bound to them.
     pub(crate) actions: Option<Actions<IssuePart>>,
@@ -92,23 +135,30 @@ pub(crate) struct Window {
 impl Window {
     fn of(cx: &ViewCx<Tracker>) -> Self {
         let chain = cx.chain::<IssuePart>();
+        let index = Rc::new(std::cell::RefCell::new(Issues::default()));
+        let kept = Rc::clone(&index);
         let tasks = match &chain {
             Some(chain) => {
-                cx.chain_value(chain, |tracker: &Tracker, parts: &Parts<IssuePart>| Tasks {
-                    tracker: Rc::new(tracker.clone()),
-                    parts: Rc::clone(parts),
+                cx.chain_value(chain, move |tracker: &Tracker, parts: &Parts<IssuePart>| {
+                    Tasks {
+                        tracker: Rc::new(tracker.clone()),
+                        parts: Rc::clone(parts),
+                        index: Rc::clone(&kept),
+                    }
                 })
             }
             // A past version shows the tracker's projects and no issues:
-            // the parts are not part of the record it shows.
+            // the parts are not part of the resource it shows.
             None => cx.value(|tracker: &Tracker| Tasks {
                 tracker: Rc::new(tracker.clone()),
                 parts: Parts::<IssuePart>::default(),
+                index: Rc::default(),
             }),
         };
         let actions = chain.as_ref().and_then(|chain| cx.resource_actions(chain));
         Self {
             tasks,
+            index,
             chain,
             actions,
         }
@@ -129,7 +179,7 @@ pub enum Place {
     /// Every issue, sub-issues under their parent.
     #[default]
     List,
-    /// A lane per status.
+    /// A list per status.
     Board,
     /// The tasks that have said something, as their conversations.
     Thread,
@@ -207,8 +257,8 @@ impl ResourceApp for App {
     }
 
     /// The issues, kept in parts beside the tracker.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.chain::<IssuePart>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<IssuePart>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -216,7 +266,7 @@ impl ResourceApp for App {
     }
 
     /// Issues a migration brought from Linear join the tracker when it opens.
-    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 
@@ -333,10 +383,7 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
     let filters = Filter::ALL
         .into_iter()
         .map(|filter| {
-            let count = issues
-                .iter()
-                .filter(|(_, issue)| filter.matches(issue, me))
-                .count();
+            let count = filter.count(&issues, me);
             NavItem::new(filter.key(), filter.title())
                 .icon(filter.icon())
                 .count(u32::try_from(count).unwrap_or(u32::MAX))
@@ -384,7 +431,7 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
 }
 
 /// A row to create an issue: its title, then Enter or the button. `status`
-/// is where it starts, when the row stands in a lane of the board; `local`
+/// is where it starts, when the row stands in a list of the board; `local`
 /// makes the title's draft.
 pub(crate) fn new_issue(
     local: &dyn Fn() -> ui::LocalState<String>,

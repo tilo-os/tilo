@@ -130,7 +130,7 @@ pub enum Command {
     /// Build this worktree's dev image (and dev disk) into a directory, for vm upgrade --image and vm create --image.
     #[command(subcommand)]
     Image(ImageCommand),
-    /// Boot a disk under QEMU: the one command line every headless boot, gate and boot-time measurement uses.
+    /// Boot a disk under QEMU: the one command line every headless boot, check and boot-time measurement uses.
     #[command(subcommand)]
     Qemu(Box<QemuCommand>),
     /// Manage accounts: your user, session and layer stack inside a VM.
@@ -824,6 +824,10 @@ pub enum GamepadCommand {
 }
 
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "clap parses each subcommand in place; boxing one would make every match arm dereference it"
+)]
 pub enum VmCommand {
     /// Carry the canonical semantic action operations over the owner's authenticated device route.
     Actions {
@@ -858,6 +862,17 @@ pub enum VmCommand {
         #[arg(long, hide = true, conflicts_with = "name")]
         vm: Option<String>,
         /// The command to run, after `--`; without one, an interactive shell.
+        #[arg(last = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Copy the VM's own tilo-vm out and execute it with these arguments: the client whose protocol its tilo-vmd speaks.
+    #[command(
+        after_help = "A dev disk keeps the tilo-vmd it was built with, so a VM from another commit speaks another protocol than this checkout's tilo-vm; the image ships the matching client. `vm client` copies it out once and executes it, so the tool you were using keeps working on that VM:\n  tilo-vm vm client dev -- swap tilo-session\n  tilo-vm vm client dev -- vm status\n  tilo-vm vm client dev                 # just fetch it and print where it is\nWithout arguments it only fetches and names the image the VM boots, its daemon's protocol and the copied client."
+    )]
+    Client {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+        /// Arguments for the fetched client, after `--`.
         #[arg(last = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
@@ -1137,6 +1152,12 @@ pub struct CreateArgs {
     /// renders on a GPU instead of in software.
     #[arg(long)]
     pub gl: bool,
+    /// libvirt or QEMU with --gl: the DRM render node to render on, e.g.
+    /// /dev/dri/renderD128 (default: the first one whose driver is not NVIDIA,
+    /// which vm create reports). `tilo-vm qemu boot` takes the same as
+    /// --rendernode.
+    #[arg(long, requires = "gl")]
+    pub render_node: Option<String>,
     /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
@@ -1439,6 +1460,33 @@ pub enum AccountIdentity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vm_client_takes_the_fetched_clients_arguments_after_a_separator() {
+        let cli = Cli::try_parse_from([
+            "tilo-vm",
+            "vm",
+            "client",
+            "dev",
+            "--",
+            "swap",
+            "tilo-session",
+        ])
+        .unwrap();
+        let Some(Command::Vm(VmCommand::Client { name, command })) = cli.command else {
+            panic!("vm client expected");
+        };
+        assert_eq!(name.as_deref(), Some("dev"));
+        assert_eq!(command, ["swap", "tilo-session"]);
+        let cli = Cli::try_parse_from(["tilo-vm", "vm", "client"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Vm(VmCommand::Client {
+                name: None,
+                ref command
+            })) if command.is_empty()
+        ));
+    }
+
     tilo_test_env::scenario! {
         fn swap_and_account_create_take_their_flags;
 

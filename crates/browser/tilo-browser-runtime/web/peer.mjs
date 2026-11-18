@@ -11,14 +11,14 @@
  *   in host order, replayed after every reconnect;
  * - device certification: the page shows the pairing code while a
  *   root-holding device of the user approves;
- * - the live plane (`peer.live`): this page as one member device of the
+ * - the live session (`peer.live`): this page as one member device of the
  *   workspace beside every other, its presence, pointers, previews and shell
  *   on the same session link they use. Never authority;
  * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds
  *   the participation and seals the page's frames, which reach the call as
- *   turns on its host's call lane (`voice.mjs`).
+ *   turns on its host's call media queue (`voice.mjs`).
  *
- * The page holds one device key (`device-custody.mjs`): each tab is a
+ * The page holds one device key (`device-key.mjs`): each tab is a
  * device of its own, with its own key, certificate and state. A page that also
  * holds the user root (`identity.mjs`, `options.identity`) certifies
  * that key itself instead of waiting for an approver.
@@ -32,7 +32,7 @@ import {memberText} from './json-text.mjs';
 import {changed as pageChanged} from './changes.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
-import {idbStorage, openDeviceCustody, rememberBrowserDevice} from './device-custody.mjs';
+import {idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
@@ -92,11 +92,11 @@ export {identityProfile};
 /** The namespace of a profile's storage its peer keeps its certificate,
  * record (outbox, synced documents) and channel state in, until the host at
  * the profile's origin is set up again. Each device key of the profile (a
- * custody slot, `device-custody.mjs`: one per tab open at once) is a device
+ * device key slot, `device-key.mjs`: one per tab open at once) is a device
  * of its own with a namespace of its own: slot 0 keeps this one, slot `n`
  * the same name with `#n` after it. */
 export const PROFILE_DEVICE = 'tilo-browser-device';
-/** The name of a namespace for the custody slot `slot`. */
+/** The name of a namespace for the device key slot `slot`. */
 const forSlot = (namespace, slot) => (slot ? `${namespace}#${slot}` : namespace);
 /** Which namespace each profile (and each slot past the first, as
  * `profile#slot`) keeps its peer in now (`localStorage`): absent for one
@@ -108,7 +108,7 @@ const readProfileDevices = namespaces => {
     return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
   } catch { return {}; }
 };
-/** The namespace the peer of `profile`'s custody slot `slot` keeps its
+/** The namespace the peer of `profile`'s device key slot `slot` keeps its
  * state in now. */
 export function profileDevice(profile, namespaces = globalThis.localStorage, slot = 0) {
   const device = readProfileDevices(namespaces)[forSlot(profile, slot)];
@@ -120,17 +120,17 @@ function keepProfileDevice(profile, slot, device, namespaces) {
   namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
 }
 /**
- * Replace the device key `custody` holds for `profile` with a new one, in a
+ * Replace the device key `device key` holds for `profile` with a new one, in a
  * namespace of its own: a new device of the same person. For a key a host
  * knows under a certificate this browser no longer holds, which that host
  * never admits again under another. What was kept for the old key stays in
- * its namespace, never opened for the new one. Resolves to the new custody.
+ * its namespace, never opened for the new one. Resolves to the new device key.
  */
-export async function renewDevice(custody, profile, {
-  open = name => openDeviceCustody({profile: name, storage: idbStorage()}), namespaces = globalThis.localStorage,
+export async function renewDevice(deviceKey, profile, {
+  open = name => openDeviceKey({profile: name, storage: idbStorage()}), namespaces = globalThis.localStorage,
   random = bytes => crypto.getRandomValues(bytes),
 } = {}) {
-  await custody.destroy();
+  await deviceKey.destroy();
   const renewed = await open(profile);
   // Another tab may have taken the freed slot meanwhile: a key that is not
   // new keeps the namespace it has.
@@ -148,9 +148,9 @@ const hostNamespace = (hostCert, slot) => {
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
-/** Rejoining the live plane: the first wait and the longest, exponential
+/** Rejoining the live session: the first wait and the longest, exponential
  * between, each jittered by `reconnect.mjs` (`backoffDelay`) so the members
- * of a workspace whose relay restarted do not all come back in the same tick. */
+ * of a workspace whose server restarted do not all come back in the same tick. */
 const LIVE_RETRY = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
 /** A member's track may be announced a moment after the member: retry a
  * subscription that ended while the member is still present. */
@@ -213,7 +213,7 @@ function wireConfirmation(confirmation) {
 }
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
-/** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
+/** A host served over plain HTTP on this machine (`tilo-server workspace --web-plain`). */
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
 /** `post(path, body)` over `fetch` to the host origin: https, or loopback
@@ -379,7 +379,7 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.userPublicKey  the user's root public key (hex)
  * @param options.label          device label shown to the approver
  * @param options.workspace           workspace uuid to join, optional
- * @param options.custody        from `openDeviceCustody`
+ * @param options.device key        from `openDeviceKey`
  * @param options.profile        profile whose durable storage keeps the peer's
  *                               certificates and outbox (with `device`); its
  *                               desktop mounts share that storage
@@ -391,56 +391,56 @@ export function createLiveLayer(peer, runtime, workspace, {
  *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
- * @param options.live           `false`: join no live plane
+ * @param options.live           `false`: join no live session
  * @param options.onPairingCode  shown while an approver decides
  * @param options.identity       an unlocked root (`identity.mjs`): the
  *                               page certifies its own device with it, no
  *                               approver; `userPublicKey` defaults to its key,
- *                               `profile` to one per identity and `custody` to
+ *                               `profile` to one per identity and `device key` to
  *                               that profile's device key
- *                               (without one, `custody` defaults to `profile`'s
+ *                               (without one, `device key` defaults to `profile`'s
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
  */
 export async function connectPeer(options) {
-  const {identity, custody, origin, store, profile} = options;
-  if (custody) return connect(options);
+  const {identity, deviceKey, origin, store, profile} = options;
+  if (deviceKey) return connect(options);
   if (!identity) {
     // A device of a person whose root is elsewhere (a paired device): its
     // key is the profile's own, let go like an identity's below.
     if (store || !profile) return connect(options);
-    const own = await openDeviceCustody({profile, storage: idbStorage()});
-    return withCustody(own, () => connect({...options, custody: own}), options.signal);
+    const own = await openDeviceKey({profile, storage: idbStorage()});
+    return withDeviceKey(own, () => connect({...options, deviceKey: own}), options.signal);
   }
   // The device key this call opens is the peer's: it is let go when the
   // peer is disposed or fails to connect, so the page can connect again.
-  const own = await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
-  return withCustody(own, () => connect({...options, custody: own, ...(store ? {} : {profile: profile ?? identityProfile(identity, origin)})}),
+  const own = await openDeviceKey({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
+  return withDeviceKey(own, () => connect({...options, deviceKey: own, ...(store ? {} : {profile: profile ?? identityProfile(identity, origin)})}),
     options.signal);
 }
 
-/** Runs `connecting` with the device key `custody`, closing it when the
+/** Runs `connecting` with the device key `device key`, closing it when the
  * resulting peer is disposed, when `signal` aborts, or when connecting fails. */
-export async function withCustody(custody, connecting, signal) {
+export async function withDeviceKey(deviceKey, connecting, signal) {
   let peer;
   try {
     peer = await connecting();
   } catch (error) {
-    custody.close();
+    deviceKey.close();
     throw error;
   }
   const dispose = peer.dispose;
   peer.dispose = async () => {
     // The page may connect again once this resolves: the device key is free by then.
-    try { await dispose(); } finally { await custody.close(); }
+    try { await dispose(); } finally { await deviceKey.close(); }
   };
-  signal?.addEventListener('abort', () => custody.close(), {once: true});
+  signal?.addEventListener('abort', () => deviceKey.close(), {once: true});
   return peer;
 }
 
 async function connect({
-  origin, userPublicKey, label = deviceLabel(), workspace, custody, store, runtime, identity, deviceCertificate,
+  origin, userPublicKey, label = deviceLabel(), workspace, deviceKey, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
@@ -455,19 +455,19 @@ async function connect({
   }
   if (identity) {
     if (!store) profile ??= identityProfile(identity, origin);
-    custody ??= await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
+    deviceKey ??= await openDeviceKey({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
   }
   // A page may start connecting while its runtime still loads.
   runtime ??= await pageRuntime(desktop);
-  if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
-    throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
+  if (!origin || !userPublicKey || !deviceKey || !(store || profile) || !runtime) {
+    throw new TypeError('origin, userPublicKey, device key, store or profile, and runtime are required');
   }
   signal?.throwIfAborted();
   const surfaceModule = async () => desktop ?? await import('./host.mjs');
   let storage;
   // Each device key of the profile (each tab open at once) is a device of
   // its own, with its own certificate, record and channel state.
-  const slot = custody.slot ?? 0;
+  const slot = deviceKey.slot ?? 0;
   device ??= profile ? profileDevice(profile, namespaces, slot) : PROFILE_DEVICE;
   if (profile) {
     const surface = await surfaceModule();
@@ -480,7 +480,7 @@ async function connect({
   const vaultOf = () => runtime.channelVault(`page:${profile}/${device}:${userPublicKey}`);
   let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
-  const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
+  const deviceKeyForWasm = deviceKey.kind === 'sealed-seed' ? await deviceKey.unseal() : deviceKey;
   /** How this device comes back to the host answering as `hostCert` (JSON
    * text), with what it `kept` and what an entry just `admitted` it under. */
   const reconnecting = (kept, admitted, hostCert) =>
@@ -761,8 +761,8 @@ async function connect({
       default: break;
     }
     const issued = identity
-      ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
-      : await runtime.certifyDevice(userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
+      ? await runtime.certifyWithRoot(post, identity, deviceKeyForWasm, label)
+      : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
         JSON.stringify(host.address));
     if (!identity) hostLabel = JSON.parse(issued).label ?? null;
     await store.put(CERTIFICATE, issued);
@@ -791,7 +791,7 @@ async function connect({
         // the host admitted it.
         entering,
       }),
-      custodyForWasm,
+      deviceKeyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
@@ -802,8 +802,8 @@ async function connect({
     peer.subscribe(publish);
     if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
     if (workspace) {
-      // A workspace of the person's own its host does not govern yet is placed
-      // there under the workspace's name.
+      // A workspace of the person's own its server does not hold yet is
+      // placed there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, workspace, {ready, member: {
@@ -998,6 +998,49 @@ async function connect({
       return {invocation: id, ...(update ? stateOf(update) : {state: 'unknown'})};
     }
 
+    /**
+     * Which of the workspace's documents changed after `after`, a cursor an earlier answer gave:
+     * `{changed: [{app, document}], cursor}`, each document once, from the server's own feed of its
+     * documents' changes (`ChangesRequest`), which answers this person with what they may read.
+     * Only the names leave this function: what a change says (its sentence, who made it, what
+     * it was given) is read by nobody here. With no cursor nothing that happened yet is news:
+     * the answer names nothing and gives the cursor to read on from.
+     */
+    async function changes(after = null) {
+      correlation += 1;
+      const answer = await ask({ChangesRequest: {correlation, ...(typeof after === 'string' && after ? {after} : {})}});
+      const result = answer.ChangesResponse?.result;
+      if (!result?.Ok) {
+        if (!result?.Err) throw new ActionsError('unavailable', 'the server did not answer');
+        throw failure(result.Err);
+      }
+      const named = new Map();
+      for (const change of result.Ok.changes ?? []) {
+        const {app, record: document} = change ?? {};
+        if (typeof app !== 'string' || typeof document !== 'string') continue;
+        named.set(`${app}\n${document}`, {app, document});
+      }
+      return {changed: [...named.values()], cursor: String(result.Ok.cursor ?? '')};
+    }
+
+    /**
+     * Wait for the server's word that a write landed in the workspace's documents, `withinMs` at
+     * most: `{woke, release}`. `woke` resolves `true` at that word and `false` once the time
+     * is over, never sooner: a server that cannot tell, or never answers, costs the whole wait
+     * and nothing else. `release()` ends the wait now. The word says that something was
+     * written, never what or by whom.
+     */
+    function landed(withinMs) {
+      let over;
+      const until = new Promise(resolve => { over = resolve; });
+      const timer = setTimeout(over, Math.max(0, Number(withinMs) || 0));
+      // The session's own wait ends with `until`; one that never settles is not waited for.
+      const heard = Promise.resolve().then(() => peer.writeLanded(workspace, until)).then(said => said === true, () => false);
+      const woke = Promise.race([heard, until.then(() => false)])
+        .then(async said => { if (!said) await until; return said; });
+      return {woke, release() { clearTimeout(timer); over(); }};
+    }
+
     async function status(id) {
       const held = entries.get(id);
       if (!held) throw new ActionsError('unknown_invocation', 'no such invocation in this page');
@@ -1025,6 +1068,8 @@ async function connect({
       invoke,
       once,
       observe,
+      changes,
+      landed,
       status,
       cancel,
       dispose() { entries.clear(); },
@@ -1038,7 +1083,7 @@ async function connect({
     throw error;
   }
 
-  // Leaving the page leaves the workspace's live plane at once: closing its
+  // Leaving the page leaves the workspace's live session at once: closing its
   // sessions withdraws this page's announcement, so everyone else takes its
   // pointer and face down now, not when the link times out, and its host
   // session ends with it. A page kept to come back to (`persisted`) is frozen,
@@ -1140,14 +1185,14 @@ async function connect({
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
     /** Answer what this person's agents on the host ask them, over this
-     * session (`agent-questions.mjs`): as the root custody `root` where the
+     * session (`agent-questions.mjs`): as the root device key `root` where the
      * page holds it, else with this session's own device key, as a device
      * paired to the person answers. */
-    answerAgentQuestions: root => peer.answerAgentQuestions(root ?? custodyForWasm),
+    answerAgentQuestions: root => peer.answerAgentQuestions(root ?? deviceKeyForWasm),
     /** The key the host pushes with, and keeping this browser's push
      * subscription there (`web-push.mjs`), as `root` or this session's key. */
-    pushKey: root => peer.pushKey(root ?? custodyForWasm),
-    notifyAt: (root, endpoint, p256dh, auth) => peer.notifyAt(root ?? custodyForWasm, endpoint, p256dh, auth),
+    pushKey: root => peer.pushKey(root ?? deviceKeyForWasm),
+    notifyAt: (root, endpoint, p256dh, auth) => peer.notifyAt(root ?? deviceKeyForWasm, endpoint, p256dh, auth),
     /** This person's new devices waiting at the host, paired with the root
      * the page holds over this session (`PairingHost`: `pending`, `answer`). */
     pairing: () => peer.pairing(),
@@ -1157,7 +1202,7 @@ async function connect({
      * each `name`. `entered(id)` says this browser is in that workspace already,
      * so it is not redeemed again. Resolves to the workspace's listing
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
-     * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
+     * typed it (`DeviceRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, entered = () => false} = {}) => JSON.parse(
       await peer.enterOwnWorkspace(name, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
@@ -1183,9 +1228,9 @@ async function connect({
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     /** The live layer of the joined workspace, or `undefined` without a workspace. */
     get live() { return live; },
-    /** Why this page cannot join the workspace's live plane at all, in the
+    /** Why this page cannot join the workspace's live session at all, in the
      * words shown in the members' place, or `null` while it can
-     * (or did): a plane that could not be reached. */
+     * (or did): a live session that could not be reached. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** This person as their presence names them: `{label, color}`. */
     get member() {
@@ -1353,9 +1398,11 @@ async function connect({
           else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           // A host never reached (`hostUnreached`) keeps its code: nothing it refused.
+          // So does a session its server stopped because this browser was removed from
+          // its person's devices (`device-revoked`): the page says that, and asks nothing again.
           else if (current.phase === 'failed') {
             finish(Object.assign(new Error(current.error ?? 'the host refused this device'),
-              current.errorCode === 'unanswered' ? {code: 'unanswered'} : {}));
+              ['unanswered', 'device-revoked'].includes(current.errorCode) ? {code: current.errorCode} : {}));
           }
           // The host answered the page's subscription with a no: the session
           // asks no more, so nothing comes of waiting on.
@@ -1525,31 +1572,31 @@ export async function openInvitation(site, secret, {runtime} = {}) {
  * holds their root approves it. Then, with `entry` (a workspace's entry, its
  * base URL), the device goes through it into that workspace as a device of
  * theirs; without, it connects to `workspace`. Takes `connectPeer`'s other options; the device key is
- * `custody`, else a free one of `profile` (default the person's profile for
+ * `device key`, else a free one of `profile` (default the person's profile for
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
   const {origin, userPublicKey, label = deviceLabel(), entry, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
-  // A caller's device key (`options.custody`, of `profile`) stays the
+  // A caller's device key (`options.device key`, of `profile`) stays the
   // caller's to let go.
-  const own = options.custody ?? await openDeviceCustody({profile, storage: idbStorage()});
+  const own = options.deviceKey ?? await openDeviceKey({profile, storage: idbStorage()});
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
-    const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
+    const deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
     // The host names this device: the name asked for, or the next numbered one
     // when another of the person's devices reads by it already.
-    const certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, custodyForWasm,
+    const certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, deviceKeyForWasm,
       code => options.onPairingCode?.(code), JSON.stringify(info.address));
     const enrolled = JSON.parse(certified).label ?? label;
-    const common = {...options, identity: undefined, label: enrolled, profile, custody: own, runtime};
+    const common = {...options, identity: undefined, label: enrolled, profile, deviceKey: own, runtime};
     if (!entry) return connect({...common, deviceCertificate: certified});
     return join({...common, origin, entry, certified});
   };
-  return options.custody ? pairing() : withCustody(own, pairing, signal);
+  return options.deviceKey ? pairing() : withDeviceKey(own, pairing, signal);
 }
 
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -1566,11 +1613,11 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  */
 export async function joinWorkspace(options) {
   const identity = options.identity ?? currentIdentity();
-  if (!identity || options.custody || !options.origin) return join({...options, identity});
+  if (!identity || options.deviceKey || !options.origin) return join({...options, identity});
   // As connectPeer: the device key opened here is the peer's.
   const profile = options.profile ?? identityProfile(identity, options.origin);
-  const own = await openDeviceCustody({profile, storage: idbStorage()});
-  return withCustody(own, () => join({...options, identity, profile, custody: own}), options.signal);
+  const own = await openDeviceKey({profile, storage: idbStorage()});
+  return withDeviceKey(own, () => join({...options, identity, profile, deviceKey: own}), options.signal);
 }
 
 /**
@@ -1618,12 +1665,12 @@ const ENTRY_TIMEOUT_MS = 45_000;
  * asks the host who it is (`site-host.mjs`): an entry reaches it in about a second. */
 const SITE_HOST_CHECK_MS = 8_000;
 
-/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the entry
+/** A refusal as the shared entry reads it (`DeviceRefusal`): its `code`, the wait the entry
  * asked for in seconds, and, when a workspace's entry turned the person away, the entry's own
  * answer (`entry`: whether it keeps a wait list, and where its contact is). */
 function hostRefusal(code, message, retryAfter = null, entry = null) {
   const error = new Error(message);
-  error.name = 'HostRefusal';
+  error.name = 'DeviceRefusal';
   error.code = code;
   if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
   if (entry) error.entry = entry;
@@ -1667,7 +1714,7 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
  * session's own first message, so a page its site told of the host asks it nothing over HTTPS,
  * and its first requests follow right behind. */
 async function enterOnSession({
-  origin, workspace, entry, identity, person, label, displayName, signal, onProgress, runtime, custody,
+  origin, workspace, entry, identity, person, label, displayName, signal, onProgress, runtime, deviceKey,
   profile, fetcher, connectOptions,
 }) {
   const named = siteHost(origin);
@@ -1684,7 +1731,7 @@ async function enterOnSession({
   const entering = JSON.parse(memberText(entered, 'entering'));
   const peer = await connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: workspace ?? entering.workspace,
-    label, displayName, custody, runtime, signal,
+    label, displayName, deviceKey, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
     // As text: the certificate's nanosecond timestamps exceed what a JavaScript number holds
     // exactly (json-text.mjs).
@@ -1715,7 +1762,7 @@ async function enterOnSession({
 
 async function join({
   origin, invitation, entry, identity, displayName = '', label = deviceLabel(), signal, onProgress,
-  admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
+  admissionToken, runtime, deviceKey, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as
   // itself; any other asks as the person whose root the page holds.
@@ -1725,11 +1772,11 @@ async function join({
   runtime ??= await pageRuntime(connectOptions.desktop);
   const person = identity ?? {userPublicKey: hexOf(JSON.parse(certified).cert.user_public_key)};
   profile ??= identityProfile(person, origin);
-  custody ??= await openDeviceCustody({profile, storage: idbStorage()});
-  const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
+  deviceKey ??= await openDeviceKey({profile, storage: idbStorage()});
+  const deviceKeyForWasm = deviceKey.kind === 'sealed-seed' ? await deviceKey.unseal() : deviceKey;
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
-  const held = certified ?? await keptDeviceCertificate({runtime, profile, slot: custody.slot, store: connectOptions.store,
+  const held = certified ?? await keptDeviceCertificate({runtime, profile, slot: deviceKey.slot, store: connectOptions.store,
     desktop: connectOptions.desktop, namespaces: connectOptions.namespaces});
   // The shared entry chooses the certificate (the one this very key holds
   // from this host, else one the root makes now) and has the workspace admit
@@ -1737,19 +1784,19 @@ async function join({
   const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
     ...(admissionToken ? {admissionToken} : {})});
   const common = {
-    origin, identity, person, label, displayName, signal, onProgress, runtime, custody, profile, fetcher, connectOptions,
+    origin, identity, person, label, displayName, signal, onProgress, runtime, deviceKey, profile, fetcher, connectOptions,
   };
   if (entry) {
     const workspace = entryWorkspace(entry);
     if (!workspace) throw new TypeError('the entry names no workspace');
     return enterOnSession({
       ...common, workspace,
-      entry: hostCert => runtime.entryRequest(hostCert, workspace, custodyForWasm, identity ?? undefined, accepting),
+      entry: hostCert => runtime.entryRequest(hostCert, workspace, deviceKeyForWasm, identity ?? undefined, accepting),
     });
   }
   return enterOnSession({
     ...common, workspace: null,
-    entry: hostCert => runtime.invitationEntry(hostCert, invitationBytes(invitation), custodyForWasm,
+    entry: hostCert => runtime.invitationEntry(hostCert, invitationBytes(invitation), deviceKeyForWasm,
       identity ?? undefined, accepting),
   });
 }

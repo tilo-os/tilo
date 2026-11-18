@@ -73,7 +73,7 @@ command=['ninja','-C','/out/build','-j2',target]
 subprocess.run(command,check=True,env=env,timeout=1800);commands.append(command)
 flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs',
  'pangocairo','atk','gdk-pixbuf-2.0','gio-2.0','cairo'],env=env,text=True))
-for source,name in [('/entry_subject.c','entry_subject'),('/native_history_gate.c','native_history_gate')]:
+for source,name in [('/entry_subject.c','entry_subject'),('/native_history_check.c','native_history_check')]:
  command=['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',source,
   '-Wl,-rpath,$ORIGIN/build/gtk:$ORIGIN/build/gdk',
   '-Wl,-rpath-link,/deps/usr/lib64','-I/source','-I/out/build',
@@ -109,7 +109,7 @@ def main():
         '--tmpfs', '/tmp:rw,nosuid,size=128m',
         '--volume', str(tree)+':/source:ro', '--volume', str(root)+':/deps:ro',
         '--volume', str(HERE/'entry_subject.c')+':/entry_subject.c:ro',
-        '--volume', str(HERE/'native_history_gate.c')+':/native_history_gate.c:ro',
+        '--volume', str(HERE/'native_history_check.c')+':/native_history_check.c:ro',
         '--volume', str(args.out.resolve())+':/out:rw',
         '--entrypoint', 'python3', IMAGE, '-c', INNER]
     if not args.execute:

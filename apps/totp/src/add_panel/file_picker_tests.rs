@@ -134,9 +134,9 @@ fn the_totp_app_opens_the_file_picker() {
     let shell = SessionShell::default();
     let link = tilo_dialogs::shell::ShellLink::connect(shell.serve("acme-qr.png", qr_png(uri)))
         .expect("the chooser connection");
-    let mut services = ui::host::HostServices::null();
+    let mut services = ui::process::ProcessServices::null();
     services.files = link.picker(None);
-    let _host = ui::host::enter(&services);
+    let _host = ui::process::enter(&services);
 
     let mut app = opened((1280, 900));
     let issuer = panel(&mut app, |panel| panel.values.issuer.clone());
@@ -217,9 +217,9 @@ fn refused<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
 #[test]
 fn an_image_without_a_readable_code_says_so_over_the_open_sheet() {
     let chooser = LaterChooser::default();
-    let mut services = ui::host::HostServices::null();
+    let mut services = ui::process::ProcessServices::null();
     services.files = Arc::new(chooser.clone());
-    let _host = ui::host::enter(&services);
+    let _host = ui::process::enter(&services);
 
     let mut app = opened((1280, 900));
     click(&mut app, "totp-scan");

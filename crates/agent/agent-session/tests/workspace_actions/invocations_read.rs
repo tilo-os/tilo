@@ -18,7 +18,7 @@ use tilo_actions::remote::{
     workspace_invocations,
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::permissions::Role;
 use ui::permissions::policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 
@@ -29,14 +29,14 @@ const TASKS: &str = "so.tilo.tasks";
 /// read now, and the questions put to them, which nobody answers.
 struct Reading {
     member: HostDevice,
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     person: [u8; 32],
     device: [u8; 32],
     unreadable: Mutex<HashSet<String>>,
     /// Apps whose records the policy admits them to, while a grant of their
     /// own denies them Read there.
     bound: Mutex<HashSet<String>>,
-    asked: Mutex<Vec<Completer<Result<ConfirmationReply, ActionHostError>>>>,
+    asked: Mutex<Vec<Completer<Result<ConfirmationReply, ActionCallError>>>>,
 }
 
 impl Reading {
@@ -48,12 +48,12 @@ impl Reading {
             return None;
         }
         let person = hex::encode(self.person);
-        let standing = ui::permissions::PermissionContext::member_of(
+        let access = ui::permissions::PermissionContext::member_of(
             WORKSPACE,
             &ui::permissions::MemberId::person(person.clone()),
             Role::Editor,
         )
-        .standing()
+        .access()
         .clone();
         let denied: Vec<Grant> = self
             .bound
@@ -65,7 +65,7 @@ impl Reading {
                 Grant::new(
                     format!("no-read:{app}"),
                     grantee.clone(),
-                    standing.node(&TreePath::root().app(app)),
+                    access.node(&TreePath::root().app(app)),
                     KindSet::of(ActionKind::Read),
                     Answer::Deny,
                     grantee,
@@ -74,9 +74,10 @@ impl Reading {
             .collect();
         Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: standing.granted(denied),
+            access: access.granted(denied),
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+            agent_bound: Vec::new(),
         })
     }
 }
@@ -120,7 +121,7 @@ impl WorkspaceDocumentsLink for Reading {
         _workspace: WorkspaceId,
         _caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         let (asked, answer) = pending();
         self.asked.lock().unwrap().push(asked);
         Some(answer)
@@ -159,7 +160,7 @@ fn receipt(
         let again = matches!(
             &receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&receipt.status, ReceiptStatus::Failed { error } if error.retryable);
         if again && Instant::now() < deadline {
@@ -257,13 +258,13 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
     let reading = Arc::new(Reading {
         member: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         unreadable: Mutex::default(),
@@ -313,7 +314,7 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
         &member,
         &request(
             &notes_provider,
-            ActionAddress::new("notes.notebook", "new-note"),
+            ActionAddress::new(notes::part::chain_resource(), "new-note"),
             json(serde_json::json!({"title": "A note for all"})),
         ),
     );
@@ -480,13 +481,13 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     let reading = Arc::new(Reading {
         member: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         unreadable: Mutex::default(),
@@ -517,7 +518,7 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
         &person,
         &request(
             &notes_provider,
-            ActionAddress::new("notes.notebook", "new-note"),
+            ActionAddress::new(notes::part::chain_resource(), "new-note"),
             json(serde_json::json!({"title": "Grace's own note"})),
         ),
     );

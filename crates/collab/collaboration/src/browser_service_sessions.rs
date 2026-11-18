@@ -10,6 +10,7 @@
 use super::native_initial::{InitialReadBridge, service_capture_bridge};
 pub use runtime_collab::{
     BrowserServiceSessionCommand, BrowserServiceSessionDescriptor, BrowserServiceSessionReply,
+    ItemField,
 };
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -74,7 +75,7 @@ pub struct Pending {
     done: bool,
 }
 impl Pending {
-    /// A reply is returned at most once; dropping this object drops private custody.
+    /// A reply is returned at most once; dropping this object drops private ownership.
     pub fn poll(&mut self) -> Option<Result<BrowserServiceSessionReply, String>> {
         if self.done {
             return None;

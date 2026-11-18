@@ -4,7 +4,7 @@
 # libraries every RPM transaction re-indexes, and fontconfig's caches: font
 # package triggers and anything that loads fontconfig rewrite them, and which
 # ones a layer ends up with differs between builds (releases 48898, 49265 and
-# 49687 each had a cache or temporary file on one lane only). The rootfs writes
+# 49687 each had a cache or temporary file on one job only). The rootfs writes
 # the system font cache once, last. Also what package scriptlets and the build's
 # own runs leave that is made fresh in every build: the machine ID and random
 # seed systemd's scriptlets generate (the base ships /etc/machine-id empty, which

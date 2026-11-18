@@ -8,7 +8,7 @@
 
 use std::{io, sync::Arc, time::Duration};
 
-use tilo_actions::remote::{ActionHost, Caller};
+use tilo_actions::remote::{ActionProvider, Caller};
 use tilo_os_search::{Changes, OsSearch};
 
 /// How long a revoked or closed resource may stay findable.
@@ -18,7 +18,7 @@ const REFRESH: Duration = Duration::from_secs(10);
 /// to the profile's `workspace`: the caller MCP acts as.
 pub(crate) fn start<H>(host: H, workspace: &str, actor: &str) -> io::Result<Arc<OsSearch>>
 where
-    H: ActionHost + Send + Sync + 'static,
+    H: ActionProvider + Send + Sync + 'static,
 {
     let search = Arc::new(OsSearch::new(
         Arc::new(host),

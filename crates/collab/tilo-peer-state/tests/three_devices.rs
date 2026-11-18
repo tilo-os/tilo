@@ -42,6 +42,8 @@ fn hint(cert: &DeviceCert, key: &SigningKey) -> TransportHint {
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&cert.device_public_key).unwrap(),
@@ -229,7 +231,7 @@ async fn a_key_holder_that_does_not_host_the_workspace_admits_and_removes_member
     for message in outgoing(&a, workspace, now) {
         governor
             .receive(
-                TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+                TransportOrigin::RetainedServerDelta(cert_a.device_public_key),
                 message,
             )
             .unwrap();
@@ -256,7 +258,7 @@ async fn a_key_holder_that_does_not_host_the_workspace_admits_and_removes_member
     for (bytes, _) in governor.outgoing() {
         a.receive(
             workspace,
-            TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+            TransportOrigin::RetainedServerDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
             now,
         )
@@ -341,7 +343,7 @@ async fn a_key_holder_that_does_not_host_the_workspace_admits_and_removes_member
     for message in outgoing(&b, workspace, now) {
         a.receive(
             workspace,
-            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            TransportOrigin::ServerDelta(cert_b.device_public_key),
             message,
             now,
         )
@@ -379,7 +381,7 @@ async fn a_key_holder_that_does_not_host_the_workspace_admits_and_removes_member
             owner
                 .receive(
                     workspace,
-                    TransportOrigin::RelayDelta(cert_b.device_public_key),
+                    TransportOrigin::ServerDelta(cert_b.device_public_key),
                     message.clone(),
                     now,
                 )
@@ -466,7 +468,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     for (bytes, _) in governor.outgoing() {
         a.receive(
             workspace,
-            TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+            TransportOrigin::RetainedServerDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
             now,
         )
@@ -506,7 +508,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     for message in outgoing(&b, workspace, now) {
         a.receive(
             workspace,
-            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            TransportOrigin::ServerDelta(cert_b.device_public_key),
             message,
             now,
         )
@@ -562,7 +564,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     for message in outgoing(&b, workspace, now) {
         a.receive(
             workspace,
-            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            TransportOrigin::ServerDelta(cert_b.device_public_key),
             message,
             now,
         )
@@ -610,7 +612,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
     for (bytes, _) in governor.outgoing() {
         a.receive(
             workspace,
-            TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+            TransportOrigin::RetainedServerDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
             now,
         )
@@ -661,7 +663,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         .accept(DIRECT_ALPN, a_link)
         .spawn();
     let b_endpoint = localhost_endpoint(&key_b).await;
-    // B's device retires and republishes its own custody while the link admits
+    // B's device retires and republishes its own ownership while the link admits
     // frames: neither takes the other's away.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let retiring = std::thread::spawn({
@@ -766,7 +768,7 @@ async fn the_entry_a_device_settles_is_the_entry_another_device_reads() {
             owner
                 .receive(
                     workspace,
-                    TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+                    TransportOrigin::RetainedServerDelta(cert_a.device_public_key),
                     postcard::from_bytes(bytes).unwrap(),
                     now,
                 )
@@ -802,7 +804,7 @@ async fn the_entry_a_device_settles_is_the_entry_another_device_reads() {
     for message in outgoing(&a, workspace, now) {
         b.receive(
             workspace,
-            TransportOrigin::RelayDelta(cert_a.device_public_key),
+            TransportOrigin::ServerDelta(cert_a.device_public_key),
             message,
             now,
         )
@@ -843,7 +845,7 @@ async fn the_entry_a_device_settles_is_the_entry_another_device_reads() {
     for message in outgoing(&b, workspace, now) {
         a.receive(
             workspace,
-            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            TransportOrigin::ServerDelta(cert_b.device_public_key),
             message,
             now,
         )

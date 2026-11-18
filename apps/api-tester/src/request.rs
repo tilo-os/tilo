@@ -1,5 +1,5 @@
 //! The request builder: the URL bar, the variable hint, the tabs and what each tab
-//! edits. Every field is a field of the shared record, and the URL and body are text
+//! edits. Every field is a field of the shared resource, and the URL and body are text
 //! controls whose keystrokes are splices there, so they keep their focus however the rest
 //! of the view is rebuilt. Credentials are set through an effect.
 

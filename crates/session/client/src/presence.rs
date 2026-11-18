@@ -2,7 +2,7 @@
 //! themselves there, and this device's own word on it. Every host drives the same board and says
 //! what it owes on its own transport; nothing here knows one.
 
-use crate::plane::{Event, Topic};
+use crate::network::{Event, Topic};
 use collab_types::presence::{
     Availability, MAX_ACTIVITY_BYTES, Presence, ShellPresence, ShellSelection, ShellWindow, Shown,
 };
@@ -11,7 +11,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::live::{LiveAnchor, LiveResource};
+use tilo_server_protocol::live::{LiveAnchor, LiveResource};
 
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -124,7 +124,7 @@ impl Workspace {
 
 /// The workspaces this session takes part in, and the one in front.
 #[derive(Debug)]
-pub struct Plane {
+pub struct Present {
     /// This device's publisher.
     pub publisher: EndpointId,
     pub workspaces: Vec<Workspace>,
@@ -132,7 +132,7 @@ pub struct Plane {
     pub active: Option<Topic>,
 }
 
-impl Plane {
+impl Present {
     pub fn new(publisher: EndpointId) -> Self {
         Self {
             publisher,
@@ -174,7 +174,7 @@ impl Plane {
         }
     }
 
-    /// Take one thing the plane heard that its boards keep.
+    /// Take one thing the peer network heard that its boards keep.
     pub fn apply(&mut self, event: Event) {
         match event {
             Event::Msg { ws, peer, msg } => self.message(ws, peer, *msg),

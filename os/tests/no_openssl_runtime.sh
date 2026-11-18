@@ -215,17 +215,19 @@ else
   bad 'Music does not carry a Rust-native full-track resolver'
 fi
 
-host_runtime="$(sed -n '/# Minimal runtime/,/# Copy binaries/p' "$repo/os/Containerfile.host")"
-if sed -e "/rpm -q --qf.*openssl sbsigntools/d" \
-       -e '/^[[:space:]]*openvpn NetworkManager-openvpn openssh/d' \
-       -e '/^[[:space:]]*ModemManager fwupd .*xargs/d' <<<"$host_runtime" \
-    | grep -Eq '^[[:space:]]+(NetworkManager-openvpn|ModemManager|fwupd)[[:space:]\\]'; then
-  bad 'headless relay image installs VPN/modem/firmware stacks outside its appliance role'
-elif ! grep -Fq "rpm -q --qf '%{NAME}\\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core" \
-      <<<"$host_runtime"; then
-  bad 'headless relay does not purge avoidable OpenSSL consumers inherited from its base'
+server_runtime="$(sed -n '/^# ---- Runtime image ----/,/^# ---- Programs ----/p' "$repo/os/Containerfile.host")"
+# The prune reads what the base actually installed and removes only those
+# packages; a protected one (mokutil, which the shim requires) must not be named.
+prune="$(grep -F "awk '/^(" <<<"$server_runtime" || true)"
+if grep -Eq '^[[:space:]]+(NetworkManager-openvpn|ModemManager|fwupd)[[:space:]\\]' <<<"$server_runtime"; then
+  bad 'headless server image installs VPN/modem/firmware stacks outside its appliance role'
+elif [ -z "$prune" ] \
+     || ! grep -Fq "rpm -qa --qf '%{NAME}\\n'" <<<"$server_runtime" \
+     || ! grep -Fq 'openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core' <<<"$prune" \
+     || grep -Fq mokutil <<<"$prune"; then
+  bad 'headless server does not purge avoidable OpenSSL consumers inherited from its base'
 else
-  ok 'headless relay excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
+  ok 'headless server excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
 fi
 
 runtime_source_roots=("$repo/os/usr" "$repo/apps" "$repo/crates")
@@ -297,7 +299,7 @@ fi
 for manifest in \
   "$repo/os/Containerfile" \
   "$repo/os/kernel/Containerfile" \
-  "$repo/os/containers/tilo-relay/Containerfile" \
+  "$repo/os/containers/tilo-server/Containerfile" \
   "$repo/dist/arch/PKGBUILD" \
   "$repo/dist/nix/package.nix"; do
   if sed -e '/^[[:space:]]*#/d' \
@@ -309,16 +311,16 @@ for manifest in \
   fi
 done
 
-relay_container="$repo/os/containers/tilo-relay/Containerfile"
-relay_entrypoint="$repo/os/containers/tilo-relay/tilo-home-peer"
-relay_binaries="$repo/tools/ci/publish/server-binaries.sh"
-if grep -Fq 'openssl-libs coreutils dnf5' "$relay_container" \
-  && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$relay_container" \
-  && grep -Fq 'bash os/scripts/verify-elf-hardening.sh "$out"' "$relay_binaries" \
-  && grep -Fq '#!/usr/bin/busybox sh' "$relay_entrypoint"; then
-  ok 'standalone relay verifies its ELFs, strips OpenSSL/package-manager, and uses static BusyBox'
+server_container="$repo/os/containers/tilo-server/Containerfile"
+server_entrypoint="$repo/os/containers/tilo-server/tilo-home-peer"
+server_binaries="$repo/tools/ci/publish/server-binaries.sh"
+if grep -Fq 'openssl-libs coreutils dnf5' "$server_container" \
+  && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$server_container" \
+  && grep -Fq 'bash os/scripts/verify-elf-hardening.sh "$out"' "$server_binaries" \
+  && grep -Fq '#!/usr/bin/busybox sh' "$server_entrypoint"; then
+  ok 'standalone server verifies its ELFs, strips OpenSSL/package-manager, and uses static BusyBox'
 else
-  bad 'standalone relay runtime does not enforce its OpenSSL-free minimal surface'
+  bad 'standalone server runtime does not enforce its OpenSSL-free minimal surface'
 fi
 
 grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/Containerfile" \
@@ -367,18 +369,18 @@ grep -Fq 'tilo-crypto sign-efi' "$secureboot" \
 grep -Fq 'tilo-crypto verify-efi' "$deployment" \
   || bad 'deployment repair path does not verify its newly signed EFI image'
 
-elf_gate="$repo/os/scripts/verify-elf-hardening.sh"
-grep -Fq "direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)" "$elf_gate" \
+elf_check="$repo/os/scripts/verify-elf-hardening.sh"
+grep -Fq "direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)" "$elf_check" \
   || bad 'final Tilo ELF artifacts are not checked for OpenSSL ABI linkage'
 grep -Fq 'os/scripts/verify-elf-hardening.sh "$out"' "$repo/os/image/compile.sh" \
   || bad 'final Tilo ELF linkage verifier is not part of the image build'
 
-runtime_package_gate="$repo/os/scripts/verify-runtime-crypto-packages.sh"
-grep -Fq 'unreviewed runtime packages directly requiring libssl' "$runtime_package_gate" \
-  && grep -Fq 'unreviewed runtime packages directly requiring libcrypto' "$runtime_package_gate" \
+runtime_package_check="$repo/os/scripts/verify-runtime-crypto-packages.sh"
+grep -Fq 'unreviewed runtime packages directly requiring libssl' "$runtime_package_check" \
+  && grep -Fq 'unreviewed runtime packages directly requiring libcrypto' "$runtime_package_check" \
   && grep -Fq 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' "$repo/os/Containerfile" \
   && grep -Fq 'rm -f /usr/local/bin/verify-runtime-crypto-packages.sh' "$repo/os/Containerfile" \
-  || bad 'finished rootfs does not enforce and retire its residual OpenSSL ABI allowlist gate'
+  || bad 'finished rootfs does not enforce and retire its residual OpenSSL ABI allowlist check'
 grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/engines-3/*.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstdtls.so'" "$repo/os/Containerfile" \
@@ -393,16 +395,16 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
 rootfs_end_line="$(grep -n '^FROM rootfs AS split' "$repo/os/Containerfile" | cut -d: -f1)"
 last_package_mutation_line="$(rg -n 'dnf .*\b(install|remove)\b|rpm -[ei]' "$repo/os/Containerfile" \
   | awk -F: -v end="$rootfs_end_line" '$1 < end { line=$1 } END { print line+0 }')"
-runtime_gate_line="$(grep -n 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' \
+runtime_check_line="$(grep -n 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' \
   "$repo/os/Containerfile" | cut -d: -f1)"
-if [ "$runtime_gate_line" -gt "$last_package_mutation_line" ] \
-   && [ "$runtime_gate_line" -lt "$rootfs_end_line" ]; then
-  ok 'residual OpenSSL ABI gate runs after the final rootfs package mutation'
+if [ "$runtime_check_line" -gt "$last_package_mutation_line" ] \
+   && [ "$runtime_check_line" -lt "$rootfs_end_line" ]; then
+  ok 'residual OpenSSL ABI check runs after the final rootfs package mutation'
 else
-  bad 'residual OpenSSL ABI gate does not inspect the finished rootfs'
+  bad 'residual OpenSSL ABI check does not inspect the finished rootfs'
 fi
 
-if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --gate "$runtime_package_gate"; then
+if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --check "$runtime_package_check"; then
   ok 'finished-rootfs RPM policy enforces conditional desktop/VM exceptions and rejects unknown consumers'
 else
   bad 'finished-rootfs RPM policy fixtures failed'

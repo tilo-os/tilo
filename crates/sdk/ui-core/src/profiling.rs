@@ -354,12 +354,12 @@ impl FrameProfiler {
     /// per-frame dump (CSV when the path ends in `.csv`, JSON-lines otherwise); either alone enables
     /// profiling.
     pub fn from_env() -> Option<Self> {
-        Self::from_diagnostics(&crate::host::environment().diagnostics)
+        Self::from_diagnostics(&crate::process::environment().diagnostics)
     }
 
     /// The profiler `diagnostics` asks for, if any: its HUD flag and dump path correspond to
     /// `TILO_PROFILE` and `TILO_PROFILE_OUT`.
-    pub fn from_diagnostics(diagnostics: &crate::host::RunnerDiagnostics) -> Option<Self> {
+    pub fn from_diagnostics(diagnostics: &crate::process::RunnerDiagnostics) -> Option<Self> {
         let hud = diagnostics.profile_hud;
         let out = diagnostics.profile_out.as_deref();
         if !hud && out.is_none() {

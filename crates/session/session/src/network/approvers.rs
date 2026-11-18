@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_network_actor::services::Approvers;
-use tilo_relay_client::Approver;
-use tilo_relay_client::questions::{Answered, QuestionSheet, answer_questions};
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_client::Approver;
+use tilo_server_client::questions::{Answered, QuestionSheet, answer_questions};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_service::{Question, Questions};
 use tilo_sheets::portal::AgentQuestion;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -48,7 +48,7 @@ impl Approvers for Answering {
     /// Answer `host` 's questions from now on, when this device may: an agent's key is no device
     /// of the person's and answers nothing for them. A host this device's person has nothing at
     /// refuses the session, which is tried again later.
-    fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &HostIdentity) {
+    fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &DeviceIdentity) {
         let capabilities = &identity.device_cert.capabilities;
         if capabilities.agent.is_some()
             || capabilities.stand_in

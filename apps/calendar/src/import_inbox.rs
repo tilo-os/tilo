@@ -1,6 +1,6 @@
 //! Import the canonical calendars a same-computer handoff left for this app.
 
-use ui::application::HostContext;
+use ui::application::ProcessContext;
 use ui::tilo_resource::Replica;
 
 use crate::model::Calendar;
@@ -8,7 +8,7 @@ use crate::model::Calendar;
 const INBOX: &str = "personal-data-incoming/calendars";
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 
-pub(crate) fn import(context: &HostContext) -> Result<(), String> {
+pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;
     let Ok(inbox) = tilo_files::VPath::new(INBOX) else {
@@ -70,7 +70,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_calendar_items_become_events_in_the_target_record() {
+    fn canonical_calendar_items_become_events_in_the_target_resource() {
         let import = crate::resource::import(
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:kept@example.test\r\nSUMMARY:Kept\r\nDTSTART:20260102T090000Z\r\nDTEND:20260102T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
         )

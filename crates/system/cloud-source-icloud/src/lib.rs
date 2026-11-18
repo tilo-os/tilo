@@ -2,8 +2,8 @@
 //! iCloud.com itself uses.
 //!
 //! Signing in (SRP, the two-factor code, the trust token, `accountLogin`)
-//! and keeping the session alive is credential custody's job
-//! (`account_custody::icloud`). What it produces is an
+//! and keeping the session alive is credential storage's job
+//! (`account_credentials::icloud`). What it produces is an
 //! [`auth::StoredSession`], whose cookies are the
 //! [`cloud_source::Credential::Session`] this source borrows per request. Accounts with Advanced Data Protection are
 //! refused with [`auth::AuthError::AdvancedDataProtection`]: their Drive keys

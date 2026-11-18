@@ -77,7 +77,7 @@ fn nested() -> VirtualList<Nested> {
 fn shape(list: &VirtualList<Nested>, marks: &TreeMarks<u64>) -> Vec<(u64, u32, bool, bool)> {
     (0..list.model.len())
         .map(|index| {
-            let key = list.model.key_at(index).expect("every row has a key");
+            let key = list.model().key_at(index).expect("every row has a key");
             (
                 key,
                 marks.depth(&key),
@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back;
+    phase a_row_held_open_folds_its_branch_and_closing_it_brings_the_rows_back;
     {
         let marks = Rc::new(TreeMarks::default());
         let list = OpenableTree {
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             list.viewport.item_height(1),
             Some(0.0),
-            "the branch folds under the row standing open"
+            "the branch folds under the row held open"
         );
         assert_eq!(
             list.viewport.item_height(2),
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.reorder_target(),
-            Some(&DropTarget::new(0, DropPlacement::Inside))
+            Some(DropTarget::new(0, DropPlacement::Inside))
         );
         let doc = AutoCommit::new();
         assert!(
@@ -587,7 +587,7 @@ tilo_test_env::scenario! {
 
         let (chevron, folded) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, row, false)
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         assert!(!folded, "the group starts open");
         assert!(
@@ -613,7 +613,7 @@ tilo_test_env::scenario! {
         let narrow = list.row_box(0).expect("the first row on a phone");
         let (chevron, _) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, narrow, false)
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), narrow, false)
             .expect("the row folds the subtask under it");
         assert!(
             (chevron.center().y - narrow.center().y).abs() < 0.5,
@@ -626,7 +626,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the first row stands somewhere");
         let (chevron, _) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, row, false)
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         press(
             &mut list,
@@ -643,7 +643,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the folded row stands somewhere");
         let (chevron, folded) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, row, list.row_folded(&0))
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, list.row_folded(&0))
             .expect("a folded row still shows its disclosure");
         assert!(folded, "the chevron points at what it folded away");
         assert!(
@@ -713,27 +713,27 @@ tilo_test_env::scenario! {
         let key = |named| Key::Named(named);
         assert!(list.on_key(&key(NamedKey::ArrowDown), false, false));
         assert_eq!(
-            list.focused_key,
-            Some(0),
+            list.focused_key(),
+            Some(&0),
             "the keyboard starts on the first row"
         );
 
         assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-        assert_eq!(list.focused_key, Some(1));
+        assert_eq!(list.focused_key(), Some(&1));
         assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-        assert_eq!(list.focused_key, Some(2));
+        assert_eq!(list.focused_key(), Some(&2));
         assert!(
             !list.on_key(&key(NamedKey::ArrowRight), false, false),
             "a row with nothing under it has nowhere to step"
         );
 
         assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
-        assert_eq!(list.focused_key, Some(1));
+        assert_eq!(list.focused_key(), Some(&1));
         assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
         assert!(list.row_folded(&1), "the branch folded its subtask away");
         assert_eq!(
-            list.focused_key,
-            Some(1),
+            list.focused_key(),
+            Some(&1),
             "the folded row keeps the keyboard"
         );
         assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
@@ -875,7 +875,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.reorder_target(),
-            Some(&DropTarget::new(0, DropPlacement::Inside)),
+            Some(DropTarget::new(0, DropPlacement::Inside)),
             "the middle of a row that takes subtasks takes the row into it"
         );
         assert!(list.reorder_preview().is_some());
@@ -891,7 +891,7 @@ tilo_test_env::scenario! {
         assert!(marks.is_branch(&0), "the row it landed in holds subtasks");
     }
 
-    phase the_seam_below_an_open_branch_lands_at_the_first_row_it_holds;
+    phase the_boundary_below_an_open_branch_lands_at_the_first_row_it_holds;
     {
         let marks = Rc::new(TreeMarks::default());
         let mut list = movable(vec![0, 1, 2], &[(1, 0)])
@@ -913,7 +913,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.reorder_target(),
-            Some(&DropTarget::new(1, DropPlacement::Before))
+            Some(DropTarget::new(1, DropPlacement::Before))
         );
         let preview = list.reorder_preview().expect("a line where it lands");
         assert!(
@@ -1397,7 +1397,7 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     assert!(done.with(|checked| *checked), "the tick reaches the box");
 }
 
-/// A list of rows that are list rows, standing as a tree: 0 holds 1, which holds 2.
+/// A list of rows that are list rows, shown as a tree: 0 holds 1, which holds 2.
 fn listed_tree() -> VirtualList<Nested> {
     use crate::widget::ListRow;
 

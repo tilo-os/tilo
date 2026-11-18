@@ -41,12 +41,12 @@ pub fn one_shot(args: &[String]) -> Result<Option<OneShot>, String> {
 /// # Errors
 /// Directory creation failed (permission denied, no space left).
 pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
-    tilo_onboarding_host::firstboot::run()?;
+    tilo_onboarding_session::firstboot::run()?;
     if host_desktop {
         // What the host desktop was set to is imported once, and the person keeps it; a machine
         // whose settings service is not up yet is tried again on the next boot rather than failing
         // this one.
-        if let Err(error) = tilo_onboarding_host::firstboot::import_host_input_settings() {
+        if let Err(error) = tilo_onboarding_session::firstboot::import_host_input_settings() {
             tracing::warn!(%error, "the host desktop's input settings were not imported");
         }
     }
@@ -60,8 +60,8 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
 pub fn setup_due(identity_missing: bool, recovery: bool, identity_dir: &std::path::Path) -> bool {
     recovery
         || identity_missing
-        || tilo_onboarding_host::view::has_pending_progress(identity_dir)
-        || tilo_onboarding_host::prepared::session_pending(identity_dir)
+        || tilo_onboarding_session::view::has_pending_progress(identity_dir)
+        || tilo_onboarding_session::prepared::session_pending(identity_dir)
 }
 
 #[cfg(test)]
@@ -143,7 +143,7 @@ mod tests {
             )
             .expect("journal");
             assert!(
-                tilo_onboarding_host::view::has_pending_progress(&dir),
+                tilo_onboarding_session::view::has_pending_progress(&dir),
                 "the journal is the one the ceremony leaves"
             );
             assert!(
@@ -154,11 +154,11 @@ mod tests {
 
         phase a_prepared_setup_waits_for_its_owner;
         {
-            let (home, dir, _) = tilo_onboarding_host::browser::fixtures::fixture();
+            let (home, dir, _) = tilo_onboarding_session::browser::fixtures::fixture();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("HOME", home.path());
             assert!(
-                tilo_onboarding_host::prepared::session_pending(&dir),
+                tilo_onboarding_session::prepared::session_pending(&dir),
                 "the fixture leaves a prepared setup"
             );
             assert!(setup_due(false, false, &dir));

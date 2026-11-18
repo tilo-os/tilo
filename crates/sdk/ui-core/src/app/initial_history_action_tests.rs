@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
         assert!(admission.history.action_history_ready);
         assert!(admission.history.primary_history_ready);
         assert!(admission.history.all_owner_histories_ready);
-        assert!(admission.connection.custody_reconciled);
+        assert!(admission.connection.ownership_reconciled);
         assert!(admission.directory.directory_enqueued);
         let page = app.published_action_directory_page(initial_history_query());
         assert!(!page.rows.is_empty());
@@ -437,14 +437,14 @@ tilo_test_env::scenario! {
             .put(ROOT, "original-owner-history", "retained")
             .unwrap();
         history.commit();
-        let (release, gate) = tokio::sync::oneshot::channel();
+        let (release, hold) = tokio::sync::oneshot::channel();
         let (manager, rechecks) = {
             let _entry = scope.enter();
             CollaborationManager::native_initial_parked_fixture_for_test(
                 "so.tilo.initial-history-probe",
                 uuid::Uuid::new_v4(),
                 history.save(),
-                gate,
+                hold,
             )
         };
         let mut app = App::new_with_controlled_inputs(
@@ -503,12 +503,12 @@ tilo_test_env::scenario! {
             .put(ROOT, "original-owner-history", "retained")
             .unwrap();
         history.commit();
-        let (release, gate) = tokio::sync::oneshot::channel();
+        let (release, hold) = tokio::sync::oneshot::channel();
         let (manager, _) = CollaborationManager::native_initial_parked_fixture_for_test(
             "so.tilo.initial-history-probe",
             uuid::Uuid::new_v4(),
             history.save(),
-            gate,
+            hold,
         );
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -592,8 +592,8 @@ tilo_test_env::scenario! {
             .put(ROOT, "subsequent-history", "settlement")
             .unwrap();
         history.commit();
-        let (release, gate) = tokio::sync::oneshot::channel();
-        (fixture.refresh)(history.save(), gate);
+        let (release, hold) = tokio::sync::oneshot::channel();
+        (fixture.refresh)(history.save(), hold);
         while app
             .state
             .doc
@@ -619,14 +619,14 @@ tilo_test_env::scenario! {
             app.pump_collab_presence();
             assert!(
                 app.collaboration.manager.is_connected(),
-                "subsequent capture must preserve original owner custody"
+                "subsequent capture must preserve original owner ownership"
             );
             std::thread::yield_now();
         }
         assert_eq!(calls.get(), 0);
         assert!(
             app.collaboration.manager.is_connected(),
-            "a subsequent capture is not lost owner custody"
+            "a subsequent capture is not lost owner ownership"
         );
         assert!(app.action_publication_failure.is_none());
         assert_eq!(app.state.doc.get_actor(), &original_actor);
@@ -675,8 +675,8 @@ tilo_test_env::scenario! {
                 .put(ROOT, "subsequent-history", "settlement")
                 .unwrap();
             history.commit();
-            let (release, gate) = tokio::sync::oneshot::channel();
-            (fixture.refresh)(history.save(), gate);
+            let (release, hold) = tokio::sync::oneshot::channel();
+            (fixture.refresh)(history.save(), hold);
             while app
                 .state
                 .doc
@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
 fn ordinary_native_pump_exports_admission_before_any_action() {
     const CHILD: &str = "TILO_ADMISSION_CHECKPOINT_CHILD";
     if let Ok(case) = std::env::var(CHILD) {
-        let diagnostics = &crate::host::environment().diagnostics;
+        let diagnostics = &crate::process::environment().diagnostics;
         assert!(
             !diagnostics.presentation_profile,
             "this is not a synthetic scenario"
@@ -1030,13 +1030,13 @@ fn an_invocation_whose_document_never_becomes_current_fails_and_the_next_runs() 
         std::thread::yield_now();
     }
     // A newer capture arrives and its recheck is held: the document is not
-    // current for as long as the gate stays shut.
+    // current for as long as the hold stays shut.
     history
         .put(ROOT, "subsequent-history", "settlement")
         .unwrap();
     history.commit();
-    let (release, gate) = tokio::sync::oneshot::channel();
-    (fixture.refresh)(history.save(), gate);
+    let (release, hold) = tokio::sync::oneshot::channel();
+    (fixture.refresh)(history.save(), hold);
     while app
         .state
         .doc

@@ -54,7 +54,7 @@ fn launch_binding(
     Ok(value)
 }
 
-/// Implemented only by the paired root-native installed custody adapter; no default and no
+/// Implemented only by the paired root-native installed ownership adapter; no default and no
 /// wire-selected certificate store. `current()` reopens the installed certificate and current
 /// revocations.
 pub(in crate::setup) trait RootInstalledPersonAnchor: Send + Sync {
@@ -191,7 +191,7 @@ pub struct ReviewedInstalledRetainedLaunch {
     source: Arc<RetainedSourceAuthority>,
     proof: Mutex<ProofClient>,
     anchor: Arc<dyn RootInstalledPersonAnchor>,
-    observed: Option<tilo_identity_host::enrolled_transport::RootObservedCurrentDevice>,
+    observed: Option<tilo_identity::enrolled_transport::RootObservedCurrentDevice>,
     binding: RetainedLaunchBinding,
     revoked: AtomicBool,
 }
@@ -247,11 +247,10 @@ impl ReviewedInstalledRetainedLaunch {
                 (device_public_key, None)
             }
             IdentityKind::SingleDeviceBackup => {
-                let current =
-                    tilo_identity_host::enrolled_transport::RootObservedCurrentDevice::review(
-                        directory,
-                        proof.peer.uid(),
-                    )?;
+                let current = tilo_identity::enrolled_transport::RootObservedCurrentDevice::review(
+                    directory,
+                    proof.peer.uid(),
+                )?;
                 super::prepared_setup::publish_retained_primary_owner(
                     &installed,
                     &current,
@@ -396,8 +395,8 @@ impl ReviewedInstalledRetainedLaunch {
             projection,
         })
     }
-    /// Call only after supervised namespace death and after input and launcher custody were dropped;
-    /// outstanding custody refuses retirement.
+    /// Call only after supervised namespace death and after input and launcher ownership were dropped;
+    /// outstanding ownership refuses retirement.
     pub fn retire(self: Arc<Self>) -> io::Result<()> {
         let value = Arc::try_unwrap(self).map_err(|_| refused())?;
         let Self {

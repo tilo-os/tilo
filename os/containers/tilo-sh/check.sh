@@ -24,7 +24,7 @@
 # in the workspace's own VM:
 #
 #   8. the visa test page (apps/browser/test-pages/visa-form.html), served
-#      where a VM's network may reach it: the relay endpoint's own address and
+#      where a VM's network may reach it: the server endpoint's own address and
 #      port, the one destination besides the internet a VM is given;
 #   9. the guest this stack's VM host boots carries the Browser there: the
 #      headless session and the image's unprivileged browser user;
@@ -33,8 +33,9 @@
 #  10. a key opens Browser in a hosted workspace, timed to a live window, in a
 #      VM that woke as a clone of that template (the host's own measure of the
 #      wake is printed), never a cold boot of the guest image;
-#  11. the VM it runs in: every renderer sandboxed, the session running as the
-#      image's browser user, its device key, and what the page costs in memory
+#  11. the VM the Browser is in, with the visa test page open in its window:
+#      every renderer sandboxed, the session running as the image's browser
+#      user, its device key, and what the page costs in memory
 #      (integration/vm-proofs.py);
 #  12. the agent fills the visa test page through page actions with the
 #      person asked nothing (their key operates web pages), captures it, and
@@ -88,7 +89,7 @@
 # sets how many workspaces the run makes (25 here). The questions put to the
 # startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
 # the t check beside tilo-enroll), from the root of theirs kept in
-# WORK/startup/root, through the relay address the VM host names.
+# WORK/startup/root, through the server address the VM host names.
 # TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
 # separated) to chase one of them without the rest; the stack is brought up
 # either way and each step's own seconds are printed beside it.
@@ -96,7 +97,7 @@
 #   check.sh --flow signin|visa|entry|passkey
 #
 # runs one of those steps against a stack that is already up and named by
-# E2E_SITE, E2E_RELAY, E2E_API_URL and E2E_WORK, which is how test-e2e.sh runs
+# E2E_SITE, E2E_SERVER, E2E_API_URL and E2E_WORK, which is how test-e2e.sh runs
 # them beside the page's own flows; `visa` reads the key `signin` approved,
 # from E2E_WORK/signin/startup.json.
 #
@@ -143,7 +144,7 @@ startup_identity() {
     rm -f "$person_asks" "$work/startup/answers.jsonl"
     mkfifo "$person_asks"
     exec {person_asks_fd}<>"$person_asks"
-    node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" "${args[@]}" \
+    node "$here/integration/person.mjs" "$site" "$server" "$work/startup" "${args[@]}" \
       --answer "$person_asks" > "$work/startup.json" 2> "$work/startup.log" &
     local person=$!
     pids+=("$person")
@@ -153,7 +154,7 @@ startup_identity() {
     done
     cat "$work/startup.log" >&2
   else
-    node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" "${args[@]}" > "$work/startup.json" \
+    node "$here/integration/person.mjs" "$site" "$server" "$work/startup" "${args[@]}" > "$work/startup.json" \
       || fail "the startup's key was not approved (see $work/startup)"
   fi
   key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
@@ -169,7 +170,7 @@ startup_identity() {
 reviewer_up() {
   reviewer_port=$((base + 50))
   sdk_python "$here/integration/reviewer.py" \
-    "$reviewer_port" "$site" "$relay" "$api" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
+    "$reviewer_port" "$site" "$server" "$api" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
   pids+=($!)
   for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
   grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
@@ -209,7 +210,7 @@ entry_visits() {
   for visit in $(seq "$visits"); do
     local invitation
     invitation=$(invite_link) || fail "the Lounge made no invitation for visitor $visit"
-    node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" --invite "$invitation" \
+    node "$here/integration/person.mjs" "$site" "$server" "$work/visitor-$visit" --invite "$invitation" \
       > "$work/visitor-$visit.json" \
       || fail "visitor $visit did not get in (see $work/visitor-$visit)"
     entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
@@ -226,7 +227,7 @@ passkey_round() {
   step '7b. a visitor keeps themselves with a passkey and signs in with it again'
   local invitation
   invitation=$(invite_link) || fail 'the Lounge made no invitation for the passkey visitor'
-  node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --invite "$invitation" --passkey \
+  node "$here/integration/person.mjs" "$site" "$server" "$work/passkey" --invite "$invitation" --passkey \
     > "$work/passkey.json" \
     || fail "the passkey did not register or sign in (see $work/passkey)"
   echo 'ok: a passkey registered, and signed the same visitor in again'
@@ -237,7 +238,7 @@ passkey_round() {
 if [[ ${1:-} == --flow ]]; then
   flow=${2:?--flow names signin, visa, entry or passkey}
   work=${E2E_WORK:?E2E_WORK names the work directory}"/$flow"
-  site=${E2E_SITE:?E2E_SITE names the site} relay=${E2E_RELAY:?E2E_RELAY names the relay}
+  site=${E2E_SITE:?E2E_SITE names the site} server=${E2E_SERVER:?E2E_SERVER names the server}
   api=${E2E_API_URL:?E2E_API_URL names the API server}
   mkdir -p "$work"
   # The stack's addresses and helpers, and the tilo command it serves.
@@ -266,7 +267,7 @@ work=${1:-$state/check}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
 site=http://tilo.localhost:$((base + 20))
-relay=http://127.0.0.1:$base
+server=http://127.0.0.1:$base
 api=http://localhost:$((base + 10))
 report=$work/report.json
 
@@ -308,6 +309,11 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
+# The stack that came up keeps the keys of people's sealed stores apart from
+# its state, or what the people of the steps below seal would lie beside its
+# key (stack.sh keys).
+keys_apart || fail "the stack does not keep people's keys apart from its state"
+
 if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18; then
   startup_identity
 fi
@@ -322,31 +328,31 @@ hosted=${TILO_SH_VM_HOST:-0}
 hosted_report=$work/hosted/report.json
 if [[ $hosted == 1 ]]; then
   [[ -e /dev/kvm ]] || fail '/dev/kvm: the hosted Browser runs in a VM, and this machine has none'
-  # What the relay reads to place here: the account a card is on file for,
-  # and the address a VM's browser session reaches the relay at.
+  # What the server reads to place here: the account a card is on file for,
+  # and the address a VM's browser session reaches the server at.
   vm_env=$(vm_host env 2>/dev/null) || true
   vm_account=$(sed -n 's/^TILO_HOSTED_ACCOUNT=//p' <<<"$vm_env")
-  relay_address=$(sed -n 's/^TILO_HOSTED_BROWSER_RELAY=//p' <<<"$vm_env")
-  [[ -n $vm_account ]] || fail 'the VM host is not up, so the relay places no Browser: stack.sh status says why'
+  server_address=$(sed -n 's/^TILO_HOSTED_BROWSER_SERVER=//p' <<<"$vm_env")
+  [[ -n $vm_account ]] || fail 'the VM host is not up, so the server places no Browser: stack.sh status says why'
   plans=$state/secrets/vm-host-plans.json
   # The plans file the provider would edit is the VM host's, made as root: the
   # check plays the provider, adding the account to it mid-run.
   [[ -w $plans ]] || sudo -n chown "$(id -u):$(id -g)" "$plans" 2>/dev/null \
     || fail "the plans file $plans is not the check's to edit"
   # The proofs run in the workspace's own VM, and a VM belongs to the account
-  # the relay placed it for: the account this stack admits by. The guest check
+  # the server placed it for: the account this stack admits by. The guest check
   # below runs as an account with a card on file, so a probe of its own admits.
   vm_run_account=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])).get("accounts") or {})))' "$plans") \
     || fail "the plans file $plans names no account with a card"
   # The person's approving device: the root the page made for them, opened
-  # here, so what the relay asks them is answered and printed.
+  # here, so what the server asks them is answered and printed.
   approve=${TILO_SH_TILO_APPROVE:-tilo-approve}
   command -v "$approve" >/dev/null 2>&1 || [[ -x $approve ]] \
     || fail "no tilo-approve: TILO_SH_TILO_APPROVE names the program the t check builds"
   "$approve" person --person "$work/startup/person.json" --root "$work/startup/root" \
     > "$work/startup/person-root.json" \
     || fail "the startup person could not be held from the recovery key their page made (see $work/startup)"
-  [[ -n $relay_address ]] || fail 'the VM host names no relay address for Browser sessions'
+  [[ -n $server_address ]] || fail 'the VM host names no server address for Browser sessions'
 
   # A Linux command in the VM needs the card the check puts on file in step
   # 14: without it a person's own command waits for the card rather than
@@ -364,8 +370,8 @@ if [[ $hosted == 1 ]]; then
     mkdir -p "$form_dir"
     cp "$repo/apps/browser/test-pages/visa-form.html" "$form_dir/visa-form.html"
     # A VM reaches the public internet and one address of this machine: the
-    # relay's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
-    # this machine's loopback). The relay's endpoint is UDP; its port's TCP side
+    # server's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
+    # this machine's loopback). The server's endpoint is UDP; its port's TCP side
     # is the stack's to serve, and this is the page it serves.
     form_port=$iroh_port
     python3 -m http.server --bind 127.0.0.1 --directory "$form_dir" "$form_port" \
@@ -424,12 +430,12 @@ if [[ $hosted == 1 ]]; then
   fi
 
   hosted_workspace= hosted_seconds=0
-  hosted_run() { # PHASE
+  hosted_flow() { # PHASE
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
       HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
-      HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
-      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_RELAY=$relay \
+      HOSTED_VISA_SERVER=$server_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
+      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_SERVER=$server \
       HOSTED_VISA_PAGE_ASKS=${person_asks:-} HOSTED_VISA_PAGE_ANSWERS=${person_asks:+$work/startup/answers.jsonl} \
       HOSTED_VISA_PAGE_WORKSPACE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workspace") or "")' "$work/startup.json") \
       sdk_python "$here/integration/hosted-visa.py" "$api" "$key" "$work/hosted" "$form_url" "$1"
@@ -440,24 +446,24 @@ if [[ $hosted == 1 ]]; then
     HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_API_URL=$api \
       HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
       HOSTED_TERMINAL_APPROVER=$approve HOSTED_TERMINAL_ROOT=$work/startup/root \
-      HOSTED_TERMINAL_RELAY=$relay_address \
-      HOSTED_TERMINAL_SITE=$site HOSTED_TERMINAL_SITE_RELAY=$relay \
+      HOSTED_TERMINAL_SERVER=$server_address \
+      HOSTED_TERMINAL_SITE=$site HOSTED_TERMINAL_SITE_SERVER=$server \
       sdk_python "$here/integration/hosted-terminal.py" "$api" "$key" "$work/hosted" "$1"
   }
   launch=$SECONDS
   if runs_step 10; then
     step '10. a key opens Browser in a hosted workspace, in its VM'
     set +e
-    hosted_run --open 2>&1 | tee "$work/hosted-open.log"
+    hosted_flow --open 2>&1 | tee "$work/hosted-open.log"
     hosted_status=${PIPESTATUS[0]}
     set -e
     hosted_seconds=$((SECONDS - launch))
     if [[ $hosted_status != 0 ]]; then
       echo '--- the VM host said:' >&2
       sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
-      # The relay dials the host's member by the device key the members file
+      # The server dials the host's member by the device key the members file
       # names; a member answering with another key fails the handshake.
-      echo '--- the members file the relay reads, and the keys on either side:' >&2
+      echo '--- the members file the server reads, and the keys on either side:' >&2
       cat "$state/secrets/vm-host-members.json" >&2 2>/dev/null || true
       keys=$(mktemp -d)
       mkdir -p "$keys/certified/device-private" "$keys/member/device-private"
@@ -480,10 +486,10 @@ if [[ $hosted == 1 ]]; then
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'find /var/lib/tilo-hosted -name browser.log -exec sh -c "echo \"== \$1\"; tail -n 80 \"\$1\"" _ {} \;' \
         >&2 2>/dev/null || true
-      echo '--- the relay said:' >&2
-      bash "$here/stack.sh" logs relay 2>/dev/null | tail -40 >&2 || true
+      echo '--- the server said:' >&2
+      bash "$here/stack.sh" logs server 2>/dev/null | tail -40 >&2 || true
       # What the host's container was given to trust, and what it mounted: a
-      # member that cannot reach the relay says one of these.
+      # member that cannot reach the server says one of these.
       echo '--- what the VM host trusts and mounts:' >&2
       sudo -n podman inspect --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' \
         tilo-sh-vm-host-0 >&2 2>/dev/null || true
@@ -495,11 +501,11 @@ if [[ $hosted == 1 ]]; then
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'find /var /srv -name "browser*.log" 2>/dev/null | while read -r log; do echo "$log:"; cat "$log"; done' \
         >&2 2>/dev/null || true
-      echo '--- what the relay said of the Browser:' >&2
-      bash "$here/stack.sh" logs relay 2>/dev/null \
+      echo '--- what the server said of the Browser:' >&2
+      bash "$here/stack.sh" logs server 2>/dev/null \
         | grep -iE 'browser|environment|hosted|placed|peer session|refus|enrol|way in|device' | tail -80 >&2 || true
-      echo '--- the relay said, to its end:' >&2
-      bash "$here/stack.sh" logs relay 2>/dev/null | tail -60 >&2 || true
+      echo '--- the server said, to its end:' >&2
+      bash "$here/stack.sh" logs server 2>/dev/null | tail -60 >&2 || true
       echo '--- the API server said, to its end:' >&2
       bash "$here/stack.sh" logs api 2>/dev/null | tail -60 >&2 || true
       echo '--- the member said, to its end:' >&2
@@ -546,6 +552,17 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     while [[ $(vm_phase) != Running ]] && ((SECONDS - waited < 600)); do sleep 2; done
     [[ $(vm_phase) == Running ]] \
       || fail "$hosted_workspace's VM is not running again in 600 s (vm_host status says $(vm_phase))"
+    # What the proofs read is an engine that renders: the window the open made
+    # shows the visa test page, which is what a person and their agent see
+    # there before anything is asked of them.
+    if ! hosted_flow --page 2>&1 | tee "$work/hosted-page.log"; then
+      echo '--- the server said of the page action:' >&2
+      bash "$here/stack.sh" logs server 2>/dev/null \
+        | grep -iE 'page action|person|ask|confirm|browser|environment' | tail -60 >&2 || true
+      echo '--- the API said, to its end:' >&2
+      bash "$here/stack.sh" logs api 2>/dev/null | tail -40 >&2 || true
+      fail 'the visa test page did not open in the hosted window (see above)'
+    fi
     VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
       VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
       python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_account" "$work/vm" \
@@ -554,8 +571,11 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
         vm_host status >&2 2>/dev/null || true
         echo '--- the VM host said:' >&2
         sudo -n podman logs --tail 60 tilo-sh-vm-host-0 >&2 2>/dev/null || true
-        echo '--- the relay said of the Browser:' >&2
-        bash "$here/stack.sh" logs relay 2>/dev/null \
+        echo '--- what the host said of its VMs:' >&2
+        sudo -n podman logs tilo-sh-vm-host-0 2>&1 \
+          | grep -E 'tilo-legacy hosted:' | tail -40 >&2 || true
+        echo '--- the server said of the Browser:' >&2
+        bash "$here/stack.sh" logs server 2>/dev/null \
           | grep -iE 'browser|environment|hosted|session|suspend|stop' | tail -60 >&2 || true
         fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
       }
@@ -564,7 +584,7 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   if runs_step 12; then
     step '12. the agent fills, submits and is held in the hosted Browser'
     set +e
-    hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
+    hosted_flow --fill 2>&1 | tee "$work/hosted-fill.log"
     fill_status=${PIPESTATUS[0]}
     set -e
     if [[ $fill_status != 0 ]]; then
@@ -668,6 +688,9 @@ if runs_step 7; then
 fi
 
 passkey_round
+
+# And where the keys lie, now that the steps' people have been here.
+keys_apart || fail "a person's key lies in the stack's state, or a sealed store has no key apart from it"
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
 import json, os, statistics, sys

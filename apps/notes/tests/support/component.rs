@@ -2,7 +2,9 @@
 pub mod canonical;
 pub use canonical::NotebookFixture;
 use std::rc::Rc;
-use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+use ui::application::{
+    AppComponent, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
+};
 use ui::application_view::InstanceViewStore;
 use ui::resource::DocumentCheckout;
 use ui::widget::Edits;
@@ -30,10 +32,10 @@ pub fn try_restored_component(
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         notes::definition(),
-        HostContextInputs {
-            records: f.records.clone(),
+        ProcessContextInputs {
+            records: f.store.clone(),
             views: Rc::new(
                 InstanceViewStore::new(
                     f.state_root.clone(),
@@ -101,7 +103,7 @@ pub fn notebook(f: &NotebookFixture) -> ui::resource::DocumentCheckout {
 pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
     assert!(
         report.resource_error.is_none(),
-        "record close: {:?}",
+        "resource close: {:?}",
         report.resource_error
     );
     assert!(
@@ -173,7 +175,7 @@ pub fn new_note(driver: &mut ui::headless::FrameHarness, instance: u64, title: &
     invoke_with(
         driver,
         instance,
-        NOTEBOOK,
+        notes::part::chain_resource(),
         "new-note",
         serde_json::json!({ "title": title }),
     );
@@ -210,13 +212,12 @@ pub fn replace_text_through(
     driver: &mut ui::headless::FrameHarness,
     instance: u64,
     f: &NotebookFixture,
-    checkout: &DocumentCheckout,
     block: &str,
     text: &str,
 ) {
     let old = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             notes::read::page_block_snapshots(doc, f.child)
                 .into_iter()
                 .find(|(id, _)| id == block)
@@ -224,7 +225,7 @@ pub fn replace_text_through(
                 .1
         })
         .unwrap();
-    let edit = notes::Notebook::paths()
+    let edit = notes::PagePart::paths()
         .pages
         .item(&notes::notebook::page_id(f.child))
         .body
@@ -239,7 +240,7 @@ pub fn replace_text_through(
     invoke_with(
         driver,
         instance,
-        NOTEBOOK,
+        notes::part::chain_resource(),
         "field-edit",
         serde_json::json!({ "edit": edit }),
     );
@@ -252,7 +253,7 @@ pub fn assign_tag_through(
     page: notes::PageId,
     tag: uuid::Uuid,
 ) {
-    let edit = notes::Notebook::paths()
+    let edit = notes::PagePart::paths()
         .pages
         .item(&notes::notebook::page_id(page))
         .tags
@@ -260,7 +261,7 @@ pub fn assign_tag_through(
     invoke_with(
         driver,
         instance,
-        NOTEBOOK,
+        notes::part::chain_resource(),
         "field-edit",
         serde_json::json!({ "edit": edit }),
     );
@@ -291,12 +292,13 @@ pub fn edit_body(
     tilo_actions::Action::apply(&notes::actions::edit_body_action(page, edit), doc).unwrap();
 }
 
-/// Apply one notebook action to `doc`, as a member's change arrives.
+/// Apply one note's action to `doc`, a part of the notes, as a member's
+/// change arrives: read against that part, as a window holding it reads it.
 pub fn apply_to(
     doc: &mut automerge::AutoCommit,
     action: &notes::actions::Action,
 ) -> Result<(), String> {
-    tilo_actions::Action::apply(action, doc).map_err(|error| error.to_string())
+    notes::read::apply_in_part(doc, &notes::Notebook::default(), action)
 }
 
 /// Apply one rich-text edit to `page`'s body.
@@ -385,10 +387,34 @@ pub fn kind_at(doc: &automerge::AutoCommit, page: notes::PageId, index: usize) -
     notes::read::page_blocks(doc, page)[index].kind.stored()
 }
 
+/// How many writes the notebook and its notes have taken: any write moves it.
 pub fn revision(f: &NotebookFixture, checkout: &DocumentCheckout) -> u64 {
-    f.records
+    let notebook = f
+        .store
         .read_history(&checkout.id, |_, history| history.revision())
-        .unwrap()
+        .unwrap_or_default();
+    // A part's edits are steps of its history, one per gesture (the letters
+    // of a word are one), not of the window's undo.
+    let part = f
+        .store
+        .read(&f.part(), |doc| {
+            let mut steps = 0u64;
+            let mut last = None;
+            for version in ui::tilo_resource::history::versions(&mut doc.clone()) {
+                // The fixture's own writes name nobody; a step is someone's.
+                let Some(context) = version.context.filter(|context| context.invoker.is_some())
+                else {
+                    continue;
+                };
+                if context.gesture.is_none() || context.gesture != last {
+                    steps = steps.saturating_add(1);
+                }
+                last = context.gesture;
+            }
+            steps
+        })
+        .unwrap_or_default();
+    notebook.saturating_add(part)
 }
 pub fn page_rect(driver: &ui::headless::FrameHarness, page: notes::PageId) -> vello::kurbo::Rect {
     semantic_rect(driver, &format!("notes:page:{page}"))

@@ -1,12 +1,12 @@
-//! A native app's records, read by the app itself.
+//! A native app's documents, read by the app itself.
 //!
-//! A native (Rust) app keeps its record in a layout of its own: its model's keys, its unit
+//! A native (Rust) app keeps its document in a layout of its own: its model's keys, its unit
 //! sections, its tables. Nothing outside the app knows that layout, and nothing here tries to.
-//! A read of a native record asks the app: its own `read` action, the
-//! one thing that turns its record into typed data, invoked as the task's caller, which the
+//! A read of a native document asks the app: its own `read` action, the
+//! one thing that turns its document into typed data, invoked as the task's caller, which the
 //! broker decides and for which it starts the app when none of it runs ([`Calls`]). That is the
-//! read a person's window and an agent's `tilo_read` take too, so one app code over one record
-//! answers all of them, and an indexer filling a task's search from records takes the same
+//! read a person's window and an agent's `tilo_read` take too, so one app code over one document
+//! answers all of them, and an indexer filling a task's search from documents takes the same
 //! path.
 //!
 //! The app's answer is its model's JSON. Its shape is the app's, not the language's: a set is an
@@ -16,13 +16,13 @@
 //! field of the type its package names: `issue.assignee` is the text the issue holds there,
 //! `issue.labels` a set, `issue.body` rich text.
 //!
-//! What an app holds, a query asks the app too: the resources under its record as its directory
+//! What an app holds, a query asks the app too: the resources under its document as its directory
 //! lists them ([`Calls::children`]), which is the listing `tilo_read` shows. A read addresses a
 //! resource by the id the directory lists it by: the resource's own, which answers a read of
-//! itself when it offers one ([`Calls::reads`]), else the record's, which takes the resource as
+//! itself when it offers one ([`Calls::reads`]), else the document's, which takes the resource as
 //! its `item` by the key the directory lists it by. That precedence is `tilo_read`'s
 //! ([`Calls::reads`] answers what its directory search reads), so both read an app the same
-//! way. No byte of a record is read here and no field is guessed from a layout.
+//! way. No byte of a document is read here and no field is guessed from a layout.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -45,19 +45,19 @@ use tilolang_runtime::store::field_json;
 
 /// The native apps a task reaches: each app whose code the task does not run
 /// ([`crate::catalogue::described`] reads what such an app publishes, not how it runs), with the
-/// record it publishes. A program names that record, invokes the app's verbs on it and assigns
-/// its fields; what the record holds it reads through the app ([`NativeReads`]).
+/// record it publishes. A program names that document, invokes the app's verbs on it and assigns
+/// its fields; what the document holds it reads through the app ([`NativeReads`]).
 pub struct Native {
     /// The app's package, by app id: what its surface declares.
     apps: BTreeMap<String, PackageMeta>,
-    /// The record each app publishes, by app id (`chat.workspace`): the root its catalogue
-    /// names. An app whose surface publishes no root has no record a program reads.
+    /// The document each app publishes, by app id (`chat.workspace`): the root its catalogue
+    /// names. An app whose surface publishes no root has no document a program reads.
     records: BTreeMap<String, String>,
 }
 
 impl Native {
     /// The native apps among `native` that the bundles here do not carry (an app the session
-    /// runs is the one that counts), and the record each publishes.
+    /// runs is the one that counts), and the document each publishes.
     #[must_use]
     pub fn of(bundles: &[Bundle], native: &[PackageMeta]) -> Self {
         let carried: BTreeSet<&str> = bundles
@@ -90,7 +90,7 @@ impl Native {
         self.apps.contains_key(app)
     }
 
-    /// The record `app` publishes.
+    /// The document `app` publishes.
     #[must_use]
     pub fn record(&self, app: &str) -> Option<&str> {
         self.records.get(app).map(String::as_str)
@@ -107,8 +107,8 @@ impl Native {
         self.apps.values()
     }
 
-    /// The type of `app`'s record, as its package names it (`so.tilo.chat.Workspace`).
-    fn record_type(&self, app: &str) -> Option<&str> {
+    /// The type of `app`'s document, as its package names it (`so.tilo.chat.Workspace`).
+    fn resource_type(&self, app: &str) -> Option<&str> {
         let root = self
             .meta(app)?
             .named_roots
@@ -118,14 +118,14 @@ impl Native {
     }
 }
 
-/// The record `meta` publishes as its root, when it publishes one.
+/// The document `meta` publishes as its root, when it publishes one.
 fn published_root(meta: &PackageMeta) -> Option<String> {
     meta.named_roots
         .iter()
         .find_map(|root| root.published.clone())
 }
 
-/// What a native app answers through: an invocation of it on its record, as the task's caller,
+/// What a native app answers through: an invocation of it on its document, as the task's caller,
 /// and the resources under one of its resources, as its directory lists them.
 pub trait Calls {
     /// Invoke `call` (`{app, resource, action, arguments}`) as the task.
@@ -134,14 +134,14 @@ pub trait Calls {
     /// The resources under `resource` of `app`, as the app's directory lists them, each
     /// `{id, kind, key, name}`, `resource` empty at the top of the directory: a resource's `id`
     /// names it under its parent, and its `key` is the app's own id for it, which its `read`
-    /// takes as an item (`<record>/<field>/<item>`, the steps its own read parses).
+    /// takes as an item (`<document>/<field>/<item>`, the steps its own read parses).
     ///
     /// # Errors
     /// Why the app lists nothing: it is not installed, it does not run, the task may not see it.
     fn children(&self, app: &str, resource: &str) -> Result<Vec<Json>, String>;
 
     /// Whether the resource `resource` of `app` answers a read of itself: whether the app's
-    /// directory offers a read on it. A resource that does not is read by the record, which
+    /// directory offers a read on it. A resource that does not is read by the document, which
     /// takes it as its `item` — the read a window and `tilo_read` take too.
     fn reads(&self, app: &str, resource: &str) -> Result<bool, String>;
 }
@@ -153,15 +153,62 @@ struct Row {
     /// The id the directory lists the resource as, whose own read answers it when it reads
     /// itself.
     id: String,
-    /// The id the directory lists the record as, whose read takes a resource under it as its
+    /// The id the directory lists the document as, whose read takes a resource under it as its
     /// `item`.
     under: String,
     /// What that read takes as its `item`: the key the directory lists the resource by;
-    /// `None` for the record itself, which no other resource reads.
+    /// `None` for the document itself, which no other resource reads.
     key: Option<String>,
 }
 
-/// Reads of a native app's records: the app's own read of a resource, and a query over the
+/// What a native app's directory listed under its document, listed once for one read.
+struct Listing {
+    /// The id the directory lists the document as.
+    published: String,
+    /// The document's own listing first, then each part kept beside it.
+    parts: Vec<Part>,
+}
+
+/// One listing of a native app's directory: the document's own, or a part kept beside it.
+struct Part {
+    /// The id the part was listed under.
+    under: String,
+    /// The kind the keys it lists start with: the document's own name for the document.
+    kind: String,
+    /// The schema of that kind.
+    root: &'static TypeSchema,
+    /// The rows it listed.
+    rows: Vec<Json>,
+}
+
+impl Listing {
+    /// The items of the collection `field` of the resource listed by `key`, in the order the
+    /// directory lists them: each by its own id, which a program holds it by after the
+    /// document's ([`held_id`]). The document's collections hold what the parts kept
+    /// beside it list in theirs too.
+    fn items(&self, document: &str, key: &str, field: &str) -> Vec<String> {
+        let mut items: Vec<String> = Vec::new();
+        for part in &self.parts {
+            let under = if key == document {
+                format!("{}/{field}/", part.kind)
+            } else {
+                format!("{key}/{field}/")
+            };
+            for row in &part.rows {
+                let Some(item) = keyed(row).and_then(|key| key.strip_prefix(&under)) else {
+                    continue;
+                };
+                if !item.is_empty() && !item.contains('/') && !items.iter().any(|seen| seen == item)
+                {
+                    items.push(item.to_owned());
+                }
+            }
+        }
+        items
+    }
+}
+
+/// Reads of a native app's documents: the app's own read of a resource, and a query over the
 /// resources its directory lists.
 pub struct NativeReads<'a> {
     native: &'a Native,
@@ -174,62 +221,132 @@ impl<'a> NativeReads<'a> {
         Self { native, calls }
     }
 
-    /// The resource `item` (its id as a program writes it, `<record>/<item>`) of the app `app`,
+    /// The resource `item` (its id as a program writes it, `<document>/<item>`) of the app `app`,
     /// its type `ty`: its fields as the app answers them, typed as the app's package declares
     /// them. Answered as [`crate::task::Host::read_values`] answers a read of an app the session
     /// runs: the type's id, every field by its id, or `{"missing": true}` for a resource the app
     /// does not hold.
     pub fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String> {
-        let record = self.record(app)?;
+        let document = self.document_name(app)?;
         let Some((doc, rest)) = split_id(item) else {
             return Err(format!("`{item}` is no resource id"));
         };
-        if doc != record {
+        // A resource the app keeps beside its document (`notes.pages`) is a root of its own; what
+        // it holds is held by the document's id, as everything the app lists is ([`held_id`]).
+        let beside = (doc != document)
+            .then(|| self.kind_root(app, doc))
+            .flatten();
+        if doc != document && beside.is_none() {
             return Err(format!(
-                "{app} keeps `{doc}`; the record a program reads is `{record}`"
+                "{app} keeps `{doc}`; the document a program reads is `{document}`"
             ));
         }
-        let content = if rest.is_none() {
+        let collections: Vec<&FieldSchema> = lookup(ty)
+            .into_iter()
+            .flat_map(|schema| &schema.fields)
+            .filter(|field| field.kind == MergeKind::Collection)
+            .collect();
+        let (content, key, listing) = if let (Some(root), None) = (beside, rest) {
+            if ty != root.id {
+                return Err(format!("{doc} is a {}, not a {ty}", root.id));
+            }
+            let listing = self.listing(app, ty)?;
+            let Some(part) = listing.parts.iter().find(|part| part.kind == doc) else {
+                return Err(format!(
+                    "{app} lists no `{doc}`: a program reads what its directory lists"
+                ));
+            };
+            let row = Row {
+                held: doc.to_owned(),
+                id: part.under.clone(),
+                under: part.under.clone(),
+                key: None,
+            };
+            (self.content(app, &row)?, doc.to_owned(), Some(listing))
+        } else if rest.is_none() {
             let (_, root_ty) = self.root(app)?;
             if ty != root_ty {
-                return Err(format!("{record} is a {root_ty}, not a {ty}"));
+                return Err(format!("{document} is a {root_ty}, not a {ty}"));
             }
-            self.content(app, &self.record_row(app)?)?
+            // The document's collections are what its directory lists, listed once; a document
+            // that keeps none is read without listing it.
+            let listing = if collections.is_empty() {
+                None
+            } else {
+                Some(self.listing(app, ty)?)
+            };
+            let row = match &listing {
+                Some(listing) => self.document_row_in(app, &listing.published)?,
+                None => self.document_row(app)?,
+            };
+            (self.content(app, &row)?, document.to_owned(), listing)
         } else {
             // A program's id names the item, not the collection it sits in: two collections of
             // one type are told apart by asking the app each in turn.
-            let rows = self.rows(app, ty)?;
-            let mut candidates = rows.iter().filter(|row| row.held == item);
+            let listing = self.listing(app, ty)?;
+            let rows = self.rows_in(app, &listing, ty)?;
+            let held = rest.map_or_else(|| item.to_owned(), |rest| format!("{document}/{rest}"));
+            let mut candidates = rows.iter().filter(|row| row.held == held);
             let Some(first) = candidates.next() else {
                 return Ok(json!({"missing": true}));
             };
-            let mut found = self.content(app, first);
+            let mut found = self.content(app, first).map(|content| (content, first));
             for row in candidates {
                 if found.is_ok() {
                     break;
                 }
-                found = self.content(app, row);
+                found = self.content(app, row).map(|content| (content, row));
             }
-            found?
+            let (content, row) = found?;
+            let key = row.key.clone().unwrap_or_else(|| row.held.clone());
+            (content, key, Some(listing))
         };
-        self.read_values(app, ty, &content)
-    }
-
-    /// `content`, the app's answer for a resource of the type `ty`, as a read of it values it.
-    fn read_values(&self, app: &str, ty: &str, content: &Json) -> Result<Json, String> {
         if !content.is_object() {
             return Err(format!(
                 "{app} answered a {ty} read of no fields: {content}"
             ));
         }
+        let mut fields = self.fields(ty, &content)?;
+        if let Some(listing) = &listing {
+            for field in collections {
+                let items = listing.items(document, &key, key_of(&field.id));
+                fields.insert(field.id.clone(), FieldValue::Items(items));
+            }
+        }
         Ok(json!({
             "type": ty,
-            "fields": self
-                .fields(ty, content)?
+            "fields": fields
                 .into_iter()
                 .map(|(id, value)| (id, field_json(&value)))
                 .collect::<serde_json::Map<String, Json>>(),
         }))
+    }
+
+    /// The id the app `app`'s directory lists the resource a program names `resource` by, which
+    /// its actions are invoked on: a resource it keeps beside its document (`notes.pages`) by the
+    /// id it is listed under the document as; the document, and any other resource, as named.
+    ///
+    /// # Errors
+    /// The app lists no such resource, or does not answer.
+    pub fn resource_id(&self, app: &str, resource: &str) -> Result<String, String> {
+        if self
+            .document_name(app)
+            .is_ok_and(|document| document == resource)
+            || self.kind_root(app, resource).is_none()
+        {
+            return Ok(resource.to_owned());
+        }
+        let published = self.published(app)?;
+        self.calls
+            .children(app, &published)?
+            .iter()
+            .find(|row| row.get("kind").and_then(Json::as_str) == Some(resource))
+            .and_then(|row| row.get("id"))
+            .and_then(Json::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!("{app} lists no `{resource}`: a program reaches what its directory lists")
+            })
     }
 
     /// What the app `app` answers to a program's `request` to read it.
@@ -245,11 +362,11 @@ impl<'a> NativeReads<'a> {
                 self.answer_describe(app, name.as_deref(), field.as_deref())
             }
             ReadRequest::Grep { .. } | ReadRequest::Find { .. } => Err(format!(
-                "{app} keeps the text of its record in itself: a program searches the resources \
+                "{app} keeps the text of its document in itself: a program searches the resources \
                  {app} lists by their fields"
             )),
             ReadRequest::Versions { .. } | ReadRequest::Written { .. } => Err(format!(
-                "{app} keeps the history of its record in itself: a program reads what it lists \
+                "{app} keeps the history of its document in itself: a program reads what it lists \
                  of its resources by their fields"
             )),
         }
@@ -259,8 +376,10 @@ impl<'a> NativeReads<'a> {
     fn answer_read(&self, app: &str, ty: &str, id: &str) -> Result<Json, String> {
         let schema = self.schema_of(app, ty)?;
         let row = match split_id(id) {
-            Some((doc, None)) if doc == self.record(app)? && schema.id == self.root(app)?.1 => {
-                self.record_row(app)?
+            Some((doc, None))
+                if doc == self.document_name(app)? && schema.id == self.root(app)?.1 =>
+            {
+                self.document_row(app)?
             }
             Some((_, Some(_))) => self
                 .rows(app, &schema.id)?
@@ -272,7 +391,7 @@ impl<'a> NativeReads<'a> {
         let content = self.content(app, &row)?;
         let mut fields = Vec::new();
         for field in &schema.fields {
-            // Text is the substance a read takes in parts; what the record holds is read where
+            // Text is the substance a read takes in parts; what the document holds is read where
             // the app lists it, and a nested record through the fields of its own type.
             if field.kind.holds_text()
                 || matches!(field.kind, MergeKind::Collection | MergeKind::Record)
@@ -385,35 +504,35 @@ impl<'a> NativeReads<'a> {
         )))
     }
 
-    /// The record `app` publishes.
-    fn record(&self, app: &str) -> Result<&str, String> {
+    /// The document `app` publishes.
+    fn document_name(&self, app: &str) -> Result<&str, String> {
         self.native.record(app).ok_or_else(|| {
-            format!("{app} publishes no record a program reads: invoke its actions instead")
+            format!("{app} publishes no document a program reads: invoke its actions instead")
         })
     }
 
-    /// The resource `app` publishes its record as: the id its directory lists the record by at
-    /// the top. A caller addresses the record by that id, which the window publishing it may
-    /// bind (`tilo-ui-bound:v1:…`), never by the record's own name, which the directory lists
-    /// as the row's key. The record's `read`, where it offers one, takes a resource under it as
+    /// The resource `app` publishes its document as: the id its directory lists the document by at
+    /// the top. A caller addresses the document by that id, which the window publishing it may
+    /// bind (`tilo-ui-bound:v1:…`), never by the document's own name, which the directory lists
+    /// as the row's key. The document's `read`, where it offers one, takes a resource under it as
     /// its `item`.
     ///
     /// # Errors
-    /// Why the app lists no record: it does not run, the task may not see it.
+    /// Why the app lists no document: it does not run, the task may not see it.
     fn published(&self, app: &str) -> Result<String, String> {
         self.published_in(app, &self.calls.children(app, "")?)
     }
 
     /// [`Self::published`], from `top`, the top of the app's directory as it listed it.
     fn published_in(&self, app: &str, top: &[Json]) -> Result<String, String> {
-        let record = self.record(app)?;
+        let document = self.document_name(app)?;
         top.iter()
-            .find(|row| keyed(row) == Some(record))
+            .find(|row| keyed(row) == Some(document))
             .and_then(|row| row.get("id"))
             .and_then(Json::as_str)
             .map(str::to_owned)
             .ok_or_else(|| {
-                format!("{app} lists no `{record}`: a program reads what its directory lists")
+                format!("{app} lists no `{document}`: a program reads what its directory lists")
             })
     }
 
@@ -421,8 +540,8 @@ impl<'a> NativeReads<'a> {
     fn root(&self, app: &str) -> Result<(&'static TypeSchema, &str), String> {
         let ty = self
             .native
-            .record_type(app)
-            .ok_or_else(|| format!("{app} publishes no record a program reads"))?;
+            .resource_type(app)
+            .ok_or_else(|| format!("{app} publishes no document a program reads"))?;
         let schema = lookup(ty)
             .ok_or_else(|| format!("{app}'s record type {ty} is not one this task knows"))?;
         Ok((schema, ty))
@@ -442,73 +561,96 @@ impl<'a> NativeReads<'a> {
         lookup(&found.id).ok_or_else(|| format!("{app}'s type {ty} is not one this task knows"))
     }
 
-    /// The row of the record itself: the resource the app's directory lists its record as.
-    fn record_row(&self, app: &str) -> Result<Row, String> {
-        let id = self.published(app)?;
+    /// The row of the document itself: the resource the app's directory lists its document as.
+    fn document_row(&self, app: &str) -> Result<Row, String> {
+        self.document_row_in(app, &self.published(app)?)
+    }
+
+    /// [`Self::document_row`], the document listed as `published`.
+    fn document_row_in(&self, app: &str, published: &str) -> Result<Row, String> {
         Ok(Row {
-            held: self.record(app)?.to_owned(),
-            under: id.clone(),
-            id,
+            held: self.document_name(app)?.to_owned(),
+            under: published.to_owned(),
+            id: published.to_owned(),
             key: None,
         })
     }
 
     /// The rows of the resources of the type `ty` `app` lists, each by the id a program holds it
-    /// by and the id the directory lists it as: the record alone for its own type, and every
+    /// by and the id the directory lists it as: the document alone for its own type, and every
     /// resource the app's directory lists under it whose type is `ty`. What an item reads as, the
     /// app says when it is read ([`Self::content`]).
     fn rows(&self, app: &str, ty: &str) -> Result<Vec<Row>, String> {
-        let record = self.record(app)?;
-        let (root, _) = self.root(app)?;
-        if ty == root.id {
-            return Ok(vec![self.record_row(app)?]);
+        if ty == self.root(app)?.0.id {
+            return Ok(vec![self.document_row(app)?]);
         }
+        self.rows_in(app, &self.listing(app, ty)?, ty)
+    }
+
+    /// What the app's directory lists under its document, for a read of the type `ty`: the
+    /// document's own listing, and the listing of each part it keeps beside it (a tracker's
+    /// issues, in the parts of a chain) that holds resources of `ty` — every part, for the
+    /// document's own type, whose collections they fill.
+    fn listing(&self, app: &str, ty: &str) -> Result<Listing, String> {
+        let document = self.document_name(app)?;
+        let (root, _) = self.root(app)?;
         let published = self.published(app)?;
-        let mut found = Vec::new();
-        let mut seen = BTreeSet::new();
+        let mut own = Vec::new();
         let mut beside = Vec::new();
         for row in self.calls.children(app, &published)? {
-            // What the app keeps beside its record (a tracker's issues, in the parts of a chain)
-            // is listed under it as a resource of its own kind: its items are the record's too,
-            // held by the record's id as the record's own are.
-            let within = keyed(&row).is_some_and(|key| key.starts_with(&format!("{record}/")));
+            // What the app keeps beside its document is listed under it as a resource of its own
+            // kind: its items are the document's too, held by the document's id as the
+            // document's own are.
+            let within = keyed(&row).is_some_and(|key| key.starts_with(&format!("{document}/")));
             if !within
                 && let Some(kind) = row.get("kind").and_then(Json::as_str)
                 && let Some(kind_root) = self.kind_root(app, kind)
                 && let Some(id) = row.get("id").and_then(Json::as_str)
             {
-                if holds_type(kind_root, ty, 0) {
+                if ty == root.id || ty == kind_root.id || holds_type(kind_root, ty, 0) {
                     beside.push((id.to_owned(), kind.to_owned(), kind_root));
                 }
                 continue;
             }
-            let Some(key) = keyed(&row) else { continue };
-            if !seen.insert(key.to_owned()) || item_type(record, root, key) != Some(ty) {
-                continue;
-            }
-            let Some(id) = row.get("id").and_then(Json::as_str) else {
-                continue;
-            };
-            found.push(Row {
-                held: held_id(record, key),
-                id: id.to_owned(),
-                under: published.clone(),
-                key: Some(key.to_owned()),
+            own.push(row);
+        }
+        let mut parts = vec![Part {
+            under: published.clone(),
+            kind: document.to_owned(),
+            root,
+            rows: own,
+        }];
+        for (under, kind, root) in beside {
+            let rows = self.calls.children(app, &under)?;
+            parts.push(Part {
+                under,
+                kind,
+                root,
+                rows,
             });
         }
-        for (under, kind, kind_root) in beside {
-            for row in self.calls.children(app, &under)? {
-                let Some(key) = keyed(&row) else { continue };
-                if !seen.insert(key.to_owned()) || item_type(&kind, kind_root, key) != Some(ty) {
+        Ok(Listing { published, parts })
+    }
+
+    /// [`Self::rows`], from what the app's directory listed.
+    fn rows_in(&self, app: &str, listing: &Listing, ty: &str) -> Result<Vec<Row>, String> {
+        let document = self.document_name(app)?;
+        let mut found = Vec::new();
+        let mut seen = BTreeSet::new();
+        for part in &listing.parts {
+            for row in &part.rows {
+                let Some(key) = keyed(row) else { continue };
+                if !seen.insert(key.to_owned()) || item_type(&part.kind, part.root, key) != Some(ty)
+                {
                     continue;
                 }
                 let Some(id) = row.get("id").and_then(Json::as_str) else {
                     continue;
                 };
                 found.push(Row {
-                    held: held_id(record, key),
+                    held: held_id(document, key),
                     id: id.to_owned(),
-                    under: under.clone(),
+                    under: part.under.clone(),
                     key: Some(key.to_owned()),
                 });
             }
@@ -517,7 +659,7 @@ impl<'a> NativeReads<'a> {
         Ok(found)
     }
 
-    /// The schema of the resources of the kind `kind` `app` publishes beside its record: the
+    /// The schema of the resources of the kind `kind` `app` publishes beside its document: the
     /// type its surface declares for that kind (`tasks.issues` is `Issues`).
     fn kind_root(&self, app: &str, kind: &str) -> Option<&'static TypeSchema> {
         if Some(kind) == self.native.record(app) {
@@ -549,7 +691,7 @@ impl<'a> NativeReads<'a> {
     }
 
     /// What the app answers to its own read of the resource `row` names: its typed data. The
-    /// resource's own read answers it when the app's directory offers one; else the record's,
+    /// resource's own read answers it when the app's directory offers one; else the document's,
     /// which takes the resource as its `item` — the read `tilo_read` performs.
     fn content(&self, app: &str, row: &Row) -> Result<Json, String> {
         let (resource, item) = match &row.key {
@@ -615,7 +757,7 @@ fn keyed(row: &Json) -> Option<&str> {
     row.get("key").and_then(Json::as_str)
 }
 
-/// The id a program holds the resource `key` of the record `record` by: the record, then the
+/// The id a program holds the resource `key` of the document `document` by: the document, then the
 /// item's own id, the last step of `key`. A program's id keeps one item, as [`split_id`] reads
 /// one, so a resource nested under another is held by the id of the item it sits in.
 fn held_id(record: &str, key: &str) -> String {
@@ -636,7 +778,7 @@ fn holds_type(schema: &TypeSchema, ty: &str, depth: usize) -> bool {
         })
 }
 
-/// The type of the resource `key` of the record `record`, walking the collections of `root`:
+/// The type of the resource `key` of the document `document`, walking the collections of `root`:
 /// `issues/<id>` is an issue, `issues/<id>/links/<id>` a link.
 fn item_type(record: &str, root: &'static TypeSchema, key: &str) -> Option<&'static str> {
     let mut path = key.strip_prefix(record)?.trim_start_matches('/').split('/');
@@ -699,7 +841,7 @@ fn held(
 
 /// The app's `plain` value of the type `ty`, as the runtime holds a value of it: what a program
 /// reads a field as and a filter compares it with. An app writes its model's own JSON — an
-/// option as the value or `null`, a list as its array, a case of an enum by its name, a record
+/// option as the value or `null`, a list as its array, a case of an enum by its name, a document
 /// as its id — where the runtime holds `{"some": …}`, `{"list": […]}`,
 /// `{"enum": …, "variant": …}` and `{"ref": …}`.
 fn encoded(ty: &Ty, plain: &Json, meta: &Meta) -> Result<Json, String> {
@@ -757,7 +899,8 @@ fn encoded(ty: &Ty, plain: &Json, meta: &Meta) -> Result<Json, String> {
         // A member as the app's model keeps them, or a person by their id.
         Ty::Actor => {
             let who: tilolang_runtime::ids::MemberId = match plain {
-                Json::String(person) => tilolang_runtime::ids::MemberId::person(person.clone()),
+                Json::String(key) => tilolang_runtime::ids::MemberId::parsed_person(key)
+                    .ok_or_else(|| format!("{plain} names no actor"))?,
                 other => serde_json::from_value(other.clone())
                     .map_err(|_| format!("{plain} names no actor"))?,
             };
@@ -921,9 +1064,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_native_apps_record_is_read_by_its_surface;
+        fn a_native_apps_document_is_read_by_its_surface;
 
-        phase the_record_an_app_publishes_is_the_root_its_package_names;
+        phase the_document_an_app_publishes_is_the_root_its_package_names;
         {
             let native = Native::of(&[], &[tasks(), chat()]);
             assert_eq!(native.record("so.tilo.tasks"), Some("tasks.tracker"));
@@ -931,11 +1074,11 @@ mod tests {
             assert!(native.is("so.tilo.tasks"));
             assert!(!native.is("so.tilo.notes"));
             assert_eq!(
-                native.record_type("so.tilo.chat"),
+                native.resource_type("so.tilo.chat"),
                 Some("so.tilo.chat.Workspace")
             );
             assert_eq!(
-                native.record_type("so.tilo.tasks"),
+                native.resource_type("so.tilo.tasks"),
                 Some("so.tilo.tasks.Tracker")
             );
         }
@@ -971,7 +1114,7 @@ mod tests {
             assert_eq!(ty("tasks.issues/issues/abc/title"), None);
             assert_eq!(ty("tasks.issues/issues"), None);
             assert_eq!(ty("tasks.issues/nothing/abc"), None);
-            // A program's id keeps the record's name and the item's own id, which
+            // A program's id keeps the document's name and the item's own id, which
             // [`NativeReads::read`] matches against the rows the app's directory lists.
             assert_eq!(
                 held_id("tasks.tracker", "tasks.issues/issues/abc"),

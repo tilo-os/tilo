@@ -23,14 +23,14 @@ pub mod agent;
 pub mod anthropic;
 #[cfg(feature = "host")]
 pub mod judge;
-pub use moderation_model::{KIND, agent, record};
+pub use moderation_model::{KIND, agent, model};
 
 pub use activity::{Activity, Source, activity_of, burst, destructive_verbs};
 #[cfg(feature = "host")]
 pub use agent::{Enforced, Look, ModerationAgent, WorkspaceApi};
 #[cfg(feature = "host")]
 pub use judge::{Case, Judge, JudgeError, Verdict};
-pub use record::{Decision, Moderation, Outcome, Report, Reverted, Ruling};
+pub use model::{Decision, Moderation, Outcome, Report, Reverted, Ruling};
 
 /// The model asked when the host configures none: small and cheap, since a
 /// public workspace may see many reports.

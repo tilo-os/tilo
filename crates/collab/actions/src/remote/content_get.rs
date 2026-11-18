@@ -11,12 +11,12 @@
 //! Only the store of the workspace the caller is in answers: a hash held by
 //! another workspace, or by no workspace, reads as no such content.
 
-use super::{ActionHostError, Caller};
+use super::{ActionCallError, Caller};
 
-/// What a host without a content store answers.
+/// What a provider without a content store answers.
 pub const CONTENT_GETS_UNAVAILABLE: &str = "reading content is not available here";
 
-/// One piece of content, as a host answers it.
+/// One piece of content, as a provider answers it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentPiece {
     /// The whole content's length.
@@ -35,7 +35,7 @@ pub trait ContentGets: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::InvalidRequest`] for a reference that is not one,
+    /// [`ActionCallError::InvalidRequest`] for a reference that is not one,
     /// content the caller's workspace does not hold, an offset past its end,
     /// or a piece longer than [`super::MAX_CONTENT_FRAME_BYTES`].
     fn get(
@@ -44,7 +44,7 @@ pub trait ContentGets: Send + Sync {
         content: &str,
         offset: u64,
         length: u64,
-    ) -> Result<ContentPiece, ActionHostError>;
+    ) -> Result<ContentPiece, ActionCallError>;
 }
 
 /// What a request for content answers: the whole content's size, where the
@@ -67,9 +67,9 @@ impl ContentGetAnswer {
     ///
     /// A piece longer than [`super::MAX_CONTENT_FRAME_BYTES`], which no
     /// frame carries.
-    pub fn new(piece: ContentPiece) -> Result<Self, ActionHostError> {
+    pub fn new(piece: ContentPiece) -> Result<Self, ActionCallError> {
         if piece.bytes.len() > super::MAX_CONTENT_FRAME_BYTES {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "a piece carries at most {} bytes",
                     super::MAX_CONTENT_FRAME_BYTES

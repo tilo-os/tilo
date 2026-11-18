@@ -1224,7 +1224,7 @@ fn identity_dir_empty(directory: &Path) -> io::Result<bool> {
 }
 
 fn configured_identity_root(root: &Path) -> io::Result<()> {
-    let configured = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let configured = tilo_identity::provisioning::collaboration_identity_paths();
     let configured_root = configured
         .device_cert
         .parent()
@@ -1740,7 +1740,7 @@ fn load_identity(
     if !identity.identity_root.is_absolute() || !identity.identity_dir.is_absolute() {
         return Err(invalid("The receiving identity location is invalid"));
     }
-    let configured = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let configured = tilo_identity::provisioning::collaboration_identity_paths();
     let configured_root = configured
         .device_cert
         .parent()

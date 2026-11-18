@@ -455,7 +455,7 @@ impl OilLayer {
         let body = settings.get("thickness");
         let streak_length = (pass.size * 2.0).max(5.0);
         let patch_size = (pass.size * 1.5).max(6.0);
-        let lanes = float(bristles.len()) * 0.35;
+        let stripes = float(bristles.len()) * 0.35;
         let pickup = 0.04 / self.canvas.scale.max(0.05);
         let room = total * 0.3;
         let mut laid = Laid::over(pass.samples, pass.size, (self.width(), self.canvas.height));
@@ -498,7 +498,7 @@ impl OilLayer {
                 }
                 let streak = fbm(
                     sample.distance / streak_length,
-                    bristle.offset * lanes,
+                    bristle.offset * stripes,
                     pass.seed ^ 0x7a3d,
                     2,
                 );
@@ -1092,7 +1092,7 @@ type CellState = [f32; 6];
 struct Kernel {
     taps: usize,
     step: f32,
-    lane: f32,
+    stripe: f32,
     strength: f32,
     seed: u64,
 }
@@ -1151,7 +1151,7 @@ impl OilLayer {
         let kernel = Kernel {
             taps,
             step: reach.max(0.5) / float(taps),
-            lane: (reach * 0.12).max(1.5),
+            stripe: (reach * 0.12).max(1.5),
             strength,
             seed,
         };
@@ -1190,7 +1190,7 @@ impl OilLayer {
         let Kernel {
             taps,
             step,
-            lane: lane_size,
+            stripe: stripe_width,
             strength,
             seed,
         } = *kernel;
@@ -1237,24 +1237,24 @@ impl OilLayer {
         let (ax, ay) = self.canvas.absolute(px, py);
         let across = ax * -dy + ay * dx;
         let along = ax * dx + ay * dy;
-        let lane = 0.35
+        let stripe = 0.35
             + 0.65
                 * smoothstep(
                     0.2,
                     0.8,
                     fbm(
-                        across / lane_size,
-                        along / (lane_size * 12.0),
+                        across / stripe_width,
+                        along / (stripe_width * 12.0),
                         seed ^ 0x6b1d,
                         2,
                     ),
                 );
         let groove = value_noise(
-            across / (lane_size * 0.6),
-            along / (lane_size * 10.0),
+            across / (stripe_width * 0.6),
+            along / (stripe_width * 10.0),
             seed ^ 0x6b1e,
         );
-        let pull = (strength * inside * mobile * lane).clamp(0.0, 1.0);
+        let pull = (strength * inside * mobile * stripe).clamp(0.0, 1.0);
         let mean_cover = covered / weight;
         let new_cover = cover + (mean_cover - cover) * pull;
         let colour = if covered > 1e-6 {

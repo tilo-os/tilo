@@ -39,7 +39,7 @@ fn replica(
         }
         replica
             .receive_from(
-                crate::TransportOrigin::RetainedRelayDelta(host.device_public_key),
+                crate::TransportOrigin::RetainedServerDelta(host.device_public_key),
                 message,
                 now,
             )

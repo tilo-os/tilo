@@ -3,7 +3,7 @@ use super::*;
 tilo_test_env::scenario! {
     fn broadcasts_are_throttled_merged_and_scoped;
 
-    phase pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope;
+    phase pointer_broadcast_throttle_checks_by_gap_and_resets_on_scope;
     {
         {
             let now = crate::time::now();
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
             let root = Box::new(crate::widget::Text::new("t"));
             let mut app = App::new(app_state, root);
             let route = crate::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
-            app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
                 route: route.clone(),
                 epoch: uuid::Uuid::new_v4(),
             });

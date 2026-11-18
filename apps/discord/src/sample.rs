@@ -1,11 +1,11 @@
 //! What the capture scenarios show: a workspace bridged to a small server, with
 //! channels, categories and two linked accounts. Never written into a real
 //! workspace — a capture cannot wait for the bridge to observe a server, so
-//! the scene is written as the record's start instead.
+//! the scene is written as the resource's start instead.
 
 use discord_wire::op::ChannelKind;
 
-use crate::record::{DChannel, Guild, Link, Ownership};
+use crate::guild::{DChannel, Guild, Link, Ownership};
 
 pub(crate) const SCENARIOS: &[&str] = &["bridged", "importing", "unlinked"];
 

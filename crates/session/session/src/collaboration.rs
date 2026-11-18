@@ -21,8 +21,8 @@ impl Session {
         // This device's call, as everyone in the workspace reads it, and
         // theirs as this session's apps show them: a join or leave reaches a
         // channel's roster on the pass it happened on.
-        if let Some(plane) = &self.action_plane {
-            plane.follow_calls(sync);
+        if let Some(app_wire) = &self.app_wire {
+            app_wire.follow_calls(sync);
             // Where everyone else here types, in this device's windows on the same record.
             let workspaces = self.shared.handle.read(|tree| {
                 tree.workspaces
@@ -32,26 +32,38 @@ impl Session {
                     .map(|id| id.to_string())
                     .collect()
             });
-            plane.carets.follow(sync, workspaces);
+            app_wire.carets.follow(sync, workspaces);
             // What the workspaces' agents did, drawn in this device's windows on the record each
             // acted in.
-            plane.carets.narrate(sync.take_narrated());
-            // Who is here in the workspace in front, named and coloured as the bar and People
-            // draw them: the apps there are told, so a caret wears its person's face.
+            app_wire.carets.narrate(sync.take_narrated());
+            // The people of the workspace in front, as its governance names them, those it
+            // removed among them, and whoever is here named and coloured as the bar and People
+            // draw them: the apps there are told, so a caret wears its person's face and a
+            // message names its author after they went offline or left.
             if let Some((workspace, _)) = sync.front_members() {
-                let people = sync
-                    .here()
-                    .borrow()
-                    .persons()
-                    .into_iter()
-                    .map(|(id, name, (r, g, b))| {
-                        let member = collab_types::Person::new(id, name);
-                        let colour = ui::tokens::PresenceHue::nearest_to_srgb(r, g, b)
-                            .unwrap_or(member.colour);
-                        collab_types::Member::of_person(&member.wearing(colour), None)
-                    })
-                    .collect();
-                plane.layout.set_people(&workspace, people);
+                let mut people: Vec<collab_types::Member> = self
+                    .shared
+                    .engine
+                    .as_ref()
+                    .and_then(|engine| engine.people(&workspace).ok())
+                    .unwrap_or_default();
+                for (id, name, (r, g, b)) in sync.here().borrow().persons() {
+                    let person = collab_types::Person::new(id, name);
+                    let colour =
+                        ui::tokens::PresenceHue::nearest_to_srgb(r, g, b).unwrap_or(person.colour);
+                    let here = collab_types::Member::of_person(&person.wearing(colour), None);
+                    match people.iter_mut().find(|member| member.id == here.id) {
+                        Some(member) => {
+                            if !here.name.trim().is_empty() {
+                                member.name = here.name;
+                            }
+                            member.colour = here.colour;
+                        }
+                        None => people.push(here),
+                    }
+                }
+                self.shared.activity.set_people(&workspace, &people);
+                app_wire.layout.set_people(&workspace, people);
             }
         }
         // Whose view this device follows: their window here comes forward each time the place they
@@ -94,7 +106,7 @@ impl Session {
         let own = sync.own();
         let (label, identity) = crate::people::own_face(&own, &self.shared.person);
         let (r, g, b) = crate::people::own_rgb(&identity);
-        let carets = self.action_plane.as_ref().map(|plane| &plane.carets);
+        let carets = self.app_wire.as_ref().map(|app_wire| &app_wire.carets);
         let said = |app: &str| carets.and_then(|carets| carets.said_in(app));
         let shell = self.shared.handle.read(|tree| {
             shell(
@@ -171,7 +183,7 @@ fn app_window(
     notes: &crate::continuations::Continuations,
     workspace: &str,
     app: &str,
-) -> Option<(tilo_relay_protocol::live::LiveResource, String)> {
+) -> Option<(tilo_server_protocol::live::LiveResource, String)> {
     let records = notes.records();
     let held = tree
         .workspaces
@@ -263,7 +275,7 @@ mod tests {
         GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
         Workspace, WorkspaceId,
     };
-    use tilo_relay_protocol::live::LiveResource;
+    use tilo_server_protocol::live::LiveResource;
     use tilo_session_core::presence::{Follow, Place, Step, Target};
     use ui::kurbo::Rect;
 
@@ -313,7 +325,7 @@ mod tests {
     }
 
     /// The window `tab` stands at on the screen's content area, as the shell laid it out.
-    fn standing(tab: u64) -> (u64, Rect) {
+    fn placed(tab: u64) -> (u64, Rect) {
         (tab, Rect::new(32.0, 80.0, 1248.0, 788.0))
     }
 
@@ -344,7 +356,7 @@ mod tests {
         shell(
             &tree,
             &notes,
-            &[standing(NOTES)],
+            &[placed(NOTES)],
             Some(Rect::new(0.0, 36.0, 1280.0, 800.0)),
             &Focus {
                 place: Some("1".to_owned()),

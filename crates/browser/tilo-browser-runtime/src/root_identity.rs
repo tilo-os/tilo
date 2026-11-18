@@ -769,7 +769,7 @@ pub fn root_envelope_passkeys(envelope: &str) -> Result<JsValue, JsValue> {
 }
 
 /// Whether `signature` is `node`'s over the session voucher
-/// `tilo_relay_protocol::web::node_session_message`: a node proves which
+/// `tilo_server_protocol::web::node_session_message`: a node proves which
 /// session beside it runs the person's apps before a page certifies it. All
 /// three are hex, as the node answers.
 #[wasm_bindgen(js_name = nodeSessionVouched)]
@@ -789,7 +789,7 @@ pub fn node_session_vouched(node: &str, session: &str, signature: &str) -> bool 
         .ok()
         .and_then(|key| {
             key.verify_strict(
-                &tilo_relay_protocol::web::node_session_message(&node, &session),
+                &tilo_server_protocol::web::node_session_message(&node, &session),
                 &Signature::from_bytes(&signature),
             )
             .ok()

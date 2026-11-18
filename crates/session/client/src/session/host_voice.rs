@@ -1,25 +1,25 @@
 //! The host's word for the runs it executes, said and heard outside the live
-//! plane ([`tilo_relay_protocol::host_voice`]).
+//! live session ([`tilo_server_protocol::host_voice`]).
 //!
 //! The host's session signs each frame with this device's key and hands it
-//! to the relay that is the host; a member's session takes a frame only when
+//! to the server that is the host; a member's session takes a frame only when
 //! the host this session is pinned to signed it, and hands it on as the
-//! plane's own events would carry it ([`crate::Event::LivePlane`] for a run's
+//! live session's own events would carry it ([`crate::Event::LiveSession`] for a run's
 //! presence, [`crate::Event::Live`] for its narration), from the host's device.
-//! A run is keyed by the device that speaks for it, so a member of the plane
-//! speaking for the agents it admitted (on the plane, as its own presence
+//! A run is keyed by the device that speaks for it, so a member of the live session
+//! speaking for the agents it admitted (on the live session, as its own presence
 //! is) never speaks for the host's runs.
 //!
-//! The host's narration of a run travels here alone: no member of the plane
+//! The host's narration of a run travels here alone: no member of the live session
 //! narrates in the host's place.
 
-use tilo_relay_protocol::host_voice::{HOST_VOICE_VERSION, HostSaid, HostWords};
-use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
-use tilo_relay_protocol::transport::Envelope;
-use tilo_relay_session::RelayClient;
+use tilo_server_protocol::host_voice::{HOST_VOICE_VERSION, HostSaid, HostWords};
+use tilo_server_protocol::live::{LiveFrame, OpsFrame};
+use tilo_server_protocol::transport::Envelope;
+use tilo_server_session::ServerClient;
 
 use super::Task;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Task {
     /// Say `words` for a run this host executes, in `workspace_id`, signed
@@ -33,7 +33,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         words: HostWords,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             return;
@@ -80,7 +80,7 @@ impl Task {
                 let Ok(body) = presence.encode() else {
                     return;
                 };
-                self.reports.emit(&crate::Event::LivePlane {
+                self.reports.emit(&crate::Event::LiveSession {
                     ws: workspace_id,
                     from: host,
                     track: tilo_live::live::Track::Presence,
@@ -103,10 +103,10 @@ impl Task {
     }
 }
 
-/// Whether an opened live `frame` heard on the plane narrates a run: a run's
+/// Whether an opened live `frame` heard on the live session narrates a run: a run's
 /// narration travels only as the host's own ([`Task::heard_from_host`]),
-/// never on the plane.
-pub(super) fn plane_narrates_a_run(frame: &[u8]) -> bool {
+/// never on the live session.
+pub(super) fn live_session_narrates_a_run(frame: &[u8]) -> bool {
     matches!(
         LiveFrame::decode(frame),
         Ok(LiveFrame::Ops(OpsFrame::Semantic { event, .. })) if event.on_behalf.is_some()

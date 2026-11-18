@@ -20,7 +20,7 @@ use crate::target::SessionTarget;
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-/// A terminal session, as its record holds it. Only the terminal running the session records these:
+/// A terminal session, as its resource holds it. Only the terminal running the session records these:
 /// facts about the world outside the document that no undo takes back.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Terminal {
@@ -170,17 +170,17 @@ pub struct CommandRequest {
     pub agent: bool,
 }
 
-/// How a requested run went: the run it became.
+/// How a requested command went: the id of the command it became.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CommandAnswer {
-    pub run: Option<Id>,
+    pub id: Option<Id>,
     pub exit: Option<i32>,
-    /// Why the run's host refused it, with the steps that would let it through.
+    /// Why the command's host refused it, with the steps that would let it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refusal: Option<ui::tilo_actions::remote::host_account::Refusal>,
+    pub refusal: Option<ui::tilo_actions::remote::server_account::Refusal>,
 }
 
-/// What a finished run recorded, as the Terminal that ran it hands it in.
+/// What a finished command recorded, as the Terminal that ran it hands it in.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct FinishedCommand {
     pub command: String,
@@ -188,7 +188,7 @@ pub struct FinishedCommand {
     pub started_ms: i64,
     pub ended_ms: i64,
     pub exit: i32,
-    /// The raw output, kept in the window's content store; the reference is what the record names it by.
+    /// The raw output, kept in the window's content store; the reference is what the resource names it by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Bytes>,
     pub truncated: bool,
@@ -199,8 +199,8 @@ pub struct FinishedCommand {
     pub items: Vec<CommandItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Id>,
-    /// The id the run takes: the request's, when `run` asked for it, so the answer names it.
-    pub run: Id,
+    /// The command's id: the request's, when `run` asked for it, so the answer names it.
+    pub id: Id,
 }
 
 /// The longest command line `run` takes.
@@ -238,7 +238,7 @@ impl Terminal {
         self.holder = cx.author().cloned();
     }
 
-    /// The session stored under `obj` of another record's document: a terminal nested in an editor's
+    /// The session stored under `obj` of another resource's document: a terminal nested in an editor's
     /// panel.
     ///
     /// # Errors
@@ -247,7 +247,7 @@ impl Terminal {
         <Self as Fields>::read_fields(doc, obj)
     }
 
-    /// Apply one of the session's actions to a session stored under `obj` of another record's document.
+    /// Apply one of the session's actions to a session stored under `obj` of another resource's document.
     ///
     /// # Errors
     /// The action's refusal; nothing is written then.
@@ -271,7 +271,7 @@ impl Terminal {
 }
 
 impl Terminal {
-    /// What the record holds, as JSON: an app with no window open reads a record through this.
+    /// What the resource holds, as JSON: an app with no window open reads a resource through this.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -345,10 +345,10 @@ impl Terminal {
     pub fn record_command(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The command, as the session marked it", flatten)] run: FinishedCommand,
+        #[param("The command, as the session marked it", flatten)] finished: FinishedCommand,
     ) -> Result<(), Refusal> {
-        let output = run.output.unwrap_or_default();
-        let asked = run
+        let output = finished.output.unwrap_or_default();
+        let asked = finished
             .request
             .as_ref()
             .and_then(|request| self.requests.get(request))
@@ -357,27 +357,27 @@ impl Terminal {
             Some(asked) => (asked.requested_by, asked.for_person),
             None => (cx.author().cloned(), None),
         };
-        let mut items = run.items;
+        let mut items = finished.items;
         items.truncate(crate::parse::MAX_ITEMS);
-        if run.run.as_str().is_empty() || self.commands.contains(&run.run) {
+        if finished.id.as_str().is_empty() || self.commands.contains(&finished.id) {
             return Err(Refusal::new("a command takes an id of its own"));
         }
-        let id = run.run;
+        let id = finished.id;
         self.commands.push(
             id,
             Command {
-                command: Atom(run.command),
-                cwd: Atom(run.cwd),
+                command: Atom(finished.command),
+                cwd: Atom(finished.cwd),
                 environment: self.target.clone(),
                 actor,
                 for_person,
-                started_ms: run.started_ms,
-                ended_ms: run.ended_ms,
-                exit: run.exit,
+                started_ms: finished.started_ms,
+                ended_ms: finished.ended_ms,
+                exit: finished.exit,
                 output,
-                truncated: run.truncated,
-                tool: Atom(run.tool),
-                undoable: run.undoable,
+                truncated: finished.truncated,
+                tool: Atom(finished.tool),
+                undoable: finished.undoable,
                 items,
             },
         );
@@ -596,7 +596,7 @@ pub enum TerminalEffect {
     /// Binds a host folder into the environment, read-write.
     #[effect(destructive)]
     GrantFolder {
-        #[param("The environment's record")]
+        #[param("The environment's resource")]
         record: String,
         #[param("An absolute folder path; it appears at the same path in the environment")]
         path: AbsolutePath,
@@ -604,7 +604,7 @@ pub enum TerminalEffect {
     /// Rename environment
     #[effect(destructive)]
     RenameEnvironment {
-        #[param("The environment's record")]
+        #[param("The environment's resource")]
         record: String,
         #[param("The new name")]
         name: String,
@@ -673,8 +673,8 @@ impl ResourceApp for TerminalShell {
         Some(&CATALOG)
     }
 
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.person::<crate::history::CommandHistory>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.person::<crate::history::CommandHistory>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -768,7 +768,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         TerminalWidget::request_device_shell(self)
     }
 
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.take_session_intent()
     }
 
@@ -863,7 +863,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         crate::TerminalWidget::request_device_shell(self.terminal_mut())
     }
 
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.take_session_intent()
     }
     fn present(&mut self, state: &std::rc::Rc<Terminal>) {

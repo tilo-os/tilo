@@ -268,7 +268,7 @@ impl Profile {
     }
 
     /// Fence reuse durably while still holding the engine's exclusive lease.
-    /// The marker deliberately survives successful deletion: canonical custody
+    /// The marker deliberately survives successful deletion: canonical ownership
     /// needs a separate backend operation before this selection can reconnect.
     ///
     /// # Errors
@@ -408,7 +408,7 @@ impl Profile {
         Self::retry_forget(root, person, id)
     }
 
-    /// Recover only a previously fenced local deletion. No custody resolution or
+    /// Recover only a previously fenced local deletion. No ownership resolution or
     /// native engine admission is involved; the exclusive lease fences live owners.
     ///
     /// # Errors

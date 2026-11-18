@@ -159,7 +159,12 @@ extension Font {
 
     /// The drawing's `--mono`.
     public static func tiloMono(_ size: CGFloat) -> Font {
-        .system(size: size, design: .monospaced)
+        #if os(iOS)
+        // The fixed face grows with the person's text size as the words around it do.
+        return .system(size: UIFontMetrics(forTextStyle: .body).scaledValue(for: size), design: .monospaced)
+        #else
+        return .system(size: size, design: .monospaced)
+        #endif
     }
 
     // The sizes the drawing uses, by what they are for.
@@ -189,6 +194,20 @@ extension PlatformFont {
         guard italic, let slanted = base.fontDescriptor.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(.traitItalic))
         else { return base }
         return UIFont(descriptor: slanted, size: scaled)
+        #endif
+    }
+
+    /// The same face with every figure as wide as the next: how a page sets a list's numbers.
+    public static func tiloFigures(_ size: CGFloat) -> PlatformFont {
+        let base = tilo(size)
+        #if os(macOS)
+        let features = [[NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+                         NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector]]
+        return NSFont(descriptor: base.fontDescriptor.addingAttributes([.featureSettings: features]), size: base.pointSize) ?? base
+        #else
+        let features = [[UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
+                         UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector]]
+        return UIFont(descriptor: base.fontDescriptor.addingAttributes([.featureSettings: features]), size: base.pointSize)
         #endif
     }
 

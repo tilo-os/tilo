@@ -172,7 +172,7 @@ fn what_an_agent_session_does_is_its_own_for_the_person_and_grouped_under_its_se
     assert_eq!(left, 1, "only the person's note is left");
 }
 
-/// The undo steps of the agent session's that are in effect in `app`'s record, newest first,
+/// The undo steps of the agent session's that are in effect in `app`'s document, newest first,
 /// each the number of changes it takes back.
 fn session_steps(app: &mut Session) -> Vec<usize> {
     let scope = Scope::Session("agent-session:7".to_owned());
@@ -250,7 +250,7 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
     app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
-    // The record's history, as an agent or a person asks the Action API for it.
+    // The document's history, as an agent or a person asks the Action API for it.
     let package = format!("tl:{NOTES}");
     let history = action_id(&mut app, &package, "History");
     let listed = app
@@ -282,7 +282,7 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
 }
 
 #[test]
-fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
+fn an_agent_reads_what_a_document_holds_and_each_item_it_names() {
     let (mut app, root) = notes_open();
     let notebook = format!("tl:{NOTES}:{root}");
     let before: Vec<String> = app.read(|doc| {

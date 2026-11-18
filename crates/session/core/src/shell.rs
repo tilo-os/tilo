@@ -1,5 +1,5 @@
 //! What a shell reads of the session and asks it: the resources the session publishes, and the
-//! screen's edges — the same on every host, so a shell written once runs on each. A shell's views
+//! screen's edges — the same everywhere, so a shell written once runs on each. A shell's views
 //! read the session's readings and ask it for the rest through [`Ask`]s on the action API.
 
 use std::collections::BTreeMap;

@@ -25,9 +25,9 @@ fn through_the_chooser(
     Vec<PickRequest>,
     Result<tilo_actions::ActionOutput, tilo_actions::ApiError>,
 ) {
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick(chosen);
-    let answer = ui::host::scoped(&services, || bench.app.effect_confirmed(effect));
+    let answer = ui::process::scoped(&services, || bench.app.effect_confirmed(effect));
     bench.frame();
     (recorder.pick_requests(), answer)
 }

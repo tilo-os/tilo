@@ -162,7 +162,7 @@ fn verbs_taking_a_sheet_take_its_name_and_refuse_one_the_workbook_lacks() {
         json!({"sheet": "Nowhere", "start": "A1", "rows": [[1]]}),
     );
     assert!(
-        refused.contains("no sheet `Nowhere`") && refused.contains("`Q3 sales`"),
+        refused.contains("no sheet named Nowhere") && refused.contains("Q3 sales"),
         "{refused}"
     );
 }
@@ -617,6 +617,51 @@ fn a_read_shows_the_cells_a_formula_spills_into() {
     );
     let part = call(&mut app, "read", json!({"item": "Summary!A2:A3"}));
     assert_eq!(part["rows"], json!([["South"], [""]]), "{part}");
+}
+
+/// What a formula spills into is found by search as any other cell is: by what it shows, at
+/// its own cell.
+#[test]
+fn search_finds_the_cells_a_formula_spills_into() {
+    let mut app = app();
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Sales", "rows": [["Region", "Revenue"], ["North", 10], ["South", 20], ["North", 5]]}),
+    );
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Summary", "rows": [["=UNIQUE(Sales!A2:A4)"]]}),
+    );
+    let state = app.state();
+    let summary = state
+        .sheet_key(&ui::tilo_resource::Id::from_raw("Summary"))
+        .unwrap();
+    let entries = super::Workbook::search(&state);
+    let found = |title: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.title == title)
+            .unwrap_or_else(|| panic!("search holds no {title}"))
+    };
+    let own = found("Summary!A1");
+    assert!(
+        own.text.contains("=UNIQUE(Sales!A2:A4)") && own.text.contains("North"),
+        "the formula's own cell, by its input and what it shows: {}",
+        own.text
+    );
+    let spilled = found("Summary!A2");
+    assert_eq!(spilled.text, "A2 Summary!A2 South");
+    assert_eq!(
+        spilled.anchor.as_deref().and_then(super::parse_cell_anchor),
+        Some((summary, (0, 1))),
+        "it opens at the cell it is shown in"
+    );
+    assert!(
+        entries.iter().all(|entry| entry.title != "Summary!A3"),
+        "a cell that shows nothing is not listed"
+    );
 }
 
 #[test]

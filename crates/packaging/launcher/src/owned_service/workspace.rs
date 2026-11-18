@@ -14,7 +14,7 @@ use tilo_files::native::atomic::{Privacy, StorageDirectory};
 const APP: &str = "tilo-workspaces/personal/so.tilo.imager.home-export";
 
 /// What a service's workspace holds besides the delegated app home, and how it checks its caller's root
-/// custody.
+/// ownership.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Layout {
     /// Names the refusal of a work root that is not fresh.

@@ -1,4 +1,4 @@
-"""Exercise the shipped boot gate with synthetic initramfs module evidence."""
+"""Exercise the shipped boot check with synthetic initramfs module evidence."""
 import os
 from pathlib import Path
 import re
@@ -11,7 +11,7 @@ from restart_fixture import restart_fixture
 
 
 OS = Path(__file__).resolve().parents[1]
-GATE = OS / 'tests/boot_chain_invariants.sh'
+CHECK = OS / 'tests/boot_chain_invariants.sh'
 REQUIRED = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo-rollback', 'tilo-sibling-unlock'}
 # Run 9404 selected the Clevis providers and nvmf despite omitting their parents.
 # The pinned base's dracut 108 module audit also found nbd/fcoe/fcoe-uefi consumers.
@@ -32,7 +32,7 @@ def bash_executable():
             return str(git_bash)
     bash = shutil.which('bash')
     if bash is None:
-        raise RuntimeError('bash is required to exercise the production boot-chain gate')
+        raise RuntimeError('bash is required to exercise the production boot-chain check')
     return bash
 
 
@@ -53,7 +53,7 @@ class InitramfsModulePolicyTests(unittest.TestCase):
         self.write('usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf',
                    'ConditionPathIsMountPoint=!/sysroot\n')
         # Isolate module policy from the host's systemd and Windows symlink privileges.
-        # The mock accepts only the exact read-only enablement query made by the gate.
+        # The mock accepts only the exact read-only enablement query made by the check.
         self.write('test-bin/systemctl', '''#!/bin/sh
 set -eu
 [ "$#" -eq 3 ]
@@ -71,7 +71,7 @@ printf 'enabled\\n'
         if executable:
             path.chmod(0o755)
 
-    def run_gate(self, modules):
+    def run_check(self, modules):
         self.write('usr/lib/tilo/initramfs-modules.txt', '\n'.join(sorted(modules)) + '\n')
         environment = os.environ.copy()
         environment.pop('BASH_ENV', None)
@@ -81,29 +81,29 @@ printf 'enabled\\n'
 set -eu
 export PATH=/usr/bin:/bin
 root=$1
-gate=$2
+check=$2
 if command -v cygpath >/dev/null 2>&1; then
     root=$(cygpath -u "$root")
-    gate=$(cygpath -u "$gate")
+    check=$(cygpath -u "$check")
 fi
 export OS_ROOT="$root"
 export PATH="$root/test-bin:$PATH"
 chmod +x "$root/test-bin/systemctl" "$root/usr/libexec/tilo-disk-encrypt" "$root/usr/libexec/tilo-secureboot"
-exec bash "$gate"
-''', 'module-policy-test', str(self.root), str(GATE)],
+exec bash "$check"
+''', 'module-policy-test', str(self.root), str(CHECK)],
             env=environment, capture_output=True, text=True, encoding='utf-8',
             errors='replace', timeout=30)
 
     def test_module_policy(self):
         with self.subTest(phase="valid_local_root_modules_pass"):
-            result = self.run_gate(REQUIRED)
+            result = self.run_check(REQUIRED)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('all boot-chain invariants hold', result.stdout)
         restart_fixture(self)
         with self.subTest(phase="each_forbidden_module_is_rejected"):
             for module in sorted(FORBIDDEN):
                 with self.subTest(module=module):
-                    result = self.run_gate(REQUIRED | {module})
+                    result = self.run_check(REQUIRED | {module})
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     failures = [line for line in result.stderr.splitlines() if line.startswith('FAIL')]
                     self.assertEqual(len(failures), 1, result.stdout + result.stderr)
@@ -113,7 +113,7 @@ exec bash "$gate"
         with self.subTest(phase="each_required_module_must_remain"):
             for module in sorted(REQUIRED):
                 with self.subTest(module=module):
-                    result = self.run_gate(REQUIRED - {module})
+                    result = self.run_check(REQUIRED - {module})
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     failures = [line for line in result.stderr.splitlines() if line.startswith('FAIL')]
                     self.assertEqual(len(failures), 1, result.stdout + result.stderr)
@@ -121,7 +121,7 @@ exec bash "$gate"
         restart_fixture(self)
         with self.subTest(phase="ext4_root_driver_must_remain"):
             self.write('usr/lib/tilo/initramfs-omitted-drivers.txt', 'ext4\nxfs\n')
-            result = self.run_gate(REQUIRED)
+            result = self.run_check(REQUIRED)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn('initramfs excludes Ext4', result.stderr)
         restart_fixture(self)

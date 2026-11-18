@@ -10,9 +10,17 @@ description = "Per-user legacy VMs: one unprivileged libvirt domain per guest OS
 name = "legacy_vm"
 path = "src/lib.rs"
 
+[features]
+# Waking a domain and keeping its windows behind an app keeper, in the program a VM machine
+# serves with. A server that places sessions on those machines reads only their control
+# requests, so it leaves this off and links no Wayland server.
+default = ["supervisor"]
+supervisor = ["dep:tilo-app-keeper"]
+
 [[bin]]
 name = "tilo-legacy"
 path = "src/main.rs"
+required-features = ["supervisor"]
 
 # The privileged helper of a hosted-VM host (`hosted::jail`).
 [[bin]]
@@ -22,18 +30,20 @@ path = "src/jail_main.rs"
 [dependencies]
 collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
+blake3.workspace = true
 hex.workspace = true
 # A refusal carries the host contract's typed reason and next steps.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 fnv.workspace = true
 # The material a browser environment's session is started with, and the
-# endpoint address it names the relay by: one type the relay and this host
+# endpoint address it names the server by: one type the server and this host
 # both build against.
 iroh-base.workspace = true
-tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 libc.workspace = true
 serde.workspace = true
+serde_bytes.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -50,6 +60,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 # A device certificate, for a material's device.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
@@ -61,6 +72,8 @@ workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The VM's window forwarder runs behind an app keeper, written into the keepers' registry.
+tilo-app-keeper = { path = "../../session/app-keeper", optional = true }
 # The VM network's bridge filter, over the same nf_tables encoder as a
 # sandbox's egress filter.
 tilo-egress = { path = "../egress" }

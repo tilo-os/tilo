@@ -225,7 +225,7 @@ impl<'de> Visitor<'de> for EntrySeed {
                 "parent_mode" if parent_mode.is_none() => parent_mode = Some(map.next_value()?),
                 "kind" if kind.is_none() => kind = Some(map.next_value()?),
                 "seed" if seed.is_none() => {
-                    seed = Some(map.next_value::<Option<seeds::Witness>>()?)
+                    seed = Some(map.next_value::<Option<seeds::RecoveryBinding>>()?)
                 }
                 "structure" if structure.is_none() => {
                     structure = Some(map.next_value_seed(OptionalSequence(SequenceSeed {

@@ -57,7 +57,7 @@ STARTED_BY = {
         "os/dev/disk-image.sh links the instance into multi-user.target.wants "
         "for the board's account"
     ),
-    "tilo-node-relay@.service": (
+    "tilo-node-server@.service": (
         "a node's install enables the instance for its account, as the unit asks"
     ),
     "tilo-node-session@.path": (

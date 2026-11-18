@@ -35,7 +35,7 @@ pub async fn run() {
         admit_person, on_messages, open_admitted_peer, part_route, published_message,
     };
     use tilo_peer_state::join::Role;
-    use tilo_relay::workspaces::RemoveMemberRequest;
+    use tilo_server::workspaces::RemoveMemberRequest;
     let bundle = std::env::args()
         .nth(1)
         .expect("compiled web bundle path is required");
@@ -121,7 +121,7 @@ pub async fn run() {
     );
     let state = crate::support::scratch_dir();
     let mut hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces
         .create("Mounted resource acceptance")
         .await
@@ -312,11 +312,11 @@ pub async fn run() {
             .send(Cmd::VoiceCall(
                 native.workspace,
                 [40; 16],
-                tilo_relay_protocol::voice::CallOperation::Start {
+                tilo_server_protocol::voice::CallOperation::Start {
                     app_id: route.app_id.clone(),
                     document_id: route.document.clone(),
                     channel_id: voice_channel.id.clone(),
-                    allowed: tilo_relay_protocol::voice::Directions {
+                    allowed: tilo_server_protocol::voice::Directions {
                         publish: true,
                         subscribe: true,
                     },
@@ -357,7 +357,7 @@ pub async fn run() {
         let barrier = native.peer.barrier().unwrap();
         barrier.recv().unwrap().unwrap();
         let retained = hosted
-            .relay
+            .server
             .workspace_documents()
             .retained(workspace.workspace_id)
             .await
@@ -375,11 +375,11 @@ pub async fn run() {
         native.peer.close();
         hosted.agents.shutdown();
         drop(hosted.web);
-        hosted.relay.shutdown().await;
+        hosted.server.shutdown().await;
         hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
         println!("MOUNTED_RESOURCE_STAGE={{\"stage\":\"remote-encrypted-source-host-restarted\"}}");
     }
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let reader_identity = hex::encode(recipient.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
@@ -389,8 +389,8 @@ pub async fn run() {
         "channelId": channel.id,
         "channel": chat::projection::item_id("channels", &channel.id),
         "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
-        "sourcePeople": source.read(|doc| chat::projection::read(doc).user_rows().into_iter().map(|person|
-            serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>()).unwrap(),
+        "sourcePeople": chat::projection::member_rows().into_iter().map(|person|
+            serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>(),
         "voiceChannel": voice_channel.id, "callRow": format!("{}/call", chat::projection::item_id("channels", &voice_channel.id)),
         "secondDevice": {"seed": second_device.key.to_bytes(),
             "root": hex::encode(second_device.cert.user_public_key),
@@ -468,7 +468,7 @@ pub async fn run() {
                                 )
                                 .unwrap();
                         }
-                        let messages: Vec<chat::record::Message> = source
+                        let messages: Vec<chat::chat::Message> = source
                             .read_resource(&part, chat::messages::read_part)
                             .unwrap()
                             .messages
@@ -537,7 +537,7 @@ pub async fn run() {
     .await;
     native.peer.close();
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
     assert!(
         result.expect("bounded mounted journey").success(),
         "mounted journey failed"

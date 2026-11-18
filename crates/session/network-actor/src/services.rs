@@ -1,7 +1,7 @@
 //! What the actor asks of the session that runs it.
 //!
 //! The actor is the transport: it keeps the endpoint, the topics, the host
-//! sessions and the person's private lane. Some of what arrives on them is
+//! sessions and the person's private connection. Some of what arrives on them is
 //! the session's business, not the transport's: a host's questions for an
 //! approver, an early-boot device asking for its unlock half, a host at
 //! another peer protocol version. The session installs those once when it
@@ -14,13 +14,13 @@ use std::sync::{Arc, OnceLock};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 
-use crate::HostIdentity;
+use crate::DeviceIdentity;
 
 /// The approver sessions this device keeps with the workspace hosts it
 /// knows, one per host.
 pub trait Approvers: Send + Sync {
     /// Answer `host`'s questions from now on, when this device may.
-    fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &HostIdentity);
+    fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &DeviceIdentity);
     /// Stop answering `host`.
     fn stop(&mut self, host: EndpointId);
 }
@@ -80,6 +80,6 @@ pub fn approvers() -> Box<dyn Approvers> {
 struct Refused;
 
 impl Approvers for Refused {
-    fn start(&mut self, _: &Endpoint, _: EndpointAddr, _: &HostIdentity) {}
+    fn start(&mut self, _: &Endpoint, _: EndpointAddr, _: &DeviceIdentity) {}
     fn stop(&mut self, _: EndpointId) {}
 }

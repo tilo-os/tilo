@@ -87,7 +87,7 @@ pub struct FieldShape {
     pub title: &'static str,
     pub shape: Shape,
     /// `#[model(unit)]`: the field is its own storage unit (for a
-    /// collection, each item is one), so a relay can tell who may write it
+    /// collection, each item is one), so a server can tell who may write it
     /// without reading content.
     pub unit: bool,
     /// `#[model(readonly)]`: published for reading, changed only by verbs.

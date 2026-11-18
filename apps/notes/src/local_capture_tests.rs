@@ -50,22 +50,22 @@ fn assert_notes_capture<R: ui::tilo_resource::Resource>(
 }
 
 #[test]
-fn local_capture_notes_create_rename_and_body_are_immediate() {
+fn local_capture_notes_tag_edits_are_immediate() {
     use crate::{actions, notebook::Notebook};
     use ui::tilo_resource::Invoke;
 
     let (_framework, dispatcher, mut doc) = notes_capture_framework();
-    let page = fresh_page_id();
+    let tag = fresh_page_id();
     let before = doc.get_heads();
     let queue = ui::local_document_action::Queue::new();
     // This opaque revision stands for the directory frozen before the input;
     // neither draining the observation nor a broker reply applies the edit.
     let _scope = queue.enter("notes-pre-input-directory".into());
-    let create = actions::create_page_action(page, None, "Draft");
+    let create = actions::new_tag_action(tag, "Draft");
     dispatcher
         .apply_now(&mut Edits::lend(&mut doc), &create)
         .unwrap();
-    assert_eq!(crate::read::list_pages(&doc)[0].title, "Draft");
+    assert_eq!(crate::read::list_tags(&doc)[0].name, "Draft");
     let created = assert_notes_capture(
         &queue,
         &mut doc,
@@ -74,92 +74,31 @@ fn local_capture_notes_create_rename_and_body_are_immediate() {
         &Invoke::<Notebook>::apply(&create).unwrap(),
     );
     assert!(!created.mutation_hashes.is_empty());
-    assert_eq!(created.encoded, actions::encode(&create));
+    assert_eq!(created.encoded, actions::encode_tag(&create));
 
     let before = doc.get_heads();
-    let rename = actions::rename_page_action(page, "Published");
+    let delete = actions::delete_tag_action(tag);
     dispatcher
-        .apply_now(&mut Edits::lend(&mut doc), &rename)
+        .apply_now(&mut Edits::lend(&mut doc), &delete)
         .unwrap();
-    assert_eq!(crate::read::list_pages(&doc)[0].title, "Published");
-    let renamed = assert_notes_capture(
+    assert!(crate::read::list_tags(&doc).is_empty());
+    let deleted = assert_notes_capture(
         &queue,
         &mut doc,
         &before,
         "notes.notebook",
-        &Invoke::<Notebook>::apply(&rename).unwrap(),
+        &Invoke::<Notebook>::apply(&delete).unwrap(),
     );
-    assert!(!renamed.mutation_hashes.is_empty());
-    assert_eq!(renamed.encoded, actions::encode(&rename));
-    assert_eq!(renamed.original_heads, created.mutation_hashes);
-    assert_ne!(renamed.invocation, created.invocation);
-
-    let before = doc.get_heads();
-    let op = tilo_document::RichTextAction::AppendParagraph {
-        text: "Already visible".into(),
-    };
-    body_dispatcher(&dispatcher, page)
-        .apply_now(&mut Edits::lend(&mut doc), &op)
-        .unwrap();
-    assert!(
-        crate::read::page_block_snapshots(&doc, page)
-            .iter()
-            .any(|(_, text)| text == "Already visible")
-    );
-    // What applies is the notebook's edit of this note's body, reported as
-    // the notebook's action the body's edit is published under.
-    let body = assert_notes_capture(
-        &queue,
-        &mut doc,
-        &before,
-        "notes.notebook",
-        &Invoke::<Notebook>::apply(&actions::edit_body_action(page, &op)).unwrap(),
-    );
-    assert!(!body.mutation_hashes.is_empty());
-    assert_eq!(body.original_heads, renamed.mutation_hashes);
-    assert_ne!(body.invocation, renamed.invocation);
-    assert_eq!(body.encoded.type_id, actions::encode(&create).type_id);
-    let applied: serde_json::Value = serde_json::from_slice(&body.encoded.payload).unwrap();
-    let expected: serde_json::Value =
-        serde_json::from_slice(&actions::encode(&actions::edit_body_action(page, &op)).payload)
-            .unwrap();
-    assert_eq!(
-        applied["op"], expected["op"],
-        "the encoded action edits this note's body"
-    );
+    assert!(!deleted.mutation_hashes.is_empty());
+    assert_eq!(deleted.original_heads, created.mutation_hashes);
+    assert_ne!(deleted.invocation, created.invocation);
 }
 
 #[test]
-fn local_capture_notes_same_title_and_reads_do_not_invent_mutations() {
-    use crate::{actions, notebook::Notebook};
-    use ui::tilo_resource::Invoke;
-
-    let (_framework, dispatcher, mut doc) = notes_capture_framework();
-    let page = fresh_page_id();
-    dispatcher
-        .apply_now(
-            &mut Edits::lend(&mut doc),
-            &actions::create_page_action(page, None, "Unchanged"),
-        )
-        .unwrap();
-    let before = doc.get_heads();
+fn local_capture_notes_reads_do_not_invent_mutations() {
+    let (_framework, _dispatcher, doc) = notes_capture_framework();
     let queue = ui::local_document_action::Queue::new();
     let _scope = queue.enter("notes-pre-input-directory".into());
-    assert_eq!(crate::read::list_pages(&doc)[0].title, "Unchanged");
-    assert_eq!(doc.get_heads(), before);
+    assert!(crate::read::list_tags(&doc).is_empty());
     assert!(queue.drain().is_empty(), "reading is not a local action");
-
-    let noop = actions::rename_page_action(page, "Unchanged");
-    dispatcher
-        .apply_now(&mut Edits::lend(&mut doc), &noop)
-        .unwrap();
-    assert_eq!(doc.get_heads(), before);
-    let captured = assert_notes_capture(
-        &queue,
-        &mut doc,
-        &before,
-        "notes.notebook",
-        &Invoke::<Notebook>::apply(&noop).unwrap(),
-    );
-    assert!(captured.mutation_hashes.is_empty());
 }

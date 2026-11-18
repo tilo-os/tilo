@@ -74,7 +74,7 @@ wait "$engine_pid" 2>/dev/null || true
 
 # ---- The session --------------------------------------------------------------
 # Through the script the guest agent runs, so the smoke proves that path too.
-# Its identity is not proved here: a session is handed one by the relay at
+# Its identity is not proved here: a session is handed one by the server at
 # every start, and the image holds none.
 printf 'TILO_SESSION_ARGS=\n' > "$work/session.env"
 chown tilo-browser:tilo-browser "$work/session.env"

@@ -13,7 +13,7 @@
 # The run proves:
 #   1. The compositor starts the desktop, with neither identity setup nor
 #      "Your existing identity needs recovery" in front of it.
-#   2. The read-only identity gate the session wrapper runs at login passes.
+#   2. The read-only identity check the session wrapper runs at login passes.
 #   3. Startup never minted a second identity or rewrote the enrollment: no
 #      primary record, no root key on disk, the device certificate unchanged.
 #   4. An authored app (Notes) opens, and its launch leaves the identity
@@ -158,7 +158,7 @@ done
 "$vm" shot joined-desktop >/dev/null 2>&1 \
   && cp -f "$TILO_RUN/joined-desktop.png" "$out/" 2>/dev/null || true
 
-# The identity chain check the release gate runs on an installed session, in
+# The identity chain check the release check runs on an installed session, in
 # the person's own session so their secret store answers.
 "$vm" ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/tilo-session --verify-collaboration-identity' \
   > "$out/verify-identity.txt" 2>&1 || {
@@ -186,7 +186,7 @@ identity_manifest="cd $identity_dir && find . -mindepth 1 ! -path ./registry.jso
   # A desktop that died under the launch leaves no app to find on the bus;
   # say that, with the status the session wrapper recorded, rather than
   # blame the app.
-  session_end="$("$vm" ssh 'grep -a "^tilo-flight-record-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
+  session_end="$("$vm" ssh 'grep -a "^tilo-flight-entry-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
   [ -z "$session_end" ] || die "the desktop session ended while Notes opened: $session_end"
   die "Notes did not open on the joined device"
 }

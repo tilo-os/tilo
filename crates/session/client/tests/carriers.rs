@@ -26,9 +26,9 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::{Carrier, Host, answer_pairing, certify, pending_pairings};
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::VoiceGrant;
+use tilo_server_client::{Carrier, Host, answer_pairing, certify, pending_pairings};
+use tilo_server_protocol::Envelope;
+use tilo_server_protocol::voice::VoiceGrant;
 use tilo_session_client::MemoryPeerStore;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -47,7 +47,7 @@ macro_rules! over_each_carrier {
             $(
                 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 async fn $scenario() {
-                    super::$scenario(tilo_relay_client::Carrier::Direct).await;
+                    super::$scenario(tilo_server_client::Carrier::Direct).await;
                 }
             )*
         }
@@ -55,7 +55,7 @@ macro_rules! over_each_carrier {
             $(
                 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 async fn $scenario() {
-                    super::$scenario(tilo_relay_client::Carrier::Relay).await;
+                    super::$scenario(tilo_server_client::Carrier::Relay).await;
                 }
             )*
         }
@@ -64,7 +64,7 @@ macro_rules! over_each_carrier {
             $(
                 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 async fn $scenario() {
-                    super::$scenario(tilo_relay_client::Carrier::WebTransport).await;
+                    super::$scenario(tilo_server_client::Carrier::WebTransport).await;
                 }
             )*
         }
@@ -75,7 +75,8 @@ over_each_carrier!(
     a_root_holding_device_certifies_a_new_one,
     the_persons_root_pairs_a_new_device,
     documents_sync_both_ways_until_the_device_is_revoked,
-    the_workspace_admits_the_device_and_its_live_plane_carries_it,
+    a_removed_device_is_told_that_it_was_removed,
+    the_workspace_admits_the_device_and_its_live_session_carries_it,
     the_device_takes_part_in_a_call,
 );
 
@@ -150,7 +151,7 @@ impl Ada {
 
     /// Ada's laptop, in the workspace over a direct session.
     async fn laptop_peer(&self, host_cert: &DeviceCert) -> Link {
-        place(&self.host.relay, &self.laptop.cert).await;
+        place(&self.host.server, &self.laptop.cert).await;
         let peer = start_peer(
             self.host.over(Carrier::Direct),
             self.laptop.cert.clone(),
@@ -162,7 +163,7 @@ impl Ada {
     }
 }
 
-/// A page's session over `carrier`: its device key stays in custody, so it
+/// A page's session over `carrier`: its device key stays held, so it
 /// dials from an endpoint its device delegated.
 fn page(
     host: &TestHost,
@@ -189,7 +190,7 @@ async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     );
     assert_eq!(cert.user_public_key, ada.root.verifying_key().to_bytes());
     assert!(!cert.capabilities.can_admit_devices);
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 /// What a page holding the person's root runs: over the session it already
@@ -249,7 +250,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
             .is_empty()
     );
     session.close();
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
@@ -281,7 +282,9 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     holds(&page, &route(), &on_laptop).await;
     assert_eq!(page.snapshot().synchronization, "acknowledged");
 
-    // Revoked, the page is turned away on every reconnect and stops.
+    // Revoked, the page is told so at its next hello, over every carrier, and stops there:
+    // its server says why it turns the device away, where it used to close the hello with
+    // nothing said and the page gave up as `not-admitted` after three tries.
     let mut entry = RevocationEntry {
         user_public_key: ada.root.verifying_key().to_bytes(),
         revoked_device_public_key: cert.device_public_key,
@@ -290,21 +293,104 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &ada.root).unwrap();
-    tilo_relay::store::save_revocations(ada.state.path(), &[entry]).unwrap();
+    tilo_server::store::save_revocations(ada.state.path(), &[entry]).unwrap();
     let failed = wait_for("the page to be refused", || {
         let snapshot = page.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }
     })
     .await;
-    assert_eq!(failed.error_code, Some("not-admitted"));
+    assert_eq!(failed.error_code, Some("device-revoked"));
     assert_eq!(page.status().phase, TransportPhase::Failed);
     page.close();
     laptop.close();
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
-/// The workspace scope's record: its channel keys seal the plane's tracks.
-fn plane_route() -> DocumentRoute {
+/// A person removes one of their devices the way Settings does (their root signs the removal,
+/// a session of theirs announces it), and the device is told so. Its server used to close the
+/// removed device's hello with nothing said: the device read a server that was away, tried
+/// again, and its page waited on "Can't reach …". Loaded again, the page's first hello is now
+/// refused with its reason and its session stops there with `device-revoked`, the code its
+/// page words as "This browser was removed from your devices"; the page that was open hears
+/// the same when it asks again.
+async fn a_removed_device_is_told_that_it_was_removed(carrier: Carrier) {
+    let ada = Ada::start().await;
+    let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
+    let open = page(&ada.host, carrier, key.clone(), &cert, &server_cert);
+    open.join_placed(WORKSPACE, "Workspace").unwrap();
+    let laptop = ada.laptop_peer(&server_cert).await;
+    ready(&[&open, &laptop]).await;
+
+    // Ada removes the browser from her devices, on her laptop.
+    let removal = tilo_server_client::revoke_device(
+        &ada.root,
+        cert.device_public_key,
+        tilo_clock::unix_now_ns(),
+        RevocationReason::Retired,
+    )
+    .await
+    .unwrap();
+    laptop.send(Cmd::Revoke(removal.clone())).unwrap();
+    wait_for("the server to take the removal in", || async {
+        ada.host
+            .server
+            .workspaces()
+            .unwrap()
+            .state(WORKSPACE)
+            .await?
+            .revocations()
+            .into_iter()
+            .find(|held| held == &removal)
+    })
+    .await;
+
+    // The browser's page is loaded again: a new session of the same device. Its first hello
+    // is refused and the refusal says why, so the session stops there, told once, and at no
+    // moment reads as waiting for a server that is away.
+    let loaded = page(&ada.host, carrier, key, &cert, &server_cert);
+    loaded.join_placed(WORKSPACE, "Workspace").unwrap();
+    let told = wait_for("the page loaded again to hear its server's answer", || {
+        let (snapshot, status) = (loaded.snapshot(), loaded.status());
+        async move {
+            assert_ne!(
+                status.phase,
+                TransportPhase::Offline,
+                "a removed device read its server as away: {:?}",
+                status.failures
+            );
+            (snapshot.phase == "failed").then_some(snapshot)
+        }
+    })
+    .await;
+    assert_eq!(
+        told.error_code,
+        Some("device-revoked"),
+        "a removed device was not told that it was removed: {:?}",
+        told.error
+    );
+    assert_eq!(loaded.status().attempt, 0, "it asked once");
+    loaded.close();
+
+    // The page that was open when the removal came asks its server again, and hears the same.
+    open.send(Cmd::Reconnect).unwrap();
+    wait_for("the open page to hear that it was removed", || {
+        let snapshot = open.snapshot();
+        async move {
+            (snapshot.phase == "failed" && snapshot.error_code == Some("device-revoked"))
+                .then_some(())
+        }
+    })
+    .await;
+    open.close();
+
+    // The laptop is the person's as before.
+    assert_eq!(laptop.status().phase, TransportPhase::Connected);
+    laptop.close();
+    ada.host.server.shutdown().await;
+}
+
+/// The workspace scope's record: its channel keys seal the live session's tracks.
+fn live_session_route() -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: WORKSPACE.to_owned(),
@@ -313,7 +399,7 @@ fn plane_route() -> DocumentRoute {
 }
 
 /// The scope's keys, as the workspace's members derive them.
-fn plane_keys() -> ContentKeys {
+fn live_session_keys() -> ContentKeys {
     KeyGroup::create(
         collab_types::WorkspaceId::new(),
         MemberKey::generate("ada").unwrap(),
@@ -323,29 +409,29 @@ fn plane_keys() -> ContentKeys {
     .unwrap()
 }
 
-async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: Carrier) {
+async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {
     let ada = Ada::start().await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
-    place(&ada.host.relay, &cert).await;
-    let keys = plane_keys();
+    place(&ada.host.server, &cert).await;
+    let keys = live_session_keys();
 
     // The workspace's governance admits the page.
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
-    page.send(Cmd::InstallGroupKeys(plane_route(), keys.clone()))
+    page.send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
         .unwrap();
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     in_workspace(&page, crate::support::workspace()).await;
     let laptop = ada.laptop_peer(&host_cert).await;
     laptop
-        .send(Cmd::InstallGroupKeys(plane_route(), keys.clone()))
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
         .unwrap();
     in_workspace(&laptop, crate::support::workspace()).await;
 
-    // The page says where it is on the workspace's plane, and the laptop
+    // The page says where it is on the workspace's live session, and the laptop
     // hears it, opened with the scope's keys.
     let events = laptop.events();
     let said = Presence::pointing(WORKSPACE, 7, 0.25, 0.75);
-    let (from, track, body) = wait_for("the laptop to hear the page on its plane", || {
+    let (from, track, body) = wait_for("the laptop to hear the page on its live session", || {
         page.send(Cmd::Presence(
             crate::support::workspace(),
             vec![said.clone()],
@@ -354,7 +440,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
         let events = events.drain();
         async move {
             events.into_iter().find_map(|event| match event {
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track,
@@ -369,11 +455,11 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
     assert_eq!(from, cert.device_public_key);
     assert_eq!(track, tilo_live::live::Track::Presence);
     assert_eq!(tilo_live::presence::decode(&body).unwrap(), said);
-    assert_eq!(page.live_note(), None, "the page reached its plane");
+    assert_eq!(page.live_note(), None, "the page reached its live session");
 
     page.close();
     laptop.close();
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 /// The next call event of `peer` that `pick` accepts.

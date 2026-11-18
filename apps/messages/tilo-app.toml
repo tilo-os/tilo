@@ -26,8 +26,7 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@30"
-shell-ui   = "optional@34"
+collab = "optional@31"
 # The person's Signal, WhatsApp, SMS and Tilo accounts (tilo-messaging).
 messaging = "optional@1"
 

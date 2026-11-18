@@ -4,7 +4,7 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    ActionHostError, CatalogueProvider, CatalogueResource, InvocationReceipt, InvocationState,
+    ActionCallError, CatalogueProvider, CatalogueResource, InvocationReceipt, InvocationState,
     Pending,
 };
 use tilo_actions::{ActionParam, InvocationUpdate, ParamType};
@@ -60,7 +60,7 @@ struct Writer {
 
 struct DirectoryFailure {
     parent: Option<String>,
-    error: ActionHostError,
+    error: ActionCallError,
 }
 
 /// One request a [`Writer`] was sent.
@@ -471,12 +471,12 @@ fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
         .any(|field| field.to_lowercase().contains(&needle))
 }
 
-impl ActionHost for Writer {
+impl ActionProvider for Writer {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.log
             .lock()
             .unwrap()
@@ -503,7 +503,7 @@ impl ActionHost for Writer {
             }));
         };
         if provider != WORKSPACE && !running {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let mut failure = self.query_failure.lock().unwrap();
         if provider != WORKSPACE
@@ -567,7 +567,7 @@ impl ActionHost for Writer {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         self.log.lock().unwrap().push(Asked::Invoke {
             revision: request.revision.clone(),
@@ -580,11 +580,11 @@ impl ActionHost for Writer {
         // As the broker refuses an instance that is no longer live.
         let gone = request.target.provider != WORKSPACE && !*self.running.lock().unwrap();
         if !known || gone {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         if request.target.provider == WORKSPACE {
             if !matches!(&request.argument, InvokeArgument::Json(map) if map.is_empty()) {
-                return Pending::ready(Err(ActionHostError::Refused {
+                return Pending::ready(Err(ActionCallError::Refused {
                     reason: "launch content requires an application the launcher authenticated"
                         .into(),
                 }));
@@ -683,7 +683,7 @@ impl ActionHost for Writer {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -697,7 +697,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// One turn's tool call: its structured result, or its error text.
-async fn call<H: ActionHost + Send + Sync + 'static>(
+async fn call<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,
@@ -1340,7 +1340,7 @@ tilo_test_env::scenario! {
             .unwrap_err();
             assert_eq!(
                 refusal,
-                format!("not_permitted: {}", ActionHostError::NotPermitted)
+                format!("not_permitted: {}", ActionCallError::NotPermitted)
             );
             assert!(host.mutations.lock().unwrap().is_empty());
         });
@@ -1433,13 +1433,13 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A host that mutates before reporting execution failure. The real ledger
+/// A host that mutates before reporting execution failure. The real log
 /// deduplicates the caller's id; it cannot protect against a bridge inventing
 /// a fresh id. Admission refusals, in contrast, record no mutation.
 #[derive(Clone)]
 struct FailingMutationHost {
     directory: Writer,
-    ledger: Arc<Mutex<tilo_actions::remote::InvocationLedger<InvocationState>>>,
+    log: Arc<Mutex<tilo_actions::remote::InvocationLog<InvocationState>>>,
     mutations: Arc<Mutex<Vec<InvokeRequest>>>,
     refuse: bool,
 }
@@ -1450,19 +1450,19 @@ impl FailingMutationHost {
         *directory.running.lock().unwrap() = true;
         Self {
             directory,
-            ledger: Arc::default(),
+            log: Arc::default(),
             mutations: Arc::default(),
             refuse,
         }
     }
 }
 
-impl ActionHost for FailingMutationHost {
+impl ActionProvider for FailingMutationHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.directory.query(caller, query)
     }
 
@@ -1470,12 +1470,12 @@ impl ActionHost for FailingMutationHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if self.refuse {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         let result = self
-            .ledger
+            .log
             .lock()
             .unwrap()
             .admit(caller, &request, || {
@@ -1498,14 +1498,14 @@ impl ActionHost for FailingMutationHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.ledger.lock().unwrap().get(caller, id).cloned()
+        self.log.lock().unwrap().get(caller, id).cloned()
     }
 
     fn cancel(
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -2230,13 +2230,13 @@ tilo_test_env::scenario! {
         for tool in ["tilo_invoke", "tilo_resolve"] {
             for (failure, expected) in [
                 (
-                    ActionHostError::Unavailable {
+                    ActionCallError::Unavailable {
                         reason: "the original directory is disconnected".into(),
                     },
                     "unavailable: the original directory is disconnected",
                 ),
                 (
-                    ActionHostError::NotPermitted,
+                    ActionCallError::NotPermitted,
                     "not_permitted: the caller may not invoke this action",
                 ),
             ] {
@@ -2280,7 +2280,7 @@ tilo_test_env::scenario! {
             *host.running.lock().unwrap() = true;
             *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
                 parent: Some(DOC.into()),
-                error: ActionHostError::Unavailable {
+                error: ActionCallError::Unavailable {
                     reason: "the original action directory is disconnected".into(),
                 },
             });
@@ -2457,4 +2457,242 @@ tilo_test_env::scenario! {
         });
         assert!(host.invoked().is_empty());
     }
+}
+
+/// The Files app, as its package names it.
+const FILES: &str = "so.tilo.file-explorer";
+/// The instance of Files in which a [`FilesShown`] device shows a folder.
+const SHOWN: &str = "7";
+
+/// A device on which Files shows a folder that holds `notes.md`, in a workspace whose own
+/// folder holds a file of every name. With `window` off nothing of Files is started here, as
+/// on a turn a server carries out. Each read answers where it read, and every call is kept.
+#[derive(Clone, Default)]
+struct FilesShown {
+    window: bool,
+    invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+}
+
+impl FilesShown {
+    /// Where each `read-text` was asked, in order: the instance of Files, or the workspace.
+    fn read_at(&self) -> Vec<String> {
+        self.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.target.address.action == "read-text")
+            .map(|request| request.target.provider.clone())
+            .collect()
+    }
+
+    /// What `provider` offers of Files: the workspace its start and its read by a path, the
+    /// instance its read of what it shows.
+    fn offered(provider: &str) -> Vec<CatalogueRow> {
+        let (resource, actions): (&str, &[&str]) = if provider == WORKSPACE {
+            ("app.so.tilo.file-explorer", &["start", "read-text"])
+        } else {
+            ("files.folder", &["read-text"])
+        };
+        actions
+            .iter()
+            .map(|action| {
+                let mut row = row("", resource, "files.folder", action, Vec::new());
+                row.app_id = FILES.into();
+                row.provider = provider.to_owned();
+                row
+            })
+            .collect()
+    }
+}
+
+impl ActionProvider for FilesShown {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let Some(provider) = query.provider.clone() else {
+            let providers = self
+                .window
+                .then(|| CatalogueProvider {
+                    provider: SHOWN.into(),
+                    app_id: FILES.into(),
+                    workspace: "workspace".into(),
+                    document_id: String::new(),
+                    browsable: true,
+                })
+                .into_iter()
+                .collect();
+            return Pending::ready(Ok(CataloguePage {
+                revision: "v1".into(),
+                providers,
+                ..CataloguePage::default()
+            }));
+        };
+        if provider != WORKSPACE && !self.window {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        let mut rows = Self::offered(&provider);
+        if let Some(target) = &query.target {
+            rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
+        } else if query.needle.is_empty() {
+            let parent = query.parent_resource.clone().unwrap_or_default();
+            rows.retain(|row| row.parent_resource == parent);
+            if let Some(name) = &query.resource_name {
+                rows.retain(|row| row.resource.is_named(name));
+            }
+        } else {
+            rows.retain(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|a| a.address.action.contains(query.needle.as_str()))
+            });
+        }
+        Pending::ready(Ok(CataloguePage {
+            revision: "v1".into(),
+            rows,
+            exhausted: true,
+            ..CataloguePage::default()
+        }))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
+        self.invoked.lock().unwrap().push(request);
+        Pending::ready(Ok(InvocationState::new(
+            invocation,
+            InvocationUpdate::Accepted { invocation },
+        )
+        .receipt()))
+    }
+
+    fn observe(
+        &self,
+        _caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<InvocationState> {
+        let (target, file) = self
+            .invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|request| request.invocation == *id)
+            .map(|request| {
+                let arguments = match &request.argument {
+                    InvokeArgument::Json(map) => map.clone(),
+                    _ => serde_json::Map::new(),
+                };
+                let file = arguments.get("file").and_then(Value::as_str);
+                (request.target.clone(), file.unwrap_or_default().to_owned())
+            })?;
+        let answered = |value: Value| InvocationUpdate::Succeeded {
+            invocation: *id,
+            output: tilo_actions::ActionOutput {
+                value: Some(value),
+                ..tilo_actions::ActionOutput::default()
+            },
+        };
+        let update = if target.provider == WORKSPACE && target.address.action == "start" {
+            // As the device answers a workspace's start of an app that is open: with the
+            // instance that is there.
+            answered(json!({"peer_id": 7}))
+        } else if target.provider == WORKSPACE {
+            answered(json!({"text": format!("{file} of the workspace's own folder")}))
+        } else if file == "notes.md" {
+            answered(json!({"text": "notes.md of the folder shown"}))
+        } else {
+            // The words Files refuses a name with that is no entry of the folder it shows.
+            let error = tilo_actions::ApiError::InvalidArguments(format!(
+                "`{file}` is neither an absolute path nor an entry of the folder shown"
+            ));
+            InvocationUpdate::Failed {
+                invocation: *id,
+                error: tilo_actions::ActionFailure {
+                    code: error.code().into(),
+                    message: error.to_string(),
+                    details: error.failure_details(),
+                    retryable: false,
+                },
+            }
+        };
+        Some(InvocationState::new(*id, update))
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+/// What an agent's `files#read-text` of `file` answers on `device`, and where it was read.
+fn read_by_name(device: &FilesShown, file: &str) -> (String, Vec<String>) {
+    let tools = McpServer::for_agent(device.clone(), "workspace".into(), "claude-code", "ada")
+        .with_agent_session("mcp:test", "MCP agent");
+    let asked = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "tilo_do",
+            "arguments": {"path": "files#read-text", "args": {"file": file}}}});
+    let reply = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(tools.handle(asked))
+        .unwrap();
+    (reply.to_string(), device.read_at())
+}
+
+/// A device's agent reads a file by its bare name. Where Files shows a folder that holds an
+/// entry by that name, it reads that entry, as it sees it listed there. A name that folder
+/// does not hold is a path in the workspace's own folder; so is every name with a folder
+/// before it, and every name where nothing of Files is started, as on a turn a server
+/// carries out.
+#[test]
+fn a_bare_file_name_is_the_entry_files_shows_and_else_a_path_in_the_workspace() {
+    let showing = || FilesShown {
+        window: true,
+        ..FilesShown::default()
+    };
+
+    let device = showing();
+    let (reply, at) = read_by_name(&device, "notes.md");
+    assert!(reply.contains("notes.md of the folder shown"), "{reply}");
+    assert_eq!(at, [SHOWN], "asked of Files, which shows the entry");
+
+    let device = showing();
+    let (reply, at) = read_by_name(&device, "report.md");
+    assert!(
+        reply.contains("report.md of the workspace's own folder"),
+        "{reply}"
+    );
+    assert_eq!(
+        at,
+        [SHOWN, WORKSPACE],
+        "Files shows no such entry: the workspace's own folder is read"
+    );
+
+    let device = showing();
+    let (reply, at) = read_by_name(&device, "Tasks/notes.md");
+    assert!(
+        reply.contains("Tasks/notes.md of the workspace's own folder"),
+        "{reply}"
+    );
+    assert_eq!(at, [WORKSPACE], "a folder before the name: the workspace's");
+
+    let no_device = FilesShown::default();
+    let (reply, at) = read_by_name(&no_device, "notes.md");
+    assert!(
+        reply.contains("notes.md of the workspace's own folder"),
+        "{reply}"
+    );
+    assert_eq!(
+        at,
+        [WORKSPACE],
+        "nothing of Files is started: the workspace's"
+    );
 }

@@ -41,6 +41,16 @@ impl RootWake {
     }
 }
 
+/// What [`super::FrameHarness::settle_if_owed`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwedSettle {
+    /// It ran frames until nothing was owed: the frame shows all of it.
+    Framed,
+    /// Nothing was owed, and it laid nothing out; `moved` when the
+    /// invocations it dispatched changed the document.
+    Unframed { moved: bool },
+}
+
 impl Drop for RootWake {
     fn drop(&mut self) {
         self.scope.close();
@@ -81,6 +91,91 @@ impl super::FrameHarness {
                 self.relayout();
             }
         });
+    }
+
+    /// What an action leaves for the frame after it, taken up as the live
+    /// window's idle pass takes it up, without a frame of everything the view
+    /// shows: the invocations it submitted are dispatched, and frames run
+    /// ([`Self::settle_owed`]) only while the root is owed a reply
+    /// ([`crate::wake::WakeHandle::owe`]) or one landed and woke it. An action
+    /// that only changed the document costs that change: whoever reads the
+    /// view next lays it out.
+    pub fn settle_if_owed(&mut self) -> OwedSettle {
+        let before = crate::doc::settle_mark(&self.state.doc);
+        self.idle_control_tick();
+        let moved = crate::doc::settle_mark(&self.state.doc) != before;
+        self.drain_component_wakes();
+        let owes = self
+            .component_wake
+            .as_ref()
+            .map_or_else(
+                || self.root_wake.handle(),
+                |wake| wake.binding.lifetime.clone(),
+            )
+            .owes();
+        if !owes && !self.wake_pending() {
+            return OwedSettle::Unframed { moved };
+        }
+        self.settle_owed();
+        OwedSettle::Framed
+    }
+
+    /// Wait up to `timeout` for the job `invocation` started to end, and
+    /// answer what it ended as; `None` when it is still running then.
+    ///
+    /// A job's input is its resource and its arguments, never what the view
+    /// shows, so nothing is laid out for it: the wait takes up the job's
+    /// queue as the live window's idle pass does (its progress and end
+    /// polled, what its end submitted applied to the document, its writes
+    /// acknowledged) and parks on the current
+    /// [`crate::background::Background`] between passes, which a pumped
+    /// executor answers by running its queue. Whatever woke the window
+    /// meanwhile is taken up by whoever next lays the view out.
+    pub fn await_job(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        timeout: crate::time::Duration,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.invalidate_local();
+        let background = crate::background::Background::current();
+        let deadline = background.now().checked_add(timeout);
+        loop {
+            self.take_up_acted();
+            if let Some(end) = self
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+            {
+                return Some(end);
+            }
+            let now = background.now();
+            // Past the deadline, the job is still running.
+            let deadline = deadline.filter(|deadline| now < *deadline)?;
+            let slice = now
+                .checked_add(crate::time::Duration::from_millis(1))
+                .unwrap_or(deadline);
+            background.park(slice.min(deadline));
+        }
+    }
+
+    /// What an action leaves for the frame after it, taken up as the live
+    /// window's idle pass takes it up, laying nothing out: the invocations
+    /// it submitted are dispatched to the document, the jobs running are
+    /// polled and the document's writes acknowledged. A wake that came
+    /// meanwhile (a worker's reply landed) is taken too: whoever next lays
+    /// the view out takes up what it brought.
+    pub fn take_up_acted(&mut self) {
+        self.invalidate_local();
+        self.drain_component_wakes();
+        let _ = self.take_wake();
+        // A frame that served a woken owner model retired the layout
+        // dispatch reads; it is admitted again first.
+        if let Err(error) = self.readmit_owner_service_layout() {
+            tracing::warn!(?error, "headless: owner layout readmission refused");
+        }
+        self.dispatch_and_poll_controls();
+        let _ = self.write_out_documents();
     }
 
     /// Take up the wake waiting for this frame, if any.
@@ -169,11 +264,11 @@ mod tests {
             if self.landed.is_some() || self.value.is_some() {
                 return;
             }
-            let (release, gate) = mpsc::channel::<()>();
+            let (release, check) = mpsc::channel::<()>();
             let (answer, landed) = mpsc::channel();
             let wake = crate::wake::WakeHandle::new();
             std::thread::spawn(move || {
-                let _ = gate.recv();
+                let _ = check.recv();
                 let _ = answer.send(7);
                 wake.wake();
             });

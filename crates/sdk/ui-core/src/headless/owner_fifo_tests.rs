@@ -1,6 +1,6 @@
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
-use crate::application_test_support::{self as probe, ProbeHost};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
+use crate::application_test_support::{self as probe, ProbeHarness};
 use crate::bound_dispatch::{BoundDispatchError, ComponentRequest};
 use crate::owner_wake::OwnerWakeQueue;
 use crate::widget::{AppKind, AppWidget, BoundAppWidget, IconDescriptor, Widget};
@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 struct Seen {
     syncs: Rc<Cell<usize>>,
     updates: Rc<Cell<usize>>,
-    drain_close_gate: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
+    drain_close_check: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
     drained: Rc<Cell<bool>>,
     saves: Rc<Cell<usize>>,
     saved: Rc<Cell<bool>>,
@@ -92,16 +92,20 @@ impl Widget for OwnerProbe {
 }
 impl crate::undo::CommittedActions for OwnerProbe {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions
-            .take_committed()
-            .or_else(|| self.seen.drain_close_gate.borrow().is_some().then(Vec::new))
+        self.actions.take_committed().or_else(|| {
+            self.seen
+                .drain_close_check
+                .borrow()
+                .is_some()
+                .then(Vec::new)
+        })
     }
 }
 impl crate::undo::UndoPoints for OwnerProbe {
     fn get_state(&self) -> Option<String> {
-        if let Some(gate) = self.seen.drain_close_gate.borrow_mut().take() {
+        if let Some(check) = self.seen.drain_close_check.borrow_mut().take() {
             self.seen.drained.set(true);
-            gate.set(true);
+            check.set(true);
         }
         None
     }
@@ -130,7 +134,7 @@ impl AppWidget for OwnerProbe {
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }
 thread_local! { static NEXT: RefCell<Option<(Seen, u64, bool)>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -157,7 +161,7 @@ fn factory(
     ))
 }
 fn prepared(
-    host: &ProbeHost,
+    host: &ProbeHarness,
     queue: &OwnerWakeQueue,
     id: u64,
     declared: bool,
@@ -262,7 +266,7 @@ fn close(frame: &mut FrameHarness, expected: usize) {
 // queued write has had its wake called, so flushing, then servicing, and
 // repeating until the store has called nothing more leaves a queue that is
 // empty of store work rather than one that merely looks empty.
-fn settle_first_writes(host: &ProbeHost, frame: &mut FrameHarness, seen: &[Seen]) {
+fn settle_first_writes(host: &ProbeHarness, frame: &mut FrameHarness, seen: &[Seen]) {
     let deadline = crate::time::now() + tilo_test_env::hang_bound();
     loop {
         host.records.try_flush().unwrap();
@@ -278,7 +282,7 @@ fn settle_first_writes(host: &ProbeHost, frame: &mut FrameHarness, seen: &[Seen]
 }
 #[test]
 fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_without_paint() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let owners = (0..110)
         .map(|i| prepared(&host, &queue, 5000 + i, true))
@@ -328,7 +332,7 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
 /// for it.
 #[test]
 fn a_landed_save_shows_its_status_without_an_owner_service_or_layout() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 6100, true);
     let (mut frame, _, _) = frame(&queue, vec![owner]);
@@ -363,7 +367,7 @@ fn a_landed_save_shows_its_status_without_an_owner_service_or_layout() {
 }
 #[test]
 fn first_dirty_fifo_and_reason_or_preserve_every_original_sink_event() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, ea) = prepared(&host, &queue, 900, true);
     let (b, sb, eb) = prepared(&host, &queue, 901, true);
@@ -403,7 +407,7 @@ fn first_dirty_fifo_and_reason_or_preserve_every_original_sink_event() {
 }
 #[test]
 fn wake_raised_by_actual_service_remains_in_next_fifo_snapshot() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 910, true);
     let (b, sb, _) = prepared(&host, &queue, 911, true);
@@ -421,7 +425,7 @@ fn wake_raised_by_actual_service_remains_in_next_fifo_snapshot() {
 }
 #[test]
 fn busy_canonical_admission_requeues_taken_batch_without_touching_later_owners() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 920, true);
     let id = a.component.record().id.clone();
@@ -447,7 +451,7 @@ fn busy_canonical_admission_requeues_taken_batch_without_touching_later_owners()
 }
 #[test]
 fn unknown_original_custom_visitor_refusal_keeps_full_batch_for_explicit_retry() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, seen, _) = prepared(&host, &queue, 930, true);
     let (mut frame, visits, refuse) = frame(&queue, vec![a]);
@@ -468,7 +472,7 @@ fn unknown_original_custom_visitor_refusal_keeps_full_batch_for_explicit_retry()
 }
 #[test]
 fn service_unwind_requeues_current_and_remaining_work_after_original_loans_unwind() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 940, true);
     let id = a.component.record().id.clone();
@@ -495,7 +499,7 @@ fn service_unwind_requeues_current_and_remaining_work_after_original_loans_unwin
 
 #[test]
 fn same_owner_callback_late_wake_is_not_consumed_by_snapshot_completion() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9601, false);
     let (mut frame, _, _) = frame(&queue, vec![owner]);
@@ -513,7 +517,7 @@ fn same_owner_callback_late_wake_is_not_consumed_by_snapshot_completion() {
 }
 #[test]
 fn event_only_opaque_owner_retains_original_model_and_save_service() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, events) = prepared(&host, &queue, 9602, false);
     let (mut frame, _, _) = frame(&queue, vec![owner]);
@@ -531,7 +535,7 @@ fn event_only_opaque_owner_retains_original_model_and_save_service() {
 
 #[test]
 fn update_drain_refusal_still_attempts_fresh_sync_and_retains_first_error() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5210, false);
     let binding = owner.component.callback_binding();
@@ -539,7 +543,7 @@ fn update_drain_refusal_still_attempts_fresh_sync_and_retains_first_error() {
     let updates = seen.updates.get();
     let syncs = seen.syncs.get();
     let actor = frame.state.doc.get_actor().clone();
-    *seen.drain_close_gate.borrow_mut() = Some(binding.closing.clone());
+    *seen.drain_close_check.borrow_mut() = Some(binding.closing.clone());
     seen.wake.borrow().as_ref().unwrap().wake();
     let probe = crate::bound_dispatch::document_admission_probe::Probe::new(&binding);
     let result = frame.service_pending_owner_models();
@@ -549,7 +553,7 @@ fn update_drain_refusal_still_attempts_fresh_sync_and_retains_first_error() {
     let restored = frame.state.doc.get_actor() == &actor;
     let update_entered = seen.updates.get() == updates + 1;
     let sync_refused = seen.syncs.get() == syncs;
-    // The metadata callback tested the actual closing gate; no Source close
+    // The metadata callback tested the actual closing check; no Source close
     // occurred. Restore only this test condition before original strict close.
     binding.closing.set(false);
     close(&mut frame, 1);
@@ -569,7 +573,7 @@ fn update_drain_refusal_still_attempts_fresh_sync_and_retains_first_error() {
 
 #[test]
 fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 5220, false);
     let (b, sb, _) = prepared(&host, &queue, 5221, false);
@@ -611,7 +615,7 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
     assert_eq!(retry.unwrap(), 3);
 }
 
-fn background_gate(case: &str, presentation: super::owner_background_work::Presentation) {
+fn background_check(case: &str, presentation: super::owner_background_work::Presentation) {
     use durable_store::DurableStore;
     // The unwraps below name no case: a failure's output ends with this line.
     eprintln!("case: {case}");
@@ -748,9 +752,9 @@ fn background_owner_services_original_model_and_save_without_paint() {
             },
         ),
     ] {
-        background_gate(case, presentation);
+        background_check(case, presentation);
     }
-    // The other side of the gate: only a shown, running window with a GPU can paint, and what
+    // The other side of the check: only a shown, running window with a GPU can paint, and what
     // the service did is reported either way.
     let shown = Presentation {
         hidden: false,
@@ -766,7 +770,7 @@ fn background_owner_services_original_model_and_save_without_paint() {
 }
 #[test]
 fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5231, false);
     let id = owner.component.record().id.clone();
@@ -796,8 +800,8 @@ fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable()
     assert_eq!(retried.unwrap().serviced, 1);
 }
 
-fn memory_host(backend: Rc<durable_store::MemoryStore>) -> ProbeHost {
-    let mut host = ProbeHost::new();
+fn memory_host(backend: Rc<durable_store::MemoryStore>) -> ProbeHarness {
+    let mut host = ProbeHarness::new();
     let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
     host.views = Rc::new(
         crate::application_view::InstanceViewStore::with_store(
@@ -1044,7 +1048,7 @@ fn background_synchronous_submit_refusal_retains_owner_then_real_retry_offers_ch
         inner: inner.clone(),
         refuse: Cell::new(false),
     });
-    let mut host = ProbeHost::new();
+    let mut host = ProbeHarness::new();
     let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
     host.views = Rc::new(
         crate::application_view::InstanceViewStore::with_store(
@@ -1096,7 +1100,7 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     let backend = Rc::new(durable_store::MemoryStore::queued());
     let mirror = Rc::new(durable_store::MemoryStore::new());
     let host = memory_host(backend.clone());
-    let other = ProbeHost::new();
+    let other = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 5236, false);
     let checkout = a.component.record().clone();
@@ -1186,7 +1190,7 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
 /// A window shows its record saved by drawing what the status changed.
 #[test]
 fn a_save_status_change_is_no_structure_change() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (mut owner, seen, wakes) = prepared(&host, &queue, 7000, true);
     let _ = owner.take_structure_change();
@@ -1221,7 +1225,7 @@ fn a_save_status_change_is_no_structure_change() {
 /// rest.
 #[test]
 fn an_idle_pass_serves_the_owner_a_worker_woke_so_the_window_rests() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9100, true);
     let (mut frame, _, _) = frame(&queue, vec![owner]);
@@ -1251,7 +1255,7 @@ fn an_idle_pass_serves_the_owner_a_worker_woke_so_the_window_rests() {
 /// already there, as a live window draws no frame between two interactions.
 #[test]
 fn a_capture_of_a_still_window_runs_no_frame() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9104, true);
     let (mut frame, _, _) = frame(&queue, vec![owner]);

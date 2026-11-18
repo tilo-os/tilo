@@ -103,7 +103,7 @@ impl Arch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Accel {
     /// KVM when this environment can create a KVM VM for the guest, else
-    /// QEMU's multithreaded emulator. The fallback is slower, but lets a gate
+    /// QEMU's multithreaded emulator. The fallback is slower, but lets a check
     /// run inside a CI runner that does not expose its node's /dev/kvm.
     Auto,
     Kvm,
@@ -706,7 +706,7 @@ pub struct Resolved<'a> {
     pub firmware: &'a firmware::Firmware,
     pub varstore: &'a Path,
     pub accel: &'a [String],
-    pub rendernode: &'a str,
+    pub rendernode: &'a RenderNode,
     /// The `-smbios` value carrying root's key.
     pub credential: Option<String>,
 }
@@ -856,7 +856,7 @@ impl Machine {
         for disk in &self.disks {
             args.extend(disk.args());
         }
-        args.extend(self.display_args(resolved.rendernode));
+        args.extend(self.display_args(&resolved.rendernode.path));
         if let Some(vnc) = &self.vnc {
             // Beside whatever the display does locally: the guest renders
             // once, and the VNC server serves those same frames on a socket
@@ -1005,7 +1005,14 @@ impl Machine {
         if let Some(warning) = warning {
             eprintln!("[tilo-vm] warning: {warning}");
         }
-        let rendernode = self.rendernode.clone().unwrap_or_else(detect_rendernode);
+        let rendernode = resolve_rendernode(self.rendernode.as_deref())
+            .map_err(|error| QemuError::new(error.to_string(), error.hint()))?;
+        if self.display == Display::Gl {
+            eprintln!(
+                "[tilo-vm] GL renders on {} ({})",
+                rendernode.path, rendernode.reason
+            );
+        }
         let credential = self.credential()?;
         Ok(Prepared {
             firmware,
@@ -1035,7 +1042,7 @@ struct Prepared {
     firmware: firmware::Firmware,
     varstore: PathBuf,
     accel: Vec<String>,
-    rendernode: String,
+    rendernode: RenderNode,
     credential: Option<String>,
 }
 
@@ -1052,35 +1059,83 @@ impl Prepared {
     }
 }
 
-/// A GL render node for virglrenderer. NVIDIA (0x10de) is skipped: its EGL
-/// stack works poorly with virglrenderer; a Mesa iGPU is strongly preferred.
-fn detect_rendernode() -> String {
-    let mut nodes: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
+/// A GL render node and why it was chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderNode {
+    pub path: String,
+    /// What made this node the choice, for the line a boot prints.
+    pub reason: String,
+}
+
+fn render_nodes() -> Vec<String> {
+    let mut nodes: Vec<String> = std::fs::read_dir("/dev/dri")
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("renderD"))
-        })
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("renderD"))
+        .map(|name| format!("/dev/dri/{name}"))
         .collect();
     nodes.sort();
     nodes
-        .into_iter()
-        .find(|node| {
-            let name = node
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            std::fs::read_to_string(format!("/sys/class/drm/{name}/device/vendor"))
-                .map_or(true, |vendor| vendor.trim() != "0x10de")
-        })
-        .map_or_else(
-            || "/dev/dri/renderD128".into(),
-            |node| node.display().to_string(),
-        )
+}
+
+fn render_node_uevent(path: &str) -> Option<String> {
+    let name = Path::new(path).file_name()?.to_str()?;
+    std::fs::read_to_string(format!("/sys/class/drm/{name}/device/uevent")).ok()
+}
+
+/// NVIDIA's own driver and nouveau initialise no EGL context virglrenderer can
+/// render on (`EGL_NOT_INITIALIZED`); the Mesa drivers do. An unknown vendor is
+/// not NVIDIA and may be tried.
+fn render_node_is_nvidia(path: &str) -> bool {
+    let name = Path::new(path).file_name().and_then(|n| n.to_str());
+    let Some(name) = name else { return false };
+    std::fs::read_to_string(format!("/sys/class/drm/{name}/device/vendor"))
+        .is_ok_and(|vendor| vendor.trim() == "0x10de")
+}
+
+/// The render node virglrenderer renders on: the one `requested` names, else
+/// the first whose driver is not NVIDIA. A machine with only NVIDIA render
+/// nodes still gets one, with the reason saying why it may fail.
+pub fn resolve_rendernode(requested: Option<&str>) -> Result<RenderNode, CliError> {
+    if let Some(path) = requested {
+        if !Path::new(path).exists() {
+            return Err(CliError::RenderNodeMissing {
+                path: path.to_owned(),
+                nodes: render_nodes(),
+            });
+        }
+        return Ok(RenderNode {
+            path: path.to_owned(),
+            reason: "named with --render-node".into(),
+        });
+    }
+    let nodes = render_nodes();
+    if let Some(node) = nodes.iter().find(|node| !render_node_is_nvidia(node)) {
+        let driver = render_node_uevent(node)
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
+            })
+            .unwrap_or_else(|| "its driver".into());
+        return Ok(RenderNode {
+            path: node.clone(),
+            reason: format!(
+                "the first render node whose driver is not NVIDIA; {driver} serves virglrenderer where NVIDIA's EGL stack does not"
+            ),
+        });
+    }
+    if let Some(node) = nodes.first() {
+        return Ok(RenderNode {
+            path: node.clone(),
+            reason: "the only render node; every node here is NVIDIA, whose EGL stack may refuse virglrenderer, so name another with --render-node if a boot fails".into(),
+        });
+    }
+    Ok(RenderNode {
+        path: "/dev/dri/renderD128".into(),
+        reason: "no /dev/dri render node is visible, so the conventional first one".into(),
+    })
 }
 
 /// Can this environment create a KVM VM for `arch`? A container can expose
@@ -1707,10 +1762,23 @@ mod tests {
                 firmware: &firmware,
                 varstore: Path::new("/run/t/vars.img"),
                 accel: &accel,
-                rendernode: "/dev/dri/renderD129",
+                rendernode: &RenderNode {
+                    path: "/dev/dri/renderD129".into(),
+                    reason: String::new(),
+                },
                 credential,
             })
             .join(" ")
+    }
+
+    #[test]
+    fn a_named_render_node_is_used_as_given() {
+        let node = resolve_rendernode(Some("/dev/null")).unwrap();
+        assert_eq!(node.path, "/dev/null");
+        assert!(node.reason.contains("--render-node"), "{}", node.reason);
+        let error = resolve_rendernode(Some("/dev/dri/tilo-no-such-node")).unwrap_err();
+        assert!(error.to_string().contains("does not exist"), "{error}");
+        assert!(error.hint().contains("--render-node"), "{}", error.hint());
     }
 
     tilo_test_env::scenario! {

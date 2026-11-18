@@ -386,12 +386,12 @@ pub struct TileHost {
     /// component taking its place cannot leave them unanswered.
     component_invocations: std::collections::HashSet<tilo_actions::InvocationId>,
     owner_bound_work: bool,
-    owner_bound_custody: Option<crate::history_mode::HistoryOwner>,
+    owner_bound_ownership: Option<crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     history_lifetime: std::rc::Rc<crate::history_mode::owner::ResourceOwnerLifetime>,
-    custody_parent: Option<crate::ControlDomain>,
-    custody_scope: Option<crate::ControlDomain>,
-    custody_renewal: Option<crate::control_custody::CustodyAttachment>,
+    ownership_parent: Option<crate::ControlDomain>,
+    ownership_scope: Option<crate::ControlDomain>,
+    ownership_renewal: Option<crate::control_domain::DomainAttachment>,
     resource_error: Option<String>,
     error_card: Option<(String, super::EmptyState)>,
     record_transition_error: Option<String>,
@@ -480,8 +480,8 @@ impl TileHost {
         self.content_shift
     }
 
-    fn install_live_custody(&mut self, attachment: crate::control_custody::CustodyAttachment) {
-        let Some(parent) = self.custody_parent.clone() else {
+    fn attach_live(&mut self, attachment: crate::control_domain::DomainAttachment) {
+        let Some(parent) = self.ownership_parent.clone() else {
             return;
         };
         let owner = self.history_owner();
@@ -498,7 +498,7 @@ impl TileHost {
                 parent.unsafe_attachment();
                 return;
             }
-            let scope = self.custody_scope.get_or_insert_with(|| parent.child());
+            let scope = self.ownership_scope.get_or_insert_with(|| parent.child());
             if scope
                 .attach_to(&parent)
                 .and_then(|()| domain.attach_to(scope))
@@ -507,13 +507,9 @@ impl TileHost {
                 parent.unsafe_attachment();
                 return;
             }
-            let attachment = self.custody_renewal.take().unwrap_or(attachment);
+            let attachment = self.ownership_renewal.take().unwrap_or(attachment);
             if let TileContent::App(root) = &mut self.content {
-                crate::widget::controls::install_control_custody(
-                    root.as_mut(),
-                    &domain,
-                    attachment,
-                );
+                crate::widget::controls::attach_controls(root.as_mut(), &domain, attachment);
             }
             if let Some(history) = &mut self.history {
                 history.set_control_domain(&domain);
@@ -521,9 +517,9 @@ impl TileHost {
         }
     }
 
-    pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+    pub fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         match &mut self.content {
-            TileContent::App(root) => root.take_host_intent(),
+            TileContent::App(root) => root.take_process_intent(),
             _ => None,
         }
     }
@@ -590,7 +586,7 @@ impl TileHost {
 
     /// Queue `invocation` as one of the hosted app's own controls: an action
     /// the person chose over this window (its in-app search) runs inside the
-    /// app, under the app's custody and permissions, exactly as clicking the
+    /// app, under the app's ownership and permissions, exactly as clicking the
     /// control in it would. The outer document never resolves an app's
     /// actions by address, so this is the only way such a choice reaches
     /// the app.
@@ -752,12 +748,12 @@ impl TileHost {
             retained_updates: HashMap::new(),
             component_invocations: std::collections::HashSet::new(),
             owner_bound_work: false,
-            owner_bound_custody: None,
+            owner_bound_ownership: None,
             close_reports: vec![],
             history_lifetime: crate::history_mode::owner::ResourceOwnerLifetime::new(),
-            custody_parent: None,
-            custody_scope: None,
-            custody_renewal: None,
+            ownership_parent: None,
+            ownership_scope: None,
+            ownership_renewal: None,
             resource_error: None,
             error_card: None,
             record_transition_error: None,
@@ -881,7 +877,7 @@ impl TileHost {
         if self.prepare_resource_resolution().is_err() {
             return false;
         }
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         if self.resource_error.is_some() {
             return false;
         }
@@ -891,7 +887,7 @@ impl TileHost {
         w.update(s, p)
     }
 
-    /// The placeholder step standing in the tile at `now`, while one does:
+    /// The placeholder step current in the tile at `now`, while one does:
     /// the content's first frame is not shown yet.
     #[must_use]
     pub fn arrival_step(&self, now: Instant) -> Option<crate::arriving::Step> {
@@ -982,17 +978,17 @@ impl TileHost {
     /// arrival, so its placeholder keeps its timing and the app cross-fades
     /// in over it instead of the window cutting or starting over.
     pub fn continue_arrival(&mut self, previous: &Self) {
-        let Some(standing) = previous
+        let Some(current) = previous
             .arrival
             .as_ref()
             .filter(|arrival| !arrival.revealed())
         else {
             return;
         };
-        let since = standing.clock().since();
+        let since = current.clock().since();
         let from = match &self.content {
             TileContent::App(app) if !self.content_presented() => app.arrives_from(),
-            _ => standing.clock().source().clone(),
+            _ => current.clock().source().clone(),
         };
         let mut arrival =
             arrival::TileArrival::new(crate::arriving::ArrivalClock::new(since, from));
@@ -1135,7 +1131,7 @@ impl TileHost {
             }
         }
         self.owner_bound_work = false;
-        self.owner_bound_custody = None;
+        self.owner_bound_ownership = None;
         self.record_transition_error = None;
         Ok(())
     }
@@ -1145,9 +1141,9 @@ impl TileHost {
             .map(crate::history_mode::HistoryOwner::component)
     }
 
-    fn owner_bound_custody_changed(&self) -> bool {
+    fn owner_bound_ownership_changed(&self) -> bool {
         self.owner_bound_work
-            && self.owner_bound_custody.as_ref().is_some_and(|admitted| {
+            && self.owner_bound_ownership.as_ref().is_some_and(|admitted| {
                 self.current_binding_owner()
                     .is_none_or(|current| !current.same_owner(admitted))
             })
@@ -1158,7 +1154,7 @@ impl TileHost {
         self.history_lifetime.active.set(false);
         let previous = self.history_lifetime.control_domain.clone();
         self.history_lifetime = crate::history_mode::owner::ResourceOwnerLifetime::new();
-        self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
+        self.ownership_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
     fn event_is_for_this_tile(&self, event: &WindowEvent, scale_factor: f64) -> bool {
@@ -1181,7 +1177,7 @@ impl TileHost {
             self.record_transition_error = Some(error.clone());
             return Err(error);
         }
-        if self.owner_bound_custody_changed() {
+        if self.owner_bound_ownership_changed() {
             self.prepare_owner_transition()?;
         }
         Ok(())
@@ -1250,10 +1246,10 @@ impl TileHost {
         self.component_invocations.clear();
         self.retained_updates.clear();
         self.owner_bound_work = false;
-        self.owner_bound_custody = None;
+        self.owner_bound_ownership = None;
         self.record_transition_error = None;
         self.content = content;
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         let registration = match &self.content {
             TileContent::App(root) => {
                 crate::history_mode::capability::history_registration(root.as_ref())
@@ -1272,15 +1268,15 @@ impl TileHost {
         {
             app.set_window_presents_history(tab_presents);
         }
-        let standing = self
+        let current = self
             .arrival
             .as_ref()
             .filter(|arrival| !arrival.revealed())
             .map(|arrival| arrival.clock().since());
         self.content_was_presented.set(false);
         self.content_presented_at.set(None);
-        self.arrival = self.begin_arrival(standing);
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+        self.arrival = self.begin_arrival(current);
+        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         self.structure_dirty = true;
     }
     pub fn content(&self) -> &TileContent {
@@ -1506,10 +1502,10 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         match &mut self.content {
-            TileContent::App(widget) => widget.take_capture_studio_request(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
+            TileContent::App(widget) => widget.take_pip_area_request(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
 
@@ -1974,7 +1970,7 @@ impl Widget for TileHost {
         if self.prepare_resource_resolution().is_err() {
             return;
         }
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         if self.resource_error.is_some() {
             return;
         }
@@ -2129,11 +2125,15 @@ impl Widget for TileHost {
             let anim_transform = pose.applied_to(transform);
             self.draw_window(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
-            crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+            crate::widget::draw_permission_scrim_and_peer_focus(
+                self, scene, transform, theme, presence,
+            );
             return;
         }
         self.draw_window(scene, transform, tr, theme, presence);
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
     fn needs_redraw(&self) -> bool {
         if let Some(redraw) = self.held_redraw() {
@@ -2189,7 +2189,7 @@ impl Widget for TileHost {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         if self.resource_error.is_some() {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
@@ -2427,7 +2427,7 @@ impl crate::widget::ResourceOperations for TileHost {
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let _running = self.running();
-        let (_, scope) = op.with_custody();
+        let (_, scope) = op.with_ownership();
         op.check()?;
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
@@ -2437,7 +2437,7 @@ impl crate::widget::ResourceOperations for TileHost {
         }
         self.prepare_resource_resolution()?;
         if scope.is_none() {
-            self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+            self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
         }
         let owner = self.history_owner();
         let TileContent::App(app) = &mut self.content else {
@@ -2479,7 +2479,7 @@ impl crate::widget::ResourceOperations for TileHost {
             self.retained_invocations
                 .insert(op.invocation(), owner.clone());
             self.owner_bound_work = true;
-            self.owner_bound_custody.get_or_insert(owner);
+            self.owner_bound_ownership.get_or_insert(owner);
         }
         Ok(started)
     }
@@ -2625,10 +2625,10 @@ impl crate::view::capability::ViewState for TileHost {
 }
 
 impl crate::widget::controls::ActionControls for TileHost {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         // An unbound tile inherits its surrounding owner exactly once. Moving
         // within that incarnation is presentation reparenting; a different
@@ -2638,22 +2638,22 @@ impl crate::widget::controls::ActionControls for TileHost {
                 domain.unsafe_attachment();
                 return;
             }
-            if let Some(previous) = self.custody_parent.as_ref() {
+            if let Some(previous) = self.ownership_parent.as_ref() {
                 if domain.permits_renewal(previous, attachment) {
                     self.history_lifetime.control_domain.close();
                     self.history_lifetime.active.set(false);
                     self.history_lifetime =
                         crate::history_mode::owner::ResourceOwnerLifetime::new();
-                    self.custody_scope = None;
-                    self.custody_renewal = None;
+                    self.ownership_scope = None;
+                    self.ownership_renewal = None;
                 } else if previous.closed() || !previous.same_owner_incarnation(domain) {
                     domain.unsafe_attachment();
                     return;
                 }
             }
         }
-        self.custody_parent = Some(domain.clone());
-        self.install_live_custody(attachment);
+        self.ownership_parent = Some(domain.clone());
+        self.attach_live(attachment);
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if self.has_separate_document_owner() {

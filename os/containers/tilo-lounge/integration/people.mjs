@@ -2,7 +2,7 @@
 // entry, which joins the Lounge through its entry as its own person (the
 // deployment admits everyone as an editor). Then one sends a chat message and
 // opens a window, and the other must see both, each shown present to the
-// other — the live plane's presence, the shared shell, and the chat all at
+// other — the live session's presence, the shared shell, and the chat all at
 // once.
 //
 // Then one of them is made an owner while their page is open (the stack's own
@@ -18,7 +18,7 @@
 // through glyphs: what is drawn is a picture, and what a person can reach is
 // the snapshot.
 //
-// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK
+// usage: node people.mjs SITE_URL SERVER_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK
 // STACK is os/containers/tilo-sh/stack.sh of the stack the Lounge runs on,
 // whose own owner makes the inviter an owner (`stack.sh owner KEY`).
 // With EARLIER as the seventh argument the run is the other way round: one
@@ -38,9 +38,9 @@ import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
 import {stepLimit, shellMetrics, SHELL} from './waits.mjs';
 
-const [site, relay, origin, out, stack, earlier] = process.argv.slice(2);
-if (!site || !relay || !origin || !out || !stack) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK [EARLIER]');
+const [site, server, origin, out, stack, earlier] = process.argv.slice(2);
+if (!site || !server || !origin || !out || !stack) {
+  console.error('usage: node people.mjs SITE_URL SERVER_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK [EARLIER]');
   process.exit(2);
 }
 
@@ -76,7 +76,7 @@ const runs = name => !only || only === name;
 // `all` opens every one here as well.
 const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
 
-const report = {site, relay, origin, at: new Date().toISOString()};
+const report = {site, server, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
 const opened = [];
 // What each press stood on, so a failure says why it did not take.
@@ -104,19 +104,19 @@ const failed = async (message, tab) => {
   process.exit(1);
 };
 
-// The relay's public directory: who is in the Lounge now, as the relay
-// counts them. Its `here` is the relay's HTTPS page sessions, not the live
-// plane's members: a page the plane never carried still counts here.
-// The relay's origin is plain http on the local stack and https behind a
+// The server's public directory: who is in the Lounge now, as the server
+// counts them. Its `here` is the server's HTTPS page sessions, not the live
+// live session's members: a page the live session never carried still counts here.
+// The server's origin is plain http on the local stack and https behind a
 // TLS front, so the request takes the module its scheme names; behind the
 // front it trusts exactly the certificate that front serves.
 const request = (url, ...rest) =>
   (new URL(url).protocol === 'http:' ? httpRequest : httpsRequest)(url, ...rest);
-const relayCertificate = new URL(relay).protocol === 'https:' ? await servedCertificate(relay) : null;
+const serverCertificate = new URL(server).protocol === 'https:' ? await servedCertificate(server) : null;
 const directory = () => new Promise((resolve, reject) => {
   const body = Buffer.from('{}');
-  const ask = request(`${relay}/peer/v1/directory`, {
-    method: 'POST', ...(relayCertificate ? {ca: relayCertificate.certificate} : {}),
+  const ask = request(`${server}/peer/v1/directory`, {
+    method: 'POST', ...(serverCertificate ? {ca: serverCertificate.certificate} : {}),
     headers: {'content-type': 'application/json', 'content-length': body.length},
   }, response => {
     const chunks = [];
@@ -251,7 +251,7 @@ const until = async (tab, expression, what, timeout = stepLimit(3), more = null)
 //
 // The events of one gesture go out together, not one acknowledged frame at a
 // time. Chromium answers a dispatched key or press when the page has taken it,
-// and this page's main thread is inside a frame for seconds under the gate: a
+// and this page's main thread is inside a frame for seconds under the check: a
 // driver that waited for each key in turn typed a five-letter query in eight
 // frames, where a person types it in a tenth of a second and the shell reads
 // the whole query on the frame it draws next.
@@ -329,7 +329,7 @@ const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 
 // offers for it.
 //
 // Every wait here is on what the shell says, never on how many frames it drew.
-// A frame of this page costs seconds under the gate — a megapixel through a
+// A frame of this page costs seconds under the check — a megapixel through a
 // software rasteriser, with the app opened last still compiling its module on
 // the same thread — so a wait that counted frames paid seconds for an answer
 // the shell had already given.
@@ -687,7 +687,7 @@ const rowsUnder = (name) => `(() => {
   return JSON.stringify(found);
 })()`;
 // The call as the page reads it: its phase, whether its microphone runs and
-// what left and arrived over the plane.
+// what left and arrived over the live session.
 // The call as the page holds it, as page code the waits above read, and as
 // the JSON this driver reads.
 const CALL = '(globalThis.tiloMount?.call?.() ?? null)';
@@ -905,8 +905,8 @@ try {
   console.log(`ok: two browsers joined the Lounge as ${keptA.userPublicKey.slice(0, 8)} and ${keptB.userPublicKey.slice(0, 8)}`);
   mark('two browsers joined the Lounge');
 
-  // The relay describes both as here: both pages opened their HTTPS sessions.
-  // That is the host's own count, not the live plane's — the plane is read
+  // The server describes both as here: both pages opened their HTTPS sessions.
+  // That is the host's own count, not the live session's — the live session is read
   // from each page's channel diagnostics below.
   // A page counts there once its session is open, a moment after it joined:
   // the directory is read until both are, or a minute has passed.
@@ -968,26 +968,26 @@ try {
   await dump(a.tab, '5-a-open');
   await dump(b.tab, '5-b-open');
 
-  // Each page joined the live plane over the host's own iroh: its channel
-  // diagnostics name the plane and the devices it reads. A page whose plane
+  // Each page joined the live session over the host's own iroh: its channel
+  // diagnostics name the live session and the devices it reads. A page whose live session
   // never opened lists nobody and says so there instead, so this is the
-  // host's address, its relay and the plane all read from the page that used
+  // host's address, its server and the live session all read from the page that used
   // them.
-  const joinedPlane = async (person, who) => {
-    // The plane of the workspace this person joined, by its own id: any
-    // other workspace's plane is not theirs.
-    const named = `plane ${person.membership.workspace}: `;
+  const joinedLiveSession = async (person, who) => {
+    // The live session of the workspace this person joined, by its own id: any
+    // other workspace's live session is not theirs.
+    const named = `live session ${person.membership.workspace}: `;
     const joined = await person.tab.waitFor(`(globalThis.tiloChannels?.() ?? '').split('\\n')
       .find(entry => entry.startsWith(${JSON.stringify(named)}) && /^epoch \\d+, reads \\d+ device\\(s\\)/.test(entry.slice(${named.length}))) ?? ''`,
     {timeout: stepLimit(3)}).catch(() => '');
     if (joined) return joined;
     const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
-    await dump(person.tab, `timeout-plane-${who}`);
-    failed(`${who} joined no live plane: ${channels}`, person.tab);
+    await dump(person.tab, `timeout-live-session-${who}`);
+    failed(`${who} joined no live session: ${channels}`, person.tab);
   };
-  report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
-  console.log('ok: both pages joined the live plane');
-  mark('both pages on the live plane');
+  report.liveSessions = {a: await joinedLiveSession(a, 'A'), b: await joinedLiveSession(b, 'B')};
+  console.log('ok: both pages joined the live session');
+  mark('both pages on the live session');
 
   // Each shell shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the
@@ -1025,7 +1025,7 @@ try {
     // control — the workspace's voice channel, joined muted, as every Tilo call
     // starts — and B, whose channels now list the call with A in it, opens the
     // same call from its own window. Each browser's microphone is its synthetic
-    // device, so the pages carry real Opus between them over the live plane:
+    // device, so the pages carry real Opus between them over the live session:
     // what each page sent and what the other heard is the call's own count.
     // Both read the call's card — who it is with, the run time its title bar
     // draws, and its controls — and hanging up ends it for both.
@@ -1088,7 +1088,7 @@ try {
       failed(`${what}: the call never went live (${JSON.stringify(call)})`);
     };
     // Both microphones running: the page's audio session captures the
-    // browser's synthetic device, which is what puts frames on the plane.
+    // browser's synthetic device, which is what puts frames on the live session.
     const untilCapture = async (person, what, timeout = stepLimit(3)) => {
       const running = await person.tab.waitFor(`(() => { const call = ${CALL} ?? {};
         return call.phase === 'live' && call.captureActive === true; })()`, {timeout}).catch(() => false);
@@ -1104,7 +1104,7 @@ try {
       failed(`${what}: the call is still live (${JSON.stringify(await callOn(person.tab))})`);
     };
     // What `sender`'s microphone published and `listener` heard of it: one
-    // count per page, the frames the plane carried between them.
+    // count per page, the frames the live session carried between them.
     const flows = async (sender, listener, what, timeout = stepLimit(4)) => {
       // What each page's own count says, read in the page as it changes: one
       // deadline for both, as the wait it replaces had.
@@ -1161,7 +1161,7 @@ try {
     console.log('ok: both pages are in the call');
     mark('both pages in the call');
     // Unmuted, both: each page's microphone is the browser's synthetic device,
-    // so unmuting is what puts audio on the plane.
+    // so unmuting is what puts audio on the live session.
     // The call card's microphone, pressed where the card is drawn: the shell
     // stands it over the windows and its app draws it, so the press is routed
     // to the card as on a native desktop.
@@ -1294,7 +1294,7 @@ try {
   // adds entries of its own as the person opens and moves between windows
   // (Back goes through Tilo), and the browser navigating on its own would
   // leave this document or step back from the newest entry.
-  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__gateArrived = true; return navigation.currentEntry.index; })()`);
+  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__checkArrived = true; return navigation.currentEntry.index; })()`);
 
   // The window menu, from a secondary click in the window's own bar: what the
   // desktop can do to that window, and choosing a row does it. Asked before
@@ -1329,8 +1329,8 @@ try {
       failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     }
     await settle(a.tab, 1);
-    // A row the click took closes the menu: still standing somewhere on the page, the click
-    // never reached it. A closed menu keeps naming its rows, standing nowhere.
+    // A row the click took closes the menu: still there somewhere on the page, the click
+    // never reached it. A closed menu keeps naming its rows, nowhere.
     await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
     await settle(a.tab, 1);
     let open = false;
@@ -1444,7 +1444,7 @@ try {
       })()`, {timeout: stepLimit(4)}).catch(() => false);
       const marks = await openMarks(a.tab);
       // An open the page's own clock never saw begun or never saw end is not a
-      // fast one: it is no reading, and the gate says so instead of counting a
+      // fast one: it is no reading, and the check says so instead of counting a
       // missing number as zero frames.
       if (!marks.ok) {
         failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
@@ -1587,7 +1587,7 @@ try {
     // nothing: the keys a browser leaves to the page. The shell has every app
     // the Lounge offers open by now and presents a frame every several
     // seconds through the software rasteriser, and each answer is a presented
-    // frame: the waits are the ones a search gets everywhere in this gate.
+    // frame: the waits are the ones a search gets everywhere in this check.
     await click(a.tab, SHELL.empty.x, SHELL.empty.y);
     await key(a.tab, 'k', a.command);
     await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', stepLimit(3));
@@ -1605,7 +1605,7 @@ try {
       scrollY: window.scrollY,
       scrollX: window.scrollX,
       scale: globalThis.visualViewport?.scale ?? 1,
-      sameDocument: globalThis.__gateArrived === true,
+      sameDocument: globalThis.__checkArrived === true,
       entry: navigation.currentEntry.index,
       newest: navigation.entries().length - 1,
       otherDocuments: navigation.entries().slice(${arrivedAt}).filter(entry => !entry.sameDocument).length,
@@ -1638,7 +1638,7 @@ try {
     // The page's own sheet, the same one a shell shows: the role a link brings
     // someone in at, chosen before the link is made.
     // The sheet is up once its choices stand where a person presses them:
-    // its title names the sheet without standing anywhere of its own.
+    // its title names the sheet without a place anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
     // A sheet slides in over the shell, and a press lands where its controls
@@ -1780,6 +1780,90 @@ try {
     console.log(`ok: A's shell shows ${invitedRow.label} beside B`);
     mark('A\'s shell shows the invitee');
     await dump(a.tab, '11-a-people-invited');
+
+    // Who is in the workspace, from the workspace menu's settings: the session's own sheet on its
+    // People tab. A, an administrator, changes the invitee's role, and the device serving the workspace
+    // carries it out. The invitee is the one Commenter here (everyone else the
+    // Lounge let in is an Editor), so the role their row's button names is theirs alone.
+    // The invite sheet A made the link in is still up, and holds the keyboard: A puts it away.
+    await key(a.tab, 'Escape');
+    const sheetAway = await a.tab.waitFor(`(${found('Create link')}) === ''`, {timeout: stepLimit(2)})
+      .catch(() => false);
+    if (!sheetAway) await failed('the invite sheet stayed up after Escape', a.tab);
+    await search(a.tab, a.command, 'workspace settings', 'Workspace settings');
+    await waitFor(a.tab, 'Commenter', "the invitee's role in the People tab");
+    await dump(a.tab, '12-a-people-sheet');
+    await pressWhen(a.tab, 'Commenter', "the invitee's role button");
+    await pressWhen(a.tab, 'Viewer', 'the Viewer choice of the role menu');
+    // The row says the new role once the serving device answered with the workspace after the change.
+    const roleChanged = await a.tab.waitFor(`(() => {
+      const names = [];
+      const node = n => { names.push(n.name ?? ''); (n.children || []).forEach(node); };
+      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      return !names.includes('Commenter') && names.includes('Viewer');
+    })()`, {timeout: stepLimit(3)}).catch(() => false);
+    if (!roleChanged) {
+      await dump(a.tab, 'timeout-people-role');
+      await failed("the invitee's row never said Viewer after the role was changed", a.tab);
+    }
+    console.log('ok: the People tab changed the invitee to a Viewer through the device serving the workspace');
+    mark('the invitee made a Viewer');
+    // Remove, from that row: the question it asks is the page's own, and its
+    // confirm is the server's own removal. A control stands on a row when its
+    // own middle is within the row's, which is how this row's Remove is told
+    // from every other row's.
+    const controlAt = (name, near = null) => `(() => {
+      const box = b => Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+      const all = [];
+      const node = n => { all.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
+      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      const named = all.filter(n => n.name === ${JSON.stringify(name)} && n.bounds);
+      const near = ${JSON.stringify(near)};
+      if (near === null) return named.length ? JSON.stringify(named[0].bounds) : '';
+      const anchor = all.find(n => n.name === near && n.bounds);
+      if (!anchor) return '';
+      const [, ay0, , ay1] = box(anchor.bounds);
+      const beside = named.find(n => {
+        const [, y0, , y1] = box(n.bounds);
+        const middle = (y0 + y1) / 2;
+        return middle >= ay0 && middle <= ay1;
+      });
+      return beside ? JSON.stringify(beside.bounds) : '';
+    })()`;
+    // A press at `bounds`, as a person presses the control they see there.
+    const pressBounds = async bounds => {
+      const [x0, y0, x1, y1] = Array.isArray(bounds) ? bounds
+        : [bounds.x0 ?? bounds.x, bounds.y0 ?? bounds.y, bounds.x1 ?? bounds.x + bounds.width, bounds.y1 ?? bounds.y + bounds.height];
+      const corner = JSON.parse(await canvasTopLeft(a.tab));
+      await click(a.tab, corner.x + (x0 + x1) / 2, corner.y + (y0 + y1) / 2);
+    };
+    const remove = JSON.parse(await a.tab.evaluate(controlAt('Remove', 'Viewer')));
+    if (!remove) await failed(`the Viewer's row offers no Remove: ${JSON.stringify((await snapshot(a.tab)).names)}`, a.tab);
+    await pressBounds(remove);
+    // The question the press asks stands over the sheet. Its answer is the
+    // dialog's own footer button: named for a reader, it stands nowhere in the
+    // published tree, so its place is the widget's own rect.
+    await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Remove this person?')`,
+      'the remove question', stepLimit(8));
+    const confirmAt = `(() => {
+      let confirm = null;
+      const walk = node => { if (!confirm && node.test_id === 'ws-settings-decision.primary') confirm = node; (node.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      return confirm ? JSON.stringify([confirm.rect[0], confirm.rect[1], confirm.rect[0] + confirm.rect[2], confirm.rect[1] + confirm.rect[3]]) : '';
+    })()`;
+    await until(a.tab, confirmAt, "the remove question's confirm", stepLimit(8));
+    await pressBounds(JSON.parse(await a.tab.evaluate(confirmAt)));
+    await until(c.tab, `document.documentElement.dataset.refusal ?? ''`,
+      "C's page turned away after the removal", stepLimit(8));
+    await until(a.tab, `!(${controlAt('Viewer')})`, "the Viewer row leaving A's sheet", stepLimit(8));
+    console.log('ok: A removed the invitation\'s person, and the viewer\'s row left A\'s settings');
+    mark('the invitee removed from the page');
+    await key(a.tab, 'Escape');
   }
 
   // Nothing failed in either page.

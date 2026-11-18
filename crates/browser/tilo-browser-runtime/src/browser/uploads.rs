@@ -161,7 +161,7 @@ impl Desktop {
         self.shared.peer.is_some()
             && self
                 .shared
-                .standing
+                .role
                 .role()
                 .is_some_and(|role| role.includes(tilo_action_policy::Role::Editor))
     }

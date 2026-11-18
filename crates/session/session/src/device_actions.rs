@@ -1,7 +1,7 @@
 //! This device's actions between the person's devices: what another of their devices asks this one
 //! for, and what an app here asks of them.
 //! The session's collaboration endpoint serves
-//! [`ActionPlane`](tilo_peer_state::actions::ActionPlane): a request another device of one of this
+//! [`ActionService`](tilo_peer_state::actions::ActionService): a request another device of one of this
 //! person's workspaces sends is checked against that workspace's roster as it stands, and the
 //! action it names runs here through the broker as any other caller's would. The other way
 //! round, an application names another of the person's devices and one of its own actions;
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_actions::offload::ActionOffload;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmationQuestion, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest,
     Pending, own_device, pending,
 };
@@ -25,24 +25,24 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{
-    ActionPlane, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
+    ActionService, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
 };
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
-use tilo_relay_protocol::{Whose, WorkSetting};
-use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
+use tilo_runtime::offload::{ActionServicePeers, offer_offload, own_offering};
+use tilo_server_protocol::{Whose, WorkSetting};
 
 use crate::engine::Engine;
 use neighbour_wire::offer::{Answer, Query};
 
-/// This device's action plane, as the session serves it and reaches the person's other devices
+/// This device's action service, as the session serves it and reaches the person's other devices
 /// through it.
 #[derive(Clone)]
 pub(crate) struct DeviceActions(Arc<Inner>);
 
 struct Inner {
-    plane: ActionPlane,
-    /// The endpoint the plane asks from, as this device.
+    action_service: ActionService,
+    /// The endpoint the action service asks from, as this device.
     endpoint: Endpoint,
     /// Where this session was told each of the person's devices is
     /// ([`crate::sync::Client::connect`]), by its endpoint. A device it was told of is one it
@@ -55,21 +55,21 @@ struct Inner {
     dispatch: DeviceDispatch,
     /// What this session says of itself when another of the person's devices offers it work.
     offering: SessionOffering,
-    /// The runtime the plane answers on, where its asks and runs are carried out.
+    /// The runtime the action service answers on, where its asks and runs are carried out.
     runtime: tokio::runtime::Handle,
 }
 
 impl DeviceActions {
-    /// This device's plane on the session's `endpoint` , authorizing against the workspaces
+    /// This device's action service on the session's `endpoint` , authorizing against the workspaces
     /// `engine` holds, answering through the dispatcher the session installs once its broker
     /// serves, and offering work with what it keeps.
     pub(crate) fn start(
-        identity: &tilo_network_actor::HostIdentity,
+        identity: &tilo_network_actor::DeviceIdentity,
         endpoint: Endpoint,
         engine: Option<Arc<Engine>>,
     ) -> Self {
         let dispatch = DeviceDispatch::for_user(identity.device_cert.user_public_key);
-        let plane = ActionPlane::over(
+        let action_service = ActionService::over(
             Arc::clone(&identity.signer),
             Arc::new(dispatch.clone()),
             Arc::new(HeldWorkspaces(engine)),
@@ -77,9 +77,9 @@ impl DeviceActions {
         // Another of the person's devices may ask which of them would run a piece of work: this one
         // answers with what it knows of itself.
         let offering = SessionOffering::default();
-        plane.offering(offering.clone());
+        action_service.offering(offering.clone());
         Self(Arc::new(Inner {
-            plane,
+            action_service,
             endpoint,
             addresses: Mutex::default(),
             here: Mutex::default(),
@@ -89,14 +89,14 @@ impl DeviceActions {
         }))
     }
 
-    /// The plane the collaboration endpoint serves.
-    pub(crate) fn plane(&self) -> ActionPlane {
-        self.0.plane.clone()
+    /// The action service the collaboration endpoint serves.
+    pub(crate) fn action_service(&self) -> ActionService {
+        self.0.action_service.clone()
     }
 
     /// Answer arriving requests through `host` from now on: the broker's own, once it serves.
-    pub(crate) fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
-        self.0.dispatch.install(host);
+    pub(crate) fn install(&self, provider: Arc<dyn ActionProvider + Send + Sync>) {
+        self.0.dispatch.install(provider);
     }
 
     /// Hold this machine awake through `power` , the holds its idle timer reads, while another of
@@ -134,24 +134,24 @@ impl DeviceActions {
 
     /// The content this session keeps, as its offer says: another device weighs a job whose inputs
     /// are already here as moving nothing.
-    pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
+    pub(crate) fn attach_content(&self, content: Arc<crate::content::ContentService>) {
         self.0.offering.holding(content);
     }
 
     /// The route an offloadable invocation takes where a device of its workspace would run it
-    /// sooner: the round asks them through this plane, the invocation runs on the device that wins,
+    /// sooner: the round asks them through this action service, the invocation runs on the device that wins,
     /// and the content it produced is kept in `content` — the store the app that invoked it reads
     /// its output from. `None` when offload is turned off on this device.
     pub(crate) fn offload_route(
         &self,
-        content: Arc<crate::content::Plane>,
+        content: Arc<crate::content::ContentService>,
     ) -> Option<Arc<dyn ActionOffload>> {
         let actions = self.clone();
         let media = content.media();
         let outputs: Arc<dyn tilo_runtime::offload::OutputContent> = content;
         let asking = self.clone();
-        let peers = PlanePeers::new(
-            self.0.plane.clone(),
+        let peers = ActionServicePeers::new(
+            self.0.action_service.clone(),
             self.0.endpoint.clone(),
             move |id| actions.addr(id),
             outputs,
@@ -173,11 +173,11 @@ impl DeviceActions {
     }
 
     /// The device an app's action is for, with where it is reached.
-    fn device(&self, key: [u8; 32], workspace: &str) -> Result<Arc<RemoteDevice>, ActionHostError> {
-        let id = EndpointId::from_bytes(&key).map_err(|_| ActionHostError::InvalidRequest {
+    fn device(&self, key: [u8; 32], workspace: &str) -> Result<Arc<RemoteDevice>, ActionCallError> {
+        let id = EndpointId::from_bytes(&key).map_err(|_| ActionCallError::InvalidRequest {
             reason: "that is not a device key".into(),
         })?;
-        Ok(Arc::new(self.0.plane.remote(
+        Ok(Arc::new(self.0.action_service.remote(
             &self.0.endpoint,
             &self.addr(id),
             workspace,
@@ -191,11 +191,11 @@ impl OwnDeviceActions for DeviceActions {
         caller: &Caller,
         checked: &own_device::Checked,
         request: &InvokeRequest,
-    ) -> Result<Pending<OwnDeviceOutcome>, ActionHostError> {
+    ) -> Result<Pending<OwnDeviceOutcome>, ActionCallError> {
         // The workspace the two devices are to share: the one the app acts in, which is where the
         // other device decides whether this one may act at all.
         let Some(workspace) = caller.workspace() else {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         };
         let device = self.device(checked.device, workspace)?;
         let forwarded = checked.forwarded(workspace, request);
@@ -212,11 +212,11 @@ impl OwnDeviceActions for DeviceActions {
         &self,
         _caller: &Caller,
         _question: &ConfirmationQuestion,
-    ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
+    ) -> Result<Pending<Result<Confirmation, ActionCallError>>, ActionCallError> {
         // A person's own word is asked of them where they are, by the device in front of them.
-        // Reaching another of their devices to ask there is no part of this plane: nothing carries
+        // Reaching another of their devices to ask there is no part of this action service: nothing carries
         // a question to it.
-        Err(ActionHostError::Unavailable {
+        Err(ActionCallError::Unavailable {
             reason: "this device does not ask the person on another of their devices".into(),
         })
     }
@@ -224,7 +224,7 @@ impl OwnDeviceActions for DeviceActions {
 
 /// What the other device's answer comes to: the outcome the app on this device observes as its own
 /// invocation's.
-fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnDeviceOutcome {
+fn outcome_of(answer: Option<Result<InvocationUpdate, ActionCallError>>) -> OwnDeviceOutcome {
     let failure = |code: &str, message: String| {
         Box::new(ActionFailure {
             code: code.to_owned(),
@@ -267,7 +267,7 @@ struct DeviceDispatch(Arc<DispatchInner>);
 
 struct DispatchInner {
     /// What answers a request that arrived here.
-    host: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    provider: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
     /// The person this device belongs to: what arrives from another of their devices is them using
     /// this one.
     user: [u8; 32],
@@ -280,27 +280,27 @@ struct DispatchInner {
 impl DeviceDispatch {
     fn for_user(user: [u8; 32]) -> Self {
         Self(Arc::new(DispatchInner {
-            host: Mutex::default(),
+            provider: Mutex::default(),
             user,
             power: Mutex::default(),
             remote_use: Mutex::default(),
         }))
     }
 
-    fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
-        *self.0.host.lock_recover() = Some(host);
+    fn install(&self, provider: Arc<dyn ActionProvider + Send + Sync>) {
+        *self.0.provider.lock_recover() = Some(provider);
     }
 
     fn attach_power(&self, power: tilo_session_power::PowerLink) {
         *self.0.power.lock_recover() = Some(power);
     }
 
-    fn host(&self) -> Result<Arc<dyn ActionHost + Send + Sync>, ActionHostError> {
+    fn provider(&self) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
         self.0
-            .host
+            .provider
             .lock_recover()
             .clone()
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this device is not serving its actions".into(),
             })
     }
@@ -336,14 +336,14 @@ impl DeviceDispatch {
     }
 }
 
-impl ActionHost for DeviceDispatch {
+impl ActionProvider for DeviceDispatch {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        match self.host() {
-            Ok(host) => host.query(caller, query),
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        match self.provider() {
+            Ok(provider) => provider.query(caller, query),
             Err(error) => Pending::ready(Err(error)),
         }
     }
@@ -352,25 +352,25 @@ impl ActionHost for DeviceDispatch {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.note_remote_use(caller);
-        match self.host() {
-            Ok(host) => host.invoke(caller, request),
+        match self.provider() {
+            Ok(provider) => provider.invoke(caller, request),
             Err(error) => Pending::ready(Err(error)),
         }
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.host().ok()?.observe(caller, id)
+        self.provider().ok()?.observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.host().ok()?.next_change(caller, id)
+        self.provider().ok()?.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        match self.host() {
-            Ok(host) => host.cancel(caller, id),
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        match self.provider() {
+            Ok(provider) => provider.cancel(caller, id),
             Err(error) => Pending::ready(Err(error)),
         }
     }
@@ -379,15 +379,15 @@ impl ActionHost for DeviceDispatch {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
-        match self.host() {
-            Ok(host) => host.confirm(caller, request),
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
+        match self.provider() {
+            Ok(provider) => provider.confirm(caller, request),
             Err(error) => Pending::ready(Err(error)),
         }
     }
 }
 
-/// The workspaces this device holds, as the plane reads them: this session's own store, asked when
+/// The workspaces this device holds, as the action service reads them: this session's own store, asked when
 /// a request names one, so who may act there is what holds at that moment rather than as it was
 /// when the session started.
 struct HeldWorkspaces(Option<Arc<Engine>>);
@@ -423,7 +423,7 @@ struct SessionOffering {
     /// The work this device takes. A session runs on a machine someone is at, so it takes its own
     /// person's work where the setting says the machine has room for it.
     work: WorkSetting,
-    content: Arc<Mutex<Option<Arc<crate::content::Plane>>>>,
+    content: Arc<Mutex<Option<Arc<crate::content::ContentService>>>>,
 }
 
 impl Default for SessionOffering {
@@ -437,7 +437,7 @@ impl Default for SessionOffering {
 
 impl SessionOffering {
     /// The content this session keeps, from now on: what its answer reports holding.
-    fn holding(&self, content: Arc<crate::content::Plane>) {
+    fn holding(&self, content: Arc<crate::content::ContentService>) {
         *self.content.lock_recover() = Some(content);
     }
 }
@@ -461,7 +461,7 @@ impl Offering for SessionOffering {
 #[cfg(test)]
 mod tests {
     //! Two of the person's devices on this machine's loopback: an action an app invokes for the
-    //! other device runs there through the session's own plane and answers here, a device the
+    //! other device runs there through the session's own action service and answers here, a device the
     //! workspace does not hold is refused, a piece of work runs on the device that offers and holds
     //! its inputs, and one nobody offers for runs here.
 
@@ -480,12 +480,12 @@ mod tests {
     use tilo_action_broker::document_content::ContentState;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
-        InvokeArgument, TestHost, application_action_target, application_provider, own_device,
+        InvokeArgument, TestProvider, application_action_target, application_provider, own_device,
     };
     use tilo_actions::{ActionAddress, ActionOutput, CONTENT_RESOURCE_KIND, Offload};
     use tilo_broker_core::route::CrdtRoute;
     use tilo_content::hash_bytes;
-    use tilo_network_actor::{HostIdentity, RecordContentDelivery};
+    use tilo_network_actor::{DeviceIdentity, RecordContentDelivery};
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_user_identity::DeviceCert;
 
@@ -511,8 +511,8 @@ mod tests {
         (key, cert)
     }
 
-    fn identity(cert: DeviceCert, key: &SigningKey) -> HostIdentity {
-        HostIdentity::kept(cert, key.clone())
+    fn identity(cert: DeviceCert, key: &SigningKey) -> DeviceIdentity {
+        DeviceIdentity::kept(cert, key.clone())
     }
 
     /// A loopback endpoint whose identity is the device `key` , as the session's own endpoint is.
@@ -545,7 +545,7 @@ mod tests {
         key: &'a SigningKey,
         cert: &'a DeviceCert,
         asking: Option<&'a (SigningKey, DeviceCert)>,
-        host: Arc<TestHost>,
+        provider: Arc<TestProvider>,
     ) -> Pin<Box<dyn Future<Output = (Endpoint, Router, DeviceActions)> + 'a>> {
         Box::pin(async move {
             let directory = tempfile::TempDir::new().expect("a state directory");
@@ -555,7 +555,7 @@ mod tests {
                     id.clone(),
                     Some(directory.path()),
                     std::iter::empty(),
-                    crate::platform::custody::of_this_session(),
+                    crate::platform::membership_check::of_this_session(),
                 )
                 .expect("this device's engine opens"),
             );
@@ -580,7 +580,7 @@ mod tests {
                         .owner()
                         .receive(
                             workspace_id,
-                            tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                            tilo_peer_state::TransportOrigin::RetainedServerDelta(
                                 cert.device_public_key,
                             ),
                             postcard::from_bytes(bytes).expect("a workspace change"),
@@ -591,15 +591,18 @@ mod tests {
             }
             let endpoint = endpoint(key).await;
             let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
-            actions.install(host);
+            actions.install(provider);
             let router = Router::builder(endpoint.clone())
-                .accept(tilo_peer_state::actions::ACTIONS_ALPN, actions.plane())
+                .accept(
+                    tilo_peer_state::actions::ACTIONS_ALPN,
+                    actions.action_service(),
+                )
                 .spawn();
             (endpoint, router, actions)
         })
     }
 
-    /// The session of the device `key` that asks: its own plane, nothing to answer, and where the
+    /// The session of the device `key` that asks: its own action service, nothing to answer, and where the
     /// other device is.
     async fn asking(
         key: &SigningKey,
@@ -660,9 +663,9 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x31; 32]);
         let here = device(&root, 0x32, "This device");
         let there = device(&root, 0x33, "The other device");
-        let host = Arc::new(TestHost::new());
+        let provider = Arc::new(TestProvider::new());
         let (there_endpoint, router, _) =
-            answering(&there.0, &there.1, Some(&here), host.clone()).await;
+            answering(&there.0, &there.1, Some(&here), provider.clone()).await;
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let caller =
             Caller::authenticated(root.verifying_key().to_bytes(), here.1.device_public_key)
@@ -678,7 +681,7 @@ mod tests {
         );
 
         // It ran there, as this device, in the workspace both are in.
-        let asked = host.asked();
+        let asked = provider.asked();
         assert_eq!(asked.len(), 1, "one request reached the other device");
         assert_eq!(asked[0].invocation, request.invocation, "under its own id");
         assert_eq!(asked[0].target.address.action, "insert");
@@ -687,7 +690,7 @@ mod tests {
             Some((WORKSPACE, APP)),
             "the app's action, in the workspace the two devices share"
         );
-        let seen = host.callers();
+        let seen = provider.callers();
         assert_eq!(seen.len(), 1);
         assert_eq!(
             seen[0].user_public_key(),
@@ -709,8 +712,9 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x51; 32]);
         let here = device(&root, 0x52, "This device");
         let there = device(&root, 0x53, "The other device");
-        let host = Arc::new(TestHost::new());
-        let (there_endpoint, router, _) = answering(&there.0, &there.1, Some(&here), host).await;
+        let provider = Arc::new(TestProvider::new());
+        let (there_endpoint, router, _) =
+            answering(&there.0, &there.1, Some(&here), provider).await;
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let route = Route::new("so.tilo.nowhere", "notes.root", "insert");
         let work = Work {
@@ -720,7 +724,7 @@ mod tests {
 
         let choice = tokio::time::timeout(
             PATIENCE,
-            actions.plane().offers(
+            actions.action_service().offers(
                 &here_endpoint,
                 [addr(&there_endpoint)],
                 WORKSPACE,
@@ -757,8 +761,9 @@ mod tests {
             0x43,
             "A device of the same person, not in the workspace",
         );
-        let host = Arc::new(TestHost::new());
-        let (there_endpoint, router, _) = answering(&there.0, &there.1, None, host.clone()).await;
+        let provider = Arc::new(TestProvider::new());
+        let (there_endpoint, router, _) =
+            answering(&there.0, &there.1, None, provider.clone()).await;
         let (stranger_endpoint, actions) =
             asking(&stranger.0, &stranger.1, addr(&there_endpoint)).await;
         let caller = Caller::authenticated(
@@ -775,7 +780,7 @@ mod tests {
             "a device the workspace has no part for acts nowhere in it: {refused:?}"
         );
         assert!(
-            host.asked().is_empty(),
+            provider.asked().is_empty(),
             "the action never ran on the device it named"
         );
 
@@ -786,21 +791,21 @@ mod tests {
     /// A device's content, and what it said about it, waiting to be carried to the other device as
     /// the workspace's hosts carry it.
     struct Content {
-        plane: Arc<crate::content::Plane>,
+        action_service: Arc<crate::content::ContentService>,
         address: EndpointId,
         said: tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
     }
 
     impl Content {
-        /// The content plane of the session whose endpoint is `key` 's, as the workspace's topic
+        /// The content store of the session whose endpoint is `key` 's, as the workspace's topic
         /// names it.
         fn open(key: &SigningKey) -> Self {
             let address = SecretKey::from_bytes(&key.to_bytes()).public();
-            let plane = crate::content::Plane::open(None);
+            let action_service = crate::content::ContentService::open(None);
             let (say, said) = tokio::sync::mpsc::unbounded_channel::<crate::sync::HostCmd>();
-            plane.bind(crate::sync::HostOutbox::of(say), address);
+            action_service.bind(crate::sync::HostOutbox::of(say), address);
             Self {
-                plane,
+                action_service,
                 address,
                 said,
             }
@@ -809,7 +814,7 @@ mod tests {
         /// The bytes an app keeps as `app` 's content in `WORKSPACE` .
         fn keep(&self, app: &str, bytes: &[u8]) -> String {
             let hash = hash_bytes(bytes);
-            self.plane
+            self.action_service
                 .route()
                 .offer(&CrdtRoute::app(app, WORKSPACE), &hash, bytes)
                 .expect("the app's content is kept");
@@ -822,11 +827,11 @@ mod tests {
     fn carry(
         from: EndpointId,
         said: &mut tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
-        to: &crate::content::Plane,
+        to: &crate::content::ContentService,
     ) {
         while let Ok(outgoing) = said.try_recv() {
             match outgoing {
-                crate::sync::HostCmd::Plane(Cmd::Publish { ws, msg }) => {
+                crate::sync::HostCmd::Network(Cmd::Publish { ws, msg }) => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
                 crate::sync::HostCmd::Content(RecordContentDelivery { ws, msg, .. }) => {
@@ -903,26 +908,29 @@ mod tests {
     }
 
     /// What each of two devices' content says, carried to the other as the workspace's hosts carry
-    /// it, until the returned task is aborted: the two planes back, for the test to read.
+    /// it, until the returned task is aborted: the two action services back, for the test to read.
     fn carrying(
         here: Content,
         there: Content,
     ) -> (
-        Arc<crate::content::Plane>,
-        Arc<crate::content::Plane>,
+        Arc<crate::content::ContentService>,
+        Arc<crate::content::ContentService>,
         tokio::task::JoinHandle<()>,
     ) {
         let addresses = [here.address, there.address];
         let mut said = [here.said, there.said];
-        let planes = [Arc::clone(&here.plane), Arc::clone(&there.plane)];
+        let action_services = [
+            Arc::clone(&here.action_service),
+            Arc::clone(&there.action_service),
+        ];
         let pump = tokio::spawn(async move {
             loop {
-                carry(addresses[0], &mut said[0], &planes[1]);
-                carry(addresses[1], &mut said[1], &planes[0]);
+                carry(addresses[0], &mut said[0], &action_services[1]);
+                carry(addresses[1], &mut said[1], &action_services[0]);
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
         });
-        (here.plane, there.plane, pump)
+        (here.action_service, there.action_service, pump)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -936,7 +944,7 @@ mod tests {
         let made = hash_bytes(&produced);
         let there_content = Content::open(&there.0);
         let written = {
-            let kept = Arc::clone(&there_content.plane);
+            let kept = Arc::clone(&there_content.action_service);
             let (bytes, hash) = (produced.clone(), made.clone());
             move |_: &InvokeRequest| {
                 kept.route()
@@ -948,17 +956,18 @@ mod tests {
                 }
             }
         };
-        let host = Arc::new(TestHost::new().completing(written));
+        let provider = Arc::new(TestProvider::new().completing(written));
         let (there_endpoint, there_router, there_actions) =
-            answering(&there.0, &there.1, Some(&here), Arc::clone(&host)).await;
+            answering(&there.0, &there.1, Some(&here), Arc::clone(&provider)).await;
         // What that device says when offered the work: it has the app, and the photograph is
         // content it already keeps.
         let offering = SessionOffering::default();
-        offering.holding(Arc::clone(&there_content.plane));
-        there_actions.plane().offering(Willing(offering));
+        offering.holding(Arc::clone(&there_content.action_service));
+        there_actions.action_service().offering(Willing(offering));
 
+        let answer_with = Arc::new(TestProvider::new());
         let (here_endpoint, here_router, actions) =
-            answering(&here.0, &here.1, Some(&there), Arc::new(TestHost::new())).await;
+            answering(&here.0, &here.1, Some(&there), answer_with).await;
         actions.learn(addr(&there_endpoint));
         // The workspace's topic reports the other device connected here: it is one of the devices
         // the round asks.
@@ -974,10 +983,10 @@ mod tests {
         there_content.keep(APP, &photograph);
 
         // The two devices' content hears what the other says, as the workspace's hosts carry it.
-        let (here_plane, _, pump) = carrying(here_content, there_content);
+        let (here_action_service, _, pump) = carrying(here_content, there_content);
 
         let route = actions
-            .offload_route(Arc::clone(&here_plane))
+            .offload_route(Arc::clone(&here_action_service))
             .expect("offload is on");
 
         // Nothing has measured how long the transform takes here, so nothing is quicker than
@@ -1007,7 +1016,7 @@ mod tests {
         );
 
         // It ran there, as the invocation the app made, in the workspace both devices are in.
-        let asked = host.asked();
+        let asked = provider.asked();
         assert_eq!(asked.len(), 1, "one invocation reached the other device");
         assert_eq!(
             asked[0].invocation, sent.invocation,
@@ -1018,7 +1027,7 @@ mod tests {
             Some((WORKSPACE, APP)),
             "the app's action, in the workspace the two devices share"
         );
-        let seen = host.callers();
+        let seen = provider.callers();
         assert_eq!(
             seen[0].device_public_key(),
             Some(&here.1.device_public_key),
@@ -1032,8 +1041,8 @@ mod tests {
             vec![format!("{CONTENT_RESOURCE_KIND}:{made}")]
         );
         let route = CrdtRoute::app(APP, WORKSPACE);
-        let mut news = here_plane.route().subscribe(&route);
-        here_plane.route().want(&route, &made);
+        let mut news = here_action_service.route().subscribe(&route);
+        here_action_service.route().want(&route, &made);
         let arrived = news
             .try_recv()
             .expect("this device keeps what the run produced");
@@ -1059,13 +1068,13 @@ mod tests {
         let here = device(&root, 0x92, "This device");
         let away = device(&root, 0x93, "A device that is away");
         let (away_endpoint, away_router, _) =
-            answering(&away.0, &away.1, Some(&here), Arc::new(TestHost::new())).await;
+            answering(&away.0, &away.1, Some(&here), Arc::new(TestProvider::new())).await;
         let (here_endpoint, here_router, actions) =
-            answering(&here.0, &here.1, Some(&away), Arc::new(TestHost::new())).await;
+            answering(&here.0, &here.1, Some(&away), Arc::new(TestProvider::new())).await;
         // Where the other device is, and nothing saying it is connected.
         actions.learn(addr(&away_endpoint));
 
-        let content = crate::content::Plane::open(None);
+        let content = crate::content::ContentService::open(None);
         let photograph = photograph();
         let input = hash_bytes(&photograph);
         content
@@ -1104,7 +1113,7 @@ mod tests {
         // This session holds no workspace, so its round asks nobody.
         let actions =
             DeviceActions::start(&identity(here.1.clone(), &here.0), endpoint.clone(), None);
-        let content = crate::content::Plane::open(None);
+        let content = crate::content::ContentService::open(None);
         let photograph = photograph();
         let input = hash_bytes(&photograph);
         content
@@ -1263,7 +1272,7 @@ mod tests {
             sequence: 1,
             value: serde_json::json!("a line"),
         };
-        let unavailable = ActionHostError::Unavailable {
+        let unavailable = ActionCallError::Unavailable {
             reason: "this device is not serving its actions".to_owned(),
         };
         let rows = [
@@ -1311,7 +1320,7 @@ mod tests {
             ),
             (
                 "not permitted there",
-                Some(Err(ActionHostError::NotPermitted)),
+                Some(Err(ActionCallError::NotPermitted)),
                 ours(
                     "own_device_refused",
                     "the caller may not invoke this action",

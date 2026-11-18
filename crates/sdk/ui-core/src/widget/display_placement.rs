@@ -1699,7 +1699,7 @@ mod tests {
             assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
         }
 
-        phase device_screens_preview_and_drop_together_preserving_native_seat_geometry;
+        phase device_screens_preview_and_drop_together_preserving_local_screen_geometry;
         {
             let mut canvas = canvas();
             canvas.displays[0].movable = false;

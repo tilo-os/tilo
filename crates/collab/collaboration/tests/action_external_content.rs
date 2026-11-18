@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use collaboration::document_content::{ContentLane, DocumentContent};
+use collaboration::document_content::{ContentLink, DocumentContent};
 use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
 use collaboration::history_source::verbs::step_summary;
 use collaboration::history_source::words::HistoryWords;
@@ -71,17 +71,17 @@ fn registry() -> ActionRegistry {
 }
 
 /// The content store of record `record`: sealed, and joined to the record's
-/// route, as a window's record content is. A lane belongs to a record of this
+/// route, as a window's record content is. A content link belongs to a record of this
 /// process, so the two replicas here name their own.
-fn resource_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
-    let lane = ContentLane::of(&collaboration::RouteSpec::document(
+fn resource_store(record: &str) -> (ContentStore, Arc<ContentLink>) {
+    let link = ContentLink::of(&collaboration::RouteSpec::document(
         APP,
         uuid::Uuid::nil(),
         record,
     ));
     (
-        DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)),
-        lane,
+        DocumentContent::store(ContentStore::memory(), Arc::clone(&link)),
+        link,
     )
 }
 
@@ -91,7 +91,7 @@ fn an_action_over_the_budget_keeps_its_parts_sealed_and_decodes_on_the_replica_t
 
     // Replica A: a window records an action too large to inline.
     let window = WakeScope::new();
-    let (store_a, lane_a) = resource_store("the note, on A");
+    let (store_a, link_a) = resource_store("the note, on A");
     let mut origin = AutoCommit::new();
     {
         let _in_the_window = window.enter();
@@ -115,7 +115,7 @@ fn an_action_over_the_budget_keeps_its_parts_sealed_and_decodes_on_the_replica_t
     let parts = recorded.content_parts();
     assert_eq!(parts.len(), 1, "the long body is kept as content");
     assert!(tilo_content::is_sealed(&parts[0]), "{parts:?}");
-    let offers = lane_a.take_requests().offers;
+    let offers = link_a.take_requests().offers;
     let [(offered, sealed)] = offers.as_slice() else {
         panic!("one offer on the record's route, got {}", offers.len());
     };
@@ -134,7 +134,7 @@ fn an_action_over_the_budget_keeps_its_parts_sealed_and_decodes_on_the_replica_t
 
     // Replica B: it holds the change, not the bytes, and decodes through its
     // own record's content store, on no window's thread.
-    let (store_b, lane_b) = resource_store("the note, on B");
+    let (store_b, link_b) = resource_store("the note, on B");
     let mut registry_b = registry();
     registry_b.connect_content(store_b);
     let mut peer = origin.fork();
@@ -144,12 +144,12 @@ fn an_action_over_the_budget_keeps_its_parts_sealed_and_decodes_on_the_replica_t
         "the part is not here yet"
     );
     assert_eq!(
-        lane_b.take_requests().wants,
+        link_b.take_requests().wants,
         vec![offered.clone()],
         "the replica asks its record's route for it"
     );
     for (address, sealed) in offers {
-        lane_b.arrive(address, sealed);
+        link_b.arrive(address, sealed);
     }
 
     let resolved = registry_b.resolve(&recorded).unwrap().unwrap();

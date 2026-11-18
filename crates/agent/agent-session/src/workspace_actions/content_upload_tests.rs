@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, ContentPutAnswer, ContentPutStep, HostedContentPuts,
+    ActionCallError, Caller, ContentPutAnswer, ContentPutStep, HostedContentPuts,
     MAX_CONTENT_FRAME_BYTES, Pending,
 };
 use tilo_content::ContentStore;
@@ -49,13 +49,13 @@ impl Host {
 }
 
 impl PutSteps for Host {
-    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionHostError>> {
+    fn put_step(&self, step: ContentPutStep) -> Pending<Result<ContentPutAnswer, ActionCallError>> {
         self.steps.borrow_mut().push(step.clone());
         if let ContentPutStep::Append { offset, .. } = &step
             && self.lose_at.get() == Some(*offset)
         {
             self.lose_at.set(None);
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the device did not answer in time".into(),
             }));
         }
@@ -139,13 +139,13 @@ fn a_lost_piece_resumes_where_the_host_stands() {
         Some(bytes),
         "the file is whole"
     );
-    let standing = host
+    let access = host
         .steps
         .borrow()
         .iter()
-        .filter(|step| matches!(step, ContentPutStep::Standing { .. }))
+        .filter(|step| matches!(step, ContentPutStep::Progress { .. }))
         .count();
-    assert_eq!(standing, 1, "the upload asked where it stands once");
+    assert_eq!(access, 1, "the upload asked where it stands once");
     let offsets: Vec<u64> = host
         .appends()
         .into_iter()

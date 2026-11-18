@@ -2,7 +2,7 @@
 # What a Release / apps build must show before its packages may be signed, run from the
 # repository root after dist/apps/package-apps.sh built every app of the default collection for
 # this machine's architecture into target/thin-app and packaged them into dist/app-release.
-# Each measurement gates on its own subject: a tapp over its
+# Each measurement waits for its own subject: a tapp over its
 # budget must not hide the runtime's numbers, or the reverse, so every one runs and the script
 # fails at the end if any did.
 #
@@ -203,9 +203,9 @@ spotify() (
 # accept --help). An engine another engine chains on (`via:` the engine the
 # app loads) must arrive from the app or through that engine, which the app
 # loaded itself:
-# Browser's import engine carries its service sessions, whose custody comes
+# Browser's import engine carries its service sessions, whose ownership comes
 # from the accounts engine; on x86_64 Browser names only the import engine.
-# Settings' engine library carries the app itself, whose custody comes from
+# Settings' engine library carries the app itself, whose ownership comes from
 # the accounts engine.
 engines() (
   set -euo pipefail
@@ -234,7 +234,7 @@ engines() (
                "imager libtilo_accounts_engine.so" \
                "browser libtilo_browser_import_engine.so" \
                "browser libtilo_accounts_engine.so via:libtilo_browser_import_engine.so" \
-               "store libtilo_app_host_engine.so" \
+               "store libtilo_app_process_engine.so" \
                "chat libtilo_emoji_engine.so" \
                "osk libtilo_emoji_engine.so" \
                "notes libtilo_emoji_engine.so"; do
@@ -291,7 +291,7 @@ engines() (
 )
 
 failed=()
-# RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size gate on main takes the two
+# RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size check on main takes the two
 # size budgets); a release runs them all.
 for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame media typst spotify engines}; do
   case $step in

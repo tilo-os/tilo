@@ -2,8 +2,8 @@
 //!
 //! Wall-clock time depends on the machine, so these run in the nightly
 //! performance suite (`tools/ci/perf-scheduled.sh fs`), which records every
-//! `PERF` line; `performance_gate.rs` bounds the same scenarios' work on every
-//! change. Ordinary `cargo test` skips them; `TILO_FS_PERF_GATE=1` runs them
+//! `PERF` line; `performance_check.rs` bounds the same scenarios' work on every
+//! change. Ordinary `cargo test` skips them; `TILO_FS_PERF_CHECK=1` runs them
 //! and makes every ceiling a hard assertion. The fixtures are generated from
 //! fixed data, use local stores only, and contain no polling, sleeps, peer
 //! discovery, or remote requests.
@@ -22,7 +22,7 @@ use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
 use tilo_lock::MutexRecover as _;
 
-const ENABLE_ENV: &str = "TILO_FS_PERF_GATE";
+const ENABLE_ENV: &str = "TILO_FS_PERF_CHECK";
 
 const DIRECTORY_ENTRIES: usize = 1_000;
 const LARGE_FILE_BYTES: usize = 64 * 1024 * 1024;
@@ -52,7 +52,9 @@ fn require_enabled() -> bool {
     if std::env::var(ENABLE_ENV).as_deref() == Ok("1") {
         true
     } else {
-        eprintln!("collaborative FS performance gate disabled; set {ENABLE_ENV}=1 to enforce SLOs");
+        eprintln!(
+            "collaborative FS performance check disabled; set {ENABLE_ENV}=1 to enforce SLOs"
+        );
         false
     }
 }
@@ -126,7 +128,7 @@ fn thumbnail_fixture() -> Vec<u8> {
 }
 
 #[test]
-fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
+fn conflict_watch_idle_pass_and_lock_hold_performance_check() {
     if !require_enabled() {
         return;
     }
@@ -202,7 +204,7 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mount_ranged_read_under_remote_apply_performance_gate() {
+async fn mount_ranged_read_under_remote_apply_performance_check() {
     if !require_enabled() {
         return;
     }
@@ -291,7 +293,7 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn document_media_cold_range_performance_gate() {
+async fn document_media_cold_range_performance_check() {
     if !require_enabled() {
         return;
     }
@@ -381,7 +383,7 @@ async fn document_media_cold_range_performance_gate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn collaborative_fs_release_performance_gate() {
+async fn collaborative_fs_release_performance_check() {
     if !require_enabled() {
         return;
     }

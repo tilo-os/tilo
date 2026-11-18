@@ -411,7 +411,7 @@ pub fn settle(
     machine: Option<&Machine>,
     branch: &Branch<'_>,
 ) -> Result<Settled, PersistError> {
-    persist::protect_private_custody()?;
+    persist::protect_private_ownership()?;
     if let Some(journal) = read_journal(paths)? {
         let Some(machine) = machine else {
             // A re-key for some machine, on one that names none: nothing

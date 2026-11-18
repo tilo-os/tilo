@@ -6,11 +6,11 @@ use automerge::AutoCommit;
 use ui::tilo_resource::{Id, MemberId, NonBlank, Replica, Resource as _};
 
 use crate::cause::{EVENT, NEWS, PERSON, REMINDER, Starting, message_id};
+use crate::chat::{Chat, WorkUpdate, reply_id_at};
 use crate::demo::apply_part_doc_as;
 use crate::messages::chat_part;
 use crate::model::ME;
 use crate::parts::ChatPart;
-use crate::record::{Chat, WorkUpdate, reply_id_at};
 use crate::summons::{stopped, summonses};
 
 /// The agent of the person's own conversation.
@@ -45,7 +45,7 @@ impl Part {
     fn new() -> Self {
         Self {
             doc: AutoCommit::new(),
-            chat: crate::demo::demo(ME),
+            chat: crate::demo::demo(),
         }
     }
 

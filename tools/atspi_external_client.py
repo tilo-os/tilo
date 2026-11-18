@@ -10,7 +10,7 @@ launcher, inside its sandbox, attached to the session's runtime host.  The
 client does not import the UI crate or inspect an in-process AccessKit tree.
 
 ``open APP_NAME`` performs only the session launch and prints the app's
-AT-SPI bus name and process id, for gates with their own checks. Such a gate
+AT-SPI bus name and process id, for checks with their own checks. Such a check
 then drives the opened app by that bus name: ``names BUS`` prints every
 accessible name in its tree, ``type BUS TEXT`` sets its first editable text
 field, and ``click BUS NAME`` invokes the click action of the node named NAME
@@ -26,7 +26,7 @@ out to match ``nmcli`` on the same device: the connected Wi-Fi network, the
 wired link, NetworkManager's connectivity verdict, and no read error.
 
 ``new-tab APP_NAME`` proves tabs are the desktop's: it opens the app, prints
-``READY``, and waits for the person (the gate's real keyboard) to press
+``READY``, and waits for the person (the check's real keyboard) to press
 Ctrl+T. The app must answer with another instance of itself, in a new
 desktop tab beside the first — one window group grows by exactly one tab
 and a second process of the app joins the bus. Apps have no tab strips of
@@ -78,20 +78,20 @@ SHELL_TREE_NODE_LIMIT = 1024
 # AT-SPI connection without reading another process's /proc entry.
 SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
 OPEN_APP_ACTION = "Open an app"
-# AT-SPI role numbers (AtspiRole) the gate tells apart.
+# AT-SPI role numbers (AtspiRole) the check tells apart.
 ROLE_PAGE_TAB = 37
 ROLE_PAGE_TAB_LIST = 38
 # Document frame, spreadsheet, presentation, text, web and email.
 DOCUMENT_ROLES = frozenset({82, 92, 93, 94, 95, 96})
 LAUNCH_TIMEOUT_SECONDS = 120
 PAGE_TITLE = "Tilo browser engine check"
-# Typing the address and starting the engine, under emulation on some lanes.
+# Typing the address and starting the engine, under emulation on some jobs.
 PAGE_TIMEOUT_SECONDS = 300
 BROWSER_TREE_NODE_LIMIT = 512
 
 
-class GateError(RuntimeError):
-    """A release-gate failure with enough context for a maintainer to act."""
+class CheckError(RuntimeError):
+    """A release-check failure with enough context for a maintainer to act."""
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,7 @@ def command(*args: str, check: bool = True) -> str:
     completed = subprocess.run(args, text=True, capture_output=True, check=False)
     if check and completed.returncode:
         detail = completed.stderr.strip() or completed.stdout.strip()
-        raise GateError(f"{' '.join(args[:5])} failed: {detail}")
+        raise CheckError(f"{' '.join(args[:5])} failed: {detail}")
     return completed.stdout
 
 
@@ -120,7 +120,7 @@ def atspi_address() -> str:
     )
     match = re.search(r"'([^']+)'", output)
     if not match:
-        raise GateError(f"org.a11y.Bus returned no AT-SPI address: {output.strip()}")
+        raise CheckError(f"org.a11y.Bus returned no AT-SPI address: {output.strip()}")
     return match.group(1)
 
 
@@ -143,13 +143,13 @@ def scenario_from_manifest(path: Path) -> Scenario | None:
     required = spec.get("required", [])
     after_action = spec.get("after_action", [])
     if not all(isinstance(value, str) and value for value in values.values()):
-        raise GateError(f"{path}: incomplete [accessibility.atspi_acceptance] data")
+        raise CheckError(f"{path}: incomplete [accessibility.atspi_acceptance] data")
     if not isinstance(required, list) or not isinstance(after_action, list):
-        raise GateError(f"{path}: required and after_action must be string arrays")
+        raise CheckError(f"{path}: required and after_action must be string arrays")
     if not all(isinstance(value, str) and value for value in required + after_action):
-        raise GateError(f"{path}: required and after_action must be string arrays")
+        raise CheckError(f"{path}: required and after_action must be string arrays")
     if not required or not after_action:
-        raise GateError(f"{path}: require non-empty required and after_action evidence")
+        raise CheckError(f"{path}: require non-empty required and after_action evidence")
     return Scenario(
         app_id=values["app_id"], app_name=values["app_name"], binary=values["binary"],
         root=values["root"], required=tuple(required), action=values["action"],
@@ -169,7 +169,7 @@ def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
             payload = manifest.parent
             if payload.name.endswith(".pkg"):
                 if not re.fullmatch(r"[0-9a-f]{64}\.pkg", payload.name):
-                    raise GateError(f"invalid installed package metadata directory: {payload}")
+                    raise CheckError(f"invalid installed package metadata directory: {payload}")
                 tree = payload.with_name(payload.name[:-4])
                 signed = payload / "signed-root"
                 if not tree.is_dir() and signed.is_file():
@@ -177,10 +177,10 @@ def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
                 payload = tree
             binary = payload / scenario.binary
             if not binary.is_file() or not os.access(binary, os.X_OK):
-                raise GateError(f"{scenario.app_id}: certified binary is absent: {binary}")
+                raise CheckError(f"{scenario.app_id}: certified binary is absent: {binary}")
             scenarios.append((scenario, binary))
     if not scenarios:
-        raise GateError(
+        raise CheckError(
             f"no [accessibility.atspi_acceptance] scenarios under {payload_root}; "
             "the installed image lost its core-app certification data"
         )
@@ -223,7 +223,7 @@ class AtspiClient:
             try:
                 result[path] = self.property(path, "Name")
                 children = self.call(path, "org.a11y.atspi.Accessible.GetChildren")
-            except GateError:
+            except CheckError:
                 # AccessKit can replace its initial placeholder transaction.
                 # The caller retries a complete bounded walk instead of treating
                 # one stale object as an empty successful tree.
@@ -256,9 +256,9 @@ class AtspiClient:
         for path in self.clickable(tree, expected):
             result = self.call(path, "org.a11y.atspi.Action.DoAction", "0")
             if "true" not in result:
-                raise GateError(f"AT-SPI action {expected!r} was rejected: {result.strip()}")
+                raise CheckError(f"AT-SPI action {expected!r} was rejected: {result.strip()}")
             return
-        raise GateError(f"AT-SPI tree has no click-capable node named {expected!r}")
+        raise CheckError(f"AT-SPI tree has no click-capable node named {expected!r}")
 
 
 # Below its breakpoint an app built on the shared shell shows one screen at a
@@ -292,14 +292,14 @@ def wait_for_reachable(
                 went_back = True
                 # The list replaces the pane; give the deadline back for it.
                 deadline = time.monotonic() + START_TIMEOUT_SECONDS
-        except GateError:
+        except CheckError:
             # AccessKit can replace a subtree while it is walked; walk again.
             pass
         if time.monotonic() >= deadline:
             break
         time.sleep(POLL_SECONDS * 4)
     observed = "\n".join(sorted({name.strip() for name in latest.values() if name.strip()}))
-    raise GateError(
+    raise CheckError(
         f"{subject}: tree never exposed {'click-capable ' if clickable else ''}"
         f"{', '.join(names)}{' (also not after going Back)' if went_back else ''}; "
         f"observed AT-SPI names:\n{observed}"
@@ -328,7 +328,7 @@ def shell_client(address: str) -> AtspiClient:
             if owner == pid:
                 return AtspiClient(address, bus)
         time.sleep(POLL_SECONDS)
-    raise GateError(f"the Tilo compositor (pid {pid}) is not on the AT-SPI bus")
+    raise CheckError(f"the Tilo compositor (pid {pid}) is not on the AT-SPI bus")
 
 
 def shell_tree(shell: AtspiClient) -> dict[str, str]:
@@ -336,7 +336,7 @@ def shell_tree(shell: AtspiClient) -> dict[str, str]:
     while True:
         try:
             return shell.tree(SHELL_TREE_NODE_LIMIT)
-        except GateError:
+        except CheckError:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(POLL_SECONDS)
@@ -355,12 +355,12 @@ def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False
         time.sleep(POLL_SECONDS * 4)
     kind = "editable" if editable else "actionable"
     names = sorted({value.strip() for value in shell_tree(shell).values() if value.strip()})
-    raise GateError(
+    raise CheckError(
         f"the session exposed no {kind} {name!r} over AT-SPI; it exposed: {', '.join(names)}"
     )
 
 
-def app_process(pid: int) -> int:
+def package_service(pid: int) -> int:
     """The app behind an AT-SPI connection. A sandboxed app reaches the bus
     through the launcher's filtered proxy, so the bus reports the proxy's pid;
     the app is the launcher's descendant that is neither a proxy nor bwrap."""
@@ -421,7 +421,7 @@ def is_app_connection(client: AtspiClient) -> bool:
     name, so the launch itself is what identifies the app."""
     try:
         name = client.property(ROOT_PATH, "Name")
-    except GateError:
+    except CheckError:
         return False
     return re.search(r"'[^']+'", name) is not None
 
@@ -433,7 +433,7 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
     _, opener = wait_for_shell_node(shell, OPEN_APP_ACTION)
     result = shell.call(opener, "org.a11y.atspi.Action.DoAction", "0")
     if "true" not in result:
-        raise GateError(f"AT-SPI {OPEN_APP_ACTION!r} was rejected: {result.strip()}")
+        raise CheckError(f"AT-SPI {OPEN_APP_ACTION!r} was rejected: {result.strip()}")
     # The palette's query is an ordinary editable text field for AT.
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while True:
@@ -446,7 +446,7 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         if any(shell.set_text(path, app_name) for path in fields):
             break
         if time.monotonic() >= deadline:
-            raise GateError("the app palette exposed no editable query over AT-SPI")
+            raise CheckError("the app palette exposed no editable query over AT-SPI")
         time.sleep(POLL_SECONDS * 4)
     # The palette names an app's launch row by the app's name.
     row_name = app_name
@@ -462,7 +462,7 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         # One accepted activation launches the app; wait for it rather than
         # launching a second copy from another row.
         return wait_for_new_app(address, before, app_name)
-    raise GateError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
+    raise CheckError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
 
 
 def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str, int]:
@@ -473,19 +473,19 @@ def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str
             if bus in before:
                 continue
             if is_app_connection(AtspiClient(address, bus)):
-                return bus, app_process(pid)
+                return bus, package_service(pid)
         time.sleep(POLL_SECONDS * 4)
     seen = []
     for bus, pid in sorted(bus_pids(address).items()):
         if bus in before:
             continue
-        process = app_process(pid)
+        process = package_service(pid)
         try:
             name = AtspiClient(address, bus).property(ROOT_PATH, "Name").strip()
-        except GateError as error:
+        except CheckError as error:
             name = f"no application node: {error}"
         seen.append(f"{bus} (pid {pid}, process {process} {process_command(process)}): {name}")
-    raise GateError(
+    raise CheckError(
         f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
         f"new connections: {'; '.join(seen) or 'none'}; "
         f"session log: {app_log(app_name)}"
@@ -505,23 +505,23 @@ def open_from_launchpad_card(
     _, node = wait_for_shell_node(shell, card)
     result = shell.call(node, "org.a11y.atspi.Action.DoAction", "0")
     if "true" not in result:
-        raise GateError(f"AT-SPI launchpad card {card!r} was rejected: {result.strip()}")
+        raise CheckError(f"AT-SPI launchpad card {card!r} was rejected: {result.strip()}")
     bus, pid = wait_for_new_app(address, before, app_name)
     # The application node is named after the executable; a sandboxed one is
     # behind its proxy, so its command line names it too.
     root_name = AtspiClient(address, bus).property(ROOT_PATH, "Name")
     if app_name.lower() not in f"{root_name} {process_command(pid)}".lower():
         close_app(pid)
-        raise GateError(
+        raise CheckError(
             f"launchpad card {card!r} opened {root_name.strip()} "
             f"({process_command(pid)}), not {app_name}"
         )
     if expected:
         try:
             wait_for_tree(AtspiClient(address, bus), expected, app_name)
-        except GateError as error:
+        except CheckError as error:
             close_app(pid)
-            raise GateError(f"launchpad card {card!r} opened {app_name} but not what it names: {error}") from error
+            raise CheckError(f"launchpad card {card!r} opened {app_name} but not what it names: {error}") from error
     return bus, pid
 
 
@@ -533,7 +533,7 @@ def app_names(address: str, bus: str) -> list[str]:
         try:
             tree = client.tree(APP_TREE_NODE_LIMIT)
             break
-        except GateError:
+        except CheckError:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(POLL_SECONDS)
@@ -549,12 +549,12 @@ def click_in_app(address: str, bus: str, name: str, timeout: float) -> None:
     """Click the node named NAME in an opened app once it is exposed."""
     client = AtspiClient(address, bus)
     deadline = time.monotonic() + timeout
-    last_error = GateError(f"no node named {name!r} appeared")
+    last_error = CheckError(f"no node named {name!r} appeared")
     while time.monotonic() < deadline:
         try:
             client.click(client.tree(APP_TREE_NODE_LIMIT), name)
             return
-        except GateError as error:
+        except CheckError as error:
             last_error = error
         time.sleep(POLL_SECONDS * 4)
     raise last_error
@@ -570,7 +570,7 @@ def type_in_app(address: str, bus: str, text: str) -> None:
             if "org.a11y.atspi.EditableText" in client.interfaces(path) and client.set_text(path, text):
                 return
         time.sleep(POLL_SECONDS * 4)
-    raise GateError("the app exposed no editable text field over AT-SPI")
+    raise CheckError("the app exposed no editable text field over AT-SPI")
 
 
 def tab_lists(shell: AtspiClient) -> list[list[str]]:
@@ -591,14 +591,14 @@ def tab_lists(shell: AtspiClient) -> list[list[str]]:
                         tabs.append(tree.get(child, shell.property(child, "Name")).strip())
                 lists.append(tabs)
             return lists
-        except GateError:
+        except CheckError:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(POLL_SECONDS)
 
 
 def new_tab(address: str, app_name: str) -> None:
-    """Open APP_NAME, then require that the Ctrl+T the gate presses opens a
+    """Open APP_NAME, then require that the Ctrl+T the check presses opens a
     second instance of it as a tab beside the first, in the same group."""
     _bus, first = open_in_session(address, app_name)
     pids = [first]
@@ -610,7 +610,7 @@ def new_tab(address: str, app_name: str) -> None:
         _second_bus, second = wait_for_new_app(address, before_bus, app_name)
         pids.append(second)
         if app_name.lower() not in process_command(second).lower():
-            raise GateError(
+            raise CheckError(
                 f"Ctrl+T in {app_name} started {process_command(second)}, not another {app_name}"
             )
         deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
@@ -629,7 +629,7 @@ def new_tab(address: str, app_name: str) -> None:
                 return
             time.sleep(POLL_SECONDS * 4)
             after_tabs = tab_lists(shell)
-        raise GateError(
+        raise CheckError(
             f"Ctrl+T in {app_name} started a second instance, but no window group gained "
             f"exactly one tab: before {before_tabs}, after {after_tabs}"
         )
@@ -663,14 +663,14 @@ def wait_for_tree(client: AtspiClient, names: tuple[str, ...], subject: str) -> 
     while time.monotonic() < deadline:
         try:
             latest = client.tree()
-        except GateError:
+        except CheckError:
             time.sleep(POLL_SECONDS)
             continue
         if all(client.named(latest, expected) for expected in names):
             return latest
         time.sleep(POLL_SECONDS)
     observed = "\n".join(sorted(set(latest.values())))
-    raise GateError(
+    raise CheckError(
         f"{subject}: tree never exposed {', '.join(names)}; "
         f"observed AT-SPI names:\n{observed}"
     )
@@ -683,8 +683,8 @@ def exercise(scenario: Scenario, address: str) -> None:
         initial = wait_for_reachable(client, (scenario.root, *scenario.required), scenario.app_id)
         client.click(initial, scenario.action)
         wait_for_tree(client, scenario.after_action, scenario.app_id)
-    except GateError as error:
-        raise GateError(f"{scenario.app_id}: {error}") from error
+    except CheckError as error:
+        raise CheckError(f"{scenario.app_id}: {error}") from error
     finally:
         close_app(pid)
     print(f"AT-SPI external client passed: {scenario.app_id} ({scenario.action} action round trip)")
@@ -722,14 +722,14 @@ def wait_for_names(client: AtspiClient, names: tuple[str, ...], timeout: float) 
     while time.monotonic() < deadline:
         try:
             latest = client.tree(BROWSER_TREE_NODE_LIMIT)
-        except GateError:
+        except CheckError:
             time.sleep(POLL_SECONDS)
             continue
         if all(client.named(latest, name) for name in names):
             return latest
         time.sleep(POLL_SECONDS * 4)
     observed = ", ".join(sorted({value.strip() for value in latest.values() if value.strip()}))
-    raise GateError(f"Browser never exposed {', '.join(names)}; it exposed: {observed}")
+    raise CheckError(f"Browser never exposed {', '.join(names)}; it exposed: {observed}")
 
 
 ADDRESS_FIELD = "Address and search"
@@ -752,7 +752,7 @@ def wait_for_keyboard_focus(client: AtspiClient, field: str, timeout: float) -> 
         if target is None:
             try:
                 tree = client.tree(BROWSER_TREE_NODE_LIMIT)
-            except GateError:
+            except CheckError:
                 tree = {}
             target = next(
                 (path for path, name in tree.items()
@@ -768,7 +768,7 @@ def wait_for_keyboard_focus(client: AtspiClient, field: str, timeout: float) -> 
                 return
         if time.monotonic() >= deadline:
             what = "never appeared" if target is None else "never took keyboard focus"
-            raise GateError(f"Browser's editable {field!r} {what}; "
+            raise CheckError(f"Browser's editable {field!r} {what}; "
                             f"session log: {app_log('Browser')}")
         time.sleep(POLL_SECONDS * 4)
 
@@ -786,13 +786,13 @@ def load_page(address: str, title: str) -> str:
             print(f"ready {url}", flush=True)
             try:
                 wait_for_names(client, (title,), PAGE_TIMEOUT_SECONDS)
-            except GateError as error:
-                raise GateError(
+            except CheckError as error:
+                raise CheckError(
                     f"{error}; the page server saw {requests or 'no request'}; "
                     f"session log: {app_log('Browser')}"
                 ) from error
             if not requests:
-                raise GateError(f"Browser showed {title!r} without fetching {url}")
+                raise CheckError(f"Browser showed {title!r} without fetching {url}")
             return url
         finally:
             close_app(pid)
@@ -856,9 +856,9 @@ def network_expectation(devices: str, connectivity: str) -> NetworkExpectation:
             wired = True
     verdict = connectivity.strip().lower()
     if verdict not in CONNECTIVITY_LABELS:
-        raise GateError(f"nmcli reported an unknown connectivity verdict {verdict!r}")
+        raise CheckError(f"nmcli reported an unknown connectivity verdict {verdict!r}")
     if wifi is None and not wired:
-        raise GateError(
+        raise CheckError(
             "nmcli reports no connected Wi-Fi or wired link; "
             f"the network check needs one:\n{devices}"
         )
@@ -908,7 +908,7 @@ def settings_network(address: str) -> None:
         while time.monotonic() < deadline:
             try:
                 names = list(client.tree(SHELL_TREE_NODE_LIMIT).values())
-            except GateError:
+            except CheckError:
                 time.sleep(POLL_SECONDS * 4)
                 continue
             problems = network_mismatches(names, expected)
@@ -917,7 +917,7 @@ def settings_network(address: str) -> None:
             time.sleep(POLL_SECONDS * 10)
         if problems:
             observed = "\n".join(sorted({name.strip() for name in names if name.strip()}))
-            raise GateError(
+            raise CheckError(
                 f"Settings' Network pane disagrees with nmcli ({expected}): it lacks "
                 f"{'; '.join(problems)}; observed AT-SPI names:\n{observed}\n"
                 f"session log: {app_log(SETTINGS_APP_NAME)}"
@@ -979,7 +979,7 @@ def prepare_typing(
             tree = client.tree(TYPING_TREE_NODE_LIMIT)
             client.click(tree, create)
             break
-        except GateError:
+        except CheckError:
             if time.monotonic() >= deadline:
                 close_app(pid)
                 raise
@@ -990,7 +990,7 @@ def prepare_typing(
         seen: list[str] = []
         try:
             tree = client.tree(TYPING_TREE_NODE_LIMIT)
-        except GateError:
+        except CheckError:
             # The app replaces its tree while the new document opens.
             tree = {}
         for path, name in tree.items():
@@ -1003,7 +1003,7 @@ def prepare_typing(
                 close_app(pid)
                 # What the app shows instead says why: the empty state still
                 # up means the action created nothing.
-                raise GateError(
+                raise CheckError(
                     f"{app_name}: {create!r} opened no document to type into; "
                     f"the app exposes: {'; '.join(seen) or 'nothing'}; "
                     f"session log: {app_log(app_name)}"
@@ -1018,7 +1018,7 @@ def prepare_typing(
             break
         if time.monotonic() >= deadline:
             close_app(pid)
-            raise GateError(f"{app_name}: the document never took keyboard focus")
+            raise CheckError(f"{app_name}: the document never took keyboard focus")
         time.sleep(POLL_SECONDS)
     state.write_text(f"{bus_name} {pid}\n")
     print(f"{app_name}: a new document has keyboard focus; type into it now")
@@ -1040,14 +1040,14 @@ def check_present(address: str, state: Path, app_name: str, name: str) -> None:
             try:
                 if client.named(client.tree(TYPING_TREE_NODE_LIMIT), name):
                     break
-            except GateError:
+            except CheckError:
                 pass
             time.sleep(POLL_SECONDS * 4)
         else:
-            raise GateError(f"the document never showed a node named {name!r}")
+            raise CheckError(f"the document never showed a node named {name!r}")
         log = app_log(app_name)
         if MEDIA_UNREACHABLE in log:
-            raise GateError(f"the app could not reach the document media service: {log}")
+            raise CheckError(f"the app could not reach the document media service: {log}")
         print(f"the document shows {name!r}, kept by the document media service")
     finally:
         close_app(pid)
@@ -1071,7 +1071,7 @@ def check_typed(
         while time.monotonic() < deadline:
             try:
                 texts = text_nodes(client)
-            except GateError:
+            except CheckError:
                 texts = {}
             if min_chars is not None and any(len(text) >= min_chars for text in texts.values()):
                 longest = max(len(text) for text in texts.values())
@@ -1090,7 +1090,7 @@ def check_typed(
                 return
             time.sleep(POLL_SECONDS * 4)
         seen = sorted({text[:200] for text in texts.values() if text})
-        raise GateError(f"typed {expected[:200]!r}, but the document's text nodes hold {seen!r}")
+        raise CheckError(f"typed {expected[:200]!r}, but the document's text nodes hold {seen!r}")
     finally:
         close_app(pid)
         state.unlink(missing_ok=True)
@@ -1115,7 +1115,7 @@ def wait_for_log_line(start: int, needle: str, subject: str, timeout: float) -> 
             if needle in line:
                 return re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
         if time.monotonic() >= deadline:
-            raise GateError(f"{subject}: the session log never showed {needle!r}")
+            raise CheckError(f"{subject}: the session log never showed {needle!r}")
         time.sleep(POLL_SECONDS * 4)
 
 
@@ -1135,18 +1135,18 @@ def reopen_history(address: str, app_name: str, package: str, expect_text: str) 
         while not any(expect_text in text for text in texts.values()):
             if time.monotonic() >= deadline:
                 seen = sorted({text[:80] for text in texts.values() if text})
-                raise GateError(f"{app_name} reopened without the typed note; it shows {seen!r}")
+                raise CheckError(f"{app_name} reopened without the typed note; it shows {seen!r}")
             time.sleep(POLL_SECONDS * 4)
             try:
                 texts = text_nodes(client)
-            except GateError:
+            except CheckError:
                 texts = {}
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         while True:
             try:
                 client.click(client.tree(TYPING_TREE_NODE_LIMIT), HISTORY_BUTTON)
                 break
-            except GateError:
+            except CheckError:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(POLL_SECONDS * 4)
@@ -1167,7 +1167,7 @@ def check_save_status(client: AtspiClient, expected: str, deadline: float) -> No
     while time.monotonic() < deadline:
         try:
             tree = client.tree(TYPING_TREE_NODE_LIMIT)
-        except GateError:
+        except CheckError:
             time.sleep(POLL_SECONDS * 4)
             continue
         shown = [state for state in SAVE_STATES if client.named(tree, state)]
@@ -1175,7 +1175,7 @@ def check_save_status(client: AtspiClient, expected: str, deadline: float) -> No
             print(f"save state reads {expected!r}")
             return
         time.sleep(POLL_SECONDS * 4)
-    raise GateError(f"save state should read {expected!r}, but the app shows {shown!r}")
+    raise CheckError(f"save state should read {expected!r}, but the app shows {shown!r}")
 
 
 def property_text(reply: str) -> str | None:
@@ -1204,10 +1204,10 @@ def check_described(address: str, state: Path, name: str, expected: str) -> None
                         print(f"{name!r} reads {expected!r}")
                         return
                     seen.add(repr(description))
-            except GateError:
+            except CheckError:
                 pass
             time.sleep(POLL_SECONDS * 4)
-        raise GateError(f"no node named {name!r} reads {expected!r}; saw {sorted(seen)}")
+        raise CheckError(f"no node named {name!r} reads {expected!r}; saw {sorted(seen)}")
     finally:
         close_app(pid)
         state.unlink(missing_ok=True)
@@ -1273,7 +1273,7 @@ def shell_viewport(shell: AtspiClient) -> tuple[int, int]:
         if largest is None or rect[2] * rect[3] > largest[2] * largest[3]:
             largest = rect
     if largest is None:
-        raise GateError("the compositor's AT-SPI tree has no node with on-screen extents")
+        raise CheckError("the compositor's AT-SPI tree has no node with on-screen extents")
     # Without a window node, the desktop surface spans the output.
     return largest[0] + largest[2], largest[1] + largest[3]
 
@@ -1283,7 +1283,7 @@ def open_search_field(shell: AtspiClient) -> str:
     _, opener = wait_for_shell_node(shell, OPEN_APP_ACTION)
     result = shell.call(opener, "org.a11y.atspi.Action.DoAction", "0")
     if "true" not in result:
-        raise GateError(f"AT-SPI {OPEN_APP_ACTION!r} was rejected: {result.strip()}")
+        raise CheckError(f"AT-SPI {OPEN_APP_ACTION!r} was rejected: {result.strip()}")
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         tree = shell_tree(shell)
@@ -1293,7 +1293,7 @@ def open_search_field(shell: AtspiClient) -> str:
             if "org.a11y.atspi.EditableText" in shell.interfaces(path):
                 return path
         time.sleep(POLL_SECONDS * 4)
-    raise GateError("the app palette exposed no editable query over AT-SPI")
+    raise CheckError("the app palette exposed no editable query over AT-SPI")
 
 
 def field_text(shell: AtspiClient, path: str) -> str:
@@ -1319,7 +1319,7 @@ def osk_search(address: str, fifo: Path) -> None:
             shell.call(field, "org.a11y.atspi.Component.GetExtents", SCREEN_COORDS)
         )
         if not rect or rect[2] <= 0 or rect[3] <= 0:
-            raise GateError(f"the search field has no on-screen extents: {rect}")
+            raise CheckError(f"the search field has no on-screen extents: {rect}")
         centre = (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
         before = field_text(shell, field)
         # A touchscreen in use is what starts the keyboard service.
@@ -1335,7 +1335,7 @@ def osk_search(address: str, fifo: Path) -> None:
             else:
                 stable_since = None
             if time.monotonic() >= deadline:
-                raise GateError(
+                raise CheckError(
                     "the on-screen keyboard never kept running after a touch on the search field; "
                     f"session log: {app_log('osk')}"
                 )
@@ -1358,7 +1358,7 @@ def osk_search(address: str, fifo: Path) -> None:
                     return
                 time.sleep(POLL_SECONDS * 4)
             if time.monotonic() >= deadline:
-                raise GateError(
+                raise CheckError(
                     f"tapping the on-screen keyboard's keys left the search field at {text!r}; "
                     f"keyboard processes {osk_processes()}; session log: {app_log('osk')}"
                 )
@@ -1512,7 +1512,7 @@ def main() -> int:
             return 0
         for scenario, _binary in installed_scenarios(args.payload_root):
             exercise(scenario, address)
-    except GateError as error:
+    except CheckError as error:
         print(f"AT-SPI external-client failed: {error}", file=sys.stderr)
         return 1
     return 0

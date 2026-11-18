@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
     {
         let notifications = Notifications::new();
         let mut services = services(&notifications);
-        let due = chrono::DateTime::parse_from_rfc3339("2026-04-14T12:00:00+00:00").expect("instant");
+        let due: jiff::Timestamp = "2026-04-14T12:00:00+00:00".parse().expect("instant");
         let done = services
             .invoke(
                 SCHEDULES_RESOURCE,
@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
                     "tag": "wake",
                     "title": "Wake up",
                     "activation": "tilo-clocks:alarm/1",
-                    "at_ms": due.timestamp_millis(),
+                    "at_ms": due.as_millisecond(),
                     "alarm_hour": 12,
                 })),
             )
@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
             "each deadline reads as itself"
         );
 
-        notifications.deliver_due(&due);
+        notifications.deliver_due(&due.to_zoned(jiff::tz::TimeZone::UTC));
         let [rung] = arrived(&notifications).try_into().expect("it rings");
         let occurrence = rung.scheduled.clone().expect("its deadline");
         assert!(occurrence.calendar_alarm);

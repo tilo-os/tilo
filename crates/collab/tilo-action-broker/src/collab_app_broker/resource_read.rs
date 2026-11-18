@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, ResourceAddress,
+    ActionCallError, Caller, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, ResourceAddress,
     ResourceChange, ResourceChanges, ResourceCopy, ResourceReads, ResourceWake,
 };
 
@@ -41,8 +41,8 @@ impl AppBrokerState {
         caller: &Caller,
         workspace: &str,
         address: &ResourceAddress,
-    ) -> Result<(), ActionHostError> {
-        super::action_host::check_execution(caller)?;
+    ) -> Result<(), ActionCallError> {
+        super::action_provider::check_execution(caller)?;
         // A member's own record is theirs alone, whatever the workspace grants: nobody acting
         // for another person reads it.
         if let Some(own) = self
@@ -52,7 +52,7 @@ impl AppBrokerState {
             .and_then(|documents| documents.own_resource(workspace, &address.app, &address.record))
             && reader(caller).map(|(person, _)| person) != Some(own.person().as_str())
         {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: RESOURCE_READ_REFUSED.into(),
             });
         }
@@ -61,10 +61,41 @@ impl AppBrokerState {
             actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
         }) {
             Some(true) => Ok(()),
-            Some(false) => Err(ActionHostError::Refused {
+            Some(false) => Err(ActionCallError::Refused {
                 reason: RESOURCE_READ_REFUSED.into(),
             }),
-            None => Err(ActionHostError::NotPermitted),
+            None => Err(ActionCallError::NotPermitted),
+        }
+    }
+}
+
+impl AppBrokerState {
+    /// Whether `caller` may read the resource `resource` (of kind `kind`) the app `app` publishes
+    /// in `workspace` now, a resource a host publishes itself rather than a record (the device's
+    /// styles, the session's windows): decided at the resource's node with the caller's actor, an
+    /// agent's bounded by its person's authority, as a record's read is
+    /// ([`Self::may_read_document`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ActionCallError::Refused`] when the workspace does not let the caller read it, and
+    /// [`ActionCallError::NotPermitted`] when the caller may not act in the workspace at all.
+    pub fn may_read_resource(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        (app, kind, resource): (&str, &str, &str),
+    ) -> Result<(), ActionCallError> {
+        super::action_provider::check_execution(caller)?;
+        match self.decide_for(caller, workspace, |workspace, actor, now| {
+            let node = tilo_actions::resource_node(&workspace.node(), app, kind, resource);
+            actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
+        }) {
+            Some(true) => Ok(()),
+            Some(false) => Err(ActionCallError::Refused {
+                reason: RESOURCE_READ_REFUSED.into(),
+            }),
+            None => Err(ActionCallError::NotPermitted),
         }
     }
 }
@@ -91,8 +122,8 @@ impl ResourceChanges for BrokerDocumentChanges {
         &self,
         caller: &Caller,
         change: &ResourceChange,
-    ) -> Result<serde_json::Value, ActionHostError> {
-        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let state = self
             .state
             .upgrade()
@@ -100,11 +131,11 @@ impl ResourceChanges for BrokerDocumentChanges {
         let (Some((person, workspace)), Some(agent)) =
             (agent_person(caller), caller.acting().agent_id())
         else {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: RESOURCE_READS_FOR_AGENTS.into(),
             });
         };
-        super::action_host::check_execution(caller)?;
+        super::action_provider::check_execution(caller)?;
         let answer = state
             .decide_for(caller, workspace, |workspace, actor, now| {
                 let node = tilo_actions::action_node(
@@ -117,12 +148,12 @@ impl ResourceChanges for BrokerDocumentChanges {
                 );
                 actor.answer_in(workspace, &node, ActionKind::Undoable, now)
             })
-            .ok_or(ActionHostError::NotPermitted)?;
+            .ok_or(ActionCallError::NotPermitted)?;
         match answer {
             Answer::Allow => {}
-            Answer::Ask => return Err(ActionHostError::confirmation_required()),
+            Answer::Ask => return Err(ActionCallError::confirmation_required()),
             Answer::Deny => {
-                return Err(ActionHostError::Refused {
+                return Err(ActionCallError::Refused {
                     reason: DOCUMENT_CHANGE_REFUSED.into(),
                 });
             }
@@ -143,8 +174,8 @@ fn apply_document_change(
     workspace: &str,
     change: &ResourceChange,
     (agent, person, name): (&str, &str, Option<&str>),
-) -> Result<serde_json::Value, ActionHostError> {
-    let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+) -> Result<serde_json::Value, ActionCallError> {
+    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
     let origin = state
         .services
         .resource_changes
@@ -203,14 +234,14 @@ impl ResourceReads for BrokerDocumentReads {
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionHostError> {
-        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let state = self
             .state
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
         let Some((person, workspace)) = reader(caller) else {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: RESOURCE_READS_FOR_AGENTS.into(),
             });
         };
@@ -232,15 +263,15 @@ impl ResourceReads for BrokerDocumentReads {
         caller: &Caller,
         address: &ResourceAddress,
         wake: &ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let state = self
             .state
             .upgrade()
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "the broker stopped".into(),
             })?;
         let Some((_, workspace)) = reader(caller) else {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: RESOURCE_READS_FOR_AGENTS.into(),
             });
         };
@@ -260,8 +291,8 @@ fn read_resource(
     (person, workspace): (&str, &str),
     address: &ResourceAddress,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-) -> Result<ResourceCopy, ActionHostError> {
-    let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+) -> Result<ResourceCopy, ActionCallError> {
+    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
     {
         let (Some(owner), Some(people)) = (
             state.services.committed_documents.clone(),
@@ -280,7 +311,7 @@ fn read_resource(
         );
         context
             .revalidate()
-            .map_err(|reason| ActionHostError::Refused { reason })?;
+            .map_err(|reason| ActionCallError::Refused { reason })?;
         if owner.resource_read(workspace, &address.app, &address.record) == ResourceRead::Own {
             // A record this device holds nothing of may still arrive: with its host's replay, or
             // from a host that sends records when they are opened. Once all of it came, one this
@@ -308,7 +339,7 @@ fn read_resource(
         }
         match owner
             .capture(&context, None, MAX_DOCUMENT_BYTES)
-            .map_err(|reason| ActionHostError::Refused { reason })?
+            .map_err(|reason| ActionCallError::Refused { reason })?
         {
             NativeDocumentRead::Captured { body, .. } => {
                 Ok(ResourceCopy::Document(body.bytes().to_vec()))

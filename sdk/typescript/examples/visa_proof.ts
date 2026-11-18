@@ -13,10 +13,10 @@
  *
  *     TILO_API_URL=http://127.0.0.1:8080 TILO_API_KEY=tilo_sk_… bun sdk/typescript/examples/visa_proof.ts
  *
- * The run prints the reviewer's invitation, then the links to the form and
+ * The program prints the reviewer's invitation, then the links to the form and
  * the letter the agent changed, and asks for the key the reviewer made after
  * following the invitation; `TILO_INVITEE` instead names an endpoint that
- * plays the reviewer (the `api-on-relay` harness): it is posted the link and
+ * plays the reviewer (the `api-on-server` harness): it is posted the link and
  * answers the reviewer's key.
  *
  * `VISA_APPLICANTS` sets how many workspaces it makes (3).
@@ -28,7 +28,7 @@ import { createInterface } from "node:readline/promises";
 import { ProtocolError, Refused, Tilo, type Workspace, type WorkspaceInfo } from "tilo-sdk";
 
 const APPLICANTS = Number(process.env.VISA_APPLICANTS ?? "3");
-const RUN_TITLE = "Fill Jane Doe's visa application";
+const INVOCATION_TITLE = "Fill Jane Doe's visa application";
 const REVIEWER_EMAIL = "rosa@example.com";
 const FORM = "pdf-viewer/application.pdf";
 
@@ -69,7 +69,7 @@ function quantile(values: number[], q: number): number {
 
 // -- the applicant's documents ----------------------------------------------
 
-/** A small picture standing in for a passport scan. */
+/** A small picture subscription in for a passport scan. */
 function passportPng(): Uint8Array {
   const width = 64;
   const height = 40;
@@ -278,7 +278,7 @@ async function main(): Promise<number> {
     "the agent reads the passport the backend put there",
   );
 
-  const group = await agentWorkspace.run(RUN_TITLE, async (run) => {
+  const group = await agentWorkspace.invocation(INVOCATION_TITLE, async (invocation) => {
     await agentWorkspace.do("pdf-viewer#open");
     const imported = await agentWorkspace.do("pdf-viewer#import-pdf-content", {
       content: application,
@@ -314,13 +314,13 @@ async function main(): Promise<number> {
       typeof exported === "string" && exported.startsWith("tilo.content:"),
       `Writer exports the letter as content (${String(exported)})`,
     );
-    return run;
+    return invocation;
   });
-  check(group.invocations.length > 0, `the run grouped the agent's ${group.invocations.length} calls`);
+  check(group.invocations.length > 0, `the invocation grouped the agent's ${group.invocations.length} calls`);
 
   const formLink = await agentWorkspace.link(FORM);
   say("   links", group.links.join(", "));
-  check(group.links.includes(formLink), `the run hands over the link to the form it filled (${formLink})`);
+  check(group.links.includes(formLink), `the invocation hands over the link to the form it filled (${formLink})`);
 
   const exportRef = (await agentWorkspace.do("word-processor#export-content", { format: "docx" })) as string;
   const letter = await workspace.files.download(exportRef);
@@ -406,13 +406,16 @@ async function main(): Promise<number> {
   check(colours.size === 1 && !colours.has(undefined), `in one colour (${[...colours]})`);
   const people = new Set(byAgent.map((version) => actorOf(version).for));
   check(people.size === 1 && !people.has(undefined), `each on behalf of the one person (${[...people]})`);
-  const runs = new Map(byAgent.filter((version) => version.run_id).map((version) => [version.run_id, version.run]));
-  say("   runs", JSON.stringify([...runs]));
-  check([...runs.values()].every((title) => title === RUN_TITLE), `History names the agent's one run ${JSON.stringify(RUN_TITLE)}`);
+  const groups = new Map(byAgent.filter((version) => version.group).map((version) => [version.group, version.title]));
+  say("   groups", JSON.stringify([...groups]));
+  check(
+    [...groups.values()].every((title) => title === INVOCATION_TITLE),
+    `History names the agent's one group ${JSON.stringify(INVOCATION_TITLE)}`,
+  );
 
-  say("4d. The reviewer undoes the agent's run");
-  const invocationId = [...runs.keys()][0];
-  await reviewing.do(`${FORM}#undo`, { run: invocationId });
+  say("4d. The reviewer undoes the agent's invocation");
+  const groupId = [...groups.keys()][0];
+  await reviewing.do(`${FORM}#undo`, { invocation: groupId });
   const back = valuesOf(await fieldsOf(reviewing));
   say("   after undo", JSON.stringify(back));
   check(

@@ -22,7 +22,7 @@ pub struct Manifest {
     pub continuity: ContinuityContract,
     /// Signed external accessibility acceptance evidence. This is deliberately
     /// package metadata rather than a source-only test list: the installed
-    /// image gate must drive the exact manifest/payload pair that was packed.
+    /// image check must drive the exact manifest/payload pair that was packed.
     #[serde(default, skip_serializing_if = "Accessibility::is_empty")]
     pub accessibility: Accessibility,
     /// `[actions]` block — what the app may do on the session's action API
@@ -653,7 +653,7 @@ impl TrustAttestation {
     }
 }
 
-/// `[actions]` — an application's own standing on the session's action API.
+/// `[actions]` — an application's own on the session's action API.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionAccess {
     /// Read the catalogue of actions the person using the app is offered:
@@ -676,49 +676,14 @@ pub struct Sandbox {
     pub seccomp: String,
     /// Landlock strictness — `strict` | `lax` | `off`.
     pub landlock: String,
-    /// `[sandbox.fs]` — **retired**; decoded only so a manifest that
-    /// still carries one can be refused by name
-    /// (`validate::ManifestError::FsWriteDeclared`/`FsReadDeclared`)
-    /// instead of an opaque serde "unknown field" error. See
-    /// `crate::validate` for the replacement.
-    #[serde(default, skip_serializing_if = "SandboxFs::is_empty")]
-    pub fs: SandboxFs,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
-    /// `[sandbox.portals]` table — policy per freedesktop portal name
-    /// (`file-chooser`, `screencast`, ...). Values are [`PortalPolicy`]:
-    /// `via-host` (D-Bus socket plumbed in) or `deny`. An entry MUST exist
-    /// for every portal the app uses — absence means the launcher won't
-    /// proxy the bus, and the app's `ashpd` call surfaces `NotAvailable`.
+    /// `[sandbox.portals]`: a [`PortalPolicy`] per name in [`PORTALS`]. The launcher's bus proxy
+    /// refuses every portal the app does not allow here; notifications need no entry.
     #[serde(default)]
     pub portals: std::collections::BTreeMap<String, PortalPolicy>,
     #[serde(default)]
     pub services: std::collections::BTreeMap<String, ServiceReq>,
-}
-
-/// A path pattern in the retired [sandbox.fs] block — stored raw, never expanded, only quoted back in the refusal.
-pub type PathPattern = String;
-
-/// `[sandbox.fs]` — **retired**. It used to let the packager declare
-/// file-access paths that the launcher bound directly — letting the
-/// sandboxed package write its own policy (`write = ["/"]` was valid
-/// and would launch). The fields survive only so a manifest still
-/// carrying them is refused with its own words quoted back; nothing
-/// reads them to build a sandbox.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxFs {
-    /// Read-only path patterns. Any entry is a validation failure.
-    #[serde(default)]
-    pub read: Vec<PathPattern>,
-    #[serde(default)]
-    pub write: Vec<PathPattern>,
-}
-
-impl SandboxFs {
-    /// Whether the package declared no paths — the only shape that validates and is re-encoded.
-    pub fn is_empty(&self) -> bool {
-        self.read.is_empty() && self.write.is_empty()
-    }
 }
 
 /// `[sandbox.net]` — egress policy. `mode` is one of
@@ -743,10 +708,21 @@ impl SandboxNet {
     }
 }
 
-/// How the launcher should route a portal request. Parsed into an
-/// enum (rather than a bare string) so misspellings surface at
-/// decode time instead of silently downgrading to a no-op; wire form
-/// is kebab-case via `#[serde(rename_all = "kebab-case")]`.
+/// Every name `[sandbox.portals]` accepts, with the `org.freedesktop.portal` interface a grant opens
+/// on the session bus. `microphone` has no bus portal: the runtime captures the device for the app.
+pub const PORTALS: &[(&str, Option<&str>)] = &[
+    ("camera", Some("Camera")),
+    ("file-chooser", Some("FileChooser")),
+    ("location", Some("Location")),
+    ("microphone", None),
+    ("network-monitor", Some("NetworkMonitor")),
+    ("open-uri", Some("OpenURI")),
+    ("screencast", Some("ScreenCast")),
+    ("secrets", Some("Secret")),
+    ("wallpaper", Some("Wallpaper")),
+];
+
+/// Whether an app may reach a portal (`via-host`) or not (`deny`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PortalPolicy {

@@ -1,13 +1,20 @@
 use super::*;
 use crate::model::{Timer, WeekdayKey, repeat_mask};
-use chrono::{NaiveTime, Timelike};
+use jiff::civil::Time;
 
-fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Local> {
-    Local.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap()
+fn local(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> jiff::Zoned {
+    in_zone(&jiff::tz::TimeZone::system(), y, mo, d, h, mi, s)
 }
 
-fn local_ms(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> i64 {
-    local(y, mo, d, h, mi, s).timestamp_millis()
+fn in_zone(zone: &jiff::tz::TimeZone, y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> jiff::Zoned {
+    jiff::civil::date(y, mo, d)
+        .at(h, mi, s, 0)
+        .to_zoned(zone.clone())
+        .unwrap()
+}
+
+fn local_ms(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> i64 {
+    local(y, mo, d, h, mi, s).timestamp().as_millisecond()
 }
 
 fn lunch(days: &[WeekdayKey]) -> Alarm {
@@ -28,32 +35,32 @@ fn with_alarm(alarm: Alarm) -> (Clocks, Id) {
     (clocks, id)
 }
 
-fn at(when: DateTime<Local>) -> (DateTime<Utc>, DateTime<Local>) {
-    (when.with_timezone(&Utc), when)
+fn at(when: jiff::Zoned) -> (jiff::Timestamp, jiff::Zoned) {
+    (when.timestamp(), when)
 }
 
 fn restarted(delivery: &Delivery) -> Delivery {
     serde_json::from_value(serde_json::to_value(delivery).unwrap()).unwrap()
 }
 
-fn ring(clocks: &Clocks, delivery: &mut Delivery, when: DateTime<Local>) -> Tick {
-    let (utc, local) = at(when);
-    tick(clocks, delivery, utc, local)
+fn ring(clocks: &Clocks, delivery: &mut Delivery, when: &jiff::Zoned) -> Tick {
+    let (utc, local) = at(when.clone());
+    tick(clocks, delivery, utc, &local)
 }
 
-fn running_timer(label: &str, ends_at: DateTime<Utc>) -> Timer {
+fn running_timer(label: &str, ends_at: jiff::Timestamp) -> Timer {
     Timer {
         label: label.into(),
         duration_ms: 60_000,
-        ends_at_ms: Some(ends_at.timestamp_millis()),
+        ends_at_ms: Some(ends_at.as_millisecond()),
         paused_remaining_ms: None,
     }
 }
 
 #[test]
 fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
-    let start = Utc::now().with_nanosecond(0).unwrap();
-    let end = start + chrono::Duration::seconds(30);
+    let start = jiff::Timestamp::from_second(jiff::Timestamp::now().as_second()).unwrap();
+    let end = start + jiff::SignedDuration::from_secs(30);
     let mut clocks = Clocks::default();
     let id = Id::from_raw("timer1");
     clocks.timers.push(id.clone(), running_timer("Tea", end));
@@ -62,7 +69,7 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
     // Case: a running timer counts down by deadline, so suspend cannot stall it.
     let timer = clocks.timers.get(&id).unwrap();
     assert_eq!(
-        timer.remaining(start + chrono::Duration::seconds(12)),
+        timer.remaining(start + jiff::SignedDuration::from_secs(12)),
         Duration::from_secs(18),
         "case suspend-by-deadline"
     );
@@ -70,7 +77,7 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
 
     // Case: nothing rings before the deadline.
     assert!(
-        tick(&clocks, &mut delivery, start, Local::now())
+        tick(&clocks, &mut delivery, start, &jiff::Zoned::now())
             .due
             .is_empty(),
         "before the deadline"
@@ -80,12 +87,12 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
     // again, and a restart keeps the handoff.
     delivery
         .native_scheduled
-        .insert("timer1".into(), end.timestamp_millis());
+        .insert("timer1".into(), end.as_millisecond());
     let mut reopened = restarted(&delivery);
-    let later = end + chrono::Duration::seconds(1);
+    let later = end + jiff::SignedDuration::from_secs(1);
     assert!(
         matches!(
-            tick(&clocks, &mut reopened, later, Local::now())
+            tick(&clocks, &mut reopened, later, &jiff::Zoned::now())
                 .due
                 .as_slice(),
             [DueEvent::Timer {
@@ -100,9 +107,14 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
         "case native-handoff: consumed"
     );
     assert!(
-        tick(&clocks, &mut restarted(&reopened), later, Local::now())
-            .due
-            .is_empty(),
+        tick(
+            &clocks,
+            &mut restarted(&reopened),
+            later,
+            &jiff::Zoned::now()
+        )
+        .due
+        .is_empty(),
         "case restart: a rung deadline does not ring again after a restart"
     );
     assert!(
@@ -112,18 +124,18 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
 
     // Case: a timer restarted with a new deadline rings again, and not as
     // the platform's.
-    let restarted_end = later + chrono::Duration::seconds(5);
-    clocks.timers.get_mut(&id).unwrap().ends_at_ms = Some(restarted_end.timestamp_millis());
+    let restarted_end = later + jiff::SignedDuration::from_secs(5);
+    clocks.timers.get_mut(&id).unwrap().ends_at_ms = Some(restarted_end.as_millisecond());
     reopened
         .native_scheduled
-        .insert("timer1".into(), end.timestamp_millis());
+        .insert("timer1".into(), end.as_millisecond());
     assert!(
         matches!(
             tick(
                 &clocks,
                 &mut reopened,
-                restarted_end + chrono::Duration::seconds(1),
-                Local::now()
+                restarted_end + jiff::SignedDuration::from_secs(1),
+                &jiff::Zoned::now()
             )
             .due
             .as_slice(),
@@ -135,15 +147,15 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
         "case changed-deadline: rings itself"
     );
 
-    // Case: a removed timer leaves the ledger.
+    // Case: a removed timer leaves the log.
     clocks.timers.remove(&id);
-    tick(&clocks, &mut reopened, restarted_end, Local::now());
+    tick(&clocks, &mut reopened, restarted_end, &jiff::Zoned::now());
     assert!(reopened.timers_rung.is_empty(), "removed timer forgotten");
 }
 
 #[test]
 fn shell_activity_shows_the_floating_clock_first() {
-    let now = Utc::now();
+    let now = jiff::Timestamp::now();
 
     // Case: a paused floating timer stays in the shell, marked resumable.
     {
@@ -197,15 +209,15 @@ fn shell_activity_shows_the_floating_clock_first() {
         let mut clocks = Clocks::default();
         clocks.timers.push(
             Id::from_raw("eggs"),
-            running_timer("Eggs", now + chrono::Duration::seconds(30)),
+            running_timer("Eggs", now + jiff::SignedDuration::from_secs(30)),
         );
         clocks.timers.push(
             Id::from_raw("focus"),
-            running_timer("Focus", now + chrono::Duration::seconds(1_500)),
+            running_timer("Focus", now + jiff::SignedDuration::from_secs(1_500)),
         );
         clocks.timers.push(
             Id::from_raw("done"),
-            running_timer("Done", now - chrono::Duration::seconds(5)),
+            running_timer("Done", now - jiff::SignedDuration::from_secs(5)),
         );
         let device = OnThisDevice {
             floating_timers: BTreeSet::from(["focus".to_owned()]),
@@ -240,18 +252,18 @@ tilo_test_env::scenario! {
             let (mut clocks, id) = with_alarm(lunch(&[]));
             let mut delivery = Delivery::default();
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 1, 0))
+                ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 1, 0))
                     .due
                     .is_empty(),
                 "past time: nothing due at arming"
             );
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 16, 11, 59, 59))
+                ring(&clocks, &mut delivery, &local(2026, 1, 16, 11, 59, 59))
                     .due
                     .is_empty(),
                 "past time: nothing due a second before tomorrow's deadline"
             );
-            let rang = ring(&clocks, &mut delivery, local(2026, 1, 16, 12, 0, 0));
+            let rang = ring(&clocks, &mut delivery, &local(2026, 1, 16, 12, 0, 0));
             assert!(
                 matches!(rang.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
                 "past time: rings at tomorrow's deadline"
@@ -262,13 +274,13 @@ tilo_test_env::scenario! {
                 "past time: a one-shot alarm turns off"
             );
             assert_eq!(
-                ring(&clocks, &mut delivery, local(2026, 1, 16, 12, 0, 0)),
+                ring(&clocks, &mut delivery, &local(2026, 1, 16, 12, 0, 0)),
                 Tick::default(),
                 "past time: rings only once, even before the turn-off arrives"
             );
             clocks.alarms.get_mut(&id).unwrap().enabled = false;
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 17, 12, 0, 0))
+                ring(&clocks, &mut delivery, &local(2026, 1, 17, 12, 0, 0))
                     .due
                     .is_empty(),
                 "past time: an alarm turned off stays quiet"
@@ -280,7 +292,7 @@ tilo_test_env::scenario! {
             let (clocks, _) = with_alarm(lunch(&[]));
             let mut delivery = Delivery::default();
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+                ring(&clocks, &mut delivery, &local(2026, 1, 15, 11, 0, 0))
                     .due
                     .is_empty(),
                 "restart: nothing due at arming"
@@ -288,15 +300,15 @@ tilo_test_env::scenario! {
             let mut reopened = restarted(&delivery);
             assert!(
                 matches!(
-                    ring(&clocks, &mut reopened, local(2026, 1, 16, 8, 0, 0)).due.as_slice(),
+                    ring(&clocks, &mut reopened, &local(2026, 1, 16, 8, 0, 0)).due.as_slice(),
                     [DueEvent::Alarm { scheduled_for, .. }]
-                        if *scheduled_for == local(2026, 1, 15, 12, 0, 0).with_timezone(&Utc)
+                        if *scheduled_for == local(2026, 1, 15, 12, 0, 0).timestamp()
                 ),
                 "restart: the missed alarm rings after reopening"
             );
             assert_eq!(
                 reopened.alarms["alarm1"].last_rung,
-                Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()),
+                Some(jiff::civil::Date::new(2026, 1, 15).unwrap()),
                 "restart: records the scheduled date"
             );
         }
@@ -306,16 +318,16 @@ tilo_test_env::scenario! {
             let (clocks, _) = with_alarm(lunch(&[WeekdayKey::Thu]));
             let mut delivery = Delivery::default();
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+                ring(&clocks, &mut delivery, &local(2026, 1, 15, 11, 0, 0))
                     .due
                     .is_empty(),
                 "recurring: nothing due at arming"
             );
             let reopened_at = local(2026, 1, 23, 8, 0, 0);
-            let rang = ring(&clocks, &mut delivery, reopened_at);
+            let rang = ring(&clocks, &mut delivery, &reopened_at);
             assert!(
                 matches!(rang.due.as_slice(), [DueEvent::Alarm { scheduled_for, .. }]
-                    if *scheduled_for == local(2026, 1, 15, 12, 0, 0).with_timezone(&Utc)),
+                    if *scheduled_for == local(2026, 1, 15, 12, 0, 0).timestamp()),
                 "recurring: exactly one catch-up for the first missed occurrence"
             );
             assert!(
@@ -329,17 +341,17 @@ tilo_test_env::scenario! {
             );
             let mut reopened = restarted(&delivery);
             assert!(
-                ring(&clocks, &mut reopened, reopened_at).due.is_empty(),
-                "recurring: the reopened ledger does not repeat the catch-up"
+                ring(&clocks, &mut reopened, &reopened_at).due.is_empty(),
+                "recurring: the reopened log does not repeat the catch-up"
             );
             let next = local(2026, 1, 29, 12, 0, 0);
             assert_eq!(
-                ring(&clocks, &mut reopened, next).due.len(),
+                ring(&clocks, &mut reopened, &next).due.len(),
                 1,
                 "recurring: rings on the armed weekday"
             );
             assert!(
-                ring(&clocks, &mut reopened, next).due.is_empty(),
+                ring(&clocks, &mut reopened, &next).due.is_empty(),
                 "recurring: rings only once on that weekday"
             );
         }
@@ -349,11 +361,11 @@ tilo_test_env::scenario! {
         {
             let (mut clocks, id) = with_alarm(lunch(&[]));
             let mut delivery = Delivery::default();
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 11, 0, 0));
             let alarm = clocks.alarms.get_mut(&id).unwrap();
             alarm.enabled_at_ms = local_ms(2026, 1, 15, 12, 0, 30);
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 1, 0))
+                ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 1, 0))
                     .due
                     .is_empty(),
                 "toggle: the stale deadline does not ring"
@@ -364,7 +376,7 @@ tilo_test_env::scenario! {
                 "toggle: re-armed for tomorrow"
             );
             clocks.alarms.get_mut(&id).unwrap().enabled = false;
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 2, 0));
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 2, 0));
             assert!(
                 delivery.alarms.is_empty(),
                 "toggle: an alarm turned off holds no deadline"
@@ -372,14 +384,14 @@ tilo_test_env::scenario! {
         }
 
         // Phase: an alarm moved to another time on another device is armed
-        // afresh, and a removed alarm leaves the ledger.
+        // afresh, and a removed alarm leaves the log.
         {
             let (mut clocks, id) = with_alarm(lunch(&[]));
             let mut delivery = Delivery::default();
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 11, 0, 0));
             clocks.alarms.get_mut(&id).unwrap().hour = 13;
             assert!(
-                ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 30, 0))
+                ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 30, 0))
                     .due
                     .is_empty(),
                 "moved: the old time does not ring"
@@ -390,8 +402,8 @@ tilo_test_env::scenario! {
                 "moved: armed for the new time"
             );
             clocks.alarms.remove(&id);
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 31, 0));
-            assert!(delivery.alarms.is_empty(), "removed: ledger entry dropped");
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 31, 0));
+            assert!(delivery.alarms.is_empty(), "removed: log entry dropped");
         }
     }
 
@@ -399,7 +411,7 @@ tilo_test_env::scenario! {
     {
         // Case: keeps the requested time after today's occurrence.
         assert_eq!(
-            next_occurrence(&lunch(&[]), None, local(2026, 1, 15, 12, 1, 0)),
+            next_occurrence(&lunch(&[]), None, &local(2026, 1, 15, 12, 1, 0)),
             Some(local(2026, 1, 16, 12, 0, 0)),
             "case after-todays-occurrence"
         );
@@ -407,13 +419,13 @@ tilo_test_env::scenario! {
         // Case: does not repeat a rung date after a clock rollback.
         let after = local(2026, 1, 15, 11, 0, 0);
         assert_eq!(
-            next_occurrence(&lunch(&[WeekdayKey::Thu]), Some(after.date_naive()), after),
+            next_occurrence(&lunch(&[WeekdayKey::Thu]), Some(after.date()), &after),
             Some(local(2026, 1, 22, 12, 0, 0)),
             "case clock-rollback"
         );
 
         // Case: resolves DST gaps and never repeats the autumn hour.
-        let zone = chrono_tz::Europe::Berlin;
+        let zone = tilo_recurrence::zone::named("Europe/Berlin").unwrap();
         let wake = Alarm {
             label: "Wake".into(),
             hour: 2,
@@ -421,27 +433,27 @@ tilo_test_env::scenario! {
             enabled: true,
             ..Alarm::default()
         };
-        let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
+        let spring = in_zone(&zone, 2026, 3, 29, 1, 0, 0);
         assert_eq!(
-            next_occurrence_in(&wake, None, &spring),
-            Some(zone.with_ymd_and_hms(2026, 3, 29, 3, 0, 0).unwrap()),
+            next_occurrence(&wake, None, &spring),
+            Some(in_zone(&zone, 2026, 3, 29, 3, 0, 0)),
             "case dst-spring-gap"
         );
-        let autumn = zone.with_ymd_and_hms(2026, 10, 25, 1, 0, 0).unwrap();
-        let first = next_occurrence_in(&wake, None, &autumn).unwrap();
+        let autumn = in_zone(&zone, 2026, 10, 25, 1, 0, 0);
+        let first = next_occurrence(&wake, None, &autumn).unwrap();
         assert_eq!(
-            first.with_timezone(&Utc),
-            Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap(),
+            first.timestamp(),
+            in_zone(&jiff::tz::TimeZone::UTC, 2026, 10, 25, 0, 30, 0).timestamp(),
             "case dst-autumn-first-occurrence"
         );
         assert_eq!(
-            next_occurrence_in(&wake, None, &first),
-            Some(zone.with_ymd_and_hms(2026, 10, 26, 2, 30, 0).unwrap()),
+            next_occurrence(&wake, None, &first),
+            Some(in_zone(&zone, 2026, 10, 26, 2, 30, 0)),
             "case dst-autumn-no-repeat"
         );
 
         // Case: honors turned-off and weekday settings.
-        let after = Utc.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let after = in_zone(&jiff::tz::TimeZone::UTC, 2026, 1, 15, 11, 0, 0);
         let mut weekend = Alarm {
             label: "Weekend".into(),
             hour: 12,
@@ -449,19 +461,19 @@ tilo_test_env::scenario! {
             ..Alarm::default()
         };
         assert_eq!(
-            next_occurrence_in(&weekend, None, &after),
+            next_occurrence(&weekend, None, &after),
             None,
             "case disabled"
         );
         weekend.enabled = true;
         assert_eq!(
-            next_occurrence_in(&weekend, None, &after),
-            Some(Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap()),
+            next_occurrence(&weekend, None, &after),
+            Some(in_zone(&jiff::tz::TimeZone::UTC, 2026, 1, 17, 12, 0, 0)),
             "case weekday-only"
         );
         assert_eq!(
             weekend.local_time(),
-            NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+            Time::new(12, 0, 0, 0).unwrap()
         );
     }
 
@@ -470,22 +482,18 @@ tilo_test_env::scenario! {
         let (clocks, _) = with_alarm(lunch(&[]));
         let mut delivery = Delivery::default();
         assert!(
-            ring(&clocks, &mut delivery, local(2026, 4, 14, 11, 0, 0))
+            ring(&clocks, &mut delivery, &local(2026, 4, 14, 11, 0, 0))
                 .due
                 .is_empty()
         );
         assert_eq!(
-            ring(&clocks, &mut delivery, local(2026, 4, 14, 12, 0, 0))
+            ring(&clocks, &mut delivery, &local(2026, 4, 14, 12, 0, 0))
                 .due
                 .len(),
             1
         );
         assert!(
-            ring(
-                &clocks,
-                &mut restarted(&delivery),
-                local(2026, 4, 15, 12, 0, 0)
-            )
+            ring(&clocks, &mut restarted(&delivery), &local(2026, 4, 15, 12, 0, 0))
             .due
             .is_empty(),
             "a read-only member still delivers a one-shot only once per device"
@@ -498,27 +506,27 @@ tilo_test_env::scenario! {
         let mut delivery = Delivery::default();
         let noon = local(2026, 1, 15, 12, 0, 0);
         assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 11, 0, 0))
                 .due
                 .is_empty()
         );
-        assert_eq!(ring(&clocks, &mut delivery, noon).due.len(), 1);
+        assert_eq!(ring(&clocks, &mut delivery, &noon).due.len(), 1);
         let alarm = clocks.alarms.get(&id).unwrap();
-        snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+        snooze(&mut delivery, &id, alarm, noon.timestamp().as_millisecond(), 5).unwrap();
         assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 4, 59))
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 4, 59))
                 .due
                 .is_empty(),
             "a snooze waits its five minutes"
         );
         let mut reopened = restarted(&delivery);
-        let again = ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 0));
+        let again = ring(&clocks, &mut reopened, &local(2026, 1, 15, 12, 5, 0));
         assert!(
             matches!(again.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
             "a snooze rings once after being kept across a restart"
         );
         assert!(
-            ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 1))
+            ring(&clocks, &mut reopened, &local(2026, 1, 15, 12, 5, 1))
                 .due
                 .is_empty(),
             "the snoozed occurrence rings once"
@@ -530,25 +538,25 @@ tilo_test_env::scenario! {
         let (mut clocks, id) = with_alarm(lunch(&[]));
         let mut delivery = Delivery::default();
         let noon = local(2026, 1, 15, 12, 0, 0);
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
-        ring(&clocks, &mut delivery, noon);
+        ring(&clocks, &mut delivery, &local(2026, 1, 15, 11, 0, 0));
+        ring(&clocks, &mut delivery, &noon);
         let alarm = clocks.alarms.get(&id).unwrap();
-        snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+        snooze(&mut delivery, &id, alarm, noon.timestamp().as_millisecond(), 5).unwrap();
 
         let alarm = clocks.alarms.get_mut(&id).unwrap();
         alarm.minute = 30;
         assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 5, 0))
                 .due
                 .is_empty(),
             "moving the alarm cancels the occurrence snoozed under the old time"
         );
 
         let alarm = clocks.alarms.get(&id).unwrap();
-        snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+        snooze(&mut delivery, &id, alarm, noon.timestamp().as_millisecond(), 5).unwrap();
         clocks.alarms.remove(&id);
         assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
+            ring(&clocks, &mut delivery, &local(2026, 1, 15, 12, 5, 0))
                 .due
                 .is_empty(),
             "a deleted alarm has no snooze"

@@ -38,7 +38,7 @@ __all__ = [
     "AppliedArgs",
 ]
 
-Action = Literal["Allow", "Deny"]
+Action = Literal["allow", "deny"]
 
 Matcher = dict[str, Any]
 """One of Service, Port: an object whose case the app tags it with."""
@@ -59,7 +59,7 @@ class StoredZone(TypedDict):
     masquerade: bool
     deleted_rules: list[str]
 
-Target = Literal["Default", "Accept", "Reject", "Drop"]
+Target = Literal["default", "accept", "reject", "drop"]
 
 ZoneKind = Literal["drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"]
 
@@ -98,7 +98,7 @@ AppliedArgs = TypedDict("AppliedArgs", {
 
 class Config(Resource):
     """Firewall — `firewall.config`."""
-    __surface__ = "so.tilo.firewall@311c05008d41672c"
+    __surface__ = "so.tilo.firewall@d4e5e1b79ae77004"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -173,7 +173,7 @@ class Config(Resource):
 
 class Applied(Resource):
     """Applied configuration — `firewall.applied`."""
-    __surface__ = "so.tilo.firewall@311c05008d41672c"
+    __surface__ = "so.tilo.firewall@d4e5e1b79ae77004"
     devices: dict[str, str]
 
     def applied(self,

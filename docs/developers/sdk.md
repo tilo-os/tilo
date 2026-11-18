@@ -77,8 +77,8 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
   both call a type `Person`. Without `-w`, `gen` writes the apps of the checkout it runs in.
 
 A surface publishes every action of its app that a caller of another language reads: its
-record's verbs, and its read effects and conversions (`read-form-fields`, Writer's
-`export-content`) as actions of the record too, each with its parameters and the value it
+resource's verbs, and its read effects and conversions (`read-form-fields`, Writer's
+`export-content`) as actions of the resource too, each with its parameters and the value it
 answers with. A read action's return type is part of the surface, so `read_form_fields`
 types the form a script reads its fields from; an action that answers nothing or a job has
 no return type. What a window shows and does to itself (its zoom, the caret) is no action
@@ -111,8 +111,8 @@ step.
 
 ## Bulk calls
 
-A record publishes a `group` action: several of its other actions, applied in order as one
-all-or-nothing step. The SDK sends it whenever a script fills a record from a list. The
+A resource publishes a `group` action: several of its other actions, applied in order as one
+all-or-nothing step. The SDK sends it whenever a script fills a resource from a list. The
 generated bulk method takes a list of the action's arguments, each typed (`CreateArgs`):
 
 ```python
@@ -139,16 +139,16 @@ one bulk call carry one `Tilo-Invocation`, so History lists the work once and on
 it back; inside `ws.invocation(...)` they join that group instead. A bulk call answers each call's
 answer, in order, and an empty list sends nothing.
 
-A read, or an action that answers a value (the record it made, a file it exported), has no
+A read, or an action that answers a value (the resource it made, a file it exported), has no
 bulk form: `group` reports no member's answer, so the value would be lost.
 
 ## Links for people
 
-Work ends with a person looking at it, so every call that changed a record answers that
-record's link, the one a person copies in the app: `invocation.links` lists each record its
-calls changed, once each, and `invocation.link` is the one link when they changed one record
+Work ends with a person looking at it, so every call that changed a resource answers that
+resource's link, the one a person copies in the app: `invocation.links` lists each resource its
+calls changed, once each, and `invocation.link` is the one link when they changed one resource
 (else `None`/`null`). A pending call's `Invocation` has `link` once it finished. `ws.link(path)` answers the
-link to anything a path names. A link opens the record in its app for the workspace's members
+link to anything a path names. A link opens the resource in its app for the workspace's members
 and carries no secret: invite the person first (`ws.members.invite`).
 
 ## Errors

@@ -1,5 +1,5 @@
 //! An agent task's programs (`tilolang_tilo::task`): run in a session of the task's own that
-//! holds no records, reading Notes and Todo through their apps and changing them only by
+//! holds no documents, reading Notes and Todo through their apps and changing them only by
 //! invoking each app's actions, which the apps (here two hosts behind an API) run.
 
 use std::rc::Rc;
@@ -47,13 +47,14 @@ fn task(refused: Vec<&'static str>) -> Task {
 }
 
 impl Task {
-    fn run(&self, source: &str, confirm: bool) -> Json {
+    /// What `source` answers as one step of the task, `confirm`ed or previewed.
+    fn step(&self, source: &str, confirm: bool) -> Json {
         self.session.run(source, confirm, &agent())
     }
 
     /// The one line `source` printed.
     fn said(&self, source: &str) -> String {
-        let answer = self.run(source, false);
+        let answer = self.step(source, false);
         assert_eq!(answer["state"], "done", "{answer:#}");
         answer["output"][0].as_str().unwrap().to_owned()
     }
@@ -66,11 +67,65 @@ fn seeded() -> Task {
         "notes.pin(notes.new_note(notes.notebook), true)",
         "tasks.new_task(tasks.tasks, title: \"milk\")\ntasks.new_task(tasks.tasks, title: \"bins\")",
     ] {
-        let answer = task.run(source, true);
+        let answer = task.step(source, true);
         assert_eq!(answer["state"], "done", "{source}: {answer:#}");
     }
     task.api.invoked.borrow_mut().clear();
     task
+}
+
+/// A program reads a resource the session publishes rather than one of an app's records — the
+/// device's styles here, as `device.styles` — in the same call it runs: the API answers the
+/// reading the session's services publish, and the program goes on with it (the style ids a
+/// person may switch to).
+#[test]
+fn a_program_reads_the_reading_the_session_publishes() {
+    let task = task(Vec::new());
+    let published = "session:styles";
+    task.api.readings.borrow_mut().insert(
+        published.to_owned(),
+        json!({
+            "offered": [
+                {"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
+                 "name": "strips", "line": "The strips", "loads": true, "reason": ""},
+                {"style": "so.tilo.shell:cards", "package": "so.tilo.shell",
+                 "name": "cards", "line": "Cards", "loads": true, "reason": ""},
+            ],
+        }),
+    );
+    let said = task.said("for s in device.styles.offered { print(s.style) }");
+    assert_eq!(said, "so.tilo.shell:strips", "{said}");
+    // One call: the reading was asked for, and it was asked for once.
+    let asked = task.api.read_for.borrow().clone();
+    assert_eq!(
+        asked,
+        [("so.tilo.device".to_owned(), published.to_owned())],
+        "the reading asked of the session once, within the program"
+    );
+    assert!(
+        task.api.invoked.borrow().is_empty(),
+        "nothing an app does: a reading is read"
+    );
+    // A second program asks again: what the session publishes may have moved.
+    let again = task.said("print(device.styles.offered.len())");
+    assert_eq!(again, "2", "{again}");
+    assert_eq!(
+        task.api.read_for.borrow().len(),
+        2,
+        "the second program reads it again"
+    );
+}
+
+/// A resource the session publishes nothing of reads as its type starts, never as a fault of the
+/// program: a device without Wi-Fi publishes no networks, and a view draws it so.
+#[test]
+fn a_reading_the_session_has_none_of_reads_as_it_starts() {
+    let task = task(Vec::new());
+    let said = task.said("print(device.time.clock)");
+    // No reading: the clock's text starts empty, and the program carries on.
+    assert_eq!(said, "", "{said}");
+    let answer = task.step("print(device.time.timer_paused)", false);
+    assert_eq!(answer["state"], "done", "{answer:#}");
 }
 
 #[test]
@@ -80,7 +135,7 @@ fn one_program_reads_notes_and_todo() {
         task.said("print(notes.notebook.notes.len(), notes.notebook.notes.filter(n -> n.pinned).len(), tasks.tasks.items.len())"),
         "2 1 2"
     );
-    let titles = task.run("tasks.tasks.items", false);
+    let titles = task.step("tasks.tasks.items", false);
     let shown = titles["output"][0].as_str().unwrap();
     assert!(
         shown.contains("@tasks.Task:") && shown.contains("\"milk\""),
@@ -95,7 +150,7 @@ fn one_program_reads_notes_and_todo() {
 #[test]
 fn a_programs_lets_stay_for_the_next() {
     let task = seeded();
-    let first = task.run("let list = tasks.tasks", false);
+    let first = task.step("let list = tasks.tasks", false);
     assert_eq!(first["state"], "done", "{first:#}");
     assert_eq!(first["lets"][0]["name"], "list", "{first:#}");
     assert_eq!(task.said("list.items.len()"), "2");
@@ -104,7 +159,7 @@ fn a_programs_lets_stay_for_the_next() {
 #[test]
 fn changes_in_two_apps_are_invocations_of_each() {
     let task = seeded();
-    let answer = task.run(
+    let answer = task.step(
         "for n in notes.notebook.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.new_task(tasks.tasks, title: \"call Ada\")",
         false,
     );
@@ -141,7 +196,7 @@ fn changes_in_two_apps_are_invocations_of_each() {
 #[test]
 fn an_assignment_is_the_resources_field_edit() {
     let task = seeded();
-    let answer = task.run("for t in tasks.tasks.items {\n    t.done = true\n}", false);
+    let answer = task.step("for t in tasks.tasks.items {\n    t.done = true\n}", false);
     assert_eq!(answer["state"], "done", "{answer:#}");
     let invoked = task.api.invoked.borrow().clone();
     assert_eq!(invoked.len(), 2, "{invoked:#?}");
@@ -161,7 +216,7 @@ fn an_assignment_is_the_resources_field_edit() {
 fn many_changes_are_previewed_and_sent_on_confirm() {
     let task = seeded();
     let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, title: t)\n}\nfor n in notes.notebook.notes {\n    n.title = \"x\"\n}";
-    let previewed = task.run(bulk, false);
+    let previewed = task.step(bulk, false);
     assert_eq!(previewed["state"], "preview", "{previewed:#}");
     assert_eq!(
         previewed["steps"].as_array().unwrap().len(),
@@ -173,7 +228,7 @@ fn many_changes_are_previewed_and_sent_on_confirm() {
         "a preview invokes nothing"
     );
     assert_eq!(task.said("tasks.tasks.items.len()"), "2");
-    let applied = task.run(bulk, true);
+    let applied = task.step(bulk, true);
     assert_eq!(applied["state"], "done", "{applied:#}");
     assert_eq!(applied["changed"], 6, "{applied:#}");
     assert_eq!(task.said("tasks.tasks.items.len()"), "6");
@@ -182,7 +237,7 @@ fn many_changes_are_previewed_and_sent_on_confirm() {
 #[test]
 fn a_destructive_action_is_previewed_first() {
     let task = seeded();
-    let answer = task.run(
+    let answer = task.step(
         "for t in tasks.tasks.items {\n    tasks.remove(tasks.tasks, t)\n}",
         false,
     );
@@ -197,7 +252,7 @@ tilo_test_env::scenario! {
     phase a_refused_invocation_is_never_done;
     {
         let task = task(vec!["edit-text"]);
-        let answer = task.run(
+        let answer = task.step(
             "let n = notes.new_note(notes.notebook)\nn.title = \"x\"",
             true,
         );
@@ -206,7 +261,7 @@ tilo_test_env::scenario! {
             answer["detail"].as_str().unwrap().contains("denied"),
             "{answer:#}"
         );
-        let tried = task.run(
+        let tried = task.step(
             "match try tasks.new_task(tasks.tasks, title: \"Read the letter\") { .ok(t) => print(t.title), .err(why) => print(why) }",
             true,
         );
@@ -242,7 +297,7 @@ tilo_test_env::scenario! {
     phase a_refused_action_stops_the_program_unless_it_tries;
     {
         let task = task(vec!["new_task"]);
-        let answer = task.run(
+        let answer = task.step(
             "tasks.new_task(tasks.tasks, title: \"milk\")\nprint(\"went on\")",
             true,
         );
@@ -261,7 +316,7 @@ tilo_test_env::scenario! {
 #[test]
 fn a_flag_argument_is_sent_as_a_flag() {
     let task = seeded();
-    let answer = task.run(
+    let answer = task.step(
         "notes.pin(notes.notebook.notes.filter(n -> n.title == \"Q3 plan\").single(), false)",
         true,
     );
@@ -273,7 +328,7 @@ fn a_flag_argument_is_sent_as_a_flag() {
 #[test]
 fn a_resource_argument_is_the_catalogues_reference() {
     let task = seeded();
-    let answer = task.run(
+    let answer = task.step(
         "for t in tasks.tasks.items.take(1) {\n    tasks.remove(tasks.tasks, t)\n}",
         true,
     );
@@ -303,7 +358,7 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
         session: api.task(),
         api,
     };
-    let answer = task.run(
+    let answer = task.step(
         "let ch = chat.new_channel(chat.conversations, \"launch\")\n\
          let first = chat.send(ch, RichText(\"The launch video is ready for review\"))\n\
          chat.send(ch, RichText(\"Watching it now\"), first)",
@@ -340,12 +395,12 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
 #[test]
 fn a_program_makes_a_note_with_its_words() {
     let task = task(Vec::new());
-    let made = task.run(
+    let made = task.step(
         "let n = notes.new_note(notes.notebook, title: \"Groceries\", body: \"- eggs\\n- milk\")\nnotes.add_text(n, \"- bread\")",
         true,
     );
     assert_eq!(made["state"], "done", "{made:#}");
-    let read = task.run(
+    let read = task.step(
         "for n in notes.notebook.notes.filter(n -> n.title == \"Groceries\") { print(read(n)) }",
         false,
     );
@@ -365,12 +420,12 @@ fn a_program_makes_a_note_with_its_words() {
 #[test]
 fn a_task_moved_to_another_day_takes_its_moment_and_reminder() {
     let task = task(Vec::new());
-    let made = task.run(
+    let made = task.step(
         "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"), at: Time(\"2026-11-18T17:00:00Z\"), remind: Time(\"2026-11-18T17:00:00Z\"))",
         true,
     );
     assert_eq!(made["state"], "done", "{made:#}");
-    let moved = task.run(
+    let moved = task.step(
         "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { tasks.schedule(t, Date(\"2026-11-20\")) }",
         true,
     );
@@ -386,18 +441,18 @@ fn a_task_moved_to_another_day_takes_its_moment_and_reminder() {
     assert!(!said.contains("2026-11-18"), "{said}");
 }
 
-/// An action that sets what a record already holds changes nothing and is done, never a failure
+/// An action that sets what a document already holds changes nothing and is done, never a failure
 /// of the program: "move the reminder to Friday" written as the day's move and then the reminder
 /// set to the moment the move already gave it.
 #[test]
 fn an_action_that_changes_nothing_is_done() {
     let task = task(Vec::new());
-    let made = task.run(
+    let made = task.step(
         "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"), at: Time(\"2026-11-18T17:00:00Z\"), remind: Time(\"2026-11-18T17:00:00Z\"))",
         true,
     );
     assert_eq!(made["state"], "done", "{made:#}");
-    let moved = task.run(
+    let moved = task.step(
         "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") {\n    tasks.schedule(t, Date(\"2026-11-20\"))\n    tasks.remind_at(t, Time(\"2026-11-20T17:00:00Z\"))\n}",
         true,
     );
@@ -409,12 +464,12 @@ fn an_action_that_changes_nothing_is_done() {
 #[test]
 fn a_reminder_past_the_tasks_day_moves_the_task() {
     let task = task(Vec::new());
-    let made = task.run(
+    let made = task.step(
         "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"), remind: Time(\"2026-11-18T17:00:00Z\"))",
         true,
     );
     assert_eq!(made["state"], "done", "{made:#}");
-    let moved = task.run(
+    let moved = task.step(
         "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { tasks.remind_at(t, Time(\"2026-11-20T17:00:00Z\")) }",
         true,
     );
@@ -423,4 +478,40 @@ fn a_reminder_past_the_tasks_day_moves_the_task() {
         "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { print(t.due, t.remind) }",
     );
     assert_eq!(said.matches("2026-11-20").count(), 2, "{said}");
+}
+
+/// "What's on my plate today?" answered by `print(xs, fields: [.title, .due, .priority])`: the
+/// answer a person reads (`person_output`) has no reference literals, leaves out a field that is
+/// `none`, and writes a day in the person's words; the model keeps `output`, refs and all, for
+/// its next program.
+#[test]
+fn a_programs_answer_reads_for_a_person_without_its_references() {
+    let task = task(Vec::new());
+    task.session.set_shown_by(|kind, value| {
+        if kind == "date" && value == "2026-11-18" {
+            return "18th November 2026".to_owned();
+        }
+        value.to_owned()
+    });
+    let answer = task.step(
+        "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"))\nprint(find(tasks.Task), fields: [.title, .due, .priority])",
+        true,
+    );
+    assert_eq!(answer["state"], "done", "{answer:#}");
+    let model = answer["output"][0].as_str().expect("a printed line");
+    let person = answer["person_output"][0]
+        .as_str()
+        .expect("a printed line for a person");
+    assert!(
+        model.contains("@tasks.Task:"),
+        "the model names the resource by its reference: {model}"
+    );
+    assert!(
+        !person.contains("@tasks.Task:") && !person.contains("title:"),
+        "a person reads the title and fields, not the reference or the field name: {person}"
+    );
+    assert_eq!(
+        person, "Call mum  18th November 2026",
+        "the day reads in the person's words, a field that is none left out"
+    );
 }

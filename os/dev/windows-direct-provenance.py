@@ -489,7 +489,7 @@ def verify_ci_image(image, key, children, kind, command_json=None, key_arg=None)
             **statement}
 
 
-def dual_ci_medium_gate(args, board_checked, board_child_digest,
+def dual_ci_medium_check(args, board_checked, board_child_digest,
                         board_source_revision):
     """Require paired CI media and separate generic full-boot proof for board copy."""
     names = ("generic_ci_image", "generic_index_manifest", "generic_child_manifest",

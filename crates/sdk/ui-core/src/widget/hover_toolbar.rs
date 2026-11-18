@@ -63,7 +63,7 @@ impl HoverToolbar {
     }
 
     /// `row` filling the room it is given under a band `band` logical pixels tall its controls
-    /// are shown in — content standing at a size of its own, a place on a canvas — with
+    /// are shown in — content at a size of its own, a place on a canvas — with
     /// `controls` at the band's trailing end, over the content's top edge rather than on it, on
     /// hover and focus: the band is kept whether they are shown or not, so showing them covers
     /// nothing of the content and moves nothing, and the pointer that went to them is still over
@@ -75,7 +75,7 @@ impl HoverToolbar {
         Self::around(part, controls, Stands::Above(band), None)
     }
 
-    /// [`Self::above`], with `caption` standing at the band's leading end at rest as well as on
+    /// [`Self::above`], with `caption` at the band's leading end at rest as well as on
     /// hover: what the content is, said quietly while its controls are away (a place on a canvas
     /// names what it shows). The band is as tall either way, so nothing moves when the controls
     /// come; a caption longer than a line wraps, and the band grows to say it in full.
@@ -238,6 +238,12 @@ impl Decorator for HoverToolbar {
 
     fn name(&self) -> &'static str {
         "HoverToolbar"
+    }
+
+    /// What it holds; a page shows its controls while the pointer is over it or focus is in it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.layers.html(cx);
+        cx.attr("data-hover-controls", "");
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

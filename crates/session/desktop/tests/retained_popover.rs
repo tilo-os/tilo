@@ -10,7 +10,7 @@ use tilo_desktop::chrome::{ChromeIntent, OwnChip};
 use tilo_desktop::desktop_host::{BackgroundLayer, DesktopChrome, NoticeTiles};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
@@ -44,8 +44,8 @@ impl ChromeSource for Page {
         PERSON
     }
 
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
-        answer(&Standing {
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R {
+        answer(&Requester {
             person: PERSON,
             // The workspace is their own: its menu offers renaming it and a new strip.
             role: Some(tilo_action_policy::Role::Owner),

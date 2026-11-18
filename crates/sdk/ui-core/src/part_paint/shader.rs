@@ -310,7 +310,7 @@ impl<'a> Program<'a> {
 
     fn shade(&self, inputs: &Inputs, texel: Texel) -> Result<[f32; 4], EvalError> {
         let mut scope = Scope::new(self.expressions.len());
-        let standing: Vec<(naga::Handle<naga::Expression>, naga::Expression)> = self
+        let kept: Vec<(naga::Handle<naga::Expression>, naga::Expression)> = self
             .expressions
             .iter()
             .filter(|(_, expression)| {
@@ -321,7 +321,7 @@ impl<'a> Program<'a> {
             })
             .map(|(handle, expression)| (handle, expression.clone()))
             .collect();
-        for (handle, expression) in standing {
+        for (handle, expression) in kept {
             let value = self.eval(&expression, inputs, texel, &scope)?;
             scope.put(handle, value);
         }

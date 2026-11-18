@@ -1,7 +1,7 @@
 //! Prepared-driver tests: a launched component restores, syncs and publishes in the order an edit
 //! needs, observed through the headless harness.
 
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
 use crate::application_test_support::*;
 use crate::headless::*;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
@@ -137,7 +137,7 @@ impl crate::widget::AppWidget for Observer {
     }
 }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -160,12 +160,12 @@ fn factory(
     ))
 }
 fn prepared() -> (
-    ProbeHost,
+    ProbeHarness,
     FrameHarness,
     Observations,
     crate::resource::DocumentCheckout,
 ) {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let definition = definition(factory);
     let observed = Observations::default();
     OBSERVED.with_borrow_mut(|slot| *slot = observed.clone());

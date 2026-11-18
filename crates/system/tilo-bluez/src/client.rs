@@ -222,7 +222,7 @@ impl BluezClient {
     }
 
     /// Make this machine visible to others. Off by default and never left on — a permanently
-    /// discoverable adapter is a standing invitation.
+    /// discoverable adapter is an access invitation.
     pub async fn set_discoverable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Discoverable", on).await
     }

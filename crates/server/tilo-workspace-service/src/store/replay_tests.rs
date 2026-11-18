@@ -1,0 +1,1270 @@
+use super::*;
+use crate::{coedit::CoeditPayload, transport};
+use tilo_server_protocol::WorkspaceId;
+fn frame(value: u8, size: usize, timestamp: u64) -> Vec<u8> {
+    transport::encode(&Envelope::Delta {
+        workspace_id: WorkspaceId::from_u128(7),
+        author_device_public_key: [1; 32],
+        authored_at_ns: timestamp,
+        signature: [0; 64],
+        delta: CoeditPayload::RetainedDelta {
+            channel: [9; 32],
+            body: vec![value; size],
+        }
+        .encode()
+        .unwrap(),
+    })
+    .unwrap()
+}
+/// Active generation of a retained lineage whose files the test writes
+/// directly, so it can inject records that retention itself would reject or
+/// collapse.
+fn raw_generation(store: &WorkspaceStore, author: u8, channel: u8) -> PathBuf {
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([author; 32]),
+        hex::encode([channel; 32])
+    ));
+    let name = "00000000000000000000000000000000";
+    fs::create_dir_all(lineage.join(name)).unwrap();
+    fs::write(lineage.join("CURRENT"), name).unwrap();
+    lineage.join(name)
+}
+/// A pending entry at the exact path `enqueue_pending` names, written without
+/// its per-entry durability barrier: backlog fixtures of thousands of entries
+/// test replay bounds, not the fsync cost of building them.
+fn raw_pending(store: &WorkspaceStore, device: &[u8; 32], seq: u64, bytes: &[u8]) -> PathBuf {
+    let directory = store.pending_dir_for(device);
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{seq:016x}-{}.delta", blake3::hash(bytes).to_hex()));
+    fs::write(&path, bytes).unwrap();
+    path
+}
+fn snapshot(store: &WorkspaceStore) -> ReplaySnapshot {
+    let mut build = store
+        .start_replay_capture(ReplayId(rand::random()), [2; 32])
+        .unwrap();
+    loop {
+        if let Step::Done(snapshot) = store
+            .capture_replay_step(&mut build, WorkLimit::default())
+            .unwrap()
+        {
+            return snapshot;
+        }
+    }
+}
+fn prepare(store: &WorkspaceStore, snapshot: &mut ReplaySnapshot) {
+    while store
+        .prepare_replay_step(snapshot, WorkLimit::default())
+        .unwrap()
+        == Step::More
+    {
+        assert!(snapshot.stats().last_step_work <= 128);
+    }
+}
+/// Prepare `snapshot` and read it whole: its frames and what it sent.
+fn drain(store: &WorkspaceStore, snapshot: &mut ReplaySnapshot) -> (Vec<Envelope>, ReplaySummary) {
+    prepare(store, snapshot);
+    let budget = ReplayBudget::new(DEFAULT_OUTPUT_BYTES);
+    let mut frames = Vec::new();
+    loop {
+        let batch = store
+            .read_replay_batch(snapshot, ReplayLimits::default(), &budget)
+            .unwrap();
+        frames.extend(batch.frames.iter().cloned());
+        if batch.eof {
+            return (frames, snapshot.summary().unwrap());
+        }
+    }
+}
+/// How many frames `snapshot` sends, read whole.
+fn sent(store: &WorkspaceStore, snapshot: &mut ReplaySnapshot) -> u64 {
+    drain(store, snapshot).1.total_frames
+}
+/// The authoring times of the delta frames `snapshot` sends, in order.
+fn stamps_of(store: &WorkspaceStore, snapshot: &mut ReplaySnapshot) -> Vec<u64> {
+    drain(store, snapshot)
+        .0
+        .iter()
+        .filter_map(|frame| match frame {
+            Envelope::Delta { authored_at_ns, .. } => Some(*authored_at_ns),
+            _ => None,
+        })
+        .collect()
+}
+fn one_entry() -> WorkLimit {
+    WorkLimit {
+        entries: 1,
+        ..WorkLimit::default()
+    }
+}
+#[test]
+fn a_batch_reads_only_the_frames_it_sends() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let retained = raw_generation(&store, 0, 9);
+    for i in (0..300).rev() {
+        fs::write(retained.join(format!("{i:016x}.delta")), frame(1, 2048, i)).unwrap();
+    }
+    for i in 0..1500 {
+        raw_pending(&store, &[2; 32], i, &[0]);
+    }
+    let pending = store
+        .enqueue_pending(&[2; 32], 2000, &frame(2, 2048, 2000))
+        .unwrap();
+    let mut snapshot = snapshot(&store);
+    prepare(&store, &mut snapshot);
+    assert_eq!(snapshot.stats().hydration_reads, 0);
+    let budget = ReplayBudget::new(256 * 1024 * 1024);
+    let batch = store
+        .read_replay_batch(
+            &mut snapshot,
+            ReplayLimits {
+                max_frames: 8,
+                ..ReplayLimits::default()
+            },
+            &budget,
+        )
+        .unwrap();
+    assert_eq!(batch.frames.len(), 8);
+    assert_eq!(snapshot.stats().hydration_reads, 8);
+    for (i, env) in batch.frames.iter().enumerate() {
+        assert!(matches!(env, Envelope::Delta {authored_at_ns, ..} if *authored_at_ns == i as u64));
+    }
+    assert!(budget.used() > 8 * 2048);
+    drop(batch);
+    assert_eq!(budget.used(), 0);
+    assert!(pending.exists());
+    assert!(snapshot.stats().peak_metadata_entries <= 128);
+    assert!(snapshot.stats().peak_frame_bytes < 40_000);
+    // The rest: 300 retained frames and the one queued frame that decodes.
+    let (rest, summary) = drain(&store, &mut snapshot);
+    assert_eq!(rest.len(), 293);
+    assert_eq!((summary.total_frames, summary.pending_frames), (301, 1));
+    let mut discard = snapshot.into_discard().unwrap();
+    while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(pending.exists());
+}
+#[test]
+fn collisions_malformed_twins_and_replaced_pending_never_authorize_retirement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let first = frame(1, 10, 1);
+    let second = frame(2, 10, 2);
+    let same_body_new_publication = frame(1, 10, 2);
+    for (name, bytes) in [
+        ("a", first.as_slice()),
+        ("b", second.as_slice()),
+        ("c", first.as_slice()),
+        ("d", b"bad".as_slice()),
+        ("e", same_body_new_publication.as_slice()),
+    ] {
+        fs::write(
+            raw_generation(&store, 0, 9).join(format!("{name}.delta")),
+            bytes,
+        )
+        .unwrap();
+    }
+    let duplicate = store.enqueue_pending(&[2; 32], 1, &first).unwrap();
+    let replaced = store.enqueue_pending(&[2; 32], 2, &second).unwrap();
+    let bad = store.enqueue_pending(&[2; 32], 3, b"bad").unwrap();
+    let mut snapshot = snapshot(&store);
+    assert_eq!(sent(&store, &mut snapshot), 3);
+    // Same bytes at a new inode are a new identity and must survive old cleanup.
+    fs::remove_file(&replaced).unwrap();
+    fs::write(&replaced, &second).unwrap();
+    assert!(duplicate.exists());
+    assert!(
+        store
+            .cleanup_replay_step(&mut snapshot, one_entry())
+            .is_ok()
+    );
+    while matches!(
+        store
+            .cleanup_replay_step(&mut snapshot, one_entry())
+            .unwrap(),
+        Step::More
+    ) {}
+    assert!(!duplicate.exists());
+    assert!(replaced.exists());
+    assert!(bad.exists());
+}
+#[test]
+fn oversized_batch_budget_and_overlimit_files_are_bounded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    for (i, size) in [(1, 10), (2, 2 * 1024 * 1024), (3, 10)] {
+        store
+            .enqueue_pending(&[2; 32], i, &frame(1, size, i))
+            .unwrap();
+    }
+    let huge = store
+        .pending_dir_for(&[2; 32])
+        .join("ffffffffffffffff.delta");
+    File::create(&huge)
+        .unwrap()
+        .set_len(transport::MAX_FRAME_BYTES as u64 + 100)
+        .unwrap();
+    let mut snapshot = snapshot(&store);
+    prepare(&store, &mut snapshot);
+    let budget = ReplayBudget::new(256 * 1024 * 1024);
+    let small_budget = ReplayBudget::new(1);
+    assert!(
+        store
+            .read_replay_batch(&mut snapshot, ReplayLimits::default(), &small_budget)
+            .is_err()
+    );
+    for expected in [1, 2, 3] {
+        let batch = store
+            .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
+            .unwrap();
+        assert_eq!(batch.frames.len(), 1);
+        assert!(
+            matches!(&batch.frames[0],Envelope::Delta {authored_at_ns,..} if *authored_at_ns == expected)
+        );
+        assert_eq!(batch.eof, expected == 3);
+    }
+    assert_eq!(snapshot.summary().unwrap().total_frames, 3);
+    while matches!(
+        store
+            .cleanup_replay_step(&mut snapshot, WorkLimit::default())
+            .unwrap(),
+        Step::More
+    ) {}
+    assert!(huge.exists());
+}
+#[test]
+fn replay_memory_is_bounded_by_its_batch_not_its_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let retained = raw_generation(&store, 0, 9);
+    for i in 0..600 {
+        fs::write(retained.join(format!("{i:016x}.delta")), frame(1, 8192, i)).unwrap();
+    }
+    let mut replay = snapshot(&store);
+    assert_eq!(sent(&store, &mut replay), 600);
+    let live_payload = replay.stats().peak_frame_bytes;
+    let resident_metadata = replay.stats().peak_metadata_entries;
+    assert!(
+        live_payload <= DEFAULT_BATCH_FRAMES * 8600,
+        "live replay bytes {live_payload}; resident entries {resident_metadata}"
+    );
+    assert!(
+        resident_metadata <= 128,
+        "resident replay entries {resident_metadata}"
+    );
+}
+#[test]
+fn a_captured_generation_survives_gc_and_restart_reclaims_only_owned_work() {
+    use automerge::transaction::Transactable;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let mut document = automerge::AutoCommit::new();
+    document.put(automerge::ROOT, "first", 1).unwrap();
+    let make_checkpoint = |body| {
+        transport::encode(&Envelope::Delta {
+            workspace_id: WorkspaceId::from_u128(7),
+            author_device_public_key: [1; 32],
+            authored_at_ns: 0,
+            signature: [0; 64],
+            delta: CoeditPayload::Checkpoint {
+                channel: [9; 32],
+                body,
+            }
+            .encode()
+            .unwrap(),
+        })
+        .unwrap()
+    };
+    let old = make_checkpoint(document.save());
+    store.retain_checkpoint(&[9; 32], &old).unwrap();
+    let mut pinned = snapshot(&store);
+    document.put(automerge::ROOT, "second", 2).unwrap();
+    store
+        .retain_checkpoint(&[9; 32], &make_checkpoint(document.save()))
+        .unwrap();
+    prepare(&store, &mut pinned);
+    let batch = store
+        .read_replay_batch(
+            &mut pinned,
+            ReplayLimits::default(),
+            &ReplayBudget::new(DEFAULT_OUTPUT_BYTES),
+        )
+        .unwrap();
+    assert_eq!(transport::encode(&batch.frames[0]).unwrap(), old);
+    let pending = store.enqueue_pending(&[2; 32], 8, &frame(8, 8, 8)).unwrap();
+    let interrupted = store
+        .start_replay_capture(ReplayId([5; 16]), [2; 32])
+        .unwrap();
+    drop(interrupted);
+    drop(pinned);
+    let unknown = store.root.join("store-work-v1/unknown");
+    fs::create_dir(&unknown).unwrap();
+    fs::write(unknown.join("keep"), b"unknown").unwrap();
+    let reopened = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let mut gc = reopened.start_work_reclamation().unwrap();
+    while matches!(gc.step(one_entry()).unwrap(), Step::More) {}
+    assert!(pending.exists());
+    assert!(unknown.join("keep").exists());
+    assert_eq!(
+        fs::read_dir(store.root.join("store-work-v1"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+#[test]
+fn retention_rejects_oversized_proof_allocation_and_preserves_unknown_record() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    store.retain_delta(&[9; 32], 1, &frame(1, 8, 1)).unwrap();
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode([9; 32])
+    ));
+    let active = retained::current(&lineage).unwrap().unwrap();
+    let large = active.join("0000000000000002.delta");
+    File::create(&large)
+        .unwrap()
+        .set_len(transport::MAX_FRAME_BYTES as u64 + 10)
+        .unwrap();
+    let mut build = store
+        .start_retain(&[9; 32], Some(3), frame(3, 8, 3))
+        .unwrap();
+    while matches!(build.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(large.exists());
+    assert!(
+        build.stats().peak_frame_bytes < 4096,
+        "proof hydrated {} bytes",
+        build.stats().peak_frame_bytes
+    );
+}
+
+#[test]
+fn replay_budget_includes_transport_encoder_allocation_capacity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let bytes = frame(42, 100_000, 1);
+    store.enqueue_pending(&[2; 32], 1, &bytes).unwrap();
+    let mut snapshot = snapshot(&store);
+    prepare(&store, &mut snapshot);
+    let budget = ReplayBudget::new(DEFAULT_OUTPUT_BYTES);
+    let batch = store
+        .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
+        .unwrap();
+    let envelope = batch.front().unwrap();
+    let encoded = transport::encode(envelope).unwrap();
+    let decoded = match envelope {
+        Envelope::Delta { delta, .. } => delta.capacity(),
+        _ => unreachable!(),
+    };
+    // The encoder serializes straight into one growable framed Vec; at its
+    // last growth the outgrown buffer (fewer than `len` bytes) coexists with
+    // the final allocation.
+    let overlap = decoded + std::mem::size_of::<Envelope>() + encoded.len() + encoded.capacity();
+    assert!(
+        batch.charged_bytes >= overlap,
+        "reserved {}, actual encode overlap {overlap}",
+        batch.charged_bytes
+    );
+}
+
+#[test]
+fn partial_cleanup_restart_preserves_remaining_pending_and_unknown_snapshot_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let mut paths = Vec::new();
+    for i in 0..3 {
+        paths.push(
+            store
+                .enqueue_pending(&[2; 32], i, &frame(1, 16, i))
+                .unwrap(),
+        );
+    }
+    let mut snapshot = snapshot(&store);
+    assert_eq!(sent(&store, &mut snapshot), 3);
+    assert!(matches!(
+        store
+            .cleanup_replay_step(&mut snapshot, one_entry())
+            .unwrap(),
+        Step::More
+    ));
+    assert!(!paths[0].exists());
+    assert!(paths[1].exists());
+    assert!(paths[2].exists());
+    let unknown = snapshot.root.join("pins/unknown");
+    fs::create_dir(&unknown).unwrap();
+    fs::write(unknown.join("keep"), b"unknown").unwrap();
+    drop(snapshot);
+    let mut restart = store.start_work_reclamation().unwrap();
+    while matches!(restart.step(one_entry()).unwrap(), Step::More) {}
+    assert!(paths[1].exists());
+    assert!(paths[2].exists());
+    assert!(unknown.join("keep").exists());
+    let mut reconnect = snapshot_for_device(&store);
+    assert_eq!(sent(&store, &mut reconnect), 2);
+}
+fn snapshot_for_device(store: &WorkspaceStore) -> ReplaySnapshot {
+    snapshot(store)
+}
+
+#[test]
+fn noncanonical_prefix_and_generic_envelope_do_not_prove_pending_retirement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let mut malformed = frame(1, 16, 1);
+    malformed[0] ^= 1;
+    let generic = transport::encode(&Envelope::Ping).unwrap();
+    let retained = raw_generation(&store, 0, 9);
+    fs::write(retained.join("a.delta"), &malformed).unwrap();
+    fs::write(retained.join("b.delta"), &generic).unwrap();
+    let bad = store.enqueue_pending(&[2; 32], 1, &malformed).unwrap();
+    let valid = store.enqueue_pending(&[2; 32], 2, &generic).unwrap();
+    let mut snapshot = snapshot(&store);
+    assert_eq!(
+        sent(&store, &mut snapshot),
+        2,
+        "generic retained data cannot omit matching pending replay"
+    );
+    while matches!(
+        store
+            .cleanup_replay_step(&mut snapshot, WorkLimit::default())
+            .unwrap(),
+        Step::More
+    ) {}
+    assert!(bad.exists());
+    assert!(!valid.exists());
+}
+
+#[test]
+fn capture_preserves_lineage_checkpoint_tail_and_filename_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    for (channel, stamp) in [(0x0b, 20), (0x0a, 10)] {
+        let generation = raw_generation(&store, 0, channel);
+        fs::write(generation.join("checkpoint.delta"), frame(1, 8, stamp)).unwrap();
+        fs::write(generation.join("2.delta"), frame(1, 8, stamp + 2)).unwrap();
+        fs::write(generation.join("1.delta"), frame(1, 8, stamp + 1)).unwrap();
+    }
+    store.retain_delta(&[9; 32], 999, &frame(1, 8, 30)).unwrap();
+    store.retain_delta(&[9; 32], 1, &frame(1, 8, 31)).unwrap();
+    store
+        .enqueue_pending(&[2; 32], 1, &frame(1, 8, 40))
+        .unwrap();
+    let mut snapshot = snapshot(&store);
+    let stamps = stamps_of(&store, &mut snapshot);
+    assert_eq!(stamps.len(), 9);
+    assert_eq!(stamps, vec![10, 11, 12, 20, 21, 22, 30, 31, 40]);
+}
+
+/// A shell drops what a device published until it holds that device's
+/// certificate, so the lineage of a device's identity channel replays first,
+/// whatever its hash orders it among the other channels.
+#[test]
+fn capture_replays_certificate_lineages_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let edits = raw_generation(&store, 0, 0x0a);
+    fs::write(edits.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();
+    fs::write(edits.join("1.delta"), frame(1, 8, 11)).unwrap();
+    let author = [0xff; 32];
+    let mut route = b"identity-hello\0".to_vec();
+    route.extend_from_slice(&author);
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode(author),
+        blake3::hash(&route).to_hex()
+    ));
+    let name = "00000000000000000000000000000000";
+    fs::create_dir_all(lineage.join(name)).unwrap();
+    fs::write(lineage.join("CURRENT"), name).unwrap();
+    fs::write(lineage.join(name).join("checkpoint.delta"), frame(2, 8, 50)).unwrap();
+    assert_eq!(
+        lineage_rank(&format!("{}-{}", hex::encode(author), hex::encode([9; 32]))),
+        "3"
+    );
+
+    let mut snapshot = snapshot(&store);
+    let stamps = stamps_of(&store, &mut snapshot);
+    assert_eq!(stamps.len(), 3);
+    assert_eq!(stamps, vec![50, 10, 11]);
+}
+
+/// A joining page shows the workspace's shared desktop before the rest of the
+/// workspace has arrived, so the desktop record's lineages replay right after
+/// the certificates and the governance it is decided under (here the
+/// workspace's own document; a channel's governance alike), ahead of every
+/// other record whatever their hashes.
+#[test]
+fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    // A record whose channel orders before any other by hash.
+    let other = raw_generation(&store, 0, 0x00);
+    store.learn_document([0x00; 32], "notes", "note-1");
+    store.learn_document(
+        neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT),
+        DESKTOP_APP,
+        DESKTOP_DOCUMENT,
+    );
+    fs::write(other.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();
+    fs::write(other.join("1.delta"), frame(1, 8, 11)).unwrap();
+    let lineage = |author: [u8; 32], channel: &str| {
+        let lineage = store
+            .root
+            .join("retained/v2")
+            .join(format!("{}-{channel}", hex::encode(author)));
+        let name = "00000000000000000000000000000000";
+        fs::create_dir_all(lineage.join(name)).unwrap();
+        fs::write(lineage.join("CURRENT"), name).unwrap();
+        lineage.join(name)
+    };
+    let desktop = hex::encode(neighbour_wire::app_document_channel(
+        DESKTOP_APP,
+        DESKTOP_DOCUMENT,
+    ));
+    let author = [0xfe; 32];
+    fs::write(
+        lineage(author, &desktop).join("checkpoint.delta"),
+        frame(3, 8, 60),
+    )
+    .unwrap();
+    fs::write(
+        lineage(author, &blake3::hash(b"shell-tree").to_hex()).join("checkpoint.delta"),
+        frame(4, 8, 55),
+    )
+    .unwrap();
+    let mut route = b"identity-hello\0".to_vec();
+    route.extend_from_slice(&author);
+    fs::write(
+        lineage(author, &blake3::hash(&route).to_hex()).join("checkpoint.delta"),
+        frame(2, 8, 50),
+    )
+    .unwrap();
+
+    let mut snapshot = snapshot(&store);
+    let stamps = stamps_of(&store, &mut snapshot);
+    assert_eq!(stamps.len(), 5);
+    assert_eq!(stamps, vec![50, 55, 60, 10, 11]);
+}
+
+#[test]
+fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    for i in 0..260 {
+        raw_pending(&store, &[2; 32], i, &[0]);
+    }
+    let queue = store.pending_dir_for(&[2; 32]);
+    // The capture pins the device's queue; its preparation orders it,
+    // spilling to disk.
+    let mut capture = snapshot(&store);
+    for _ in 0..100 {
+        if capture.sorter.as_ref().unwrap().stats.peak_metadata_entries >= 128 {
+            break;
+        }
+        assert!(matches!(
+            store
+                .prepare_replay_step(&mut capture, WorkLimit::default())
+                .unwrap(),
+            Step::More
+        ));
+    }
+    let root = capture.root.clone();
+    assert!(
+        root.join("sort/0000000000000000-0000000000000000.run")
+            .exists()
+    );
+    let mut discard = capture.into_discard().unwrap();
+    while matches!(discard.step(one_entry()).unwrap(), Step::More) {}
+    assert!(!root.exists());
+    assert_eq!(fs::read_dir(&queue).unwrap().count(), 260);
+    store.retain_delta(&[9; 32], 1, &frame(1, 8, 1)).unwrap();
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode([9; 32])
+    ));
+    let obsolete = lineage.join("77777777777777777777777777777777");
+    fs::create_dir(&obsolete).unwrap();
+    for i in 0..260 {
+        fs::write(obsolete.join(format!("{i:016x}.delta")), [0]).unwrap();
+    }
+    fs::create_dir(obsolete.join("unknown")).unwrap();
+    fs::write(obsolete.join("unknown/keep"), b"keep").unwrap();
+    let mut gc = retained::GenerationGc::new(lineage).unwrap();
+    let mut previous = 260;
+    loop {
+        let done = matches!(gc.step(one_entry()).unwrap(), Step::Done(()));
+        let left = fs::read_dir(&obsolete)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_type().unwrap().is_file())
+            .count();
+        assert!(
+            previous - left <= 1,
+            "one-entry quantum deleted more than one record"
+        );
+        previous = left;
+        if done {
+            break;
+        }
+    }
+    assert_eq!(previous, 0);
+    assert!(obsolete.join("unknown/keep").exists());
+}
+
+/// A newcomer's capture runs in its workspace owner's turn, which must not
+/// grow with the workspace: it takes the order the store keeps, lists only
+/// what changed since, and pins nothing. Its replay reads each frame as it
+/// sends it.
+#[test]
+fn a_capture_takes_the_kept_order_and_pins_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    for author in 0..64 {
+        let generation = raw_generation(&store, author, 9);
+        fs::write(
+            generation.join("0000000000000000.delta"),
+            frame(author, 8, 1),
+        )
+        .unwrap();
+    }
+    let pins =
+        |snapshot: &ReplaySnapshot| fs::read_dir(snapshot.root.join("pins")).unwrap().count();
+    let before = lineages_listed();
+    let mut first = snapshot(&store);
+    assert_eq!(
+        lineages_listed() - before,
+        64,
+        "the first capture lists all"
+    );
+    assert_eq!(sent(&store, &mut first), 64);
+    assert_eq!(pins(&first), 0, "a replay pinned retained frames");
+    let mut next = snapshot(&store);
+    assert_eq!(lineages_listed() - before, 64, "the next lists none");
+    assert_eq!(sent(&store, &mut next), 64);
+}
+
+/// What a capture took stays where it was until its replay read it:
+/// retention replacing a lineage meanwhile leaves the replaced generation
+/// for later, collects it once the replay read it, and the replay sends
+/// what the capture took.
+#[test]
+fn retention_collects_what_a_capture_took_only_once_it_is_read() {
+    use automerge::transaction::Transactable;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let checkpoint = |body| {
+        transport::encode(&Envelope::Delta {
+            workspace_id: WorkspaceId::from_u128(7),
+            author_device_public_key: [1; 32],
+            authored_at_ns: 0,
+            signature: [0; 64],
+            delta: CoeditPayload::Checkpoint {
+                channel: [9; 32],
+                body,
+            }
+            .encode()
+            .unwrap(),
+        })
+        .unwrap()
+    };
+    let mut document = automerge::AutoCommit::new();
+    document.put(automerge::ROOT, "first", 1).unwrap();
+    let old = checkpoint(document.save());
+    store.retain_checkpoint(&[9; 32], &old).unwrap();
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode([9; 32])
+    ));
+    let listed = retained::current(&lineage).unwrap().unwrap();
+    let mut captured = snapshot(&store);
+    document.put(automerge::ROOT, "second", 2).unwrap();
+    store
+        .retain_checkpoint(&[9; 32], &checkpoint(document.save()))
+        .unwrap();
+    assert_ne!(retained::current(&lineage).unwrap().unwrap(), listed);
+    assert!(
+        listed.exists(),
+        "a captured generation was collected before it was read"
+    );
+    assert!(store.deferred_collections().is_empty());
+    prepare(&store, &mut captured);
+    let batch = store
+        .read_replay_batch(
+            &mut captured,
+            ReplayLimits::default(),
+            &ReplayBudget::new(DEFAULT_OUTPUT_BYTES),
+        )
+        .unwrap();
+    assert_eq!(transport::encode(&batch.frames[0]).unwrap(), old);
+    assert_eq!(store.deferred_collections(), vec![lineage.clone()]);
+    let mut gc = retained::GenerationGc::new(lineage).unwrap();
+    while matches!(gc.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(!listed.exists());
+}
+
+#[cfg(unix)]
+struct RestoreDirectoryPermissions {
+    path: PathBuf,
+    permissions: fs::Permissions,
+}
+#[cfg(unix)]
+impl Drop for RestoreDirectoryPermissions {
+    fn drop(&mut self) {
+        fs::set_permissions(&self.path, self.permissions.clone()).unwrap();
+    }
+}
+#[cfg(unix)]
+fn deny_directory_mutation(path: &Path) -> Option<RestoreDirectoryPermissions> {
+    use std::os::unix::fs::PermissionsExt;
+    let restore = RestoreDirectoryPermissions {
+        path: path.into(),
+        permissions: fs::metadata(path).unwrap().permissions(),
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(0o500)).unwrap();
+    // Privileged test processes may bypass mode bits. Never claim that such a
+    // run exercised PermissionDenied; the normal non-root runner uses real I/O.
+    let probe = path.join("permission-probe");
+    match File::create(&probe) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Some(restore),
+        Ok(file) => {
+            drop(file);
+            fs::remove_file(probe).unwrap();
+            eprintln!("skipping mode-bit failure fixture: process bypasses directory permissions");
+            None
+        }
+        Err(error) => panic!("unexpected permission probe error: {error}"),
+    }
+}
+#[cfg(unix)]
+fn reach_unlink_failure(mut step: impl FnMut() -> Result<Step<()>, StoreError>) {
+    for _ in 0..100 {
+        match step() {
+            Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Ok(Step::More) => {}
+            outcome => panic!("expected real transient unlink failure, got {outcome:?}"),
+        }
+    }
+    panic!("reclamation did not reach the blocked file");
+}
+#[cfg(unix)]
+fn finish_reclamation(mut step: impl FnMut() -> Result<Step<()>, StoreError>) {
+    for _ in 0..100 {
+        if matches!(step().unwrap(), Step::Done(())) {
+            return;
+        }
+    }
+    panic!("reclamation did not finish after permissions were restored");
+}
+/// Creates one recognized work entry, either directly in `root` or in its
+/// `pins` child, and returns the directory holding it and the entry path.
+#[cfg(unix)]
+fn owned_work_entry(root: &Path, child: bool) -> (PathBuf, PathBuf) {
+    let directory = if child {
+        root.join("pins")
+    } else {
+        root.to_path_buf()
+    };
+    fs::create_dir_all(&directory).unwrap();
+    let owned = directory.join(if child {
+        "0000000000000000.frame"
+    } else {
+        "replay.manifest"
+    });
+    fs::write(&owned, b"owned snapshot bytes").unwrap();
+    (directory, owned)
+}
+/// Blocks unlinking in `directory`, drives `step` into the real failure, then
+/// restores permissions and requires `step` to retire `owned`. Returns false
+/// when the process bypasses mode bits and the fixture cannot run.
+#[cfg(unix)]
+fn retries_blocked_unlink(
+    directory: &Path,
+    owned: &Path,
+    mut step: impl FnMut(WorkLimit) -> Result<Step<()>, StoreError>,
+    message: &str,
+) -> bool {
+    let Some(restore) = deny_directory_mutation(directory) else {
+        return false;
+    };
+    reach_unlink_failure(|| step(one_entry()));
+    assert!(owned.exists());
+    drop(restore);
+    finish_reclamation(|| step(one_entry()));
+    assert!(!owned.exists(), "{message}");
+    true
+}
+#[test]
+#[cfg(unix)]
+fn direct_discard_retries_exact_entry_after_transient_unlink_failure() {
+    for child in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp
+            .path()
+            .join("store-work-v1/replay-11111111111111111111111111111111");
+        let (directory, owned) = owned_work_entry(&root, child);
+        let mut discard = WorkDiscard::new(root.clone()).unwrap();
+        if retries_blocked_unlink(
+            &directory,
+            &owned,
+            |limit| discard.step(limit),
+            "Done skipped the previously failed recognized file",
+        ) {
+            assert!(!root.exists());
+        }
+    }
+}
+#[test]
+#[cfg(unix)]
+fn startup_reclaimer_retries_exact_entry_after_transient_unlink_failure() {
+    for child in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let pending = store
+            .enqueue_pending(&[2; 32], 1, &frame(1, 16, 1))
+            .unwrap();
+        let root = store
+            .root
+            .join("store-work-v1/replay-11111111111111111111111111111111");
+        let (directory, owned) = owned_work_entry(&root, child);
+        let mut reclaimer = store.start_work_reclamation().unwrap();
+        if retries_blocked_unlink(
+            &directory,
+            &owned,
+            |limit| reclaimer.step(limit),
+            "startup Done skipped the previously failed recognized file",
+        ) {
+            assert!(!root.exists());
+            assert!(pending.exists());
+        }
+    }
+}
+#[test]
+#[cfg(unix)]
+fn generation_gc_retries_exact_entry_after_transient_unlink_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    store.retain_delta(&[9; 32], 1, &frame(1, 16, 1)).unwrap();
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode([9; 32])
+    ));
+    let active = retained::current(&lineage).unwrap().unwrap();
+    let obsolete = lineage.join("11111111111111111111111111111111");
+    fs::create_dir(&obsolete).unwrap();
+    let owned = obsolete.join("0000000000000000.delta");
+    fs::write(&owned, b"old generation").unwrap();
+    fs::write(obsolete.join("unknown"), b"preserve").unwrap();
+    let mut gc = retained::GenerationGc::new(lineage).unwrap();
+    if retries_blocked_unlink(
+        &obsolete,
+        &owned,
+        |limit| gc.step(limit),
+        "generation Done skipped the previously failed record",
+    ) {
+        assert!(obsolete.join("unknown").exists());
+        assert!(active.join("0000000000000001.delta").exists());
+    }
+}
+
+#[test]
+fn replay_budget_includes_v2_wire_encoding_overlap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    store
+        .enqueue_pending(&[2; 32], 1, &frame(42, 100_000, 1))
+        .unwrap();
+    let mut snapshot = snapshot(&store);
+    prepare(&store, &mut snapshot);
+    let batch = store
+        .read_replay_batch(
+            &mut snapshot,
+            ReplayLimits::default(),
+            &ReplayBudget::new(DEFAULT_OUTPUT_BYTES),
+        )
+        .unwrap();
+    let envelope = batch.front().unwrap();
+    let payload = postcard::to_allocvec(&tilo_delivery_protocol::transport_v2::EnvelopeV2::State(
+        envelope.clone(),
+    ))
+    .unwrap();
+    let wire = tilo_delivery_protocol::transport_v2::encode_state(envelope).unwrap();
+    let overlap = heap_bytes(envelope)
+        + std::mem::size_of::<Envelope>()
+        + payload.capacity()
+        + wire.capacity();
+    assert!(
+        batch.charged_bytes >= overlap,
+        "v2 reservation {} omitted known encode overlap {overlap}",
+        batch.charged_bytes
+    );
+}
+
+#[test]
+fn disposable_reclamation_treats_disappeared_recognized_entries_as_completed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let work = store.root().join("store-work-v1");
+    fs::create_dir_all(&work).unwrap();
+    let root = work.join("replay-00000000000000000000000000000001");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("replay.manifest"), b"old metadata").unwrap();
+    let mut discard = WorkDiscard::new(root.clone()).unwrap();
+    let path = discard
+        .outer
+        .as_mut()
+        .unwrap()
+        .peek()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::remove_file(path).unwrap();
+    let result = discard.step(WorkLimit::default());
+    assert!(
+        matches!(result, Ok(Step::Done(()))),
+        "already absent recognized file remained a retry error: {result:?}"
+    );
+    let mut missing = WorkDiscard::new(root).expect("already absent spool root should be disposed");
+    assert!(matches!(
+        missing.step(WorkLimit::default()).unwrap(),
+        Step::Done(())
+    ));
+}
+
+#[test]
+fn startup_reclamation_treats_disappeared_selected_work_root_as_completed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let root = store
+        .root()
+        .join("store-work-v1/replay-00000000000000000000000000000001");
+    fs::create_dir_all(root.join("pins")).unwrap();
+    fs::write(root.join("pins/0000000000000001.frame"), b"old pin").unwrap();
+    let unknown = root.parent().unwrap().join("unknown");
+    fs::write(&unknown, b"preserve").unwrap();
+    let mut startup = store.start_work_reclamation().unwrap();
+    while startup
+        .entries
+        .as_mut()
+        .unwrap()
+        .peek()
+        .unwrap()
+        .unwrap()
+        .path()
+        != root
+    {
+        startup.entries.as_mut().unwrap().advance();
+    }
+    let mut discard = WorkDiscard::new(root).unwrap();
+    while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
+    let result = startup.step(WorkLimit::default());
+    assert!(
+        result.is_ok(),
+        "already disposed selected root remained a retry error: {result:?}"
+    );
+    while matches!(startup.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(unknown.exists());
+}
+
+#[test]
+fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let root = store
+        .root()
+        .join("store-work-v1/replay-00000000000000000000000000000001");
+    fs::create_dir_all(root.join("pins")).unwrap();
+    fs::write(root.join("pins/0000000000000001.frame"), b"old pin").unwrap();
+    let mut later = WorkDiscard::new(root.clone()).unwrap();
+    later.step(one_entry()).unwrap();
+    later.child.as_mut().unwrap().1.peek().unwrap();
+    let mut earlier = WorkDiscard::new(root).unwrap();
+    while matches!(earlier.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(matches!(
+        later.step(WorkLimit::default()).unwrap(),
+        Step::Done(())
+    ));
+}
+
+#[test]
+fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(temp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let bytes = super::super::test_support::wrapper_suffix(&frame(1, 10, 1), false);
+    store.retain_delta(&[9; 32], 1, &bytes).unwrap();
+    let pending = store.enqueue_pending(&[2; 32], 1, &bytes).unwrap();
+    let mut snapshot = snapshot(&store);
+    assert_eq!(
+        sent(&store, &mut snapshot),
+        2,
+        "unproved wrappers must be replayed independently"
+    );
+    assert!(pending.exists());
+    assert!(store.load_retained().unwrap().contains(&bytes));
+}
+
+/// A frame of `author` on `channel`, as `frame` makes one.
+fn authored(author: u8, channel: u8, value: u8, timestamp: u64) -> ([u8; 32], Vec<u8>) {
+    let bytes = transport::encode(&Envelope::Delta {
+        workspace_id: WorkspaceId::from_u128(7),
+        author_device_public_key: [author; 32],
+        authored_at_ns: timestamp,
+        signature: [0; 64],
+        delta: CoeditPayload::RetainedDelta {
+            channel: [channel; 32],
+            body: vec![value; 10],
+        }
+        .encode()
+        .unwrap(),
+    })
+    .unwrap();
+    ([channel; 32], bytes)
+}
+
+fn lineage_name(author: u8, channel: u8) -> OsString {
+    format!(
+        "{}-{}",
+        hex::encode([author; 32]),
+        hex::encode([channel; 32])
+    )
+    .into()
+}
+
+fn lineages_listed() -> u64 {
+    LINEAGES_LISTED.with(std::cell::Cell::get)
+}
+
+/// A capture lists each lineage once; later captures take it from the kept
+/// order until it changes (or the owner reports nothing of what changed),
+/// and list what changed from its generation again.
+#[test]
+fn captures_list_each_lineage_only_when_it_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let (first, a1) = authored(1, 9, 1, 1);
+    let (second, b1) = authored(2, 8, 2, 2);
+    store.retain_delta(&first, 1, &a1).unwrap();
+    store.retain_delta(&second, 2, &b1).unwrap();
+    let before = lineages_listed();
+    let mut listed = snapshot(&store);
+    assert_eq!(sent(&store, &mut listed), 2);
+    assert_eq!(
+        lineages_listed() - before,
+        2,
+        "the first capture lists both"
+    );
+    assert_eq!(
+        store.listed_lineage_names(),
+        [lineage_name(1, 9), lineage_name(2, 8)]
+    );
+
+    let mut kept = snapshot(&store);
+    assert_eq!(sent(&store, &mut kept), 2);
+    assert_eq!(
+        lineages_listed() - before,
+        2,
+        "both come from the kept order"
+    );
+
+    // Retention marks the lineage it writes, whoever drives it.
+    let (_, a2) = authored(1, 9, 3, 3);
+    store.retain_delta(&first, 3, &a2).unwrap();
+    let mut changed = snapshot(&store);
+    assert_eq!(
+        lineages_listed() - before,
+        3,
+        "only the changed lineage is listed again"
+    );
+    let stamps = stamps_of(&store, &mut changed);
+    assert_eq!(stamps.len(), 3);
+    assert!(stamps.contains(&3), "the new frame is replayed: {stamps:?}");
+
+    // A job that says nothing of what it changed has every lineage listed.
+    store.forget_listed(None);
+    assert!(store.listed_lineage_names().is_empty());
+    let mut relisted = snapshot(&store);
+    assert_eq!(sent(&store, &mut relisted), 3);
+    assert_eq!(lineages_listed() - before, 5);
+}
+
+/// A device the workspace no longer admits is sent to no one, so the host
+/// forgets the hello it retained: a workspace many people pass through keeps
+/// none of theirs. Another device's hello stays.
+#[test]
+fn a_hello_the_workspace_forgets_is_replayed_no_more() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let hello = |author: [u8; 32], stamp: u64| {
+        let channel = crate::store::compaction::hello_channel(&author);
+        let lineage = store.root.join("retained/v2").join(format!(
+            "{}-{}",
+            hex::encode(author),
+            hex::encode(channel)
+        ));
+        let name = "00000000000000000000000000000000";
+        fs::create_dir_all(lineage.join(name)).unwrap();
+        fs::write(lineage.join("CURRENT"), name).unwrap();
+        fs::write(
+            lineage.join(name).join("checkpoint.delta"),
+            frame(2, 8, stamp),
+        )
+        .unwrap();
+    };
+    hello([0xf1; 32], 50);
+    hello([0xf2; 32], 51);
+    let stamps = |store: &WorkspaceStore| {
+        let mut snapshot = snapshot(store);
+        let mut stamps = stamps_of(store, &mut snapshot);
+        stamps.sort_unstable();
+        stamps
+    };
+    assert_eq!(stamps(&store), vec![50, 51]);
+    assert_eq!(
+        store
+            .forget_hellos(&[[0xf1; 32], [0xf3; 32]], &|_| false)
+            .unwrap(),
+        1
+    );
+    assert_eq!(stamps(&store), vec![51]);
+    let reopened = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    assert_eq!(stamps(&reopened), vec![51], "forgotten for good");
+    assert_eq!(
+        reopened.forget_hellos(&[[0xf1; 32]], &|_| false).unwrap(),
+        0
+    );
+}
+
+/// A frame `author` wrote on `channel`, `size` bytes of body.
+fn member_frame(author: [u8; 32], channel: [u8; 32], size: usize, timestamp: u64) -> Vec<u8> {
+    transport::encode(&Envelope::Delta {
+        workspace_id: WorkspaceId::from_u128(7),
+        author_device_public_key: author,
+        authored_at_ns: timestamp,
+        signature: [0; 64],
+        delta: CoeditPayload::RetainedDelta {
+            channel,
+            body: vec![1; size],
+        }
+        .encode()
+        .unwrap(),
+    })
+    .unwrap()
+}
+
+/// A newcomer's join costs what it sends: the first batch of a workspace of
+/// 0, 300 or 3,000 members goes out after reading that batch's frames, and
+/// listing only the lineage written since the last join, however much the
+/// workspace retained. Each member left an identity hello, a part of the
+/// shared desktop and a note of their own (which a newcomer opens later, so
+/// its replay leaves it out).
+#[test]
+fn a_join_costs_what_it_sends() {
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    let desktop = neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT);
+    let mut rows = Vec::new();
+    for members in [0_u32, 300, 3_000] {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+        store.set_documents_when_opened(true);
+        store.learn_document(desktop, DESKTOP_APP, DESKTOP_DOCUMENT);
+        let write = |author: [u8; 32], channel: [u8; 32], frames: u64| {
+            let lineage = store.root.join("retained/v2").join(format!(
+                "{}-{}",
+                hex::encode(author),
+                hex::encode(channel)
+            ));
+            let name = "00000000000000000000000000000000";
+            fs::create_dir_all(lineage.join(name)).unwrap();
+            fs::write(lineage.join("CURRENT"), name).unwrap();
+            fs::write(
+                lineage.join(name).join("checkpoint.delta"),
+                member_frame(author, channel, 600, 0),
+            )
+            .unwrap();
+            for frame in 1..frames {
+                fs::write(
+                    lineage.join(name).join(format!("{frame:016x}.delta")),
+                    member_frame(author, channel, 200, frame),
+                )
+                .unwrap();
+            }
+        };
+        // The workspace's governance, then its members.
+        write([0xee; 32], [0xee; 32], 4);
+        for member in 0..members {
+            let mut author = [0; 32];
+            author[..4].copy_from_slice(&member.to_le_bytes());
+            let note = *blake3::hash(&author).as_bytes();
+            store.learn_document(note, "so.tilo.notes", &format!("note-{member}"));
+            write(author, crate::store::compaction::hello_channel(&author), 1);
+            write(author, desktop, 3);
+            write(author, note, 8);
+        }
+        // Once per store: its first capture lists every lineage.
+        let mut first = snapshot(&store);
+        let (_, warm) = drain(&store, &mut first);
+        // A member writes, and a newcomer joins.
+        let mut writer = [0; 32];
+        writer[..4].copy_from_slice(&members.saturating_sub(1).to_le_bytes());
+        store
+            .retain_delta(&desktop, 9, &member_frame(writer, desktop, 200, 9))
+            .unwrap();
+        let listed = lineages_listed();
+        let joined = std::time::Instant::now();
+        let mut join = snapshot(&store);
+        prepare(&store, &mut join);
+        let budget = ReplayBudget::new(DEFAULT_OUTPUT_BYTES);
+        let batch = store
+            .read_replay_batch(&mut join, ReplayLimits::default(), &budget)
+            .unwrap();
+        let first_batch = joined.elapsed();
+        let read_first = join.stats().hydration_reads;
+        let lineages_first = lineages_listed() - listed;
+        let in_first = batch.len();
+        let bytes_first = batch.encoded_bytes;
+        let mut eof = batch.eof;
+        drop(batch);
+        while !eof {
+            eof = store
+                .read_replay_batch(&mut join, ReplayLimits::default(), &budget)
+                .unwrap()
+                .eof;
+        }
+        let whole = joined.elapsed();
+        let sent = join.summary().unwrap().total_frames;
+        // The governance, each member's hello and part of the desktop, and
+        // the frame written since.
+        assert_eq!(sent, warm.total_frames + 1);
+        assert_eq!(sent, 4 + u64::from(members) * 4 + 1);
+        assert!(
+            lineages_first <= 1,
+            "a join of {members} members listed {lineages_first} lineages"
+        );
+        assert_eq!(
+            read_first, in_first as u64,
+            "a join of {members} members read more than its first batch before sending it"
+        );
+        rows.push((members, first_batch, whole, sent, bytes_first));
+    }
+    eprintln!("members  first batch  whole join  frames sent  first batch bytes");
+    for (members, first_batch, whole, sent, bytes) in &rows {
+        eprintln!(
+            "{members:>7}  {:>8.2} ms  {:>7.2} ms  {sent:>11}  {bytes:>17}",
+            first_batch.as_secs_f64() * 1000.0,
+            whole.as_secs_f64() * 1000.0
+        );
+    }
+    // What happens before the first send is the same work at every size:
+    // allow for the clock, not for growth with the workspace.
+    let (_, small, ..) = rows[1];
+    let (_, large, ..) = rows[2];
+    assert!(
+        large < small * 3 + std::time::Duration::from_millis(20),
+        "the first batch of 3,000 members took {large:?}, of 300 {small:?}"
+    );
+}

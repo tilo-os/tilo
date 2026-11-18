@@ -19,8 +19,8 @@
 #      tap, and a pod's /dev made without udev would refuse it), the VMs'
 #      cgroup, and the service's directories;
 #   3. the member identity: this host's own Tilo device, certified by the
-#      operator that runs the relay, from TILO_VM_MEMBER_IDENTITIES (a
-#      operator that runs the relay, from TILO_VM_MEMBER_IDENTITIES (a
+#      operator that runs the server, from TILO_VM_MEMBER_IDENTITIES (a
+#      operator that runs the server, from TILO_VM_MEMBER_IDENTITIES (a
 #      directory holding <pod name>.tar, made with tilo-enroll device-key and
 #      install-cert), unpacked onto the state disk when the disk holds no
 #      identity or another one, so the device key stays with the host's disk as
@@ -30,8 +30,8 @@
 #      member/profile/identity, the person's record under
 #      member/profile/config/tilo/identity. A profile made under another
 #      identity is that device's, and is dropped with it;
-#   4. with TILO_TAKE_WORK_RELAY, the member: `tilo-runtime --daemon`, as the
-#      service, under the member identity, which takes the relay's runs for
+#   4. with TILO_TAKE_WORK_SERVER, the member: `tilo-runtime --daemon`, as the
+#      service, under the member identity, which takes the server's runs for
 #      the workspaces whose VMs are here (restarted if it stops);
 #   5. tilo-hosted-serve, the start this image and the server OS share: the
 #      guest (the image the release key signed, fetched once per digest;
@@ -41,8 +41,8 @@
 #      VMs by the memory they really take of the node's (TILO_VM_MEMORY_MIB,
 #      or auto: all of it) less the reserve it keeps
 #      (TILO_VM_MEMORY_RESERVE_MIB), and answers a placer's Status on
-#      TILO_VM_STATUS_LISTEN. With TILO_VM_RELAY_ENDPOINT (ADDR:PORT), each
-#      workspace's Browser in its VM joins its workspace through the relay at
+#      TILO_VM_STATUS_LISTEN. With TILO_VM_SERVER_ENDPOINT (ADDR:PORT), each
+#      workspace's Browser in its VM joins its workspace through the server at
 #      that address, the one address besides the internet a VM may reach.
 set -eu
 
@@ -102,8 +102,8 @@ if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ]; then
 fi
 
 # 4. the member
-if [ -n "${TILO_TAKE_WORK_RELAY:-}" ]; then
-  [ -e "$profile/identity/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_RELAY is set, but this host has no member identity'; exit 1; }
+if [ -n "${TILO_TAKE_WORK_SERVER:-}" ]; then
+  [ -e "$profile/identity/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_SERVER is set, but this host has no member identity'; exit 1; }
   mkdir -p -m 0700 "$profile" "$member/home"
   chown tilo-hosted:tilo-hosted "$profile" "$member/home"
   chmod 0700 "$profile"

@@ -1,0 +1,666 @@
+//! The files members post in a workspace's Chat, kept by the workspace's host so
+//! they stay in the workspace after the member who posted them leaves.
+//!
+//! A member's device keeps what it posts and answers whoever asks the workspace
+//! for it, as long as it is online. The host asks too: each time a member's
+//! write reaches a part of the Chat's messages, it reads the attachments
+//! there, and each time one reaches the Chat's own record, the pictures and
+//! recordings of the feedback reports filed there ([`reported`]); it asks the
+//! workspace for every one it does not keep yet, on its own presence, as any
+//! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
+//! assembled and verified as a page assembles them
+//! ([`neighbour_wire::content::ContentWants`]) and kept in the workspace's
+//! content store on this host, beside what its bots fetched ([`crate::content`]),
+//! from which the host answers members' requests for content it keeps
+//! ([`crate::workspaces::WorkspaceContent`]).
+//!
+//! What a host keeps is bounded ([`AttachmentLimits`]): a file larger than
+//! the cap is not asked for or kept, and past a member's or the workspace's
+//! quota the oldest files that member posted, or the workspace's oldest, go
+//! first. A member's quota bounds what the host takes in of their files in
+//! any hour too: past it, their next file is asked for once the hour has
+//! workspace again. The pieces answering the host's requests count against these
+//! quotas alone, not a member's general content budget
+//! ([`crate::workspaces::ContentKeeper::expects`]), so a file as large as the cap
+//! reaches the host. A file the host kept before for another reason (its bots fetched
+//! it) is neither counted nor ever let go of here. Which files it keeps,
+//! and for whom is kept in a log beside the workspace's state, so
+//! a restart keeps counting.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use automerge::AutoCommit;
+use neighbour_wire::content::ContentWants;
+use serde::{Deserialize, Serialize};
+use tilo_lock::MutexRecover as _;
+
+use super::CHAT;
+use crate::workspaces::{ContentKeeper, ResourceWrite, Workspaces};
+use tilo_content::ContentStore;
+use tilo_resource::MemberId;
+
+/// How long the host waits before it asks again for files nobody answered.
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(90);
+/// The window a member's quota bounds what the host takes in of their
+/// files over.
+const HOUR_MS: u64 = 3_600_000;
+/// How often the parts members wrote to are read for their files: a busy
+/// Chat takes many writes a second, and one read finds all their files.
+const READ_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often the files being gathered are looked at for the pieces a lost one
+/// left missing, so a member's answer arrives whole without waiting for the
+/// next write to the part that named it.
+const MISSING_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How much of members' posted files a host keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttachmentLimits {
+    /// The largest file kept; a larger one stays with its poster.
+    pub file_bytes: u64,
+    /// What one member's files may take together; past it, that member's
+    /// oldest go first. The host takes in no more of a member's files in
+    /// any hour either.
+    pub member_bytes: u64,
+    /// What the workspace's files may take together; past it, the workspace's oldest
+    /// go first.
+    pub workspace_bytes: u64,
+}
+
+impl Default for AttachmentLimits {
+    fn default() -> Self {
+        const MIB: u64 = 1024 * 1024;
+        Self {
+            file_bytes: 25 * MIB,
+            member_bytes: 250 * MIB,
+            workspace_bytes: 2048 * MIB,
+        }
+    }
+}
+
+/// One file the host keeps for a member.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Kept {
+    /// The member who posted it.
+    member: MemberId,
+    bytes: u64,
+    /// The order it was kept in: the oldest goes first.
+    order: u64,
+}
+
+/// The files kept for members, by hash.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Log {
+    kept: BTreeMap<String, Kept>,
+    next: u64,
+    /// The files let go of past a quota: never asked for again, or every
+    /// new file past the quota would bring the last one back.
+    #[serde(default)]
+    let_go: BTreeSet<String>,
+}
+
+impl Log {
+    fn total(&self, member: Option<&MemberId>) -> u64 {
+        self.kept
+            .values()
+            .filter(|kept| member.is_none_or(|member| kept.member == *member))
+            .map(|kept| kept.bytes)
+            .fold(0, u64::saturating_add)
+    }
+
+    /// The oldest file of `member`, or of anyone.
+    fn oldest(&self, member: Option<&MemberId>) -> Option<String> {
+        self.kept
+            .iter()
+            .filter(|(_, kept)| member.is_none_or(|member| kept.member == *member))
+            .min_by_key(|(_, kept)| kept.order)
+            .map(|(hash, _)| hash.clone())
+    }
+}
+
+struct State {
+    log: Log,
+    /// The files asked for and not whole yet, named by who posted them.
+    wants: ContentWants<MemberId>,
+    /// Parts that held files nobody answered for yet: read again later.
+    unanswered: BTreeSet<String>,
+    /// Parts members wrote to since they were last read.
+    written: BTreeSet<String>,
+    /// The files asked for within the last hour, by hash: who posted them,
+    /// when and how large, which their poster's quota bounds.
+    taken: BTreeMap<String, Taken>,
+}
+
+/// A file the host asked a member for.
+struct Taken {
+    member: MemberId,
+    at_ms: u64,
+    bytes: u64,
+}
+
+/// The host's copy of the files a workspace's members post in its Chat.
+pub struct WorkspaceAttachments {
+    workspaces: Workspaces,
+    workspace: String,
+    /// This host's device: what its requests name, and what answers to
+    /// them are addressed to.
+    host: [u8; 32],
+    blobs: ContentStore,
+    log: PathBuf,
+    limits: AttachmentLimits,
+    state: Mutex<State>,
+}
+
+/// A file a message of a part references: its hash, who posted it and the
+/// size the message says it has, when it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Referenced {
+    /// The content's hash, lowercase BLAKE3 hex.
+    pub hash: String,
+    /// Its poster.
+    pub member: MemberId,
+    /// The size the message names, if any.
+    pub size: Option<u64>,
+}
+
+/// The files the messages of `part`, a saved part of the Chat's messages,
+/// reference.
+#[must_use]
+pub fn referenced(part: &[u8]) -> Vec<Referenced> {
+    let Ok(doc) = AutoCommit::load(part) else {
+        return Vec::new();
+    };
+    chat::messages::read_part(&doc)
+        .messages
+        .values()
+        .flat_map(|message| {
+            message.attachments.iter().filter_map(move |attached| {
+                Some(Referenced {
+                    hash: tilo_content::content_address(attached.blob()?)?,
+                    member: message.author.clone(),
+                    size: attached.size(),
+                })
+            })
+        })
+        .collect()
+}
+
+/// The address content `reference` is stored under, as the host keeps it:
+/// the host holds a sealed file's ciphertext, never its key.
+fn address(reference: &str) -> String {
+    tilo_content::content_address(reference).unwrap_or_else(|| reference.to_ascii_lowercase())
+}
+
+/// The pictures and recordings of the feedback reports filed in `record`,
+/// the saved Chat record, each by whoever filed it.
+#[must_use]
+pub fn reported(record: &[u8]) -> Vec<Referenced> {
+    let Ok(doc) = AutoCommit::load(record) else {
+        return Vec::new();
+    };
+    chat::projection::read(&doc)
+        .feedback
+        .iter()
+        .filter_map(|(_, report)| Some((report.submission.as_ref()?, &report.author)))
+        .flat_map(|(submission, author)| {
+            let feedback = &submission.feedback;
+            let picture = feedback.screenshot.as_ref().map(|picture| Referenced {
+                hash: address(&picture.hash),
+                member: author.clone(),
+                size: None,
+            });
+            let recording = feedback.recording.as_ref().map(|recording| Referenced {
+                hash: address(&recording.hash),
+                member: author.clone(),
+                size: Some(u64::from(recording.bytes)),
+            });
+            picture.into_iter().chain(recording)
+        })
+        .collect()
+}
+
+/// The Chat's own record on the wire: its package primary.
+const CHAT_RECORD: &str = "";
+
+fn now_ms() -> u64 {
+    tilo_clock::unix_now_ns() / 1_000_000
+}
+
+impl WorkspaceAttachments {
+    /// The host `host` of `workspace` keeping its members' files in `blobs`
+    /// within `limits`, counted in the log at `log`.
+    #[must_use]
+    pub fn new(
+        workspaces: Workspaces,
+        workspace: String,
+        host: [u8; 32],
+        blobs: ContentStore,
+        log: PathBuf,
+        limits: AttachmentLimits,
+    ) -> Arc<Self> {
+        let kept = std::fs::read(&log)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Arc::new(Self {
+            workspaces,
+            workspace,
+            host,
+            blobs,
+            log,
+            limits,
+            state: Mutex::new(State {
+                log: kept,
+                wants: ContentWants::default(),
+                unanswered: BTreeSet::new(),
+                written: BTreeSet::new(),
+                taken: BTreeMap::new(),
+            }),
+        })
+    }
+
+    /// Keep the workspace's members' files from now on: the pieces members send
+    /// the host come here, every part of the Chat is read once, and each
+    /// member write to a part after, until the workspace is no longer governed
+    /// here.
+    pub async fn run(self: Arc<Self>) {
+        let keeper: Arc<dyn ContentKeeper> = self.clone();
+        self.workspaces.keep_content(&keeper);
+        let mut writes = self.workspaces.document_writes();
+        let mut again = tokio::time::interval(ASK_AGAIN);
+        again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut read = tokio::time::interval(READ_EVERY);
+        read.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut missing = tokio::time::interval(MISSING_EVERY);
+        missing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        self.read_all().await;
+        loop {
+            tokio::select! {
+                write = writes.recv() => match write {
+                    Ok(write) => {
+                        if let Some(part) = self.part_of(&write) {
+                            self.state.lock_recover().written.insert(part);
+                        }
+                    }
+                    // Missed writes are read from the parts themselves.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.read_all().await,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                _ = read.tick() => {
+                    let parts = std::mem::take(&mut self.state.lock_recover().written);
+                    for part in parts {
+                        self.read_part(&part).await;
+                    }
+                }
+                _ = missing.tick() => self.ask_again_for_missing().await,
+                _ = again.tick() => {
+                    let parts = std::mem::take(&mut self.state.lock_recover().unanswered);
+                    for part in parts {
+                        self.read_part(&part).await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ask the workspace again for the files being gathered that a lost piece
+    /// left short: an answer carries only so much of a file at a time, and a
+    /// piece a session could not deliver is not sent again by itself, so the
+    /// host asks within [`neighbour_wire::content::PIECE_PATIENCE_MS`] of the
+    /// last piece it got, naming what it holds.
+    async fn ask_again_for_missing(&self) {
+        let asks = {
+            let mut state = self.state.lock_recover();
+            state.wants.reask(&self.host, now_ms())
+        };
+        // Every file here belongs to this one workspace, whatever member
+        // posted it.
+        for (_, ask) in asks {
+            if let Err(error) = self.workspaces.ask_members(&self.workspace, ask).await {
+                tracing::debug!(workspace = %self.workspace, %error, "could not ask the workspace for a file it is missing");
+            }
+        }
+    }
+
+    /// The record of this workspace's Chat `write` went to, if it went to one
+    /// that references files: a part of its messages or its own record,
+    /// where feedback reports are filed.
+    fn part_of(&self, write: &ResourceWrite) -> Option<String> {
+        if write.workspace != self.workspace || write.app != CHAT {
+            return None;
+        }
+        if write.record == CHAT_RECORD {
+            return Some(write.record.clone());
+        }
+        let id = ui::resource::DocumentId::parse(&write.record)?;
+        chat::parts::part_index(&id)
+            .is_some()
+            .then(|| write.record.clone())
+    }
+
+    async fn read_all(&self) {
+        let Ok(routes) = self.workspaces.document_routes(&self.workspace).await else {
+            return;
+        };
+        for (app, record) in routes {
+            let write = ResourceWrite {
+                workspace: self.workspace.clone(),
+                app,
+                record,
+                carried: tilo_workspace_service::workspaces::repaired_documents::Carried::Nothing,
+            };
+
+            if let Some(part) = self.part_of(&write) {
+                self.read_part(&part).await;
+            }
+        }
+    }
+
+    /// Ask the workspace for the files `part` references that the host does not
+    /// keep yet.
+    async fn read_part(&self, part: &str) {
+        let bytes = match self
+            .workspaces
+            .resource_document(&self.workspace, CHAT, part)
+            .await
+        {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::debug!(workspace = %self.workspace, part, %error, "chat part not readable for its files");
+                return;
+            }
+        };
+        let files = if part == CHAT_RECORD {
+            reported(&bytes)
+        } else {
+            referenced(&bytes)
+        };
+        let asks = self.asks(&files, now_ms());
+        {
+            let mut state = self.state.lock_recover();
+            if files.iter().any(|file| self.lacks(&state, file)) {
+                state.unanswered.insert(part.to_owned());
+            }
+        }
+        for ask in asks {
+            if let Err(error) = self.workspaces.ask_members(&self.workspace, ask).await {
+                tracing::debug!(workspace = %self.workspace, %error, "could not ask the workspace for a file");
+            }
+        }
+    }
+
+    /// The requests the host sends for the files of `referenced` it does
+    /// not keep, within the cap and their poster's hourly quota, and not
+    /// asked for lately.
+    #[must_use]
+    pub fn asks(&self, referenced: &[Referenced], now_ms: u64) -> Vec<Vec<u8>> {
+        let mut state = self.state.lock_recover();
+        state
+            .taken
+            .retain(|_, taken| now_ms.saturating_sub(taken.at_ms) < HOUR_MS);
+        let mut asks = Vec::new();
+        for file in referenced {
+            if let Some(ask) = (self.lacks(&state, file) && self.within_hour(&state, file))
+                .then(|| {
+                    state.wants.ask(
+                        &self.host,
+                        file.member.clone(),
+                        (CHAT, &self.workspace),
+                        &file.hash,
+                        now_ms,
+                    )
+                })
+                .flatten()
+            {
+                state.taken.insert(
+                    file.hash.clone(),
+                    Taken {
+                        member: file.member.clone(),
+                        at_ms: now_ms,
+                        bytes: file.size.unwrap_or(0),
+                    },
+                );
+                asks.push(ask);
+            }
+        }
+        drop(state);
+        asks
+    }
+
+    /// Whether `file` fits what its poster's quota leaves of this hour.
+    fn within_hour(&self, state: &State, file: &Referenced) -> bool {
+        let taken = state
+            .taken
+            .iter()
+            .filter(|(hash, taken)| taken.member == file.member && **hash != file.hash)
+            .map(|(_, taken)| taken.bytes)
+            .fold(0, u64::saturating_add);
+        taken.saturating_add(file.size.unwrap_or(0)) <= self.limits.member_bytes
+    }
+
+    /// Whether the host lacks `file` and would keep it.
+    fn lacks(&self, state: &State, file: &Referenced) -> bool {
+        tilo_content::valid_hash(&file.hash)
+            && file.size.is_none_or(|size| size <= self.limits.file_bytes)
+            && !state.log.let_go.contains(&file.hash)
+            && !self.blobs.has(&file.hash)
+    }
+
+    /// Keep `bytes`, the whole and verified file `hash` `member` posted,
+    /// and let the oldest files go past the member's and the workspace's quota.
+    fn keep(&self, state: &mut State, member: &MemberId, hash: &str, bytes: &[u8]) {
+        let Ok(size) = u64::try_from(bytes.len()) else {
+            return;
+        };
+        if size > self.limits.file_bytes || self.blobs.has(hash) {
+            return;
+        }
+        if let Err(error) = self.blobs.put(bytes) {
+            tracing::warn!(workspace = %self.workspace, %error, "could not keep a member's file");
+            return;
+        }
+        // A picture's message names no size: what came counts.
+        if let Some(taken) = state.taken.get_mut(hash) {
+            taken.bytes = size;
+        }
+        let order = state.log.next;
+        state.log.next = order.saturating_add(1);
+        state.log.kept.insert(
+            hash.to_owned(),
+            Kept {
+                member: member.clone(),
+                bytes: size,
+                order,
+            },
+        );
+        while state.log.total(Some(member)) > self.limits.member_bytes {
+            let Some(oldest) = state.log.oldest(Some(member)) else {
+                break;
+            };
+            self.let_go(state, &oldest);
+        }
+        while state.log.total(None) > self.limits.workspace_bytes {
+            let Some(oldest) = state.log.oldest(None) else {
+                break;
+            };
+            self.let_go(state, &oldest);
+        }
+        self.save(state);
+    }
+
+    fn let_go(&self, state: &mut State, hash: &str) {
+        state.log.kept.remove(hash);
+        state.log.let_go.insert(hash.to_owned());
+        if let Err(error) = self.blobs.release(hash) {
+            tracing::warn!(workspace = %self.workspace, %error, "could not let a member's file go");
+        }
+    }
+
+    fn save(&self, state: &State) {
+        let saved = serde_json::to_vec(&state.log)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                tilo_files::native::atomic::write(&self.log, &bytes)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = saved {
+            tracing::warn!(workspace = %self.workspace, %error, "could not save the log of kept files");
+        }
+    }
+
+    /// Whether the host keeps file `hash` for a member, and for whom.
+    #[must_use]
+    pub fn kept_for(&self, hash: &str) -> Option<MemberId> {
+        self.state
+            .lock_recover()
+            .log
+            .kept
+            .get(hash)
+            .map(|kept| kept.member.clone())
+    }
+}
+
+impl ContentKeeper for WorkspaceAttachments {
+    fn piece(&self, workspace: &str, _from: [u8; 32], frame: &[u8]) {
+        if workspace != self.workspace {
+            return;
+        }
+        // A file over the cap is not taken in piece by piece either.
+        if let Ok(neighbour_wire::NeighbourMsg::DocumentContentPiece { total, .. }) =
+            postcard::from_bytes(frame)
+            && total > self.limits.file_bytes
+        {
+            return;
+        }
+        let mut state = self.state.lock_recover();
+        if let Some(arrived) = state.wants.piece(&self.host, frame, now_ms()) {
+            self.keep(&mut state, &arrived.tag, &arrived.hash, &arrived.bytes);
+        }
+    }
+
+    fn expects(&self, workspace: &str, frame: &[u8]) -> bool {
+        workspace == self.workspace
+            && !matches!(
+                postcard::from_bytes(frame),
+                Ok(neighbour_wire::NeighbourMsg::DocumentContentPiece { total, .. })
+                    if total > self.limits.file_bytes
+            )
+            && self.state.lock_recover().wants.expects(&self.host, frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn the_host_keeps_reported_files_for_their_reporters_within_a_quota;
+
+        phase a_filed_reports_picture_and_recording_are_kept_for_its_reporter;
+        // The pictures and recordings of the reports filed in the Chat's
+        // record are the files the host keeps for them, each for whoever filed
+        // it; a report without either references nothing.
+        {
+            let mut doc = AutoCommit::new();
+            chat::demo::seed(&mut doc).unwrap();
+            let picture = "ab".repeat(32);
+            let recording = "cd".repeat(32);
+            let file = |id: &str, screenshot: Option<serde_json::Value>| {
+                let mut feedback = serde_json::json!({
+                    "text": "The picker misses a row",
+                    "context": [],
+                });
+                if let Some(screenshot) = screenshot {
+                    feedback["screenshot"] = screenshot;
+                }
+                if id == "c" {
+                    feedback["recording"] = serde_json::json!({
+                        "hash": recording,
+                        "app": "so.tilo.notes",
+                        "app_name": "Notes",
+                        "kind": "notes.note",
+                        "from_ms": 1_000,
+                        "to_ms": 2_000,
+                        "steps": 3,
+                        "bytes": 4_096,
+                    });
+                }
+                serde_json::json!({
+                    "id": id.repeat(32),
+                    "destination": {
+                        "workspace": "workspace",
+                        "provider": "record:so.tilo.chat:",
+                        "channel": "c_general",
+                    },
+                    "feedback": feedback,
+                })
+            };
+            let with_picture = serde_json::json!({
+                "hash": picture.to_ascii_uppercase(),
+                "width": 4,
+                "height": 3,
+            });
+            for (author, submission) in [
+                ("visitor-one", file("a", Some(with_picture))),
+                ("visitor-two", file("b", None)),
+                ("visitor-three", file("c", None)),
+            ] {
+                chat::demo::apply_as(
+                    &mut doc,
+                    author,
+                    chat::Chat::SUBMIT_FEEDBACK.with(chat::chat::chat::SubmitFeedback {
+                        channel: tilo_resource::Id::from_raw("c_general"),
+                        submission,
+                    }),
+                )
+                .unwrap();
+            }
+            let mut kept = reported(&doc.save());
+            kept.sort_by(|a, b| a.member.cmp(&b.member));
+            assert_eq!(
+                kept,
+                [
+                    Referenced {
+                        hash: picture,
+                        member: MemberId::person("visitor-one"),
+                        size: None,
+                    },
+                    Referenced {
+                        hash: recording,
+                        member: MemberId::person("visitor-three"),
+                        size: Some(4_096),
+                    },
+                ]
+            );
+            assert!(reported(b"not a record").is_empty());
+        }
+
+        phase the_oldest_files_go_first_past_a_quota;
+        {
+            let mut log = Log::default();
+            for (hash, member, order) in [("a", "ada", 0), ("b", "bo", 1), ("c", "ada", 2)] {
+                log.kept.insert(
+                    hash.into(),
+                    Kept {
+                        member: MemberId::person(member),
+                        bytes: 10,
+                        order,
+                    },
+                );
+            }
+            let (ada, bo) = (MemberId::person("ada"), MemberId::person("bo"));
+            assert_eq!(log.total(Some(&ada)), 20);
+            assert_eq!(log.total(None), 30);
+            assert_eq!(log.oldest(Some(&ada)).as_deref(), Some("a"));
+            assert_eq!(log.oldest(Some(&bo)).as_deref(), Some("b"));
+            assert_eq!(log.oldest(None).as_deref(), Some("a"));
+            let saved = serde_json::to_vec(&log).unwrap();
+            let read: Log = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(read.kept, log.kept);
+        }
+    }
+}

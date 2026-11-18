@@ -8,7 +8,7 @@
 /// `RUST_LOG`: a refused settings write, a person record that could not open, an action a control could
 /// not deliver, all logged as warnings, never reached the journal, and a lost write left no trace.
 pub(super) fn init_app_log() {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let prefix = app_log_prefix(
         environment
             .identity

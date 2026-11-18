@@ -6,15 +6,17 @@
 //! person let it: an answer kept in their settings (`settings_store::app_consent`),
 //! given once on the sheet the host draws ([`AppActionConsentPrompter`]).
 //! Until they answer, the request is refused. Nobody present means nobody to
-//! ask: the request is refused without a sheet.
+//! ask: the request is refused without a sheet, with the reason. So is a
+//! call outside any workspace, on a device that keeps no answers, or for an
+//! action nobody offers the person.
 
 use crate::BrokerError;
 use std::sync::Arc;
 
-use tilo_actions::remote::{Caller, InvokeRequest, RemoteActionMessage};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, RemoteActionMessage};
 
 use super::AppBrokerState;
-use super::action_host::{ConnectionActionHost, RowScope};
+use super::action_provider::{ConnectionActionProvider, RowScope};
 use crate::app_actions::{
     AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
@@ -23,46 +25,22 @@ use crate::app_actions::{
 pub(crate) enum ConsentStep {
     /// It holds what it needs already: serve it as it is.
     Serve,
-    /// Nobody can be asked: refuse it.
-    Refuse,
+    /// Nobody can be asked: refuse it, saying why.
+    Refuse(ActionCallError),
     /// The person is being asked.
     Ask(Box<PendingConsent>),
 }
 
-/// An action one app asks to take of another: the app that offers it, and
-/// the action as offered.
-struct Offer {
-    app_id: String,
-    action: tilo_actions::ActionDescriptor,
-}
-
 /// Which app wants which app's action.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ConsentKey {
-    app_id: String,
-    target_app: String,
-    resource: String,
-    action: String,
-}
+pub(crate) type ConsentKey = settings_store::app_consent::Consent;
 
-impl ConsentKey {
-    fn of(request: &AppActionConsentRequest) -> Self {
-        Self {
-            app_id: request.app_id.clone(),
-            target_app: request.target_app.clone(),
-            resource: request.resource.clone(),
-            action: request.action.clone(),
-        }
-    }
-
-    fn answered(&self) -> settings_store::app_consent::Consent {
-        settings_store::app_consent::Consent::new(
-            self.app_id.clone(),
-            self.target_app.clone(),
-            self.resource.clone(),
-            self.action.clone(),
-        )
-    }
+fn key_of(request: &AppActionConsentRequest) -> ConsentKey {
+    ConsentKey::new(
+        &request.app_id,
+        &request.target_app,
+        &request.resource,
+        &request.action,
+    )
 }
 
 /// A consent question on screen.
@@ -84,22 +62,25 @@ impl AppBrokerState {
     ///
     /// The person is asked only for an action the catalogue offers them, in a
     /// workspace this machine governs, that this app was not let take before:
-    /// in their settings, or for this session.
+    /// in their settings, or for this session. Without a person, a workspace
+    /// or a place to keep the answer, nobody can let it, and it is refused.
     pub(crate) fn app_action_consent(
         &self,
         person: &Caller,
         app_id: &str,
         request: &InvokeRequest,
     ) -> ConsentStep {
-        let Some(consent) = self.consent_question(person, app_id, request) else {
-            return ConsentStep::Serve;
+        let consent = match self.consent_question(person, app_id, request) {
+            Ok(Some(consent)) => consent,
+            Ok(None) => return ConsentStep::Serve,
+            Err(refused) => return ConsentStep::Refuse(refused),
         };
-        let key = ConsentKey::of(&consent);
+        let key = key_of(&consent);
         let Ok(mut pending) = self.app_action_consent_pending.lock() else {
-            return ConsentStep::Refuse;
+            return ConsentStep::Refuse(ActionCallError::NotPermitted);
         };
         if pending.contains(&key) {
-            return ConsentStep::Refuse;
+            return ConsentStep::Refuse(ActionCallError::NotPermitted);
         }
         let prompter = self
             .app_action_consent
@@ -107,7 +88,7 @@ impl AppBrokerState {
             .ok()
             .and_then(|prompter| prompter.clone());
         let Some(answer) = prompter.and_then(|prompter| prompter.ask(consent.clone())) else {
-            return ConsentStep::Refuse;
+            return ConsentStep::Refuse(ActionCallError::NotPermitted);
         };
         pending.insert(key);
         ConsentStep::Ask(Box::new(PendingConsent {
@@ -116,46 +97,53 @@ impl AppBrokerState {
         }))
     }
 
+    /// The question to put to the person: `None` when the call needs none,
+    /// `Err` with what to tell the app when nobody can answer it.
     fn consent_question(
         &self,
         person: &Caller,
         app_id: &str,
         request: &InvokeRequest,
-    ) -> Option<AppActionConsentRequest> {
-        let person_id = person.acting().person_id()?;
-        let workspace = person.workspace()?;
-        let consents = self.services.app_consents.as_ref()?;
-        let offer = self.offer(person, request)?;
+    ) -> Result<Option<AppActionConsentRequest>, ActionCallError> {
+        let refused = |reason: &str| ActionCallError::Refused {
+            reason: reason.to_owned(),
+        };
+        let person_id = person.acting().person_id().ok_or_else(|| {
+            refused("no person uses this app to let it take another app's action")
+        })?;
+        let workspace = person.workspace().ok_or_else(|| {
+            refused("this app is in no workspace that could let it take another app's action")
+        })?;
+        // What nobody offers the person, nobody can let the app take: running
+        // it would do what the person was never shown.
+        let (target_app, action) = self
+            .offer(person, request)
+            .ok_or(ActionCallError::UnknownAction)?;
         // Governing the workspace is never one click away for an app.
         let governance = self
             .services
             .workspace_governance
             .as_ref()
-            .is_some_and(|governance| governance.app_id() == offer.app_id);
-        if offer.action.contract.kind == tilo_actions::ActionKind::Outside
+            .is_some_and(|governance| governance.app_id() == target_app);
+        if action.contract.kind == tilo_actions::ActionKind::Outside
             || governance
-            || offer.app_id == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID
+            || target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID
         {
-            return None;
+            return Ok(None);
         }
-        let key = ConsentKey {
-            app_id: app_id.to_owned(),
-            target_app: offer.app_id.clone(),
-            resource: offer.action.address.resource.clone(),
-            action: offer.action.address.action.clone(),
-        };
-        if consents.allows(&key.answered())
+        let settings = self.services.settings.as_deref().ok_or_else(|| {
+            refused("this device keeps no answers for one app taking another app's action")
+        })?;
+        let address = &action.address;
+        let key = ConsentKey::new(app_id, &target_app, &address.resource, &address.action);
+        if settings_store::app_consent::allows(settings, &key)
             || self
                 .app_consent_session
                 .lock()
                 .is_ok_and(|held| held.contains(&key))
         {
-            return None;
+            return Ok(None);
         }
-        let Offer {
-            app_id: target_app,
-            action,
-        } = offer;
         let contract = &action.contract;
         // What the call would run with, field by field, so the person sees what it changes.
         let draft = match &request.argument {
@@ -165,7 +153,7 @@ impl AppBrokerState {
             _ => None,
         }
         .filter(|draft| !draft.fields.is_empty());
-        Some(AppActionConsentRequest {
+        Ok(Some(AppActionConsentRequest {
             handle: format!("app-action:{}", request.invocation.0),
             workspace: workspace.to_string(),
             person: person_id.to_owned(),
@@ -184,19 +172,23 @@ impl AppBrokerState {
             moderation: None,
             scope: None,
             draft,
-        })
+        }))
     }
 
-    /// The action `request` asks for, as the person using the asking app is
-    /// offered it: an instance's action in the catalogue, or what the app a
-    /// target names by its id offers.
-    fn offer(&self, person: &Caller, request: &InvokeRequest) -> Option<Offer> {
+    /// The action `request` asks for, and the app that offers it, as the
+    /// person using the asking app is offered it: an instance's action in the
+    /// catalogue, or what the app a target names by its id offers.
+    fn offer(
+        &self,
+        person: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<(String, tilo_actions::ActionDescriptor)> {
         if let Some((workspace, app_id, action)) = self.application_offer(request) {
             let action = action.filter(|_| person.workspace() == Some(workspace.as_str()))?;
-            return Some(Offer {
+            return Some((
                 app_id,
-                action: action.descriptor(tilo_actions::ExecutionLocus::default()),
-            });
+                action.descriptor(tilo_actions::ExecutionLocus::default()),
+            ));
         }
         let row = self
             .eager_catalogue(person, RowScope::Provider(&request.target.provider))
@@ -209,16 +201,13 @@ impl AppBrokerState {
                         .as_ref()
                         .is_some_and(|descriptor| descriptor.address == request.target.address)
             })?;
-        Some(Offer {
-            app_id: row.app_id,
-            action: row.action?,
-        })
+        Some((row.app_id, row.action?))
     }
 
     /// The question `consent` asked is off the screen.
     fn finish_app_action_consent(&self, consent: &PendingConsent) {
         if let Ok(mut pending) = self.app_action_consent_pending.lock() {
-            pending.remove(&ConsentKey::of(&consent.request));
+            pending.remove(&key_of(&consent.request));
         }
     }
 
@@ -230,12 +219,12 @@ impl AppBrokerState {
         consent: &PendingConsent,
         answer: AppActionConsent,
     ) -> Result<(), String> {
-        let consents = self
+        let settings = self
             .services
-            .app_consents
-            .as_ref()
+            .settings
+            .as_deref()
             .ok_or_else(|| "this device keeps no answers".to_owned())?;
-        let key = ConsentKey::of(&consent.request);
+        let key = key_of(&consent.request);
         match answer {
             // The call it was given for, and no other.
             AppActionConsent::Once | AppActionConsent::Deny => Ok(()),
@@ -246,7 +235,8 @@ impl AppBrokerState {
                     held.insert(key);
                 })
                 .map_err(|_| "this session's answers are unreadable".to_owned()),
-            AppActionConsent::Always => consents.allow(&key.answered()),
+            AppActionConsent::Always => settings_store::app_consent::allow(settings, &key)
+                .map_err(|error| format!("the answer could not be saved: {error}")),
         }
     }
 }
@@ -257,11 +247,11 @@ impl AppBrokerState {
 pub(super) fn serve_after_consent(
     state: Arc<AppBrokerState>,
     consent: Box<PendingConsent>,
-    host: ConnectionActionHost,
+    provider: ConnectionActionProvider,
     caller: Caller,
     message: RemoteActionMessage,
 ) -> super::wire::Answer<RemoteActionMessage> {
-    use tilo_actions::remote::{ActionHostError, refuse};
+    use tilo_actions::remote::refuse;
     Box::pin(async move {
         let mut consent = consent;
         // A consent sheet shows no draft: only the choice counts. Resolved by
@@ -272,16 +262,16 @@ pub(super) fn serve_after_consent(
         let reply = match answered {
             Err(_) => refuse(
                 &message,
-                ActionHostError::Unavailable {
+                ActionCallError::Unavailable {
                     reason: "the sheet closed without the person's answer".into(),
                 },
             ),
             Ok(answer) if !answer.consent.grants() => {
-                refuse(&message, ActionHostError::NotPermitted)
+                refuse(&message, ActionCallError::NotPermitted)
             }
             Ok(answer) => {
                 if let Err(reason) = state.keep_app_action_consent(&consent, answer.consent) {
-                    refuse(&message, ActionHostError::Refused { reason })
+                    refuse(&message, ActionCallError::Refused { reason })
                 } else {
                     // Answered at admission, as before waits existed: an answer
                     // given for this call is spent by that admission, never
@@ -294,9 +284,9 @@ pub(super) fn serve_after_consent(
                         other => other,
                     };
                     let person = consent.request.person.clone();
-                    super::witness::serve_answering(
+                    super::approval::serve_answering(
                         Arc::clone(&state),
-                        host,
+                        provider,
                         caller,
                         person,
                         message,
@@ -305,6 +295,6 @@ pub(super) fn serve_after_consent(
                 }
             }
         };
-        reply.ok_or_else(|| BrokerError::failed("the action host dropped the request".into()))
+        reply.ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))
     })
 }

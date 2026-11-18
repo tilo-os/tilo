@@ -40,7 +40,7 @@ fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
         &root.join("identity"),
         "Ada",
         [20, 80, 140],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     let password = "a sufficiently long transport password";
@@ -68,7 +68,7 @@ fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
     assert!(media.home.is_none());
     assert!(media.applications.is_none());
     assert!(Delivery::with_artifact(media.clone()).requires_data_partition());
-    assert_eq!(fs::read_dir(media._custody.path()).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(media._ownership.path()).unwrap().count(), 2);
     let setup = prepared_setup::PreparedSetupReview::open(
         &media.package(),
         password.as_bytes(),
@@ -85,7 +85,7 @@ fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
         .payload
         .validate_plan(&declaration.plan)
         .unwrap();
-    let package = media._custody.path().join(&declaration.payload.filename);
+    let package = media._ownership.path().join(&declaration.payload.filename);
     let projection = browser_transfer::extract(
         &declaration.payload,
         &declaration.plan,

@@ -6,7 +6,7 @@ fn root() -> PathBuf {
 }
 
 #[test]
-fn account_custody_adopts_legacy_entries_and_preserves_settings_interoperability() {
+fn account_credentials_adopts_legacy_entries_and_preserves_settings_interoperability() {
     let root = root();
     let id = AccountId::new("legacy-account");
     let mut settings = SecretVault::open_in(&root);
@@ -16,14 +16,14 @@ fn account_custody_adopts_legacy_entries_and_preserves_settings_interoperability
     };
     settings.put(&id, &legacy);
     settings.try_save().unwrap();
-    let mut custody = AccountCredentials::open_in(&root).unwrap();
-    assert_eq!(custody.get(&id), Some(legacy));
+    let mut ownership = AccountCredentials::open_in(&root).unwrap();
+    assert_eq!(ownership.get(&id), Some(legacy));
     let refreshed = Secret {
         password: String::new(),
         token: Some("refreshed-grant".into()),
     };
-    custody.put(&id, &refreshed);
-    custody.try_save().unwrap();
+    ownership.put(&id, &refreshed);
+    ownership.try_save().unwrap();
     assert_eq!(SecretVault::open_in(&root).get(&id), Some(refreshed));
     let mut settings = SecretVault::open_in(&root);
     settings.remove(&id);
@@ -38,7 +38,7 @@ fn account_custody_adopts_legacy_entries_and_preserves_settings_interoperability
 }
 
 #[test]
-fn account_custody_rejects_stale_replacements_and_corrupt_storage() {
+fn account_credentials_rejects_stale_replacements_and_corrupt_storage() {
     let root = root();
     let id = AccountId::new("account");
     let mut first = AccountCredentials::open_in(&root).unwrap();

@@ -51,7 +51,7 @@ pub struct PersonalDevice {
     /// It has a live session with this device now.
     pub online: bool,
     /// It is heard on this device's local network, so the two reach each
-    /// other directly, without a relay.
+    /// other directly, without a server.
     #[serde(default)]
     pub nearby: bool,
     /// This machine.

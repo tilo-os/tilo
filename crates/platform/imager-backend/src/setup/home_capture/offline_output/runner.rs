@@ -14,7 +14,7 @@ impl original_worker::OriginalWorkerOwner for OfflineOutputTransaction {
         &self.cancellation
     }
     fn record_namespace(&self, endpoint: &ServiceEndpoint) -> io::Result<()> {
-        self.record_namespace(&endpoint.custody()?)
+        self.record_namespace(&endpoint.ownership()?)
     }
 }
 impl OfflineOutputTransaction {

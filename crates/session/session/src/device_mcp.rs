@@ -57,7 +57,7 @@ pub(crate) struct DeviceAgents {
     servers: OnceLock<Arc<OtherDevices>>,
     /// The person's workspace list as this device holds it, for a key of theirs that dials the
     /// server to read it.
-    list: Mutex<Option<tilo_relay_session::workspaces::PersonalList>>,
+    list: Mutex<Option<tilo_server_session::workspaces::PersonalList>>,
 }
 
 impl DeviceAgents {
@@ -102,7 +102,7 @@ impl DeviceAgents {
 
     /// Answer `list` to the person's keys that dial the server to read where their workspaces
     /// are.
-    pub(crate) fn show_list(&self, list: tilo_relay_session::workspaces::PersonalList) {
+    pub(crate) fn show_list(&self, list: tilo_server_session::workspaces::PersonalList) {
         *self.list.lock_recover() = Some(list);
     }
 
@@ -119,7 +119,7 @@ impl DeviceAgents {
             None => tilo_mcp::devices::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices: it takes no part in the \
-                 collaboration plane"
+                 peer network"
                     .into(),
             ),
         }
@@ -157,7 +157,7 @@ impl Arrivals for DeviceAgents {
         Ok(())
     }
 
-    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+    fn listed(&self) -> Option<tilo_server_session::workspaces::PersonalList> {
         self.list.lock_recover().clone()
     }
 }

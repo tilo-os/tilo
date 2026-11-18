@@ -2,7 +2,7 @@
 //! (`fs serve-media`): the connector puts a picture as this device's content, and a second
 //! connection — the app's window — reads it back by its address.
 //!
-//! This is the seam a live tilolang app's pictures travel: the connector is the process with
+//! This is the boundary a live tilolang app's pictures travel: the connector is the process with
 //! the network, and the window is the one that draws. Neither ever speaks to the image's
 //! filesystem daemon: a session started from a build under test serves them this one instead,
 //! because the image's daemon keeps a different wire and every call to it dies on the first

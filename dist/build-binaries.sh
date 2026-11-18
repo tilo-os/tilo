@@ -11,7 +11,7 @@ if [[ -n ${TILO_CARGO_TARGET:-} ]]; then
 fi
 
 cd "$repo_root"
-cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper -p tilo-session-record
+cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper -p tilo-flight-log
 # `tilo`, the command a terminal reaches the desktop's apps and actions with.
 cargo build "${cargo_args[@]}" -p tilo-cli --bin tilo
 # The host package installs Tilo and imports the old folders: the installation.

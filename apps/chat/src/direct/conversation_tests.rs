@@ -6,7 +6,7 @@ use ui::framework::testing::TestApp;
 use crate::ChatShell;
 use tilo_actions::policy::MemberId;
 
-use crate::record::Chat;
+use crate::chat::Chat;
 use crate::testing::MountedChat;
 
 type Window = TestApp<ChatShell>;
@@ -77,31 +77,17 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Ada's and Bob's windows in one workspace, each having introduced themself,
+/// Ada's and Bob's windows in one workspace, each listing the other as a member,
 /// the record delivered both ways.
 fn a_pair_of_windows(workspace: &str, ada: &str, bob: &str) -> (Window, Window) {
-    use crate::record::chat::Introduce;
-
     let mut ada_window = Window::for_person_in(ada, workspace).expect("Ada's window opens");
     let mut bob_window = Window::for_person_in(bob, workspace).expect("Bob's window opens");
-    for (window, name, initials, color) in [
-        (&mut ada_window, "Ada", "A", 1),
-        (&mut bob_window, "Bob", "B", 2),
-    ] {
-        window
-            .invoke(Chat::INTRODUCE.with(Introduce {
-                name: name.into(),
-                initials: initials.into(),
-                color,
-            }))
-            .expect("each person introduces themself");
-    }
     ada_window
         .deliver_changes_to(&mut bob_window)
-        .expect("one record");
+        .expect("one resource");
     bob_window
         .deliver_changes_to(&mut ada_window)
-        .expect("one record");
+        .expect("one resource");
     lists_member(&mut ada_window, bob, "Bob");
     lists_member(&mut bob_window, ada, "Ada");
     (ada_window, bob_window)
@@ -117,7 +103,7 @@ fn lists_member(window: &mut Window, id: &str, name: &str) {
     window.harness().relayout();
 }
 
-/// What `window`'s record holds of its conversation with `peer`: each
+/// What `window`'s resource holds of its conversation with `peer`: each
 /// message's text and the person it names as its author.
 fn read_conversation(window: &mut Window, peer: &str) -> Vec<(String, String)> {
     let me = window
@@ -285,13 +271,6 @@ fn a_box_send_reaches_a_member_who_never_opened_chat() {
     let ada = "ad".repeat(32);
     let ben = "be".repeat(32);
     let mut ada_window = Window::for_person_in(&ada, WORKSPACE).expect("Ada's window opens");
-    ada_window
-        .invoke(Chat::INTRODUCE.with(crate::record::chat::Introduce {
-            name: "Ada".into(),
-            initials: "A".into(),
-            color: 1,
-        }))
-        .expect("Ada introduces herself");
     lists_member(&mut ada_window, &ben, "Ben");
 
     let sent = ada_window
@@ -313,11 +292,11 @@ fn a_box_send_reaches_a_member_who_never_opened_chat() {
         sent.value
     );
 
-    // Ben opens Chat for the first time: the record and the message reach his window.
+    // Ben opens Chat for the first time: the resource and the message reach his window.
     let mut ben_window = Window::for_person_in(&ben, WORKSPACE).expect("Ben's window opens");
     ada_window
         .deliver_changes_to(&mut ben_window)
-        .expect("one record");
+        .expect("one resource");
     lists_member(&mut ben_window, &ada, "Ada");
     deliver_messages(&mut ada_window, &mut ben_window);
     assert_eq!(
@@ -416,21 +395,20 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
             chat.direct_contacts()
                 .iter()
                 .any(|row| row.id == conversation.to_string()),
-            "the conversation is listed with the person's others, though the record keeps no row for it"
+            "the conversation is listed with the person's others, though the resource keeps no row for it"
         );
     });
 }
 
 /// An agent's send names whom it goes to by name alone: the person the workspace's member list
-/// calls that, or the agent its record of agents does.
+/// calls that, or the agent it calls that.
 #[test]
 fn a_send_by_name_reaches_the_member_called_that() {
     use ui::floating_surface::{Recipient, RecipientKind};
 
     let mut app = crate::ChatApp::new_ephemeral();
     let agent = "a5".repeat(16);
-    app.workspace_agent_names
-        .insert(agent.clone(), "Reviewer".to_owned());
+    crate::testing::agent_member(&mut app, &agent, "Reviewer");
     app.workspace_presence_answers = true;
     app.workspace_names
         .insert(MemberId::person("ad".repeat(32)), "Ada".to_owned());
@@ -674,7 +652,7 @@ fn an_agents_send_is_the_agents_on_every_member() {
     bob_window.harness().relayout();
     assert_eq!(
         bob_window.with_chat(|chat| chat.message_author_name(&theirs[0])),
-        Some(ui::acting_line("Helper", Some("Ada"), false)),
-        "Bob, who never saw the agent here, reads it by its name and Ada's"
+        Some("Helper".to_owned()),
+        "Bob, who never saw the agent here, reads it by its own name"
     );
 }

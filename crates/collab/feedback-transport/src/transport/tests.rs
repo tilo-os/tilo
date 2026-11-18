@@ -4,7 +4,7 @@ use std::{cell::RefCell, path::Path, process::Command};
 use tilo_feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::application::{
-    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    ComponentRunnerInputs, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
@@ -41,7 +41,7 @@ fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
         Acting::person(person),
         vec![],
-        ui::permissions::Standing::person(
+        ui::permissions::MemberAccess::person(
             policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),
             person,
         ),
@@ -157,7 +157,7 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
             .initialize(|doc| {
                 let reporter = hex::encode([12; 32]);
                 let failed = |error: ui::tilo_actions::ApiError| error.to_string();
-                chat::demo::start(doc, &reporter, "Reporter", "R").map_err(failed)?;
+                chat::demo::start(doc, &reporter).map_err(failed)?;
                 chat::demo::insert_category(doc, "category", "Feedback").map_err(failed)?;
                 chat::demo::insert_channel(
                     doc,
@@ -176,9 +176,9 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
         checkout,
         reveal: None,
     };
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         chat::definition(),
-        HostContextInputs {
+        ProcessContextInputs {
             records: records.clone(),
             views,
             device_id: "device".into(),
@@ -752,7 +752,7 @@ tilo_test_env::scenario! {
 
     phase startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant;
     //
-    // The custody a desktop installs over a startup is that desktop's own
+    // The ownership a desktop installs over a startup is that desktop's own
     // (`tilo_desktop::feedback::install`): this crate only opens the host.
     {
         let mut missing = enrollment();

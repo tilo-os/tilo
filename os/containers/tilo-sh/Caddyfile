@@ -1,16 +1,16 @@
-# The relay's front in the Lounge, as tilo.sh runs it: the same Caddy,
-# routing the relay's paths as production's tls container does
-# (tilo/infra apps/tilo-sh-relay/Caddyfile), on this machine's loopback.
+# The server's front in the Lounge, as tilo.sh runs it: the same Caddy,
+# routing the server's paths as production's tls container does
+# (tilo/infra apps/tilo-sh-server/Caddyfile), on this machine's loopback.
 #
 # Production's names become loopback ports (stack.sh sets them):
-#   eu1.tilo.sh       http://127.0.0.1:{$TILO_SH_RELAY_PORT}
+#   eu1.tilo.sh       http://127.0.0.1:{$TILO_SH_SERVER_PORT}
 #   live-eu1.tilo.sh  http://127.0.0.1:{$TILO_SH_LIVE_PORT}
 #   tilo.sh           http://tilo.localhost:{$TILO_SH_SITE_PORT}
 # all plain HTTP. A browser treats localhost, its subdomains and loopback
 # addresses as secure contexts, so the page runs as it does on tilo.sh
 # (passkeys, WebCrypto, service workers) with no certificate for anyone to
 # trust or click through. The one thing that needs TLS is WebTransport, and
-# the relay serves that itself with a short-lived certificate whose hash the
+# the server serves that itself with a short-lived certificate whose hash the
 # page is handed (serverCertificateHashes).
 #
 # The API server is not behind it: production serves it as plain HTTP behind
@@ -21,7 +21,7 @@
 	http_port {$TILO_SH_CADDY_HTTP_PORT}
 }
 
-http://127.0.0.1:{$TILO_SH_RELAY_PORT} {
+http://127.0.0.1:{$TILO_SH_SERVER_PORT} {
 	@host path /mode /avatars /avatars/* /discord/callback
 	handle @host {
 		reverse_proxy 127.0.0.1:{$TILO_SH_ROUTES_PORT}
@@ -31,7 +31,7 @@ http://127.0.0.1:{$TILO_SH_RELAY_PORT} {
 	}
 }
 
-# The relay's live plane: its packet relay, which pages reach over
+# The relay's live session: its packet relay, which pages reach over
 # websockets (TILO_WORKSPACES_LIVE) and the relay's own endpoint uses as its home.
 http://127.0.0.1:{$TILO_SH_LIVE_PORT} {
 	reverse_proxy 127.0.0.1:{$TILO_SH_PACKET_PORT}

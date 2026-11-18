@@ -108,7 +108,7 @@ fn names_retain_form_anchors_and_mid_string_caret() {
 #[test]
 #[cfg(target_os = "linux")]
 fn approved_name_explains_why_it_cannot_be_edited() {
-    let (_custody, mut pairing) = pairing::certified_fixture();
+    let (_ownership, mut pairing) = pairing::certified_fixture();
     let deadline = tilo_test_env::hang_deadline();
     while pairing.busy() {
         assert!(std::time::Instant::now() < deadline);

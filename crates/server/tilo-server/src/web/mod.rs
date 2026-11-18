@@ -1,0 +1,1357 @@
+//! The host's browser listener (feature `web`): HTTPS (TCP, HTTP/2 and
+//! HTTP/1.1), served by the server itself.
+//!
+//! What a page needs before it holds a session rides it: the host's
+//! certificate and address (`/host`), joining a workspace, the public
+//! directory, root envelopes and profiles, the fetch proxy and the static
+//! entry. Everything after that — certification, presence, membership,
+//! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_server_protocol::web`].
+//!
+//! No owner loop runs here: every handler is async and awaits the server's
+//! own locks; workspace I/O already runs on the blocking pool.
+
+mod content;
+mod envelopes;
+mod fetch;
+pub mod install;
+mod link;
+pub(crate) mod live;
+mod login_codes;
+mod page_errors;
+mod shelf;
+mod sign_in;
+mod stand_in;
+#[cfg(test)]
+mod tests;
+mod tls;
+
+pub use fetch::FetchProxySetup;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
+pub use tls::TlsSource;
+
+use bytes::Bytes;
+use http_body_util::BodyExt as _;
+use hyper::{Method, Request, Response, StatusCode, header};
+pub(crate) use tilo_server_protocol::web as protocol;
+use tilo_server_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
+
+use crate::daemon::{Server, ServerError, WebContext};
+use collab_types::WorkspaceId;
+
+/// Configuration of the browser listener.
+#[derive(Clone, Debug)]
+pub struct WebConfig {
+    /// TCP address for HTTPS. Port 0 picks one free.
+    pub listen: SocketAddr,
+    /// Certificate source.
+    pub tls: TlsSource,
+    /// Page origins allowed to call the host cross-origin (the Cloud console
+    /// origin, a dev server). Empty allows same-origin pages only.
+    pub allowed_origins: Vec<String>,
+    /// A loopback address that also serves the HTTPS routes as plain HTTP,
+    /// for local review in a browser that should not need a certificate
+    /// exception.
+    pub plain_listen: Option<SocketAddr>,
+    /// The `https://` origin a TLS-terminating proxy publishes the plain
+    /// listener at. When set, the plain listener may bind a non-loopback
+    /// address (the proxy is the way in), and this origin is what pages
+    /// and links are told.
+    pub public_origin: Option<String>,
+    /// The fetch proxy this host serves its members' pages at
+    /// [`protocol::FETCH_PATH`], if any.
+    pub fetch_proxy: Option<FetchProxySetup>,
+    /// The wait list this host keeps for a workspace that takes people by
+    /// invitation, when whoever runs it keeps one
+    /// ([`crate::entry::WaitListPage`]).
+    pub wait_list: Option<Arc<crate::entry::WaitListPage>>,
+    /// Where the host takes WebTransport sessions, when not on the UDP port of
+    /// [`Self::listen`] at the origin pages are told: a deployment whose
+    /// HTTPS arrives through a proxy that carries no UDP names a way around
+    /// it. `None` listens beside the HTTPS listener.
+    pub link: Option<LinkListen>,
+    /// The site this host belongs to (`https://tilo.sh/`), when it knows one:
+    /// its `/i/<handle>` answers a browser that opens the host's own address
+    /// by sending it to the site's page, which is the page that can take a
+    /// sealed invitation's link.
+    pub site: Option<String>,
+}
+
+/// A WebTransport listener of its own ([`WebConfig::link`]).
+#[derive(Clone, Debug)]
+pub struct LinkListen {
+    /// The UDP address it binds.
+    pub listen: SocketAddr,
+    /// The `https://` origin devices open its sessions at.
+    pub origin: String,
+}
+
+impl Web {
+    /// Tell a person no Tilo of theirs is open for that a question waits, in
+    /// the browsers they let notify them. The push services are told this
+    /// host by the site it belongs to, else its own origin.
+    fn serve_pushes(
+        &self,
+        state: &std::path::Path,
+        site: Option<&str>,
+        public_origin: Option<&str>,
+        addr: SocketAddr,
+    ) {
+        let contact = site
+            .or(public_origin)
+            .map_or_else(|| format!("https://{addr}"), str::to_owned);
+        match crate::web_push::WebPush::open(state, &contact) {
+            Ok(push) => {
+                // What a person's assistant told them reaches the same
+                // browsers, while no device of theirs is looking.
+                #[cfg(feature = "agents")]
+                if let (Some(workspaces), Ok(runtime)) =
+                    (&self.workspaces, tokio::runtime::Handle::try_current())
+                {
+                    let teller = crate::workspace_telling::Teller::new(
+                        workspaces.clone(),
+                        Arc::new(push.clone()),
+                    );
+                    // An app of theirs that is closed hears of it through
+                    // Apple's push service, where this server was given a
+                    // key for that at its start.
+                    let named = self.context.closed_apps.get();
+                    let apple = crate::apple_push::ApplePush::open(named, workspaces.clone());
+                    let teller = if let Some(apple) = apple {
+                        teller.also(Arc::new(apple))
+                    } else {
+                        teller
+                    };
+                    runtime.spawn(teller.run());
+                }
+                self.context.certification.set_notifier(Arc::new(push));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "this host tells nobody outside Tilo that a question waits");
+            }
+        }
+    }
+}
+
+/// A running browser listener. Dropping it stops serving.
+pub struct WebHandle {
+    /// HTTPS address.
+    pub addr: SocketAddr,
+    /// `https://host:port` of the listener.
+    pub origin: String,
+    /// SHA-256 of a development certificate.
+    pub certificate_sha256: Option<String>,
+    /// Where pages reach the host over WebTransport, as `/host` publishes it.
+    pub link: WebLink,
+    /// `http://localhost:port` of the plain loopback listener, if any.
+    pub plain_origin: Option<String>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
+    published_origin: Option<Arc<String>>,
+    /// The live session: the one account of who is here.
+    presence: Arc<live::Authority>,
+}
+
+impl WebHandle {
+    /// Open browser sessions per person (user root) now, for a public
+    /// host's presence count and idle-guest pruning. One person on two
+    /// devices is one entry; the workspace's visitor person is one entry whose
+    /// count is its open pages.
+    #[must_use]
+    pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
+        self.presence
+            .devices()
+            .into_iter()
+            .map(|(user, devices)| (user, devices.len()))
+            .collect()
+    }
+}
+
+impl Drop for WebHandle {
+    fn drop(&mut self) {
+        if let Ok(mut published) = self.locator_origin.write()
+            && self.published_origin.as_ref().is_some_and(|ours| {
+                published
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(ours, current))
+            })
+        {
+            *published = None;
+        }
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+struct Web {
+    context: WebContext,
+    host_info: HostInfo,
+    /// The endpoint `host_info`'s address is of, whose current address `/host`
+    /// answers ([`Web::current_host_info`]). `None` where the listener serves
+    /// no endpoint of its own.
+    endpoint: Option<iroh::Endpoint>,
+    allowed_origins: Vec<String>,
+    /// The workspaces this server governs, for their directory and entries.
+    workspaces: Option<crate::workspaces::Workspaces>,
+    /// Members' root envelopes, for `/envelope`.
+    envelopes: envelopes::Envelopes,
+    /// Members' profiles, for `/profile`.
+    profiles: Arc<envelopes::Envelopes>,
+    /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
+    /// tokens its pages' sessions take for it.
+    fetch: Option<tilo_net::proxy::host::FetchProxy>,
+    grants: Arc<fetch::Grants>,
+    /// The links to the workspaces' files this host serves.
+    content_links: Arc<crate::content_links::ContentLinks>,
+    /// The live session: the one account of who is here.
+    presence: Arc<live::Authority>,
+    /// The page errors the entry logs.
+    page_errors: page_errors::PageErrors,
+    /// The sealed invitations this site keeps in place of their clerk: what a
+    /// short link names, in bytes the site has no key for.
+    shelf: shelf::Shelf,
+    /// The site this host belongs to, when it knows one: where a browser that
+    /// opened a link at the host's own address is sent.
+    site: Option<Site>,
+    /// The login codes tabs hand their agents.
+    login_codes: Arc<login_codes::LoginCodes>,
+    /// The stand-in approvers this host keeps for people.
+    stand_ins: Arc<stand_in::StandIns>,
+    /// The wait list the entry keeps for a workspace taking people by
+    /// invitation, when whoever runs this host keeps one.
+    wait_list: Option<Arc<crate::entry::WaitListPage>>,
+}
+
+impl Web {
+    /// What `/host` answers: who this host is, and where its endpoint is dialled now. A
+    /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
+    /// reached only after the listener started (its first network report found none, as when
+    /// the host's own relay is not routable yet) is named as soon as it is.
+    fn current_host_info(&self) -> HostInfo {
+        let mut info = self.host_info.clone();
+        if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
+            follow_endpoint(address, endpoint.addr());
+        }
+        info
+    }
+}
+
+/// Move `address` to the endpoint's address `now`. An endpoint that has lost its relays keeps
+/// the relay `address` named, as a host keeps what it named elsewhere
+/// (`tilo_endpoint_reachability::own_address::follow`): it is reached there again once the
+/// relay is back, and an address with no relay reaches it from nowhere.
+fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
+    let relay = now.relay_urls().next().map(ToString::to_string);
+    if relay.is_none() && address.relay_url.is_some() {
+        return;
+    }
+    address.relay_url = relay;
+    address.endpoint_addr = now;
+}
+
+/// Where this host keeps the stand-ins it approves for people with.
+#[must_use]
+pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
+    state_root.join("stand-ins")
+}
+
+/// The site a host belongs to, as a link opened at the host's own address is
+/// answered: the page that takes it is the site's.
+#[derive(Clone, Debug)]
+struct Site {
+    /// The site's origin (`https://tilo.sh`), below which `i/<handle>` is the
+    /// page an invitation's link opens.
+    origin: String,
+    /// The `host:port` a request names when it already reached the site, and so
+    /// arrived through it: sending it on would be sending it to itself.
+    authority: String,
+}
+
+impl Site {
+    /// `entry` (`https://tilo.sh/`) as the site it names, if it names one.
+    fn new(entry: &str) -> Option<Self> {
+        let entry = entry.trim().trim_end_matches('/');
+        let uri: hyper::Uri = entry.parse().ok()?;
+        let authority = without_default_port(uri.authority()?.as_str()).to_owned();
+        Some(Self {
+            origin: entry.to_owned(),
+            authority,
+        })
+    }
+
+    /// Where the site's page for `handle` is. The key that opens the
+    /// invitation stays in the link's fragment, which a browser carries over
+    /// this redirect by itself: the site is never told it.
+    fn invitation(&self, handle: &str) -> String {
+        format!("{}/i/{handle}", self.origin)
+    }
+
+    /// Whether the request reached the host through the site itself.
+    fn served_it(&self, request: &Request<hyper::body::Incoming>) -> bool {
+        request
+            .headers()
+            .get(header::HOST)
+            .and_then(|host| host.to_str().ok())
+            .is_some_and(|host| without_default_port(host).eq_ignore_ascii_case(&self.authority))
+    }
+}
+
+/// `authority` without the port its scheme implies (`tilo.sh:443` is
+/// `tilo.sh`), which a browser leaves out of a `Host` as often as it writes it.
+fn without_default_port(authority: &str) -> &str {
+    authority
+        .strip_suffix(":443")
+        .or_else(|| authority.strip_suffix(":80"))
+        .unwrap_or(authority)
+}
+
+/// Make this host the stand-in approver of `root`'s person, with a certificate
+/// their root signs: what a host that places browser sessions certifies them
+/// with. Placing sessions is the agents feature's, which is the only thing
+/// that keeps one.
+///
+/// # Errors
+///
+/// The state directory cannot be read or written, or the root would not sign.
+#[cfg(feature = "agents")]
+pub(crate) fn keep_stand_in(
+    state_root: &std::path::Path,
+    root: &ed25519_dalek::SigningKey,
+) -> Result<(), String> {
+    stand_in::keep(&stand_ins_dir(state_root), root)
+}
+
+/// The stand-in certificate and key this host keeps for `user`, when it keeps
+/// a live one.
+pub(crate) fn stand_in_for(
+    state_root: &std::path::Path,
+    user: &[u8; 32],
+) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+    stand_in::kept(&stand_ins_dir(state_root), user)
+}
+
+/// Checks the published origins against the listeners they front. `also` are
+/// the other origins whoever keeps this server says it is reached under: each
+/// an origin as the public one is, beside which it stands.
+fn checked_origins(config: &WebConfig, also: &[String]) -> Result<(), String> {
+    if config.public_origin.is_none()
+        && config
+            .plain_listen
+            .is_some_and(|plain| !plain.ip().is_loopback())
+    {
+        return Err(
+            "the plain HTTP listener must be a loopback address unless a proxy publishes it".into(),
+        );
+    }
+    if config.public_origin.as_ref().is_some_and(|origin| {
+        !tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url))
+            || config.plain_listen.is_none()
+    }) {
+        return Err(
+            "a public origin is an https:// origin (or an http:// one on this machine) published for the plain listener".into(),
+        );
+    }
+    if !also.is_empty() && config.public_origin.is_none() {
+        return Err(
+            "another origin this server is reached under stands beside its public origin, which is not set".into(),
+        );
+    }
+    if !also
+        .iter()
+        .all(|origin| tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url)))
+    {
+        return Err(
+            "another origin this server is reached under is an https:// origin (or an http:// one on this machine)".into(),
+        );
+    }
+    Ok(())
+}
+
+/// An unspecified listener is not a usable browser destination. Only its
+/// configured certificate host can provide one; no caller URL is accepted.
+fn browser_locator_origin(
+    tls: &TlsSource,
+    addr: SocketAddr,
+) -> Result<Option<String>, ServerError> {
+    let host = match tls {
+        TlsSource::Files { host, .. } => host
+            .clone()
+            .or_else(|| (!addr.ip().is_unspecified()).then(|| addr.ip().to_string())),
+        TlsSource::Development { hosts, .. } => {
+            let bound = addr.ip().to_string();
+            if !addr.ip().is_unspecified() && hosts.contains(&bound) {
+                Some(bound)
+            } else {
+                hosts
+                    .iter()
+                    .find(|host| {
+                        !host
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_unspecified())
+                    })
+                    .cloned()
+            }
+        }
+        TlsSource::Managed { domain } => Some(domain.clone()),
+    };
+    let Some(host) = host else {
+        return Ok(None);
+    };
+    if host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_unspecified())
+    {
+        return Ok(None);
+    }
+    let authority = if host.contains(':') {
+        format!("[{host}]:{}", addr.port())
+    } else {
+        format!("{host}:{}", addr.port())
+    };
+    let origin = format!("https://{authority}");
+    let uri: hyper::Uri = origin
+        .parse()
+        .map_err(|_| ServerError::Identity("invalid configured browser locator host".into()))?;
+    if uri
+        .authority()
+        .is_none_or(|value| value.as_str() != authority || value.as_str().contains('@'))
+    {
+        return Err(ServerError::Identity(
+            "invalid configured browser locator host".into(),
+        ));
+    }
+    Ok(Some(if addr.port() == 443 {
+        origin.strip_suffix(":443").unwrap_or(&origin).to_owned()
+    } else {
+        origin
+    }))
+}
+
+impl Server {
+    /// Make `origin` the one browser locators name, and return it shared.
+    fn publish_browser_origin(
+        &self,
+        origin: Option<String>,
+    ) -> Result<Option<Arc<String>>, ServerError> {
+        let published = origin.map(Arc::new);
+        self.browser_origin
+            .write()
+            .map_err(|_| ServerError::Iroh("web listener: browser locator lock poisoned".into()))?
+            .clone_from(&published);
+        Ok(published)
+    }
+
+    /// Serve browsers: HTTPS on `config.listen`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Iroh`] (the transport error kind) when the
+    /// certificate cannot be loaded or an address cannot be bound.
+    pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, ServerError> {
+        self.serve_web_also_at(config, Vec::new()).await
+    }
+
+    /// [`Self::serve_web`] for a server that is reached under more origins
+    /// than the one it publishes: `also` are the others (a front that hands
+    /// a second name on to the same listener), named at its start by whoever
+    /// keeps it. A setup code's pairing link may name one of them as it may
+    /// name the published origin; a name the server was not told stays
+    /// another server, whatever a request says of itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::serve_web`], and when one of `also` is no origin a server
+    /// is published at, or stands beside no published origin.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one bring-up of every browser-facing part, each started where it reads"
+    )]
+    pub async fn serve_web_also_at(
+        &self,
+        config: WebConfig,
+        also: Vec<String>,
+    ) -> Result<WebHandle, ServerError> {
+        let failed = |message: String| ServerError::Iroh(format!("web listener: {message}"));
+        checked_origins(&config, &also).map_err(failed)?;
+        if !also.is_empty() {
+            tracing::info!(origins = ?also, "this server is also reached under these origins");
+        }
+        let identity = tls::Identity::load(&config.tls).map_err(failed)?;
+        let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
+        let addr = tcp
+            .local_addr()
+            .map_err(|error| failed(error.to_string()))?;
+        let public_origin = match config.public_origin.clone() {
+            Some(origin) => Some(origin),
+            None => browser_locator_origin(&config.tls, addr)?,
+        };
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
+        let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
+        let context = self.web_context().clone();
+        let Some(live) = self.live_origin.as_ref() else {
+            return Err(failed("the server runs no live session".into()));
+        };
+        if let Some(workspaces) = self.workspaces() {
+            let _ = context.server.carried_calls.set(workspaces.downgrade());
+        }
+        let host_cert = context.server.identity.cert.clone();
+        // Where a page dials this host: its endpoint's key and addresses, and
+        // the relay it is reached through — which the endpoint names from the
+        // moment this host serves anything ([`Server::start`] waits for it), as
+        // a page has no UDP socket and its own endpoint carries no packet
+        // without one.
+        // `/host` answers the endpoint's address as it is when asked
+        // ([`Web::current_host_info`]); this is where it starts.
+        let endpoint_addr = self.node_addr();
+        let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
+        let (link_listener, web_link) =
+            bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
+        let web = Arc::new(Web {
+            context: context.clone(),
+            host_info: HostInfo {
+                host_cert,
+                address: Some(HostAddress {
+                    endpoint_addr,
+                    relay_url,
+                    web: Some(web_link.clone()),
+                }),
+            },
+            endpoint: Some(self.endpoint()),
+            allowed_origins: config.allowed_origins,
+            workspaces: self.workspaces().cloned(),
+            envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
+            profiles: Arc::new(envelopes::Envelopes::of(
+                envelopes::Record::Profile,
+                self.state_root().join("profiles"),
+            )),
+            fetch: fetch.proxy,
+            grants: Arc::default(),
+            content_links: self.content_links(),
+            presence: live.authority(),
+            page_errors: page_errors::PageErrors::default(),
+            // A link is read days after it was made, so what it names waits on
+            // this host's disk: a restart, an upgrade or a deploy over this
+            // server leaves it there.
+            shelf: shelf::Shelf::opening(
+                self.state_root().join("invitations"),
+                tilo_clock::unix_now_ns(),
+            ),
+            site: config.site.as_deref().and_then(Site::new),
+            login_codes: Arc::new(kept_login_codes(
+                self.state_root(),
+                public_origin.clone(),
+                also,
+            )),
+            stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
+            wait_list: config.wait_list.clone(),
+        });
+        web.serve_stand_ins();
+        web.serve_pushes(
+            self.state_root(),
+            config.site.as_deref(),
+            public_origin.as_deref(),
+            addr,
+        );
+        // A page's fetch proxy token is minted on the session it fetched from.
+        if web.fetch.is_some() {
+            let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
+            let _ = context.server.fetch.set(grants);
+        }
+        let mut tasks = Vec::new();
+        tasks.extend(fetch.metrics);
+        let mut plain_origin = None;
+        if let Some(plain) = config.plain_listen {
+            let plain = tokio::net::TcpListener::bind(plain)
+                .await
+                .map_err(|error| failed(error.to_string()))?;
+            let port = plain
+                .local_addr()
+                .map_err(|error| failed(error.to_string()))?
+                .port();
+            plain_origin = Some(format!("http://localhost:{port}"));
+            tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
+        }
+        tasks.push(tokio::spawn(link::serve(
+            link_listener,
+            link::Serving {
+                server: context.server.clone(),
+                certification: context.certification.clone(),
+                live_origin: live.origin(),
+            },
+        )));
+        tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
+        let published_origin = self.publish_browser_origin(public_origin.clone())?;
+        Ok(WebHandle {
+            addr,
+            origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
+            certificate_sha256: identity.fingerprint,
+            link: web_link,
+            plain_origin,
+            tasks,
+            locator_origin: Arc::clone(&self.browser_origin),
+            published_origin,
+            presence: live.authority(),
+        })
+    }
+}
+
+impl Server {}
+
+/// Where a page reaches this host: WebTransport on `socket`, at the HTTPS
+/// listener's origin and certificate unless the deployment names another way in.
+fn bind_link(
+    config: &WebConfig,
+    socket: std::net::UdpSocket,
+    addr: SocketAddr,
+    public_origin: Option<&String>,
+    identity: &tls::Identity,
+) -> Result<(tilo_net::webtransport::Listener, WebLink), String> {
+    let bound = socket
+        .local_addr()
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let listener = tilo_net::webtransport::Listener::bind(socket, identity.certificate()?)
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let link = WebLink {
+        origin: named_port(
+            &config
+                .link
+                .as_ref()
+                .map(|link| link.origin.clone())
+                .or_else(|| public_origin.cloned())
+                .unwrap_or_else(|| format!("https://{addr}")),
+            bound.port(),
+        ),
+        certificate_sha256: identity
+            .fingerprint
+            .as_deref()
+            .and_then(|fingerprint| hex::decode(fingerprint).ok())
+            .and_then(|bytes| bytes.try_into().ok()),
+    };
+    Ok((listener, link))
+}
+
+/// `origin` naming the port `bound` a listener took. An origin ending in `:0`
+/// names none of its own: the kernel picked the port, and this is where it
+/// answers. Any other origin is reached exactly as written, at the name and
+/// port its deployment publishes.
+fn named_port(origin: &str, bound: u16) -> String {
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return origin.to_owned();
+    };
+    let (authority, path) = rest
+        .find('/')
+        .map_or((rest, ""), |slash| rest.split_at(slash));
+    match authority.strip_suffix(":0") {
+        Some(name) => format!("{scheme}://{name}:{bound}{path}"),
+        None => origin.to_owned(),
+    }
+}
+
+/// How many kernel-picked ports [`bind_listeners`] tries before it gives up.
+const PORT_PAIR_ATTEMPTS: usize = 64;
+
+/// The HTTPS listener on `config.listen` and the UDP socket WebTransport takes
+/// sessions on: beside it on the same port unless [`WebConfig::link`] names
+/// its own. For port 0 the kernel picks a UDP port and the HTTPS listener takes
+/// the same one, so the pair is held from the start; a port whose TCP side is
+/// in use is passed over for the next one the kernel picks.
+fn bind_listeners(
+    config: &WebConfig,
+) -> std::io::Result<(tokio::net::TcpListener, std::net::UdpSocket)> {
+    let listen = config.listen;
+    if let Some(link) = &config.link {
+        return Ok((
+            bind_listener(listen)?,
+            std::net::UdpSocket::bind(link.listen)?,
+        ));
+    }
+    if listen.port() != 0 {
+        return Ok((bind_listener(listen)?, std::net::UdpSocket::bind(listen)?));
+    }
+    let mut last = None;
+    for _ in 0..PORT_PAIR_ATTEMPTS {
+        let udp = std::net::UdpSocket::bind(listen)?;
+        let paired = SocketAddr::new(listen.ip(), udp.local_addr()?.port());
+        match bind_listener(paired) {
+            Ok(tcp) => return Ok((tcp, udp)),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrInUse)))
+}
+
+/// The HTTPS listener on `listen`.
+fn bind_listener(listen: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = if listen.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
+    // As `TcpListener::bind`: a restarted host takes its port back while its
+    // old connections linger in TIME_WAIT.
+    socket.set_reuseaddr(true)?;
+    socket.bind(listen)?;
+    socket.listen(1024)
+}
+
+/// Accepted connections belong to their listener's loop: aborting the loop
+/// (dropping the [`WebHandle`]) closes every open connection with it, so a
+/// browser sees its host go away instead of a kept-alive orphan serving it.
+async fn accept_loop(
+    tcp: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    web: Arc<Web>,
+) {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        let Ok((stream, peer)) = tcp.accept().await else {
+            continue;
+        };
+        while connections.try_join_next().is_some() {}
+        let acceptor = acceptor.clone();
+        let web = web.clone();
+        connections.spawn(async move {
+            let Ok(Ok(tls)) =
+                tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await
+            else {
+                return;
+            };
+            serve_connection(tls, peer, web).await;
+        });
+    }
+}
+
+/// The same routes as plain HTTP on a loopback listener.
+async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        let Ok((stream, peer)) = tcp.accept().await else {
+            continue;
+        };
+        while connections.try_join_next().is_some() {}
+        connections.spawn(serve_connection(stream, peer, web.clone()));
+    }
+}
+
+/// The address a request's connection came from.
+#[derive(Clone, Copy, Debug)]
+struct Peer(std::net::IpAddr);
+
+async fn serve_connection<Io>(io: Io, peer: SocketAddr, web: Arc<Web>)
+where
+    Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = hyper::service::service_fn(move |mut request: Request<hyper::body::Incoming>| {
+        let web = web.clone();
+        request.extensions_mut().insert(Peer(peer.ip()));
+        async move { Ok::<_, Infallible>(handle(&web, request).await) }
+    });
+    let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .serve_connection(hyper_util::rt::TokioIo::new(io), service)
+        .await;
+}
+
+/// A response body: whole bytes, what the fetch proxy relays, or what is
+/// read for it as it is sent (a link to a workspace's files).
+pub(crate) enum Body {
+    Full(Option<Bytes>),
+    Proxied(tilo_net::proxy::host::ProxyBody),
+    Streamed(tokio::sync::mpsc::Receiver<Result<Bytes, String>>),
+}
+
+/// Why a body broke off: the browser then sees an error rather than a short
+/// body that reads as whole.
+#[derive(Debug)]
+pub(crate) struct BodyError(String);
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BodyError {}
+
+impl http_body::Body for Body {
+    type Data = Bytes;
+    /// A relayed body breaks off at the proxy's bounds; a streamed one where
+    /// its bytes could not be read.
+    type Error = BodyError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        match self.get_mut() {
+            Self::Full(bytes) => {
+                Poll::Ready(bytes.take().map(|bytes| Ok(http_body::Frame::data(bytes))))
+            }
+            Self::Proxied(body) => Pin::new(body)
+                .poll_frame(cx)
+                .map_err(|error| BodyError(error.to_string())),
+            Self::Streamed(pieces) => pieces.poll_recv(cx).map(|piece| {
+                piece.map(|piece| piece.map(http_body::Frame::data).map_err(BodyError))
+            }),
+        }
+    }
+}
+
+fn reply(status: StatusCode, body: Vec<u8>) -> Response<Body> {
+    let mut response = Response::new(Body::Full(Some(Bytes::from(body))));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/octet-stream"),
+    );
+    response
+}
+
+fn encoded<T: serde::Serialize>(value: &T) -> Response<Body> {
+    match postcard::to_allocvec(value) {
+        Ok(bytes) => reply(StatusCode::OK, bytes),
+        Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+    }
+}
+
+fn status(status: StatusCode, message: &str) -> Response<Body> {
+    reply(status, message.as_bytes().to_vec())
+}
+
+/// Whether the request asks for a page a person reads, as a browser opening an
+/// address does, rather than for a body a caller takes as data.
+pub(super) fn wants_a_page(request: &Request<hyper::body::Incoming>) -> bool {
+    request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|accept| accept.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// The answer to a browser that opened the host's own address: on to the page
+/// that can take it, a redirect the browser follows by itself.
+pub(super) fn redirect_to(location: &str) -> Response<Body> {
+    let mut response = reply(StatusCode::FOUND, Vec::new());
+    if let Ok(location) = header::HeaderValue::from_str(location) {
+        response.headers_mut().insert(header::LOCATION, location);
+    }
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// Where a browser that asked this host for a page it does not serve goes:
+/// the site the host belongs to, when it knows one.
+fn site_for_a_page(web: &Web, request: &Request<hyper::body::Incoming>) -> Option<Response<Body>> {
+    if request.method() != Method::GET || !wants_a_page(request) {
+        return None;
+    }
+    let site = web.site.as_ref()?;
+    (!site.served_it(request)).then(|| redirect_to(&site.origin))
+}
+
+fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Body> {
+    match serde_json::to_vec(value) {
+        Ok(json) => {
+            let mut response = reply(code, json);
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("application/json"),
+            );
+            response
+        }
+        Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+    }
+}
+
+fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
+    json_status(StatusCode::OK, value)
+}
+
+/// A public workspace's entry (`/directory/<workspace>/report` or `…/errors`,
+/// and its wait list): JSON in, JSON out, a refusal as `{error}` the person
+/// reads. A person is let in through it on their device's session
+/// ([`tilo_server_protocol::entering`]), not here.
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+async fn directory_entry(
+    web: &Web,
+    route: &str,
+    bytes: &[u8],
+    client: std::net::IpAddr,
+) -> Result<Response<Body>, Response<Body>> {
+    use tilo_server_protocol::directory::{
+        EntryReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STATUS, entry_route,
+    };
+    let (workspace, step) =
+        entry_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
+    // A server that governs no workspaces refuses before the request is parsed.
+    let workspaces = governed_workspaces(web)?;
+    // The wait list a workspace taking people by invitation keeps: an address
+    // left, confirmed, taken off, and where it stands.
+    if matches!(
+        step,
+        WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STATUS
+    ) {
+        let Some(wait_list) = &web.wait_list else {
+            return Err(refused(
+                StatusCode::NOT_FOUND,
+                "this workspace keeps no wait list",
+            ));
+        };
+        if wait_list.workspace() != workspace {
+            return Err(refused(
+                StatusCode::NOT_FOUND,
+                "this workspace keeps no wait list",
+            ));
+        }
+        let answered = crate::entry::route(wait_list, workspaces, client, step, bytes).await;
+        let mut response = json_status(answered.status, &answered.body);
+        if let Some(seconds) = answered.retry_after_secs
+            && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return Ok(response);
+    }
+    let refused = |error: crate::workspaces::CollaborationError| {
+        json_status(
+            StatusCode::FORBIDDEN,
+            &serde_json::json!({ "error": error.to_string() }),
+        )
+    };
+    match step {
+        "report" => {
+            let report: EntryReport = serde_json::from_slice(bytes)
+                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
+            workspaces
+                .report_listed(workspace, &report)
+                .await
+                .map_err(refused)?;
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
+        // A page's own uncaught error: one log line for the site's operator,
+        // and the same answer whatever became of it, so a page never retries.
+        "errors" => {
+            web.page_errors.report(workspace, bytes);
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
+        _ => Err(status(StatusCode::NOT_FOUND, "not found")),
+    }
+}
+
+/// The workspaces this server governs, or the answer that it governs none.
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+fn governed_workspaces(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
+    web.workspaces
+        .as_ref()
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server governs no workspaces"))
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Body>> {
+    postcard::from_bytes(bytes).map_err(|_| status(StatusCode::BAD_REQUEST, "malformed body"))
+}
+
+/// Headers a page may send to the browser routes.
+const ALLOWED_HEADERS: &str = "content-type, x-tilo-session";
+
+/// Whether `path` is part of the public directory: a listing anyone may read,
+/// and an entry anyone may ask, from any site.
+fn public_directory_route(path: &str) -> bool {
+    directory_route(path).is_some()
+}
+
+/// The public directory's route a site names, below the listener's own paths.
+///
+/// A server's own routes live below [`API_PREFIX`]. A site names its directory
+/// in its `entry.json` and hangs each entry off that address
+/// ([`tilo_server_protocol::directory`]), so the same routes answer at the
+/// site's own paths — `/directory` and `/directory/<workspace>/report` — for a
+/// host a site's person reaches without the prefix: the ingress in front of
+/// it sends the site's paths to the server.
+fn directory_route(path: &str) -> Option<&str> {
+    let route = path.strip_prefix(API_PREFIX).unwrap_or(path);
+    (route == tilo_server_protocol::directory::DIRECTORY_PATH
+        || tilo_server_protocol::directory::entry_route(route).is_some())
+    .then_some(route)
+}
+
+/// CORS for the public directory: any origin, no credentials, and the
+/// `Retry-After` a full entry answers with. A page on any site reads the
+/// listings and reports a workspace without going through its host.
+fn public_cors(response: &mut Response<Body>) {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        header::HeaderValue::from_static("content-type"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        header::HeaderValue::from_static("retry-after"),
+    );
+}
+
+fn cors(
+    allowed_origins: &[String],
+    allowed_headers: &str,
+    origin: Option<&header::HeaderValue>,
+    response: &mut Response<Body>,
+) {
+    let Some(origin) = origin.and_then(|value| value.to_str().ok()) else {
+        return;
+    };
+    if !allowed_origins
+        .iter()
+        .any(|allowed| allowed == origin || allowed == "*")
+    {
+        return;
+    }
+    let headers = response.headers_mut();
+    if let Ok(origin) = header::HeaderValue::from_str(origin) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    }
+    headers.insert(header::VARY, header::HeaderValue::from_static("origin"));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    if let Ok(allowed) = header::HeaderValue::from_str(allowed_headers) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed);
+    }
+}
+
+async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
+    // The fetch proxy takes the method of the request it relays.
+    if request
+        .uri()
+        .path()
+        .strip_prefix(API_PREFIX)
+        .is_some_and(|route| route == protocol::FETCH_PATH)
+    {
+        return fetch::handle(web, request).await;
+    }
+    // A link to a workspace's files is fetched by the browser itself.
+    if let Some(link) = request
+        .uri()
+        .path()
+        .strip_prefix(API_PREFIX)
+        .and_then(|route| route.strip_prefix(crate::content_links::ROUTE))
+    {
+        let link = link.to_owned();
+        let origin = request.headers().get(header::ORIGIN).cloned();
+        let mut response = content::handle(web, request.method(), &link).await;
+        cors(
+            &web.allowed_origins,
+            ALLOWED_HEADERS,
+            origin.as_ref(),
+            &mut response,
+        );
+        return response;
+    }
+    // A sealed invitation is fetched and taken back with their own methods,
+    // so the shelf answers before the POST-only check.
+    if let Some(handle) = tilo_server_protocol::sealed_invitations::handle_of(request.uri().path())
+    {
+        let handle = handle.to_owned();
+        let mut response = shelf::handle(web, request, &handle).await;
+        shelf::cors(&mut response);
+        return response;
+    }
+    let origin = request.headers().get(header::ORIGIN).cloned();
+    let public = public_directory_route(request.uri().path());
+    let mut response = if request.method() == Method::OPTIONS {
+        reply(StatusCode::NO_CONTENT, Vec::new())
+    } else if request.method() != Method::POST {
+        // A browser that opened an address here asks for a page, not for a
+        // text body: it goes to the site the host belongs to, which has one.
+        site_for_a_page(web, &request)
+            .unwrap_or_else(|| status(StatusCode::METHOD_NOT_ALLOWED, "POST only"))
+    } else {
+        route(web, request)
+            .await
+            .unwrap_or_else(|response| response)
+    };
+    if public {
+        public_cors(&mut response);
+    } else {
+        cors(
+            &web.allowed_origins,
+            ALLOWED_HEADERS,
+            origin.as_ref(),
+            &mut response,
+        );
+    }
+    response
+}
+
+async fn body(
+    request: Request<hyper::body::Incoming>,
+    limit: usize,
+) -> Result<(hyper::http::request::Parts, Bytes), Response<Body>> {
+    let (parts, body) = request.into_parts();
+    let bytes = http_body_util::Limited::new(body, limit)
+        .collect()
+        .await
+        .map_err(|_| status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"))?
+        .to_bytes();
+    Ok((parts, bytes))
+}
+
+/// Whether `user` is admitted to any workspace this server serves: whose
+/// envelope it keeps.
+async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
+    // The person this host runs for is its own before any workspace is bound.
+    web.context.server.admits(user).await
+}
+
+/// The client a request came from: its connection's address, or, for a
+/// connection from a proxy in front of this host (a loopback or private
+/// address), the last address that proxy names in `X-Forwarded-For`.
+fn client_address(request: &Request<hyper::body::Incoming>) -> Option<std::net::IpAddr> {
+    let Peer(peer) = *request.extensions().get::<Peer>()?;
+    let proxied = match peer {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
+    };
+    let forwarded = proxied
+        .then(|| {
+            request
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .next_back()
+        })
+        .flatten()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .and_then(|last| last.trim().parse().ok());
+    Some(forwarded.unwrap_or(peer))
+}
+
+/// A JSON refusal the page reads: `{error}` with `code`.
+fn refused(code: StatusCode, message: &str) -> Response<Body> {
+    let mut response = json_status(code, &serde_json::json!({ "error": message }));
+    if code == StatusCode::TOO_MANY_REQUESTS || code == StatusCode::SERVICE_UNAVAILABLE {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
+    }
+    response
+}
+
+/// This host's login codes, kept under `state_root`: every deploy restarts
+/// the host, and a code a tab shows, or an agent was handed, outlives that.
+fn kept_login_codes(
+    state_root: &std::path::Path,
+    public_origin: Option<String>,
+    also: Vec<String>,
+) -> login_codes::LoginCodes {
+    login_codes::LoginCodes::kept(
+        public_origin,
+        state_root.join("login-codes.json"),
+        tilo_clock::unix_now_ms(),
+    )
+    .reached_also_at(also)
+}
+
+fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
+    let code = match refusal {
+        login_codes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+        login_codes::Refusal::Unknown => StatusCode::NOT_FOUND,
+        login_codes::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
+        login_codes::Refusal::Conflict(_) => StatusCode::CONFLICT,
+    };
+    refused(code, refusal.message())
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Body>> {
+    serde_json::from_slice(bytes)
+        .map_err(|_| refused(StatusCode::BAD_REQUEST, "not a request this route takes"))
+}
+
+/// The login code routes ([`tilo_server_protocol::login_code`]), or `None`
+/// for any other route.
+fn login_route(
+    web: &Web,
+    route: &str,
+    bytes: &[u8],
+    client: Option<std::net::IpAddr>,
+) -> Option<Response<Body>> {
+    use tilo_server_protocol::login_code as wire;
+    fn answered<T: serde::Serialize>(result: Result<T, login_codes::Refusal>) -> Response<Body> {
+        result.map_or_else(|refusal| code_refused(&refusal), |value| json(&value))
+    }
+    let now_ms = tilo_clock::unix_now_ms();
+    let codes = &web.login_codes;
+    Some(match route {
+        wire::CREATE_ROUTE => match json_body::<wire::CreateCode>(bytes) {
+            Ok(create) => answered(codes.create(create.link.as_deref(), now_ms)),
+            Err(refusal) => refusal,
+        },
+        wire::RESOLVE_ROUTE => match json_body::<wire::Resolve>(bytes) {
+            Ok(resolve) => answered(codes.resolve(&resolve.code, client, now_ms)),
+            Err(refusal) => refusal,
+        },
+        wire::STEP_ROUTE => match json_body::<wire::Report>(bytes) {
+            Ok(report) => codes.report(&report, now_ms).map_or_else(
+                |refusal| code_refused(&refusal),
+                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
+            ),
+            Err(refusal) => refusal,
+        },
+        wire::CLAIM_ROUTE => match json_body::<wire::Claim>(bytes) {
+            Ok(claim) => web.claim(&claim).unwrap_or_else(|refusal| refusal),
+            Err(refusal) => refusal,
+        },
+        wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
+            Ok(follow) => {
+                answered(codes.follow(&follow.follow, follow.offer.as_ref(), client, now_ms))
+            }
+            Err(refusal) => refusal,
+        },
+        wire::STAND_IN_ROUTE => match json_body::<wire::StandInRequest>(bytes) {
+            Ok(request) => web
+                .stand_ins
+                .answer(request, client, tilo_clock::unix_now_ns())
+                .map_or_else(
+                    |refusal| {
+                        let code = match refusal {
+                            stand_in::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                            stand_in::Refusal::Forbidden(_) => StatusCode::FORBIDDEN,
+                            stand_in::Refusal::Unknown => StatusCode::NOT_FOUND,
+                            stand_in::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
+                            stand_in::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                        };
+                        refused(code, refusal.message())
+                    },
+                    |reply| json(&reply),
+                ),
+            Err(refusal) => refusal,
+        },
+        _ => return None,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one routing table: every browser route and its body type in one place"
+)]
+async fn route(
+    web: &Web,
+    request: Request<hyper::body::Incoming>,
+) -> Result<Response<Body>, Response<Body>> {
+    let path = request.uri().path().to_owned();
+    // A site's own paths for the public directory — `/directory` and each
+    // entry below it — reach the same routes as their versions below the
+    // prefix, so a host a site's person dials by the address its `entry.json`
+    // names answers without being reached under the prefix.
+    let Some(route) = path
+        .strip_prefix(API_PREFIX)
+        .or_else(|| directory_route(&path))
+    else {
+        return Err(status(StatusCode::NOT_FOUND, "not found"));
+    };
+    let client = client_address(&request);
+    let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
+    if let Some(answer) = login_route(web, route, &bytes, client) {
+        return Ok(answer);
+    }
+    match route {
+        "/host" => Ok(encoded(&web.current_host_info())),
+        tilo_server_protocol::web::WORKSPACE_DELETED_PATH => {
+            let workspace: String = decode(&bytes)?;
+            let deleted = web.workspaces.as_ref().is_some_and(|workspaces| {
+                WorkspaceId::parse(&workspace)
+                    .is_some_and(|workspace_id| workspaces.deleted(workspace_id))
+            });
+            Ok(encoded(&deleted))
+        }
+        tilo_server_protocol::web::INVITATION_PATH => {
+            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
+                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
+            })?;
+            let invitation: Vec<u8> = decode(&bytes)?;
+            Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
+        }
+        tilo_server_protocol::directory::DIRECTORY_PATH => {
+            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
+                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
+            })?;
+            let online = web.presence.devices().into_keys().collect();
+            Ok(json(&tilo_server_protocol::directory::DirectoryPage {
+                workspaces: workspaces.directory(&online).await,
+            }))
+        }
+        _ if tilo_server_protocol::directory::entry_route(route).is_some() => {
+            let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            directory_entry(web, route, &bytes, client).await
+        }
+        "/envelope" | "/profile" => {
+            let now_ms = tilo_clock::unix_now_ms();
+            let kept = if route == "/profile" {
+                &web.profiles
+            } else {
+                &web.envelopes
+            };
+            kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
+                .await
+                .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
+                .map_err(|refusal| {
+                    let code = match refusal {
+                        envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                        envelopes::Refusal::BadSignature | envelopes::Refusal::NotMember => {
+                            StatusCode::FORBIDDEN
+                        }
+                        envelopes::Refusal::Stale => StatusCode::CONFLICT,
+                        envelopes::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                    };
+                    status(code, refusal.message())
+                })
+        }
+        "/envelope/fetch" | "/profile/fetch" => match if route == "/profile/fetch" {
+            web.profiles.answer(&bytes)
+        } else {
+            web.envelopes.answer(&bytes)
+        } {
+            Some(json) => {
+                let mut response = reply(StatusCode::OK, json);
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("application/json"),
+                );
+                Ok(response)
+            }
+            None => Err(status(StatusCode::BAD_REQUEST, "malformed root public key")),
+        },
+        _ => Err(status(StatusCode::NOT_FOUND, "not found")),
+    }
+}

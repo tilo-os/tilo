@@ -85,8 +85,8 @@ mod tests {
             assert_eq!(t("agent-vertex-title"), CATALOG.t("agent-vertex-title"));
             assert_ne!(t("agent-vertex-title"), "agent-vertex-title");
             assert_eq!(
-                t("agent-sign-in-custody"),
-                provider_settings_ui::i18n::t("agent-sign-in-custody")
+                t("agent-sign-in-credentials"),
+                provider_settings_ui::i18n::t("agent-sign-in-credentials")
             );
             let args = [("error", "diagnostic".into())];
             assert_eq!(

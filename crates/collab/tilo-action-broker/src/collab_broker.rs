@@ -375,7 +375,7 @@ impl AppActionBroker {
     /// through: every request admitted for the caller its own device's
     /// signature named, and followed here like any other invocation.
     #[must_use]
-    pub fn device_host(&self) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
+    pub fn device_host(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
         crate::collab_app_broker::device_host(Arc::clone(&self.state))
     }
 
@@ -474,29 +474,31 @@ impl AppActionBroker {
 
     /// A local action api bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
-    pub fn certified_local_action_host(
+    pub fn certified_local_action_provider(
         &self,
         caller: &tilo_actions::remote::Caller,
         presentation: &[u8],
-    ) -> Result<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
-        self.state.certified_local_action_host(caller, presentation)
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String> {
+        self.state
+            .certified_local_action_provider(caller, presentation)
     }
 
-    /// [`Self::certified_local_action_host`] handed to agent `agent` by the
+    /// [`Self::certified_local_action_provider`] handed to agent `agent` by the
     /// person's own device; see
-    /// [`AppBrokerState::certified_local_agent_host`].
+    /// [`AppBrokerState::certified_local_agent_provider`].
     ///
     /// # Errors
     ///
-    /// As [`Self::certified_local_action_host`].
-    pub fn certified_local_agent_host(
+    /// As [`Self::certified_local_action_provider`].
+    pub fn certified_local_agent_provider(
         &self,
         caller: &tilo_actions::remote::Caller,
         presentation: &[u8],
         agent: &str,
-    ) -> Result<std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+    ) -> Result<std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String>
+    {
         self.state
-            .certified_local_agent_host(caller, presentation, agent)
+            .certified_local_agent_provider(caller, presentation, agent)
     }
 
     /// Reuse the checked signed personal-cluster admission for native owner checks.
@@ -726,7 +728,7 @@ impl AppActionBroker {
         workspace: &str,
         shortcut: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
         self.state
             .start_interactive_shortcut_run(caller, workspace, shortcut, inputs)
     }
@@ -756,7 +758,7 @@ impl AppActionBroker {
         trigger: &tilo_automation::TriggerSpec,
         invocation: tilo_automation::AutomationInvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
         self.state
             .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, invocation, inputs)
     }
@@ -995,7 +997,7 @@ pub fn spawn_with_services(
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: Option<&crate::NativePeerBrokerConfig>,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 ) -> std::io::Result<BrokerHandle> {
@@ -1026,7 +1028,7 @@ pub fn spawn_with_test_services(
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: Option<&crate::NativePeerBrokerConfig>,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -1051,7 +1053,7 @@ fn spawn_inner(
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: Option<&crate::NativePeerBrokerConfig>,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
     harness: HarnessAdmission,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -1098,7 +1100,7 @@ pub fn spawn_native_peer(
         membership,
         publisher,
         config,
-        crate::services::HostServices::default(),
+        crate::services::ProcessServices::default(),
     )
 }
 /// [`spawn_native_peer`] with explicit host services.
@@ -1111,7 +1113,7 @@ pub fn spawn_native_peer_with_services(
     membership: crate::services::WorkspaceAuthorityHandle,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: crate::NativePeerBrokerConfig,
-    services: crate::services::HostServices,
+    services: crate::services::ProcessServices,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(

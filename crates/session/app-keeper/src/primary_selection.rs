@@ -1,8 +1,9 @@
 //! The primary selection: `zwp_primary_selection_device_manager_v1`.
 //!
 //! Select-then-middle-click, forwarded like the clipboard and with the same rule across a
-//! restart: the app's own primary selection is kept and offered to the new desktop once it
-//! gives the app's window focus. No payload is read here; descriptors are passed as they are.
+//! restart: the app's own primary selection is kept and offered to the new desktop as soon as it
+//! attaches, before the app's window has the focus. No payload is read here; descriptors are
+//! passed as they are.
 
 use std::collections::HashMap;
 use std::os::fd::AsFd as _;
@@ -35,6 +36,9 @@ use wayland_protocols::wp::primary_selection::zv1::{
     },
 };
 
+use tilo_x11_transfer::{names_added, with_text_names};
+
+use crate::data_device::served_as;
 use crate::state::State;
 
 /// A primary selection source the app created.
@@ -69,6 +73,9 @@ pub(crate) struct PrimarySelection {
     selection: Option<u32>,
     focus: Option<ClientId>,
     owner: Option<ObjectId>,
+    /// When that source was set, in milliseconds of the machine's monotonic clock: the time the
+    /// new desktop compares two keepers' claims by.
+    owner_at: u32,
 }
 
 impl PrimarySelection {
@@ -82,6 +89,7 @@ impl PrimarySelection {
             selection: None,
             focus: None,
             owner: None,
+            owner_at: 0,
         }
     }
 
@@ -123,8 +131,8 @@ impl State {
                 continue;
             };
             device.data_offer(&offer);
-            for mime in &mimes {
-                offer.offer(mime.clone());
+            for mime in with_text_names(&mimes) {
+                offer.offer(mime);
             }
             device.selection(Some(&offer));
             let id = offer.id();
@@ -190,11 +198,20 @@ impl State {
     }
 
     fn primary_reoffer_owner(&mut self) {
-        self.primary_offer_owner(false);
+        self.primary_offer_owner(false, None);
     }
 
-    /// Offer the app's selection to the desktop: `force` replaces the twin already there.
-    fn primary_offer_owner(&mut self, force: bool) {
+    /// Offer the app's primary selection as soon as the desktop attaches, before the app's window
+    /// has the focus: the compositor takes it from a session-handed connection for a short while
+    /// after it arrives, when nothing else owns the selection yet.
+    pub(crate) fn primary_reassert_owner(&mut self) {
+        let at = self.primary.owner_at;
+        self.primary_offer_owner(false, Some(at));
+    }
+
+    /// Offer the app's selection to the desktop: `force` replaces the twin already there. `claim`
+    /// is the time the app's selection was made, when this is the first offer after an attach.
+    fn primary_offer_owner(&mut self, force: bool, claim: Option<u32>) {
         let Some(owner) = self.primary.owner.clone() else {
             return;
         };
@@ -203,7 +220,7 @@ impl State {
             return;
         };
         let (has_twin, mimes) = (source.up.is_some(), source.mimes.clone());
-        if self.primary.focus.is_none() || (has_twin && !force) {
+        if (claim.is_none() && self.primary.focus.is_none()) || (has_twin && !force) {
             return;
         }
         if force
@@ -212,7 +229,7 @@ impl State {
         {
             twin.destroy();
         }
-        let serial = self.seat.last_serial();
+        let serial = claim.unwrap_or_else(|| self.seat.last_serial());
         let Some(up) = self.up.as_ref() else {
             return;
         };
@@ -221,7 +238,7 @@ impl State {
             return;
         };
         let twin = manager.create_source(&up.qh, ());
-        for mime in mimes {
+        for mime in with_text_names(&mimes) {
             twin.offer(mime);
         }
         device.set_selection(Some(&twin), serial);
@@ -282,7 +299,8 @@ impl State {
             return;
         }
         self.primary.owner = Some(id);
-        self.primary_offer_owner(true);
+        self.primary.owner_at = crate::data_device::now_ms();
+        self.primary_offer_owner(true, None);
     }
 
     fn upstream_primary_selection(&mut self, offer: Option<ZwpPrimarySelectionOfferV1>) {
@@ -418,10 +436,12 @@ impl Dispatch<ServerSource, ()> for State {
                     .sources
                     .get(&id)
                     .and_then(|held| held.up.clone());
-                if let Some(twin) = twin {
-                    twin.offer(mime_type.clone());
-                }
                 if let Some(held) = state.primary.sources.get_mut(&id) {
+                    if let Some(twin) = twin {
+                        for name in names_added(&held.mimes, &mime_type) {
+                            twin.offer(name);
+                        }
+                    }
                     held.mimes.push(mime_type);
                 }
             }
@@ -462,16 +482,18 @@ impl Dispatch<ServerOffer, ()> for State {
         let Some(held) = state.primary.offers.get(&id) else {
             return;
         };
-        let Some(up) = state
+        let Some((up, mimes)) = state
             .primary
             .up_offers
             .get(&held.up)
-            .map(|up| up.offer.clone())
+            .map(|up| (up.offer.clone(), up.mimes.clone()))
         else {
             return;
         };
         match request {
-            offer::Request::Receive { mime_type, fd } => up.receive(mime_type, fd.as_fd()),
+            offer::Request::Receive { mime_type, fd } => {
+                up.receive(served_as(mime_type, &mimes), fd.as_fd());
+            }
             offer::Request::Destroy => state.primary_forget_offer(&id, false),
             _ => {}
         }
@@ -538,11 +560,14 @@ impl wayland_client::Dispatch<ZwpPrimarySelectionOfferV1, ()> for State {
             let Some(up) = state.primary.up_offers.get_mut(&id) else {
                 return;
             };
-            up.mimes.push(mime_type.clone());
+            let added = names_added(&up.mimes, &mime_type);
+            up.mimes.push(mime_type);
             let apps = up.apps.clone();
             for app in apps {
                 if let Some(offer) = state.primary.offers.get(&app) {
-                    offer.resource.offer(mime_type.clone());
+                    for name in &added {
+                        offer.resource.offer(name.clone());
+                    }
                 }
             }
         }
@@ -561,16 +586,18 @@ impl wayland_client::Dispatch<ZwpPrimarySelectionSourceV1, ()> for State {
         let Some(app) = state.primary.app_source_of(source.id().protocol_id()) else {
             return;
         };
-        let Some(source) = state
+        let Some((source, mimes)) = state
             .primary
             .sources
             .get(&app)
-            .map(|held| held.resource.clone())
+            .map(|held| (held.resource.clone(), held.mimes.clone()))
         else {
             return;
         };
         match event {
-            client_source::Event::Send { mime_type, fd } => source.send(mime_type, fd.as_fd()),
+            client_source::Event::Send { mime_type, fd } => {
+                source.send(served_as(mime_type, &mimes), fd.as_fd());
+            }
             client_source::Event::Cancelled => {
                 source.cancelled();
                 if state.primary.owner == Some(app) {

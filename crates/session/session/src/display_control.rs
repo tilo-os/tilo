@@ -37,7 +37,7 @@ impl DisplayControl {
     /// says the person may do in the workspace.
     pub(crate) fn native(
         source: Arc<dyn SettingsSource>,
-        shell: &Arc<crate::plane::LayoutAuthority>,
+        shell: &Arc<crate::app_wire::LayoutAuthority>,
     ) -> Self {
         let governing = Arc::clone(shell);
         Self {

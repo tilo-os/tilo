@@ -42,7 +42,7 @@ impl Core {
         };
         let snapshot = self.model.snapshot_for(location.id);
         let updated = snapshot.and_then(|snapshot| {
-            freshness::updated(snapshot.fetched_at, ui::clock::local_now().naive_local())
+            freshness::updated(snapshot.fetched_at, ui::clock::local_now().datetime())
         });
         let detail = snapshot.map_or_else(
             || crate::i18n::t("weather-loading"),
@@ -623,7 +623,7 @@ impl Hero {
         );
         // The age line reads the app's clock, so a capture and a live window agree.
         let updated = snapshot.and_then(|snap| {
-            freshness::updated(snap.fetched_at, ui::clock::local_now().naive_local())
+            freshness::updated(snap.fetched_at, ui::clock::local_now().datetime())
         });
         let mut text_h = ctx.line_box(TextRole::Display)
             + ctx.line_box(TextRole::Heading)
@@ -1417,8 +1417,8 @@ fn precip_unit(units: Units) -> String {
 /// An ISO local time ("2026-06-30T07:40") in the person's clock ("7:40 AM").
 pub(crate) fn clock_label(iso: &str) -> String {
     iso.get(11..16)
-        .and_then(|clock| chrono::NaiveTime::parse_from_str(clock, "%H:%M").ok())
-        .map(|time| ui::format::time(&time))
+        .and_then(|clock| jiff::civil::Time::strptime("%H:%M", clock).ok())
+        .map(ui::format::time)
         .unwrap_or_default()
 }
 
@@ -1458,10 +1458,10 @@ fn day_extra_labels(d: &DayForecast, snap: &WeatherSnapshot, units: Units) -> (S
 }
 
 fn weekday(date: &str) -> String {
-    use chrono::NaiveDate;
-    NaiveDate::parse_from_str(date, "%Y-%m-%d").map_or_else(
+    use jiff::civil::Date;
+    Date::strptime("%Y-%m-%d", date).map_or_else(
         |_| date.to_string(),
-        |d| ui::format::weekday_name(chrono::Datelike::weekday(&d)),
+        |d| ui::format::weekday_name(d.weekday()),
     )
 }
 
@@ -1699,7 +1699,8 @@ mod accessibility_tests {
             .snapshots
             .get_mut(&location.id)
             .expect("a bundled forecast");
-        snapshot.fetched_at = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        snapshot.fetched_at =
+            u64::try_from(ui::clock::local_now().timestamp().as_second()).unwrap_or_default();
         let snapshot = snapshot.clone();
         (Core::new(model, units), snapshot)
     }
@@ -1715,7 +1716,7 @@ mod accessibility_tests {
     #[test]
     fn a_staged_forecast_age_is_measured_against_the_clock_the_page_reads() {
         let ages = |core: &Core| {
-            let now = ui::clock::local_now().naive_local();
+            let now = ui::clock::local_now().datetime();
             core.model
                 .snapshots
                 .values()

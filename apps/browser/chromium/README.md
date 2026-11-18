@@ -631,6 +631,28 @@ and once more at the timeout, so an answer that the words never came has just
 looked. A look costs what one `search` of the page costs. `data.checks` counts
 the looks and `data.read_ms` the time they took.
 
+`action: "table"` reads tables as rows, which an `outline` prints a cell to a
+line. With an `element` it reads the table that element is or sits in; without
+one, every table the document shows: `table` elements and the roles `table`,
+`grid` and `treegrid`. A table whose role says it only lays the page out is
+none, and one that holds other tables is left out and counted in the message,
+to be read by its ref. `data.tables` holds for each its `element` (the ref),
+`name` (its caption or label), `columns`, `from`, `total_rows` and `rows`, a
+row being the texts of its cells in the header's order. A cell merged over
+several columns or rows stands in every place it covers, so every row is as
+long as the header, and `merged` counts such cells. The header is the table's
+`thead`, or the rows at its top whose every cell is a header, at most four; a
+header of several rows names a column by all of them (`Price / Monthly`), and
+a table without one has no `columns`. A row that is not laid out is no row. A
+cell says the words it shows, at most 400 characters, and never what a field
+in it holds; one that shows a mark instead of words says the mark's name. One
+read carries at most 200 rows of a table and 50 000 characters of cells over
+all its tables: a table that goes on says `next`, the row to read on from with
+`element` and `from` (rows count from 1 below the header). A `from` past the
+last row or without an `element`, and an `element` in no table, are
+`invalid_request`. A table in a shadow tree is read by a ref inside it. What a
+cell says is the page's own words, as with every read.
+
 `action: "reader"` with `enabled` shows the document's article alone and puts
 the page back when turned off. The article is the `article`, `main` or
 article-body element whose paragraphs hold the most text, else the block whose
@@ -747,7 +769,7 @@ may act and passes the name of the invoker it admitted.
   frame it was once the number names nothing.
   What was written into a secret field is never recorded, whatever wrote it
   (the entry then carries `secret: true`), and nor is text the page refused.
-  Reads take no place in it. `page` with `action: "ledger"` and `since`
+  Reads take no place in it. `page` with `action: "log"` and `since`
   answers with the entries after that place, `next`, `more`, `dropped`, the
   action `running` and how many are `waiting`. It reads nothing of the page,
   so it answers at once whatever is running. `running` is an operating action
@@ -788,7 +810,7 @@ may act and passes the name of the invoker it admitted.
   input (the keys of its `press`, its fills, the clicks of its gestures) is
   that action's entry and is not set down again. No answer carries such an
   entry, so the host says it: the event `page_record`, with `tab`, `seq` and
-  the `entry` as `ledger` lists it. A named actor's next answer lists it
+  the `entry` as `log` lists it. A named actor's next answer lists it
   among `others`.
 - **What a window held is in the record.** A tab told `hold_departures` holds
   what its page is about to send until the app answers: a form submission or
@@ -963,6 +985,31 @@ leaving is said with `taken_by_page`.
 A frame's forms are its own document's: `forms` and `fill_form` read and
 answer them with `frame`.
 
+### A text kept for one site
+
+A `fill` may carry `at` and `into` beside `secret: true`: the origin its text was released for
+(`https://example.com`, as `location.origin` spells it) and the kind of field it is for
+(`password`, `code` or `value`). Such a fill is the engine's half of filling in something a
+person keeps for one site, which whoever asks for the fill never holds itself.
+
+The engine decides where the text goes, in the step that writes it:
+
+- only in the page's own document. A fill that names an element of a frame is refused with
+  `foreign_frame` before any script is sent to the frame, whatever site the frame is of;
+- only where that document's own origin is `at` (`another_site` otherwise), so a page that was
+  sent on to another address, or left since the caller read it, gets nothing;
+- only into a page that arrived over https or from this computer (`not_secure`);
+- a `password` only into a password field (`not_a_password_field`), and anything only into a
+  field that takes text (`not_a_text_field`);
+- never into a form that sends to another site (`foreign_form`).
+
+A field filled this way is a secret from then on, whatever its type: every read says that it is
+set and how long, and none of what it holds, and a field that is no password field is drawn as
+dots. A plain `fill` with `secret` and no `at` is unchanged.
+
+What this does not decide: the page that receives the text is the site's own, and its scripts
+read their own fields.
+
 ### Private guarded text input
 
 `text_input` is a separate backend protocol; it does not activate page-agent
@@ -1045,7 +1092,7 @@ to a successor. With a host that does not take compositions
 (`ime_composition`), ordinary composition and OSK remain closed outside this
 voice session. Real Wayland protocol and bound native App dispatch tests qualify those
 separate production boundaries; a complete standalone-window/microphone journey
-remains an acceptance gate.
+remains an acceptance check.
 
 The mounted `browser-text-input-qualification` example exercises the real
 retained `Framed` host with both a direct `WebView` and a production `Decorator`
@@ -1468,7 +1515,7 @@ content scripts (with `sender.tab`) work without help.
   `onInputChanged` for each change with the request its suggestions answer,
   and `onInputCancelled` when the person leaves, waking the worker. What the
   extension suggests for the latest change (`extension_omnibox_suggestions`)
-  and its default suggestion (`extension_omnibox_default`, `%s` standing
+  and its default suggestion (`extension_omnibox_default`, `%s` access
   for what is typed) go to the page's tab, and the Browser lists them, plain,
   under the address, the default first. Enter, or a suggestion chosen, fires
   `onInputEntered` with its text and `currentTab`, makes that window the

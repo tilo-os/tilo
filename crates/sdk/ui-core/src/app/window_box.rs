@@ -34,7 +34,7 @@ impl App {
         let keyboard = crate::widget::context_menu_area::keyboard_anchor;
         self.focused_node
             .and_then(|node| {
-                let tree = crate::host_core::HostCore::tree(self);
+                let tree = crate::app_core::AppCore::tree(self);
                 tree.inspect_node(node, keyboard).ok().flatten()
             })
             .or_else(|| keyboard(self.root_widget.as_ref()))

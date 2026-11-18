@@ -1,4 +1,4 @@
-//! Retained, independently reopened protected mounted-source read custody.
+//! Retained, independently reopened protected mounted-source read ownership.
 //! No public JSON, source owner, or caller-selected descriptor constructs this.
 use super::*;
 use std::sync::Mutex;
@@ -26,7 +26,7 @@ impl MountedReadEpoch {
         let state = self
             .state
             .lock()
-            .map_err(|_| failure("Mounted read custody poisoned"))?;
+            .map_err(|_| failure("Mounted read ownership poisoned"))?;
         state.verify(cancel)?;
         state.volumes.qualification_owned_roots()?;
         let expected = [Path::new("mounted-directory"), Path::new("mounted-file")];
@@ -56,32 +56,32 @@ impl MountedReadEpoch {
     #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(super) fn reopen(
         primary: &SourceReadContext,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<Self> {
-        Self::reopen_mode(primary, witness, cancel, false)
+        Self::reopen_mode(primary, proof, cancel, false)
     }
     pub(super) fn reopen_for_export(
         primary: &SourceReadContext,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<Self> {
-        Self::reopen_mode(primary, witness, cancel, true)
+        Self::reopen_mode(primary, proof, cancel, true)
     }
     fn reopen_mode(
         primary: &SourceReadContext,
-        witness: &MountedWitness,
+        proof: &MountedProof,
         cancel: &std::sync::atomic::AtomicBool,
         own_missing: bool,
     ) -> io::Result<Self> {
         check_cancel(cancel)?;
         primary.revalidate()?;
-        if witness.schema != 1 || witness.primary != primary.intent.witness()? {
-            return Err(failure("Mounted witness belongs to another source intent"));
+        if proof.schema != 1 || proof.primary != primary.intent.proof()? {
+            return Err(failure("Mounted proof belongs to another source intent"));
         }
         // Reopen records rather than cloning their file descriptions: each
         // epoch owns independent offsets, with its actual mount lease retained.
-        let primary = primary.reopen_witness(&witness.primary)?;
+        let primary = primary.reopen_proof(&proof.primary)?;
         let namespace = primary
             .intent
             .namespace
@@ -89,7 +89,7 @@ impl MountedReadEpoch {
             .map_err(io::Error::other)?;
         let record_file = primary.source.open_original_mounted_record(&namespace)?;
         let record_bytes = read_private(&record_file)?;
-        if <[u8; 32]>::from(sha2::Sha256::digest(&record_bytes)) != witness.sha256 {
+        if <[u8; 32]>::from(sha2::Sha256::digest(&record_bytes)) != proof.sha256 {
             return Err(failure("Mounted source protected record differs"));
         }
         let record: MountedRecord = serde_json::from_slice(&record_bytes)?;
@@ -141,14 +141,14 @@ impl MountedReadEpoch {
             Ok(owned) => owned,
             Err(shared) => {
                 std::mem::forget(shared);
-                return Err(failure("Mounted source epoch still has custody leases"));
+                return Err(failure("Mounted source epoch still has ownership leases"));
             }
         };
         match owned.state.into_inner() {
             Ok(state) => state.retire(),
             Err(poisoned) => {
                 std::mem::forget(poisoned.into_inner());
-                Err(failure("Mounted source retirement custody poisoned"))
+                Err(failure("Mounted source retirement ownership poisoned"))
             }
         }
     }
@@ -198,7 +198,7 @@ impl MountedReadEpoch {
         let state = self
             .state
             .lock()
-            .map_err(|_| failure("Mounted read custody poisoned"))?;
+            .map_err(|_| failure("Mounted read ownership poisoned"))?;
         state.verify(cancel)?;
         let entries = state
             .record
@@ -216,7 +216,7 @@ impl MountedReadEpoch {
         result
     }
     /// Reviews serialize exact retained record descriptions; the callback runs
-    /// unlocked so supervisor custody checks can re-enter during actual work.
+    /// unlocked so supervisor ownership checks can re-enter during actual work.
     /// Caller cancellation stays live; metadata checks don't mint a false flag.
     pub(in crate::setup::home_capture) fn with_sources<T>(
         &self,
@@ -227,7 +227,7 @@ impl MountedReadEpoch {
             let state = self
                 .state
                 .lock()
-                .map_err(|_| failure("Mounted read custody poisoned"))?;
+                .map_err(|_| failure("Mounted read ownership poisoned"))?;
             state.verify(cancel)?;
             state
                 .sources
@@ -243,11 +243,11 @@ impl MountedReadEpoch {
         };
         let result = use_sources(&sources);
         drop(sources);
-        // Failed work still reattests protected custody. No completed receipt
+        // Failed work still reattests protected ownership. No completed receipt
         // or cleanup acknowledgement follows merely from dropping this guard.
         self.state
             .lock()
-            .map_err(|_| failure("Mounted read custody poisoned"))?
+            .map_err(|_| failure("Mounted read ownership poisoned"))?
             .verify_integrity()?;
         check_cancel(cancel)?;
         result
@@ -274,7 +274,7 @@ impl ReadState {
         check_cancel(cancel)
     }
     // Integrity is bounded by the finite protected table and record limits.
-    // Cancellation cannot suppress post-use custody checks or authorize cleanup.
+    // Cancellation cannot suppress post-use ownership checks or authorize cleanup.
     fn verify_integrity(&self) -> io::Result<()> {
         self.primary.revalidate()?;
         self.record.validate(&self.primary.intent)?;

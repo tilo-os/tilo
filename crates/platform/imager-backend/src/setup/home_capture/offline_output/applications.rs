@@ -32,7 +32,7 @@ impl OriginalApplicationsOutcome {
         let run = self
             .runs
             .last()
-            .ok_or_else(|| refused("Applications cleanup custody missing"))?;
+            .ok_or_else(|| refused("Applications cleanup ownership missing"))?;
         let shutdown = run
             .supervised
             .shutdown
@@ -213,7 +213,7 @@ impl OfflineOutputTransaction {
             };
             let run =
                 self.launch_request(admission.with_original_output(proof)?, request, service)?;
-            // Retain real shutdown custody before source permission recheck.
+            // Retain real shutdown ownership before source permission recheck.
             runs.push(run);
             Ok(())
         })

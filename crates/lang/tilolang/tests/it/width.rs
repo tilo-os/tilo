@@ -49,48 +49,48 @@ tilo_test_env::scenario! {
 
     phase a_long_call_puts_one_argument_per_line_with_a_trailing_comma;
     {
-        let src = "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let n = tally(l.entries, by: \"week\", until: .none, empty: \"Nothing yet\", note: \"Counted by the week\")\n    return n\n}\n";
+        let src = "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let n = tally(l.entries, by: \"week\", until: .none, empty: \"Nothing yet\", note: \"Counted by the week\")\n    return n\n}\n";
         prints_as(
             src,
-            "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let n = tally(\n        l.entries,\n        by: \"week\",\n        until: .none,\n        empty: \"Nothing yet\",\n        note: \"Counted by the week\",\n    )\n    return n\n}\n",
+            "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let n = tally(\n        l.entries,\n        by: \"week\",\n        until: .none,\n        empty: \"Nothing yet\",\n        note: \"Counted by the week\",\n    )\n    return n\n}\n",
         );
     }
 
     phase nested_calls_break_the_outer_list_and_keep_an_inner_one_that_fits;
     {
-        let src = "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let day = tally(sum(l.entries, of: x -> x.size, note: \"Total size of the day, per entry\"), by: \"week\")\n    return day\n}\n";
+        let src = "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let day = tally(sum(l.entries, of: x -> x.size, note: \"Total size of the day, per entry\"), by: \"week\")\n    return day\n}\n";
         prints_as(
             src,
-            "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let day = tally(\n        sum(l.entries, of: x -> x.size, note: \"Total size of the day, per entry\"),\n        by: \"week\",\n    )\n    return day\n}\n",
+            "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let day = tally(\n        sum(l.entries, of: x -> x.size, note: \"Total size of the day, per entry\"),\n        by: \"week\",\n    )\n    return day\n}\n",
         );
         // An inner call too long for the line it lands on breaks its own arguments.
-        let deep = "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let day = tally(sum(l.entries, of: x -> x.size, note: \"Total size of the day, counted per entry and per note\"), by: \"week\")\n    return day\n}\n";
+        let deep = "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let day = tally(sum(l.entries, of: x -> x.size, note: \"Total size of the day, counted per entry and per note\"), by: \"week\")\n    return day\n}\n";
         prints_as(
             deep,
-            "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let day = tally(\n        sum(\n            l.entries,\n            of: x -> x.size,\n            note: \"Total size of the day, counted per entry and per note\",\n        ),\n        by: \"week\",\n    )\n    return day\n}\n",
+            "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let day = tally(\n        sum(\n            l.entries,\n            of: x -> x.size,\n            note: \"Total size of the day, counted per entry and per note\",\n        ),\n        by: \"week\",\n    )\n    return day\n}\n",
         );
     }
 
     phase a_long_chain_breaks_before_each_dot;
     {
-        let src = "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let shown = l.entries.filter(e -> e.done).sort_by(e -> e.title).map(e -> text(e.title)).count(e -> true)\n    return shown\n}\n";
+        let src = "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let shown = l.entries.filter(e -> e.done).sort_by(e -> e.title).map(e -> text(e.title)).count(e -> true)\n    return shown\n}\n";
         prints_as(
             src,
-            "app t.x \"X\"\n\nfn f(l: Ledger) -> Int {\n    let shown = l.entries\n        .filter(e -> e.done)\n        .sort_by(e -> e.title)\n        .map(e -> text(e.title))\n        .count(e -> true)\n    return shown\n}\n",
+            "app t.x \"X\"\n\nfn f(l: Log) -> Int {\n    let shown = l.entries\n        .filter(e -> e.done)\n        .sort_by(e -> e.title)\n        .map(e -> text(e.title))\n        .count(e -> true)\n    return shown\n}\n",
         );
     }
 
     phase a_long_condition_breaks_before_its_operator;
     {
-        let src = "app t.x \"X\"\n\nfn f(l: Ledger) -> Text {\n    let title = l.entries.find(e -> e.key == key)?.title ?? if l.entries.is_empty() { meta(l).title } else { everything }\n    return title\n}\n";
+        let src = "app t.x \"X\"\n\nfn f(l: Log) -> Text {\n    let title = l.entries.find(e -> e.key == key)?.title ?? if l.entries.is_empty() { meta(l).title } else { everything }\n    return title\n}\n";
         prints_as(
             src,
-            "app t.x \"X\"\n\nfn f(l: Ledger) -> Text {\n    let title = l.entries.find(e -> e.key == key)?.title\n        ?? if l.entries.is_empty() { meta(l).title } else { everything }\n    return title\n}\n",
+            "app t.x \"X\"\n\nfn f(l: Log) -> Text {\n    let title = l.entries.find(e -> e.key == key)?.title\n        ?? if l.entries.is_empty() { meta(l).title } else { everything }\n    return title\n}\n",
         );
-        let longer = "app t.x \"X\"\n\nfn f(l: Ledger, other: Ledger) -> Bool {\n    return l.entries.is_empty() and other.entries.is_empty() and l.name == other.name and l.owner == other.owner\n}\n";
+        let longer = "app t.x \"X\"\n\nfn f(l: Log, other: Log) -> Bool {\n    return l.entries.is_empty() and other.entries.is_empty() and l.name == other.name and l.owner == other.owner\n}\n";
         prints_as(
             longer,
-            "app t.x \"X\"\n\nfn f(l: Ledger, other: Ledger) -> Bool {\n    return l.entries.is_empty()\n        and other.entries.is_empty()\n        and l.name == other.name\n        and l.owner == other.owner\n}\n",
+            "app t.x \"X\"\n\nfn f(l: Log, other: Log) -> Bool {\n    return l.entries.is_empty()\n        and other.entries.is_empty()\n        and l.name == other.name\n        and l.owner == other.owner\n}\n",
         );
     }
 

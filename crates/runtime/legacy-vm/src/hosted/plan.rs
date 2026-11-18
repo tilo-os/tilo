@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::host_account::{
+use tilo_actions::remote::server_account::{
     self, Invoice, NextStep, NextStepKind, PaymentMethod, PlanOffer, Reason,
 };
 
@@ -211,7 +211,7 @@ impl Refusal {
     /// The refusal as the host's contract carries it: its reason, these words, and the steps that
     /// would let it through, with the provider pages `sells` names for `account`.
     #[must_use]
-    pub fn typed(&self, sells: Option<&Sells>, account: &str) -> host_account::Refusal {
+    pub fn typed(&self, sells: Option<&Sells>, account: &str) -> server_account::Refusal {
         let page = |page: Option<&String>| page.map(|page| Sells::page(page, account));
         let raise = NextStep {
             kind: NextStepKind::RaiseLimit,
@@ -260,7 +260,7 @@ impl Refusal {
                 vec![raise],
             ),
         };
-        host_account::Refusal {
+        server_account::Refusal {
             reason,
             message: self.to_string(),
             next,

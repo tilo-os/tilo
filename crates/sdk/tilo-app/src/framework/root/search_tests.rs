@@ -779,7 +779,7 @@ fn issues(count: usize, edited: Option<(usize, &str)>) -> Vec<SearchEntry> {
         .map(|at| {
             let title = match edited {
                 Some((which, title)) if which == at => title.to_owned(),
-                _ => format!("Issue {at} about the relay"),
+                _ => format!("Issue {at} about the server"),
             };
             SearchEntry::new(title, format!("What issue {at} is about, at length."))
                 .anchored(format!("issue:{at}"))
@@ -828,13 +828,13 @@ fn an_edit_indexes_only_the_entries_it_changed() {
         Some("Storm warning")
     );
     assert!(
-        !titles_found(&edited, "issue 7123 about the relay")
-            .contains(&"Issue 7123 about the relay".to_owned()),
+        !titles_found(&edited, "issue 7123 about the server")
+            .contains(&"Issue 7123 about the server".to_owned()),
         "the title it had is no longer found"
     );
     assert!(
-        titles_found(&edited, "issue 7124 about the relay")
-            .contains(&"Issue 7124 about the relay".to_owned())
+        titles_found(&edited, "issue 7124 about the server")
+            .contains(&"Issue 7124 about the server".to_owned())
     );
 
     // An issue added and one taken away: two changes.
@@ -844,8 +844,8 @@ fn an_edit_indexes_only_the_entries_it_changed() {
     let grown = Arc::new(edited.updated(grown, 2));
     assert_eq!(grown.indexed_count(), COUNT + 2);
     assert!(
-        !titles_found(&grown, "issue 9 about the relay")
-            .contains(&"Issue 9 about the relay".to_owned())
+        !titles_found(&grown, "issue 9 about the server")
+            .contains(&"Issue 9 about the server".to_owned())
     );
     assert_eq!(
         titles_found(&grown, "a new issue")

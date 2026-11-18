@@ -48,7 +48,7 @@ tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
-# Portal-only (feature-gated; never compiled for the default hermetic build).
+# Portal-only (feature-dependent; never compiled for the default hermetic build).
 
 [lints]
 workspace = true

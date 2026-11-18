@@ -220,7 +220,7 @@ The signing inventory now assigns the SDK entitlements to `NAME.real`, while
 helper processes retain their empty entitlement policy. Sign this real app and
 all other nested code before signing the enclosing bundle/launcher. A valid
 static stage is still **unsigned and not runtime-qualified**. After the normal
-Keychain gate, qualify actual Music file playback and CoreAudio output, Remote
+Keychain check, qualify actual Music file playback and CoreAudio output, Remote
 codec negotiation/decoding, plugin-scanner isolation, catalogs, moved bundle
 paths, and hardened runtime before packaging or installation. Additional code or
 resources require a new reviewed profile rather than widening these allowlists.

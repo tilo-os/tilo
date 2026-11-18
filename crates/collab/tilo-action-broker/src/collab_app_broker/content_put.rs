@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, TreePath};
 use tilo_actions::remote::{
-    ActionHostError, CONTENT_PUTS_UNAVAILABLE, Caller, ContentPut, ContentPuts,
+    ActionCallError, CONTENT_PUTS_UNAVAILABLE, Caller, ContentPut, ContentPuts,
 };
 use tilo_desktop_model::Workspace;
 
@@ -51,18 +51,18 @@ impl AppBrokerState {
     /// Whether `caller` may add content to `workspace` now, with the policy
     /// time it was decided at. An answer that would ask first refuses: a
     /// put asks nobody and spends no once-grant.
-    fn may_put_content(&self, caller: &Caller, workspace: &str) -> Result<u64, ActionHostError> {
-        super::action_host::check_execution(caller)?;
+    fn may_put_content(&self, caller: &Caller, workspace: &str) -> Result<u64, ActionCallError> {
+        super::action_provider::check_execution(caller)?;
         match self.decide_for(caller, workspace, |workspace, actor, now| {
             actor
                 .may_in(workspace, &put_node(workspace), ActionKind::Undoable, now)
                 .then_some(now)
         }) {
             Some(Some(now)) => Ok(now),
-            Some(None) => Err(ActionHostError::Refused {
+            Some(None) => Err(ActionCallError::Refused {
                 reason: CONTENT_PUT_REFUSED.into(),
             }),
-            None => Err(ActionHostError::NotPermitted),
+            None => Err(ActionCallError::NotPermitted),
         }
     }
 
@@ -74,8 +74,8 @@ impl AppBrokerState {
         workspace: &str,
         at: u64,
         (hash, len): (&str, u64),
-    ) -> Result<(), ActionHostError> {
-        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    ) -> Result<(), ActionCallError> {
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let actor = self.caller_actor(caller, workspace).member().clone();
         let store = self.services.content_store.clone();
         let durable = {
@@ -131,8 +131,8 @@ fn is_content_hash(hash: &str) -> bool {
 }
 
 /// The broker, while it runs.
-fn broker(state: &Weak<AppBrokerState>) -> Result<Arc<AppBrokerState>, ActionHostError> {
-    state.upgrade().ok_or_else(|| ActionHostError::Unavailable {
+fn broker(state: &Weak<AppBrokerState>) -> Result<Arc<AppBrokerState>, ActionCallError> {
+    state.upgrade().ok_or_else(|| ActionCallError::Unavailable {
         reason: CONTENT_PUTS_UNAVAILABLE.into(),
     })
 }
@@ -143,16 +143,16 @@ struct BrokerContentPuts {
 }
 
 impl ContentPuts for BrokerContentPuts {
-    fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
+    fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         let workspace = caller
             .workspace()
-            .ok_or_else(|| ActionHostError::InvalidRequest {
+            .ok_or_else(|| ActionCallError::InvalidRequest {
                 reason: "content goes to a workspace, and this session is in none".into(),
             })?
             .to_owned();
         let max = self.store.max_bytes();
         if size == 0 || size > max {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!("an upload is 1 to {max} bytes, not {size}"),
             });
         }
@@ -160,7 +160,7 @@ impl ContentPuts for BrokerContentPuts {
         let sink = self
             .store
             .begin(&workspace)
-            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
         Ok(Box::new(BrokerContentPut {
             state: Weak::clone(&self.state),
             caller: caller.clone(),
@@ -188,8 +188,8 @@ struct BrokerContentPut {
 }
 
 impl BrokerContentPut {
-    fn ended() -> ActionHostError {
-        ActionHostError::Refused {
+    fn ended() -> ActionCallError {
+        ActionCallError::Refused {
             reason: "this upload failed and is over: begin it again".into(),
         }
     }
@@ -204,16 +204,16 @@ impl ContentPut for BrokerContentPut {
         self.written
     }
 
-    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
+    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
         let written = self.written;
         if offset != written {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!("the upload has {written} bytes: append at offset {written}"),
             });
         }
         let end = written.saturating_add(chunk.len() as u64);
         if end > self.size {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "the chunk ends at {end}, past the {} bytes the upload began with",
                     self.size
@@ -223,16 +223,16 @@ impl ContentPut for BrokerContentPut {
         let sink = self.sink.as_mut().ok_or_else(Self::ended)?;
         if let Err(reason) = sink.append(chunk) {
             self.sink = None;
-            return Err(ActionHostError::Refused { reason });
+            return Err(ActionCallError::Refused { reason });
         }
         self.hasher.update(chunk);
         self.written = end;
         Ok(end)
     }
 
-    fn finish(mut self: Box<Self>) -> Result<String, ActionHostError> {
+    fn finish(mut self: Box<Self>) -> Result<String, ActionCallError> {
         if self.written != self.size {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!("the upload has {} of {} bytes", self.written, self.size),
             });
         }
@@ -250,10 +250,10 @@ impl ContentPut for BrokerContentPut {
         drop(broker);
         let (stored, len) = sink
             .finish()
-            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
         tilo_actions::content_resource(&hash)
             .filter(|_| stored == hash && is_content_hash(&stored) && len == self.size)
-            .ok_or_else(|| ActionHostError::Unavailable {
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "the content store answered a reference for other content".into(),
             })
     }

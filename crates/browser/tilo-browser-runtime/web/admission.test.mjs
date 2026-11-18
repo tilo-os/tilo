@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {AdmissionError, NO_ACCESS, admit} from './admission.mjs';
-import {CustodyError} from './device-custody.mjs';
+import {DeviceKeyError} from './device-key.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 // Which way in, and the next one when a way fails, are the runtime's rules
@@ -110,7 +110,7 @@ test('the own desktop of a stranger under a home taking people by invitation is 
   assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]]);
 });
 
-test('the own desktop opens without a peer for whom the home’s gate is open, or whom its entry just let in', async () => {
+test('the own desktop opens without a peer for whom the home’s hold is open, or whom its entry just let in', async () => {
   const own = () => rules(['own-desktop']).runtime;
   const open = entries({ownDesktopOpen: async () => true});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, runtime: own(), deps: open.deps}), {peer: null});
@@ -125,7 +125,7 @@ test('the own desktop opens without a peer for whom the home’s gate is open, o
   // gesture) keeps no membership: still nothing of their own.
   const idle = entries({ownDesktopOpen: async () => false, enterViaHost: async () => ({idle: true})});
   await assert.rejects(admit({scope: {kind: 'own'}, home: commons, runtime: own(), deps: idle.deps}), {name: 'AdmissionError', code: 'no-access'});
-  // A home without an entry gates nothing.
+  // A home without an entry holds nothing.
   const bare = entries({ownDesktopOpen: async () => false});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: {name: 'Team', host: {origin: target.host}}, runtime: own(), deps: bare.deps}), {peer: null});
   assert.deepEqual(bare.calls, []);
@@ -233,7 +233,7 @@ test('no access says the same thing for a missing and a private workspace', asyn
     entries({...member, connectMember: async () => { throw new Error('workspace 6f1c… is unknown on this host'); }}),
     entries({...member, connectMember: async () => { throw new Error('not a member of this workspace'); }}),
     entries({...member, connectMember: async () => ({whenReady: async () => { throw new Error('This workspace’s host no longer has you as a member.'); }})}),
-    entries({...member, connectMember: async () => { throw new CustodyError('custody-missing', 'This account has no existing browser device'); }}),
+    entries({...member, connectMember: async () => { throw new DeviceKeyError('device-key-missing', 'This account has no existing browser device'); }}),
   ];
   for (const {deps} of failures) {
     const {asked, runtime} = rules(['accounts', 'member', 'no-access']);
@@ -246,7 +246,7 @@ test('no access says the same thing for a missing and a private workspace', asyn
 });
 
 test('a member whose device keys other tabs hold gets in as a new device, or is told so, never refused', async () => {
-  const busy = () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
+  const busy = () => { throw new DeviceKeyError('device-key-busy', 'Every device key is held by another tab'); };
   const member = {readAccounts: async () => [{userPublicKey: 'ab'}], connectMember: async () => busy()};
   // Where the page holds the person's root, this tab is a new device of theirs.
   const reconnected = entries({...member, reconnect: async ({origin, workspace: wanted}) => ({origin, workspace: wanted, admission: 'reconnect'})});
@@ -257,13 +257,38 @@ test('a member whose device keys other tabs hold gets in as a new device, or is 
   // Where it cannot, the page says other tabs hold them: another tab of this
   // browser says nothing about the host.
   const stuck = rules(['accounts', 'member', 'reconnect', 'no-access']);
-  await assert.rejects(admit({scope: target, runtime: stuck.runtime, deps: entries(member).deps}), {name: 'CustodyError', code: 'custody-busy'});
+  await assert.rejects(admit({scope: target, runtime: stuck.runtime, deps: entries(member).deps}), {name: 'DeviceKeyError', code: 'device-key-busy'});
   assert.deepEqual(stuck.asked.at(-1).slice(0, 2), ['wayInAfter', 'reconnect']);
   // As where the workspace cannot admit a new device of the person by itself.
   const uninvited = rules(['accounts', 'reconnect']);
   await assert.rejects(admit({scope: target, runtime: uninvited.runtime, deps: entries({reconnect: async () => busy()}).deps}),
-    {name: 'CustodyError', code: 'custody-busy'});
+    {name: 'DeviceKeyError', code: 'device-key-busy'});
   assert.ok(!uninvited.asked.some(([, failed]) => failed === 'reconnect'), 'the runtime is not asked what follows');
+});
+
+test('a browser removed from its person’s devices is told so on every way in, and no other way is tried', async () => {
+  // What a session reaches the page as when its server refused its hello and said why.
+  const removed = () => Object.assign(new Error('This device was removed from your devices.'), {code: 'device-revoked'});
+  // With a member's account here: the session stops as the page waits for it.
+  const member = entries({readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => ({whenReady: async () => { throw removed(); }})});
+  const asMember = rules(['accounts', 'member', 'entry']);
+  await assert.rejects(admit({scope: target, runtime: asMember.runtime, deps: member.deps}), {code: 'device-revoked'});
+  assert.ok(!asMember.asked.some(([name]) => name === 'wayInAfter'), 'the runtime is not asked what follows');
+  assert.deepEqual(member.calls, [], 'no entry is asked');
+  // Reconnecting: whether the session stops while connecting or as the page waits for it.
+  for (const reconnect of [async () => { throw removed(); }, async () => ({whenReady: async () => { throw removed(); }})]) {
+    const back = entries({workspaceAt: () => commons, reconnect});
+    const way = rules(['reconnect', 'entry']);
+    await assert.rejects(admit({scope: target, runtime: way.runtime, deps: back.deps}), {code: 'device-revoked'});
+    assert.ok(!way.asked.some(([name]) => name === 'wayInAfter'), 'the runtime is not asked what follows');
+    assert.deepEqual(back.calls, [], 'no entry is asked');
+  }
+  // Any other refusal of a member stays no access, whatever it says.
+  const refused = entries({readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => ({whenReady: async () => { throw Object.assign(new Error('not admitted'), {code: 'unanswered'}); }})});
+  await assert.rejects(admit({scope: target, runtime: rules(['accounts', 'member', 'no-access']).runtime, deps: refused.deps}),
+    {name: 'AdmissionError', code: 'no-access'});
 });
 
 test('reconnecting says the page is connecting, so a host that does not answer is not blamed on this device', async () => {

@@ -4,7 +4,7 @@ use super::FilesState;
 use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
-use crate::recent::{RecentRecord, RecentUse};
+use crate::recent::{RecentResource, RecentUse};
 use runtime_portal::tools::DocumentApp;
 use std::path::{Path, PathBuf};
 use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
@@ -250,7 +250,7 @@ impl FilesState {
         let at = ui::time::unix_now_ms();
         let shown = AbsolutePath::new(path).ok();
         self.edit_recent(
-            |device| shown.map(|path| RecentRecord::NOTE.with((device, path, last_use, at))),
+            |device| shown.map(|path| RecentResource::NOTE.with((device, path, last_use, at))),
             |recent| recent.note(path, last_use, at),
         );
     }
@@ -258,21 +258,21 @@ impl FilesState {
     pub(super) fn recent_moved(&mut self, from: &Path, to: &Path) {
         let shown = AbsolutePath::new(from).ok().zip(AbsolutePath::new(to).ok());
         self.edit_recent(
-            |device| shown.map(|(from, to)| RecentRecord::MOVED.with((device, from, to))),
+            |device| shown.map(|(from, to)| RecentResource::MOVED.with((device, from, to))),
             |recent| recent.moved(from, to),
         );
     }
 
-    fn recent_record(&self) -> Option<(&ui::framework::PersonResource<RecentRecord>, &str)> {
-        self.recent_record.as_ref().zip(self.device.as_deref())
+    fn recent_resource(&self) -> Option<(&ui::framework::PersonResource<RecentResource>, &str)> {
+        self.recent_resource.as_ref().zip(self.device.as_deref())
     }
 
     fn edit_recent(
         &mut self,
-        edit: impl FnOnce(String) -> Option<Invoke<RecentRecord>>,
+        edit: impl FnOnce(String) -> Option<Invoke<RecentResource>>,
         change: impl FnOnce(&mut crate::recent::RecentFiles),
     ) {
-        match self.recent_record() {
+        match self.recent_resource() {
             Some((record, device)) => {
                 if let Some(edit) = edit(device.to_owned())
                     && let Err(error) = record.invoke(&edit)
@@ -285,7 +285,7 @@ impl FilesState {
     }
 
     pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
-        self.recent_record().map_or_else(
+        self.recent_resource().map_or_else(
             || self.recent.clone(),
             |(record, device)| record.with(|recent| recent.on(device)),
         )
@@ -318,7 +318,7 @@ impl FilesState {
     pub(super) fn apply_forget_recent(&mut self, path: &Path) -> bool {
         let shown = AbsolutePath::new(path).ok();
         self.edit_recent(
-            |device| shown.map(|path| RecentRecord::FORGET.with((device, path))),
+            |device| shown.map(|path| RecentResource::FORGET.with((device, path))),
             |recent| {
                 recent.forget(path);
             },
@@ -369,7 +369,10 @@ pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
                 path: path.clone(),
                 is_dir,
                 size: meta.len(),
-                modified: meta.modified().ok().map(chrono::DateTime::from),
+                modified: meta
+                    .modified()
+                    .ok()
+                    .and_then(|at| jiff::Timestamp::try_from(at).ok()),
                 mime: if is_dir {
                     "inode/directory".into()
                 } else {

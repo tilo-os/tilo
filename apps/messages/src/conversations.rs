@@ -12,7 +12,7 @@ use ui::prelude::{Collection, Id, Model};
 use ui::tilo_resource::items::{item_of_resource, item_resource_id};
 use ui::tilo_resource::{self, ActionCx, NonBlank, Refusal, resource};
 
-/// Bounds on what one message carries, so a hostile payload cannot grow the record without
+/// Bounds on what one message carries, so a hostile payload cannot grow the resource without
 /// limit.
 const MAX_PARTY_CHARS: usize = 256;
 const MAX_BODY_CHARS: usize = 16 * 1024;
@@ -27,7 +27,7 @@ const CONVERSATION_PREFIX: &str = "tilo.messages/conversations/";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Messages {
     /// The conversations, keyed by [`conversation_key`]: made and changed only by the
-    /// record's verbs, so no field edit can put words in someone's mouth or mark a message
+    /// resource's verbs, so no field edit can put words in someone's mouth or mark a message
     /// sent.
     #[model(readonly)]
     pub conversations: Collection<Conversation>,

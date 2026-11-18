@@ -13,7 +13,7 @@ impl ResolvedSource {
     pub fn open_original_mounted_entry(&self, binding: &EntryBinding) -> io::Result<fs::File> {
         binding.validate()?;
         if binding.volume() != &self.plan.home.volume {
-            return Err(refusal("Mounted entry lacks same-volume source custody"));
+            return Err(refusal("Mounted entry lacks same-volume source ownership"));
         }
         self.pin.validate()?;
         kernel_read_only(&self.pin)?;

@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
                 text(cache.join("mount")),
                 "--acl".into(),
                 text(profile.path("config/tilo/fs-capabilities.json")),
-                "--data-plane".into(),
+                "--backend".into(),
                 "fuse".into(),
                 "--storage-sock".into(),
                 text(profile.path("run/tilo/files-storage/storage.sock")),

@@ -1,6 +1,6 @@
 name: CI / affected packages
 
-# Main is allowed to be unstable, so a commit is never gated before it lands;
+# Main is allowed to be unstable, so a commit is never guarded before it lands;
 # this workflow measures pushes after the fact, one window of commits at a time.
 # Each push plans from the head of the newest earlier push run on main whose
 # window really ran, so a window covers every commit whose own run was dropped,
@@ -86,7 +86,7 @@ jobs:
   supersede:
     # The native class, not the quality one: the quality label serves a single
     # runner that this run's own builder, plan and aggregate jobs, the sweeps and
-    # the lint gate need. The job itself is a checkout and an API conversation.
+    # the lint check need. The job itself is a checkout and an API conversation.
     runs-on: runner
     timeout-minutes: 15
     container:
@@ -224,7 +224,7 @@ jobs:
   # The boundary invariants run five fixture binaries built from the merged
   # tree. Build
   # them where the compiler and cache are warm: the checks themselves are
-  # mostly text, but their first cold build on a 2-CPU lane spent a 30-minute
+  # mostly text, but their first cold build on a 2-CPU job spent a 30-minute
   # timeout inside one invariant and reported no result at all.
   security-fixtures:
     if: needs.select.outputs.security_required == 'true'
@@ -271,14 +271,14 @@ jobs:
           retention-days: 1
 
   # Stands beside the compile matrix, not in front of it (see the note above
-  # `test`); `checks` requires its success, so it is still a gate on the run.
+  # `test`); `checks` requires its success, so it is still a check on the run.
   security:
     if: needs.select.outputs.security_required == 'true'
     needs: [select, security-fixtures]
     runs-on: runner-quality
     timeout-minutes: 60
     env:
-      # The complete suite passes in the quality lane's 2 CPU / 5 GiB job limit
+      # The complete suite passes in the quality job's 2 CPU / 5 GiB job limit
       # once its fixtures are built (security-fixtures); t declares the same
       # check as a 1-core, minutes-long job.
       CARGO_BUILD_JOBS: '2'
@@ -365,13 +365,13 @@ jobs:
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
   # The compile jobs below do not wait for the security boundary. It used to
-  # gate them so a red boundary would not spend native slots, but the boundary
+  # check them so a red boundary would not spend native slots, but the boundary
   # suite runs the whole repository's invariant scripts and one slow or hung
   # invariant then leaves test/check/clippy permanently blocked ("incomplete
   # matrix"), which hides every product result in the run. The boundary is
   # still required: the `checks` aggregate fails the run when it fails or is
   # skipped unexpectedly.
-  # Tests and the Clippy gate run as parallel jobs rather than one after
+  # Tests and the Clippy check run as parallel jobs rather than one after
   # another on one runner. Test jobs are sharded by recorded test time, Clippy
   # by structural cost (tools/ci/affected_packages.py). Clippy type-checks
   # every target it lints, so on x86_64 it is also the shard's all-target

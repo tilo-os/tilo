@@ -1,9 +1,9 @@
 //! A window one device of a person shares, pictured on their other device: two real sessions, each
-//! with its own endpoint, its own engine and its own live plane, as two machines on one network
+//! with its own endpoint, its own engine and its own live session, as two machines on one network
 //! run them.
 //!
-//! A shared window's pictures travel the workspace's live plane, on a track of their own that the
-//! viewing device asks the sharing device for. The plane is carried by the device hosting the
+//! A shared window's pictures travel the workspace's live session, on a track of their own that the
+//! viewing device asks the sharing device for. The live session is carried by the device hosting the
 //! workspace, or by the site that does, and a device is in it only once it holds the keys of the
 //! workspace's media channel and reached that relay. The shares' own tests put every member on one
 //! relay in one process and carry the control messages by hand, so none of that is in them: here
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 use crate::common::people::{
     Device, Person, Site, log_sessions_at, share_the_fleet, two_devices_of_one_person,
@@ -41,15 +41,15 @@ use crate::common::window::Client;
 const NOTES: &str = "so.tilo.notes";
 /// The provider of the session's own actions.
 const SESSION: &str = "so.tilo.session";
-/// What the devices' sessions log here: the live plane, the shares, the channels whose keys seal
-/// the plane and the routes between the devices say how far a share came only below `info`.
+/// What the devices' sessions log here: the live session, the shares, the channels whose keys seal
+/// the live session and the routes between the devices say how far a share came only below `info`.
 const LOGGED: &str = "info,tilo_session::live=debug,tilo_session::window_share=debug,\
                       tilo_workspace_keys=debug,tilo_network_actor=debug,tilo_session_client=warn";
 /// How many kinds of line a failed step shows of one part of a session's log.
 const SHOWN: usize = 90;
 /// How many lines a failed step shows of what a session said in order.
 const IN_ORDER: usize = 60;
-/// How long a plane may stand as not open while a share runs before the step fails: a plane that
+/// How long a live session may stand as not open while a share runs before the step fails: a live session that
 /// ended is settled again at once, and one its relay refuses is never let in by waiting.
 const NOT_OPEN: Duration = Duration::from_secs(12);
 /// How often a shared window is painted anew while a step watches its share.
@@ -75,23 +75,23 @@ fn row_of(reading: &Value, part: &str, tab: &str) -> Option<Value> {
         .cloned()
 }
 
-/// How `device`'s session says the live plane of `workspace` stands: the workspace's row in `live`
-/// of the shares' reading, `Null` while the session names no plane for it.
-fn plane_of(device: &Device, workspace: &str) -> Value {
+/// How `device`'s session says the live session of `workspace` stands: the workspace's row in `live`
+/// of the shares' reading, `Null` while the session names no live session for it.
+fn live_session_of(device: &Device, workspace: &str) -> Value {
     shares(device)["live"]
         .as_array()
         .and_then(|live| {
             live.iter()
-                .find(|plane| plane["workspace"].as_str() == Some(workspace))
+                .find(|live_session| live_session["workspace"].as_str() == Some(workspace))
                 .cloned()
         })
         .unwrap_or(Value::Null)
 }
 
-/// What `device` says of who hosts `workspace` (`workspace_hosts`): `Null` while it does not hold
+/// What `device` says of who hosts `workspace` (`keeping_devices`): `Null` while it does not hold
 /// it.
 fn hosting_of(device: &Device, workspace: &str) -> Value {
-    device.ask(&json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+    device.ask(&json!({"op": "keeping_devices"}))["answer"]["workspaces"]
         .as_array()
         .and_then(|held| {
             held.iter()
@@ -209,7 +209,7 @@ fn in_order(log: &str, keep: impl Fn(&str) -> bool) -> String {
 
 /// How far a share came on each of `devices`, for a step that never happened: what each session
 /// says of its shares, of who hosts `workspace` and of who is present there, what its shell holds
-/// of the workspace, and what it logged of the live plane, of the workspace's channels, of the
+/// of the workspace, and what it logged of the live session, of the workspace's channels, of the
 /// shares, of the windows' control messages and of its link to the workspace's host, which is
 /// what the workspace's governance and records travel.
 fn report(workspace: &str, devices: &[&Device]) -> String {
@@ -220,9 +220,9 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
             out,
             "== {} (device {}) ==\nshares: {}\nhosts: {}\npresent in {workspace}: {:?}\n\
              shell in {workspace}: {}\n\
-             -- the live plane --\n{}\n-- the workspace's channels --\n{}\n-- the shares --\n{}\n\
+             -- the live session --\n{}\n-- the workspace's channels --\n{}\n-- the shares --\n{}\n\
              -- the windows' messages --\n{}\n-- warnings --\n{}\n\
-             -- the plane's keys and standings, in order --\n{}\n\
+             -- the live_session's keys and states, in order --\n{}\n\
              -- the workspace's channel frames, in order --\n{}\n\
              -- the links to the workspaces' hosts, in order --\n{}",
             device.label,
@@ -397,8 +397,8 @@ fn shown_in(viewer: &Device, tab: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The epoch `device`'s session last said it seals the live plane of `workspace` under: what it
-/// logs when the plane opens and whenever its keys move.
+/// The epoch `device`'s session last said it seals the live session of `workspace` under: what it
+/// logs when the live session opens and whenever its keys move.
 fn sealing_epoch(device: &Device, workspace: &str) -> Option<u64> {
     let log = device.log();
     log.lines()
@@ -419,7 +419,7 @@ fn sealing_epoch(device: &Device, workspace: &str) -> Option<u64> {
 }
 
 /// How often `device`'s session said that no relay of `workspace` took it into the workspace's
-/// live plane.
+/// live session.
 fn missed_relays(device: &Device, workspace: &str) -> usize {
     device
         .log()
@@ -432,7 +432,7 @@ fn missed_relays(device: &Device, workspace: &str) -> usize {
         .count()
 }
 
-/// Wait until both devices seal the live plane of `workspace` under the same keys and have for a
+/// Wait until both devices seal the live session of `workspace` under the same keys and have for a
 /// while: nothing of the workspace's keys is still on its way to either, so neither is told of a
 /// change of them later.
 fn keys_at_rest(workspace: &str, one: &Device, other: &Device) {
@@ -515,27 +515,27 @@ fn the_window_shared(
     let both = [sharer, viewer];
     bring_to_front(sharer, workspace);
     bring_to_front(viewer, workspace);
-    // The pictures travel the workspace's live plane: each device is in it and says so, and both
+    // The pictures travel the workspace's live session: each device is in it and says so, and both
     // run through the one device that relays the workspace.
     for device in both {
         eventually(
             &format!(
-                "{} says the live plane of {workspace} is open",
+                "{} says the live session of {workspace} is open",
                 device.label
             ),
             Duration::from_secs(60),
             workspace,
             &both,
             || {
-                let plane = plane_of(device, workspace);
-                plane["state"] == json!("open") && plane["waiting_for"] == json!("")
+                let live_session = live_session_of(device, workspace);
+                live_session["state"] == json!("open") && live_session["waiting_for"] == json!("")
             },
         );
     }
     assert_eq!(
-        plane_of(sharer, workspace)["relay"],
-        plane_of(viewer, workspace)["relay"],
-        "both devices' planes run through one relay\n{}",
+        live_session_of(sharer, workspace)["relay"],
+        live_session_of(viewer, workspace)["relay"],
+        "both devices' live sessions run through one relay\n{}",
         report(workspace, &both)
     );
     let window = sharer.window(NOTES, title);
@@ -636,7 +636,7 @@ fn the_share_arrives(
             })
         },
     );
-    // The window's first keyframe crossed the workspace's live plane.
+    // The window's first keyframe crossed the workspace's live session.
     eventually(
         &format!(
             "{} received the window of tab {tab} that {} shares",
@@ -745,7 +745,7 @@ fn a_window_shared_after_both_devices_came_back_the_host_first_is_pictured() {
 }
 
 /// Both devices were off and the hosting device came back last: when the other device's session
-/// started, the device relaying the workspace was not there to reach. Its live plane opens once
+/// started, the device relaying the workspace was not there to reach. Its live session opens once
 /// that device is back, and what it shares the hosting device pictures.
 #[test]
 fn a_window_shared_after_the_host_came_back_last_is_pictured() {
@@ -753,7 +753,7 @@ fn a_window_shared_after_the_host_came_back_last_is_pictured() {
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
     // Neither device is behind on the workspace's keys when it goes off: a change of them that
-    // reached the laptop only after the phone came back would have its plane settled again, and
+    // reached the laptop only after the phone came back would have its live session settled again, and
     // hide that nothing else does.
     keys_at_rest(&made, &laptop, &phone);
     laptop.stop();
@@ -762,7 +762,7 @@ fn a_window_shared_after_the_host_came_back_last_is_pictured() {
     laptop.start();
     laptop.wait_holding(&made);
     eventually(
-        "the laptop asked the phone, which is off, for the workspace's live plane",
+        "the laptop asked the phone, which is off, for the workspace's live session",
         Duration::from_secs(60),
         &made,
         &[&laptop],
@@ -821,9 +821,9 @@ struct Running<'a> {
     viewer: &'a Device,
 }
 
-/// How the live plane of one workspace stands on each of some devices, read again and again: the
+/// How the live session of one workspace stands on each of some devices, read again and again: the
 /// course says each change of it, which is what a step that fails shows of the way there.
-struct Planes<'a> {
+struct LiveSessions<'a> {
     workspace: &'a str,
     devices: Vec<&'a Device>,
     began: Instant,
@@ -832,7 +832,7 @@ struct Planes<'a> {
     course: Vec<String>,
 }
 
-impl<'a> Planes<'a> {
+impl<'a> LiveSessions<'a> {
     fn of(workspace: &'a str, devices: &[&'a Device]) -> Self {
         Self {
             workspace,
@@ -844,16 +844,19 @@ impl<'a> Planes<'a> {
         }
     }
 
-    /// Read every device's plane once. A plane its relay refused, or one that is not open for
-    /// longer than [`NOT_OPEN`], is why the workspace's live plane does not carry what is said in
+    /// Read every device's live session once. A live session its relay refused, or one that is not open for
+    /// longer than [`NOT_OPEN`], is why the workspace's live session does not carry what is said in
     /// it: the error says which device's, and how it reads.
     fn read(&mut self) -> Result<(), String> {
         for device in &self.devices {
-            let plane = plane_of(device, self.workspace);
-            let state = plane["state"].as_str().unwrap_or("absent").to_owned();
+            let live_session = live_session_of(device, self.workspace);
+            let state = live_session["state"]
+                .as_str()
+                .unwrap_or("absent")
+                .to_owned();
             if self.stood.get(&device.label) != Some(&state) {
                 self.course.push(format!(
-                    "{:>6.1}s {}: {plane}",
+                    "{:>6.1}s {}: {live_session}",
                     self.began.elapsed().as_secs_f32(),
                     device.label
                 ));
@@ -865,7 +868,7 @@ impl<'a> Planes<'a> {
             }
             if state == "refused" {
                 return Err(format!(
-                    "{}'s live plane was refused: {plane}",
+                    "{}'s live session was refused: {live_session}",
                     device.label
                 ));
             }
@@ -875,7 +878,7 @@ impl<'a> Planes<'a> {
                 .or_insert_with(Instant::now);
             if since.elapsed() > NOT_OPEN {
                 return Err(format!(
-                    "{}'s live plane is not open for {:?}: {plane}",
+                    "{}'s live session is not open for {:?}: {live_session}",
                     device.label,
                     since.elapsed()
                 ));
@@ -890,9 +893,11 @@ impl<'a> Planes<'a> {
     }
 }
 
-/// How many objects of other devices `device`'s plane of `workspace` opened so far.
+/// How many objects of other devices `device`'s live session of `workspace` opened so far.
 fn heard_by(device: &Device, workspace: &str) -> u64 {
-    plane_of(device, workspace)["heard"].as_u64().unwrap_or(0)
+    live_session_of(device, workspace)["heard"]
+        .as_u64()
+        .unwrap_or(0)
 }
 
 /// Paint `window` anew in `shade`, so the device sharing it has another picture of it to send.
@@ -902,17 +907,22 @@ fn repaint(window: &mut Client, shade: u8) {
     window.exchange();
 }
 
-/// For `during`, with nothing shared, the live plane of `workspace` stays open on each of
+/// For `during`, with nothing shared, the live session of `workspace` stays open on each of
 /// `devices`.
 #[track_caller]
-fn the_planes_stay_open(after: &str, during: Duration, workspace: &str, devices: &[&Device]) {
-    let mut planes = Planes::of(workspace, devices);
+fn the_live_sessions_stay_open(
+    after: &str,
+    during: Duration,
+    workspace: &str,
+    devices: &[&Device],
+) {
+    let mut live_sessions = LiveSessions::of(workspace, devices);
     let began = Instant::now();
     while began.elapsed() < during {
-        if let Err(why) = planes.read() {
+        if let Err(why) = live_sessions.read() {
             panic!(
-                "after {after}: {why}\nthe planes' course:\n{}\n{}",
-                planes.course(),
+                "after {after}: {why}\nthe live sessions' course:\n{}\n{}",
+                live_sessions.course(),
                 report(workspace, devices)
             );
         }
@@ -920,7 +930,7 @@ fn the_planes_stay_open(after: &str, during: Duration, workspace: &str, devices:
     }
 }
 
-/// For `during`, the share `share` stays live while its `window` keeps changing: the plane of its
+/// For `during`, the share `share` stays live while its `window` keeps changing: the live session of its
 /// workspace stays open on the sharing device, on the viewing device and on each device `beside`
 /// them, the viewing device keeps hearing through both halves of the time, and at its end the
 /// sharing device still says it sends the window and waits for nothing, and the viewing device
@@ -935,7 +945,7 @@ fn the_share_stays_live(
 ) {
     let mut devices = vec![share.sharer, share.viewer];
     devices.extend_from_slice(beside);
-    let mut planes = Planes::of(share.workspace, &devices);
+    let mut live_sessions = LiveSessions::of(share.workspace, &devices);
     let began = Instant::now();
     let mut heard = vec![heard_by(share.viewer, share.workspace)];
     let mut tint = 0_u8;
@@ -947,10 +957,10 @@ fn the_share_stays_live(
             painted = Some(Instant::now());
         }
         window.exchange();
-        if let Err(why) = planes.read() {
+        if let Err(why) = live_sessions.read() {
             panic!(
-                "after {after}: {why}\nthe planes' course:\n{}\n{}",
-                planes.course(),
+                "after {after}: {why}\nthe live sessions' course:\n{}\n{}",
+                live_sessions.course(),
                 report(share.workspace, &devices)
             );
         }
@@ -973,11 +983,11 @@ fn the_share_stays_live(
         sends && pictured && kept_hearing,
         "after {after}, the share of tab {} did not stay live for {during:?}: {} says of it \
          {sharing:?}, {} received {received:?} and heard {heard:?} objects at the start, half way \
-         and at the end\nthe planes' course:\n{}\n{}",
+         and at the end\nthe live_sessions' course:\n{}\n{}",
         share.tab,
         share.sharer.label,
         share.viewer.label,
-        planes.course(),
+        live_sessions.course(),
         report(share.workspace, &devices)
     );
 }
@@ -1048,7 +1058,7 @@ fn the_shared_windows_tab_is_gone_from(share: &Running<'_>, viewer: &Device, pla
 /// A shared window is not a moment: the person's other device shares one with the device hosting
 /// the workspace, and it stays live while it changes, through the share's end and a second share
 /// of the same window. On two machines the pictures arrived and then the hosting device refused
-/// the sharing one from the workspace's live plane for good.
+/// the sharing one from the workspace's live session for good.
 #[test]
 fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
     log_sessions_at(LOGGED);
@@ -1069,7 +1079,7 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
         &[],
     );
     the_share_stops(&share);
-    the_planes_stay_open(
+    the_live_sessions_stay_open(
         "the share was stopped",
         Duration::from_secs(10),
         &made,
@@ -1147,11 +1157,11 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
         },
     );
     eventually(
-        &format!("{} says the live plane of {made} is open", tablet.label),
+        &format!("{} says the live session of {made} is open", tablet.label),
         Duration::from_secs(60),
         &made,
         &all,
-        || plane_of(&tablet, &made)["state"] == json!("open"),
+        || live_session_of(&tablet, &made)["state"] == json!("open"),
     );
     the_share_stays_live(
         "a third device of the person was admitted",
@@ -1174,7 +1184,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
         let epoch = sealing_epoch(device, &site.workspace);
         assert!(
             epoch.is_some_and(|epoch| epoch <= KEYS_MOVED_AT_MOST),
-            "{} seals the live plane of {}, which three devices came into, under the keys of \
+            "{} seals the live session of {}, which three devices came into, under the keys of \
              epoch {epoch:?}: they moved more than {KEYS_MOVED_AT_MOST} times\n{}",
             device.label,
             site.workspace,
@@ -1254,7 +1264,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
         &[],
     );
     the_share_stops(&share);
-    the_planes_stay_open(
+    the_live_sessions_stay_open(
         "the share was stopped",
         Duration::from_secs(5),
         &workspace,
@@ -1341,13 +1351,13 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     for device in all {
         eventually(
             &format!(
-                "{} says the live plane of {workspace} is open, with three devices in it",
+                "{} says the live session of {workspace} is open, with three devices in it",
                 device.label
             ),
             Duration::from_secs(90),
             &workspace,
             &all,
-            || plane_of(device, &workspace)["state"] == json!("open"),
+            || live_session_of(device, &workspace)["state"] == json!("open"),
         );
     }
 
@@ -1374,7 +1384,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
         &[],
     );
     the_share_stops(&share);
-    the_planes_stay_open(
+    the_live_sessions_stay_open(
         "the share was stopped",
         Duration::from_secs(5),
         &workspace,
@@ -1400,7 +1410,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
 
 /// `device`, a further device of the person, comes into `workspace`, which one of their devices
 /// made and hosts: it joins their site, takes the workspace from their list, the workspace's host
-/// takes it in, and its live plane of the workspace opens. `beside` are the workspace's devices
+/// takes it in, and its live session of the workspace opens. `beside` are the workspace's devices
 /// already there.
 fn comes_into(
     site: &Site,
@@ -1427,13 +1437,13 @@ fn comes_into(
     );
     eventually(
         &format!(
-            "{} says the live plane of {workspace} is open",
+            "{} says the live session of {workspace} is open",
             device.label
         ),
         Duration::from_secs(60),
         workspace,
         &all,
-        || plane_of(device, workspace)["state"] == json!("open"),
+        || live_session_of(device, workspace)["state"] == json!("open"),
     );
 }
 
@@ -1492,7 +1502,7 @@ fn a_window_the_hosting_device_shares_after_it_came_back_last_is_pictured() {
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
     // Neither device is behind on the workspace's keys when it goes off: a change of them that
-    // reached the laptop only after the phone came back would have its plane settled again, and
+    // reached the laptop only after the phone came back would have its live session settled again, and
     // hide that nothing else does.
     keys_at_rest(&made, &laptop, &phone);
     laptop.stop();
@@ -1501,7 +1511,7 @@ fn a_window_the_hosting_device_shares_after_it_came_back_last_is_pictured() {
     laptop.start();
     laptop.wait_holding(&made);
     eventually(
-        "the laptop asked the phone, which is off, for the workspace's live plane",
+        "the laptop asked the phone, which is off, for the workspace's live session",
         Duration::from_secs(60),
         &made,
         &[&laptop],
@@ -1569,7 +1579,7 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
         );
         the_shared_windows_tab_is_gone_from(&share, viewer, &place);
     }
-    the_planes_stay_open(
+    the_live_sessions_stay_open(
         "the share was stopped",
         Duration::from_secs(5),
         &made,

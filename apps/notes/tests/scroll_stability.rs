@@ -77,8 +77,8 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 
 #[test]
 fn pasting_an_image_keeps_the_page_where_it_is() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = long_note();
     let before = work_below_the_fold(&mut app);
     recorder.copy_image_elsewhere(ClipboardImage {

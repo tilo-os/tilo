@@ -15,6 +15,8 @@
 
 use std::process::Command;
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use ed25519_dalek::SigningKey;
 use tilo_sibling_unlock::material::{Attestation, Material};
 use tilo_sibling_unlock::seal;
@@ -122,7 +124,7 @@ fn a_quote_from_the_tpm_proves_the_chain_a_sibling_accepts() {
 fn the_attestation_key_travels_in_the_luks_header() {
     if Command::new("cryptsetup")
         .arg("--version")
-        .output()
+        .output_locked()
         .is_err()
     {
         eprintln!("skipping: cryptsetup is not installed");
@@ -154,7 +156,7 @@ fn the_attestation_key_travels_in_the_luks_header() {
         ])
         .arg(&recovery)
         .arg(&image)
-        .status()
+        .status_locked()
         .expect("cryptsetup luksFormat");
     assert!(formatted.success(), "luksFormat failed");
 

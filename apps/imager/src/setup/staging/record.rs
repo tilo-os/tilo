@@ -12,7 +12,7 @@ mod browser;
 
 pub const SCHEMA: u32 = 1;
 
-pub use imager_backend::staging::protocol::{Step, StepRecord, StepState};
+pub use imager_backend::staging::protocol::{Step, StepEntry, StepState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +49,7 @@ pub struct Record {
     pub plan_sha256: String,
     pub plan: Plan,
     pub release: ReleaseRef,
-    pub steps: Vec<StepRecord>,
+    pub steps: Vec<StepEntry>,
     pub original_firmware: OriginalFirmware,
     pub owned_boot_entry: Option<OwnedBootEntry>,
     #[serde(default)]
@@ -122,7 +122,7 @@ impl Record {
     ) -> Option<&imager_backend::staging::browser::HostExpectation> {
         self.prepared_browser.as_ref()
     }
-    pub fn step(&self, step: Step) -> Option<&StepRecord> {
+    pub fn step(&self, step: Step) -> Option<&StepEntry> {
         self.steps.iter().find(|s| s.step == step)
     }
 
@@ -287,7 +287,7 @@ impl Record {
             existing.at = at;
             existing.detail.extend(detail);
         } else {
-            self.steps.push(StepRecord {
+            self.steps.push(StepEntry {
                 step,
                 state,
                 detail,
@@ -347,7 +347,7 @@ impl Record {
                 || expected.sealed_bytes > imager_backend::staging::prepared_setup::SLOT_BYTES
                 || self.plan.basis.host_os() != super::plan::HostOs::Linux)
         {
-            return Err("invalid prepared setup custody in staging record".into());
+            return Err("invalid prepared setup ownership in staging record".into());
         }
         if let Some(browser) = &self.prepared_browser {
             imager_backend::staging::browser::Expectation::validate(browser)
@@ -355,7 +355,7 @@ impl Record {
             if self.prepared_setup.is_none()
                 || self.plan.basis.host_os() != super::plan::HostOs::Linux
             {
-                return Err("Browser custody requires prepared Linux identity".into());
+                return Err("Browser ownership requires prepared Linux identity".into());
             }
         }
         if let Some(raw) = &self.migration {
@@ -466,7 +466,7 @@ impl RecordStore {
             source_path: self
                 .prepared_path(id)?
                 .to_str()
-                .ok_or("invalid custody path")?
+                .ok_or("invalid ownership path")?
                 .into(),
             expectation: expected.clone(),
         };

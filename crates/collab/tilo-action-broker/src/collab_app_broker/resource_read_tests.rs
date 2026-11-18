@@ -13,7 +13,8 @@ use tilo_actions::remote::{ResourceAddress, ResourceCopy};
 use super::*;
 use crate::collab_app_broker::person_id_for_root;
 use crate::services::{
-    DocumentBytes, DocumentChangeServices, HostServices, LocalPersonServices, NativeDocumentReads,
+    DocumentBytes, DocumentChangeServices, LocalPersonServices, NativeDocumentReads,
+    ProcessServices,
 };
 use crate::test_support::{Grantee, Grants as _, KindSet, TreePath, WorkspaceId, WorkspaceTree};
 
@@ -195,7 +196,7 @@ fn fixture_with(owner: Owner) -> Fixture {
     *owner.own_people.lock().unwrap() = vec![person.clone(), ANOTHER_MEMBER.repeat(32)];
     let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
-    let services = HostServices {
+    let services = ProcessServices {
         resource_changes: Some(Arc::clone(&origin) as Arc<dyn DocumentChangeServices>),
         committed_documents: Some(Arc::clone(&owner) as Arc<dyn NativeDocumentReads>),
         local_person: Some(Arc::new(Person(certificate))),
@@ -233,7 +234,7 @@ impl Fixture {
         caller: &Caller,
         app: &str,
         record: &str,
-    ) -> Result<ResourceCopy, ActionHostError> {
+    ) -> Result<ResourceCopy, ActionCallError> {
         self.reads.read(
             caller,
             &ResourceAddress {
@@ -244,7 +245,7 @@ impl Fixture {
     }
 }
 
-/// `person`'s own record of Mail, the one an app with `records: .own` keeps.
+/// `person`'s own record of Mail, the one an app with `resources: .own` keeps.
 fn own_resource(person: &str) -> String {
     collab_types::OwnResource::of_person(person, OWN_KIND)
         .expect("a person's own record")
@@ -307,14 +308,14 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 f.read(&caller, MAIL, &theirs),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ),
             "another member's own record"
         );
         // A record the workspace denies the agent: its person's authority does not widen it.
         assert!(matches!(
             f.read(&caller, NOTES, "private"),
-            Err(ActionHostError::Refused { .. })
+            Err(ActionCallError::Refused { .. })
         ));
         // An agent the workspace grants nothing reads nothing, whatever its person may.
         assert!(f.read(&f.agent("idle"), NOTES, "").is_err());
@@ -338,7 +339,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 f.read(&caller, NOTES, ""),
-                Err(ActionHostError::Refused { .. })
+                Err(ActionCallError::Refused { .. })
             ),
             "the capture under way is cut"
         );
@@ -353,7 +354,7 @@ tilo_test_env::scenario! {
         let refused = |caller: &Caller| {
             matches!(
                 f.read(caller, NOTES, ""),
-                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READS_FOR_AGENTS
+                Err(ActionCallError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READS_FOR_AGENTS
             )
         };
         // The person reads their own workspace's records, as their apps do.
@@ -395,7 +396,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 f.read(&alone, NOTES, ""),
-                Err(ActionHostError::Refused { reason }) if reason == RESOURCE_READS_FOR_AGENTS
+                Err(ActionCallError::Refused { reason }) if reason == RESOURCE_READS_FOR_AGENTS
             ),
             "an app acting for nobody reads nothing"
         );
@@ -471,7 +472,7 @@ tilo_test_env::scenario! {
         let changes = f.state.resource_changes().unwrap();
         assert!(matches!(
             changes.apply(&f.agent("scribe"), &change(MAIL)),
-            Err(ActionHostError::Refused { .. })
+            Err(ActionCallError::Refused { .. })
         ));
         assert!(f.origin.0.lock().unwrap().is_empty());
     }
@@ -486,7 +487,7 @@ tilo_test_env::scenario! {
         for caller in [person.clone(), person.delegated_to("scribe")] {
             assert!(matches!(
                 changes.apply(&caller, &change(NOTES)),
-                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READS_FOR_AGENTS
+                Err(ActionCallError::Refused { reason }) if reason == tilo_actions::remote::RESOURCE_READS_FOR_AGENTS
             ));
         }
         assert!(f.origin.0.lock().unwrap().is_empty());

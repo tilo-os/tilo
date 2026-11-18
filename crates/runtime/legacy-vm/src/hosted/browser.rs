@@ -19,7 +19,7 @@ use legacy_agent_protocol::link::{AgentLink, AgentStream};
 use legacy_agent_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio};
 use thiserror::Error;
 use tilo_actions::remote::browser::{MARK, Report, UP};
-use tilo_relay_protocol::hosted::Material;
+use tilo_server_protocol::hosted::Material;
 
 use super::network::Endpoint;
 
@@ -80,28 +80,28 @@ pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 /// to it.
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
-/// The line a session is handed at hand-off: the relay's material, with the address the session
-/// dials replaced by `relay`. The endpoint's id stays, so it joins the same relay at the one
-/// address this VM dials.
+/// The line a session is handed at hand-off: the server's material, with the address the session
+/// dials replaced by one this VM reaches it at. The endpoint's id stays, so it joins the same
+/// server at the one address this VM dials.
 ///
 /// # Errors
 ///
-/// The material is not the relay's, or names no endpoint.
-pub fn hand_off(material: &str, relay: Endpoint) -> Result<String, String> {
+/// The material is not the server's, or names no endpoint.
+pub fn hand_off(material: &str, server: Endpoint) -> Result<String, String> {
     let mut material: Material = serde_json::from_str(material.trim())
-        .map_err(|error| format!("the material is not the relay's: {error}"))?;
-    material.relay =
-        EndpointAddr::from_parts(material.relay.id, [TransportAddr::Ip(relay.socket())]);
+        .map_err(|error| format!("the material is not the server's: {error}"))?;
+    material.server =
+        EndpointAddr::from_parts(material.server.id, [TransportAddr::Ip(server.socket())]);
     serde_json::to_string(&material).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 #[cfg(test)]
-/// The material the relay writes a session, joining the workspace at
+/// The material the server writes a session, joining the workspace at
 /// `relay`: what the tests of a hand-off start from.
-pub fn test_material(relay: &str) -> String {
+pub fn test_material(server: &str) -> String {
     let cert = tilo_user_identity::DeviceCert {
         user_public_key: [1; 32],
         device_public_key: [2; 32],
@@ -118,9 +118,9 @@ pub fn test_material(relay: &str) -> String {
         record: "browser-1".into(),
         device: cert,
         secret: [2; 32],
-        relay: EndpointAddr::from_parts(
-            test_relay_id(),
-            [TransportAddr::Ip(relay.parse().unwrap())],
+        server: EndpointAddr::from_parts(
+            test_server_id(),
+            [TransportAddr::Ip(server.parse().unwrap())],
         ),
         user_public_key: [1; 32],
         account: "acct-1".into(),
@@ -129,7 +129,7 @@ pub fn test_material(relay: &str) -> String {
 }
 
 #[cfg(test)]
-fn test_relay_id() -> iroh_base::EndpointId {
+fn test_server_id() -> iroh_base::EndpointId {
     iroh_base::SecretKey::from_bytes(&[7; 32]).public()
 }
 
@@ -730,7 +730,7 @@ mod tests {
     };
 
     #[test]
-    fn the_line_handed_to_a_session_keeps_the_relays_id_and_its_dialable_address() {
+    fn the_line_handed_to_a_session_keeps_the_servers_id_and_its_dialable_address() {
         let handed = hand_off(
             &test_material("203.0.113.9:7704"),
             Endpoint {
@@ -740,9 +740,9 @@ mod tests {
         )
         .unwrap();
         let line: Material = serde_json::from_str(&handed).unwrap();
-        assert_eq!(line.relay.id, test_relay_id(), "the same relay");
+        assert_eq!(line.server.id, test_server_id(), "the same server");
         assert_eq!(
-            line.relay.addrs,
+            line.server.addrs,
             [TransportAddr::Ip("10.0.2.4:7704".parse().unwrap())]
                 .into_iter()
                 .collect(),
@@ -770,6 +770,10 @@ mod tests {
     #[test]
     fn a_session_reports_ready_up_and_use() {
         let life = Life::new(1_000);
+        assert!(
+            life.alive(),
+            "a session that started and has not ended is alive: it keeps its VM awake"
+        );
         assert!(!life.ready() && life.expired(1_000, LIMITS).is_none());
         life.report(Report::Ready, 2_000);
         life.report(Report::Used, 3_000);
@@ -794,6 +798,7 @@ mod tests {
         life.report(Report::Used, 700_000);
         assert_eq!(life.expired(1_200_000, LIMITS), None, "use resets it");
         life.ended("its session exited (1)".into());
+        assert!(!life.alive(), "an ended session is no reason to keep a VM");
         assert_eq!(life.expired(1_200_000, LIMITS), Some(End::Session));
         assert_eq!(
             life.ended_because().as_deref(),

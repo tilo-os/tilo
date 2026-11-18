@@ -25,10 +25,6 @@ impl TextInput {
                 focused: self.is_focused,
                 invalid: self.invalid,
                 disabled: self.effectively_disabled(),
-                changed_by: self
-                    .change
-                    .as_ref()
-                    .map(|(by, _)| theme.tokens.colors.presence.hue(by.hue)),
             },
         );
     }

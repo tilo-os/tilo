@@ -1,15 +1,15 @@
 //! Windows shared live into a channel.
 //!
-//! A message that shares a window ([`crate::record::WindowShare`]) shows a
+//! A message that shares a window ([`crate::chat::WindowShare`]) shows a
 //! card: the app's mark, the window's title, the sharer's face and whether
 //! they still have it open, over a miniature of the resource at the view's
 //! own proportions. The miniature is not a picture the sharer sends: Chat
 //! asks its desktop to draw the resource's own app there
-//! ([`ui::window_share`]), from this device's copy of the record, so it
-//! follows the sharer's work as the record syncs. Pressing the card grows
+//! ([`ui::window_share`]), from this device's copy of the resource, so it
+//! follows the sharer's work as the resource syncs. Pressing the card grows
 //! the miniature in place to a size to work at: the desktop then runs the
 //! resource's app there on this device's copy, taking the reader's pointer,
-//! keys and text input beside whoever else is in the record, with the access
+//! keys and text input beside whoever else is in the resource, with the access
 //! the workspace gives them. The card's head makes it smaller again, or opens
 //! the resource as a window of the reader's own. On a desktop that draws no
 //! views a press opens the window. A share its sharer stopped turns into a
@@ -35,11 +35,11 @@ use ui::window_share::{Embed, EmbedState, OpenWindow, ResourceView};
 use vello::kurbo::{Point, Rect};
 
 use crate::app::{ChatApp, Hit};
+use crate::chat::ShareAccess;
 use crate::messages::chat_part;
 use crate::model::Message;
 use crate::paint::{line_in, line_of};
 use crate::parts::ChatPart;
-use crate::record::ShareAccess;
 
 /// The miniature's proportions: a window's, wider than tall.
 pub(crate) const ASPECT: f64 = 16.0 / 10.0;
@@ -53,14 +53,13 @@ pub(crate) fn max_card_width(theme: &ui::theme::Theme) -> f64 {
 /// How much of the window's height a view to work in may take: the
 /// conversation it stands in, and the message field, stay in reach.
 const WORKING_SHARE_OF_WINDOW: f64 = 0.62;
-/// The least height worth working in.
-const MIN_WORKING_HEIGHT: f64 = 280.0;
 
 /// The height of a view to work in that is `width` wide, in a window
 /// `window` high: a window's proportions, within what the window leaves.
-pub(crate) fn working_height(width: f64, window: f64) -> f64 {
-    let most = (window * WORKING_SHARE_OF_WINDOW).max(MIN_WORKING_HEIGHT);
-    (width / ASPECT).clamp(MIN_WORKING_HEIGHT, most)
+pub(crate) fn working_height(theme: &ui::theme::Theme, width: f64, window: f64) -> f64 {
+    let least = f64::from(theme.tokens.metrics.view_min_height);
+    let most = (window * WORKING_SHARE_OF_WINDOW).max(least);
+    (width / ASPECT).clamp(least, most)
 }
 
 /// What Chat keeps of the windows shared into the workspace.
@@ -76,7 +75,7 @@ pub(crate) struct LiveShares {
     /// What the shares grant, and what the workspace lets this person do.
     pub(crate) grants: crate::share_grants::ShareGrants,
     /// The shares this person works in where the conversation shows them,
-    /// by message: how this window presents them, never part of the record.
+    /// by message: how this window presents them, never part of the resource.
     pub(crate) grown: HashSet<String>,
 }
 
@@ -195,7 +194,7 @@ impl ChatApp {
         let view = (!ended).then(|| {
             let inner = w - 2.0 * f64::from(sp.s1);
             let height = if grown {
-                working_height(inner, self.rect.height())
+                working_height(theme, inner, self.rect.height())
             } else {
                 inner / ASPECT
             };
@@ -413,7 +412,7 @@ impl ChatApp {
         &self,
         paint: &mut PaintCtx<'_>,
         m: &Message,
-        share: &crate::record::WindowShare,
+        share: &crate::chat::WindowShare,
         (label, app): (&str, &str),
         (header, end): (Rect, Option<f64>),
     ) {
@@ -464,7 +463,7 @@ impl ChatApp {
 
     /// What a live share's card says under its title, to this reader: why
     /// opening it failed, that they may edit it anyway, or the share's access.
-    pub(crate) fn share_caption(&self, m: &Message, share: &crate::record::WindowShare) -> String {
+    pub(crate) fn share_caption(&self, m: &Message, share: &crate::chat::WindowShare) -> String {
         if let Some(Err(why)) = self.resource_navigation.status(&m.id, 0) {
             // Why pressing it opened nothing, where the access stood.
             why.clone()
@@ -483,7 +482,7 @@ impl ChatApp {
     /// Returns where it stands.
     fn draw_share_mark(
         paint: &mut PaintCtx<'_>,
-        share: &crate::record::WindowShare,
+        share: &crate::chat::WindowShare,
         app: &str,
         header: Rect,
     ) -> Rect {
@@ -508,7 +507,7 @@ impl ChatApp {
         &self,
         paint: &mut PaintCtx<'_>,
         m: &Message,
-        share: &crate::record::WindowShare,
+        share: &crate::chat::WindowShare,
         (header, end): (Rect, f64),
     ) -> f64 {
         let theme = paint.theme;
@@ -518,7 +517,7 @@ impl ChatApp {
         let cy = header.center().y;
         let face_rect = Rect::new(end - face, cy - face / 2.0, end, cy + face / 2.0);
         let name = self.user_name(&m.author);
-        AvatarFace::new(&name, m.author.id())
+        AvatarFace::member(&name, &m.author)
             .presence(self.identity_colour(&m.author))
             .paint(paint, face_rect);
         if !(share.open && self.sharer_here(&m.author)) {
@@ -733,7 +732,7 @@ impl ChatApp {
         if self.active_channel.is_empty() {
             return Err("Open a channel to share a window in".into());
         }
-        // A window on one item of its record (a note of the notebook)
+        // A window on one item of its resource (a note of the notebook)
         // shares that item, under the item's own kind.
         let item_kind = window
             .item

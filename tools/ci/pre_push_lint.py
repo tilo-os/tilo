@@ -5,31 +5,43 @@ Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 
     <local ref> <local oid> <remote ref> <remote oid>
 
-Two sets of packages are linted the way CI lints them: the ones the pushed
-commits own, and the ones whose own source names something those commits
-changed. A rename, a removed item or a field added to a struct breaks the crates
-that use it, not the crate that declares it, and a gate that linted only the
-declaring crate left main red with every linted package green.
+Only a push to main is linted. Work in progress goes to `integration` (or a
+branch of its own) at once, and is tested once when it is done:
+tools/integrate.sh merges main into it, runs `t` over the result, and moves main
+to it, which is the push to main this lint runs for.
 
-What is linted is what CI lints: the changed files through the repository's own
-format check, Clippy over every target of the host with the features the
-workspace's unified build gives each package (so code behind a feature that no
-default build enables is compiled), the packages CI also checks as they ship,
-and Clippy for `wasm32-unknown-unknown` on the ones that build for the page,
-under the page's own Clippy configuration (std's clocks are banned there). A
-change can compile on the host and still break the page.
+A push to main lints the packages its commits own: the changed files through the
+repository's own format check, and Clippy over every target of the host with the
+features the workspace's unified build gives each package (so code behind a
+feature that no default build enables is compiled). Those features are the same
+whichever packages are selected, so one push's build stays warm for the next.
+
+`--wide` adds what a push leaves out, and `t`'s lint-head check runs it on every
+commit of main, so a commit that breaks one of them is named there: the packages
+whose own source names something the commits changed (a rename, a removed item
+or a field added to a struct breaks the crates that use it, not the crate that
+declares it), the packages CI also checks as they ship, and Clippy for
+`wasm32-unknown-unknown` on the ones that build for the page, under the page's
+own Clippy configuration (std's clocks are banned there). A push used to run
+them too; with main moving every minute, their minutes of rebuilding lost the
+race to the next commit, again on each retry.
 
 The Clippy runs start together, so a one-crate push costs about one build. A run
 that passed is not repeated while everything it reads is unchanged
 (tools/ci/lint_inputs.py), so a push retried after a rebase onto unrelated
-commits does not lint again. Cargo compiles wherever `$CARGO` points when it is
+commits does not lint again. Commits that passed are not linted again either
+when they are pushed once more as they were, rebased onto a newer main, within
+REBASE_WINDOW: main takes a commit every minute or two and a lint takes minutes,
+so a push that relints after every rebase loses to the next commit each time and
+never lands. What the commits main gained in between do to them is what `t`'s
+lint-head says on main. Cargo compiles wherever `$CARGO` points when it is
 set - any cargo drop-in, which may build on another machine - and otherwise the
 `cargo` on PATH. Formatting is always checked by the `cargo` and `rustfmt` on
 PATH: they compile nothing, so they need no other machine.
 
 The lint reads the files on disk, so a push is refused when what it sends is not
 the tree checked out here: a lint that spoke for another commit would say
-nothing about this one. A push whose changed packages the gate cannot name, or
+nothing about this one. A push whose changed packages the check cannot name, or
 whose page lint cannot run here, is refused too, rather than passed unread.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
@@ -37,10 +49,12 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 
     tools/ci/pre_push_lint.py --plan < pre-push-stdin    print what a push would lint
     tools/ci/pre_push_lint.py --range BASE..HEAD         lint what that range changes
+    tools/ci/pre_push_lint.py --wide --range BASE..HEAD  also its dependents, as shipped, and the page
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -68,7 +82,7 @@ WASM_TARGET = "wasm32-unknown-unknown"
 RUST_SUFFIXES = (".rs", ".tl")
 RUST_NAMES = ("Cargo.toml", "Cargo.lock", "build.rs")
 # Files that steer the whole workspace's build: a change to one can reach every
-# member, so one the gate cannot attribute refuses the push instead.
+# member, so one the check cannot attribute refuses the push instead.
 WORKSPACE_MANIFEST = "Cargo.toml"
 WORKSPACE_LOCK = "Cargo.lock"
 # The manifest that gives every member the features the workspace's whole build
@@ -86,11 +100,25 @@ CARGO_REMARKS = (
     "`bin` target `",
     "Blocking waiting for file lock on",
 )
-REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
-            "refs/remotes/origin/HEAD", "refs/heads/main")
+# Cargo's progress, one line per crate: a lint of the whole workspace prints hundreds before
+# its first diagnostic, and a failure report cut to its first lines showed nothing else.
+PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
+                      r"|Locking|Updating|Adding|Documenting)\s")
 ZERO_OID = {"0"}
+# The branch everyone lands on, and the only one a push is linted for: work in progress goes to
+# `integration` or a branch of its own unlinted, and is tested once when it is done
+# (tools/integrate.sh). A push to main that is not a fast-forward is a race already lost:
+# nobody force-pushes main, so the remote refuses it after any lint.
+MAIN_REF = "refs/heads/main"
+# Where work in progress lands. It is pushed unlinted, but never rewritten: a push that drops
+# commits from it drops someone else's work, so the one check on it is that it fast-forwards.
+INTEGRATION_REF = "refs/heads/integration"
 # How many passing lint keys a clone keeps.
 KEPT_PASSES = 256
+# How long commits that passed the lint are pushed again without it after a rebase that left them
+# as they were. Long enough for a push to be retried until it wins the race for main's head, short
+# enough that main has not become another tree under them.
+REBASE_WINDOW = 20 * 60
 # Identifiers of the language itself, and words every crate uses, say nothing
 # about which crate names what a change did: a dependent is picked by the names
 # a change removed or declared, never by these.
@@ -139,7 +167,7 @@ def wasm_target_installed() -> bool:
 
 
 class Lint(NamedTuple):
-    """One lint run of the push gate: what it is called, the command that reruns it, and what it reads.
+    """One lint run of the push check: what it is called, the command that reruns it, and what it reads.
 
     `packages` are linted; with `dependencies` the run also reads every crate they build on.
     """
@@ -155,11 +183,16 @@ class Lint(NamedTuple):
 
 
 class Push(NamedTuple):
-    """What the refs being pushed change, and what the gate could not name about them."""
+    """What the refs being pushed change, and what the check could not name about them."""
     files: set[str]
     comparisons: list[tuple[str, str]]
     tips: list[str]
     unnamed: list[str]
+    # Pushes to main that main's own head, as the remote reported it when the push began, is not
+    # part of: the remote refuses them whatever the lint says.
+    behind: list[str] = []
+    # Pushes that would rewrite integration: its head on the remote is not part of what is sent.
+    rewrites: list[str] = []
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -179,74 +212,51 @@ def diff(root: Path, base: str, head: str) -> set[str]:
     return {path for path in result.stdout.decode("utf-8", "surrogateescape").split("\0") if path}
 
 
-def start_of(root: Path, remote: str, head: str) -> str | None:
-    """The commit a ref being created started from: its merge base with main.
-
-    A branch push says nothing about where the branch began, so the merge base
-    with the branch it will be reviewed against is what the push adds.
-    """
-    for tip in (pattern.format(remote=remote) for pattern in REF_TIPS):
-        if not known(root, tip):
-            continue
-        merged = git(root, "merge-base", tip, head)
-        if merged.returncode == 0 and merged.stdout.strip():
-            return merged.stdout.strip()
-    return None
-
-
-def unreferenced(root: Path, head: str) -> set[str]:
-    """The files of the pushed commits no remote has yet: the last resort for a branch start."""
-    commits = git(root, "rev-list", head, "--not", "--remotes")
-    if commits.returncode != 0:
-        return set()
-    files: set[str] = set()
-    for commit in commits.stdout.split():
-        result = subprocess.run(
-            ["git", "diff-tree", "-r", "--root", "--no-commit-id", "--no-renames", "--name-only",
-             "-z", commit], cwd=root, capture_output=True, check=False,
-        )
-        files |= {path for path in result.stdout.decode("utf-8", "surrogateescape").split("\0") if path}
-    return files
-
-
-def comparison(root: Path, remote: str, remote_oid: str, head: str) -> tuple[str, set[str]] | None:
-    """Where a pushed ref starts and what it changes, or None when there is nothing to compare it with."""
+def comparison(root: Path, remote_oid: str, head: str) -> tuple[str, set[str]] | None:
+    """What a push to main changes from main's head, or None when that head is not here."""
     if set(remote_oid) != ZERO_OID and known(root, remote_oid):
         return remote_oid, diff(root, remote_oid, head)
-    start = start_of(root, remote, head)
-    if start:
-        return start, diff(root, start, head)
-    files = unreferenced(root, head)
-    if files:
-        return None, files
     return None
 
 
-def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
-    """Every file the pushed refs change, and each ref's comparison."""
+def contains(root: Path, head: str, commit: str) -> bool:
+    """Whether `commit` is `head` or one of its ancestors (False when it is not even here)."""
+    return known(root, commit) and git(root, "merge-base", "--is-ancestor", commit, head).returncode == 0
+
+
+def pushed(root: Path, lines: Iterable[str]) -> Push:
+    """Every file a push to main changes, and its comparison; pushes to other branches are not linted."""
     files: set[str] = set()
     comparisons: list[tuple[str, str]] = []
     tips: list[str] = []
     unnamed: list[str] = []
+    behind: list[str] = []
+    rewrites: list[str] = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
             continue
-        ref, head, _remote_ref, remote_oid = parts
-        if set(head) == ZERO_OID:
-            continue  # a deleted ref changes nothing that is built
-        result = comparison(root, remote, remote_oid, head)
+        ref, head, remote_ref, remote_oid = parts
+        if (remote_ref == INTEGRATION_REF and set(remote_oid) != ZERO_OID
+                and not contains(root, head, remote_oid)):
+            rewrites.append(remote_oid)
+            continue
+        if remote_ref != MAIN_REF or set(head) == ZERO_OID:
+            continue  # work in progress, or a deleted ref, which changes nothing that is built
+        if set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
+            behind.append(remote_oid)
+            continue
+        result = comparison(root, remote_oid, head)
         if result is None:
             unnamed.append(ref)
-            say(f"pre-push: cannot tell what {ref} adds (no main to compare it with); "
-                "its packages cannot be named")
+            say(f"pre-push: main's head {remote_oid[:12]} is not here, so what {ref} adds to it "
+                "cannot be named; fetch and push again")
             continue
         start, changed = result
-        if start:
-            comparisons.append((start, head))
+        comparisons.append((start, head))
         tips.append(head)
         files |= changed
-    return Push(files, comparisons, tips, unnamed)
+    return Push(files, comparisons, tips, unnamed, behind, rewrites)
 
 
 def rust_changes(files: set[str]) -> set[str]:
@@ -432,14 +442,15 @@ def reading_packages(root: Path, paths: list[str]) -> list[str]:
         return []
 
 
-def select(root: Path, push: Push, files: set[str]) -> Selection | None:
+def select(root: Path, push: Push, files: set[str], wide: bool = True) -> Selection | None:
     """The packages to lint for the host and the page, or None when the push cannot be named.
 
     Those are the packages the commits own or read the changed files through,
     plus every package whose own source names something they changed: a rename,
     a removed item or a field added to a struct breaks the crates that use it.
     The page lint covers the same crates that build for it, and the page's entry
-    when the change reaches anything the page compiles.
+    when the change reaches anything the page compiles. Without `wide`, only the
+    packages the commits own are linted, for the host alone.
     """
     metadata = cargo_metadata(root)
     packages, by_dir = package_maps(metadata, root)
@@ -455,7 +466,7 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
         readers = set(reading_packages(root, unowned))
         if not readers:
             say(f"pre-push: no workspace package reads {', '.join(unowned[:3])}"
-                f"{' and more' if len(unowned) > 3 else ''}, so CI builds them outside the gate; "
+                f"{' and more' if len(unowned) > 3 else ''}, so CI builds them outside the check; "
                 "they are not linted here")
         owners |= readers & members
     seeds = set(owners)
@@ -473,6 +484,8 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
                 "only a workspace-wide lint speaks for (`t cargo clippy --workspace`)")
             return None
         seeds |= reached
+    if not wide:
+        return Selection(sorted(seeds), [], [], metadata)
     names = changed_names(root, push.comparisons, files)
     dependents = closure(seeds, reverse_dependencies(packages, root)) - seeds
     if len(names) > NAMED_LIMIT:
@@ -538,14 +551,23 @@ def page_clippy_config(root: Path) -> dict[str, str]:
     return {"CLIPPY_CONF_DIR": str(directory)}
 
 
-def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str]) -> list[Lint]:
-    """The runs the gate makes: formatting, the host lint, and the page lint where it can run.
+def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str],
+              own_build_dirs: bool = False, wide: bool = True) -> list[Lint]:
+    """The runs the check makes: formatting, the host lint, and the page lint where it can run.
 
     `web` is what is actually linted for the page, so a toolchain without the
     target leaves it empty. Each command is also the line a failure prints to
     rerun it.
+
+    With `own_build_dirs`, the lints as the packages ship and for the page build in build
+    directories of their own. Cargo locks a build directory for the whole of a build, so the
+    three otherwise waited for one another instead of starting together; a build directory
+    of their own costs a first build each.
     """
     cargo = cargo_command()
+
+    def build_dir(name: str) -> list[str]:
+        return ["--config", f'build.build-dir="target/{name}"'] if own_build_dirs else []
     native = selection.native
     selected = [item for name in native for item in ("-p", name)]
     runs = []
@@ -556,17 +578,18 @@ def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list
                       "--all-targets", "--keep-going", "--", "-D", "warnings"], native, True))
     # The packages CI lints as they ship too (tools/ci/package_features.py): a
     # lint that only sees them with extra features never builds that shape.
-    shipped = package_features.default_builds(native)
+    shipped = package_features.default_builds(native) if wide else []
     if shipped:
         runs.append(Lint("clippy (native, as it ships)", [
-            *cargo, "clippy", "--locked",
+            *cargo, "clippy", "--locked", *build_dir("lint-as-shipped"),
             *(item for name in shipped for item in ("-p", name)),
             "--all-targets", "--keep-going", "--", "-D", "warnings",
         ], shipped, True))
     if web:
         page = [item for name in web for item in ("-p", name)]
         runs.append(Lint("clippy (wasm32)", [
-            *cargo, "clippy", "--locked", "--target", WASM_TARGET, *page, "--", "-D", "warnings",
+            *cargo, "clippy", "--locked", *build_dir("lint-page"), "--target", WASM_TARGET, *page,
+            "--", "-D", "warnings",
         ], web, True, page_clippy_config(root)))
     return runs
 
@@ -580,8 +603,13 @@ def rustfmt_available() -> bool:
     return shutil.which("rustfmt") is not None
 
 
-def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, str]], float]:
-    """Start every run at once and collect them, so the wall time is the slowest one."""
+def run_together(root: Path, runs: list[Lint],
+                 keep: Path | None = None) -> tuple[list[tuple[Lint, int, str]], float]:
+    """Start every run at once and collect them, so the wall time is the slowest one.
+
+    With `keep`, each run's whole output is written there, headed by its command and how long
+    it took: what tells a lint that compiled everything from one that compiled what changed.
+    """
     started = time.monotonic()
     running = []
     for run in runs:
@@ -591,12 +619,24 @@ def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, st
         process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True,
                                    env={**os.environ, **(run.env or {})})
         running.append((run, process, log))
+    finished: dict[int, float] = {}
+    while len(finished) < len(running):
+        for index, (_run, process, _log) in enumerate(running):
+            if index not in finished and process.poll() is not None:
+                finished[index] = time.monotonic() - started
+        time.sleep(0.2)
     results = []
-    for run, process, log in running:
-        status = process.wait()
+    for index, (run, process, log) in enumerate(running):
         log.seek(0)
-        results.append((run, status, log.read()))
+        output = log.read()
+        results.append((run, process.returncode, output))
         log.close()
+        if keep is not None:
+            keep.mkdir(parents=True, exist_ok=True)
+            name = re.sub(r"[^a-z0-9]+", "-", run.label.lower()).strip("-")
+            (keep / f"{index}-{name}.log").write_text(
+                f"$ {shlex.join(run.command)}\n# exit {process.returncode} after {finished[index]:.0f}s\n"
+                + output)
     return results, time.monotonic() - started
 
 
@@ -610,7 +650,17 @@ class Passes:
     def passed(self, key: str | None) -> bool:
         return key is not None and (self.directory / key).is_file()
 
-    def record(self, key: str | None, label: str) -> None:
+    def passed_since(self, key: str | None, seconds: float) -> float | None:
+        """How long ago the run of `key` passed, when that is within `seconds`."""
+        if key is None:
+            return None
+        try:
+            age = time.time() - (self.directory / key).stat().st_mtime
+        except FileNotFoundError:
+            return None
+        return age if 0 <= age <= seconds else None
+
+    def keep(self, key: str | None, label: str) -> None:
         if key is None:
             return
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -626,6 +676,35 @@ class Passes:
         entries.sort(key=lambda modified: modified[0])
         for _modified, stale in entries[:-KEPT_PASSES]:
             stale.unlink(missing_ok=True)
+
+
+def change_key(root: Path, push: Push) -> str | None:
+    """What the pushed commits change, whatever they stand on, or None when that cannot be named.
+
+    A commit's patch id is the same before and after a rebase that applied it unchanged, and
+    another one as soon as a conflict was resolved or the commit amended. A merge has none, and
+    neither has a worktree that is not the commit: both are linted.
+    """
+    if git(root, "status", "--porcelain").stdout.strip():
+        return None
+    digest = hashlib.sha256()
+    for start, head in push.comparisons:
+        commits = git(root, "rev-list", "--reverse", "--parents", f"{start}..{head}").stdout.split("\n")
+        commits = [line.split() for line in commits if line.strip()]
+        if not commits or any(len(parents) != 2 for parents in commits):
+            return None
+        patches = subprocess.run(["git", "log", "--reverse", "--patch", "--no-color", "--no-ext-diff",
+                                  "--format=commit %H", f"{start}..{head}"],
+                                 cwd=root, capture_output=True, text=True, check=False)
+        named = subprocess.run(["git", "patch-id", "--stable"], cwd=root, input=patches.stdout,
+                               capture_output=True, text=True, check=False)
+        ids = [line.split()[0] for line in named.stdout.splitlines() if line.strip()]
+        if patches.returncode or named.returncode or len(ids) != len(commits):
+            return None  # an empty commit has no patch id: nothing says it is the one that passed
+        for patch in ids:
+            digest.update(patch.encode() + b"\n")
+        digest.update(b"\0")
+    return f"change-{digest.hexdigest()}"
 
 
 def lint_keys(root: Path, metadata: dict, runs: list[Lint]) -> list[str | None]:
@@ -654,9 +733,9 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
         say(f"pre-push: lint passed in {elapsed:.0f}s ({checked})")
         return 0
     for run, output in failed:
-        say(f"pre-push: {run.label} failed - rerun: {' '.join(run.command)}")
+        say(f"pre-push: {run.label} failed - rerun: {shlex.join(run.command)}")
         lines = [line for line in output.strip().splitlines()
-                 if not any(remark in line for remark in CARGO_REMARKS)]
+                 if not any(remark in line for remark in CARGO_REMARKS) and not PROGRESS.match(line)]
         for line in lines[:SHOWN_DIAGNOSTIC_LINES]:
             say(f"  {line}")
         if len(lines) > SHOWN_DIAGNOSTIC_LINES:
@@ -684,6 +763,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
     parser.add_argument("--range", metavar="BASE..HEAD",
                         help="lint what that range changes, for a run outside a push (CI, t)")
+    parser.add_argument("--wide", action="store_true",
+                        help="also lint the dependents that name what changed, the packages as they "
+                             "ship, and the page (what t's lint-head runs on every commit of main)")
+    parser.add_argument("--own-build-dirs", action="store_true",
+                        help="build the lints as packages ship and for the page in build directories "
+                             "of their own, so all three start together")
+    parser.add_argument("--keep-logs", metavar="DIR", type=Path,
+                        help="keep each run's whole output, and how long it took, in DIR")
+    parser.add_argument("--only", metavar="PACKAGES",
+                        help="lint only these of the packages the range reaches, comma-separated "
+                             "(to relint only some of what a range reaches)")
     parser.add_argument("--stdin", type=argparse.FileType("r"), default=sys.stdin,
                         help="the ref lines Git writes for a pre-push hook")
     options = parser.parse_args(argv)
@@ -694,26 +784,54 @@ def main(argv: list[str]) -> int:
             parser.error("--range takes BASE..HEAD")
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
-        push = pushed(root, options.remote, options.stdin)
+        push = pushed(root, options.stdin)
+    if push.rewrites:
+        say(f"pre-push: integration is at {push.rewrites[0][:12]}, which this push does not contain, "
+            "so it would drop the commits after it, which are other people's work. Fetch, rebase "
+            "or merge onto origin/integration, and push again")
+        return 1
+    if push.behind:
+        say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
+            "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
+            "and push again")
+        return 1
     files = rust_changes(push.files)
     if not files:
         say("pre-push: no Rust or Cargo file changed; nothing to lint")
         return 0
     if push.unnamed:
-        say("pre-push: refusing a push the gate cannot name")
+        say("pre-push: refusing a push the check cannot name")
         return 1
     if tip := unchecked_tree(root, push):
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
         return 1
+    # Only a push asks this: `--range` and `--wide` are how main itself is linted, and they read
+    # every commit on the tree it landed on.
+    passes = Passes(root)
+    change = None
+    if not (options.range or options.wide or options.only or options.plan):
+        change = change_key(root, push)
+        age = passes.passed_since(change, REBASE_WINDOW)
+        if age is not None:
+            say(f"pre-push: these commits passed the lint {age / 60:.0f} min ago and are pushed as "
+                "they were, on a newer main; what main's commits since do to them is linted on main")
+            return 0
     try:
-        selection = select(root, push, files)
+        selection = select(root, push, files, options.wide)
     except (subprocess.CalledProcessError, RuntimeError) as error:
         say(f"pre-push: cargo metadata could not name the packages this push touches: {error}")
         return 1
     if selection is None:
         say("pre-push: refusing the push until the changed packages can be named")
         return 1
+    if options.only is not None:
+        only = set(filter(None, options.only.split(",")))
+        selection = Selection(sorted(set(selection.native) & only), sorted(set(selection.web) & only),
+                              sorted(set(selection.dependents) & only), selection.metadata)
+        if not selection.native:
+            say("pre-push: none of the packages asked for is one this range reaches; nothing to lint")
+            return 0
     if not selection.native:
         say("pre-push: the changed Rust files belong to no workspace package; CI builds them outside it")
         return 0
@@ -741,20 +859,23 @@ def main(argv: list[str]) -> int:
     dependents = (f" and {packages(len(selection.dependents))} built on them"
                   if selection.dependents else "")
     say(f"pre-push: linting {packages(len(selection.native))}{dependents}{page}")
-    runs = lint_runs(root, selection, web, formatting)
+    runs = lint_runs(root, selection, web, formatting,
+                     options.own_build_dirs, options.wide)
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
-    passes = Passes(root)
     pending = []
     for run, key in zip(runs, lint_keys(root, selection.metadata, runs)):
         if passes.passed(key):
             say(f"pre-push: {run.label} passed before on the same inputs")
         else:
             pending.append((run, key))
-    results, elapsed = run_together(root, [run for run, _key in pending])
+    results, elapsed = run_together(root, [run for run, _key in pending], options.keep_logs)
     for (_run, key), (run, status, _output) in zip(pending, results):
         if status == 0:
-            passes.record(key, " ".join(run.command))
-    return report(results, elapsed, checked)
+            passes.keep(key, " ".join(run.command))
+    status = report(results, elapsed, checked)
+    if status == 0:
+        passes.keep(change, "the pushed commits")
+    return status
 
 
 if __name__ == "__main__":

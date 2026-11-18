@@ -19,7 +19,7 @@
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 
 use crate::common::window::KEY_A;
 use crate::common::{
@@ -33,7 +33,7 @@ const NO_WINDOW: &str = "No window here yet";
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
-fn notebook() -> (RecordService, Vec<String>) {
+fn notebook() -> (ResourceService, Vec<String>) {
     notes(&TITLES)
 }
 
@@ -391,7 +391,7 @@ fn a_placed_notes_body_stands_at_the_shells_height_under_one_bar() {
     );
 
     // The notes app's own body: its title field and the running text under it, each a whole line
-    // tall and standing inside its window.
+    // tall and inside its window.
     let title = until_bounds(&mut session, "Untitled");
     let body = until_bounds(&mut session, "Block text");
     for (what, rect) in [("title", title), ("body", body)] {
@@ -519,7 +519,7 @@ fn window_within(
 
 /// Where the menu of the window the shell shows as `name` stands on the standard display: the
 /// window's own menu in the pill of its one bar ("This window", `window_controls`). Every strip's
-/// window carries one by that name, so it is the one standing in the window's frame at an icon's
+/// window carries one by that name, so it is the one in the window's frame at an icon's
 /// size.
 fn window_menu(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
     let frame = window_frame(session, name)?;
@@ -1118,7 +1118,7 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
     // A frame whose menu is shut is no surface over the windows: nothing of the shell's takes the
     // keyboard, so what the person types is the window in front's.
     assert!(
-        !session.compositor().host_takes_keys(),
+        !session.compositor().surface_takes_keys(),
         "the shell takes no key while its own menu is shut: {:?}",
         session.compositor().windows()
     );

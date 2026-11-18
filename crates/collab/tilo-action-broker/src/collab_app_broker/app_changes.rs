@@ -3,13 +3,13 @@
 //! service for the list again instead of asking on a timer.
 
 use crate::BrokerError;
-use crate::services::HostServices;
+use crate::services::ProcessServices;
 
 /// The wait for the app list's next change past `after` for a connection on
 /// `route_app`: only the certified Files route may wait, as only Files lists
 /// the person's apps.
 pub(super) fn app_change(
-    services: &HostServices,
+    services: &ProcessServices,
     route_app: &str,
     after: u64,
 ) -> Result<crate::services::ApplicationChange, BrokerError> {
@@ -53,7 +53,7 @@ mod tests {
             announces: true,
             waits: Mutex::new(Vec::new()),
         });
-        let services = HostServices {
+        let services = ProcessServices {
             applications: Some(service.clone()),
             ..Default::default()
         };
@@ -77,8 +77,8 @@ mod tests {
         );
 
         for services in [
-            HostServices::default(),
-            HostServices {
+            ProcessServices::default(),
+            ProcessServices {
                 applications: Some(Arc::new(WaitingApps {
                     announces: false,
                     waits: Mutex::new(Vec::new()),

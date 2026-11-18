@@ -104,7 +104,7 @@ impl Drop for GovernancePump {
 impl GovernancePump {
     /// Run `access`'s governance over `transport` on a thread named `name`,
     /// and `after_pass` after every pass: the host's own work that settles beside
-    /// the groups (a session tells the collaboration plane its rosters
+    /// the groups (a session tells the peer network its rosters
     /// there).
     ///
     /// Between passes the thread sleeps until it is poked
@@ -130,8 +130,7 @@ impl GovernancePump {
         std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
-                let policy_watch =
-                    tilo_identity_host::policy_change::Watch::new(move || wake.poke());
+                let policy_watch = tilo_identity::policy_change::Watch::new(move || wake.poke());
                 while !stopped.load(Ordering::Relaxed) {
                     let mut due = access
                         .as_ref()
@@ -155,7 +154,7 @@ impl GovernancePump {
 mod tests {
     use super::*;
     use crate::encryption::{InboundGovernance, KeyAccess, KeyDir, KeysConfig, WorkspaceKeys};
-    use crate::gates::Gates;
+    use crate::seal_checks::SealChecks;
     use crate::testing::{Announcements, Directory, Endpoint, Policy, Workspace, key};
     use key_group::VaultKey;
 
@@ -201,7 +200,7 @@ mod tests {
                 role: crate::KeyRole::Committer,
             },
             Box::new(Directory::new(Policy::default())),
-            Arc::new(Gates::default()),
+            Arc::new(SealChecks::default()),
         )
         .unwrap();
         let park = GovernancePark::new();
@@ -316,7 +315,7 @@ mod tests {
                     role: crate::KeyRole::Committer,
                 },
                 Box::new(Directory::new(policy.clone())),
-                Arc::new(Gates::default()),
+                Arc::new(SealChecks::default()),
             )
             .unwrap();
             (service, Endpoint::join(&workspace, workspace_id, id))

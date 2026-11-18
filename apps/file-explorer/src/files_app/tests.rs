@@ -283,7 +283,7 @@ mod open_with_tests {
             );
             // Each row wears the app's own glyph, and a row two apps share a name with says where the
             // machine got it.
-            // An app the session handed artwork for wears it, its glyph standing by.
+            // An app the session handed artwork for wears it, its glyph beside it.
             let rows: Vec<(Option<ui::icons::Icon>, Option<String>, Option<String>)> = apps
                 .iter()
                 .map(|item| match item {
@@ -713,7 +713,7 @@ mod open_with_tests {
             })
             .unwrap();
             let stored = app
-                .person::<crate::recent::RecentRecord>()
+                .person::<crate::recent::RecentResource>()
                 .unwrap()
                 .with(|recent| recent.on("test-device"));
             assert_eq!(
@@ -827,7 +827,7 @@ mod command_path_tests {
         {
             opaque_hold_deadline_reaches_files_root_before_metadata_refresh();
             #[cfg(unix)]
-            scheduled_metadata_refresh_preserves_record_selection_and_scroll();
+            scheduled_metadata_refresh_preserves_resource_selection_and_scroll();
             #[cfg(unix)]
             collaborative_search_activation_resolves_the_latest_path_by_document_id();
         }
@@ -869,7 +869,7 @@ mod command_path_tests {
             context_menu_exposes_the_sort_section_including_type();
             context_select_targets_the_clicked_row_not_a_stale_selection();
             a_screen_reader_opens_a_rows_menu_on_the_row_it_names();
-            context_menu_gates_new_file_on_templates_existing();
+            context_menu_checks_new_file_on_templates_existing();
             large_text_view_menu_clamps_inside_the_live_window();
         }
 
@@ -1253,10 +1253,10 @@ mod command_path_tests {
             assert!(
                 widget
                     .state()
-                    .collaborative_record_pager
+                    .collaborative_resource_pager
                     .borrow()
                     .has_roots(),
-                "the root holds a record catalogue"
+                "the root holds a resource catalogue"
             );
             widget.state().load(folder);
             let _ = widget.state().refresh_metadata_if_due(ui::time::now());
@@ -1997,14 +1997,14 @@ mod command_path_tests {
             );
         }
 
-        phase availability_policy_commands_write_only_eligible_records;
+        phase availability_policy_commands_write_only_eligible_resources;
         {
             #[cfg(unix)]
             collaborative_selection_offers_and_applies_keep_offline();
             #[cfg(unix)]
             free_local_space_is_offered_and_sent_only_for_eligible_local_files();
             #[cfg(unix)]
-            mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_records();
+            mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_resources();
             #[cfg(unix)]
             inherited_pin_is_explained_but_not_offered_as_a_local_toggle();
             failed_projected_file_offers_retry_and_availability_details();
@@ -2079,14 +2079,14 @@ mod command_path_tests {
                     document_id: record.into(),
                     version_id: selected,
                 });
-            let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            let Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
                 entry: Some(entry), ..
-            }) = w.state().take_host_intent()
+            }) = w.state().take_process_intent()
             else {
                 panic!("Files hands the selected version to Workspace Activity");
             };
             assert_eq!(entry.author.name, "Scribe");
-            assert_eq!(ui::author_line(&entry.author), "Scribe for Ada Lovelace");
+            assert_eq!(ui::author_line(&entry.author), "Scribe");
             assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
             let attribution = entry.author.attribution.expect("who acted for whom");
             assert_eq!(attribution.acting.by, ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::agent("scribe")));
@@ -2097,7 +2097,7 @@ mod command_path_tests {
             );
         }
 
-        phase conflict_resolution_is_explicit_and_merge_preflight_gated;
+        phase conflict_resolution_is_explicit_and_merge_preflight_guarded;
         {
             open_text_conflict_menu_requires_review_before_an_exact_merge();
             merge_review_only_enables_apply_after_a_safe_daemon_preflight();
@@ -2830,9 +2830,9 @@ mod command_path_tests {
             .children
             .iter()
             .find(|resource| {
-                resource.id.as_str() == crate::search_provider::record_resource_id(document_id)
+                resource.id.as_str() == crate::search_provider::resource_resource_id(document_id)
             })
-            .expect("a collaborative file uses its record UUID as the resource identity");
+            .expect("a collaborative file uses its resource UUID as the resource identity");
         assert_eq!(entry.kind, "files.record");
         let address = entry
             .action_address("copy")
@@ -2856,7 +2856,7 @@ mod command_path_tests {
         let refreshed = crate::files_app::published::tree(&w, &doc);
         assert!(
             api::resolve(&refreshed, &address).is_some(),
-            "the record action address survives a path rename and resolves its fresh path"
+            "the resource action address survives a path rename and resolves its fresh path"
         );
     }
 
@@ -3606,7 +3606,7 @@ mod command_path_tests {
         );
     }
 
-    fn context_menu_gates_new_file_on_templates_existing() {
+    fn context_menu_checks_new_file_on_templates_existing() {
         let (w, _cfg) = hermetic();
         let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
             spec.iter().any(|(label, _)| label.starts_with("New file"))
@@ -3741,7 +3741,7 @@ mod command_path_tests {
     }
 
     #[cfg(unix)]
-    fn scheduled_metadata_refresh_preserves_record_selection_and_scroll() {
+    fn scheduled_metadata_refresh_preserves_resource_selection_and_scroll() {
         let dir = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_WORKSPACE_ROOTS", dir.path());
@@ -3775,7 +3775,7 @@ mod command_path_tests {
     }
 
     #[cfg(unix)]
-    fn mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_records() {
+    fn mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_resources() {
         let dir = tempfile::tempdir().unwrap();
         let automatic = dir.path().join("automatic.txt");
         let pinned = dir.path().join("pinned.txt");
@@ -3867,7 +3867,7 @@ mod command_path_tests {
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice()),
-            "the opposite policy action must not rewrite an automatic record"
+            "the opposite policy action must not rewrite an automatic resource"
         );
         assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
     }
@@ -4153,7 +4153,7 @@ mod command_path_tests {
         w.state().apply_command(FileCommand::ShowProperties);
         let panel = w.state().collab_panel.as_ref().unwrap().clone();
         assert!(panel.title.contains("Properties"));
-        let internal = |line: &String| line.contains("Collaborative record");
+        let internal = |line: &String| line.contains("Collaborative resource");
         assert!(!panel.lines.iter().any(internal), "{:?}", panel.lines);
         assert!(panel.lines.iter().any(|line| line.contains("1 version")));
         assert!(panel.lines.iter().any(|line| line.contains("1920 × 1080")));
@@ -4196,11 +4196,11 @@ mod command_path_tests {
                 version_id: selected,
             });
         assert!(w.state().collab_panel.is_none());
-        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+        let Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
             resource_id,
             version_id,
             entry,
-        }) = w.state().take_host_intent()
+        }) = w.state().take_process_intent()
         else {
             panic!("Files hands the selected immutable version to Workspace Activity");
         };
@@ -4327,7 +4327,7 @@ mod command_path_tests {
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
         xattr::set(&file, ui::prelude::DOCUMENT_ID_XATTR, id.as_bytes()).unwrap();
-        crate::model::sync_state_tests::set_record_index(
+        crate::model::sync_state_tests::set_resource_index(
             dir.path(),
             &[serde_json::json!({
                 "document_id": id,
@@ -4341,8 +4341,8 @@ mod command_path_tests {
         widget.state().workspace_roots = vec![dir.path().to_path_buf()];
         {
             let mut state = widget.state();
-            state.collaborative_record_pager = RefCell::new(
-                crate::model::WorkspaceRecordIndexPager::new(&state.workspace_roots),
+            state.collaborative_resource_pager = RefCell::new(
+                crate::model::WorkspaceDocumentIndexPager::new(&state.workspace_roots),
             );
         }
         widget.state().refresh_external_search_catalogs();
@@ -4352,22 +4352,22 @@ mod command_path_tests {
         );
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
-            .find(|result| result.action_id == crate::search_provider::record_resource_id(id))
-            .expect("collaborative record is searchable");
+            .find(|result| result.action_id == crate::search_provider::resource_resource_id(id))
+            .expect("collaborative resource is searchable");
         let row = widget
             .state()
             .published_row(&hit.anchor())
-            .expect("late record materializes exactly for this anchor");
+            .expect("late resource materializes exactly for this anchor");
         assert!(
             row.actions
                 .iter()
                 .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
-            "the anchored row reveals the record"
+            "the anchored row reveals the resource"
         );
         widget
             .state()
             .open_anchor(&hit.anchor())
-            .expect("opening the anchor reveals the record");
+            .expect("opening the anchor reveals the resource");
         assert_eq!(widget.state().current_path, nested);
         assert_eq!(widget.state().selection.primary(), Some(0));
         assert_eq!(widget.state().entries[0].path, file);
@@ -4712,7 +4712,7 @@ mod accessibility_tests {
     #[test]
     fn files_states_and_modal_sheets_publish_accessible_semantics() {
         custom_empty_loading_and_error_states_are_live_semantics();
-        deterministic_shot_seams_cover_loading_and_actionable_error_states();
+        deterministic_shot_boundaries_cover_loading_and_actionable_error_states();
         collaboration_sheet_is_a_focused_modal_semantic_subtree();
         #[cfg(unix)]
         destructive_eviction_requires_a_named_modal_action_before_writing_the_override();
@@ -4769,7 +4769,7 @@ mod accessibility_tests {
         assert_eq!(retry.action_target.as_deref(), Some(RETRY_ROW));
     }
 
-    fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {
+    fn deterministic_shot_boundaries_cover_loading_and_actionable_error_states() {
         let (_home, widget) = empty_widget();
         widget.state().debug_show_loading_state();
         assert!(widget.state().is_loading());
@@ -4867,7 +4867,7 @@ pub(super) fn with_owner_callback(callback: impl FnOnce() + 'static) {
     struct Probe<F>(RefCell<Option<F>>);
     impl<F: FnOnce() + 'static> ui::resources::PublishesResources for Probe<F> {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
-            assert!(ui::bound_dispatch::host_person_invocation_permitted());
+            assert!(ui::bound_dispatch::local_person_invocation_permitted());
             self.0.borrow_mut().take().unwrap()();
             Vec::new()
         }
@@ -4927,7 +4927,7 @@ mod injected_startup_tests {
         StartupInputs {
             initial_dir: path.to_path_buf(),
             workspace_roots: Vec::new(),
-            record_roots: Vec::new(),
+            resource_roots: Vec::new(),
             remote_accounts: Vec::new(),
             trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
         }
@@ -5978,7 +5978,7 @@ fn hosted_window(home: &Path) -> FileExplorerWidget {
         StartupInputs {
             initial_dir: home.to_path_buf(),
             workspace_roots: Vec::new(),
-            record_roots: Vec::new(),
+            resource_roots: Vec::new(),
             remote_accounts: Vec::new(),
             trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
         },

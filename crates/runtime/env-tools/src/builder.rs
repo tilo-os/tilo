@@ -9,7 +9,7 @@
 //!    tree to the store, which packs it into a `tool` image bound to the
 //!    runtime, signs and keeps it.
 //!
-//! Nothing here needs a session or a display; a relay's compute worker
+//! Nothing here needs a session or a display; a server's compute worker
 //! drives the same [`Builder`] as a device does.
 
 use std::collections::HashMap;
@@ -300,7 +300,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         let network = match self.network {
             NetworkChoice::Offline => Network::Offline,
             NetworkChoice::Host => Network::Host,
-            NetworkChoice::Gated => crate::network::gated(self.policy(runtime, tree)?),
+            NetworkChoice::Guarded => crate::network::guarded(self.policy(runtime, tree)?),
         };
         Ok(SandboxOptions {
             dnf_cache: Some(self.state.join("dnf-cache").join(runtime.to_hex())),

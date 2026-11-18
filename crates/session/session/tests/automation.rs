@@ -38,7 +38,7 @@ use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Records, SearchOptions, Session};
+use tilo_session::{AppSocket, Launches, Options, Records, SearchOptions, Session};
 use tilo_user_identity::DeviceCert;
 
 /// The workspace the shell shows, the id it has on every device, and the app whose records it holds.
@@ -69,11 +69,11 @@ fn this_computer(
     let identities = home.config().join("tilo/identity");
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &identities,
         &paths,
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
     let device =
@@ -142,7 +142,7 @@ fn take_published(owner: &NativeWorkspaceOwner, from: &NativeWorkspaceOwner, dev
         owner
             .receive(
                 workspace_id(),
-                TransportOrigin::RelayDelta(device),
+                TransportOrigin::ServerDelta(device),
                 message,
                 SystemTime::now(),
             )
@@ -161,8 +161,8 @@ fn take_frames<'a>(
         .collect();
     for (bytes, retention) in frames {
         let origin = match retention {
-            Retention::Checkpoint => TransportOrigin::RetainedRelayDelta(publisher),
-            Retention::Delta => TransportOrigin::RelayDelta(publisher),
+            Retention::Checkpoint => TransportOrigin::RetainedServerDelta(publisher),
+            Retention::Delta => TransportOrigin::ServerDelta(publisher),
         };
         owner
             .receive(
@@ -226,7 +226,7 @@ fn kept(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
     workspace
 }
 
-/// A session keeping this device's shell under `state` , with the action plane the shortcuts run on
+/// A session keeping this device's shell under `state` , with the app wire the shortcuts run on
 /// at `socket` , for `person` , showing the workspace its governance holds.
 fn session_keeping(data: &Path, state: &Path, socket: &Path, person: &str) -> Session {
     session_launching(data, state, socket, person, Arc::new(Launches::default()))
@@ -244,7 +244,7 @@ fn session_launching(
     crate::common::headless(Options {
         collab: false,
         state: Some(state.to_path_buf()),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: person.to_owned(),
         wake: LoopWake::default(),
         launches,
@@ -414,7 +414,7 @@ fn post_a_message(home: &tilo_test_env::TestHome) {
 #[track_caller]
 fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
     let mut seen = Vec::new();
-    // A firing waits for the ledger that records it to be on disk, and a writer busy with the rest
+    // A firing waits for the log that records it to be on disk, and a writer busy with the rest
     // of the suite is what makes it take a while: the bound is the suite's own, not a second count.
     tilo_test_env::wait_for("a shortcut run to start", || {
         session.step(Duration::from_millis(2)).expect("step");
@@ -529,16 +529,16 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     );
 }
 
-/// The schedule ledger this device keeps.
-fn ledger_path(state: &Path) -> std::path::PathBuf {
+/// The schedule log this device keeps.
+fn log_path(state: &Path) -> std::path::PathBuf {
     state.join("tilo").join("automation").join("schedules.json")
 }
 
-/// The one schedule the ledger holds, as (its key, its trigger, its next fire time).
+/// The one schedule the log holds, as (its key, its trigger, its next fire time).
 fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
-    let text = std::fs::read_to_string(ledger_path(state)).expect("the schedule ledger");
-    let ledger: serde_json::Value = serde_json::from_str(&text).expect("the ledger's JSON");
-    let schedules = ledger["schedules"].as_object().expect("the schedules");
+    let text = std::fs::read_to_string(log_path(state)).expect("the schedule log");
+    let log: serde_json::Value = serde_json::from_str(&text).expect("the log's JSON");
+    let schedules = log["schedules"].as_object().expect("the schedules");
     assert_eq!(schedules.len(), 1, "one schedule is armed");
     let (key, entry) = schedules.iter().next().expect("the schedule");
     (
@@ -548,10 +548,10 @@ fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
     )
 }
 
-/// The ledger a device that was off when a fire time came finds: the schedule it kept, its next
+/// The log a device that was off when a fire time came finds: the schedule it kept, its next
 /// fire `due` milliseconds past the epoch.
 fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
-    let ledger = serde_json::json!({
+    let log = serde_json::json!({
         "schedules": {
             format!("{WORKSPACE}/tidy/0"): {
                 "trigger": serde_json::to_value(trigger).expect("the trigger"),
@@ -559,10 +559,10 @@ fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
             }
         }
     });
-    let path = ledger_path(state);
-    std::fs::create_dir_all(path.parent().expect("the ledger's directory"))
-        .expect("the ledger's directory");
-    std::fs::write(path, ledger.to_string()).expect("the ledger written");
+    let path = log_path(state);
+    std::fs::create_dir_all(path.parent().expect("the log's directory"))
+        .expect("the log's directory");
+    std::fs::write(path, log.to_string()).expect("the log written");
 }
 
 #[test]
@@ -598,21 +598,21 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         vec!["tidy".to_string()],
         "the missed fire time ran once"
     );
-    // The ledger's move past the fire time is a write of the session's to disk: a counted number of
+    // The log's move past the fire time is a write of the session's to disk: a counted number of
     // frames is not that write landing.
     let (key, entry, next) =
-        tilo_test_env::wait_for("the ledger to move past the fire time it ran", || {
+        tilo_test_env::wait_for("the log to move past the fire time it ran", || {
             session.step(Duration::from_millis(2)).expect("step");
             let (key, entry, next) = only_schedule(state.path());
             (next > due).then_some((key, entry, next))
         });
     assert!(
         key.ends_with("/tidy/0"),
-        "the ledger names the shortcut's trigger: {key}"
+        "the log names the shortcut's trigger: {key}"
     );
     assert!(
         next > due,
-        "the ledger moved past the fire time it ran: {next} is after {due}"
+        "the log moved past the fire time it ran: {next} is after {due}"
     );
     assert_eq!(entry["schedule"]["every"], "interval");
     assert_eq!(entry["schedule"]["seconds"], 3600);
@@ -630,13 +630,13 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         &person,
         kept(&person, std::slice::from_ref(&tidy)),
     );
-    // Past a tick, so a fire time the ledger kept would have come up.
+    // Past a tick, so a fire time the log kept would have come up.
     for _ in 0..60 {
         session.step(Duration::from_millis(10)).expect("step");
     }
     assert!(
         session.take_finished_invocations().is_empty(),
-        "the fire time the ledger kept ran once, across both restarts"
+        "the fire time the log kept ran once, across both restarts"
     );
 }
 

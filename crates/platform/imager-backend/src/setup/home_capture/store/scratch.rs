@@ -5,7 +5,7 @@ mod recovery;
 #[cfg(test)]
 mod tests;
 use super::*;
-pub use backing::BackingWitness;
+pub use backing::BackingProof;
 use std::{
     ffi::CString,
     os::{
@@ -119,7 +119,7 @@ pub(in crate::setup::home_capture) struct ScratchLease {
     pub(in crate::setup::home_capture) quota_bytes: u64,
     pub(in crate::setup::home_capture) receipt: ScratchReceipt,
     _allocation_lease: Option<FileLease>,
-    _backing: BackingWitness,
+    _backing: BackingProof,
 }
 impl ScratchLease {
     pub(in crate::setup::home_capture) fn validate_backing(&self) -> io::Result<()> {
@@ -163,7 +163,7 @@ impl Store {
             .and_then(|bytes| bytes.checked_sub(reserve))
             .filter(|bytes| *bytes > 0)
             .ok_or(io::ErrorKind::StorageFull)?;
-        let backing = BackingWitness::review(&parent)?;
+        let backing = BackingProof::review(&parent)?;
         backing.validate_directory(&parent)?;
         let parent_path = std::fs::read_link(format!("/proc/self/fd/{}", parent.as_raw_fd()))?;
         let parent_facts = parent.metadata()?;

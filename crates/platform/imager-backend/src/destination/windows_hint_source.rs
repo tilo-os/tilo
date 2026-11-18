@@ -3,7 +3,7 @@
 //! Boot extraction copies opaque ciphertext, never unlocks it. The Accounts
 //! actor owns the expectation and a fresh operation/selection generation, and
 //! invokes `unlock` only in response to explicit private password input.
-use account_custody::hints::{
+use account_credentials::hints::{
     AccountHint,
     media::{self, Expectation, Prepared},
 };
@@ -72,10 +72,10 @@ mod tests {
             b"private-password",
             "12345678-1234-1234-1234-123456789abc",
             &[AccountHint {
-                provider: account_custody::hints::Provider::Microsoft,
+                provider: account_credentials::hints::Provider::Microsoft,
                 email: "private@example.org".into(),
                 server: String::new(),
-                sources: account_custody::hints::HintSources::default(),
+                sources: account_credentials::hints::HintSources::default(),
             }],
             b"verified copies",
         )

@@ -78,7 +78,7 @@ RUN --mount=type=bind,source=tools/ci/shstk-mark.py,target=/tmp/shstk-mark.py,ro
 
 # CI-only workflow tooling. nodejs: actions/checkout. ripgrep, time, yt-dlp:
 # workflow and measurement tools (tools/ci/measure.sh needs GNU time). Qt
-# examples and LibreOffice are installed by the path-gated legacy-app E2E.
+# examples and LibreOffice are installed by the path-guarded legacy-app E2E.
 RUN dnf install -y \
       nodejs \
       ripgrep time yt-dlp \
@@ -121,7 +121,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 # Android NDK and Rust targets for the Android lint (tools/ci/clippy-android.sh, docs/android.md).
 # The NDK ships Linux host tools for x86_64 only, so the ARM builder, whose
-# jobs never run that lane, does not carry it. API 29 is the host's minimum.
+# jobs never run that job, does not carry it. API 29 is the host's minimum.
 RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install-android-ndk.sh,ro \
     if [ "$(uname -m)" = x86_64 ]; then \
       TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" bash /tmp/install-android-ndk.sh \

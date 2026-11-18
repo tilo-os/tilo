@@ -94,9 +94,9 @@ pub enum SandboxError {
     /// The build's network could not be set up; the build did not run.
     #[error("the build's network could not be set up, so it did not run: {0}")]
     Egress(String),
-    /// This platform cannot enforce the requested gated network.
-    #[error("gated build networking is unsupported on this platform; the build did not run")]
-    UnsupportedGatedNetwork,
+    /// This platform cannot enforce the requested guarded network.
+    #[error("guarded build networking is unsupported on this platform; the build did not run")]
+    UnsupportedGuardedNetwork,
 }
 
 #[derive(Debug)]
@@ -333,9 +333,11 @@ impl BuildSandbox {
         tracing::debug!(?argv, runtime = %self.runtime.display(), "build sandbox");
         let out = match network {
             #[cfg(not(target_os = "linux"))]
-            Network::Gated { .. } => return Err(SandboxError::UnsupportedGatedNetwork),
+            Network::Guarded { .. } => return Err(SandboxError::UnsupportedGuardedNetwork),
             #[cfg(target_os = "linux")]
-            Network::Gated { policy, options } => self.run_gated(argv, policy, options, timeout),
+            Network::Guarded { policy, options } => {
+                self.run_guarded(argv, policy, options, timeout)
+            }
             Network::Offline | Network::Host => {
                 // Name resolution for the caller's network; the mount point
                 // it creates in the upper is dropped by the seal.
@@ -373,13 +375,13 @@ impl BuildSandbox {
         })
     }
 
-    /// Run with gated egress. bwrap makes the network namespace and stops
+    /// Run with guarded egress. bwrap makes the network namespace and stops
     /// before the program (`--block-fd`); the egress is attached to that
     /// namespace — stub, filter, then `pasta` — and only then is bwrap let
     /// go. Any failure before that kills bwrap: the program never runs
     /// with a network the policy didn't shape.
     #[cfg(target_os = "linux")]
-    fn run_gated(
+    fn run_guarded(
         &self,
         argv: &[&str],
         policy: &tilo_egress::EgressPolicy,
@@ -674,7 +676,7 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn gated_builds_are_rejected_before_spawning_on_unsupported_platforms() {
+    fn guarded_builds_are_rejected_before_spawning_on_unsupported_platforms() {
         use std::os::unix::fs::PermissionsExt as _;
         use tilo_egress::{EgressOptions, EgressPolicy};
 
@@ -699,12 +701,12 @@ mod tests {
                 .unwrap()
                 .with_identity(Identity::CallerOnly)
                 .with_bwrap(bwrap.clone())
-                .with_network(Network::Gated {
+                .with_network(Network::Guarded {
                     policy,
                     options: EgressOptions::from_host(&runtime),
                 });
             let error = sandbox.run(&["true"], Duration::from_secs(1)).unwrap_err();
-            assert!(matches!(error, SandboxError::UnsupportedGatedNetwork));
+            assert!(matches!(error, SandboxError::UnsupportedGuardedNetwork));
             assert!(!root.path().join("bwrap.started").exists());
             assert!(!scratch.join("resolv.conf").exists());
         }

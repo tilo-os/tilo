@@ -422,10 +422,9 @@ impl Core {
     /// writer id the mark holds.
     fn mark_writer(&self, target: &ResourceRef, mark: &str) -> Option<crate::ids::Actor> {
         let versions = self.store.borrow().versions(target).ok()?;
-        versions.into_iter().find_map(|v| {
-            v.who
-                .filter(|who| automerge::ActorId::from(who.actor_bytes()).to_hex_string() == mark)
-        })
+        versions
+            .into_iter()
+            .find_map(|v| v.who.filter(|who| who.actor_bytes() == mark.as_bytes()))
     }
 
     /// The lines of the text of `target` that `re` matches, each at its first match, leaving out
@@ -631,6 +630,71 @@ impl Core {
             parts,
             fields: others,
         })
+    }
+
+    /// `target` as `read` gives it, from the reading its service publishes (`reading`) rather than
+    /// a record: what `read(device.styles)` answers, each field as a view of it reads it, or as it
+    /// would start where the reading leaves it out. A field that does not read as its type says is
+    /// shown as the error it gave, as [`Self::read_local`] shows one.
+    pub(crate) fn read_reading(
+        &self,
+        target: &ResourceRef,
+        reading: &Json,
+        info: &TypeInfo,
+    ) -> ReadAnswer {
+        let fields = Self::text_fields(info);
+        let values = {
+            let registry = self.registry.borrow();
+            crate::foreign::Foreign::values(target, info, reading, &registry)
+        };
+        let mut parts = Vec::new();
+        let mut others = Vec::new();
+        for f in &info.fields {
+            // What the reading holds of the field, else what its type starts as where the
+            // reading leaves it out: what a view of it reads.
+            let value = match values.get(&f.id) {
+                Some(value) => value.clone(),
+                None => crate::host_res::declared_default(&f.ty, f.default.as_ref())
+                    .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), f.name)),
+            };
+            let text_field = fields.iter().find(|t| t.info.id == f.id);
+            // A type with one text has a body, cited by the paragraph alone; a type with several
+            // names each text's field, as [`Self::text_of`] reads it.
+            let prefix = text_field.map(|field| {
+                if field.body {
+                    String::new()
+                } else {
+                    format!("{} ", field.info.name)
+                }
+            });
+            match (text_field, value) {
+                (Some(_), Ok(Value::Text(text))) => {
+                    parts.extend(plain_parts(&text, prefix.as_deref().unwrap_or_default()));
+                }
+                (Some(_), Ok(Value::Rich(rich))) => {
+                    for (anchor, block) in rich.anchors() {
+                        if block.text.trim().is_empty() {
+                            continue;
+                        }
+                        parts.push(Part {
+                            anchor: format!("{}{anchor}", prefix.as_deref().unwrap_or_default()),
+                            kind: block_kind(block).to_owned(),
+                            text: block.text.clone(),
+                        });
+                    }
+                }
+                (_, Ok(Value::List(items))) if f.kind == FieldKind::Collection => {
+                    others.push((f.name.clone(), format!("{} items", items.len())));
+                }
+                (_, Ok(value)) => others.push((f.name.clone(), self.show_inline(&value))),
+                (_, Err(error)) => others.push((f.name.clone(), format!("error: {error}"))),
+            }
+        }
+        ReadAnswer {
+            shown: self.shown(target),
+            parts,
+            fields: others,
+        }
     }
 
     /// The answer to `req` over this runtime's records, as JSON.
@@ -971,7 +1035,7 @@ impl Runtime {
 }
 
 impl Core {
-    /// The value standing for `shown` here: a resource of this runtime when it holds `shown`'s
+    /// The value for `shown` here: a resource of this runtime when it holds `shown`'s
     /// app, else a foreign one that prints as its literal and title.
     pub(crate) fn value_of_shown(&self, shown: &Shown, local: bool) -> HResult<Value> {
         let author = self.module_of_frame()?;

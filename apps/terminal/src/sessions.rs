@@ -72,7 +72,7 @@ pub struct Sessions {
     pub directory: Directory,
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
-    intent: Option<ui::widget::AppHostIntent>,
+    intent: Option<ui::widget::AppProcessIntent>,
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
     window: Option<ui::hosted_window::HostedWindow>,
 }
@@ -282,7 +282,7 @@ impl Sessions {
         let scripted = false;
         if scripted || matches!(self.source, Source::Hosted { .. } | Source::Standalone) {
             let reply = Rc::new(RefCell::new(ui::widget::HostShellAllow::default()));
-            self.intent = Some(ui::widget::AppHostIntent::AllowHostShell {
+            self.intent = Some(ui::widget::AppProcessIntent::AllowHostShell {
                 reply: Rc::downgrade(&reply),
             });
             self.allow = Some(reply);
@@ -297,7 +297,7 @@ impl Sessions {
         Some(answer)
     }
 
-    pub fn take_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    pub fn take_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.intent.take()
     }
 
@@ -412,7 +412,7 @@ impl Sessions {
 
     pub fn rename_environment(&mut self, record: &str, name: &str) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
-            return Err("not an environment record".into());
+            return Err("not an environment resource".into());
         }
         self.environments = self.directory_request(&serde_json::json!({
             "op": "environment-action",
@@ -431,7 +431,7 @@ impl Sessions {
         writable: bool,
     ) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
-            return Err("not an environment record".into());
+            return Err("not an environment resource".into());
         }
         self.environments = self.directory_request(&serde_json::json!({
             "op": "environment-action",

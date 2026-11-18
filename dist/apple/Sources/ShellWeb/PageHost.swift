@@ -20,7 +20,7 @@ public protocol PageHostDelegate: AnyObject {
 /// for as long as the app keeps its signature and its data.
 ///
 /// In a build that shows one app it holds that app's page and nothing else of Tilo. The way
-/// in may lead anywhere in the site (its door, an invitation, a pairing link). Once the
+/// in may lead anywhere in the site (its entry page, an invitation, a pairing link). Once the
 /// person is in, an address of the site that is not the app's own goes to the system like
 /// any other, and a page that is not the app's own is put out of sight and the app opened in
 /// its place.
@@ -31,13 +31,13 @@ public final class PageHost: NSObject {
     public let view: WKWebView
     public weak var delegate: (any PageHostDelegate)?
 
-    private let door = Door()
-    private let offer: DoorOffer?
+    private let messages = MessageHandler()
+    private let offer: WayInOffer?
     private var permission: NoticePermission
     private var lastEnd: Date?
     private var titleWatch: NSKeyValueObservation?
     private var addressWatch: NSKeyValueObservation?
-    /// The page said it is in: past its site's door.
+    /// The page said it is in: past its site's entry page.
     private var entered = false
     /// How often in a row the page was taken back to the app without getting there.
     private var returns = 0
@@ -48,11 +48,11 @@ public final class PageHost: NSObject {
     public var settling = Duration.seconds(1.5)
 
     /// - Parameters:
-    ///   - offer: the ways in this device has, which the page shows in its door while the
+    ///   - offer: the ways in this device has, which the page shows in its entry page while the
     ///     site keeps the device out.
     ///   - keepsData: `false` only for a check that must leave nothing behind.
     ///   - inspectable: lets Safari's Web Inspector attach, for development.
-    public init(settings: ShellSettings, permission: NoticePermission, offer: DoorOffer? = nil, keepsData: Bool = true,
+    public init(settings: ShellSettings, permission: NoticePermission, offer: WayInOffer? = nil, keepsData: Bool = true,
                 frame: CGRect = CGRect(x: 0, y: 0, width: 1100, height: 760), inspectable: Bool = false) {
         self.settings = settings
         policy = SitePolicy(settings: settings)
@@ -71,8 +71,8 @@ public final class PageHost: NSObject {
         #endif
         view = WKWebView(frame: frame, configuration: configuration)
         super.init()
-        door.host = self
-        view.configuration.userContentController.add(door, name: Bridge.name)
+        messages.host = self
+        view.configuration.userContentController.add(messages, name: Bridge.name)
         installScript()
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -151,7 +151,7 @@ public final class PageHost: NSObject {
     private func go(to address: URL) {
         returning?.cancel()
         returning = nil
-        // The page that is shown is on its way out: what it said of the door is over.
+        // The page that is shown is on its way out: what it said of the entry page is over.
         entered = false
         guard let shown = view.url, PageHost.sameDocument(shown, address) else {
             view.load(URLRequest(url: address))
@@ -179,10 +179,10 @@ public final class PageHost: NSObject {
         return (answer as? String).flatMap(ComposeOutcome.init(rawValue:)) ?? .noBridge
     }
 
-    /// Say `words` in the door, under the ways in the shell offers there: why a link the
-    /// person brought was not followed. `false` where the door shows no such offer, and the
+    /// Say `words` on the entry page, under the ways in the shell offers there: why a link the
+    /// person brought was not followed. `false` where the entry page shows no such offer, and the
     /// words are the app's to say.
-    public func say(atDoor words: String) async -> Bool {
+    public func say(onEntryPage words: String) async -> Bool {
         let answer = try? await view.callAsyncJavaScript(
             "return Boolean(globalThis.__tiloShell?.refused(words))",
             arguments: ["words": words], in: nil, contentWorld: .page)
@@ -283,7 +283,7 @@ struct PageAway: LocalizedError {
 }
 
 /// The message handler holds its target weakly: a content controller keeps its handlers.
-private final class Door: NSObject, WKScriptMessageHandler {
+private final class MessageHandler: NSObject, WKScriptMessageHandler {
     weak var host: PageHost?
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -329,7 +329,7 @@ extension PageHost: WKNavigationDelegate {
     }
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        // Another page: whatever the last one said of the site's door is over.
+        // Another page: whatever the last one said of the site's entry page is over.
         entered = false
         veil(false)
         delegate?.page(self, said: .entry(PageEntry(state: "")))

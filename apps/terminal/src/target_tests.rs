@@ -41,9 +41,9 @@ tilo_test_env::scenario! {
     phase the_device_shell_is_asked_for_once_and_opens_when_allowed;
     {
         let allowed = Rc::new(RefCell::new(false));
-        let gate = allowed.clone();
+        let check = allowed.clone();
         let (mut widget, opened) = tab(RecentTarget::none(), move |target| {
-            if target.is_host() && !*gate.borrow() {
+            if target.is_host() && !*check.borrow() {
                 Err(OpenError::NeedsAllow("not allowed yet".into()))
             } else {
                 Ok(())
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
                 .is_err()
         );
 
-        let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
+        let Some(ui::widget::AppProcessIntent::AllowHostShell { reply }) = widget.take_session_intent()
         else {
             panic!("the tab must ask the shell for the person's allow");
         };
@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
     {
         let mut sessions = crate::sessions::Sessions::standalone();
         assert!(sessions.request_allow());
-        let ui::widget::AppHostIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
+        let ui::widget::AppProcessIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
         else {
             panic!("expected host shell permission");
         };
@@ -259,7 +259,7 @@ fn a_new_tab_opens_the_most_recent_environment_and_records_it() {
     assert_eq!(
         recorded(&app),
         Some(SessionTarget::environment("work")),
-        "the target is part of the synced session record"
+        "the target is part of the synced session resource"
     );
 
     on_tab(&mut app, |_| ());
@@ -507,7 +507,7 @@ tilo_test_env::scenario! {
             {"key":"../x","name":"Bad"}]}"#,
         )
         .unwrap();
-        assert_eq!(list.len(), 1, "a key no record may have is dropped");
+        assert_eq!(list.len(), 1, "a key no resource may have is dropped");
         assert_eq!(list[0].tools, vec!["git".to_string()]);
         assert_eq!(
             crate::sessions::parse_directory_reply(r#"{"result":"denied","reason":"nope"}"#),
@@ -528,7 +528,7 @@ tilo_test_env::scenario! {
             let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
             assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
             assert_eq!(request["requested_by"], "person");
-            assert_eq!(request["runs"], "0123456789abcdef");
+            assert_eq!(request["commands"], "0123456789abcdef");
             assert!(
                 crate::inner::ush_request(
                     &[],
@@ -715,10 +715,10 @@ fn a_carried_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() 
 #[test]
 fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
     let allowed = Rc::new(RefCell::new(false));
-    let gate = allowed.clone();
+    let check = allowed.clone();
     let mut app = App::new().unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), move |target| {
-        if target.is_host() && !*gate.borrow() {
+        if target.is_host() && !*check.borrow() {
             Err(OpenError::NeedsAllow("not allowed".into()))
         } else {
             Ok(())
@@ -763,19 +763,19 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
     let versions = app.versions().len();
     let intent = app
         .harness()
-        .take_host_intent()
+        .take_process_intent()
         .expect("the canonical native app adapter must see the request");
-    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+    let ui::widget::AppProcessIntent::AllowHostShell { reply } = intent else {
         panic!("expected host permission");
     };
     assert!(
-        app.harness().take_host_intent().is_none(),
+        app.harness().take_process_intent().is_none(),
         "the host consumes the request once"
     );
     assert_eq!(
         app.versions().len(),
         versions,
-        "consuming host intent does not write the record"
+        "consuming host intent does not write the resource"
     );
     *allowed.borrow_mut() = true;
     reply.upgrade().unwrap().borrow_mut().answer = Some(true);
@@ -805,8 +805,8 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
         widget.switch_target(&SessionTarget::Host, Requester::Person)
     })
     .unwrap();
-    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
-        app.harness().take_host_intent()
+    let Some(ui::widget::AppProcessIntent::AllowHostShell { reply }) =
+        app.harness().take_process_intent()
     else {
         panic!("expected canonical host permission");
     };
@@ -818,7 +818,7 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
         OpenState::Failed(_)
     ));
     assert!(on_tab(&mut app, |widget| widget.is_disconnected()));
-    assert!(app.harness().take_host_intent().is_none());
+    assert!(app.harness().take_process_intent().is_none());
     app.settle();
     assert_eq!(
         opened.borrow().len(),
@@ -843,8 +843,8 @@ fn a_refused_device_shell_is_not_where_the_next_session_opens() {
     })
     .unwrap();
     assert_eq!(recorded(&app), Some(SessionTarget::Host));
-    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
-        app.harness().take_host_intent()
+    let Some(ui::widget::AppProcessIntent::AllowHostShell { reply }) =
+        app.harness().take_process_intent()
     else {
         panic!("expected the person to be asked");
     };
@@ -857,7 +857,7 @@ fn a_refused_device_shell_is_not_where_the_next_session_opens() {
     assert_eq!(
         recorded(&app),
         Some(SessionTarget::default_environment()),
-        "the refusal hands the record back to where a new tab opens"
+        "the refusal hands the resource back to where a new tab opens"
     );
 
     let mut app = app.reopen().unwrap();
@@ -867,7 +867,7 @@ fn a_refused_device_shell_is_not_where_the_next_session_opens() {
         &[(SessionTarget::default_environment(), Requester::Person)]
     );
     assert!(
-        app.harness().take_host_intent().is_none(),
+        app.harness().take_process_intent().is_none(),
         "the next login asks nothing"
     );
 }
@@ -889,9 +889,9 @@ fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relab
     );
     let intent = app
         .harness()
-        .take_host_intent()
+        .take_process_intent()
         .expect("ordinary host permission flow");
-    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+    let ui::widget::AppProcessIntent::AllowHostShell { reply } = intent else {
         panic!("expected permission request");
     };
     reply.upgrade().unwrap().borrow_mut().answer = Some(false);
@@ -908,8 +908,8 @@ fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relab
 fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused() {
     use ui::floating_surface::DeviceShellOperation as O;
     let allowed = Rc::new(std::cell::Cell::new(false));
-    let gate = allowed.clone();
-    let sessions = owner_fixture_sessions(gate);
+    let check = allowed.clone();
+    let sessions = owner_fixture_sessions(check);
     let mut app = App::new().unwrap();
     app.with_surface(|t: &mut crate::TerminalView| t.set_sessions(sessions))
         .unwrap();
@@ -917,8 +917,8 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
     assert_eq!(mounted["target"]["kind"], "host");
     assert_eq!(mounted["lifecycle"], "awaiting_allow");
-    let ui::widget::AppHostIntent::AllowHostShell { reply } =
-        app.harness().take_host_intent().unwrap()
+    let ui::widget::AppProcessIntent::AllowHostShell { reply } =
+        app.harness().take_process_intent().unwrap()
     else {
         panic!("normal permission request");
     };
@@ -1043,13 +1043,13 @@ fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
     });
 }
 
-fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
+fn owner_fixture_sessions(check: Rc<std::cell::Cell<bool>>) -> Sessions {
     Sessions::scripted(RecentTarget::none(), move |target, by, _| {
         assert_eq!(by, Requester::Person);
         if !target.is_host() {
             return Err(OpenError::NoRuntime("fixture runtime absent".into()));
         }
-        if !gate.get() {
+        if !check.get() {
             return Err(OpenError::NeedsAllow(
                 "fixture owner consent required".into(),
             ));
@@ -1342,7 +1342,7 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     let keep = handed.clone();
     let up = reachable.clone();
     attach_with(&mut app, &attaches, move |target, _| {
-        if target.environment_record().is_some() && !up.get() {
+        if target.environment_resource().is_some() && !up.get() {
             return Err(OpenError::Failed("the session cannot be reached".into()));
         }
         let (output, supervisor_output) = std::os::unix::net::UnixStream::pair().unwrap();

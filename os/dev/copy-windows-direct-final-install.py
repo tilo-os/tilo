@@ -374,7 +374,7 @@ def run(args):
                 and source_receipt.get("ci_image") == args.ci_image,
                 "VM source receipt does not bind the digest-pinned CI image")
         if getattr(args, "development", False):
-            ci_provenance, checked, dual_gate = development.verify(args)
+            ci_provenance, checked, dual_check = development.verify(args)
             index_digest = child_digest = args.ci_image.split("@", 1)[1]
             require(source_receipt.get("ci_verification_key_sha256") is None,
                     "development source receipt must not claim a release verification key")
@@ -396,7 +396,7 @@ def run(args):
                 args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
             require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
                     "physical install requires backend-derived signed target proof v2")
-            dual_gate = provenance.dual_ci_medium_gate(
+            dual_check = provenance.dual_ci_medium_check(
                 args, checked, child_digest, ci_provenance["source_revision"])
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
@@ -413,7 +413,7 @@ def run(args):
                 and source_receipt.get("installed_uki_sha256") == guest["target_uki_sha256"],
                 "VM source receipt does not bind verified CI child and checked guest proof")
         require(all(source_receipt.get(field) == value
-                    for field, value in dual_gate.items()),
+                    for field, value in dual_check.items()),
                 "source receipt does not bind paired CI media and WHPX proofs")
     disk_number = plan["windows_disk"]["number"]
     current = stage.snapshot(disk_number)
@@ -424,7 +424,7 @@ def run(args):
         # Final copies cannot touch the Windows extent. Its pagefile is only a
         # shrink constraint; requiring it to disappear here forces a needless
         # Windows reboot after the final partitions have already been allocated.
-        stage.windows_install_gate(require_no_pagefile=False)
+        stage.windows_install_check(require_no_pagefile=False)
     rows, final_rows = expected_rows(plan, stage_receipt, current.get("partitions", []))
     live_number = live_windows_partition(rows, disk_number)
     hashes = source_preflight(args.source_raw, source_receipt, rows, final_rows,
@@ -469,7 +469,7 @@ def run(args):
         output["loader_path"] = loader_path
         output["loader_sha256"] = loader_hash
         if getattr(args, "development", False):
-            output["development_admission"] = dual_gate["development_admission"]
+            output["development_admission"] = dual_check["development_admission"]
         require(args.output is not None, "execute requires --output")
         stage.atomic_json(args.output, output)
     print(json.dumps(output, indent=2))

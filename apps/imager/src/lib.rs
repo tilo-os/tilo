@@ -49,7 +49,7 @@
 //! Disk Imager: writing an OS image to a drive, and installing Tilo.
 //!
 //! One wizard runs both: a source, a drive, the settings the target keeps, then
-//! the write and its read-back. Writing is gated twice: the host's typed
+//! the write and its read-back. Writing is guarded twice: the host's typed
 //! confirmation, then the platform authenticating a short-lived helper.
 //!
 //! [`ImagerShell`] is the app: this wizard plus the guided setup (`--setup`) and

@@ -74,7 +74,7 @@ pub(super) enum Never {
     /// Its ciphertext is malformed, or the route's keys reject it.
     Undecryptable,
     /// Cleartext the broker says must be sealed: a broker that fanned out
-    /// what its own gate refuses.
+    /// what its own check refuses.
     Downgrade,
     /// Sealed, on a route that is cleartext.
     SealedOnPlain,

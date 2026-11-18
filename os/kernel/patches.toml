@@ -17,7 +17,7 @@
 fedora_kernel = "kernel-7.2.10-200.fc44"
 
 [[patch]]
-file = "0001-octeontx2-gate-cn20k-debugfs.patch"
+file = "0001-octeontx2-cn20k-debugfs-needs-debug-fs.patch"
 upstream = "Tilo's own build fix, not posted; mainline v7.3 still builds cn20k/debugfs.o unconditionally"
 
 [[patch]]

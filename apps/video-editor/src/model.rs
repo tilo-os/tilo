@@ -1,6 +1,6 @@
 //! The editor's data model: media bin, tracks, clips, project.
 //!
-//! `#[derive(Model)]` stores the project in the record field by field, with media, tracks,
+//! `#[derive(Model)]` stores the project in the resource field by field, with media, tracks,
 //! clips and markers keyed by their own ids, so members' edits merge per field. The
 //! editing math (split, trim, move, ripple) lives here behind unit tests; the verbs
 //! ([`crate::resource`]) run it.
@@ -88,7 +88,7 @@ impl ClipEffect {
 }
 
 /// The kinds of stackable effect a clip can carry. Each transforms the graded
-/// colour; the preview and the (gated) export apply them in list order.
+/// colour; the preview and the (guarded) export apply them in list order.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
 )]
@@ -358,7 +358,7 @@ pub struct ChromaKey {
     /// staircase.
     pub softness: f64,
     /// How much of the key colour is pulled back out of what survives,
-    /// 0..1. Green bouncing off a subject standing near the screen tints
+    /// 0..1. Green bouncing off a subject near the screen tints
     /// them; this removes that tint without touching their brightness.
     pub spill: f64,
 }
@@ -812,11 +812,12 @@ impl MediaKind {
     }
 }
 
-/// A track is a horizontal lane. Video lanes stack above audio lanes;
+/// A track is a horizontal row of the timeline. Video tracks stack above audio tracks;
 /// `index` orders within a kind (V1 below V2, A1 above A2).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     Video,
     Audio,
@@ -906,7 +907,7 @@ pub struct MediaItem {
     /// (`/var/workspace/<path>`), or the content reference a source imported
     /// from the workspace's content store is read by. This — not the bytes —
     /// is what the CRDT replicates; the decode path hydrates the bytes on
-    /// demand. See [`crate::media`] for the seam.
+    /// demand. See [`crate::media`] for the boundary.
     pub path: String,
     /// The title's text and styling, for a [`MediaKind::Text`] item. `None`
     /// for every decoded source — a title is the one media whose picture
@@ -943,7 +944,7 @@ impl Default for MediaItem {
 }
 
 impl MediaItem {
-    /// Resolve this item's bytes through the FUSE-media seam, reporting
+    /// Resolve this item's bytes through the FUSE-media boundary, reporting
     /// where they live and whether they're hydrated. The one place a
     /// reference becomes a (possibly-local) file.
     pub fn source(&self) -> media::MediaSource {
@@ -968,14 +969,14 @@ pub struct Track {
     /// written before solo existed still loads.
     #[serde(default)]
     pub solo: bool,
-    /// The lane's fader, in **decibels**, `0.0` being unity.
+    /// The track's fader, in **decibels**, `0.0` being unity.
     ///
     /// Decibels rather than a fraction because a linear fader puts -6 dB half way along and
     /// crushes the useful range into the top fifth. Defaults to `0.0` with `#[serde(default)]`,
     /// so a project written before faders existed loads at unity.
     #[serde(default)]
     pub gain_db: f64,
-    /// Where the lane sits across the stereo field: `-1` hard left, `0`
+    /// Where the track sits across the stereo field: `-1` hard left, `0`
     /// centre, `+1` hard right. Defaults to centre for the same reason.
     #[serde(default)]
     pub pan: f64,
@@ -997,7 +998,7 @@ impl Default for Track {
     }
 }
 
-/// The quietest fader position, below which the lane is **off** rather than
+/// The quietest fader position, below which the track is **off** rather than
 /// merely quiet. -60 dB is a thousandth of full scale: past it nothing is
 /// audible under anything else, and a fader that crawled on toward -∞ would
 /// spend most of its travel on differences nobody can hear.
@@ -1012,7 +1013,7 @@ pub const MAX_GAIN_DB: f64 = 12.0;
 /// A fader position as a linear amplitude multiplier.
 ///
 /// At or below [`MIN_GAIN_DB`] this is exactly `0.0`: the bottom of the track
-/// is silence, not a very small number, so a lane turned all the way down
+/// is silence, not a very small number, so a track turned all the way down
 /// contributes nothing at all rather than a rounding error.
 pub fn db_to_linear(db: f64) -> f64 {
     if !db.is_finite() || db <= MIN_GAIN_DB {
@@ -1029,7 +1030,7 @@ pub fn linear_to_db(gain: f64) -> f64 {
 }
 
 impl Track {
-    /// This lane's fader as a linear multiplier, clamped to the range the
+    /// This track's fader as a linear multiplier, clamped to the range the
     /// control offers. A value outside it can only arrive from a peer running
     /// a build with a different ceiling, and honouring it would let one
     /// member hear a mix nobody else can reach.
@@ -1037,7 +1038,7 @@ impl Track {
         db_to_linear(self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB))
     }
 
-    /// The pan matrix: what this lane's signal is multiplied by in each channel.
+    /// The pan matrix: what this track's signal is multiplied by in each channel.
     ///
     /// The **0 dB pan law**: the channel panned toward stays at unity and the other is
     /// attenuated. A constant-power law would make the ends 3 dB louder than the centre, and a
@@ -1051,7 +1052,7 @@ impl Track {
     }
 
     /// How the fader reads on screen: `"0.0 dB"`, `"+4.5 dB"`, `"-12.0 dB"`,
-    /// and `"-∞"` at the bottom stop, where the lane is off.
+    /// and `"-∞"` at the bottom stop, where the track is off.
     pub fn gain_words(&self) -> String {
         let db = self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
         if db <= MIN_GAIN_DB {
@@ -1075,8 +1076,8 @@ impl Track {
         }
     }
 
-    /// Whether this lane is anywhere other than unity and centre — what a
-    /// summary line has to mention and a resting lane does not.
+    /// Whether this track is anywhere other than unity and centre — what a
+    /// summary line has to mention and a resting track does not.
     pub fn mix_is_set(&self) -> bool {
         self.gain_db.abs() > 1e-9 || self.pan.abs() > 1e-9
     }
@@ -1148,7 +1149,7 @@ pub struct Clip {
     /// shot's picture and sound, which move, trim, split, delete and re-time together.
     ///
     /// A shared group id rather than "my partner is clip X": a pointer has to be repaired when
-    /// one half is deleted, and in a record two people edit that repair is a conflict. A group
+    /// one half is deleted, and in a resource two people edit that repair is a conflict. A group
     /// id degrades safely — one member is indistinguishable from unlinked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Uuid>,
@@ -1163,7 +1164,7 @@ pub struct Clip {
     /// play.
     #[serde(default, skip_serializing_if = "is_false")]
     pub sound_split: bool,
-    /// Unlinking clears **this**, not [`Self::link`], so the group survives as a record of
+    /// Unlinking clears **this**, not [`Self::link`], so the group survives as a resource of
     /// what came from one placement: that is what answers "is this shot's sound already on
     /// the timeline". Clearing the id instead offered "Split off audio" again on an unlinked
     /// clip and made a duplicate.
@@ -1329,7 +1330,7 @@ impl Clip {
     /// Envelope gain in 0..1 from the fade-in / fade-out ramps at timeline
     /// time `t`. 1.0 in the clip's steady middle; ramps linearly across the
     /// `fade_in`/`fade_out` regions. Used by both the preview (video dip)
-    /// and the (gated) audio mix.
+    /// and the (guarded) audio mix.
     pub fn envelope(&self, t: f64) -> f64 {
         let into = t - self.start;
         let dur = self.duration();
@@ -1899,23 +1900,23 @@ impl Project {
         self.clips.find_mut(&key(id))
     }
 
-    /// Every lane in `lanes` brought **down** by `db`, as whole-track writes.
+    /// Every track in `tracks` brought **down** by `db`, as whole-track writes.
     ///
-    /// Every lane moves by the same number, which makes this a trim rather than a re-mix: a
+    /// Every track moves by the same number, which makes this a trim rather than a re-mix: a
     /// mix is a sum, and scaling every layer of a sum scales the sum by that factor, so the
-    /// balance stays where the person mixing put it. Moving only the lanes caught over would
-    /// change the balance and would not even guarantee the sum fits — two lanes at two-thirds
+    /// balance stays where the person mixing put it. Moving only the tracks caught over would
+    /// change the balance and would not even guarantee the sum fits — two tracks at two-thirds
     /// each are over without either being over alone.
     ///
-    /// `db` at or below zero writes nothing. A lane that lands on [`MIN_GAIN_DB`] is off,
+    /// `db` at or below zero writes nothing. A track that lands on [`MIN_GAIN_DB`] is off,
     /// which can only make the sum quieter: "at or under the target", never over.
-    pub fn lanes_trimmed_by(&self, lanes: &[TrackId], db: f64) -> Vec<Track> {
+    pub fn tracks_trimmed_by(&self, tracks: &[TrackId], db: f64) -> Vec<Track> {
         if !db.is_finite() || db <= 0.0 {
             return Vec::new();
         }
         let mut seen: Vec<TrackId> = Vec::new();
         let mut out = Vec::new();
-        for id in lanes {
+        for id in tracks {
             if seen.contains(id) {
                 continue;
             }
@@ -1928,8 +1929,8 @@ impl Project {
         out
     }
 
-    /// Tracks in vertical display order, top → bottom: video lanes
-    /// (highest index first), then audio lanes (lowest index first).
+    /// Tracks in vertical display order, top → bottom: video tracks
+    /// (highest index first), then audio tracks (lowest index first).
     /// This matches every NLE's "video above, audio below" convention.
     pub fn display_tracks(&self) -> Vec<&Track> {
         let mut video: Vec<&Track> = self
@@ -2083,7 +2084,7 @@ impl Project {
     }
 
     /// Move a clip to `track` *and* `new_start` in one step — a vertical drag
-    /// across lanes. Rejected (leaving the clip untouched) when the target
+    /// across tracks. Rejected (leaving the clip untouched) when the target
     /// track doesn't exist, is locked, or carries the wrong kind for the
     /// clip's media: a video clip only ever lands on a video track, audio on
     /// audio. Returns whether the move happened.
@@ -2103,8 +2104,8 @@ impl Project {
     /// references.
     ///
     /// The track comes first because one source can be placed as two clips: the audio half of
-    /// a linked pair references a video file and lives on an audio lane, and deriving its kind
-    /// from the media would refuse to let it move along its own lane. Falls back to video so a
+    /// a linked pair references a video file and lives on an audio track, and deriving its kind
+    /// from the media would refuse to let it move along its own track. Falls back to video so a
     /// broken clip still has a home.
     pub fn clip_kind(&self, id: ClipId) -> TrackKind {
         if let Some(kind) = self
@@ -2304,7 +2305,7 @@ impl Project {
 
     /// [`Self::split_linked`] over an explicit set of clips — what a caller
     /// that has already dropped the members a track lock forbids editing hands
-    /// in, so a link cannot be used to cut through a locked lane.
+    /// in, so a link cannot be used to cut through a locked track.
     pub fn split_group(&mut self, ids: &[ClipId], at: f64) -> Vec<(ClipId, ClipId)> {
         let mut pairs = Vec::new();
         for gid in ids {
@@ -2328,7 +2329,7 @@ impl Project {
     }
 
     /// Ripple-delete every clip in `id`'s link group, closing the gap on each
-    /// clip's own lane. Returns the ids removed and the ids that shifted.
+    /// clip's own track. Returns the ids removed and the ids that shifted.
     ///
     /// Deleted last-first so each remaining clip's start is still valid while
     /// the earlier ones are there — the same order a multi-clip ripple uses.
@@ -2404,7 +2405,7 @@ impl Project {
     }
 
     /// Deliberately asks the link rather than [`Clip::sound_split`]: the flag says the sound
-    /// left the picture, not that the clip it left for still exists. Deleting the audio lane
+    /// left the picture, not that the clip it left for still exists. Deleting the audio track
     /// takes every sound half with it, and a rule reading the flag would leave every shot
     /// permanently silent with no way back.
     ///
@@ -2666,7 +2667,7 @@ impl Identified for ClipEffect {
     }
 }
 
-/// A track sorts by the lane it occupies.
+/// A track sorts by its place in the timeline.
 impl Identified for Track {
     fn id(&self) -> Id {
         key(self.id)
@@ -4191,7 +4192,7 @@ mod link_tests {
                 assert_eq!(p.clip(vid).expect("picture").link, Some(group));
 
                 // Recovery still works: delete the sound and the split comes back,
-                // or a shot whose audio lane was removed would be silent forever.
+                // or a shot whose audio track was removed would be silent forever.
                 p.unlink_clips(&[vid, aid]);
                 p.clips.retain(|c| c.id != aid);
                 assert_eq!(p.detached_sound(vid), None);
@@ -4215,7 +4216,7 @@ mod link_tests {
                 assert_eq!(
                     p.track(a.track).map(|t| t.kind),
                     Some(TrackKind::Audio),
-                    "the sound lands on an audio lane, which is what makes it \
+                    "the sound lands on an audio track, which is what makes it \
              sliddable, levellable and cuttable on its own",
                 );
                 assert_eq!(v.link, a.link, "one shared group id");
@@ -4291,7 +4292,7 @@ mod link_tests {
              be heard twice",
                 );
                 assert!(!p.can_split_audio(aid), "and never off a sound clip");
-                // Losing the sound half -- deleting the lane it sits on takes every
+                // Losing the sound half -- deleting the track it sits on takes every
                 // one of them -- has to be recoverable, or every shot on the timeline
                 // is permanently silent with nothing offering a way back.
                 p.delete_clip(aid);
@@ -4305,9 +4306,9 @@ mod link_tests {
                 );
             }
             {
-                // The sound half references a *video* file. Reading its lane kind off
+                // The sound half references a *video* file. Reading its track kind off
                 // the media would call it a video clip, and `can_place` would then
-                // refuse to let it move along the lane it is already on.
+                // refuse to let it move along the track it is already on.
                 let (p, vid, aid) = pair();
                 assert_eq!(p.clip_kind(aid), TrackKind::Audio);
                 assert_eq!(
@@ -4319,11 +4320,11 @@ mod link_tests {
                 let a_track = p.clip(aid).expect("sound").track;
                 assert!(
                     p.can_place(aid, a_track),
-                    "the sound half must be able to move along its own lane",
+                    "the sound half must be able to move along its own track",
                 );
                 assert!(
                     !p.can_place(vid, a_track),
-                    "and a picture clip still may not land on an audio lane",
+                    "and a picture clip still may not land on an audio track",
                 );
             }
         }
@@ -4336,7 +4337,7 @@ mod link_tests {
                 let (mut p, vid, aid) = pair();
                 let was = p.clip(vid).expect("picture").link;
                 let pairs = p.split_linked(vid, 6.0);
-                assert_eq!(pairs.len(), 2, "both lanes were cut: {pairs:?}");
+                assert_eq!(pairs.len(), 2, "both tracks were cut: {pairs:?}");
                 let tails: Vec<ClipId> = pairs.iter().map(|(_, t)| *t).collect();
                 let tail_link = p.clip(tails[0]).expect("a tail").link;
                 assert!(tail_link.is_some());
@@ -4357,7 +4358,7 @@ mod link_tests {
             }
             {
                 let (mut p, vid, _aid) = pair();
-                // Only the picture is offered to the cut (a locked sound lane, say).
+                // Only the picture is offered to the cut (a locked sound track, say).
                 let pairs = p.split_group(&[vid], 6.0);
                 assert_eq!(pairs.len(), 1);
                 let tail = pairs[0].1;
@@ -4429,7 +4430,7 @@ mod link_tests {
                 for later in [after_v, after_a] {
                     assert!(
                         (p.clip(later).expect("later clip").start - (20.0 - gap)).abs() < 1e-9,
-                        "the gap has to close on the sound lane as well as the picture one",
+                        "the gap has to close on the sound track as well as the picture one",
                     );
                 }
 

@@ -281,7 +281,7 @@ impl ReviewOverlay {
                 .partial_cmp(&b.anchor())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let seam = f64::from(theme.tokens.spacing.s2);
+        let boundary = f64::from(theme.tokens.spacing.s2);
         let mut next_y = f64::MIN;
         for card in &cards {
             let top = card.anchor().max(next_y);
@@ -296,7 +296,7 @@ impl ReviewOverlay {
                 }
                 (MarginCard::Change(change, _), _) => self.draw_change(ctx, slot, change),
             };
-            next_y = top + height + seam;
+            next_y = top + height + boundary;
         }
     }
 

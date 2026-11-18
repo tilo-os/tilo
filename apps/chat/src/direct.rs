@@ -1,13 +1,13 @@
 //! Chat's direct conversations: the conversation two of the workspace's
 //! people have, opened and sent to by the app's operations
 //! (`open-direct-conversation`, `send-direct-message`); its messages are read
-//! from the record, as every conversation's are.
+//! from the resource, as every conversation's are.
 //!
 //! A direct conversation is not created: its id names its members
 //! ([`Chat::direct_id`]), so every device that opens the same conversation
 //! opens the same one, and neither has to write anything first. Its messages
 //! are the chat's messages in the chat's parts, beside every channel's; its
-//! read mark is this person's, in the record.
+//! read mark is this person's, in the resource.
 
 use tilo_actions::policy::MemberId;
 use ui::framework::{Effected, LiveRow};
@@ -15,10 +15,10 @@ use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{Id, Invoke};
 
 use crate::app::{ChatApp, Focus};
+use crate::chat::Chat;
 use crate::effects::{ChatEffect, item_row_id};
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
-use crate::record::Chat;
 
 impl ChatApp {
     /// The person `key` (their root key) names here, and the one conversation
@@ -86,12 +86,9 @@ impl ChatApp {
     ) {
         match self.messages_chain() {
             Ok(chain) => {
-                chain.invoke_then(
-                    &post(id, text, None, None, Vec::new(), self.agent_mentions(text)),
-                    move |posted| {
-                        then(posted.map(drop).map_err(|error| error.to_string()));
-                    },
-                );
+                chain.invoke_then(&post(id, text, None, None, Vec::new()), move |posted| {
+                    then(posted.map(drop).map_err(|error| error.to_string()));
+                });
             }
             Err(unavailable) => then(Err(unavailable)),
         }
@@ -134,18 +131,11 @@ impl ChatApp {
         // asked can stand the turn it opened (canvas.md §3) by the message, not by its words.
         drop(ui::tilo_resource::take_minted());
         self.messages_chain()?
-            .invoke(&post(
-                &id,
-                text,
-                parent.map(Id::from_raw),
-                body,
-                attached,
-                self.agent_mentions(text),
-            ))
+            .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
             .map_err(|error| error.to_string())?;
         let message = ui::tilo_resource::take_minted().into_iter().next();
         // The conversation stands where the box stood: a window of the shell,
-        // floated over it, that the workspace's record keeps for every
+        // floated over it, that the workspace's document keeps for every
         // member.
         let anchor = item_row_id("channels", id.as_str());
         if opens {
@@ -220,19 +210,13 @@ impl ChatApp {
             if agent {
                 return Ok(MemberId::agent(recipient.id.clone()));
             }
-            return self.workspace_member(MemberId::person(recipient.id.clone()));
+            let person = ui::tilo_resource::PersonId::parse(&recipient.id)
+                .map_err(|_| crate::i18n::t("chat-person-unknown"))?;
+            return self.workspace_member(MemberId::Person(person));
         }
         let name = recipient.name.trim().to_lowercase();
         if name.is_empty() {
             return Err(crate::i18n::t("chat-person-unknown"));
-        }
-        if agent
-            && let Some((id, _)) = self
-                .workspace_agent_names
-                .iter()
-                .find(|(_, named)| named.trim().to_lowercase() == name)
-        {
-            return Ok(MemberId::agent(id.clone()));
         }
         let mut called: Vec<&MemberId> = self
             .workspace_names
@@ -245,7 +229,13 @@ impl ChatApp {
         called.sort();
         called
             .into_iter()
-            .find_map(|member| self.workspace_member(member.clone()).ok())
+            .find_map(|member| {
+                if agent {
+                    Some(member.clone())
+                } else {
+                    self.workspace_member(member.clone()).ok()
+                }
+            })
             .ok_or_else(|| crate::i18n::t("chat-person-unknown"))
     }
 
@@ -276,7 +266,7 @@ impl ChatApp {
     /// by a written address. Every person has one, not only those the
     /// conversation with whom holds a message yet: a caller asks for the
     /// row before it can write the first message. Its messages are read as
-    /// any conversation's, from the chat's record and its parts.
+    /// any conversation's, from the chat's resource and its parts.
     pub(crate) fn direct_conversation_rows(&self) -> Vec<LiveRow> {
         self.channels
             .iter()
@@ -317,7 +307,7 @@ pub(crate) struct SendMessage<'a> {
     pub opens: bool,
 }
 
-/// The record's `post` of `text`, with what it carries, the paragraphs it
+/// The resource's `post` of `text`, with what it carries, the paragraphs it
 /// was written in, and the mentions the window resolved, to the conversation
 /// `id`.
 fn post(
@@ -326,7 +316,6 @@ fn post(
     parent: Option<Id>,
     body: Option<Vec<tilo_document::ClipBlock>>,
     attachments: Vec<tilo_reference::Attached>,
-    mentions: Vec<crate::mention::Mention>,
 ) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
         message: crate::messages::NewMessage {
@@ -336,7 +325,7 @@ fn post(
             quoted: None,
             body,
             attachments,
-            mentions: Some(mentions),
+            mentions: None,
             written: None,
             origin: None,
         },

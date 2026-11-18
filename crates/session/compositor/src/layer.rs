@@ -1049,7 +1049,7 @@ mod tests {
         // Where [`placement`] puts a surface on the 1000 by 800 output: what the row shows, the
         // surface's anchors, the size it asks for and its margins (top, right, bottom, left), then
         // its place as x, y, width and height. Each row is placed on that output at the desktop's
-        // corner and again on one standing elsewhere, where its place is counted from that output's.
+        // corner and again on one access elsewhere, where its place is counted from that output's.
         {
             let bar = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
             let low_bar = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
@@ -1136,7 +1136,7 @@ mod tests {
                 ),
             ];
             for (name, anchor, size, margin, (x, y, width, height)) in rows {
-                // An output standing elsewhere in the desktop places the surface the same way, from
+                // An output elsewhere in the desktop places the surface the same way, from
                 // its own corner.
                 for (left, top) in [(0, 0), (1000, -200)] {
                     let mut on = output();

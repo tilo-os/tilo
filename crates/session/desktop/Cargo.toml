@@ -57,7 +57,7 @@ tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 tilo-desktop-search = { path = "../desktop-search" }
-# A report's transport and the profile custody a desktop installs.
+# A report's transport and the profile ownership a desktop installs.
 tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
@@ -71,7 +71,7 @@ durable-store = { path = "../../system/durable-store" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 # The bar's clock reads the weekday of the local time.
-chrono.workspace = true
+jiff.workspace = true
 # The system monitor widget shows the session's own readings of the machine.
 tilo-system-stats = { path = "../../system/system-stats" }
 # The same catalogue for the toolkit's shared picker, which the window bars'
@@ -100,7 +100,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 # The palette's proof that it stands over the windows: the compositor's own
 # host of a widget tree, with the pixels it drew.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tilo-surface-host = { path = "../surface-host" }
+tilo-shell-surface = { path = "../shell-surface" }
 tilo-compositor = { path = "../compositor" }
 tilo-session-core = { path = "../core" }
 

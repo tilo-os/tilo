@@ -126,7 +126,7 @@ fn a_press_on_the_dimmed_editor_closes_the_drawer_and_does_nothing_else() {
     let mut app = editor((720, 820));
     let before = playhead(&mut app);
     app.harness().key("b");
-    // Near the right edge, low down: covered ruler and lanes, never the drawer.
+    // Near the right edge, low down: covered ruler and tracks, never the drawer.
     app.harness().click_at(700.0, 600.0);
     assert_eq!(playhead(&mut app), before, "the covered timeline is inert");
     assert_eq!(
@@ -154,7 +154,7 @@ fn widening_past_the_breakpoint_docks_the_bin_again() {
 
 #[test]
 fn the_shortcut_sheet_and_go_to_field_swallow_clicks_on_the_editor() {
-    // A press and drag across the lanes, where clips sit.
+    // A press and drag across the tracks, where clips sit.
     let drag = |app: &mut HeadlessApp<VideoEditor>| {
         app.harness().drag_at((400.0, 660.0), (700.0, 660.0));
     };

@@ -1,7 +1,7 @@
 //! The calendar in the shell's frame: the sidebar is the shell's (its width, its drawer in a narrow
 //! window, its toggle and keys), and the calendar says what it holds.
 
-use chrono::{Datelike, NaiveDate};
+use jiff::civil::Date;
 use ui::icons::Icon;
 use ui::widget::{
     DateFeed, DatePicker, DateShown, Element, Manual, NavAction, NavFeed, NavItem, NavList,
@@ -261,10 +261,10 @@ impl CalendarApp {
 
     fn show_month(&self) {
         let hidden = self.hidden_calendar_ids();
-        let first = self.anchor.with_day(1).unwrap_or(self.anchor);
-        let start = first - chrono::Duration::days(7);
-        let marked: Vec<NaiveDate> = (0..49)
-            .map(|offset| start + chrono::Duration::days(offset))
+        let first = self.anchor.first_of_month();
+        let start = first - jiff::Span::new().days(7);
+        let marked: Vec<Date> = (0..49)
+            .map(|offset| start + jiff::Span::new().days(offset))
             .filter(|day| {
                 self.model
                     .events_on(*day)

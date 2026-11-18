@@ -63,7 +63,7 @@
 //                   is in the workspace it opens; with --answer it answers
 //                   there, with its own device key, as a device of theirs does.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
+// usage: node person.mjs SITE SERVER OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -79,13 +79,13 @@ import {join} from 'node:path';
 import {inflateSync} from 'node:zlib';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, out, ...rest] = process.argv.slice(2);
+const [site, server, out, ...rest] = process.argv.slice(2);
 const option = name => {
   const at = rest.indexOf(name);
   return at < 0 ? null : rest[at + 1];
 };
-if (!site || !relay || !out) {
-  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
+if (!site || !server || !out) {
+  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
   process.exit(2);
 }
 const invite = option('--invite');
@@ -104,7 +104,7 @@ const answerFifo = option('--answer');
 const pairLink = option('--pair-link');
 mkdirSync(out, {recursive: true});
 
-const report = {site, relay};
+const report = {site, server};
 // The stack is plain HTTP on this machine: no certificate to accept, as for
 // any person's browser.
 const browser = await launch();
@@ -170,7 +170,11 @@ let membership = null;
 if (pairLink) {
   await tab.navigate(pairLink);
   await until(`document.documentElement.dataset.entry === 'open'`, 'the page pairing this browser');
+  // The page says whose device this becomes before it asks to be let in; the
+  // person paired it to themselves, and goes on.
   membership = JSON.parse(await until(`(() => {
+    const go = document.querySelector('[data-card="pair-whose"] .tilo-entry-primary');
+    if (go && !go.dataset.pressed) { go.dataset.pressed = '1'; go.click(); }
     const now = ${memberships};
     const found = (Array.isArray(now) ? now : Object.values(now)).find(entry => entry?.paired && entry?.workspace);
     return found ? JSON.stringify(found) : '';
@@ -195,7 +199,7 @@ if (pairLink) {
   }
   report.arrivedMs = Date.now() - began;
   membership = JSON.parse(await until(`(() => {
-    const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
+    const kept = ${memberships}[${JSON.stringify(new URL(server).origin)}];
     return kept?.workspace ? JSON.stringify(kept) : '';
   })()`, 'joining the Lounge'));
   report.joinedMs = Date.now() - began;
@@ -244,7 +248,7 @@ if (passkey) {
     const person = await id.browserIdentity();
     try {
       await person.keepWithPasskey({userName: 'local passkey check'});
-      await id.publishEnvelope({origin: ${JSON.stringify(new URL(relay).origin)}, identity: person});
+      await id.publishEnvelope({origin: ${JSON.stringify(new URL(server).origin)}, identity: person});
     } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
     return JSON.stringify({person: person.userPublicKey, rpIds: person.envelope.wraps.filter(wrap => wrap.kind === 'passkey').map(wrap => wrap.rp_id)});
   })()`).then(JSON.parse);
@@ -257,7 +261,7 @@ if (passkey) {
   // A site that lets people in by invitation (production's) shows a visitor
   // it does not know the invite-only page, and someone who has been here
   // signs in from it with their passkey, as a person would. A stack whose
-  // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e gate brings
+  // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e check brings
   // it up) lets the stranger in as a fresh guest instead; they sign in with
   // the passkey from there, through the page's own sign-in.
   const met = await until(`(() => {
@@ -278,7 +282,7 @@ if (passkey) {
     back = await tab.evaluate(`(async () => {
       const id = ${identityModule};
       try {
-        const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(relay).origin)}])});
+        const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(server).origin)}])});
         return JSON.stringify({before: ${JSON.stringify(before)}, person: person.userPublicKey});
       } catch (error) { return JSON.stringify({before: ${JSON.stringify(before)}, error: String(error?.message ?? error)}); }
     })()`).then(JSON.parse);

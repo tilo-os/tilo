@@ -1,7 +1,7 @@
 //! Absent-only firstboot defaults with durable, descriptor-anchored provenance.
 //! Existing files are never adopted as defaults, even after an interrupted run.
 //! A receipt is an authority to replace files later, so verification fails
-//! closed on changed metadata, links, custody paths and oversized input.
+//! closed on changed metadata, links, ownership paths and oversized input.
 #[cfg(target_os = "linux")]
 mod linux {
     use serde_json::{Value, json};
@@ -109,7 +109,7 @@ mod linux {
         Ok(unsafe { info.assume_init() }.f_fsid)
     }
 
-    fn custody(path: &Path) -> bool {
+    fn ownership(path: &Path) -> bool {
         path.starts_with(".config/tilo") || path.starts_with(".local/state/tilo")
     }
 
@@ -307,7 +307,7 @@ mod linux {
                     .any(|part| !matches!(part, Component::Normal(_)))
                 || normalized.as_os_str() != decoded
                 || !seen.insert(decoded.clone())
-                || custody(relative)
+                || ownership(relative)
             {
                 return invalid("unsafe firstboot seed proof path");
             }
@@ -518,24 +518,24 @@ mod linux {
             return invalid("firstboot skeleton changed");
         }
         publish_bytes(destination, name, &data, metadata.mode() & 0o777, owner)?;
-        if !custody(relative) {
+        if !ownership(relative) {
             let mut output = open_at(
                 destination,
                 name,
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
             )?;
-            let witness = output.metadata()?;
-            if !witness.is_file()
-                || witness.nlink() != 1
-                || witness.uid() != owner.uid
+            let proof = output.metadata()?;
+            if !proof.is_file()
+                || proof.nlink() != 1
+                || proof.uid() != owner.uid
                 || bounded_read(&mut output)? != data
-                || stamp(&output.metadata()?) != stamp(&witness)
+                || stamp(&output.metadata()?) != stamp(&proof)
             {
                 return invalid("attested firstboot default changed");
             }
             files.push(FileProof {
                 path: relative.to_owned(),
-                stamp: stamp(&witness),
+                stamp: stamp(&proof),
                 sha256: digest(&data),
             });
         }
@@ -672,7 +672,7 @@ mod linux {
     }
 
     impl AccountTarget {
-        fn binding(&self) -> Result<account_custody::portable::PortableBinding> {
+        fn binding(&self) -> Result<account_credentials::portable::PortableBinding> {
             uuid::Uuid::parse_str(&self.operation)?;
             if self.uid != 1000
                 || self.target.len() != 64
@@ -686,7 +686,7 @@ mod linux {
             {
                 return invalid("invalid installed account target");
             }
-            Ok(account_custody::portable::PortableBinding::new(
+            Ok(account_credentials::portable::PortableBinding::new(
                 &self.operation,
                 &self.target,
                 &self.user,

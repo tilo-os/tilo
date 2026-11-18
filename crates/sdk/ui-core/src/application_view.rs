@@ -41,12 +41,24 @@ pub trait ApplicationViewState {
 
 /// The file or folder a window shows, kept with its saved view as it changes (Files going into a
 /// folder): after a restart the window opens on it again, as a launch naming it does.
-#[derive(Clone)]
 pub struct WindowShows {
     pub(crate) shown: Rc<std::cell::RefCell<Option<String>>>,
     pub(crate) views: Rc<InstanceViewStore>,
     /// The window's view as saved before it showed anything: kept when no view of it is saved.
     pub(crate) unsaved: SavedInstanceView,
+}
+
+/// Written out rather than derived: a derived `clone` is inlined into every
+/// app, this one is compiled once.
+impl Clone for WindowShows {
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            shown: Rc::clone(&self.shown),
+            views: Rc::clone(&self.views),
+            unsaved: self.unsaved.clone(),
+        }
+    }
 }
 
 impl WindowShows {

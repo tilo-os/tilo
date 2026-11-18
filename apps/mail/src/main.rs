@@ -4,7 +4,7 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
-// Account custody with the IMAP client, the contact directory, and the
+// Account credentials with the IMAP client, the contact directory, and the
 // message codecs with the SMTP client come from their engine libraries, not
 // the runtime or the tapp.
 #[cfg(feature = "runtime-engine")]

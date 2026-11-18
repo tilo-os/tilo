@@ -2,17 +2,17 @@
 //! service publishes, invoked as the agent or person that asked and as a step of the run it names,
 //! and a change of a record a service keeps for a package the session runs itself.
 
-use tilo_actions::remote::ActionHostError;
+use tilo_actions::remote::ActionCallError;
 
 /// The typed arguments a step's slot carries: none for none. A slot that is not a typed object
 /// names no argument of a session action, which all take their arguments by name.
 pub(super) fn arguments_of(
     slot: Option<&str>,
-) -> Result<serde_json::Map<String, serde_json::Value>, ActionHostError> {
+) -> Result<serde_json::Map<String, serde_json::Value>, ActionCallError> {
     let Some(slot) = slot else {
         return Ok(serde_json::Map::new());
     };
-    let invalid = |reason: String| ActionHostError::InvalidRequest { reason };
+    let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
     let json = slot
         .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
         .ok_or_else(|| invalid("a session action takes its arguments by name".into()))?;
@@ -63,7 +63,7 @@ pub(crate) fn invoke_service_step(
     arguments: &serde_json::Map<String, serde_json::Value>,
     beside: &str,
     done: tilo_actions::remote::Completer<
-        Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+        Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
     >,
 ) {
     use tilo_service::Started;
@@ -84,7 +84,7 @@ pub(crate) fn invoke_service_step(
                 Some(ran) => ran
                     .map(Some)
                     .map_err(|error| crate::surfaces::refusal(&error)),
-                None => Err(ActionHostError::Unavailable {
+                None => Err(ActionCallError::Unavailable {
                     reason: "the step's work was given up".to_owned(),
                 }),
             });
@@ -101,14 +101,14 @@ pub(super) fn change_through(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
     actor: &tilo_action_policy::Acting,
     change: &tilo_actions::remote::ResourceChange,
-) -> Option<Result<serde_json::Value, ActionHostError>> {
+) -> Option<Result<serde_json::Value, ActionCallError>> {
     // Who the change is attributed to: the agent acting for its person, or the person.
     let invoker = if let Some(agent) = actor.agent_id() {
         tilo_actions::ActionInvoker::agent(agent)
     } else {
         tilo_actions::ActionInvoker::person(actor.person_id()?.to_owned())
     };
-    services.borrow().record(&change.app)?;
+    services.borrow().document(&change.app)?;
     let ran = services.borrow_mut().invoke_as(
         &invoker,
         None,
@@ -120,7 +120,7 @@ pub(super) fn change_through(
         Ok(output) => {
             let document = services
                 .borrow()
-                .record(&change.app)
+                .document(&change.app)
                 .map(|record| record.document);
             let output = match output {
                 tilo_service::Started::Done(output) => serde_json::json!({
@@ -133,7 +133,7 @@ pub(super) fn change_through(
             };
             Ok(serde_json::json!({"ok": output, "change": document}))
         }
-        Err(error) => Err(ActionHostError::Unavailable {
+        Err(error) => Err(ActionCallError::Unavailable {
             reason: error.to_string(),
         }),
     })

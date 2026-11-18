@@ -1,42 +1,51 @@
-//! What starts a turn of an agent the host runs besides its person's typing: a cause that asks
+//! What starts a turn of an agent the server works besides its person's typing: a cause that asks
 //! through Chat's `ask-agent`. And what reaches a turn that is going: what its person writes
-//! next, their stop, and the host's own restart. All through the relay's own interfaces, with
+//! next, their stop, and the server's own restart. All through its own interfaces, with
 //! no device of the person running anything.
 use super::*;
 use std::sync::Condvar;
 use tilo_actions::remote::Caller;
 
-/// A hosted workspace with one person in its chat and their agent made to run on the host, as
-/// the tests beside this one set it up. The person's page joins: its device is the one the host
-/// admits their agent's turns on. Nothing on it runs an agent.
+/// A hosted workspace with one person in its chat and their agent made to work on the server,
+/// as the tests beside this one set it up. The person's page joins: its device is the one the
+/// server admits their agent's turns on. No agent works on that device.
 macro_rules! team {
     ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
+        team!(
+            $root,
+            $browser,
+            $actions,
+            $workspaces,
+            $workspace,
+            $page,
+            $person,
+            served,
+            device
+        );
+    };
+    // The same, for a test in which another person's page joins as well: it names what serves
+    // the workspace and the device that serves it.
+    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident, $served:ident, $device:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let host = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
+        let $device = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (relay, $actions) = crate::harness::hosted::serving_records_with_actions(
+        let ($served, $actions) = crate::harness::hosted::serving_records_with_actions(
             &$root,
-            &host,
+            &$device,
             state.path(),
             crate::common::catalogue,
         )
         .await;
-        let $workspaces = relay.workspaces().unwrap().clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&relay, &$browser, &host, &$workspace).await;
+        let $page = Browser::open_at(&$served, &$browser, &$device, &$workspace).await;
         let $person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &$person, None).await;
         let catalogue = crate::common::catalogue();
         let governor = $workspaces.governor().clone();
         $workspaces
             .prepare_application(&$workspace, &governor, &catalogue, CHAT, "")
-            .await
-            .unwrap();
-        $workspaces
-            .author_application(&$workspace, &governor, &catalogue, CHAT, "", |doc| {
-                chat::demo::introduce(doc, &$person, "Ada", "A").map_err(|error| error.to_string())
-            })
             .await
             .unwrap();
     };
@@ -51,7 +60,7 @@ fn themselves(root: &SigningKey, browser: &Device, workspace: &str) -> Caller {
     .in_workspace(workspace)
 }
 
-/// Invoke Chat's `action` on `resource` of `record` as `caller`, through the host's action
+/// Invoke Chat's `action` on `resource` of `record` as `caller`, through the server's action
 /// service.
 async fn chat_action(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
@@ -61,7 +70,8 @@ async fn chat_action(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let host = tilo_relay::workspace_agents::WorkspaceActionHost::new(
+    use tilo_server::workspace_agents;
+    let provider = workspace_agents::WorkspaceActionProvider::new(
         actions.clone(),
         WorkspaceId::parse(workspace).unwrap(),
     );
@@ -70,8 +80,8 @@ async fn chat_action(
         cluster_id: workspace.into(),
         document: record.into(),
     };
-    tilo_relay::workspace_agents::invoke_named(
-        &host,
+    workspace_agents::invoke_named(
+        &provider,
         caller,
         &route,
         resource,
@@ -126,15 +136,15 @@ async fn stop_agent(
     .await
 }
 
-/// A gate a scripted model waits at until the test opens it. It opens when it is dropped, so a
+/// A hold a scripted model waits at until the test opens it. It opens when it is dropped, so a
 /// failed test never leaves a model's thread waiting.
 #[derive(Default)]
-struct Gate {
+struct Hold {
     open: Mutex<bool>,
     opened: Condvar,
 }
 
-impl Gate {
+impl Hold {
     fn open(&self) {
         *self.open.lock().unwrap() = true;
         self.opened.notify_all();
@@ -148,8 +158,8 @@ impl Gate {
     }
 }
 
-/// Opens its gate when the test ends, however it ends.
-struct Opens(Arc<Gate>);
+/// Opens its hold when the test ends, however it ends.
+struct Opens(Arc<Hold>);
 
 impl Drop for Opens {
     fn drop(&mut self) {
@@ -157,14 +167,14 @@ impl Drop for Opens {
     }
 }
 
-/// A model whose answers are written out, in order over every turn it is made for (a host makes
-/// its model anew for each turn), the last one again once they are used up. It waits at its gate
+/// A model whose answers are written out, in order over every turn it is made for (a server makes
+/// its model anew for each turn), the last one again once they are used up. It waits at its hold
 /// before it answers the call numbered `hold_at`, counted from 0 over every call it is asked.
 struct Waits {
     answers: Arc<Mutex<Vec<ModelResponse>>>,
     asked: Arc<Mutex<Vec<ModelRequest>>>,
     hold_at: usize,
-    gate: Arc<Gate>,
+    hold: Arc<Hold>,
 }
 
 impl tilo_agent_session::model::PlanTurns for Waits {
@@ -181,7 +191,7 @@ impl tilo_agent_session::model::PlanTurns for Waits {
             asked.len() - 1
         };
         if index == self.hold_at {
-            self.gate.pass();
+            self.hold.pass();
         }
         let mut answers = self.answers.lock().unwrap();
         Ok(if answers.len() > 1 {
@@ -200,16 +210,16 @@ fn waits(
     answers: Vec<ModelResponse>,
     hold_at: usize,
     asked: &Arc<Mutex<Vec<ModelRequest>>>,
-    gate: &Arc<Gate>,
+    hold: &Arc<Hold>,
 ) -> Model {
-    let (asked, gate) = (Arc::clone(asked), Arc::clone(gate));
+    let (asked, hold) = (Arc::clone(asked), Arc::clone(hold));
     let answers = Arc::new(Mutex::new(answers));
     Arc::new(move || {
         Some(Box::new(Waits {
             answers: Arc::clone(&answers),
             asked: Arc::clone(&asked),
             hold_at,
-            gate: Arc::clone(&gate),
+            hold: Arc::clone(&hold),
         }) as Box<dyn tilo_agent_session::model::PlanTurns>)
     })
 }
@@ -248,16 +258,16 @@ async fn until(what: &str, mut ready: impl FnMut() -> bool) {
 
 /// The agent's reply to `message`, once its work ended.
 async fn ended(
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     message: &Id,
-) -> chat::record::Message {
+) -> chat::chat::Message {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let part = conversation_part(workspaces, workspace).await;
         let reply = part
             .messages
-            .get(&chat::record::reply_id(message, &MemberId::agent(SCOUT)));
+            .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)));
         if let Some(reply) = reply
             && !chat::summons::unanswered(Some(reply))
         {
@@ -273,19 +283,19 @@ async fn ended(
 }
 
 /// How the work a reply records ended.
-fn end_of(reply: &chat::record::Message) -> Option<chat::agent_stream::AgentFinish> {
+fn end_of(reply: &chat::chat::Message) -> Option<chat::agent_stream::AgentFinish> {
     match reply.work.as_ref()?.state.as_ref()?.state {
         chat::model::AgentWorkState::ProviderFinished { outcome } => Some(outcome),
         _ => None,
     }
 }
 
-/// Run `turn` on `agents` until its model was asked `calls` times, then let the host go: the
-/// turn is dropped where it stands, as when the host's process ends.
+/// Run `turn` on `agents` until its model was asked `calls` times, then let the server go: the
+/// turn is dropped where it stands, as when the server's process ends.
 async fn dies_at(
     agents: &HostAgents,
     workspace: &str,
-    turn: &tilo_relay::workspace_agents::Turn,
+    turn: &tilo_server::workspace_agents::Turn,
     asked: &Arc<Mutex<Vec<ModelRequest>>>,
     calls: usize,
 ) {
@@ -298,7 +308,7 @@ async fn dies_at(
             "the turn never reached its model's call {calls}"
         );
         tokio::select! {
-            ended = &mut working => panic!("the turn ended before the host stopped: {ended:?}"),
+            ended = &mut working => panic!("the turn ended before the server stopped: {ended:?}"),
             () = tokio::time::sleep(Duration::from_millis(25)) => {}
         }
     }
@@ -309,7 +319,7 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     // What asks here: another agent of the person's, acting for them, as a sub-agent with news
-    // or the runner of their reminder does. The person is never an argument: the host says who
+    // or the runner of their reminder does. The person is never an argument: the server says who
     // it acts for.
     let planner = themselves(&root, &browser, &workspace)
         .delegated_to("planner")
@@ -369,7 +379,7 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
         "what asked wrote it, never the person"
     );
 
-    // With no device on, the host reads it as the agent's one turn, for that person.
+    // With no device on, the server reads it as the agent's one turn, for that person.
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
@@ -443,8 +453,8 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
         "plan the launch",
     )
     .await;
-    let (asked, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens = Opens(Arc::clone(&gate));
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
@@ -457,7 +467,7 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
             ],
             1,
             &asked,
-            &gate,
+            &hold,
         )),
     );
     agents.look(&workspace).await.unwrap();
@@ -474,7 +484,6 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
         .await
         .expect("the reminder asks");
     agents.look(&workspace).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1100)).await;
     let second = write_to_agent(
         &actions,
         &workspaces,
@@ -485,7 +494,7 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
     .await;
     agents.look(&workspace).await.unwrap();
     agents.look(&workspace).await.unwrap();
-    gate.open();
+    hold.open();
 
     // The turn goes on under what the person wrote next: there its answer stands, and the reply
     // to their first message says so. No second answer was started beside it.
@@ -543,8 +552,10 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_reaches_a_turn_that_is_going() {
-    use tilo_relay::workspaces::person_model::ProviderProtocol;
-    use tilo_relay::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+    use tilo_server::workspaces::person_model::{
+        ProviderProtocol,
+        scripted::{Linking, Reply, ScriptedProvider},
+    };
 
     team!(root, browser, actions, workspaces, workspace, page, person);
     let written = (&root, &browser);
@@ -557,8 +568,8 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         "plan the launch",
     )
     .await;
-    let (asked, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens = Opens(Arc::clone(&gate));
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
@@ -566,7 +577,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
             vec![looks(), says("The launch is planned.")],
             1,
             &asked,
-            &gate,
+            &hold,
         )),
     );
     agents.look(&workspace).await.unwrap();
@@ -585,7 +596,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         "a stopped message asks nobody"
     );
     agents.look(&workspace).await.unwrap();
-    gate.open();
+    hold.open();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
         end_of(&reply),
@@ -654,14 +665,14 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     )
     .await;
 
-    // The host stops while the turn works: it had looked through the workspace, and its model
+    // The server stops while the turn works: it had looked through the workspace, and its model
     // was asked what to do next.
-    let (asked, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens = Opens(Arc::clone(&gate));
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
     let dying = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
-        Some(waits(vec![looks(), says("never said")], 1, &asked, &gate)),
+        Some(waits(vec![looks(), says("never said")], 1, &asked, &hold)),
     );
     let turns = dying.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -673,7 +684,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
         "its record shows a step taken and no end"
     );
 
-    // The host that starts again reads the turn from the records. It does not take its steps a
+    // The server that starts again reads the turn from the workspace. It does not take its steps a
     // second time: the reply says it was interrupted, and asking again is the person's to do.
     let again = Arc::new(Mutex::new(Vec::new()));
     let restarted = HostAgents::new(
@@ -707,7 +718,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     assert!(restarted.turns(&workspace).await.unwrap().is_empty());
     drop(restarted);
 
-    // A turn the host had only taken changed nothing yet: after the restart it runs, once.
+    // A turn the server had only taken changed nothing yet: after the restart it runs, once.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let second = write_to_agent(
         &actions,
@@ -717,12 +728,12 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
         "and the budget?",
     )
     .await;
-    let (waiting, second_gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens_second = Opens(Arc::clone(&second_gate));
+    let (waiting, second_hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens_second = Opens(Arc::clone(&second_hold));
     let dying = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
-        Some(waits(vec![says("never said")], 0, &waiting, &second_gate)),
+        Some(waits(vec![says("never said")], 0, &waiting, &second_hold)),
     );
     let turns = dying.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -731,7 +742,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     let part = conversation_part(&workspaces, &workspace).await;
     assert!(
         part.messages
-            .get(&chat::record::reply_id(&second, &MemberId::agent(SCOUT)))
+            .get(&chat::chat::reply_id(&second, &MemberId::agent(SCOUT)))
             .is_some_and(|reply| chat::summons::unanswered(Some(reply))),
         "the turn was taken and has not ended"
     );
@@ -761,3 +772,11 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     let _ = person;
     page.peer.close();
 }
+
+/// Sub-agents: started by the person's own agent, working in conversations of their own.
+#[path = "hosted_sub_agents.rs"]
+mod sub_agents;
+
+/// A reminder a person's assistant set up itself, from the asking to the answer.
+#[path = "hosted_agent_reminders.rs"]
+mod reminders;

@@ -20,7 +20,7 @@ pub struct Backups {
 }
 
 impl Backups {
-    /// What the record holds: the retention policy every device follows.
+    /// What the resource holds: the retention policy every device follows.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -120,7 +120,7 @@ impl ResourceApp for BackupsShell {
                 ),
             },
             _ => DemoRepository {
-                catalog: Catalog::sample(ui::clock::local_now().naive_local()),
+                catalog: Catalog::sample(ui::clock::local_now().datetime()),
                 location: BackupLocation::default(),
                 error: None,
             },

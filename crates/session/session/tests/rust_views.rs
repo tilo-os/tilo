@@ -21,7 +21,7 @@ use tilo_actions::ApiError;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_service::{Service, Started};
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 /// The channel the test places: a labelled sample channel with the videos its page lists.
 const CHANNEL: &str = "tube.channel:ch_lowlevel";
@@ -103,7 +103,6 @@ impl Service for Channels {
 /// A session with the shell as the whole screen and the Tube channels published, its test hooks at
 /// `root` , the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
-    let program = std::env::current_exe().expect("this test's program");
     let mut services = crate::common::seeded_apps();
     services.push(Box::new(Channels::new()));
     let mut session = crate::common::headless_on(
@@ -118,9 +117,8 @@ fn session(root: &std::path::Path) -> Session {
             collab: false,
             services,
             questions: Some(tilo_service::Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),
             ..Options::default()
         },
@@ -233,16 +231,16 @@ fn a_tube_channel_placed_on_the_canvas_draws_its_own_page_and_a_videos_row_place
     crate::common::until(&mut session, "the video is placed", |session| {
         crate::common::places(session)
             .iter()
-            .any(|place| place.record.starts_with("tube.video:"))
+            .any(|place| place.resource.starts_with("tube.video:"))
     });
     assert!(
         crate::common::places(&session)
             .iter()
-            .any(|place| place.record.starts_with("tube.video:")),
+            .any(|place| place.resource.starts_with("tube.video:")),
         "a video's row places the video: {:?}",
         crate::common::places(&session)
             .iter()
-            .map(|place| place.record.clone())
+            .map(|place| place.resource.clone())
             .collect::<Vec<_>>()
     );
 }

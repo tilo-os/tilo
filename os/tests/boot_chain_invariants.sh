@@ -194,7 +194,7 @@ else
   ours="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_unit" | head -1)"
   exec_line="$(grep -E '^ExecStart=' "$growfs_unit" | head -1)"
   [ "$ours" = "ConditionPathIsMountPoint=/sysroot" ] \
-    && ok "tilo growfs is gated on /sysroot" \
+    && ok "tilo growfs depends on /sysroot" \
     || bad "tilo growfs does not require /sysroot (${ours:-none})"
   [ "$exec_line" = "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'" ] \
     && ok "tilo growfs targets the block-backed /sysroot" \
@@ -219,7 +219,7 @@ if [ ! -f "$growfs_dropin" ]; then
 else
   theirs="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_dropin" | head -1)"
   [ "$theirs" = "ConditionPathIsMountPoint=!/sysroot" ] \
-    && ok "stock growfs is gated away when /sysroot is mounted" \
+    && ok "stock growfs is guarded away when /sysroot is mounted" \
     || bad "stock growfs condition is not the opposite of the replacement (${theirs:-none})"
 fi
 
@@ -234,7 +234,7 @@ fi
 # The path fallback keeps this invariant useful in a minimal unpacked root.
 growfs_enabled=""
 if [ "$source_tree" = 1 ]; then
-  # Enabled by the build (os/Containerfile); os/tests/boot_performance_gate_test.sh
+  # Enabled by the build (os/Containerfile); os/tests/boot_performance_check_test.sh
   # checks that it does.
   growfs_enabled=yes
 elif command -v systemctl >/dev/null 2>&1; then

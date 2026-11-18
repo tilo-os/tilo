@@ -28,7 +28,7 @@ pub(crate) struct Time {
 impl Time {
     fn now(activities: &crate::chrome::Activities) -> Self {
         let mut time = Self {
-            clock: ui::clock::time_of_day(&ui::clock::local_now()),
+            clock: ui::clock::time_of_day(ui::clock::local_now()),
             ..Self::default()
         };
         let Some(published) = activities.published(crate::chrome::CLOCKS_APP) else {
@@ -106,7 +106,10 @@ impl Service for Served {
     }
 
     fn wakes_in(&self) -> Option<std::time::Duration> {
-        let second = ui::clock::local_now().timestamp().rem_euclid(60);
+        let second = ui::clock::local_now()
+            .timestamp()
+            .as_second()
+            .rem_euclid(60);
         Some(std::time::Duration::from_secs(
             60_u64.saturating_sub(u64::try_from(second).unwrap_or(0)),
         ))

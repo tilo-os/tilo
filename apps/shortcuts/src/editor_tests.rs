@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
     // A catalogue read nothing answered is explained in the person's words,
     // not as the client's refusal.
     {
-        let unanswered = ui::tilo_actions::remote::ActionHostError::Unavailable {
+        let unanswered = ui::tilo_actions::remote::ActionCallError::Unavailable {
             reason: ui::remote_actions::CATALOGUE_UNANSWERED.into(),
         };
         let message = crate::effects::catalogue_refusal(&unanswered);

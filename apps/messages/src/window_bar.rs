@@ -1,6 +1,6 @@
 //! Messages' controls, as parts in the window's bar ([`ui::window_toolbar`]): the shell's
 //! sidebar toggle and Back; where the window is as the location (the people, the person a
-//! conversation is with, the record's open conversation, the open groups or the account
+//! conversation is with, the resource's open conversation, the open groups or the account
 //! setup); the conversation's route as the location's choices; and the actions: Accounts,
 //! Refresh messages, and in the groups Refresh membership and Close groups.
 

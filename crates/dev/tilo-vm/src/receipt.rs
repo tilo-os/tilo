@@ -31,7 +31,7 @@ pub struct Receipt {
 }
 
 fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    format!("{:.3}", jiff::Timestamp::now())
 }
 
 fn round(seconds: f64) -> f64 {

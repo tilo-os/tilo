@@ -26,7 +26,7 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
     eprintln!("phase a_members_text_edit_reaches_the_open_note");
     {
         let (mut app, page) = with_note("Shared", "Hello");
-        app.merge_peer_edit(|doc| {
+        crate::framework_support::part_edit(&mut app, page, |doc| {
             let first = read::page_block_snapshots(doc, page)[0].0.clone();
             crate::component_support::edit_page_body(
                 doc,
@@ -51,7 +51,9 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
     eprintln!("phase duplicate_carries_every_new_page_body");
     {
         let (mut app, source) = with_note("Welcome", "First\n\nSecond");
-        let source_blocks = app.read_document(|doc| read::page_block_snapshots(doc, source));
+        let source_blocks = crate::framework_support::part_doc(&app, source, |doc| {
+            read::page_block_snapshots(doc, source)
+        });
         // The sidebar's context-menu path: the copy and its bodies are one
         // action, so nobody has to open the copy for its body to exist.
         surface(&mut app, |notes| {
@@ -63,7 +65,9 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
             .find(|page| page.title == "Welcome copy")
             .expect("duplicate metadata")
             .id;
-        let copied_blocks = app.read_document(|doc| read::page_block_snapshots(doc, copy));
+        let copied_blocks = crate::framework_support::part_doc(&app, copy, |doc| {
+            read::page_block_snapshots(doc, copy)
+        });
         assert_eq!(
             body(&app, copy),
             body(&app, source),
@@ -73,21 +77,23 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
             copied_blocks[0].0, source_blocks[0].0,
             "copies mint independent stable block ids"
         );
-        let replica = app.peer_document();
+        let (_, replica) = crate::framework_support::peer_part(&app, copy);
         assert_eq!(read::page_block_snapshots(&replica, copy), copied_blocks);
     }
 }
 
 /// An agent writing in a note a window here shows, the way a person
-/// following it sees it: the window is open on the empty notebook, the agent
-/// makes the note and appends its paragraphs one change at a time, and the
-/// window follows into the note between them. Each paragraph the agent was
-/// told it wrote reads in both replicas, in order.
+/// following it sees it: the window is open on a notebook of one note, the
+/// agent makes another and appends its paragraphs one change at a time, and
+/// the window follows into the note between them. Each paragraph the agent
+/// was told it wrote reads in both replicas, in order.
 #[test]
 fn an_agents_paragraphs_land_in_a_note_a_following_window_shows() {
     use tilo_document::RichTextAction;
     let mut app = crate::framework_support::notes();
-    let mut agent = app.peer_document();
+    let inbox = crate::framework_support::add_note(&mut app, "Inbox", "");
+    let (part, mut agent) = crate::framework_support::peer_part(&app, inbox);
+    let forked = agent.get_heads();
     let page = notes::PageId::new_v4();
     crate::component_support::apply_to(
         &mut agent,
@@ -111,13 +117,13 @@ fn an_agents_paragraphs_land_in_a_note_a_following_window_shows() {
         )
         .unwrap();
         agent.commit();
-        app.merge_peer(&mut agent).unwrap();
+        crate::framework_support::merge_part(&mut app, &part, &mut agent);
         if index == 1 {
             // Following brings the note forward in the window.
             crate::framework_support::open(&mut app, page);
         }
     }
-    app.merge_peer(&mut agent).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut agent);
     let texts = |doc: &automerge::AutoCommit| -> Vec<String> {
         read::page_block_snapshots(doc, page)
             .into_iter()
@@ -125,21 +131,19 @@ fn an_agents_paragraphs_land_in_a_note_a_following_window_shows() {
             .filter(|text| !text.is_empty())
             .collect()
     };
-    // The window wrote nothing back over them: every change the record
-    // holds past its genesis is the agent's.
-    let genesis = Some(tilo_actions::FrameworkChange::Genesis.change_message());
+    // The window wrote nothing back over them: every change the part took
+    // since the agent started is the agent's.
     let agent_actor = agent.get_actor().clone();
     assert!(
         agent
-            .get_changes(&[])
+            .get_changes(&forked)
             .iter()
-            .all(|change| change.actor_id() == &agent_actor
-                || change.message() == genesis.as_deref()),
+            .all(|change| change.actor_id() == &agent_actor),
         "following the agent made the window write"
     );
     assert_eq!(texts(&agent), lines, "the agent's replica");
     assert_eq!(
-        app.read_document(|doc| texts(doc)),
+        crate::framework_support::part_doc(&app, page, |doc| texts(doc)),
         lines,
         "the window's replica"
     );

@@ -496,7 +496,7 @@ tilo_test_env::scenario! {
         assert!(
             ui::attention::entries().iter().any(|entry| entry.what()
                 == "This connection changed while you were asked. Review it, then try again."),
-            "the person learns why nothing opened, in the ledger"
+            "the person learns why nothing opened, in the log"
         );
     }
 

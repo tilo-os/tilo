@@ -231,7 +231,7 @@ else
   fi
 fi
 
-# --- the health gate ----------------------------------------------------------
+# --- the health check ----------------------------------------------------------
 if systemctl is-enabled tilo-boot-health.service >/dev/null 2>&1; then
   ok "tilo-boot-health.service is enabled"
 else

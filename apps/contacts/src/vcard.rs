@@ -529,7 +529,7 @@ fn birthday_value(line: &ContentLine) -> Option<Birthday> {
 }
 
 /// Empty BEGIN/END pairs are not contacts: truncated exports and hand-edited
-/// files have them, and accepting one adds an untitled record and inflates the
+/// files have them, and accepting one adds an untitled resource and inflates the
 /// import count. A name-less card with an endpoint, note, group or organization
 /// is still a contact.
 fn has_contact_data(c: &Contact) -> bool {

@@ -1,0 +1,22 @@
+# Tilo composite home-peer server configuration.
+#
+# This process durably hosts workspace CRDT state and queues updates for
+# offline members. The companion `fs replica` worker retains the
+# workspace content configured in `/etc/tilo/home-peer.toml`.
+identity_root = "/var/lib/tilo"
+state_root = "/var/lib/tilo-server"
+
+# Compose exposes this UDP port. Iroh still uses encrypted relay fallback and
+# NAT traversal when a direct path is unavailable.
+iroh_listen = "0.0.0.0:4433"
+
+# Safe default: accept only device certificates chained to this owner's root.
+# See README.md before changing this for a cross-user workspace.
+trust_policy = { kind = "allow_matching_user" }
+
+# `full_content_replication` is enabled dynamically only while the aggregate
+# home-peer status proves every configured workspace is complete.
+
+# `allow_matching_user` hosts open an owner workspace when it first subscribes.
+# Any other workspace is held here because its governor made this server one of
+# the workspace's hosts; nothing in this file names workspaces.

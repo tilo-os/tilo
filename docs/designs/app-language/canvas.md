@@ -10,7 +10,7 @@ Its one gesture is **point somewhere and say what you want there.** It is the st
 
 | Pointing | What the words carry | What the answer fills |
 |---|---|---|
-| **Click free space** | the point, and what stands near it | content standing at the point, at its own size |
+| **Click free space** | the point, and what stands near it | content access at the point, at its own size |
 | **Drag a rectangle on free space** | the rectangle | that rectangle: the content is laid out to it |
 | **Right-click a thing** | the thing: a place, a resource in it, a field | beside it, or the thing itself when the words change it |
 | **Select things** (drag a rectangle over them, or shift-click) | the selection | beside the selection |
@@ -50,14 +50,16 @@ A place on the canvas is a resource's view, drawn as itself:
 - What the agent shows is content too: the views it answers with fill the rectangle the person
   dragged, or stand beside the reply when they only clicked. A view the agent generates
   (tilolang it writes) is placed the same way and stays live.
-- Beside means adjacent: what an answer shows takes the free spot touching its turn (trailing
-  side, then below, then leading side, then above), the one most inside what the person sees,
-  made smaller when only a smaller room is free there, and goes elsewhere only when no spot
-  adjacent to the turn is free.
+- Beside means adjacent: what an answer shows takes the free spot touching its turn. A spot that
+  stands whole in what the person sees comes first (trailing side, then below, then leading
+  side, then above), made smaller when only a smaller spot is free there: nothing pans, and what
+  they were looking at stays in view. Only when no side has a free spot in view does it stand past the
+  edge, trailing side first, with the camera panning to show it and the turn together; it goes
+  elsewhere only when no spot adjacent to the turn is free.
 - Following up is pointing again: click under a reply to continue that turn, right-click an
   answer to refine it in place.
 - Nothing modal: an answer in progress shows where it will land and never blocks the rest of
-  the canvas. Nothing already standing moves to make room.
+  the canvas. Nothing already access moves to make room.
 
 ## 4. The agent has the whole session
 
@@ -139,7 +141,7 @@ is shown to anyone.
   caret itself never moves it. A card hugs what it holds up to the visible area and no further:
   its text wraps and the card scrolls.
 - **Captions name the thing.** A place's caption is what it shows, by the name of the view it
-  stands through ("All inboxes", "Notes"), never the first record or account of its app's root.
+  stands through ("All inboxes", "Notes"), never the first resource or account of its app's root.
   A place under another keeps its caption clear of it: they stand the caption's band and the
   canvas's gap apart.
 - **Places hug what they show.** A list found at a click is as tall as its rows up to its room:

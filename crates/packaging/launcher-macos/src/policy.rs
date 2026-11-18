@@ -1,7 +1,7 @@
 //! What a Seatbelt-confined app may touch, from the Linux launcher's policy inputs: the app's one
 //! writable directory ([`launcher::appdir`], per workspace and package), the user's grants as a
 //! [`launcher::capabilities::CapabilityPlan`], and the network outcome as a
-//! [`launcher::netgate::EgressDecision`].
+//! [`launcher::egress_proxy::EgressDecision`].
 //!
 //! Seatbelt matches the resolved path of every access (`/tmp` is `/private/tmp`, `/var` is
 //! `/private/var`), so every path is canonicalised here; an unresolved alias in a profile silently
@@ -9,8 +9,8 @@
 //!
 //! What does not map, recorded per launch in [`SeatbeltPolicy::not_enforced`]: device grants, since
 //! cameras and microphones sit behind TCC and not device nodes (the app is denied, never widened),
-//! and filtered egress without a gate, since there is no network namespace to hide the host network
-//! behind (with no gate the launch is offline).
+//! and filtered egress without a proxy, since there is no network namespace to hide the host network
+//! behind (with no proxy the launch is offline).
 //!
 //! The identity secrets, vault keys, trust and revocation lists and the workspace tree live in
 //! [`launcher::capabilities::private_store_roots`]. Seatbelt has no mount namespace, but its last
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use launcher::appdir;
 use launcher::capabilities::CapabilityPlan;
-use launcher::netgate::EgressDecision;
+use launcher::egress_proxy::EgressDecision;
 
 /// Symlinks followed while resolving one private store's path before the resolution gives up: the
 /// kernel's own limit.
@@ -139,8 +139,8 @@ pub fn app_environment(container: &Path) -> Vec<(String, String)> {
 pub enum SeatbeltNetwork {
     /// No socket may be connected or bound, IP or filesystem.
     Denied,
-    /// Only this loopback TCP port — the egress gate — may be connected.
-    Gate(u16),
+    /// Only this loopback TCP port — the egress proxy — may be connected.
+    Proxy(u16),
     /// IP traffic in and out, and the system resolver. Filesystem sockets stay denied: a shared host
     /// network is not the user's `ssh-agent`.
     Unrestricted,
@@ -156,9 +156,9 @@ pub struct PolicyInputs<'a> {
     pub container_dir: &'a Path,
     pub capabilities: &'a CapabilityPlan,
     pub egress: &'a EgressDecision,
-    /// The egress gate's loopback port, when [`EgressDecision::Filtered`]
+    /// The egress proxy's loopback port, when [`EgressDecision::Filtered`]
     /// runs one.
-    pub gate_port: Option<u16>,
+    pub proxy_port: Option<u16>,
     /// The app's own per-user cache directory (see [`prepare_darwin_cache`]).
     pub darwin_cache: Option<&'a Path>,
     /// Tilo's private stores, as [`launcher::capabilities::private_store_roots`] names them: kept
@@ -273,7 +273,7 @@ impl SeatbeltPolicy {
             .collect();
         for device in &capabilities.devices {
             not_enforced.push(format!(
-                "device `{device}`: macOS gates capture devices through TCC, which the \
+                "device `{device}`: macOS guards capture devices through TCC, which the \
                  Seatbelt profile does not grant"
             ));
         }
@@ -282,11 +282,11 @@ impl SeatbeltPolicy {
             EgressDecision::Blocked => SeatbeltNetwork::Denied,
             EgressDecision::Unrestricted => SeatbeltNetwork::Unrestricted,
             EgressDecision::Filtered(_) => {
-                if let Some(port) = inputs.gate_port {
-                    SeatbeltNetwork::Gate(port)
+                if let Some(port) = inputs.proxy_port {
+                    SeatbeltNetwork::Proxy(port)
                 } else {
                     not_enforced.push(
-                        "filtered egress: no gate is running; the app is offline".to_string(),
+                        "filtered egress: no proxy is running; the app is offline".to_string(),
                     );
                     SeatbeltNetwork::Denied
                 }
@@ -511,7 +511,7 @@ fn is_root(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use launcher::netgate::EgressPolicy;
+    use launcher::egress_proxy::EgressPolicy;
 
     struct Layout {
         _base: tempfile::TempDir,
@@ -546,7 +546,7 @@ mod tests {
             container_dir: &layout.container,
             capabilities: plan,
             egress,
-            gate_port: None,
+            proxy_port: None,
             darwin_cache: None,
             private_stores: &[],
         }
@@ -662,10 +662,10 @@ mod tests {
             assert_eq!(offline.not_enforced.len(), 1);
 
             let mut i = inputs(&l, &plan, &filtered);
-            i.gate_port = Some(9050);
-            let gated = SeatbeltPolicy::resolve(&i).unwrap();
-            assert_eq!(gated.network, SeatbeltNetwork::Gate(9050));
-            assert!(gated.not_enforced.is_empty());
+            i.proxy_port = Some(9050);
+            let proxied = SeatbeltPolicy::resolve(&i).unwrap();
+            assert_eq!(proxied.network, SeatbeltNetwork::Proxy(9050));
+            assert!(proxied.not_enforced.is_empty());
         }
 
         phase the_environment_is_the_linux_contract_pointed_at_the_container;

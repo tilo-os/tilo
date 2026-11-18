@@ -10,7 +10,7 @@
 //!
 //! - [`record`]: a record's document, as the record store keeps it.
 //! - [`local_identity`]: who sits at this device, the process's one identity
-//!   seam.
+//!   boundary.
 //! - [`local_document_action`]: a local action observation as it is
 //!   reported to the workspace.
 //! - The collaboration manager below: the broker client.
@@ -109,7 +109,7 @@ pub mod portable_storage;
 pub mod state;
 
 // The clock, wake routing and host inputs, under the paths the toolkit
-// names them by (`ui::time`, `ui::wake`, `ui::host`), without the toolkit's
+// names them by (`ui::time`, `ui::wake`, `ui::process`), without the toolkit's
 // host services.
 pub(crate) mod time {
     // The broker's tests stamp records with it.
@@ -127,7 +127,7 @@ pub(crate) use wake::WakeHandle;
 pub(crate) use wake::WakeScope;
 // The tests bound what the sender's storage allocates.
 
-pub(crate) mod host {
+pub(crate) mod process {
     pub use tilo_process::environment::{ContinuationMetadata, environment};
 }
 
@@ -171,9 +171,9 @@ pub mod external_moderation;
 pub mod handoff;
 mod history;
 #[cfg(feature = "broker-transport")]
-mod lane;
+mod route_endpoints;
 #[cfg(feature = "broker-transport")]
-pub mod write_attribution_lane;
+pub mod write_attribution_endpoint;
 
 pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
 pub mod document_content;
@@ -188,7 +188,7 @@ pub use broker::{
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
-// `CollabEvent` and native construction custody still runs (always on the
+// `CollabEvent` and native construction ownership still runs (always on the
 // non-Required path).
 #[cfg(feature = "broker-transport")]
 pub use broker::CommittedDocument;
@@ -350,7 +350,7 @@ impl SessionResource {
     }
 }
 
-pub use crate::host::ContinuationMetadata;
+pub use crate::process::ContinuationMetadata;
 /// The numbers a semantic checkpoint carries for the portable schemas a
 /// signed manifest can declare (`continuity.semantic_schema`). The tag says
 /// what the payload means, so a device that has not installed the app can
@@ -364,10 +364,10 @@ pub mod semantic_schema {
     pub const TEXT_POSITION_V1: u16 = 0x0105;
 }
 
-/// The launcher-only resume payload the host passed this window
-/// ([`crate::host::HostIdentity::continuity_resume`]).
+/// The launcher-only resume payload the process passed this window
+/// ([`crate::process::ProcessIdentity::continuity_resume`]).
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
-    crate::host::environment()
+    crate::process::environment()
         .identity
         .continuity_resume
         .clone()
@@ -440,15 +440,15 @@ pub enum NativeConnection {
     Window(Option<runtime_portal::windows::Descriptor>),
 }
 
-/// Host-local original contributor custody a document change carries to the
+/// Host-local original contributor ownership a document change carries to the
 /// transport, never serialized on the wire. The toolkit's invocation scope
 /// mints it (`ui::invocation_scope::DocumentAuthorization`); the transport
 /// checks it against the change it is about to sign.
-pub trait DocumentCustody: Send + Sync + std::fmt::Debug {
+pub trait DocumentAuthority: Send + Sync + std::fmt::Debug {
     /// Whether the change's body and its current contributors are bound to
     /// `route`.
     fn check(&self, route: &RouteSpec, mutation: &DocumentMutation) -> Result<(), String>;
-    /// The bytes the custody holds while its change waits in the transport's
+    /// The bytes the ownership holds while its change waits in the transport's
     /// queue, counted against the queue's budget; `None` when they overflow.
     fn retained_bytes(&self) -> Option<usize>;
 }
@@ -488,8 +488,8 @@ pub enum CollabRequest {
     /// enums drifting apart.
     Document {
         mutation: DocumentMutation,
-        /// Host-local original contributor custody; never serialized on the wire.
-        authorization: Option<std::sync::Arc<dyn DocumentCustody>>,
+        /// Host-local original contributor ownership; never serialized on the wire.
+        authorization: Option<std::sync::Arc<dyn DocumentAuthority>>,
         /// The action this mutation is one part of, when the caller made it
         /// as part of an action that writes more than one unit: every part
         /// carries the same commit, and a peer applies them all together or
@@ -691,19 +691,19 @@ pub use runtime_collab::{ActionCatalogue, BrokerActionSurface, CatalogueChange};
 
 pub use runtime_collab::route::{KeyAccessState, RouteSpec};
 
-/// The custody types only this toolkit's endpoint mints: the committed
+/// The ownership types only this toolkit's endpoint mints: the committed
 /// captures its collaboration events carry.
 #[derive(Clone, Copy, Debug)]
-pub enum SdkCustody {}
+pub enum SdkAuthority {}
 
-impl runtime_collab::event::EndpointCustody for SdkCustody {
+impl runtime_collab::event::EndpointOwnership for SdkAuthority {
     type CommittedRead = CommittedDocument;
 }
 
-/// One event this endpoint receives, carrying the toolkit's own custody
+/// One event this endpoint receives, carrying the toolkit's own ownership
 /// types. The vocabulary is defined in [`runtime_collab::event`], which the
 /// session's brokers share.
-pub type CollabEvent = runtime_collab::event::CollabEvent<SdkCustody>;
+pub type CollabEvent = runtime_collab::event::CollabEvent<SdkAuthority>;
 
 /// The colour a roster row's packed `0x00RRGGBB` names: the presence
 /// hue nearest it, `None` for `0` or a grey.
@@ -770,18 +770,18 @@ enum Backend {
 /// Successful primary-route metadata; an epoch invalidates cursors even when
 /// the same route is re-announced. This is not an application-mintable credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrimaryRouteWitness {
+pub struct AcceptedRoute {
     #[cfg(not(any(test, feature = "test-support")))]
     route: RouteSpec,
     #[cfg(not(any(test, feature = "test-support")))]
     epoch: Uuid,
-    // The toolkit's tests hold up witnesses of their own to an app.
+    // The toolkit's tests hold up observations of their own to an app.
     #[cfg(any(test, feature = "test-support"))]
     pub route: RouteSpec,
     #[cfg(any(test, feature = "test-support"))]
     pub epoch: Uuid,
 }
-impl PrimaryRouteWitness {
+impl AcceptedRoute {
     /// The route the broker accepted.
     #[must_use]
     pub fn route(&self) -> &RouteSpec {
@@ -792,7 +792,7 @@ impl PrimaryRouteWitness {
     pub fn epoch(&self) -> Uuid {
         self.epoch
     }
-    /// A witness the toolkit's tests hold up to a manager.
+    /// An observation the toolkit's tests hold up to a manager.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn for_test(route: RouteSpec, epoch: Uuid) -> Self {
@@ -801,9 +801,9 @@ impl PrimaryRouteWitness {
 }
 #[derive(Default)]
 struct PrimaryRouteState {
-    required_document_custody: bool,
+    required_document_ownership: bool,
     requested: Option<RouteSpec>,
-    accepted: Option<PrimaryRouteWitness>,
+    accepted: Option<AcceptedRoute>,
 }
 impl PrimaryRouteState {
     fn announce(&mut self, route: RouteSpec) {
@@ -816,13 +816,13 @@ impl PrimaryRouteState {
         if self.requested.as_ref() != Some(&route) {
             return Err("primary route acknowledgement differs from the latest Hello".into());
         }
-        self.accepted = Some(PrimaryRouteWitness {
+        self.accepted = Some(AcceptedRoute {
             route,
             epoch: Uuid::new_v4(),
         });
         Ok(())
     }
-    fn current(&self, healthy: bool) -> Option<&PrimaryRouteWitness> {
+    fn current(&self, healthy: bool) -> Option<&AcceptedRoute> {
         healthy.then_some(self.accepted.as_ref()).flatten()
     }
 }
@@ -970,9 +970,9 @@ impl CollaborationManager {
 
 /// Compatibility route marker for a launcher-issued app window. Native
 /// document routes obtain their separate window binding from original broker
-/// custody; this environment value cannot authorize native private control.
+/// ownership; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
     (!value.is_empty() && value.len() <= 256 && !value.contains(['/', '\\']))
         .then(|| value.to_owned())
@@ -998,11 +998,11 @@ impl CollaborationManager {
     }
 
     pub fn require_document_authorization(&mut self) {
-        self.primary_route.required_document_custody = true;
+        self.primary_route.required_document_ownership = true;
     }
 
-    fn missing_required_document_custody(&self, request: &CollabRequest) -> bool {
-        self.primary_route.required_document_custody
+    fn missing_required_document_ownership(&self, request: &CollabRequest) -> bool {
+        self.primary_route.required_document_ownership
             && matches!(
                 request,
                 CollabRequest::Document {
@@ -1169,19 +1169,19 @@ impl CollaborationManager {
 
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
-    pub fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
+    pub fn primary_route(&self) -> Option<&AcceptedRoute> {
         self.primary_route.current(self.is_connected())
     }
 
     pub fn private_window_instance(&self) -> Option<u64> {
-        let witness = self.primary_route()?;
+        let observation = self.primary_route()?;
         let Backend::Transport(transport) = &self.backend else {
             return None;
         };
-        if transport.committed_document_required(&witness.route.channel_id()) {
-            return transport.private_window_binding(&witness.route);
+        if transport.committed_document_required(&observation.route.channel_id()) {
+            return transport.private_window_binding(&observation.route);
         }
-        let instance = witness
+        let instance = observation
             .route
             .document
             .as_deref()?
@@ -1238,7 +1238,7 @@ impl CollaborationManager {
     /// [`CollabSendError::Unavailable`] for anything but a `Hello` while the
     /// manager is still connecting.
     pub fn try_send(&mut self, req: CollabRequest) -> Result<(), CollabSendError> {
-        if self.missing_required_document_custody(&req) {
+        if self.missing_required_document_ownership(&req) {
             return Err(CollabSendError::Unavailable);
         }
         if self.awaiting_primary && !matches!(req, CollabRequest::Hello { .. }) {
@@ -1273,7 +1273,7 @@ impl CollaborationManager {
             .primary_route
             .accepted
             .as_ref()
-            .map(|witness| witness.route.channel_id());
+            .map(|observation| observation.route.channel_id());
         let unpublishable = matches!(
             req,
             CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
@@ -1284,7 +1284,7 @@ impl CollaborationManager {
             Backend::Disabled(_) => false,
         };
         if unpublishable {
-            // Committed-document custody: nothing is published on a route
+            // Committed-document ownership: nothing is published on a route
             // whose original history has not been applied locally.
             return Err(CollabSendError::Unavailable);
         }
@@ -1460,7 +1460,7 @@ impl CollaborationManager {
     }
 
     /// Whether the actual route's original document history has been applied.
-    /// This is the same transport gate used before document publication. A
+    /// This is the same transport check used before document publication. A
     /// closed transport never reopens, so its routes stop being ready the
     /// moment it closes, before the worker clears their read state.
     pub fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
@@ -1519,7 +1519,7 @@ impl CollaborationManager {
         }
     }
 
-    /// Independently sample the existing transport read gates without admission.
+    /// Independently sample the existing transport read checks without admission.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_document_read_phase_for_test(
         &self,
@@ -1555,9 +1555,9 @@ impl CollaborationManager {
         route: RouteSpec,
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
-        if self.missing_required_document_custody(&req) {
+        if self.missing_required_document_ownership(&req) {
             tracing::debug!(
-                cause = "missing_committed_document_custody",
+                cause = "missing_committed_document_ownership",
                 "document route handoff refused"
             );
             return Err(CollabSendError::Unavailable);
@@ -1629,9 +1629,9 @@ impl CollaborationManager {
             return Err(CollabSendError::Unavailable);
         }
         // A known committed route may be refreshing. Required original
-        // custody was checked above; retain this mutation in the bounded queue.
+        // ownership was checked above; retain this mutation in the bounded queue.
         // The worker still waits for this exact route before checking retained
-        // custody and applying the existing certification/commit policy.
+        // ownership and applying the existing certification/commit policy.
         let result = self.submit(TransportCommand::ToRoute(route, req));
         if let Err(error) = &result {
             tracing::warn!(%error, cause = "transport_queue_refusal", "document route handoff refused");
@@ -1870,7 +1870,7 @@ pub fn local_user_id() -> collab_types::MemberId {
 
 /// The OS account this process runs as, or `local` on a machine without one.
 fn local_account() -> String {
-    crate::host::environment()
+    crate::process::environment()
         .identity
         .account_name
         .clone()
@@ -1878,7 +1878,7 @@ fn local_account() -> String {
 }
 
 fn resolve_local_user_id() -> String {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     if let Some(v) = environment.identity.user_id.clone() {
         return v;
     }
@@ -1929,7 +1929,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let identity = &environment.identity;
     let app_id = identity
         .app_id
@@ -1959,7 +1959,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
 mod task4_route_tests {
     use super::{PrimaryRouteState, RouteSpec};
     #[test]
-    fn task4_primary_witness_requires_latest_success_and_current_health() {
+    fn task4_primary_observation_requires_latest_success_and_current_health() {
         let a = RouteSpec::document("a", uuid::Uuid::nil(), "record-a");
         let b = RouteSpec::document("b", uuid::Uuid::nil(), "record-b");
         let mut state = PrimaryRouteState::default();
@@ -2020,7 +2020,7 @@ mod local_document_report_tests {
 
     fn capture() -> CapturedAction {
         let mut capture = CapturedAction {
-            custody: None,
+            ownership: None,
             invocation: uuid::Uuid::from_bytes([1; 16]),
             capture_id: uuid::Uuid::from_bytes([5; 16]),
             revision: "captured-not-current".into(),
@@ -2206,7 +2206,7 @@ mod publication_change_tests {
     }
 
     #[test]
-    fn a_standing_refusal_is_one_change_and_its_end_another() {
+    fn a_lasting_refusal_is_one_change_and_its_end_another() {
         let failed = Arc::new(AtomicBool::new(false));
         let mut manager =
             CollaborationManager::with_transport(Box::new(Refusing(Arc::clone(&failed))));
@@ -2314,7 +2314,7 @@ mod late_primary_route_tests {
             assert_eq!(
                 manager
                     .primary_route()
-                    .map(|witness| witness.route().clone()),
+                    .map(|observation| observation.route().clone()),
                 Some(route())
             );
             assert_eq!(

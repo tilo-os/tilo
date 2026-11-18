@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # The programs the tilo.sh server images run, compiled by t's own check and cached like any other
 # build here: the API server, the VM host's service, its jail helper and its member, the
-# relay's daemon, its admin and its enroll program with the filesystem replica, and the server OS's
+# server's daemon, its admin and its enroll program with the filesystem replica, and the server OS's
 # boot and update tools. The images package what this leaves (api-build.sh, vm-host-build.sh,
-# relay-build.sh, host-build.sh); none compiles Rust inside its build, so an image after a change
+# server-build.sh, host-build.sh); none compiles Rust inside its build, so an image after a change
 # costs that crate's compile and a layering run.
 #
-# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or host)
+# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server or host)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or host)'
+usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server or host)'
 image=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -20,35 +20,40 @@ target=${CARGO_TARGET_DIR:-$repo_root/target}
 export CARGO_PROFILE_RELEASE_LTO=thin
 case $image in
   api)
-    packages=(-p tilo-api --bin tilo-api)
-    bins=(tilo-api) ;;
+    # The API server starts a task's tilolang programs in tilolang-process, which it finds
+    # beside itself: one feature resolution for the two.
+    packages=(-p tilo-api --bin tilo-api -p tilolang-process --bin tilolang-process)
+    bins=(tilo-api tilolang-process) ;;
   vm-host)
     # tilo-runtime already depends on the runtime packages the host serves from; one feature
     # resolution for the three programs.
     packages=(-p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
     bins=(tilo-legacy tilo-hosted-jail tilo-runtime) ;;
-  relay)
-    # The relay and the filesystem replica in one feature resolution, as the image compiled them:
+  server)
+    # The server and the filesystem replica in one feature resolution, as the image compiled them:
     # separate Cargo invocations recompile the shared dependencies whose selected features differ
     # by package root.
-    packages=(-p tilo-relay -p tilo-fs --bins)
-    bins=(tilo-relay tilo-relay-admin tilo-enroll fs) ;;
+    packages=(-p tilo-server -p tilo-fs --bins)
+    bins=(tilo-server tilo-server-admin tilo-enroll fs) ;;
   host)
-    # The server OS: the relay and replica, the hosted-VM service and its jail helper, the API
-    # server, and the boot tools the update ledger and the boot-entry pass read. One feature
+    # The server OS: the server and replica, the hosted-VM service and its jail helper, the API
+    # server with the program it starts a task's tilolang programs in (it finds it beside
+    # itself), and the boot tools the update log and the boot-entry pass read. One feature
     # resolution, so the shared workspace crates compile once.
-    packages=(-p tilo-relay -p tilo-fs --bin tilo-relay --bin tilo-relay-admin \
+    packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
                 --bin tilo-enroll --bin fs
               -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail
               -p tilo-api --bin tilo-api
+              -p tilolang-process --bin tilolang-process
               -p tilo-esp-write --bin tilo-esp-write
               -p tilo-image-policy-check --bin tilo-image-policy-check
               -p tilo-user-identity --bin tilo-image-trust
               -p tilo-board-successor --bin tilo-board-successor)
-    bins=(tilo-relay tilo-relay-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
+    bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
+          tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;
   *)
-    die "unknown server image $image: api, vm-host, relay or host" ;;
+    die "unknown server image $image: api, vm-host, server or host" ;;
 esac
 rm -rf "$out"
 mkdir -p "$out"

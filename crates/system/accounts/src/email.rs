@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TYPE_ID: &str = "email";
 
-/// The app that keeps email accounts: the one the session's custody
+/// The app that keeps email accounts: the one the session's ownership
 /// releases an email account's secret to.
 pub use tilo_app_id::apps::MAIL as KEEPER;
 

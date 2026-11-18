@@ -260,7 +260,7 @@ scenario "an agent's suggestion" -> Task {
     van
 }
 
-/// A move a week away, on its project's board: a lane per stage, the tasks in each.
+/// A move a week away, on its project's board: a list per stage, the tasks in each.
 scenario "a project board" -> Project {
     let flat = tasks.projects.insert(
         Project(name: "Move flat", notes: RichText("Keys on the 15th.")),

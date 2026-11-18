@@ -37,7 +37,7 @@ fn shared_home_generations_rebuild_capacity_from_their_own_authenticated_artifac
         &root.path().join("identity"),
         "Ada",
         [20, 80, 140],
-        tilo_identity_host::provisioning::IdentityStorage::for_session(),
+        tilo_identity::provisioning::IdentityStorage::for_session(),
     )
     .unwrap();
     let original = PreparedMedia::prepare_with_selections(
@@ -69,7 +69,7 @@ fn shared_home_generations_rebuild_capacity_from_their_own_authenticated_artifac
         fresh.home.as_ref().unwrap()
     ));
     // Cached totals are observation, never authority. A different generation's
-    // lagging total must not influence recomputation from current held custody.
+    // lagging total must not influence recomputation from current held ownership.
     original.reserved_data_bytes.store(0, Ordering::Release);
     fresh.reserved_data_bytes.store(1, Ordering::Release);
     for generation in [&original, &fresh] {

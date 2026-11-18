@@ -42,7 +42,10 @@ impl Described for Avatar {
 
     fn from_props(_key: &str, props: AvatarProps) -> Self {
         let (name, identity) = props.name_and_identity();
-        let mut avatar = Self::person(name, identity);
+        let mut avatar = match props.who {
+            Some(who) => Self::of(who),
+            None => Self::person(name, identity),
+        };
         if let Some(glyph) = props.glyph {
             avatar = avatar.with_glyph(glyph);
         }
@@ -59,6 +62,7 @@ impl Described for Avatar {
         let (name, identity) = props.name_and_identity();
         self.name = name;
         self.identity = identity;
+        self.who = props.who;
         self.glyph = props.glyph;
         self.neutral = props.glyph.is_some();
         self.square = props.square || props.glyph.is_some();

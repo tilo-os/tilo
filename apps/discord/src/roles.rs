@@ -11,7 +11,7 @@ use discord_wire::perm;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, JsonSchema, Settled};
 
-use crate::record::{Guild, MappedKind};
+use crate::guild::{Guild, MappedKind};
 
 /// Tilo's roles, lowest first.
 pub const TILO_ROLES: [&str; 5] = ["viewer", "commenter", "editor", "moderator", "owner"];
@@ -247,8 +247,8 @@ mod tests {
     use discord_wire::op::ChannelKind;
 
     use super::*;
+    use crate::guild::{DRole, Link, Ownership};
     use crate::layout::tests::{dchan, mapping};
-    use crate::record::{DRole, Link, Ownership};
 
     fn drole(id: &str, name: &str, perms: u64, color: u32) -> DRole {
         DRole {

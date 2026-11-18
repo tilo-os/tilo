@@ -25,7 +25,7 @@
 //! Rust binding, links a GPL library, and needs a model download — not
 //! feasible to build cleanly+offline in the current toolchain. So this
 //! geometric decoder is the **shipping** path. The [`SwipeModel`] trait is
-//! the clean seam: drop in a `FutoSwipeModel` implementing it later and the
+//! the clean boundary: drop in a `FutoSwipeModel` implementing it later and the
 //! widget wiring is unchanged.
 
 use std::collections::HashMap;

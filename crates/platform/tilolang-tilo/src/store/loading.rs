@@ -1,4 +1,4 @@
-//! How the store gets what it was not sent: the workspace record on a first write, and a chunk
+//! How the store gets what it was not sent: the workspace document on a first write, and a chunk
 //! when something reads into it (a row a window shows, or a lookup the index routes to it) or a
 //! write is addressed to it. What a workspace opens with is its manifest, its index and the
 //! chunks its window shows; the rest come this way.
@@ -10,7 +10,7 @@ use super::{Inner, Planned, TiloStore};
 use crate::chunk::{self, ChunkNo};
 
 impl TiloStore {
-    /// Read every chunk the record's holder handed over now, as a store sent them all reads
+    /// Read every chunk the document's holder handed over now, as a store sent them all reads
     /// them: what a replica that joined every chunk's route holds.
     pub fn read_every_chunk(&self) {
         let unread: Vec<ChunkNo> = self.held().chunks.all().map(|(chunk, _)| chunk).collect();
@@ -19,18 +19,18 @@ impl TiloStore {
         }
     }
 
-    /// Have the workspace record, if the store opened without it: from the loader.
-    pub(super) fn load_record(&self) -> Result<(), StoreError> {
+    /// Have the workspace document, if the store opened without it: from the loader.
+    pub(super) fn load_document(&self) -> Result<(), StoreError> {
         let loader = {
             let mut inner = self.changing();
-            if inner.chunks.has_record() {
+            if inner.chunks.has_document() {
                 return Ok(());
             }
             inner.loader.take()
         };
         let Some(mut loader) = loader else {
             return Err(StoreError::Backend(
-                "the workspace record is not loaded".into(),
+                "the workspace document is not loaded".into(),
             ));
         };
         let record = loader();
@@ -38,7 +38,7 @@ impl TiloStore {
         inner.loader = Some(loader);
         let Some(record) = record else {
             return Err(StoreError::Backend(
-                "the workspace record cannot be loaded".into(),
+                "the workspace document cannot be loaded".into(),
             ));
         };
         let moved = inner.attach_document(chunk::FIRST, record);
@@ -49,7 +49,7 @@ impl TiloStore {
         Ok(())
     }
 
-    /// Have the chunk `chunk`, if the store has not read it: from what the record's holder
+    /// Have the chunk `chunk`, if the store has not read it: from what the document's holder
     /// handed over ([`TiloStore::adopt`]). A chunk the manifest names not at all is one no write
     /// has started yet, which there is nothing to load for.
     ///
@@ -60,7 +60,7 @@ impl TiloStore {
     /// ([`TiloStore::index_whole`]).
     pub(super) fn load_chunk(&self, chunk: ChunkNo) -> Result<(), StoreError> {
         if chunk == chunk::FIRST {
-            return self.load_record();
+            return self.load_document();
         }
         let mut inner = self.changing();
         if inner.chunks.mirror(chunk).is_some() {
@@ -75,11 +75,11 @@ impl TiloStore {
             }
             return Ok(());
         }
-        // Which chunks exist is what the record's manifest says: without it there is no telling
+        // Which chunks exist is what the document's manifest says: without it there is no telling
         // a chunk it names from one a write will start.
-        if !inner.chunks.has_record() {
+        if !inner.chunks.has_document() {
             return Err(StoreError::Backend(
-                "the workspace record is not loaded".into(),
+                "the workspace document is not loaded".into(),
             ));
         }
         if !inner.adopted || !inner.chunks.placement().chunks().contains(&chunk) {
@@ -97,13 +97,13 @@ impl TiloStore {
 
     /// Have the chunk the resource `doc` is stored in, if the store was not sent it.
     pub(super) fn load_doc(&self, doc: &str) -> Result<(), StoreError> {
-        self.load_record()?;
+        self.load_document()?;
         let chunk = self.held().chunks.chunk(doc);
         self.load_chunk(chunk)
     }
 
     /// Have the chunk the resource at `at` is read and written in, if the store was not sent it:
-    /// of a record, the one the manifest places it in, and of an item, the one the index routes
+    /// of a document, the one the manifest places it in, and of an item, the one the index routes
     /// it to.
     ///
     /// An item the index names no chunk for — one no step has derived yet, and the chunks read
@@ -112,17 +112,17 @@ impl TiloStore {
     /// rest as it reaches for them ([`Self::load_short`]), so what a person reaches for in one
     /// of those is read, never missing.
     pub(super) fn load_at(&self, at: &ResourceRef) -> Result<(), StoreError> {
-        // A store that opened without its record reads what its indexes name: a resource no
-        // index names is not one the workspace is known to hold, and reading the record for it
-        // would read the whole workspace to answer nothing. A window shown before its record
-        // shows what the index holds and reads the record for what it names.
-        if !self.held().chunks.has_record()
+        // A store that opened without its document reads what its indexes name: a resource no
+        // index names is not one the workspace is known to hold, and reading the document for it
+        // would read the whole workspace to answer nothing. A window shown before its document
+        // shows what the index holds and reads the document for what it names.
+        if !self.held().chunks.has_document()
             && self.held().apps.values().any(super::AppIndex::answers)
             && self.held().locate(at).is_err()
         {
             return Ok(());
         }
-        self.load_record()?;
+        self.load_document()?;
         let Some(item) = &at.item else {
             let chunk = self.held().chunks.chunk(&at.doc);
             return self.load_chunk(chunk);
@@ -131,7 +131,7 @@ impl TiloStore {
         if let Some(chunk) = routed {
             return self.load_chunk(chunk);
         }
-        // The chunks the record places that the store was not sent: an item is in one of them,
+        // The chunks the document places that the store was not sent: an item is in one of them,
         // or in one it holds already, which is where its row stands.
         let missing: Vec<ChunkNo> = {
             let inner = self.held();

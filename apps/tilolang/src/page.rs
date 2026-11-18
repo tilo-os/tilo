@@ -5,7 +5,7 @@
 //! from the address its payload is served at ([`install_package`], `installTilolangPackage` to
 //! the page), which registers the app with the page's runtime under the package's own id, and
 //! the window runs the package's instance itself ([`PageWindow`]), over a workspace record the
-//! page keeps in memory, sending the UI host's half of the window ([`AppWindow`]) the same
+//! page keeps in memory, sending the app window's half of the window ([`AppWindow`]) the same
 //! component patches a host sends over its socket.
 
 // A page runs on one thread: what it awaits never moves to another.
@@ -18,11 +18,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local;
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::bundle::{Bundle, IDS_FILE, IMPORTS_DIR, WASM_FILE};
 use tilolang_tilo::host::{Host, RootView};
-use tilolang_tilo::instance::memory::MemoryRecord;
+use tilolang_tilo::instance::memory::MemoryDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use ui::widget::{AppModel, DrawChild as _, ModelPath, Widget};
 use wasm_bindgen::JsCast as _;
@@ -31,7 +31,7 @@ use wasm_bindgen::prelude::*;
 /// Install the package whose payload is served under `base` (a URL ending in `/`): its module,
 /// its ids lock and the modules of the packages it uses (`imports/<app>.wasm`), as a `.tapp`'s
 /// payload holds them. Registers the app with the page's runtime and answers its id, which the
-/// page mounts. Its window opens with `scenarios` staged in its record, in order (names separated
+/// page mounts. Its window opens with `scenarios` staged in its document, in order (names separated
 /// by commas, or `all` for every scenario the package declares), as a capture stages one.
 ///
 /// # Errors
@@ -139,9 +139,9 @@ impl Platform for PagePlatform {
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
+            .map(|(name, value)| (name.as_str(), tilo_app_window::i18n::value_of(value)))
             .collect();
-        tilo_ui_host::i18n::t_args(id, &args)
+        tilo_app_window::i18n::t_args(id, &args)
     }
 
     /// The package's words, and the one language its window speaks: the person's when the
@@ -150,18 +150,16 @@ impl Platform for PagePlatform {
         if window {
             ui::i18n::speak_window_language(catalogues);
         } else {
-            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+            tilo_app_window::i18n::add_shared_catalogues(catalogues);
         }
     }
 
     fn now(&self) -> String {
-        ui::clock::local_now()
-            .to_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        format!("{:.0}", ui::clock::local_now().timestamp())
     }
 
     fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().local_minus_utc())
+        i64::from(ui::clock::local_now().offset().seconds())
     }
 
     fn zone_name(&self) -> Option<String> {
@@ -169,7 +167,7 @@ impl Platform for PagePlatform {
     }
 
     fn shown(&self, kind: &str, value: &str) -> String {
-        tilo_ui_host::date::shown_text(kind, value)
+        tilo_app_window::date::shown_text(kind, value)
     }
 
     fn clock(&self, hour: u32, minute: u32) -> String {
@@ -190,13 +188,13 @@ const EXCHANGES: usize = 8;
 pub struct PageWindow {
     view: AppWindow,
     instance: Instance,
-    record: MemoryRecord,
+    record: MemoryDocument,
     /// The instance asked for the window to come forward.
     activation: Cell<bool>,
 }
 
 impl PageWindow {
-    /// The window of `bundle` for the person `me`, over a workspace record of its own.
+    /// The window of `bundle` for the person `me`, over a workspace document of its own.
     #[must_use]
     pub fn new(me: &str, bundle: Arc<Bundle>) -> Self {
         let app = bundle.meta.app.clone();
@@ -212,7 +210,7 @@ impl PageWindow {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 root: RootView::default(),
                 // What the app hands outside (a post, a mail) stays in the page: it has no
                 // development log to write, and no connector to reach.
@@ -222,9 +220,9 @@ impl PageWindow {
             Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
-        let record = MemoryRecord::new(ui::automerge::AutoCommit::new(), me);
+        let record = MemoryDocument::new(ui::automerge::AutoCommit::new(), me);
         instance.sync(Some(record.doc()));
-        // The page is the record's only replica, and so its origin: the package's roots are made
+        // The page is the document's only replica, and so its origin: the package's roots are made
         // and its migrations run here.
         if let Some(host) = instance.host() {
             let roots: Vec<String> = host
@@ -240,7 +238,7 @@ impl PageWindow {
                 })
                 .unwrap_or_default();
             for ty in roots {
-                if let Err(error) = host.root_record(&app, &ty) {
+                if let Err(error) = host.root_resource(&app, &ty) {
                     tracing::error!(%error, "a root of the package could not be made");
                 }
             }
@@ -272,7 +270,7 @@ impl PageWindow {
             let mut changed = self.instance.update();
             match self.record.take_in(&mut self.instance, None) {
                 Ok(wrote) => changed |= wrote,
-                Err(error) => tracing::error!(%error, "the record refused a step"),
+                Err(error) => tracing::error!(%error, "the document refused a step"),
             }
             changed |= self.view.receive();
             if self.view.take_activation() {
@@ -303,14 +301,14 @@ impl ui::component_lifecycle::WindowActivation for PageWindow {
     }
 }
 
-/// The window is named by what it shows, as the UI host's window names it.
+/// The window is named by what it shows, as the app window's window names it.
 impl ui::component_lifecycle::WindowTitle for PageWindow {
     fn window_title(&self) -> Option<&str> {
         self.view.title()
     }
 }
 
-/// The window stands for the UI host's window in the layout and in every walk of the widgets.
+/// The window stands for the app window's window in the layout and in every walk of the widgets.
 impl ui::widget::Decorator for PageWindow {
     type Inner = dyn Widget;
 

@@ -242,7 +242,7 @@ impl World for TypstWorld {
         match offset {
             // No offset asks for the date on the person's own clock.
             None => {
-                let local = ui::clock::local_now().format("%Y-%m-%d").to_string();
+                let local = ui::clock::today().to_string();
                 let mut parts = local.split('-').filter_map(|part| part.parse::<i32>().ok());
                 let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
                 Datetime::from_ymd(year, u8::try_from(month).ok()?, u8::try_from(day).ok()?)

@@ -129,7 +129,7 @@ where
     }
 
     /// Close the queue and observe the exact worker and transport outcome.
-    /// Requires sole custody after all FUSE callbacks and handles have retired.
+    /// Requires sole ownership after all FUSE callbacks and handles have retired.
     pub(crate) fn retire(self) -> io::Result<()> {
         let mut inner = Arc::try_unwrap(self.0)
             .map_err(|_| io::Error::other("retained source still has active owners"))?;
@@ -145,7 +145,7 @@ where
     }
 
     /// Terminally close this exact authenticated channel before waiting for
-    /// callbacks. The source provider observes peer death at native effect gates.
+    /// callbacks. The source provider observes peer death at native effect checks.
     pub(crate) fn revoke(&self) {
         self.0.live.store(false, Ordering::Release);
         let _ = self.0.transport.shutdown(std::net::Shutdown::Both);

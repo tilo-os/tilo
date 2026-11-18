@@ -61,7 +61,7 @@ fn editor_with_one_clip() -> (TestApp<VideoEditor>, uuid::Uuid) {
 fn an_action_invoked_with_no_window_reaches_the_app() {
     let (mut app, clip_id) = editor_with_one_clip();
 
-    // The editor's view of the record, as a host with no screen holds it.
+    // The editor's view of the resource, as a host with no screen holds it.
     let definition = definition::<VideoEditor>();
     let mut agent = AttachedView::open(
         definition,

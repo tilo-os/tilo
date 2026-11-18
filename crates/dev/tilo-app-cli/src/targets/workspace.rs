@@ -1,7 +1,7 @@
 //! `--share` for `run --platform web` and `dev --platform web`: the app in a
 //! workspace other people join from their own browser.
 //!
-//! The workspace's host is the SDK's own, `tilo-relay workspace --persistent`, on
+//! The workspace's host is the SDK's own, `tilo-server workspace --persistent`, on
 //! this machine: it governs the workspace, so it keys every record's channel
 //! and what one person does reaches everyone else. The workspace is listed in
 //! the host's directory at its default role, so its entry admits each person
@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::directory::entry_path;
-use tilo_relay_protocol::web::API_PREFIX;
+use tilo_server_protocol::directory::entry_path;
+use tilo_server_protocol::web::API_PREFIX;
 use tilo_workspace_directory::web_origin;
 
 use super::Project;
@@ -36,7 +36,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct SharedWorkspace {
     pub origin: String,
-    pub relay_workspace: String,
+    pub server_workspace: String,
     pub app_id: String,
     pub name: String,
     child: Mutex<Child>,
@@ -105,7 +105,7 @@ impl SharedWorkspace {
     /// restart reopens the same workspace with what was in it. `fresh` starts
     /// an empty one.
     pub fn start(project: &Project, pages_origin: &str, fresh: bool) -> Result<Self> {
-        let relay = relay_binary(project)?;
+        let server = server_binary(project)?;
         // The state a shared session has already written: kept under the
         // name it was written with, so a restart reopens it.
         let state = project
@@ -124,10 +124,10 @@ impl SharedWorkspace {
         }
         let app_id = project.manifest.package.id.clone();
         let name = project.display_name();
-        let mut child = ProcessCommand::new(&relay)
+        let mut child = ProcessCommand::new(&server)
             .arg("workspace")
             .arg("--state")
-            .arg(state.join("relay"))
+            .arg(state.join("server"))
             .args(["--persistent", &project.package])
             .args(["--workspace-name", &name])
             // Listed, so its entry admits whoever asks, at the app's default
@@ -145,14 +145,14 @@ impl SharedWorkspace {
             .args(["--web-plain", "127.0.0.1:0"])
             .args(["--allowed-origin", pages_origin])
             .env(
-                "TILO_RELAY_LOG",
-                std::env::var("TILO_RELAY_LOG").unwrap_or_else(|_| "error".into()),
+                "TILO_SERVER_LOG",
+                std::env::var("TILO_SERVER_LOG").unwrap_or_else(|_| "error".into()),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .with_context(|| format!("starting {}", relay.display()))?;
+            .with_context(|| format!("starting {}", server.display()))?;
         let stdin = child.stdin.take().context("the host has no stdin")?;
         let stdout = child.stdout.take().context("the host has no stdout")?;
         let started_rx = follow_operator(stdout)?;
@@ -160,7 +160,7 @@ impl SharedWorkspace {
             let _ = child.kill();
             anyhow::anyhow!("the host did not start in two minutes")
         })?;
-        let relay_workspace = started
+        let server_workspace = started
             .get("workspace")
             .and_then(Value::as_str)
             .context("the host named no workspace")?
@@ -182,7 +182,7 @@ impl SharedWorkspace {
             .unwrap_or_default();
         Ok(Self {
             origin,
-            relay_workspace,
+            server_workspace,
             app_id,
             name,
             child: Mutex::new(child),
@@ -240,7 +240,7 @@ impl SharedWorkspace {
         let entry = web_origin(&format!(
             "{}{API_PREFIX}/{}",
             self.origin,
-            entry_path(&self.relay_workspace)
+            entry_path(&self.server_workspace)
         ))
         .map_err(anyhow::Error::msg)?;
         let people = {
@@ -295,19 +295,19 @@ fn follow_operator(stdout: std::process::ChildStdout) -> Result<mpsc::Receiver<V
 
 /// The SDK's host, built from the SDK checkout the app builds against (with
 /// its lockfile) the first time and reused after.
-fn relay_binary(project: &Project) -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("TILO_RELAY") {
+fn server_binary(project: &Project) -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TILO_SERVER") {
         return Ok(PathBuf::from(path));
     }
     let in_workspace = project.workspace_root == project.sdk_root;
     let target = if in_workspace {
         project.target_dir.clone()
     } else {
-        project.target_dir.join("tilo-app/relay")
+        project.target_dir.join("tilo-app/server")
     };
-    let binary = target.join("debug").join(exe("tilo-relay"));
+    let binary = target.join("debug").join(exe("tilo-server"));
     eprintln!(
-        "[tilo-app] building the workspace's host (tilo-relay); the first build takes a few minutes"
+        "[tilo-app] building the workspace's host (tilo-server); the first build takes a few minutes"
     );
     let mut command = ProcessCommand::new(super::cargo_program());
     command
@@ -315,9 +315,9 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
             "build",
             "--locked",
             "-p",
-            "tilo-relay",
+            "tilo-server",
             "--bin",
-            "tilo-relay",
+            "tilo-server",
         ])
         .args(["--features", "web,agents"])
         .arg("--manifest-path")

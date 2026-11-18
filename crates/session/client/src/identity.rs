@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
-use tilo_identity_host::custody::{Custody, HostIdentity};
+use tilo_identity::identity_store::{DeviceIdentity, IdentityStore};
 
-/// This device's custody, when this host holds an identity at all.
+/// This device's identity store, when this host holds an identity at all.
 #[must_use]
-pub fn custody() -> Option<Arc<dyn Custody>> {
+pub fn identity_store() -> Option<Arc<dyn IdentityStore>> {
     #[cfg(target_os = "linux")]
     {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-        Some(Arc::new(tilo_identity_host::custody::files::Files::new(
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        Some(Arc::new(tilo_identity::identity_store::files::Files::new(
             paths,
         )))
     }
@@ -30,6 +30,6 @@ pub fn custody() -> Option<Arc<dyn Custody>> {
 /// A session on a host without one takes part in no workspace as anybody: it binds a fresh key and
 /// stays anonymous until the person sets a device up.
 #[must_use]
-pub fn device_identity() -> Option<HostIdentity> {
-    HostIdentity::open(custody()?)
+pub fn device_identity() -> Option<DeviceIdentity> {
+    DeviceIdentity::open(identity_store()?)
 }

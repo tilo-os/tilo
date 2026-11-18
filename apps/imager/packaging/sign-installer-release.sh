@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sign every catalogued medium for one native lane, after checking its bytes.
+# Sign every catalogued medium for one native job, after checking its bytes.
 set -euo pipefail
 catalog_root="${1:?catalog directory required}"
 media_root="${2:?media directory required}"

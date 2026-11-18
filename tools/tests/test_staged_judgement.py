@@ -106,7 +106,7 @@ class Case:
             return [Path(v.path).relative_to(repository.root).as_posix() for v in found]
         if self.check == "check_swallowed_failures":
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)[0]]
-        if self.check == "check_ui_host_inputs_contract":
+        if self.check == "check_app_window_inputs_contract":
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
         if self.check == "check_ui_clock_contract":
             return [v.path for v in module.audit(repository.root, staged)]
@@ -124,7 +124,7 @@ class Case:
 
 
 # The runner files a fixture lists so the host-inputs check sees its inventory.
-NATIVE_RUNNER_FILES = load("check_ui_host_inputs_contract").NATIVE_RUNNER_FILES
+NATIVE_RUNNER_FILES = load("check_app_window_inputs_contract").NATIVE_RUNNER_FILES
 
 CASES = (
     Case(
@@ -159,7 +159,7 @@ CASES = (
         },
     ),
     Case(
-        check="check_ui_host_inputs_contract",
+        check="check_app_window_inputs_contract",
         files={
             "crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n",
             **{f"crates/sdk/ui-core/src/{name}": "" for name in NATIVE_RUNNER_FILES},
@@ -369,7 +369,7 @@ class HookWiringTests(unittest.TestCase):
 
     STAGED_IN_HOOK = (
         "check_app_text_contract",
-        "check_ui_host_inputs_contract",
+        "check_app_window_inputs_contract",
         "check_ui_clock_contract",
         "check_clock_contract",
         "check_formats",

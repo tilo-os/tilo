@@ -17,13 +17,49 @@ use collab_types::DocumentMutation;
 use fs_protocol::files::TreeChunk;
 use fs_protocol::tree;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_fs::namespace::Namespace;
-use tilo_fs::tree_document::{FILES_APP, record as tree_document};
+use tilo_fs::tree_document::{FILES_APP, document_id as tree_document};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
+use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
 use super::{Outcome, Worker, commit_failed, invoke_arguments};
+
+mod by_path;
+mod read;
+mod write;
+
+/// Whether `target` is one of Files' verbs on the workspace's own folder, by a path in the
+/// workspace ([`by_path`]), which change its tree where it is kept; its `write-file` there
+/// ([`write`]), which writes a file into it; or one of its reads of that folder ([`read`]),
+/// which answer what the tree kept here holds.
+pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+    let action = target.address.action.as_str();
+    target
+        .address
+        .resource
+        .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+        == Some(FILES_APP)
+        && (tree::is_tree_verb(action) || tree::is_tree_read(action) || action == tree::WRITE_FILE)
+}
+
+/// The verb that brings entries back from the trash: asked by their ids alone, it answers the
+/// names they go by.
+const RESTORE: &str = "restore";
+
+/// Whether what a call of `target` answers holds words that are neither the caller's own nor
+/// this holder's: what a file of the workspace's folder says, and the names its entries go
+/// by, which whoever put them there wrote, also somebody outside who passed a file on. Both
+/// reads of the folder answer such words ([`read`]), and so does [`RESTORE`]. A caller's
+/// tools are told so with the answer
+/// ([`tilo_actions::remote::InvocationState::with_untrusted`]): it is data to reason about,
+/// never an instruction to follow. What the other verbs and a write answer names only what
+/// the caller itself named.
+pub(super) fn answers_from_outside(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+    let action = target.address.action.as_str();
+    acts_on_tree(target) && (tree::is_tree_read(action) || action == RESTORE)
+}
 
 /// The records of a workspace's tree as the host holds them: each with the
 /// number of its chunk, the tree's own record first, and the chunks the host
@@ -46,7 +82,7 @@ pub(super) struct Putting {
 }
 
 fn refused(reason: impl Into<String>) -> Outcome {
-    Outcome::Rejected(ActionHostError::Refused {
+    Outcome::Rejected(ActionCallError::Refused {
         reason: reason.into(),
     })
 }
@@ -117,6 +153,63 @@ impl Putting {
 }
 
 impl Worker {
+    /// Whether `caller` may do `kind` with the files of the workspace `workspace_id`: the
+    /// person this holder works for may; anyone else as the workspace's policy answers now
+    /// for what its Files app keeps, an agent held to its bound. So an agent whose rules
+    /// refuse it Files is refused the workspace's folder here, as a search of the workspace
+    /// answers it none of its files.
+    pub(super) fn may_in_files(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        kind: ActionKind,
+    ) -> bool {
+        if self.serves_as_owner(caller) {
+            return true;
+        }
+        let Some(who) = self.bounded(caller) else {
+            return false;
+        };
+        self.permissions_across(workspace_id, &who, &workspace_id.to_string())
+            .is_some_and(|permissions| {
+                let files = TreePath::root().app(FILES_APP);
+                permissions.answer(&files, kind) == Answer::Allow
+            })
+    }
+
+    /// Answer one of Files' verbs on the folder of the workspace `named`, its `write-file`
+    /// there, or one of its reads of that folder ([`acts_on_tree`]).
+    ///
+    /// # Errors
+    /// What the verb ([`Self::change_tree`]), the write ([`Self::write_tree_file`]) or the
+    /// read ([`Self::read_tree`]) refuses.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the holder keeps"
+    )]
+    pub(super) fn in_tree(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        named: &str,
+    ) -> Result<
+        (
+            tilo_actions::ActionOutput,
+            Option<tilo_actions::remote::ActorPlace>,
+        ),
+        Outcome,
+    > {
+        let action = request.target.address.action.as_str();
+        if tree::is_tree_read(action) {
+            return self.read_tree(workspace_id, caller, request, named);
+        }
+        if action == tree::WRITE_FILE {
+            return self.write_tree_file(workspace_id, caller, request, named);
+        }
+        self.change_tree(workspace_id, caller, request, named)
+    }
+
     /// The record of `workspace`'s files: the tree's own (chunk 0), which names
     /// the chunks that hold its nodes.
     pub(super) fn tree_route(workspace: &str) -> DocumentRoute {
@@ -265,33 +358,18 @@ impl Worker {
         Outcome,
     > {
         use tilo_actions::ActionOutput;
-        if !self.may_across(
-            workspace_id,
-            caller,
-            ui::permissions::policy::ActionKind::Undoable,
-        ) {
-            return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+        if !self.may_in_files(workspace_id, caller, ActionKind::Undoable) {
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
         let putting = Putting::named(&invoke_arguments(&request.argument))?;
         let store = self
             .workspace_content(workspace_id)
             .ok_or_else(|| refused("this workspace keeps no files on its host"))?;
-        // Sealed content keeps its length only in its seal: it is read whole.
-        let size = match store.read_range(&putting.hash, 0, 1) {
-            Ok((size, _)) => size,
-            Err(_) => match store.read(&putting.hash) {
-                Some(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                None => {
-                    return Err(refused(format!(
-                        "this workspace holds no {}",
-                        putting.content
-                    )));
-                }
-            },
-        };
+        let size = size_of(&store, &putting.hash)
+            .ok_or_else(|| refused(format!("this workspace holds no {}", putting.content)))?;
         // A file of the tree is named by its content manifest, as a mounted
         // computer names one, so every member reads it the same way.
-        let manifest = manifest_of(&store, &putting.hash).map_err(refused)?;
+        let manifest = manifest_of(&store, &putting.hash, size).map_err(refused)?;
         // The tree of a governed workspace is sealed: its keys are what
         // reading it and writing to it need.
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
@@ -322,36 +400,77 @@ impl Worker {
     }
 }
 
-/// Keep the content `hash` names as a file of the tree is kept: chunked, each
-/// chunk and the manifest listing them under their own BLAKE3 address in
-/// `store`, the manifest's address answered. A mounted computer, a page and
-/// the workspace's host read a file of the tree from its manifest's chunks.
+/// The length of the content `hash` names: what the store knows of it, or,
+/// for sealed content, whose length only its seal keeps, counted as it is
+/// read through, a piece at a time.
+fn size_of(store: &tilo_content::ContentStore, hash: &str) -> Option<u64> {
+    if let Some(size) = store.size(hash) {
+        return Some(size);
+    }
+    let mut reader = store.open(hash)?;
+    std::io::copy(&mut reader, &mut std::io::sink()).ok()
+}
+
+/// Keep the content `hash` names, `size` bytes long, as a file of the tree is
+/// kept: chunked, each chunk and the manifest listing them under their own
+/// BLAKE3 address in `store`, the manifest's address answered. A mounted
+/// computer, a page and the workspace's host read a file of the tree from its
+/// manifest's chunks.
+///
+/// The bytes are read and chunked a piece at a time, each chunk kept as soon
+/// as its end is known: a file of a gigabyte costs what one chunk does in
+/// memory, not the file.
 ///
 /// # Errors
-/// The content is not in `store`, or what was kept is not at the address the
-/// manifest names.
-fn manifest_of(store: &tilo_content::ContentStore, hash: &str) -> Result<String, String> {
-    let bytes = store
-        .read(hash)
+/// The content is not in `store`, is not `size` bytes long, or what was kept
+/// is not at the address the manifest names.
+fn manifest_of(
+    store: &tilo_content::ContentStore,
+    hash: &str,
+    size: u64,
+) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut reader = store
+        .open(hash)
         .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
-    let (manifest, _) = fs_content::build(&bytes, None);
-    let mut at = 0_usize;
-    for chunk in manifest.chunks() {
-        let len = usize::try_from(chunk.len).unwrap_or(usize::MAX);
-        let piece = bytes
-            .get(at..at.saturating_add(len))
-            .ok_or("the file's chunks run past its end")?;
-        at = at.saturating_add(len);
+    let mut failed: Option<String> = None;
+    let mut keep = |chunk: &fs_content::ChunkRef, bytes: &[u8]| {
+        if failed.is_some() {
+            return;
+        }
         let address = hex::encode(chunk.hash);
         if store.has(&address) {
-            continue;
+            return;
         }
-        let kept = store.put_public(piece).map_err(|error| error.to_string())?;
-        if kept != address {
-            return Err(format!("a chunk was kept at {kept}, not at {address}"));
+        match store.put_public(bytes) {
+            Ok(kept) if kept == address => {}
+            Ok(kept) => failed = Some(format!("a chunk was kept at {kept}, not at {address}")),
+            Err(error) => failed = Some(error.to_string()),
         }
+    };
+    let mut stream = fs_content::Streamed::new(size, None);
+    let mut piece = vec![0_u8; PIECE];
+    loop {
+        let read = match reader.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        stream
+            .push(piece.get(..read).unwrap_or_default(), &mut keep)
+            .map_err(|error| error.to_string())?;
+    }
+    let (manifest, _) = stream
+        .finish(&mut keep)
+        .map_err(|error| error.to_string())?;
+    if let Some(failed) = failed {
+        return Err(failed);
     }
     store
         .put_public(&manifest.encode())
         .map_err(|error| error.to_string())
 }
+
+/// How much of a file [`manifest_of`] reads at a time.
+const PIECE: usize = 1024 * 1024;

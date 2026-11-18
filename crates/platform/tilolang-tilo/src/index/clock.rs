@@ -4,7 +4,7 @@
 //! run is the items that hold of it, and its counts answer how many, so a query names it and
 //! reads one run and one count rather than checking its tests item by item.
 //!
-//! The clock runs on without the record changing, so the index records the instant it wrote such
+//! The clock runs on without the document changing, so the index records the instant it wrote such
 //! a type's columns at ([`META_CLOCK`]) and, when it is asked at another one, writes again the
 //! items whose clock-read field the clock passed between the two: those, and only those, can
 //! have come to hold of the filter or stopped holding of it, so what it holds and how many it
@@ -114,7 +114,7 @@ impl Index {
     /// after it, so the view that asked wakes when that item comes to count, and not before.
     /// `written` is what the store's own writes hold that the index has not taken in yet, which
     /// reads answer from all along: a value one of them gives the field is a moment to wake at
-    /// too, or a snooze an action sets would only be known once the record brought it back.
+    /// too, or a snooze an action sets would only be known once the document brought it back.
     /// Answering `Unknown` when the index cannot place the field leaves the clock's grain to
     /// wake the view instead, and `Never` when it holds no later value at all.
     pub fn next_change(
@@ -169,7 +169,7 @@ impl Index {
         Ok(next.map_or(NextChange::Never, NextChange::At))
     }
 
-    /// Write the columns of the filters of `schema` that read the clock for `paths`, and record
+    /// Write the columns of the filters of `schema` that read the clock for `paths`, and document
     /// the instant as the one they are at.
     fn rewrite(
         &self,
@@ -374,7 +374,7 @@ impl Writer<'_> {
     }
 }
 
-/// The clock `text` records ([`META_CLOCK`]): the instant and the zone it was written in.
+/// The clock `text` documents ([`META_CLOCK`]): the instant and the zone it was written in.
 fn recorded(text: &str) -> Option<Clock> {
     let mut parts = text.split(' ');
     let (Some(now), Some(zone)) = (parts.next(), parts.next()) else {

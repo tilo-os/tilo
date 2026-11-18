@@ -132,7 +132,7 @@ impl Store {
     }
     fn read(&self, offset: u64) -> io::Result<(u64, Vec<u8>)> {
         super::super::super::migration::check_cancel(&self.cancel)?;
-        self.scratch.check_custody()?;
+        self.scratch.check_ownership()?;
         let backing = self
             .backing
             .lock()

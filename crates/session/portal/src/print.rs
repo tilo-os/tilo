@@ -39,7 +39,7 @@ pub const MAX_COPIES: u32 = 100;
 /// How long a prepared job may be printed.
 const TOKEN_TTL: Duration = Duration::from_secs(300);
 /// The prepared jobs one session keeps at once; the oldest goes first.
-const MAX_OUTSTANDING_TOKENS: usize = 32;
+const MAX_OUTACCESS_TOKENS: usize = 32;
 
 /// What the sheet shows for choosing a printer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +178,7 @@ impl Tokens {
     fn mint(&self, job: Prepared) -> u32 {
         let mut table = self.prepared.lock_recover();
         table.retain(|_, job| job.issued.elapsed() < TOKEN_TTL);
-        while table.len() >= MAX_OUTSTANDING_TOKENS {
+        while table.len() >= MAX_OUTACCESS_TOKENS {
             let Some(oldest) = table
                 .iter()
                 .min_by_key(|(_, job)| job.issued)

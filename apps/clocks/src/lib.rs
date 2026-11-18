@@ -2,7 +2,7 @@
 //!
 //! What a person keeps is the app's resource, [`Clocks`], and follows them to
 //! every device. What one device decides for itself (which clocks float there,
-//! which deadlines it has already rung) is its entry in the record beside the
+//! which deadlines it has already rung) is its entry in the resource beside the
 //! clocks, [`ClocksOnDevices`].
 
 pub mod app;

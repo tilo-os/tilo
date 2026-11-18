@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use jiff::civil::{Date, DateTime, Time};
 use tilo_document::RichText;
 use tilo_recurrence::Rule;
 use ui::tilo_resource::{self, Identified, Keyed, Model, Outbox, Refusal, Set};
@@ -280,16 +280,16 @@ impl InviteStatus {
 pub struct OccurrenceOverride {
     /// The date it was on
     #[model(readonly)]
-    pub original_date: NaiveDate,
+    pub original_date: Date,
     /// Time component when the RFC identity was DATE-TIME rather than DATE.
     #[model(readonly)]
-    pub original_time: Option<NaiveTime>,
+    pub original_time: Option<Time>,
     /// Cancelled
     pub cancelled: bool,
     /// Start
-    pub start: Option<NaiveDateTime>,
+    pub start: Option<DateTime>,
     /// End
-    pub end: Option<NaiveDateTime>,
+    pub end: Option<DateTime>,
     /// Whether the end selects the later instant of a repeated wall time.
     pub end_later_fold: bool,
     /// Title
@@ -299,8 +299,8 @@ pub struct OccurrenceOverride {
 }
 
 impl OccurrenceOverride {
-    pub fn key_of(date: NaiveDate) -> tilo_resource::Id {
-        tilo_resource::Id::from_raw(date.format("%Y-%m-%d").to_string())
+    pub fn key_of(date: Date) -> tilo_resource::Id {
+        tilo_resource::Id::from_raw(date.strftime("%Y-%m-%d").to_string())
     }
 
     fn valid(&self) -> Result<(), Refusal> {
@@ -367,9 +367,9 @@ pub struct Event {
     #[model(label)]
     pub title: String,
     /// Start
-    pub start: NaiveDateTime,
+    pub start: DateTime,
     /// End
-    pub end: NaiveDateTime,
+    pub end: DateTime,
     /// Select the later instant when the end falls in a DST fold. Missing in
     /// older documents means false, preserving the earlier-instant policy.
     pub end_later_fold: bool,
@@ -385,11 +385,11 @@ pub struct Event {
     /// week. Old documents default to 1.
     pub recurrence_interval: u32,
     /// Inclusive final original occurrence date.
-    pub recurrence_until: Option<NaiveDate>,
+    pub recurrence_until: Option<Date>,
     /// Maximum number of original occurrences, including the seed.
     pub recurrence_count: Option<u32>,
     /// Absolute original occurrence dates omitted from the series.
-    pub recurrence_exdates: Set<NaiveDate>,
+    pub recurrence_exdates: Set<Date>,
     /// Per-occurrence absolute cancellation/reschedule/content edits.
     pub occurrence_overrides: Keyed<OccurrenceOverride>,
     /// IANA time-zone identifier, or `floating` for legacy/local wall time.
@@ -419,8 +419,8 @@ impl Default for Event {
         Self {
             id: Id::nil(),
             title: String::new(),
-            start: NaiveDateTime::default(),
-            end: NaiveDateTime::default(),
+            start: DateTime::default(),
+            end: DateTime::default(),
             end_later_fold: false,
             all_day: false,
             location: String::new(),
@@ -506,7 +506,7 @@ impl Event {
         for edit in &self.occurrence_overrides {
             let start = edit
                 .start
-                .unwrap_or_else(|| edit.original_date.and_time(self.start.time()));
+                .unwrap_or_else(|| edit.original_date.to_datetime(self.start.time()));
             if let Some(end) = edit.end
                 && !crate::timezone::valid_span(&self.timezone, start, end, edit.end_later_fold)
             {
@@ -542,28 +542,31 @@ impl Event {
         }
     }
 
-    pub fn all_day_last_date(&self) -> NaiveDate {
+    pub fn all_day_last_date(&self) -> Date {
         if !self.all_day {
             return self.end.date();
         }
-        if self.end.time() == NaiveTime::MIN && self.end.date() > self.start.date() {
-            self.end.date() - Duration::days(1)
+        if self.end.time() == Time::MIN && self.end.date() > self.start.date() {
+            self.end.date() - jiff::Span::new().days(1)
         } else {
             self.end.date().max(self.start.date())
         }
     }
 
-    pub fn all_day_end_exclusive(&self) -> NaiveDate {
-        self.all_day_last_date() + Duration::days(1)
+    pub fn all_day_end_exclusive(&self) -> Date {
+        self.all_day_last_date() + jiff::Span::new().days(1)
     }
 
     /// Number of visible dates occupied by an all-day event.  Kept separate
     /// from a timestamp duration because RFC all-day events are date ranges,
     /// and a daylight-saving transition must never shorten one in the views.
     pub fn all_day_span_days(&self) -> i64 {
-        (self.all_day_end_exclusive() - self.start.date())
-            .num_days()
-            .max(1)
+        i64::from(
+            self.all_day_end_exclusive()
+                .since(self.start.date())
+                .map_or(0, |span| span.get_days()),
+        )
+        .max(1)
     }
 
     pub fn visible_under(&self, hidden: &std::collections::HashSet<String>) -> bool {
@@ -574,7 +577,7 @@ impl Event {
     }
 
     pub(crate) fn rule(&self) -> Option<Rule> {
-        let exdates: Vec<NaiveDate> = self.recurrence_exdates.iter().copied().collect();
+        let exdates: Vec<Date> = self.recurrence_exdates.iter().copied().collect();
         self.recurrence.rule(
             self.recurrence_interval,
             self.recurrence_until,
@@ -583,7 +586,7 @@ impl Event {
         )
     }
 
-    pub fn occurrences_in(&self, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
+    pub fn occurrences_in(&self, from: Date, to: Date) -> Vec<Date> {
         let seed = self.start.date();
         let moved_originals = || {
             self.occurrence_overrides
@@ -614,9 +617,7 @@ impl Event {
                 .occurrence_overrides
                 .iter()
                 .find(|edit| edit.original_date == day);
-            let actual = edit
-                .and_then(|edit| edit.start)
-                .map_or(day, |start| start.date());
+            let actual = edit.and_then(|edit| edit.start).map_or(day, DateTime::date);
             if !edit.is_some_and(|edit| edit.cancelled) && actual >= from && actual <= to {
                 out.push(actual);
             }
@@ -626,51 +627,56 @@ impl Event {
         out
     }
 
-    pub(crate) fn occurrences_before(&self, day: NaiveDate) -> u64 {
+    pub(crate) fn occurrences_before(&self, day: Date) -> u64 {
         self.rule().map_or_else(
             || u64::from(self.start.date() < day),
             |rule| rule.count_before(self.start.date(), day),
         )
     }
 
-    pub fn occurs_on(&self, date: NaiveDate) -> bool {
+    pub fn occurs_on(&self, date: Date) -> bool {
         if self.all_day {
             // Query far enough back to include an event that started before
             // `date` but still spans it.  This also makes recurring all-day
             // conferences appear on every occupied day, not only their first.
-            let from = date - Duration::days(self.all_day_span_days().saturating_sub(1));
+            let from = date - jiff::Span::new().days(self.all_day_span_days().saturating_sub(1));
             return self.occurrences_in(from, date).into_iter().any(|start| {
-                date >= start && date < start + Duration::days(self.all_day_span_days())
+                date >= start && date < start + jiff::Span::new().days(self.all_day_span_days())
             });
         }
         !self.occurrences_in(date, date).is_empty()
     }
 
-    pub fn end_instant(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn end_instant(&self) -> Option<jiff::Timestamp> {
         crate::timezone::endpoint_utc(&self.timezone, self.end, self.end_later_fold)
     }
 
     /// The elapsed interval; floating events have only a wall interval.
-    pub fn elapsed_duration(&self) -> Duration {
+    pub fn elapsed_duration(&self) -> jiff::SignedDuration {
         crate::timezone::wall_to_utc(&self.timezone, self.start)
             .zip(self.end_instant())
-            .map_or(self.end - self.start, |((start, _), end)| end - start)
+            .map_or_else(
+                || self.end.duration_since(self.start),
+                |((start, _), end)| end.duration_since(start),
+            )
     }
 
-    pub fn occurrence_end(&self, start: NaiveDateTime) -> NaiveDateTime {
+    pub fn occurrence_end(&self, start: DateTime) -> DateTime {
         if self.end_later_fold
             && let Some((instant, _)) = crate::timezone::wall_to_utc(&self.timezone, start)
-            && let Ok(zone) = self.timezone.parse::<chrono_tz::Tz>()
-            && let Some(end) = instant.checked_add_signed(self.elapsed_duration())
+            && let Some(zone) = crate::timezone::named(&self.timezone)
+            && let Ok(end) = instant.checked_add(self.elapsed_duration())
         {
-            return end.with_timezone(&zone).naive_local();
+            return end.to_zoned(zone).datetime();
         }
-        start + (self.end - self.start)
+        start
+            .checked_add(self.end.duration_since(self.start))
+            .unwrap_or(start)
     }
 
     /// Duration in fractional hours (timed events only).
     pub fn hours(&self) -> f64 {
-        self.elapsed_duration().num_minutes().max(0) as f64 / 60.0
+        self.elapsed_duration().as_mins().max(0) as f64 / 60.0
     }
 }
 
@@ -686,7 +692,7 @@ pub struct Task {
     /// Done
     pub done: bool,
     /// When it is due
-    pub due: Option<NaiveDate>,
+    pub due: Option<Date>,
     /// Priority
     pub priority: Priority,
     /// The project it is filed under
@@ -805,7 +811,7 @@ impl Calendar {
         self.tasks.find_mut(&key(id))
     }
 
-    pub fn tasks_for(&self, sel: &ListSel, today: NaiveDate) -> Vec<&Task> {
+    pub fn tasks_for(&self, sel: &ListSel, today: Date) -> Vec<&Task> {
         let mut out: Vec<&Task> = self
             .tasks
             .iter()
@@ -842,14 +848,14 @@ impl Calendar {
             .collect()
     }
 
-    pub fn open_count(&self, sel: &ListSel, today: NaiveDate) -> usize {
+    pub fn open_count(&self, sel: &ListSel, today: Date) -> usize {
         self.tasks_for(sel, today)
             .iter()
             .filter(|t| !t.done)
             .count()
     }
 
-    pub fn events_on(&self, date: NaiveDate) -> Vec<&Event> {
+    pub fn events_on(&self, date: Date) -> Vec<&Event> {
         let mut out: Vec<&Event> = self.events.iter().filter(|e| e.occurs_on(date)).collect();
         out.sort_by(|a, b| {
             b.all_day
@@ -859,8 +865,8 @@ impl Calendar {
         out
     }
 
-    pub fn agenda(&self, from: NaiveDate, to: NaiveDate) -> Vec<(NaiveDate, &Event)> {
-        let mut out: Vec<(NaiveDate, &Event)> = Vec::new();
+    pub fn agenda(&self, from: Date, to: Date) -> Vec<(Date, &Event)> {
+        let mut out: Vec<(Date, &Event)> = Vec::new();
         for e in &self.events {
             for d in e.occurrences_in(from, to) {
                 out.push((d, e));
@@ -879,7 +885,7 @@ impl Calendar {
     }
 }
 
-pub fn seed_demo(today: NaiveDate) -> Calendar {
+pub fn seed_demo(today: Date) -> Calendar {
     let pid_work = Uuid::new_v4();
     let pid_personal = Uuid::new_v4();
     let pid_health = Uuid::new_v4();
@@ -917,16 +923,11 @@ fn seed_demo_projects(pid_work: Id, pid_personal: Id, pid_health: Id) -> Vec<Pro
 
 /// A literal (h, m) is always in range, so the fallback only matters if that stops being true; a wrong
 /// demo time beats panicking the whole seed.
-fn seed_demo_at(date: NaiveDate, h: u32, m: u32) -> NaiveDateTime {
-    date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
+fn seed_demo_at(date: Date, h: i8, m: i8) -> DateTime {
+    date.to_datetime(Time::new(h, m, 0, 0).unwrap_or(Time::MIN))
 }
 
-fn seed_demo_events(
-    today: NaiveDate,
-    pid_work: Id,
-    pid_personal: Id,
-    pid_health: Id,
-) -> Vec<Event> {
+fn seed_demo_events(today: Date, pid_work: Id, pid_personal: Id, pid_health: Id) -> Vec<Event> {
     let mut events = seed_demo_events_early(today, pid_work, pid_personal, pid_health);
     events.extend(seed_demo_events_later(today, pid_work, pid_personal));
     events.sort_by_key(|e| e.start);
@@ -934,12 +935,12 @@ fn seed_demo_events(
 }
 
 fn seed_demo_events_early(
-    today: NaiveDate,
+    today: Date,
     pid_work: Id,
     pid_personal: Id,
     pid_health: Id,
 ) -> Vec<Event> {
-    let d = |delta: i64| today + Duration::days(delta);
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
     let design_organizer = Uuid::new_v4();
     vec![
         Event {
@@ -1023,8 +1024,8 @@ fn seed_demo_events_early(
     ]
 }
 
-fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> Vec<Event> {
-    let d = |delta: i64| today + Duration::days(delta);
+fn seed_demo_events_later(today: Date, pid_work: Id, pid_personal: Id) -> Vec<Event> {
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
     vec![
         Event {
             id: Uuid::new_v4(),
@@ -1105,7 +1106,7 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
     ]
 }
 
-fn seed_demo_tasks(today: NaiveDate, pid_personal: Id, pid_health: Id, pid_work: Id) -> Vec<Task> {
+fn seed_demo_tasks(today: Date, pid_personal: Id, pid_health: Id, pid_work: Id) -> Vec<Task> {
     let flights = Uuid::new_v4();
     let mut tasks = seed_demo_top_level_tasks(today, pid_work, pid_personal, pid_health, flights);
     tasks.extend(seed_demo_flight_subtasks(today, pid_personal, flights));
@@ -1113,13 +1114,13 @@ fn seed_demo_tasks(today: NaiveDate, pid_personal: Id, pid_health: Id, pid_work:
 }
 
 fn seed_demo_top_level_tasks(
-    today: NaiveDate,
+    today: Date,
     pid_work: Id,
     pid_personal: Id,
     pid_health: Id,
     flights: Id,
 ) -> Vec<Task> {
-    let d = |delta: i64| today + Duration::days(delta);
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
     vec![
         Task {
             id: Uuid::new_v4(),
@@ -1187,8 +1188,8 @@ fn seed_demo_top_level_tasks(
     ]
 }
 
-fn seed_demo_flight_subtasks(today: NaiveDate, pid_personal: Id, flights: Id) -> Vec<Task> {
-    let d = |delta: i64| today + Duration::days(delta);
+fn seed_demo_flight_subtasks(today: Date, pid_personal: Id, flights: Id) -> Vec<Task> {
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
     vec![
         Task {
             id: Uuid::new_v4(),
@@ -1223,10 +1224,9 @@ fn seed_demo_flight_subtasks(today: NaiveDate, pid_personal: Id, flights: Id) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Datelike;
 
-    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    fn date(y: i16, m: i8, d: i8) -> Date {
+        Date::new(y, m, d).unwrap()
     }
 
     tilo_test_env::scenario! {
@@ -1250,7 +1250,7 @@ mod tests {
                 let occ = e.occurrences_in(date(2026, 6, 15), date(2026, 6, 21));
                 // Mon..Fri only.
                 assert_eq!(occ.len(), 5);
-                assert!(occ.iter().all(|d| d.weekday().num_days_from_monday() < 5));
+                assert!(occ.iter().all(|d| d.weekday().to_monday_zero_offset() < 5));
             }
             {
                 let mut event = sample_event(date(2026, 6, 1));
@@ -1262,8 +1262,8 @@ mod tests {
                     original_date: date(2026, 6, 5),
                     original_time: None,
                     cancelled: false,
-                    start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
-                    end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
+                    start: Some(date(2026, 6, 6).at(9, 0, 0, 0)),
+                    end: Some(date(2026, 6, 6).at(10, 0, 0, 0)),
                     end_later_fold: false,
                     title: Some("Moved instance".into()),
                     location: None,
@@ -1315,7 +1315,7 @@ mod tests {
                         for (count, until) in [
                             (None, None),
                             (Some(7), None),
-                            (None, Some(seed + Duration::days(400))),
+                            (None, Some(seed + jiff::Span::new().days(400))),
                         ] {
                             let mut event = sample_event(seed);
                             event.recurrence = recurrence;
@@ -1327,26 +1327,19 @@ mod tests {
                                 let _ = write!(rule, ";COUNT={count}");
                             }
                             if let Some(until) = until {
-                                let _ = write!(rule, ";UNTIL={}T235959Z", until.format("%Y%m%d"));
+                                let _ = write!(rule, ";UNTIL={}T235959Z", until.strftime("%Y%m%d"));
                             }
-                            let rfc = |exdate: Option<NaiveDate>| -> Vec<NaiveDate> {
+                            let rfc = |exdate: Option<Date>| -> Vec<Date> {
                                 let mut text =
-                                    format!("DTSTART:{}T000000Z\nRRULE:{rule}", seed.format("%Y%m%d"));
+                                    format!("DTSTART:{}T000000Z\nRRULE:{rule}", seed.strftime("%Y%m%d"));
                                 if let Some(exdate) = exdate {
                                     let _ =
-                                        write!(text, "\nEXDATE:{}T000000Z", exdate.format("%Y%m%d"));
+                                        write!(text, "\nEXDATE:{}T000000Z", exdate.strftime("%Y%m%d"));
                                 }
                                 let set: rrule::RRuleSet = text.parse().expect("valid rule");
-                                let end = to
-                                    .and_hms_opt(23, 59, 59)
-                                    .unwrap()
-                                    .and_utc()
-                                    .with_timezone(&rrule::Tz::UTC);
-                                set.before(end)
-                                    .all(u16::MAX)
-                                    .dates
-                                    .into_iter()
-                                    .map(|at| at.date_naive())
+                                set.into_iter()
+                                    .map(|at| at.format("%Y-%m-%d").to_string().parse().unwrap())
+                                    .take_while(|day| *day <= to)
                                     .filter(|day| *day >= from)
                                     .collect()
                             };
@@ -1370,8 +1363,8 @@ mod tests {
 
         phase a_counted_series_shows_its_window_not_its_age;
         {
-            let grid: Vec<NaiveDate> = (0..42)
-                .map(|day| date(2026, 9, 28) + Duration::days(day))
+            let grid: Vec<Date> = (0..42)
+                .map(|day| date(2026, 9, 28) + jiff::Span::new().days(day))
                 .collect();
             let shown = |event: &Event| {
                 grid.iter()
@@ -1379,7 +1372,7 @@ mod tests {
                     .filter(|day| event.occurs_on(*day))
                     .collect::<Vec<_>>()
             };
-            let weekly = |seed: NaiveDate, count| {
+            let weekly = |seed: Date, count| {
                 let mut event = sample_event(seed);
                 event.recurrence = Recurrence::Weekly;
                 event.recurrence_count = Some(count);
@@ -1399,8 +1392,8 @@ mod tests {
         {
             let mut e = sample_event(date(2026, 6, 15));
             e.all_day = true;
-            e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
-            e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
+            e.start = date(2026, 6, 15).to_datetime(Time::MIN);
+            e.end = date(2026, 6, 18).to_datetime(Time::MIN);
 
             assert_eq!(e.all_day_last_date(), date(2026, 6, 17));
             assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 18));
@@ -1413,8 +1406,8 @@ mod tests {
         {
             let mut e = sample_event(date(2026, 6, 15));
             e.all_day = true;
-            e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
-            e.end = date(2026, 6, 15).and_hms_opt(23, 59, 0).unwrap();
+            e.start = date(2026, 6, 15).to_datetime(Time::MIN);
+            e.end = date(2026, 6, 15).at(23, 59, 0, 0);
 
             assert_eq!(e.all_day_last_date(), date(2026, 6, 15));
             assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 16));
@@ -1425,10 +1418,10 @@ mod tests {
             // A repeating all-day event takes every day of each occurrence and none between.
             let mut e = sample_event(date(2026, 6, 15));
             e.all_day = true;
-            e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
-            e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
+            e.start = date(2026, 6, 15).to_datetime(Time::MIN);
+            e.end = date(2026, 6, 18).to_datetime(Time::MIN);
             e.recurrence = Recurrence::Weekly;
-            let taken: Vec<u32> = (12..=30)
+            let taken: Vec<i8> = (12..=30)
                 .filter(|day| e.occurs_on(date(2026, 6, *day)))
                 .collect();
             assert_eq!(taken, vec![15, 16, 17, 22, 23, 24, 29, 30]);
@@ -1487,12 +1480,12 @@ mod tests {
         }
     }
 
-    fn sample_event(start_date: NaiveDate) -> Event {
+    fn sample_event(start_date: Date) -> Event {
         Event {
             id: Uuid::new_v4(),
             title: "x".into(),
-            start: start_date.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
-            end: start_date.and_time(NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
+            start: start_date.to_datetime(Time::new(9, 0, 0, 0).unwrap()),
+            end: start_date.to_datetime(Time::new(10, 0, 0, 0).unwrap()),
             ..Event::default()
         }
     }
@@ -1522,14 +1515,14 @@ mod tests {
                     event.recurrence_interval = interval;
                     // Nothing of a series lies before its first day.
                     for offset in [-366, -7, -1] {
-                        let day = seed + Duration::days(offset);
+                        let day = seed + jiff::Span::new().days(offset);
                         let row = format!("{recurrence:?} every {interval} from {seed}, {day}");
                         assert_eq!(event.occurrences_before(day), 0, "{row}");
                         assert!(!event.occurs_on(day), "{row}");
                     }
                     let mut matched = 0;
                     for offset in 0..1500 {
-                        let day = seed + Duration::days(offset);
+                        let day = seed + jiff::Span::new().days(offset);
                         assert_eq!(
                             event.occurrences_before(day),
                             matched,

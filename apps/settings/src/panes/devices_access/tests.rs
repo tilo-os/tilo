@@ -5,7 +5,7 @@ use super::*;
 
 use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
-    ActionHostError, Caller, Completer, InvocationReceipt, InvokeRequest, identity_admin,
+    ActionCallError, Caller, Completer, InvocationReceipt, InvokeRequest, identity_admin,
 };
 
 use crate::resource::SettingsShell;
@@ -72,7 +72,7 @@ enum Sheet {
     Held(Vec<(ui::tilo_actions::InvocationId, Completer<Answer>)>),
 }
 
-type Answer = Result<InvocationReceipt, ActionHostError>;
+type Answer = Result<InvocationReceipt, ActionCallError>;
 
 fn opened(invocation: ui::tilo_actions::InvocationId) -> InvocationReceipt {
     InvocationReceipt {
@@ -156,16 +156,16 @@ impl RecordingHost {
     }
 }
 
-impl ui::tilo_actions::remote::ActionHost for RecordingHost {
+impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
     fn query(
         &self,
         _: &Caller,
         _: ui::tilo_actions::remote::CatalogueQuery,
     ) -> ui::tilo_actions::remote::Pending<
-        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionCallError>,
     > {
         ui::tilo_actions::remote::Pending::ready(Err(
-            ui::tilo_actions::remote::ActionHostError::NotPermitted,
+            ui::tilo_actions::remote::ActionCallError::NotPermitted,
         ))
     }
 
@@ -176,7 +176,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
     ) -> ui::tilo_actions::remote::Pending<
         Result<
             ui::tilo_actions::remote::InvocationReceipt,
-            ui::tilo_actions::remote::ActionHostError,
+            ui::tilo_actions::remote::ActionCallError,
         >,
     > {
         let invocation = request.invocation;
@@ -191,7 +191,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
             return match &mut *self.sheet.lock().unwrap() {
                 Sheet::Opens => ui::tilo_actions::remote::Pending::ready(Ok(opened(invocation))),
                 Sheet::Refused => {
-                    ui::tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted))
+                    ui::tilo_actions::remote::Pending::ready(Err(ActionCallError::NotPermitted))
                 }
                 Sheet::Held(held) => {
                     let (answer, pending) = ui::tilo_actions::remote::pending();
@@ -221,7 +221,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
             let answer = self.served.lock().unwrap().clone();
             let Some(answer) = answer else {
                 return ui::tilo_actions::remote::Pending::ready(Err(
-                    ActionHostError::UnknownAction,
+                    ActionCallError::UnknownAction,
                 ));
             };
             answer
@@ -231,7 +231,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         let refused = self.refused.lock().unwrap().contains(&request.target);
         self.asked.lock().unwrap().push(request);
         if refused {
-            return ui::tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted));
+            return ui::tilo_actions::remote::Pending::ready(Err(ActionCallError::NotPermitted));
         }
         ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
             invocation,
@@ -288,7 +288,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         &self,
         _: &Caller,
         id: &ui::tilo_actions::InvocationId,
-    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
     {
         if let Some(current) = &mut *self.current.lock().unwrap() {
             current.reads.retain(|(read, _)| read != id);
@@ -320,7 +320,7 @@ fn record(now: i64) -> serde_json::Value {
 }
 
 fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteActions) {
-    let remote = ui::RemoteActions::with_host(host.clone(), Caller::local_person("owner"));
+    let remote = ui::RemoteActions::with_provider(host.clone(), Caller::local_person("owner"));
     let mut model = AccessModel::asking(&remote);
     model.poll(&remote);
     (model, remote)
@@ -366,7 +366,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_device_is_named_through_the_host;
 
-    phase the_name_the_person_typed_reaches_their_record;
+    phase the_name_the_person_typed_reaches_their_resource;
     {
         en();
         let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
@@ -630,7 +630,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn the_access_rows_join_grants_and_offer_what_can_be_done;
 
-    phase the_apis_grants_join_the_records_agents;
+    phase the_apis_grants_join_the_resources_agents;
     {
         en();
         let mut sample = sample();
@@ -741,7 +741,7 @@ fn window_on(host: &std::sync::Arc<RecordingHost>) -> TestApp<SettingsShell> {
     crate::area::replace_in_next_window(move |context| {
         DevicesAccessArea::new(
             context,
-            ui::RemoteActions::with_host(served, Caller::local_person("owner")),
+            ui::RemoteActions::with_provider(served, Caller::local_person("owner")),
         )
     });
     let mut app = TestApp::<SettingsShell>::new().expect("Settings opens");
@@ -825,6 +825,45 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase a_second_press_in_the_same_page_asks_the_shell_again;
+    // A person who closed the sheet, or added one device and wants to add
+    // another, presses the same button again without loading the page anew:
+    // on a page, whose lists are kept current, and where they are asked for
+    // again and again.
+    {
+        for (button, _, sheet, _) in sheets() {
+            for kept_current in [true, false] {
+                let shell = if kept_current {
+                    a_list_kept_current(now())
+                } else {
+                    a_full_list(now())
+                };
+                let mut app = window_on_a_full_list(&shell);
+                for press in 1..=3 {
+                    app.harness()
+                        .click_named(button)
+                        .expect("the button is on the page");
+                    app.settle();
+                    assert_eq!(
+                        app.harness().refusal_said(),
+                        None,
+                        "{button}, press {press}"
+                    );
+                    assert!(
+                        app.harness().control_failures().is_empty(),
+                        "{button}, press {press}: {:?}",
+                        app.harness().control_failures()
+                    );
+                    assert_eq!(
+                        shell.asked_at(&session_actions::target(sheet)).len(),
+                        press,
+                        "{button}: press {press} asks for its sheet (lists kept current: {kept_current})"
+                    );
+                }
+            }
+        }
+    }
+
     phase the_caller_hears_once_the_shell_has_answered;
     {
         for (_, _, sheet, effect) in sheets() {
@@ -865,7 +904,7 @@ tilo_test_env::scenario! {
                 matches!(
                     &refused,
                     ui::tilo_actions::ApiError::Failed(why)
-                        if *why == ActionHostError::NotPermitted.to_string()
+                        if *why == ActionCallError::NotPermitted.to_string()
                 ),
                 "{refused:?}"
             );
@@ -1227,6 +1266,10 @@ tilo_test_env::scenario! {
             let host = a_full_list(now());
             let mut app = window_on_a_full_list(&host);
             press(&mut app, &format!("settings.access.asking.{ASK}.{button}"));
+            if approve {
+                // Letting a device in asks its person first.
+                assert!(app.confirm_asked().is_some(), "approving asks first");
+            }
             assert_eq!(
                 asked_at_last(
                     &mut app,
@@ -1434,7 +1477,7 @@ tilo_test_env::scenario! {
         let said = format!("{:?}", app.harness().refusal_said());
         let told = format!("{failed} {said}");
         assert!(
-            told.contains(&ActionHostError::NotPermitted.to_string()),
+            told.contains(&ActionCallError::NotPermitted.to_string()),
             "{told}"
         );
         assert_eq!(
@@ -1680,6 +1723,47 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_row_that_asks_before_removing_keeps_its_name;
+    // Cancel and Remove filled the row from its leading edge: the row's
+    // name and what removing does were gone under them, and the person was
+    // asked to remove something the row no longer named.
+    {
+        let mut app = window_on_a_full_list(&a_full_list(now()));
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.ask-remove"),
+        );
+        let targets = app.harness().targets();
+        let placed = |name: String| {
+            *targets
+                .get(&name)
+                .unwrap_or_else(|| panic!("the page shows `{name}`"))
+        };
+        let row = placed(format!("settings.access.device.{OTHER_COMPUTER}"));
+        let cancel = placed(format!("settings.access.device.{OTHER_COMPUTER}.cancel"));
+        let remove = placed(format!("settings.access.device.{OTHER_COMPUTER}.remove"));
+        assert!(
+            cancel.x0 > row.x0 + row.width() / 2.0,
+            "the row's name keeps its leading half: Cancel at {cancel:?} in the row at {row:?}"
+        );
+        assert!(
+            cancel.x1 <= remove.x0,
+            "Cancel, then Remove: {cancel:?}, {remove:?}"
+        );
+        assert!(
+            remove.x1 <= row.x1,
+            "both at the row's trailing edge: {remove:?} in the row at {row:?}"
+        );
+        let shown = plain_all(app.texts());
+        assert!(
+            shown.iter().any(|text| {
+                text.contains("MacBook Air")
+                    && text.contains("It's signed out and can't act as you anymore.")
+            }),
+            "the row still names the computer and says what removing does: {shown:?}"
+        );
+    }
+
     phase a_removal_the_host_took_and_never_showed_gone_stops_saying_so;
     {
         en();
@@ -1710,5 +1794,157 @@ tilo_test_env::scenario! {
             "the row shows what the list says"
         );
         assert_eq!(times_listed(&host), 1, "and the host is not asked again");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn security_review_letting_a_device_in_wants_its_callers_confirmation;
+
+    phase a_call_that_confirms_nothing_lets_no_device_in;
+    {
+        // Security review, 17 November 2026. Taking a device back asks its
+        // caller to confirm (`without_its_confirmation_nothing_is_taken_back`).
+        // Letting one in is the larger act: the device becomes the person.
+        // Called as the search or an agent calls it, confirming nothing, it
+        // must be passed on no more than a taking back is. It was passed
+        // on, marked as confirmed by its person.
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        let answer = device_pairing::target(device_pairing::ANSWER);
+        let called = app.call_on(
+            &asking_row_id(),
+            "answer-device",
+            serde_json::json!({"approve": true}),
+        );
+        // As long as a pressed button's call is given to be passed on.
+        for _ in 0..200 {
+            app.settle();
+            if !devices.asked_at(&answer).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let asked = devices.asked_at(&answer);
+        let confirmed: Vec<_> = devices
+            .asked()
+            .into_iter()
+            .filter(|request| request.target == answer)
+            .map(|request| request.confirmation)
+            .collect();
+        assert!(
+            asked.is_empty(),
+            "a call that confirmed nothing (answered {called:?}) was passed on to let the \
+             device in: {asked:?}, with the confirmation {confirmed:?}"
+        );
+    }
+}
+
+/// `passed_on` is given as long as a pressed button's call takes, and says
+/// that nothing was passed on.
+fn nothing_passed_on(app: &mut TestApp<SettingsShell>, passed_on: impl Fn() -> bool) -> bool {
+    for _ in 0..50 {
+        app.settle();
+        if passed_on() {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
+tilo_test_env::scenario! {
+    fn letting_a_device_in_is_its_persons_own_act;
+
+    phase the_row_says_what_answering_asks_of_its_caller;
+    // Whoever reads the row's action knows before calling it: letting the
+    // device in wants a confirmation, declining wants none, and anyone
+    // acting for the person asks them first, whatever they were allowed.
+    {
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        let row = published_row(&mut app, &asking_row_id()).unwrap();
+        let answer = offered(&row, "answer-device");
+        let approving = object(serde_json::json!({"approve": true}));
+        let declining = object(serde_json::json!({"approve": false}));
+        assert_eq!(
+            answer.confirmation_for_json(&approving),
+            ui::tilo_actions::ConfirmationPolicy::Confirm,
+            "letting a device in"
+        );
+        assert_eq!(
+            answer.confirmation_for_json(&declining),
+            ui::tilo_actions::ConfirmationPolicy::None,
+            "declining one"
+        );
+        let attended = ui::tilo_actions::ATTENDED_TAG;
+        assert!(
+            answer.contract.tags.iter().any(|tag| tag == attended),
+            "its person attends: {:?}",
+            answer.contract.tags
+        );
+    }
+
+    phase approve_asks_the_person_first_and_decline_does_not;
+    {
+        let answer = device_pairing::target(device_pairing::ANSWER);
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        press(&mut app, &format!("settings.access.asking.{ASK}.approve"));
+        let (asked, _) = app.asking().expect("letting a device in asks first");
+        assert_eq!(
+            (asked.resource.clone(), asked.action.as_str()),
+            (asking_row_id(), "answer-device")
+        );
+        assert!(
+            nothing_passed_on(&mut app, || !devices.asked_at(&answer).is_empty()),
+            "nobody is let in before the person agreed"
+        );
+        assert_eq!(app.confirm_asked(), Some(asked));
+        assert_eq!(
+            asked_at_last(&mut app, &devices, &answer),
+            [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
+                "approve": true, "confirm": true}))]
+        );
+
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        press(&mut app, &format!("settings.access.asking.{ASK}.decline"));
+        assert_eq!(app.asking(), None, "declining asks nothing more");
+        assert_eq!(
+            asked_at_last(&mut app, &devices, &answer),
+            [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
+                "approve": false, "confirm": true}))]
+        );
+    }
+
+    phase whoever_acts_for_the_person_lets_no_device_in;
+    // An agent, an automation and a bot each reach the action only as a
+    // call delivered for them. Even with a confirmation on it, such a call
+    // lets nobody in: Settings would pass it on to whoever keeps the
+    // person's devices as the person's own word.
+    {
+        let answer = device_pairing::target(device_pairing::ANSWER);
+        for acting in [
+            ui::tilo_actions::ActionInvoker::agent("scribe"),
+            ui::tilo_actions::ActionInvoker::automation("nightly"),
+            ui::tilo_actions::ActionInvoker::bot("helper"),
+        ] {
+            let devices = a_full_list(now());
+            let mut app = window_on_a_full_list(&devices);
+            let refused = {
+                let _for = ui::invocation_scope::InvokerScope::enter(acting.clone());
+                app.call_confirmed_on(
+                    &asking_row_id(),
+                    "answer-device",
+                    serde_json::json!({"approve": true}),
+                )
+            };
+            assert!(refused.is_err(), "{acting:?} was answered {refused:?}");
+            assert!(
+                nothing_passed_on(&mut app, || !devices.asked_at(&answer).is_empty()),
+                "{acting:?} had a device let in: {:?}",
+                devices.asked_at(&answer)
+            );
+        }
     }
 }

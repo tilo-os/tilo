@@ -83,7 +83,7 @@ fn record_main_stage_with(
 pub(crate) fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let diagnostics = &crate::host::environment().diagnostics;
+        let diagnostics = &crate::process::environment().diagnostics;
         (tilo_presentation::clock::SUPPORTS_WAYLAND_TIMING && diagnostics.presentation_timing)
             || (tilo_presentation::clock::SUPPORTS_METAL_TIMING
                 && cfg!(feature = "presentation-feedback")

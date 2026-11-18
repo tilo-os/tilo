@@ -3,8 +3,8 @@
 //! reads as what it checks.
 
 use super::*;
-pub(super) fn link_host() -> tilo_actions::remote::TestHost {
-    tilo_actions::remote::TestHost::new()
+pub(super) fn link_host() -> tilo_actions::remote::TestProvider {
+    tilo_actions::remote::TestProvider::new()
         .with_catalogue(|_, query| {
             Ok(tilo_actions::remote::CataloguePage {
                 locator: Some(tilo_actions::remote::ResourceViewLocator {
@@ -20,7 +20,7 @@ pub(super) fn link_host() -> tilo_actions::remote::TestHost {
         })
         .answering(|_, _| {
             tilo_actions::remote::Pending::ready(Err(
-                tilo_actions::remote::ActionHostError::NotPermitted,
+                tilo_actions::remote::ActionCallError::NotPermitted,
             ))
         })
 }
@@ -50,9 +50,9 @@ fn share_copies_the_open_photographs_link() {
         std::sync::Arc::new(link_host()),
         tilo_actions::remote::Caller::local_person("owner"),
     );
-    let services = ui::host::HostServices::null()
+    let services = ui::process::ProcessServices::null()
         .with_clipboard(std::sync::Arc::new(LinkClipboard::default()));
-    let _scope = ui::host::enter(&services);
+    let _scope = ui::process::enter(&services);
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("lake.png");
     std::fs::write(
@@ -210,8 +210,8 @@ fn make_thumbnails_fails_only_the_picture_that_is_not_an_image() {
 
 #[test]
 fn the_empty_library_open_button_asks_the_host_chooser() {
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = ui::framework::testing::TestApp::<crate::resource::PhotosShell>::new().unwrap();
     app.settle();
     app.harness()

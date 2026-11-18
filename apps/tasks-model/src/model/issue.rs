@@ -319,9 +319,9 @@ pub struct Link {
     pub kind: String,
     /// The resource's address in its app.
     pub resource: String,
-    /// The app's record that keeps it, such as a page kept on its own. None
-    /// for the app's own record of the workspace, which every link made
-    /// before links named a record means.
+    /// The app's resource that keeps it, such as a page kept on its own. None
+    /// for the app's own document of the workspace, which every link made
+    /// before links named a resource means.
     pub record: Option<String>,
 }
 
@@ -437,11 +437,11 @@ pub struct Issue {
     pub url: Option<String>,
     /// Work
     ///
-    /// What it keeps while it is worked on over many runs: where its working
+    /// What it keeps while it is worked on over many agent sessions: where its working
     /// material is, what it waits for, what it may cost and why it stopped
     /// ([`Work`](crate::model::Work)). None until something uses it. Only
     /// its own verbs change it (`set-place`, `wait`, `resume`, `set-budget`,
-    /// `run-began`, `run-ended`, `stop`).
+    /// `session-began`, `session-ended`, `stop`).
     #[model(readonly)]
     pub work: Option<crate::model::Work>,
 }

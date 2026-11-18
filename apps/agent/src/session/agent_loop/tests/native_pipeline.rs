@@ -37,7 +37,7 @@ struct Measured {
     idle_per_step: f64,
 }
 
-/// The native benchmark: the three-step plan on three records, every step
+/// The native benchmark: the three-step plan on three resources, every step
 /// taking `settle` in its application, run as the model marks it
 /// (standalone) and unmarked (in order). Wall time is the whole task; idle
 /// wakeups are the host round trips per step that brought no news while a
@@ -65,7 +65,7 @@ fn turn_steps_benchmark() {
             },
             vec![turn(
                 &[
-                    three_records(independent),
+                    three_resources(independent),
                     vec![finish("Posted and started both documents.", true)],
                 ]
                 .concat(),
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
     fn native_steps_run_wait_and_stop_as_their_plan_says;
 
     phase standalone_native_steps_run_alongside_each_other_in_plan_order;
-    // Steps the model marks standalone, on records no running step acts on,
+    // Steps the model marks standalone, on resources no running step acts on,
     // start without waiting for the ones before them to settle. Each is still
     // its own native child (its own request, id, admission and journal row),
     // and the model reads their results in the order it wrote the calls.
@@ -148,11 +148,11 @@ tilo_test_env::scenario! {
             World {
                 second_window: Some("doc-2"),
                 settle_after: Some(Duration::from_millis(10)),
-                settle_gate: 3,
+                settle_hold: 3,
                 ..World::default()
             },
             vec![
-                turn(&three_records(true), 24),
+                turn(&three_resources(true), 24),
                 turn(&[finish("Posted and started both documents.", true)], 64),
             ],
         );
@@ -191,14 +191,14 @@ tilo_test_env::scenario! {
     }
 
     phase a_native_step_that_may_read_earlier_writes_waits_for_them;
-    // An unmarked native step, or one on a record a running step acts on,
+    // An unmarked native step, or one on a resource a running step acts on,
     // starts only after every running step has settled.
     {
         let mut f = fixture(
             "post, write a heading, then type under it and confirm in Chat",
             World {
                 settle_after: Some(Duration::from_millis(10)),
-                settle_gate: 2,
+                settle_hold: 2,
                 ..World::default()
             },
             vec![
@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
         assert!(started[1].1 < started[0].2, "standalone: alongside");
         assert!(
             started[2].1 >= started[0].2 && started[2].1 >= started[1].2,
-            "the same record waits for everything running: {started:?}"
+            "the same resource waits for everything running: {started:?}"
         );
         assert!(
             started[3].1 >= started[2].2,

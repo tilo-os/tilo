@@ -127,7 +127,7 @@ pub fn add_channel(
     chat::demo::apply_as(
         doc,
         author,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+        chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
             name: name.parse().unwrap(),
             category: None,
             kind,

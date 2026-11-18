@@ -1,14 +1,13 @@
 //! The session's MCP server: how agents reach the action API. `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 //! (0600, in the session's 0700 directory) is where a program of this login reaches this desktop's
 //! actions as an agent, never as the person. Framing is newline-delimited MCP JSON-RPC
-//! ([`tilo_mcp::session_api`]). Three gates stand between a connection and the desktop: its
+//! ([`tilo_mcp::session_api`]). Three checks stand between a connection and the desktop: its
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
 //! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
 //! agent member for that client. Each connection is one agent session
-//! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. Acting
-//! as the person is a request, never authority: the person decides it on the sheet ([`crate::Options`]'s
-//! `admit_repl` decides it ahead of time for a test's own program). "Always allow" is kept in
-//! this account's private state.
+//! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. The
+//! person's own programs reach the desktop as them through Tilo's API ([`crate::api_server`]),
+//! never here. "Always allow" is kept in this account's private state.
 //!
 //! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
 //! ([`environments`]): a program there works in the environment's workspace, and the person's
@@ -41,7 +40,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::collab_app_broker::{AgentConnection, AppBrokerState};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
@@ -54,9 +53,9 @@ use tilo_sheets::{word, words};
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
+use crate::app_wire::LayoutAuthority;
 use crate::device_mcp::DeviceAgents;
 use crate::launches::Launches;
-use crate::plane::LayoutAuthority;
 use crate::platform::steps::SessionSteps as _;
 use tilo_action_policy::AgentSessionId;
 
@@ -102,9 +101,6 @@ pub(crate) struct Admission {
     pub(crate) workspace: String,
     /// The agent it is admitted as.
     pub(crate) agent: String,
-    /// Whether it asks to act as the person themselves, not as an agent.
-    #[serde(default)]
-    pub(crate) as_person: bool,
 }
 
 /// What the kernel and the client's own `initialize` say about a connection.
@@ -191,8 +187,6 @@ impl Facts {
 /// One connection waiting for the person, handed to the loop.
 struct Request {
     facts: Facts,
-    /// It asks to act as the person.
-    as_person: bool,
     /// The workspace it asks to work in, by id; `None` for the one in front.
     workspace: Option<String>,
     /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
@@ -207,15 +201,12 @@ struct Request {
 /// A connection the person is being asked about.
 struct Waiting {
     facts: Facts,
-    as_person: bool,
     workspace: String,
     /// The workspace as the person reads it.
     workspace_name: String,
     session: AgentSessionId,
-    /// The program the answer is remembered for (`claude-code`), and what the shell calls the
-    /// session (`Claude Code #2`).
+    /// The program the answer is remembered for (`claude-code`).
     agent: String,
-    shown: String,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -366,11 +357,6 @@ pub(crate) struct Loop {
     /// Polls the questions: the loop looks for an answer on each of its own passes, so nothing else
     /// has to wake it.
     waker: Waker,
-    /// The programs the person named, when they started the session, as the ones they admit to act
-    /// as them: canonical executable paths.
-    admits: Vec<PathBuf>,
-    /// The clients the person let act as them for this session.
-    person_session: std::collections::HashSet<BindingKey>,
     /// What the connections ask of the session's own services, answered on the loop's pass.
     services: Arc<SessionServices>,
     /// The control protocol's socket, which a program inside an app this session started is served
@@ -453,7 +439,6 @@ pub(crate) fn mount_named(
         launches: Arc::clone(&options.launches),
         wake: options.wake.handle(),
         state: options.state.as_deref(),
-        admits: &options.admit_repl,
         agent_key: options.agent_key.as_deref(),
         services,
         control,
@@ -468,7 +453,7 @@ pub(crate) fn mount_named(
 }
 
 /// What the server binds with: where it listens, whose questions its clients are admitted by, the
-/// apps this session started, where "Always allow" is kept, the programs named to admit, the
+/// apps this session started, where "Always allow" is kept, the
 /// session's own services, the workspace governance it holds, and the control socket a program inside an
 /// app drives.
 pub(crate) struct Mounting<'a> {
@@ -477,7 +462,6 @@ pub(crate) struct Mounting<'a> {
     launches: Arc<Launches>,
     wake: Wake,
     state: Option<&'a Path>,
-    admits: &'a [PathBuf],
     /// The file holding the agent key the person started the session with.
     agent_key: Option<&'a Path>,
     services: Arc<SessionServices>,
@@ -498,7 +482,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         launches,
         wake,
         state,
-        admits,
         agent_key,
         services,
         control,
@@ -517,17 +500,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         .as_deref()
         .map_or_else(|| (HashMap::new(), Lost::default()), read_bindings);
     let (requests, asked) = std::sync::mpsc::channel();
-    // A program named by a path that does not resolve is admitted by none.
-    let admits = admits
-        .iter()
-        .filter_map(|program| match std::fs::canonicalize(program) {
-            Ok(program) => Some(program),
-            Err(error) => {
-                tracing::warn!(%error, program = %program.display(), "MCP server: the program named to admit is not there");
-                None
-            }
-        })
-        .collect();
     let server = Loop {
         questions,
         listener,
@@ -549,8 +521,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         room: Room::default(),
         // The loop polls its questions itself, each pass, so an answer needs no wakeup.
         waker: Waker::noop().clone(),
-        admits,
-        person_session: std::collections::HashSet::new(),
         services,
         control,
         sessions,
@@ -703,7 +673,6 @@ impl Loop {
     ) {
         let Request {
             facts,
-            as_person,
             workspace: asked,
             session,
             decide,
@@ -715,34 +684,14 @@ impl Loop {
             ));
             return;
         };
-        let (workspace, name) =
-            match where_it_works(handle, person, &facts, as_person, asked.as_deref()) {
-                Ok(found) => found,
-                Err(reason) => {
-                    let _ = decide.send(Consent::Refuse(reason));
-                    return;
-                }
-            };
-        let key = facts.key();
-        if as_person {
-            // The person named this program when they started the session, or let this client act
-            // as them earlier in it: their decision, made already.
-            let named = facts
-                .exe
-                .as_ref()
-                .is_some_and(|exe| self.admits.iter().any(|admitted| admitted == exe));
-            let earlier = key
-                .as_ref()
-                .is_some_and(|key| self.person_session.contains(key));
-            if named || earlier {
-                tracing::info!(client = %facts.client, pid = facts.pid, named, "MCP server: the person admitted this client to act as them");
-                let _ = decide.send(Consent::Person {
-                    workspace,
-                    person: person.to_owned(),
-                });
+        let (workspace, name) = match where_it_works(handle, person, &facts, asked.as_deref()) {
+            Ok(found) => found,
+            Err(reason) => {
+                let _ = decide.send(Consent::Refuse(reason));
                 return;
             }
-        }
+        };
+        let key = facts.key();
         let remembered = key
             .as_ref()
             .and_then(|key| self.session.get(key).or_else(|| self.always.get(key)))
@@ -750,35 +699,28 @@ impl Loop {
         // What the person said ahead of time admits it as a connection of its own: an answer they
         // remembered for this client, or this device's setting that lets agents from their other
         // devices in without being asked.
-        let ahead = remembered.clone().filter(|_| !as_person).or_else(|| {
+        let ahead = remembered.clone().or_else(|| {
             (facts.origin.is_some() && DeviceAgents::accepts_own_devices())
                 .then(|| facts.proposed())
         });
         if let Some(agent) = ahead {
-            let (instance, shown) = self.agent_of(&agent, &facts);
-            tracing::info!(client = %facts.client, pid = facts.pid, %instance, %workspace, "MCP server: what the person said ahead of time admits this client");
-            let consent = as_member(members, &facts, (&workspace, person), shown);
+            tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: what the person said ahead of time admits this client");
+            let consent = as_member(members, &facts, (&workspace, person));
             self.sessions.admit(&session, &consent, &agent, &name);
             let _ = decide.send(consent);
             return;
         }
         let agent = remembered.unwrap_or_else(|| facts.proposed());
-        let (proposed, shown) = if as_person {
-            (agent.clone(), facts.client.clone())
-        } else {
-            self.agent_of(&agent, &facts)
-        };
         let details = serde_json::to_value(Admission {
             workspace: name.clone(),
-            agent: proposed.clone(),
-            as_person,
+            agent: facts.client.clone(),
         })
         .unwrap_or_default();
         let label = facts.subject();
         tracing::info!(
             client = %facts.client,
             pid = facts.pid,
-            agent = %proposed,
+            %agent,
             %workspace,
             "MCP server: asking the person"
         );
@@ -791,44 +733,13 @@ impl Loop {
         });
         self.waiting.push(Waiting {
             facts,
-            as_person,
             workspace,
             workspace_name: name,
             session,
             agent,
-            shown,
             asked: Some(asked),
             decide,
         });
-    }
-
-    /// The agent of its own the client `facts` describes is admitted as, when the person admits it
-    /// as `agent`, and how their shell shows it: its instance among the clients of that agent at its
-    /// place (`claude-code@host#2`, `Claude Code #2`, `Claude Code in dev #2`). An agent from
-    /// another device names its device already (`claude-code@laptop-3f2a`).
-    fn agent_of(&mut self, agent: &str, facts: &Facts) -> (String, String) {
-        let at = if facts.origin.is_some() {
-            agent.to_owned()
-        } else {
-            format!("{agent}@{}", facts.entrance.place())
-        };
-        let (id, instance) = self.environments.instance(&at);
-        let instance = instance.to_string();
-        let shown = match &facts.entrance {
-            Origin::Environment(environment) => words(
-                "mcp-server-session-in-environment",
-                &[
-                    ("client", &facts.client),
-                    ("environment", &environment.name),
-                    ("instance", &instance),
-                ],
-            ),
-            Origin::Host => words(
-                "mcp-server-session",
-                &[("client", &facts.client), ("instance", &instance)],
-            ),
-        };
-        (id, shown)
     }
 
     /// Settle the questions the person answered — or whose client left — and let the admitted
@@ -878,26 +789,7 @@ impl Loop {
             tilo_portal::consent::ALLOW_ALWAYS => Memory::Always,
             _ => return Consent::Refuse(word("mcp-server-declined")),
         };
-        if waiting.as_person {
-            // Acting as the person makes no one a member: it is them. What they let it do for the
-            // session is remembered for the session only; a later session asks again unless they
-            // name the program when they start it.
-            if !matches!(remembered, Memory::Once)
-                && let Some(key) = waiting.facts.key()
-            {
-                self.person_session.insert(key);
-            }
-            return Consent::Person {
-                workspace: waiting.workspace.clone(),
-                person: person.to_owned(),
-            };
-        }
-        let consent = as_member(
-            members,
-            &waiting.facts,
-            (&waiting.workspace, person),
-            waiting.shown.clone(),
-        );
+        let consent = as_member(members, &waiting.facts, (&waiting.workspace, person));
         self.sessions.admit(
             &waiting.session,
             &consent,
@@ -978,21 +870,18 @@ impl Loop {
 }
 
 /// How the session finds or adds the person's agent member for an MCP client in a workspace: by
-/// workspace id and client name, answering the agent's id once the roster the broker reads lists
-/// it ([`Shared::mcp_member`]). A connection admitted on this answer joins the broker at once, on
+/// workspace id and client name, answering the agent's id and the name the workspace calls it by
+/// once the roster the broker reads lists it ([`Shared::mcp_member`]). A connection admitted on this answer joins the broker at once, on
 /// its own thread, so the answer never names an agent the broker would not find.
-pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<String, String> + 'a;
+pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<(String, String), String> + 'a;
 
 /// Admit the client `facts` describes, in `workspace` for `person`, as the person's agent member
-/// for its client, shown as `name`; refused where that member cannot be found, added or listed.
-fn as_member(
-    members: &Members<'_>,
-    facts: &Facts,
-    (workspace, person): (&str, &str),
-    name: String,
-) -> Consent {
+/// for its client, under the name the workspace calls that member by: every connection of it reads
+/// as the member, and the shell tells two of them apart by where each works from, beside the name.
+/// Refused where that member cannot be found, added or listed.
+fn as_member(members: &Members<'_>, facts: &Facts, (workspace, person): (&str, &str)) -> Consent {
     match members(workspace, &facts.client) {
-        Ok(agent) => Consent::Admit {
+        Ok((agent, name)) => Consent::Admit {
             workspace: workspace.to_owned(),
             agent,
             person: person.to_owned(),
@@ -1007,23 +896,13 @@ fn as_member(
 
 /// Where the client `facts` describes works, by id and as the person reads it, when it may work
 /// here at all: the workspace its device asked for, its environment's, the one it asked for by id,
-/// or the one in front. The reason it may not, as it is told: only a program of this login, and
-/// none inside an environment, acts as the person (`as_person`).
+/// or the one in front. The reason it may not, as it is told.
 fn where_it_works(
     handle: &DesktopHandle,
     person: &str,
     facts: &Facts,
-    as_person: bool,
     asked: Option<&str>,
 ) -> Result<(String, String), String> {
-    if as_person && facts.origin.is_some() {
-        return Err(word("mcp-server-person-from-device"));
-    }
-    if as_person && matches!(facts.entrance, Origin::Environment(_)) {
-        // A confined environment's programs are agents: none acts as the person, whose authority
-        // reaches past the environment.
-        return Err(word("mcp-server-environment-as-person"));
-    }
     let found = match &facts.origin {
         Some(origin) => workspace_for(handle, origin.workspace.as_deref())
             .ok_or_else(|| word("mcp-server-no-workspace")),
@@ -1063,7 +942,7 @@ enum Memory {
     Always,
 }
 
-/// Whether the agent `remembered` is the program the agent `seated` is an instance of. An answer
+/// Whether the agent `remembered` is the program the agent `connected` is an instance of. An answer
 /// is remembered for the program by the id its client proposed (`claude-code`), and what the answer
 /// admits is that program at this device, as an instance of its own (`claude-code@host#2`): its own
 /// id begins with the one remembered, at a place or an instance of it.
@@ -1400,7 +1279,7 @@ enum ApiAsk {
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
-            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+            Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
@@ -1408,23 +1287,32 @@ enum ApiAsk {
     /// record of.
     Record {
         app: String,
-        done: tilo_actions::remote::Completer<Option<tilo_service::Record>>,
+        done: tilo_actions::remote::Completer<Option<tilo_service::Document>>,
     },
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
-    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
+    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_process::App>>),
+    /// The newest reading of the resource `resource` of the app `app`, one the session's own
+    /// services publish (the device's sound, the session's windows, Settings' sections): what a
+    /// task's program reads within the program it runs, answered on the loop's pass, where the
+    /// services are. `None` for a resource no service publishes.
+    Reading {
+        app: String,
+        resource: String,
+        done: tilo_actions::remote::Completer<Option<Published>>,
+    },
     /// Run the change `change` of a record a service keeps for a package the session runs itself,
     /// as `actor` , on the pass: its answer as the services give it, or `None` when no service keeps
     /// that app's record.
     Change {
         actor: tilo_action_policy::Acting,
         change: tilo_actions::remote::ResourceChange,
-        done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionHostError>>>,
+        done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionCallError>>>,
     },
 }
 
-/// The seam between the server's connections and the session's own services.
+/// The boundary between the server's connections and the session's own services.
 pub(crate) struct SessionServices {
     asks: std::sync::Mutex<Vec<ApiAsk>>,
     wake: Wake,
@@ -1464,8 +1352,8 @@ const WAIT: Duration = Duration::from_secs(30);
 
 /// A session that did not answer within [`WAIT`]: it is frozen, and nothing is done elsewhere in
 /// its place.
-fn unanswered() -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unanswered() -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: "the session did not answer".to_owned(),
     }
 }
@@ -1489,7 +1377,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
         beside: String,
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
-            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+            Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
     ) {
         self.ask(ApiAsk::Step {
@@ -1516,7 +1404,7 @@ impl SessionServices {
         self.kept.lock_recover().contains(app)
     }
 
-    /// The seam `wake` wakes the loop on, shared by every connection that asks the session's own
+    /// The services `wake` wakes the loop for, shared by every connection that asks the session's own
     /// services, for the person sitting here.
     pub(crate) fn new(wake: Wake, person: &str) -> Self {
         Self {
@@ -1636,9 +1524,38 @@ impl SessionServices {
         })
     }
 
+    /// The newest reading of the resource `resource` the app `app` publishes, asked on the loop's
+    /// pass, where the services are: what a task's program reads within the program it runs, and
+    /// what the shell's parts are handed. `None` for a resource no service publishes.
+    ///
+    /// # Errors
+    ///
+    /// Why the session did not answer: it is frozen ([`unanswered`]).
+    pub(crate) fn reading(
+        &self,
+        app: &str,
+        resource: &str,
+    ) -> Result<Option<Published>, ActionCallError> {
+        let (done, answered) = tilo_actions::remote::pending();
+        self.ask(ApiAsk::Reading {
+            app: app.to_owned(),
+            resource: resource.to_owned(),
+            done,
+        });
+        answered
+            .wait_timeout(WAIT)
+            .map(Option::flatten)
+            .map_err(|_| unanswered())
+    }
+
     /// The session's own actions these services hand a connection, once the session has them.
     pub(crate) fn keep_actions(&self, actions: Arc<crate::session_actions::SessionActions>) {
         let _ = self.actions.set(actions);
+    }
+
+    /// The shell's workspaces, as of the loop's last pass: each one's id and name.
+    pub(crate) fn workspaces(&self) -> Vec<[String; 2]> {
+        self.workspaces.lock_recover().clone()
     }
 
     /// The session's own actions, once they are made.
@@ -1745,10 +1662,23 @@ impl SessionServices {
                     Err(why) => done.complete(Err(why)),
                 },
                 ApiAsk::Record { app, done } => {
-                    done.complete(services.borrow().record(&app));
+                    done.complete(services.borrow().document(&app));
                 }
                 ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
+                }
+                ApiAsk::Reading {
+                    app,
+                    resource,
+                    done,
+                } => {
+                    let services = services.borrow();
+                    done.complete(
+                        published_reading(&services, &app, &resource).map(|reading| Published {
+                            kind: published_kind(&services, &resource),
+                            reading,
+                        }),
+                    );
                 }
                 ApiAsk::Change {
                     actor,
@@ -1767,7 +1697,7 @@ type Answered =
 /// How many answered session steps a connection remembers.
 const ANSWERED_KEPT: usize = 256;
 
-/// The broker as an admitted client's API: every call passes the gate as the agent or person
+/// The broker as an admitted client's API: every call passes the check as the agent or person
 /// and workspace the connection was admitted for, and the session's own actions are among what
 /// the same broker publishes.
 #[derive(Clone)]
@@ -1889,7 +1819,7 @@ fn connect(
         return Ok(None);
     }
     let (device, certificate) =
-        match tilo_identity_host::broker::trusted_current_device(admitted.workspace) {
+        match tilo_identity::broker::trusted_current_device(admitted.workspace) {
             Ok(device) => device,
             Err(error) => {
                 tracing::warn!(
@@ -1912,7 +1842,7 @@ fn connect(
 
 /// What an agent session is admitted for: the workspace it works in, the person who admitted it
 /// (whom the agent acts for), the agent member it is a session of, the session, and the name the
-/// person reads it by (`Claude Code #2`).
+/// person reads it by (`Claude Code`).
 struct Admitted<'a> {
     workspace: &'a str,
     person: &'a str,
@@ -2014,20 +1944,20 @@ impl Host {
     }
 
     /// An invocation the person at this device made through this device's own control sockets: the
-    /// same as [`ActionHost::invoke`], except that the broker keeps the device's certificate custody for it
+    /// same as [`ActionProvider::invoke`], except that the broker keeps the device's certificate ownership for it
     /// ([`AppBrokerState::action_invoke_local_person`]), as it does for the palette's actions, so
     /// what the person may do here is what the person may do anywhere.
     /// Only this device's own control sockets call it — the owner's socket, whose peer is the account
     /// whose desktop this is ([`crate::test_control::owner_decision`]), and the development
     /// test-control socket, which drives it as the person at this device. An agent, or a person over
-    /// a network, MCP or app connection, invokes as itself through [`ActionHost::invoke`], and the
-    /// broker's per-action and per-role permissions decide; the broker refuses custody to anything
+    /// a network, MCP or app connection, invokes as itself through [`ActionProvider::invoke`], and the
+    /// broker's per-action and per-role permissions decide; the broker refuses ownership to anything
     /// but the person at this device.
     pub(crate) fn invoke_as_local_person(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.invoke_within(caller, request, true)
     }
 
@@ -2038,16 +1968,16 @@ impl Host {
         caller: &Caller,
         request: InvokeRequest,
         as_local_person: bool,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with
         // the reason, for the person and an agent alike.
         if let Some(reason) = self.session.awaited_reason(&request.target.provider) {
-            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+            return Pending::ready(Err(ActionCallError::Unavailable { reason }));
         }
         // This device's own sockets, and a desktop with no broker at all, reach the session's own
-        // actions on the loop: the broker is the gate for a caller on another's word, and the
-        // person at this seat is nobody's delegate.
+        // actions on the loop: the broker is the check for a caller on another's word, and the
+        // person at this device is nobody's delegate.
         let own = request.target.provider == wire_provider();
         let person = caller.acting().is_person();
         // An agent works in one workspace: a shell window of another is not its to read or act on,
@@ -2058,14 +1988,14 @@ impl Host {
                 .session
                 .window_elsewhere(request.target.address.resource.as_str(), workspace)
         {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         // Nor may it branch another workspace: what it would copy is not its to read.
         if !person
             && let Some(workspace) = caller.workspace()
             && self.session.branches_elsewhere(&request, workspace)
         {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         // What the session offers people alone (ending an agent's session) is no agent's step: it
         // is refused at once, saying why, never put to the person on a sheet that stands over the
@@ -2076,7 +2006,7 @@ impl Host {
                 .placed(&request)
                 .is_some_and(|placed| !placed.action.contract.reaches_agents())
         {
-            return Pending::ready(Err(ActionHostError::Refused {
+            return Pending::ready(Err(ActionCallError::Refused {
                 reason: "this action is for people only; ask the person to run it".to_owned(),
             }));
         }
@@ -2099,7 +2029,7 @@ impl Host {
         match &self.state {
             Some(state) if as_local_person => state.action_invoke_local_person(caller, &request),
             Some(state) => state.action_invoke(caller, None, None, &request),
-            None => Pending::ready(Err(ActionHostError::Unavailable {
+            None => Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "this desktop's apps are not running here".to_owned(),
             })),
         }
@@ -2127,9 +2057,9 @@ impl Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Some(agent) = caller.acting().agent_id() else {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         };
         let actor = tilo_actions::MemberId::agent(agent).into();
         self.invoke_step_at(actor, request, caller.turn())
@@ -2159,22 +2089,22 @@ impl Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let Some(person) = caller.acting().person_id() else {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         };
         let actor = tilo_actions::MemberId::person(person).into();
         self.invoke_step_at(actor, request, caller.turn())
     }
 
     /// The session's own action `request` names, carried out on the loop's pass as `actor` (the
-    /// person at this seat, or an agent reading): where the layout and the windows are.
+    /// person at this device, or an agent reading): where the layout and the windows are.
     fn invoke_step_at(
         &self,
         actor: tilo_actions::Actor,
         request: InvokeRequest,
         turn: Option<&tilo_action_policy::turn::Turn>,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let slot = request.argument.to_slot();
         let invocation = request.invocation;
         // The place the ask is in: the turn's conversation, when the step is an agent's; else the
@@ -2207,12 +2137,12 @@ impl Host {
     }
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // An agent works in one workspace: the shell's windows of another (each listed by the title
         // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
         let confined = if caller.acting().is_person() {
@@ -2249,7 +2179,7 @@ impl ActionHost for Host {
         match &self.state {
             Some(state) => state.action_query(caller, &query),
             // A desktop that runs no broker (a session in a window of another, a test with no
-            // action plane) still publishes its own actions: they are read on the loop and
+            // app wire) still publishes its own actions: they are read on the loop and
             // held here, so the services list them itself.
             None => Pending::ready(Ok(CataloguePage::from_rows(
                 String::new(),
@@ -2263,14 +2193,14 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A person typing at a REPL is the person at this device: their own step is carried out on the loop's
         // pass, where the layout and the windows are, as their own input is — never
         // through the broker, which decides for an actor on another's word but has no
         // certificate for the person alone. An agent's step is the turn's, and the broker
         // decides it exactly as it decides the agent's app action in that turn.
         // An admitted connection invokes as itself: the broker decides by its per-action and
-        // per-role permissions. Device custody belongs to this device's own control sockets alone
+        // per-role permissions. Device identity belongs to this device's own control sockets alone
         // ([`Host::invoke_as_local_person`]), and the person's own steps on the session go to the loop
         // wherever they come from ([`Host::invoke_within`]).
         self.invoke_within(caller, request, false)
@@ -2307,13 +2237,13 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         if let Some(agent) = &self.agent {
             return agent.cancel(caller, id);
         }
         match &self.state {
             Some(state) => state.action_cancel(caller, id),
-            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+            None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
 
@@ -2321,7 +2251,7 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         // An admitted agent's step is its session's to ask about: its person answers on this
         // shell's sheet ([`crate::step_questions`]).
         if let Some(agent) = &self.agent
@@ -2330,8 +2260,8 @@ impl ActionHost for Host {
             return agent.confirm(caller, request);
         }
         match &self.state {
-            Some(state) => state.request_witness(caller, None, request),
-            None => Pending::ready(Err(ActionHostError::confirmation_required())),
+            Some(state) => state.request_approval(caller, None, request),
+            None => Pending::ready(Err(ActionCallError::confirmation_required())),
         }
     }
 
@@ -2385,6 +2315,15 @@ impl ActionHost for Host {
     fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.service_records()))
     }
+
+    /// The readings of the resources the session publishes itself, which a task's programs read
+    /// within the program they run: asked on the loop's pass, where the services are.
+    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
+        Some(Arc::new(SessionReadings {
+            session: Arc::clone(&self.session),
+            state: self.state.clone(),
+        }))
+    }
 }
 
 impl Host {
@@ -2400,15 +2339,89 @@ impl Host {
     }
 }
 
+/// The readings of a session's own resources, for the programs its API runs ([`Readings`]).
+struct SessionReadings {
+    session: Arc<SessionServices>,
+    /// The session's broker, which decides each caller's read of a resource as it decides every
+    /// other: `None` on a desktop that runs none, where only the person reads their own.
+    state: Option<Arc<AppBrokerState>>,
+}
+
+impl tilo_actions::remote::Readings for SessionReadings {
+    fn reading(
+        &self,
+        caller: &Caller,
+        app: &str,
+        resource: &str,
+    ) -> Result<Option<serde_json::Value>, ActionCallError> {
+        if !published_root(app, resource) {
+            return Ok(None);
+        }
+        let Some(published) = self.session.reading(app, resource)? else {
+            return Ok(None);
+        };
+        // A read is decided at the resource's node, which its published kind names: a resource no
+        // service publishes a kind for has no node to decide it at, so it is read by nobody.
+        let Some(kind) = &published.kind else {
+            return Ok(None);
+        };
+        may_read_published(self.state.as_deref(), caller, (SESSION_APP, kind, resource))?;
+        Ok(Some(published.reading))
+    }
+}
+
+/// A reading of a resource the session publishes, and the kind it is published as (`None` for a
+/// resource no service of this device serves, which no program reads: with no kind there is no
+/// node to decide its read at).
+pub(crate) struct Published {
+    kind: Option<String>,
+    reading: serde_json::Value,
+}
+
+/// The app the session publishes its own resources as, at whose nodes a read of them is decided.
+const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
+
+/// Whether `caller` may read the resource `target` (app, kind, resource) the session publishes:
+/// decided by the broker at the resource's node, in the workspace the caller acts in, with its
+/// actor, as every read of a record is: an agent rides its person's authority. The person acting
+/// as themselves reads their own device, as their own catalogue is theirs; with no broker, nobody
+/// else reads it.
+///
+/// # Errors
+///
+/// [`ActionCallError::Refused`] or [`ActionCallError::NotPermitted`]: the read is not the caller's.
+fn may_read_published(
+    state: Option<&AppBrokerState>,
+    caller: &Caller,
+    target: (&str, &str, &str),
+) -> Result<(), ActionCallError> {
+    if caller.acting().is_person() {
+        return Ok(());
+    }
+    match (state, caller.workspace()) {
+        (Some(state), Some(workspace)) => state.may_read_resource(caller, workspace, target),
+        _ => Err(ActionCallError::NotPermitted),
+    }
+}
+
+/// The kind the session's services publish the resource `resource` as, when one serves it.
+fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<String> {
+    services
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str() == resource)
+        .map(|spec| spec.kind)
+}
+
 /// The packages the session runs itself (the shell), each its compiled module: what a task's
 /// programs read those records by, answered on the loop's pass, where the services are.
 fn session_packages(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-) -> Vec<runtime_portal::tilolang_host::App> {
-    use runtime_portal::tilolang_host::{App, Module};
+) -> Vec<runtime_portal::tilolang_process::App> {
+    use runtime_portal::tilolang_process::{App, Module};
     services
         .borrow()
-        .records()
+        .documents()
         .into_iter()
         .flat_map(|record| record.packages)
         .map(|wasm| {
@@ -2419,6 +2432,34 @@ fn session_packages(
             })
         })
         .collect()
+}
+
+/// The reading of the resource `resource` the app `app` publishes, asked by a program on the
+/// loop's pass: what the session's services read it as. Only the resources the session itself
+/// publishes are read here — an app's record an agent asks for is read through the record API,
+/// never from a service. A resource no service of this device serves (no Bluetooth, no battery)
+/// is published empty, as the shell's own parts are handed it: a program reads its fields as
+/// absent (off, empty) and goes on; `None` for a resource the session does not publish at all.
+fn published_reading(
+    services: &tilo_service::Services,
+    app: &str,
+    resource: &str,
+) -> Option<serde_json::Value> {
+    published_root(app, resource).then(|| {
+        services
+            .read(resource)
+            .unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+/// Whether the session publishes the resource `resource` as the app `app`'s: the device's,
+/// Settings' and the session's own roots, each a resource the session's services read
+/// ([`tilolang_tilo::platform_apps::platform_roots`]). A resource of any other app is its
+/// record's, read through the record API.
+fn published_root(app: &str, resource: &str) -> bool {
+    tilolang_tilo::platform_apps::platform_roots()
+        .iter()
+        .any(|(published, ty)| *published == resource && ty.starts_with(&format!("{app}#")))
 }
 
 /// A client the server accepted: its socket, and where it came from.
@@ -2585,10 +2626,7 @@ fn serve_admitted(
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
-    let tasks = Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
-        Some(&session.person),
-        Arc::new(SessionCatalogue::new(Arc::clone(session))),
-    ));
+    let tasks = person_tasks(session);
     let admitted = Arc::clone(&tasks);
     // The agent the person admitted: its workspace, its person and the agent member it is a
     // session of, from the answer to the host the connection is then served through.
@@ -2654,7 +2692,7 @@ fn serve_admitted(
                 connected,
                 agent_session.clone(),
             );
-            if let Consent::Admit { person, .. } | Consent::Person { person, .. } = &consent {
+            if let Consent::Admit { person, .. } = &consent {
                 admitted.set_person(Some(person));
             }
             if let Consent::Admit {
@@ -2688,6 +2726,15 @@ fn serve_admitted(
     }
 }
 
+/// Where the programs of a task of the person's sitting here are done: over the session's own
+/// catalogue.
+pub(crate) fn person_tasks(session: &Arc<SessionServices>) -> Arc<tilo_mcp::task_hosts::TaskHosts> {
+    Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+        Some(&session.person),
+        Arc::new(SessionCatalogue::new(Arc::clone(session))),
+    ))
+}
+
 /// Hand one client to the loop's question and wait for the person's answer,
 /// giving up when the client leaves.
 fn ask(
@@ -2703,7 +2750,6 @@ fn ask(
     let (decide, mut decided) = tokio::sync::oneshot::channel();
     let request = Request {
         facts,
-        as_person: hello.as_person,
         workspace: hello.workspace.clone(),
         key: hello.key.clone(),
         session,

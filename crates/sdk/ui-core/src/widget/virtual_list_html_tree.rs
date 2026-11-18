@@ -7,25 +7,24 @@ use std::iter::Peekable;
 
 use vello::kurbo::Rect;
 
-use super::{ListModel, VirtualList};
+use super::{ListKey, VirtualRows};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::composition::{Composed, Own};
 use crate::i18n::widget_text;
 use crate::icons::Icon;
 use crate::theme::Theme;
-use crate::widget::Button;
 
-impl<M: ListModel + 'static> VirtualList<M> {
+impl VirtualRows {
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
     /// each row's notes nested in a `<ul>` inside the row's own element, with a branch row's
-    /// disclosure standing where its chevron does.
+    /// disclosure where its chevron does.
     pub(crate) fn tree_html_rows(&self, rows: Vec<Composed>, theme: &Theme) -> Vec<Composed> {
         let Some(marks) = self.tree.as_ref() else {
             return rows;
         };
         // Pair each composed row with the row the list holds, by where it stands: the
         // composition names a row by its path in the window's layout, the list by its key.
-        let mut standing: Vec<(u32, M::Key, Composed)> = Vec::with_capacity(rows.len());
+        let mut paired: Vec<(u32, ListKey, Composed)> = Vec::with_capacity(rows.len());
         let mut loose: Vec<Composed> = Vec::new();
         for row in rows {
             let mounted = self.mounted.iter().find(|mounted| {
@@ -36,13 +35,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
                     && near(rect.height(), row.rect[3])
             });
             match mounted {
-                Some(mounted) => {
-                    standing.push((marks.depth(&mounted.key), mounted.key.clone(), row))
-                }
+                Some(mounted) => paired.push((marks.depth(&mounted.key), mounted.key.clone(), row)),
                 None => loose.push(row),
             }
         }
-        for (_, key, row) in &mut standing {
+        for (_, key, row) in &mut paired {
             let Some(rect) = self.disclosure_rect(key) else {
                 continue;
             };
@@ -50,7 +47,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
             let part = self.disclosure_html(key, &row.path, rect, folded, theme);
             row.children.insert(0, part);
         }
-        let mut rows = standing
+        let mut rows = paired
             .into_iter()
             .map(|(depth, _, row)| (depth, row))
             .peekable();
@@ -62,11 +59,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
         nested
     }
 
-    /// A branch row's disclosure as an element: a button named for what it does, standing where
+    /// A branch row's disclosure as an element: a button named for what it does, where
     /// the chevron is painted, pressing the list's own fold on the row it belongs to.
     fn disclosure_html(
         &self,
-        key: &M::Key,
+        key: &ListKey,
         row_path: &str,
         rect: Rect,
         folded: bool,
@@ -89,9 +86,14 @@ impl<M: ListModel + 'static> VirtualList<M> {
         );
         part.tag = Some("button");
         part.focusable = true;
-        part.own = Button::icon_only("", icon, &name)
-            .composed_face(theme)
-            .map(Own::Face);
+        // The chevron alone, centred where it is painted, at the size of a small icon.
+        let side = f64::from(theme.tokens.metrics.icon_sm).min(rect.width().min(rect.height()));
+        part.own = crate::composition::glyph(icon, side, theme.text_dim, false).map(|glyph| {
+            Own::Face(crate::composition::Face {
+                radius: f64::from(theme.tokens.radii.control),
+                ..crate::composition::Face::glyph(glyph)
+            })
+        });
         let mut node = AccessNode::new(Role::Button)
             .with_name(name)
             .with_state(AccessState::new().expanded(!folded));
@@ -124,7 +126,7 @@ fn nest_rows(
     out
 }
 
-/// `children` in a group of their own under `parent`, standing over the region they take.
+/// `children` in a group of their own under `parent`, over the region they take.
 fn group(parent: &str, row: [f64; 4], children: Vec<Composed>) -> Composed {
     let mut rect = Rect::new(
         children.first().map_or(row[0], |child| child.rect[0]),

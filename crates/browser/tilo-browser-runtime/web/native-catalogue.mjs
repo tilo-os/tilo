@@ -8,7 +8,7 @@
  * workspace's policy. The answer is the invocation's receipt. Any other action
  * the workspace's host runs (a workspace record's, `record:<app>:<record>`, or the
  * workspace's own, `workspace:<workspace>`) goes to the host over the peer's carrier
- * (`peer.actions`), and the host admits it by the person's own standing:
+ * (`peer.actions`), and the host admits it by the person's own access:
  * the page grants nothing itself. The page itself takes the same membership actions through the mount's
  * entry (`invokeMembershipAction`). */
 const GOVERNANCE_PROVIDER = 'tilo.workspace';
@@ -78,7 +78,7 @@ export function createNativeCatalogueBridge({take, deliver, actions, membership 
   const receipt = (invocation, status) => send({Receipt:{invocation, status}});
   const rejected = (invocation, reason) => receipt(invocation, {Rejected:{error:{Unavailable:{reason}}}});
   // The workspace's host runs the action as itself for the person it verified
-  // on the carrier, deciding by their own standing (a chat message asking
+  // on the carrier, deciding by their own access (a chat message asking
   // for a page's `share-link`, a record's action from another app).
   function hostRun({invocation, target, argument, confirmation}) {
     const connection = actions();

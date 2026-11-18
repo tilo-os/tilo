@@ -317,8 +317,6 @@ impl ChatApp {
             (&user.id, &user.name).hash(&mut people);
         }
         hash_sorted(&self.workspace_colors, &mut people);
-        hash_sorted(&self.workspace_agent_names, &mut people);
-        hash_sorted(&self.workspace_agent_colours, &mut people);
         let look = PaintLook {
             theme: theme.clone(),
             transform: tf,
@@ -476,7 +474,7 @@ impl ChatApp {
 
     /// Paint the row `rm` into a scene of its own, at the content's top,
     /// and keep it under `key` with what it placed and where it asked about
-    /// the pointer (the row standing `offset` down the view).
+    /// the pointer (the row `offset` down the view).
     fn keep_row_paint(
         &mut self,
         paint: PaintCtx<'_>,

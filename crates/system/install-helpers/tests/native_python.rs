@@ -27,7 +27,7 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     // The native seed driver re-enters a private mount namespace itself, and fails
     // closed when it cannot. Skip with that reason where the sandbox refuses
-    // namespaces, and require it in the micro-VM lane.
+    // namespaces, and require it in the micro-VM job.
     if script == "os/tests/test_firstboot_home_seeds_native.py"
         && namespace_unavailable(
             tilo_test_env::Capability::UserNamespace,
@@ -37,7 +37,7 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
     {
         return Ok(());
     }
-    // Bound each suite so a wedged script fails the lane instead of stalling it;
+    // Bound each suite so a wedged script fails the job instead of stalling it;
     // timeout exits 124, which the status check below reports.
     let mut command = Command::new("timeout");
     command.args(["--kill-after=10", "600"]);

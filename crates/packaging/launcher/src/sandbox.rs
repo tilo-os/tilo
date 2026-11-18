@@ -411,6 +411,9 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
         "TILO_CONTINUITY_RESUME_SCHEMA",
         "TILO_CONTINUITY_RESUME_HEX",
         tilo_process::environment::WINDOWLESS_ENV,
+        // The item the window opens on (a conversation another member's send landed in): a
+        // process started for that window learns it nowhere else.
+        tilo_process::environment::REVEAL_ENV,
     ] {
         let Ok(value) = std::env::var(key) else {
             continue;
@@ -614,10 +617,10 @@ pub fn build_bwrap_argv_for_entry(
     push_clean_environment(&mut argv);
 
     // Network namespace is shared ONLY for unrestricted access (host network, or a `*` grant) —
-    // anything more specific keeps the empty namespace and uses the egress gate, since `--share-net`
+    // anything more specific keeps the empty namespace and uses the egress proxy, since `--share-net`
     // is all-or-nothing.
     argv.push("--unshare-all".to_string());
-    if egress_decision(manifest, capabilities).shares_host_network() {
+    if egress_decision(manifest, capabilities, payload_root).shares_host_network() {
         argv.push("--share-net".to_string());
     }
     argv.push("--die-with-parent".to_string());
@@ -671,7 +674,7 @@ pub fn build_bwrap_argv_for_entry(
     // The system read profile: fixed, identical for every package, fed by no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
-        egress_decision(manifest, capabilities).shares_host_network(),
+        egress_decision(manifest, capabilities, payload_root).shares_host_network(),
     );
 
     // User-granted capabilities after the system profile (read-write wins over read-only).
@@ -738,55 +741,57 @@ pub fn build_bwrap_argv_for_entry(
     argv
 }
 
-/// The outbound access this launch resolves to.
+/// The outbound access this launch of the package at `payload_root` resolves to.
 pub fn egress_decision(
     manifest: &ManifestView,
     capabilities: &CapabilityPlan,
-) -> crate::netgate::EgressDecision {
-    let decision = crate::netgate::EgressDecision::resolve(
+    payload_root: &Path,
+) -> crate::egress_proxy::EgressDecision {
+    let decision = crate::egress_proxy::EgressDecision::resolve(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
+        crate::system_stats::image_shipped(payload_root),
     );
-    // Applied here, not at the gate: the namespace decision and the gate must come from the same
+    // Applied here, not at the check: the namespace decision and the check must come from the same
     // answer, or the app gets an empty namespace with nothing to reach through it.
-    if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
-        && package_store::dev_env::dev_override(crate::dev_env::NET_GATE_ENV)
+    if matches!(decision, crate::egress_proxy::EgressDecision::Filtered(_))
+        && package_store::dev_env::dev_override(crate::dev_env::EGRESS_PROXY_ENV)
             .is_some_and(|v| v == "off")
     {
         tracing::warn!(
-            hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
+            hosts = ?decision.policy().map(super::egress_proxy::EgressPolicy::describe),
             "{}=off: launching with UNRESTRICTED outbound network access even though this app \
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
-            crate::run::NET_GATE_ENV,
+            crate::run::EGRESS_PROXY_ENV,
         );
-        return crate::netgate::EgressDecision::Unrestricted;
+        return crate::egress_proxy::EgressDecision::Unrestricted;
     }
     decision
 }
 
-/// Where the egress gate socket is on each side of the sandbox boundary, and the loopback port the
+/// Where the egress proxy socket is on each side of the sandbox boundary, and the loopback port the
 /// in-sandbox relay serves.
 #[derive(Debug, Clone)]
-pub struct NetGateBind {
+pub struct EgressProxyBind {
     pub host_socket: PathBuf,
     pub sandbox_socket: PathBuf,
     /// Loopback port the relay listens on inside the sandbox.
     pub port: u16,
 }
 
-/// Wire the egress gate into the sandbox: socket + env vars for an ordinary HTTP client
-/// ([`crate::netgate::proxy_env`]), pointed at the in-sandbox relay.
-pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
+/// Wire the egress proxy into the sandbox: socket + env vars for an ordinary HTTP client
+/// ([`crate::egress_proxy::proxy_env`]), pointed at the in-sandbox relay.
+pub fn push_egress_proxy(argv: &mut Vec<String>, bind: &EgressProxyBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
-    for (var, value) in crate::netgate::proxy_env(bind.port) {
+    for (var, value) in crate::egress_proxy::proxy_env(bind.port) {
         argv.push("--setenv".to_string());
         argv.push(var.to_string());
         argv.push(value);
     }
-    // Convenience for an app that speaks to the gate directly instead of via the loopback relay.
+    // Convenience for an app that speaks to the check directly instead of via the loopback relay.
     argv.push("--setenv".to_string());
-    argv.push("TILO_NET_GATE".to_string());
+    argv.push("TILO_EGRESS_PROXY".to_string());
     argv.push(bind.sandbox_socket.display().to_string());
 }
 
@@ -930,6 +935,73 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
+/// Where a sandbox given an X11 display finds the display's cookie.
+pub const X11_AUTHORITY_MOUNT: &str = "/tmp/.X11-authority";
+
+/// Give the sandbox Bubblewrap's `args` set up the X11 display `display` (`:N`), whose cookie is
+/// the file `authority`: its socket and its cookie bound read-only into the sandbox's private
+/// `/tmp`, `DISPLAY` and `XAUTHORITY` naming them, and the Landlock rules that let the program
+/// reach both.
+///
+/// The display is known only once the program's keeper picked it, after the arguments were
+/// planned; nothing else of the sandbox changes, and nothing else of the session is reachable.
+///
+/// # Errors
+/// `display` is not a local display `:N`, `authority` is not an absolute path, or `args` are not
+/// a sandbox with a private `/tmp` behind the Landlock shim.
+pub fn give_x11_display(
+    args: &mut Vec<std::ffi::OsString>,
+    display: &str,
+    authority: &Path,
+) -> Result<(), String> {
+    let number: u32 = display
+        .strip_prefix(':')
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| format!("{display:?} is not a local X11 display"))?;
+    if !authority.is_absolute() {
+        return Err(format!(
+            "the cookie {} is not an absolute path",
+            authority.display()
+        ));
+    }
+    let socket = format!("/tmp/.X11-unix/X{number}");
+    // Where the mounts go: right after the private /tmp; and the rules: right after the shim.
+    let tmp = args
+        .windows(2)
+        .position(|pair| matches!(pair, [flag, path] if flag == "--tmpfs" && path == "/tmp"))
+        .and_then(|at| at.checked_add(2))
+        .ok_or("the sandbox has no private /tmp to bind the display's socket in")?;
+    let shim = args
+        .iter()
+        .position(|arg| arg == crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
+        .filter(|shim| *shim >= tmp)
+        .and_then(|at| at.checked_add(1))
+        .ok_or("the sandbox has no Landlock shim")?;
+    let rules: [std::ffi::OsString; 4] = [
+        "--ro".into(),
+        X11_AUTHORITY_MOUNT.into(),
+        "--rw".into(),
+        socket.clone().into(),
+    ];
+    args.splice(shim..shim, rules);
+    let mounts: [std::ffi::OsString; 12] = [
+        "--ro-bind".into(),
+        socket.clone().into(),
+        socket.into(),
+        "--ro-bind".into(),
+        authority.into(),
+        X11_AUTHORITY_MOUNT.into(),
+        "--setenv".into(),
+        "DISPLAY".into(),
+        format!(":{number}").into(),
+        "--setenv".into(),
+        "XAUTHORITY".into(),
+        X11_AUTHORITY_MOUNT.into(),
+    ];
+    args.splice(tmp..tmp, mounts);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,9 +1035,6 @@ mod tests {
                     mode: net_mode.to_string(),
                     hosts: Vec::new(),
                 },
-                // A manifest names no path here — one that did would be refused before reaching this
-                // builder; see `manifest::enforce_fs_policy`.
-                fs: crate::manifest::Fs::default(),
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
                 ..Default::default()
@@ -999,6 +1068,9 @@ mod tests {
             &CapabilityPlan::empty(),
         )
     }
+
+    /// The item a window opens on, as a launch names it.
+    const REVEAL: &str = "chat.workspace/messages/m1";
 
     /// Value of `--setenv <key> <value>` for `key`, or `None` if absent.
     fn setenv_value<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
@@ -1261,17 +1333,19 @@ mod tests {
                 assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
             }
             {
+                // `host` outside the image is the most the app may ask for: it shares the network
+                // once a person granted any host, not before.
                 let m = mk_manifest("host");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert!(argv.iter().any(|a| a == "--share-net"));
+                let argv = |plan: &CapabilityPlan| {
+                    build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, plan)
+                };
+                assert!(!argv(&CapabilityPlan::empty()).iter().any(|a| a == "--share-net"));
+                let granted = CapabilityPlan {
+                    allow_network: true,
+                    net_hosts: vec!["*".to_owned()],
+                    ..CapabilityPlan::empty()
+                };
+                assert!(argv(&granted).iter().any(|a| a == "--share-net"));
             }
             {
                 let m = mk_manifest("off");
@@ -1352,24 +1426,6 @@ mod tests {
                         "profile entry {entry} missing from argv: {argv:?}"
                     );
                 }
-                // A manifest that still carries `fs` fields changes nothing — the builder doesn't read
-                // them.
-                let mut hostile = mk_manifest("off");
-                hostile.sandbox.fs.write.push("/".to_string());
-                hostile.sandbox.fs.read.push("/home/alice/.ssh".to_string());
-                let hostile_argv = build_bwrap_argv(
-                    &hostile,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert_eq!(
-                    argv, hostile_argv,
-                    "a manifest naming paths must produce byte-identical argv to one that names none"
-                );
                 // The payload mount stays a hard `--ro-bind`: a package whose own payload is missing
                 // genuinely cannot run.
                 assert!(
@@ -1491,7 +1547,7 @@ mod tests {
                 let mut env = tilo_test_env::ScopedEnv::new();
                 env.set("TILO_PROFILE_PRESENTATION", value)
                     .set("TILO_NATIVE_SCENARIO", "/private/input.json")
-                    .set("TILO_NATIVE_INPUT_GATE", "private-approval")
+                    .set("TILO_NATIVE_INPUT_APPROVAL", "private-approval")
                     .set("TILO_PROFILE_OUT", "/private/log")
                     .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
                     .set("VELLO_GPU_TIMESTAMPS", value)
@@ -1519,7 +1575,7 @@ mod tests {
                 }
                 for key in [
                     "TILO_NATIVE_SCENARIO",
-                    "TILO_NATIVE_INPUT_GATE",
+                    "TILO_NATIVE_INPUT_APPROVAL",
                     "TILO_PROFILE_OUT",
                 ] {
                     assert_eq!(
@@ -1556,7 +1612,8 @@ mod tests {
                 let mut env = tilo_test_env::ScopedEnv::new();
                 env.set("TILO_CONTINUITY_INSTANCE", "42")
                     .set("TILO_CONTINUITY_RESUME_SCHEMA", "7")
-                    .set("TILO_CONTINUITY_RESUME_HEX", "7b7d");
+                    .set("TILO_CONTINUITY_RESUME_HEX", "7b7d")
+                    .set(tilo_process::environment::REVEAL_ENV, REVEAL);
                 let argv = build_bwrap_argv(
                     &mk_manifest("off"),
                     Path::new("/host/pkg"),
@@ -1575,6 +1632,11 @@ mod tests {
                 assert_eq!(
                     setenv_value(&argv, "TILO_CONTINUITY_RESUME_HEX"),
                     Some("7b7d")
+                );
+                // A window started on another member's item opens on it.
+                assert_eq!(
+                    setenv_value(&argv, tilo_process::environment::REVEAL_ENV),
+                    Some(REVEAL)
                 );
             }
             {
@@ -1921,7 +1983,7 @@ mod tests {
                 None,
                 &CapabilityPlan::empty(),
             );
-            let app = tilo_process::environment::HostIdentity {
+            let app = tilo_process::environment::ProcessIdentity {
                 app_id: setenv_value(&argv, "TILO_PACKAGE_ID").map(str::to_owned),
                 ..Default::default()
             };
@@ -1930,7 +1992,7 @@ mod tests {
             let granted = crate::dbus_proxy::media_player_for(&m);
             assert_eq!(granted.as_deref(), Some(requested.as_str()));
             assert!(
-                crate::dbus_proxy::session_filter_args(false, true, granted.as_deref())
+                crate::dbus_proxy::session_filter_args(&BTreeMap::new(), true, granted.as_deref())
                     .contains(&format!("--own={requested}"))
             );
             // Without the declaration there is no player to own.
@@ -1981,7 +2043,7 @@ mod tests {
                 let mut m = mk_manifest("off");
                 m.sandbox
                     .portals
-                    .insert("notifications".to_string(), PortalPolicy::ViaHost);
+                    .insert("file-chooser".to_string(), PortalPolicy::ViaHost);
                 let plan = DBusBindPlan {
                     host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
                     sandbox_path: PathBuf::from("/run/user/1234/bus"),
@@ -2140,10 +2202,10 @@ mod tests {
 
     /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
     /// test machine owning one.
-    fn fake_device_paths(device: &str) -> Vec<PathBuf> {
+    fn fake_device_paths(device: collab_types::caps::DeviceCap) -> Vec<PathBuf> {
         match device {
-            "camera" => vec![PathBuf::from("/dev/video0")],
-            "microphone" => vec![PathBuf::from("/dev/snd")],
+            collab_types::caps::DeviceCap::Camera => vec![PathBuf::from("/dev/video0")],
+            collab_types::caps::DeviceCap::Microphone => vec![PathBuf::from("/dev/snd")],
             _ => Vec::new(),
         }
     }
@@ -2151,9 +2213,21 @@ mod tests {
     /// Build the argv the launcher would really produce for `app_id`, through the same production path
     /// as `run_with`; only the device-node lookup is substituted.
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
-        let m = mk_manifest("off");
-        let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
-        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
+        let mut m = mk_manifest("host");
+        m.capabilities.push("camera".to_owned());
+        argv_declared(&m, app_id, caps, now)
+    }
+
+    /// [`argv_with_caps`] for an app whose manifest is `m`.
+    fn argv_declared(
+        m: &ManifestView,
+        app_id: &str,
+        caps: &[CapOverride],
+        now: u64,
+    ) -> Vec<String> {
+        let caps = crate::capabilities::declared(m, caps.to_vec());
+        let plan = CapabilityPlan::for_app_with(app_id, &caps, Some(now), fake_device_paths);
+        build_bwrap_argv(m, Path::new("/host/pkg"), None, &[], None, None, &plan)
     }
 
     /// Every bind triple in an argv, as `(flag, src, dst)`.
@@ -2424,8 +2498,6 @@ mod tests {
                         && w[2] == "/var/workspace/books"),
                     "a Write capability must produce a read-write bind: {argv:?}"
                 );
-                // Scoped to the granted path: the manifest's own `fs.read` declarations legitimately emit
-                // read-only binds of their own.
                 for (flag, src, _dst) in bind_triples(&argv) {
                     if src == "/var/workspace/books" {
                         assert!(
@@ -2444,7 +2516,7 @@ mod tests {
 
                 let caps = vec![app_grant(
                     "so.tilo.meet",
-                    Scope::Device("camera".to_string()),
+                    Scope::Device(collab_types::caps::DeviceCap::Camera),
                     Access::Read,
                 )];
                 let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
@@ -2454,13 +2526,18 @@ mod tests {
                         && w[2] == "/dev/video0"),
                     "a camera capability must bind the device node: {with:?}"
                 );
+                let undeclared = argv_declared(&mk_manifest("host"), "so.tilo.meet", &caps, 1_000);
+                assert!(
+                    !undeclared.iter().any(|a| a.starts_with("/dev/video")),
+                    "a camera the manifest does not declare is never bound: {undeclared:?}"
+                );
             }
             {
                 let caps = vec![
                     fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                     app_grant(
                         "so.tilo.other",
-                        Scope::Device("camera".to_string()),
+                        Scope::Device(collab_types::caps::DeviceCap::Camera),
                         Access::Read,
                     ),
                     app_grant(
@@ -2658,7 +2735,7 @@ mod tests {
                     "an app without `gpu` has no /dev/dri at all"
                 );
                 let mut gpu = mk_manifest("off");
-                gpu.capabilities.push(crate::gpu::CAPABILITY.to_string());
+                gpu.capabilities.push("gpu".to_owned());
                 assert!(
                     grants_drm(crate::gpu::granted(&gpu, &none, true), &none),
                     "an app the image ships declaring `gpu` gets the device, narrowed"
@@ -2668,7 +2745,7 @@ mod tests {
                     "an app the person installed declaring `gpu` waits for their grant"
                 );
                 let mut person = CapabilityPlan::empty();
-                person.devices.push(crate::gpu::CAPABILITY.to_string());
+                person.devices.push(crate::gpu::CAPABILITY);
                 assert!(crate::gpu::granted(&gpu, &person, false));
                 assert!(
                     !crate::gpu::granted(&off, &person, false),
@@ -2681,59 +2758,49 @@ mod tests {
                     grants_drm(false, &granted),
                     "a user-granted node must be narrowed too"
                 );
-
-                // Only the `gpu` capability counts.
-                let mut hostile = mk_manifest("off");
-                hostile.sandbox.fs.write.push("/dev/dri".to_string());
-                assert_eq!(
-                    crate::gpu::granted(&hostile, &none, true),
-                    crate::gpu::granted(&mk_manifest("off"), &none, true),
-                    "a manifest entry must not change the GPU decision"
-                );
             }
         }
 
-        phase network_capabilities_decide_namespace_and_egress_gate;
+        phase network_capabilities_decide_namespace_and_egress_proxy;
         {
+            // An app outside the image that may ask for any host (`host`) reaches what its grants
+            // name, and nothing before a person granted it.
+            let asks_anything = mk_manifest("host");
+            let argv = |caps: &[CapOverride]| argv_with_caps("so.tilo.mail", caps, 1_000);
             {
-                // The manifest says net.mode = "off": without a capability the sandbox keeps the empty
-                // network namespace, and no packet can leave.
-                let isolated = argv_with_caps("so.tilo.mail", &[], 1_000);
+                let isolated = argv(&[]);
                 assert!(
                     !isolated.iter().any(|a| a == "--share-net"),
-                    "no network capability must leave the netns unshared: {isolated:?}"
+                    "no network grant must leave the netns unshared: {isolated:?}"
                 );
-
-                let caps = vec![app_grant(
+                let caps = [app_grant(
                     "so.tilo.mail",
                     Scope::NetHost("*".to_string()),
                     Access::Write,
                 )];
-                let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
+                let granted = argv(&caps);
                 assert!(
                     granted.iter().any(|a| a == "--share-net"),
                     "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
                 );
             }
             {
-                let caps = vec![app_grant(
+                let caps = [app_grant(
                     "so.tilo.mail",
                     Scope::NetHost("github.com".to_string()),
                     Access::Write,
                 )];
-                let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
-
+                let argv = argv(&caps);
                 assert!(
                     !argv.iter().any(|a| a == "--share-net"),
-                    "a grant naming one host must NOT hand the app the host's whole network — that \
-                 equivalence between `github.com` and `*` is the bug this closes: {argv:?}"
+                    "a grant naming one host must NOT hand the app the host's whole network: {argv:?}"
                 );
 
-                // And the grant does reach a mechanism now: the gate decision comes from the same manifest
-                // + capability pair that built the argv above.
+                // The check decision comes from the same manifest and capability pair that built
+                // the argv above.
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
-                let decision = egress_decision(&mk_manifest("off"), &plan);
+                let decision = egress_decision(&asks_anything, &plan, Path::new("/host/pkg"));
                 let policy = decision.policy().unwrap_or_else(|| {
                     panic!("a named host must resolve to a filtered egress policy, got {decision:?}")
                 });
@@ -2742,26 +2809,31 @@ mod tests {
                     !policy.permits("evil.example.com"),
                     "the allowlist must exclude what it does not name: {policy:?}"
                 );
+                // A manifest that asks for no network is not given any by a grant.
+                assert_eq!(
+                    egress_decision(&mk_manifest("off"), &plan, Path::new("/host/pkg")),
+                    crate::egress_proxy::EgressDecision::Blocked
+                );
             }
             {
-                let bind = NetGateBind {
+                let bind = EgressProxyBind {
                     host_socket: PathBuf::from("/run/user/1000/tilo/net/7.sock"),
-                    sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
-                    port: crate::netgate::RELAY_PORT,
+                    sandbox_socket: PathBuf::from(crate::egress_proxy::SANDBOX_PROXY_PATH),
+                    port: crate::egress_proxy::RELAY_PORT,
                 };
                 let mut argv = Vec::new();
-                push_net_gate(&mut argv, &bind);
+                push_egress_proxy(&mut argv, &bind);
 
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--bind"
                         && w[1] == "/run/user/1000/tilo/net/7.sock"
-                        && w[2] == crate::netgate::SANDBOX_GATE_PATH),
-                    "the gate socket must be bound read-write: connect(2) on a pathname socket is a \
+                        && w[2] == crate::egress_proxy::SANDBOX_PROXY_PATH),
+                    "the check socket must be bound read-write: connect(2) on a pathname socket is a \
                  write and a --ro-bind surfaces as EACCES: {argv:?}"
                 );
-                // socks5h, not socks5: the `h` sends the hostname to the gate instead of resolving it
+                // socks5h, not socks5: the `h` sends the hostname to the check instead of resolving it
                 // locally, which the sandbox cannot do.
-                let socks = format!("socks5h://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+                let socks = format!("socks5h://127.0.0.1:{}", crate::egress_proxy::RELAY_PORT);
                 for var in ["ALL_PROXY", "all_proxy"] {
                     assert!(
                         argv.windows(3)
@@ -2771,7 +2843,7 @@ mod tests {
                 }
                 // And the HTTP form works without an opt-in feature — an app whose HTTP library lacks
                 // SOCKS support reads only these.
-                let http = format!("http://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+                let http = format!("http://127.0.0.1:{}", crate::egress_proxy::RELAY_PORT);
                 for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
                     assert!(
                         argv.windows(3)

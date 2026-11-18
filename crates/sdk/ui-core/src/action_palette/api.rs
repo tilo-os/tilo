@@ -36,12 +36,12 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
     fn ordinary_request(&self) -> Option<&crate::bound_dispatch::OrdinaryConfirmation>;
     fn is_presented(&self) -> bool;
     fn suspend_for_history(&mut self);
-    fn history_has_custody(&self) -> bool;
-    fn retain_history_custody(
+    fn history_has_ownership(&self) -> bool;
+    fn retain_history_ownership(
         &mut self,
         target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
-        witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
+        observation: Option<Result<crate::bound_dispatch::ControlObservation, String>>,
     );
     fn retain_history_refusal(&mut self, pending: PendingOperation, reason: String);
     fn resume_after_history(&mut self);
@@ -154,16 +154,16 @@ impl ActionPaletteApi for ActionPalette {
     fn suspend_for_history(&mut self) {
         ActionPalette::suspend_for_history(self)
     }
-    fn history_has_custody(&self) -> bool {
-        ActionPalette::history_has_custody(self)
+    fn history_has_ownership(&self) -> bool {
+        ActionPalette::history_has_ownership(self)
     }
-    fn retain_history_custody(
+    fn retain_history_ownership(
         &mut self,
         target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
-        witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
+        observation: Option<Result<crate::bound_dispatch::ControlObservation, String>>,
     ) {
-        ActionPalette::retain_history_custody(self, target, identity, witness)
+        ActionPalette::retain_history_ownership(self, target, identity, observation)
     }
     fn retain_history_refusal(&mut self, pending: PendingOperation, reason: String) {
         ActionPalette::retain_history_refusal(self, pending, reason)

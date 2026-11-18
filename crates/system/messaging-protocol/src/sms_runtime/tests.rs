@@ -813,7 +813,7 @@ async fn received_partial_report_flash_binary_foreign_or_invalid_time_is_refused
 }
 
 #[cfg(feature = "signal-broker")]
-struct ReceiveGate(std::sync::atomic::AtomicBool);
+struct ReceiveHold(std::sync::atomic::AtomicBool);
 #[cfg(feature = "signal-broker")]
 fn contact_route() -> tilo_contact_directory::routing::Route {
     tilo_contact_directory::routing::Route {
@@ -827,7 +827,7 @@ fn contact_route() -> tilo_contact_directory::routing::Route {
     }
 }
 #[cfg(feature = "signal-broker")]
-impl crate::external_broker::ExternalAuthority for ReceiveGate {
+impl crate::external_broker::ExternalAuthority for ReceiveHold {
     fn incoming(
         &self,
         recipient: &str,
@@ -880,7 +880,7 @@ fn inbox_broker(fixture: &Fixture, root: &Path) -> crate::external_broker::Exter
         )
         .unwrap(),
         "verified-provider".into(),
-        Arc::new(ReceiveGate(std::sync::atomic::AtomicBool::new(false))),
+        Arc::new(ReceiveHold(std::sync::atomic::AtomicBool::new(false))),
     )
     .unwrap()
 }
@@ -1246,14 +1246,14 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
     let fixture = Fixture::new().await;
     receive_state(&mut fixture.state.lock().unwrap());
     let root = tempfile::tempdir().unwrap();
-    let gate = Arc::new(ReceiveGate(AtomicBool::new(false)));
+    let hold = Arc::new(ReceiveHold(AtomicBool::new(false)));
     let key = || secret_vault::VaultKey::from_bytes([19; 32]);
     let history_root = root.path().join("history");
     let broker = crate::external_broker::ExternalBroker::new(
         Box::new(fixture.runtime(&root.path().join("journal"))),
         crate::signal_broker::History::open(&history_root, &owner(), key()).unwrap(),
         "verified-provider".into(),
-        gate.clone(),
+        hold.clone(),
     )
     .unwrap();
     let wakes = Arc::new(AtomicUsize::new(0));
@@ -1293,7 +1293,7 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
         Err(tilo_messaging::SendError::InvalidRequest)
     );
     assert_eq!(wakes.load(Ordering::SeqCst), 1);
-    gate.0.store(true, Ordering::SeqCst);
+    hold.0.store(true, Ordering::SeqCst);
     assert_eq!(
         broker
             .observe_sms_message(contact_route(), MESSAGE_PATH.into())
@@ -1374,7 +1374,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
     let fixture = Fixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let route = contact_route();
-    let gate = Arc::new(ReceiveGate(std::sync::atomic::AtomicBool::new(false)));
+    let hold = Arc::new(ReceiveHold(std::sync::atomic::AtomicBool::new(false)));
     let broker = crate::external_broker::ExternalBroker::new(
         Box::new(fixture.runtime(&root.path().join("journal"))),
         crate::signal_broker::History::open(
@@ -1384,7 +1384,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
         )
         .unwrap(),
         route.scope.clone(),
-        gate.clone(),
+        hold.clone(),
     )
     .unwrap();
     let (mut app, choice) = sms_messages_app(&broker, &route);
@@ -1453,7 +1453,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
         files
     };
     let before = private_files(&root.path().join("history"));
-    gate.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    hold.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let refused = MessagesEffect::Send {
         choice,
         operation: "sms-native-revoked-reply".into(),

@@ -48,7 +48,7 @@ thin = ["dep:runtime-dylib"]
 # collection) does not: on Tilo it is the image writer, and the default build
 # is that app. tools/ci/package_features.py tests and lints with it.
 installation = ["dep:launcher", "imager-backend/installation"]
-# Reach account custody with the WebDAV client, and the FUSE presentation the
+# Reach account credentials with the WebDAV client, and the FUSE presentation the
 # projection worker serves, through their engine libraries in the runtime
 # bundle (libtilo_accounts_engine.so and libtilo_fuse_engine.so, under
 # crates/runtime/engines/) instead of carrying them in the tapp. The release
@@ -101,8 +101,8 @@ tilo-fuse-engine = { path = "../../crates/runtime/engines/fuse", optional = true
 # toggles and fields dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
-tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
+tilo-identity = { path = "../../crates/runtime/tilo-identity" }
+tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
@@ -184,7 +184,7 @@ required-features = ["installation", "destination"]
 # `tilo-guided-partition` delegates to.
 tilo-install-helpers = { path = "../../crates/system/install-helpers" }
 accounts = { path = "../../crates/system/accounts" }
-account-custody = { path = "../../crates/system/account-custody" }
+account-credentials = { path = "../../crates/system/account-credentials" }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 url.workspace = true

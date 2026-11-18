@@ -22,7 +22,7 @@
 //! edited field.
 //!
 //! The in-progress word is shown as input-method preedit and committed with
-//! `commit_string` at word boundaries. A narrowly gated virtual keyboard sends
+//! `commit_string` at word boundaries. A narrowly guarded virtual keyboard sends
 //! the editing keys — Backspace outside a composing word (winit's
 //! `text-input-v3` client does not consume `delete_surrounding_text`) and
 //! Return, so single-line fields submit. [`osk::OrderedRouter`] keeps the two

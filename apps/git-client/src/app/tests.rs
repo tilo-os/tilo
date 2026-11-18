@@ -1,13 +1,13 @@
 use super::*;
 use ui::widget::Widget;
 
-/// The first-run screen's three controls fit the lane they are drawn in:
+/// The first-run screen's three controls fit the column they are drawn in:
 /// side by side while the path keeps room to type in, and in two rows
 /// below that, so neither a field nor a button is squeezed to nothing.
 #[test]
 fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
-    let wide_lane = Rect::new(0.0, 0.0, 400.0, 400.0);
-    let wide = OpenControls::at(wide_lane, 60.0, 32.0, 8.0, 102.0, 58.0, 180.0);
+    let wide_column = Rect::new(0.0, 0.0, 400.0, 400.0);
+    let wide = OpenControls::at(wide_column, 60.0, 32.0, 8.0, 102.0, 58.0, 180.0);
     assert!(
         (wide.field.y0 - wide.choose.y0).abs() < f64::EPSILON,
         "one row when it fits"
@@ -20,10 +20,10 @@ fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
     assert!(wide.choose.x1 <= wide.open.x0, "the buttons do not overlap");
     assert!(!wide.field.overlaps(wide.choose) && !wide.choose.overlaps(wide.open));
 
-    // The same lane at a 1.5 text scale in an expanded language: the two
+    // The same column at a 1.5 text scale in an expanded language: the two
     // buttons take almost all of it.
-    let lane = Rect::new(0.0, 0.0, 342.0, 400.0);
-    let narrow = OpenControls::at(lane, 60.0, 48.0, 12.0, 215.0, 85.0, 180.0);
+    let column = Rect::new(0.0, 0.0, 342.0, 400.0);
+    let narrow = OpenControls::at(column, 60.0, 48.0, 12.0, 215.0, 85.0, 180.0);
     assert!(
         narrow.field.y1 <= narrow.choose.y0,
         "the buttons moved under the path: {:?} {:?}",
@@ -31,7 +31,7 @@ fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
         narrow.choose
     );
     assert!(
-        (narrow.field.width() - lane.width()).abs() < f64::EPSILON,
+        (narrow.field.width() - column.width()).abs() < f64::EPSILON,
         "the path keeps the whole row"
     );
     assert!(

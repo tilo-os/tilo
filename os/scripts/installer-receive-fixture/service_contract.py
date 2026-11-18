@@ -150,7 +150,7 @@ def owned_bridge(command, env, raw):
         initial = os.fstat(descriptor)
         require(initial.st_uid == 0 and initial.st_ino != Path('/proc/self/ns/pid').stat().st_ino
                 and fcntl.ioctl(descriptor, 0xb703) == 0x20000000,  # NS_GET_NSTYPE / CLONE_NEWPID
-                'service bridge lacks the outer initial PID namespace witness')
+                'service bridge lacks the outer initial PID namespace proof')
         with Path('/evidence/owned/service-bridge.log').open('xb') as log:
             os.fchmod(log.fileno(), 0o600)
             return bounded_command([*command, '--candidate', '/owned/candidate',
@@ -240,13 +240,13 @@ def install_native_scope(request, phase, actor, log, *, authenticated=None):
                 and fcntl.ioctl(initial, 0xb703) == 0x20000000
                 and os.fstat(initial).st_ino != Path('/proc/self/ns/pid').stat().st_ino,
                 'native scope is not the disposable owned PID namespace')
-        witness = Path('/run/tilo-service-initial-pidns')
-        descriptor = os.open(witness, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+        proof = Path('/run/tilo-service-initial-pidns')
+        descriptor = os.open(proof, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
         os.close(descriptor)
-        bounded_command(['/usr/bin/mount', '--bind', '/owned/initial-pidns', str(witness)],
+        bounded_command(['/usr/bin/mount', '--bind', '/owned/initial-pidns', str(proof)],
                         time.monotonic() + 30, log)
-        require(witness.stat().st_ino == os.fstat(initial).st_ino,
-                'native initial namespace witness changed')
+        require(proof.stat().st_ino == os.fstat(initial).st_ino,
+                'native initial namespace proof changed')
     finally:
         os.close(initial)
     import hashlib
@@ -269,14 +269,14 @@ def install_native_scope(request, phase, actor, log, *, authenticated=None):
     info = actor.lstat()
     require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= 1024 * 1024 * 1024,
             'native scope actor is not bounded regular data')
-    ledger_path = Path('/owned/candidate/subjects.json')
-    info = ledger_path.lstat()
+    manifest_path = Path('/owned/candidate/subjects.json')
+    info = manifest_path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
-            and 0 < info.st_size <= 16384, 'native scope ledger differs from protected candidate')
-    ledger = json.loads(ledger_path.read_bytes(), object_pairs_hook=unique)
+            and 0 < info.st_size <= 16384, 'native scope manifest differs from protected candidate')
+    manifest = json.loads(manifest_path.read_bytes(), object_pairs_hook=unique)
     role = 'host' if phase == 'source' else 'prepared_helper'
     digest = hash_file(actor)
-    require(digest == ledger[role]['sha256'], 'native scope actor differs from admitted candidate')
+    require(digest == manifest[role]['sha256'], 'native scope actor differs from admitted candidate')
     person = binding = None
     if phase == 'receiver':
         require(type(authenticated) is dict, 'receiving scope lacks native authentication')

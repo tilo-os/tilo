@@ -1,4 +1,4 @@
-//! The account engine: the worker seam that connects Mail to real IMAP and SMTP servers, off
+//! The account engine: the worker boundary that connects Mail to real IMAP and SMTP servers, off
 //! the synchronous `ui` event loop.
 //!
 //! Every round trip runs on a worker thread; the UI posts [`EngineRequest`]s and drains
@@ -484,7 +484,7 @@ pub fn spawn_waking(
 pub mod live {
     use std::sync::Arc;
 
-    use account_custody::Custodian;
+    use account_credentials::CredentialStore;
     use futures_util::TryStreamExt;
 
     use super::{
@@ -503,7 +503,7 @@ pub mod live {
         tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
         trusts_test_servers: bool,
         content: tilo_content::ContentStore,
-        custodian: Custodian,
+        credential_store: CredentialStore,
         sessions: std::collections::HashMap<String, (ImapSession, std::time::Instant)>,
         places: std::collections::HashMap<String, crate::sync::Places>,
         watches: std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
@@ -532,7 +532,7 @@ pub mod live {
                 tls: std::sync::OnceLock::new(),
                 trusts_test_servers: false,
                 content,
-                custodian: Custodian::live(),
+                credential_store: CredentialStore::live(),
                 sessions: std::collections::HashMap::new(),
                 places: std::collections::HashMap::new(),
                 watches: std::collections::HashMap::new(),
@@ -611,7 +611,7 @@ pub mod live {
                 }
             }
             if !self.sessions.contains_key(&key) {
-                let creds = resolve_auth(&self.custodian, account)?;
+                let creds = resolve_auth(&self.credential_store, account)?;
                 let session = self.block_on(connect_session(account, &creds, self.tls()?))?;
                 self.sessions
                     .insert(key.clone(), (session, std::time::Instant::now()));
@@ -834,7 +834,8 @@ pub mod live {
             draft: &Draft,
             files: &[crate::model::SendFile],
         ) -> Result<Vec<u8>, SmtpFailure> {
-            let creds = resolve_auth(&self.custodian, account).map_err(SmtpFailure::Failed)?;
+            let creds =
+                resolve_auth(&self.credential_store, account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
             let bytes = build_mime_from(&from, draft, files).map_err(SmtpFailure::Failed)?;
             let tls = if self.trusts_test_servers {
@@ -940,10 +941,13 @@ pub mod live {
             login_hint: &str,
             out: &Sender<EngineEvent>,
         ) {
-            let signed_in =
-                oauth::sign_in(&self.custodian, &account_id, provider, login_hint, |url| {
-                    ui::widget::try_open_external_url(url).map_err(|error| error.to_string())
-                });
+            let signed_in = oauth::sign_in(
+                &self.credential_store,
+                &account_id,
+                provider,
+                login_hint,
+                |url| ui::widget::try_open_external_url(url).map_err(|error| error.to_string()),
+            );
             match signed_in {
                 Ok(()) => {
                     let _ = out.send(EngineEvent::Authorized {
@@ -1055,7 +1059,10 @@ pub mod live {
         }
     }
 
-    fn resolve_auth(custodian: &Custodian, account: &AccountConfig) -> Result<AuthCreds, String> {
+    fn resolve_auth(
+        credential_store: &CredentialStore,
+        account: &AccountConfig,
+    ) -> Result<AuthCreds, String> {
         let user = login_user(account);
         if account.import_pending {
             return Err(crate::i18n::t("mail-import-sign-in-required"));
@@ -1074,7 +1081,7 @@ pub mod live {
                 let provider =
                     oauth::OAuthProvider::for_account(&account.email, &account.imap_host)
                         .ok_or("OAuth sign-in is not supported for this provider")?;
-                let token = oauth::access_token(custodian, &account.email, provider, false)?;
+                let token = oauth::access_token(credential_store, &account.email, provider, false)?;
                 Ok(AuthCreds::XOAuth2 { user, token })
             }
         }
@@ -1177,7 +1184,7 @@ pub mod live {
             // renewed since the last connection.
             let owner = account.clone();
             let creds =
-                tokio::task::spawn_blocking(move || resolve_auth(&Custodian::live(), &owner))
+                tokio::task::spawn_blocking(move || resolve_auth(&CredentialStore::live(), &owner))
                     .await
                     .map_err(|e| e.to_string())
                     .and_then(|creds| creds);
@@ -2260,7 +2267,8 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                         ..Default::default()
                     };
                     let creds =
-                        resolve_auth(&account_custody::Custodian::live(), &account).unwrap();
+                        resolve_auth(&account_credentials::CredentialStore::live(), &account)
+                            .unwrap();
                     let client_tls = accepting_client_config();
 
                     // One signed-in session serves every request: LIST
@@ -2355,7 +2363,8 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                     let mime = build_mime(&tilo_content::ContentStore::memory(), &from, &draft)
                         .expect("build MIME");
                     let creds =
-                        resolve_auth(&account_custody::Custodian::live(), &account).unwrap();
+                        resolve_auth(&account_credentials::CredentialStore::live(), &account)
+                            .unwrap();
 
                     // Send: the production submission path over a real STARTTLS
                     // upgrade (the non-465 submission-port behaviour), authenticating

@@ -68,11 +68,11 @@ impl FrameHarness {
         let owner_queue = self.owner_wake_queue.clone().unwrap_or_default();
         let (root, wake, history) = Self::mount_component(component, notify, &owner_queue)?;
         let mut root = root;
-        let control_domain = crate::control_custody::ControlDomain::outer();
-        crate::widget::controls::install_control_custody(
+        let control_domain = crate::control_domain::ControlDomain::outer();
+        crate::widget::controls::attach_controls(
             root.as_mut(),
             &control_domain,
-            crate::control_custody::CustodyAttachment::Initial,
+            crate::control_domain::DomainAttachment::Initial,
         );
         control_domain.finish_initial_installation();
         Ok(MountedComponent {

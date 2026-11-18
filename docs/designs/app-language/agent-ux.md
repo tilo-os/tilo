@@ -46,13 +46,13 @@ Resources are shared content; views belong to whoever chose them.
   names no app with `use`: every app the workspace has installed is in scope by its name,
   resolved when it is checked (`tilolang::compile_view_definition`), so it reads any type the
   workspace has. It runs as the viewer, so it shows each person what they can see.
-- **It is the person's own code**, a `WrittenView` in their own record of Views
-  (`apps/tl/views`, `records: .own`), with its author as the host recorded them: the agent task
+- **It is the person's own code**, a `WrittenView` in their own document of Views
+  (`apps/tl/views`, `resources: .own`), with its author as the host recorded them: the agent task
   that answered, the person, or who sent it. That author is its code author, so its actions ask
   first unless the viewer trusts them (the code-author grants of `tilo_action_policy`).
 - **An agent's answer is one.** The Tasks agent finishes with `plan` and a `view`; the Views host
   checks it (`run-block` answers `{"kind":"view","definition":…}`), Views' `answer` keeps it
-  written by the task, and `record-answer` opens it beside the target. The person keeps or
+  written by the task, and `resource-answer` opens it beside the target. The person keeps or
   discards it; each person's keep is their own.
 - **Sharing sends the definition.** Views' `send` puts it in a chat message (`send_view`); a
   reader adds it to their own views (`add`), its author whoever sent the message, as the log
@@ -61,15 +61,15 @@ Resources are shared content; views belong to whoever chose them.
 - **Defaults.** `make_default` makes a view how the person shows its type on a kind of device
   (desktop, tablet, phone).
 - **Where it runs:** in the host of the person's Views, which the session hands every installed
-  app (`with_every_installed_app` in the launcher). Reading other apps' records from there is
-  the open part: today that host reads the records it holds.
-- **Before:** answers were Text in a shared Views record with one `kept` for everyone. A
-  person's own record, opened first on a device holding that record, starts as it
+  app (`with_every_installed_app` in the launcher). Reading other apps' resources from there is
+  the open part: today that host reads the resources it holds.
+- **Before:** answers were Text in a shared Views resource with one `kept` for everyone. A
+  person's own document, opened first on a device holding that resource, starts as it
   (`open_stored_adopting`): every answer they saw, kept ones kept, with its id.
 
 ## 4. One agent
 
-The Tasks agent, relay agents and external MCP agents are three runtimes that ask the person
+The Tasks agent, server agents and external MCP agents are three runtimes that ask the person
 three ways. They converge on one: the broker's decision and receipts, the person's agent answers,
 one ask model with editable drafts, one run group for undo. External agents keep the action API
 (`tilo_*` tools, later the `tilo` program tool) as their interface.
@@ -78,6 +78,6 @@ one ask model with editable drafts, one run group for undo. External agents keep
 
 1. Point and type in menus, plus the composer's layout, working state and rich answers (sections
    1 and 2). Independent of tilolang.
-2. Answers as views, after the tilolang host (step 2b).
-3. One agent: relay agents' standing and asks first (separately tracked), then the rest.
+2. Answers as views, after the tilolang process (step 2b).
+3. One agent: server agents' access and asks first (separately tracked), then the rest.
 4. The canvas.

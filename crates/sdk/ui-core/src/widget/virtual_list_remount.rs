@@ -7,7 +7,8 @@ use std::ops::Range;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, TaffyTree};
 
-use super::{ListModel, VirtualList, px};
+use super::px;
+use super::{ListKey, VirtualRows};
 use crate::widget::Remount;
 
 /// How far the view may scroll from where the rows' layout was placed
@@ -15,7 +16,7 @@ use crate::widget::Remount;
 /// `f32`, which stays well under a hundredth of a pixel this near.
 const REPLACE_AFTER_PX: f64 = 16_384.0;
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn mount_window(&self) -> Range<usize> {
         let near = self.rows_to_hold();
         let mounted = self.mounted_range.clone();
@@ -86,7 +87,7 @@ impl<M: ListModel> VirtualList<M> {
     /// stands outside the row, both drawn by the list and neither covered by the row's damage.
     fn collect_row_frame_damage(
         &self,
-        row: &super::MountedRow<M::Key>,
+        row: &super::MountedRow<ListKey>,
         regions: &mut Vec<vello::kurbo::Rect>,
     ) {
         let Some(row_rect) = self.row_box(row.index) else {
@@ -123,7 +124,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn place_rows(&mut self, taffy: &mut TaffyTree<()>) {
         self.rows_beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
         let left = length(px(self.lead));
@@ -208,7 +209,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     }
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn pending_shape(&self) -> crate::widget::SkeletonShape {
         self.mounted
             .iter()

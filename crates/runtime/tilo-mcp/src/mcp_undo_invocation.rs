@@ -1,110 +1,81 @@
-//! Taking back one invocation: exactly the changes this session's call made, in
-//! every record it changed, and nothing anyone else did.
+//! Taking back one invocation: exactly the changes its calls made, in every
+//! document it changed, and nothing anyone else did.
 //!
-//! An invocation is one call of this session, or, when the call named a group of
-//! the client's (`_meta` invocation), every call of that group: the client chose
-//! that as one thing to take back, and they share one undo step. Each record it
-//! changed lists its changes in its own `history`, each with the undo step it is
-//! part of (as recorded under its group) and, where the host kept it, the
-//! invocation that made it, so the group's changes are found there by those and
-//! taken back with the record's own `undo` of exactly that step (`step`), never
-//! of whatever the record's last step happens to be. A change someone else made
-//! on top of the group's in a record refuses the whole undo before anything is
-//! taken back: undoing under their work would change what they see without their
-//! say.
+//! The workspace's server finds the invocation as it lists it
+//! ([`tilo_actions::remote::workspace_invocations`]): by the step its changes
+//! are kept under in each document's history, from any connection and across
+//! restarts, among the documents the caller may read. Each document's own `undo`
+//! takes back exactly that step (`step`), as the caller may change the document.
+//! A change someone else made on top of the invocation's in a document refuses
+//! the whole undo before anything is taken back: undoing under their work would
+//! change what they see without their say. An undo of a later step is no such
+//! change ([`edited_after`]).
 
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::watch::history_entries;
-use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, Value, json};
+use super::{
+    ActionProvider, Addressed, Failure, McpServer, OneCall, ParsedPath, Reply, Value, json,
+};
+use tilo_actions::remote::workspace_invocations::{
+    InvocationChange, InvocationsQuery, edited_after,
+};
 use tilo_lock::MutexRecover as _;
 
-/// How many of a record's changes are read to find a group's.
+/// How many of a document's changes are read to find an invocation's.
 const HISTORY_READ: u64 = 200;
 /// How long a record has to answer its history or its undo.
 const RECORD_WAIT_MS: u64 = 10_000;
-/// The most steps one record's share of a group is taken back in: its changes in
-/// a record are one step unless someone else's changes fell between them.
+/// The most steps one document's share of an invocation is taken back in: its
+/// changes in a document are one step unless someone else's changes fell between
+/// them.
 const MOST_STEPS: usize = 16;
 
-/// How many invocations' changes a session keeps to take back.
-const KEPT: usize = 1024;
-
-/// The record one invocation of this session changed, where its change is taken back.
-#[derive(Clone, Debug)]
-pub(crate) struct Undoable {
-    pub(crate) invocation: String,
-    /// The resource the call named, as a caller writes it.
-    pub(crate) path: String,
-    /// The provider that answers for the record.
-    pub(crate) provider: String,
-    /// The app whose record it is.
-    pub(crate) app: String,
-    /// The resource there that offers the record's history verbs.
-    pub(crate) history: String,
-    /// The undo step the call joined: its own, or the one every call of a group the
-    /// client named shares.
-    pub(crate) step: tilo_actions::ActionId,
-}
-
-/// One record an invocation changed.
+/// One document an invocation changed, where its changes are taken back.
 struct Target {
     /// What a caller names it by.
     path: String,
-    changed: Undoable,
+    app: String,
+    /// The document's provider.
+    provider: String,
+    /// The resource there that offers the document's history verbs.
+    history: String,
 }
 
-/// The invocation group being taken back: its undo step, and the calls of it.
-pub(crate) struct UndoInvocation {
-    step: tilo_actions::ActionId,
-    invocations: BTreeSet<String>,
+/// Whether the history `entry` lists is one of the changes of the invocation
+/// whose step is `step`.
+fn made(step: &str, entry: &Value) -> bool {
+    entry.get("step").and_then(Value::as_str) == Some(step)
 }
 
-impl UndoInvocation {
-    /// Whether the history `entry` lists is one of this group's changes: of its
-    /// undo step, as recorded under the group the entry names, or made by one of
-    /// its calls.
-    fn made(&self, entry: &Value) -> bool {
-        let field = |key: &str| entry.get(key).and_then(Value::as_str);
-        let invoked = field("invocation").is_some_and(|id| self.invocations.contains(id));
-        let stepped = field("step").is_some_and(|step| {
-            let group = field("group_kind").zip(field("group"));
-            tilo_actions::context::recorded_gesture(self.step, group)
-                .0
-                .to_string()
-                == step
-        });
-        invoked || stepped
-    }
-}
-
-/// What a record's history says of an invocation group.
-struct Standing {
-    /// The group's changes still in effect, oldest first.
+/// What a document's history says of an invocation.
+struct Effect {
+    /// Its changes still in effect, oldest first.
     changes: Vec<String>,
-    /// Someone else's change made after the group's last, in effect: why it is not taken back.
+    /// Whose steps they are, as the document's `undo` takes it beside `step`.
+    whose: serde_json::Map<String, Value>,
+    /// Someone else's change made after its last, in effect: why it is not taken back.
     over: Option<Value>,
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// Take back the invocation `invocation` this session started (or a step of):
-    /// every change it made, in every record it changed, or nothing when someone
-    /// else's change stands on one of them.
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+    /// Take back the invocation `invocation` (one of its calls' ids, or its
+    /// step): every change it made, in every document it changed, or nothing when
+    /// someone else's change stands on one of them.
     pub(super) async fn undo_invocation(
         &self,
         invocation: &str,
         structured: bool,
     ) -> Result<Reply, Failure> {
-        let (group, targets) = self.invocation_targets(invocation)?;
+        let (step, targets) = self.invocation_targets(invocation).await?;
         let mut plans = Vec::new();
         let mut refusals = Vec::new();
         for target in targets {
-            let standing = self.standing(&target, &group).await?;
-            if let Some(over) = &standing.over {
+            let effect = self.effect(&target, &step).await?;
+            if let Some(over) = &effect.over {
                 refusals.push(refusal(&target.path, over));
-            } else if !standing.changes.is_empty() {
-                plans.push((target, standing.changes));
+            } else if !effect.changes.is_empty() {
+                plans.push((target, effect.changes, effect.whose));
             }
         }
         if !refusals.is_empty() {
@@ -124,15 +95,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let mut undone = Vec::new();
         let mut text = String::new();
-        for (target, mut changes) in plans {
+        for (target, mut changes, whose) in plans {
             let mut taken = Vec::new();
             for _ in 0..MOST_STEPS {
                 let Some(first) = changes.first().cloned() else {
                     break;
                 };
-                self.undo_step(&target, &first).await?;
+                self.undo_step(&target, &first, whose.clone()).await?;
                 taken.push(first);
-                let left = self.standing(&target, &group).await?.changes;
+                let left = self.effect(&target, &step).await?.changes;
                 // A step its undo did not take is left as it is, never asked again.
                 changes = left
                     .into_iter()
@@ -149,7 +120,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             );
             undone.push(json!({
                 "path": target.path,
-                "app": target.changed.app,
+                "app": target.app,
                 "changes": taken,
             }));
         }
@@ -164,100 +135,109 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    /// Note what the call answered `value` changed: the record `provider` of `app` answers
-    /// for, at `path`, whose history verbs `history` offers. A call naming the group it is a step
-    /// of makes that group's step too, which `undo task` takes back in every app it changed, as it
-    /// takes back a program's. A call that names no invocation, or a record with no history to
-    /// take it back in, leaves nothing for [`Self::undo_invocation`] to take back.
-    pub(super) fn note_change(
-        &self,
-        value: &Value,
-        path: &str,
-        (provider, app): (&str, &str),
-        history: Option<String>,
-    ) {
+    /// Note that the call changed `app`, whose history verbs `history` offers: a call naming
+    /// the group it is a step of makes that group's step too, which `undo task` takes back in
+    /// every app it changed, as it takes back a program's.
+    pub(super) fn note_change(&self, app: &str, history: Option<String>) {
         if let Some((gesture, label)) = Self::grouped_invocation() {
             self.programs
                 .lock_recover()
-                .note_invocation(gesture, &label, app, history.clone());
+                .note_invocation(gesture, &label, app, history);
         }
-        let (Some(invocation), Some(history), Some(step)) = (
-            value.get("invocation_id").and_then(Value::as_str),
-            history,
-            Self::call_step(),
-        ) else {
-            return;
-        };
-        let mut kept = self.undoable.lock_recover();
-        kept.push_back(Undoable {
-            invocation: invocation.to_owned(),
-            path: path.to_owned(),
-            provider: provider.to_owned(),
-            app: app.to_owned(),
-            history,
-            step,
-        });
-        while kept.len() > KEPT {
-            kept.pop_front();
-        }
-        drop(kept);
     }
 
-    /// The invocations of the group `invocation` is a step of, and the records
-    /// they changed, each once.
-    fn invocation_targets(
-        &self,
-        invocation: &str,
-    ) -> Result<(UndoInvocation, Vec<Target>), String> {
-        let kept = self.undoable.lock_recover();
-        let step = kept
-            .iter()
-            .find(|changed| changed.invocation == invocation)
-            .ok_or_else(|| {
-                format!(
-                    "invocation {invocation} changed nothing this connection can take back: one is \
-                     taken back by the connection that started it, once it changed a record"
-                )
-            })?
-            .step;
-        let members: Vec<&Undoable> = kept.iter().filter(|changed| changed.step == step).collect();
-        let group = UndoInvocation {
-            step,
-            invocations: members
-                .iter()
-                .map(|changed| changed.invocation.clone())
-                .collect(),
-        };
-        let mut targets: Vec<Target> = Vec::new();
-        for changed in members {
-            if targets.iter().any(|target| {
-                target.changed.provider == changed.provider
-                    && target.changed.history == changed.history
-            }) {
-                continue;
-            }
-            targets.push(Target {
-                path: changed.path.clone(),
-                changed: changed.clone(),
-            });
+    /// The step of the invocation `invocation` names, as the workspace's server
+    /// lists it for this caller, and the documents it changed.
+    async fn invocation_targets(&self, invocation: &str) -> Result<(String, Vec<Target>), String> {
+        let listed = self
+            .listed_invocations(&InvocationsQuery {
+                invocation: Some(invocation.to_owned()),
+                ..InvocationsQuery::default()
+            })
+            .await?;
+        let found = listed.items.into_iter().next().ok_or_else(|| {
+            format!(
+                "invocation {invocation} changed nothing you may read: one is taken back once it \
+                 changed a resource"
+            )
+        })?;
+        let step = found.step.ok_or_else(|| {
+            format!("invocation {invocation} changed no resource, so nothing of it is taken back")
+        })?;
+        let mut targets = Vec::new();
+        for document in &found.records {
+            targets.push(self.document_target(document).await?);
         }
-        drop(kept);
-        Ok((group, targets))
+        Ok((step, targets))
     }
 
-    /// What `target`'s history says of the group whose calls are `invocations`.
-    async fn standing(&self, target: &Target, group: &UndoInvocation) -> Result<Standing, String> {
+    /// Where the changes to `document` are taken back: its document's provider,
+    /// and the resource of it that offers `undo`.
+    async fn document_target(&self, document: &InvocationChange) -> Result<Target, String> {
+        let provider = format!(
+            "{}:{}:{}",
+            tilo_actions::remote::RESOURCE_PROVIDER,
+            document.app_id,
+            document.record
+        );
+        let parsed = ParsedPath {
+            app: document.app.clone(),
+            segments: Vec::new(),
+            action: None,
+        };
+        let at = self
+            .resolve_in(
+                &parsed,
+                document.app_id.clone(),
+                provider.clone(),
+                true,
+                None,
+            )
+            .await?;
+        // History is the document's: any of its resources that offers `undo` takes back its steps.
+        let history = at
+            .history()
+            .or_else(|| {
+                at.children
+                    .iter()
+                    .find(|node| {
+                        node.actions
+                            .iter()
+                            .any(|action| action.address.action == "undo")
+                    })
+                    .map(|node| node.id.clone())
+            })
+            .ok_or_else(|| format!("{} offers no undo to take its changes back", document.app))?;
+        Ok(Target {
+            path: document.app.clone(),
+            app: document.app_id.clone(),
+            provider,
+            history,
+        })
+    }
+
+    /// What `target`'s history says of the invocation whose step is `step`.
+    async fn effect(&self, target: &Target, step: &str) -> Result<Effect, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("last".into(), json!(HISTORY_READ));
         let value = self.on_resource(target, "history", arguments).await?;
-        let entries = history_entries(&value)
-            .ok_or_else(|| format!("{} answered no history to find the group in", target.path))?;
-        Ok(standing(&entries, |entry| group.made(entry)))
+        let entries = history_entries(&value).ok_or_else(|| {
+            format!(
+                "{} answered no history to find the invocation in",
+                target.path
+            )
+        })?;
+        Ok(effect(&entries, |entry| made(step, entry)))
     }
 
-    /// Take back the step of `target`'s record that the change `change` is part of.
-    async fn undo_step(&self, target: &Target, change: &str) -> Result<(), String> {
-        let mut arguments = serde_json::Map::new();
+    /// Take back the step of `target`'s document that the change `change` is part of, of the
+    /// steps `whose` names.
+    async fn undo_step(
+        &self,
+        target: &Target,
+        change: &str,
+        mut arguments: serde_json::Map<String, Value>,
+    ) -> Result<(), String> {
         arguments.insert("step".into(), json!(change));
         let value = self.on_resource(target, "undo", arguments).await?;
         if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") {
@@ -279,12 +259,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Value, String> {
         Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
-                provider: target.changed.provider.clone(),
-                app_id: Some(target.changed.app.clone()),
+                provider: target.provider.clone(),
+                app_id: Some(target.app.clone()),
             },
             workspace: false,
             revision: None,
-            resource: target.changed.history.clone(),
+            resource: target.history.clone(),
             action: action.to_owned(),
             arguments,
             invocation_id: None,
@@ -295,10 +275,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-/// What a record's history `entries` (oldest first, each whole) say of the group whose changes
-/// `of_invocation` tells: its changes still in effect, and a change someone else made after its last
-/// one that is still in effect.
-fn standing(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Standing {
+/// What a document's history `entries` (oldest first, each whole) say of the invocation whose changes
+/// `of_invocation` tells: its changes still in effect, and the change that holds its undo back.
+fn effect(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Effect {
     let in_effect = |entry: &&Value| entry.get("undone").and_then(Value::as_bool) != Some(true);
     let changes: Vec<String> = entries
         .iter()
@@ -311,24 +290,37 @@ fn standing(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Standi
                 .map(str::to_owned)
         })
         .collect();
-    let last = entries
+    let over = edited_after(entries, &of_invocation).cloned();
+    let whose = entries
         .iter()
-        .rposition(|entry| of_invocation(entry) && in_effect(&entry));
-    let over = last.and_then(|last| {
-        entries
-            .iter()
-            .skip(last.saturating_add(1))
-            .filter(in_effect)
-            // Housekeeping (naming a checkpoint) changes nothing the group wrote.
-            .filter(|entry| entry.get("change_kind").is_none())
-            .find(|entry| !of_invocation(entry))
-            .cloned()
-    });
-    Standing { changes, over }
+        .find(|entry| of_invocation(entry))
+        .map(whose)
+        .unwrap_or_default();
+    Effect {
+        changes,
+        whose,
+        over,
+    }
 }
 
-/// Why the group is not taken back in the record at `path`: `over`, the change
-/// standing on it.
+/// Whose steps the change the history `entry` lists is, as `undo` names them: the session it
+/// was a step of (`invocation`), or the author outside one (`by`). Neither for a change that
+/// names no invoker, which only its own writer takes back.
+fn whose(entry: &Value) -> serde_json::Map<String, Value> {
+    let mut whose = serde_json::Map::new();
+    let field = |key: &str| entry.get(key).and_then(Value::as_str);
+    if let (Some(group), Some(kind)) = (field("group"), field("group_kind"))
+        && tilo_actions::context::names_a_session(kind)
+    {
+        whose.insert("invocation".into(), json!(group));
+    } else if let Some(by) = entry.pointer("/actor/by") {
+        whose.insert("by".into(), by.clone());
+    }
+    whose
+}
+
+/// Why the invocation is not taken back in the document at `path`: `over`, the change
+/// over it.
 fn refusal(path: &str, over: &Value) -> String {
     let who = over
         .get("title")
@@ -351,6 +343,7 @@ fn refusal(path: &str, over: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn entry(change: &str, invocation: &str) -> Value {
         json!({"change": change, "invocation": invocation, "sentence": "Added a paragraph", "by": "Ada"})
@@ -367,7 +360,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn an_invocation_takes_back_only_its_own_standing_changes;
+        fn an_invocation_takes_back_only_its_own_changes_in_effect;
 
         phase an_invocation_finds_its_own_changes_in_effect;
         {
@@ -377,15 +370,15 @@ mod tests {
                 json!({"change": "b2", "invocation": "run", "undone": true}),
                 entry("b3", "run"),
             ];
-            let standing = standing(&entries, named(&["run"]));
-            assert_eq!(standing.changes, ["b1", "b3"]);
-            assert!(standing.over.is_none());
+            let effect = effect(&entries, named(&["run"]));
+            assert_eq!(effect.changes, ["b1", "b3"]);
+            assert!(effect.over.is_none());
         }
 
         phase someone_elses_change_on_top_holds_the_invocation;
         {
             let entries = [entry("b1", "run"), entry("c1", "theirs")];
-            let held = standing(&entries, named(&["run"]));
+            let held = effect(&entries, named(&["run"]));
             assert_eq!(held.over.as_ref().unwrap()["change"], "c1");
             assert_eq!(
                 refusal("word-processor", held.over.as_ref().unwrap()),
@@ -399,38 +392,22 @@ mod tests {
                 json!({"change": "c1", "invocation": "theirs", "undone": true}),
                 json!({"change": "c2", "change_kind": "housekeeping"}),
             ];
-            assert!(standing(&entries, named(&["run"])).over.is_none());
+            assert!(effect(&entries, named(&["run"])).over.is_none());
         }
 
         phase every_call_of_a_named_invocation_is_its_own;
         {
             let entries = [entry("b1", "open"), entry("b2", "append")];
-            let standing = standing(&entries, named(&["open", "append"]));
-            assert_eq!(standing.changes, ["b1", "b2"]);
-            assert!(standing.over.is_none());
+            let effect = effect(&entries, named(&["open", "append"]));
+            assert_eq!(effect.changes, ["b1", "b2"]);
+            assert!(effect.over.is_none());
         }
 
-        phase a_change_is_the_groups_by_its_recorded_step;
-        // A change is the group's by the undo step history recorded for it under
-        // the group it names, where the host kept no invocation: never by a step
-        // recorded under another group.
+        phase a_change_is_the_invocations_by_its_step;
         {
-            let step = tilo_actions::ActionId::new();
-            let group = UndoInvocation {
-                step,
-                invocations: BTreeSet::new(),
-            };
-            let recorded = tilo_actions::context::recorded_gesture(
-                step,
-                Some(("agent-session", "agent-session:1")),
-            );
-            let ours = json!({"change": "b1", "step": recorded.0.to_string(),
-                              "group_kind": "agent-session", "group": "agent-session:1"});
-            assert!(group.made(&ours));
-            let elsewhere = json!({"change": "b1", "step": recorded.0.to_string(),
-                                   "group_kind": "agent-session", "group": "agent-session:2"});
-            assert!(!group.made(&elsewhere));
-            assert!(!group.made(&json!({"change": "c1"})));
+            assert!(made("s1", &json!({"change": "b1", "step": "s1"})));
+            assert!(!made("s1", &json!({"change": "b1", "step": "s2"})));
+            assert!(!made("s1", &json!({"change": "c1"})));
         }
     }
 }

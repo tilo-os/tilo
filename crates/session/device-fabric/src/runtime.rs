@@ -362,7 +362,7 @@ impl FabricRuntime {
     }
 
     /// Take the displays this device shows now, replacing what it showed before: where
-    /// each connector's output stands, how big the plane they make is, and what the
+    /// each connector's output stands, how big the area they make is, and what the
     /// hardware behind each one says. Returns whether this device's record changed.
     /// # Errors
     /// Why the placement and the facts do not make a valid record, or do not agree with

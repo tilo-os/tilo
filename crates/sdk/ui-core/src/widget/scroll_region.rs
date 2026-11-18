@@ -38,18 +38,18 @@ pub struct ScrollRegion {
     vbar: Scrollbar,
     hbar: Scrollbar,
     fade: BarFade,
-    /// The bar lane and line step from the theme, at the last
+    /// The bar gutter and line step from the theme, at the last
     /// [`ScrollRegion::set_viewport`].
-    lane: f64,
+    gutter: f64,
     line: f64,
     cursor: Point,
     pointer_near: bool,
     focused: bool,
     edge_fade: bool,
-    /// Bars lie over the content's trailing edge instead of in lanes of
+    /// Bars lie over the content's trailing edge instead of in gutters of
     /// their own ([`Self::with_overlaid_bars`]).
     overlaid_bars: bool,
-    /// The region shows no bars and keeps no lane for them
+    /// The region shows no bars and keeps no gutter for them
     /// ([`Self::with_no_bars`]).
     bars: bool,
     /// The step a wheel line and an arrow key take, where the content has a
@@ -127,7 +127,7 @@ impl ScrollRegion {
             vbar: Scrollbar::vertical(),
             hbar: Scrollbar::horizontal(),
             fade: BarFade::default(),
-            lane: 0.0,
+            gutter: 0.0,
             line: 0.0,
             cursor: Point::ZERO,
             pointer_near: false,
@@ -176,7 +176,7 @@ impl ScrollRegion {
         self
     }
 
-    /// Lay the bars over the content's trailing edge rather than in lanes beside it, so the
+    /// Lay the bars over the content's trailing edge rather than in gutters beside it, so the
     /// content keeps the region's whole width whether or not it overflows: content that grows
     /// past the region (a list opening in a panel) never narrows and reflows what was already
     /// there.
@@ -186,7 +186,7 @@ impl ScrollRegion {
         self
     }
 
-    /// Show no bar and keep no lane for one: the content takes the region's
+    /// Show no bar and keep no gutter for one: the content takes the region's
     /// whole width whether or not it overflows, for a list the wheel and the
     /// keyboard scroll that draws no bar of its own.
     #[must_use]
@@ -214,16 +214,16 @@ impl ScrollRegion {
     }
 
     pub fn set_viewport(&mut self, viewport: Rect, theme: &Theme) {
-        let lane = if self.bars {
+        let gutter = if self.bars {
             f64::from(theme.tokens.metrics.scrollbar_gutter)
         } else {
             0.0
         };
-        if self.viewport != viewport || self.lane.to_bits() != lane.to_bits() {
+        if self.viewport != viewport || self.gutter.to_bits() != gutter.to_bits() {
             self.cancel_interaction();
         }
         self.viewport = viewport;
-        self.lane = lane;
+        self.gutter = gutter;
         self.line = f64::from(theme.tokens.metrics.wheel_line);
         self.motion = theme.motion();
         self.clamp();
@@ -249,25 +249,25 @@ impl ScrollRegion {
     }
 
     /// The part of the region the content shows in: the region less the
-    /// bar lanes while the content overflows (the whole region when the bars
+    /// bar gutters while the content overflows (the whole region when the bars
     /// are overlaid). Lay the content out to this width.
     #[must_use]
     pub fn content_rect(&self) -> Rect {
         if self.overlaid_bars {
             return self.viewport;
         }
-        self.inside_lanes()
+        self.inside_gutters()
     }
 
-    /// The region less the bar lanes while the content overflows: beyond
+    /// The region less the bar gutters while the content overflows: beyond
     /// it lie the bars, beside the content or over its edge.
-    fn inside_lanes(&self) -> Rect {
+    fn inside_gutters(&self) -> Rect {
         let mut rect = self.viewport;
         if self.overflows_vertically() {
-            rect.x1 = (rect.x1 - self.lane).max(rect.x0);
+            rect.x1 = (rect.x1 - self.gutter).max(rect.x0);
         }
         if self.overflows_horizontally() {
-            rect.y1 = (rect.y1 - self.lane).max(rect.y0);
+            rect.y1 = (rect.y1 - self.gutter).max(rect.y0);
         }
         rect
     }
@@ -446,21 +446,21 @@ impl ScrollRegion {
 
     fn v_track(&self, theme: &Theme) -> Option<Rect> {
         (self.bars && self.overflows_vertically()).then(|| {
-            let shown = self.inside_lanes();
-            let lane = Rect::new(shown.x1, self.viewport.y0, self.viewport.x1, shown.y1);
+            let shown = self.inside_gutters();
+            let gutter = Rect::new(shown.x1, self.viewport.y0, self.viewport.x1, shown.y1);
             self.corners
                 .get()
-                .clear(self.vbar.track_in(lane, theme), true)
+                .clear(self.vbar.track_in(gutter, theme), true)
         })
     }
 
     fn h_track(&self, theme: &Theme) -> Option<Rect> {
         (self.bars && self.overflows_horizontally()).then(|| {
-            let shown = self.inside_lanes();
-            let lane = Rect::new(self.viewport.x0, shown.y1, shown.x1, self.viewport.y1);
+            let shown = self.inside_gutters();
+            let gutter = Rect::new(self.viewport.x0, shown.y1, shown.x1, self.viewport.y1);
             self.corners
                 .get()
-                .clear(self.hbar.track_in(lane, theme), false)
+                .clear(self.hbar.track_in(gutter, theme), false)
         })
     }
 
@@ -471,7 +471,7 @@ impl ScrollRegion {
         self.vbar.is_dragging() || self.hbar.is_dragging()
     }
 
-    /// Whether a bar is held, hovered or the pointer is on its lane: what
+    /// Whether a bar is held, hovered or the pointer is on its gutter: what
     /// its paint depends on besides the offset, for a host that keys a cache
     /// on its scroll.
     #[must_use]
@@ -783,7 +783,7 @@ impl ScrollRegion {
                 if let Some(track) = self.h_track(theme) {
                     changed |= self.hbar.update_hover(track, self.h_metrics(), self.cursor);
                 }
-                let shown = self.inside_lanes();
+                let shown = self.inside_gutters();
                 let near = self.viewport.contains(self.cursor)
                     && (self.cursor.x >= shown.x1 || self.cursor.y >= shown.y1);
                 if near != self.pointer_near {
@@ -1064,23 +1064,23 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// A scroll region: its lane and bars, its scrolling and glides, its offset.
+        /// A scroll region: its gutter and bars, its scrolling and glides, its offset.
         /// Each phase was a test of its own and builds its own fixture.
         fn a_region_reserves_scrolls_glides_and_persists;
 
-        phase the_region_reserves_its_lane_only_while_content_overflows;
+        phase the_region_reserves_its_gutter_only_while_content_overflows;
         {
             let fits = region(150.0);
             assert_eq!(fits.content_rect(), Rect::new(0.0, 0.0, 300.0, 200.0));
             let tall = region(1000.0);
-            let lane = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
-            assert!((tall.content_rect().x1 - (300.0 - lane)).abs() < 1e-9);
+            let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+            assert!((tall.content_rect().x1 - (300.0 - gutter)).abs() < 1e-9);
         }
 
         phase overlaid_bars_keep_the_content_width_and_sit_in_its_trailing_edge;
         {
             let theme = Theme::dark();
-            let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+            let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
             let viewport = Rect::new(0.0, 0.0, 300.0, 200.0);
             let mut region = ScrollRegion::vertical().with_overlaid_bars();
             region.set_viewport(viewport, &theme);
@@ -1096,7 +1096,7 @@ mod tests {
                 .v_track(&theme)
                 .expect("an overflowing region has a bar");
             assert!(
-                track.x0 >= viewport.x1 - lane && track.x1 <= viewport.x1,
+                track.x0 >= viewport.x1 - gutter && track.x1 <= viewport.x1,
                 "{track:?}"
             );
         }

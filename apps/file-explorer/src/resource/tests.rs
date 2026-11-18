@@ -840,7 +840,7 @@ fn import_entry() -> tilo_cloud_files::cloud::ImportEntry {
 // Cloud import stages through descriptor-relative paths only Linux provides.
 #[cfg(target_os = "linux")]
 #[test]
-fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
+fn cloud_import_queues_on_its_device_and_undo_reverts_its_resource() {
     // The service socket is this test's alone: other tests run at the same time.
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
@@ -933,7 +933,7 @@ fn assert_cloud_import_history_is_structural(
     use ui::tilo_actions::{ActionEnvelope, ActionId, ActionRegistry, ExecutionLocus};
     use ui::tilo_resource::Resource as _;
 
-    assert!(ui::bound_dispatch::executing_host_scope().is_none());
+    assert!(ui::bound_dispatch::executing_scope().is_none());
     let mut document = app.peer_document();
     let recorded = app
         .versions()
@@ -1004,7 +1004,7 @@ fn assert_cloud_import_history_is_structural(
     let (_, historical) = shown.ops.entries().next().unwrap();
     assert_eq!(historical.value, task.value);
     assert!(historical.settled.is_none());
-    assert!(ui::bound_dispatch::executing_host_scope().is_none());
+    assert!(ui::bound_dispatch::executing_scope().is_none());
     std::fs::rename(displaced, folder).unwrap();
 }
 
@@ -1144,7 +1144,7 @@ tilo_test_env::scenario! {
         assert!(!folder.join("Google.docx").exists());
     }
 
-    phase mounted_import_record_verifies_offline_without_host_or_source;
+    phase mounted_import_resource_verifies_offline_without_host_or_source;
     {
         use ui::tilo_actions::ActionRegistry;
         let root = tempfile::tempdir().unwrap();
@@ -1189,7 +1189,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         root.close().unwrap();
-        assert!(ui::bound_dispatch::executing_host_scope().is_none());
+        assert!(ui::bound_dispatch::executing_scope().is_none());
         let mut document = app.peer_document();
         document.set_actor(ui::automerge::ActorId::from(b"other-device".to_vec()));
         let registry = ActionRegistry::with(ui::tilo_resource::group::register::<FileExplorer>);
@@ -1305,7 +1305,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_valid_destination_witness_does_not_authorize_a_fresh_guest_import;
+    phase a_valid_destination_observation_does_not_authorize_a_fresh_guest_import;
     {
         let root = tempfile::tempdir().unwrap();
         let destination = import_destination(root.path());

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
-use tilo_relay_session::workspaces::govern::{self, WorkspaceLink};
+use tilo_server_session::workspaces::govern::{self, WorkspaceLink};
 
 #[derive(clap::Args)]
 pub struct PushArgs {
@@ -22,7 +22,7 @@ pub struct PushArgs {
     /// current directory.
     path: Option<PathBuf>,
     /// The workspace to push to, by its host's link:
-    /// `tilo-workspace:<relay>[@<ip:port>]/<workspace>/<id>`.
+    /// `tilo-workspace:<server>[@<ip:port>]/<workspace>/<id>`.
     #[arg(long = "workspace")]
     workspace: String,
     /// This machine's Tilo identity: a device of yours, enrolled for the

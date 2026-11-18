@@ -70,30 +70,30 @@ pub trait MetaExt {
     fn schemas(&self) -> Vec<TypeSchema>;
 
     /// The record schemas of every declared type, written out: what an index of the package's
-    /// records was built for, and is built anew when it differs.
+    /// documents was built for, and is built anew when it differs.
     fn schema_text(&self) -> String;
 
     /// Register the schemas of every declared type; peers that replay this package's actions
-    /// resolve its records through them.
+    /// resolve its documents through them.
     fn register_schemas(&self);
 
     /// The action published as `action` (`new_note`, as a native verb is): the one name a caller
     /// and a window's control run it by. The code of one runs under the id its declaration keeps,
-    /// which only the record's changes say.
+    /// which only the document's changes say.
     fn action_published_as(&self, action: &str) -> Option<&ActionMeta>;
 
     /// The resource kind of the type `type_name`: `tl.<app>.<Type>`.
     fn kind_of(&self, type_name: &str) -> String;
 
-    /// The kind a package-level action (one with no record parameter) is published under.
+    /// The kind a package-level action (one with no document parameter) is published under.
     fn package_kind(&self) -> String;
 
-    /// The kind of the record a package keeps its resources in: its first root type's, which its
+    /// The kind of the document a package keeps its resources in: its first root type's, which its
     /// surface publishes (`tl.<app>.<Root>`), else the package's own.
-    fn record_kind(&self) -> String;
+    fn resource_type(&self) -> String;
 }
 
-/// Whether a field's declared type names a resource: a record, or one inside an option.
+/// Whether a field's declared type names a resource: a document, or one inside an option.
 fn names_a_resource(ty: &Ty) -> bool {
     match ty {
         Ty::Record(_) | Ty::Union(_) => true,
@@ -128,7 +128,7 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
                 }
             });
             match item {
-                Some(id) => schema.of_record(id),
+                Some(id) => schema.of_document(id),
                 None => schema,
             }
         }
@@ -193,8 +193,8 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
     // A trigger's `at` is asked of the whole type ("the first of them after now"), wherever its
-    // records are placed, so the field it fires at is kept across the workspace too: with the
-    // type's filters, not with the collection a record is in.
+    // documents are placed, so the field it fires at is kept across the workspace too: with the
+    // type's filters, not with the collection a document is in.
     let fires_at: Vec<&str> = meta
         .triggers
         .iter()
@@ -333,7 +333,7 @@ impl MetaExt for Meta {
     }
 
     fn schema_text(&self) -> String {
-        // The records an index holds include those stored under the app's earlier ids.
+        // The documents an index holds include those stored under the app's earlier ids.
         if self.previously.is_empty() {
             format!("{:?}", self.schemas())
         } else {
@@ -361,7 +361,7 @@ impl MetaExt for Meta {
         format!("tl.{}", self.app)
     }
 
-    fn record_kind(&self) -> String {
+    fn resource_type(&self) -> String {
         let root = self.roots.first().and_then(|id| {
             self.types
                 .iter()

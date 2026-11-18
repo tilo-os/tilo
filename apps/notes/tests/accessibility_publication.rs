@@ -1,6 +1,6 @@
 //! What the host's accessibility walk costs and publishes when Notes runs
 //! as the desktop runs an app in a tile (`ui::app::EmbeddedApp`): the real
-//! window over its real record, driven through `App::surface_input`, framed
+//! window over its real resource, driven through `App::surface_input`, framed
 //! by `App::surface_frame_with_damage`, then the semantic tree refreshed as
 //! the host reads it after every frame.
 //!
@@ -103,10 +103,13 @@ fn a_note_holding_among(app: &mut App, damage: &mut SurfaceDamage, text: &str, n
             None,
             &format!("Listed note {note}"),
         );
-        let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(&action)
+        let invoke = ui::tilo_resource::Invoke::<notes::PagePart>::apply(&action)
             .expect("creating a note is a notebook action");
-        app.invoke_local_resource_action(&invoke.address(), &invoke.arguments)
-            .expect("the notebook takes the note");
+        app.invoke_local_resource_action(
+            &invoke.address_on(notes::part::chain_resource()),
+            &invoke.arguments,
+        )
+        .expect("the notebook takes the note");
         frame(app, damage);
     }
     let new_note = app

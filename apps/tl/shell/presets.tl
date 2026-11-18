@@ -4,7 +4,7 @@
 /// spreads them, never pressing them into the left edge) and the dock's items sit on their
 /// edge, the Windows preset's taskbar carrying the time and the status at its end.
 ///
-/// They never touch a person's own record: a real first launch starts empty.
+/// They never touch a person's own document: a real first launch starts empty.
 scenario "the default shell" {
     let d = root Layout
     d.person = "Ada Lovelace"

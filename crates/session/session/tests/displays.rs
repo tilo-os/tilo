@@ -297,7 +297,7 @@ fn each_display_keeps_the_strip_it_shows() {
 }
 
 /// A window opening on one display leaves the windows of the other display the size they are: two
-/// displays are two strips' worth of room, so nothing is shared across the seam.
+/// displays are two strips' worth of room, so nothing is shared across the border.
 #[test]
 fn a_window_opening_beside_one_display_leaves_the_other_alone() {
     let _settled = ui::motion::testing::settled();
@@ -348,7 +348,7 @@ fn bottom_edge(session: &mut Session, output: &str, (from, to): (i32, i32)) -> V
 }
 
 /// The strip's rail stands under the strip of the display the person works on, never across the
-/// seam onto the other display.
+/// border onto the other display.
 #[test]
 fn the_strip_rail_stands_on_the_display_in_use() {
     let _settled = ui::motion::testing::settled();
@@ -357,10 +357,10 @@ fn the_strip_rail_stands_on_the_display_in_use() {
         let mut session = docked();
         let mut client = client(&mut session);
         let middle = (WIDTH / 2 - 40, WIDTH / 2 + 40);
-        let seam = (0, 40);
+        let border = (0, 40);
         let empty = (
             bottom_edge(&mut session, "HEADLESS-1", middle),
-            bottom_edge(&mut session, "HEADLESS-2", seam),
+            bottom_edge(&mut session, "HEADLESS-2", border),
         );
         tab(&mut session, &mut client, "org.example.Left");
         client.pump(&mut session, |session, _| {
@@ -368,7 +368,7 @@ fn the_strip_rail_stands_on_the_display_in_use() {
                 && bottom_edge(session, "HEADLESS-1", middle) != empty.0
         });
         assert_eq!(
-            bottom_edge(&mut session, "HEADLESS-2", seam),
+            bottom_edge(&mut session, "HEADLESS-2", border),
             empty.1,
             "nothing of the rail stands on the other display"
         );

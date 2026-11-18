@@ -14,7 +14,7 @@
 ; mount /var/workspace, create/write/append/rename/copy/truncate/chmod/
 ; touch/xattr/delete through the mount as two local accounts, restart and
 ; stop the unit (ExecStopPost), the storage and media sockets, the
-; Iroh endpoint waking (relays, net report, DNS), and the native data plane's
+; Iroh endpoint waking (relays, net report, DNS), and the native backend's
 ; probes against a Btrfs store volume. It was then re-run with the domain
 ; enforcing and no tilo_fs_t denial. Every rule names the type it needs; a
 ; new behaviour of fs that needs another one shows up as an AVC denial for
@@ -116,7 +116,7 @@
 (allow tilo_fs_t mount_var_run_t (dir (getattr search open read write add_name remove_name)))
 (allow tilo_fs_t mount_var_run_t (file (getattr open read write create lock unlink)))
 
-; The workspace as fs sees it: the FUSE mount, and the native data plane's
+; The workspace as fs sees it: the FUSE mount, and the native backend's
 ; store volume, which tilo-store-volume mounts with context=fusefs_t (its
 ; capability probes and content area at /var/lib/tilo/store). setattr on a
 ; directory is the change signal: fs sets its no-op user.tilo.change-signal

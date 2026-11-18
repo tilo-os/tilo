@@ -4,7 +4,7 @@
 //! Two things a person saw on a live shell and reported:
 //!
 //! 1. A third place opened beside the conversation squeezed all three into one narrow column and
-//!    resized the place already standing: opening something never moves or resizes what stands,
+//!    resized the place already open: opening something never moves or resizes what stands,
 //!    and it never changes the person's zoom — it pans when what arrived would stand off-screen.
 //! 2. The style menu's band above its first row stood empty.
 //!
@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 use crate::common::{
     CANVAS, PERSON, layout, on_screen, private_home, show_preset, until, wait_for,
@@ -39,7 +39,7 @@ fn session(root: &std::path::Path) -> Session {
         collab: false,
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.join("plane.sock")),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         ..Options::default()
     });
@@ -66,7 +66,7 @@ fn boxes(session: &Session) -> Vec<(String, i64, i64, i64, i64)> {
         .filter_map(|place| {
             let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
             strip.placed.then_some((
-                place.record.clone(),
+                place.resource.clone(),
                 strip.canvas_x,
                 strip.canvas_y,
                 strip.canvas_width,
@@ -199,7 +199,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
 /// question, an agent opened Tasks and all three places were *drawn* as a narrow column down the
 /// left edge, the inbox itself shrunk to a sliver. Opening a place never resizes the places
 /// already there: a place is drawn at the size the canvas draws its neighbours at, and the camera
-/// pans to what arrived instead of zooming everything into the viewport. A place already standing
+/// pans to what arrived instead of zooming everything into the viewport. A place already open
 /// keeps the width it was drawn at, whichever places arrive beside it.
 #[test]
 fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
@@ -216,7 +216,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let inbox_name = layout(&session)
         .places
         .into_iter()
-        .find(|place| place.record == inbox.0)
+        .find(|place| place.resource == inbox.0)
         .map(|place| place.title)
         .expect("the inbox stands");
     // The widest box drawn for the place's name is the place itself (its frame's group reads the

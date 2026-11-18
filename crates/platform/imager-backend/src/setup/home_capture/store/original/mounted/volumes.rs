@@ -6,9 +6,9 @@ use crate::setup::migration_handoff::{SourceVolume, VolumeNamespace};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct VolumeWitness {
+pub(super) struct VolumeProof {
     schema: u32,
-    primary: SourceWitness,
+    primary: SourceProof,
     volume: SourceVolume,
     sha256: [u8; 32],
 }
@@ -17,7 +17,7 @@ pub(super) struct VolumeWitness {
 struct VolumeRecord {
     schema: u32,
     kind: String,
-    primary: SourceWitness,
+    primary: SourceProof,
     caller: OriginalCallerFacts,
     entries: Vec<MountedEntry>,
 }
@@ -31,7 +31,7 @@ struct VolumeStore {
     store: Store,
     file: File,
     bytes: Vec<u8>,
-    witness: VolumeWitness,
+    proof: VolumeProof,
 }
 pub(in crate::setup::home_capture) struct VolumeStores {
     primary_file: File,
@@ -48,7 +48,7 @@ impl VolumeRecord {
         primary.validate()?;
         if self.schema != 1
             || self.kind != "original-mounted-volume"
-            || self.primary != primary.witness()?
+            || self.primary != primary.proof()?
             || self.caller != primary.original
             || self.entries.is_empty()
             || self.entries.len() > 256
@@ -73,14 +73,14 @@ impl VolumeRecord {
         Ok(())
     }
 }
-impl VolumeWitness {
+impl VolumeProof {
     pub(super) fn validate(
         &self,
         primary: &SourceIntent,
         binding: &EntryBinding,
     ) -> io::Result<()> {
         if self.schema != 1
-            || self.primary != primary.witness()?
+            || self.primary != primary.proof()?
             || self.volume != *binding.volume()
             || self.volume == primary.home.home.volume
         {
@@ -161,7 +161,7 @@ impl VolumeStores {
             if result
                 .volumes
                 .iter()
-                .any(|volume| &volume.witness.volume == entry.record.binding.volume())
+                .any(|volume| &volume.proof.volume == entry.record.binding.volume())
             {
                 continue;
             }
@@ -200,7 +200,7 @@ impl VolumeStores {
             let record = VolumeRecord {
                 schema: 1,
                 kind: "original-mounted-volume".into(),
-                primary: primary.witness()?,
+                primary: primary.proof()?,
                 caller: result.caller.clone(),
                 entries: result
                     .entries
@@ -216,7 +216,7 @@ impl VolumeStores {
             if bytes.len() as u64 > MAX_RECORD {
                 return Err(failure("Volume record exceeds bound"));
             }
-            let witness = VolumeWitness {
+            let proof = VolumeProof {
                 schema: 1,
                 primary: record.primary.clone(),
                 volume: entry.record.binding.volume().clone(),
@@ -247,17 +247,17 @@ impl VolumeStores {
                 store,
                 file,
                 bytes,
-                witness,
+                proof,
             });
         }
         result.verify(primary_store, &peer.original_peer(), cancel)?;
         Ok(result)
     }
-    pub(super) fn witness_for(&self, entry: &EntryBinding) -> Option<VolumeWitness> {
+    pub(super) fn proof_for(&self, entry: &EntryBinding) -> Option<VolumeProof> {
         self.volumes
             .iter()
-            .find(|volume| &volume.witness.volume == entry.volume())
-            .map(|volume| volume.witness.clone())
+            .find(|volume| &volume.proof.volume == entry.volume())
+            .map(|volume| volume.proof.clone())
     }
     pub(super) fn verify(
         &self,
@@ -351,7 +351,7 @@ struct ReadVolume {
     file: File,
     bytes: Vec<u8>,
     record: VolumeRecord,
-    witness: VolumeWitness,
+    proof: VolumeProof,
 }
 impl VolumeReads {
     pub(super) fn qualification_owned_roots(&self) -> io::Result<()> {
@@ -392,17 +392,17 @@ impl VolumeReads {
         let reviewed = (|| {
             for entry in entries {
                 check_reader(cancel)?;
-                let Some(witness) = &entry.volume else {
+                let Some(proof) = &entry.volume else {
                     continue;
                 };
-                witness.validate(primary, &entry.binding)?;
+                proof.validate(primary, &entry.binding)?;
                 if let Some(existing) = result
                     .volumes
                     .iter()
-                    .find(|volume| volume.witness.volume == witness.volume)
+                    .find(|volume| volume.proof.volume == proof.volume)
                 {
-                    if existing.witness != *witness {
-                        return Err(failure("One volume has conflicting witnesses"));
+                    if existing.proof != *proof {
+                        return Err(failure("One volume has conflicting proofs"));
                     }
                     continue;
                 }
@@ -428,9 +428,9 @@ impl VolumeReads {
                 file,
                 bytes,
                 record,
-                witness,
+                proof,
             } = volume;
-            drop((file, bytes, record, witness));
+            drop((file, bytes, record, proof));
             if let Err(current) = namespace.retire() {
                 if error.is_none() {
                     error = Some(current);
@@ -443,14 +443,14 @@ impl VolumeReads {
         }
     }
     pub(super) fn open_entry(&self, entry: &MountedEntry) -> io::Result<File> {
-        let witness = entry
+        let proof = entry
             .volume
             .as_ref()
             .ok_or_else(|| failure("Foreign volume missing"))?;
         let volume = self
             .volumes
             .iter()
-            .find(|volume| volume.witness == *witness)
+            .find(|volume| volume.proof == *proof)
             .ok_or_else(|| failure("Foreign volume was not independently reopened"))?;
         if !volume.record.entries.iter().any(|approved| {
             approved.placement == entry.placement && approved.binding == entry.binding
@@ -467,7 +467,7 @@ impl VolumeReads {
         for volume in &self.volumes {
             check_reader(cancel)?;
             volume.namespace.validate()?;
-            volume.record.validate(primary, &volume.witness.volume)?;
+            volume.record.validate(primary, &volume.proof.volume)?;
             let current = volume.namespace.open_record(&primary.home.operation_id)?;
             if stamp(&current.metadata()?) != stamp(&volume.file.metadata()?)
                 || read_private(&current)? != volume.bytes
@@ -488,10 +488,10 @@ impl ReadVolume {
         entry: &MountedEntry,
         own_missing: bool,
     ) -> io::Result<Self> {
-        let witness = entry
+        let proof = entry
             .volume
             .as_ref()
-            .ok_or_else(|| failure("Volume witness missing"))?;
+            .ok_or_else(|| failure("Volume proof missing"))?;
         let namespace = if own_missing {
             VolumeNamespace::mount_for_export(&entry.binding)?
         } else {
@@ -500,14 +500,14 @@ impl ReadVolume {
         let reviewed = (|| {
             let file = namespace.open_record(&primary.home.operation_id)?;
             let bytes = read_private(&file)?;
-            if <[u8; 32]>::from(sha2::Sha256::digest(&bytes)) != witness.sha256 {
+            if <[u8; 32]>::from(sha2::Sha256::digest(&bytes)) != proof.sha256 {
                 return Err(failure("Foreign volume's protected bytes differ"));
             }
             let record: VolumeRecord = serde_json::from_slice(&bytes)?;
-            record.validate(primary, &witness.volume)?;
+            record.validate(primary, &proof.volume)?;
             let expected: Vec<_> = entries
                 .iter()
-                .filter(|candidate| candidate.binding.volume() == &witness.volume)
+                .filter(|candidate| candidate.binding.volume() == &proof.volume)
                 .map(|candidate| MountedEntry {
                     placement: candidate.placement.clone(),
                     binding: candidate.binding.clone(),
@@ -527,7 +527,7 @@ impl ReadVolume {
                 file,
                 bytes,
                 record,
-                witness: witness.clone(),
+                proof: proof.clone(),
             }),
             Err(error) => {
                 namespace.retire()?;

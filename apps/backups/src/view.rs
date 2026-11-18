@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use jiff::civil::{Date, DateTime};
 use ui::LocalState;
 use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
@@ -165,7 +165,7 @@ pub struct Model<'a> {
     pub catalog: &'a Catalog,
     pub page: &'a Page,
     pub selected: Option<&'a str>,
-    pub now: NaiveDateTime,
+    pub now: DateTime,
     pub order: Order,
     pub order_binding: Option<&'a ActionBinding<String>>,
     pub job: Option<&'a Job>,
@@ -178,13 +178,13 @@ pub fn size(bytes: u64) -> String {
 }
 
 /// `12:05` or `12:05 PM`.
-fn clock(at: NaiveDateTime) -> String {
-    ui::clock::time_of_day(&at)
+fn clock(at: DateTime) -> String {
+    ui::clock::time_of_day(at)
 }
 
 /// "Today", "Yesterday", or the weekday and date.
-pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
-    let days = (day - today).num_days();
+pub fn day_label(day: Date, today: Date) -> String {
+    let days = i64::from(day.since(today).map_or(0, |span| span.get_days()));
     match ui::format::near_day(days) {
         Some(near) if days <= 0 => near,
         _ => ui::format::day_heading(day, day.year() != today.year()),
@@ -192,13 +192,13 @@ pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
 }
 
 /// "Today at 10:00", "Yesterday at 18:00", "Sunday 28 June at 04:00".
-pub fn when(at: NaiveDateTime, now: NaiveDateTime) -> String {
+pub fn when(at: DateTime, now: DateTime) -> String {
     format!("{} at {}", day_label(at.date(), now.date()), clock(at))
 }
 
 /// A summary tile's value and unit for an instant in the past.
-fn ago(at: NaiveDateTime, now: NaiveDateTime) -> (String, String) {
-    let minutes = (now - at).num_minutes().max(0);
+fn ago(at: DateTime, now: DateTime) -> (String, String) {
+    let minutes = now.duration_since(at).as_mins().max(0);
     let (count, key) = if minutes < 60 {
         (minutes, "backups-unit-minutes-ago")
     } else if minutes < 24 * 60 {
@@ -211,8 +211,8 @@ fn ago(at: NaiveDateTime, now: NaiveDateTime) -> (String, String) {
 }
 
 /// A summary tile's value and unit for an instant to come.
-fn ahead(at: NaiveDateTime, now: NaiveDateTime) -> (String, String) {
-    let minutes = (at - now).num_minutes().max(0);
+fn ahead(at: DateTime, now: DateTime) -> (String, String) {
+    let minutes = at.duration_since(now).as_mins().max(0);
     if minutes < 60 {
         let count = minutes.unsigned_abs();
         return (
@@ -557,7 +557,7 @@ fn fact_tile(
 
 /// Protected size, snapshot count, last backup and next run, all derived from the catalog
 /// and the schedules.
-fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGroup {
+fn summary(catalog: &Catalog, filter: Filter<'_>, now: DateTime) -> StatGroup {
     let protected = match filter {
         Filter::Source(id) => catalog.protected_bytes(id),
         Filter::All | Filter::Destination(_) => catalog.total_protected(),
@@ -593,7 +593,8 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
     tiles.push(match catalog.last_backup(filter) {
         Some(last) => {
             let (value, unit) = ago(last.taken, now);
-            let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
+            let tone = (now.duration_since(last.taken) > jiff::SignedDuration::from_hours(48))
+                .then_some(Tone::Warning);
             tile(
                 "Last backup",
                 Measured::known(
@@ -664,7 +665,7 @@ fn source_details(source: &Source) -> PropertyList {
 }
 
 /// A destination's capacity, and what it holds.
-fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime) -> Element {
+fn destination_summary(dest: &Destination, catalog: &Catalog, now: DateTime) -> Element {
     let mut facts = vec![
         Property::new(CATALOG.t("backups-kind"), dest.kind.label()),
         Property::new(CATALOG.t("backups-used"), size(dest.used_bytes))
@@ -744,8 +745,8 @@ fn snapshot_list(model: &Model<'_>, intents: &Intents) -> Element {
     let today = model.now.date();
     let mut days: Vec<Element> = vec![Box::new(timeline_heading(model.order, model.order_binding))];
     let mut day_rows: Vec<Element> = Vec::new();
-    let mut current: Option<NaiveDate> = None;
-    let flush = |day: NaiveDate, rows: &mut Vec<Element>, days: &mut Vec<Element>| {
+    let mut current: Option<Date> = None;
+    let flush = |day: Date, rows: &mut Vec<Element>, days: &mut Vec<Element>| {
         let count = rows.len();
         days.push(Box::new(Section::new(std::mem::take(rows)).with_header(
             SectionHeader::group(day_label(day, today)).count(count),
@@ -842,11 +843,7 @@ fn snapshot_row(
 /// How many snapshots each class keeps, and what the counts on screen would remove:
 /// lowering a count deletes snapshots at the next backup, so the page names them before
 /// that happens.
-fn retention_page(
-    states: &[LocalState<f64>; 4],
-    catalog: &Catalog,
-    now: NaiveDateTime,
-) -> Container {
+fn retention_page(states: &[LocalState<f64>; 4], catalog: &Catalog, now: DateTime) -> Container {
     let mut keep = FormSection::new(CATALOG.t("backups-retention-heading")).grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
@@ -868,11 +865,15 @@ fn retention_page(
     })
     .with_role(TextRole::Body)
     .dimmed();
-    let stored: Vec<(String, u64, NaiveDateTime)> = catalog
+    let stored: Vec<(String, u64, DateTime)> = catalog
         .snapshots
         .iter()
         .map(|snapshot| {
-            let seconds = snapshot.taken.and_utc().timestamp().max(0);
+            let seconds = snapshot
+                .taken
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .map_or(0, |at| at.timestamp().as_second())
+                .max(0);
             (
                 snapshot.id.clone(),
                 u64::try_from(seconds).unwrap_or_default(),
@@ -931,7 +932,7 @@ fn count_of(state: &LocalState<f64>) -> u32 {
 pub fn snapshot_details(
     snapshot: &Snapshot,
     catalog: &Catalog,
-    now: NaiveDateTime,
+    now: DateTime,
     can_act: bool,
     intents: &Intents,
 ) -> Element {
@@ -1010,7 +1011,7 @@ pub fn snapshot_details(
 pub fn restore_dialog(
     snapshot: &Snapshot,
     catalog: &Catalog,
-    now: NaiveDateTime,
+    now: DateTime,
     intents: &Intents,
 ) -> ModalDialog<Column> {
     let mut body = Column::new()

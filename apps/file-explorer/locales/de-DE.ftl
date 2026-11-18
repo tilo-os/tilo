@@ -116,8 +116,8 @@ files-transfer-uploading = wird hochgeladen
 files-transfer-verifying = wird verifiziert
 
 ## Freigaben
-files-search-collaborative-records = Kollaborative Dateien
-files-search-record-provenance = { $path }
+files-search-collaborative-files = Kollaborative Dateien
+files-search-provenance = { $path }
 files-share = Teilen…
 files-share-opening = Einladungsfenster wird geöffnet…
 files-share-failed = Das Einladungsfenster wurde nicht geöffnet: { $reason }

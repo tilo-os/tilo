@@ -6,9 +6,9 @@ use crate::{
     VmInstallConfirmation, VmInstallation, VmPresentation, VmUninstallation,
 };
 
-// Version 7 adds explicit presentation and portal-file capability fields to
-// `ManagedApplication`; do not let a v6 peer decode it as the same schema.
-pub const PROTOCOL_VERSION: u16 = 7;
+// Version 8 answers a launch once the program started and reports its end
+// apart (`ProgramEnd` in a list, `running` on an application), and adds `Stop`.
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -27,6 +27,12 @@ pub enum ProtocolRequest {
     /// fallback may be selected.  The server still supplies the entry,
     /// workspace, capability snapshot, and published application id.
     LaunchVmFallback {
+        version: u16,
+        entry_id: String,
+    },
+    /// End every program of the entry this manager's workspace started that
+    /// is still open.
+    Stop {
         version: u16,
         entry_id: String,
     },
@@ -125,6 +131,20 @@ pub struct ManagedApplication {
     pub installation_status: Option<InstallationStatus>,
     pub remove_launcher_available: bool,
     pub vendor_uninstall_available: bool,
+    /// A program of this entry started in the manager's workspace is still open.
+    pub running: bool,
+}
+
+/// A program of the manager's workspace that ended, reported once to each
+/// manager connected when it ended or connecting later.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProgramEnd {
+    pub entry_id: String,
+    pub display_name: String,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    /// Why it never ran, when it did not.
+    pub error: Option<String>,
 }
 
 #[cfg(test)]
@@ -141,7 +161,7 @@ mod tests {
         assert!(!encoded.contains("writable"));
         assert!(
             serde_json::from_str::<ProtocolRequest>(
-                r#"{"method":"launch_vm_with_portal_file","version":7,"entry_id":"windows-entry","writable":true}"#,
+                r#"{"method":"launch_vm_with_portal_file","version":8,"entry_id":"windows-entry","writable":true}"#,
             )
             .is_err()
         );
@@ -173,6 +193,9 @@ pub enum ProtocolResponse {
         vm_availability: VmAvailability,
         vm_installation: Option<VmInstallation>,
         vm_uninstallation: Option<VmUninstallation>,
+        /// The workspace's programs that ended since this connection last
+        /// listed, oldest first.
+        ended: Vec<ProgramEnd>,
     },
     Resolved {
         explanation: ExplainStatus,
@@ -204,6 +227,9 @@ pub enum ProtocolResponse {
         receipt: InstallReceipt,
     },
     LauncherRemoved {
+        entry_id: String,
+    },
+    Stopped {
         entry_id: String,
     },
     VendorUninstalled {

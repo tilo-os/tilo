@@ -6,7 +6,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_relay::web::{TlsSource, WebConfig};
+use tilo_server::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -47,7 +47,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
     assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
 
     let refused = host
-        .relay
+        .server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: TlsSource::Development {

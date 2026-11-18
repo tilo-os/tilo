@@ -16,7 +16,7 @@ use tilo_desktop::workspace_settings::people::{Member as Row, content_of};
 use tilo_desktop_model::UserId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::t;
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     Member, Role, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_session::workspace_people;
@@ -90,11 +90,6 @@ impl AgentsHost for PageRecords {
 
     fn manages(&self, _workspace: &tilo_desktop_model::Workspace, _person: &UserId) -> bool {
         self.administers.load(Ordering::Relaxed)
-    }
-
-    /// The workspace's grants are its host's: a page asks it for changes.
-    fn writes_grants(&self) -> bool {
-        false
     }
 }
 
@@ -188,7 +183,7 @@ impl PageWorkspaceSettings {
                         .into_iter()
                         .find(|held| held.workspace == uuid)
                         .map(WorkspacesReply::Workspace)
-                        .ok_or_else(|| "the host does not govern this workspace".to_owned()),
+                        .ok_or_else(|| "the server does not hold this workspace".to_owned()),
                     other => other,
                 });
             },
@@ -310,8 +305,13 @@ impl PageWorkspaceSettings {
             .collect();
         // The owner first, then everyone else by key, as the session's shell lists them.
         rows.sort_by(|a, b| b.owns.cmp(&a.owns).then_with(|| a.user.cmp(&b.user)));
+        let kept = workspace_people::holders(
+            workspace
+                .as_ref()
+                .map_or(&[], |workspace| &workspace.holders),
+        );
         let mut people =
-            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner)));
+            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner), &kept));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
         let mut tabs = vec![sheet::Tab::People];

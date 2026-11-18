@@ -820,7 +820,7 @@ fn battery_card(
             &state.history.points,
             Span::ALL.get(span).copied().unwrap_or(Span::Day),
             state.now_minute,
-            i64::from(ui::clock::local_now().offset().local_minus_utc()),
+            i64::from(ui::clock::local_now().offset().seconds()),
         ))),
     ];
     if let Some(cycles) = state.battery.cycle_count {
@@ -1518,8 +1518,8 @@ mod tests {
     #[test]
     fn a_stalled_power_daemon_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         crate::area::replace_in_next_window(move |_| {
             PowerArea::over(Arc::new(StalledPower(stalled)))
         });
@@ -1529,14 +1529,14 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("opening the pane");
+        check.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("power-reading")), "{frame}");
         crate::testing::edit_field(&mut app, crate::testing::POWER, "auto_suspend", false)
             .expect("a preference changes while the hardware is read");
         assert!(!app.settings::<PowerPrefs>().get().auto_suspend);
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness

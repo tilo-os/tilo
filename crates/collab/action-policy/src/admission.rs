@@ -5,7 +5,7 @@
 //! some kind at some node. Running one invocation weighs that answer with
 //! who asks and how: someone acting for a person is asked before an action
 //! its person attends, an ask goes to the person only where they can be
-//! reached, and a record's own grants can ask or refuse as well.
+//! reached, and a resource's own grants can ask or refuse as well.
 //! [`admit`] is that weighing, so a broker admitting a caller's invocation,
 //! a window checking its own and a page admitting its person's agree on
 //! every answer.
@@ -66,8 +66,8 @@ pub struct Invoked {
     pub answer: Answer,
     /// Whether the action needs its person attending.
     pub attended: bool,
-    /// The answer for the record the invocation changes, where it is one.
-    pub record: Option<Answer>,
+    /// The answer for the resource the invocation changes, where it is one.
+    pub resource: Option<Answer>,
 }
 
 /// How an invocation is admitted.
@@ -84,8 +84,8 @@ pub enum Admission {
 pub enum Refused {
     /// The grants for the action itself, or an ask nobody can answer.
     Action,
-    /// The grants for the record it changes.
-    Record,
+    /// The grants for the resource it changes.
+    Resource,
 }
 
 /// Admit `invoked` for `asker`.
@@ -98,8 +98,8 @@ pub const fn admit(invoked: Invoked, asker: Asker) -> Result<Admission, Refused>
         Answer::Ask if asker.reachable => true,
         Answer::Ask | Answer::Deny => return Err(Refused::Action),
     };
-    match invoked.record {
-        Some(Answer::Deny) => return Err(Refused::Record),
+    match invoked.resource {
+        Some(Answer::Deny) => return Err(Refused::Resource),
         Some(Answer::Ask) => asks = true,
         Some(Answer::Allow) | None => {}
     }
@@ -120,7 +120,7 @@ mod tests {
         Invoked {
             answer,
             attended: false,
-            record: None,
+            resource: None,
         }
     }
 
@@ -198,26 +198,26 @@ mod tests {
             assert_eq!(admit(attended, person), Ok(Admission::Runs));
         }
 
-        phase a_record_answer_asks_or_refuses_on_top;
+        phase a_resource_answer_asks_or_refuses_on_top;
         {
             let person = Asker {
                 reachable: true,
                 delegated: false,
             };
             for answer in ANSWERS {
-                let record = Invoked {
-                    record: Some(answer),
+                let resource = Invoked {
+                    resource: Some(answer),
                     ..invoked(Answer::Allow)
                 };
                 let expected = match answer {
                     Answer::Allow => Ok(Admission::Runs),
                     Answer::Ask => Ok(Admission::AsksFirst),
-                    Answer::Deny => Err(Refused::Record),
+                    Answer::Deny => Err(Refused::Resource),
                 };
-                assert_eq!(admit(record, person), expected);
+                assert_eq!(admit(resource, person), expected);
             }
             let denied = Invoked {
-                record: Some(Answer::Deny),
+                resource: Some(Answer::Deny),
                 ..invoked(Answer::Deny)
             };
             assert_eq!(

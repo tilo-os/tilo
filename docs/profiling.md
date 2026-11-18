@@ -36,7 +36,7 @@ A panel appears top-right with:
 
 The HUD is painted *after* the frame's timing is committed, so it never inflates
 the numbers it reports. Unlike the debug overlay (`TILO_UI_DEBUG`), `TILO_PROFILE`
-is **not** gated on `debug_assertions` — you profile release builds, because
+is **not** depending on `debug_assertions` — you profile release builds, because
 that is where frame cost matters.
 
 ---

@@ -14,9 +14,9 @@ use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
 
-/// How the receiver knows the sender's standing in the workspace.
+/// How the receiver knows the sender's access in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum SenderAccess {
     /// The receiver resolved the sender to this person root, from a device
     /// held to the foreign-device bound or not. The batch needs undoable
     /// changes on the workspace allowed under the policy the receiver already
@@ -24,9 +24,15 @@ pub enum Standing {
     Member { person: [u8; 32], foreign: bool },
     /// The receiver's transport decided this sender may change the workspace before
     /// it delivered the batch, and the receiver has no roster entry of its own to
-    /// decide it again (the shell's network gate, `peer_workspace_allows`). Every
+    /// decide it again (the shell's network check, `peer_workspace_allows`). Every
     /// other check still applies.
     TransportAuthorized,
+    /// The sender is a device of `person`, who is no member, named among the
+    /// workspace's holders by its own signed address: a server of another
+    /// person keeping the workspace. It writes the redemptions of
+    /// invitations it answers and its own copy's row, and nothing else
+    /// ([`holder_writes`]).
+    Holder { person: [u8; 32] },
 }
 
 /// The sender of a batch, as the receiver's transport authenticated it.
@@ -35,14 +41,14 @@ pub struct Writer<'a> {
     /// The authenticated sender key, spelt the way the topology registry
     /// names it.
     pub key: &'a str,
-    pub standing: Standing,
+    pub access: SenderAccess,
 }
 
 impl Writer<'_> {
     fn person(&self) -> Option<&[u8; 32]> {
-        match &self.standing {
-            Standing::Member { person, .. } => Some(person),
-            Standing::TransportAuthorized => None,
+        match &self.access {
+            SenderAccess::Member { person, .. } | SenderAccess::Holder { person } => Some(person),
+            SenderAccess::TransportAuthorized => None,
         }
     }
 
@@ -51,7 +57,7 @@ impl Writer<'_> {
     /// knows the owner from what it joined through, never from the batch,
     /// so a first answer cannot make its sender the owner.
     fn governs(&self, owner: &[u8; 32]) -> bool {
-        self.person() == Some(owner)
+        matches!(self.access, SenderAccess::Member { person, .. } if person == *owner)
     }
 }
 
@@ -113,6 +119,9 @@ pub enum WorkspaceRefusal {
     /// ([`super::refusal_slices_kept`]).
     RefusalWriter,
     Coverage(String),
+    /// A change erases or lowers the cut of a device's removal
+    /// ([`crate::removals::monotonic`]).
+    Removals(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
     /// The media policy is malformed or its transition is not permitted.
@@ -129,6 +138,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::WriteForbidden => f.write_str("workspace write forbidden"),
             Self::Malformed(error)
             | Self::Coverage(error)
+            | Self::Removals(error)
             | Self::Durability(error)
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
@@ -185,7 +195,7 @@ impl From<WorkspaceRefusal> for AdmissionFailure {
 /// workspace document must pass, in one place for every receiver.
 ///
 /// 1. The sender may make undoable changes on the workspace, unless it is the
-///    owner's device (who may grant itself anything) — [`Standing`].
+///    owner's device (who may grant itself anything) — [`SenderAccess`].
 /// 2. The batch decodes under the shared incoming limits ([`super::candidate`]).
 /// 3. Then [`check_candidate`].
 ///
@@ -197,6 +207,9 @@ pub fn admit_workspace_changes(
     input: WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
+    if matches!(input.source.access, SenderAccess::Holder { .. }) {
+        return holder_writes(&input, changes);
+    }
     let governs = input.source.governs(input.owner);
     let writes = governs || may_write(input.before, input.workspace, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
@@ -254,6 +267,111 @@ pub fn admit_workspace_changes(
         }
         super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter.into()),
     }
+}
+
+/// What a holder that is no member may write: the row saying where its own
+/// copy stands ([`crate::state::HELD_COPIES_KEY`]), and the redemptions of
+/// invitations, each admitting the person its signed invitation names
+/// ([`super::membership::admit_operations`]), and the device rows of a
+/// member's further device or key, which any key holder writes in
+/// ([`super::membership::admit_operations`] checks the row's person is a
+/// member's); nothing else. Each is a rule every device computes alike: the
+/// row is about the holder itself, and a redemption or device row carries
+/// what decides it. Whether the sender is a holder is read where the batch
+/// was written (its dependencies), from the signed holder entries there, so
+/// every receiver decides it alike whenever the batch reaches it. Adding
+/// people otherwise, every change of a role, windows and layout stay a
+/// member's.
+fn holder_writes(
+    input: &WorkspaceAdmission<'_>,
+    changes: &[Vec<u8>],
+) -> Result<AdmittedWorkspace, AdmissionFailure> {
+    let before = input.before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
+    let at = super::membership::dependency_state(before, changes).map_err(membership)?;
+    let named = crate::state::keeping_devices_of(&at)
+        .iter()
+        .any(|hint| hex::encode(hint.host.device_public_key) == input.source.key);
+    if !named {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    let super::base::Lineage::Same { changes, replaced } =
+        super::base::lineage(Some(before), changes)
+    else {
+        return Err(WorkspaceRefusal::GovernanceWriter.into());
+    };
+    let pruned = super::base::pruned(Some(before), replaced);
+    let candidate = super::candidate(Some(pruned.as_ref().unwrap_or(before)), &changes)?;
+    if only_own_copy_row(before, &candidate, input.source.key) {
+        let media = checked(input, &candidate, false)?;
+        return Ok(AdmittedWorkspace {
+            candidate,
+            media,
+            rebased: false,
+        });
+    }
+    let held = crate::members::ops(before);
+    let only_admissions = crate::members::ops(&candidate)
+        .iter()
+        .filter(|(id, _)| !held.contains_key(*id))
+        .all(|(_, op)| match &op.command {
+            crate::members::MembershipOpCommand::Admit { .. } => true,
+            // A member's further device is a device row and nothing else.
+            crate::members::MembershipOpCommand::Governance { rows } => {
+                *rows == [super::GovernanceRow::Identities]
+            }
+            crate::members::MembershipOpCommand::Project { .. } => false,
+        });
+    let grown =
+        crate::members::growth(Some(before), &candidate).map_err(WorkspaceRefusal::Membership)?;
+    if !only_admissions || grown == 0 {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    super::membership::admit_operations(
+        Some(before),
+        &candidate,
+        &changes,
+        input.workspace,
+        input.now_ns,
+    )
+    .map_err(membership)?;
+    let media = checked(input, &candidate, true)?;
+    Ok(AdmittedWorkspace {
+        candidate,
+        media,
+        rebased: false,
+    })
+}
+
+/// Whether all `after` changes of `before` is the row of `own` (a device
+/// key, hex) among the held copies, and the map holding the rows when
+/// `before` had none.
+fn only_own_copy_row(before: &AutoCommit, after: &AutoCommit, own: &str) -> bool {
+    use automerge::patches::PatchAction;
+    use automerge::{ObjType, Prop, ReadDoc as _, Value};
+    let rows = crate::state::HELD_COPIES_KEY;
+    let had_rows = before.get(automerge::ROOT, rows).ok().flatten().is_some();
+    let from = before.clone().get_heads();
+    let mut after = after.clone();
+    let to = after.get_heads();
+    let patches = after.diff(&from, &to);
+    !patches.is_empty()
+        && patches
+            .iter()
+            .all(|patch| match (patch.path.as_slice(), &patch.action) {
+                (
+                    [],
+                    PatchAction::PutMap {
+                        key,
+                        value: (Value::Object(ObjType::Map), _),
+                        conflict: false,
+                    },
+                ) => key == rows && !had_rows,
+                (
+                    [(_, Prop::Map(map))],
+                    PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key },
+                ) => map == rows && key == own,
+                _ => false,
+            })
 }
 
 fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure {
@@ -341,6 +459,7 @@ fn checked(
         return Err(WorkspaceRefusal::RedemptionImmutable);
     }
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
+    crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;
     media::validate_transition(before, candidate, media::TransitionMode::Admission)
         .map_err(WorkspaceRefusal::Media)
@@ -399,7 +518,7 @@ fn may_write(
     source: &Writer<'_>,
     now_ns: u64,
 ) -> Result<bool, WorkspaceRefusal> {
-    let Standing::Member { person, foreign } = source.standing else {
+    let SenderAccess::Member { person, foreign } = source.access else {
         return Ok(true);
     };
     let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;

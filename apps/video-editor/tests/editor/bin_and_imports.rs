@@ -66,8 +66,8 @@ fn a_picked_file_lands_in_the_document_with_probed_metadata() {
     let dir = scratch();
     let still = png(dir.path(), "still.png", 480, 270);
     let mut app = blank();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     recorder.respond_to_pick_multiple(MultiOutcome::Selected(vec![still]));
     app.effect(&VideoEditorEffect::Import { path: None })
         .unwrap();
@@ -157,8 +157,8 @@ fn a_partly_refused_batch_names_what_it_refused_and_reads_as_a_failure() {
         not_media(dir.path(), "notes.mov"),
     ];
     let mut app = blank();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     recorder.respond_to_pick_multiple(MultiOutcome::Selected(batch));
     let report = app
         .effect(&VideoEditorEffect::Import { path: None })
@@ -183,8 +183,8 @@ fn a_chooser_refusal_reads_as_a_failure_in_its_own_words() {
     // could be guessed from.
     const REFUSAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
     let mut app = blank();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
 
     recorder.respond_to_pick_multiple(MultiOutcome::Failed(REFUSAL.into()));
     let _ = app.effect(&VideoEditorEffect::Import { path: None });

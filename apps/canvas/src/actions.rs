@@ -907,7 +907,7 @@ fn named_mark(id: Option<&str>, index: usize) -> String {
 }
 
 /// `shape` with a rect's negative width or height turned to reach the other
-/// way from its corner, as a canvas `fillRect` draws it: a bar standing on
+/// way from its corner, as a canvas `fillRect` draws it: a bar on
 /// its baseline may be written with `y` at the baseline and a negative
 /// height. The same box, with positive sides.
 fn upright(shape: &Shape) -> Shape {

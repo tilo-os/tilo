@@ -1,5 +1,5 @@
 //! Descriptor-relative, bounded collection only after the exact service lease
-//! has a namespace-exit witness. The collected bytes never enter an app loan.
+//! has a namespace-exit proof. The collected bytes never enter an app loan.
 use super::{
     AsRawFd, CString, File, FromRawFd, MetadataExt, OsStr, RamDirectory, SERVICE_PACKAGE,
     component, fd_path, io, open_directory, ram_backing,

@@ -36,7 +36,7 @@ use crate::registry::{FieldInfo, TypeInfo};
 use crate::run::Journal;
 use crate::store::{
     Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, LinkHow,
-    ListingChange, Mutation, NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store,
+    ListingChange, Mutation, NewResource, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store,
     StoreError, SubId, Txn, Version,
 };
 use crate::textdiff;
@@ -612,7 +612,7 @@ impl Inner {
         &mut self,
         at: &ResourceRef,
         field: &str,
-        (item, index): (&NewRecord, Option<usize>),
+        (item, index): (&NewResource, Option<usize>),
         id: Option<String>,
     ) -> Result<Applied, StoreError> {
         let id = id.unwrap_or_else(|| self.fresh("i"));
@@ -775,7 +775,7 @@ fn commit_with_note(doc: &mut AutoCommit, note: &ChangeNote) -> Result<(), Store
 
 /// The document of `record`, as it starts: its type, the app that keeps it, its items, and
 /// each field of it as its kind has it.
-fn new_doc(record: &NewRecord) -> Result<AutoCommit, StoreError> {
+fn new_doc(record: &NewResource) -> Result<AutoCommit, StoreError> {
     let mut doc = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
     doc.put(&ROOT, TYPE_KEY, record.ty.as_str())
         .map_err(backend)?;
@@ -794,12 +794,16 @@ impl Store for AmStore {
         self.inner.borrow_mut().fresh(prefix)
     }
 
-    fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError> {
+    fn create(&mut self, record: &NewResource) -> Result<ResourceRef, StoreError> {
         let id = self.inner.borrow_mut().fresh("d");
         self.create_with_id(record, &id)
     }
 
-    fn create_with_id(&mut self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
+    fn create_with_id(
+        &mut self,
+        record: &NewResource,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
         let mut inner = self.inner.borrow_mut();
         if inner.docs.contains_key(id) {
             return Err(StoreError::Invalid(format!("resource {id} exists")));
@@ -828,7 +832,7 @@ impl Store for AmStore {
     fn create_in(
         &mut self,
         txn: Txn,
-        record: &NewRecord,
+        record: &NewResource,
         id: &str,
     ) -> Result<ResourceRef, StoreError> {
         let mut inner = self.inner.borrow_mut();

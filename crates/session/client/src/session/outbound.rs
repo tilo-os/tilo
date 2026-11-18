@@ -1,18 +1,20 @@
-//! What this session writes: its custody of a device's writes.
+//! What this session writes: its ownership of a device's writes.
 //!
 //! A write a page publishes is committed to this device's replica sealed with
 //! its record's keys ([`Task::commit_held`]); never in the clear, so frames
-//! wait for the keys. The replica's custody is what this session owes its
-//! host: it is sent as commits ([`Task::send_custody`]) and retired as the
+//! wait for the keys. The replica's ownership is what this session owes its
+//! host: it is sent as commits ([`Task::send_ownership`]) and retired as the
 //! host answers them ([`Task::retire_answered`]), and a barrier completes once
-//! everything in custody when it was asked is answered.
+//! everything held when it was asked is answered.
 
 use super::{
-    Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute, Envelope,
-    FailureKind, RelayClient, Task,
+    Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, DocumentRoute, Envelope, FailureKind,
+    OwnershipEntry, ServerClient, Task,
 };
 use tilo_peer_state::owner::WriteRefusal;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
+
+use crate::network::{Kept, Waits};
 
 /// A record's history is full and this device could not compact it: its writes wait.
 const RECORD_FULL: &str = "record-history-full";
@@ -20,6 +22,24 @@ const RECORD_FULL: &str = "record-history-full";
 const SIGNING_FAILED: &str = "signing-failed";
 /// The failures of writes that wait, held: gone once nothing is held.
 const HELD_CODES: &[&str] = &[RECORD_FULL, SIGNING_FAILED];
+
+/// The workspaces a barrier answers for ([`crate::Outbox::barrier_of`]): these alone, or every
+/// one this session joined.
+pub(super) type Scope = Option<BTreeSet<WorkspaceId>>;
+
+/// A barrier waiting on what this device owes: the writes still unanswered of those it was
+/// asked about, the refusal one of them met, where its outcome goes, and the workspaces it
+/// answers for.
+pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope);
+
+/// Whether `route` is of a workspace `scope` answers for.
+fn within(scope: Option<&BTreeSet<WorkspaceId>>, route: &DocumentRoute) -> bool {
+    scope.is_none_or(|workspaces| {
+        route
+            .workspace_id()
+            .is_ok_and(|workspace| workspaces.contains(&workspace))
+    })
+}
 
 impl Task {
     /// `route` holds new writes of this device, held as the session was told of them: to commit
@@ -34,6 +54,9 @@ impl Task {
             );
             return;
         }
+        self.held_since
+            .entry(route.clone())
+            .or_insert_with(tilo_clock::now);
         self.open_channel(route);
         if self.keys_of(route).is_some() {
             self.outbound_due = true;
@@ -87,14 +110,20 @@ impl Task {
                 });
             });
         }
+        {
+            // What holds nothing any more waits for nothing.
+            let held = self.engine.held_writes().lock();
+            self.held_since.retain(|route, _| held.contains_key(route));
+            self.kept_why.retain(|route, _| held.contains_key(route));
+        }
         self.persist_keys(true);
         self.release_barriers(&refused);
     }
 
-    /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn.
+    /// Seal, sign and commit `frames` of `route` into this device's ownership, in one owner turn.
     /// Answers `None` while they stay held, and once it is done with them, whether they were
     /// committed or refused for good, and why. Writes its record cannot take yet (its keys went
-    /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and custody keeps however long
+    /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and ownership keeps however long
     /// its host is away.
     /// A change needs the record it changes. The keys of a record this device opened can come
     /// before the record does, and a change drafted then would be refused and let go, while the
@@ -136,7 +165,7 @@ impl Task {
         let author = self.signer.device_public_key();
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         let written = (route.app_id.as_str(), route.document.as_str());
-        // Drafted in the owner's turn, signed by this device's custody outside it.
+        // Drafted in the owner's turn, signed by this device's ownership outside it.
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
             frames
                 .iter()
@@ -162,7 +191,7 @@ impl Task {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
-                            record: route.document.clone(),
+                            document: route.document.clone(),
                             envelope: Box::new(op),
                             own: view.peer().own_write(written.0, written.1, &author),
                         },
@@ -177,6 +206,7 @@ impl Task {
             Ok(committed) => committed,
             Err(refusal @ WriteRefusal::HistoryFull { .. }) => {
                 tracing::warn!(%refusal, "writes wait for their record's history to be compacted");
+                self.keep_for(route, Waits::History);
                 self.fail(
                     RECORD_FULL,
                     "This record is too large to share your latest changes. They are kept on this device.",
@@ -185,6 +215,7 @@ impl Task {
             }
             Err(WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
+                self.keep_for(route, Waits::Signature);
                 self.fail(
                     SIGNING_FAILED,
                     "This device could not sign your latest changes. They are kept on this device.",
@@ -192,6 +223,7 @@ impl Task {
                 return None;
             }
             Err(WriteRefusal::Waiting(prerequisite)) => {
+                self.keep_for(route, Waits::Prerequisite(prerequisite.to_string()));
                 tracing::debug!(app = %route.app_id, record = %route.document, %prerequisite,
                     "writes wait for what the workspace has not admitted here yet");
                 return None;
@@ -206,20 +238,24 @@ impl Task {
         if committed.is_empty() {
             return Some(Ok(()));
         }
+        self.owes(route);
         self.landed(route, Some(self.config.cert.device_public_key));
         let ids: Vec<[u8; 32]> = committed
             .iter()
             .filter_map(|(request, _)| tilo_peer_state::owner::outgoing_bytes(request).ok())
-            .map(|bytes| tilo_relay_protocol::compaction::entry_id(&bytes))
+            .map(|bytes| tilo_server_protocol::compaction::entry_id(&bytes))
             .collect();
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
-        self.count_custody();
+        self.count_ownership();
         Some(Ok(()))
     }
 
-    /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.
-    pub(super) fn custody(&self, workspace: tilo_desktop_model::WorkspaceId) -> Vec<CustodyEntry> {
+    /// `workspace`'s writes in this device's ownership: id, bytes, channel and retention.
+    pub(super) fn ownership(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Vec<OwnershipEntry> {
         self.replicas
             .owner()
             .with_outgoing(workspace, tilo_clock::wall(), |_, outgoing| {
@@ -238,10 +274,14 @@ impl Task {
             .unwrap_or_default()
     }
 
-    /// Send `workspace_id`'s writes in this device's custody its host was not sent on this
+    /// Send `workspace_id`'s writes in this device's ownership its host was not sent on this
     /// connection, as far as the transport takes them; the rest go as the host's answers make
     /// workspace. Returns `false` when the transport took no more.
-    pub(super) fn send_custody(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
+    pub(super) fn send_ownership(
+        &mut self,
+        workspace_id: WorkspaceId,
+        client: &ServerClient,
+    ) -> bool {
         let Some(workspace) = self.replicas.workspace(workspace_id) else {
             return true;
         };
@@ -278,13 +318,13 @@ impl Task {
                 },
             )
             .unwrap_or(true);
-        self.count_custody();
+        self.count_ownership();
         delivered
     }
 
-    /// Count what this device's custody still owes its hosts, over every workspace, and follow
-    /// the writes that left it unanswered ([`Self::follow_custody`]).
-    pub(super) fn count_custody(&mut self) {
+    /// Count what this device's ownership still owes its hosts, over every workspace, and follow
+    /// the writes that left it unanswered ([`Self::follow_ownership`]).
+    pub(super) fn count_ownership(&mut self) {
         let owner = self.replicas.owner();
         let pending = self
             .workspaces
@@ -294,58 +334,201 @@ impl Task {
             .sum();
         self.reports
             .change(|status| status.outgoing_pending = pending);
-        self.follow_custody();
+        self.follow_ownership();
     }
 
-    /// Writes leave custody unanswered when another write carries them: a compaction of their
+    /// Writes leave ownership unanswered when another write carries them: a compaction of their
     /// record folds the ones it covers, and a renewal carries the change of the write it renews.
-    /// A barrier owed one of them is owed what custody holds now, which carries it, and
+    /// A barrier owed one of them is owed what ownership holds now, which carries it, and
     /// completes once that is answered; its writes never come back to be answered themselves.
-    fn follow_custody(&mut self) {
+    fn follow_ownership(&mut self) {
         if self.barriers.is_empty() {
             return;
         }
-        let owed = self.owed();
+        // Read once for the barriers that answer for every workspace, and for each of those
+        // that answer for their own.
+        let every = self
+            .barriers
+            .iter()
+            .any(|(.., scope)| scope.is_none())
+            .then(|| self.owed(None));
         let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
             .into_iter()
-            .map(|(mut left, refused, complete)| {
-                if !left.is_subset(&owed) {
-                    left.clone_from(&owed);
+            .map(|(mut left, refused, complete, scope)| {
+                let own = scope.as_ref().map(|named| self.owed(Some(named)));
+                if let Some(owed) = own.as_ref().or(every.as_ref())
+                    && !left.is_subset(owed)
+                {
+                    left.clone_from(owed);
                 }
-                (left, refused, complete)
+                (left, refused, complete, scope)
             })
-            .partition(|(left, _, _)| !left.is_empty());
+            .partition(|(left, ..)| !left.is_empty());
         self.barriers = waiting;
-        for (_, refused, complete) in done {
+        for (_, refused, complete, _) in done {
             let _ = complete.send(refused.map_or(Ok(()), Err));
         }
     }
 
-    /// Complete `done` once every write now in this device's custody is answered by its host, or
-    /// the write that carries it is ([`Self::follow_custody`]).
-    pub(super) fn await_custody(&mut self, done: Completion, refused: Option<String>) {
-        let owed = self.owed();
-        if owed.is_empty() {
-            let _ = done.send(refused.map_or(Ok(()), Err));
+    /// Complete `done` once every write said so far is durable at this device's holder: every
+    /// write of this session, or, with a `scope`, those to its workspaces alone. What another
+    /// workspace still holds back or is owed then keeps nothing waiting here: a write that
+    /// waits in one workspace, for its document or for its keys, says nothing about the
+    /// others'.
+    pub(super) fn barrier(&mut self, done: Completion, scope: Scope) {
+        let held: BTreeSet<DocumentRoute> = self
+            .engine
+            .held_writes()
+            .lock()
+            .keys()
+            .filter(|route| within(scope.as_ref(), route))
+            .cloned()
+            .collect();
+        if held.is_empty() {
+            self.await_ownership(done, None, scope);
         } else {
-            self.barriers.push((owed, refused, done));
+            self.held_barriers.push((held, done, scope));
         }
     }
 
-    /// Every write in this device's custody, over every workspace, sendable now or not.
-    fn owed(&self) -> BTreeSet<[u8; 32]> {
+    /// Complete `done` once every write now in this device's ownership is answered by its host, or
+    /// the write that carries it is ([`Self::follow_ownership`]): every write, or those of
+    /// `scope`'s workspaces alone.
+    pub(super) fn await_ownership(
+        &mut self,
+        done: Completion,
+        refused: Option<String>,
+        scope: Scope,
+    ) {
+        let owed = self.owed(scope.as_ref());
+        if owed.is_empty() {
+            let _ = done.send(refused.map_or(Ok(()), Err));
+        } else {
+            self.barriers.push((owed, refused, done, scope));
+        }
+    }
+
+    /// Every write in this device's ownership, sendable now or not: over every workspace, or
+    /// over `scope`'s alone.
+    fn owed(&self, scope: Option<&BTreeSet<WorkspaceId>>) -> BTreeSet<[u8; 32]> {
         let owner = self.replicas.owner();
         self.workspaces
             .iter()
+            .filter(|workspace_id| scope.is_none_or(|named| named.contains(*workspace_id)))
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
             .flat_map(|workspace| owner.owed_writes(workspace).unwrap_or_default())
             .collect()
     }
 
-    /// Renew this device's sealed writes that expired in custody while its host was away, so
+    /// Whether this device's replica holds nothing of `route`'s document.
+    fn holds_none_of(&self, route: &DocumentRoute) -> bool {
+        tilo_desktop_model::WorkspaceId::parse(&route.cluster_id).is_some_and(|workspace| {
+            self.replicas.owner().with_current(workspace, |view| {
+                Ok(view.peer().holds_document(&route.app_id, &route.document))
+            }) == Ok(false)
+        })
+    }
+
+    /// Note what `route`'s held writes wait for, as this device's replica named it.
+    fn keep_for(&mut self, route: &DocumentRoute, waits: Waits) {
+        self.kept_why.insert(route.clone(), waits);
+    }
+
+    /// Note that `route` has committed writes of this device their holder has not answered,
+    /// from now unless it had some already.
+    fn owes(&mut self, route: &DocumentRoute) {
+        self.kept_why.remove(route);
+        self.owed_since
+            .entry(route.clone())
+            .or_insert_with(tilo_clock::now);
+    }
+
+    /// The documents of `scope`'s workspaces that hold writes of this device not committed to
+    /// its replica yet, each with whether the first of them is a change.
+    fn held_in(&self, scope: Option<&BTreeSet<WorkspaceId>>) -> Vec<(DocumentRoute, bool)> {
+        self.engine
+            .held_writes()
+            .lock()
+            .iter()
+            .filter(|(route, _)| within(scope, route))
+            .map(|(route, frames)| {
+                let changes = frames.first().is_some_and(|frame| {
+                    collab_types::ContentRetention::of_frame(frame)
+                        == collab_types::ContentRetention::Delta
+                });
+                (route.clone(), changes)
+            })
+            .collect()
+    }
+
+    /// What this session still keeps of what this device wrote to `workspaces`, a document
+    /// each, and what its writes wait for ([`crate::Outbox::kept_of`]): the documents whose
+    /// writes are held, not committed to this device's replica yet, then those whose committed
+    /// writes their holder has not answered. Read as it stands now, so a write is named with
+    /// what keeps it now, whatever kept it before.
+    pub(super) fn keeps(&mut self, workspaces: &BTreeSet<WorkspaceId>) -> Vec<Kept> {
+        let now = tilo_clock::now();
+        let scope = Some(workspaces);
+        let mut kept: Vec<Kept> = self
+            .held_in(scope)
+            .into_iter()
+            .map(|(route, changes)| {
+                let waits = if self.keys_of(&route).is_none() {
+                    Waits::Keys
+                } else if changes && self.holds_none_of(&route) {
+                    Waits::Document
+                } else {
+                    self.kept_why.get(&route).cloned().unwrap_or(Waits::Commit)
+                };
+                let age = self
+                    .held_since
+                    .get(&route)
+                    .map_or(std::time::Duration::ZERO, |since| {
+                        now.saturating_duration_since(*since)
+                    });
+                Kept { route, waits, age }
+            })
+            .collect();
+        let owner = self.replicas.owner();
+        let owed: BTreeSet<DocumentRoute> = self
+            .workspaces
+            .iter()
+            .filter(|workspace_id| workspaces.contains(*workspace_id))
+            .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
+            .flat_map(|workspace| {
+                let unanswered: BTreeSet<[u8; 32]> = owner
+                    .owed_writes(workspace)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                self.ownership(workspace)
+                    .into_iter()
+                    .filter(move |entry| unanswered.contains(&entry.0))
+            })
+            .filter_map(|entry| DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?))
+            .collect();
+        self.owed_since
+            .retain(|route, _| !within(scope, route) || owed.contains(route));
+        kept.extend(owed.into_iter().map(|route| {
+            let age = self
+                .owed_since
+                .get(&route)
+                .map_or(std::time::Duration::ZERO, |since| {
+                    now.saturating_duration_since(*since)
+                });
+            Kept {
+                route,
+                waits: Waits::Holder,
+                age,
+            }
+        }));
+        kept
+    }
+
+    /// Renew this device's sealed writes that expired held while its host was away, so
     /// they still go; a barrier owed the original is owed nothing more for it, as the renewal
     /// carries the same change.
-    pub(super) async fn renew_custody(&mut self) {
+    pub(super) async fn renew_ownership(&mut self) {
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         let mut renewed = 0usize;
         for workspace_id in self.workspaces.clone() {
@@ -363,7 +546,7 @@ impl Task {
             }
         }
         if renewed > 0 {
-            self.count_custody();
+            self.count_ownership();
         }
     }
 
@@ -374,21 +557,21 @@ impl Task {
         let held = self.engine.held_writes().lock().clone();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
-            .partition(|(routes, _)| routes.iter().any(|route| held.contains_key(route)));
+            .partition(|(routes, ..)| routes.iter().any(|route| held.contains_key(route)));
         self.held_barriers = waiting;
-        for (routes, done) in released {
+        for (routes, done, scope) in released {
             let why = routes.iter().find_map(|route| refused.get(route)).cloned();
-            self.await_custody(done, why);
+            self.await_ownership(done, why, scope);
         }
     }
 
     /// Take the host's answer to the write it answered as `op`: durable, or refused with the
-    /// host's `refusal` (it can never become durable). Answers retire from custody together
+    /// host's `refusal` (it can never become durable). Answers retire from ownership together
     /// ([`Self::retire_answered`]).
     pub(super) fn acknowledge(
         &mut self,
         op: [u8; 16],
-        outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
+        outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     ) {
         let Some((workspace, id)) = self
             .sending
@@ -398,7 +581,7 @@ impl Task {
             return;
         };
         // A host that was not ready for the write takes it once it says the workspace is ready:
-        // the write stays in custody and goes again then. One the host refuses as not ready
+        // the write stays held and goes again then. One the host refuses as not ready
         // after it said it was is refused: the host will not take it on this connection.
         if let Err(refusal) = &outcome
             && refusal.passes_once_ready()
@@ -418,10 +601,10 @@ impl Task {
         }
         self.not_ready.remove(&id);
         // What the refused write would have brought, as its envelope claims it: read before the
-        // entry leaves custody, so whoever holds the record withdraws exactly those changes.
+        // entry leaves ownership, so whoever holds the record withdraws exactly those changes.
         let withdrawn = match &outcome {
             Err(reason) => self
-                .custody(workspace)
+                .ownership(workspace)
                 .into_iter()
                 .find(|entry| entry.0 == id)
                 .and_then(|entry| {
@@ -441,7 +624,7 @@ impl Task {
         });
     }
 
-    /// Retire every write the host answered from custody, in one owner turn per workspace, then
+    /// Retire every write the host answered from ownership, in one owner turn per workspace, then
     /// tell whoever waited for them.
     pub(super) fn retire_answered(&mut self) {
         if self.answered.is_empty() {
@@ -483,26 +666,26 @@ impl Task {
             let refusal = outcome.err().map(|refusal| refusal_text(&refusal));
             let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
                 .into_iter()
-                .map(|(mut owed, mut refused, complete)| {
+                .map(|(mut owed, mut refused, complete, scope)| {
                     if owed.remove(&id) && refused.is_none() {
                         refused.clone_from(&refusal);
                     }
-                    (owed, refused, complete)
+                    (owed, refused, complete, scope)
                 })
-                .partition(|(owed, _, _)| !owed.is_empty());
+                .partition(|(owed, ..)| !owed.is_empty());
             self.barriers = waiting;
-            for (_, refused, complete) in done {
+            for (_, refused, complete, _) in done {
                 let _ = complete.send(refused.map_or(Ok(()), Err));
             }
         }
-        // Counted once the answers took their writes off the barriers: a write that left custody
+        // Counted once the answers took their writes off the barriers: a write that left ownership
         // answered is not one another write carries.
-        self.count_custody();
+        self.count_ownership();
     }
 }
 
 /// What this session reports when the host would not take a change it read.
-fn refusal_text(refusal: &tilo_relay_protocol::refusal::Refusal) -> String {
+fn refusal_text(refusal: &tilo_server_protocol::refusal::Refusal) -> String {
     format!("{REFUSAL}: {refusal}")
 }
 

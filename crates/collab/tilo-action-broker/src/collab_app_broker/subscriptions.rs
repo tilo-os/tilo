@@ -8,16 +8,16 @@ use tokio::sync::mpsc;
 /// This broker's verdict for an op it delivers: the one it decided when it
 /// admitted the op, read off the op itself. A sealed op is sealed because
 /// its channel requires it, and cleartext is admitted because the channel's
-/// gates admitted it then. The app applies that verdict and keeps no policy
+/// checks admitted it then. The app applies that verdict and keeps no policy
 /// of its own.
 ///
-/// Reading the channel's gate again here would decide the op a second time,
+/// Reading the channel's check again here would decide the op a second time,
 /// by whatever the channel requires now: a write admitted in the clear a
 /// moment before the channel started requiring encryption — before its
 /// record sealed, or in a record whose seal another device's write made
 /// after it — would be refused when it is delivered again, and whether it
-/// reached an app would depend on when the gate arrived against when the
-/// write did. Refusing what the gate does not take is the ingress's job,
+/// reached an app would depend on when the check arrived against when the
+/// write did. Refusing what the check does not take is the ingress's job,
 /// before the op is recorded ([`crate::collab_inbound::deliver`]); what was
 /// admitted is history.
 pub(super) fn recorded_admission(envelope: &collab_types::SignedOp) -> OpAdmission {
@@ -32,7 +32,7 @@ pub(super) fn recorded_admission(envelope: &collab_types::SignedOp) -> OpAdmissi
 /// admitted for its record before. The workspace delivers a record's history
 /// once, when this device connects; an app that opens the record later
 /// would otherwise build on changes it never received. Its CRDT drops what
-/// it already holds. Every op in the log passed the channel's gate when it
+/// it already holds. Every op in the log passed the channel's check when it
 /// arrived, so cleartext there stays admitted after the channel later
 /// starts requiring encryption: the history is the channel's own.
 pub(super) fn admitted_ops(
@@ -536,11 +536,11 @@ mod tests {
     /// history a window opened now is sent, and the op fanned out again —
     /// carries the verdict it was admitted under: the history is the
     /// channel's own, and what a window receives never depends on how long
-    /// after the write the gate arrived.
+    /// after the write the check arrived.
     #[test]
     fn cleartext_admitted_before_the_channel_required_encryption_stays_admitted() {
         use std::sync::Arc;
-        // A workspace by the id it is known by: the gate is registered under it.
+        // A workspace by the id it is known by: the check is registered under it.
         let route = CrdtRoute::record("so.tilo.chat", "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b", "");
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
         let op = SignedOp::new_unsigned(
@@ -571,9 +571,9 @@ mod tests {
             "the subscriber holds exactly the op the broker admitted"
         );
         // The workspace's group requires encryption from now on.
-        channels.lock().unwrap().register_gate(
+        channels.lock().unwrap().register_seal_check(
             collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
-            key_group::SealGate {
+            key_group::SealCheck {
                 encryption_required: true,
             },
         );

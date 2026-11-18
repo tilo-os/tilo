@@ -48,7 +48,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     .map_err(|error| format!("could not connect {} to its services: {error}", app.app_id))?;
     let chooser = Chooser::start(&app.app_id)
         .map_err(|error| format!("could not give {} a file chooser: {error}", app.app_id))?;
-    let capture = Capture::start(apps, app, &manifest.sandbox.portals)
+    let capture = Capture::start(apps, app, &manifest)
         .map_err(|error| format!("could not give {} its capture broker: {error}", app.app_id))?;
     let mut inherit_fds = services.fds();
     inherit_fds.push(chooser.app_end.as_raw_fd());
@@ -74,7 +74,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         runtime_dylib_dir: None,
         container_dir: container,
         capabilities: launcher::capabilities::CapabilityPlan::empty(),
-        egress: launcher::netgate::EgressDecision::resolve(
+        egress: launcher::egress_proxy::EgressDecision::resolve(
             &manifest.sandbox.net.mode,
             &manifest.sandbox.net.hosts,
             &[],
@@ -125,8 +125,8 @@ impl Chooser {
 /// The camera and microphone a confined app asks for over its end of a
 /// socket pair: this runtime, which holds the TCC permission, captures on its
 /// behalf once the person consents, and only the devices the app declares
-/// (`[sandbox.portals] camera` / `microphone` = `"via-host"`)
-/// (`tilo_capture::broker`).
+/// (`camera` / `microphone` in its `[capabilities]`), as the Linux launcher
+/// binds them (`tilo_capture::broker`).
 struct Capture {
     app_end: std::os::unix::net::UnixDatagram,
 }
@@ -135,14 +135,14 @@ impl Capture {
     fn start(
         apps: &Apps,
         app: &InstalledApp,
-        portals: &std::collections::BTreeMap<String, launcher::manifest::PortalPolicy>,
+        manifest: &launcher::manifest::ManifestView,
     ) -> std::io::Result<Self> {
         use tilo_capture::DeviceKind;
         use tilo_capture::broker::{Policy, Sources, SystemSources};
-        let declared = portals
-            .iter()
-            .filter(|(_, policy)| matches!(policy, launcher::manifest::PortalPolicy::ViaHost))
-            .filter_map(|(name, _)| DeviceKind::from_name(name))
+        let declared = collab_types::caps::DeviceCap::ALL
+            .into_iter()
+            .filter(|device| launcher::capabilities::declares(manifest, *device))
+            .filter_map(crate::device_grants::capture_device)
             .collect();
         let (app_end, runtime_end) = std::os::unix::net::UnixDatagram::pair()?;
         let exe = std::env::current_exe()?;

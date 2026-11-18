@@ -12,7 +12,7 @@ use collab_types::DocumentMutation;
 use tilo_session_client::{Cmd, Event, Outbox as _, SyncState, WorkspaceState};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{WORKSPACE, enrol, enter, entry_grant, route, start_host_limiting, workspace};
+use crate::support::{WORKSPACE, enrol, enter, entry_grant, route, start_host_plain, workspace};
 
 /// The next state event on `events` that `wanted` takes, waited for as the session wakes it.
 async fn told<T>(
@@ -42,18 +42,16 @@ async fn a_joined_workspace_and_a_write_are_told_by_their_states() {
     let (bob, _) = UserIdentity::generate("Bob", 1);
     let browser = enrol(&bob, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host_limiting(
+    let host = start_host_plain(
         &alice,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
         None,
-        &[],
-        None,
     )
     .await;
     let board = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create_workspace("Board", Some(WORKSPACE))
@@ -121,7 +119,7 @@ async fn a_joined_workspace_and_a_write_are_told_by_their_states() {
     assert_eq!(peer.status().sync_state(), SyncState::Done);
 
     // The host goes away: the workspace is told it waits for a connection.
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     let state = told(&peer, &events, |event| match event {
         Event::Workspace { ws, state } if *ws == workspace() => Some(*state),
         _ => None,

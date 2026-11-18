@@ -331,7 +331,7 @@ fn read_plan(root: &File, person: &[u8; 32]) -> io::Result<Plan> {
     }
     Ok(plan)
 }
-/// Prepare an exact host-granted projection, retaining private retry custody.
+/// Prepare an exact host-granted projection, retaining private retry ownership.
 /// # Errors
 /// Refuses invalid source authority, identity, capture or checkpoint storage.
 pub fn prepare_given(

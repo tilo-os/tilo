@@ -1,4 +1,4 @@
-//! Portable prepared-media contracts and owned authenticated ciphertext custody.
+//! Portable prepared-media contracts and owned authenticated ciphertext ownership.
 use serde::{Deserialize, Serialize};
 pub mod filesystem;
 #[cfg(target_os = "linux")]
@@ -50,7 +50,7 @@ pub fn validate_manifest_binding(
     schema: u32,
     setup_binding: &str,
     account_ids: &[String],
-    account_custody_protocol: Option<u32>,
+    account_credentials_protocol: Option<u32>,
 ) -> io::Result<()> {
     let valid_text = |value: &str| {
         !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
@@ -61,11 +61,11 @@ pub fn validate_manifest_binding(
         || account_ids.len() > 64
         || unique.len() != account_ids.len()
         || account_ids.iter().any(|id| !valid_text(id))
-        || account_custody_protocol.is_some_and(|protocol| protocol != 1)
-        || (account_ids.is_empty() && account_custody_protocol.is_some())
+        || account_credentials_protocol.is_some_and(|protocol| protocol != 1)
+        || (account_ids.is_empty() && account_credentials_protocol.is_some())
     {
         return Err(io::Error::other(
-            "Prepared setup custody is invalid or changed",
+            "Prepared setup ownership is invalid or changed",
         ));
     }
     Ok(())
@@ -93,7 +93,7 @@ impl std::fmt::Display for PreparedMediaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unsupported => {
-                f.write_str("Prepared media custody is unsupported on this platform")
+                f.write_str("Prepared media ownership is unsupported on this platform")
             }
             Self::Native(error) => error.fmt(f),
         }
@@ -152,10 +152,10 @@ fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
 pub struct PreparedMediaHandle {
     info: CiphertextInfo,
     #[cfg(target_os = "linux")]
-    custody: native::Custody,
+    ownership: native::Ownership,
 }
 impl PreparedMediaHandle {
-    /// Authenticates the complete bounded stream before admitting custody: no password, plaintext or
+    /// Authenticates the complete bounded stream before admitting ownership: no password, plaintext or
     /// key survives admission. Archive content policy stays a separate prerequisite for adoption.
     ///
     /// # Errors
@@ -197,7 +197,7 @@ impl PreparedMediaHandle {
         #[cfg(target_os = "linux")]
         {
             check_cancel(cancel)?;
-            self.custody.verify(&self.info, cancel)?;
+            self.ownership.verify(&self.info, cancel)?;
             Ok(())
         }
         #[cfg(not(target_os = "linux"))]
@@ -206,7 +206,7 @@ impl PreparedMediaHandle {
             Err(PreparedMediaError::Unsupported)
         }
     }
-    /// Verifies held custody before and after the copy. Output may be partially written on failure.
+    /// Verifies held ownership before and after the copy. Output may be partially written on failure.
     pub fn copy_ciphertext(
         &mut self,
         output: &mut std::fs::File,
@@ -214,7 +214,7 @@ impl PreparedMediaHandle {
     ) -> Result<[u8; 32], PreparedMediaError> {
         self.copy_ciphertext_reporting(output, cancel, &mut |_| Ok(()))
     }
-    /// Copies while reporting progress and rechecking held custody. Output may be partially written
+    /// Copies while reporting progress and rechecking held ownership. Output may be partially written
     /// on failure.
     pub fn copy_ciphertext_reporting(
         &mut self,
@@ -225,7 +225,7 @@ impl PreparedMediaHandle {
         #[cfg(target_os = "linux")]
         {
             self.verify_held_ciphertext(cancel)?;
-            let digest = self.custody.copy(&self.info, output, cancel, observer)?;
+            let digest = self.ownership.copy(&self.info, output, cancel, observer)?;
             self.verify_held_ciphertext(cancel)?;
             if digest != self.info.ciphertext_sha256 {
                 return Err(io::Error::new(

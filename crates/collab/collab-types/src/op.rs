@@ -25,7 +25,10 @@ use crate::role::OpKind;
 
 pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
-pub(crate) const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
+/// An incremental change set, as its writer saved the changes. A session's
+/// delta coding carries the bytes it repeats from one keystroke to the next,
+/// so the set travels as it was written.
+pub(crate) const DOCUMENT_INCREMENTAL_TAG: u8 = 4;
 /// One piece of a mutation too large for a single frame; see
 /// [`crate::document_transfer`].
 pub(crate) const DOCUMENT_SEGMENT_TAG: u8 = 3;
@@ -33,8 +36,12 @@ pub(crate) const DOCUMENT_SEGMENT_TAG: u8 = 3;
 /// split into segments (see [`crate::document_transfer`]) up to
 /// [`crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES`].
 pub const MAX_DOCUMENT_MUTATION_BYTES: usize = 3 * 1024 * 1024;
-const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
-    DOCUMENT_MUTATION_V2_PREFIX.len() + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + 16;
+/// A body is its mutation's bytes behind the prefix and tag, so the largest
+/// transfer's frame stays under this.
+const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.len()
+    + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES
+    + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
+    + 16;
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
 const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
@@ -129,19 +136,30 @@ impl DocumentMutation {
                 max: MAX_DOCUMENT_MUTATION_BYTES,
             });
         }
+        let body = self.data();
         let mut encoded = Vec::with_capacity(
             DOCUMENT_MUTATION_V2_PREFIX
                 .len()
                 .saturating_add(1)
-                .saturating_add(actual),
+                .saturating_add(body.len()),
         );
         encoded.extend_from_slice(DOCUMENT_MUTATION_V2_PREFIX);
         encoded.push(match self {
             Self::Snapshot(_) => DOCUMENT_SNAPSHOT_TAG,
             Self::Incremental(_) => DOCUMENT_INCREMENTAL_TAG,
         });
-        encoded.extend_from_slice(self.data());
+        encoded.extend_from_slice(body);
         Ok(encoded)
+    }
+
+    /// The mutation a frame body of kind `tag` carries.
+    pub(crate) fn of_wire_body(tag: u8, body: &[u8]) -> Result<Self, DocumentMutationError> {
+        match tag {
+            DOCUMENT_SNAPSHOT_TAG => Ok(Self::Snapshot(body.to_vec())),
+            DOCUMENT_INCREMENTAL_TAG => Ok(Self::Incremental(body.to_vec())),
+            DOCUMENT_SEGMENT_TAG => Err(DocumentMutationError::Segmented),
+            other => Err(DocumentMutationError::UnknownKind(other)),
+        }
     }
 
     /// Decode a complete versioned document mutation, either a single frame
@@ -174,12 +192,7 @@ impl DocumentMutation {
             .strip_prefix(DOCUMENT_MUTATION_V2_PREFIX)
             .ok_or(DocumentMutationError::MissingPrefix)?;
         let (&kind, data) = body.split_first().ok_or(DocumentMutationError::Truncated)?;
-        let mutation = match kind {
-            DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
-            DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
-            DOCUMENT_SEGMENT_TAG => return Err(DocumentMutationError::Segmented),
-            other => return Err(DocumentMutationError::UnknownKind(other)),
-        };
+        let mutation = Self::of_wire_body(kind, data)?;
         let actual = mutation.data().len();
         if actual > crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES {
             return Err(DocumentMutationError::TooLarge {
@@ -461,22 +474,14 @@ pub enum ContentRetention {
 /// `SignedOp.signature` covers (cipher)bytes either way, and covers
 /// `encryption` itself too, so a malicious peer can't strip the metadata or
 /// downgrade the scheme.
-///
-/// Wire form: one tagged value — `0` none, `3` MLS application message
-/// `{epoch}`, `4` content key `{epoch, retention}`. Tags `1` and `2` keep
-/// their places for the forms the 0.1 releases signed, which no build reads.
-/// `retired_channel` was the channel those forms named; no build sets or
-/// reads it, and its place keeps this build's tags where they are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EncryptionMetadata {
     /// MLS epoch the ciphertext belongs to: the ratchet epoch for
     /// [`EncryptionScheme::MlsApplication`], the content-key epoch for
     /// [`EncryptionScheme::ContentKey`].
     pub epoch: u64,
     pub scheme: EncryptionScheme,
-    /// The channel a 0.1 release sealed the op for, as it signed it. No build
-    /// writes or reads it; the field keeps its place in the struct ([`Self`]).
-    pub retired_channel: Option<uuid::Uuid>,
 }
 
 impl EncryptionMetadata {
@@ -485,7 +490,6 @@ impl EncryptionMetadata {
         Self {
             epoch,
             scheme: EncryptionScheme::MlsApplication,
-            retired_channel: None,
         }
     }
 
@@ -494,7 +498,6 @@ impl EncryptionMetadata {
         Self {
             epoch,
             scheme: EncryptionScheme::ContentKey { retention },
-            retired_channel: None,
         }
     }
 
@@ -510,89 +513,64 @@ impl EncryptionMetadata {
 
 /// Serde adapter for `Option<EncryptionMetadata>`: its tagged wire form
 /// (see [`EncryptionMetadata`]).
-mod encryption_wire {
-    use super::{ContentRetention, EncryptionMetadata, EncryptionScheme};
+/// The claims of an op as runs: the keystrokes of one word each claim the
+/// same edit of the same units, which the op states once for all of their
+/// changes rather than once per change.
+mod claims_wire {
+    use crate::claim::{ChangeClaim, ClaimedAction, UnitPath};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// The variants in tag order. The first two keep the tags the 0.1
-    /// releases signed a channel-bound op under; nothing writes them, and a
-    /// reader refuses their bytes.
-    #[allow(
-        dead_code,
-        reason = "the retired tags' field shapes keep the current tags in place"
-    )]
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
-    enum Wire {
-        None,
-        RetiredReleasedMlsApplication {
-            epoch: u64,
-            channel: uuid::Uuid,
-        },
-        RetiredReleasedContentKey {
-            epoch: u64,
-            channel: uuid::Uuid,
-            retention: ContentRetention,
-        },
-        MlsApplication {
-            epoch: u64,
-        },
-        ContentKey {
-            epoch: u64,
-            retention: ContentRetention,
-        },
+    struct Run {
+        changes: Vec<[u8; 32]>,
+        action: ClaimedAction,
+        units: Vec<UnitPath>,
     }
 
-    fn wire(value: Option<&EncryptionMetadata>) -> Wire {
-        let Some(&EncryptionMetadata {
-            epoch,
-            scheme,
-            retired_channel: _,
-        }) = value
-        else {
-            return Wire::None;
-        };
-        match scheme {
-            EncryptionScheme::MlsApplication => Wire::MlsApplication { epoch },
-            EncryptionScheme::ContentKey { retention } => Wire::ContentKey { epoch, retention },
-        }
+    #[derive(Serialize)]
+    struct RunRef<'a> {
+        changes: Vec<[u8; 32]>,
+        action: &'a ClaimedAction,
+        units: &'a [UnitPath],
     }
 
-    #[allow(
-        clippy::ref_option,
-        reason = "serde's `with` adapters receive a reference to the field"
-    )]
     pub(super) fn serialize<S: Serializer>(
-        value: &Option<EncryptionMetadata>,
+        claims: &[ChangeClaim],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        wire(value.as_ref()).serialize(serializer)
+        let mut runs: Vec<RunRef<'_>> = Vec::new();
+        for claim in claims {
+            match runs.last_mut() {
+                Some(run) if *run.action == claim.action && run.units == claim.units => {
+                    run.changes.push(claim.change);
+                }
+                _ => runs.push(RunRef {
+                    changes: vec![claim.change],
+                    action: &claim.action,
+                    units: &claim.units,
+                }),
+            }
+        }
+        runs.serialize(serializer)
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<Option<EncryptionMetadata>, D::Error> {
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::None => None,
-            Wire::RetiredReleasedMlsApplication { .. } | Wire::RetiredReleasedContentKey { .. } => {
-                return Err(serde::de::Error::custom(
-                    "an op a 0.1 release sealed for a channel is not read",
-                ));
+    ) -> Result<Vec<ChangeClaim>, D::Error> {
+        let runs = Vec::<Run>::deserialize(deserializer)?;
+        let mut claims = Vec::new();
+        for run in runs {
+            if run.changes.is_empty() {
+                return Err(serde::de::Error::custom("a claim run names no change"));
             }
-            Wire::MlsApplication { epoch } => Some(EncryptionMetadata::mls_application(epoch)),
-            Wire::ContentKey { epoch, retention } => {
-                Some(EncryptionMetadata::content_key(epoch, retention))
-            }
-        })
-    }
-
-    /// Borrowing wrapper so signing views serialize exactly like the field.
-    pub(super) struct View<'a>(pub(super) &'a Option<EncryptionMetadata>);
-
-    impl Serialize for View<'_> {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            serialize(self.0, serializer)
+            claims.extend(run.changes.into_iter().map(|change| ChangeClaim {
+                change,
+                action: run.action.clone(),
+                units: run.units.clone(),
+            }));
         }
+        Ok(claims)
     }
 }
 
@@ -627,15 +605,16 @@ pub struct SignedOp {
     pub seq: u64,
     /// Encryption mode. `None` means `payload` is cleartext; `Some(meta)`
     /// names the epoch and versioned scheme. Part of the signed bytes so a
-    /// peer can't rewrite the metadata to downgrade a ciphertext. See
-    /// [`EncryptionMetadata`] for the wire form, which keeps every op the
-    /// 0.1 releases signed decodable.
-    #[serde(default, with = "encryption_wire")]
+    /// peer can't rewrite the metadata to downgrade a ciphertext.
+    #[serde(default)]
     pub encryption: Option<EncryptionMetadata>,
     /// What each change in `payload` claims to be: its action and the
     /// storage units it writes, one per change, signed with the op so a
-    /// receiver (a relay that cannot read a sealed payload included) decides
-    /// every change against the author's grants before merging it.
+    /// receiver (a server that cannot read a sealed payload included) decides
+    /// every change against the author's grants before merging it. On the
+    /// wire, consecutive changes that claim the same action and units share
+    /// one statement of them ([`claims_wire`]).
+    #[serde(with = "claims_wire")]
     pub claims: Vec<crate::claim::ChangeClaim>,
     /// The content hash (BLAKE3) of the app surface the op's changes are
     /// decided against: the `surface.toml` of the package that made them,
@@ -745,7 +724,7 @@ impl SignedOp {
             kind: &'a OpKind,
             timestamp: &'a SystemTime,
             seq: u64,
-            encryption: encryption_wire::View<'a>,
+            encryption: &'a Option<EncryptionMetadata>,
             claims: &'a [crate::claim::ChangeClaim],
             surface: &'a Option<[u8; 32]>,
         }
@@ -757,7 +736,7 @@ impl SignedOp {
             kind: &self.kind,
             timestamp: &self.timestamp,
             seq: self.seq,
-            encryption: encryption_wire::View(&self.encryption),
+            encryption: &self.encryption,
             claims: &self.claims,
             surface: &self.surface,
         })
@@ -769,10 +748,6 @@ mod tests {
     use super::*;
     use crate::canonical::from_canonical_bytes;
 
-    /// The metadata as a signed op's field carries it.
-    #[derive(Deserialize)]
-    #[serde(transparent)]
-    struct Wrapped(#[serde(with = "encryption_wire")] Option<EncryptionMetadata>);
     use crate::crypto::generate_keypair;
 
     /// The unordered document sequence never falls below wall-clock
@@ -793,6 +768,59 @@ mod tests {
         assert!(second > first, "same instant must still advance");
         let earlier = next_unordered_document_sequence(SystemTime::UNIX_EPOCH);
         assert!(earlier > second, "a backwards clock must still advance");
+    }
+
+    tilo_test_env::scenario! {
+        /// The letters of a typed word claim one edit, which the op states once.
+        fn an_ops_claims_state_a_shared_action_once;
+
+        phase a_words_claims_travel_as_one_run_and_read_back_per_change;
+        {
+            use crate::claim::{ChangeClaim, ClaimedAction};
+            use tilo_actions::PathStep;
+            let edit = |field: &str| ClaimedAction::Edit {
+                kind: "Document".into(),
+                path: vec![
+                    PathStep::Field("pages".into()),
+                    PathStep::Item("12980f87-fbbb-446e-8620-ee255ff8498f".into()),
+                    PathStep::Field(field.into()),
+                ],
+            };
+            let claim = |change: u8, field: &str| ChangeClaim {
+                change: [change; 32],
+                action: edit(field),
+                units: vec![vec![PathStep::Field("pages".into())]],
+            };
+            let op = |claims: Vec<ChangeClaim>| {
+                SignedOp::new_unsigned(
+                    vec![1],
+                    ArtifactId::new(),
+                    Ed25519PublicKey::from_bytes([7; 32]),
+                    AttestationId::default(),
+                    OpKind::Change,
+                    SystemTime::UNIX_EPOCH,
+                    1,
+                )
+                .with_claims(claims)
+            };
+            let one = postcard::to_stdvec(&op(vec![claim(0, "body")])).unwrap().len();
+            let word = op((1..=6).map(|change| claim(change, "body")).collect());
+            let bytes = postcard::to_stdvec(&word).unwrap();
+            assert_eq!(
+                bytes.len().saturating_sub(one),
+                5 * 32,
+                "each further letter adds its change's hash alone"
+            );
+            assert_eq!(postcard::from_bytes::<SignedOp>(&bytes).unwrap(), word);
+
+            let mixed = op(vec![claim(1, "body"), claim(2, "title"), claim(3, "body")]);
+            let bytes = postcard::to_stdvec(&mixed).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<SignedOp>(&bytes).unwrap(),
+                mixed,
+                "claims keep their order across runs"
+            );
+        }
     }
 
     tilo_test_env::scenario! {
@@ -845,7 +873,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "9d72674d3ecf9f3394ac31e7e9427d3154dbe589653f5d1909935498c35578aa",
+                "749e5ccb5556d65069f084e0d4d2d5bd30a88b9e3609dfc46eb390cd16822234",
                 "{}",
                 hex::encode(&bytes)
             );
@@ -927,44 +955,6 @@ mod tests {
             a.signature = Signature::from_bytes([0u8; 64]);
             b.signature = Signature::from_bytes([0xff; 64]);
             assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
-        }
-
-        phase metadata_a_channel_bound_op_is_refused_and_this_builds_tags_stay;
-        {
-            // The forms the 0.1 releases wrote — `Option<{epoch, channel}>`
-            // for an MLS application message, the third tag for a content
-            // key — keep their places so this build's tags do not move; their
-            // bytes are refused.
-            #[derive(Serialize)]
-            struct Released {
-                epoch: u64,
-                channel: uuid::Uuid,
-            }
-            let channel = uuid::Uuid::from_u128(9);
-            let mls = canonical_bytes(&Some(Released { epoch: 9, channel })).unwrap();
-            assert!(from_canonical_bytes::<Wrapped>(&mls).is_err());
-            let content = [&[2_u8, 9, 16][..], channel.as_bytes(), &[1]].concat();
-            assert!(from_canonical_bytes::<Wrapped>(&content).is_err());
-            assert_eq!(
-                canonical_bytes(&encryption_wire::View(&Some(
-                    EncryptionMetadata::mls_application(9),
-                )))
-                .unwrap(),
-                [3, 9]
-            );
-            assert_eq!(
-                canonical_bytes(&encryption_wire::View(&Some(
-                    EncryptionMetadata::content_key(9, ContentRetention::Delta),
-                )))
-                .unwrap(),
-                [4, 9, 1]
-            );
-            let ours = canonical_bytes(&encryption_wire::View(&Some(
-                EncryptionMetadata::mls_application(9),
-            )))
-            .unwrap();
-            let read: Wrapped = from_canonical_bytes(&ours).unwrap();
-            assert_eq!(read.0, Some(EncryptionMetadata::mls_application(9)));
         }
 
         phase content_key_metadata_round_trips_and_is_signed;

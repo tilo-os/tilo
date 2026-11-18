@@ -1,0 +1,19 @@
+[package]
+name = "tilo-x11-transfer"
+description = "What crosses between X11 and Wayland programs, shared by the compositor and the app keeper: the names text goes by on each side, which one serves a request, and drag-and-drop in XDND."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing.workspace = true
+# The XDND bridge's own connection to an X11 display; XFixes tells it who owns the drag.
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

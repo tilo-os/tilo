@@ -1,4 +1,4 @@
-//! Watch history: the videos the person watched, newest first, in a record beside the
+//! Watch history: the videos the person watched, newest first, in a resource beside the
 //! library ([`ResourceEnv::person`](ui::framework::ResourceEnv::person)), kept in the workspace
 //! Tube is open in and synced with it; the library never holds it.
 
@@ -22,7 +22,7 @@ pub struct WatchHistory {
 pub const RESUME_TOLERANCE_MS: u64 = 20_000;
 
 impl WatchHistory {
-    /// What the record holds: the videos the person watched, newest first, and where each
+    /// What the resource holds: the videos the person watched, newest first, and where each
     /// was left off.
     pub fn read_document(
         &self,

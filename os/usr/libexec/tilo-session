@@ -400,7 +400,7 @@ end_flight_record() {
   flight_relay_pid=""
   "$RM" -f -- "$flight_pipe.ready" 2>/dev/null || true
   local end_record
-  end_record=$(printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s restart_request=%s' \
+  end_record=$(printf 'tilo-flight-entry-v1 end=%s status=%s logout_request=%s restart_request=%s' \
     "$("$DATE" --iso-8601=seconds)" "$status" \
     "$([ -e "$logout_request_path" ] && printf yes || printf no)" \
     "$([ "$restart_requested" = 1 ] && printf yes || printf no)")

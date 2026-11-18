@@ -1,5 +1,5 @@
 //! `PeerSnapshot` and `SessionHealth` v1, the shapes Cloud already codes
-//! against, derived from the relay session and the page store's save
+//! against, derived from the server session and the page store's save
 //! status.
 //!
 //! Serialized with camelCase field names so the page can hand the value to
@@ -65,7 +65,7 @@ pub enum EntryHealth {
         /// The entry's own refusal, when a workspace's entry turned the device away: what it
         /// says about a wait list the workspace keeps, which its page offers.
         #[serde(skip_serializing_if = "Option::is_none")]
-        entry: Option<tilo_relay_protocol::directory::EntryRefused>,
+        entry: Option<tilo_server_protocol::directory::EntryRefused>,
     },
 }
 
@@ -105,7 +105,7 @@ pub struct SessionHealth {
     pub version: u8,
     /// Changes whenever anything below changes.
     pub generation: String,
-    /// Relay session.
+    /// Server session.
     pub transport: TransportHealth,
     /// Workspace admission.
     pub admission: AdmissionHealth,
@@ -126,7 +126,7 @@ pub struct TransportHealth {
     pub phase: &'static str,
     /// The current connection completed the certified handshake.
     pub authenticated: bool,
-    pub last_relay_contact_at_ms: Option<u64>,
+    pub last_server_contact_at_ms: Option<u64>,
     /// The host is the session peer on this carrier.
     pub last_session_peer_contact_at_ms: Option<u64>,
     /// Reconnect schedule.
@@ -431,7 +431,7 @@ fn record_health(
 
 impl PeerSnapshot {
     /// Derive the snapshot from a session status and this device's `writes` to each record, as
-    /// its replica's custody keeps them.
+    /// its replica's ownership keeps them.
     pub fn from_status(
         status: &PeerStatus,
         writes: &BTreeMap<DocumentRoute, DocumentWrites>,
@@ -470,7 +470,7 @@ impl PeerSnapshot {
                 transport: TransportHealth {
                     phase: transport_phase(status.phase),
                     authenticated: status.authenticated,
-                    last_relay_contact_at_ms: status.last_contact_at_ms,
+                    last_server_contact_at_ms: status.last_contact_at_ms,
                     last_session_peer_contact_at_ms: status.last_contact_at_ms,
                     retry: Retry {
                         attempt: status.attempt,

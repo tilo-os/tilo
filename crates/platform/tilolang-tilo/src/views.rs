@@ -3,7 +3,7 @@
 //! A `#[view]` function builds [`tilo_view::Node`]s, described components checked against the
 //! catalogue. The runtime draws a resource of a Rust app's type through its view the way it draws
 //! a tilolang package's: a boundary, keyed and wired, whose tree the host builds from the one
-//! catalogue (one-app-model.md §2). This module is the seam: it takes the views a crate registered
+//! catalogue (one-app-model.md §2). This module is the boundary: it takes the views a crate registered
 //! ([`tilo_view::ViewRegistry`]) and hands the runtime a [`RustViews`] over them, converting each
 //! tree the view builds into the runtime's own node kinds, props and events.
 
@@ -147,8 +147,8 @@ fn convert_binding(binding: tilo_view::Binding) -> tilolang_runtime::rust_views:
 /// One of a view's values as the runtime's.
 fn value_into_runtime(value: ViewValue) -> Value {
     match value {
-        // A link a Rust view builds names a record, which a value of the runtime's does not
-        // carry: what the runtime's own views send, and this one, is the record itself.
+        // A link a Rust view builds names a document, which a value of the runtime's does not
+        // carry: what the runtime's own views send, and this one, is the document itself.
         ViewValue::Unit | ViewValue::Case { .. } | ViewValue::Link { .. } => Value::Unit,
         ViewValue::Int(number) => Value::Int(number),
         ViewValue::Float(number) => Value::Float(number),

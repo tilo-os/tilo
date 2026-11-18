@@ -2,7 +2,7 @@
 //! xkb turns a key into a keysym, and some keysyms type nothing on their own: `dead_acute` and
 //! `Multi_key` open a sequence that the keys after them finish (`´` then `e` is `é` , Compose then
 //! `o` `c` is `©` ). A client holding the keymap answers that itself, from the same compose table;
-//! a hosted surface types through the keys the compositor resolves, so the compositor answers for
+//! a surface types through the keys the compositor resolves, so the compositor answers for
 //! it here, from the compose table of the session's locale — the sequences the person's own apps
 //! know.
 

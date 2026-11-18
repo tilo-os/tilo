@@ -12,8 +12,8 @@ use tilo_messaging_protocol::supervisor::AccountSupervisor;
 use super::{Flow, Order, Provider};
 use crate::link::{Handler, Responder};
 use crate::service::Service;
-use crate::service::gate::{Gate, Running};
-use crate::service::identity::{Credential, Custody, Identity};
+use crate::service::guard::{AccountGuard, Running};
+use crate::service::identity::{Credential, Identity, Ownership};
 use crate::session;
 
 /// The compositor's side, as far as these flows ask it.
@@ -71,13 +71,13 @@ fn rig() -> Rig {
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let actor = hex::encode(certificate.user_public_key);
-    let custody = Custody::with_host(
-        tilo_identity_host::custody::HostIdentity::kept(certificate, device),
+    let ownership = Ownership::with_host(
+        tilo_identity::identity_store::DeviceIdentity::kept(certificate, device),
         &actor,
         "device",
     )
     .unwrap();
-    custody.session(true, 1);
+    ownership.session(true, 1);
     let vault_dir = tempfile::tempdir().unwrap();
     let store = vault_dir.path().to_owned();
     let vault = accounts::CredentialOwner::deferred(&actor, "device", move || {
@@ -104,7 +104,7 @@ fn rig() -> Rig {
     let service = {
         let _entered = runtime.enter();
         Service::assemble(
-            Arc::new(custody),
+            Arc::new(ownership),
             vault,
             profile.path(),
             link,
@@ -123,12 +123,12 @@ fn rig() -> Rig {
 }
 
 struct Started {
-    gate: Arc<Gate>,
+    guard: Arc<AccountGuard>,
     supervisor: Arc<AccountSupervisor>,
 }
 impl Running for Started {
-    fn gate(&self) -> &Arc<Gate> {
-        &self.gate
+    fn guard(&self) -> &Arc<AccountGuard> {
+        &self.guard
     }
     fn supervisor(&self) -> &Arc<AccountSupervisor> {
         &self.supervisor
@@ -137,7 +137,7 @@ impl Running for Started {
 
 /// A provider of any order that links with the token "scanned" and offers
 /// two SIMs. It never starts an account: the vault in these tests has no
-/// system custody, so no grant is ever made.
+/// system ownership, so no grant is ever made.
 struct Fake<const ORDER: u8> {
     begun: Arc<AtomicUsize>,
     cancelled: Arc<AtomicUsize>,
@@ -341,7 +341,7 @@ tilo_test_env::scenario! {
                 "{name:?}"
             );
         }
-        // This vault keeps its key in a file, never system custody: no key is
+        // This vault keeps its key in a file, never system ownership: no key is
         // prepared, so no request is made and the enrollment ends.
         assert_eq!(
             rig.runtime
@@ -402,14 +402,14 @@ tilo_test_env::scenario! {
         assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
         *alive.lock().unwrap() = true;
         let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
-        rig.service.custody.session(true, 2);
+        rig.service.ownership.session(true, 2);
         flow.check();
         assert_eq!(
             phase(&flow, &pairing.account),
             EnrollmentPhase::Interrupted,
             "an enrollment admitted under an ended session does not continue"
         );
-        rig.service.custody.session(false, 2);
+        rig.service.ownership.session(false, 2);
         assert_eq!(
             rig.runtime.block_on(flow.begin()).err(),
             Some(SendError::Revoked),

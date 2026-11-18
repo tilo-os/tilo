@@ -54,7 +54,7 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     // The host's state is reset: the same identity and web certificate, its
     // ports the kernel's to pick again, and nothing of the guest.
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     let reset = tempfile::tempdir().unwrap();
     std::fs::copy(
         state.path().join("web-dev-identity"),
@@ -69,5 +69,5 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     .await;
     assert_eq!(failed.error_code, Some("not-admitted"));
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

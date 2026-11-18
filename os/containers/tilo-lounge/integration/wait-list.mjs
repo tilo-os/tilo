@@ -2,9 +2,9 @@
 // browser that has never been here: the wait list shows instead of the setup
 // screen, the address is left and confirmed through the mail the entry sends,
 // and the tab stays on the wait list when it reloads. The site is the web
-// entry's bundle served beside the relay, as the image serves it.
+// entry's bundle served beside the server, as the image serves it.
 //
-// usage: node wait-list.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
+// usage: node wait-list.mjs SITE_URL SERVER_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
 //
 // Prints a JSON report and keeps the screenshots and the tab's console in
 // OUT_DIR; exits non-zero when a step did not happen or the page failed.
@@ -13,19 +13,19 @@ import {join} from 'node:path';
 import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, shellMetrics} from './waits.mjs';
 
-const [site, relay, mailDir, out, before] = process.argv.slice(2);
-if (!site || !relay || !mailDir || !out) {
-  console.error('usage: node wait-list.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
+const [site, server, mailDir, out, before] = process.argv.slice(2);
+if (!site || !server || !mailDir || !out) {
+  console.error('usage: node wait-list.mjs SITE_URL SERVER_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
-const report = {site, relay, at: new Date().toISOString()};
+const report = {site, server, at: new Date().toISOString()};
 
 // The entry's page loads the site's and the host's own certificates, and the
 // "before" site's too, which the same mint signs. A browser loads these and no
 // others, as a person's loads what it trusts.
 const siteCertificate = await servedCertificate(site);
-const browser = await launch({args: [pinnedCertificates([siteCertificate, await servedCertificate(relay)])]});
+const browser = await launch({args: [pinnedCertificates([siteCertificate, await servedCertificate(server)])]});
 // A stranger's browser: nothing kept from an earlier visit, so the entry
 // page opens on its first screen unless the entry takes its place.
 const tab = await browser.tab({firstRun: true});
@@ -176,8 +176,11 @@ console.log(`ok: a reload stays on the wait list (${report.reloadListed})`);
 // shares its storage, and so the address already listed, and never offers the
 // field again.
 const phone = await browser.tab({context: await browser.context(), firstRun: true});
+// The phone speaks German as a browser does: the locale override, and the
+// list of languages beside it, which the override leaves as it was.
+await phone.send('Emulation.setLocaleOverride', {locale: 'de-DE'});
 await phone.send('Page.addScriptToEvaluateOnNewDocument', {
-  source: `Object.defineProperty(navigator, 'language', {get: () => 'de-DE'});`,
+  source: `Object.defineProperty(navigator, 'languages', {get: () => ['de-DE', 'de']});`,
 });
 await phone.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 2, mobile: true});
 await phone.navigate(site);
@@ -195,6 +198,14 @@ report.phone = await phone.evaluate(`({
 const phoneShot = await phone.screenshot().catch(() => null);
 if (phoneShot) writeFileSync(join(out, '4-phone-german.png'), phoneShot);
 if (!phoneForm) await finish(1, `the phone in German never offered the wait list's field: ${JSON.stringify(report.phone)}`);
+// The entry's refusal and its wait list speak the visitor's language: a
+// German phone reads German, with the same form under it.
+if (!/nur mit Einladung offen/.test(report.phone?.heading ?? '')) {
+  await finish(1, `the phone in German read the heading “${report.phone?.heading}”, not the German refusal`);
+}
+if (!/Auf die Warteliste/.test(report.phone?.button ?? '')) {
+  await finish(1, `the phone in German read the button “${report.phone?.button}”, not the German wait list`);
+}
 console.log(`ok: a phone in German (${report.phone?.heading})`);
 await phone.close().catch(() => {});
 

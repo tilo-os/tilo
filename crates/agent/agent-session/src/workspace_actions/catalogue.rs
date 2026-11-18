@@ -5,11 +5,11 @@ use crate::member::actions::{open_row, open_row_needing};
 use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
-    ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
+    ActionCallError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
     DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, is_part,
     provider_workspace, record_provider, resource_of,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Worker {
     pub(super) fn catalogue_page(
@@ -17,7 +17,7 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
+    ) -> Result<CataloguePage, ActionCallError> {
         // A stranger is told nothing: the workspace's own records are for the
         // people it admits, and for the person whose device runs this service.
         // A view lookup is not a listing and carries its own governed check.
@@ -59,14 +59,14 @@ impl Worker {
         else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
         };
-        let routes = self.records(&state, &cluster_id);
+        let routes = self.documents(&state, &cluster_id);
         let own_provider = workspace_provider(&cluster_id);
         let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
             Some(provider) if provider == own_provider => Vec::new(),
             Some(provider) => {
                 let route = resource_of(provider, &cluster_id)
                     .filter(|route| routes.contains(route))
-                    .ok_or(ActionHostError::UnknownAction)?;
+                    .ok_or(ActionCallError::UnknownAction)?;
                 vec![route]
             }
             None => routes.iter().take(DEFAULT_DOCUMENTS).cloned().collect(),
@@ -149,19 +149,28 @@ impl Worker {
         state: &WorkspaceState,
     ) -> Vec<CatalogueRow> {
         let mut rows = Vec::new();
+        // Whose conversations decide what is listed of them ([`super::direct`]).
+        let person = bounded.map_or_else(|| self.member.clone(), |who| who.person.clone());
         for route in wanted {
             let provider = record_provider(route);
+            let withheld = self.kept_from(&person, route, state);
             match self.listed(workspace_id, bounded, route, state) {
-                Ok(descriptors) => rows.extend(descriptors.into_iter().map(|descriptor| {
-                    CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-                })),
-                Err(error) => tracing::warn!(
-                    %error,
-                    app = %route.app_id,
-                    record = %route.document,
-                    "workspace actions: {} did not mount",
-                    super::named(route)
-                ),
+                Ok(descriptors) => {
+                    self.unmounted.remove(route);
+                    rows.extend(
+                        descriptors
+                            .into_iter()
+                            .filter(|descriptor| !withheld.names(&descriptor.address.resource))
+                            .map(|descriptor| {
+                                CatalogueRow::for_action(
+                                    provider.clone(),
+                                    route.app_id.clone(),
+                                    descriptor,
+                                )
+                            }),
+                    );
+                }
+                Err(error) => self.did_not_mount(route, error),
             }
         }
         rows

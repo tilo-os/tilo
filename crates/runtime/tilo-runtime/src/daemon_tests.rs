@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
         drop(endpoint);
     }
 
-    phase a_result_another_process_was_handed_opens_through_the_action_host;
+    phase a_result_another_process_was_handed_opens_through_the_action_provider;
     {
         let host = PageHost::default();
         host.offered
@@ -164,8 +164,8 @@ tilo_test_env::scenario! {
     // finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
     // answer while two invokes of the same connection wait.
     {
-        use tilo_mcp::test_hosts::{GatedHost, overlapping_lines};
-        let host = GatedHost::default();
+        use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};
+        let host = HeldHost::default();
         let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
             std::sync::Arc::new(host.clone()),
             tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
@@ -901,13 +901,13 @@ struct PageHost {
     invoked: std::sync::Arc<std::sync::Mutex<Vec<tilo_actions::remote::InvokeRequest>>>,
 }
 
-impl tilo_actions::remote::ActionHost for PageHost {
+impl tilo_actions::remote::ActionProvider for PageHost {
     fn query(
         &self,
         _caller: &tilo_actions::remote::Caller,
         query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         use tilo_actions::remote::{CatalogueProvider, CatalogueResource, CatalogueRow};
         let rows: Vec<CatalogueRow> = if self.offered.load(std::sync::atomic::Ordering::SeqCst) {
@@ -964,7 +964,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
         _caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
@@ -986,17 +986,17 @@ impl tilo_actions::remote::ActionHost for PageHost {
         &self,
         _caller: &tilo_actions::remote::Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         tilo_actions::remote::Pending::ready(Err(
-            tilo_actions::remote::ActionHostError::UnknownInvocation,
+            tilo_actions::remote::ActionCallError::UnknownInvocation,
         ))
     }
 }
 
-/// The relay writes the workspace and the agent key into the client's `initialize` and nothing
+/// The server writes the workspace and the agent key into the client's `initialize` and nothing
 /// else: a probe before it and every line after it reach the API as sent.
 #[test]
-fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
+fn the_server_writes_the_workspace_and_key_into_the_initialize_alone() {
     let sent = concat!(
         r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#,
         "\n",

@@ -28,12 +28,12 @@ pub(crate) struct TasksWindow {
     /// The window's page, with the tracker's own dialogs over it.
     page: Stack,
     /// The shell inside that page: the bar's slots come from it, so a
-    /// dialog standing over the page leaves them alone.
+    /// dialog over the page leaves them alone.
     link: ui::widget::WindowBarLink,
     nav: Nav,
     /// The tracker as the window reads it, for the location.
     tasks: LocalState<Tasks>,
-    /// The record's actions, for the bar's own slots.
+    /// The resource's actions, for the bar's own slots.
     dispatcher: Dispatcher<Tracker>,
     /// The issues' chain, whose writes the window's Undo takes back.
     chain: Option<ui::framework::Chain<crate::IssuePart>>,
@@ -161,8 +161,8 @@ impl ui::widget::Decorator for TasksWindow {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.bar.take_events();
-        self.declare();
         ui::widget::Widget::sync(&mut self.page, state, path);
+        self.declare();
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {

@@ -177,7 +177,7 @@ pub(crate) fn reference(app_id: &str, app: &mut impl Driven, label: &str) -> ser
     })
 }
 
-/// The rows standing in for removed items: their titles.
+/// The rows in place of removed items: their titles.
 pub(crate) fn removed_rows(app: &mut impl Driven) -> Vec<String> {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();

@@ -2,7 +2,7 @@
 #
 # The one grammar (`collab_types::caps::NetHostPattern`). Every enforcer is
 # checked against this file on its own production path: `collab-types`
-# (`host_covers`, `EgressPolicy`), the launcher's gate for apps
+# (`host_covers`, `EgressPolicy`), the launcher's check for apps
 # (`EgressDecision::resolve`) and `tilo-egress` for environments. A row that
 # one answers differently from another is the bug this file exists to catch.
 

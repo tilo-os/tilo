@@ -1,6 +1,6 @@
 //! Markdown typed into a note becomes formatting as its closing delimiter is
 //! typed, and contractions typed without an apostrophe get one back at the
-//! word's end: both stored in the notebook record and kept on reopening.
+//! word's end: both stored in the notebook resource and kept on reopening.
 
 use crate::framework_support::with_note;
 use notes::{PageId, markdown, read};
@@ -18,11 +18,11 @@ fn type_in_body(app: &mut App, text: &str) {
 
 /// The page as the notebook stores it, written out as Markdown.
 fn stored_markdown(app: &App, page: PageId) -> String {
-    let blocks: Vec<Block> = app
-        .read_document(|doc| read::page_blocks(doc, page))
-        .into_iter()
-        .map(Block::from_content)
-        .collect();
+    let blocks: Vec<Block> =
+        crate::framework_support::notes_doc(app, |doc| read::page_blocks(doc, page))
+            .into_iter()
+            .map(Block::from_content)
+            .collect();
     markdown::serialize(&markdown::blocks_to_specs(&blocks))
 }
 
@@ -31,7 +31,7 @@ fn typed_markdown_is_stored_as_formatting_and_survives_a_reopen() {
     let (mut app, page) = with_note("Typed markdown", "");
     type_in_body(&mut app, "*hi* and **b** and `c` and ~~s~~ end");
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page))[0].text,
         "hi and b and c and s end",
         "the delimiters leave the stored text"
     );
@@ -45,7 +45,7 @@ fn typed_markdown_is_stored_as_formatting_and_survives_a_reopen() {
 fn delimiters_that_close_nothing_stay_as_typed() {
     let (mut app, page) = with_note("Literal", "");
     type_in_body(&mut app, "snake_case_name and 2 * 3 * 4");
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(blocks[0].text, "snake_case_name and 2 * 3 * 4");
     assert!(blocks[0].marks.is_empty(), "{:?}", blocks[0].marks);
 }
@@ -56,7 +56,7 @@ fn undo_or_backspace_after_formatting_brings_the_markdown_back() {
     type_in_body(&mut app, "a **b**");
     assert_eq!(stored_markdown(&app, page), "a **b**\n");
     app.harness().key("Backspace");
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         blocks[0].text, "a **b**",
         "Backspace puts the markdown back"
@@ -69,11 +69,11 @@ fn undo_or_backspace_after_formatting_brings_the_markdown_back() {
     let (mut app, page) = with_note("Undo markdown", "");
     type_in_body(&mut app, "a **b**");
     assert!(app.undo());
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(blocks[0].text, "a **b**", "{blocks:?}");
     assert!(blocks[0].marks.is_empty(), "{:?}", blocks[0].marks);
     app.harness().key("x");
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         blocks[0].text, "a **b**x",
         "the caret is back after what was typed"
@@ -85,7 +85,7 @@ fn undo_or_backspace_after_formatting_brings_the_markdown_back() {
     assert!(app.undo());
     assert!(app.undo());
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page))[0].text,
         "a "
     );
 }
@@ -95,7 +95,7 @@ fn undo_after_an_autocorrection_gives_back_the_word_as_typed() {
     let (mut app, page) = with_note("Undo correction", "");
     type_in_body(&mut app, "it doesnt ");
     let text = |app: &App| {
-        app.read_document(|doc| read::page_blocks(doc, page))[0]
+        crate::framework_support::part_doc(app, page, |doc| read::page_blocks(doc, page))[0]
             .text
             .clone()
     };
@@ -116,7 +116,7 @@ fn contractions_typed_on_a_keyboard_get_their_apostrophe() {
     type_in_body(&mut app, "it doesnt work, cant stop");
     let app = app.reopen().unwrap();
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page))[0].text,
         "it doesn't work, can't stop"
     );
 
@@ -124,7 +124,7 @@ fn contractions_typed_on_a_keyboard_get_their_apostrophe() {
     type_in_body(&mut app, "it doesnt ");
     app.harness().key("Backspace");
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page))[0].text,
         "it doesnt",
         "Backspace right after the correction reverts it"
     );
@@ -133,7 +133,7 @@ fn contractions_typed_on_a_keyboard_get_their_apostrophe() {
     type_in_body(&mut app, "```");
     app.harness().key("Enter");
     app.harness().type_text("it doesnt work");
-    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         blocks.last().unwrap().text,
         "it doesnt work",

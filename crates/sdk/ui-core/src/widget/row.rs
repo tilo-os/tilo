@@ -143,7 +143,7 @@ impl Widget for Row {
     }
 
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -166,7 +166,13 @@ impl Widget for Row {
             }
         }
         let children = self.children();
-        if caption(*children.get(child_index)?).is_some() {
+        let child = *children.get(child_index)?;
+        // A caption, or static words such as a person's chip, is no control to name.
+        if caption(child).is_some()
+            || child
+                .accessibility()
+                .is_some_and(|node| node.role == crate::a11y::Role::StaticText)
+        {
             return None;
         }
         let mut captions = children.iter().filter_map(|child| caption(*child));

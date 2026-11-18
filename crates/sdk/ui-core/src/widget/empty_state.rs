@@ -1505,26 +1505,59 @@ impl Widget for EmptyState {
         cx.element("section");
         let m = &self.layout_style;
         let (title, message, hint) = &self.resolved;
-        let x0 = self.rect.x0;
-        let x1 = self.rect.x1;
-        let mut y = self.rect.y0 + m.pad_y;
+        // Stacked where the canvas stacks it: its picture, then its words in the measure
+        // centred under it, in the styles it paints them in.
+        let placed = crate::text_render::with_layout_renderer(theme, |text| {
+            place(text, theme, self.rect, &self.content(), self.inline)
+        });
+        let inner = f64::from(placed.metrics.inner_width);
+        let x0 = self.rect.center().x - inner / 2.0;
+        let x1 = x0 + inner;
+        if let Some(hero) = placed.hero {
+            cx.part("hero", "EmptyStateHero", hero)
+                .painted(u64::from(self.busy));
+        }
+        let mut y = placed.title_y;
         let line = |cx: &mut crate::composition::HtmlCx<'_>,
                     key: &str,
                     tag: &'static str,
                     text: &str,
                     style: &crate::text_render::TextStyle,
                     ink: vello::peniko::Color,
-                    y: f64| {
-            let height = f64::from(style.line_height_px());
+                    (top, bottom): (f64, Option<f64>)| {
+            let line = f64::from(style.line_height_px());
+            let height = bottom.map_or(line, |bottom| (bottom - top - m.gap).max(line));
             let look = TextLook::new(text.to_owned(), style, Some(ink));
-            cx.words(key, tag, Rect::new(x0, y, x1, y + height), look);
+            cx.words(key, tag, Rect::new(x0, top, x1, top + height), look);
             height
         };
+        let next = placed.message_y.or(placed.action.map(|action| action.y0));
         if !title.is_empty() {
-            y += line(cx, "title", "h2", title, &m.title, theme.text_primary, y) + m.gap;
+            let style = &placed.style.title;
+            y += line(
+                cx,
+                "title",
+                "h2",
+                title,
+                style,
+                theme.text_primary,
+                (y, next),
+            ) + m.gap;
         }
         if let Some(message) = message {
-            y += line(cx, "message", "p", message, &m.message, theme.text_dim, y) + m.gap;
+            let top = placed.message_y.unwrap_or(y);
+            let bottom = placed.action.map(|action| action.y0);
+            let style = &placed.style.message;
+            y =
+                top + line(
+                    cx,
+                    "message",
+                    "p",
+                    message,
+                    style,
+                    theme.text_dim,
+                    (top, bottom),
+                ) + m.gap;
         }
         if let Some(label) = &self.action_label {
             let rect = if self.action_rect.width() > 0.0 {
@@ -2006,15 +2039,13 @@ impl crate::resources::PublishesResources for EmptyState {
 }
 
 impl crate::widget::controls::ActionControls for EmptyState {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(engine) = &mut self.engine {
-            crate::widget::controls::ActionControls::install_control_custody(
-                engine, domain, attachment,
-            );
+            crate::widget::controls::ActionControls::attach_controls(engine, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

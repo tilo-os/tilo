@@ -2,7 +2,7 @@
 # Publish main's dev image for one architecture, the dev image with the development key's
 # signature sign-dev-os-<arch> wrote beside it, under names production releases never use:
 #
-#   os-dev-publish.sh image ARCH IMAGE DEV       once os-dev-gate-ARCH passed on it
+#   os-dev-publish.sh image ARCH IMAGE DEV       once os-dev-check-ARCH passed on it
 #   os-dev-publish.sh disk ARCH IMAGE DEV DISK   with its disk, once os-acceptance-ARCH passed
 #                                                on the disk os-dev-disk-ARCH installed
 #
@@ -14,7 +14,7 @@
 #                                                        so far
 # `image` moves tilo-vm:ARCH-ci, the architecture's dev channel, to it, only forward along main;
 # `disk` publishes the disk (os/dev/publish-dev-disk.sh), which `tilo-vm vm create` takes and
-# os-dev-gate-ARCH updates from, and moves tilo-vm:latest.
+# os-dev-check-ARCH updates from, and moves tilo-vm:latest.
 # Logs in to registry.tilo.so with an identity token (lib.sh registry_login); the disks go to the generic packages with
 # TILO_PACKAGES_TOKEN.
 set -euo pipefail
@@ -60,7 +60,7 @@ registry_copy "$auth" "oci:$image/oci" "docker://registry.tilo.so/tilo/tilo-ci:$
 [[ $(skopeo inspect --raw "docker://registry.tilo.so/tilo/tilo-ci:$tag-$arch" | sha256sum | awk '{print "sha256:" $1}') == "$base_digest" ]] \
   || die "registry.tilo.so/tilo/tilo-ci:$tag-$arch is not $base_digest"
 
-# The dev image, signed, by the digest its build recorded; once gated, its channel tag, only
+# The dev image, signed, by the digest its build recorded; once guarded, its channel tag, only
 # forward.
 repository=registry.tilo.so/tilo/tilo-vm
 tags=("$tag-ci-$arch")

@@ -35,7 +35,11 @@ impl Drop for PtyRoot {
     }
 }
 impl PtyRoot {
-    fn open(witness: Arc<Mutex<Vec<u8>>>, runs: Rc<Cell<usize>>, updates: Rc<Cell<usize>>) -> Self {
+    fn open(
+        observation: Arc<Mutex<Vec<u8>>>,
+        runs: Rc<Cell<usize>>,
+        updates: Rc<Cell<usize>>,
+    ) -> Self {
         use std::os::unix::process::CommandExt;
         let (mut master, mut slave) = (-1, -1);
         // SAFETY: valid output descriptors; no termios or name buffers requested.
@@ -87,7 +91,10 @@ impl PtyRoot {
                 if count == 0 {
                     break;
                 }
-                witness.lock().unwrap().extend_from_slice(&bytes[..count]);
+                observation
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..count]);
                 if sender.send(bytes[..count].to_vec()).is_err() {
                     break;
                 }
@@ -145,7 +152,7 @@ impl crate::widget::ResourceOperations for PtyRoot {
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         op.check()?;
-        let (request, _) = op.with_custody();
+        let (request, _) = op.with_ownership();
         if request.type_id != TYPE {
             return Ok(None);
         }
@@ -203,12 +210,12 @@ impl crate::resources::PublishesResources for PtyRoot {
 
 #[test]
 fn native_idle_wake_publishes_real_pty_output_without_any_frame() {
-    let witness = Arc::new(Mutex::new(Vec::new()));
+    let observation = Arc::new(Mutex::new(Vec::new()));
     let runs = Rc::new(Cell::new(0));
     let updates = Rc::new(Cell::new(0));
     let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
         Box::new(PtyRoot::open(
-            witness.clone(),
+            observation.clone(),
             runs.clone(),
             updates.clone(),
         ))
@@ -243,7 +250,7 @@ fn native_idle_wake_publishes_real_pty_output_without_any_frame() {
         "the published Run must reach the actual PTY once"
     );
     tilo_test_env::wait_until("actual Bash PTY bytes", || {
-        String::from_utf8_lossy(&witness.lock().unwrap())
+        String::from_utf8_lossy(&observation.lock().unwrap())
             .contains("\r\nNATIVE_PTY_MARKER\r\nNATIVE_PTY> ")
     });
     // Actual reader-originated wake events, same acceptance and idle phase as native_runner.

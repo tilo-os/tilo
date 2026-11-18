@@ -85,7 +85,7 @@ fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
 tilo_test_env::scenario! {
     fn the_accounts_model_keeps_store_vault_and_journal_in_step;
 
-    phase selected_browser_sessions_use_device_inventory_not_public_identity_records;
+    phase selected_browser_sessions_use_device_inventory_not_public_identity_resources;
     {
         let (_scratch, root) = scratch_root();
         let mut store = accounts::AccountStore::new();
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
                 "New label",
                 "new-user",
                 "",
-                "https://new.example/",
+                "https://old.example/",
                 "",
             )
             .expect("edit account");
@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
             assert_eq!(saved.config["use_calendar"], true);
             assert_eq!(saved.config["use_mail"], false);
             assert_eq!(saved.config["future_provider_field"]["kept"], true);
-            assert_eq!(saved.config["server_url"], "https://new.example");
+            assert_eq!(saved.config["server_url"], "https://old.example");
             assert_eq!(saved.config["username"], "new-user");
             assert_eq!(
                 root.vault().get(&id),
@@ -247,6 +247,75 @@ tilo_test_env::scenario! {
 
 /// Drive the host's polling until the pending account probe reports,
 /// however long the probe thread takes to be scheduled.
+/// A credential is entered for the server its account names then. An edit
+/// that names another server and enters none is refused, in words that ask
+/// for the one of that server: the kept one is sent nowhere else.
+#[test]
+fn an_edit_that_names_another_server_needs_its_credential_entered() {
+    let (_scratch, root) = scratch_root();
+    let save = |existing: Option<&str>, name: &str, server: &str, password: &str| {
+        AccountsPane::save_account(
+            &root,
+            AccountKind::CalDav,
+            existing,
+            name,
+            "me@example.test",
+            "",
+            server,
+            password,
+        )
+    };
+    save(
+        None,
+        "Work",
+        "https://dav.example.test/dav/",
+        "entered-for-dav-example",
+    )
+    .expect("add account");
+    let id = root.store().all()[0].id.clone();
+    let named = |root: &AccountRoot| {
+        root.store().get(&id).expect("the account is kept").config["server_url"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let kept = named(&root);
+
+    save(
+        Some(id.as_str()),
+        "Work calendar",
+        "https://dav.example.test/dav/",
+        "",
+    )
+    .expect("an edit that keeps its server keeps its credential");
+    let refused = save(
+        Some(id.as_str()),
+        "Work calendar",
+        "https://dav.elsewhere.example/dav/",
+        "",
+    );
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("another server")),
+        "an edit to another server took the credential entered for {kept} with it: {refused:?}"
+    );
+    assert_eq!(named(&root), kept, "a refused edit changes nothing");
+
+    save(
+        Some(id.as_str()),
+        "Work calendar",
+        "https://dav.elsewhere.example/dav/",
+        "entered-for-elsewhere",
+    )
+    .expect("with its own credential entered the other server is saved");
+    assert_ne!(named(&root), kept);
+    assert_eq!(
+        root.vault().get(&id).map(|secret| secret.password),
+        Some("entered-for-elsewhere".to_owned())
+    );
+}
+
 fn settle_probes(pane: &mut AccountsPane) {
     let deadline = ui::time::now() + ProbeJob::<String>::DEADLINE;
     loop {
@@ -255,7 +324,7 @@ fn settle_probes(pane: &mut AccountsPane) {
             && pane.reauth_probe.is_none()
             && !pane.form_saving
             && !pane.reauth_saving
-            && pane.lane.is_idle()
+            && pane.queue.is_idle()
         {
             return;
         }
@@ -332,8 +401,10 @@ fn import_only_rows_keep_recorded_errors_offline_and_signin_requirements() {
     }
     let (_scratch, root) = scratch_root();
     let id = accounts::AccountId::from("import-google");
-    let mut account =
-        accounts::Account::new(id.clone(), account_custody::providers::GOOGLE_DRIVE_TYPE);
+    let mut account = accounts::Account::new(
+        id.clone(),
+        account_credentials::providers::GOOGLE_DRIVE_TYPE,
+    );
     account.config = serde_json::json!({"files_mode": "import", "use_files": true});
     let mut store = accounts::AccountStore::new();
     store.upsert(account);
@@ -631,8 +702,8 @@ fn vault_save_failure_preserves_existing_account_metadata() {
     vault.put(&old_id, &accounts::Secret::password("old-password"));
     vault.try_save().unwrap();
     assert_eq!(
-        accounts::SecretVault::open_in(&root).custody(),
-        accounts::SecretCustody::LocalFile
+        accounts::SecretVault::open_in(&root).backend(),
+        accounts::VaultBackend::LocalFile
     );
     let dir = accounts::vault_dir_in(&root);
     let ciphertext_before = std::fs::read(dir.join("vault.enc")).unwrap();
@@ -781,13 +852,13 @@ fn a_stalled_vault_never_holds_the_window() {
     vault.try_save().expect("the vault is saved");
     let read = AccountsRead::of(&root);
     let config = root.path().expect("an explicit root");
-    let gate = crate::stall::Stall::new();
+    let hold = crate::stall::Stall::new();
     let window = {
         let id = id.clone();
         std::thread::spawn(move || {
             ui::rt::mark_ui_thread();
-            let stalled = Arc::clone(&gate);
-            let root = AccountRoot::at(config).with_vault_gate(move || {
+            let stalled = Arc::clone(&hold);
+            let root = AccountRoot::at(config).with_vault_hold(move || {
                 stalled.wait();
             });
             let dir = AccountDirectory::load_in(&root);
@@ -800,9 +871,9 @@ fn a_stalled_vault_never_holds_the_window() {
             });
             let check = pane.connection_check(id.as_str());
             let _ = pane.poll();
-            // The vault answers nothing until the gate opens below:
+            // The vault answers nothing until the hold is released below:
             // clicks answered while it is held did not wait for it.
-            gate.assert_held("the clicks");
+            hold.assert_held("the clicks");
             assert!(check.is_ok(), "the check reads the vault on its worker");
             assert!(
                 removed.borrow().is_none(),
@@ -814,9 +885,9 @@ fn a_stalled_vault_never_holds_the_window() {
                 "the account is kept until the vault took its removal"
             );
 
-            gate.release();
+            hold.release();
             let deadline = tilo_test_env::hang_deadline();
-            while removed.borrow().is_none() || !pane.lane.is_idle() {
+            while removed.borrow().is_none() || !pane.queue.is_idle() {
                 assert!(Instant::now() < deadline, "the removal lands");
                 let _ = pane.poll();
                 std::thread::yield_now();
@@ -857,10 +928,10 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         1,
         "the pane lists a Mail account"
     );
-    root.custodian()
+    root.credential_store()
         .seal_oauth(
             &id,
-            &account_custody::TokenSet {
+            &account_credentials::TokenSet {
                 access_token: "test-only-access".into(),
                 scope: None,
                 refresh_token: "test-only-refresh".into(),
@@ -871,11 +942,11 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         .expect("the grant is sealed");
     let read = AccountsRead::of(&root);
     let config = root.path().expect("an explicit root");
-    let gate = crate::stall::Stall::new();
+    let hold = crate::stall::Stall::new();
     // A window that waited on the vault would sit until the stall gives up,
     // which `assert_held` reports.
-    let stalled = std::sync::Arc::clone(&gate);
-    let root = AccountRoot::at(config).with_vault_gate(move || {
+    let stalled = std::sync::Arc::clone(&hold);
+    let root = AccountRoot::at(config).with_vault_hold(move || {
         stalled.wait();
     });
     let dir = AccountDirectory::load_in(&root);
@@ -887,7 +958,7 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
 
     let mut app = window_showing(pane);
     let shown = shows_granted(&mut app);
-    gate.assert_held("composing the accounts");
+    hold.assert_held("composing the accounts");
     assert!(!shown, "the grant is not known before the vault answers");
     assert!(
         app.with_widget::<crate::window::Inspected, _>(|settings| {
@@ -897,7 +968,7 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         "the pane keeps polling while the vault is out"
     );
 
-    gate.release();
+    hold.release();
     let deadline = tilo_test_env::hang_deadline();
     while !shows_granted(&mut app) {
         assert!(Instant::now() < deadline, "the grant is shown");

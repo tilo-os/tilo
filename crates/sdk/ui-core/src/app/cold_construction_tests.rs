@@ -1,4 +1,4 @@
-//! Factory ordering and worker-custody regressions only; native authority
+//! Factory ordering and worker-ownership regressions only; native authority
 //! must additionally be proved through the real enrolled-owner broker fixture.
 use super::*;
 use std::cell::Cell;
@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
 
     phase absent_existing_record_cannot_reach_a_default_new_factory;
     {
-        use crate::application::{ApplicationDefinition, ApplicationHost, ComponentRunnerInputs};
+        use crate::application::{ApplicationDefinition, ApplicationOwner, ComponentRunnerInputs};
         use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
         let directory = tempfile::tempdir().unwrap();
         let definition = ApplicationDefinition {
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         let result = App::from_prepared_component_with_collaboration(
             CollaborationManager::disabled(),
             || {
-                let mut host = ApplicationHost::new(
+                let mut host = ApplicationOwner::new(
                     directory.path().into(),
                     "device".into(),
                     "workspace",

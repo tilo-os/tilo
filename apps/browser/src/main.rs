@@ -5,7 +5,7 @@ extern crate runtime_dylib;
 // Profile import comes from the import engine's library, not the tapp.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_browser_import_engine;
-// Website-session custody comes from the accounts engine the import engine links.
+// Website-session ownership comes from the accounts engine the import engine links.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_accounts_engine;
 

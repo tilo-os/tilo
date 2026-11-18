@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tilo_actions::remote::{Caller, InvokeArgument, TestHost, person_vault};
+use tilo_actions::remote::{Caller, InvokeArgument, TestProvider, person_vault};
 use ui::RemoteActions;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{Acting, ActionInvoker};
@@ -161,13 +161,15 @@ fn only_the_person_asked_answers_and_the_answer_carries_the_reference() {
 /// The person asked sees the protected field under the question. What they
 /// type goes to their vault's host with the kind and the places the question
 /// names, and to nothing else: the question is answered with the reference
-/// the vault gave, their words say so, and the record holds nothing typed.
+/// the vault gave, their words say so, and the resource holds nothing typed.
 #[test]
 fn what_is_typed_goes_to_the_vault_and_the_question_is_answered_with_its_reference() {
-    let vault = Arc::new(TestHost::new().completing(|_| tilo_actions::ActionOutput {
-        value: Some(json!({"reference": REFERENCE})),
-        resources: Vec::new(),
-    }));
+    let vault = Arc::new(
+        TestProvider::new().completing(|_| tilo_actions::ActionOutput {
+            value: Some(json!({"reference": REFERENCE})),
+            resources: Vec::new(),
+        }),
+    );
     let _served = RemoteActions::enter(vault.clone(), Caller::local_person(ME));
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let me = window_person(&mut app);
@@ -223,7 +225,7 @@ fn what_is_typed_goes_to_the_vault_and_the_question_is_answered_with_its_referen
     );
     for kept in mounted_rows(&mut app, CHANNEL) {
         let kept = format!("{kept:?}");
-        assert!(!kept.contains(TYPED), "the record holds what was typed");
+        assert!(!kept.contains(TYPED), "the resource holds what was typed");
     }
 }
 
@@ -261,5 +263,29 @@ fn the_field_is_drawn_in_every_theme_and_fits_a_narrow_window() {
                 && rect.x1 <= 390.0),
             "{fields:?}"
         );
+    }
+}
+
+/// A question for a key may say where the key rides in a request to its
+/// service, and only a key says so.
+#[test]
+fn a_question_for_a_key_says_where_the_key_rides() {
+    let key = json!({
+        "kind": "key",
+        "belongsTo": ["https://api.example.com"],
+        "sentIn": "header:X-Api-Key",
+    });
+    let asked = Asked::read(Some(&key)).expect("a key says how it is sent");
+    assert_eq!(asked.kind, person_vault::ItemKind::Key);
+    assert_eq!(asked.sent_in, "header:X-Api-Key");
+    assert_eq!(serde_json::to_value(&asked).unwrap(), key);
+    let plain = json!({"kind": "key", "belongsTo": ["https://api.example.com"]});
+    assert!(Asked::read(Some(&plain)).unwrap().sent_in.is_empty());
+    for unusable in [
+        json!({"kind": "login", "belongsTo": ["https://example.com"], "sentIn": "basic"}),
+        json!({"kind": "key", "belongsTo": ["https://api.example.com"], "sentIn": "header:X Api Key"}),
+        json!({"kind": "key", "belongsTo": ["https://api.example.com"], "sentIn": "x".repeat(200)}),
+    ] {
+        assert!(Asked::read(Some(&unusable)).is_err(), "{unusable}");
     }
 }

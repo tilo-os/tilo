@@ -11,14 +11,14 @@
 use std::sync::Arc;
 
 use super::AppBrokerState;
-use crate::services::{HostServices, HostStepOutcome, HostStepRequest, HostStepServices};
+use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices, ProcessServices};
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
+    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
 /// The installed host-step service that answers under `provider`, if any.
 pub(super) fn for_provider(
-    services: &HostServices,
+    services: &ProcessServices,
     provider: &str,
 ) -> Option<Arc<dyn HostStepServices>> {
     services
@@ -111,10 +111,10 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         steps: &dyn HostStepServices,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
-        let abandon = |error: ActionHostError| {
-            if let Ok(mut ledger) = self.remote_invocations.lock() {
-                ledger.abandon(&request.invocation);
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let abandon = |error: ActionCallError| {
+            if let Ok(mut log) = self.remote_invocations.lock() {
+                log.abandon(&request.invocation);
             }
             error
         };
@@ -123,39 +123,39 @@ impl AppBrokerState {
             return self
                 .remote_job(caller, &request.invocation)
                 .map(|job| self.receipt_for(request.invocation, job))
-                .ok_or(ActionHostError::UnknownInvocation);
+                .ok_or(ActionCallError::UnknownInvocation);
         }
         if !is_local_host_caller(caller, origin) {
-            return Err(abandon(ActionHostError::UnknownAction));
+            return Err(abandon(ActionCallError::UnknownAction));
         }
         let Some(workspace_id) = caller.workspace() else {
-            return Err(abandon(ActionHostError::NotPermitted));
+            return Err(abandon(ActionCallError::NotPermitted));
         };
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let Some(descriptor) = steps.invocation(address, argument.as_deref()) else {
-            return Err(abandon(ActionHostError::UnknownAction));
+            return Err(abandon(ActionCallError::UnknownAction));
         };
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
-        // One answer covers both gates of this exact host invocation.
-        let witnessed = self.consume_answer(
+        // One answer covers both checks of this exact host invocation.
+        let approved = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(policy.member(), workspace_id, request),
+            &self.approval_binding(policy.member(), workspace_id, request),
         );
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.
         let session = self.agent_session_of(Some(caller), origin, workspace_id);
         if let Some(Err(reason)) = &session {
-            return Err(abandon(ActionHostError::Refused {
+            return Err(abandon(ActionCallError::Refused {
                 reason: reason.clone(),
             }));
         }
         let session_step = steps.for_turns() || steps.for_agent_sessions();
         if session_step && policy.is_agent() && session.is_none() {
-            return Err(abandon(ActionHostError::Refused {
+            return Err(abandon(ActionCallError::Refused {
                 reason: "a session step is an agent session's: this agent works in none".into(),
             }));
         }
@@ -163,7 +163,7 @@ impl AppBrokerState {
             (&workspace, &policy, now),
             (steps.app_id(), &descriptor),
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
             false,
         )
         .map_err(abandon)?;
@@ -172,9 +172,9 @@ impl AppBrokerState {
             &descriptor,
             argument.as_deref(),
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
         ) {
-            return Err(abandon(ActionHostError::confirmation_required()));
+            return Err(abandon(ActionCallError::confirmation_required()));
         }
         let admitted = self
             .admit_host_action(
@@ -189,10 +189,10 @@ impl AppBrokerState {
             )
             .map_err(abandon)?;
         let id = admitted.id;
-        if let Ok(mut ledger) = self.remote_invocations.lock() {
-            ledger.complete(&request.invocation, id);
+        if let Ok(mut log) = self.remote_invocations.lock() {
+            log.complete(&request.invocation, id);
         }
-        // Signing and journalling may block. Resolve original custody and the
+        // Signing and journalling may block. Resolve original ownership and the
         // committed policy again for the effect, not the pre-admission actor.
         let policy = self.framework_effect_ready(&admitted, || {
             let (workspace, policy, now) =
@@ -202,16 +202,16 @@ impl AppBrokerState {
                 &descriptor,
                 argument.as_deref(),
                 request.confirmation.as_ref(),
-                witnessed,
+                approved,
             ) {
-                return Err(ActionHostError::confirmation_required());
+                return Err(ActionCallError::confirmation_required());
             }
             self.admit_answer(
                 (&workspace, &policy, now),
                 steps.app_id(),
                 &descriptor,
                 (argument.as_deref(), request.confirmation.as_ref()),
-                witnessed,
+                approved,
             )?;
             Ok(policy)
         })?;
@@ -219,7 +219,7 @@ impl AppBrokerState {
         let api = match (&session, origin) {
             (Some(Ok(_)), Some(origin)) => {
                 self.agent_session_api(caller, origin.clone()).map(|api| {
-                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>
+                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
                 })
             }
             _ => None,
@@ -229,7 +229,7 @@ impl AppBrokerState {
             actor: &policy,
             address,
             argument: argument.as_deref(),
-            host: api,
+            provider: api,
             group: request
                 .context
                 .as_ref()
@@ -243,7 +243,7 @@ impl AppBrokerState {
                         &admitted,
                         host_step_failure(request.invocation, "host_step_refused", &reason),
                     )?;
-                    return Err(ActionHostError::Refused { reason });
+                    return Err(ActionCallError::Refused { reason });
                 }
             };
             let following = super::live_views::Following {
@@ -252,10 +252,10 @@ impl AppBrokerState {
                 workspace: workspace_id.to_owned(),
                 app_id: steps.app_id().to_owned(),
                 descriptor,
-                witnessed,
+                approved,
             };
             self.follow_live_view(admitted, following, view)
-                .map_err(|reason| ActionHostError::Refused { reason })?;
+                .map_err(|reason| ActionCallError::Refused { reason })?;
             return Ok(self.receipt_for(request.invocation, id));
         }
         let started = steps.start(&step);
@@ -266,7 +266,7 @@ impl AppBrokerState {
                     &admitted,
                     host_step_failure(request.invocation, "host_step_refused", &reason),
                 )?;
-                return Err(ActionHostError::Refused { reason });
+                return Err(ActionCallError::Refused { reason });
             }
         }
         Ok(self.receipt_for(request.invocation, id))
@@ -330,14 +330,14 @@ pub(crate) mod signed_test_support {
         AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, InvocationKey,
         PeerPublisher, person_id_for_root, published_invocation::InvocationCaller,
     };
-    use crate::services::HostServices;
+    use crate::services::ProcessServices;
     use crate::test_support::{Workspace, WorkspaceTree};
     use ed25519_dalek::Signer as _;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
-    use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
+    use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest};
 
     struct NativeOwnerReceipts {
         owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
@@ -406,7 +406,7 @@ pub(crate) mod signed_test_support {
         pub authority: Arc<Authority>,
         pub workspace: String,
         pub tree: crate::test_support::WorkspaceTreeHandle,
-        certified_host: Option<Arc<dyn tilo_actions::remote::ActionHost>>,
+        certified_host: Option<Arc<dyn tilo_actions::remote::ActionProvider>>,
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
         directory: tempfile::TempDir,
@@ -423,17 +423,17 @@ pub(crate) mod signed_test_support {
             self.policy_origin.invalidate();
         }
 
-        pub fn new(services: HostServices) -> Self {
+        pub fn new(services: ProcessServices) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let mut environment = tilo_test_env::ScopedEnv::new();
             environment
                 .set("XDG_CONFIG_HOME", directory.path().join("config"))
                 .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
-                .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity::provisioning::ensure_collaboration_identity(
                 &directory.path().join("config/tilo/identity"),
                 &tilo_user_identity::IdentityPaths::under(directory.path().join("identity")),
-                tilo_identity_host::provisioning::IdentityStorage::Files,
+                tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
             let mut workspace = Workspace::new(
@@ -443,7 +443,7 @@ pub(crate) mod signed_test_support {
             );
             let workspace_id = workspace.id().to_string();
             let (key, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
+                tilo_identity::broker::trusted_current_device(&workspace_id).unwrap();
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
@@ -521,18 +521,18 @@ pub(crate) mod signed_test_support {
             }
         }
 
-        pub fn new_certified(services: HostServices) -> Self {
+        pub fn new_certified(services: ProcessServices) -> Self {
             Self::certified(services, false)
         }
 
-        pub fn new_certified_foreign(services: HostServices) -> Self {
+        pub fn new_certified_foreign(services: ProcessServices) -> Self {
             Self::certified(services, true)
         }
 
-        fn certified(services: HostServices, foreign: bool) -> Self {
+        fn certified(services: ProcessServices, foreign: bool) -> Self {
             let mut fixture = Self::new(services);
             let (key, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&fixture.workspace).unwrap();
+                tilo_identity::broker::trusted_current_device(&fixture.workspace).unwrap();
             let presentation = runtime_collab::CertifiedJoinIdentity {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
@@ -553,7 +553,7 @@ pub(crate) mod signed_test_support {
             fixture.certified_host = Some(
                 fixture
                     .state
-                    .certified_local_action_host(&fixture.caller, &presentation)
+                    .certified_local_action_provider(&fixture.caller, &presentation)
                     .unwrap(),
             );
             fixture.origin = InvocationCaller::Certified {
@@ -579,14 +579,14 @@ pub(crate) mod signed_test_support {
                         agent: None,
                     }
                 }
-                InvocationCaller::NativePerson { .. } => panic!("authenticated custody"),
+                InvocationCaller::NativePerson { .. } => panic!("authenticated ownership"),
             }
         }
 
         pub fn invoke(
             &self,
             request: &InvokeRequest,
-        ) -> Result<InvocationReceipt, ActionHostError> {
+        ) -> Result<InvocationReceipt, ActionCallError> {
             let pending = match &self.certified_host {
                 Some(host) => host.invoke(&self.caller, request.clone()),
                 None => self.state.action_invoke_with_origin(
@@ -718,16 +718,16 @@ pub(crate) mod signed_test_support {
 #[cfg(test)]
 mod identity_admin_tests {
     use super::super::AppBrokerState;
-    use super::super::action_host::RowScope;
+    use super::super::action_provider::RowScope;
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{Grants as _, Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
+        ActionCallError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
         RemoteActionMessage, identity_admin, pending,
     };
 
-    /// The host's identity store, standing in: it records each step it was
+    /// The host's identity store, in its place: it records each step it was
     /// asked to start and answers when the test completes it.
     #[derive(Default)]
     struct Host {
@@ -809,7 +809,7 @@ mod identity_admin_tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 host_steps: vec![host],
                 ..Default::default()
             },
@@ -835,11 +835,11 @@ mod identity_admin_tests {
             clippy::significant_drop_tightening,
             reason = "the test keeps its fixture and guards alive through its assertions"
         )]
-        fn host_steps_admit_only_certified_local_custody;
+        fn host_steps_admit_only_certified_local_ownership;
 
         phase a_keyless_agent_or_person_takes_no_host_step_on_a_native_host;
         // On a native host (one with the person's device), neither an agent nor a
-        // person that carries no retained custody takes a host step: an agent
+        // person that carries no retained ownership takes a host step: an agent
         // takes one only inside an agent session, a person only through the
         // device. Neither is taken as an actor-only caller.
         {
@@ -853,7 +853,7 @@ mod identity_admin_tests {
             tree.workspaces.push(workspace);
             let (state, _bridge_rx) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     local_person: Some(Arc::new(NoDevice)),
                     ..Default::default()
@@ -867,7 +867,7 @@ mod identity_admin_tests {
             let person = Caller::local_person(owner).in_workspace(workspace_id);
             assert!(
                 invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
-                "a person reaches a native host's steps only with the device's custody"
+                "a person reaches a native host's steps only with the device's ownership"
             );
             assert!(host.started.lock().unwrap().is_empty());
         }
@@ -917,13 +917,13 @@ mod identity_admin_tests {
             );
         }
 
-        phase certified_host_steps_admit_only_nonforeign_local_custody;
+        phase certified_host_steps_admit_only_nonforeign_local_ownership;
         {
             for pairing in [false, true] {
                 for foreign in [false, true] {
                     let host = Arc::new(PairingHost::default());
                     let identity = Arc::new(Host::default());
-                    let services = crate::services::HostServices {
+                    let services = crate::services::ProcessServices {
                         host_steps: vec![if pairing {
                             host.clone() as Arc<dyn HostStepServices>
                         } else {
@@ -952,7 +952,7 @@ mod identity_admin_tests {
                         f.state
                             .eager_catalogue(
                                 &f.caller,
-                                super::super::action_host::RowScope::Provider(&asked.target.provider),
+                                super::super::action_provider::RowScope::Provider(&asked.target.provider),
                             )
                             .0
                             .is_empty(),
@@ -965,7 +965,7 @@ mod identity_admin_tests {
                     }
                     assert!(
                         invoked(&f.state, &f.caller, &asked).is_err(),
-                        "device keys without certified local custody are not a local api"
+                        "device keys without certified local ownership are not a local api"
                     );
                     assert!(service.started.lock().unwrap().is_empty());
                     *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
@@ -996,7 +996,7 @@ mod identity_admin_tests {
         phase device_pairing_uses_the_same_signed_admission_and_terminal_path;
         {
             let host = Arc::new(PairingHost::default());
-            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+            let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             });
@@ -1037,7 +1037,7 @@ mod identity_admin_tests {
                     "time",
                 ] {
                     let host = Arc::new(Host::default());
-                    let services = crate::services::HostServices {
+                    let services = crate::services::ProcessServices {
                         host_steps: vec![host.clone()],
                         ..Default::default()
                     };
@@ -1085,7 +1085,7 @@ mod identity_admin_tests {
                         worker.join().unwrap()
                     });
                     if change == "unchanged" {
-                        result.expect("unchanged custody must still start");
+                        result.expect("unchanged ownership must still start");
                         assert_eq!(host.started.lock().unwrap().len(), 1);
                         host.answers
                             .lock()
@@ -1131,7 +1131,7 @@ mod identity_admin_tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -1182,7 +1182,7 @@ mod identity_admin_tests {
         phase identity_admin_signs_before_start_and_retains_the_original_uuid;
         {
             let host = Arc::new(Host::default());
-            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+            let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             });
@@ -1222,7 +1222,7 @@ mod identity_admin_tests {
         {
             for dropped in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
                 });
@@ -1266,7 +1266,7 @@ mod identity_admin_tests {
         {
             for admission_failure in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
                 });
@@ -1296,11 +1296,11 @@ mod identity_admin_tests {
             }
         }
 
-        phase identity_admin_refuses_revoked_custody_and_missing_signer_before_start;
+        phase identity_admin_refuses_revoked_ownership_and_missing_signer_before_start;
         {
             for revoked in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
                 });
@@ -1310,7 +1310,7 @@ mod identity_admin_tests {
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 } else {
                     std::fs::remove_file(
-                        tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
+                        tilo_identity::provisioning::collaboration_identity_paths().device_privkey,
                     )
                     .unwrap();
                 }
@@ -1360,7 +1360,7 @@ mod identity_admin_tests {
             ] {
                 assert_eq!(
                     invoked(&state, &person, &request(step, None)),
-                    Err(ActionHostError::confirmation_required()),
+                    Err(ActionCallError::confirmation_required()),
                     "{step} needs the person's confirmation"
                 );
             }
@@ -1468,14 +1468,14 @@ mod settings_documents_tests {
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+        ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
         settings_resources,
     };
 
     const APP: &str = ui::apps::SETTINGS;
     const RESOURCE: &str = "settings:power";
 
-    /// The session's settings, standing in: one section whose lock delay
+    /// The session's settings, in its place: one section whose lock delay
     /// weakens the lock when longer or never.
     struct Host {
         minutes: Mutex<u32>,
@@ -1592,7 +1592,7 @@ mod settings_documents_tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -1619,7 +1619,7 @@ mod settings_documents_tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             },
@@ -1637,7 +1637,7 @@ mod settings_documents_tests {
         assert_eq!(minutes(), 1);
         assert_eq!(
             invoked(&state, &person, &lock_after(0, None)),
-            Err(ActionHostError::confirmation_required()),
+            Err(ActionCallError::confirmation_required()),
             "never locking asks first"
         );
         assert_eq!(minutes(), 1);

@@ -1291,9 +1291,9 @@ fn geometry_of(
     let metrics = &theme.tokens.metrics;
     let pad = if framed { f64::from(spacing.s3) } else { 0.0 };
     let gap = f64::from(spacing.s2);
-    // The overlaid scroll bar gets a lane of its own at the grid's right, so
+    // The overlaid scroll bar gets a gutter of its own at the grid's right, so
     // it never covers the last column.
-    let lane = f64::from(spacing.s2);
+    let gutter = f64::from(spacing.s2);
     let edge = f64::from(spacing.s4);
     let field_h = super::ButtonFace::height(ControlSize::Regular, theme);
     let tab_height = SegmentedFace::height(ControlSize::Regular, theme);
@@ -1311,7 +1311,7 @@ fn geometry_of(
     } else {
         (wanted, f64::INFINITY)
     };
-    let body = (width - pad * 2.0 - lane).max(1.0);
+    let body = (width - pad * 2.0 - gutter).max(1.0);
     let cell = if framed {
         f64::from(metrics.panel_row_height).max(1.0)
     } else {
@@ -1358,7 +1358,7 @@ fn geometry_of(
     let reserved = pad + if footer_h > 0.0 { gap + footer_h } else { 0.0 };
     let grid_h = grid_h.min((height - grid_y - reserved).max(0.0));
     let grid_x0 = pad + (body - grid_w) / 2.0;
-    let grid = Rect::new(grid_x0, grid_y, grid_x0 + grid_w + lane, grid_y + grid_h);
+    let grid = Rect::new(grid_x0, grid_y, grid_x0 + grid_w + gutter, grid_y + grid_h);
     let footer = Rect::new(pad, grid.y1 + gap, width - pad, grid.y1 + gap + footer_h);
     Geometry {
         size: (width, height),
@@ -1446,6 +1446,7 @@ impl Widget for EmojiPicker {
             multiline: false,
             placeholder: None,
             look,
+            inset: [0.0, 0.0],
         });
         for (index, (group, rect)) in self.groups.iter().zip(&self.geometry.tabs).enumerate() {
             if rect.width() <= 0.0 || rect.height() <= 0.0 {

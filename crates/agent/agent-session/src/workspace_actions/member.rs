@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox, PeerConfig};
 use tilo_user_identity::RevocationList;
 

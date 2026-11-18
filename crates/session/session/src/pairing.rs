@@ -1,7 +1,7 @@
 //! Pairing a nearby device with the person's identity, run by the session.
 //! Discovery listens on the LAN for an unprovisioned device announcing itself (`tilo-enroll
 //! discover[-device]`) and answers what it found, with the verification code both screens show.
-//! Approval runs the polkit-gated helper (`tilo-home-peer-control approve-…`), which asks an
+//! Approval runs the polkit-guarded helper (`tilo-home-peer-control approve-…`), which asks an
 //! administrator to authenticate before it admits the device. The helper and its policy are
 //! unchanged; only their caller is the session now, so no sandboxed application starts a privileged
 //! process.
@@ -9,7 +9,7 @@
 //! session's loop and the action broker for an application — never blocks on a LAN window that may
 //! stay open for minutes. One step runs at a time: discovery and approval listen on the same LAN
 //! port.
-//! An approval names a device this session discovered, with the relay service it announced: a
+//! An approval names a device this session discovered, with the server service it announced: a
 //! caller cannot admit a key it merely names. Rejecting forgets the candidate and stops waiting on
 //! its approval; the helper's own LAN window bounds the privileged child.
 //! Who may pair is decided by the API the step arrives through, before it reaches this engine:
@@ -25,8 +25,8 @@ use std::time::Duration;
 use crate::platform::fabric::SharedLink;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_identity_host::device_admin::DeviceKind;
-use tilo_identity_host::device_admin::{
+use tilo_identity::device_admin::DeviceKind;
+use tilo_identity::device_admin::{
     Approval, Candidate, ENROLL, KeyHolding, PersonPaths, approval_args, command_error,
     discover_command, node_id,
 };
@@ -70,12 +70,12 @@ pub(crate) const APPROVE_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "service",
         ParamType::Text,
-        "The relay service node id discovery answered with the device, 64 hex characters.",
+        "The server service node id discovery answered with the device, 64 hex characters.",
     ),
     ActionParam::optional(
         "workspace_ids",
         ParamType::Array,
-        "For a home peer, the ids of the workspaces it keeps. Defaults to the relay configuration's.",
+        "For a home peer, the ids of the workspaces it keeps. Defaults to the server configuration's.",
     ),
     ActionParam::required(
         "confirm",
@@ -262,7 +262,7 @@ pub(crate) struct Pairing {
 
 static SESSION: LazyLock<Pairing> = LazyLock::new(|| {
     Pairing::with_runner(Arc::new(run_bounded))
-        .holding(Arc::new(tilo_identity_host::device_admin::key_holding))
+        .holding(Arc::new(tilo_identity::device_admin::key_holding))
 });
 
 impl Pairing {
@@ -359,7 +359,7 @@ impl Pairing {
             let (role, candidate) = flights.candidates.get(&approval.device).ok_or_else(|| {
                 "no device with that key was discovered here; discover it first".to_string()
             })?;
-            if *role != approval.role || candidate.relay_service_node_id != approval.service {
+            if *role != approval.role || candidate.server_node_id != approval.service {
                 return Err("that is not the device discovered with this key".into());
             }
             let label = candidate.label.clone();
@@ -517,7 +517,7 @@ impl Admission {
             .fabric
             .as_ref()
             .ok_or_else(crate::certification::cannot_certify_here)?;
-        let (proposal, service) = tilo_identity_host::device_admin::proposed_certificate(
+        let (proposal, service) = tilo_identity::device_admin::proposed_certificate(
             person,
             &self.candidate,
             tilo_clock::unix_now_ns(),
@@ -533,7 +533,7 @@ impl Admission {
         runner(
             &HostCommand {
                 program: PathBuf::from(ENROLL),
-                args: tilo_identity_host::device_admin::approved_args(
+                args: tilo_identity::device_admin::approved_args(
                     &self.approval,
                     &self.paths,
                     file.path(),
@@ -560,11 +560,7 @@ pub(crate) fn approval_command(
 
 /// The device a finished discovery reports.
 fn discovered(finished: &Finished) -> Result<Candidate, String> {
-    tilo_identity_host::device_admin::discovered(
-        finished.success,
-        &finished.stdout,
-        &finished.stderr,
-    )
+    tilo_identity::device_admin::discovered(finished.success, &finished.stdout, &finished.stderr)
 }
 
 /// Run `command` under the bounded-command policy, polling for `stop`;
@@ -633,7 +629,7 @@ fn spawn_step(step: impl FnOnce() + Send + 'static) -> Result<(), String> {
 /// The broker's API to pairing: how Settings pairs a device, as the person using it, without
 /// starting any process itself.
 pub(crate) struct BrokerApi {
-    pub(crate) layout: std::sync::Arc<crate::plane::LayoutAuthority>,
+    pub(crate) layout: std::sync::Arc<crate::app_wire::LayoutAuthority>,
     pub(crate) fabric: Option<SharedLink>,
     pub(crate) pairing: &'static Pairing,
 }
@@ -781,7 +777,7 @@ mod tests {
     fn announced(device: &str, service: &str) -> Vec<u8> {
         serde_json::json!({
             "device_node_id": device,
-            "relay_service_node_id": service,
+            "server_node_id": service,
             "label": "Phone",
             "verification_code": "123456",
         })
@@ -876,7 +872,7 @@ mod tests {
                 }
             );
             assert_eq!(recorded[1].program, PathBuf::from(PKEXEC), "{recorded:?}");
-            let ask = tilo_identity_host::device_admin::approval_args(&approval, &paths, &[]);
+            let ask = tilo_identity::device_admin::approval_args(&approval, &paths, &[]);
             assert_eq!(recorded[1].args, ask);
             assert_eq!(recorded[1].timeout, APPROVAL_TIMEOUT);
 

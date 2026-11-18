@@ -85,7 +85,7 @@ pub fn rows(desktop: &Layout, local_user: &str, own_id: &str) -> Vec<RosterRow> 
         .into_iter()
         .filter(|row| row.id != own_id && row.id != local_user)
         .collect();
-    rows.sort_by_key(|row| row.is_agent);
+    rows.sort_by_key(RosterRow::is_agent);
     rows
 }
 

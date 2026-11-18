@@ -1,4 +1,4 @@
-//! Fixed installed retained-helper role over genuine kernel process custody.
+//! Fixed installed retained-helper role over genuine kernel process ownership.
 //! This role is not a source/file grant or an identity certificate.
 #[cfg(target_os = "linux")]
 use crate::process_binding::ExecutingPeer;

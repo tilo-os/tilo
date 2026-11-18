@@ -221,7 +221,7 @@ impl From<String> for StoreError {
 /// What a new document or item needs to start out with: every structural field exists
 /// from the first change, so concurrent first writes merge instead of conflicting.
 #[derive(Clone, Debug)]
-pub struct NewRecord {
+pub struct NewResource {
     pub ty: TypeId,
     pub app: AppId,
     pub fields: Vec<FieldSpec>,
@@ -257,7 +257,7 @@ pub enum Mutation {
     /// Insert a new item; `index` of `None` appends.
     CollInsert {
         field: FieldId,
-        item: NewRecord,
+        item: NewResource,
         index: Option<usize>,
         /// The id the item takes, or `None` for a fresh one. A run that is run again after it
         /// waited names the id it gave before, so the change it makes is the one it was making.
@@ -1365,7 +1365,7 @@ pub trait Store {
     /// # Errors
     ///
     /// A [`StoreError`] when the document cannot be created.
-    fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError>;
+    fn create(&mut self, record: &NewResource) -> Result<ResourceRef, StoreError>;
 
     /// Create a document under the id `id` and commit it as one change: a package's per-workspace
     /// root, `root-<type id>`, which code names as `root T` or by the root's name.
@@ -1373,7 +1373,11 @@ pub trait Store {
     /// # Errors
     ///
     /// A [`StoreError`] when the document exists or cannot be created.
-    fn create_with_id(&mut self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
+    fn create_with_id(
+        &mut self,
+        record: &NewResource,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
         let _ = (record, id);
         Err(StoreError::Invalid(
             "this store makes documents under ids of its own".into(),
@@ -1391,7 +1395,7 @@ pub trait Store {
     fn create_in(
         &mut self,
         txn: Txn,
-        record: &NewRecord,
+        record: &NewResource,
         id: &str,
     ) -> Result<ResourceRef, StoreError> {
         let _ = (txn, record, id);

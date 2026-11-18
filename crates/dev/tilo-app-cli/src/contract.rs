@@ -292,12 +292,12 @@ const FORBIDDEN: &[(&[&str], &str, &str)] = &[
         "read the time from `cx.now_ms()`",
     ),
     (
-        &["Utc", "now"],
+        &["Timestamp", "now"],
         "the clock",
         "read the time from `cx.now_ms()`",
     ),
     (
-        &["Local", "now"],
+        &["Zoned", "now"],
         "the clock",
         "read the time from `cx.now_ms()`",
     ),

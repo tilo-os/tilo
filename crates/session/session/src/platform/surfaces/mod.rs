@@ -25,20 +25,20 @@ pub use linux::Hosted;
 /// The tilolang shell a desktop shows: the package it runs (the person's installed one or this
 /// build's copy), and the identity a part of it is made with.
 #[cfg(target_os = "linux")]
-pub use tilo_surface_host::shell_part::{ShellIdentity, compile_shell, installed_shell};
-/// The desktop's own hosts, as a Linux session drives them: the toolkit's widget trees on their
-/// layers ([`WidgetHost`]), the shell under the windows and its window policy ([`DesktopHost`],
-/// [`StripPolicy`]), a surface app on a layer of its own ([`AppHost`]) and the tilolang shell's
+pub use tilo_shell_surface::shell_part::{ShellIdentity, compile_shell, installed_shell};
+/// The desktop's own surfaces, as a Linux session drives them: the toolkit's widget trees on their
+/// layers ([`WidgetSurface`]), the shell under the windows and its window policy ([`ShellDesktop`],
+/// [`StripPolicy`]), a surface app on a layer of its own ([`AppProcess`]) and the tilolang shell's
 /// parts and slot views.
 #[cfg(target_os = "linux")]
-pub use tilo_surface_host::{
-    AppHost, DesktopHost, PointerSamples, SessionLink, ShellGesture, ShellPart, ShellWork,
-    StripPolicy, WellPolicy, WidgetHost, WindowObserver, desktop, desktop_with, part_view,
+pub use tilo_shell_surface::{
+    AppProcess, PointerSamples, SessionLink, ShellDesktop, ShellGesture, ShellPart, ShellWork,
+    StripPolicy, WellPolicy, WidgetSurface, WindowObserver, desktop, desktop_with, part_view,
 };
 
-/// What a role places over the windows: the host's layers.
+/// What a role places over the windows: the shell's layers.
 pub trait Surfaces {
-    /// Place `tree` on a layer of its own, called `name`, standing at `placement`: it covers the
+    /// Place `tree` on a layer of its own, called `name`, at `placement`: it covers the
     /// outputs, and what `heard` says of the layer's role reaches it. The actions `published`
     /// offers are reached through the session's API.
     fn place(
@@ -54,7 +54,7 @@ pub trait Surfaces {
     fn publish(&mut self, published: Rc<RefCell<dyn Published>>);
 }
 
-/// The shell under the windows, as the roles standing over it read it.
+/// The shell under the windows, as the roles over it read it.
 pub trait Shell {
     /// The windows the shell shows, each at its logical rectangle on the desktop.
     fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)>;
@@ -62,7 +62,7 @@ pub trait Shell {
     /// Where the shell's layer begins on the desktop: the chrome over it draws from there too.
     fn origin(&self) -> (i32, i32);
 
-    /// Lay the shell's layer out again: a panel standing over it went up or down.
+    /// Lay the shell's layer out again: a panel over it went up or down.
     fn relayout(&self);
 }
 

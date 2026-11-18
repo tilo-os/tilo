@@ -4,7 +4,7 @@
 //!
 //! A connector is the app's own launch with no window (`tilo-launcher run
 //! --tilolang-connector <origin>`): the launcher gives it exactly the sandbox its signed
-//! manifest declares for that origin — the network and the custody the tilolang host that runs
+//! manifest declares for that origin — the network and the ownership the tilolang host that runs
 //! its instances never has — and the app's runtime runs its origin's connector there
 //! (`tilolang_mail::run_connector`, `tilolang_youtube::connector::run`).
 //!
@@ -66,7 +66,7 @@ impl ConnectorHost {
 
     /// Stop the connector of `app`'s `origin` in `workspace` when one runs: nothing of that app
     /// in that workspace reads the service any more, so what the service says next waits nowhere
-    /// and the process, with the network and custody its sandbox gave it, ends. Whether one ran.
+    /// and the process, with the network and ownership its sandbox gave it, ends. Whether one ran.
     ///
     /// The child is reaped on a thread of its own, never here: this runs on the loop's pass, and
     /// a killed process can take a moment to end (a kernel wait, a file it is writing), which on
@@ -132,7 +132,7 @@ impl ConnectorHost {
     }
 
     /// Start the connector `planned` ran, releasing the socket `socket` to it through the launcher's
-    /// registration gate, and following it on a thread of its own.
+    /// launch hold, and following it on a thread of its own.
     fn start(planned: &Planned, socket: &OwnedFd) -> Result<Child, String> {
         tilo_app_launch::name_surface(planned);
         let mut command = Command::new(&planned.program);
@@ -145,8 +145,8 @@ impl ConnectorHost {
             // the same as a window's app's.
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let gate = launcher::registration_gate::install(&mut command)
-            .map_err(|error| format!("{} has no launch gate: {error}", planned.app))?;
+        let hold = launcher::launch_hold::install(&mut command)
+            .map_err(|error| format!("{} has no launch hold: {error}", planned.app))?;
         let mut child = command
             .spawn()
             .map_err(|error| format!("{}'s connector did not start: {error}", planned.app))?;
@@ -158,14 +158,14 @@ impl ConnectorHost {
             None,
         ));
         if let Some(stdout) = child.stdout.take() {
-            output.relay_stdout(stdout);
+            output.keep_stdout(stdout);
         }
         if let Some(stderr) = child.stderr.take() {
-            output.relay_stderr(stderr);
+            output.keep_stderr(stderr);
         }
         // The connector's socket reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.
-        gate.release_with_window_link(socket.as_fd())
+        hold.release_with_window_link(socket.as_fd())
             .map_err(|error| format!("{}'s connector was not released: {error}", planned.app))?;
         tracing::info!(app = %planned.app, argv = %planned.describe(), "an origin connector started");
         Ok(child)
@@ -217,7 +217,7 @@ pub(crate) fn reap(child: Child) {
 /// whose package declares it, in the sandbox its signed manifest gives that origin, and the service
 /// reached through it.
 /// A connector is the app's own launch with no window (`--tilolang-connector <origin>`): it holds
-/// the network and the custody the session and the tilolang host never have. A session that
+/// the network and the ownership the session and the tilolang host never have. A session that
 /// cannot start one says why and goes on: the app's records then stand as they are, and its
 /// views show what they last held.
 ///

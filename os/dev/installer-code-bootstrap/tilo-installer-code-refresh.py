@@ -37,7 +37,7 @@ def command(*argv):
     return result.stdout.strip()
 
 
-def gate():
+def check():
     require(os.geteuid() == 0 and MARKER.is_file() and not MARKER.is_symlink()
             and FLAVOUR.is_file() and not FLAVOUR.is_symlink() and FLAVOUR.read_bytes() == b'dev\n'
             and PORT.is_char_device() and PROOF_PORT.is_char_device()
@@ -78,7 +78,7 @@ def idle():
 
 
 def apply(files, receipt):
-    gate()
+    check()
     descriptor = lock()
     mounted = []
     marker = BASE / 'active.json'
@@ -194,7 +194,7 @@ def bootstrap_receive(stream):
 
 
 def main():
-    gate()
+    check()
     ready_sent = False
     while True:
         # Host chardev connections may close between refreshes. Reopen the

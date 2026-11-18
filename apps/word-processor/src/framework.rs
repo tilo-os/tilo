@@ -179,7 +179,7 @@ fn attach(editor: &mut Editor, cx: &ViewCx<Document>) {
         if let Some(shows) = cx.window_shows() {
             shows.show(&path);
         }
-        editor.show_record_of(path);
+        editor.show_resource_of(path);
     }
     editor.follow_personal_dictionary();
     if cx.mode() == RunMode::Live {

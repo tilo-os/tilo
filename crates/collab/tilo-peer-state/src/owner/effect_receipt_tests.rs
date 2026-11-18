@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             fixture
                 .governor
                 .receive(
-                    crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
+                    crate::TransportOrigin::RetainedServerDelta(member.device_public_key),
                     postcard::from_bytes(&frame).unwrap(),
                 )
                 .unwrap();
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
             fixture
                 .governor
                 .receive(
-                    crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
+                    crate::TransportOrigin::RetainedServerDelta(member.device_public_key),
                     postcard::from_bytes(&frame).unwrap(),
                 )
                 .unwrap();
@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
                 fixture
                     .governor
                     .receive(
-                        crate::TransportOrigin::RetainedRelayDelta(
+                        crate::TransportOrigin::RetainedServerDelta(
                             fixture.certificate.device_public_key,
                         ),
                         postcard::from_bytes(&frame).unwrap(),
@@ -373,7 +373,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         fixture
             .governor
             .receive(
-                crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                crate::TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                 postcard::from_bytes(&frame).unwrap(),
             )
             .unwrap();
@@ -455,7 +455,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         reopened
             .receive(
                 workspace,
-                crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                crate::TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                 postcard::from_bytes(&frame).unwrap(),
                 fixture.now,
             )
@@ -617,7 +617,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
                     160
                 );
                 assert_eq!(view.generation(), 161);
-                assert_eq!(view.record.version, crate::owner::record::WORKSPACE_VERSION);
+                assert_eq!(view.record.version, crate::owner::stored::WORKSPACE_VERSION);
                 assert!(
                     !view
                         .record
@@ -669,7 +669,7 @@ fn relay_to_governor_and_compare_roots(
         fixture
             .governor
             .receive(
-                crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                crate::TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                 postcard::from_bytes(&frame).unwrap(),
             )
             .unwrap();
@@ -698,7 +698,7 @@ fn assert_archived_file_layout(path: &std::path::Path) {
 }
 
 #[test]
-fn effect_archive_io_and_root_publication_failure_preserve_active_custody() {
+fn effect_archive_io_and_root_publication_failure_preserve_active_ownership() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let fixture = fixture();
     let first = request(&fixture.certificate, EffectReceiptStatus::Succeeded);

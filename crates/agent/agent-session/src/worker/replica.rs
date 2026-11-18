@@ -9,7 +9,7 @@ use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_content::ContentStore;
-use tilo_relay_protocol::live::LiveAnchor;
+use tilo_server_protocol::live::LiveAnchor;
 use ui::resource::DocumentId;
 
 use super::process::{Lease, Stopped};
@@ -51,6 +51,9 @@ const MOST_SCANNED_VALUES: usize = 1 << 20;
 /// operation names, and before an effect what the record refers to, goes
 /// in before it runs; what the app stored comes out after, hashed again
 /// here before the workspace keeps it.
+/// Who a workspace's members are, by what it calls each, as its host reads them now.
+type Members = std::sync::Arc<dyn Fn() -> Vec<(tilo_actions::MemberId, String)> + Send + Sync>;
+
 pub struct ConfinedReplica {
     app_id: String,
     workspace: String,
@@ -59,6 +62,8 @@ pub struct ConfinedReplica {
     actor: String,
     record: DocumentId,
     content: Option<ContentStore>,
+    /// Who the workspace's members are, read again for each operation.
+    members: Option<Members>,
     inner: Mutex<Inner>,
 }
 
@@ -85,6 +90,10 @@ struct Inner {
     /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
     /// answered they hold none of: told again to a worker that replaces it.
     asks_workspace: Option<BTreeMap<String, ui::resource::WorkspaceAnswer>>,
+    /// What the worker was told of the workspace unasked ([`ConfinedReplica::workspace_answered`]
+    /// for a store that asks nothing): told again to a worker that replaces it, since what
+    /// the app keeps for its whole workspace opens only on that word.
+    told: BTreeMap<String, ui::resource::WorkspaceAnswer>,
 }
 
 impl Inner {
@@ -187,6 +196,7 @@ impl ConfinedReplica {
             actor,
             record,
             content: None,
+            members: None,
             inner: Mutex::new(Inner {
                 process: Some(process),
                 revivals: 0,
@@ -201,6 +211,7 @@ impl ConfinedReplica {
                 kept: Vec::new(),
                 held: BTreeSet::new(),
                 asks_workspace: None,
+                told: BTreeMap::new(),
             }),
         };
         if fresh {
@@ -223,6 +234,20 @@ impl ConfinedReplica {
         self
     }
 
+    /// Lend the record the workspace's members, as `engine` holds the workspace's governance: what
+    /// an operation binds a typed `@Name` to and names an author by.
+    #[must_use]
+    pub fn knowing(mut self, engine: std::sync::Arc<tilo_session_client::engine::Engine>) -> Self {
+        let workspace = self.workspace.clone();
+        self.members = Some(std::sync::Arc::new(move || {
+            engine
+                .people(&workspace)
+                .map(|people| people.into_iter().map(|row| (row.id, row.name)).collect())
+                .unwrap_or_default()
+        }));
+        self
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock_recover()
     }
@@ -236,7 +261,7 @@ impl ConfinedReplica {
     /// agent's renders go to the host's render service.
     pub(crate) fn is_agents(&self) -> bool {
         serde_json::from_str::<ReplicaActor>(&self.actor)
-            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent))
+            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent { .. }))
     }
 
     /// Collaboration route of this record: [`crate::Replica::wire_document`].
@@ -276,6 +301,22 @@ impl ConfinedReplica {
             self.revive(inner, false)?;
             (inner.dirty, inner.beside_dirty) = pending;
             answer = Self::send(inner, request);
+        }
+        // A request that reads the record's view may lay it out, and the view
+        // may write as it takes up what changed (a file it now names opened
+        // for the first time): what it wrote is collected with the next take.
+        if answer.is_ok()
+            && matches!(
+                request,
+                Request::Survey
+                    | Request::SurveyRows
+                    | Request::SurveyPage { .. }
+                    | Request::Resolve { .. }
+                    | Request::Wanted
+            )
+        {
+            inner.dirty = true;
+            inner.beside_dirty = true;
         }
         answer.map_err(|stopped| {
             inner.stop();
@@ -358,6 +399,18 @@ impl ConfinedReplica {
                             _ => return Err(worker_error("the worker answered out of turn")),
                         }
                     }
+                } else {
+                    for (id, answer) in &inner.told {
+                        let again = Request::Answered {
+                            record: id.clone(),
+                            answer: *answer,
+                        };
+                        match process.call(&again).map_err(worker)? {
+                            Reply::Done => {}
+                            Reply::Failed(reason) => return Err(worker_error(reason)),
+                            _ => return Err(worker_error("the worker answered out of turn")),
+                        }
+                    }
                 }
                 inner.process = Some(process);
                 inner.dirty = false;
@@ -412,9 +465,11 @@ impl ConfinedReplica {
         answer: ui::resource::WorkspaceAnswer,
     ) -> Result<(), AppError> {
         let mut inner = self.lock();
-        if let Some(answered) = &mut inner.asks_workspace {
-            answered.insert(record.as_str().to_owned(), answer);
-        }
+        let id = record.as_str().to_owned();
+        match &mut inner.asks_workspace {
+            Some(answered) => answered.insert(id, answer),
+            None => inner.told.insert(id, answer),
+        };
         let reply = self.call(
             &mut inner,
             &Request::Answered {
@@ -686,6 +741,11 @@ impl ConfinedReplica {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| unavailable(e.to_string()))?,
+            members: self
+                .members
+                .as_ref()
+                .map(|members| members())
+                .unwrap_or_default(),
         };
         let mut inner = self.lock();
         inner.dirty = true;
@@ -1080,7 +1140,7 @@ impl ConfinedReplica {
         if record == &self.record {
             return self.apply(mutation);
         }
-        if record.chain_part().is_none() {
+        if record.chain_part().is_none() && !self.keeps_for_workspace(record) {
             return Err(AppError::Merge(format!(
                 "{} is held on its own, not beside {}",
                 record.as_str(),
@@ -1144,7 +1204,7 @@ impl ConfinedReplica {
         result
     }
 
-    /// This member's changes to the records held beside this one since
+    /// This member's changes to the documents held beside this one since
     /// the last call, by record, admitted here first:
     /// [`crate::Replica::take_document_mutations`]. A part the worker started
     /// comes whole; it must be a part of a chain not held here yet.
@@ -1185,7 +1245,7 @@ impl ConfinedReplica {
         Ok(out)
     }
 
-    /// Admit one change the worker made to a record held beside this one
+    /// Admit one change the worker made to a document held beside this one
     /// to its mirror: a part it started whole, a part held here as changes
     /// on top of it.
     fn admit_beside(
@@ -1196,7 +1256,10 @@ impl ConfinedReplica {
         bytes: Vec<u8>,
     ) -> Result<(DocumentId, DocumentMutation), AppError> {
         let record = DocumentId::parse(record)
-            .filter(|record| record.chain_part().is_some() && record != &self.record)
+            .filter(|record| {
+                (record.chain_part().is_some() || self.keeps_for_workspace(record))
+                    && record != &self.record
+            })
             .ok_or_else(|| worker_error("the worker named a record it does not hold beside"))?;
         match (snapshot, beside.get_mut(&record)) {
             (true, None) => {
@@ -1220,7 +1283,14 @@ impl ConfinedReplica {
         }
     }
 
-    /// The records held beside this one ([`Self::apply_document`]), by id.
+    /// Whether `id` is what this app keeps for its whole workspace beside its own document
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`]): held with it and mirrored here as a chain's
+    /// parts are, since the app's actions reach it through the same view.
+    fn keeps_for_workspace(&self, id: &DocumentId) -> bool {
+        collab_types::workspace_document(&self.app_id, id.as_str()).is_some()
+    }
+
+    /// The documents held beside this one ([`Self::apply_document`]), by id.
     #[must_use]
     pub fn resources_beside(&self) -> Vec<DocumentId> {
         self.lock().beside.keys().cloned().collect()
@@ -1454,8 +1524,11 @@ mod tests {
             &AppCatalogue::native(),
             "so.tilo.notes",
             WORKSPACE,
-            &tilo_actions::MemberId::person("maker"),
-            &ReplicaActor::Agent,
+            &tilo_actions::MemberId::agent("maker"),
+            &ReplicaActor::Agent {
+                person: tilo_actions::MemberId::person("maker"),
+                name: String::new(),
+            },
             Seed::New,
         )
         .unwrap();
@@ -1518,14 +1591,14 @@ mod tests {
 
         // The app makes a change of its own while that one waits.
         let mut arguments = serde_json::Map::new();
-        arguments.insert("title".into(), "Made while another waited".into());
+        arguments.insert("name".into(), "Made while another waited".into());
         replica
             .invoke(
-                &ActionAddress::new("notes.notebook", "new-note"),
+                &ActionAddress::new("notes.notebook", "new-tag"),
                 &arguments,
                 false,
             )
-            .expect("the app makes a note");
+            .expect("the app makes a tag");
 
         let taken = replica
             .take_mutation()

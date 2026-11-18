@@ -5,7 +5,7 @@
 //! device that keeps only its ciphertext, another member's device — has it
 //! from the moment it exists.
 use crate::join::TransportHint;
-use crate::owner::record::StoredWorkspace;
+use crate::owner::stored::StoredWorkspace;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::workspace_membership::valid_founding_name;
 use crate::{StatePeer, workspace_seed};
@@ -17,7 +17,7 @@ use web_time::SystemTime;
 impl NativeWorkspaceOwner {
     /// Found `workspace` — the identity the workspace was made with, before
     /// anything of it was held here — named `name`, on `device`, signed by
-    /// `signer`, its custody, outside the owner's turn. The workspace is new, its host is this
+    /// `signer`, its ownership, outside the owner's turn. The workspace is new, its host is this
     /// device, and its governance admits any other device the owner invites.
     /// `host_hint` is where this device's host keeps the workspace's records,
     /// signed by `device` itself: a workspace founded here is reached at its
@@ -94,7 +94,7 @@ impl NativeWorkspaceOwner {
             let mut view = NativeCommittedView::new(
                 peer.clone(),
                 StoredWorkspace {
-                    version: crate::owner::record::WORKSPACE_VERSION,
+                    version: crate::owner::stored::WORKSPACE_VERSION,
                     workspace: id,
                     workspace_host: device.clone(),
                     device: device.clone(),
@@ -112,7 +112,7 @@ impl NativeWorkspaceOwner {
                     effect_receipts: std::collections::BTreeMap::new(),
                     shortcut_change: None,
                     effect_history_root: None,
-                    join_ledger: crate::join_ledger::JoinLedger::default(),
+                    join_log: crate::join_log::JoinLog::default(),
                     join_admissions: std::collections::BTreeMap::new(),
                 },
             );

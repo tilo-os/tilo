@@ -2,7 +2,7 @@
 //! own actions on an application live under.
 
 /// Provider token naming the calling application's own connection, for an
-/// app that routes one of its own actions through the host.
+/// app that routes one of its own actions through the provider.
 pub const OWN_PROVIDER: &str = "self";
 
 /// Prefix of the provider token for actions a workspace itself offers
@@ -20,7 +20,7 @@ pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
 pub const APPLICATION_OPEN_ACTION: &str = "open";
 
 /// Action id that starts an application in a workspace without showing it:
-/// an instance with no window where the host runs one, ready for the
+/// an instance with no window where the provider runs one, ready for the
 /// actions of the app that show nothing. It answers with that instance.
 pub const APPLICATION_START_ACTION: &str = "start";
 
@@ -30,7 +30,7 @@ pub const SHARE_LINK_ACTION: &str = "share-link";
 
 /// Prefix of the provider token of one record of a workspace, served by a
 /// device that holds it whoever has it open: `record:<app id>:<record id>`
-/// (a host serving its workspaces' records answers under these). Such a
+/// (a provider serving its workspaces' records answers under these). Such a
 /// provider is the app's record, live, as a window of the app is.
 pub const RESOURCE_PROVIDER: &str = "record";
 

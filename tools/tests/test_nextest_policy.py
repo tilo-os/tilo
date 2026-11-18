@@ -301,11 +301,26 @@ class SetupHandedProgramTests(unittest.TestCase):
                     packages |= set(PACKAGE.findall(rule["filter"]))
         return packages
 
+    @staticmethod
+    def packages_tested(family: dict, members: set[str]) -> set[str] | None:
+        """The packages `family` tests, as this test reads a family.
+
+        As the nested-sandbox check reads one, and beside that the packages a family names
+        although its arguments hold an `-E`: it tests them, whatever part of their tests the
+        `-E` leaves to another family (the per-arch family leaves tilolang-tilo's budget
+        checks to test-bench), so it owes them the same programs. An `-E` over a family that
+        names no packages says itself which they are, and that is still not read: `None`.
+        """
+        tested = families.tested(family, members)
+        if tested is None and family.get("tool") == "nextest" and "packages" in family:
+            tested = set(family["packages"])
+        return tested
+
     def families_testing(self, package: str) -> list[dict]:
         members = families.workspace_packages()
         found = []
         for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
-            tested = families.tested(family, members)
+            tested = self.packages_tested(family, members)
             if tested and package in tested:
                 found.append(family)
         return found
@@ -334,10 +349,26 @@ class SetupHandedProgramTests(unittest.TestCase):
                             checked += 1
         self.assertGreater(checked, 0, "a program a setup builds is checked")
 
+    def test_a_family_that_names_its_packages_is_read_whatever_its_filter_leaves_out(self):
+        # The per-arch family's shape: its packages by name, and an `-E` that leaves some of
+        # one package's tests to another family.
+        members = {"first", "second", "third"}
+        family = {"name": "test-{arch}", "tool": "nextest", "packages": ["first", "second"],
+                  "args": ["--locked", "--tests", "-E", "not (package(second) & binary(budgets))"]}
+        self.assertIsNone(families.tested(family, members),
+                          "the nested-sandbox check reads no family with an -E")
+        self.assertEqual(self.packages_tested(family, members), {"first", "second"})
+
+    def test_a_family_whose_filter_alone_says_its_packages_answers_nothing(self):
+        members = {"first", "second", "third"}
+        family = {"name": "test-some", "tool": "nextest",
+                  "args": ["--locked", "--tests", "-E", "package(first)"]}
+        self.assertIsNone(self.packages_tested(family, members))
+
     def test_a_family_declares_one_build_of_each_target(self):
         # tools/build-sibling-binaries.sh reads a bin's hand as NEXTEST_BIN_EXE_<bin>, which names
         # a file and not the features it was built with. t hands one declaration per target per
-        # family (it refuses two), so the tree must keep it: a plain `tilo-relay` declared beside
+        # family (it refuses two), so the tree must keep it: a plain `tilo-server` declared beside
         # the featured one would be two builds of one file's name, and the hand could be either.
         for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
             declared: dict[tuple[str, str], set[tuple[str, ...]]] = {}
@@ -374,15 +405,17 @@ class WrapperHandedProgramTests(unittest.TestCase):
 
     # The run's cargo argv, as the fake cargo records it: everything after `cargo`.
     RUN = "nextest run --locked --profile ci -E all() --test it --no-fail-fast"
-    # Package whose shards run the wrapper -> the program they need and the build a run handed
-    # none makes.
+    # Each program a package's tests need, and the build a shard that was handed none makes.
+    BUILDS = {
+        "tilo-video-render": "build --locked -p tilo-video-render --bin tilo-video-render",
+        "tilo-install": "build --locked -p install --bin tilo-install",
+        "tilolang-process": "build --locked -p tilolang-process --bin tilolang-process",
+    }
+    # Package whose shards go through the wrapper -> the programs they need, built in this order.
     PROGRAMS = {
-        "tilo-agent-session": (
-            "tilo-video-render",
-            "build --locked -p tilo-video-render --bin tilo-video-render",
-        ),
-        "app-host": ("tilo-install", "build --locked -p install --bin tilo-install"),
-        "app-cli": ("tilo-install", "build --locked -p install --bin tilo-install"),
+        "tilo-agent-session": ("tilo-video-render", "tilolang-process"),
+        "package-service": ("tilo-install",),
+        "app-cli": ("tilo-install",),
     }
     # The pam-tilo shards' cdylib: the wrapper exports it as TILO_PAM_TILO_MODULE, which the tests
     # load, and builds the package's library when handed none.
@@ -437,29 +470,29 @@ class WrapperHandedProgramTests(unittest.TestCase):
             return result, ran, named, modules, paths
 
     def test_a_handed_program_is_not_built(self):
-        for package, (program, _) in self.PROGRAMS.items():
-            with self.subTest(package=package, program=program):
-                result, ran, _, _, _ = self.run_wrapper(package, handed=(program,))
+        for package, programs in self.PROGRAMS.items():
+            with self.subTest(package=package):
+                result, ran, _, _, _ = self.run_wrapper(package, handed=programs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(ran, [self.RUN], "the run, and no build")
 
     def test_a_handed_render_helper_is_named_to_the_run(self):
-        result, _, named, _, paths = self.run_wrapper("tilo-agent-session",
-                                                     handed=("tilo-video-render",))
+        result, _, named, _, paths = self.run_wrapper(
+            "tilo-agent-session", handed=self.PROGRAMS["tilo-agent-session"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(named, [paths["tilo-video-render"]])
 
     def test_a_run_not_handed_builds_the_program(self):
         # A developer's run has no NEXTEST_BIN_EXE_<bin>: it builds the program, as it always did.
-        for package, (_, build) in self.PROGRAMS.items():
+        for package, programs in self.PROGRAMS.items():
             with self.subTest(package=package):
                 result, ran, _, _, _ = self.run_wrapper(package)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(ran, [build, self.RUN])
+                self.assertEqual(ran, [*(self.BUILDS[program] for program in programs), self.RUN])
 
     def test_a_handed_program_that_cannot_run_fails_instead_of_building(self):
         # Building here would hide a broken handoff and compile the program in every shard again.
-        result, ran, _, _, _ = self.run_wrapper("app-host", broken="tilo-install")
+        result, ran, _, _, _ = self.run_wrapper("package-service", broken="tilo-install")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("NEXTEST_BIN_EXE_tilo-install", result.stderr)
         self.assertEqual(ran, [])
@@ -496,11 +529,11 @@ class SiblingBinarySetupTests(unittest.TestCase):
     handed none (a developer's) builds it, with the features its entry names.
     """
 
-    # The workspace host, which only `agents` gives `tilo-relay` the subcommand the Lounge tests
+    # The workspace host, which only `agents` gives `tilo-server` the subcommand the Lounge tests
     # start: the one program a setup builds with features.
-    ENTRY = "tilo-relay:tilo-relay=tilo-relay/agents"
-    BUILD = ("build --locked --message-format=json-render-diagnostics --package tilo-relay "
-             "--bin tilo-relay --features tilo-relay/agents")
+    ENTRY = "tilo-server:tilo-server=tilo-server/agents"
+    BUILD = ("build --locked --message-format=json-render-diagnostics --package tilo-server "
+             "--bin tilo-server --features tilo-server/agents")
 
     def run_setup(self, hand: str = ""):
         """The Lounge setup as a shard runs it: the result, the cargo invocations it made, the
@@ -514,7 +547,7 @@ class SiblingBinarySetupTests(unittest.TestCase):
                         tree / "tools" / "build-sibling-binaries.sh")
             argv, env_file = Path(work) / "argv", Path(work) / "nextest-env"
             env_file.write_text("")
-            built = programs / "built" / "tilo-relay"
+            built = programs / "built" / "tilo-server"
             built.parent.mkdir()
             built.write_text("#!/bin/sh\nexit 0\n")
             built.chmod(0o755)
@@ -526,11 +559,11 @@ class SiblingBinarySetupTests(unittest.TestCase):
             env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "GIVEN": str(argv), "BUILT": str(built), "NEXTEST_ENV": str(env_file)}
             if hand:
-                path = programs / "handed" / "tilo-relay"
+                path = programs / "handed" / "tilo-server"
                 path.parent.mkdir()
                 path.write_text("#!/bin/sh\nexit 0\n")
                 path.chmod(0o755)
-                env["NEXTEST_BIN_EXE_tilo-relay"] = str(path)
+                env["NEXTEST_BIN_EXE_tilo-server"] = str(path)
             result = subprocess.run(
                 ["bash", str(tree / "tools" / "build-sibling-binaries.sh"), self.ENTRY],
                 env=env, capture_output=True, text=True, check=False)
@@ -542,14 +575,14 @@ class SiblingBinarySetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(ran, [], "the setup, and no build")
         self.assertEqual(len(handed), 1, handed)
-        self.assertTrue(handed[0].startswith("TILO_SIBLING_BIN_tilo_relay="), handed)
-        self.assertIn(os.sep + "handed" + os.sep + "tilo-relay", handed[0])
+        self.assertTrue(handed[0].startswith("TILO_SIBLING_BIN_tilo_server="), handed)
+        self.assertIn(os.sep + "handed" + os.sep + "tilo-server", handed[0])
 
     def test_a_run_not_handed_builds_the_program_with_its_features(self):
         result, ran, handed, built = self.run_setup()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(ran, [self.BUILD])
-        self.assertEqual(handed, [f"TILO_SIBLING_BIN_tilo_relay={built}"])
+        self.assertEqual(handed, [f"TILO_SIBLING_BIN_tilo_server={built}"])
 
 
 if __name__ == "__main__":

@@ -23,11 +23,11 @@ use iroh::{Endpoint, Watcher as _};
 use n0_future::boxed::BoxStream;
 use tilo_lock::MutexRecover as _;
 
-/// The lookups of a session endpoint: number 0's publisher behind the gate,
+/// The lookups of a session endpoint: number 0's publisher behind the switch,
 /// number 0's resolver always.
 #[must_use]
-pub fn collaborating() -> Gate {
-    Gate::default()
+pub fn collaborating() -> PublishSwitch {
+    PublishSwitch::default()
 }
 
 /// The lookups of an endpoint that is off the directory: no publication, the
@@ -44,24 +44,24 @@ impl AddressLookupBuilder for Watchonly {
     }
 }
 
-/// The publishing gate: iroh's number 0 publisher and resolver, with the
+/// The publishing switch: iroh's number 0 publisher and resolver, with the
 /// publisher called only while this endpoint has a home relay, and the
 /// record the endpoint last handed over published as soon as one arrives.
 ///
 /// Opening is the endpoint's own report of its home relay: it turns true when
 /// `tilo_endpoint_reachability::Reachability` adds a relay, and false when
-/// it takes the last one back. The gate wakes only when that report changes
-/// and keeps no timer: a resting desktop's gate sleeps until a relay comes
+/// it takes the last one back. The switch wakes only when that report changes
+/// and keeps no timer: a resting desktop's switch sleeps until a relay comes
 /// up, and the task ends with the endpoint.
 #[derive(Clone, Debug, Default)]
-pub struct Gate {
+pub struct PublishSwitch {
     open: Arc<AtomicBool>,
     /// The record the endpoint last handed over, which iroh's publisher
     /// would otherwise republish whether or not there is a relay to name.
     held: Arc<Mutex<Option<EndpointData>>>,
 }
 
-impl Gate {
+impl PublishSwitch {
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
@@ -82,7 +82,7 @@ impl Gate {
     }
 }
 
-impl AddressLookupBuilder for Gate {
+impl AddressLookupBuilder for PublishSwitch {
     fn into_address_lookup(
         self,
         endpoint: &Endpoint,
@@ -91,12 +91,12 @@ impl AddressLookupBuilder for Gate {
             .addr_filter(AddrFilter::relay_only())
             .into_address_lookup(endpoint)?;
         let resolver = PkarrResolver::n0_dns().into_address_lookup(endpoint)?;
-        // The gate task holds the publisher it opens; the endpoint's lookup
+        // The switch task holds the publisher it opens; the endpoint's lookup
         // list only ever sees the switch in front of it.
         let id = endpoint.id();
         let mut relays = endpoint.home_relay_status();
         let closed = endpoint.closed();
-        let gate = self.clone();
+        let switch = self.clone();
         let opening: Arc<Box<dyn AddressLookup>> = Arc::new(Box::new(publisher));
         let waking = opening.clone();
         // The endpoint's own runtime drives the watch. It wakes when the
@@ -110,9 +110,9 @@ impl AddressLookupBuilder for Gate {
                     .get()
                     .iter()
                     .any(iroh::endpoint::RelayStatus::is_connected);
-                match (up, gate.is_open()) {
-                    (true, false) => gate.open_for(id, waking.as_ref().as_ref()),
-                    (false, true) => gate.open.store(false, Ordering::Relaxed),
+                match (up, switch.is_open()) {
+                    (true, false) => switch.open_for(id, waking.as_ref().as_ref()),
+                    (false, true) => switch.open.store(false, Ordering::Relaxed),
                     _ => {}
                 }
                 let changed =
@@ -127,17 +127,17 @@ impl AddressLookupBuilder for Gate {
             }
         });
         Ok(Switched {
-            gate: self,
+            switch: self,
             publisher: opening,
             resolver: Box::new(resolver),
         })
     }
 }
 
-/// The lookups a gated endpoint has: number 0's publisher behind the gate,
+/// The lookups a guarded endpoint has: number 0's publisher behind the switch,
 /// number 0's resolver always.
 struct Switched {
-    gate: Gate,
+    switch: PublishSwitch,
     publisher: Arc<Box<dyn AddressLookup>>,
     resolver: Box<dyn AddressLookup>,
 }
@@ -145,15 +145,15 @@ struct Switched {
 impl std::fmt::Debug for Switched {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Switched")
-            .field("open", &self.gate.is_open())
+            .field("open", &self.switch.is_open())
             .finish_non_exhaustive()
     }
 }
 
 impl AddressLookup for Switched {
     fn publish(&self, data: &EndpointData) {
-        *self.gate.held.lock_recover() = Some(data.clone());
-        if self.gate.is_open() {
+        *self.switch.held.lock_recover() = Some(data.clone());
+        if self.switch.is_open() {
             self.publisher.publish(data);
         }
     }
@@ -174,19 +174,19 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::{RelayMap, RelayMode, SecretKey};
 
-    use super::{Gate, Watchonly, collaborating};
+    use super::{PublishSwitch, Watchonly, collaborating};
     use crate::{Need, Reachability};
 
     /// A session endpoint as the shell binds one: number 0's lookups behind
-    /// the gate, its relays held back until woken. The relay handed back is
+    /// the switch, its relays held back until woken. The relay handed back is
     /// the test's own, a loopback server that answers a home relay
-    /// connection the moment the gate lets one through.
-    async fn session() -> (Gate, Reachability, tilo_test_env::relay::Relay) {
+    /// connection the moment the switch lets one through.
+    async fn session() -> (PublishSwitch, Reachability, tilo_test_env::relay::Relay) {
         let relay = tilo_test_env::relay::relay().await;
         let relays = relay.relays();
-        let gate = collaborating();
+        let switch = collaborating();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)
-            .address_lookup(gate.clone())
+            .address_lookup(switch.clone())
             .relay_mode(RelayMode::Custom(RelayMap::empty()))
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .unwrap()
@@ -200,7 +200,7 @@ mod tests {
             tokio::runtime::Handle::current(),
             Some(Duration::from_millis(300)),
         );
-        (gate, reachability, relay)
+        (switch, reachability, relay)
     }
 
     async fn until(what: &str, mut ready: impl FnMut() -> bool) {
@@ -214,54 +214,57 @@ mod tests {
 
     /// The decision this module exists for: a desktop with nobody to talk to
     /// does not sign its key in to number 0's directory. iroh hands its
-    /// record over as the endpoint comes up, relay or none; the gate holds
+    /// record over as the endpoint comes up, relay or none; the switch holds
     /// it, and a resting desktop stays closed against it. The first home
     /// relay is what opens it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_resting_desktop_publishes_nothing_until_a_relay_is_up() {
-        let (gate, reachability, _relay) = session().await;
+        let (switch, reachability, _relay) = session().await;
         assert!(reachability.is_dormant(), "the relays wait for something");
-        assert!(gate.is_holding(), "iroh's record waits in the gate");
-        assert!(!gate.is_open(), "nothing publishes from a resting desktop");
-        // Nothing would open the gate now: give a gate that wrongly
+        assert!(switch.is_holding(), "iroh's record waits in the switch");
+        assert!(
+            !switch.is_open(),
+            "nothing publishes from a resting desktop"
+        );
+        // Nothing would open the switch now: give a switch that wrongly
         // published a held record the time to show it.
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            !gate.is_open(),
+            !switch.is_open(),
             "a held record is not a reason to sign the device in"
         );
 
         // An open invitation holds the relays up while the endpoint picks
         // its home relay: a bare wake rests them after the 300 ms delay,
         // which a loaded runner's net report can outlast, and an endpoint
-        // whose relays rested before it picked one never opens the gate.
+        // whose relays rested before it picked one never opens the switch.
         reachability.need(Need::Session, Some("an invitation is open"));
-        until("the gate to open on the first home relay", || {
-            gate.is_open()
+        until("the switch to open on the first home relay", || {
+            switch.is_open()
         })
         .await;
         reachability.need(Need::Session, None);
     }
 
-    /// Resting again takes the device off the directory: the gate is the
+    /// Resting again takes the device off the directory: the switch is the
     /// same condition the relays are, so a desktop left alone stops being
     /// dialable by anyone who did not already hold its address.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_rested_desktop_closes_the_gate_again() {
-        let (gate, reachability, _relay) = session().await;
-        // Held up until the gate opens (a bare wake could rest the relays
+    async fn a_rested_desktop_closes_the_check_again() {
+        let (switch, reachability, _relay) = session().await;
+        // Held up until the switch opens (a bare wake could rest the relays
         // before a loaded runner picks a home relay), then let go to rest.
         reachability.need(Need::Session, Some("an invitation is open"));
-        until("the gate to open", || gate.is_open()).await;
+        until("the switch to open", || switch.is_open()).await;
         assert!(
             !reachability.is_dormant(),
-            "the gate opened on a relay, not before one"
+            "the switch opened on a relay, not before one"
         );
         reachability.need(Need::Session, None);
-        until("the gate to close with the relays", || !gate.is_open()).await;
+        until("the switch to close with the relays", || !switch.is_open()).await;
         assert!(
             reachability.is_dormant(),
-            "the gate closed because the relays rested"
+            "the switch closed because the relays rested"
         );
     }
 

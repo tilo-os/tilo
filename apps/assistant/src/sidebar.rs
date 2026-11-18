@@ -5,21 +5,21 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::widget::{ListRow, Tone};
 
-use crate::sources::{Read, Standing, SubAgent};
+use crate::sources::{Progress, Read, SubAgent};
 use crate::{Hands, Nav, Place, tr, trf};
 
 fn sub_agent(sub: &SubAgent) -> NavItem {
-    let (standing, tone) = match &sub.standing {
-        Standing::Working => (tr("assistant-standing-working"), Tone::Info),
-        Standing::NeedsYou => (tr("assistant-standing-needs-you"), Tone::Warning),
-        Standing::Done { when } => (
-            trf("assistant-standing-done", &[("when", when.clone().into())]),
+    let (progress, tone) = match &sub.progress {
+        Progress::Working => (tr("assistant-progress-working"), Tone::Info),
+        Progress::NeedsYou => (tr("assistant-progress-needs-you"), Tone::Warning),
+        Progress::Done { when } => (
+            trf("assistant-progress-done", &[("when", when.clone().into())]),
             Tone::Success,
         ),
     };
     NavItem::new(Place::SubAgent(sub.id.clone()).key(), sub.job.clone())
         .secondary(sub.role.clone())
-        .status_label(standing, tone)
+        .status_label(progress, tone)
 }
 
 pub(crate) fn view(nav: &Nav, hands: &Hands) -> Element {

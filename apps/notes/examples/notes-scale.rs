@@ -2,16 +2,21 @@
 //! work a page does on the main thread when a workspace's notebook arrives,
 //! timed on this machine.
 //!
-//! The notebook is written with Notes' own `import-markdown-files` action:
-//! `NOTES` long notes (headings, paragraphs, lists, code and tables, 6–14
-//! sections each), `BATCH` notes per change. It prints, in milliseconds:
+//! The notes are written with Notes' own `import-markdown-files` action, as a
+//! window carries it out, into the parts Notes keeps them in: `NOTES` long
+//! notes (headings, paragraphs, lists, code and tables, 6–14 sections each),
+//! `BATCH` notes per change. It prints the size of the parts, then, in
+//! milliseconds, for the newest part (the one a joining device is sent first):
 //!
-//! * **load**: loading the saved notebook as a peer's bytes are loaded, every
-//!   change rebuilt and hashed (what the page's record worker now does);
+//! * **load**: loading the saved part as a peer's bytes are loaded, every
+//!   change rebuilt and hashed (what the page's resource worker now does);
 //! * **load with hashes**: loading it with the change hashes that load
 //!   computed (what is left on the page's main thread);
+//!
+//! and for the part keeping the note in the middle:
+//!
 //! * **note dates**: the open note's created and edited time;
-//! * **history**: the first read of the notebook's newest 16 changes, as the
+//! * **history**: the first read of the part's newest 16 changes, as the
 //!   page's activity reads what its person did.
 //!
 //! ```text
@@ -27,15 +32,17 @@
     reason = "a benchmark that writes its own ASCII notebook and stops at the first failure"
 )]
 
-use notes::notebook::{self, MarkdownFile, Notebook};
+use notes::notebook::{MarkdownFile, Notebook};
+use notes::part::page_part;
+use notes::{PagePart, Pages};
+use std::rc::Rc;
 use std::time::Instant;
-use ui::tilo_resource::Replica;
 
 /// A small deterministic generator, so every run writes the same notebook.
 struct Words(u64);
 
 const WORDS: &[&str] = &[
-    "relay",
+    "server",
     "workspace",
     "record",
     "sync",
@@ -136,7 +143,12 @@ fn main() {
     let notes: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(100);
     let batch: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(1).max(1);
     let mut words = Words(7);
-    let mut notebook = Replica::<Notebook>::new();
+    let chain = ui::framework::Chain::<PagePart>::detached(
+        ui::apps::NOTES,
+        &ui::tilo_resource::MemberId::person("scale"),
+        || Rc::new(Notebook::default()),
+    )
+    .expect("the notes open");
     let mut written = 0;
     while written < notes {
         let files: Vec<MarkdownFile> = (written..(written + batch).min(notes))
@@ -148,36 +160,53 @@ fn main() {
             })
             .collect();
         written += files.len();
-        notebook
-            .apply(
-                Notebook::IMPORT_MARKDOWN_FILES
-                    .with(notebook::notebook::ImportMarkdownFiles { files }),
+        chain
+            .invoke(
+                &PagePart::IMPORT_MARKDOWN_FILES.with(page_part::ImportMarkdownFiles {
+                    files,
+                    ranks: None,
+                    links: None,
+                }),
             )
             .expect("the notes import");
     }
-    let bytes = notebook.save();
-    let doc = notebook.doc().clone();
-    let history = doc.committed_document();
+    let parts = chain.parts();
+    let doc_of = |index: u64| {
+        chain
+            .read_part(index, Clone::clone)
+            .expect("the part is held")
+    };
+    let (mut bytes, mut changes, mut ops) = (0, 0, 0);
+    for (index, _) in &parts {
+        let mut doc = doc_of(*index);
+        bytes += doc.save().len();
+        let history = doc.committed_document();
+        changes += history.change_hashes().len();
+        ops += automerge::ReadDoc::stats(history).num_ops;
+    }
     println!(
-        "{notes} notes, {batch} a change: {} bytes, {} changes, {} ops",
-        bytes.len(),
-        history.change_hashes().len(),
-        automerge::ReadDoc::stats(history).num_ops
+        "{notes} notes, {batch} a change: {} parts, {bytes} bytes, {changes} changes, {ops} ops",
+        parts.len()
     );
 
+    let (newest, _) = parts.last().expect("a part");
+    let head = doc_of(*newest).save();
     let began = Instant::now();
-    let loaded = automerge::Automerge::load(&bytes).expect("it loads");
+    let loaded = automerge::Automerge::load(&head).expect("it loads");
     println!("load              {:8.1}", ms(began));
     let hashes = loaded.change_hashes().to_vec();
     let began = Instant::now();
     automerge::Automerge::load_with_options(
-        &bytes,
+        &head,
         automerge::LoadOptions::new().known_change_hashes(&hashes),
     )
     .expect("it loads");
     println!("load with hashes  {:8.1}", ms(began));
 
-    let page = notes::read::list_pages(&doc)[notes / 2].id;
+    let pages = Pages::of(&parts);
+    let (middle, _) = pages.iter().nth(notes / 2).expect("the middle note");
+    let page = notes::notebook::page_of(middle).expect("a note's id");
+    let doc = doc_of(pages.part_of(middle).expect("a part keeps it"));
     let began = Instant::now();
     let mut dates = notes::metadata::NoteDateIndex::default();
     dates.sync(&doc, Some(page));

@@ -15,7 +15,7 @@ struct Selection {
 fn selected(devices: &[BlockDevice], target: &TargetDrive) -> io::Result<Selection> {
     if !target.is_media_target() || target.stable_id.as_ref().is_none_or(String::is_empty) {
         return Err(changed(
-            "Automatic setup requires stable external media custody",
+            "Automatic setup requires stable external media ownership",
         ));
     }
     let disks: Vec<_> = devices

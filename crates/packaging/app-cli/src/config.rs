@@ -304,13 +304,13 @@ mod tests {
         {
             {
                 use package_store::dev_env::dev_override_from;
-                let gated = dev_override_from(
+                let guarded = dev_override_from(
                     false,
                     OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
                     Some("/tmp/attacker-owner.pub".into()),
                 );
                 assert_eq!(
-                    official_owner_key_path_from(gated),
+                    official_owner_key_path_from(guarded),
                     PathBuf::from(OFFICIAL_OWNER_KEY_PATH)
                 );
                 let honoured = dev_override_from(

@@ -142,7 +142,7 @@ for each in vm_a vm_b vm_c; do
     || die "$each: not a dev disk with tilo-device-admin, tilo-vmd and tilo-enroll"
 done
 
-# Older gated dev disks have the daemon and peer service but no developer
+# Older guarded dev disks have the daemon and peer service but no developer
 # CLI. Optional bootstrap uses a real, provenanced VM-wide component swap;
 # only this disposable laptop receives a fresh fixture SSH key/sudo grant.
 # No binaries are copied over the scenario's setup SSH connection.

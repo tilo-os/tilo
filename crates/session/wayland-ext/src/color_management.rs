@@ -10,7 +10,9 @@
 //! for an immutable `wp_image_description_v1` attached via
 //! `wp_color_management_surface_v1`, plus the Windows-scRGB description
 //! (linear light, sRGB primaries, `1.0` at SDR white) that DirectX-style
-//! games render into. Deliberately unimplemented: ICC creators
+//! games render into. A creator's requests are checked by
+//! [`tilo_color_params`], the rules the app keeper checks its apps by too.
+//! Deliberately unimplemented: ICC creators
 //! (`unsupported_feature` error), and `get_information` on client-created descriptions (`no_information` —
 //! they're surface-attach-only, not for round-tripping). Descriptions minted
 //! by output and surface-feedback requests are queryable and return the exact
@@ -22,6 +24,8 @@
 //! [`ColorManagementSurfaceData`], flipped by the commit hook in
 //! the compositor state.
 
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
@@ -39,9 +43,7 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_color_management_output_v1::{self, WpColorManagementOutputV1},
     wp_color_management_surface_feedback_v1::{self, WpColorManagementSurfaceFeedbackV1},
     wp_color_management_surface_v1::{self, WpColorManagementSurfaceV1},
-    wp_color_manager_v1::{
-        self, Feature, Primaries, RenderIntent, TransferFunction, WpColorManagerV1,
-    },
+    wp_color_manager_v1::{self, Primaries, TransferFunction, WpColorManagerV1},
     wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1,
     wp_image_description_creator_params_v1::{self, WpImageDescriptionCreatorParamsV1},
     wp_image_description_info_v1::WpImageDescriptionInfoV1,
@@ -52,6 +54,7 @@ use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
 use neighbour_wire::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume};
+use tilo_color_params::{Params, Primaries as ParamPrimaries, Support, Transfer, feature};
 
 /// The maximum protocol version we support. Bump on staging churn.
 ///
@@ -62,21 +65,10 @@ use neighbour_wire::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDi
 const MAX_VERSION: u32 = 1;
 
 /// Advertised capability set for `wp_color_manager_v1`.
-///
-/// Populated at compositor startup from the intersection of what the
-/// wgpu backend can render, what the OS display driver supports, and
-/// what we've validated with real clients. Kept as raw `u32`s
-/// mirroring the protocol enum values so callers can construct fixture
-/// [`ColorManagerState`] instances in tests without dragging in
-/// `wayland-protocols` (matches the task spec).
 #[derive(Debug, Clone)]
 pub struct ColorManagerState {
-    /// Supported primaries (`wp_color_manager_v1::primaries` enum values,
-    /// NOT CICP): srgb=1, bt2020=6, `display_p3=9`, …
-    pub supported_primaries: Vec<u32>,
-    /// Supported named transfer functions (`wp_color_manager_v1::transfer_function`
-    /// enum values, NOT CICP): bt1886=1, gamma22=2, `st2084_pq=11`, hlg=13, …
-    pub supported_transfers: Vec<u32>,
+    /// What clients are told is supported, as `wp_color_manager_v1` enum values (not CICP).
+    pub support: Support,
     /// Matrix hint used by the compositor for parametric image
     /// descriptions. `wp_color_manager_v1` does NOT itself have a
     /// "matrixes" event — matrix negotiation lives in the sibling
@@ -85,12 +77,6 @@ pub struct ColorManagerState {
     /// preferred matrix on the wire; we don't advertise it through
     /// `color-management-v1`. See `wp_color_manager_v1.xml`.
     pub supported_matrixes: Vec<u32>,
-    /// Advertised features (`wp_color_manager_v1::feature`): parametric=1,
-    /// `set_primaries=2`, `set_tf_power=3`, `set_luminances=4`,
-    /// `set_mastering_display_primaries=5`, ...
-    pub supported_features: Vec<u32>,
-    /// Advertised render intents. Perceptual (0) is mandatory per spec.
-    pub supported_render_intents: Vec<u32>,
     /// The global's id, held so the caller can revoke it when
     /// shutting down (currently unused, but the id is cheap to keep
     /// and it saves a `create_global` return dance).
@@ -111,41 +97,88 @@ pub struct ColorManagerState {
     feedbacks: Arc<Mutex<Vec<WpColorManagementSurfaceFeedbackV1>>>,
     /// The description surfaces are asked to render in.
     preferred: Arc<Mutex<OutputDescription>>,
+    /// Whether a description a client makes has its `ready` held for a test to let go.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    holding: Arc<AtomicBool>,
+    /// The descriptions held back, with the identity each will be told.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    held: Arc<Mutex<Vec<(WpImageDescriptionV1, u32)>>>,
+}
+
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+impl ColorManagerState {
+    /// Hold back the `ready` of every image description a client makes from now on.
+    pub fn hold_descriptions(&self) {
+        self.holding.store(true, Ordering::Relaxed);
+    }
+
+    /// Tell every held description it is ready, and stop holding new ones.
+    pub fn release_descriptions(&self) {
+        self.holding.store(false, Ordering::Relaxed);
+        let held = self
+            .held
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        for (obj, identity_lo) in held {
+            if obj.is_alive() {
+                let () = obj.ready(identity_lo);
+            }
+        }
+    }
+
+    /// Tell every held description it failed, and stop holding new ones.
+    pub fn fail_descriptions(&self, message: &str) {
+        self.holding.store(false, Ordering::Relaxed);
+        let held = self
+            .held
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        for (obj, _) in held {
+            if obj.is_alive() {
+                let () = obj.failed(ImageCause::Unsupported, message.to_owned());
+            }
+        }
+    }
 }
 
 impl Default for ColorManagerState {
     fn default() -> Self {
         Self {
-            // Named input spaces the compositor's color pipeline accepts.
-            // These are renderer capabilities, not a claim that every sink
-            // physically covers each gamut: the output description below is
-            // populated independently from that output's EDID/profile.
-            supported_primaries: vec![1, 6, 9],
-            // BT.1886 (=1), gamma22 (=2), ext_linear (=5), ST 2084 PQ
-            // (=11), HLG (=13). The v1 spec's `srgb` (=9) is deprecated
-            // since v2; we don't advertise it — clients get gamma22 or the
-            // sibling `ext_srgb` (=10) instead. `ext_linear` is scRGB-style
-            // linear light, composited at full precision like PQ and HLG.
-            supported_transfers: vec![1, 2, 5, 11, 13],
+            support: Support {
+                // Perceptual (=0), Relative colorimetric (=1),
+                // Media-relative w/ BPC (=4). Saturation (=2) + Absolute
+                // (=3) aren't yet plumbed into the wgpu shader.
+                intents: vec![0, 1, 4],
+                // Parametric (=1) — must advertise or clients can't build
+                // any parametric image description.
+                // set_primaries (=2) — allows explicit CIE-1931 xy chroma.
+                // set_tf_power (=3) — allows a pure power-curve transfer;
+                //   fed straight into the wgpu shader.
+                // set_luminances (=4) — primary volume min/max/reference.
+                // set_mastering_display_primaries (=5) — SMPTE ST 2086
+                //   mastering-display metadata for HDR pipelines.
+                // windows_scrgb (=7) — the ready-made scRGB description.
+                features: vec![1, 2, 3, 4, 5, 7],
+                // Named input spaces the compositor's color pipeline accepts.
+                // These are renderer capabilities, not a claim that every sink
+                // physically covers each gamut: the output description below is
+                // populated independently from that output's EDID/profile.
+                primaries: vec![1, 6, 9],
+                // BT.1886 (=1), gamma22 (=2), ext_linear (=5), ext_srgb
+                // (=10), ST 2084 PQ (=11), HLG (=13). The v1 spec's `srgb`
+                // (=9) is deprecated since v2; we don't advertise it — clients
+                // get gamma22 or the sibling `ext_srgb` instead. `ext_linear` is
+                // scRGB-style linear light, composited at full precision like PQ
+                // and HLG.
+                transfers: vec![1, 2, 5, 10, 11, 13],
+            },
             // Compositor's preferred matrix set: Identity (=0),
             // BT.709 (=1), BT.2020-non-constant (=9). These are the
             // CICP MatrixCoefficients numbers, not `color-management-v1`
             // enum values.
             supported_matrixes: vec![0, 1, 9],
-            // Parametric (=1) — must advertise or clients can't build
-            // any parametric image description.
-            // set_primaries (=2) — allows explicit CIE-1931 xy chroma.
-            // set_tf_power (=3) — allows a pure power-curve transfer;
-            //   fed straight into the wgpu shader.
-            // set_luminances (=4) — primary volume min/max/reference.
-            // set_mastering_display_primaries (=5) — SMPTE ST 2086
-            //   mastering-display metadata for HDR pipelines.
-            // windows_scrgb (=7) — the ready-made scRGB description.
-            supported_features: vec![1, 2, 3, 4, 5, 7],
-            // Perceptual (=0), Relative colorimetric (=1),
-            // Media-relative w/ BPC (=4). Saturation (=2) + Absolute
-            // (=3) aren't yet plumbed into the wgpu shader.
-            supported_render_intents: vec![0, 1, 4],
             #[cfg(target_os = "linux")]
             global: None,
             #[cfg(target_os = "linux")]
@@ -155,6 +188,10 @@ impl Default for ColorManagerState {
             #[cfg(target_os = "linux")]
             feedbacks: Arc::default(),
             preferred: Arc::new(Mutex::new(OutputDescription::sdr())),
+            #[cfg(all(target_os = "linux", feature = "test-support"))]
+            holding: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(target_os = "linux", feature = "test-support"))]
+            held: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -249,95 +286,27 @@ impl ColorManagerState {
 // UserData for each protocol object.
 // -----------------------------------------------------------------------------
 
-/// Builder state for `wp_image_description_creator_params_v1`.
-///
-/// Mirrors the "set exactly once, then `create`" contract of the
-/// protocol — every field is `Option` and set-requests reject a
-/// second write with `already_set`. On `create` we validate the
-/// completeness (primaries + transfer are required), stitch the
-/// values into a [`Colorimetry`] + optional [`Hdr10Metadata`], and
-/// hand them to the newly-minted `wp_image_description_v1`.
+/// Builder state for `wp_image_description_creator_params_v1`: the parameters set so far, each
+/// at most once. `create` destroys the creator, so nothing reaches it afterwards.
 #[derive(Debug, Default)]
 pub struct ParametricBuilder {
-    inner: Mutex<ParametricBuilderInner>,
-}
-
-#[derive(Debug, Default)]
-struct ParametricBuilderInner {
-    primaries_named: Option<ColorPrimaries>,
-    /// Explicit CIE 1931 xy primaries (R, G, B, W) — each i32 is
-    /// x/y × `1_000_000` per the protocol wire encoding.
-    primaries_custom: Option<CustomPrimaries>,
-    tf_named: Option<TransferCharacteristics>,
-    /// Pure-power transfer exponent × `10_000`. Mutually exclusive with
-    /// `tf_named` per the protocol's "set exactly once" rule.
-    tf_power_eexp: Option<u32>,
-    /// Primary color volume luminance range: (`min_lum` × `10_000`,
-    /// `max_lum`, `reference_lum`) — cd/m².
-    luminances: Option<(u32, u32, u32)>,
-    /// Mastering display primaries in the same wire encoding as
-    /// `primaries_custom`.
-    mastering_primaries: Option<CustomPrimaries>,
-    /// Mastering luminance range (min × `10_000`, max) — cd/m².
-    mastering_luminance: Option<(u32, u32)>,
-    /// Max content light level — cd/m².
-    max_cll: Option<u32>,
-    /// Max frame-average light level — cd/m².
-    max_fall: Option<u32>,
-    /// Set once `create` runs so a second `create` is caught cleanly.
-    consumed: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CustomPrimaries {
-    r: (i32, i32),
-    g: (i32, i32),
-    b: (i32, i32),
-    w: (i32, i32),
+    params: Mutex<Params>,
 }
 
 impl ParametricBuilder {
-    /// Assemble the pieces into a settled image description. Returns
-    /// `None` when the required-field set is incomplete.
+    /// The settled image description, or `None` while primaries or transfer are missing.
     fn build(&self) -> Option<ImageDescriptionData> {
-        // Copy the (Copy-typed) fields out under the lock, then release it —
-        // everything below reads only these local copies, not `inner`.
-        let (
-            primaries_named,
-            primaries_custom,
-            tf_named,
-            tf_power_eexp,
-            mastering_primaries,
-            mastering_luminance,
-            max_cll,
-            max_fall,
-        ) = {
-            let inner = self.inner.lock().ok()?;
-            (
-                inner.primaries_named,
-                inner.primaries_custom,
-                inner.tf_named,
-                inner.tf_power_eexp,
-                inner.mastering_primaries,
-                inner.mastering_luminance,
-                inner.max_cll,
-                inner.max_fall,
-            )
-        };
+        let params = self.params.lock().ok()?.clone();
         // Required: primaries + transfer.
-        let primaries = match (primaries_named, primaries_custom) {
-            (Some(p), _) => p,
-            (None, Some(c)) => guess_primaries_from_custom(c),
-            (None, None) => return None,
+        let primaries = match params.primaries? {
+            ParamPrimaries::Named(named) => primaries_named_to_color(named),
+            ParamPrimaries::Chromaticities(xy) => guess_primaries_from_custom(xy),
         };
-        let transfer = match (tf_named, tf_power_eexp) {
-            (Some(t), _) => t,
-            (None, Some(exp)) => match exp {
-                // Common named power curves.
-                22_000 => TransferCharacteristics::Bt709,
-                _ => TransferCharacteristics::Unspecified,
-            },
-            (None, None) => return None,
+        let transfer = match params.transfer? {
+            Transfer::Named(named) => transfer_named_to_color(named),
+            // The common named power curve.
+            Transfer::Power(22_000) => TransferCharacteristics::Bt709,
+            Transfer::Power(_) => TransferCharacteristics::Unspecified,
         };
         // Matrix — a client that speaks `color-management-v1` alone
         // does not describe matrix; we default to BT.2020-nc for
@@ -361,34 +330,40 @@ impl ParametricBuilder {
         // luminance range it was mastered at without naming the
         // mastering primaries, so each falls back to the reference
         // volume on its own.
-        let hdr = if transfer.is_hdr() {
-            let reference = MasteringDisplayColorVolume::hdr10_reference();
-            let volume = mastering_primaries.map_or(reference, |m| MasteringDisplayColorVolume {
-                display_primaries: [
-                    (chrom_micro_to_st2086(m.r.0), chrom_micro_to_st2086(m.r.1)),
-                    (chrom_micro_to_st2086(m.g.0), chrom_micro_to_st2086(m.g.1)),
-                    (chrom_micro_to_st2086(m.b.0), chrom_micro_to_st2086(m.b.1)),
-                ],
-                white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
-                ..reference
-            });
-            let mastering = MasteringDisplayColorVolume {
-                max_display_mastering_luminance: mastering_luminance
-                    .map_or(volume.max_display_mastering_luminance, |(_, max)| {
-                        max.saturating_mul(10_000)
-                    }),
-                min_display_mastering_luminance: mastering_luminance
-                    .map_or(volume.min_display_mastering_luminance, |(min, _)| min),
-                ..volume
+        let hdr =
+            if transfer.is_hdr() {
+                let reference = MasteringDisplayColorVolume::hdr10_reference();
+                let volume = params.mastering_primaries.map_or(
+                    reference,
+                    |[rx, ry, gx, gy, bx, by, wx, wy]| MasteringDisplayColorVolume {
+                        display_primaries: [
+                            (chrom_micro_to_st2086(rx), chrom_micro_to_st2086(ry)),
+                            (chrom_micro_to_st2086(gx), chrom_micro_to_st2086(gy)),
+                            (chrom_micro_to_st2086(bx), chrom_micro_to_st2086(by)),
+                        ],
+                        white_point: (chrom_micro_to_st2086(wx), chrom_micro_to_st2086(wy)),
+                        ..reference
+                    },
+                );
+                let mastering = MasteringDisplayColorVolume {
+                    max_display_mastering_luminance: params
+                        .mastering_luminance
+                        .map_or(volume.max_display_mastering_luminance, |(_, max)| {
+                            max.saturating_mul(10_000)
+                        }),
+                    min_display_mastering_luminance: params
+                        .mastering_luminance
+                        .map_or(volume.min_display_mastering_luminance, |(min, _)| min),
+                    ..volume
+                };
+                let light = ContentLightLevel {
+                    max_content_light_level: params.max_cll.map_or(0, clamp_to_u16),
+                    max_frame_average_light_level: params.max_fall.map_or(0, clamp_to_u16),
+                };
+                Some(Hdr10Metadata { mastering, light })
+            } else {
+                None
             };
-            let light = ContentLightLevel {
-                max_content_light_level: max_cll.map_or(0, clamp_to_u16),
-                max_frame_average_light_level: max_fall.map_or(0, clamp_to_u16),
-            };
-            Some(Hdr10Metadata { mastering, light })
-        } else {
-            None
-        };
 
         Some(ImageDescriptionData {
             colorimetry,
@@ -397,15 +372,6 @@ impl ParametricBuilder {
             queryable: false,
             reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
         })
-    }
-
-    /// Mark the builder as consumed so the second `create` request
-    /// can be caught with `already_set`.
-    #[cfg(target_os = "linux")]
-    fn mark_consumed(&self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.consumed = true;
-        }
     }
 }
 
@@ -418,36 +384,35 @@ fn clamp_to_u16(v: u32) -> u16 {
     v.min(u32::from(u16::MAX)) as u16
 }
 
-#[cfg(target_os = "linux")]
-fn primaries_named_to_color(p: Primaries) -> ColorPrimaries {
-    match p {
-        Primaries::Srgb => ColorPrimaries::Bt709,
-        Primaries::Bt2020 => ColorPrimaries::Bt2020,
-        Primaries::DisplayP3 => ColorPrimaries::DisplayP3,
-        // Unsupported / uncommon primaries — treat as unspecified so
-        // the encoder falls back to BT.709 defaults rather than
-        // crashing.
+/// A `wp_color_manager_v1.primaries` value as the colorimetry it names.
+fn primaries_named_to_color(named: u32) -> ColorPrimaries {
+    match named {
+        1 => ColorPrimaries::Bt709,
+        6 => ColorPrimaries::Bt2020,
+        9 => ColorPrimaries::DisplayP3,
+        // Uncommon primaries: unspecified, so the encoder falls back to BT.709 defaults.
         _ => ColorPrimaries::Unspecified,
     }
 }
 
-#[cfg(target_os = "linux")]
-fn transfer_named_to_color(t: TransferFunction) -> TransferCharacteristics {
-    match t {
-        TransferFunction::Bt1886 | TransferFunction::Gamma22 => TransferCharacteristics::Bt709,
-        TransferFunction::St2084Pq => TransferCharacteristics::SmpteSt2084,
-        TransferFunction::Hlg => TransferCharacteristics::AribStdB67,
-        TransferFunction::Srgb | TransferFunction::ExtSrgb => TransferCharacteristics::Srgb,
-        TransferFunction::ExtLinear => TransferCharacteristics::Linear,
+/// A `wp_color_manager_v1.transfer_function` value as the transfer it names.
+fn transfer_named_to_color(named: u32) -> TransferCharacteristics {
+    match named {
+        1 | 2 => TransferCharacteristics::Bt709,
+        5 => TransferCharacteristics::Linear,
+        9 | 10 => TransferCharacteristics::Srgb,
+        11 => TransferCharacteristics::SmpteSt2084,
+        13 => TransferCharacteristics::AribStdB67,
         _ => TransferCharacteristics::Unspecified,
     }
 }
 
-fn guess_primaries_from_custom(c: CustomPrimaries) -> ColorPrimaries {
+/// The named primaries nearest to chromaticities (red, green, blue, white; x then y).
+fn guess_primaries_from_custom([red_x, ..]: [i32; 8]) -> ColorPrimaries {
     // Red primary > 0.680 → almost certainly BT.2020 (0.708).
-    if c.r.0 > 680_000 {
+    if red_x > 680_000 {
         ColorPrimaries::Bt2020
-    } else if c.r.0 > 650_000 {
+    } else if red_x > 650_000 {
         ColorPrimaries::DisplayP3
     } else {
         ColorPrimaries::Bt709
@@ -899,31 +864,7 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         let manager = data_init.init(resource, ());
-        // Advertise the capability set. Order matters only in as much
-        // as spec-mandated events (perceptual render intent) precede
-        // optional ones.
-        let cfg = state.as_ref().clone();
-        for intent in cfg.supported_render_intents {
-            if let Ok(ri) = RenderIntent::try_from(intent) {
-                let () = manager.supported_intent(ri);
-            }
-        }
-        for feat in cfg.supported_features {
-            if let Ok(f) = Feature::try_from(feat) {
-                let () = manager.supported_feature(f);
-            }
-        }
-        for prim in cfg.supported_primaries {
-            if let Ok(p) = Primaries::try_from(prim) {
-                let () = manager.supported_primaries_named(p);
-            }
-        }
-        for tf in cfg.supported_transfers {
-            if let Ok(t) = TransferFunction::try_from(tf) {
-                let () = manager.supported_tf_named(t);
-            }
-        }
-        let () = manager.done();
+        tilo_color_params::server::advertise(&manager, &state.as_ref().support);
     }
 }
 
@@ -953,6 +894,12 @@ where
             wp_color_manager_v1::Request::CreateParametricCreator { obj } => {
                 let builder = Arc::new(ParametricBuilder::default());
                 data_init.init(obj, builder);
+                if !state.as_ref().support.has(feature::PARAMETRIC) {
+                    manager.post_error(
+                        wp_color_manager_v1::Error::UnsupportedFeature,
+                        "parametric image descriptions are not supported",
+                    );
+                }
             }
             wp_color_manager_v1::Request::CreateIccCreator { obj } => {
                 // We don't advertise the icc_v2_v4 feature — clients
@@ -973,9 +920,16 @@ where
                 let data = ImageDescriptionData::windows_scrgb();
                 let identity = data.identity;
                 let obj = data_init.init(image_description, data);
+                if !state.as_ref().support.has(feature::WINDOWS_SCRGB) {
+                    manager.post_error(
+                        wp_color_manager_v1::Error::UnsupportedFeature,
+                        "the Windows scRGB description is not supported",
+                    );
+                    return;
+                }
                 // Version 1: `ready` is the only success event (see
                 // `create_image_description`).
-                let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
+                tell_ready(state.as_ref(), &obj, (identity & 0xFFFF_FFFF) as u32);
             }
             wp_color_manager_v1::Request::GetOutput { id, output } => {
                 let data = ColorManagementOutputData::new(output);
@@ -1080,19 +1034,11 @@ impl<D> Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>, D> f
 where
     D: Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>>
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
+        + AsRef<ColorManagerState>
         + 'static,
 {
-    // The local `set_once!` macro and the `Create` arm's body were already split
-    // out below (`set_builder_field_once`/`create_image_description`); what's left
-    // is one match arm per wire request variant, which stays a 1:1 dispatch table
-    // rather than fragmenting further.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per WpImageDescriptionCreatorParamsV1 request variant; \
-                  the two heaviest chunks are already split into named helpers"
-    )]
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         creator: &WpImageDescriptionCreatorParamsV1,
         request: <WpImageDescriptionCreatorParamsV1 as Resource>::Request,
@@ -1100,165 +1046,53 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        match request {
-            wp_image_description_creator_params_v1::Request::Create { image_description } => {
-                create_image_description(creator, builder, image_description, data_init);
-            }
-            wp_image_description_creator_params_v1::Request::SetTfNamed { tf } => {
-                let Ok(tf) = tf.into_result() else {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::InvalidTf,
-                        "unknown transfer_function enum value",
-                    );
-                    return;
-                };
-                set_builder_field_once(builder, creator, "transfer function already set", |i| {
-                    set_if_none(&mut i.tf_named, transfer_named_to_color(tf))
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetTfPower { eexp } => {
-                set_builder_field_once(builder, creator, "transfer function already set", |i| {
-                    set_if_none(&mut i.tf_power_eexp, eexp)
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
-                let Ok(primaries) = primaries.into_result() else {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::InvalidPrimariesNamed,
-                        "unknown primaries enum value",
-                    );
-                    return;
-                };
-                set_builder_field_once(builder, creator, "primaries already set", |i| {
-                    set_if_none(&mut i.primaries_named, primaries_named_to_color(primaries))
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetPrimaries {
-                r_x,
-                r_y,
-                g_x,
-                g_y,
-                b_x,
-                b_y,
-                w_x,
-                w_y,
-            } => {
-                let custom = CustomPrimaries {
-                    r: (r_x, r_y),
-                    g: (g_x, g_y),
-                    b: (b_x, b_y),
-                    w: (w_x, w_y),
-                };
-                set_builder_field_once(builder, creator, "primaries already set", |i| {
-                    set_if_none(&mut i.primaries_custom, custom)
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetLuminances {
-                min_lum,
-                max_lum,
-                reference_lum,
-            } => {
-                if max_lum <= min_lum / 10_000 || reference_lum == 0 {
-                    // Loose validation — spec's tighter check is left
-                    // to the wire; we accept anything sensible.
-                }
-                set_builder_field_once(builder, creator, "luminances already set", |i| {
-                    set_if_none(&mut i.luminances, (min_lum, max_lum, reference_lum))
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetMasteringDisplayPrimaries {
-                r_x,
-                r_y,
-                g_x,
-                g_y,
-                b_x,
-                b_y,
-                w_x,
-                w_y,
-            } => {
-                let custom = CustomPrimaries {
-                    r: (r_x, r_y),
-                    g: (g_x, g_y),
-                    b: (b_x, b_y),
-                    w: (w_x, w_y),
-                };
-                set_builder_field_once(
-                    builder,
+        let set = match tilo_color_params::server::set_of(request) {
+            Ok(set) => set,
+            Err(wp_image_description_creator_params_v1::Request::Create { image_description }) => {
+                create_image_description(
+                    state.as_ref(),
                     creator,
-                    "mastering display primaries already set",
-                    |i| set_if_none(&mut i.mastering_primaries, custom),
+                    builder,
+                    image_description,
+                    data_init,
                 );
+                return;
             }
-            wp_image_description_creator_params_v1::Request::SetMasteringLuminance {
-                min_lum,
-                max_lum,
-            } => {
-                set_builder_field_once(builder, creator, "mastering luminance already set", |i| {
-                    set_if_none(&mut i.mastering_luminance, (min_lum, max_lum))
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetMaxCll { max_cll } => {
-                set_builder_field_once(builder, creator, "max_cll already set", |i| {
-                    set_if_none(&mut i.max_cll, max_cll)
-                });
-            }
-            wp_image_description_creator_params_v1::Request::SetMaxFall { max_fall } => {
-                set_builder_field_once(builder, creator, "max_fall already set", |i| {
-                    set_if_none(&mut i.max_fall, max_fall)
-                });
-            }
-            _ => {}
+            Err(_) => return,
+        };
+        let taken = builder
+            .params
+            .lock()
+            .map_err(|_| tilo_color_params::ParamError::IncompleteSet)
+            .and_then(|mut params| params.set(set, &state.as_ref().support));
+        if let Err(error) = taken {
+            creator.post_error(error.code(), error.message());
         }
     }
 }
 
-/// `true` and sets `*slot` if it was `None`; `false` (no write) if the
-/// caller had already set it. The `bool` is what
-/// [`set_builder_field_once`] uses to decide whether to post `AlreadySet`.
+/// Tell a client its description is ready, or hold it back while a test says so.
 #[cfg(target_os = "linux")]
-fn set_if_none<T>(slot: &mut Option<T>, val: T) -> bool {
-    if slot.is_some() {
-        return false;
+fn tell_ready(manager: &ColorManagerState, obj: &WpImageDescriptionV1, identity_lo: u32) {
+    #[cfg(feature = "test-support")]
+    {
+        if manager.holding.load(Ordering::Relaxed) {
+            if let Ok(mut held) = manager.held.lock() {
+                held.push((obj.clone(), identity_lo));
+            }
+            return;
+        }
     }
-    *slot = Some(val);
-    true
+    #[cfg(not(feature = "test-support"))]
+    let _ = manager;
+    let () = obj.ready(identity_lo);
 }
 
-#[cfg(target_os = "linux")]
-fn set_builder_field_once(
-    builder: &ParametricBuilder,
-    creator: &WpImageDescriptionCreatorParamsV1,
-    msg: &str,
-    set: impl FnOnce(&mut ParametricBuilderInner) -> bool,
-) {
-    let Ok(mut inner) = builder.inner.lock() else {
-        creator.post_error(
-            wp_image_description_creator_params_v1::Error::IncompleteSet,
-            "builder poisoned",
-        );
-        return;
-    };
-    if inner.consumed {
-        creator.post_error(
-            wp_image_description_creator_params_v1::Error::AlreadySet,
-            "builder already consumed",
-        );
-        return;
-    }
-    if !set(&mut inner) {
-        creator.post_error(
-            wp_image_description_creator_params_v1::Error::AlreadySet,
-            msg,
-        );
-    }
-}
-
-/// `Create` request: builds the final [`ImageDescriptionData`] and
-/// advertises it via the v1 `ready` event, or posts `IncompleteSet` when a
-/// required field is still missing. Split out of the
-/// `WpImageDescriptionCreatorParamsV1` dispatch to keep that match short.
+/// `Create` request: the settled description, announced with the v1 `ready` event, or the
+/// protocol error the parameters raise.
 #[cfg(target_os = "linux")]
 fn create_image_description<D>(
+    manager: &ColorManagerState,
     creator: &WpImageDescriptionCreatorParamsV1,
     builder: &Arc<ParametricBuilder>,
     image_description: New<WpImageDescriptionV1>,
@@ -1266,31 +1100,39 @@ fn create_image_description<D>(
 ) where
     D: Dispatch<WpImageDescriptionV1, ImageDescriptionData> + 'static,
 {
-    if let Some(data) = builder.build() {
-        let identity = data.identity;
-        let obj = data_init.init(image_description, data);
-        // The global is deliberately version 1, so `ready` is the only
-        // valid success event. `ready2` has opcode 2 and exists only from
-        // version 2 onward; emitting it disconnects v1 clients.
-        let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
-        builder.mark_consumed();
-    } else {
-        // The request carried a `new_id`; initialise it before the fatal
-        // error removes the client and all of its protocol objects.
-        data_init.init(
-            image_description,
-            ImageDescriptionData {
-                colorimetry: Colorimetry::sdr_bt709(),
-                hdr: None,
-                identity: 0,
-                queryable: false,
-                reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
-            },
-        );
-        creator.post_error(
-            wp_image_description_creator_params_v1::Error::IncompleteSet,
-            "primaries + transfer are required before create",
-        );
+    let checked = builder
+        .params
+        .lock()
+        .map_err(|_| tilo_color_params::ParamError::IncompleteSet)
+        .and_then(|params| params.check_complete());
+    match checked.and_then(|()| {
+        builder
+            .build()
+            .ok_or(tilo_color_params::ParamError::IncompleteSet)
+    }) {
+        Ok(data) => {
+            let identity = data.identity;
+            let obj = data_init.init(image_description, data);
+            // The global is deliberately version 1, so `ready` is the only
+            // valid success event. `ready2` has opcode 2 and exists only from
+            // version 2 onward; emitting it disconnects v1 clients.
+            tell_ready(manager, &obj, (identity & 0xFFFF_FFFF) as u32);
+        }
+        Err(error) => {
+            // The request carried a `new_id`; initialise it before the fatal
+            // error removes the client and all of its protocol objects.
+            data_init.init(
+                image_description,
+                ImageDescriptionData {
+                    colorimetry: Colorimetry::sdr_bt709(),
+                    hdr: None,
+                    identity: 0,
+                    queryable: false,
+                    reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
+                },
+            );
+            creator.post_error(error.code(), error.message());
+        }
     }
 }
 
@@ -1341,10 +1183,12 @@ where
 impl<D> Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData, D>
     for ColorManagerState
 where
-    D: Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData> + 'static,
+    D: Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData>
+        + AsRef<ColorManagerState>
+        + 'static,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         obj: &WpColorManagementSurfaceV1,
         request: <WpColorManagementSurfaceV1 as Resource>::Request,
@@ -1369,7 +1213,13 @@ where
                 image_description,
                 render_intent,
             } => {
-                let _ = render_intent;
+                if !state.as_ref().support.intent(render_intent.into()) {
+                    obj.post_error(
+                        wp_color_management_surface_v1::Error::RenderIntent,
+                        "the rendering intent was not advertised",
+                    );
+                    return;
+                }
                 let Some(desc) = image_description.data::<ImageDescriptionData>().cloned() else {
                     obj.post_error(
                         wp_color_management_surface_v1::Error::ImageDescription,
@@ -1579,28 +1429,39 @@ macro_rules! delegate_color_management {
 mod tests {
     use super::*;
 
+    /// A builder told `primaries` and `transfer` by name, and the mastering luminance range.
+    fn builder(
+        primaries: u32,
+        transfer: u32,
+        mastering_luminance: Option<(u32, u32)>,
+    ) -> ParametricBuilder {
+        ParametricBuilder {
+            params: Mutex::new(Params {
+                primaries: Some(ParamPrimaries::Named(primaries)),
+                transfer: Some(Transfer::Named(transfer)),
+                mastering_luminance,
+                ..Params::default()
+            }),
+        }
+    }
+
     #[test]
     fn color_management_advertises_builds_and_exposes_hdr_descriptions() {
         // Phase `advertised_capabilities_include_bt2020_and_pq`.
         {
             let cfg = ColorManagerState::default();
-            assert!(cfg.supported_primaries.contains(&(6)));
-            assert!(cfg.supported_primaries.contains(&(1)));
-            assert!(cfg.supported_primaries.contains(&(9)));
-            assert!(cfg.supported_transfers.contains(&(11)));
-            assert!(cfg.supported_transfers.contains(&(13)));
-            assert!(cfg.supported_features.contains(&(1)));
-            assert!(cfg.supported_features.contains(&(2)));
+            assert!(cfg.support.primaries.contains(&(6)));
+            assert!(cfg.support.primaries.contains(&(1)));
+            assert!(cfg.support.primaries.contains(&(9)));
+            assert!(cfg.support.transfers.contains(&(11)));
+            assert!(cfg.support.transfers.contains(&(13)));
+            assert!(cfg.support.has(feature::PARAMETRIC));
+            assert!(cfg.support.has(feature::SET_PRIMARIES));
         }
 
         // Phase `builder_yields_bt2020_pq_when_configured`.
         {
-            let b = ParametricBuilder::default();
-            {
-                let mut inner = b.inner.lock().unwrap();
-                inner.primaries_named = Some(ColorPrimaries::Bt2020);
-                inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
-            }
+            let b = builder(6, 11, None);
             let desc = b.build().expect("builder produces description");
             assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
             assert_eq!(
@@ -1613,19 +1474,12 @@ mod tests {
         {
             let b = ParametricBuilder::default();
             assert!(b.build().is_none());
-            {
-                b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
-            }
+            b.params.lock().unwrap().primaries = Some(ParamPrimaries::Named(1));
             assert!(b.build().is_none());
         }
 
         {
-            let b = ParametricBuilder::default();
-            {
-                let mut inner = b.inner.lock().unwrap();
-                inner.primaries_named = Some(ColorPrimaries::Bt709);
-                inner.tf_named = Some(TransferCharacteristics::Bt709);
-            }
+            let b = builder(1, 1, None);
             let desc = b.build().unwrap();
             assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
         }
@@ -1648,27 +1502,16 @@ mod tests {
             );
             assert_eq!(output.protocol_luminances(), (100, 100, 100));
 
-            let builder = ParametricBuilder::default();
-            {
-                let mut inner = builder.inner.lock().unwrap();
-                inner.primaries_named = Some(ColorPrimaries::Bt2020);
-                inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
-            }
-            assert_eq!(builder.build().unwrap().information_colors(), None);
+            let made = builder(6, 11, None);
+            assert_eq!(made.build().unwrap().information_colors(), None);
         }
     }
 
     #[test]
     fn a_mastering_luminance_range_alone_is_kept() {
         let reference = MasteringDisplayColorVolume::hdr10_reference();
-        let builder = ParametricBuilder::default();
-        {
-            let mut inner = builder.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt2020);
-            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
-            inner.mastering_luminance = Some((500, 4_000));
-        }
-        let hdr = builder.build().unwrap().hdr.expect("PQ carries metadata");
+        let made = builder(6, 11, Some((500, 4_000)));
+        let hdr = made.build().unwrap().hdr.expect("PQ carries metadata");
         assert_eq!(hdr.mastering.max_display_mastering_luminance, 40_000_000);
         assert_eq!(hdr.mastering.min_display_mastering_luminance, 500);
         assert_eq!(

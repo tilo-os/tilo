@@ -14,7 +14,7 @@
 //! (enrolling generation 500 on a counter reading 1 gives `-497`), fixed at first materialisation
 //! and recorded in every sealed token and in `/var/lib/tilo/rollback/state.json`.
 //!
-//! `base` is not integrity-critical, because the gate is the absolute operand inside each token's
+//! `base` is not integrity-critical, because the check is the absolute operand inside each token's
 //! policy digest: a wrong `base` can only make a future seal wrong. It is availability-critical: a
 //! tampered-upward `base` would demand a huge number of increments and soft-brick the machine into
 //! recovery-key-only, hence [`MAX_INCREMENTS_PER_ADVANCE`] and the cross-check in

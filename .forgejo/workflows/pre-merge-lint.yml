@@ -1,9 +1,9 @@
 name: CI / pre-merge lint
 
-# A pull request is linted as it merges onto main's current tip, with the same
-# selection a push is refused for (tools/ci/pre_push_lint.py): the packages the
-# change touches and the packages whose own source names something it changed,
-# natively and for the page. A merge the forge makes is a commit no contributor's
+# A pull request is linted as it merges onto main's current tip, with the wide
+# selection t's lint-head runs on main (tools/ci/pre_push_lint.py --wide): the
+# packages the change touches and the packages whose own source names something
+# it changed, natively, as they ship and for the page. A merge the forge makes is a commit no contributor's
 # pre-push hook ever saw, so without this the first lint of the merged tree runs
 # after it is already main.
 #
@@ -64,4 +64,4 @@ jobs:
             base=$(git rev-parse HEAD^)
           fi
           bash tools/ci/measure.sh "pre-merge lint" -- \
-            python3 -I tools/ci/pre_push_lint.py --range "$base..HEAD"
+            python3 -I tools/ci/pre_push_lint.py --wide --range "$base..HEAD"

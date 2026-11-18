@@ -64,7 +64,7 @@ impl SourceIdentity {
 
 /// One signed proof of possession for the bootstrap rendezvous: it binds the
 /// destination's new device key and ephemeral key to the exact operation and
-/// package, so a relay cannot substitute another device or transfer.
+/// package, so a server cannot substitute another device or transfer.
 #[derive(Serialize)]
 struct BootstrapProof<'a> {
     tag: &'static str,
@@ -214,7 +214,7 @@ pub(crate) fn seal_projection(
 ) -> io::Result<String> {
     let sealed = tilo_seal::hpke::seal_to_bytes(
         &tilo_seal::PublicKey::from_bytes(*ephemeral_public_key),
-        Label::RelayEnrollResponse,
+        Label::ServerEnrollResponse,
         aad,
         &projection.encode()?,
     )
@@ -232,7 +232,7 @@ pub(crate) fn open_projection(
 ) -> io::Result<BootstrapProjection> {
     let sealed = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, sealed)
         .map_err(|_| invalid("The identity export is invalid"))?;
-    let opened = tilo_seal::hpke::open_bytes(ephemeral, Label::RelayEnrollResponse, aad, &sealed)
+    let opened = tilo_seal::hpke::open_bytes(ephemeral, Label::ServerEnrollResponse, aad, &sealed)
         .map_err(|_| invalid("The identity export did not open"))?;
     BootstrapProjection::decode(&opened)
 }
@@ -324,7 +324,7 @@ pub(crate) fn issue(
     Ok((cert, projection))
 }
 
-/// Install the admitted member identity into the destination's own custody, never
+/// Install the admitted member identity into the destination's own ownership, never
 /// over an identity that already exists.
 pub(crate) fn install(
     identity_root: &Path,
@@ -407,7 +407,7 @@ pub(crate) fn install(
     )?;
     runtime_identity::set_active_identity(identity_dir, &document_id)
         .map_err(|_| invalid("The joined identity could not be selected"))?;
-    let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity_dir, paths);
+    let store = tilo_identity::device_fleet::DeviceFleetStore::at(identity_dir, paths);
     for known in fleet.certificates {
         store
             .remember_certificate(&fleet.identity_id, known)

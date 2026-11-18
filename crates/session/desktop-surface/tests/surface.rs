@@ -1622,7 +1622,6 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         ui::permissions::MemberId::person("tester"),
     );
     driver.relayout();
-    let last = handle.snapshot("g", vec![]).entries[3].route.clone();
     on_clock(Duration::ZERO, || {
         driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
     });
@@ -1647,20 +1646,18 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         pan_offset(&handle)
     );
 
-    // Where the spin left the strip, windows are cut at both edges. A later
-    // change to the strip's geometry, here the last window a pixel wider,
-    // keeps it there rather than re-framing it onto a window's edge.
+    // Where the spin left the strip, windows are cut at both edges. A change
+    // to the strip's geometry from another device, here the last window a
+    // pixel wider, keeps it there rather than re-framing it onto a window's
+    // edge: only the person's own moves and width changes are followed.
     let held = pan_offset(&handle);
-    on_clock(Duration::ZERO, || {
-        dispatch(
-            &mut driver,
-            &handle,
-            verb(
-                "set-width",
-                serde_json::json!({"group":last.group,"permille":668}),
-            ),
-        );
-    });
+    let mut tree = handle.read(Clone::clone);
+    let group = tree.workspaces[0].strips[0]
+        .window_groups
+        .last_mut()
+        .unwrap();
+    group.width = WindowWidth::Fraction(668);
+    on_clock(Duration::ZERO, || handle.replace_tree(tree));
     settle(&mut driver);
     assert!(
         (pan_offset(&handle) - held).abs() < 0.5,
@@ -2066,10 +2063,10 @@ fn result_names(chrome: &ui::headless::FrameHarness) -> Vec<String> {
 /// draws no frame of its own while a source works, so nothing on a clock asks the sources again.
 #[test]
 fn an_answer_asks_for_the_frame_that_shows_it() {
-    let (services, _recorder) = ui::host::HostServices::recording();
+    let (services, _recorder) = ui::process::ProcessServices::recording();
     let pumped = ui::rt::background::Pumped::new();
     let _background = pumped.background().enter();
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         let (mut shell, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("notes".into()));
@@ -2134,10 +2131,10 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
 /// opens addresses (a new tab of the browser the web desktop runs in).
 #[test]
 fn search_works_out_sums_and_conversions_and_searches_the_web() {
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     let pumped = ui::rt::background::Pumped::new();
     let _background = pumped.background().enter();
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         let (mut driver, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("12*7".into()));
@@ -2596,7 +2593,7 @@ fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
 /// What a shell shows that a member's pointer can be relative to, as the browser runtime lays it
 /// out: each shown window by the record it shows (here, its app's workspace record) and the shown
 /// strip.
-fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
+fn pointer_layout(handle: &DesktopHandle) -> tilo_server_protocol::live::PointerLayout {
     let shown = handle.shown_tabs();
     let windows = handle.read(|tree| {
         shown
@@ -2612,7 +2609,7 @@ fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerL
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return None;
                 };
-                let record = tilo_relay_protocol::live::LiveResource {
+                let record = tilo_server_protocol::live::LiveResource {
                     app: app_id.clone(),
                     record: String::new(),
                 };
@@ -2624,14 +2621,15 @@ fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerL
         clippy::cast_possible_truncation,
         reason = "a strip's pan is a few thousand logical pixels"
     )]
-    let strip = handle
-        .shown_strip()
-        .map(|(id, area, pan)| tilo_relay_protocol::live::ShownStrip {
-            id: id.0,
-            area: rect_f32(area),
-            scroll_x: pan as f32,
-        });
-    tilo_relay_protocol::live::PointerLayout { windows, strip }
+    let strip =
+        handle
+            .shown_strip()
+            .map(|(id, area, pan)| tilo_server_protocol::live::ShownStrip {
+                id: id.0,
+                area: rect_f32(area),
+                scroll_x: pan as f32,
+            });
+    tilo_server_protocol::live::PointerLayout { windows, strip }
 }
 
 fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
@@ -2644,7 +2642,7 @@ fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
 /// strip's coordinates, it never landed anywhere.
 #[test]
 fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
-    use tilo_relay_protocol::live::LivePointer;
+    use tilo_server_protocol::live::LivePointer;
     let (_wide_driver, wide) = personal_shell(7, 1440);
     let (_narrow_driver, narrow) = personal_shell(9, 1024);
     let (wide_layout, narrow_layout) = (pointer_layout(&wide), pointer_layout(&narrow));
@@ -2653,7 +2651,7 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
         wide_strip.id, narrow_strip.id,
         "each shell's strip is its own"
     );
-    let notes = |layout: &tilo_relay_protocol::live::PointerLayout| {
+    let notes = |layout: &tilo_server_protocol::live::PointerLayout| {
         layout
             .windows
             .iter()
@@ -2794,7 +2792,7 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
 mod actions;
 
 /// A shell nobody touches has nothing to draw: a settled shell declines the frame its host offers, so
-/// a window's bar and its search lane paint nothing until what they show changes.
+/// a window's bar and its search area paint nothing until what they show changes.
 #[test]
 fn a_settled_idle_shell_repaints_nothing() {
     let (mut driver, _handle, _) = mount();

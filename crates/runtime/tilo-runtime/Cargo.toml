@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # the desktop does. NEVER SHIP THIS: it accepts fixed credentials from the
 # environment (tools/policy/check_dev_overrides_contract.py).
 dev-overrides = [
-  "tilo-identity-host/throwaway-test-identity",
+  "tilo-identity/throwaway-test-identity",
   "package-store/dev-overrides",
   "launcher/dev-overrides",
 ]
@@ -59,7 +59,7 @@ key-group = { path = "../../collab/key-group" }
 blake3.workspace = true
 # The bytes and content addresses a joined workspace's files hydrate with.
 bytes.workspace = true
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 fs-protocol = { path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
@@ -73,7 +73,7 @@ iroh.workspace = true
 # something needs this device reachable.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 iroh-blobs.workspace = true
-# The launcher's manifest view, service names and developer-override gate;
+# The launcher's manifest view, service names and developer-override check;
 # its binary builds every Linux app sandbox.
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
@@ -97,7 +97,7 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 # files mirrored into a folder where nothing mounts them.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-tilo-identity-host = { path = "../tilo-identity-host" }
+tilo-identity = { path = "../tilo-identity" }
 # The surface an app under development names (`app_surface`), and the
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
@@ -113,23 +113,23 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service" }
 # The content store app surfaces are read from.
 tilo-content = { path = "../../system/content" }
 # The apps' store: the device content store when the launcher handed one over.
 tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission API it answers with: the engine's own membership.
-# The relay session a joined workspace syncs through.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The server session a joined workspace syncs through.
+tilo-server-session = { path = "../../server/tilo-server-session" }
 # A workspace host's signed address, which a key enters a workspace at.
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
+tilo-server-client = { path = "../../server/tilo-server-client" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # The offload route a session's action API places offloadable actions
 # through: the compute session with the home relay, placement and the
-# workspace-scoped route (`tilo_relay::offload`). Its tests also start real relays.
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# workspace-scoped route (`tilo_server::offload`). Its tests also start real relays.
+tilo-server = { path = "../../server/tilo-server" }
 tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
@@ -172,7 +172,7 @@ runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # The join protocol a runtime joins workspaces over.
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
@@ -182,8 +182,8 @@ collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
-# A relay on this machine's loopback, which is what a test's devices relay through.
-test-relay = { path = "../../dev/test-relay" }
+# A server on this machine's loopback, which is what a test's devices relay through.
+test-server = { path = "../../dev/test-server" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
 

@@ -19,7 +19,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use tilo_automerge::ApplyIncoming;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
-use crate::context::{ActionContext, ChangeKind};
+use crate::context::{ActionContext, CONTINUATION_PREFIX, ChangeKind};
 use crate::entry::{Described, Did};
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
@@ -176,6 +176,14 @@ pub fn settle_compensation(doc: &mut Doc, hash: &str) -> Result<(), ActionError>
 /// reads it here; any other action must not.
 pub fn invoking_context() -> Option<ActionContext> {
     INVOKING.with(|current| current.borrow().clone())
+}
+
+/// Call `work` with `context` as the [`invoking_context`]: an operation the
+/// app carries out itself (a write into a part of a chain) keeps the agent
+/// session and purpose its invocation came with.
+pub fn with_invoking_context<T>(context: Option<ActionContext>, work: impl FnOnce() -> T) -> T {
+    let _invoking = InvokingScope::enter(context);
+    work()
 }
 
 /// Sets [`invoking_context`] for one apply and restores the outer value.
@@ -416,21 +424,17 @@ fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope) {
 }
 
 /// The message `context` is written with by `actor` on `doc`: as the
-/// continuation of the actor's previous entry when the change continues its
-/// gesture (a head of `doc` is the actor's, of the same gesture and step),
-/// else whole. A function of the document, so a replaying device writes the
+/// continuation of the actor's last whole entry when the change differs from
+/// it only in its gesture and action payload, else whole. Changes of others
+/// in between do not matter. A function of the document, so a replaying device writes the
 /// same message, hence the same change.
 #[must_use]
 pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Option<String> {
     if context.gesture.is_some() && context.compensation.is_none() {
         let document = doc.committed_document();
-        let continuation = doc.committed_heads().into_iter().find_map(|head| {
-            let meta = document.get_change_meta_by_hash(&head)?;
-            if meta.actor.as_ref() != actor {
-                return None;
-            }
-            context.continuation_of(&entry_of(document, head)?)
-        });
+        let continuation = document
+            .hash_of_actor_seq(actor, document.applied_seq(actor))
+            .and_then(|last| context.continuation_of(&opening_entry(document, last)?));
         if continuation.is_some() {
             return continuation;
         }
@@ -438,16 +442,17 @@ pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Opt
     context.change_message()
 }
 
-/// How deep [`entry_of`] follows a gesture's continuations back to its
-/// first entry.
-const MAX_CONTINUATIONS: usize = 4096;
+/// How deep [`entry_of`] follows its writer's continuations back to the
+/// entry they continue. A writer writes its entry whole again past it, so a
+/// change read on its own costs at most this many steps back.
+const MAX_CONTINUATIONS: usize = 256;
 
 /// How many continuations [`entry_of`] remembers the first entry of.
 const CONTINUATIONS_KEPT: usize = 8;
 
 thread_local! {
-    /// The continuations [`entry_of`] read last, each with its gesture's
-    /// first entry and how many changes back that entry is. A keystroke's
+    /// The continuations [`entry_of`] read last, each with the whole entry
+    /// it continues and how many changes back that entry is. A keystroke's
     /// change continues the one before it, so its entry is found one step
     /// back instead of by walking the whole gesture again. A change's hash
     /// names its content and history, so what is kept for it holds on any
@@ -463,17 +468,32 @@ thread_local! {
 }
 
 /// The entry of the change `hash`: its message's, or for a continuation its
-/// gesture's first entry with the continuation's action (found by following
-/// its writer's earlier changes).
+/// writer's last whole entry with the continuation's gesture and action
+/// (found by following its writer's earlier changes).
 #[must_use]
 pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
+    let entry = opening_entry(doc, hash)?;
+    match doc.get_change_meta_by_hash(&hash)?.message.as_deref() {
+        Some(message) if message.starts_with(CONTINUATION_PREFIX) => {
+            ActionContext::continued(message, &entry)
+        }
+        _ => Some(entry),
+    }
+}
+
+/// The whole entry of the change `hash`: its own, or for a continuation its
+/// writer's last whole entry, which a continuation is written and read
+/// against.
+fn opening_entry(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
     let meta = doc.get_change_meta_by_hash(&hash)?;
     let message = meta.message.as_deref()?;
     if let Some(entry) = ActionContext::from_change_message(message) {
         return Some(entry);
     }
-    let gesture = ActionContext::continued_gesture(message)?;
-    let (first, depth) = first_entry(doc, &meta, gesture)?;
+    if !message.starts_with(CONTINUATION_PREFIX) {
+        return None;
+    }
+    let (first, depth) = first_entry(doc, &meta)?;
     CONTINUATIONS.with_borrow_mut(|kept| {
         if !kept.iter().any(|(kept, ..)| *kept == hash) {
             if kept.len() >= CONTINUATIONS_KEPT {
@@ -482,31 +502,26 @@ pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Opti
             kept.push_back((hash, first.clone(), depth));
         }
     });
-    ActionContext::continued(message, &first)
+    Some(first)
 }
 
-/// The first entry of the gesture `gesture` the continuation `meta` is in,
-/// and how many of its writer's changes back it is: none when it is more
-/// than [`MAX_CONTINUATIONS`] back.
+/// The whole entry the continuation `meta` continues, and how many of its
+/// writer's changes back it is: none when it is more than
+/// [`MAX_CONTINUATIONS`] back.
 fn first_entry(
     doc: &automerge::Automerge,
     meta: &automerge::ChangeMetadata<'_>,
-    gesture: ActionId,
 ) -> Option<(ActionContext, usize)> {
-    let actor = meta.actor.clone();
-    let mut at = meta.deps.clone();
     for depth in 1..=MAX_CONTINUATIONS {
         #[cfg(test)]
         STEPS_BACK.with(|steps| steps.set(steps.get().saturating_add(1)));
-        let earlier = at.iter().find_map(|dep| {
-            let meta = doc.get_change_meta_by_hash(dep)?;
-            (meta.actor == actor).then_some(meta)
-        })?;
+        let seq = meta.seq.checked_sub(u64::try_from(depth).ok()?)?;
+        let earlier = doc.get_change_meta_by_hash(&doc.hash_of_actor_seq(&meta.actor, seq)?)?;
         let text = earlier.message.as_deref()?;
         if let Some(first) = ActionContext::from_change_message(text) {
-            return (first.gesture == Some(gesture)).then_some((first, depth));
+            return Some((first, depth));
         }
-        if ActionContext::continued_gesture(text) != Some(gesture) {
+        if !text.starts_with(CONTINUATION_PREFIX) {
             return None;
         }
         let kept = CONTINUATIONS.with_borrow(|kept| {
@@ -518,7 +533,6 @@ fn first_entry(
             let depth = depth.checked_add(back)?;
             return (depth <= MAX_CONTINUATIONS).then_some((first, depth));
         }
-        at = earlier.deps.clone();
     }
     None
 }
@@ -528,10 +542,10 @@ fn first_entry(
 mod entry_tests;
 
 /// The entries of a document's changes read in causal order, each
-/// continuation folded into its gesture's first entry as it is read.
+/// continuation folded into its writer's last whole entry as it is read.
 #[derive(Default)]
 pub struct EntryReader {
-    firsts: std::collections::HashMap<(ActorId, ActionId), ActionContext>,
+    firsts: std::collections::HashMap<ActorId, ActionContext>,
 }
 
 impl EntryReader {
@@ -540,13 +554,10 @@ impl EntryReader {
     pub fn read(&mut self, actor: &ActorId, message: Option<&str>) -> Option<ActionContext> {
         let message = message?;
         if let Some(entry) = ActionContext::from_change_message(message) {
-            if let Some(gesture) = entry.gesture {
-                self.firsts.insert((actor.clone(), gesture), entry.clone());
-            }
+            self.firsts.insert(actor.clone(), entry.clone());
             return Some(entry);
         }
-        let gesture = ActionContext::continued_gesture(message)?;
-        ActionContext::continued(message, self.firsts.get(&(actor.clone(), gesture))?)
+        ActionContext::continued(message, self.firsts.get(actor)?)
     }
 }
 
@@ -755,7 +766,7 @@ fn recorded_size(action: &EncodedAction) -> Result<usize, ActionError> {
 /// authored against, and check that it produces exactly that change: same
 /// operations, same actor, time and message, so the same hash. This is what
 /// a device that has the app does with every change it receives, beside the
-/// relay's grant check: an author granted an action who wrote something else
+/// server's grant check: an author granted an action who wrote something else
 /// inside its storage units is caught here.
 pub fn verify_change(
     doc: &mut Doc,
@@ -853,7 +864,7 @@ pub enum HostDecision {
 }
 
 /// The transport an action is handed to after (or instead of) local
-/// execution — the seam between the pure action model and whatever
+/// execution — the boundary between the pure action model and whatever
 /// moves bytes (in-process broker, compositor socket, Iroh). The
 /// model never imports a transport, only calls this trait.
 pub trait ActionTransport {

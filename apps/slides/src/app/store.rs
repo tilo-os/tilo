@@ -15,7 +15,7 @@ use ui::tilo_resource::{ActionDecl, Id};
 use ui::widget::toast::ToastKind;
 
 use super::{
-    DeckRecord, SlidesApp, image_open_request, is_pptx, load_presentation_from_path,
+    DeckResource, SlidesApp, image_open_request, is_pptx, load_presentation_from_path,
     open_document_request, parse_presentation, sanitize_filename, save_document_request,
     save_presentation_to_path,
 };
@@ -72,7 +72,7 @@ impl Store {
         &mut self,
         effect: SlidesEffect,
         me: &Shared,
-        cx: &mut EffectCx<DeckRecord>,
+        cx: &mut EffectCx<DeckResource>,
     ) -> EffectAnswer {
         let deck = || crate::deck::mirror(&cx.live().get());
         match effect {
@@ -125,7 +125,7 @@ impl Store {
         &self,
         path: Option<ui::tilo_resource::AbsolutePath>,
         me: &Shared,
-        cx: &mut EffectCx<DeckRecord>,
+        cx: &mut EffectCx<DeckResource>,
     ) -> Effected {
         let content = self.content.clone();
         let me = Rc::clone(me);
@@ -154,7 +154,7 @@ impl Store {
     fn finish_open(
         &mut self,
         loaded: Result<Deck, String>,
-        cx: &EffectCx<DeckRecord>,
+        cx: &EffectCx<DeckResource>,
     ) -> EffectAnswer {
         match loaded {
             Ok(deck) => {
@@ -176,7 +176,7 @@ impl Store {
         &mut self,
         path: Option<ui::tilo_resource::AbsolutePath>,
         me: &Shared,
-        cx: &mut EffectCx<DeckRecord>,
+        cx: &mut EffectCx<DeckResource>,
     ) -> EffectAnswer {
         let deck = crate::deck::mirror(&cx.live().get());
         if !actions::deck_within_aggregate_limits(&deck) {
@@ -235,7 +235,7 @@ impl Store {
 /// Ask the person for a picture with the host's chooser (the app never
 /// draws its own picker), then keep its bytes in the content store and
 /// place it on the current slide. A cancelled choice places nothing.
-fn choose_picture(me: &Shared, cx: &mut EffectCx<DeckRecord>) -> Effected {
+fn choose_picture(me: &Shared, cx: &mut EffectCx<DeckResource>) -> Effected {
     let me = Rc::clone(me);
     cx.choose_file(image_open_request(), move |(), chosen, _| {
         let Some(file) = chosen else {
@@ -267,7 +267,7 @@ fn element_kind(deck: &Deck, slide: &str, element: &str) -> Result<ElementKind, 
 /// The edits bound to the selected element, published on the deck beside
 /// its declared actions: delete it, bring it to the front, send it to the
 /// back.
-pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionDecl<DeckRecord>> {
+pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionDecl<DeckResource>> {
     let Some(Selected {
         slide,
         element,
@@ -277,7 +277,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
         return Vec::new();
     };
     let mut declarations = Vec::new();
-    if let Some(delete) = DeckRecord::DELETE_ELEMENT
+    if let Some(delete) = DeckResource::DELETE_ELEMENT
         .bind(
             crate::deck::deck::DeleteElement::paths().slide,
             slide.clone(),
@@ -293,7 +293,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
     {
         declarations.push(delete.describe("Delete the element selected in the editor."));
     }
-    let front = DeckRecord::BRING_TO_FRONT
+    let front = DeckResource::BRING_TO_FRONT
         .bind(
             crate::deck::deck::BringToFront::paths().slide,
             slide.clone(),
@@ -306,7 +306,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             "bring-selection-front",
             ui::tilo_resource::word!("slides-deck-bring-selection-front", name = label.as_str()),
         );
-    let back = DeckRecord::SEND_TO_BACK
+    let back = DeckResource::SEND_TO_BACK
         .bind(crate::deck::deck::SendToBack::paths().slide, slide.clone())
         .and(
             crate::deck::deck::SendToBack::paths().element,
@@ -322,7 +322,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
     declarations
 }
 
-pub(crate) fn window(cx: &ViewCx<DeckRecord>, mut editor: SlidesApp) -> ui::widget::Element {
+pub(crate) fn window(cx: &ViewCx<DeckResource>, mut editor: SlidesApp) -> ui::widget::Element {
     editor.live = Some(cx.live().clone());
     cx.on_open_item(editor.opener());
     let store = Rc::clone(&editor.store);

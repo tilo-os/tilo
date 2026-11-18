@@ -31,7 +31,7 @@ fn demo() -> SnippetsWindow {
     app
 }
 
-/// The app on a fresh record holding `snippets`, inserted through the API.
+/// The app on a fresh resource holding `snippets`, inserted through the API.
 fn launched(snippets: &[Snippet]) -> TestApp<SnippetsShell> {
     let mut app = TestApp::<SnippetsShell>::new().unwrap();
     for (at, snippet) in snippets.iter().enumerate() {
@@ -900,7 +900,7 @@ fn a_pointer_click_on_copy_copies() {
     );
 }
 
-/// A picked language and a typed name apply for the record's owner and for an editor of a
+/// A picked language and a typed name apply for the resource's owner and for an editor of a
 /// shared workspace alike.
 #[test]
 fn owners_and_editors_set_the_language_and_the_name() {

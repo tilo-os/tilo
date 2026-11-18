@@ -1,5 +1,5 @@
 //! The Discord connector: one
-//! `discord.guild` record per bridged server, whose verbs record what the
+//! `discord.guild` resource per bridged server, whose verbs record what the
 //! bridge bot observed and queue what it asks Discord to do, and whose
 //! planning effects work out what a change means, because a bot's program
 //! only sequences steps. The `discord-worker` binary performs the queued
@@ -10,13 +10,13 @@ pub mod effects;
 pub mod emoji;
 pub mod emoji_sync;
 pub mod guard;
+pub mod guild;
 pub mod import;
 pub mod inbound;
 pub mod layout;
 pub mod locales;
 pub mod order;
 pub mod outbound;
-pub mod record;
 pub mod resource;
 pub mod roles;
 #[cfg(feature = "samples")]
@@ -29,18 +29,18 @@ pub mod token;
 pub mod voice;
 
 pub use discord_wire::event;
-pub use record::{
+pub use guild::{
     Connect, DChannel, DRole, Guild, Link, LinkOffer, MappedKind, Mapping, Origin, Ownership,
     map_key,
 };
 
 /// The connector's package id.
 pub use ui::apps::DISCORD as APP_ID;
-/// The record kind it publishes.
+/// The resource kind it publishes.
 pub const KIND: &str = "discord.guild";
 
 /// The app's toolkit definition, which a workspace's host mounts so the bridge
-/// bot can work on the guild record.
+/// bot can work on the guild resource.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(resource::Discord)

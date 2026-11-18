@@ -34,12 +34,12 @@ pub struct SelectedFileConnection(Bridge<Request, Response>);
 
 impl SelectedFileConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
-    /// Requires sole custody after all FUSE callbacks and handles have retired.
+    /// Requires sole ownership after all FUSE callbacks and handles have retired.
     pub fn retire(self) -> io::Result<()> {
         self.0.retire()
     }
     /// Terminally close this exact authenticated channel before waiting for
-    /// callbacks. The source provider observes peer death at native effect gates.
+    /// callbacks. The source provider observes peer death at native effect checks.
     pub fn revoke(&self) {
         self.0.revoke();
     }

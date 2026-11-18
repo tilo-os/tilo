@@ -67,6 +67,9 @@ pub struct Options {
     /// and process it launched itself. The apps it starts record their launch here; a session whose
     /// apps run in its own process (a test) records one itself.
     pub launches: std::sync::Arc<Launches>,
+    /// How the Windows compatibility service the Windows Apps manager reaches is put together:
+    /// the computer's own Windows stack, or what a test stands in for it.
+    pub windows: compat_service::Assembly,
     /// The drives the person plugs in, which this session announces and acts on when they open or
     /// eject one.
     pub drives: Option<Rc<crate::drives::Drives>>,
@@ -96,6 +99,11 @@ pub struct Options {
     /// session left in force comes back with it, and the state this one ends in is published for
     /// the next.
     pub recovery: Option<crate::recovery::Recovery>,
+    /// How the session ends, asked once as it does: what its apps are left as. Every session but
+    /// the machine's own desktop ends its apps; that one asks whether its wrapper restarts it in
+    /// place ([`crate::restart::teardown`]).
+    #[cfg(target_os = "linux")]
+    pub teardown: Box<dyn Fn() -> tilo_app_launch::Teardown>,
     /// What the services were handed to wake the session's loop when something lands: the session
     /// binds it to its loop once started.
     pub wake: tilo_service::LoopWake,
@@ -130,37 +138,35 @@ pub struct Options {
     /// on it. Without one, the session starts on a fresh shell and keeps nothing (tests and
     /// screenshots).
     pub state: Option<std::path::PathBuf>,
-    /// Whether the session takes part in the collaboration plane: who is here in each workspace,
+    /// Whether the session takes part in the peer network: who is here in each workspace,
     /// over Iroh. Off, this desktop has no members but its own person.
     pub collab: bool,
-    /// A collaboration plane to take part in instead of starting one: a session a test hands the
+    /// A peer network to take part in instead of starting one: a session a test hands the
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
     /// What this device's endpoint relays through. `None` : the person's setting
     /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their shell uses. `Some`
-    /// is a test's own: a relay on this machine's loopback, so nothing it does leaves the machine.
+    /// is a test's own: a server on this machine's loopback, so nothing it does leaves the machine.
     pub relays: Option<tilo_endpoint_reachability::EndpointRelays>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.
     pub fabric: Option<crate::platform::fabric::SharedLink>,
-    pub wake_seams: crate::wake::Seams,
+    pub wake_io: crate::wake::WakeIo,
     /// The device VPN, when this session runs on a machine with the helper: a VPN profile set to
     /// connect and not connected blocks traffic while its kill switch is on, and this device routes
     /// through another of the person's devices while they choose one. Without one, nothing does.
     pub vpn: Option<Vpn>,
     /// Whether the apps this session runs read and invoke what its services publish, and on which
     /// socket. Off, the apps it starts reach no service at all.
-    pub action_plane: ActionPlane,
+    pub app_socket: AppSocket,
     /// Where the session's MCP server listens ([`mcp_server::path`]): the socket a program of this
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
     /// session serves no agents (a test, or a session in a window of another desktop).
     pub mcp_server: Option<std::path::PathBuf>,
-    /// The programs admitted ahead of time to act as the person at the MCP server, without the
-    /// sheet: a test that drives the session as its person names its own executable. Only a
-    /// connection whose executable is one of these and that asks to act as the person is; any
-    /// other is asked about as before.
-    pub admit_repl: Vec<std::path::PathBuf>,
+    /// Where the session serves Tilo's API to its person's own programs on this computer, as them
+    /// ([`crate::api_server`]): its login's `api.sock`. `None` : it serves none.
+    pub api_server: Option<std::path::PathBuf>,
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
@@ -204,7 +210,7 @@ impl Machine {
 
 /// Where a session serves its apps the resources its services publish.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum ActionPlane {
+pub enum AppSocket {
     /// Nowhere: the apps reach no service.
     #[default]
     Off,
@@ -219,7 +225,7 @@ pub enum ActionPlane {
     At(std::path::PathBuf),
 }
 
-impl ActionPlane {
+impl AppSocket {
     /// What a session on `machine` serves its apps on: the socket the launcher hands them when it
     /// owns the machine, and a socket of its own when it runs in a window of another desktop, whose
     /// socket is not its to take. Every surface app it starts reads its resources there — its lock
@@ -245,7 +251,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
     Ok(())
 }
 
-/// Who is here: this session's membership of each workspace, over the collaboration plane. `None`
+/// Who is here: this session's membership of each workspace, over the peer network. `None`
 /// when the session takes no part in it, or the device's endpoint did not bind: a desktop with no
 /// one else on it.
 /// `beside` is what else this device answers on its endpoint — its exit for the person's other
@@ -342,7 +348,7 @@ pub(crate) fn start_collaboration(
             Some(Rc::new(sync))
         }
         Err(error) => {
-            tracing::warn!(%error, "the collaboration plane");
+            tracing::warn!(%error, "the peer network");
             None
         }
     }
@@ -365,7 +371,7 @@ pub(crate) fn open_engine(
     match engine::Engine::for_this_device(
         options.state.as_deref(),
         workspaces,
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     ) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
@@ -404,6 +410,8 @@ impl Default for Options {
             earlier: Vec::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             recovery: None,
+            #[cfg(target_os = "linux")]
+            teardown: Box::new(|| tilo_app_launch::Teardown::Logout),
             wake: tilo_service::LoopWake::default(),
             captures: None,
             projector: None,
@@ -417,15 +425,16 @@ impl Default for Options {
             state: None,
             collab: true,
             fabric: None,
-            wake_seams: crate::wake::Seams::default(),
+            wake_io: crate::wake::WakeIo::default(),
             vpn: None,
-            action_plane: ActionPlane::default(),
+            app_socket: AppSocket::default(),
             mcp_server: None,
-            admit_repl: Vec::new(),
+            api_server: None,
             agent_key: None,
             test_control: None,
             admin_control: None,
             launches: std::sync::Arc::default(),
+            windows: compat_service::Assembly::system(),
             drives: None,
         }
     }
@@ -433,17 +442,14 @@ impl Default for Options {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionPlane, Machine};
+    use super::{AppSocket, Machine};
 
     /// A session in a window of another desktop serves its apps on a socket of its own, never on
     /// the one the desktop it draws in serves: that one is the other session's, and the apps of
     /// this one — its lock screen above all — read their resources on this one.
     #[test]
     fn a_session_serves_its_apps_where_they_reach_it() {
-        assert_eq!(
-            ActionPlane::for_machine(Machine::Owned),
-            ActionPlane::Launcher
-        );
-        assert_eq!(ActionPlane::for_machine(Machine::Window), ActionPlane::Own);
+        assert_eq!(AppSocket::for_machine(Machine::Owned), AppSocket::Launcher);
+        assert_eq!(AppSocket::for_machine(Machine::Window), AppSocket::Own);
     }
 }

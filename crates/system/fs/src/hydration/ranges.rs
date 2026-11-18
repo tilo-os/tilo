@@ -30,7 +30,7 @@ use tilo_lock::MutexRecover as _;
 const REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 const FOREGROUND_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
 const REQUESTS_PER_PEER: usize = 8;
-const LANES_PER_PEER: usize = 4;
+const CONNECTIONS_PER_PEER: usize = 4;
 /// A request that makes no progress for this long is abandoned for the
 /// next peer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -402,7 +402,7 @@ impl Hydrator {
         }
         let max_bytes = if priority == Priority::Foreground {
             // A blocked reader waits for all of it: smaller requests,
-            // answered in parallel over the lanes.
+            // answered in parallel over the connections.
             FOREGROUND_REQUEST_BYTES
         } else {
             REQUEST_BYTES
@@ -514,8 +514,8 @@ impl Hydrator {
         let mut last_error = anyhow!("no peer served {content}");
         for peer in later.iter().chain(earlier) {
             let started = std::time::Instant::now();
-            let lane = index.checked_rem(LANES_PER_PEER).unwrap_or(0);
-            let connection = match self.blob_connection_lane(peer, lane).await {
+            let number = index.checked_rem(CONNECTIONS_PER_PEER).unwrap_or(0);
+            let connection = match self.pooled_blob_connection(peer, number).await {
                 Ok(connection) => connection,
                 Err(error) => {
                     self.record_peer_result(peer.id, started.elapsed(), false);
@@ -745,11 +745,11 @@ mod tests {
     ) {
         let server_store = Arc::new(crate::store::ContentStore::memory());
         let id = server_store.write_content(data).await.unwrap().unwrap();
-        let server = test_relay::direct_endpoint().await;
+        let server = test_server::direct_endpoint().await;
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
-        let client = test_relay::direct_endpoint().await;
+        let client = test_server::direct_endpoint().await;
         let hydrator = Hydrator::new(client, Arc::new(crate::store::ContentStore::memory()));
         hydrator.add_peer(server.addr());
         (hydrator, id, server_store, router)
@@ -878,7 +878,7 @@ mod tests {
         let id = source.write_content(&data).await.unwrap().unwrap();
         let quiet = crate::hydration::test_peers::silent().await;
         let hydrator = Hydrator::new(
-            test_relay::direct_endpoint().await,
+            test_server::direct_endpoint().await,
             Arc::new(crate::store::ContentStore::memory()),
         );
         let manifest = source.local(id).await.unwrap();

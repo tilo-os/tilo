@@ -8,10 +8,15 @@
   html,body{margin:0;height:100%;background:#fff}
   @media (prefers-color-scheme:dark){html,body{background:#111}}
   #app{position:fixed;inset:0}
+  #why{position:fixed;inset:0;display:grid;place-content:center;gap:6px;padding:24px;text-align:center;font:14px/1.5 system-ui,sans-serif;color:#3f3f46}
+  #why strong{font-size:16px;color:#18181b}
+  @media (prefers-color-scheme:dark){#why{color:#a1a1aa}#why strong{color:#f4f4f5}}
+  #why[hidden]{display:none}
 </style>
 </head>
 <body>
 <main id="app"></main>
+<div id="why" role="status" hidden><strong></strong><span></span></div>
 <script type="module">
 // One app of the bundle (`?app=`) mounted alone, shown as HTML (`?render=dom`,
 // the default) or on the WebGPU canvas (`?render=gpu`), for comparing the two.
@@ -24,6 +29,21 @@ const dom = params.get('render') !== 'gpu';
 // input's own task, to compare the two.
 if (params.get('sync') === '0') globalThis.__tiloDomInputSync = false;
 const marks = window.renderMarks = {navigationStart: 0, presented: [], reports: []};
+// What stopped the app from showing, said where it would have been: the
+// canvas needs WebGPU, which a browser without a GPU adapter does not offer.
+function why(title, detail) {
+  const box = document.getElementById('why');
+  box.querySelector('strong').textContent = title;
+  box.querySelector('span').textContent = detail;
+  box.hidden = false;
+  marks.failed = title;
+}
+if (!dom && !await navigator.gpu?.requestAdapter().catch(() => null)) {
+  why('The canvas needs WebGPU', navigator.gpu
+    ? 'This browser offers WebGPU but found no graphics adapter for it. The HTML rendering works without one.'
+    : 'This browser does not offer WebGPU. The HTML rendering works without it.');
+  throw new Error('no WebGPU adapter');
+}
 const {mountDesktop, loadRuntime} = await import('./host.mjs');
 const installed = params.get('package')
   ? await (await loadRuntime()).installTilolangPackage(params.get('package'), params.get('scenario') ?? undefined)
@@ -39,6 +59,7 @@ window.mount = await mountDesktop(document.getElementById('app'), {
   onStatus: state => {
     if (state.presentation === true || state.observedPresentedAtMs) marks.presented.push(performance.now());
     if (state.phase && marks.firstPhase === undefined) marks.firstPhase = performance.now();
+    if (state.error && !marks.presented.length) why('The app could not start', String(state.error));
     // What the runtime answered a control pressed by name, for the check that
     // presses them (`check-activation.mjs`).
     if (state.semanticAction) marks.reports.push(state);

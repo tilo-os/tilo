@@ -4,8 +4,8 @@
 Each adapter reads what a benchmark already prints and emits records through
 `record.from_samples`. A benchmark that writes records itself needs no adapter.
 
-- `fs-gate LOG...`: the tilo-fs latency benchmarks
-  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_GATE=1`) print
+- `fs-check LOG...`: the tilo-fs latency benchmarks
+  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_CHECK=1`) print
   `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
   test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
   shape in `MiB`. Each log is one run; repeated runs become the samples of
@@ -26,7 +26,7 @@ Each adapter reads what a benchmark already prints and emits records through
   caller's KPI ids' `first_frame` (chord to the first frame shown), `settled`
   (chord to the resting frame shown after the frame run) and `dropped_frames`
   (refresh intervals in the run that showed no new frame).
-  `scripts/perf/device_latency_bench.py` (the reference-hardware lane) calls it
+  `scripts/perf/device_latency_bench.py` (the reference-hardware job) calls it
   for `hw.workspace_switch.*`.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
@@ -67,12 +67,12 @@ Each adapter reads what a benchmark already prints and emits records through
   `open`) becomes `render.notes_latency.<workload>.to_frame_ms` and
   `.to_raster_ms`, every input (or input-free frame) a sample. A run without
   raster timings (no GPU) fails.
-- `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
-  (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
+- `server-load REPORT_JSON`: the server load bench's `server-load.json`
+  (`crates/server/tilo-server/examples/server_load`). Each KPI it measured
   becomes `<kpi>.n<members>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
-  `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`
-  and `hosting.relay.cost_usd_per_user_month.<provider>`, priced per minute.
+  `tools/perf/prices.toml` adds `server.cost_usd_per_collab_hour.<provider>`
+  and `server.cost_usd_per_user_month.<provider>`, priced per minute.
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
@@ -86,14 +86,14 @@ Each adapter reads what a benchmark already prints and emits records through
   and an unthrottled page.
 Usage:
 
-    python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
+    python3 tools/perf/adapters.py fs-check --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
     python3 tools/perf/adapters.py notes-latency --env-json env.json notes-latency.log >> results.jsonl
-    python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
+    python3 tools/perf/adapters.py server-load --env-json env.json server-load.json >> results.jsonl
     python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
@@ -119,32 +119,32 @@ import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
 # share the line with the test's first stderr line when both streams are merged.
-FS_GATE_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) (?P<unit>ms|MiB) "
+FS_CHECK_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) (?P<unit>ms|MiB) "
                           r"\(SLO <= [0-9.]+ (?P=unit)\)$")
 
 
-def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
-    """Records for the scenarios of one or more tilo-fs gate runs."""
+def fs_check(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for the scenarios of one or more tilo-fs check runs."""
     samples: dict[str, list[float]] = {}
     units: dict[str, str] = {}
     for log in logs:
         seen = set()
         for line in log.splitlines():
-            match = FS_GATE_LINE.search(line.strip())
+            match = FS_CHECK_LINE.search(line.strip())
             if match is None:
                 continue
             name = match.group("name")
             if name in seen:
-                raise ValueError(f"fs gate scenario {name} printed twice in one run")
+                raise ValueError(f"fs check scenario {name} printed twice in one run")
             seen.add(name)
             if units.setdefault(name, match.group("unit")) != match.group("unit"):
-                raise ValueError(f"fs gate scenario {name} printed in both {units[name]} and {match.group('unit')}")
+                raise ValueError(f"fs check scenario {name} printed in both {units[name]} and {match.group('unit')}")
             samples.setdefault(name, []).append(float(match.group("value")))
     if not samples:
-        raise ValueError("no `PERF <name>: <x> ms (SLO <= <y> ms)` lines: did the gate run with TILO_FS_PERF_GATE=1?")
+        raise ValueError("no `PERF <name>: <x> ms (SLO <= <y> ms)` lines: did the check run with TILO_FS_PERF_CHECK=1?")
     counts = {name: len(values) for name, values in samples.items()}
     if len(set(counts.values())) != 1:
-        raise ValueError(f"fs gate scenarios ran unequal times: {counts}")
+        raise ValueError(f"fs check scenarios ran unequal times: {counts}")
     meta = {**env.get("meta", {}), "runs": str(len(logs))}
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(f"fs.{name}", units[name], values, meta=meta, **base)
@@ -373,23 +373,23 @@ def notes_latency(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
 
 
 PRICES = Path(__file__).resolve().parent / "prices.toml"
-# The relay load bench's per-minute KPIs, as `relay_load` names them.
-HOSTING_KPIS = {
-    "hosting.relay.cpu_s_per_collab_hour": "s",
-    "hosting.relay.rss_mib_per_collab": "MiB",
-    "hosting.relay.egress_bytes_per_collab_hour": "bytes",
-    "hosting.relay.frame_bytes_per_collab_hour": "bytes",
-    "hosting.relay.client_packets_per_collab_hour": "count",
-    "hosting.relay.client_data_packets_per_collab_hour": "count",
-    "hosting.relay.datagrams_per_collab_hour": "count",
-    "hosting.relay.ack_only_datagrams_per_collab_hour": "count",
-    "hosting.relay.fanout_ms": "ms",
-    "hosting.relay.presence_pointer_ms": "ms",
-    "hosting.relay.presence_caret_ms": "ms",
-    "hosting.relay.store_fsyncs_per_edit": "count",
-    "hosting.relay.store_listed_entries_per_edit": "count",
-    "hosting.relay.compaction_cpu_ms_per_collab_hour": "ms",
-    "hosting.relay.compaction_signature_checks_per_edit": "count",
+# The server load bench's per-minute KPIs, as `server_load` names them.
+SERVER_KPIS = {
+    "server.cpu_s_per_collab_hour": "s",
+    "server.rss_mib_per_collab": "MiB",
+    "server.egress_bytes_per_collab_hour": "bytes",
+    "server.frame_bytes_per_collab_hour": "bytes",
+    "server.client_packets_per_collab_hour": "count",
+    "server.client_data_packets_per_collab_hour": "count",
+    "server.datagrams_per_collab_hour": "count",
+    "server.ack_only_datagrams_per_collab_hour": "count",
+    "server.fanout_ms": "ms",
+    "server.relay.presence_pointer_ms": "ms",
+    "server.relay.presence_caret_ms": "ms",
+    "server.store_fsyncs_per_edit": "count",
+    "server.store_listed_entries_per_edit": "count",
+    "server.compaction_cpu_ms_per_collab_hour": "ms",
+    "server.compaction_signature_checks_per_edit": "count",
 }
 
 
@@ -402,7 +402,7 @@ def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: flo
     by_cpu = float(provider["vcpus"]) * 3600.0 * target / cpu_s if cpu_s > 0 else math.inf
     free_mib = float(provider["memory_gib"]) * 1024.0 * target - idle_rss_mib
     if free_mib <= 0:
-        raise ValueError(f"the idle relay ({idle_rss_mib:.0f} MiB) does not fit {provider['description']}")
+        raise ValueError(f"the idle server ({idle_rss_mib:.0f} MiB) does not fit {provider['description']}")
     by_memory = free_mib / rss_mib if rss_mib > 0 else math.inf
     capacity, binding = (by_cpu, "cpu") if by_cpu <= by_memory else (by_memory, "memory")
     if not math.isfinite(capacity):
@@ -414,27 +414,27 @@ def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: flo
 
 
 # What pricing needs: a report without these cannot be priced at all.
-HOSTING_PRICED_KPIS = ("hosting.relay.cpu_s_per_collab_hour", "hosting.relay.rss_mib_per_collab",
-                       "hosting.relay.egress_bytes_per_collab_hour")
+SERVER_PRICED_KPIS = ("server.cpu_s_per_collab_hour", "server.rss_mib_per_collab",
+                       "server.egress_bytes_per_collab_hour")
 
 
-def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any],
+def server_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any],
                  require_all: bool = True) -> list[record.Record]:
-    """Records for one relay load bench run, priced with `prices`.
+    """Records for one server load bench run, priced with `prices`.
 
     The nightly requires exactly today's KPIs. `require_all=False` is the
-    same-job A/B lane (tools/perf/ab.py), which also reads an older bench: it
+    same-job A/B job (tools/perf/ab.py), which also reads an older bench: it
     records the known KPIs the report has and leaves out any it does not know.
     """
     members = int(report["members"])
     variant = f"n{members}"
     kpis = report.get("kpis", {})
-    if require_all and set(kpis) != set(HOSTING_KPIS):
-        raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(HOSTING_KPIS)}")
-    missing = [kpi for kpi in HOSTING_PRICED_KPIS if kpi not in kpis]
+    if require_all and set(kpis) != set(SERVER_KPIS):
+        raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(SERVER_KPIS)}")
+    missing = [kpi for kpi in SERVER_PRICED_KPIS if kpi not in kpis]
     if missing:
         raise ValueError(f"the bench reported {sorted(kpis)}, without {missing}")
-    present = {kpi: unit for kpi, unit in HOSTING_KPIS.items() if kpi in kpis}
+    present = {kpi: unit for kpi, unit in SERVER_KPIS.items() if kpi in kpis}
     for kpi, unit in present.items():
         if kpis[kpi]["unit"] != unit or not kpis[kpi]["samples"]:
             raise ValueError(f"{kpi}: expected samples in {unit}")
@@ -443,16 +443,16 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
             "workspace_size": str(report["workspace_size"]), "window_s": str(report["window_s"]),
             "edits": str(report["edits"]), "presence": str(report["presence"]),
             "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"]),
-            # The CPUs the relay was confined to (`relay_load --relay-cpus`), which sizes its
+            # The CPUs the server was confined to (`server_load --server-cpus`), which sizes its
             # runtime: "all" is the runner's, four workers; the priced VM has two vCPUs.
-            "relay_cpus": str(report.get("relay_cpus") or "all")}
+            "server_cpus": str(report.get("server_cpus") or "all")}
     base = {name: value for name, value in env.items() if name != "meta"}
     records = [record.from_samples(f"{kpi}.{variant}", unit, kpis[kpi]["samples"], meta=meta, **base)
                for kpi, unit in present.items()]
-    minutes = list(zip(kpis["hosting.relay.cpu_s_per_collab_hour"]["samples"],
-                       kpis["hosting.relay.rss_mib_per_collab"]["samples"],
-                       kpis["hosting.relay.egress_bytes_per_collab_hour"]["samples"], strict=True))
-    idle = float(report["relay_idle_rss_mib"])
+    minutes = list(zip(kpis["server.cpu_s_per_collab_hour"]["samples"],
+                       kpis["server.rss_mib_per_collab"]["samples"],
+                       kpis["server.egress_bytes_per_collab_hour"]["samples"], strict=True))
+    idle = float(report["server_idle_rss_mib"])
     for name, provider in sorted(prices["provider"].items()):
         priced = [collab_hour_usd(provider, prices, *minute, idle) for minute in minutes]
         hourly = [usd for usd, _, _ in priced]
@@ -460,10 +460,10 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
         bindings = sorted({binding for _, _, binding in priced})
         provider_meta = {**meta, "provider": provider["description"],
                          "members_per_vm": f"{capacity:.0f}", "binding": ",".join(bindings)}
-        records.append(record.from_samples(f"hosting.relay.cost_usd_per_collab_hour.{name}.{variant}", "usd",
+        records.append(record.from_samples(f"server.cost_usd_per_collab_hour.{name}.{variant}", "usd",
                                            hourly, meta=provider_meta, **base))
         monthly = [usd * float(prices["active_hours_per_user_month"]) for usd in hourly]
-        records.append(record.from_samples(f"hosting.relay.cost_usd_per_user_month.{name}.{variant}", "usd",
+        records.append(record.from_samples(f"server.cost_usd_per_user_month.{name}.{variant}", "usd",
                                            monthly, meta=provider_meta, **base))
     return records
 
@@ -503,7 +503,7 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     The report must have measured the environment the records claim: its
     WebGPU adapter is the env's renderer, its bundle a build of the env's
     commit in the env's profile, clean unless `require_clean=False` (the A/B
-    lane, whose output directory sits untracked in the checkout it builds),
+    job, whose output directory sits untracked in the checkout it builds),
     and its page CPU unthrottled: a throttled run stands in for older
     hardware and is never this series. The demo's and the typing workload's
     KPIs come from a run with that workload and only from one.
@@ -553,9 +553,9 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    gate = commands.add_parser("fs-gate", help="records from tilo-fs performance gate logs")
-    gate.add_argument("--env-json", required=True, type=Path)
-    gate.add_argument("logs", nargs="+", type=Path)
+    check = commands.add_parser("fs-check", help="records from tilo-fs performance check logs")
+    check.add_argument("--env-json", required=True, type=Path)
+    check.add_argument("logs", nargs="+", type=Path)
     sizes = commands.add_parser("tapp-sizes", help="records from the registry entries index")
     sizes.add_argument("--env-json", required=True, type=Path)
     sizes.add_argument("entries", type=Path)
@@ -576,10 +576,10 @@ def main(argv: list[str] | None = None) -> int:
     notes = commands.add_parser("notes-latency", help="records from notes-latency's NOTES-LATENCY line")
     notes.add_argument("--env-json", required=True, type=Path)
     notes.add_argument("logs", nargs="+", type=Path)
-    hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
-    hosting.add_argument("--env-json", required=True, type=Path)
-    hosting.add_argument("--prices", type=Path, default=PRICES)
-    hosting.add_argument("report", type=Path)
+    load = commands.add_parser("server-load", help="records from the server load bench's server-load.json")
+    load.add_argument("--env-json", required=True, type=Path)
+    load.add_argument("--prices", type=Path, default=PRICES)
+    load.add_argument("report", type=Path)
     browser = commands.add_parser("browser-qualification",
                                   help="records from scripts/perf/browser_qualification.mjs's report")
     browser.add_argument("--env-json", required=True, type=Path)
@@ -589,16 +589,16 @@ def main(argv: list[str] | None = None) -> int:
         env = record.load_env(args.env_json)
         if args.command == "browser-qualification":
             records = browser_qualification(json.loads(args.report.read_text(encoding="utf-8")), env)
-        elif args.command == "hosting-load":
-            records = hosting_load(json.loads(args.report.read_text(encoding="utf-8")),
+        elif args.command == "server-load":
+            records = server_load(json.loads(args.report.read_text(encoding="utf-8")),
                                    tomllib.loads(args.prices.read_text(encoding="utf-8")), env)
             for item in records:
                 if item.unit == "usd":
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
                           f"({item.meta['members_per_vm']} members per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
-        elif args.command == "fs-gate":
-            records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
+        elif args.command == "fs-check":
+            records = fs_check([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "runtime-sizes":
             records = runtime_sizes(json.loads(args.measurements.read_text(encoding="utf-8")), env)
         elif args.command == "framework-open":

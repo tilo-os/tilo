@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_session::{Options, Session};
@@ -84,13 +84,13 @@ pub fn fixture() -> Fixture {
         .set(FILE_SECRETS_ENV, "1");
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let _profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
+    let _profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
@@ -128,7 +128,7 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
         owner
             .receive(
                 id,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 SystemTime::now(),
             )
@@ -170,7 +170,7 @@ pub fn layout(workspace: &str, person: &str) -> Layout {
     }
 }
 
-/// A session of this computer taking part in the collaboration plane, keeping what it holds under
+/// A session of this computer taking part in the peer network, keeping what it holds under
 /// `state` , on the shell showing [`WORKSPACE`] owned by the person whose root key is `root`.
 pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
     let mut session = super::headless_on(
@@ -202,10 +202,10 @@ pub fn this_computer_with_an_identity(
     // and nothing may delete them while it runs.
     let root = home.root().join("system");
     let identity_dir = home.config().join("tilo").join("identity");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &identity_dir,
         &tilo_user_identity::IdentityPaths::under(&root),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
     home.env().set("TILO_IDENTITY_ROOT", &root);

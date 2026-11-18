@@ -1,5 +1,5 @@
 //! Firewall — a firewalld front end: the zones, their rules and services in a shared
-//! record, each device applying it to its own firewalld.
+//! resource, each device applying it to its own firewalld.
 
 // Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(

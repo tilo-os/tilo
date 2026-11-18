@@ -21,10 +21,10 @@ under `os/` may:
 Resolution can still pull Cisco's `openh264` in transitively (with Fedora's
 `fedora-cisco-openh264` repository enabled it satisfies `libopenh264.so`
 ahead of the `noopenh264` stub), which only a resolved check sees:
-os/scripts/verify-no-cisco-openh264.sh gates the frozen RPM snapshot and the
+os/scripts/verify-no-cisco-openh264.sh checks the frozen RPM snapshot and the
 finished OS rootfs. The shipped images that install from live Fedora
 repositories instead (`LIVE_REPOSITORY_IMAGES`) must, in their final stage,
-remove that repository before their first install and run the same gate
+remove that repository before their first install and run the same check
 after their last one.
 """
 
@@ -60,7 +60,7 @@ LIVE_REPOSITORY_IMAGES = {
     "os/Containerfile.legacy-guest": "the Linux legacy VM guest, on the mirrored fedora-bootc base",
 }
 CISCO_REPO_REMOVAL = f"rm -f /etc/yum.repos.d/{CISCO_REPO}.repo"
-RESOLVED_GATE = re.compile(r"\bbash\s+\S*verify-no-cisco-openh264\.sh(?!\s+--repo)")
+RESOLVED_CHECK = re.compile(r"\bbash\s+\S*verify-no-cisco-openh264\.sh(?!\s+--repo)")
 # A package name, or the start of an RPM file name (`openh264-2.6.0-...rpm`).
 CISCO_PACKAGE_TOKEN = re.compile(
     r"(?<![\w.+-])(" + "|".join(re.escape(name) for name in CISCO_PACKAGES) + r")(?=-\d|[^\w.+/-]|$)"
@@ -185,7 +185,7 @@ def final_stage(lines: list[str]) -> list[str]:
 
 
 def live_repository_violations(root: Path = ROOT) -> list[Violation]:
-    """Each live-repository image drops Cisco's repository and gates what it resolved."""
+    """Each live-repository image drops Cisco's repository and checks what it resolved."""
     found = []
     for shown in sorted(LIVE_REPOSITORY_IMAGES):
         path = root / shown
@@ -207,14 +207,14 @@ def live_repository_violations(root: Path = ROOT) -> list[Violation]:
                 f"installs from live repositories without first running `{CISCO_REPO_REMOVAL}` "
                 "in the same stage"))
         last = stage[installs[-1]]
-        gated = any(
-            RESOLVED_GATE.search(line)
+        guarded = any(
+            RESOLVED_CHECK.search(line)
             and (index > installs[-1]
                  or (index == installs[-1]
-                     and RESOLVED_GATE.search(line).start() > PACKAGE_INSTALL.search(last).start()))
+                     and RESOLVED_CHECK.search(line).start() > PACKAGE_INSTALL.search(last).start()))
             for index, line in enumerate(stage)
         )
-        if not gated:
+        if not guarded:
             found.append(Violation(
                 shown, "verify-no-cisco-openh264",
                 "does not run os/scripts/verify-no-cisco-openh264.sh on the finished rootfs "

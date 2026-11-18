@@ -8,7 +8,7 @@ fn a_new_window_shows_a_document_of_its_own() {
     let beside = app.open_window().expect("a second window");
     assert!(
         !app.record().is_package_primary() && !beside.record().is_package_primary(),
-        "a window's document is never the app's record"
+        "a window's document is never the app's resource"
     );
     assert_ne!(
         beside.record(),

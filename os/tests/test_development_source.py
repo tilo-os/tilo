@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed identity checks for the independent development source gate."""
+"""Fail-closed identity checks for the independent development source check."""
 import importlib.util
 import json
 from pathlib import Path

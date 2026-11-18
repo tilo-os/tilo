@@ -60,7 +60,7 @@ CATALOG: Names = [
 ]
 # Packages outside the owner's dependents that name the catalog without reading it.
 CARRIERS = {
-    "tilo-process": "names the variables of the processes it describes (HostPaths, "
+    "tilo-process": "names the variables of the processes it describes (ProcessPaths, "
                     "RunnerDiagnostics) and reads no font",
     "tilo-test-env": "hands the variables it was given on to a program a test launches "
                      "(launch_env)",

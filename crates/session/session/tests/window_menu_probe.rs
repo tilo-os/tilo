@@ -25,17 +25,17 @@ use serde_json::{Value, json};
 use tilo_desktop_model::Layout;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::surfaces::Surface;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_test_env::ScopedEnv;
 
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The session the probe talks to: headless, its plane on `socket` , showing one window.
+/// The session the probe talks to: headless, its app wire on `socket` , showing one window.
 fn session_with(socket: &Path, tree: Layout) -> Session {
     let mut session = crate::common::headless(Options {
         collab: false,
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         ..Options::default()
     });
     session.handle().replace_tree(tree);

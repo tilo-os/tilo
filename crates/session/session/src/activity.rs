@@ -1,5 +1,5 @@
 //! The workspace's activity: the workspaces' layout records and the records its apps keep in the
-//! store, served to the Activity app and to presence.
+//! engine, served to the Activity app and to presence.
 //! A record is read away from the loop ([`crate::platform::records::Reading`]) and a change asks the session for
 //! the frame that lists it; what this device has seen of a workspace is its own ([`HistoryMaps`]) and
 //! never reaches a shared record.
@@ -36,6 +36,7 @@ use crate::platform::Store;
 use crate::platform::apps::Apps;
 use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
+use crate::platform::records::{Records as Reads, Source};
 #[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
@@ -44,9 +45,6 @@ use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use crate::platform::fabric::SharedLink;
 #[cfg(target_os = "linux")]
 use crate::unlock_history::UnlockHistory;
-
-/// The file this device's view was kept in before it was a record.
-const VIEW_FILE: &str = "activity-history.json";
 
 /// The package this device's view of the activity is kept under: the session's.
 const VIEW_PACKAGE: &str = "so.tilo.session.activity";
@@ -90,6 +88,8 @@ pub struct Given {
     /// Who sits here.
     pub person: String,
     pub store: Option<Store>,
+    /// What the workspaces hold; a native session reads it through its engine once it opened it.
+    pub held: Option<Source>,
     pub state: Option<PathBuf>,
     pub apps: Option<Arc<dyn Apps>>,
     /// Who an actor is, as presence shows them.
@@ -131,12 +131,16 @@ struct Inner {
     /// The workspaces this device holds, once the session opened them.
     #[cfg(target_os = "linux")]
     engine: RefCell<Option<Arc<crate::engine::Engine>>>,
+    /// The people of each workspace, by workspace, named as the bar and People name them.
+    people_of: RefCell<HashMap<WorkspaceId, Vec<collab_types::Member>>>,
+    /// Moves whenever [`Self::people_of`] does, so an open history names its authors again.
+    people_moved: Cell<u64>,
     /// The session's action API, once its apps run here.
     #[cfg(target_os = "linux")]
     api: RefCell<Option<Arc<dyn crate::task_undo::UndoApi>>>,
     /// The records' content this device keeps.
     #[cfg(target_os = "linux")]
-    content: RefCell<Option<Arc<crate::content::Plane>>>,
+    content: RefCell<Option<Arc<crate::content::ContentService>>>,
     #[cfg(target_os = "linux")]
     undos: crate::task_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
@@ -146,7 +150,8 @@ struct Inner {
     /// The records the session's services keep themselves, rather than an app's process or the
     /// store: the workspace record a service publishes holds a root per package it runs.
     services: RefCell<Option<Rc<RefCell<tilo_service::Services>>>>,
-    store: Option<Store>,
+    /// What the workspaces hold, as this device reads it.
+    held: RefCell<Option<Source>>,
     /// The one stream of record changes: what tells this session a workspace's records moved.
     changes: crate::platform::records::Changes,
     /// The stream's count and the reads that landed, as the last frame saw them: a change the
@@ -162,8 +167,8 @@ struct Inner {
     woken: Arc<AtomicBool>,
     /// The broker's end of the same activity, once this session serves the apps it runs.
     wire: RefCell<Option<Arc<ActivityWire>>>,
-    /// The revision the model last served its reads at, as the apps following them were last told.
-    served: Cell<Option<u64>>,
+    /// How many new results the model's reads had sent when the apps following them were last told.
+    served: Cell<u64>,
     /// One notice per device and reason, never one per write or per pass.
     #[cfg(target_os = "linux")]
     told_refusals: RefCell<BTreeSet<ToldRefusal>>,
@@ -213,6 +218,7 @@ impl Activity {
             layouts,
             person,
             store,
+            held: None,
             state: state.map(std::path::Path::to_path_buf),
             apps,
             people: crate::platform::authors::unnamed(),
@@ -241,6 +247,7 @@ impl Activity {
             layouts,
             person,
             store,
+            held,
             state,
             apps,
             #[cfg(target_os = "linux")]
@@ -262,7 +269,7 @@ impl Activity {
             shown,
             #[cfg(target_os = "linux")]
             unlock,
-            maps: HistoryMaps::load(store.clone(), state.as_deref()),
+            maps: HistoryMaps::load(store),
             apps,
             #[cfg(target_os = "linux")]
             people,
@@ -271,6 +278,8 @@ impl Activity {
             models,
             #[cfg(target_os = "linux")]
             engine: RefCell::default(),
+            people_of: RefCell::default(),
+            people_moved: Cell::default(),
             #[cfg(target_os = "linux")]
             api: RefCell::default(),
             #[cfg(target_os = "linux")]
@@ -280,7 +289,7 @@ impl Activity {
             person,
             records: RefCell::default(),
             services: RefCell::default(),
-            store,
+            held: RefCell::new(held),
             changes,
             seen: Cell::new(seen),
             restored: RefCell::default(),
@@ -304,6 +313,10 @@ impl Activity {
     /// Show where a workspace's writes were refused from `engine` .
     #[cfg(target_os = "linux")]
     fn attach_engine(&self, engine: Arc<crate::engine::Engine>) {
+        *self.0.held.borrow_mut() = Some(Arc::new(crate::platform::records::Held::over(
+            Arc::clone(&engine),
+            self.0.changes.clone(),
+        )));
         *self.0.engine.borrow_mut() = Some(engine);
     }
 
@@ -345,6 +358,21 @@ impl Activity {
         let engine = crate::options::open_engine(options, handle)?;
         self.attach_engine(Arc::clone(&engine));
         Some(engine)
+    }
+
+    /// Name `workspace` 's people as `people` do: who a change in its history was made by.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_people(&self, workspace: &str, people: &[collab_types::Member]) {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return;
+        };
+        let mut held = self.0.people_of.borrow_mut();
+        if held.get(&workspace).map(Vec::as_slice) != Some(people) {
+            held.insert(workspace, people.to_vec());
+            self.0
+                .people_moved
+                .set(self.0.people_moved.get().wrapping_add(1));
+        }
     }
 
     /// What the windows ask of the activity and follow.
@@ -398,7 +426,7 @@ impl Activity {
 
     /// Read the output of command runs from `content` .
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
+    pub(crate) fn attach_content(&self, content: Arc<crate::content::ContentService>) {
         *self.0.content.borrow_mut() = Some(content);
     }
 
@@ -575,7 +603,7 @@ impl Activity {
         let Ok(services) = services.try_borrow() else {
             return Vec::new();
         };
-        let kept = services.history_records();
+        let kept = services.history_documents();
         kept.into_iter()
             .map(|record| DetachedRecordHistory {
                 // The service's record is the app's record of the workspace, which the history
@@ -600,7 +628,7 @@ impl Activity {
 
     /// The records `workspace_id` holds as last read, shared rather than copied.
     fn records_held(&self, workspace_id: WorkspaceId) -> Arc<Vec<DetachedRecordHistory>> {
-        let Some(store) = self.0.store.clone() else {
+        let Some(held) = self.0.held.borrow().clone() else {
             return Arc::default();
         };
         let key = workspace_id.to_string();
@@ -609,13 +637,12 @@ impl Activity {
             let known = Rc::clone(known);
             return known.following(&self.0.changes, &watch);
         }
-        let reading = store.clone();
         let by_workspace = key.clone();
         let noted = crate::platform::authors::new_noted({
             let noted = self.0.writers.noted.clone();
             move |actor| noted(actor)
         });
-        let read = move || read_workspace_records(reading.as_ref(), &by_workspace, &noted);
+        let read = move || read_workspace_records(held.as_ref(), &by_workspace, &noted);
         #[cfg(target_os = "linux")]
         let known = Rc::new(crate::platform::records::Reading::start(
             "tilo-activity-records",
@@ -693,9 +720,17 @@ impl HistorySource for Activity {
         Rc::new(Host(Rc::clone(&self.0))) as Rc<dyn ActivityHost>
     }
 
-    fn register_authors(&self, authors: &mut ui::AuthorDirectory) {
+    fn register_authors(&self, workspace: WorkspaceId, authors: &mut ui::AuthorDirectory) {
         // Who this host's own mounts write as: a record's changes by the person who made them.
         (self.0.writers.register)(authors);
+        // The workspace's people: a change another member made reads as theirs, by name.
+        if let Some(people) = self.0.people_of.borrow().get(&workspace) {
+            authors.register_roster(
+                people
+                    .iter()
+                    .map(|member| (&member.id, member.name.as_str())),
+            );
+        }
         // A change of a workspace's layout is the person's: the record is written as them, so it
         // reads as presence shows them here and never as another member.
         authors.register_local_identity(
@@ -726,6 +761,7 @@ impl HistorySource for Activity {
         // this device is served again.
         self.0.changes.moved().hash(&mut hasher);
         self.reads().hash(&mut hasher);
+        self.0.people_moved.get().hash(&mut hasher);
         // What the session's own services keep moves without a store's change stream: an agent's
         // step in a record the session holds is one of its runs, and asks for the frame listing it.
         if let Some(services) = self.services_held()
@@ -761,82 +797,38 @@ impl HistorySource for Activity {
     }
 }
 
-/// The packages that hold records in `workspace` , as their apps' indexes name them.
-fn workspace_packages(store: &dyn DurableStore, workspace: &str) -> Vec<(String, String)> {
-    match store.workspace_indexes() {
-        Ok(indexes) => indexes
-            .into_iter()
-            .filter(|(_, held)| held == workspace)
-            .collect(),
-        Err(error) => {
-            tracing::warn!(%error, "the workspace indexes of this device are not listed");
-            Vec::new()
-        }
-    }
-}
-
 /// Every record a workspace holds, with the document its app last wrote.
 fn read_workspace_records(
-    store: &dyn DurableStore,
+    held: &dyn Reads,
     workspace: &str,
     noted: &crate::platform::authors::Noted,
 ) -> Vec<DetachedRecordHistory> {
     let mut read = Vec::new();
     let mut seen = BTreeSet::new();
-    for (package, index_room) in workspace_packages(store, workspace) {
-        let Some((checkouts, primary)) =
-            crate::platform::records::workspace_resources(store, &package, &index_room)
-        else {
-            continue;
-        };
-        // The app's own record (Notes' notebook, Chat's chat) is the workspace's document itself,
-        // which also keeps the index: read as a record of its own once anything was done in it.
-        if let Some(document) = primary
-            && seen.insert((
-                package.clone(),
-                DocumentId::package_primary().as_str().to_owned(),
-            ))
-        {
-            noted(document.get_actor());
-            read.push(DetachedRecordHistory {
-                app: package.clone(),
-                checkout: DocumentCheckout::package_primary(ResourceType::new(package.as_str())),
-                tree_chunks: Vec::new(),
-                document: Some(document),
-            });
-        }
-        for checkout in checkouts {
-            if !seen.insert((package.clone(), checkout.id.as_str().to_owned())) {
-                continue;
-            }
-            let document =
-                crate::platform::records::document(store, &package, workspace, checkout.id.route());
-            if let Some(document) = &document {
-                noted(document.get_actor());
-            }
-            read.push(DetachedRecordHistory {
-                app: package.clone(),
-                checkout,
-                tree_chunks: Vec::new(),
-                document,
-            });
-        }
-    }
     // The workspace's folder is a record of its own, and its changes belong in
     // the history beside the apps': a page holds it without listing it among
     // the packages it opened, and a computer's folder writes are its versions.
     let tree_id = collab_types::person_document_id(fs_protocol::tree::TREE_KIND);
-    if seen.insert((fs_protocol::tree::FILES_APP.to_owned(), tree_id.clone()))
-        && let Some(document_id) = DocumentId::parse(&tree_id)
-        && let Some(document) = crate::platform::records::document(
-            store,
-            fs_protocol::tree::FILES_APP,
-            workspace,
-            document_id.route(),
-        )
+    if let Some(document_id) = DocumentId::parse(&tree_id)
+        && let Some(document) =
+            held.document(fs_protocol::tree::FILES_APP, workspace, document_id.route())
     {
         noted(document.get_actor());
-        let tree_chunks = tree_chunks(store, workspace, &document);
+        seen.insert((
+            fs_protocol::tree::FILES_APP.to_owned(),
+            document_id.route().to_owned(),
+        ));
+        // The chunks the tree lists, each read on its own: the folder's rows are read from
+        // them beside it. A chunk this device holds nothing of comes with a later read.
+        let tree_chunks = fs_protocol::tree::listed_chunks(&document)
+            .into_iter()
+            .filter_map(|chunk| {
+                let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
+                seen.insert((fs_protocol::tree::FILES_APP.to_owned(), chunk_id.clone()));
+                held.document(fs_protocol::tree::FILES_APP, workspace, &chunk_id)
+                    .map(|doc| (chunk, doc))
+            })
+            .collect();
         read.push(DetachedRecordHistory {
             app: fs_protocol::tree::FILES_APP.to_owned(),
             checkout: DocumentCheckout::new(
@@ -847,30 +839,45 @@ fn read_workspace_records(
             document: Some(document),
         });
     }
+    // Every resource the workspace holds, as the workspace lists them: an app keeps them whether
+    // or not its own document indexes them.
+    for (package, route) in held.held(workspace) {
+        if !seen.insert((package.clone(), route.clone())) {
+            continue;
+        }
+        let Some(document) = held.document(&package, workspace, &route) else {
+            continue;
+        };
+        // The app's own document of the workspace keeps its index. It is a resource of its own
+        // (Notes' notebook, Chat's chat) once anything was done in it: keeping the index alone is
+        // no one's work. Only the changes' messages are read.
+        let checkout = if route.is_empty() {
+            let acted = document
+                .committed_document()
+                .get_changes_meta(&[])
+                .iter()
+                .any(|change| {
+                    change.message.as_deref().is_some_and(|message| {
+                        message.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX)
+                            || message.starts_with(tilo_actions::CONTINUATION_PREFIX)
+                    })
+                });
+            acted.then(|| DocumentCheckout::package_primary(ResourceType::new(package.as_str())))
+        } else {
+            ui::resource::identity(&document)
+        };
+        let Some(checkout) = checkout else {
+            continue;
+        };
+        noted(document.get_actor());
+        read.push(DetachedRecordHistory {
+            app: package,
+            checkout,
+            tree_chunks: Vec::new(),
+            document: Some(document),
+        });
+    }
     read
-}
-
-/// The chunk records the tree's own record `tree` lists, each read on its own: the folder's rows
-/// are read from them beside it. A chunk this device holds nothing of is left out, and its files'
-/// versions come with it on a later read.
-fn tree_chunks(
-    store: &dyn DurableStore,
-    workspace: &str,
-    tree: &automerge::AutoCommit,
-) -> Vec<(fs_protocol::files::TreeChunk, automerge::AutoCommit)> {
-    fs_protocol::tree::listed_chunks(tree)
-        .into_iter()
-        .filter_map(|chunk| {
-            let record = fs_protocol::tree::chunk_document_id(chunk);
-            crate::platform::records::document(
-                store,
-                fs_protocol::tree::FILES_APP,
-                workspace,
-                &record,
-            )
-            .map(|doc| (chunk, doc))
-        })
-        .collect()
 }
 
 /// What the model asks of the session, over the one state this activity keeps.
@@ -1320,22 +1327,16 @@ struct HistoryMaps {
 }
 
 impl HistoryMaps {
-    fn load(store: Option<Store>, state: Option<&std::path::Path>) -> Self {
+    fn load(store: Option<Store>) -> Self {
         let known = store
             .as_ref()
             .and_then(|store| Self::read(store.as_ref()))
-            .or_else(|| state.map(Self::kept_in).unwrap_or_default())
             .unwrap_or_default();
-        let maps = Self {
+        Self {
             known: RefCell::new(known),
             store,
             lease: RefCell::default(),
-        };
-        // What the file held is part of the record from now on: the file is left where it is.
-        if !maps.known.borrow().is_empty() {
-            maps.keep();
         }
-        maps
     }
 
     /// What this device's store holds of the view.
@@ -1352,22 +1353,6 @@ impl HistoryMaps {
             .inspect_err(
                 |error| tracing::warn!(%error, "the remembered history view does not read back"),
             )
-            .ok()
-    }
-
-    /// The map the file under `state` held, before this device kept it in its store.
-    fn kept_in(state: &std::path::Path) -> Option<serde_json::Map<String, Value>> {
-        let path = state.join("tilo").join(VIEW_FILE);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(error) => {
-                tracing::warn!(%error, path = %path.display(), "the remembered history map view could not be read");
-                return None;
-            }
-        };
-        serde_json::from_slice(&bytes)
-            .inspect_err(|error| tracing::warn!(%error, "the remembered history map view does not read back"))
             .ok()
     }
 
@@ -1431,6 +1416,7 @@ mod tests {
     //! command is the workspace's own changes, and what they restore from it reaches the session.
 
     use super::*;
+    use crate::platform::records::Kept as InStore;
     use automerge::transaction::Transactable as _;
 
     fn step(
@@ -1479,7 +1465,11 @@ mod tests {
         );
 
         let noted: crate::platform::authors::Noted = Arc::new(|_| {});
-        let read = read_workspace_records(&store, workspace, &noted);
+        let kept = InStore::over(
+            Arc::new(store),
+            crate::platform::records::Changes::default(),
+        );
+        let read = read_workspace_records(&kept, workspace, &noted);
         let budget = read
             .iter()
             .find(|record| record.checkout.id == id)
@@ -1948,6 +1938,7 @@ mod tests {
             layouts: Box::new(session.records.clone()),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
+            held: Some(Arc::new(InStore::over(Arc::clone(&store), changes.clone()))),
             state: None,
             apps: None,
             people: crate::platform::authors::unnamed(),
@@ -2066,6 +2057,7 @@ mod tests {
             layouts: Box::<Records>::default(),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
+            held: Some(Arc::new(InStore::over(Arc::clone(&store), changes.clone()))),
             state: None,
             apps: None,
             people: crate::platform::authors::unnamed(),

@@ -60,7 +60,7 @@ impl Handoff {
 }
 
 /// Test-only: serve a source the fixture already bound, without identity
-/// custody the test process does not have.
+/// ownership the test process does not have.
 #[cfg(all(unix, any(test, feature = "test-support")))]
 impl Handoff {
     pub fn from_source(source: tilo_handoff::Source, key: Zeroizing<String>) -> Self {
@@ -131,7 +131,7 @@ mod inner {
     use super::{HandoffIdentity, SourceState, Zeroizing, io};
 
     /// No endpoint can be bound on this host, so this value is never created;
-    /// the methods exist so the journey compiles without a target gate.
+    /// the methods exist so the journey compiles without a target check.
     pub(super) struct Handoff {
         identity: HandoffIdentity,
         key: Zeroizing<String>,

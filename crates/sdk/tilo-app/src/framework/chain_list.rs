@@ -243,7 +243,7 @@ pub enum ChainRow<K> {
 type Rows<P, K, T> = Box<dyn Fn(&[(u64, Rc<<P as Resource>::State>)]) -> Vec<(K, T)>>;
 
 /// A chain's items as a [`ListModel`]: every held part's items, oldest
-/// first, after a row standing for the earlier parts while there are any
+/// first, after a row for the earlier parts while there are any
 /// ([`ChainRow::Earlier`], pending while one is on its way, failed with
 /// why when the workspace's hosts have none of it). Showing that
 /// row opens the part before ([`ChainPager::reached_top`]); a

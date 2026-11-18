@@ -154,7 +154,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
         move || ended.quit(),
     );
     host.run(&mut app, || {
-        // The boot performance gate reads this line's time.
+        // The boot performance check reads this line's time.
         eprintln!("tilo-greeter: first frame of the boot sign-in");
     })?;
     Ok(())

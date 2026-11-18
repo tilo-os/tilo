@@ -112,7 +112,7 @@ tilo_test_env::scenario! {
         server.retire().unwrap();
     }
 
-    phase mit_directory_client_cannot_promote_read_custody_to_creation_or_history_authority;
+    phase mit_directory_client_cannot_promote_read_ownership_to_creation_or_history_authority;
     {
         let disk = tempfile::tempdir().unwrap();
         std::fs::write(disk.path().join("chosen"), b"read only").unwrap();

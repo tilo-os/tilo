@@ -1,7 +1,7 @@
 //! Transient pickers used by the calendar event editor.
 
 use crate::input_context::InputContext;
-use chrono::{NaiveDate, Timelike};
+use jiff::civil::Date;
 use ui::paint::PaintCtx;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -25,7 +25,7 @@ pub(crate) enum PopoverKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PopoverEdit {
-    Date(PopoverKind, NaiveDate),
+    Date(PopoverKind, Date),
     Time(PopoverKind, u8, u8),
 }
 
@@ -53,7 +53,7 @@ pub(crate) struct EventPopovers {
 }
 
 impl EventPopovers {
-    pub fn new(today: NaiveDate) -> Self {
+    pub fn new(today: Date) -> Self {
         Self {
             active: PopoverKind::None,
             date_picker: DatePicker::new(today).with_today(today),
@@ -292,21 +292,18 @@ impl EventPopovers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, NaiveDate};
+    use jiff::civil::Date;
     use uuid::Uuid;
 
     use crate::model::Palette;
 
     fn event() -> Event {
-        let start = NaiveDate::from_ymd_opt(2026, 8, 31)
-            .unwrap()
-            .and_hms_opt(9, 15, 0)
-            .unwrap();
+        let start = Date::new(2026, 8, 31).unwrap().at(9, 15, 0, 0);
         Event {
             id: Uuid::new_v4(),
             title: "Test".into(),
             start,
-            end: start + Duration::minutes(90),
+            end: start + jiff::SignedDuration::from_mins(90),
             color: Palette::Blue,
             ..Event::default()
         }
@@ -315,7 +312,7 @@ mod tests {
     #[test]
     fn picker_lifecycle_replaces_and_clears_and_the_guard_wins_hits() {
         {
-            let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
+            let mut popovers = EventPopovers::new(Date::new(2026, 8, 31).unwrap());
             popovers.open(PopoverKind::StartDate, &event());
             assert_eq!(popovers.active(), PopoverKind::StartDate);
             popovers.open(PopoverKind::EndTime, &event());
@@ -325,7 +322,7 @@ mod tests {
             assert!(popovers.hits.is_empty());
         }
         {
-            let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
+            let mut popovers = EventPopovers::new(Date::new(2026, 8, 31).unwrap());
             popovers
                 .hits
                 .push((Rect::new(0.0, 0.0, 800.0, 600.0), Hit::Dismiss));

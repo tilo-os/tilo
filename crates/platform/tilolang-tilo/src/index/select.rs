@@ -144,7 +144,7 @@ fn named_conj<'a>(
 }
 
 /// Whether every item `conj` holds has the same value in `order`'s one key: the query's order
-/// is then the collection's own, the items standing in it by the key they are read in, and a
+/// is then the collection's own, the items in it by the key they are read in, and a
 /// listing of the query's run reads the items in it without the order's column.
 ///
 /// A filter a query names is one column, and pins what it declares: the order's key is pinned

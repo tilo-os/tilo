@@ -12,7 +12,7 @@ pub trait SearchSource: Widget {
     }
 
     /// Who each of [`search_providers`](Self::search_providers) is, as the action
-    /// directory's witness reads them.
+    /// directory's observation reads them.
     fn search_provider_descriptors(&self) -> Vec<SearchProviderDescriptor> {
         self.search_providers()
             .iter()
@@ -50,7 +50,7 @@ pub fn search_providers(widget: &(impl Widget + ?Sized)) -> Vec<Box<dyn super::S
     capability::<dyn SearchSource>(widget).map_or_else(Vec::new, SearchSource::search_providers)
 }
 
-/// `widget`'s search providers as the action directory's witness reads them, without
+/// `widget`'s search providers as the action directory's observation reads them, without
 /// querying them.
 pub fn search_provider_descriptors(
     widget: &(impl Widget + ?Sized),
@@ -59,7 +59,7 @@ pub fn search_provider_descriptors(
         .map_or_else(Vec::new, SearchSource::search_provider_descriptors)
 }
 
-/// What the action directory's witness reads of a search provider: who it is and which
+/// What the action directory's observation reads of a search provider: who it is and which
 /// build of its content answers for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchProviderDescriptor {

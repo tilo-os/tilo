@@ -7,19 +7,20 @@ use serde::{Deserialize, Serialize};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_HASHES: usize = 256;
 
-/// The authenticated channel verifies the original actor, app and record custody.
+/// The authenticated channel verifies the original actor, app and record ownership.
 /// Encoded input, context, hashes and grouping are the application's report,
 /// not verified execution. Context never supplies the authenticated actor.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    /// Original authenticated channel provenance, compared with live custody at admission.
-    #[serde(default)]
-    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    /// Original authenticated channel provenance, compared with live ownership at admission.
+    /// Read under the name a report writes it by, and under the code's.
+    #[serde(default, rename = "custody", alias = "ownership")]
+    pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,
     /// Random identity of this capture, before content binding. Keeps identical
-    /// reads/no-ops distinct without an unbounded host invocation ledger.
+    /// reads/no-ops distinct without an unbounded host invocation log.
     pub capture_id: uuid::Uuid,
     pub revision: String,
     pub resource: String,
@@ -152,6 +153,28 @@ mod tests {
             "context": null,
             "custody": null
         })
+    }
+
+    /// A report names its provenance as it always did, and one that names it as the code
+    /// does, as builds wrote it for a while, is read too.
+    #[test]
+    fn a_report_is_read_under_either_name_of_its_provenance() {
+        let provenance = serde_json::json!({
+            "root": vec![1; 32], "device": vec![2; 32], "agent": null,
+            "app_id": "app", "workspace": "workspace", "document": "document"
+        });
+        let mut before = report();
+        before["custody"] = provenance.clone();
+        let mut between = report();
+        between.as_object_mut().unwrap().remove("custody");
+        between["ownership"] = provenance.clone();
+        for written in [before, between] {
+            let request: Request = serde_json::from_value(written).unwrap();
+            assert!(request.ownership.is_some());
+            let again = serde_json::to_value(&request).unwrap();
+            assert_eq!(again["custody"], provenance);
+            assert!(again.get("ownership").is_none());
+        }
     }
 
     tilo_test_env::scenario! {

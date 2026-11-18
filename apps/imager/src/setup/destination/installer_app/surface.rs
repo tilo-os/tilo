@@ -29,13 +29,13 @@ const RECOVERY_KEY_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::
 
 type Blocked = Option<(&'static str, String)>;
 
-struct Gate {
+struct Check {
     id: &'static str,
     blocked: Blocked,
     label: Option<String>,
 }
 
-impl Gate {
+impl Check {
     fn new(id: &'static str, blocked: Blocked) -> Self {
         Self {
             id,
@@ -68,7 +68,7 @@ struct Item {
     operation: Option<ActionSpec>,
 }
 
-fn gated(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
+fn guarded(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
     match blocked {
         Some((code, reason)) => spec.unavailable(code, reason),
         None => spec,
@@ -153,21 +153,21 @@ impl InstallerApp {
         }
     }
 
-    fn gates(&self) -> Vec<Gate> {
+    fn checks(&self) -> Vec<Check> {
         let account = self.off_step(Step::Account);
         let options = self.off_step(Step::Options);
-        let mut gates = vec![
-            Gate::new("status", None),
-            self.next_gate(),
-            self.back_gate(),
-            self.return_to_host_gate(),
-            Gate::new("set-layout", self.off_step(Step::Keyboard)),
-            Gate::new("set-method", self.off_step(Step::Disk)),
-            Gate::new("refresh-disks", self.off_step(Step::Disk)),
-            Gate::new("set-identity", account.clone()),
-            Gate::new("set-passphrase", account.clone()),
-            Gate::new("set-disk-passphrase", account.clone()),
-            Gate::new(
+        let mut checks = vec![
+            Check::new("status", None),
+            self.next_check(),
+            self.back_check(),
+            self.return_to_host_check(),
+            Check::new("set-layout", self.off_step(Step::Keyboard)),
+            Check::new("set-method", self.off_step(Step::Disk)),
+            Check::new("refresh-disks", self.off_step(Step::Disk)),
+            Check::new("set-identity", account.clone()),
+            Check::new("set-passphrase", account.clone()),
+            Check::new("set-disk-passphrase", account.clone()),
+            Check::new(
                 "set-password-hash",
                 if self.unattended_mode {
                     account
@@ -175,24 +175,24 @@ impl InstallerApp {
                     Some(("interactive_only", t("installer-blocked-password-hash")))
                 },
             ),
-            Gate::new("set-filesystem", options.clone()),
-            Gate::new("set-security-key", options.clone()),
-            Gate::new("set-hostname", options.clone()),
-            Gate::new("set-locale", options.clone()),
-            Gate::new("set-timezone", options),
-            Gate::new("set-media-codecs", self.off_step(Step::Media)),
-            Gate::new("set-recovery-promise", self.off_step(Step::Review)),
+            Check::new("set-filesystem", options.clone()),
+            Check::new("set-security-key", options.clone()),
+            Check::new("set-hostname", options.clone()),
+            Check::new("set-locale", options.clone()),
+            Check::new("set-timezone", options),
+            Check::new("set-media-codecs", self.off_step(Step::Media)),
+            Check::new("set-recovery-promise", self.off_step(Step::Review)),
         ];
-        gates.extend(self.network_gates());
-        gates.extend(self.online_account_gates());
-        gates.extend(self.recovery_gates());
-        gates
+        checks.extend(self.network_checks());
+        checks.extend(self.online_account_checks());
+        checks.extend(self.recovery_checks());
+        checks
     }
 
     pub(super) fn blocked(&self, effect: &DestinationEffect) -> Blocked {
         let id = effect.id();
-        if let Some(gate) = self.gates().into_iter().find(|gate| gate.id == id) {
-            return gate.blocked;
+        if let Some(check) = self.checks().into_iter().find(|check| check.id == id) {
+            return check.blocked;
         }
         match effect {
             DestinationEffect::SelectDisk { device } => self
@@ -217,15 +217,15 @@ impl InstallerApp {
     }
 
     pub(super) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        self.gates()
+        self.checks()
             .into_iter()
-            .filter_map(|gate| {
-                let label = gate.label;
-                let status = match gate.blocked {
+            .filter_map(|check| {
+                let label = check.label;
+                let status = match check.blocked {
                     Some((code, reason)) => {
-                        EffectStatus::unavailable(reference(gate.id), code, reason)
+                        EffectStatus::unavailable(reference(check.id), code, reason)
                     }
-                    None => EffectStatus::labelled(reference(gate.id), label.clone()?),
+                    None => EffectStatus::labelled(reference(check.id), label.clone()?),
                 };
                 Some(match label {
                     Some(label) => status.with_label(label),
@@ -250,7 +250,7 @@ impl InstallerApp {
     }
 
     pub fn published(&self) -> Vec<ResourceSpec> {
-        let gates = self.gates();
+        let checks = self.checks();
         let mut root = ResourceSpec::new(
             PROVIDER,
             "installer.session",
@@ -274,8 +274,8 @@ impl InstallerApp {
             preview: None,
         });
         for spec in DestinationEffect::specs() {
-            let spec = match gates.iter().find(|gate| gate.id == spec.id) {
-                Some(gate) => gate.overlay(spec),
+            let spec = match checks.iter().find(|check| check.id == spec.id) {
+                Some(check) => check.overlay(spec),
                 None => spec,
             };
             root = root.with_action(spec);
@@ -297,7 +297,7 @@ impl InstallerApp {
         vec![root]
     }
 
-    fn next_gate(&self) -> Gate {
+    fn next_check(&self) -> Check {
         let label = match self.step {
             Step::Network
                 if self.network.snapshot.connectivity
@@ -313,10 +313,10 @@ impl InstallerApp {
             Step::Install => Some(("install_started", t("installer-blocked-next-install"))),
             _ => None,
         };
-        Gate::new("next", blocked).labelled(label)
+        Check::new("next", blocked).labelled(label)
     }
 
-    fn back_gate(&self) -> Gate {
+    fn back_check(&self) -> Check {
         let failed = self.step == Step::Install && self.install_state == InstallState::Failed;
         let blocked = if failed || prev_step(self.step).is_some() {
             None
@@ -325,17 +325,17 @@ impl InstallerApp {
         } else {
             Some(("first_step", t("installer-blocked-back-first")))
         };
-        let gate = Gate::new("back", blocked);
+        let check = Check::new("back", blocked);
         if failed {
-            gate.labelled(t("installer-action-review-storage"))
+            check.labelled(t("installer-action-review-storage"))
         } else {
-            gate
+            check
         }
     }
 
-    fn return_to_host_gate(&self) -> Gate {
+    fn return_to_host_check(&self) -> Check {
         let Some(host) = self.internal_host() else {
-            return Gate::new(
+            return Check::new(
                 "return-to-host",
                 Some(("not_staged", t("installer-blocked-not-staged"))),
             );
@@ -347,13 +347,13 @@ impl InstallerApp {
             InstallState::Done => Some(("install_done", t("installer-blocked-return-done"))),
             InstallState::Idle | InstallState::Failed => None,
         };
-        Gate::new("return-to-host", blocked).labelled(t_args(
+        Check::new("return-to-host", blocked).labelled(t_args(
             "installer-action-return-to-host",
             &[("host", ArgValue::Text(host.display_name().to_owned()))],
         ))
     }
 
-    fn network_gates(&self) -> Vec<Gate> {
+    fn network_checks(&self) -> Vec<Check> {
         let on_step = self.off_step(Step::Network);
         let busy = self
             .network
@@ -382,13 +382,13 @@ impl InstallerApp {
             }
         });
         vec![
-            Gate::new("refresh-networks", on_step.or(busy)),
-            Gate::new("select-network", select),
-            Gate::new("connect-network", connect),
+            Check::new("refresh-networks", on_step.or(busy)),
+            Check::new("select-network", select),
+            Check::new("connect-network", connect),
         ]
     }
 
-    fn online_account_gates(&self) -> Vec<Gate> {
+    fn online_account_checks(&self) -> Vec<Check> {
         use crate::setup::destination::accounts_view::AccountsStatus;
         let status = self.accounts_controller.as_ref().map_or(
             if self.accounts_initialized {
@@ -401,7 +401,7 @@ impl InstallerApp {
         let on_step = self.off_step(Step::Accounts);
         let signing_in = (status == AccountsStatus::SigningIn)
             .then(|| ("signing_in", t("installer-blocked-signing-in")));
-        let add = Gate::new(
+        let add = Check::new(
             "add-account",
             on_step.clone().or_else(|| signing_in.clone()),
         );
@@ -412,19 +412,19 @@ impl InstallerApp {
         };
         vec![
             add,
-            Gate::new(
+            Check::new(
                 "retry-account",
                 on_step.clone().or(signing_in).or_else(|| {
                     (status != AccountsStatus::Failed)
                         .then(|| ("not_failed", t("installer-blocked-retry-not-failed")))
                 }),
             ),
-            Gate::new("cancel-sign-in", on_step.clone()),
-            Gate::new("continue-offline", on_step),
+            Check::new("cancel-sign-in", on_step.clone()),
+            Check::new("continue-offline", on_step),
         ]
     }
 
-    fn recovery_gates(&self) -> Vec<Gate> {
+    fn recovery_checks(&self) -> Vec<Check> {
         let no_key = self
             .recovery_key
             .is_none()
@@ -437,13 +437,13 @@ impl InstallerApp {
                 .or_else(|| (!self.recovery_key_saved).then(|| ("recovery_key_unsaved", t(key))))
         };
         vec![
-            Gate::new("copy-recovery-key", no_key.clone()),
-            Gate::new("confirm-recovery-saved", no_key),
-            Gate::new(
+            Check::new("copy-recovery-key", no_key.clone()),
+            Check::new("confirm-recovery-saved", no_key),
+            Check::new(
                 "reboot",
                 unsaved("installer-blocked-recovery-unsaved-reboot"),
             ),
-            Gate::new(
+            Check::new(
                 "power-off",
                 unsaved("installer-blocked-recovery-unsaved-power-off"),
             ),
@@ -475,7 +475,7 @@ impl InstallerApp {
                         .then(|| "selected".to_owned()),
                     ..ResourcePresentation::default()
                 },
-                operation: Some(gated(
+                operation: Some(guarded(
                     DestinationEffect::SelectNetwork { ssid }.bound(),
                     self.blocked(&DestinationEffect::SelectNetwork {
                         ssid: network.ssid.clone(),
@@ -509,7 +509,7 @@ impl InstallerApp {
                     badge: Some(badge.to_owned()),
                     preview: None,
                 },
-                operation: Some(gated(
+                operation: Some(guarded(
                     DestinationEffect::SelectDisk {
                         device: disk.name.clone(),
                     }
@@ -542,7 +542,7 @@ impl InstallerApp {
                             .then(|| "selected".to_owned()),
                         ..ResourcePresentation::default()
                     },
-                    operation: Some(gated(
+                    operation: Some(guarded(
                         DestinationEffect::SelectRegion {
                             index: i64::try_from(index).unwrap_or(i64::MAX),
                         }
@@ -566,7 +566,7 @@ impl InstallerApp {
             },
             operation: self
                 .capacity_effect()
-                .map(|effect| gated(effect.bound_asking(&["gib"]), self.off_step(Step::Disk))),
+                .map(|effect| guarded(effect.bound_asking(&["gib"]), self.off_step(Step::Disk))),
         });
         items.push(self.review_item());
         items
@@ -652,7 +652,7 @@ impl InstallerApp {
             ),
             (None, _) => t("installer-item-review-no-target"),
         };
-        let mut begin = gated(self.begin_effect().bound(), self.begin_blocked());
+        let mut begin = guarded(self.begin_effect().bound(), self.begin_blocked());
         begin.type_mut().description = Some(description);
         Item {
             id: REVIEW.to_owned(),

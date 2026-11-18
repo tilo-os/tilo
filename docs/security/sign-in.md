@@ -93,7 +93,7 @@ the Secure Boot state and keys. So the keyslot opens only for a UKI the authorit
 signed a prediction for, booted with Secure Boot on under this machine's keys, at or
 above the rollback floor. The token format already supports this (`pin: false`).
 The repair command line measures differently, so repair mode never opens this slot
-and keeps its own gate ([repair-mode.md](repair-mode.md)).
+and keeps its own check ([repair-mode.md](repair-mode.md)).
 
 "Verified" here means all of: Secure Boot on, the db holding only keys this machine
 trusts (Tilo's release key, the owner's key, or both), kernel lockdown active, and a
@@ -238,14 +238,14 @@ reveals that someone here uses these settings, and nothing about who. Someone wh
 modifies the header can change it, so the greeter clamps every value and treats the
 token as preferences only.
 
-**Budgets.** The boot performance gate on the reference VM checks two things:
+**Budgets.** The boot performance check on the reference VM checks two things:
 
 - The first frame of the login screen arrives within 300 ms of the moment
   `tilo-boot-signin` knows who may sign in, which is when Plymouth's own sign-in
   screen used to appear.
-- The initrd's growth stays within what the gate records for it. The greeter in
+- The initrd's growth stays within what the check records for it. The greeter in
   boot mode is built without its media stack (GStreamer, PipeWire) and stripped,
-  and the gate fails a build that grows it past the recorded size.
+  and the check fails a build that grows it past the recorded size.
 
 **If the greeter can't start** (no KMS device, the host fails), or stops
 answering, the supervisor ends Plymouth and asks through systemd's password agents
@@ -375,7 +375,7 @@ key. Changing the PIN re-wraps the user key and never touches homed.
 The home lives inside the system volume, so a home is encrypted twice on machines
 whose system volume is encrypted. AES on the Snapdragon and on any x86 machine Tilo
 supports runs at several GB/s per core. A storage benchmark against the single-layer
-layout gates the switch, under the perf bar that applies to every change.
+layout checks the switch, under the perf bar that applies to every change.
 
 Until then the PAM services carry no `pam_systemd_home` lines; they come back with
 personal storage (§8).

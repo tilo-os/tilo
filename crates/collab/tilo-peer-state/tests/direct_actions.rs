@@ -17,15 +17,15 @@ use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr};
-use neighbour_wire::actions::{DeviceAction, PlaneFrame, SignedDeviceAction};
+use neighbour_wire::actions::{ActionServiceFrame, DeviceAction, SignedDeviceAction};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, TestHost,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, TestProvider,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane, Bounds, RemoteDevice};
+use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, Bounds, RemoteDevice};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{
     InviteGrant, JoinChallenge, Role, VerifiedRedemption, decode_and_verify_invitation,
@@ -91,8 +91,8 @@ fn catalogue() -> RemoteActionMessage {
     }
 }
 
-/// The device that answers requests: its workspace replica, the plane that
-/// serves actions out of it, and the dispatcher the plane hands them to.
+/// The device that answers requests: its workspace replica, the action service that
+/// serves actions out of it, and the dispatcher the action service hands them to.
 struct Engine {
     key: SigningKey,
     replica: Replica,
@@ -104,14 +104,14 @@ impl Engine {
     async fn serving(
         replica: Replica,
         key: SigningKey,
-        dispatcher: Arc<TestHost>,
+        dispatcher: Arc<TestProvider>,
         bounds: Bounds,
     ) -> Self {
         let endpoint = localhost_endpoint(&key).await;
-        let plane = ActionPlane::with_bounds(key.clone(), dispatcher.clone(), bounds);
-        plane.hold(replica.clone());
+        let action_service = ActionService::with_bounds(key.clone(), dispatcher.clone(), bounds);
+        action_service.hold(replica.clone());
         let router = Router::builder(endpoint.clone())
-            .accept(ACTIONS_ALPN, plane)
+            .accept(ACTIONS_ALPN, action_service)
             .spawn();
         Self {
             key,
@@ -135,15 +135,15 @@ impl Engine {
     }
 }
 
-/// A device of `key` that only asks: its own plane, with nothing to answer.
-async fn asking(key: &SigningKey) -> (Endpoint, ActionPlane) {
+/// A device of `key` that only asks: its own action service, with nothing to answer.
+async fn asking(key: &SigningKey) -> (Endpoint, ActionService) {
     let endpoint = localhost_endpoint(key).await;
-    let plane = ActionPlane::new(key.clone(), Arc::new(TestHost::new()));
-    (endpoint, plane)
+    let action_service = ActionService::new(key.clone(), Arc::new(TestProvider::new()));
+    (endpoint, action_service)
 }
 
 /// One signed request written to `addr` by hand, and the one answer that
-/// comes back: what the plane itself never writes, a test sends itself.
+/// comes back: what the action service itself never writes, a test sends itself.
 async fn send(
     endpoint: &Endpoint,
     addr: EndpointAddr,
@@ -151,7 +151,8 @@ async fn send(
 ) -> Option<RemoteActionMessage> {
     let connection = endpoint.connect(addr, ACTIONS_ALPN).await.unwrap();
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
-    let bytes = postcard::to_allocvec(&PlaneFrame::Action(Box::new(signed.clone()))).unwrap();
+    let bytes =
+        postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed.clone()))).unwrap();
     send.write_all(&u32::try_from(bytes.len()).unwrap().to_le_bytes())
         .await
         .unwrap();
@@ -177,10 +178,10 @@ async fn read_message(recv: &mut RecvStream) -> Option<RemoteActionMessage> {
 }
 
 /// What `remote` answered a catalogue query as `caller`.
-async fn queried(remote: &RemoteDevice, caller: &Caller) -> Result<(), ActionHostError> {
+async fn queried(remote: &RemoteDevice, caller: &Caller) -> Result<(), ActionCallError> {
     let answer = tokio::time::timeout(
         PATIENCE,
-        ActionHost::query(remote, caller, CatalogueQuery::default()),
+        ActionProvider::query(remote, caller, CatalogueQuery::default()),
     )
     .await
     .expect("the device answers");
@@ -192,10 +193,10 @@ async fn invoked(
     remote: &RemoteDevice,
     caller: &Caller,
     invocation: InvocationId,
-) -> Result<ReceiptStatus, ActionHostError> {
+) -> Result<ReceiptStatus, ActionCallError> {
     let answer = tokio::time::timeout(
         PATIENCE,
-        ActionHost::invoke(remote, caller, invoke(invocation)),
+        ActionProvider::invoke(remote, caller, invoke(invocation)),
     )
     .await
     .expect("the device answers");
@@ -205,9 +206,9 @@ async fn invoked(
 }
 
 /// The reason a refusal carries, for a test to read.
-fn refusal(error: &ActionHostError) -> &str {
+fn refusal(error: &ActionCallError) -> &str {
     match error {
-        ActionHostError::Refused { reason } | ActionHostError::Unavailable { reason } => reason,
+        ActionCallError::Refused { reason } | ActionCallError::Unavailable { reason } => reason,
         other => panic!("expected a refusal with a reason, got {other:?}"),
     }
 }
@@ -218,7 +219,7 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
     let a = device(&root, 2);
     let b = device(&root, 3);
     let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -226,8 +227,8 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
         Bounds::default(),
     )
     .await;
-    let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
+    let remote = b_action_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
 
     // The request reaches the addressed device, which answers it from its
@@ -284,7 +285,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     let a = device(&root, 2);
     let b = device(&root, 3);
     let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -292,13 +293,13 @@ async fn a_device_that_is_not_the_sender_is_refused() {
         Bounds::default(),
     )
     .await;
-    let (b_endpoint, _b_plane) = asking(&b.0).await;
+    let (b_endpoint, _b_action_service) = asking(&b.0).await;
 
     // A device of another person the workspace never admitted.
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
     let c = device(&stranger_root, 10);
-    let (c_endpoint, c_plane) = asking(&c.0).await;
-    let stranger = c_plane.remote(&c_endpoint, &engine.addr(), WORKSPACE);
+    let (c_endpoint, c_action_service) = asking(&c.0).await;
+    let stranger = c_action_service.remote(&c_endpoint, &engine.addr(), WORKSPACE);
     let refused = queried(
         &stranger,
         &Caller::authenticated(
@@ -308,7 +309,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     )
     .await
     .unwrap_err();
-    assert_eq!(refused, ActionHostError::NotPermitted);
+    assert_eq!(refused, ActionCallError::NotPermitted);
 
     // The device that asked answers as itself and nobody else: the owner's
     // own signature over an action naming the owner's device, sent from
@@ -332,7 +333,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
         answer,
         RemoteActionMessage::CatalogueResponse {
             correlation: 1,
-            result: Err(ActionHostError::NotPermitted),
+            result: Err(ActionCallError::NotPermitted),
         }
     );
     assert_eq!(
@@ -376,7 +377,7 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
     let a = device(&root, 2);
     let b = device(&root, 3);
     let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -384,8 +385,8 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
         Bounds::default(),
     )
     .await;
-    let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
+    let remote = b_action_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
 
@@ -426,7 +427,7 @@ async fn a_person_who_left_the_workspace_is_refused() {
     let guest_root = SigningKey::from_bytes(&[3; 32]);
     let g = device(&guest_root, 5);
     let roster = vec![a.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -447,8 +448,8 @@ async fn a_person_who_left_the_workspace_is_refused() {
             .unwrap()
     );
 
-    let (g_endpoint, g_plane) = asking(&g.0).await;
-    let remote = g_plane.remote(&g_endpoint, &engine.addr(), WORKSPACE);
+    let (g_endpoint, g_action_service) = asking(&g.0).await;
+    let remote = g_action_service.remote(&g_endpoint, &engine.addr(), WORKSPACE);
     let caller =
         Caller::authenticated(guest_root.verifying_key().to_bytes(), g.1.device_public_key);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
@@ -535,7 +536,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
     let a = device(&root, 2);
     let helper = agent_device(&root, 4);
     let roster = vec![a.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -573,8 +574,8 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
             .unwrap()
     );
 
-    let (helper_endpoint, helper_plane) = asking(&helper.0).await;
-    let remote = helper_plane.remote(&helper_endpoint, &engine.addr(), WORKSPACE);
+    let (helper_endpoint, helper_action_service) = asking(&helper.0).await;
+    let remote = helper_action_service.remote(&helper_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::delegated_agent(
         "scribe",
         root.verifying_key().to_bytes(),
@@ -613,7 +614,7 @@ async fn changes_spend_their_budget_while_reading_spends_none() {
     let a = device(&root, 2);
     let b = device(&root, 3);
     let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -625,8 +626,8 @@ async fn changes_spend_their_budget_while_reading_spends_none() {
         },
     )
     .await;
-    let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
+    let remote = b_action_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
 
     for _ in 0..2 {
@@ -658,7 +659,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let a = device(&root, 2);
     let b = device(&root, 3);
     let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
@@ -666,10 +667,10 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
         Bounds::default(),
     )
     .await;
-    let (b_endpoint, b_plane) = asking(&b.0).await;
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
 
     // A workspace this device does not hold.
-    let elsewhere = b_plane.remote(&b_endpoint, &engine.addr(), ELSEWHERE);
+    let elsewhere = b_action_service.remote(&b_endpoint, &engine.addr(), ELSEWHERE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     let refused = queried(&elsewhere, &caller).await.unwrap_err();
     assert_eq!(
@@ -677,7 +678,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
         "this device does not hold that workspace"
     );
 
-    // A request the action plane does not serve is answered with a reason,
+    // A request the action service does not serve is answered with a reason,
     // never left for the asker to wait on.
     let wanted = SignedDeviceAction::sign(
         &DeviceAction {
@@ -712,7 +713,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
         panic!("an unserved request is refused, got {answer:?}");
     };
     assert!(
-        matches!(error, ActionHostError::Unavailable { .. }),
+        matches!(error, ActionCallError::Unavailable { .. }),
         "{error:?}"
     );
     assert_eq!(dispatcher.callers().len(), 0);
@@ -727,30 +728,30 @@ async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
     let a = device(&root, 2);
     let b = device(&root, 3);
     let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestHost::new());
+    let dispatcher = Arc::new(TestProvider::new());
     let endpoint = localhost_endpoint(&a.0).await;
-    let plane = ActionPlane::new(a.0.clone(), dispatcher.clone());
-    plane.hold(Replica::new(workspace(WORKSPACE, &a, &roster)));
+    let action_service = ActionService::new(a.0.clone(), dispatcher.clone());
+    action_service.hold(Replica::new(workspace(WORKSPACE, &a, &roster)));
     let serving = Router::builder(endpoint.clone())
-        .accept(ACTIONS_ALPN, plane.clone())
+        .accept(ACTIONS_ALPN, action_service.clone())
         .spawn();
 
     // B signs as its device but asks from an endpoint keyed by another key,
-    // as a Tilo relay does.
+    // as a Tilo server does.
     let apart = SigningKey::from_bytes(&[30; 32]);
     let b_endpoint = localhost_endpoint(&apart).await;
-    let b_plane = ActionPlane::new(b.0.clone(), Arc::new(TestHost::new()));
-    let remote = b_plane.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
+    let b_action_service = ActionService::new(b.0.clone(), Arc::new(TestProvider::new()));
+    let remote = b_action_service.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     assert_eq!(
         queried(&remote, &caller).await,
-        Err(ActionHostError::NotPermitted),
+        Err(ActionCallError::NotPermitted),
         "an endpoint nobody named asks as the device it is keyed by"
     );
     assert!(dispatcher.callers().is_empty());
 
-    plane.reach_device_at(b.1.device_public_key, apart.verifying_key().to_bytes());
-    let remote = b_plane.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
+    action_service.reach_device_at(b.1.device_public_key, apart.verifying_key().to_bytes());
+    let remote = b_action_service.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
     assert_eq!(
         dispatcher.callers()[0].device_public_key(),

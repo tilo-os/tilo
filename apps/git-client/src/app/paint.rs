@@ -407,14 +407,14 @@ impl GitClientState {
         let theme = ctx.theme;
         let s = &theme.tokens.spacing;
         let body = self.rect;
-        let lane = ui::content_layout::FocusedContentLane::new()
+        let focused = ui::content_layout::FocusedContentArea::new()
             .max_width(f64::from(theme.tokens.metrics.panel_width_sheet))
             .gutter(f64::from(s.s6))
             .layout(body);
-        let width = ui::num::f32_of_f64(lane.width());
+        let width = ui::num::f32_of_f64(focused.width());
         let y = Self::paint_open_intro(
             ctx,
-            Point::new(lane.x0, body.y0 + body.height() / 3.0),
+            Point::new(focused.x0, body.y0 + body.height() / 3.0),
             width,
         );
 
@@ -428,7 +428,7 @@ impl GitClientState {
             || ButtonFace::new(Rect::ZERO, &choose_label).icon(ui::icons::Icon::FolderOpen);
         let choose_w = choose_face().intrinsic_width(ctx.text, theme);
         let controls = OpenControls::at(
-            lane,
+            focused,
             y,
             h,
             f64::from(s.s2),
@@ -490,8 +490,8 @@ impl GitClientState {
         if let Some(error) = &self.last_error {
             let top = button.y1.max(choose.y1) + f64::from(s.s4);
             let content = BannerContent::new(BannerKind::Error, error);
-            let h = Banner::height(&content, lane.width(), ctx.text, theme);
-            let banner = Rect::new(lane.x0, top, lane.x1, top + h);
+            let h = Banner::height(&content, focused.width(), ctx.text, theme);
+            let banner = Rect::new(focused.x0, top, focused.x1, top + h);
             Banner::paint(ctx, banner, &content, Point::new(f64::MIN, f64::MIN));
         }
     }

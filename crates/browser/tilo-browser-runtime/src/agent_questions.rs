@@ -1,6 +1,6 @@
 //! What a person's agents on a workspace host ask them, on a page of theirs:
 //! the approver session a native session keeps
-//! ([`tilo_relay_client::questions`]), signed by the root the page holds or,
+//! ([`tilo_server_client::questions`]), signed by the root the page holds or,
 //! on a page paired to them, by the page's own device key, and
 //! each question on the native question sheet over the desktop
 //! ([`tilo_sheets::portal`]), in its words. Allow once runs that one
@@ -16,8 +16,8 @@
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 
-use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::portal::{AgentQuestion, Dialog, DrawnSheet, PortalEffect, PortalState};
 use tokio::sync::mpsc;
@@ -47,7 +47,7 @@ thread_local! {
 }
 
 /// Answer what the person's agents on the host of the page's session `peer`
-/// (`WasmPeer::id`, whose device `cert` certifies) ask them, with `custody`:
+/// (`WasmPeer::id`, whose device `cert` certifies) ask them, with `device key`:
 /// the person's root where the page holds it, else the session's own device
 /// key, as any device of theirs answers — the person is asked wherever they
 /// are. Every question and answer goes over that session's own endpoint; the
@@ -55,11 +55,11 @@ thread_local! {
 /// asking again does nothing.
 ///
 /// # Errors
-/// `custody` is no custody, or neither the person's root nor the session's
+/// `device key` is no device key, or neither the person's root nor the session's
 /// device key.
-pub(crate) fn answer_as(peer: u32, custody: &JsValue, cert: &DeviceCert) -> Result<(), JsError> {
-    use tilo_relay_client::DeviceSigner as _;
-    let signer = PageSigner::from_js(custody)?;
+pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> Result<(), JsError> {
+    use tilo_server_client::DeviceSigner as _;
+    let signer = PageSigner::from_js(device_key)?;
     let key = signer.device_public_key();
     let device = if key == cert.user_public_key {
         None
@@ -178,13 +178,13 @@ fn notify(question: &PendingConfirmation) {
     let asked = dialog(question);
     let words = asked.words();
     let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words);
-    if let Err(error) = ui::host::current().notifications.show(&notice) {
+    if let Err(error) = ui::process::current().notifications.show(&notice) {
         tracing::debug!(%error, "agent questions: no notification");
     }
 }
 
 fn unnotify(id: &[u8; 32]) {
-    let _ = ui::host::current().notifications.withdraw(&tag(id));
+    let _ = ui::process::current().notifications.withdraw(&tag(id));
 }
 
 /// Hand the person's answer to question `id` back to its session.

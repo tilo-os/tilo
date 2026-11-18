@@ -475,7 +475,7 @@ impl ConsumerLaunchBinding {
     }
 }
 
-/// Observation sent exclusively by the pinned native Shell on its private gate.
+/// Observation sent exclusively by the pinned native Shell on its private socket.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootHelperExpectation {
@@ -486,7 +486,7 @@ pub struct RootHelperExpectation {
 }
 
 /// Opaque admission minted only from actual pinned Shell execution and its privately held root child.
-pub struct RetainedLaunchGate {
+pub struct RetainedLaunchAdmission {
     endpoint: UnixStream,
     shell: ExecutingPeer,
     shell_image: File,
@@ -494,37 +494,41 @@ pub struct RetainedLaunchGate {
     root_pidfd: OwnedFd,
     expected: RootHelperExpectation,
 }
-impl RetainedLaunchGate {
+impl RetainedLaunchAdmission {
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn receive(
-        mut gate: UnixStream,
+        mut socket: UnixStream,
         endpoint: UnixStream,
         cancellation: &ServiceCancellation,
     ) -> io::Result<Self> {
         let uid = rustix::process::getuid().as_raw();
         if uid == 0 {
-            return Err(refused("retained gate requires nonroot launcher"));
+            return Err(refused("retained socket requires nonroot launcher"));
         }
-        let (shell, shell_image) =
-            qpe_exchange(&mut gate, cancellation, Duration::from_secs(10), |gate| {
-                gate.set_read_timeout(Some(Duration::from_secs(10)))?;
-                gate.set_write_timeout(Some(Duration::from_secs(10)))?;
-                process_binding::arm(gate)?;
+        let (shell, shell_image) = qpe_exchange(
+            &mut socket,
+            cancellation,
+            Duration::from_secs(10),
+            |socket| {
+                socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+                socket.set_write_timeout(Some(Duration::from_secs(10)))?;
+                process_binding::arm(socket)?;
                 let mut challenge = [0; 32];
                 getrandom::SysRng
                     .try_fill_bytes(&mut challenge)
                     .map_err(io::Error::other)?;
-                gate.write_all(&process_binding::MAGIC)?;
-                gate.write_all(&challenge)?;
-                let shell = process_binding::receive(gate, &challenge, uid)?;
+                socket.write_all(&process_binding::MAGIC)?;
+                socket.write_all(&challenge)?;
+                let shell = process_binding::receive(socket, &challenge, uid)?;
                 let shell_image = protected_program("/usr/bin/tilo-session")?;
                 check_executing_image(&shell, &shell_image)?;
-                gate.write_all(&[1])?;
-                process_binding::complete(gate)?;
+                socket.write_all(&[1])?;
+                process_binding::complete(socket)?;
                 Ok((shell, shell_image))
-            })?;
+            },
+        )?;
         let (expected, root_pidfd) = {
-            let mut io = Handoff::new(&mut gate, cancellation, Duration::from_secs(10))?;
+            let mut io = Handoff::new(&mut socket, cancellation, Duration::from_secs(10))?;
             let expected: RootHelperExpectation = receive_json_bound(&mut io, 4096)?;
             let fd = receive_fd(&mut io, 0)?;
             (expected, fd)
@@ -577,15 +581,15 @@ impl RetainedLaunchGate {
 /// Exact QPE root task matching the native Shell's actual protected child.
 struct RootRole {
     peer: ExecutingPeer,
-    gate: RetainedLaunchGate,
+    admission: RetainedLaunchAdmission,
 }
 impl RootRole {
     fn authenticate(
-        gate: RetainedLaunchGate,
+        admission: RetainedLaunchAdmission,
         cancellation: &ServiceCancellation,
     ) -> io::Result<(Self, UnixStream)> {
-        gate.check()?;
-        let mut stream = gate.endpoint.try_clone()?;
+        admission.check()?;
+        let mut stream = admission.endpoint.try_clone()?;
         let peer = qpe_exchange(
             &mut stream,
             cancellation,
@@ -600,9 +604,9 @@ impl RootRole {
                 stream.write_all(&process_binding::MAGIC)?;
                 stream.write_all(&challenge)?;
                 let peer = process_binding::receive(stream, &challenge, 0)?;
-                gate.check()?;
-                if peer.pid() != gate.expected.pid
-                    || !peer.belongs_to(gate.expected.pid, gate.expected.start)
+                admission.check()?;
+                if peer.pid() != admission.expected.pid
+                    || !peer.belongs_to(admission.expected.pid, admission.expected.start)
                 {
                     return Err(refused("retained root differs from owned helper"));
                 }
@@ -610,17 +614,17 @@ impl RootRole {
                 Ok(peer)
             },
         )?;
-        let role = Self { peer, gate };
+        let role = Self { peer, admission };
         role.check()?;
         Ok((role, stream))
     }
     fn check(&self) -> io::Result<()> {
-        self.gate.check()?;
+        self.admission.check()?;
         if self.peer.uid() != 0
-            || self.peer.pid() != self.gate.expected.pid
+            || self.peer.pid() != self.admission.expected.pid
             || !self
                 .peer
-                .belongs_to(self.gate.expected.pid, self.gate.expected.start)
+                .belongs_to(self.admission.expected.pid, self.admission.expected.start)
         {
             return Err(refused("retained root task differs from owned helper"));
         }
@@ -715,7 +719,7 @@ pub struct RetainedViewAdmission {
 impl RetainedViewAdmission {
     /// Receive only on the private endpoint inherited through Shell opcode 2.
     pub fn receive(
-        gate: RetainedLaunchGate,
+        admission: RetainedLaunchAdmission,
         manifest_path: &Path,
         payload_root: &Path,
         opts: &RunOptions,
@@ -747,7 +751,7 @@ impl RetainedViewAdmission {
                 "retained view requires signed GUI app".into(),
             ));
         }
-        let (role, mut stream) = RootRole::authenticate(gate, cancellation)?;
+        let (role, mut stream) = RootRole::authenticate(admission, cancellation)?;
         let (binding, view, original_home_alias) = {
             let mut io = Handoff::new(&mut stream, cancellation, Duration::from_secs(30))?;
             let challenge: ConsumerChallenge = receive_json(&mut io)?;
@@ -808,7 +812,7 @@ impl RetainedViewAdmission {
             let arguments = self
                 .alias_args
                 .lock()
-                .map_err(|_| refused("alias argument custody poisoned"))?;
+                .map_err(|_| refused("alias argument ownership poisoned"))?;
             arguments
                 .as_ref()
                 .ok_or_else(|| refused("alias arguments not prepared"))?
@@ -832,7 +836,7 @@ impl RetainedViewAdmission {
         let mut held_args = self
             .alias_args
             .lock()
-            .map_err(|_| refused("alias argument custody poisoned"))?;
+            .map_err(|_| refused("alias argument ownership poisoned"))?;
         if held_args.is_some() {
             return Err(refused("alias argv already prepared"));
         }
@@ -1235,7 +1239,7 @@ impl RootConsumerChannel {
             }
             let exposure = grant
                 .exposure
-                .ok_or_else(|| refused("Retained issue requires placed clone custody"))?;
+                .ok_or_else(|| refused("Retained issue requires placed clone ownership"))?;
             exposure.matches(observation)?;
 
             let receipt = ViewReceipt {
@@ -1902,43 +1906,47 @@ mod original_home_alias_tests {
     }
 }
 /// Closed private launch registration.
-pub enum OrdinaryLaunchGate {
-    Home(RetainedLaunchGate),
+pub enum OrdinaryLaunchAdmission {
+    Home(RetainedLaunchAdmission),
 }
-impl RetainedLaunchGate {
+impl RetainedLaunchAdmission {
     /// Refuses cancelled or unauthenticated channels, invalid handoff evidence, and failed or timed-out
     /// socket transfers.
     pub fn receive_registration(
-        mut gate: UnixStream,
+        mut socket: UnixStream,
         cancellation: &ServiceCancellation,
-    ) -> io::Result<Option<OrdinaryLaunchGate>> {
-        let (bytes, endpoint) =
-            qpe_exchange(&mut gate, cancellation, Duration::from_secs(10), |gate| {
-                runtime_portal::fd_transport::recv_with_fd(gate.as_fd())
-            })?;
+    ) -> io::Result<Option<OrdinaryLaunchAdmission>> {
+        let (bytes, endpoint) = qpe_exchange(
+            &mut socket,
+            cancellation,
+            Duration::from_secs(10),
+            |socket| runtime_portal::fd_transport::recv_with_fd(socket.as_fd()),
+        )?;
         match (bytes.as_slice(), endpoint) {
             ([1], None) => Ok(None),
-            ([2], Some(endpoint)) => Self::receive(gate, UnixStream::from(endpoint), cancellation)
-                .map(|gate| Some(OrdinaryLaunchGate::Home(gate))),
+            ([2], Some(endpoint)) => {
+                Self::receive(socket, UnixStream::from(endpoint), cancellation)
+                    .map(|socket| Some(OrdinaryLaunchAdmission::Home(socket)))
+            }
             _ => Err(refused("Invalid private launch registration frame")),
         }
     }
 }
 
 #[cfg(test)]
-mod selected_edit_gate_guards {
+mod selected_edit_admission_guards {
     use super::*;
     tilo_test_env::scenario! {
         fn a_registration_is_cancellable_and_keeps_delivery_evidence;
 
         phase cancelled_registration_performs_no_initial_socket_io;
         {
-            let (gate, mut peer) = UnixStream::pair().unwrap();
+            let (socket, mut peer) = UnixStream::pair().unwrap();
             peer.set_nonblocking(true).unwrap();
             let cancel = ServiceCancellation::default();
             cancel.cancel();
             assert!(
-                matches!(RetainedLaunchGate::receive_registration(gate,&cancel),Err(error) if error.kind()==io::ErrorKind::Interrupted)
+                matches!(RetainedLaunchAdmission::receive_registration(socket,&cancel),Err(error) if error.kind()==io::ErrorKind::Interrupted)
             );
             let mut byte = [0];
             assert_eq!(peer.read(&mut byte).unwrap(), 0);

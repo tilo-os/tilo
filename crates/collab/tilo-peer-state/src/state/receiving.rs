@@ -134,11 +134,11 @@ impl StatePeer {
         if workspace != self.core.workspace || op.author.as_bytes() != &source {
             return Err("transport author or document workspace mismatch".into());
         }
-        if self
-            .authorize_document(&source, app, record, op, now)?
-            .is_none()
-        {
-            // Held for its app surface: decided by the real admission, never a recorded one.
+        if matches!(
+            self.authorize_document(&source, app, record, op, now)?,
+            super::authority::Authorized::Hold(_)
+        ) {
+            // Held for what it waits for: decided by the real admission, never a recorded one.
             return Ok(None);
         }
         collab_types::validate_whole_document_payload_route(app, workspace, record, op)
@@ -313,9 +313,9 @@ impl StatePeer {
                 revocations,
                 ..
             } => {
-                // A device at another peer protocol version is admitted to
-                // nothing: what it says is not read at this one.
-                if protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+                // A device at a peer protocol version this one does not work
+                // with is admitted to nothing: what it says is not read here.
+                if !neighbour_wire::works_with_peer_version(protocol) {
                     return Err(AdmissionError::Rejected(format!(
                         "the device speaks peer protocol {protocol}, this one {}",
                         neighbour_wire::PEER_PROTOCOL_VERSION
@@ -449,17 +449,31 @@ impl StatePeer {
         if received != self.core.workspace {
             return Err("workspace topic mismatch".into());
         }
-        let cert = self
-            .certificate(&source, now)
-            .map_err(|error| error.to_string())?;
-        let person = cert.user_public_key;
-        let foreign = backend::member::foreign(cert, &self.core.origin);
         // The owner's devices write governance on their certificate alone:
         // the device this replica was joined through supplies the first
         // governance before any roster exists.
-        if person != self.core.owner {
-            self.role(&source, now).map_err(|error| error.to_string())?;
-        }
+        let member = self
+            .certificate(&source, now)
+            .map_err(|error| error.to_string())
+            .and_then(|cert| {
+                let person = cert.user_public_key;
+                let foreign = backend::member::foreign(cert, &self.core.origin);
+                if person != self.core.owner {
+                    self.role(&source, now).map_err(|error| error.to_string())?;
+                }
+                Ok(workspace::SenderAccess::Member { person, foreign })
+            });
+        // A device that is no member writes here only as one of the
+        // workspace's holders, by the address it signed.
+        let access = match member {
+            Ok(access) => access,
+            Err(error) => self
+                .holder_certificate(&source)
+                .map(|cert| workspace::SenderAccess::Holder {
+                    person: cert.user_public_key,
+                })
+                .ok_or(error)?,
+        };
         let owner = self.core.owner;
         let from = hex::encode(source);
         // The one workspace admission the shell's workspace tree runs too.
@@ -471,15 +485,22 @@ impl StatePeer {
             workspace::WorkspaceAdmission {
                 before: self.core.workspace_doc.as_deref(),
                 workspace: &self.core.workspace,
-                source: workspace::Writer {
-                    key: &from,
-                    standing: workspace::Standing::Member { person, foreign },
-                },
+                source: workspace::Writer { key: &from, access },
                 owner: &owner,
                 now_ns: now_ns(now),
             },
             workspace_changes,
         )?;
+        // The workspace's owner is the person its governance names, not the
+        // person of the device this replica was joined through: a member's
+        // device admits its person's further device too, and the workspace
+        // stays its own owner's ([`Self::from_join`] names the admitting
+        // device until the governance arrives).
+        if self.core.workspace_doc.is_none()
+            && let Some(owner) = owner_named_by(&candidate, &self.core.workspace)
+        {
+            self.core.owner = owner;
+        }
         // Receipts this peer admitted earlier stay immutable even once
         // the workspace document omits them.
         let mut receipts = self.core.receipts.clone();
@@ -534,4 +555,16 @@ impl StatePeer {
         self.retry_held(&mut outcome, now, strict_report)?;
         Ok(outcome)
     }
+}
+
+/// The owner `document`'s governance names, as their root key.
+pub(super) fn owner_named_by(
+    document: &automerge::AutoCommit,
+    workspace: &str,
+) -> Option<[u8; 32]> {
+    let owner: [u8; 32] = hex::decode(workspace::policy_of(document, workspace).owner()?)
+        .ok()?
+        .try_into()
+        .ok()?;
+    Some(owner)
 }

@@ -1,6 +1,6 @@
 //! The client's transport half: what this device says to its workspaces, its replicas of them, and
 //! what its session with its host heard and how it fares — what any thread holds. A page's presence
-//! boards ([`crate::Client`]) are built on it; an agent, a program and the relay's own tests hold
+//! boards ([`crate::Client`]) are built on it; an agent, a program and the server's own tests hold
 //! it alone.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -11,8 +11,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use crate::engine::Engine;
-use crate::plane::{Closed, Cmd, Event, Outbox};
-use tilo_relay_protocol::WorkspaceId;
+use crate::network::{Closed, Cmd, Event, Outbox};
+use tilo_server_protocol::WorkspaceId;
 
 /// Failures kept at once; the oldest goes first.
 const MAX_FAILURES: usize = 16;
@@ -137,7 +137,7 @@ pub struct PeerStatus {
     pub workspace_members: BTreeMap<String, BTreeSet<String>>,
     /// Whose each member device of a joined workspace is, by workspace: device (hex) to person
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
-    /// person from it, so someone the live plane never certified to this page is still theirs.
+    /// person from it, so someone the live session never certified to this page is still theirs.
     pub workspace_devices: BTreeMap<String, BTreeMap<String, String>>,
     /// What each joined workspace's governance calls its people, by workspace, by person id
     /// (root key, hex): how a page names someone who is not here now, never by their key.
@@ -180,12 +180,12 @@ pub enum Entry {
     Admitted {
         /// The workspace's UUID.
         workspace: String,
-        /// Its relay workspace.
+        /// Its server workspace.
         workspace_id: WorkspaceId,
         /// Its name.
         name: String,
         /// What the person may do there.
-        role: tilo_relay_protocol::workspaces::Role,
+        role: tilo_server_protocol::workspaces::Role,
     },
     /// The entry or the workspace did not let it in: the entry's `code`
     /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or
@@ -198,7 +198,7 @@ pub enum Entry {
         /// The entry's own refusal as it answered it: its code, and what it
         /// says about a wait list the workspace keeps, so the page offers to
         /// leave an address there.
-        entry: Option<tilo_relay_protocol::directory::EntryRefused>,
+        entry: Option<tilo_server_protocol::directory::EntryRefused>,
     },
 }
 
@@ -253,7 +253,7 @@ struct Reported {
     /// The current session's bearer token for its host's fetch proxy (`tilo_net::proxy`, at
     /// `/peer/v1/fetch`); kept apart from [`PeerStatus`], which diagnostics show.
     fetch_proxy: Option<String>,
-    /// What the page shows where its live plane would be, when it has none: that no plane could
+    /// What the page shows where its live session would be, when it has none: that no peer network could
     /// be reached ([`Link::live_note`]).
     live_note: Option<String>,
     /// What serves what another device asks this one through the host
@@ -382,7 +382,7 @@ impl Reports {
         self.lock().fetch_proxy = token;
     }
 
-    /// Put the note the page shows where its live plane would be (in place of the members) in
+    /// Put the note the page shows where its live session would be (in place of the members) in
     /// place, waking every watcher when it changed.
     pub fn set_live_note(&self, note: Option<&str>) {
         let wakes = {
@@ -430,7 +430,7 @@ impl Reports {
     }
 
     /// Whether a consumer's queue takes the members' presence now: while none does, the
-    /// session's planes read none of it.
+    /// session's peer networks read none of it.
     #[must_use]
     pub fn reads_presence(&self) -> bool {
         self.lock()
@@ -446,7 +446,7 @@ impl Reports {
 }
 
 /// What a queue that takes the members' presence takes.
-const PRESENCE: Event = Event::LivePlane {
+const PRESENCE: Event = Event::LiveSession {
     ws: crate::Topic::nil(),
     from: [0; 32],
     track: tilo_live::live::Track::Presence,
@@ -528,7 +528,7 @@ impl Link {
     }
 
     /// This session's health: its status, and this device's writes to each record as its
-    /// replica's custody keeps them.
+    /// replica's ownership keeps them.
     #[must_use]
     pub fn snapshot(&self) -> crate::health::PeerSnapshot {
         let owner = self.engine.owner();
@@ -555,7 +555,7 @@ impl Link {
     }
 
     /// Why this page shows no live presence, in the words it shows in its members' place, or
-    /// `None` while it has a plane: no plane could be reached.
+    /// `None` while it has a peer network: no peer network could be reached.
     #[must_use]
     pub fn live_note(&self) -> Option<String> {
         self.reports.lock().live_note.clone()
@@ -665,7 +665,7 @@ impl Link {
     }
 
     /// How many of this device's writes its hosts have not admitted yet, as the session counted
-    /// them last: read without copying the status or reading what custody holds, so a caller
+    /// them last: read without copying the status or reading what ownership holds, so a caller
     /// may ask after every change it hears of.
     #[must_use]
     pub fn outgoing_pending(&self) -> usize {

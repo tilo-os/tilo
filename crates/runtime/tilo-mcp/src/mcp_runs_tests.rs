@@ -111,12 +111,12 @@ impl KeepingRuns {
     }
 }
 
-impl ActionHost for KeepingRuns {
+impl ActionProvider for KeepingRuns {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.notes.query(caller, query)
     }
 
@@ -132,7 +132,7 @@ impl ActionHost for KeepingRuns {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if is_listing(&request.target) {
             return Pending::ready(Ok(self.listing(&request)));
         }
@@ -148,7 +148,7 @@ impl ActionHost for KeepingRuns {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         self.notes.cancel(caller, id)
     }
 }
@@ -234,7 +234,9 @@ tilo_test_env::scenario! {
 }
 
 /// `history task` as an agent reads it: the words, and whether it failed.
-async fn history<H: ActionHost + Send + Sync + 'static>(server: &McpServer<H>) -> (String, bool) {
+async fn history<H: ActionProvider + Send + Sync + 'static>(
+    server: &McpServer<H>,
+) -> (String, bool) {
     tool(server, "tilo", json!({"program":"history task"})).await
 }
 

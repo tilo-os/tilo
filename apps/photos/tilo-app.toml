@@ -59,11 +59,11 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@30"
-tilo-fs = "optional@30"
+collab = "optional@31"
+tilo-fs = "optional@31"
 # Photos may request its fixed, local-only visual-analysis operation through
 # this broker. The app still has no network namespace or model socket.
-model-gateway = "optional@30"
+model-gateway = "optional@31"
 
 [entrypoint]
 bin             = "bin/photos"
@@ -72,7 +72,7 @@ splash-segments = ["bin/photos[0x0:0x400000]"]
 splash-budget   = 250
 
 # The installed-image acceptance client discovers these controls through the
-# real AT-SPI D-Bus endpoint. Photos opens on the library, and the gate runs on
+# real AT-SPI D-Bus endpoint. Photos opens on the library, and the check runs on
 # a freshly installed profile whose library holds no photographs, so the
 # library's empty state is read out on open. Activating Favorites must replace
 # it with the Favorites surface, whose own empty state only that view shows, so

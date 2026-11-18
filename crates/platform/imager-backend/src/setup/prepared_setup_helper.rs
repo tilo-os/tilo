@@ -1,5 +1,5 @@
 //! Headless target-user consumer. Its only secret input is bounded raw UTF-8 stdin, and stdout
-//! carries a receipt only after all requested custody is saved.
+//! carries a receipt only after all requested ownership is saved.
 pub mod enrolled;
 use super::{
     destination_security, migration::PinnedDirectory, prepared_setup::PreparedSetupReview,
@@ -123,7 +123,7 @@ pub struct Receipt {
     pub identity_public_key: [u8; 32],
     pub account_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_identity: Option<tilo_identity_host::enrolled_transport::CurrentDeviceDeclaration>,
+    pub current_identity: Option<tilo_identity::enrolled_transport::CurrentDeviceDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_sessions: Option<super::service_sessions::Declaration>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -195,7 +195,7 @@ fn private_parent(path: &Path) -> io::Result<()> {
     destination_security::check_private_file(&parent.file)
 }
 /// The caller closes stdin after raw password bytes and uses a fresh quarantine for each retry;
-/// existing canonical target custody is verified idempotently.
+/// existing canonical target ownership is verified idempotently.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
     input: &mut impl Read,
@@ -223,13 +223,13 @@ pub fn run_with_home_admission(
     let identity = &args["--identity-dir"];
     let accounts = &args["--config-root"];
     // The caller must copy delivered ciphertext into its private grant; the package on public media
-    // is never treated as target-user custody.
+    // is never treated as target-user ownership.
     private_parent(package)?;
     private_parent(quarantine)?;
     let review =
         PreparedSetupReview::open(package, &password, quarantine, &AtomicBool::new(false))?;
     review.require_completed_export()?;
-    if review.manifest().account_custody_protocol.is_some() {
+    if review.manifest().account_credentials_protocol.is_some() {
         super::account_admission::installed()?;
     }
     let mut candidate_service = None;
@@ -265,7 +265,7 @@ pub fn run_with_home_admission(
         review.manifest().identity_kind,
         super::prepared_setup::IdentityKind::CurrentDevice { .. }
     ) {
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let system = paths
             .device_cert
             .parent()
@@ -274,7 +274,7 @@ pub fn run_with_home_admission(
         Some(review.resolve_current_identity(system, identity, &password)?)
     } else {
         if let Some(host) = args.get("--host-device-root") {
-            let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+            let paths = tilo_identity::provisioning::collaboration_identity_paths();
             let configured = paths
                 .device_cert
                 .parent()
@@ -357,7 +357,7 @@ pub fn run_with_home_admission(
     review.validate()
 }
 
-/// Read-only image-build probe of this packaged executable and GNU tar; password input, custody and
+/// Read-only image-build probe of this packaged executable and GNU tar; password input, ownership and
 /// application startup are unused.
 pub fn home_consumer_capability(
     args: impl IntoIterator<Item = OsString>,

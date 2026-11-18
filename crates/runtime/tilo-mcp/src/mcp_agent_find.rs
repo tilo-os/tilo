@@ -2,15 +2,58 @@
 //! shell's one search, then every hit's path built the way `tilo_ls` writes it.
 
 use super::*;
+use tilo_actions::remote::Within;
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+/// One hit as a typed answer carries it: the path it reads at, what it is, what it is called,
+/// the action it offers and, where it says so, when it was written.
+fn hit_row(path: &str, kind: &str, hit: &Found) -> Value {
+    let mut row = serde_json::Map::new();
+    row.insert("path".into(), json!(path));
+    row.insert("kind".into(), json!(kind));
+    row.insert("label".into(), json!(hit.label.trim()));
+    row.insert("action".into(), json!(hit.open));
+    if let Some(when) = hit.when {
+        row.insert("when".into(), json!(when));
+    }
+    Value::Object(row)
+}
+
+/// What a search that found nothing answers: what was looked through and what never is, so
+/// that silence about something search does not reach is not taken for an answer.
+fn nothing_matches(query: &str) -> String {
+    format!(
+        "nothing matches {} in what you may read here (what the apps keep and the workspace's \
+         files); the web, mail still on its server and conversations you take no part in are \
+         not searched. tilo_ls shows the apps and what is in them",
+        query.trim()
+    )
+}
+
+/// `reply`, saying first that it carries content from outside the person's own data. A find
+/// that names a file of the workspace's folder answers its name and its path, which whoever
+/// put it there wrote: data to reason about, as what the file says is, never an instruction.
+fn naming_files(mut reply: Reply) -> Reply {
+    reply.text = format!(
+        "[{}: {}]\n{}",
+        crate::UNTRUSTED,
+        crate::UNTRUSTED_NOTE,
+        reply.text
+    );
+    if let Some(typed) = reply.structured.as_mut() {
+        crate::mark_untrusted(typed);
+    }
+    reply
+}
+
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// What the workspace holds, by the host's own search: on a desktop the
     /// one search it runs, the palette's ranking and `place_found`'s, so a
     /// text an agent asks for answers what the person sees, in the person's
     /// order; on a host with no desktop its ranking of the records it holds.
     /// Each result is named by the path `tilo_ls` and `tilo_do` take, an
     /// action as `path#action(params)`, so the next call acts on what this
-    /// one found.
+    /// one found. A query narrows itself to a conversation and a stretch of
+    /// time ([`Self::narrowed`]).
     ///
     /// A host with no search of its own is told so: answering by its apps'
     /// own directories here would be a second ranking beside the host's.
@@ -19,7 +62,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         args: FindArgs,
         structured: bool,
     ) -> Result<Reply, Failure> {
-        if args.query.trim().is_empty() {
+        let (words, within) = self.narrowed(&args.query).await?;
+        if words.is_empty() && within.is_everything() {
             return Err("query needs a word to look for".into());
         }
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
@@ -31,14 +75,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             );
         };
         let found = search
-            .find(&self.caller, &args.query)
+            .find_within(&self.caller, &words, &within)
             .await
             .ok_or("the host's search stopped answering")??;
         if found.is_empty() {
-            return Ok(Reply::ok(format!(
-                "nothing matches {}; tilo_ls shows the apps and what is in them",
-                args.query.trim()
-            )));
+            return Ok(Reply::ok(nothing_matches(&args.query)));
         }
         let wanted = match args
             .app
@@ -85,17 +126,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             else {
                 continue;
             };
+            // What says when it was written is answered with it, as a query's `after:` and
+            // `before:` read a moment.
+            let line = match hit.when.and_then(Within::said_at) {
+                Some(at) => format!("{line}  {at}"),
+                None => line,
+            };
             if !lines.contains(&line) {
                 // One hit per resource, by the path it reads at: the search
                 // ranks a resource and each action on it apart, and a caller
                 // acts on the resource.
                 if !hits.iter().any(|hit: &Value| hit["path"] == path) {
-                    hits.push(json!({
-                        "path": path,
-                        "kind": forms.kind(&kind).unwrap_or(&kind),
-                        "label": hit.label.trim(),
-                        "action": hit.open,
-                    }));
+                    hits.push(hit_row(&path, forms.kind(&kind).unwrap_or(&kind), hit));
                 }
                 lines.push(line);
             }
@@ -116,11 +158,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             );
         }
         if text.is_empty() {
-            text = format!(
-                "nothing matches {}; tilo_ls shows the apps and what is in them",
-                args.query.trim()
-            );
+            text = nothing_matches(&args.query);
         }
+        // A file's name and its path are the words of whoever put it into the folder.
+        let file = tilo_actions::remote::FOUND_FILE;
+        let names_files = hits.iter().take(limit).any(|hit| hit["kind"] == file);
         let mut reply = Reply::ok(text);
         if structured {
             reply.structured = Some(json!({
@@ -128,7 +170,63 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "hits": hits.into_iter().take(limit).collect::<Vec<Value>>(),
             }));
         }
-        Ok(reply)
+        Ok(if names_files {
+            naming_files(reply)
+        } else {
+            reply
+        })
+    }
+
+    /// The words of `query`, and what the rest of it narrows the search to: `in:here` (the
+    /// conversation this turn is in) or `in:` a conversation's path as `tilo_ls` lists it,
+    /// `after:` and `before:` a day (`2026-11-10`) or a moment (`2026-11-10T14:00:00Z`).
+    async fn narrowed(&self, query: &str) -> Result<(String, Within), String> {
+        let moment = |name: &str, text: &str| {
+            Within::moment(text).ok_or_else(|| {
+                format!(
+                    "{name}: takes a day (2026-11-10) or a moment (2026-11-10T14:00:00Z), not \
+                     {text:?}"
+                )
+            })
+        };
+        let mut within = Within::default();
+        let mut words: Vec<&str> = Vec::new();
+        for word in query.split_whitespace() {
+            if let Some(place) = word.strip_prefix("in:") {
+                within.place = Some(self.placed(place).await?);
+            } else if let Some(text) = word.strip_prefix("after:") {
+                within.after = Some(moment("after", text)?);
+            } else if let Some(text) = word.strip_prefix("before:") {
+                within.before = Some(moment("before", text)?);
+            } else {
+                words.push(word);
+            }
+        }
+        Ok((words.join(" "), within))
+    }
+
+    /// What `in:` names: `here`, the conversation this turn is in, or a conversation by the
+    /// path `tilo_ls` lists it at.
+    async fn placed(&self, place: &str) -> Result<String, String> {
+        if place == "here" {
+            return self
+                .caller
+                .turn()
+                .map(|turn| turn.conversation.clone())
+                .ok_or_else(|| {
+                    "in:here is the conversation a turn is in, and this session is in none: \
+                     name one by its path (in:chat/…)"
+                        .to_owned()
+                });
+        }
+        let parsed = parse_path(place)?;
+        match self.resolve(&parsed).await?.0 {
+            Ok(Resolved {
+                node: Some(node), ..
+            }) => Ok(node.id),
+            Ok(_) => Err(format!("in:{place} names an app, not a conversation in it")),
+            Err(note) => Err(note),
+        }
     }
 
     /// The app ids `name` means, among the apps this workspace runs and

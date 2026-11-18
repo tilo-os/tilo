@@ -72,11 +72,11 @@ pub(crate) struct Run {
     pub(crate) embedded: bool,
     /// The file whose history History shows beside the resource's, for an
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
-    /// and the History scope the root witnesses it under.
+    /// and the History scope the root observations it under.
     pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
     /// The folder History lists, for an app that declares
     /// [`ResourceApp::FOLDER_HISTORY`](super::ResourceApp::FOLDER_HISTORY): filled with the
-    /// workspace's tree once the root's storage is open, and witnessed by the root under
+    /// workspace's tree once the root's storage is open, and observed by the root under
     /// the app's History scope.
     pub(crate) folder_history: Option<(
         ui_core::history_mode::folder::FolderHistorySource,
@@ -119,7 +119,7 @@ pub(crate) struct Launched {
 }
 
 /// What an in-process host lent the app
-/// ([`HostContext::lend`](ui_core::application::HostContext::lend)), each
+/// ([`ProcessContext::lend`](ui_core::application::ProcessContext::lend)), each
 /// taken once by the view or surface that uses it.
 #[derive(Default)]
 pub(crate) struct Lent(std::cell::RefCell<Vec<Box<dyn Any>>>);

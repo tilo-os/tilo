@@ -1,15 +1,15 @@
-//! Which participant device does one piece of work in a workspace.
+//! Which key-holding device does one piece of work in a workspace.
 //!
 //! State merges by itself; a side effect does not. A lease names the device
 //! doing a piece of work, with a deadline it keeps pushing out while it
 //! works. The lease is a resource of the workspace's own state, so a group of
 //! desktops holding a workspace has it with no server: whoever wants the work
-//! writes its own claim, and every participant reads the same claim set.
+//! writes its own claim, and every key holder reads the same claim set.
 //!
 //! Claims are per device, never one shared register, so two devices that claim
 //! at the same time both keep their row after a merge and nothing is lost.
 //! The holder is then decided the same way on every device: the claims are
-//! ranked the way [`placement`](crate::placement) ranks devices (power, load,
+//! ranked the way [`placement`](neighbour_wire::placement) ranks devices (power, load,
 //! measured round trip, then the device key), and the best of them holds. Two
 //! takers after a partition therefore converge on one winner; the loser
 //! withdraws its claim and stops the work instead of repeating it.
@@ -23,19 +23,53 @@
 
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use super::{Duration, ROOT, now_ns};
-use crate::placement::{self, Answer, Power, Rank};
-use automerge::transaction::Transactable as _;
-use automerge::{ObjType, ReadDoc, ScalarValue, Value};
+use super::{Duration, device_rows, now_ns};
+use neighbour_wire::placement::{self, Answer, Power, Rank};
 use serde::{Deserialize, Serialize};
 
-/// Key of the workspace's leases in its own document: a map from each lease's
-/// id to a map from each claiming device key (hex) to its claim.
+/// Key of the workspace's leases in its own document: a map, there from the
+/// workspace's founding, from `<lease id>/<claiming device key hex>` to its
+/// claim ([`device_rows`]).
 pub const LEASES_KEY: &str = "leases_v1";
 /// How far two devices' clocks may differ and still agree on whether a lease
 /// is over: a claim's deadline is only taken as passed, and the lease as free
 /// to take, once it is this far in the past.
 pub const CLOCK_SKEW_NS: u64 = 60_000_000_000;
+
+/// The lease running the workspace's VM of `environment` is taken under: the
+/// one device whose VM service boots it, so it is up on exactly one.
+#[must_use]
+pub fn vm_lease(environment: &str) -> String {
+    format!("vm/{environment}")
+}
+
+/// The one input a VM's placement weighs: its disk.
+const DISK: [u8; 32] = [0; 32];
+
+/// What a VM machine ranks itself by for a workspace's VM: its own `rank` where
+/// it `holds` the VM's disk. One that would have to fetch the disk of
+/// `disk_bytes` ranks below every machine that holds it, whatever their loads,
+/// and among those that would, by how long the fetch takes
+/// ([`placement::transfer`]) as its round trip: the VM stays where its disk
+/// is, and moves only once that machine is gone.
+#[must_use]
+pub fn vm_rank(rank: Rank, disk_bytes: u64, holds: bool) -> Rank {
+    if holds {
+        return rank;
+    }
+    let work = neighbour_wire::placement::Work {
+        inputs: vec![(DISK, disk_bytes)],
+        input_bytes: disk_bytes,
+        local_wall_ms: None,
+        offload: None,
+    };
+    let moving = placement::transfer(&Answer::taking(rank, Vec::new()), &work, rank.latency_ms);
+    Rank {
+        load_permille: rank.load_permille.saturating_add(1_000),
+        latency_ms: u32::try_from(moving.moving_ms).unwrap_or(u32::MAX),
+        ..rank
+    }
+}
 
 /// What a device ranks itself by when it has nothing better to say: it takes
 /// the work without preferring any power state or load.
@@ -94,39 +128,23 @@ struct StoredClaim {
     rank: Rank,
 }
 
+/// A claim as every device reads it from its stored text.
+fn claim_of(device: [u8; 32], json: &str) -> Option<LeaseClaim> {
+    let claimed = serde_json::from_str::<StoredClaim>(json).ok()?;
+    Some(LeaseClaim {
+        device,
+        term: claimed.term,
+        expires_at_ns: claimed.expires_at_ns,
+        rank: claimed.rank,
+    })
+}
+
 /// The claims held under `id` in `doc`.
 fn claims_of(doc: Option<&automerge::AutoCommit>, id: &str) -> Vec<LeaseClaim> {
-    let Some(doc) = doc else {
-        return Vec::new();
-    };
-    let Ok(Some((Value::Object(ObjType::Map), leases))) = doc.get(ROOT, LEASES_KEY) else {
-        return Vec::new();
-    };
-    let Ok(Some((Value::Object(ObjType::Map), claims))) = doc.get(&leases, id) else {
-        return Vec::new();
-    };
-    let mut held = Vec::new();
-    for device in doc.keys(&claims) {
-        let Ok(Some((Value::Scalar(value), _))) = doc.get(&claims, device.as_str()) else {
-            continue;
-        };
-        let ScalarValue::Str(json) = value.as_ref() else {
-            continue;
-        };
-        let (Ok(claimed), Some(key)) = (
-            serde_json::from_str::<StoredClaim>(json),
-            device_of(&device),
-        ) else {
-            continue;
-        };
-        held.push(LeaseClaim {
-            device: key,
-            term: claimed.term,
-            expires_at_ns: claimed.expires_at_ns,
-            rank: claimed.rank,
-        });
-    }
-    held
+    device_rows::rows_of(doc, LEASES_KEY, id)
+        .into_iter()
+        .filter_map(|(device, json)| claim_of(device, &json))
+        .collect()
 }
 
 /// The lease `id` made of `claims` at `now_ns`: the best-ranked live claim of
@@ -156,15 +174,6 @@ fn lease_of(id: &str, claims: Vec<LeaseClaim>, now_ns: u64) -> Lease {
     }
 }
 
-/// The key a device row's hex names, if it is one.
-fn device_of(device: &str) -> Option<[u8; 32]> {
-    let key = tilo_failure::ignored!(
-        "a device row another build wrote is not a key this one can name",
-        hex::decode(device).ok()
-    )?;
-    <[u8; 32]>::try_from(key.as_slice()).ok()
-}
-
 impl PeerWorkspace<'_> {
     /// The lease `id` as this peer's workspace holds it now.
     #[must_use]
@@ -179,14 +188,17 @@ impl PeerWorkspace<'_> {
     /// Every lease the workspace holds, by id.
     #[must_use]
     pub fn leases(self, now: SystemTime) -> Vec<Lease> {
-        let Some(doc) = self.peer.core.workspace_doc.as_deref() else {
-            return Vec::new();
-        };
-        let Ok(Some((Value::Object(ObjType::Map), leases))) = doc.get(ROOT, LEASES_KEY) else {
-            return Vec::new();
-        };
-        doc.keys(&leases)
-            .map(|id| lease_of(&id, claims_of(Some(doc), &id), now_ns(now)))
+        let mut claims = std::collections::BTreeMap::<String, Vec<LeaseClaim>>::new();
+        for (id, device, json) in
+            device_rows::all_rows(self.peer.core.workspace_doc.as_deref(), LEASES_KEY)
+        {
+            if let Some(claim) = claim_of(device, &json) {
+                claims.entry(id).or_default().push(claim);
+            }
+        }
+        claims
+            .into_iter()
+            .map(|(id, claims)| lease_of(&id, claims, now_ns(now)))
             .collect()
     }
 }
@@ -316,78 +328,15 @@ impl PeerWorkspaceMut<'_> {
             rank: claim.rank,
         })
         .map_err(|error| error.to_string())?;
-        self.write_claim_row(id, &claim.device, Some(&json))
+        let key = device_rows::row_key(id, &claim.device);
+        self.write_row(LEASES_KEY, &key, &claim.device, Some(&json))?;
+        Ok(())
     }
 
     /// Remove `device`'s claim under `id`, answering whether one was there.
     fn write_claim_removed(&mut self, id: &str, device: &[u8; 32]) -> Result<bool, String> {
-        let held = {
-            let doc = self.peer.core.workspace_doc.as_deref();
-            let row = doc.and_then(|doc| {
-                let (Value::Object(ObjType::Map), leases) = doc.get(ROOT, LEASES_KEY).ok()?? else {
-                    return None;
-                };
-                let (Value::Object(ObjType::Map), claims) = doc.get(&leases, id).ok()?? else {
-                    return None;
-                };
-                doc.get(&claims, hex::encode(device).as_str()).ok()?
-            });
-            row.is_some()
-        };
-        if !held {
-            return Ok(false);
-        }
-        self.write_claim_row(id, device, None)?;
-        Ok(true)
+        self.write_row(LEASES_KEY, &device_rows::row_key(id, device), device, None)
     }
-
-    /// Put `json` in `device`'s row under `id`, or remove the row when `json`
-    /// is `None`.
-    fn write_claim_row(
-        &mut self,
-        id: &str,
-        device: &[u8; 32],
-        json: Option<&str>,
-    ) -> Result<(), String> {
-        let actor = self.peer.workspace_actor_for(device);
-        let workspace = self
-            .peer
-            .core
-            .workspace_doc
-            .as_deref()
-            .ok_or("lease workspace is absent")?;
-        let mut candidate = workspace.clone();
-        candidate.set_actor(actor);
-        let leases = match candidate.get(ROOT, LEASES_KEY).map_err(message)? {
-            Some((Value::Object(ObjType::Map), leases)) => leases,
-            Some(_) => return Err("the workspace's leases are malformed".into()),
-            None => candidate
-                .put_object(ROOT, LEASES_KEY, ObjType::Map)
-                .map_err(message)?,
-        };
-        let claims = match candidate.get(&leases, id).map_err(message)? {
-            Some((Value::Object(ObjType::Map), claims)) => claims,
-            Some(_) => return Err(format!("lease `{id}` is malformed")),
-            None => candidate
-                .put_object(&leases, id, ObjType::Map)
-                .map_err(message)?,
-        };
-        let row = hex::encode(device);
-        match json {
-            Some(json) => candidate
-                .put(&claims, row.as_str(), json)
-                .map_err(message)?,
-            None => candidate.delete(&claims, row.as_str()).map_err(message)?,
-        }
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
-        Ok(())
-    }
-}
-
-/// A document operation's error as text.
-fn message(error: impl std::fmt::Display) -> String {
-    error.to_string()
 }
 
 #[cfg(test)]
@@ -412,6 +361,29 @@ mod tests {
 
     fn at(now: SystemTime, seconds: u64) -> SystemTime {
         now + Duration::from_secs(seconds)
+    }
+
+    /// A claim reaches the workspace's other holders as a change to its
+    /// document, so a server of the previous peer version, still running
+    /// while its person's servers update one at a time, reads the claims of
+    /// this build and this build reads its: the claim as that version wrote
+    /// it is frozen beside `neighbour-wire`.
+    #[test]
+    fn a_claim_reads_and_writes_as_the_previous_peer_version_wrote_it() {
+        const FROZEN: &str = include_str!("../../../neighbour-wire/previous-peer-frames.txt");
+        let kept = FROZEN
+            .lines()
+            .find_map(|line| line.strip_prefix("lease-claim "))
+            .expect("previous-peer-frames.txt keeps a lease claim");
+        let today = serde_json::to_string(&StoredClaim {
+            term: 3,
+            expires_at_ns: 4_000_000_000,
+            rank: rank(250),
+        })
+        .unwrap();
+        assert_eq!(today, kept, "this build writes a lease claim differently");
+        let read: StoredClaim = serde_json::from_str(kept).unwrap();
+        assert_eq!(serde_json::to_string(&read).unwrap(), kept);
     }
 
     #[test]
@@ -469,58 +441,123 @@ mod tests {
         assert_eq!(left.workspace().lease("tick", over).holder, Some(taken));
     }
 
+    /// Two VM machines that claim a workspace's VM at once settle on the one
+    /// holding its disk, though the other is less loaded: the VM stays where
+    /// it is, and moves only once that machine is gone.
     #[test]
-    fn two_takers_after_a_partition_merge_on_one_winner_and_the_loser_withdraws() {
+    fn the_vm_goes_to_the_machine_that_holds_its_disk() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
         let now = now();
-        let left_cert = cert_of(&left);
-        let right_cert = cert_of(&right);
-        // The lease was over and neither device could see the other: both
-        // claim it at once.
-        let over = at(now, 62 + CLOCK_SKEW_NS / 1_000_000_000);
-        let left_claim = left
+        let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
+        let lease = vm_lease("default");
+        let disk = 8 << 30;
+        let ttl = Duration::from_secs(60);
+        // The left machine has the VM, so its disk is there.
+        assert!(
+            left.workspace_mut()
+                .take_lease(&left_cert, &lease, ttl, vm_rank(rank(900), disk, true), now)
+                .unwrap()
+                .is_some()
+        );
+        sync(&left, &mut right);
+        // Both machines restart after its claim is over, and claim it at once.
+        let back = at(now, 62 + CLOCK_SKEW_NS / 1_000_000_000);
+        for (peer, cert, holds, load) in [
+            (&mut left, &left_cert, true, 900),
+            (&mut right, &right_cert, false, 0),
+        ] {
+            let ranked = vm_rank(rank(load), disk, holds);
+            assert!(
+                peer.workspace_mut()
+                    .take_lease(cert, &lease, ttl, ranked, back)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        sync(&left, &mut right);
+        sync(&right, &mut left);
+        for peer in [&left, &right] {
+            assert_eq!(
+                peer.workspace()
+                    .lease(&lease, back)
+                    .holder
+                    .map(|claim| claim.device),
+                Some(left_cert.device_public_key),
+                "the machine with the disk keeps the VM"
+            );
+        }
+        // Once it is gone and its claim over, the other machine takes the VM.
+        let over = at(back, 62 + CLOCK_SKEW_NS / 1_000_000_000);
+        let taken = right
             .workspace_mut()
-            .take_lease(&left_cert, "tick", Duration::from_secs(60), rank(5), over)
+            .take_lease(
+                &right_cert,
+                &lease,
+                ttl,
+                vm_rank(rank(0), disk, false),
+                over,
+            )
             .unwrap()
-            .expect("alone, the left device wins");
-        let right_claim = right
+            .expect("the lease moves");
+        assert_eq!(taken.device, right_cert.device_public_key);
+    }
+
+    #[test]
+    fn two_first_claims_on_a_new_lease_both_merge_and_the_better_ranked_holds() {
+        let (left, _left_key, right, _right_key) = desktops();
+        // A map two devices each put at one key while apart merges as the
+        // map of the greater device key alone. That device ranks worse here,
+        // so a lease kept in such maps would hold the wrong device.
+        let (mut better, mut worse) =
+            if cert_of(&left).device_public_key < cert_of(&right).device_public_key {
+                (left, right)
+            } else {
+                (right, left)
+            };
+        let now = now();
+        let better_cert = cert_of(&better);
+        let worse_cert = cert_of(&worse);
+        // Neither device could see the other when each claimed the lease no
+        // device had claimed before.
+        let better_claim = better
             .workspace_mut()
-            .take_lease(&right_cert, "tick", Duration::from_secs(60), rank(0), over)
+            .take_lease(&better_cert, "tick", Duration::from_secs(60), rank(0), now)
             .unwrap()
-            .expect("alone, the right device wins too");
+            .expect("alone, the better device wins");
+        let worse_claim = worse
+            .workspace_mut()
+            .take_lease(&worse_cert, "tick", Duration::from_secs(60), rank(5), now)
+            .unwrap()
+            .expect("alone, the worse device wins too");
         assert_eq!(
-            left_claim.term, right_claim.term,
+            better_claim.term, worse_claim.term,
             "both started the same term"
         );
 
-        // The partition ends. The claims rank the same on both devices and
-        // the right device, less loaded, holds.
-        sync(&left, &mut right);
-        sync(&right, &mut left);
-        let winner = left.workspace().lease("tick", over);
-        assert_eq!(
-            winner.holder.map(|holder| holder.device),
-            Some(right_cert.device_public_key)
-        );
-        assert_eq!(winner, right.workspace().lease("tick", over));
+        // The partition ends: both claims are there on both devices, and the
+        // less loaded device holds.
+        sync(&better, &mut worse);
+        sync(&worse, &mut better);
+        let merged = better.workspace().lease("tick", now);
+        assert_eq!(merged.holder, Some(better_claim));
+        let mut claims = merged.claims.clone();
+        claims.sort_by_key(|claim| claim.device);
+        assert_eq!(claims, vec![better_claim, worse_claim], "both claims merge");
+        assert_eq!(merged, worse.workspace().lease("tick", now));
+        assert_eq!(worse.workspace().leases(now), vec![merged]);
 
         // The loser's next claim attempt stops it and withdraws its claim.
         assert!(
-            left.workspace_mut()
-                .take_lease(&left_cert, "tick", Duration::from_secs(60), rank(5), over)
+            worse
+                .workspace_mut()
+                .take_lease(&worse_cert, "tick", Duration::from_secs(60), rank(5), now)
                 .unwrap()
                 .is_none()
         );
-        sync(&left, &mut right);
+        sync(&worse, &mut better);
         assert_eq!(
-            right
-                .workspace()
-                .lease("tick", over)
-                .claims
-                .iter()
-                .map(|claim| claim.device)
-                .collect::<Vec<_>>(),
-            vec![right_cert.device_public_key],
+            better.workspace().lease("tick", now).claims,
+            vec![better_claim],
             "one claim is left"
         );
     }

@@ -5,9 +5,9 @@
 //! extents or, for a small file whose every block was rewritten, in identical
 //! sectors ([`kept_bytes_in_place`]). The lease lives in the namespace
 //! (`crate::namespace::WriteLease`), so every device sees who holds it in causal
-//! order with the file's changes. On this device a lease nobody holds is gated with
-//! [`WriteGate::Ask`] and the first write acquires it; a lease another device holds
-//! gates the file with `WriteGate::Deny(EBUSY)`; a held lease is renewed while the
+//! order with the file's changes. On this device a lease nobody holds is guarded with
+//! [`WriteGuard::Ask`] and the first write acquires it; a lease another device holds
+//! checks the file with `WriteGuard::Deny(EBUSY)`; a held lease is renewed while the
 //! file is written and released after the last write, once the versions under it
 //! are published. Every version written under a lease is tagged with its tenancy
 //! ([`crate::namespace::VersionFence`]), so a version from an epoch its author did
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fs_native::hydrate::{Hydrator as Placeholders, WriteGate, WritePolicy};
+use fs_native::hydrate::{Hydrator as Placeholders, WriteGuard, WritePolicy};
 
 use crate::fs::QuickFS;
 use crate::fs::native_ops::LeaseSource;
@@ -104,38 +104,38 @@ impl Default for LeaseTiming {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Gate {
+enum Check {
     Ask,
     Deny,
 }
 
-/// The write gates on lease-class files, shared with the projector: a new
-/// version of a gated file is gated before it is renamed into place, so no
+/// The write waits for lease-class files, shared with the projector: a new
+/// version of a guarded file is guarded before it is renamed into place, so no
 /// descriptor of it is ever opened unwatched (the kernel decides at open
 /// whether a descriptor raises pre-content events).
 #[derive(Default)]
-pub struct WriteGates {
-    by_path: Mutex<HashMap<PathBuf, Gate>>,
+pub struct WriteGuards {
+    by_path: Mutex<HashMap<PathBuf, Check>>,
     asking: Mutex<HashMap<(u64, u64), PathBuf>>,
 }
 
-impl WriteGates {
-    /// Gates `staged`, a new version of `rel` (at `abs`) not yet renamed
-    /// into place, as the file it replaces is gated.
-    pub fn gate_new_version(
+impl WriteGuards {
+    /// Checks `staged`, a new version of `rel` (at `abs`) not yet renamed
+    /// into place, as the file it replaces is guarded.
+    pub fn check_new_version(
         &self,
         placeholders: &Placeholders,
         staged: &Path,
         abs: &Path,
         rel: &Path,
     ) -> std::io::Result<()> {
-        let gate = self.by_path.lock().ok().and_then(|g| g.get(abs).copied());
-        match gate {
-            Some(Gate::Deny) => placeholders
-                .gate(staged, WriteGate::Deny(libc::EBUSY))
+        let check = self.by_path.lock().ok().and_then(|g| g.get(abs).copied());
+        match check {
+            Some(Check::Deny) => placeholders
+                .check(staged, WriteGuard::Deny(libc::EBUSY))
                 .map(|_| ()),
-            Some(Gate::Ask) => {
-                let key = placeholders.gate(staged, WriteGate::Ask)?;
+            Some(Check::Ask) => {
+                let key = placeholders.check(staged, WriteGuard::Ask)?;
                 if let Ok(mut asking) = self.asking.lock() {
                     asking.insert(key, rel.to_path_buf());
                 }
@@ -161,12 +161,12 @@ pub struct LeasePolicy {
     me: [u8; 32],
     timing: LeaseTiming,
     shared: Arc<Mutex<Shared>>,
-    gates: Arc<WriteGates>,
+    checks: Arc<WriteGuards>,
 }
 
 impl WritePolicy for LeasePolicy {
     fn admit_writer(&self, file: (u64, u64)) -> Result<(), i32> {
-        let Some(path) = self.gates.asked(file) else {
+        let Some(path) = self.checks.asked(file) else {
             return Ok(());
         };
         match self.fs.acquire_write_lease(
@@ -219,12 +219,12 @@ pub struct LeaseKeeper {
     timing: LeaseTiming,
     shared: Arc<Mutex<Shared>>,
     lease_class: HashSet<PathBuf>,
-    /// Gates in force, with the inode each was placed on: a file replaced by a newer
-    /// version is a new inode and is gated again.
-    gates: HashMap<PathBuf, (Gate, (u64, u64))>,
+    /// Checks in force, with the inode each was placed on: a file replaced by a newer
+    /// version is a new inode and is guarded again.
+    checks: HashMap<PathBuf, (Check, (u64, u64))>,
     renewed: HashMap<PathBuf, Instant>,
     notified: HashSet<(PathBuf, u64)>,
-    write_gates: Arc<WriteGates>,
+    write_guards: Arc<WriteGuards>,
     authority: bool,
     answered: HashSet<(fs_protocol::FileDocumentId, [u8; 32], u64)>,
 }
@@ -237,7 +237,7 @@ impl LeaseKeeper {
         me: [u8; 32],
         timing: LeaseTiming,
         lease_class: HashSet<PathBuf>,
-        write_gates: Arc<WriteGates>,
+        write_guards: Arc<WriteGuards>,
     ) -> Self {
         let shared = Arc::new(Mutex::new(Shared::default()));
         placeholders.set_write_policy(Arc::new(LeasePolicy {
@@ -245,7 +245,7 @@ impl LeaseKeeper {
             me,
             timing,
             shared: Arc::clone(&shared),
-            gates: Arc::clone(&write_gates),
+            checks: Arc::clone(&write_guards),
         }));
         Self {
             fs,
@@ -255,10 +255,10 @@ impl LeaseKeeper {
             timing,
             shared,
             lease_class,
-            gates: HashMap::new(),
+            checks: HashMap::new(),
             renewed: HashMap::new(),
             notified: HashSet::new(),
-            write_gates,
+            write_guards,
             authority: false,
             answered: HashSet::new(),
         }
@@ -308,7 +308,7 @@ impl LeaseKeeper {
     }
 
     /// Follows a rename of `from` (and everything below it) to `to`: the
-    /// file stays lease-class under its new name. Gates stay on the inode.
+    /// file stays lease-class under its new name. Checks stay on the inode.
     pub fn moved(&mut self, from: &Path, to: &Path) {
         let rebase = |p: &Path| super::project::rebase(p, from, to);
         self.lease_class = self
@@ -316,8 +316,8 @@ impl LeaseKeeper {
             .drain()
             .map(|p| rebase(&p).unwrap_or(p))
             .collect();
-        self.gates = self
-            .gates
+        self.checks = self
+            .checks
             .drain()
             .map(|(p, g)| (rebase(&p).unwrap_or(p), g))
             .collect();
@@ -326,7 +326,7 @@ impl LeaseKeeper {
             .drain()
             .map(|(p, t)| (rebase(&p).unwrap_or(p), t))
             .collect();
-        if let Ok(mut asking) = self.write_gates.asking.lock() {
+        if let Ok(mut asking) = self.write_guards.asking.lock() {
             for p in asking.values_mut() {
                 if let Some(new) = rebase(p) {
                     *p = new;
@@ -340,7 +340,7 @@ impl LeaseKeeper {
                 .map(|(p, t)| (rebase(&p).unwrap_or(p), t))
                 .collect();
         }
-        if let Ok(mut by_path) = self.write_gates.by_path.lock() {
+        if let Ok(mut by_path) = self.write_guards.by_path.lock() {
             let live = self.live.clone();
             *by_path = by_path
                 .drain()
@@ -374,11 +374,11 @@ impl LeaseKeeper {
         }
     }
 
-    fn set_gate(&mut self, rel: &Path, gate: Option<Gate>) {
+    fn set_check(&mut self, rel: &Path, check: Option<Check>) {
         let abs = self.live.join(rel);
         let key = Placeholders::file_key(&abs).ok();
-        let current = self.gates.get(rel).copied();
-        let unchanged = match (current, gate) {
+        let current = self.checks.get(rel).copied();
+        let unchanged = match (current, check) {
             (None, None) => true,
             (Some((g, k)), Some(want)) => g == want && Some(k) == key,
             _ => false,
@@ -386,38 +386,38 @@ impl LeaseKeeper {
         if unchanged {
             return;
         }
-        if let Ok(mut by_path) = self.write_gates.by_path.lock() {
-            match gate {
+        if let Ok(mut by_path) = self.write_guards.by_path.lock() {
+            match check {
                 Some(g) => by_path.insert(abs.clone(), g),
                 None => by_path.remove(&abs),
             };
         }
-        let result = match gate {
-            Some(Gate::Deny) => self
+        let result = match check {
+            Some(Check::Deny) => self
                 .placeholders
-                .gate(&abs, WriteGate::Deny(libc::EBUSY))
+                .check(&abs, WriteGuard::Deny(libc::EBUSY))
                 .map(|_| ()),
-            Some(Gate::Ask) => self.placeholders.gate(&abs, WriteGate::Ask).map(|key| {
-                if let Ok(mut asking) = self.write_gates.asking.lock() {
+            Some(Check::Ask) => self.placeholders.check(&abs, WriteGuard::Ask).map(|key| {
+                if let Ok(mut asking) = self.write_guards.asking.lock() {
                     asking.insert(key, rel.to_path_buf());
                 }
             }),
             None => self.placeholders.ungate_writes(&abs),
         };
-        if gate != Some(Gate::Ask)
+        if check != Some(Check::Ask)
             && let Ok(key) = Placeholders::file_key(&abs)
-            && let Ok(mut asking) = self.write_gates.asking.lock()
+            && let Ok(mut asking) = self.write_guards.asking.lock()
         {
             asking.remove(&key);
         }
-        if let (Ok(()), Some(g), Some(k)) = (result, gate, key) {
-            self.gates.insert(rel.to_path_buf(), (g, k));
+        if let (Ok(()), Some(g), Some(k)) = (result, check, key) {
+            self.checks.insert(rel.to_path_buf(), (g, k));
         } else {
-            self.gates.remove(rel);
+            self.checks.remove(rel);
         }
     }
 
-    /// Brings gates, renewals and releases up to date, about once a second and after
+    /// Brings checks, renewals and releases up to date, about once a second and after
     /// every epoch. A lease is not released while `unpublished` names its file: the
     /// next holder must start from the versions written under it.
     pub fn tick(&mut self, now_ms: u64, unpublished: &HashSet<PathBuf>) {
@@ -429,7 +429,7 @@ impl LeaseKeeper {
             .unwrap_or_default();
         for rel in taken {
             self.renewed.insert(rel.clone(), Instant::now());
-            self.set_gate(&rel, None);
+            self.set_check(&rel, None);
         }
 
         let leases: HashMap<PathBuf, WriteLease> =
@@ -440,7 +440,7 @@ impl LeaseKeeper {
             let lease = leases.get(&rel).copied();
             match lease {
                 Some(l) if l.holder != self.me && l.is_live(now_ms) => {
-                    self.set_gate(&rel, Some(Gate::Deny));
+                    self.set_check(&rel, Some(Check::Deny));
                     if self.notified.insert((rel.clone(), l.epoch)) {
                         eprintln!(
                             "{} is read-only here: device {} holds its write lease (epoch {})",
@@ -451,7 +451,7 @@ impl LeaseKeeper {
                     }
                 }
                 Some(l) if l.holder == self.me && l.is_live(now_ms) => {
-                    self.set_gate(&rel, None);
+                    self.set_check(&rel, None);
                     self.keep_or_release(&rel, now_ms, unpublished.contains(&rel));
                 }
                 _ => {
@@ -461,8 +461,8 @@ impl LeaseKeeper {
                     // A file with any lease record is lease-class on every
                     // device, not only where the in-place write was seen.
                     let class = self.lease_class.contains(&rel) || lease.is_some();
-                    let gate = class.then_some(Gate::Ask);
-                    self.set_gate(&rel, gate);
+                    let check = class.then_some(Check::Ask);
+                    self.set_check(&rel, check);
                 }
             }
         }
@@ -477,9 +477,9 @@ impl LeaseKeeper {
         let idle = !unpublished
             && last_write.is_none_or(|t| t.elapsed() >= self.timing.release_after_idle);
         if idle {
-            // Gated before the release is visible: no other device can take
+            // Guarded before the release is visible: no other device can take
             // the lease while this device's file is still open to writers.
-            self.set_gate(rel, Some(Gate::Ask));
+            self.set_check(rel, Some(Check::Ask));
             self.fs.release_write_lease(rel, self.me, now_ms);
             if let Ok(mut s) = self.shared.lock() {
                 s.writes.remove(rel);

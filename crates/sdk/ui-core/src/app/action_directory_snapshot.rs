@@ -1,5 +1,5 @@
 //! The app's hold on its directory snapshot
-//! ([`collaboration::action_directory`]): the witness a revision is reused
+//! ([`collaboration::action_directory`]): the observation a revision is reused
 //! under, and the snapshots pinned for local input.
 use super::{App, ResourceCacheKey};
 pub(super) use ::collaboration::action_directory::ActionDirectorySnapshot;
@@ -7,24 +7,24 @@ use runtime_collab::ActionDirectoryRow;
 use std::collections::HashMap;
 use tilo_actions::{ActionAddress, ActionDescriptor, ResourceSpec};
 #[cfg(test)]
-#[path = "directory_effective_witness.rs"]
+#[path = "directory_effective_observation.rs"]
 mod effective;
 
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct DirectoryWitness {
+pub(super) struct DirectoryObservation {
     pub key: ResourceCacheKey,
     pub registry_generation: u64,
     pub root_domain: crate::widget::ActionDirectoryInvocationDomain,
     pub provider_domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
-    pub permissions: crate::permissions::DirectoryPermissionWitness,
+    pub permissions: crate::permissions::DirectoryPermissionObservation,
     pub permission_generation: u64,
-    pub route: Option<crate::collaboration::PrimaryRouteWitness>,
-    pub owners: Vec<crate::bound_dispatch::BoundDirectoryWitness>,
+    pub route: Option<crate::collaboration::AcceptedRoute>,
+    pub owners: Vec<crate::bound_dispatch::BoundDirectoryObservation>,
     pub root_revision: Option<String>,
     pub providers: Vec<String>,
 }
 
-impl DirectoryWitness {
+impl DirectoryObservation {
     fn reusable_model_projection(&self) -> bool {
         self.key.mutation_generation != u64::MAX
             && self.registry_generation != u64::MAX
@@ -60,7 +60,7 @@ impl DirectoryWitness {
 /// An inert, one-pass candidate. Real model sync and fresh publication still
 /// run. No executable declaration or permission decision is retained here.
 pub(super) struct ModelDirectoryCandidate {
-    witness: std::rc::Rc<DirectoryWitness>,
+    observation: std::rc::Rc<DirectoryObservation>,
     revision: String,
     snapshot: std::rc::Rc<ActionDirectorySnapshot>,
     cursors: HashMap<String, super::ActionDirectoryCursor>,
@@ -198,7 +198,7 @@ impl App {
             != Some(revision)
         {
             // Disconnection must not recompute a revision against a now-absent
-            // primary witness. Only the previously frozen surface is usable.
+            // primary observation. Only the previously frozen surface is usable.
             return Err(PinRefused::Moved);
         }
         let snapshot = self
@@ -331,9 +331,9 @@ impl App {
             .as_ref()?
             .effective_invocations?;
         let snapshot = self.actions.action_directory_snapshot.as_ref()?.clone();
-        let (witness, revision) = self.actions.action_directory_stamp.as_ref()?.clone();
+        let (observation, revision) = self.actions.action_directory_stamp.as_ref()?.clone();
         Some(ModelDirectoryCandidate {
-            witness,
+            observation,
             revision,
             snapshot,
             cursors: std::mem::take(&mut self.actions.action_directory_cursors),
@@ -354,7 +354,7 @@ impl App {
         let Some(snapshot) = &self.actions.action_directory_snapshot else {
             return;
         };
-        let Some((witness, revision)) = &mut self.actions.action_directory_stamp else {
+        let Some((observation, revision)) = &mut self.actions.action_directory_stamp else {
             return;
         };
         if *revision == candidate.revision {
@@ -369,11 +369,11 @@ impl App {
             }
             return;
         }
-        if witness.reusable_model_projection()
-            && witness.same_non_scheduling_fields(&candidate.witness)
+        if observation.reusable_model_projection()
+            && observation.same_non_scheduling_fields(&candidate.observation)
             && snapshot == &candidate.snapshot
         {
-            // Retain the NEW witness and freshly materialized snapshot. Only
+            // Retain the NEW observation and freshly materialized snapshot. Only
             // their externally visible revision/cursors can remain continuous.
             *revision = candidate.revision;
             self.actions.action_directory_cursors = candidate.cursors;
@@ -385,7 +385,7 @@ impl App {
         resources: &[ResourceSpec],
         descriptors: &[ActionDescriptor],
     ) {
-        // Establish current ownership/generation witnesses before comparing data.
+        // Establish current ownership/generation observations before comparing data.
         if self.try_action_directory_revision().is_err() {
             return;
         }
@@ -399,10 +399,10 @@ impl App {
             // a paged read of a busy app still reads one snapshot.
             let retired = self.actions.action_directory_retired.take();
             self.actions.action_directory_cursors.clear();
-            if let Some((witness, revision)) = &mut self.actions.action_directory_stamp {
+            if let Some((observation, revision)) = &mut self.actions.action_directory_stamp {
                 match retired.filter(|retired| {
-                    witness.reusable_model_projection()
-                        && witness.same_non_scheduling_fields(&retired.witness)
+                    observation.reusable_model_projection()
+                        && observation.same_non_scheduling_fields(&retired.observation)
                         && *retired.snapshot == snapshot
                 }) {
                     Some(retired) => {
@@ -424,9 +424,9 @@ impl App {
         let cursors = std::mem::take(&mut self.actions.action_directory_cursors);
         let snapshot = self.actions.action_directory_snapshot.take();
         let stamp = self.actions.action_directory_stamp.take();
-        if let (Some(snapshot), Some((witness, revision))) = (snapshot, stamp) {
+        if let (Some(snapshot), Some((observation, revision))) = (snapshot, stamp) {
             self.actions.action_directory_retired = Some(ModelDirectoryCandidate {
-                witness,
+                observation,
                 revision,
                 snapshot,
                 cursors,

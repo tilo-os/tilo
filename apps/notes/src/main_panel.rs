@@ -51,7 +51,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{RichTextField, RichTextSource, RichTextSurface};
 use ui::Widget;
-use ui::framework::Dispatcher;
+use ui::framework::{Chain, Dispatcher};
+
+use crate::part::PagePart;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -219,76 +221,18 @@ pub struct BacklinkChip {
 /// actions.
 pub type NotesEditor = RichTextSurface<PageBody>;
 
-/// A page's body: the notebook's rich-text child resource, edited through
-/// its dispatcher once the app is hosted by the framework.
-pub struct PageBody {
-    field: RichTextField,
-    page: Option<PageId>,
-}
-
-impl PageBody {
-    fn attach(&mut self, notebook: &Dispatcher<crate::resource::Notebook>) {
-        if let Some(page) = self.page {
-            self.field.attach(body_dispatcher(notebook, page));
-        }
-    }
-}
-
-/// The dispatcher `page`'s body is edited through: each rich-text edit is a
-/// field edit of the notebook at the body's path.
-fn body_dispatcher(
-    notebook: &Dispatcher<crate::resource::Notebook>,
-    page: PageId,
-) -> Dispatcher<tilo_document::RichText> {
-    notebook.child(&crate::actions::page_resource_id(page), move |op| {
-        crate::actions::edit_body_action(page, &op)
-    })
-}
-
-impl RichTextSource for PageBody {
-    fn read_only(&self) -> bool {
-        self.field.read_only()
-    }
-
-    fn sync(&mut self, doc: &AutoCommit) {
-        self.field.sync(doc);
-    }
-
-    fn revision(&self) -> Option<u64> {
-        self.field.revision()
-    }
-
-    fn read_from(&mut self, doc: &AutoCommit) -> bool {
-        self.field.read_from(doc)
-    }
-
-    fn with_state<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
-        self.field.with_state(read)
-    }
-
-    fn apply(
-        &mut self,
-        edits: &mut ui::widget::Edits<'_>,
-        edit: &tilo_document::RichTextAction,
-    ) -> Result<(), ui::tilo_actions::ActionError> {
-        self.field.apply(edits, edit)
-    }
-
-    fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
-        self.field.presence_keys()
-    }
-}
+/// The notes' chain, and the part of it a note is kept in.
+mod page_body;
+use page_body::Kept;
+pub use page_body::PageBody;
 
 /// Notes is a prose editor, so ordinary blocks must reflow to the available
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
 /// editor's single-line (code/editor) default. `page` is the page whose body
-/// it edits, through the notebook's dispatcher; without a page or a
-/// dispatcher it shows what it is given and writes nothing.
-fn notes_editor(
-    page: Option<(PageId, ObjId)>,
-    notebook: Option<&Dispatcher<crate::resource::Notebook>>,
-) -> NotesEditor {
+/// it edits, through the notes' chain, kept in the part `kept` names; without
+/// a page or a part it shows what it is given and writes nothing.
+fn notes_editor(page: Option<(PageId, ObjId)>, kept: Option<Kept>) -> NotesEditor {
     let body_object = page.as_ref().map(|(_, body)| body.clone());
     let mut body = PageBody {
         field: RichTextField::view_only(move |doc| {
@@ -297,10 +241,9 @@ fn notes_editor(
                 .filter(|body| tilo_doc::model::open(doc, body).is_ok())
         }),
         page: page.map(|(page, _)| page),
+        kept,
     };
-    if let Some(notebook) = notebook {
-        body.attach(notebook);
-    }
+    body.attach();
     RichTextSurface::over(body).with_editor(
         BlockEditor::new()
             .with_wrap_lines(true)
@@ -378,8 +321,10 @@ pub struct MainPanel {
     header_node: Option<NodeId>,
     metadata_height: f64,
     /// Currently displayed page (None until a selection lands). Also the
-    /// "is a page open" signal that gates the title vs. the empty state.
+    /// "is a page open" signal that checks the title vs. the empty state.
     page_id: Option<PageId>,
+    /// The part of the notes' chain the open note is kept in, when hosted.
+    page_part: Option<u64>,
     date_index: crate::metadata::NoteDateIndex,
     dates: crate::metadata::NoteDates,
     /// Where the note was first written, as its header shows it, when it
@@ -454,9 +399,11 @@ pub struct MainPanel {
     /// changes what the editor shows without the editor itself editing — it
     /// presents content, binds another page or clears.
     content_generation: u64,
-    /// The notebook's dispatcher, once the app is hosted: page bodies are
-    /// edited through it.
+    /// The notebook's dispatcher, once the app is hosted.
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
+    /// The notes' chain, once the app is hosted: page bodies are read from
+    /// the part keeping each and edited through it.
+    chain: Option<Chain<PagePart>>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -556,6 +503,7 @@ impl MainPanel {
         title.set_accessible_name(CATALOG.t("notes-a11y-page-title"));
         Self {
             page_id: None,
+            page_part: None,
             date_index: crate::metadata::NoteDateIndex::default(),
             dates: crate::metadata::NoteDates::default(),
             origin: None,
@@ -584,6 +532,7 @@ impl MainPanel {
             editor: notes_editor(None, None),
             content_generation: 0,
             notebook: None,
+            chain: None,
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -692,7 +641,7 @@ impl MainPanel {
         self.set_title_value(title);
         let specs = crate::markdown::parse(body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = self.fresh_editor(None);
+        self.editor = self.fresh_editor(None, None);
         self.editor.editor_mut().set_blocks(blocks);
         // Focus the editor's first block so the user can start
         // typing immediately. The App will route keystrokes through
@@ -720,19 +669,30 @@ impl MainPanel {
     ///
     /// # Errors
     /// Rejects a page without a body.
+    ///
+    /// Hosted, the body is read from part `part` of the notes' chain; shown
+    /// without the chain, from `doc`, a part's document.
     pub fn bind_canonical_page(
         &mut self,
         doc: &AutoCommit,
         page: PageId,
+        part: Option<u64>,
         title: &str,
     ) -> Result<(), String> {
-        let body = crate::notebook::body_object(doc, page).ok_or("the page has no body")?;
+        let kept = self.chain.clone().zip(part);
+        let body = match &kept {
+            Some((chain, part)) => chain
+                .read_part(*part, |doc| crate::part::body_object(doc, page))
+                .flatten(),
+            None => crate::part::body_object(doc, page),
+        }
+        .ok_or("the page has no body")?;
         if let Some(old) = self.page_id
             && old != page
         {
             self.scroll_by_page.insert(old, self.scroll_y);
         }
-        // Binding the page already open again (its record re-read, a reveal)
+        // Binding the page already open again (its resource re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
         let same_page = self.page_id == Some(page);
@@ -747,7 +707,7 @@ impl MainPanel {
                 Some((block.id.clone(), block.line.cursor_pos()))
             })
             .flatten();
-        let mut editor = self.fresh_editor(Some((page, body)));
+        let mut editor = self.fresh_editor(Some((page, body)), kept);
         editor
             .editor_mut()
             .set_local_author(self.local_author.clone());
@@ -767,6 +727,7 @@ impl MainPanel {
         self.editor = editor;
         self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(page);
+        self.page_part = part;
         self.dates = self.date_index.get(page);
         self.refresh_captions();
         self.empty_action_focused = false;
@@ -794,17 +755,21 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
+        panel.chain.clone_from(&self.chain);
         // The new panel goes on from where this one read the open note's
         // dates rather than reading its ops again.
         panel.date_index.clone_from(&self.date_index);
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
         }
+        if let Some(pages) = self.header.pages() {
+            panel.header.attach_pages(pages);
+        }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
             let title = &workspace.get(page).ok_or("selected page missing")?.title;
-            panel.bind_canonical_page(doc, page, title)?;
+            panel.bind_canonical_page(doc, page, workspace.part_of(page), title)?;
         }
         Ok(panel)
     }
@@ -862,6 +827,7 @@ impl MainPanel {
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
+        self.page_part = None;
         self.parent_path.clear();
         self.set_title_value("");
         self.header.set_tags(Vec::new());
@@ -869,7 +835,7 @@ impl MainPanel {
         self.header.set_backlinks(Vec::new());
         self.header.set_captions(Vec::new());
         self.metadata_height = 0.0;
-        self.editor = self.fresh_editor(None);
+        self.editor = self.fresh_editor(None, None);
         self.content_generation = self.content_generation.wrapping_add(1);
         self.body = String::new();
         self.scroll_y = 0.0;
@@ -986,9 +952,11 @@ impl MainPanel {
         // in the header's provenance row; its history here still says who
         // moved it.
         let now = self.clock.map_or_else(ui::clock::local_now, |at| {
-            chrono::DateTime::<chrono::Local>::from(ui::time::to_std(at))
+            jiff::Timestamp::try_from(ui::time::to_std(at))
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+                .to_zoned(jiff::tz::TimeZone::system())
         });
-        lines.extend(self.dates.labels_at(now));
+        lines.extend(self.dates.labels_at(&now));
         lines
     }
 
@@ -1073,14 +1041,18 @@ impl MainPanel {
         &mut self,
         notebook: Dispatcher<crate::resource::Notebook>,
         actions: ui::framework::Actions<crate::resource::Notebook>,
+        notes: Option<crate::app::Notes>,
     ) {
-        self.editor.source_mut().attach(&notebook);
         self.header.attach(actions);
         self.notebook = Some(notebook);
+        if let Some(notes) = notes {
+            self.header.attach_pages(notes.actions);
+            self.chain = Some(notes.chain);
+        }
     }
 
-    fn fresh_editor(&self, page: Option<(PageId, ObjId)>) -> NotesEditor {
-        let mut editor = notes_editor(page, self.notebook.as_ref());
+    fn fresh_editor(&self, page: Option<(PageId, ObjId)>, kept: Option<Kept>) -> NotesEditor {
+        let mut editor = notes_editor(page, kept);
         editor
             .editor_mut()
             .set_image_store(self.image_store.clone());
@@ -1809,7 +1781,15 @@ impl Widget for MainPanel {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         ui::tilo_resource::profiling::measure("note_dates", || {
-            self.date_index.sync(state, self.page_id);
+            // A note's dates are its own changes, kept in its part.
+            let page = self.page_id;
+            let index = &mut self.date_index;
+            match self.chain.as_ref().zip(self.page_part) {
+                Some((chain, part)) => {
+                    chain.read_part(part, |doc| index.sync(doc, page));
+                }
+                None => index.sync(state, page),
+            }
         });
         let dates = self
             .page_id

@@ -226,7 +226,11 @@ type = "text"
 [[resources.verbs]]
 id = "reopen-closed"
 kind = "outside"
-params = []
+
+[[resources.verbs.params]]
+name = "app"
+required = false
+type = "text"
 
 [[resources.verbs]]
 id = "share-window"
@@ -937,6 +941,15 @@ kind = "undoable"
 name = "width"
 required = true
 type = "int"
+
+[[resources.verbs.params]]
+name = "height"
+required = true
+type = "int"
+
+[[resources.verbs]]
+id = "drawn"
+kind = "read"
 
 [[resources.verbs.params]]
 name = "height"

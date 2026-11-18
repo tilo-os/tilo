@@ -1,7 +1,7 @@
 //! Inviting people into the workspace a page is in: the session's own role
 //! ([`tilo_session::invite`]) and sheet, over the page. Who is in the workspace
 //! is the membership the page follows, the parts this person may hand out are
-//! their standing here, and the workspace's host makes, lists and cancels the
+//! their member access here, and the workspace's host makes, lists and cancels the
 //! links, which open this page.
 
 use std::cell::RefCell;
@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use serde::Deserialize;
 use tilo_desktop::here::Here;
-use tilo_relay_protocol::workspaces::{PendingInvite, WorkspacesReply, WorkspacesRequest};
+use tilo_server_protocol::workspaces::{PendingInvite, WorkspacesReply, WorkspacesRequest};
 use tilo_session::invite::{Answer, Invite, Issued, Refused, Workspace};
 use tilo_sheets::Presentation;
 use tilo_sheets::directory::Store;
@@ -225,7 +225,7 @@ const NO_WORKSPACE: &str = "this page is in no workspace";
 impl Workspace for PageWorkspace {
     fn may_invite(&self) -> bool {
         // Whether this person may invite here is the workspace's last answer, which
-        // [`crate::replication`] asks with the rest of their standing.
+        // [`crate::replication`] asks with the rest of their access.
         self.asks.hosted()
             && self.workspace().is_some()
             && self.shared.invitable.load(Ordering::Relaxed)
@@ -269,7 +269,7 @@ impl Workspace for PageWorkspace {
     }
 
     fn roles(&self) -> Vec<sheet::Role> {
-        let ceiling = self.shared.standing.role().unwrap_or(Role::Editor);
+        let ceiling = self.shared.role.role().unwrap_or(Role::Editor);
         let mut roles: Vec<sheet::Role> = Role::ASSIGNABLE
             .into_iter()
             .filter(|role| ceiling.includes(*role))

@@ -1,4 +1,4 @@
-"""An all-target check builds every target, the feature-gated ones included.
+"""An all-target check builds every target, the feature-dependent ones included.
 
 `--all-targets`, and nextest's `--tests`, select a test, bench or example whose
 Cargo.toml lists `required-features` only when the build enables them, and Cargo
@@ -47,7 +47,7 @@ class CheckAllTargetsTests(unittest.TestCase):
             self.assertLessEqual({"tilo-ui/test-support", "tilo-media/decode",
                                   "tilo-media/test-support"}, features)
 
-    def test_a_selection_none_of_which_gates_a_target_gets_no_features(self):
+    def test_a_selection_none_of_which_checks_a_target_gets_no_features(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(["bash", str(HELPER), "-p", "chat"],
                                     capture_output=True, text=True, check=True,
@@ -73,7 +73,7 @@ class CheckAllTargetsTests(unittest.TestCase):
 
 class WarningCheckTests(unittest.TestCase):
     def test_the_workspaces_test_features_are_enabled(self):
-        """The workspace check reads the warnings of the gated targets too."""
+        """The workspace check reads the warnings of the guarded targets too."""
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "argv"
             env = fake_cargo(Path(directory), RECORD_ARGV)

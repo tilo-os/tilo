@@ -50,7 +50,7 @@ impl Factory {
     fn check(&self) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         if let Some(scratch) = &self.scratch {
-            scratch.check_custody()?;
+            scratch.check_ownership()?;
         }
         Ok(())
     }

@@ -139,7 +139,7 @@ fn workspace_sync(
                 workspace.tabs().any(|shown| {
                     shown.id == instance
                         && tilo_desktop_model::apps::canonical_app_id(&shown.tile)
-                            .is_some_and(|id| tilo_desktop_policy::app_ids_match(&id, app))
+                            .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
                 })
             })
         })
@@ -160,7 +160,7 @@ fn workspace_sync(
 /// The theme the shell and its windows wear: the settings document's, with the host's accessibility
 /// overrides on top, built as the shell's own theme was when the session started.
 fn shell_theme(document: &Map<String, Value>) -> Theme {
-    let accessibility = ui::host::environment().accessibility;
+    let accessibility = ui::process::environment().accessibility;
     Theme::configured_from(document).with_a11y(
         &ui::a11y::A11ySettings {
             high_contrast: accessibility.high_contrast,

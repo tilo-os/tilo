@@ -20,7 +20,7 @@ fn mail(window: &mut Window) -> &mut crate::app::MailApp {
     window.surface_mut::<crate::app::MailApp>()
 }
 
-/// The content of the person's copies record as its route keeps it: what
+/// The content of the person's copies resource as its route keeps it: what
 /// one device keeps there, the person's other devices read, and no device
 /// collects it from under them.
 struct Route(tilo_content::MemoryBackend);
@@ -110,7 +110,7 @@ struct Peers {
     /// here, so it must outlive both windows.
     _vault: tempfile::TempDir,
     /// The Settings window that made the account: the person's accounts
-    /// record lives through it, so it outlives both windows too.
+    /// resource lives through it, so it outlives both windows too.
     _settings: TestApp<settings::resource::SettingsShell>,
     page: Window,
     device: Window,
@@ -124,7 +124,7 @@ fn peers() -> Peers {
     let smtp = rt.block_on(FakeSmtp::start(server_tls_config())).unwrap();
 
     // The account, as a migration or Settings keeps it: its settings in the
-    // person's accounts record, its password in the vault of the device that
+    // person's accounts resource, its password in the vault of the device that
     // holds it.
     let vault = tempfile::tempdir().unwrap();
     let mut settings =
@@ -146,11 +146,11 @@ fn peers() -> Peers {
         .shared_person::<accounts::person::PersonAccounts>()
         .unwrap();
 
-    // The device: custody releases it the secret, and it reaches the servers.
+    // The device: ownership releases it the secret, and it reaches the servers.
     let mut device = Window::on_device("laptop").unwrap();
     {
         let app = mail(&mut device);
-        app.custody = Some(crate::custody::SecretRelease::kept_under(
+        app.ownership = Some(crate::account_secrets::SecretRelease::kept_under(
             vault.path().to_path_buf(),
         ));
         let engine = crate::engine::live::LiveEngine::trusting(
@@ -164,20 +164,20 @@ fn peers() -> Peers {
         app.follow_person_accounts(accounts.clone());
     }
     // What the device fetches it keeps for the person's other devices: the
-    // person's copies record, its content carried beside it (a test window's
-    // record keeps none of its own).
+    // person's copies resource, its content carried beside it (a test window's
+    // resource keeps none of its own).
     let copies = device
         .person::<crate::copies::MailCopies>()
         .expect("the device keeps copies");
     let carried = tilo_content::ContentStore::new(Route(tilo_content::MemoryBackend::default()));
     mail(&mut device).copies = Some(crate::copies::Copies::new(copies.clone(), carried.clone()));
 
-    // The page: the same accounts record, no secret and no server.
+    // The page: the same accounts resource, no secret and no server.
     let mut page = Window::on_device("page").unwrap();
     {
         let app = mail(&mut page);
         app.reach_no_server();
-        app.custody = None;
+        app.ownership = None;
         app.state().checks.asks = true;
         app.follow_person_accounts(accounts);
         app.copies = Some(crate::copies::Copies::new(copies, carried));

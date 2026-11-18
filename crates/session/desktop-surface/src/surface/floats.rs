@@ -153,7 +153,7 @@ pub(super) fn set(
 /// after it, as the strip shares its room with ([`GroupRow::share_with_floating_neighbour`]).
 pub(super) fn opened_beside(row: &GroupRow, group: u64) -> Option<u64> {
     let index = row.groups.iter().position(|held| held.id == group)?;
-    let standing = |at: usize| {
+    let placed_at = |at: usize| {
         row.groups
             .get(at)
             .filter(|held| !row.is_floating(held.id))
@@ -161,8 +161,8 @@ pub(super) fn opened_beside(row: &GroupRow, group: u64) -> Option<u64> {
     };
     index
         .checked_sub(1)
-        .and_then(standing)
-        .or_else(|| standing(index.saturating_add(1)))
+        .and_then(placed_at)
+        .or_else(|| placed_at(index.saturating_add(1)))
 }
 
 /// A window floating as a card in the floating layer's column on this device: the layer stacks it

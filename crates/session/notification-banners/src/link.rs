@@ -257,7 +257,7 @@ impl Link {
 }
 
 /// The feed a desktop lends the banners it mounts
-/// ([`ui::application::HostContext::lend`]): the desktop keeps a clone of
+/// ([`ui::application::ProcessContext::lend`]): the desktop keeps a clone of
 /// the link, publishes its banners on it and carries out what they ask.
 #[derive(Clone)]
 pub struct BannerService {

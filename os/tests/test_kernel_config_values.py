@@ -86,18 +86,18 @@ class SurfaceCameraSupportTests(unittest.TestCase):
         'CONFIG_VIDEO_OV02C10', 'CONFIG_VIDEO_OV08X40', 'CONFIG_VIDEO_HI556',
         'CONFIG_VIDEO_DW9714',
     )
-    # `bool` symbols: the menu gate and the aggregator bus are part of the core
+    # `bool` symbols: the menu check and the aggregator bus are part of the core
     # module, not modules of their own.
-    GATES = ('CONFIG_SURFACE_PLATFORMS', 'CONFIG_SURFACE_AGGREGATOR_BUS')
+    HOLDS = ('CONFIG_SURFACE_PLATFORMS', 'CONFIG_SURFACE_AGGREGATOR_BUS')
 
     def test_the_surface_stack_is_requested_on_x86(self):
         values = config.settings(self.FRAGMENT.read_text(encoding='utf-8'))
         for driver in self.DRIVERS:
             with self.subTest(driver=driver):
                 self.assertEqual(config.mismatches(values, {driver: 'm'}), [])
-        for gate in self.GATES:
-            with self.subTest(gate=gate):
-                self.assertEqual(config.mismatches(values, {gate: 'y'}), [])
+        for check in self.HOLDS:
+            with self.subTest(check=check):
+                self.assertEqual(config.mismatches(values, {check: 'y'}), [])
 
     def test_the_drivers_ride_on_the_shared_core(self):
         shared = config.settings((Path(__file__).parents[1] / 'kernel/config-fragments/tilo.config')

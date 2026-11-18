@@ -4,7 +4,7 @@
 #
 #   os/dev/publish-dev-disk.sh
 #
-# Run once the disk passed its gates: t's publish-os-dev-<arch>
+# Run once the disk passed its checks: t's publish-os-dev-<arch>
 # (tools/ci/publish/os-dev-publish.sh). It writes, in this order:
 #
 #   registry.tilo.so/tilo/tilo-vm:<tag>-<arch>          the dev image child
@@ -16,20 +16,20 @@
 #
 # tilo-vm-disk-<arch>.json is the commit point for <arch>: it is written only
 # after its disks and image exist, and `tilo-vm vm create` offers a tag to a
-# host only once that host's file exists. The other architecture's lane adds
+# host only once that host's file exists. The other architecture's job adds
 # its own child to the index and its own manifest whenever it finishes; neither
 # waits for, or can be failed by, the other.
 #
 # The index is rebuilt from the per-architecture child tags rather than edited,
-# and each lane repeats that until a fresh read agrees. Two lanes finishing at
-# once therefore converge on the index holding both children: the lane that
-# writes last read both child tags, because each lane pushes its child before
+# and each job repeats that until a fresh read agrees. Two jobs finishing at
+# once therefore converge on the index holding both children: the job that
+# writes last read both child tags, because each job pushes its child before
 # it reads any.
 #
 # Environment (all required unless marked):
 #   DEV_IMAGE          local dev image (containers-storage), e.g. localhost/tilo-vm:ci
 #   DEV_TAG            tilo-vm tag and disk package version
-#   ARCH               x86_64 or aarch64 (this lane's native architecture)
+#   ARCH               x86_64 or aarch64 (this job's native architecture)
 #   SOURCE_REVISION    full commit SHA the dev image was built from
 #   DISK_TOOLING_REVISION full commit SHA supplying disk installer tooling
 #   SOURCE_DISK        the installed qcow2, never booted
@@ -106,7 +106,7 @@ package="$package_api/tilo-vm-disk/$DEV_TAG"
 manifest_file="tilo-vm-disk-$ARCH.json"
 
 # The per-architecture manifest is immutable once written: an exact rerun of
-# a lane that already committed has nothing left to do.
+# a job that already committed has nothing left to do.
 status=$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' \
   --header "Authorization: Bearer $TILO_PACKAGE_TOKEN" "$package/$manifest_file")
 case "$status" in
@@ -143,7 +143,7 @@ skopeo copy --preserve-digests "docker://$REPOSITORY@$image_digest" \
 note "pushed $child_tag ($image_digest)"
 
 # ---- 2. the index of every child published so far ------------------------------
-# One child per architecture whose tag names this source revision. This lane's
+# One child per architecture whose tag names this source revision. This job's
 # child must be the digest it just pushed; anything else is a concurrent writer
 # of the same architecture, which must not be silently merged.
 children() {
@@ -173,13 +173,13 @@ converged=false
 for attempt in 1 2 3 4 5 6; do
   wanted=$(children)
   [[ $(jq -r --arg arch "$ARCH" '.[] | select(.architecture == $arch) | .digest' <<< "$wanted") == "$image_digest" ]] \
-    || die "$child_tag no longer names $image_digest: another $ARCH lane is publishing $DEV_TAG"
+    || die "$child_tag no longer names $image_digest: another $ARCH job is publishing $DEV_TAG"
   if [[ $(index_children "$index_tag") == "$wanted" ]]; then
     converged=true
     break
   fi
   # buildx writes the index straight to the registry; podman needs a local
-  # store, which a lane that merely has podman installed cannot always set up.
+  # store, which a job that merely has podman installed cannot always set up.
   if docker buildx version >/dev/null 2>&1; then
     mapfile -t sources < <(jq -r --arg repo "$REPOSITORY" '.[] | "\($repo)@\(.digest)"' <<< "$wanted")
     docker buildx imagetools create --tag "$index_tag" "${sources[@]}"
@@ -193,7 +193,7 @@ for attempt in 1 2 3 4 5 6; do
     podman manifest push --all "$list" "docker://$index_tag"
     podman manifest rm "$list" >/dev/null
   fi
-  # A concurrent lane may have written between our read and write; let its
+  # A concurrent job may have written between our read and write; let its
   # write land before reading back.
   sleep $(( attempt * 5 ))
 done
@@ -221,7 +221,7 @@ for format in $DISK_FORMATS; do
     # the download is small and needs no unpacking.
     qcow2)
       if qemu-img info --output=json "$SOURCE_DISK" | jq -e '."format-specific".data."compression-type" == "zstd"' >/dev/null; then
-        # The CI dev-disk lane already wrote zstd qcow2 clusters. A hard link
+        # The CI dev-disk job already wrote zstd qcow2 clusters. A hard link
         # gives the package its versioned name without allocating another disk.
         ln -- "$SOURCE_DISK" "$out/$file"
       else

@@ -1,6 +1,6 @@
 //! Installed-copy durable intent, never media or verified/adopted output authority.
 //! Incomplete and unknown launches remain quarantined. Terminal material removal
-//! requires the actual private completed importer and verifier custody.
+//! requires the actual private completed importer and verifier ownership.
 use super::attempt::{NamespaceFacts, Phase, Route};
 use super::*;
 mod cleanup;
@@ -125,11 +125,11 @@ impl Scratch {
 #[serde(deny_unknown_fields)]
 struct Namespace {
     facts: NamespaceFacts,
-    custody: super::super::process::Custody,
+    ownership: super::super::process::Ownership,
 }
 impl Namespace {
     fn actual(endpoint: &ServiceEndpoint) -> io::Result<Self> {
-        let a = endpoint.custody()?;
+        let a = endpoint.ownership()?;
         if a.init_pid <= 1 || a.start_ticks == 0 || a.namespace_ino == 0 {
             return Err(failure("Installed copy namespace unavailable"));
         }
@@ -143,14 +143,14 @@ impl Namespace {
             namespace_dev: a.namespace_dev,
             namespace_ino: a.namespace_ino,
         };
-        let custody = super::super::process::Custody {
+        let ownership = super::super::process::Ownership {
             host,
             namespace: Some(namespace),
             projection: None,
             launch_acknowledged: true,
             inventory_scratch: None,
         };
-        if a != endpoint.custody()? {
+        if a != endpoint.ownership()? {
             return Err(failure("Installed copy namespace changed"));
         }
         Ok(Self {
@@ -160,7 +160,7 @@ impl Namespace {
                 namespace_dev: a.namespace_dev,
                 namespace_ino: a.namespace_ino,
             },
-            custody,
+            ownership,
         })
     }
 }
@@ -170,7 +170,7 @@ struct Receiver {
     pid: u32,
     start: u64,
     uid: u32,
-    custody: super::super::process::Custody,
+    ownership: super::super::process::Ownership,
     expectations_digest: Option<[u8; 32]>,
 }
 impl Receiver {
@@ -187,7 +187,7 @@ impl Receiver {
             pid: peer.pid(),
             start,
             uid: peer.uid(),
-            custody: super::super::process::Custody {
+            ownership: super::super::process::Ownership {
                 host,
                 namespace: None,
                 projection: None,
@@ -318,11 +318,11 @@ impl Record {
                 namespace_ino: n.facts.namespace_ino,
             };
             if !n.facts.plausible()
-                || n.custody.host.pid != n.facts.init_pid
-                || n.custody.namespace != Some(expected)
-                || !n.custody.launch_acknowledged
-                || n.custody.projection.is_some()
-                || n.custody.inventory_scratch.is_some()
+                || n.ownership.host.pid != n.facts.init_pid
+                || n.ownership.namespace != Some(expected)
+                || !n.ownership.launch_acknowledged
+                || n.ownership.projection.is_some()
+                || n.ownership.inventory_scratch.is_some()
             {
                 return Err(failure("Installed copy namespace checkpoint invalid"));
             }
@@ -400,11 +400,11 @@ impl Record {
             if receiver.pid <= 1
                 || receiver.start == 0
                 || receiver.uid != self.binding.target_uid
-                || receiver.custody.host.pid != receiver.pid
-                || receiver.custody.namespace.is_some()
-                || receiver.custody.launch_acknowledged
-                || receiver.custody.projection.is_some()
-                || receiver.custody.inventory_scratch.is_some()
+                || receiver.ownership.host.pid != receiver.pid
+                || receiver.ownership.namespace.is_some()
+                || receiver.ownership.launch_acknowledged
+                || receiver.ownership.projection.is_some()
+                || receiver.ownership.inventory_scratch.is_some()
                 || match receiver.expectations_digest {
                     Some(digest) => self
                         .verified
@@ -952,14 +952,14 @@ impl InstalledCopyAttempt {
         if secret_facts(&named)? != self.secret_identity
             || secret_facts(&self.secret)? != self.secret_identity
         {
-            return Err(failure("Installed copy retirement secret custody changed"));
+            return Err(failure("Installed copy retirement secret storage changed"));
         }
         let before = serde_json::to_vec(&record)?;
         record
             .export_namespace
             .as_ref()
             .ok_or_else(|| failure("Unknown launch cannot guess namespace absence"))?
-            .custody
+            .ownership
             .require_stopped()?;
         if matches!(
             record.phase,
@@ -974,7 +974,7 @@ impl InstalledCopyAttempt {
                 .verify_namespace
                 .as_ref()
                 .ok_or_else(|| failure("Unknown verifier launch cannot guess namespace absence"))?
-                .custody
+                .ownership
                 .require_stopped()?;
         }
         if record.phase == Phase::RecoveryVerifying && record.recovery_namespace.is_none() {
@@ -983,7 +983,7 @@ impl InstalledCopyAttempt {
             ));
         }
         if let Some(namespace) = &record.recovery_namespace {
-            namespace.custody.require_stopped()?;
+            namespace.ownership.require_stopped()?;
         }
         let after = load(&store)?
             .ok_or_else(|| failure("Installed copy retirement checkpoint disappeared"))?;

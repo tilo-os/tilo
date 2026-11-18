@@ -70,7 +70,7 @@ history.
 - **Current state first, history on demand.** A joiner loads the latest
   snapshot, which is sealed like any other op and retained by hosts as a
   checkpoint through the clear `ContentRetention` class in the metadata.
-  Older ops stay with the broker's durable history and the relay, and are
+  Older ops stay with the broker's durable history and the server, and are
   paged in newest-first through the existing scrollback request.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
@@ -166,7 +166,7 @@ key holder keeps a [`GroupPeer`]:
   ratchet secrets, so an app can seal and open content but cannot change
   membership.
 
-A workspace's first frame is `Genesis`. It closes the plaintext gate for
+A workspace's first frame is `Genesis`. It closes off plaintext for
 good, whether the workspace is new or is being migrated from plaintext.
 
 ### Per-edit cost
@@ -201,12 +201,12 @@ plaintext path.
   missed the other during an outage) resolve to the lower digest, and every
   device that held the other group, or sealed under it, hands its content
   keys to the winner's members with its next commit, so nothing written
-  under either is lost. `Genesis` closes the plaintext gate for good.
+  under either is lost. `Genesis` closes off plaintext for good.
 - **Migration.** A workspace that carried plaintext before migrates the same
   way on its next open. New content is encrypted from then on. Old
   plaintext stays in the replicas of the members that hold it, and the local
   broker's history pages still serve it to current members, because the
-  broker admitted it before the gate closed. Live plaintext on an encrypted
+  broker admitted it before plaintext was closed off. Live plaintext on an encrypted
   route is refused as a downgrade.
 - **Access policy** (`shell/group_policy.rs`). A workspace is readable by:
   - every person on the workspace's roster, or named by a grant (a share, a
@@ -238,7 +238,7 @@ plaintext path.
   keys then. Every policy change above becomes such a commit within a
   key holder's reconcile interval, so a removed or revoked device's
   apps stop holding the workspace's keys within about a second plus the
-  commit's delivery to that device; the broker's epoch gate and the identity
+  commit's delivery to that device; the broker's epoch seal check and the identity
   service's per-signature trust check stop it publishing at once. A route
   also asks when ciphertext arrives that its keys can't open, and when the
   broker refuses an edit. A route still waiting for access is asked on a
@@ -259,17 +259,17 @@ plaintext path.
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
-- **Workspaces a node governs** have no committed routes. A node is a relay
+- **Workspaces a node governs** have no committed routes. A node is a server
   whose certificate lets it host and own workspaces; it takes part in the
   workspaces of the workspaces it governs. A desktop session enrolled in such a
   workspace serves each route as a workspace: its apps ask for keys, seal and
-  open, and its sealed writes go to the relay as the device's own, never
+  open, and its sealed writes go to the server as the device's own, never
   through the governor. A company node's own session is such a member: a
   device of the node's person with its own key and certificate, which enters
   every workspace of the person's workspace list the node hosts, as the list
   brings it.
-- **Brokers and relays** hold gates, never keys. Every ingress path checks
-  the workspace's gate (`SealGate`): plaintext is closed off, and
+- **Brokers and relays** hold checks, never keys. Every ingress path checks
+  the workspace's seal check (`SealCheck`): plaintext is closed off, and
   ciphertext must name that workspace. Relays store and
   forward ciphertext and MLS control material without decoding either.
 
@@ -289,7 +289,7 @@ workspace's content only as a **service member**
   key holder removes it. The removal is a commit, so content keys rotate: the
   service keeps what it read and cannot open anything written afterwards.
 
-The relay and the action broker need no change: they route and retain
+The server and the action broker need no change: they route and retain
 ciphertext and MLS control material without decoding either.
 
 ### Security properties as shipped
@@ -298,7 +298,7 @@ ciphertext and MLS control material without decoding either.
   brokers see signed envelope metadata (author, artifact, op class, retention
   class, workspace, epoch, seq, timestamp) and ciphertext. They never see
   content and never hold a content key. An end-to-end test asserts that no
-  byte the relay stores contains the plaintext.
+  byte the server stores contains the plaintext.
 - **Membership follows the workspace ACL and the certified device set.** No
   separate workspace membership list can drift from permissions.
 - **Joiners read all history** through the key history in their Welcome.
@@ -307,7 +307,7 @@ ciphertext and MLS control material without decoding either.
   party, and content written after the removal is sealed under them. The keys
   it kept open what was written while it was a member, and nothing newer.
 - **Apps never hold MLS secrets.** They receive content keys for routes of
-  their own launch only, gated on the device being trusted and the person
+  their own launch only, only once the device is trusted and the person
   holding a reading role.
 - **Commits follow the membership.** Any key holder may sign a commit,
   and every key holder refuses one the membership does not back, so no

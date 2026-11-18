@@ -18,7 +18,7 @@
 //! widens.
 //!
 //! Every enforcer reads this grammar through [`EgressPolicy`]: the
-//! launcher's gate (apps, Windows capsules, the Windows guest relay) and
+//! launcher's check (apps, Windows capsules, the Windows guest relay) and
 //! `tilo-egress`'s DNS stub (environments, builds). They differ in backend
 //! only.
 
@@ -105,6 +105,12 @@ impl HostPattern {
     /// dot)? A domain grant covers names without pointing at one machine.
     pub fn names_exactly(&self, host: &str) -> bool {
         !self.subdomains && host == self.name
+    }
+
+    /// Does this pattern allow every name `other` allows? A domain pattern
+    /// covering the other's name covers everything under it too.
+    fn includes(&self, other: &Self) -> bool {
+        self == other || (self.subdomains && self.covers(&other.name))
     }
 }
 
@@ -296,9 +302,9 @@ impl EgressPolicy {
     /// May a connection to `host` land on an address of *this device*?
     /// Only when a grant names that host exactly, or the policy is `*`.
     ///
-    /// This is the launcher gate's question. For an app, `*` is
+    /// This is the launcher check's question. For an app, `*` is
     /// `--share-net`, which reaches the device's loopback like any other
-    /// process, and a gate standing in for it must not be stricter. The DNS
+    /// process, and a check in place of it must not be stricter. The DNS
     /// stub of `tilo-egress` answers its own question
     /// (`tilo_egress::policy::admissible`): an environment's `*` keeps a
     /// namespace of its own, whose loopback is not the device's.
@@ -319,13 +325,33 @@ impl EgressPolicy {
         match (self, other) {
             (_, Self::Any) => true,
             (Self::Any, Self::Hosts(_)) => false,
-            // A domain grant covering a pattern's name covers everything
-            // under it too.
-            (Self::Hosts(mine), Self::Hosts(theirs)) => mine.iter().all(|p| {
-                theirs
-                    .iter()
-                    .any(|t| t == p || (t.subdomains && t.covers(&p.name)))
-            }),
+            (Self::Hosts(mine), Self::Hosts(theirs)) => {
+                mine.iter().all(|p| theirs.iter().any(|t| t.includes(p)))
+            }
+        }
+    }
+
+    /// The names both `self` and `other` allow: of each pair of patterns,
+    /// the narrower one when one includes the other.
+    #[must_use]
+    pub fn intersect(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Any, only) | (only, Self::Any) => only.clone(),
+            (Self::Hosts(mine), Self::Hosts(theirs)) => Self::hosts(
+                mine.iter()
+                    .flat_map(|p| {
+                        theirs.iter().filter_map(move |t| {
+                            if t.includes(p) {
+                                Some(p.clone())
+                            } else if p.includes(t) {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect(),
+            ),
         }
     }
 

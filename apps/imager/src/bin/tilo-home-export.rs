@@ -18,7 +18,7 @@ fn main() -> ExitCode {
 }
 
 /// The worker's fixed service modes. The sandbox launches exactly one of them,
-/// so the platform boundary is one function instead of one gate per mode.
+/// so the platform boundary is one function instead of one check per mode.
 #[cfg(target_os = "linux")]
 fn linux(arguments: Vec<std::ffi::OsString>) -> ExitCode {
     let one = |expected: &str| arguments == [std::ffi::OsString::from(expected)];

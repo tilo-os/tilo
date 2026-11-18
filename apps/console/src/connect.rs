@@ -7,7 +7,7 @@ use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ButtonRole, ChipStyle, ListRow, Property, PropertyList, Section};
 
-use crate::{Console, Reads, Records, ago, faced, page, tr, trf};
+use crate::{Console, Reads, Resources, ago, faced, page, tr, trf};
 
 const fn client_label(client: mcp_server::Client) -> &'static str {
     match client {
@@ -18,7 +18,7 @@ const fn client_label(client: mcp_server::Client) -> &'static str {
 }
 
 pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
-    let records = Records::of(cx);
+    let records = Resources::of(cx);
     let read = &reads.server;
     Box::new(cx.arriving(&read.answer(), move |_, server| {
         let commands = mcp_server::Client::ALL
@@ -71,7 +71,7 @@ pub(crate) fn access(grant: &mcp_server::Grant) -> String {
     }
 }
 
-fn grant_row(records: &Records, index: usize, grant: &mcp_server::Grant) -> Element {
+fn grant_row(records: &Resources, index: usize, grant: &mcp_server::Grant) -> Element {
     let agent = wire::Author {
         name: grant.agent.clone(),
         relation: wire::Relation::Software,

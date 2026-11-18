@@ -21,10 +21,10 @@ pub(super) fn build_tile(
     window.set_workspace(tiles.workspace_id());
     host.set_hosted_window(window);
     if let Some(domain) = controls {
-        ui::widget::controls::install_control_custody(
+        ui::widget::controls::attach_controls(
             &mut host,
             domain,
-            ui::control_custody::CustodyAttachment::Dynamic,
+            ui::control_domain::DomainAttachment::Dynamic,
         );
     }
     host

@@ -42,13 +42,15 @@ pub struct Look<'a> {
     pub app: &'a str,
     /// The record, as its route names it: empty for the app's own record of the workspace.
     pub record: &'a str,
-    /// The kind of the app's records, for a record (or chain) whose document names none, as the
-    /// app's own record of the workspace does.
+    /// The record a mention in it opens in, by route: the record itself, or the one whose items
+    /// a part keeps (a chat's part, published as the chat's items).
+    pub place: &'a str,
+    /// The kind of `place`, whose `open` shows an item of it; empty when unknown, and the record
+    /// then opens whole.
     pub kind: &'a str,
     /// Its document.
     pub doc: &'a AutoCommit,
-    /// The record its places belong to, when it is a part of another (a chat's part, published as
-    /// the chat's items): its document.
+    /// The document of `place`, when it is another record than this one.
     pub tree: Option<&'a AutoCommit>,
     /// Take what it holds as seen: the person is looking at it, or it is what the workspace held
     /// before this device first followed it.
@@ -61,7 +63,7 @@ pub struct Look<'a> {
 /// What this device told, and what must not be told again.
 #[derive(Default)]
 pub struct Held {
-    /// Per record (`app` and route), the tags told and still standing.
+    /// Per record (`app` and route), the tags told and still live.
     told: BTreeMap<(String, String), BTreeSet<String>>,
     /// Per record, where it was last looked at: what changed since is all a look reads of it.
     seen: BTreeMap<(String, String), Seen>,
@@ -91,9 +93,8 @@ impl Held {
         me: &BTreeSet<ui::MemberId>,
         name: &dyn Fn(&str) -> String,
     ) -> Told {
-        let (record, kind) = place_record(look);
         let route = look.record.to_owned();
-        let mut standing: BTreeMap<String, Notice> = BTreeMap::new();
+        let mut live_tags: BTreeMap<String, Notice> = BTreeMap::new();
         for mention in ui::mentions::in_resource_for(look.doc, look.read) {
             if !me.contains(&mention.person)
                 || mention.by.as_ref().is_some_and(|by| {
@@ -103,20 +104,32 @@ impl Held {
             {
                 continue;
             }
-            // The item opens through the record's resource, published under its kind, as a search
-            // hit on it does. Without a kind the item has no address: the record opens.
-            let (resource, anchor) = match mention.item.as_ref().filter(|_| !kind.is_empty()) {
-                Some((field, id)) => (kind.clone(), format!("{kind}/{field}/{id}")),
+            // The item opens through the record's resource, published under its kind, at the
+            // address its app publishes the item and a search hit on it opens. Without a kind the
+            // item has no address: the record opens.
+            let (resource, anchor) = match mention.item.as_ref().filter(|_| !look.kind.is_empty()) {
+                Some((field, id)) => (
+                    look.kind.to_owned(),
+                    tilo_resource::items::item_resource_id_in(
+                        look.kind,
+                        field,
+                        &tilo_resource::Id::from_raw(id.as_str()),
+                    ),
+                ),
                 None => Default::default(),
             };
             let place = Place {
                 app: look.app.to_owned(),
-                record: record.clone(),
+                record: look.place.to_owned(),
                 resource,
                 anchor,
             };
-            let tag = place.tag(&mention.person);
-            if standing.contains_key(&tag) {
+            // Each item is told once: one with no address of its own still is not another's.
+            let mut tag = place.tag(&mention.person);
+            if let Some((field, id)) = mention.item.as_ref().filter(|_| place.anchor.is_empty()) {
+                tag = format!("{tag}/{field}/{id}");
+            }
+            if live_tags.contains_key(&tag) {
                 continue;
             }
             let who = mention
@@ -127,7 +140,13 @@ impl Held {
                 look.tree
                     .and_then(|tree| ui::mentions::channel_name(tree, channel))
             });
+            let direct = mention.channel.as_deref().is_some_and(|channel| {
+                ui::MemberId::direct_conversation_members(channel).is_some()
+            });
             let title = match (channel, &mention.title) {
+                _ if direct => {
+                    crate::i18n::t_args("mention-notice-direct", &[("name", who.as_str().into())])
+                }
                 (Some(channel), _) => crate::i18n::t_args(
                     "mention-notice-channel",
                     &[
@@ -146,7 +165,7 @@ impl Held {
                     crate::i18n::t_args("mention-notice", &[("name", who.as_str().into())])
                 }
             };
-            standing.insert(
+            live_tags.insert(
                 tag.clone(),
                 Notice::opens(
                     tilo_desktop_search::names::app_name(look.app),
@@ -166,13 +185,13 @@ impl Held {
         let told = self.told.entry((look.app.to_owned(), route)).or_default();
         let withdraw: Vec<String> = told
             .iter()
-            .filter(|tag| !standing.contains_key(*tag))
+            .filter(|tag| !live_tags.contains_key(*tag))
             .cloned()
             .collect();
         for tag in &withdraw {
             told.remove(tag);
         }
-        let show = standing
+        let show = live_tags
             .into_iter()
             .filter(|(tag, _)| told.insert(tag.clone()))
             .map(|(_, notice)| notice)
@@ -357,25 +376,28 @@ impl Mentions {
             else {
                 continue;
             };
-            let tree = ui::mentions::chain_of(&changed.record)
-                .and_then(|chain| records.document(&changed.app, &changed.workspace, chain));
-            // The kind the record names itself as, else the one its app keeps there.
-            let named = match tree.as_ref() {
-                Some(tree) => resource_type(tree),
-                None => resource_type(&doc),
-            };
-            let kind = named
-                .or_else(|| self.known_kind(&changed.app, &changed.workspace))
-                .unwrap_or_default();
+            let place = ui::mentions::record_of_part(&changed.record);
+            let tree =
+                place.and_then(|place| records.document(&changed.app, &changed.workspace, place));
+            let place = place.unwrap_or(&changed.record);
+            // The kind of the record a mention opens in: the one its document names, else, for
+            // the app's own record, which names none, the one its app's surface declares first.
+            let kind = if place.is_empty() {
+                ui::app_surface::primary_kind(&changed.app)
+            } else {
+                resource_type(tree.as_ref().unwrap_or(&doc))
+            }
+            .unwrap_or_default();
             let mut held = self.0.held.borrow_mut();
             let key = (changed.app.clone(), changed.record.clone());
-            self.read_where_seen(&mut held, &changed, &kind, &mut doc, tree.as_ref());
+            self.read_where_seen(&mut held, &changed, (place, &kind), &mut doc, tree.as_ref());
             // What the workspace held before this device followed the record is not news.
             let quiet = changed.replayed && !held.knows(&changed.app, &changed.record);
             let told = held.look(
                 &Look {
                     app: &changed.app,
                     record: &changed.record,
+                    place,
                     kind: &kind,
                     doc: &doc,
                     tree: tree.as_ref(),
@@ -416,7 +438,7 @@ impl Mentions {
         &self,
         held: &mut Held,
         changed: &Changed,
-        kind: &str,
+        (place, kind): (&str, &str),
         doc: &mut AutoCommit,
         tree: Option<&AutoCommit>,
     ) {
@@ -436,6 +458,7 @@ impl Mentions {
             &Look {
                 app: &changed.app,
                 record: &changed.record,
+                place,
                 kind,
                 doc: &before,
                 tree,
@@ -467,8 +490,8 @@ impl Mentions {
                 Since::Changes { heads, bytes } => (heads, bytes),
             };
             let touched = ui::mentions::touched_by(&bytes, &self.0.me)?;
-            let standing = held.told.get(&key).is_some_and(|told| !told.is_empty());
-            if touched.names || (touched.removes && standing) || heads.is_empty() {
+            let has_told = held.told.get(&key).is_some_and(|told| !told.is_empty());
+            if touched.names || (touched.removes && has_told) || heads.is_empty() {
                 return None;
             }
             held.seen.insert(
@@ -489,13 +512,6 @@ impl Mentions {
         held.told.entry(key.clone()).or_default();
         held.seen.insert(key, Seen { heads, read: false });
         Some(true)
-    }
-
-    /// The record kind this host knows `app`'s records by, where the record names none itself.
-    fn known_kind(&self, app: &str, workspace: &str) -> Option<String> {
-        let records = self.0.records.as_ref()?;
-        let kind = records.kind(app, workspace);
-        (!kind.is_empty()).then_some(kind)
     }
 
     /// Take up the places the person chose from a notice, so the host opens them through its own
@@ -563,19 +579,6 @@ fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, serde_json::
     serde_json::from_slice(&stored.bytes)
         .inspect_err(|error| tracing::warn!(%error, "the mentions told do not read back"))
         .ok()
-}
-
-/// The record a mention in the record `look` names opens in, by route, and that record's kind:
-/// the chain a part belongs to, else the record itself.
-fn place_record(look: &Look<'_>) -> (String, String) {
-    let kind_of = |doc: Option<&AutoCommit>| {
-        doc.and_then(resource_type)
-            .unwrap_or_else(|| look.kind.to_owned())
-    };
-    match ui::mentions::chain_of(look.record) {
-        Some(chain) => (chain.to_owned(), kind_of(look.tree)),
-        None => (look.record.to_owned(), kind_of(Some(look.doc))),
-    }
 }
 
 /// The kind of record `doc` names itself as, when it names one.

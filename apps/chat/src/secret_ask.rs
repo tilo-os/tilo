@@ -32,13 +32,15 @@ use crate::i18n::{t, t_args};
 use crate::messages::{NewMessage, chat_part};
 use crate::model::Message;
 use crate::parts::ChatPart;
-use crate::question::{DECLINED, FILLED, Question, SECRET, Standing};
+use crate::question::{DECLINED, FILLED, Question, QuestionState, SECRET};
 use crate::question_card::{Line, QuestionShown, Reader};
 
 /// The most places one question names, as the vault keeps at most.
 const MAX_PLACES: usize = 8;
 /// The longest name a question says a secret signs in with.
 const MAX_NAME_BYTES: usize = 320;
+/// The most a question says of where a key rides in a request.
+const MAX_SENT_IN_BYTES: usize = 128;
 
 /// What a [`SECRET`] question asks for, as its detail keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +56,11 @@ pub struct Asked {
     /// The name it signs in with, when whoever asks knows it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub username: String,
+    /// Where a key rides in a request to its service, when not as a bearer
+    /// token: `basic`, `header:<name>` or `query:<name>`. Only a key says
+    /// so; the vault that keeps it decides whether it is one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sent_in: String,
 }
 
 impl Asked {
@@ -83,6 +90,17 @@ impl Asked {
         if asked.username.len() > MAX_NAME_BYTES || asked.username.chars().any(char::is_control) {
             return Err("that is not a name to sign in with");
         }
+        if asked.sent_in.len() > MAX_SENT_IN_BYTES
+            || asked
+                .sent_in
+                .chars()
+                .any(|character| character.is_control() || character.is_whitespace())
+            || (!asked.sent_in.is_empty() && asked.kind != person_vault::ItemKind::Key)
+        {
+            return Err(
+                "only a key says how it is sent, as sentIn: basic, header:<name> or query:<name>",
+            );
+        }
         Ok(asked)
     }
 
@@ -103,7 +121,7 @@ fn shown_place(place: &str) -> &str {
 }
 
 /// What `asked` asks for and where it belongs, in the system's words.
-fn title(asked: &Asked) -> String {
+pub(crate) fn title(asked: &Asked) -> String {
     let key = match asked.kind {
         person_vault::ItemKind::Login => "chat-secret-title-login",
         person_vault::ItemKind::Key => "chat-secret-title-key",
@@ -147,17 +165,17 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> QuestionShown {
             .map_or_else(|| t("chat-secret-unreadable"), title),
         Line::Title,
     ));
-    let standing = match question.standing() {
-        Standing::Waiting if asked.is_none() => None,
-        Standing::Waiting if reader.mine => Some((t("chat-secret-waiting-mine"), Line::Field)),
-        Standing::Waiting => Some((
+    let state = match question.state() {
+        QuestionState::Waiting if asked.is_none() => None,
+        QuestionState::Waiting if reader.mine => Some((t("chat-secret-waiting-mine"), Line::Field)),
+        QuestionState::Waiting => Some((
             reader.name.map_or_else(
                 || t("chat-question-waiting-someone"),
                 |name| t_args("chat-question-waiting", &[("name", name.into())]),
             ),
             Line::Status,
         )),
-        Standing::Answered(given) | Standing::Settled(given, _) => Some((
+        QuestionState::Answered(given) | QuestionState::Settled(given, _) => Some((
             t(if given.answer.0 == FILLED {
                 "chat-secret-filled"
             } else {
@@ -165,7 +183,7 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> QuestionShown {
             }),
             Line::Status,
         )),
-        Standing::Withdrawn(withdrawn) => Some((
+        QuestionState::Withdrawn(withdrawn) => Some((
             if withdrawn.why.is_empty() {
                 t("chat-question-withdrawn")
             } else {
@@ -177,7 +195,7 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> QuestionShown {
             Line::Status,
         )),
     };
-    shown.lines.extend(standing);
+    shown.lines.extend(state);
     shown
 }
 
@@ -401,6 +419,7 @@ impl ChatApp {
             kind: asked.kind,
             belongs_to: asked.belongs_to,
             username: username.trim().to_owned(),
+            sent_in: asked.sent_in,
             secret: answer.secret.to_string(),
         };
         let Ok(serde_json::Value::Object(argument)) = serde_json::to_value(&adding) else {

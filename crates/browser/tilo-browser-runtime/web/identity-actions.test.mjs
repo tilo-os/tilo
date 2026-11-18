@@ -729,7 +729,7 @@ function fakeStandIn() {
 
 test('a person set up through an agent gets a stand-in, once', async () => {
   // How the host makes the key, the root certifies it and the host keeps it
-  // is the shared client's (tilo-relay-client's `keep_stand_in`).
+  // is the shared client's (tilo-server-client's `keep_stand_in`).
   const identity = fakeIdentity();
   const fake = fakeStandIn();
   const actions = createIdentityActions({passkeys: withPasskeys, identity, ...fake});

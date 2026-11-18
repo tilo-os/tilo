@@ -1,0 +1,504 @@
+//! The Windows compatibility service as this session serves it: what only the session knows,
+//! handed to the service `compat_service` assembles.
+//!
+//! - **Who may connect.** A `tilo-launcher` process this session started (its child, running the
+//!   launcher's executable) for the Windows Apps manager in the workspace its handoff names, while
+//!   that launch is still alive ([`Launches`]). Each launch hands off once. The service refuses any
+//!   other app id, any process the session did not start, and a second connection of the same
+//!   launch.
+//! - **What a program may reach.** The asking workspace's sandbox, read from the layout the broker
+//!   decides against at every request ([`LayoutAuthority`]).
+//! - **Where it shows its windows.** The display the session's apps start on, once the compositor
+//!   has bound it ([`Display`]): asked when a program starts, never when the service starts, so a
+//!   program never gets a display that does not exist yet.
+//! - **How a program stays open.** Where the session keeps apps through an in-place restart, each
+//!   Windows program starts as one of the session's own launches, behind an app keeper whose
+//!   display it shows on ([`Kept`]): the keeper and the program live in a scope of the launch's
+//!   own, so memory tiers, a force quit, a crash notice and a logout treat it as any app. The
+//!   session that follows a restart takes the program back and hands it to its service again.
+//!
+//! The service works on threads of its own; nothing here blocks the session's loop.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
+
+use compat_service::{
+    Assembly, CapabilityAuthority, CompatSessionHandle, ExecutionError, ExecutionOutcome,
+    KeptDisplay, KeptProgram, LaunchDisplay, LaunchDisplays, SandboxCommand, SessionSide,
+    StartedProgram, TakenBack, TrustedLauncherRegistry,
+};
+use tilo_broker_core::services::WorkspaceAuthority as _;
+use tilo_lock::MutexRecover as _;
+
+use crate::Launches;
+use crate::app_wire::LayoutAuthority;
+
+/// The display the session's apps start on, as the compositor bound it, and the GPU it draws
+/// with: written on the loop as they become known, read by the service as a program starts.
+#[derive(Default)]
+pub struct Display {
+    shown: Mutex<Shown>,
+    kept: Arc<Kept>,
+}
+
+#[derive(Default)]
+struct Shown {
+    wayland_socket: Option<PathBuf>,
+    render_node: Option<PathBuf>,
+}
+
+impl Display {
+    /// The compositor bound its Wayland socket at `socket`.
+    pub(crate) fn bound(&self, socket: PathBuf) {
+        self.shown.lock_recover().wayland_socket = Some(socket);
+    }
+
+    /// The compositor draws on the GPU whose render node is `node`.
+    pub(crate) fn drawn_on(&self, node: Option<PathBuf>) {
+        self.shown.lock_recover().render_node = node;
+    }
+
+    /// Keep each Windows program from now on behind a keeper in a directory `dirs` makes, waking
+    /// the session's loop with `wake` when the service asks it something.
+    pub(crate) fn keep_in(
+        &self,
+        dirs: tilo_app_launch::KeptDirs,
+        wake: Option<tilo_service::Wake>,
+    ) {
+        let mut asked = self.kept.asked.lock_recover();
+        asked.dirs = Some(dirs);
+        asked.wake = wake;
+    }
+
+    /// What the service asked the session's loop since the last pass.
+    pub(crate) fn take_asks(&self) -> Vec<Ask> {
+        std::mem::take(&mut self.kept.asked.lock_recover().asks)
+    }
+
+    /// The launch `id` is the program the service waits on through `end`.
+    pub(crate) fn started(&self, id: u64, end: Arc<Ending>) {
+        self.kept.asked.lock_recover().ends.insert(id, end);
+    }
+
+    /// The launch `id` ended as `end` says: a program the service waits on is told.
+    pub(crate) fn ended(&self, id: u64, end: &tilo_app_launch::End) {
+        let ending = self.kept.asked.lock_recover().ends.remove(&id);
+        if let Some(ending) = ending {
+            ending.give(outcome_of(end));
+        }
+    }
+
+    /// The launch `id`, which the desktop before an in-place restart started for the service as
+    /// `launch` asked, is this desktop's: the service takes it back, open, or ended as `end` says
+    /// when it ended while no desktop was there. Any other launch is passed over.
+    pub(crate) fn take_back(
+        &self,
+        id: u64,
+        launch: &tilo_app_launch::kept::KeptLaunch,
+        end: Option<&tilo_app_launch::End>,
+    ) {
+        let Some(entry_id) = launch
+            .asked
+            .as_deref()
+            .and_then(|asked| asked.strip_prefix(ASKED_PREFIX))
+        else {
+            return;
+        };
+        let ending = Arc::new(Ending::default());
+        match end {
+            Some(end) => ending.give(outcome_of(end)),
+            None => self.started(id, Arc::clone(&ending)),
+        }
+        self.kept.asked.lock_recover().taken.push(TakenBack {
+            entry_id: entry_id.to_owned(),
+            workspace_id: launch.workspace.clone(),
+            display_name: launch.title.clone(),
+            program: Box::new(Program {
+                id,
+                ending,
+                kept: Arc::clone(&self.kept),
+            }),
+        });
+    }
+}
+
+/// What a launch of a Windows program is asked as: the prefix, then its entry in the manager's
+/// list. A later desktop reads the entry back from it.
+pub(crate) const ASKED_PREFIX: &str = "windows:";
+
+/// How the service reads an app's end.
+fn outcome_of(end: &tilo_app_launch::End) -> ExecutionOutcome {
+    ExecutionOutcome {
+        success: !end.crashed(),
+        exit_code: match end {
+            tilo_app_launch::End::Exited { code, .. } => Some(*code),
+            tilo_app_launch::End::Signalled { .. } | tilo_app_launch::End::Failed(_) => None,
+        },
+    }
+}
+
+impl LaunchDisplays for Display {
+    fn display_for(&self, _workspace_id: &str) -> Result<LaunchDisplay, String> {
+        let (wayland_socket, render_node) = {
+            let shown = self.shown.lock_recover();
+            (shown.wayland_socket.clone(), shown.render_node.clone())
+        };
+        let wayland_socket = wayland_socket
+            .ok_or_else(|| "this session has not bound its display yet".to_owned())?;
+        let render_node = render_node.ok_or_else(|| {
+            "this session draws without a GPU, which Windows programs need".to_owned()
+        })?;
+        Ok(LaunchDisplay {
+            uid: rustix::process::geteuid().as_raw(),
+            runtime_dir: tilo_paths::xdg::runtime_dir_or_default(),
+            wayland_socket,
+            render_node,
+        })
+    }
+
+    fn kept_display(
+        &self,
+        program: &KeptProgram<'_>,
+    ) -> Option<Result<Box<dyn KeptDisplay>, String>> {
+        let dirs = self.kept.asked.lock_recover().dirs.clone()?;
+        let session = match self.display_for(program.workspace_id) {
+            Ok(display) => display,
+            Err(error) => return Some(Err(error)),
+        };
+        let dir = match dirs.reserve() {
+            Ok(dir) => dir,
+            Err(error) => return Some(Err(format!("no keeper's directory: {error}"))),
+        };
+        Some(Ok(Box::new(KeptStart {
+            display: LaunchDisplay {
+                runtime_dir: dir.clone(),
+                wayland_socket: dir.join("wayland-0"),
+                ..session
+            },
+            dir: Some(dir),
+            dirs,
+            launch: Launch {
+                app_id: program.app_id.to_owned(),
+                title: program.display_name.to_owned(),
+                workspace: program.workspace_id.to_owned(),
+                asked: format!("{ASKED_PREFIX}{}", program.entry_id),
+                x11: program.x11,
+            },
+            kept: Arc::clone(&self.kept),
+        })))
+    }
+
+    fn taken_back(&self) -> Vec<TakenBack> {
+        std::mem::take(&mut self.kept.asked.lock_recover().taken)
+    }
+}
+
+/// The service's side of the programs the session keeps: what it asked the session's loop, and
+/// the launches it waits on.
+#[derive(Default)]
+pub(crate) struct Kept {
+    asked: Mutex<Asked>,
+}
+
+#[derive(Default)]
+struct Asked {
+    dirs: Option<tilo_app_launch::KeptDirs>,
+    wake: Option<tilo_service::Wake>,
+    asks: Vec<Ask>,
+    /// The program of each launch, by launch id, while the service waits on its end.
+    ends: BTreeMap<u64, Arc<Ending>>,
+    /// The programs taken back after a restart, until the service takes them.
+    taken: Vec<TakenBack>,
+}
+
+impl Kept {
+    fn ask(&self, ask: Ask) {
+        let wake = {
+            let mut asked = self.asked.lock_recover();
+            asked.asks.push(ask);
+            asked.wake.clone()
+        };
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+}
+
+/// What the service asks the session's loop.
+pub(crate) enum Ask {
+    /// Start `launch` as one of the session's own launches, `handed` the program's command, and
+    /// answer the launch's id; its end is told to `ending`.
+    Start {
+        launch: Launch,
+        handed: tilo_app_launch::Handed,
+        ending: Arc<Ending>,
+        reply: Reply,
+    },
+    /// End the launch.
+    Stop(u64),
+}
+
+/// A Windows program's launch, as the session starts it.
+pub(crate) struct Launch {
+    pub(crate) app_id: String,
+    pub(crate) title: String,
+    pub(crate) workspace: String,
+    /// What it is asked as ([`ASKED_PREFIX`]).
+    pub(crate) asked: String,
+    /// It shows its windows through X11, on a display its keeper serves.
+    pub(crate) x11: bool,
+}
+
+/// A keeper's display reserved for one program, until the program starts behind it.
+struct KeptStart {
+    display: LaunchDisplay,
+    /// Taken once the program started.
+    dir: Option<PathBuf>,
+    dirs: tilo_app_launch::KeptDirs,
+    launch: Launch,
+    kept: Arc<Kept>,
+}
+
+impl KeptDisplay for KeptStart {
+    fn display(&self) -> &LaunchDisplay {
+        &self.display
+    }
+
+    fn start(
+        mut self: Box<Self>,
+        command: SandboxCommand,
+    ) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+        let dir = self
+            .dir
+            .take()
+            .ok_or_else(|| ExecutionError::Io(std::io::Error::other("started twice")))?;
+        let mut argv = vec![command.program.into_os_string()];
+        argv.extend(command.args);
+        let answer = Arc::new(Awaited::default());
+        let launch = std::mem::replace(
+            &mut self.launch,
+            Launch {
+                app_id: String::new(),
+                title: String::new(),
+                workspace: String::new(),
+                asked: String::new(),
+                x11: false,
+            },
+        );
+        let ending = Arc::new(Ending::default());
+        self.kept.ask(Ask::Start {
+            launch,
+            ending: Arc::clone(&ending),
+            handed: tilo_app_launch::Handed {
+                dir,
+                command: argv,
+                inherited: command.inherited,
+                latency_sensitive: command.latency_sensitive,
+            },
+            reply: Reply(Arc::clone(&answer)),
+        });
+        // The session's loop answers on its next pass; a session that went away dropped the ask,
+        // which answers that.
+        let id = answer.wait().map_err(std::io::Error::other)?;
+        Ok(Box::new(Program {
+            id,
+            ending,
+            kept: Arc::clone(&self.kept),
+        }))
+    }
+}
+
+impl Drop for KeptStart {
+    fn drop(&mut self) {
+        if let Some(dir) = self.dir.take() {
+            self.dirs.give_back(&dir);
+        }
+    }
+}
+
+/// A value one thread waits for and another gives, once.
+pub(crate) struct Awaited<T> {
+    value: Mutex<Option<T>>,
+    came: Condvar,
+}
+
+impl<T> Default for Awaited<T> {
+    fn default() -> Self {
+        Self {
+            value: Mutex::new(None),
+            came: Condvar::new(),
+        }
+    }
+}
+
+impl<T: Clone> Awaited<T> {
+    /// Give `value`, unless one was given.
+    fn give(&self, value: T) {
+        let given = {
+            let mut held = self.value.lock_recover();
+            let empty = held.is_none();
+            if empty {
+                *held = Some(value);
+            }
+            empty
+        };
+        if given {
+            self.came.notify_all();
+        }
+    }
+
+    /// Wait for the value.
+    fn wait(&self) -> T {
+        let mut held = self.value.lock_recover();
+        loop {
+            if let Some(value) = held.clone() {
+                return value;
+            }
+            held = self
+                .came
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+/// How a kept program ended, once it did.
+pub(crate) type Ending = Awaited<ExecutionOutcome>;
+
+/// The answer to a start the service asked for: a launch's id, or why it did not start. An ask
+/// dropped unanswered (the session went away) answers that.
+pub(crate) struct Reply(Arc<Awaited<Result<u64, String>>>);
+
+impl Reply {
+    pub(crate) fn send(&self, answer: Result<u64, String>) {
+        self.0.give(answer);
+    }
+}
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        self.0.give(Err("the session ended".to_owned()));
+    }
+}
+
+/// A Windows program running as one of the session's launches.
+struct Program {
+    id: u64,
+    ending: Arc<Ending>,
+    kept: Arc<Kept>,
+}
+
+impl StartedProgram for Program {
+    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError> {
+        Ok(self.ending.wait())
+    }
+
+    fn stop(&self) {
+        self.kept.ask(Ask::Stop(self.id));
+    }
+}
+
+/// The launches this session started, as the service asks about a connecting process.
+struct SessionLaunches(Arc<Launches>);
+
+impl TrustedLauncherRegistry for SessionLaunches {
+    fn is_launch(
+        &self,
+        pid: u32,
+        process_start_time: u64,
+        app_id: &str,
+        workspace_id: &str,
+    ) -> bool {
+        self.0.started_at(pid, app_id, workspace_id) == Some(process_start_time)
+    }
+}
+
+/// Each workspace's sandbox, from the layout the broker decides against.
+struct WorkspaceSandboxes(Arc<LayoutAuthority>);
+
+impl CapabilityAuthority for WorkspaceSandboxes {
+    fn capabilities_for(
+        &self,
+        workspace_id: &str,
+        _app_id: &str,
+    ) -> Result<Vec<collab_types::caps::CapOverride>, String> {
+        let mut sandbox = None;
+        self.0.with_workspace(workspace_id, &mut |workspace| {
+            // The whole list, restrictions included: the service filters it to the program's own
+            // app id.
+            sandbox = workspace.map(|workspace| workspace.sandbox.clone());
+        })?;
+        sandbox.ok_or_else(|| "the workspace is no longer in this session".to_owned())
+    }
+}
+
+/// The compatibility service while this session serves it.
+pub(crate) struct Served {
+    /// Filled once the service is up: loading the catalogues and the capsules reads files, so it
+    /// starts on a thread of its own rather than the session's loop.
+    _service: Arc<Mutex<Option<CompatSessionHandle>>>,
+}
+
+/// What the service table serves Windows programs with: the session's launches, the launcher its
+/// apps start through, the display they show on, and how the service is put together.
+pub(crate) struct Serving {
+    launches: Arc<Launches>,
+    tilo_launcher: PathBuf,
+    display: Arc<Display>,
+    assembly: Assembly,
+}
+
+/// What a session started with `options` serves Windows programs with: nothing when it starts no
+/// apps, as no manager can start then.
+pub(crate) fn serving(options: &mut crate::Options) -> Option<Serving> {
+    let apps = options.launch.as_ref()?;
+    Some(Serving {
+        launches: Arc::clone(&options.launches),
+        tilo_launcher: apps.launcher()?,
+        display: apps.windows_display(),
+        assembly: std::mem::take(&mut options.windows),
+    })
+}
+
+/// Serve the compatibility service at the launcher's socket for it, deciding against `layout`.
+pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Served, String> {
+    let Serving {
+        launches,
+        tilo_launcher,
+        display,
+        assembly,
+    } = serving;
+    let capsules = tilo_paths::xdg::data_home()
+        .ok_or_else(|| "this login has no data directory".to_owned())?
+        .join("tilo/windows-compat");
+    let side = SessionSide {
+        socket: launcher::services::socket_for(launcher::services::COMPAT_SERVICE),
+        launcher: tilo_launcher,
+        parent_pid: std::process::id(),
+        launches: Arc::new(SessionLaunches(launches)),
+        sandboxes: Arc::new(WorkspaceSandboxes(layout)),
+        displays: display,
+        capsules,
+    };
+    let service = Arc::new(Mutex::new(None));
+    let started = Arc::clone(&service);
+    std::thread::Builder::new()
+        .name("tilo-windows-start".to_owned())
+        .spawn(move || {
+            let served = launcher::services::ensure_services_root()
+                .map_err(|error| error.to_string())
+                .and_then(|_| assembly.start(side));
+            match served {
+                Ok(served) => {
+                    tracing::info!("serving Windows programs to the Windows Apps manager");
+                    *started.lock_recover() = Some(served);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the Windows compatibility service is unavailable");
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(Served { _service: service })
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Lounge's product font catalog: the fonts its app components lay text out
 # from, which a container has no system fonts to take. The image's context and
-# the checks that run the relay directly both serve it, so it is built once,
+# the checks that run the server directly both serve it, so it is built once,
 # apart from either. usage: lounge-fonts.sh OUT
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"

@@ -39,8 +39,9 @@ pub mod zone;
 use std::fmt::Write as _;
 use std::ops::ControlFlow;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc, Weekday};
-use rrule::{Frequency, NWeekday, RRule, RRuleSet, Tz};
+use jiff::Timestamp;
+use jiff::civil::{Date, DateTime, Weekday};
+use rrule::RRuleSet;
 
 pub use zone::{Resolution, canonical_zone, normalize_wall, wall_instant, wall_to_utc};
 
@@ -109,9 +110,9 @@ pub struct Rule {
     interval: u32,
     by_day: Vec<Weekday>,
     by_month_day: Vec<i8>,
-    until: Option<NaiveDate>,
+    until: Option<Date>,
     count: Option<u32>,
-    exdates: Vec<NaiveDate>,
+    exdates: Vec<Date>,
 }
 
 impl Rule {
@@ -209,7 +210,7 @@ impl Rule {
             let _ = write!(out, ";BYMONTHDAY={}", days.join(","));
         }
         if let Some(until) = self.until {
-            let _ = write!(out, ";UNTIL={}", until.format("%Y%m%d"));
+            let _ = write!(out, ";UNTIL={}", until.strftime("%Y%m%d"));
         }
         if let Some(count) = self.count {
             let _ = write!(out, ";COUNT={count}");
@@ -231,7 +232,7 @@ impl Rule {
             let dates: Vec<String> = self
                 .exdates
                 .iter()
-                .map(|date| date.format("%Y%m%d").to_string())
+                .map(|date| date.strftime("%Y%m%d").to_string())
                 .collect();
             let _ = write!(out, ";EXDATE={}", dates.join(","));
         }
@@ -265,7 +266,7 @@ impl Rule {
 
     /// Inclusive last date of the series.
     #[must_use]
-    pub fn until(&self) -> Option<NaiveDate> {
+    pub fn until(&self) -> Option<Date> {
         self.until
     }
 
@@ -279,7 +280,7 @@ impl Rule {
     /// [`Rule::count`], which is how RFC 5545 ranges a series before
     /// exclusions are applied.
     #[must_use]
-    pub fn exdates(&self) -> &[NaiveDate] {
+    pub fn exdates(&self) -> &[Date] {
         &self.exdates
     }
 
@@ -308,7 +309,7 @@ impl Rule {
     }
 
     #[must_use]
-    pub fn with_until(mut self, until: Option<NaiveDate>) -> Self {
+    pub fn with_until(mut self, until: Option<Date>) -> Self {
         self.until = until;
         self
     }
@@ -320,8 +321,8 @@ impl Rule {
     }
 
     #[must_use]
-    pub fn with_exdates(mut self, exdates: impl IntoIterator<Item = NaiveDate>) -> Self {
-        let mut exdates: Vec<NaiveDate> = exdates.into_iter().collect();
+    pub fn with_exdates(mut self, exdates: impl IntoIterator<Item = Date>) -> Self {
+        let mut exdates: Vec<Date> = exdates.into_iter().collect();
         exdates.sort_unstable();
         exdates.dedup();
         self.exdates = exdates;
@@ -333,7 +334,7 @@ impl Rule {
     /// `UNTIL` and `COUNT` bound the series, exclusions remove dates from it.
     /// A rule that runs out before `from` yields nothing.
     #[must_use]
-    pub fn occurrences(&self, seed: NaiveDate, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
+    pub fn occurrences(&self, seed: Date, from: Date, to: Date) -> Vec<Date> {
         let last = self.until.map_or(to, |until| until.min(to));
         let mut out = Vec::new();
         if last < from {
@@ -358,8 +359,10 @@ impl Rule {
     /// The first date of the series on or after `date`, or `None` once the
     /// series has ended. Excluded dates are stepped over.
     #[must_use]
-    pub fn next_on_or_after(&self, seed: NaiveDate, date: NaiveDate) -> Option<NaiveDate> {
-        let horizon = date.checked_add_signed(Duration::days(SEARCH_DAYS))?;
+    pub fn next_on_or_after(&self, seed: Date, date: Date) -> Option<Date> {
+        let horizon = date
+            .checked_add(jiff::Span::new().try_days(SEARCH_DAYS).ok()?)
+            .ok()?;
         let last = self.until.map_or(horizon, |until| until.min(horizon));
         if last < date {
             return None;
@@ -377,8 +380,8 @@ impl Rule {
 
     /// The first date of the series after `after`.
     #[must_use]
-    pub fn next_after(&self, seed: NaiveDate, after: NaiveDate) -> Option<NaiveDate> {
-        self.next_on_or_after(seed, after.checked_add_signed(Duration::days(1))?)
+    pub fn next_after(&self, seed: Date, after: Date) -> Option<Date> {
+        self.next_on_or_after(seed, after.tomorrow().ok()?)
     }
 
     /// The rule's occurrences for a timed series that starts at `seed`: each
@@ -391,16 +394,16 @@ impl Rule {
     #[must_use]
     pub fn timed_occurrences(
         &self,
-        seed: NaiveDateTime,
+        seed: DateTime,
         zone: &str,
-        from: NaiveDate,
-        to: NaiveDate,
+        from: Date,
+        to: Date,
     ) -> Vec<TimedOccurrence> {
         let time = seed.time();
         self.occurrences(seed.date(), from, to)
             .into_iter()
             .map(|date| {
-                let wall = date.and_time(time);
+                let wall = date.to_datetime(time);
                 TimedOccurrence {
                     wall,
                     instant: zone::wall_to_utc(zone, wall).map(|(instant, _)| instant),
@@ -417,7 +420,7 @@ impl Rule {
     /// `BYDAY` or `BYMONTHDAY` filters of its own is counted by the engine,
     /// whose filters do not divide into the frequency's steps.
     #[must_use]
-    pub fn count_before(&self, seed: NaiveDate, date: NaiveDate) -> u64 {
+    pub fn count_before(&self, seed: Date, date: Date) -> u64 {
         if date <= seed {
             return 0;
         }
@@ -437,9 +440,9 @@ impl Rule {
         // below it, so their count is the distance rounded up.
         let steps_before = |steps: i64| u64::try_from(ceil_div(steps, interval)).unwrap_or(0);
         match self.freq {
-            Freq::Daily => steps_before(date.signed_duration_since(seed).num_days()),
+            Freq::Daily => steps_before(days_between(seed, date)),
             Freq::Weekly => u64::try_from(ceil_div(
-                date.signed_duration_since(seed).num_days(),
+                days_between(seed, date),
                 interval.saturating_mul(7),
             ))
             .unwrap_or(0),
@@ -456,7 +459,7 @@ impl Rule {
     /// series costs its window rather than the years since its seed. A
     /// filtered rule ("every weekday") keeps its seed, whose dates the engine
     /// has to walk to apply the filter.
-    fn skip_to(&self, seed: NaiveDate, from: NaiveDate) -> Option<(NaiveDate, Option<u32>)> {
+    fn skip_to(&self, seed: Date, from: Date) -> Option<(Date, Option<u32>)> {
         if from <= seed || !self.by_day.is_empty() || !self.by_month_day.is_empty() {
             return Some((seed, self.count));
         }
@@ -478,17 +481,19 @@ impl Rule {
     /// The first date of this rule on or after `from`, reached by whole
     /// `INTERVAL` steps from `seed`. Only a rule without day filters is moved
     /// this way: its dates are exactly the period steps.
-    fn period_at_or_after(&self, seed: NaiveDate, from: NaiveDate) -> Option<NaiveDate> {
+    fn period_at_or_after(&self, seed: Date, from: Date) -> Option<Date> {
         let interval = i64::from(self.interval());
-        let days = from.signed_duration_since(seed).num_days();
+        let days = days_between(seed, from);
         match self.freq {
             Freq::Daily => {
                 let steps = ceil_div(days, interval).checked_mul(interval)?;
-                seed.checked_add_signed(Duration::days(steps))
+                seed.checked_add(jiff::Span::new().try_days(steps).ok()?)
+                    .ok()
             }
             Freq::Weekly => {
                 let weeks = ceil_div(days, interval.checked_mul(7)?).checked_mul(interval)?;
-                seed.checked_add_signed(Duration::days(weeks.checked_mul(7)?))
+                seed.checked_add(jiff::Span::new().try_days(weeks.checked_mul(7)?).ok()?)
+                    .ok()
             }
             Freq::Monthly => month_at_or_after(seed, from, interval),
             Freq::Yearly => year_at_or_after(seed, from, interval),
@@ -500,76 +505,73 @@ impl Rule {
     /// `count` stands in for [`Rule::count`], so a skip-ahead hands over what
     /// is left of it. Without `limits` the engine drops `UNTIL` and the
     /// exclusions, which is how counting the authored dates sees them.
-    fn engine(&self, seed: NaiveDate, count: Option<u32>, limits: bool) -> Option<RRuleSet> {
-        let start = midnight(seed)?;
-        let mut rule = RRule::new(match self.freq {
-            Freq::Daily => Frequency::Daily,
-            Freq::Weekly => Frequency::Weekly,
-            Freq::Monthly => Frequency::Monthly,
-            Freq::Yearly => Frequency::Yearly,
-        })
-        .interval(u16::try_from(self.interval()).unwrap_or(u16::MAX))
-        // RFC 5545's default `WKST`, which is the week every counted series
-        // here is counted from.
-        .week_start(Weekday::Mon)
-        .by_weekday(
-            self.by_day
-                .iter()
-                .map(|day| NWeekday::Every(*day))
-                .collect(),
-        )
-        .by_month_day(self.by_month_day.clone());
+    fn engine(&self, seed: Date, count: Option<u32>, limits: bool) -> Option<RRuleSet> {
+        // The engine reads the rule as RFC 5545 text: midnight UTC on each
+        // date, and RFC 5545's default `WKST`, which is the week every counted
+        // series here is counted from.
+        let mut text = format!(
+            "DTSTART:{}T000000Z\nRRULE:FREQ={};INTERVAL={};WKST=MO",
+            seed.strftime("%Y%m%d"),
+            self.freq.as_rrule(),
+            self.interval(),
+        );
+        if !self.by_day.is_empty() {
+            let codes: Vec<&str> = self.by_day.iter().map(|day| weekday_code(*day)).collect();
+            let _ = write!(text, ";BYDAY={}", codes.join(","));
+        }
+        if !self.by_month_day.is_empty() {
+            let days: Vec<String> = self.by_month_day.iter().map(i8::to_string).collect();
+            let _ = write!(text, ";BYMONTHDAY={}", days.join(","));
+        }
         if let Some(count) = count {
-            rule = rule.count(count);
+            let _ = write!(text, ";COUNT={count}");
         }
         if limits && let Some(until) = self.until {
-            rule = rule.until(midnight(until)?);
+            let _ = write!(text, ";UNTIL={}T000000Z", until.strftime("%Y%m%d"));
         }
-        let mut set = rule.build(start).ok()?;
-        if limits {
-            set = set.set_exdates(
-                self.exdates
-                    .iter()
-                    .filter_map(|date| midnight(*date))
-                    .collect(),
-            );
+        if limits && !self.exdates.is_empty() {
+            let dates: Vec<String> = self
+                .exdates
+                .iter()
+                .map(|date| format!("{}T000000Z", date.strftime("%Y%m%d")))
+                .collect();
+            let _ = write!(text, "\nEXDATE:{}", dates.join(","));
         }
         // A rule that matches nothing would otherwise expand for ever; the
         // engine's own limit ends it instead.
-        Some(set.limit())
+        Some(text.parse::<RRuleSet>().ok()?.limit())
     }
 }
 
 /// Applies `visit` to the dates `set` yields from `from` on, in order, until it
 /// asks to stop.
-fn walk(
-    set: Option<RRuleSet>,
-    from: NaiveDate,
-    mut visit: impl FnMut(NaiveDate) -> ControlFlow<()>,
-) {
+fn walk(set: Option<RRuleSet>, from: Date, mut visit: impl FnMut(Date) -> ControlFlow<()>) {
     let Some(set) = set else {
         return;
     };
     for at in &set {
         #[cfg(test)]
         DATES_TAKEN.with(|taken| taken.set(taken.get().saturating_add(1)));
-        let date = at.date_naive();
+        let Some(date) = Timestamp::from_second(at.timestamp())
+            .ok()
+            .map(|at| at.to_zoned(jiff::tz::TimeZone::UTC).date())
+        else {
+            return;
+        };
         if date >= from && visit(date).is_break() {
             return;
         }
     }
 }
 
-/// Midnight UTC on `date`: the instant a date-only series expands at, so every
-/// peer derives the same dates whatever its host zone says.
-fn midnight(date: NaiveDate) -> Option<DateTime<Tz>> {
-    date.and_hms_opt(0, 0, 0)
-        .map(|at| at.and_utc().with_timezone(&Tz::UTC))
+/// How many days `to` is after `from`.
+fn days_between(from: Date, to: Date) -> i64 {
+    i64::from(to.since(from).map_or(0, |span| span.get_days()))
 }
 
 /// [`Rule::count_before`] for yearly rules, which skip the years that have no
 /// 29 February.
-fn years_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
+fn years_before(seed: Date, date: Date, interval: i64) -> u64 {
     let years = i64::from(date.year()).saturating_sub(i64::from(seed.year()));
     if (seed.month(), seed.day()) != (2, 29) {
         let reached = years.saturating_add(i64::from(
@@ -580,8 +582,8 @@ fn years_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
     let mut count = 0_u64;
     let mut offset = 0_i64;
     while offset <= years {
-        let year = seed.year().checked_add(i32::try_from(offset).unwrap_or(0));
-        if let Some(candidate) = year.and_then(|year| NaiveDate::from_ymd_opt(year, 2, 29)) {
+        let year = seed.year().checked_add(i16::try_from(offset).unwrap_or(0));
+        if let Some(candidate) = year.and_then(|year| Date::new(year, 2, 29).ok()) {
             if candidate >= date {
                 break;
             }
@@ -594,7 +596,7 @@ fn years_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
 
 /// The first counted year at or after `from` that holds the seed's month and
 /// day, which skips the years that have no 29 February.
-fn year_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<NaiveDate> {
+fn year_at_or_after(seed: Date, from: Date, interval: i64) -> Option<Date> {
     let mut step = ceil_div(
         i64::from(from.year()).saturating_sub(i64::from(seed.year())),
         interval,
@@ -602,9 +604,10 @@ fn year_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<N
     for _ in 0..SKIPPED_PERIODS {
         let year = seed
             .year()
-            .checked_add(i32::try_from(step.checked_mul(interval)?).ok()?)?;
-        if let Some(date) =
-            NaiveDate::from_ymd_opt(year, seed.month(), seed.day()).filter(|date| *date >= from)
+            .checked_add(i16::try_from(step.checked_mul(interval)?).ok()?)?;
+        if let Some(date) = Date::new(year, seed.month(), seed.day())
+            .ok()
+            .filter(|date| *date >= from)
         {
             return Some(date);
         }
@@ -616,16 +619,19 @@ fn year_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<N
 /// The first counted month at or after `from` that holds the seed's day: a
 /// month without it (the 31st, 29 February) carries no occurrence, so the step
 /// moves on to the next counted month.
-fn month_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<NaiveDate> {
+fn month_at_or_after(seed: Date, from: Date, interval: i64) -> Option<Date> {
     let mut step = ceil_div(months_between(seed, from), interval);
     for _ in 0..SKIPPED_PERIODS {
-        let total = i64::from(seed.month0()).checked_add(step.checked_mul(interval)?)?;
+        let total = i64::from(seed.month())
+            .saturating_sub(1)
+            .checked_add(step.checked_mul(interval)?)?;
         let year = seed
             .year()
-            .checked_add(i32::try_from(total.div_euclid(12)).ok()?)?;
-        let month = u32::try_from(total.rem_euclid(12)).ok()?.checked_add(1)?;
-        if let Some(date) =
-            NaiveDate::from_ymd_opt(year, month, seed.day()).filter(|date| *date >= from)
+            .checked_add(i16::try_from(total.div_euclid(12)).ok()?)?;
+        let month = i8::try_from(total.rem_euclid(12)).ok()?.checked_add(1)?;
+        if let Some(date) = Date::new(year, month, seed.day())
+            .ok()
+            .filter(|date| *date >= from)
         {
             return Some(date);
         }
@@ -636,7 +642,7 @@ fn month_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<
 
 /// [`Rule::count_before`] for monthly rules, which skip the months that have
 /// no such day.
-fn months_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
+fn months_before(seed: Date, date: Date, interval: i64) -> u64 {
     let months = months_between(seed, date);
     if seed.day() <= 28 {
         let reached = months.saturating_add(i64::from(date.day() > seed.day()));
@@ -645,16 +651,16 @@ fn months_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
     let mut count = 0_u64;
     let mut offset = 0_i64;
     while offset <= months {
-        let total = i64::from(seed.month0()).saturating_add(offset);
+        let total = i64::from(seed.month())
+            .saturating_sub(1)
+            .saturating_add(offset);
         let year = seed
             .year()
-            .checked_add(i32::try_from(total.div_euclid(12)).unwrap_or(0));
-        let month = u32::try_from(total.rem_euclid(12))
+            .checked_add(i16::try_from(total.div_euclid(12)).unwrap_or(0));
+        let month = i8::try_from(total.rem_euclid(12))
             .unwrap_or(0)
             .saturating_add(1);
-        if let Some(candidate) =
-            year.and_then(|year| NaiveDate::from_ymd_opt(year, month, seed.day()))
-        {
+        if let Some(candidate) = year.and_then(|year| Date::new(year, month, seed.day()).ok()) {
             if candidate >= date {
                 break;
             }
@@ -669,8 +675,8 @@ fn months_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
 /// zone, the absolute instant it denotes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TimedOccurrence {
-    pub wall: NaiveDateTime,
-    pub instant: Option<DateTime<Utc>>,
+    pub wall: DateTime,
+    pub instant: Option<Timestamp>,
 }
 
 /// The preset set a repeat picker cycles through, and the canonical rule text
@@ -746,9 +752,9 @@ impl Repeat {
     pub fn rule(
         self,
         interval: u32,
-        until: Option<NaiveDate>,
+        until: Option<Date>,
         count: Option<u32>,
-        exdates: &[NaiveDate],
+        exdates: &[Date],
     ) -> Option<Rule> {
         let freq = match self {
             Self::None => return None,
@@ -764,11 +770,11 @@ impl Repeat {
             .with_exdates(exdates.to_vec());
         Some(if self == Self::Weekdays {
             rule.with_by_day([
-                Weekday::Mon,
-                Weekday::Tue,
-                Weekday::Wed,
-                Weekday::Thu,
-                Weekday::Fri,
+                Weekday::Monday,
+                Weekday::Tuesday,
+                Weekday::Wednesday,
+                Weekday::Thursday,
+                Weekday::Friday,
             ])
         } else {
             rule
@@ -787,14 +793,14 @@ fn parse_positive(value: &str) -> Option<u32> {
     (parsed > 0).then_some(parsed)
 }
 
-fn parse_cal_date(value: &str) -> Option<NaiveDate> {
+fn parse_cal_date(value: &str) -> Option<Date> {
     let value = value.trim();
     let compact = value
         .get(..8)
         .filter(|head| head.bytes().all(|byte| byte.is_ascii_digit()));
     match compact {
-        Some(head) => NaiveDate::parse_from_str(head, "%Y%m%d").ok(),
-        None => NaiveDate::parse_from_str(value, "%Y-%m-%d").ok(),
+        Some(head) => Date::strptime("%Y%m%d", head).ok(),
+        None => Date::strptime("%Y-%m-%d", value).ok(),
     }
 }
 
@@ -805,32 +811,32 @@ fn parse_month_day(value: &str) -> Option<i8> {
 
 fn parse_weekday(code: &str) -> Option<Weekday> {
     match code.to_ascii_uppercase().as_str() {
-        "MO" => Some(Weekday::Mon),
-        "TU" => Some(Weekday::Tue),
-        "WE" => Some(Weekday::Wed),
-        "TH" => Some(Weekday::Thu),
-        "FR" => Some(Weekday::Fri),
-        "SA" => Some(Weekday::Sat),
-        "SU" => Some(Weekday::Sun),
+        "MO" => Some(Weekday::Monday),
+        "TU" => Some(Weekday::Tuesday),
+        "WE" => Some(Weekday::Wednesday),
+        "TH" => Some(Weekday::Thursday),
+        "FR" => Some(Weekday::Friday),
+        "SA" => Some(Weekday::Saturday),
+        "SU" => Some(Weekday::Sunday),
         _ => None,
     }
 }
 
 fn weekday_code(day: Weekday) -> &'static str {
     match day {
-        Weekday::Mon => "MO",
-        Weekday::Tue => "TU",
-        Weekday::Wed => "WE",
-        Weekday::Thu => "TH",
-        Weekday::Fri => "FR",
-        Weekday::Sat => "SA",
-        Weekday::Sun => "SU",
+        Weekday::Monday => "MO",
+        Weekday::Tuesday => "TU",
+        Weekday::Wednesday => "WE",
+        Weekday::Thursday => "TH",
+        Weekday::Friday => "FR",
+        Weekday::Saturday => "SA",
+        Weekday::Sunday => "SU",
     }
 }
 
 fn canonical_days(days: impl IntoIterator<Item = Weekday>) -> Vec<Weekday> {
     let mut days: Vec<Weekday> = days.into_iter().collect();
-    days.sort_by_key(Weekday::num_days_from_monday);
+    days.sort_by_key(|day| day.to_monday_zero_offset());
     days.dedup();
     days
 }
@@ -842,7 +848,7 @@ fn ceil_div(steps: i64, step: i64) -> i64 {
         .div_euclid(step)
 }
 
-fn months_between(seed: NaiveDate, date: NaiveDate) -> i64 {
+fn months_between(seed: Date, date: Date) -> i64 {
     i64::from(date.year())
         .saturating_sub(i64::from(seed.year()))
         .saturating_mul(12)
@@ -853,12 +859,12 @@ fn months_between(seed: NaiveDate, date: NaiveDate) -> i64 {
 mod tests {
     use super::*;
 
-    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    fn date(year: i16, month: i8, day: i8) -> Date {
+        Date::new(year, month, day).unwrap()
     }
 
-    fn at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> NaiveDateTime {
-        date(year, month, day).and_hms_opt(hour, minute, 0).unwrap()
+    fn at(year: i16, month: i8, day: i8, hour: i8, minute: i8) -> DateTime {
+        date(year, month, day).at(hour, minute, 0, 0)
     }
 
     fn parse(text: &str) -> Rule {
@@ -893,7 +899,7 @@ mod tests {
         let rule = parse(text);
         assert_eq!(rule.freq(), Freq::Monthly);
         assert_eq!(rule.interval(), 2);
-        assert_eq!(rule.by_day(), [Weekday::Mon, Weekday::Fri]);
+        assert_eq!(rule.by_day(), [Weekday::Monday, Weekday::Friday]);
         assert_eq!(rule.by_month_day(), [-1, 1]);
         assert_eq!(rule.until(), Some(date(2026, 12, 31)));
         assert_eq!(rule.count(), Some(7));
@@ -907,7 +913,7 @@ mod tests {
         assert_eq!(parse(&written), rule);
         assert_eq!(parse(&format!("RRULE:{written}")), rule);
         // The rule body on its own carries no exclusions.
-        assert_eq!(parse(&rule.to_rrule()).exdates(), [] as [NaiveDate; 0]);
+        assert_eq!(parse(&rule.to_rrule()).exdates(), [] as [Date; 0]);
 
         // A part this crate cannot expand exactly is refused, not dropped.
         assert!(Rule::parse("FREQ=HOURLY").is_none());
@@ -1071,7 +1077,7 @@ mod tests {
         let spent = Repeat::Daily.rule(1, None, Some(10), &[]).unwrap();
         assert_eq!(
             spent.occurrences(date(1996, 6, 1), date(2026, 9, 1), date(2026, 9, 30)),
-            [] as [NaiveDate; 0]
+            [] as [Date; 0]
         );
         assert_eq!(
             spent.next_on_or_after(date(1996, 6, 1), date(2026, 9, 1)),
@@ -1105,9 +1111,9 @@ mod tests {
         for (text, seed) in cases {
             let rule = parse(text);
             for offset in [0, 1, 6, 7, 40, 400, 1_500] {
-                let probe = seed + Duration::days(offset);
+                let probe = seed + jiff::Span::new().days(offset);
                 let walked = rule
-                    .occurrences(seed, seed, probe - Duration::days(1))
+                    .occurrences(seed, seed, probe.yesterday().unwrap())
                     .len();
                 assert_eq!(
                     rule.count_before(seed, probe),
@@ -1124,10 +1130,10 @@ mod tests {
     #[test]
     fn a_counted_series_costs_its_window_not_its_age() {
         let weekly = Repeat::Weekly.rule(1, None, Some(10_000), &[]).unwrap();
-        let grid = |offset: i64| date(2026, 9, 28) + Duration::days(offset);
-        let shown_and_taken = |seed: NaiveDate| {
+        let grid = |offset: i64| date(2026, 9, 28) + jiff::Span::new().days(offset);
+        let shown_and_taken = |seed: Date| {
             DATES_TAKEN.with(|taken| taken.set(0));
-            let shown: Vec<NaiveDate> = (0..42)
+            let shown: Vec<Date> = (0..42)
                 .map(grid)
                 .filter(|day| weekly.occurrences(seed, *day, *day).contains(day))
                 .collect();
@@ -1217,7 +1223,7 @@ mod tests {
             occurrences
                 .iter()
                 .filter_map(|o| o.instant)
-                .map(|instant| instant.naive_utc())
+                .map(|instant| instant.to_zoned(jiff::tz::TimeZone::UTC).datetime())
                 .collect::<Vec<_>>(),
             vec![
                 at(2026, 3, 22, 8, 0),
@@ -1244,7 +1250,7 @@ mod tests {
             occurrences
                 .iter()
                 .filter_map(|o| o.instant)
-                .map(|instant| instant.naive_utc())
+                .map(|instant| instant.to_zoned(jiff::tz::TimeZone::UTC).datetime())
                 .collect::<Vec<_>>(),
             vec![
                 at(2026, 10, 24, 0, 30),

@@ -87,7 +87,7 @@ pub(crate) trait RootApp {
         operation: &ui_core::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String>;
     fn request_device_shell(&mut self) -> bool;
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent>;
     fn take_save_retry(&mut self) -> bool;
     fn resource_save_status(&mut self, status: ResourceSaveStatus);
     fn record_refused(&mut self, refusal: &ui_core::resource::ResourceRefusal);
@@ -180,10 +180,10 @@ pub(crate) trait RootSearch {
 /// The [`ActionControls`] part of a root: the controls its dispatcher
 /// queued, ahead of its view's.
 pub(crate) trait RootControls {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui_core::ControlDomain,
-        attachment: ui_core::control_custody::CustodyAttachment,
+        attachment: ui_core::control_domain::DomainAttachment,
     );
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation>;
     fn take_attributed_control_invocation(&mut self) -> Option<AttributedControlInvocation>;
@@ -439,8 +439,8 @@ impl AppWidget for RootWidget {
         self.0.request_device_shell()
     }
 
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
-        self.0.take_host_intent()
+    fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
+        self.0.take_process_intent()
     }
 
     fn take_save_retry(&mut self) -> bool {
@@ -593,12 +593,12 @@ impl ActionControls for RootWidget {
     /// its record: a press there is submitted over the app's connection, and
     /// a host's local document API never runs it
     /// (`docs/designs/app-language/one-app-model.md` §4).
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui_core::ControlDomain,
-        attachment: ui_core::control_custody::CustodyAttachment,
+        attachment: ui_core::control_domain::DomainAttachment,
     ) {
-        self.0.install_control_custody(domain, attachment);
+        self.0.attach_controls(domain, attachment);
     }
 
     fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {

@@ -140,7 +140,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
     );
     choose(&mut session, "so.tilo.shell:frames");
     // The canvas is the whole screen: its bar keeps no switch (`canvas.md` §7), so the canvas
-    // standing under a bar that names no style is what says it is shown.
+    // under a bar that names no style is what says it is shown.
     until(&mut session, |session| crate::common::canvas_shown(session));
 }
 
@@ -564,8 +564,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
     // The layouttop, by the style switch's own action: `show_style` names the view the layout draws
     // (`Viewing.style`), through the shell's API as the switch's row runs. The desktop's own
     // bar drops the style menu, so a press on the bar cannot pick it back.
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = crate::common::Api::open(&mut session, root.path());
     let (answer, failed) = repl.run(
         &mut session,
         "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
@@ -614,8 +613,7 @@ fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
     until(&mut session, |session| {
         crate::common::preset_menu(session).is_some()
     });
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = crate::common::Api::open(&mut session, root.path());
     // The desktop, through the REPL's own API: the style is a view of the layout and the
     // switch is `show_style`, an action of the person's viewing record.
     let (answer, failed) = repl.run(

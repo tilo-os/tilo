@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::{t, t_args};
 use crate::question::{
-    ACTION, ALLOW, ALWAYS, CHOICE, DENY, DONE, DROPPED, Question, STARTED, Standing,
+    ACTION, ALLOW, ALWAYS, CHOICE, DENY, DONE, DROPPED, Question, QuestionState, STARTED,
 };
 
 /// The most fields of a draft a card lists: what a person reads at a glance.
@@ -88,6 +88,9 @@ pub fn answer_label(question: &Question, id: &str) -> String {
     }
     match id {
         ALLOW => t("chat-question-allow"),
+        // What "always" covers is the question's own: one event, or one
+        // item of the vault where the action would use it.
+        ALWAYS if question.uses_item().is_some() => t("chat-question-always-item"),
         ALWAYS => t("chat-question-always"),
         DENY => t("chat-question-deny"),
         other => other.to_owned(),
@@ -98,6 +101,9 @@ pub fn answer_label(question: &Question, id: &str) -> String {
 fn answered_line(question: &Question, answer: &str, reader: &Reader<'_>) -> String {
     let said = match (question.kind.0.as_str(), answer) {
         (ACTION, ALLOW) => t("chat-question-allowed"),
+        (ACTION, ALWAYS) if question.uses_item().is_some() => {
+            t("chat-question-always-item-allowed")
+        }
         (ACTION, ALWAYS) => t("chat-question-always-allowed"),
         (ACTION, DENY) => t("chat-question-denied"),
         _ => answer_label(question, answer),
@@ -148,13 +154,23 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> Option<QuestionShown> 
                 Line::Field,
             ));
         }
+        // Which item of their vault it would use, in the system's words.
+        if let Some(item) = question.uses_item() {
+            shown.lines.push((
+                t_args(
+                    "chat-question-with-item",
+                    &[("item", crate::secret_ask::title(&item).into())],
+                ),
+                Line::Field,
+            ));
+        }
         if !draft.undoable {
             shown.lines.push((t("chat-question-final"), Line::Field));
         }
     }
-    match question.standing() {
-        Standing::Waiting if kind == CHOICE && !reader.open => {}
-        Standing::Waiting if reader.mine => {
+    match question.state() {
+        QuestionState::Waiting if kind == CHOICE && !reader.open => {}
+        QuestionState::Waiting if reader.mine => {
             shown.answers = question
                 .answers
                 .iter()
@@ -165,7 +181,7 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> Option<QuestionShown> 
                 })
                 .collect();
         }
-        Standing::Waiting => shown.lines.push((
+        QuestionState::Waiting => shown.lines.push((
             reader.name.map_or_else(
                 || t("chat-question-waiting-someone"),
                 |name| t_args("chat-question-waiting", &[("name", name.into())]),
@@ -173,12 +189,12 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> Option<QuestionShown> 
             Line::Status,
         )),
         // A choice's answer is the message its person posted under it.
-        Standing::Answered(_) | Standing::Settled(..) if kind == CHOICE => {}
-        Standing::Answered(given) => shown.lines.push((
+        QuestionState::Answered(_) | QuestionState::Settled(..) if kind == CHOICE => {}
+        QuestionState::Answered(given) => shown.lines.push((
             answered_line(question, &given.answer.0, reader),
             Line::Status,
         )),
-        Standing::Settled(given, outcome) => {
+        QuestionState::Settled(given, outcome) => {
             shown.lines.push((
                 answered_line(question, &given.answer.0, reader),
                 Line::Status,
@@ -196,7 +212,7 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> Option<QuestionShown> 
                 shown.lines.push((outcome.detail.clone(), Line::Status));
             }
         }
-        Standing::Withdrawn(withdrawn) => shown.lines.push((
+        QuestionState::Withdrawn(withdrawn) => shown.lines.push((
             if withdrawn.why.is_empty() {
                 t("chat-question-withdrawn")
             } else {

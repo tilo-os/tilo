@@ -15,8 +15,8 @@ use crate::part::{IssuePart, Issues, PART_ISSUES, issue_part};
 /// A tracker and its parts as one device holds them: every action goes to
 /// the part the chain sends it to, read against the tracker and the parts
 /// held, as a window carries it out.
-struct Board {
-    tracker: Replica<Tracker>,
+pub(crate) struct Board {
+    pub(crate) tracker: Replica<Tracker>,
     parts: Vec<(u64, Replica<IssuePart>)>,
     /// Each part's state as last written, as a window follows them.
     states: Vec<(u64, Rc<IssuePart>)>,
@@ -25,7 +25,7 @@ struct Board {
 }
 
 impl Board {
-    fn new(author: &str) -> Self {
+    pub(crate) fn new(author: &str) -> Self {
         let mut tracker = Replica::<Tracker>::new().as_author(author);
         tracker.set_now_ms(1_000);
         Self {
@@ -37,7 +37,7 @@ impl Board {
         }
     }
 
-    fn states(&self) -> Vec<(u64, Rc<IssuePart>)> {
+    pub(crate) fn states(&self) -> Vec<(u64, Rc<IssuePart>)> {
         self.states.clone()
     }
 
@@ -81,7 +81,7 @@ impl Board {
             .1
     }
 
-    fn apply(&mut self, invoke: impl Into<Invoke<IssuePart>>) -> Result<u64, String> {
+    pub(crate) fn apply(&mut self, invoke: impl Into<Invoke<IssuePart>>) -> Result<u64, String> {
         let mut action = invoke.into().build(self.now_ms)?;
         let parts = self.states();
         crate::part::prepare(&mut action, &self.tracker.state().unwrap(), &parts)?;
@@ -93,7 +93,7 @@ impl Board {
         Ok(index)
     }
 
-    fn create(&mut self, title: &str, parent: Option<Id>) -> Id {
+    pub(crate) fn create(&mut self, title: &str, parent: Option<Id>) -> Id {
         self.apply(IssuePart::CREATE.with(NewIssue {
             parent: parent.map(ui::tilo_resource::items::Ref::from),
             ..NewIssue::titled(nb(title))
@@ -417,7 +417,7 @@ fn a_change_costs_the_same_in_a_tracker_ten_times_the_size() {
     );
     assert!(
         record_large <= record_small + record_small / 10,
-        "the record a change is written to is no larger: {record_small} then {record_large} bytes"
+        "the resource a change is written to is no larger: {record_small} then {record_large} bytes"
     );
 }
 
@@ -606,7 +606,7 @@ struct Task {
 
 impl Task {
     /// Ada files "Write the market analysis" and gives it to the agent
-    /// `claude` at 1 000 ms; the agent holds the same record.
+    /// `claude` at 1 000 ms; the agent holds the same document.
     fn given() -> Self {
         let mut ada = Replica::<IssuePart>::new().as_author("ada");
         ada.set_now_ms(1_000);
@@ -620,7 +620,7 @@ impl Task {
         Self { ada, agent, issue }
     }
 
-    /// The agent does `invoke` at `now_ms`, and Ada's record takes it.
+    /// The agent does `invoke` at `now_ms`, and Ada's document takes it.
     fn agent_does(
         &mut self,
         now_ms: i64,
@@ -667,7 +667,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::RUN_BEGAN.with(issue_part::RunBegan { issue }),
+            IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan { issue }),
         )
         .unwrap();
     }
@@ -676,7 +676,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::RUN_ENDED.with(issue_part::RunEnded {
+            IssuePart::SESSION_ENDED.with(issue_part::SessionEnded {
                 issue,
                 cost_micros,
                 worked_ms,
@@ -699,11 +699,11 @@ impl Task {
         self.held().work.unwrap_or_default()
     }
 
-    fn standing(&self) -> crate::model::Standing {
-        crate::model::standing(&self.held())
+    fn task_state(&self) -> crate::model::TaskState {
+        crate::model::task_state(&self.held())
     }
 
-    /// What asks the agent at `now_ms`, read from the record alone, as a host
+    /// What asks the agent at `now_ms`, read from the document alone, as a server
     /// that just started reads it.
     fn asks(&self, now_ms: i64) -> Vec<crate::model::IssueAsk> {
         crate::model::agent_asks_at(self.ada.state().unwrap().issues.iter(), now_ms)
@@ -721,10 +721,10 @@ fn reply_wait() -> crate::model::WaitFor {
 
 /// A task that waits two days for a reply costs nothing while it waits, is
 /// asked again when the reply comes, and in a second telling when the two
-/// days are over; a reader that holds only the record reads the same asks.
+/// days are over; a reader that holds only the document reads the same asks.
 #[test]
 fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
-    use crate::model::{Asked, Standing};
+    use crate::model::{Asked, TaskState};
     let until = 2_000 + 2 * DAY_MS;
     let waiting = || {
         let mut task = Task::given();
@@ -758,14 +758,14 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     // On the reply.
     let mut task = waiting();
     assert_eq!(
-        task.standing(),
-        Standing::Waiting {
+        task.task_state(),
+        TaskState::Waiting {
             what: vec!["a reply from the supplier".into()],
             until_ms: until
         }
     );
     for now in [2_500, 2_000 + DAY_MS, until - 1] {
-        assert!(task.asks(now).is_empty(), "nothing runs while it waits");
+        assert!(task.asks(now).is_empty(), "nothing is asked while it waits");
     }
     let issue = task.issue.clone();
     task.agent_does(
@@ -782,8 +782,8 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     assert_eq!(asked[0].words, "the supplier replied");
     assert_eq!(asked[0].person, ui::tilo_resource::MemberId::person("ada"));
     assert_eq!(
-        task.standing(),
-        Standing::Working,
+        task.task_state(),
+        TaskState::Working,
         "it no longer reads as waiting"
     );
     task.begins(2_002 + DAY_MS);
@@ -795,9 +795,9 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     );
     let work = task.work();
     assert_eq!(
-        (work.runs, work.spent_micros, work.worked_ms),
+        (work.sessions, work.spent_micros, work.worked_ms),
         (2, 1_200, 700),
-        "both runs are counted"
+        "both sessions are counted"
     );
 
     // On the deadline, in a second telling.
@@ -808,18 +808,22 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     assert_eq!(asked[0].asked, Asked::WaitEnded);
     assert_eq!(asked[0].cause, format!("waited-{until}"));
     task.begins(until + 5);
-    assert_eq!(task.standing(), Standing::Working, "the run ended the wait");
+    assert_eq!(
+        task.task_state(),
+        TaskState::Working,
+        "the session ended the wait"
+    );
     assert_eq!(task.work().until_ms, None);
     task.says(until + 6, "No reply came: I wrote again.");
     assert!(task.asks(until + DAY_MS).is_empty(), "answered once");
 }
 
-/// A run that was lost is asked again from the record alone, and one lost
-/// while the task waited does not start it early. After the most lost runs
+/// A session that was lost is asked again from the document alone, and one lost
+/// while the task waited does not start it early. After the most lost sessions
 /// in a row the task stops and says so: it never reads as done.
 #[test]
-fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done() {
-    use crate::model::{Asked, MOST_LOST_RUNS, Standing, StoppedWhy};
+fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_done() {
+    use crate::model::{Asked, MOST_LOST_SESSIONS, StoppedWhy, TaskState};
     // Lost after it began to wait: the wait still holds.
     let mut task = Task::given();
     task.begins(2_000);
@@ -839,16 +843,16 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
     );
     assert_eq!(task.asks(9_000)[0].asked, Asked::WaitEnded);
 
-    // Lost while it worked: asked again, each new run counting the one before.
+    // Lost while it worked: asked again, each new session counting the one before.
     let mut task = Task::given();
     let issue = task.issue.clone();
-    for run in 0..=MOST_LOST_RUNS {
+    for lost in 0..=MOST_LOST_SESSIONS {
         let asked = task.asks(2_000);
-        assert_eq!(asked.len(), 1, "run {run} is asked again: {asked:?}");
-        task.begins(2_000 + i64::try_from(run).unwrap());
-        assert_eq!(task.work().lost, run, "the runs lost in a row");
+        assert_eq!(asked.len(), 1, "session {lost} is asked again: {asked:?}");
+        task.begins(2_000 + i64::try_from(lost).unwrap());
+        assert_eq!(task.work().lost, lost, "the sessions lost in a row");
     }
-    assert!(task.work().lost >= MOST_LOST_RUNS);
+    assert!(task.work().lost >= MOST_LOST_SESSIONS);
     task.agent_does(
         3_000,
         IssuePart::STOP.with(issue_part::Stop {
@@ -858,9 +862,9 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
         }),
     )
     .unwrap();
-    let read = task.standing();
+    let read = task.task_state();
     assert!(
-        matches!(&read, Standing::Stopped { why: StoppedWhy::LostWorker, words } if words.contains("interrupted")),
+        matches!(&read, TaskState::Stopped { why: StoppedWhy::LostWorker, words } if words.contains("interrupted")),
         "{read:?}"
     );
     assert!(!read.resolved(), "work that lost its worker is not done");
@@ -879,7 +883,7 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
         }),
     )
     .unwrap();
-    assert!(matches!(task.standing(), Standing::Stopped { .. }));
+    assert!(matches!(task.task_state(), TaskState::Stopped { .. }));
     task.agent_does(
         3_600,
         IssuePart::PLACE.with(issue_part::Place {
@@ -905,14 +909,14 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].asked, Asked::Message);
     task.begins(5_002);
-    assert_eq!(task.standing(), Standing::Working);
+    assert_eq!(task.task_state(), TaskState::Working);
 }
 
 /// A budget is its person's to raise. Once it is spent the task stops with a
 /// plain line, does not read as done, and goes on only after it was raised.
 #[test]
 fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
-    use crate::model::{Asked, BudgetBy, Standing, StoppedWhy};
+    use crate::model::{Asked, BudgetBy, StoppedWhy, TaskState};
     let mut task = Task::given();
     let issue = task.issue.clone();
     let budget = |money_micros: Option<u64>, time_ms: Option<u64>| {
@@ -958,16 +962,19 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     )
     .unwrap();
     task.says(2_700, "I stopped: this task's budget of $2.00 is spent.");
-    let read = task.standing();
+    let read = task.task_state();
     assert!(
-        matches!(&read, Standing::Stopped { why: StoppedWhy::Budget, words } if words.contains("$2.00")),
+        matches!(&read, TaskState::Stopped { why: StoppedWhy::Budget, words } if words.contains("$2.00")),
         "{read:?}"
     );
     assert!(
         !read.resolved(),
         "work that stopped at its budget is not done"
     );
-    assert!(task.asks(3_000).is_empty(), "nothing runs past the budget");
+    assert!(
+        task.asks(3_000).is_empty(),
+        "nothing is asked past the budget"
+    );
 
     let resume = || {
         IssuePart::RESUME.with(issue_part::Resume {
@@ -985,7 +992,7 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     let asked = task.asks(3_400);
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].asked, Asked::Resumed);
-    assert!(!matches!(task.standing(), Standing::Stopped { .. }));
+    assert!(!matches!(task.task_state(), TaskState::Stopped { .. }));
 }
 
 /// An agent gives an issue for the one person it acts for; an issue it filed
@@ -1015,8 +1022,8 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
         .clone();
     assert!(asks(&agent).is_empty(), "nobody asked for it yet");
     assert_eq!(
-        crate::model::standing(agent.state().unwrap().issues.get(&proposal).unwrap()),
-        crate::model::Standing::UpNext
+        crate::model::task_state(agent.state().unwrap().issues.get(&proposal).unwrap()),
+        crate::model::TaskState::UpNext
     );
     // The nod: its person gives it to the agent it is with.
     let mut ada = agent.fork().as_author("ada");
@@ -1086,21 +1093,21 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
     assert!(asks(&lone).is_empty());
 }
 
-/// Only the agent an issue is with counts its runs, a closed issue takes no
+/// Only the agent an issue is with counts its sessions, a closed issue takes no
 /// wait and no stop, and a place is a folder's path and a note.
 #[test]
-fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
+fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
     use crate::model::StoppedWhy;
     let mut task = Task::given();
     let issue = task.issue.clone();
     let began = || {
-        IssuePart::RUN_BEGAN.with(issue_part::RunBegan {
+        IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan {
             issue: issue.clone(),
         })
     };
     let refused = task.ada_does(1_100, began()).unwrap_err();
     assert!(
-        refused.contains("Only the agent an issue is assigned to counts its runs"),
+        refused.contains("Only the agent an issue is assigned to counts its sessions"),
         "{refused}"
     );
     let mut other = task.ada.fork().as_agent_for("scout", "ada");
@@ -1162,5 +1169,325 @@ fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
             }),
         )
         .is_err()
+    );
+}
+
+/// What `issues` says of the tracker, read through every question the views ask of it.
+fn reading(issues: &Issues) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (id, issue) in issues.iter() {
+        let children: Vec<u64> = issues
+            .children(Some(id))
+            .map(|(_, child)| child.number)
+            .collect();
+        let _ = writeln!(
+            out,
+            "{} {} {:?} under {:?} {:?} {:?}",
+            issue.number,
+            issue.title,
+            issue.status,
+            issues
+                .parent_of(issue)
+                .map(|parent| issues.get(parent).map(|p| p.number)),
+            children,
+            issues.progress(id),
+        );
+    }
+    let top: Vec<u64> = issues
+        .children(None)
+        .map(|(_, issue)| issue.number)
+        .collect();
+    let labels: Vec<(String, usize)> = issues
+        .labels()
+        .map(|(label, count)| (label.to_owned(), count))
+        .collect();
+    let todo = issues.count_kinds(|issue| !issue.status.started());
+    let unassigned = issues.count_kinds(|issue| issue.assignee.is_none());
+    let _ = writeln!(
+        out,
+        "top {top:?}\nlabels {labels:?}\ntodo {todo} unassigned {unassigned} of {}",
+        issues.len()
+    );
+    out
+}
+
+#[test]
+fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
+    let mut board = Board::new("ada");
+    let mut kept = Issues::default();
+    let follow = |board: &Board, kept: &mut Issues| -> Vec<u64> {
+        let parts: Rc<[(u64, Rc<IssuePart>)]> = board.states().into();
+        let before = kept.revision();
+        kept.sync(&parts);
+        assert_eq!(
+            reading(kept),
+            reading(&Issues::of(&parts)),
+            "kept from the changes, the issues read as the parts read afresh"
+        );
+        let mut touched = kept.touched_since(before).expect("one revision back");
+        touched.sort_unstable();
+        touched.dedup();
+        touched
+    };
+    // Enough issues for three parts, every tenth a parent of the nine after it.
+    let mut parent = None;
+    let mut ids = Vec::new();
+    for number in 1..=1_100_u64 {
+        let first = number % 10 == 1;
+        let id = board.create(
+            &format!("Issue {number}"),
+            if first { None } else { parent.clone() },
+        );
+        if first {
+            parent = Some(id.clone());
+        }
+        ids.push(id);
+    }
+    follow(&board, &mut kept);
+
+    // One change touches that issue, and its parent whose progress moved.
+    board
+        .apply(IssuePart::PLACE.with(issue_part::Place {
+            issue: ids[4].clone(),
+            status: Status::Done,
+            before: None,
+            rank: None,
+        }))
+        .unwrap();
+    assert_eq!(follow(&board, &mut kept), vec![1, 5]);
+
+    board
+        .apply(IssuePart::ADD_LABEL.with(issue_part::AddLabel {
+            issue: ids[600].clone(),
+            label: nb("launch"),
+        }))
+        .unwrap();
+    board
+        .apply(IssuePart::ASSIGN.with(issue_part::Assign {
+            issue: ids[1_050].clone(),
+            assignee: Some("agent:claude".to_owned()),
+        }))
+        .unwrap();
+    follow(&board, &mut kept);
+
+    // A parent moved under another, a parent deleted (its sub-issues stand at
+    // the top until they are moved), an issue made in the newest part.
+    board
+        .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+            issue: ids[20].clone(),
+            parent: Some(ui::tilo_resource::items::Ref::from(&ids[1_090])),
+        }))
+        .unwrap();
+    follow(&board, &mut kept);
+    board
+        .apply(IssuePart::DELETE.with(issue_part::Delete {
+            issue: ids[30].clone(),
+        }))
+        .unwrap();
+    follow(&board, &mut kept);
+    board.create("One more", Some(ids[0].clone()));
+    let touched = follow(&board, &mut kept);
+    assert_eq!(
+        touched,
+        vec![1, 1_101],
+        "the new issue and its parent, and nothing else"
+    );
+}
+
+/// An automation going on tells exactly the tasks that wait for it to go on: one given for its
+/// own person, still waiting, that names it. It tells no other, and never a task given for
+/// another person.
+#[test]
+fn an_automation_tells_only_the_task_that_waits_for_it_to_go_on() {
+    let mut task = Task::given();
+    let issue = task.issue.clone();
+    task.agent_does(
+        2_000,
+        IssuePart::WAIT.with(issue_part::Wait {
+            issue: issue.clone(),
+            waits: vec![reply_wait()],
+            until_ms: 2_000 + 2 * DAY_MS,
+        }),
+    )
+    .unwrap();
+    let waiting = |task: &Task, person: &str, automation: &str| {
+        crate::model::waiting_for(task.ada.state().unwrap().issues.iter(), person, automation)
+    };
+    assert_eq!(waiting(&task, "ada", "e-reply"), vec![issue.clone()]);
+    assert!(
+        waiting(&task, "grace", "e-reply").is_empty(),
+        "another person's automation ends no wait of a task given for Ada"
+    );
+    assert!(
+        waiting(&task, "ada", "e-other").is_empty(),
+        "an automation it does not name"
+    );
+    assert!(waiting(&task, "ada", "").is_empty(), "no automation at all");
+
+    // Told to go on, it waits no more: the automation coming again tells nothing.
+    task.ada_does(
+        3_000,
+        IssuePart::RESUME.with(issue_part::Resume {
+            issue,
+            cause: nb("the supplier replied"),
+        }),
+    )
+    .unwrap();
+    assert!(waiting(&task, "ada", "e-reply").is_empty());
+}
+
+/// Say how many of `issue`'s pieces are in work at once.
+fn pieces_at_once(issue: &Id, at_once: Option<u64>) -> impl Into<Invoke<IssuePart>> {
+    IssuePart::SET_PIECES_AT_ONCE.with(issue_part::SetPiecesAtOnce {
+        issue: issue.clone(),
+        at_once,
+    })
+}
+
+/// A task with three pieces under it, each given to the agent, of which one is in work at a
+/// time, and the task waiting for them: the task, and its pieces in the tracker's order.
+fn in_three_pieces() -> (Task, Vec<Id>) {
+    use crate::model::{WaitFor, WaitKind};
+    let mut task = Task::given();
+    let whole = task.issue.clone();
+    task.begins(1_100);
+    let mut pieces = Vec::new();
+    for (at, title) in [(1_200, "North"), (1_201, "South"), (1_202, "West")] {
+        task.ada_does(
+            at,
+            IssuePart::CREATE.with(NewIssue {
+                assignee: Some("agent:claude".into()),
+                parent: Some(ui::tilo_resource::items::Ref::from(whole.clone())),
+                ..NewIssue::titled(nb(title))
+            }),
+        )
+        .unwrap();
+        let held = task.ada.state().unwrap();
+        let piece = held.issues.iter().find(|(_, issue)| issue.title == title);
+        pieces.push(piece.unwrap().0.clone());
+    }
+    task.agent_does(1_300, pieces_at_once(&whole, Some(1)))
+        .unwrap();
+    task.agent_does(
+        1_400,
+        IssuePart::WAIT.with(issue_part::Wait {
+            issue: whole,
+            waits: vec![WaitFor {
+                kind: WaitKind::Pieces,
+                what: "its three pieces".into(),
+                on: None,
+                event: None,
+            }],
+            until_ms: 1_400 + 2 * DAY_MS,
+        }),
+    )
+    .unwrap();
+    task.says(1_450, "I split it into three pieces and wait for them.");
+    task.ends(1_500, 0, 0);
+    (task, pieces)
+}
+
+/// How many of an issue's pieces are in work at once is said by a person or by the agent the
+/// issue is given to: no other agent says it, and none at a time is no bound.
+#[test]
+fn only_a_person_or_its_own_agent_says_how_many_pieces_are_in_work_at_once() {
+    let (mut task, _) = in_three_pieces();
+    let whole = task.issue.clone();
+    assert!(
+        task.ada_does(1_600, pieces_at_once(&whole, Some(0)))
+            .is_err(),
+        "none at a time"
+    );
+    let refused = task
+        .ada
+        .fork()
+        .as_agent_for("other", "ada")
+        .apply(pieces_at_once(&whole, Some(9)))
+        .map(drop)
+        .map_err(|error| error.to_string())
+        .unwrap_err();
+    assert!(refused.contains("its own agent"), "{refused}");
+    task.ada_does(1_700, pieces_at_once(&whole, Some(2)))
+        .unwrap();
+    assert_eq!(task.work().pieces_at_once, Some(2));
+    task.ada_does(1_800, pieces_at_once(&whole, None)).unwrap();
+    assert_eq!(task.work().pieces_at_once, None);
+}
+
+/// A task split into pieces: of the pieces under an issue that says how many are in work at
+/// once, only so many are begun, in the tracker's order, and the next is begun when one is
+/// through. The issue itself, waiting for its pieces, is asked again once all of them are.
+#[test]
+fn pieces_are_begun_so_many_at_once_and_their_issue_goes_on_when_they_are_through() {
+    use crate::model::{Asked, StoppedWhy};
+    let (mut task, pieces) = in_three_pieces();
+    let whole = task.issue.clone();
+    let asked = |task: &Task, now_ms: i64| -> Vec<(Id, Asked)> {
+        task.asks(now_ms)
+            .into_iter()
+            .map(|ask| (ask.issue, ask.asked))
+            .collect()
+    };
+    let began = |issue: &Id| {
+        IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan {
+            issue: issue.clone(),
+        })
+    };
+    let placed = |issue: &Id, status| {
+        IssuePart::PLACE.with(issue_part::Place {
+            issue: issue.clone(),
+            status,
+            before: None,
+            rank: None,
+        })
+    };
+
+    // One at a time: only the first piece is begun, and nothing else while it is in work.
+    assert_eq!(
+        asked(&task, 2_000),
+        vec![(pieces[0].clone(), Asked::Assigned)]
+    );
+    task.agent_does(2_100, began(&pieces[0])).unwrap();
+    let said = IssuePart::COMMENT.with(issue_part::Comment {
+        issue: pieces[0].clone(),
+        text: nb("I am on it."),
+        origin: None,
+    });
+    task.agent_does(2_150, said).unwrap();
+    assert!(asked(&task, 2_200).is_empty(), "one piece is in work");
+
+    // It is ready for review: the second is begun. That one stops: the third is begun.
+    task.agent_does(2_300, placed(&pieces[0], Status::InReview))
+        .unwrap();
+    assert_eq!(
+        asked(&task, 2_400),
+        vec![(pieces[1].clone(), Asked::Assigned)]
+    );
+    task.agent_does(2_500, began(&pieces[1])).unwrap();
+    let stopped = IssuePart::STOP.with(issue_part::Stop {
+        issue: pieces[1].clone(),
+        why: StoppedWhy::Failed,
+        words: nb("I could not reach the site."),
+    });
+    task.agent_does(2_600, stopped).unwrap();
+    assert_eq!(
+        asked(&task, 2_700),
+        vec![(pieces[2].clone(), Asked::Assigned)]
+    );
+
+    // Its person calls the third off: every piece is through, and the issue is asked again
+    // with how they ended. A stopped piece is not counted as done.
+    task.ada_does(2_800, placed(&pieces[2], Status::Cancelled))
+        .unwrap();
+    let asks = task.asks(2_900);
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(
+        (&asks[0].issue, asks[0].asked),
+        (&whole, Asked::PiecesEnded)
+    );
+    assert_eq!(
+        asks[0].words,
+        "3 pieces: 1 ready for review, 0 done, 1 stopped, 1 cancelled"
     );
 }

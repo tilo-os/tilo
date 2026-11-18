@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
         assert!(refused.contains("duplicate seq"), "{refused}");
         let refused = page
             .decide_relayed_document(
-                TransportOrigin::RelayDelta(guest.device_public_key),
+                TransportOrigin::ServerDelta(guest.device_public_key),
                 &moderation_write,
                 now(),
             )
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
         let refused = receive(&mut peer, &guest, moderation_write).unwrap_err();
         assert!(refused.contains("not granted"), "{refused}");
         page.decide_relayed_document(
-            TransportOrigin::RelayDelta(guest.device_public_key),
+            TransportOrigin::ServerDelta(guest.device_public_key),
             &later,
             now(),
         )
@@ -604,7 +604,7 @@ tilo_test_env::scenario! {
         };
         let held = peer
             .receive_from(
-                TransportOrigin::RelayDelta(guest.device_public_key),
+                TransportOrigin::ServerDelta(guest.device_public_key),
                 edited.clone(),
                 now(),
             )
@@ -836,7 +836,7 @@ tilo_test_env::scenario! {
         let old = signed_write(&mut doc, &heads, &key);
         let held = peer
             .receive_from(
-                TransportOrigin::RelayDelta(guest.device_public_key),
+                TransportOrigin::ServerDelta(guest.device_public_key),
                 old,
                 now(),
             )

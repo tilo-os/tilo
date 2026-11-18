@@ -11,9 +11,9 @@ tilo_flight_recorder_build() {
         && [ -n "${TILO_SESSION_REPORT:-}" ] && [ -x "$TILO_SESSION_REPORT" ]; then
         return 0
     fi
-    cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-session-record \
+    cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-flight-log \
         --bin tilo-flight-recorder --bin tilo-session-report >&2 || {
-        echo 'cannot build the flight recorder (tilo-session-record)' >&2
+        echo 'cannot build the flight recorder (tilo-flight-log)' >&2
         return 1
     }
     bin="${CARGO_TARGET_DIR:-$repo/target}/debug"

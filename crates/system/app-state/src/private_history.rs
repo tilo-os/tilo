@@ -133,7 +133,7 @@ impl PrivateHistory {
                 decode(&stored.bytes)?
             }
             // An obsolete slot (including the unbound legacy format) may be
-            // replaced, but its private contents never cross actor custody.
+            // replaced, but its private contents never cross actor ownership.
             _ => VecDeque::new(),
         };
         // Reads may include another live session's accepted writes. Ask the
@@ -544,7 +544,7 @@ mod tests {
             let replacement = PrivateHistory::open(store.clone(), &owner, b"replacement").unwrap();
             assert_eq!(*replacement.key(), freed);
             assert_eq!(std::fs::read(sentinel).unwrap(), b"legitimate user data");
-            // Slot files and their permanent gates are the only owner metadata.
+            // Slot files and their permanent checks are the only owner metadata.
             let path = store.local_path(replacement.key()).unwrap();
             assert!(
                 std::fs::read_dir(path.parent().unwrap()).unwrap().count()

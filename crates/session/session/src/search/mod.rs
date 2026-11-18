@@ -32,7 +32,7 @@ mod host;
 use tilo_actions::ApiError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
+    ActionCallError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
 };
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
@@ -234,12 +234,12 @@ struct DownloadedRows {
     published: Vec<tilo_actions::ActionDescriptor>,
 }
 
-/// Why a row the person chose did not happen, in words they read: the session's own missing app host
-/// says what it means, rather than naming its code on the row.
+/// Why a row the person chose did not happen, in words they read: the session's own missing action
+/// provider says what it means, rather than naming its code on the row.
 #[must_use]
 pub fn why_in_words(error: &ApiError) -> String {
     match error {
-        ApiError::Unavailable { code, .. } if code == "action_host_unavailable" => {
+        ApiError::Unavailable { code, .. } if code == "action_provider_unavailable" => {
             tilo_desktop_surface::i18n::t("answer-why-cannot-start")
         }
         other => other.to_string(),
@@ -1339,7 +1339,7 @@ impl SessionSearch {
         match &self.apps {
             Some(apps) => run(&**apps),
             None => Err(ApiError::Unavailable {
-                code: "action_host_unavailable".into(),
+                code: "action_provider_unavailable".into(),
                 reason: "The session runs without an action host".into(),
             }),
         }
@@ -1501,7 +1501,7 @@ impl ResourceSearch for SearchThrough {
         &self,
         caller: &Caller,
         needle: &str,
-    ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionCallError>> {
         // An agent finds what the workspace it works in holds: the search is the person's, over
         // every workspace they see, and an agent is in one.
         let workspace = if caller.acting().is_person() {
@@ -1511,7 +1511,7 @@ impl ResourceSearch for SearchThrough {
                 Some(workspace) => Some(workspace.to_owned()),
                 None => {
                     return tilo_actions::remote::Pending::ready(Err(
-                        ActionHostError::Unavailable {
+                        ActionCallError::Unavailable {
                             reason:
                                 "an agent searches the workspace it works in, and works in none"
                                     .to_owned(),
@@ -1663,6 +1663,7 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
         arguments,
         app,
         provider: None,
+        when: None,
     })
 }
 
@@ -2312,7 +2313,7 @@ mod tests {
         // The page links Notes, as its bundle does.
         let _ = notes::definition();
         // A hundred long notes, as a company's wiki moved in.
-        let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
+        let mut notebook = tilo_resource::Replica::<notes::PagePart>::new();
         let mut release = String::new();
         for at in 0..100 {
             let page = uuid::Uuid::new_v4();
@@ -2345,13 +2346,29 @@ mod tests {
         }
         let store: crate::platform::Store =
             std::sync::Arc::new(app_state::FsStore::new(home.data()));
-        let key = durable_store::StorageKey::workspace_index(NOTES_APP, &workspace);
-        let lease = store.lease(&key).expect("the key is this test's");
-        store
-            .write(&key, durable_store::WriteOp::Replace(notebook.save()), None)
-            .expect("the notebook is written");
-        store.flush(Some(&key)).expect("the notebook is kept");
-        drop(lease);
+        // Notes keeps its notes in the first part of their chain, beside its own record.
+        let own = tilo_resource::Replica::<notes::Notebook>::new().save();
+        for (key, bytes) in [
+            (
+                durable_store::StorageKey::workspace_index(NOTES_APP, &workspace),
+                own,
+            ),
+            (
+                durable_store::StorageKey::document(
+                    NOTES_APP,
+                    &workspace,
+                    notes::part::chain().part(0).storage_key(),
+                ),
+                notebook.save(),
+            ),
+        ] {
+            let lease = store.lease(&key).expect("the key is this test's");
+            store
+                .write(&key, durable_store::WriteOp::Replace(bytes), None)
+                .expect("the record is written");
+            store.flush(Some(&key)).expect("the record is kept");
+            drop(lease);
+        }
         let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
         let search = Rc::new(SessionSearch::new(
             SearchOptions {
@@ -2521,7 +2538,7 @@ mod tests {
         const NOTEBOOK: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000bb";
         // The page links Notes, as its bundle does.
         let kind = notes::definition().resource_type.clone();
-        let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
+        let mut notebook = tilo_resource::Replica::<notes::PagePart>::new();
         let mut write = |title: &str, text: &str| {
             let page = uuid::Uuid::new_v4();
             notebook
@@ -2541,13 +2558,15 @@ mod tests {
         let record = ui::resource::DocumentId::parse(NOTEBOOK).expect("a record id");
         let mut index = automerge::AutoCommit::new();
         assert!(ui::resource::index::reference(&mut index, &record, &kind));
+        // The notes are kept in the first part of their chain, which no index names.
+        let part = notes::part::chain().part(0);
         for (key, bytes) in [
             (
                 durable_store::StorageKey::workspace_index(NOTES_APP, workspace),
                 index.save(),
             ),
             (
-                durable_store::StorageKey::document(NOTES_APP, workspace, record.storage_key()),
+                durable_store::StorageKey::document(NOTES_APP, workspace, part.storage_key()),
                 notebook.save(),
             ),
         ] {

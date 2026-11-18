@@ -6,7 +6,7 @@
 //! - **Identity.** Its own device key, a capability-less `DeviceCert`
 //!   issued under the user's root by ordinary device certification (the
 //!   approving device is where consent is given), and a root-signed
-//!   `tilo_relay_protocol::delegation::Delegation` naming its label, cursor
+//!   `tilo_server_protocol::delegation::Delegation` naming its label, cursor
 //!   colour, workspaces and apps. The host confines the device to those workspaces and
 //!   treats it as its own actor ([`control::AgentIdentity`]).
 //! - **Apps.** Each record the agent works in is a replica of the app's
@@ -18,10 +18,10 @@
 //!   keys; the host admits what a worker returns before it signs it
 //!   ([`worker`]).
 //! - **Edits.** Each action's Automerge change is committed through the
-//!   agent's relay session and ordered by the host with everyone else's;
+//!   agent's server session and ordered by the host with everyone else's;
 //!   browsers receive it live, attributed to the agent ([`member`]).
 //! - **Presence.** The agent publishes the record it focuses and a
-//!   member of kind agent on the live plane; browsers show it there,
+//!   member of kind agent on the live session; browsers show it there,
 //!   and it sees theirs.
 //! - **Steering.** Spawn, message, pause, resume, stop and status are
 //!   remote actions the host answers for the delegating user's devices
@@ -66,7 +66,7 @@ pub use apps::{
 };
 pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
-    GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot, Witness,
+    Approver, GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use member::actions::{RESOURCE_PROVIDER, record_provider};

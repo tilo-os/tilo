@@ -158,8 +158,8 @@ impl AppBrokerState {
     }
 }
 
-fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionHostError {
-    tilo_actions::remote::ActionHostError::Unavailable {
+fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unavailable {
         reason: reason.into(),
     }
 }
@@ -210,7 +210,7 @@ impl AppBrokerState {
                         agent: current.agent_id.clone(),
                     }
                 } else {
-                    // The connection's custody attests only its own admitted
+                    // The connection's ownership attests only its own admitted
                     // Person or agent. An application acting under its own
                     // identity, or an effect continuing another caller's
                     // invocation, is decided as that actor and stays
@@ -281,7 +281,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: &InvocationCaller,
         invocation: tilo_actions::InvocationId,
-    ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionHostError>
+    ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionCallError>
     {
         let workspace = caller
             .workspace()

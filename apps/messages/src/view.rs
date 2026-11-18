@@ -352,7 +352,7 @@ fn answer(
         MessagesEffect::SearchMessages { .. }
         | MessagesEffect::ExportContent { .. }
         | MessagesEffect::OpenConversation { .. } => {
-            return Err("the record answers this before the broker".to_owned());
+            return Err("the resource answers this before the broker".to_owned());
         }
     }
     Ok(Effected::done())
@@ -439,7 +439,7 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
     }
 }
 
-/// The workspace's people as the Tilo lane offers them: everyone the workspace names but
+/// The workspace's people as Tilo offers them: everyone the workspace names but
 /// this window's own person and its agents.
 fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
     cx.people()
@@ -664,7 +664,7 @@ fn navigation(
     drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
 ) -> NavShell {
     let entries = groups.entries(sources, actions);
-    // Nobody to message only when the record holds no conversation either: a Messages with
+    // Nobody to message only when the resource holds no conversation either: a Messages with
     // content never presents itself as empty.
     let nobody = nobody_listed(sources) && sources.record().conversations.is_empty();
     let people = overview(sources, actions, selected, drafts);
@@ -786,7 +786,7 @@ fn register_effects(
     let status_history = history.clone();
     let content = cx.content();
     cx.effects(move |effect: MessagesEffect, cx| {
-        // What the record holds is read here, never through the broker.
+        // What the resource holds is read here, never through the broker.
         match &effect {
             MessagesEffect::SearchMessages { query } => {
                 return cx.live().get().search(query).map(Effected::value);
@@ -858,7 +858,7 @@ fn register_effects(
     });
 }
 
-/// Open the record's conversation `named` (its id, its item address or who it is with) in
+/// Open the resource's conversation `named` (its id, its item address or who it is with) in
 /// place of any person.
 fn open_conversation(
     record: &Messages,
@@ -878,7 +878,7 @@ fn open_conversation(
     Ok(Effected::done())
 }
 
-/// One conversation the record holds, as the overview lists it.
+/// One conversation the resource holds, as the overview lists it.
 #[derive(Clone)]
 struct Held {
     key: String,
@@ -886,7 +886,7 @@ struct Held {
     last: String,
 }
 
-/// The record's conversations, the one with the latest message first.
+/// The resource's conversations, the one with the latest message first.
 fn held(record: &Messages) -> Vec<Held> {
     let mut held: Vec<(i64, Held)> = record
         .conversations
@@ -909,7 +909,7 @@ fn held(record: &Messages) -> Vec<Held> {
     held.into_iter().map(|(_, held)| held).collect()
 }
 
-/// A row of the overview: a conversation the record holds, or a person.
+/// A row of the overview: a conversation the resource holds, or a person.
 #[derive(Clone)]
 enum Entry {
     Held(Held),
@@ -1008,7 +1008,7 @@ fn overview(
     Box::new(Container::new().filling().with_child(Box::new(list)))
 }
 
-/// The record's conversation `key`, read-only: who said what, and which of the words
+/// The resource's conversation `key`, read-only: who said what, and which of the words
 /// written here still wait for a person to send them.
 fn held_detail(record: &Messages, key: &str) -> Element {
     let Some(conversation) = record.conversations.get(&Id::from_raw(key)) else {
@@ -1262,7 +1262,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
 
 fn capture_history() -> tilo_messaging::HistoryPage {
     use tilo_messaging::{Delivery, Direction, HistoryPage, Message};
-    let now_ms = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or(0);
+    let now_ms = u64::try_from(ui::clock::local_now().timestamp().as_millisecond()).unwrap_or(0);
     HistoryPage {
         route: routing::Route {
             person: Id::from_raw("00000000-0000-4000-8000-000000000001"),
@@ -1374,7 +1374,7 @@ mod route_tests {
             .expect("person");
         let mut accounts = PersonAccounts::default();
         accounts
-            .save_account(
+            .keep_account(
                 "sender".into(),
                 "signal".into(),
                 "Personal".into(),
@@ -1436,7 +1436,7 @@ mod route_tests {
             .expect("person");
         let mut accounts = PersonAccounts::default();
         accounts
-            .save_account(
+            .keep_account(
                 "sender".into(),
                 "signal".into(),
                 "Personal".into(),
@@ -1526,7 +1526,7 @@ mod route_tests {
         }
         let mut accounts = PersonAccounts::default();
         accounts
-            .save_account(
+            .keep_account(
                 "sender".into(),
                 "signal".into(),
                 "Personal".into(),

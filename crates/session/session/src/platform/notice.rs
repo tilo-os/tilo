@@ -1,6 +1,6 @@
 //! One notice a role tells the person, as this host shows it.
 //!
-//! The notice and the [`Notices`] seam are the session core's ([`tilo_session_core::notice`]):
+//! The notice and the [`Notices`] service are the session services' ([`tilo_service::notice`]):
 //! what it says, where choosing it lands, and what the person chose. This is the page's own way
 //! of showing one — the notifier its host serves — and the address an open of a notice's place is
 //! carried at.
@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
-pub use tilo_session_core::notice::{Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME};
+pub use tilo_service::notice::{Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME};
 
 /// A host's notifier as a role's notices: the notification platform the toolkit serves, which is
-/// the page's `ui::host::current().notifications`. What choosing one lands at comes back here;
+/// the page's `ui::process::current().notifications`. What choosing one lands at comes back here;
 /// nothing on the page reads why one closed, so it reports none.
 pub struct Toolkit {
     notifier: Arc<dyn ui::notify::Notifier>,
@@ -37,7 +37,7 @@ impl Toolkit {
 
 impl Notices for Toolkit {
     fn show(&self, notice: &Notice) {
-        if let Err(error) = self.notifier.show(&notice.notification()) {
+        if let Err(error) = self.notifier.show(&notification(notice)) {
             tracing::warn!(%error, tag = %notice.tag, "a notice was not shown");
         }
     }
@@ -50,5 +50,15 @@ impl Notices for Toolkit {
 
     fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.chosen.lock_recover())
+    }
+}
+
+/// The notification the toolkit's notifier shows for `notice`: what the person clicks carries the
+/// place's activation.
+fn notification(notice: &Notice) -> ui::notify::Notification {
+    let notification = ui::notify::Notification::new(&notice.tag, &notice.title, &notice.body);
+    match &notice.place {
+        Some(place) => notification.with_activation(place.activation()),
+        None => notification,
     }
 }

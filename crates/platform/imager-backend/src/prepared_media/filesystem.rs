@@ -62,7 +62,7 @@ pub fn with_efi_filesystem<T>(
     }
 }
 
-/// Delivers through the authenticated migration partition; formatting and reuse-witness policy stay
+/// Delivers through the authenticated migration partition; formatting and reuse-proof policy stay
 /// in the native actor. Unsupported without the native Linux media writer feature.
 pub fn with_home_filesystem<T>(
     target: &TargetDrive,
@@ -80,7 +80,7 @@ pub fn with_home_filesystem<T>(
     }
 }
 /// Reads an existing migration filesystem without formatting it, checking its partition binding and
-/// stored reuse witness. Unsupported without the native Linux media writer feature.
+/// stored reuse proof. Unsupported without the native Linux media writer feature.
 pub fn with_existing_home<T>(
     target: &TargetDrive,
     expected: &crate::media_model::MediaPartitionBinding,

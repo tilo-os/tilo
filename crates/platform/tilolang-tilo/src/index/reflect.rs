@@ -1,9 +1,9 @@
 //! Reflection, indexed: who made each resource and when, who changed it last and when, and
 //! when each of its fields last changed (`created(r)`, `updated(r)`, `changed(r, .field)`;
 //! language-changes.md, "Reflection"), kept per resource beside its fields and derived change
-//! by change from the workspace record's log.
+//! by change from the workspace document's log.
 //!
-//! The record holds what each resource is now; the log holds who made each change, when, and
+//! The document holds what each resource is now; the log holds who made each change, when, and
 //! which resources it changed, and which fields of each ([`DynAction::made`]). The index
 //! keeps, per resource, the first and the last of those versions under the pseudo-fields
 //! [`CREATED`] and [`UPDATED`], the last change of each field under [`changed_field`], and per
@@ -13,12 +13,12 @@
 //!
 //! Which version is first and last does not depend on the order a replica received the
 //! changes in: versions compare by their recorded time, then by the change's place in the
-//! record's causal order (its first operation's counter, a Lamport clock: a change comes after
+//! document's causal order (its first operation's counter, a Lamport clock: a change comes after
 //! every change it was made on top of, whatever their times' precision), then by the change's
 //! hash. Two replicas holding the same changes hold the same `created` and `updated`.
 //!
 //! A resource's versions stay when the resource is derived anew (its fields are read from the
-//! record again; its versions are not in the record) and when it is removed: an undone removal
+//! document again; its versions are not in the document) and when it is removed: an undone removal
 //! brings back the resource it was, made when it was made.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -240,7 +240,7 @@ impl Stamp {
     }
 }
 
-/// The action a step on the record that is no package's action is a version by (an undo, a
+/// The action a step on the document that is no package's action is a version by (an undo, a
 /// revert from History; [`tilolang_runtime::store::STEP_ACTION`]).
 pub const STEP_ACTION: &str = tilolang_runtime::store::STEP_ACTION;
 
@@ -321,7 +321,7 @@ pub fn placed_of(
 }
 
 /// What a change says of itself beside its operations: its hash, when it was made, its first
-/// operation and its message. Reading what a change records needs no more, and a document
+/// operation and its message. Reading what a change documents needs no more, and a document
 /// answers these for its whole log without encoding a change's operations
 /// ([`automerge::Automerge::get_changes_meta`]): building a chunk's versions read its two
 /// thousand changes in some 70 ms as whole changes, and in 2 ms as these.
@@ -415,14 +415,14 @@ pub fn read_change(change: &(impl ChangeHead + ?Sized)) -> Option<(Stamp, DynAct
     parsed(change).read.clone()
 }
 
-/// The edits `change` records, when it is a tilolang action's change: what a write the store
-/// made is the record's when the record's change holds the very edit it made.
+/// The edits `change` documents, when it is a tilolang action's change: what a write the store
+/// made is the document's when the document's change holds the very edit it made.
 #[must_use]
 pub fn edits_of(change: &automerge::Change) -> Vec<DynEdit> {
     read_change(change).map_or_else(Vec::new, |(_, action, _)| action.edits)
 }
 
-/// Where each item the `changes` placed is: the record holding its collection, the field and
+/// Where each item the `changes` placed is: the document holding its collection, the field and
 /// its type. What a removal in the same batch left, for an index that never held the item.
 pub type Placed = BTreeMap<String, Left>;
 
@@ -510,7 +510,7 @@ pub(crate) fn maker_of(change: &automerge::Change) -> Option<Actor> {
 }
 
 impl Parsed {
-    /// What `change`, whose message records `context`, says of the action it ran: its version,
+    /// What `change`, whose message documents `context`, says of the action it ran: its version,
     /// action and run, or, for an action whose edits are kept as content, its version alone.
     fn of(
         change: &(impl ChangeHead + ?Sized),
@@ -531,7 +531,7 @@ impl Parsed {
         else {
             return parsed;
         };
-        // An action too large to record whole keeps its large parts in the record's content
+        // An action too large to record whole keeps its large parts in the document's content
         // store: read back from there, it is the action as it ran. Until they reach this device,
         // what the entry says beside them is its version, and what it changed is read off what
         // it wrote ([`Parsed::apart`]).
@@ -558,7 +558,7 @@ impl Parsed {
             }
             Err(error) => {
                 // A tilolang action's change whose action does not read: the change is still the
-                // record's, but no version stamps it.
+                // document's, but no version stamps it.
                 tracing::warn!(
                     change = %change.hash(),
                     %error,
@@ -570,7 +570,7 @@ impl Parsed {
     }
 }
 
-/// The action `encoded` records with its edits and arguments kept as content, read without
+/// The action `encoded` documents with its edits and arguments kept as content, read without
 /// them: who invoked it, when, and which action it was stay in the entry.
 fn without_parts(encoded: &tilo_actions::EncodedAction) -> Result<DynAction, serde_json::Error> {
     let mut value: Json = serde_json::from_slice(&encoded.payload)?;
@@ -625,7 +625,7 @@ pub struct Ends {
     /// What that version did to it.
     pub last_kind: VersionKind,
     /// The last version that changed each of its fields, by the field's id: a change of the
-    /// record, never a step that takes one back (an undo), which leaves the field's last
+    /// document, never a step that takes one back (an undo), which leaves the field's last
     /// change the one still in effect. A field no version here names was last changed by the
     /// one that made the resource, which set it.
     pub fields: BTreeMap<String, Stamp>,
@@ -658,7 +658,7 @@ impl Ends {
 
     /// Whether these are the ends of the same invocation's version as `other`: who made it, when
     /// and by which action, over how many items and from what. A version this device made before
-    /// the record held it says the same of itself, though its causal place is
+    /// the document held it says the same of itself, though its causal place is
     /// [`PROVISIONAL`] and the change that made it is not known yet.
     #[must_use]
     pub fn same_invocation(&self, other: &Self) -> bool {
@@ -728,9 +728,9 @@ fn made_of(change: &(impl ChangeHead + ?Sized)) -> Vec<(String, Vec<String>, Ver
 }
 
 /// The versions `changes` made of each resource they changed, with the last change of each of
-/// its fields: a package action's (a field's last change), or a step on the record that is no
+/// its fields: a package action's (a field's last change), or a step on the document that is no
 /// package's action (an undo, a revert) and changed no field, as it takes a change back
-/// rather than making one. A change the record marks undone made no version.
+/// rather than making one. A change the document marks undone made no version.
 ///
 /// A resource an action was made from is a version of that change too, of no field of its own:
 /// a comment under a task changed that task, for whoever made or read it. The store's versions
@@ -785,8 +785,8 @@ fn versions_of_changes<C: ChangeHead>(
     out
 }
 
-/// The changes `step` marked at the record's root ([`undone_changes`]), whether it marked one
-/// undone or took the mark back (a redo): the changes whose resources the record holds as they
+/// The changes `step` marked at the document's root ([`undone_changes`]), whether it marked one
+/// undone or took the mark back (a redo): the changes whose resources the document holds as they
 /// left them, or no longer does.
 fn marked_by(step: &automerge::Change) -> Vec<String> {
     let mut out = Vec::new();
@@ -803,7 +803,7 @@ fn marked_by(step: &automerge::Change) -> Vec<String> {
     out
 }
 
-/// The changes the record marks undone (an undo, until a redo brings it back), by hash: a
+/// The changes the document marks undone (an undo, until a redo brings it back), by hash: a
 /// derivation of the whole log leaves them out.
 #[must_use]
 pub fn undone_changes(mirror: &Doc) -> BTreeSet<String> {
@@ -830,7 +830,7 @@ pub fn undone_changes(mirror: &Doc) -> BTreeSet<String> {
 }
 
 /// The first and last versions `changes` made of each resource they changed, and the last
-/// change of each of its fields: a package action's, or a step on the record that is no
+/// change of each of its fields: a package action's, or a step on the document that is no
 /// package's action (an undo, a revert, which `mirror` holds what it wrote).
 ///
 /// A change taken back by a step (an undo) no longer names a field's last change: the
@@ -857,7 +857,7 @@ pub fn ends_of<'c>(
     let undone = undone_changes(mirror);
     // The resources the steps wrote, and those of the changes they took back: a step that
     // undoes a removal writes nothing of the resource that comes back, and a step that makes
-    // it again (a redo) only takes the record's marker of it back.
+    // it again (a redo) only takes the document's marker of it back.
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for step in &steps {
         touched.extend(
@@ -929,7 +929,7 @@ impl<'d> Stepped<'d> {
     }
 }
 
-/// The version a step on the record that is no action of a package was made by (an undo, a
+/// The version a step on the document that is no action of a package was made by (an undo, a
 /// revert from History; [`STEP_ACTION`]), when `change` is one: who took it, when, and which
 /// step. `None` for a package action's change, and for one that is nobody's step (an outside
 /// effect settling).

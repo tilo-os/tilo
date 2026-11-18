@@ -2,7 +2,7 @@
 //! the window bar's slots, the inspector drawer and the status bar. The grid is a
 //! dense fixed-pitch canvas, so it paints itself and reads its metrics from the
 //! theme. The bytes are the [`HexEditor`] record's: the [`Editor`] edits its own copy
-//! as a key is pressed and submits each edit as the record's action.
+//! as a key is pressed and submits each edit as the resource's action.
 
 mod clipboard;
 mod find;
@@ -136,7 +136,7 @@ pub(crate) struct Editor {
     last_mouse: Point,
 
     // --- file state ---
-    /// False until the record holds a file, which composes the empty state.
+    /// False until the resource holds a file, which composes the empty state.
     has_file: bool,
     new_file: Rect,
     /// The bytes as last opened or saved, which the changed marks compare against.
@@ -152,7 +152,7 @@ pub(crate) struct Editor {
 
     focused: bool,
     dispatch: Option<Dispatcher<HexEditor>>,
-    /// The record's state, followed as it changes and shown again when an edit is
+    /// The resource's state, followed as it changes and shown again when an edit is
     /// refused; `None` outside the framework.
     live: Option<Live<HexEditor>>,
     presented: Option<(u64, u64)>,
@@ -246,7 +246,7 @@ impl Editor {
     }
 
     /// Submit the edits the last input made, one undo step per run of typing; an
-    /// input that edited nothing ends the run. A refused edit shows the record's
+    /// input that edited nothing ends the run. A refused edit shows the resource's
     /// bytes again.
     fn commit_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let edits = self.model.take_edits();
@@ -362,7 +362,7 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// Open the file at `path` into the record; the path stays on this device.
+    /// Open the file at `path` into the resource; the path stays on this device.
     fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
         match crate::file::read(&path) {
             Ok(bytes) => {
@@ -862,7 +862,7 @@ irrelevant"
 }
 
 impl Editor {
-    /// Show the buffer the record holds now: a newly opened file loads fresh, any
+    /// Show the buffer the resource holds now: a newly opened file loads fresh, any
     /// other change is shown in place, keeping the cursor and the view settings.
     fn present(&mut self, state: &HexEditor) {
         let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
@@ -889,7 +889,7 @@ impl Editor {
     }
 
     /// Answer an effect from a control, the palette, an agent or a script, on the
-    /// buffer the record holds now.
+    /// buffer the resource holds now.
     pub(crate) fn answer(
         &mut self,
         effect: HexEffect,
@@ -955,7 +955,7 @@ impl Editor {
         }
     }
 
-    /// The edits at the cursor and the selection, as the record's actions.
+    /// The edits at the cursor and the selection, as the resource's actions.
     pub(crate) fn bound_declarations(&self) -> Vec<ActionDecl<HexEditor>> {
         if !self.has_file {
             return Vec::new();
@@ -1174,7 +1174,7 @@ impl Editor {
                 for (off, value) in [(0x1D_usize, 0x01_u8), (0x1E, 0x00), (0x25, 0xFF)] {
                     self.model.set_byte(off, value);
                 }
-                // The edits are the record's, as typing them would be.
+                // The edits are the resource's, as typing them would be.
                 for edit in self.model.take_edits() {
                     if let (Some(dispatch), Some(edit)) = (&self.dispatch, byte_edit(&edit)) {
                         dispatch.submit(edit);
@@ -1463,9 +1463,9 @@ mod tests {
         view
     }
 
-    fn own_clipboard() -> ui::host::HostScope {
-        let (services, _recorder) = ui::host::HostServices::recording();
-        ui::host::enter(&services)
+    fn own_clipboard() -> ui::process::ProcessScope {
+        let (services, _recorder) = ui::process::ProcessServices::recording();
+        ui::process::enter(&services)
     }
 
     tilo_test_env::scenario! {
@@ -1667,10 +1667,10 @@ mod tests {
                 g.ascii_x1 <= g.content.x1,
                 "the grid fits the content width: {g:?}"
             );
-            let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+            let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
             assert!(
-                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
-                "the ASCII column ends at the scroll bar's lane, no empty band: {g:?}"
+                (g.content.x1 - g.ascii_x1 - gutter).abs() < 1.0,
+                "the ASCII column ends at the scroll bar's gutter, no empty band: {g:?}"
             );
             for off in [0usize, 1, bpr - 1, bpr, 2 * bpr + 3] {
                 let (row, col) = (off / bpr, off % bpr);
@@ -1706,14 +1706,14 @@ mod tests {
 
         // The grid fills every width: whatever the window, the gaps absorb
         // what a whole number of bytes leaves over.
-        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
         for width in (640..=1600).step_by(37) {
             let mut view = HexView::new(vec![0; 4096], "fill.bin");
             view.state().rect = Rect::new(0.0, 0.0, f64::from(width), 700.0);
             paint_frame(&mut view, &mut tr, &theme);
             let g = &view.state().geo.clone();
             assert!(
-                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
+                (g.content.x1 - g.ascii_x1 - gutter).abs() < 1.0,
                 "width {width}: dead space right of the ASCII column: {g:?}"
             );
         }

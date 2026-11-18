@@ -86,7 +86,7 @@ fn response(output: &[u8], browser: bool) -> std::io::Result<i64> {
     let mut expected =
         json!({"schema": 1, "service_session_protocol": protocol, "codec_verified": true});
     if browser {
-        insert(&mut expected, "custody_binding_verified", true);
+        insert(&mut expected, "ownership_binding_verified", true);
         insert(&mut expected, "resource_action_verified", true);
     }
     require(
@@ -440,7 +440,7 @@ fn route_proof(candidate: Value, shell_path: &str, facts: Map<String, Value>) ->
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear contract: each step gates the next"
+    reason = "one linear contract: each step checks the next"
 )]
 fn qualify_receivers(
     root: &Path,
@@ -640,7 +640,7 @@ fn qualify_receivers(
 }
 
 /// Runs the fixed image-controlled bridge of the owned receiving coordinator, which checks the
-/// candidate, evidence and namespace witness itself first.
+/// candidate, evidence and namespace proof itself first.
 pub fn native_route_qualify(
     command: &[OsString],
     env: &[(&str, OsString)],

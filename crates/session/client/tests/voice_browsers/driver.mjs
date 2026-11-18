@@ -1,6 +1,6 @@
 // One browser member of one governed call (voice_browsers.rs serves the
-// page and carries what it makes to the call's plane): the page joins with a
-// fake microphone, publishes its frames as its plane's voice, sees the native
+// page and carries what it makes to the call's live session): the page joins with a
+// fake microphone, publishes its frames as its live session's voice, sees the native
 // member's picture, sends its own camera to it, mutes, and leaves.
 //
 // usage: node driver.mjs FIXTURE_URL

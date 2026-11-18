@@ -4,7 +4,7 @@
 d-so-tilo-shell = Shell
 
 d-cejnvssb = Shell
-    .doc = The person's own shell record, reached as `shell` (`root shell: Shell`).
+    .doc = The person's own shell document, reached as `shell` (`root shell: Shell`).
     .noun = { $count ->
         [one] shell
        *[other] shells
@@ -125,7 +125,7 @@ d-fjzbw5un = Kind
     .doc = What the part is; the bar draws it from this, so a part moved is a part the same, and its name is the one that part goes by.
 
 d-pbly7ymy = Shown
-    .doc = Whether it shows on the bar; a part off keeps its place in the record.
+    .doc = Whether it shows on the bar; a part off keeps its place in the document.
 
 d-sfhd6wko-filter-kind = Kind
 
@@ -221,7 +221,7 @@ d-xsjcdedm = Reason
     .doc = Why it failed, in the app's own words; empty while it does better.
 
 d-jq4ftwnw = Layout ref
-    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's record is named by.
+    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's document is named by.
     .noun = { $count ->
         [one] layout ref
        *[other] layout refs
@@ -357,8 +357,8 @@ d-jpzk4cli = Shows
 d-nprpusuo = Shown as
     .doc = The view it shows the resource through; empty for the app's default.
 
-d-ofkshr4v = Record
-    .doc = The record it shows, when it shows one.
+d-ofkshr4v = Resource
+    .doc = The document it shows, when it shows one.
 
 d-qqcejiim = Title
     .doc = The title it is shown under.
@@ -375,7 +375,7 @@ d-soy4vimv = Shell
 d-farfsl4d-filter-pinned = Pinned
 
 d-nkjtmr33 = Viewing
-    .doc = What the person shows of their layout, and which strip stands in front: the shell's own view of it, in their own record (`records: .own`, `root viewing: Viewing`).
+    .doc = What the person shows of their layout, and which strip stands in front: the shell's own view of it, in their own document (`resources: .own`, `root viewing: Viewing`).
     .noun = { $count ->
         [one] viewing
        *[other] viewings
@@ -522,6 +522,13 @@ d-2e7aappl = Size it
 d-2e7aappl-key = Key
 
 d-2e7aappl-size = Size
+
+d-ce3pp2or = Drew place
+    .doc = Keeps how tall the hugging place `key` is drawn now, `size` carrying its height in canvas pixels as the map lays it out: the free area under it on the canvas is what the person sees there (canvas.md §1, §7), though the place could grow into it.
+
+d-ce3pp2or-key = Key
+
+d-ce3pp2or-size = Size
 
 d-nljxfsom = Move it here
     .doc = Puts a resource dropped on the canvas where it was let go.
@@ -708,7 +715,7 @@ d-st426t4p = A front workspace
 d-st426t4p-name = Name
 
 d-ztflhbbf = A strip
-    .doc = Adds a strip named `name` to `row`, standing at `width`, and returns its key.
+    .doc = Adds a strip named `name` to `row` at `width`, and returns its key.
 
 d-ztflhbbf-row = Row
 
@@ -724,7 +731,7 @@ d-chvuqgur-strip = Strip
 d-chvuqgur-index = Index
 
 d-tnecawb6 = A foreign place
-    .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like.
+    .doc = A place of a kind this build has no document for: it stands as it is, which is what a place another shell made looks like.
 
 d-tnecawb6-strip = Strip
 
@@ -876,7 +883,10 @@ d-moh3hzne = Bell
 d-s7yqm7cb = Canvas
     .w-click-anywhere-and-say-what-you = Click anywhere and say what you want
     .w-caret = Caret
-    .w-find-or-ask = Find or ask
+    .w-ask-or-find-anything = Ask or find anything
+    .w-send = Send
+
+d-vi5fveaq = Model choice
 
 d-kzhftbrb = Canvas place
 

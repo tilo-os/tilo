@@ -40,7 +40,7 @@ tilo_test_env::scenario! {
 
     phase a_header_row_gives_up_its_labels_before_its_title;
     // A header row holds its title against its actions by one rule: a label the row could show as its
-    // icon gives way before the title is cut, room standing empty beside the title is the title's, and
+    // icon gives way before the title is cut, room left empty beside the title is the title's, and
     // the app's primary action never leaves the row.
     {
         assert!(
@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
             "a title cut beside actions with nothing left to give is the row's last resort"
         );
         let room = header_row_problem(&header_row(180.0, 99.0, 77.0, false, true))
-            .expect("a title cut with room standing empty beside it");
+            .expect("a title cut with room left empty beside it");
         assert!(room.contains("free beside it"), "{room}");
         let dropped = header_row_problem(&header_row(180.0, 180.0, 0.0, false, false))
             .expect("a row that keeps its menu and not its primary action");
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
     {
         let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
         shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
-            sidebar: ui::widget::SidebarStanding::None,
+            sidebar: ui::widget::SidebarPosition::None,
             beside: ui::widget::arrange::WidthClass::Compact,
             needs: ui::widget::arrange::WidthClass::Compact,
             beside_width: 400.0,
@@ -310,7 +310,7 @@ fn row_that_opens(
 }
 
 fn shell_layout(
-    sidebar: ui::widget::SidebarStanding,
+    sidebar: ui::widget::SidebarPosition,
     beside: ui::widget::arrange::WidthClass,
     width: f32,
 ) -> ui::widget::ShellLayout {
@@ -330,7 +330,7 @@ tilo_test_env::scenario! {
     // A sidebar stands beside content of the window's own: a pane narrower than a column is a phone's
     // screen, so the sidebar folds behind the bar's toggle there instead.
     {
-        use ui::widget::SidebarStanding;
+        use ui::widget::SidebarPosition;
         use ui::widget::arrange::WidthClass;
         let with = |sidebar, beside, width| {
             let mut shell = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
@@ -342,17 +342,17 @@ tilo_test_env::scenario! {
                 .filter(|problem| problem.kind == Kind::ContentBesideSidebar)
                 .collect::<Vec<Problem>>()
         };
-        let found = with(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+        let found = with(SidebarPosition::Docked, WidthClass::Compact, 336.0);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].detail.contains("336"), "{}", found[0].detail);
         assert!(
-            with(SidebarStanding::Docked, WidthClass::Medium, 420.0).is_empty(),
+            with(SidebarPosition::Docked, WidthClass::Medium, 420.0).is_empty(),
             "content of a column's width stands beside the sidebar"
         );
         // A grid of tiles or a surface drawn on works narrower than a
         // column: the same width is what its own kind asks for there.
         let mut phone_pane = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
-        let mut layout = shell_layout(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+        let mut layout = shell_layout(SidebarPosition::Docked, WidthClass::Compact, 336.0);
         layout.needs = WidthClass::Compact;
         phone_pane.layout = Some(ui::widget::LayoutInfo::Shell(layout));
         assert!(
@@ -362,11 +362,11 @@ tilo_test_env::scenario! {
             "a surface works below a column where its kind says so"
         );
         assert!(
-            with(SidebarStanding::Alone, WidthClass::Compact, 336.0).is_empty(),
+            with(SidebarPosition::Alone, WidthClass::Compact, 336.0).is_empty(),
             "a sidebar that folded beside a phone-width pane is what the rule asks for"
         );
         assert!(
-            with(SidebarStanding::Over, WidthClass::Compact, 336.0).is_empty(),
+            with(SidebarPosition::Over, WidthClass::Compact, 336.0).is_empty(),
             "a drawer stands over the content, not beside it"
         );
     }
@@ -399,9 +399,9 @@ tilo_test_env::scenario! {
     // A column of a board as a height it did not get leaves it: the view scrolling its cards has no
     // room, so the cards under its heading cannot be brought into view.
     {
-        let lane = |height: f64| {
+        let list = |height: f64| {
             let mut scrolling = stack_node(
-                "lane",
+                "list",
                 [0.0, 40.0, 240.0, height],
                 (0..7)
                     .map(|index| {
@@ -426,12 +426,12 @@ tilo_test_env::scenario! {
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            lost(&lane(0.0)),
-            vec![vec!["lane".to_owned(), "window".to_owned()]],
+            lost(&list(0.0)),
+            vec![vec!["list".to_owned(), "window".to_owned()]],
             "a scroll view with no height holds seven cards in none of it"
         );
         assert!(
-            lost(&lane(600.0)).is_empty(),
+            lost(&list(600.0)).is_empty(),
             "given the room of a pane, the same cards are there to scroll through"
         );
     }
@@ -755,7 +755,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught;
-    // An item stands once: the document of a row standing open that lists an item the list shows again
+    // An item stands once: the document of a row held open that lists an item the list shows again
     // is the same item twice, while a document listing items of its own is not.
     {
         let held = |rows: Vec<InspectionNode>| {
@@ -774,7 +774,7 @@ tilo_test_env::scenario! {
                 .collect::<Vec<Problem>>()
         };
 
-        // The row standing open lists two steps, and the list shows one of them again.
+        // The row held open lists two steps, and the list shows one of them again.
         let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
         open.children = vec![document(
             vec![
@@ -965,7 +965,7 @@ tilo_test_env::scenario! {
         };
         assert!(
             heading_rooms(&heading_over(40.0 + inset), &theme, None).is_empty(),
-            "a heading standing on the content gutter"
+            "a heading on the content gutter"
         );
         let hugging_heading = heading_rooms(&heading_over(40.0), &theme, None);
         assert!(
@@ -1138,7 +1138,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             found(&read_at_the_measure([500.0, 676.0, 560.0, 32.0])).is_empty(),
-            "a bar standing on the column adds to it in its own column"
+            "a bar on the column adds to it in its own column"
         );
         assert!(
             found(&read_at_the_measure([492.0, 676.0, 560.0, 32.0])).is_empty(),
@@ -1691,7 +1691,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_heading_with_nothing_in_it_is_caught;
-    // A heading nobody named takes its band's height over a lane's cards all the same: the strip says
+    // A heading nobody named takes its band's height over a list's cards all the same: the strip says
     // nothing, and the cards start below it.
     {
         let heading = |name: &str| {
@@ -1719,7 +1719,7 @@ tilo_test_env::scenario! {
             )];
             header
         };
-        let lane = |header: Option<InspectionNode>| {
+        let board_list = |header: Option<InspectionNode>| {
             let top = if header.is_some() { 117.0 } else { 80.0 };
             let cards = stack_node(
                 "cards",
@@ -1731,26 +1731,26 @@ tilo_test_env::scenario! {
                 header.into_iter().chain([cards]).collect(),
             );
             holding(
-                node("Container", "lane", [304.0, 80.0, 320.0, 300.0], None),
+                node("Container", "list", [304.0, 80.0, 320.0, 300.0], None),
                 vec![column],
             )
         };
-        let board = |lane: InspectionNode| {
+        let board = |board_list: InspectionNode| {
             holding(
                 node("Row", "board", [280.0, 80.0, 1000.0, 600.0], None),
-                vec![lane],
+                vec![board_list],
             )
         };
-        let found = empty_headings(&board(lane(Some(heading("")))));
+        let found = empty_headings(&board(board_list(Some(heading("")))));
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].keys.first().map(String::as_str), Some("heading"));
         assert!(
-            empty_headings(&board(lane(Some(heading("Doing"))))).is_empty(),
-            "a named heading is the lane's words"
+            empty_headings(&board(board_list(Some(heading("Doing"))))).is_empty(),
+            "a named heading is the list's words"
         );
         assert!(
-            empty_headings(&board(lane(None))).is_empty(),
-            "a lane no heading heads starts its cards at its top"
+            empty_headings(&board(board_list(None))).is_empty(),
+            "a list no heading heads starts its cards at its top"
         );
     }
 
@@ -1907,7 +1907,7 @@ tilo_test_env::scenario! {
 
     phase a_page_section_after_the_writing_stands_under_a_rule;
     // A page's own sections stand under a rule, apart from the writing the page holds: a heading set
-    // like the writing's own and standing no further from it reads as another line of the text.
+    // like the writing's own and no further from it reads as another line of the text.
     {
         let page = |between: Vec<InspectionNode>, wrapped: bool| {
             let top = 400.0;
@@ -1966,7 +1966,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_surface_with_nothing_in_it_is_caught;
-    // A card standing empty in a column paints a filled block with nothing in it, and what it promised
+    // A card left empty in a column paints a filled block with nothing in it, and what it promised
     // is not there: a surface is drawn for what it holds, so one holding nothing — or only a
     // placeholder that never filled — is no surface at all.
     {
@@ -2037,7 +2037,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_pane_saying_nothing_is_chosen_beside_the_list_is_caught;
-    // A pane that only says nothing is chosen, standing beside the list the window chooses from, takes
+    // A pane that only says nothing is chosen, beside the list the window chooses from, takes
     // the room the rows would list in: with nothing chosen the list lists for the whole window, and
     // the pane appears when a row is chosen.
     {
@@ -2518,7 +2518,7 @@ tilo_test_env::scenario! {
 
     phase a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window;
     // A rounded surface stands inside its column with a gutter on every side: one glued to the
-    // column's edges, cut by them, or one standing on the window's edge where no column holds it, is
+    // column's edges, cut by them, or one on the window's edge where no column holds it, is
     // found — and the same surface a gutter in is no finding.
     {
         let shell_with = |banner: InspectionNode| {
@@ -2668,7 +2668,7 @@ tilo_test_env::scenario! {
                 .collect()
         };
 
-        // A notice standing on the list under it, with the page's gap above it.
+        // A notice on the list under it, with the page's gap above it.
         let glued = found(&column_with(vec![
             node_of("Banner", "notice", [304.0, 24.0, 572.0, 65.0]),
             node_of("DescribedList", "list", [304.0, 89.0, 572.0, 400.0]),
@@ -2721,7 +2721,7 @@ tilo_test_env::scenario! {
 
     phase a_page_on_a_phone_screen_starts_its_body_on_the_gutter;
     // A page's body stands under the text a control beside its heading leads to only where the column
-    // has the room: on a phone's screen it starts on the gutter, and a section standing a control's
+    // has the room: on a phone's screen it starts on the gutter, and a section set a control's
     // width in is what a person sees the page lose on every line.
     {
         let theme = ui::Theme::dark();
@@ -2765,7 +2765,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A row of a list, named `title`, standing at `rect`: `open` a row grown into its document.
+/// A row of a list, named `title`, at `rect`: `open` a row grown into its document.
 fn list_row(title: &str, rect: [f64; 4], open: bool) -> InspectionNode {
     let mut row = node("SwipeRow", title, rect, Some(Role::ListItem));
     let access = row.semantics.as_mut().expect("the row's semantics");
@@ -2781,7 +2781,7 @@ fn document_row(title: &str, rect: [f64; 4]) -> InspectionNode {
     row
 }
 
-/// What a document holds: the outline of the items under the row standing open.
+/// What a document holds: the outline of the items under the row held open.
 fn document(rows: Vec<InspectionNode>, rect: [f64; 4]) -> InspectionNode {
     let mut tree = node("TreeView", "subtasks", rect, Some(Role::Tree));
     tree.children = rows;

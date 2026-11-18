@@ -353,11 +353,11 @@ impl Default for ScreenReader {
 }
 
 impl ScreenReader {
-    /// Speaks through the current host's [`crate::host::SpeechFactory`]. Never panics:
+    /// Speaks through the current host's [`crate::process::SpeechFactory`]. Never panics:
     /// with no speech available this is a [`NullSpeaker`] and narration is silently
     /// dropped.
     pub fn new() -> Self {
-        Self::with_speaker(crate::host::current().speech.make())
+        Self::with_speaker(crate::process::current().speech.make())
     }
 
     pub fn with_speaker(speaker: Box<dyn Speaker>) -> Self {

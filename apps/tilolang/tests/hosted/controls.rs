@@ -1,8 +1,8 @@
 //! What a window's controls do, and where they stand: how a test finds a control without the
 //! words the person's language gives it and without where the window's composition drew it.
 //!
-//! A control that runs an app action says which one — the record kind and the operation, in the
-//! app's own ids — and one that edits a record's field says which field. The window's
+//! A control that runs an app action says which one — the document kind and the operation, in the
+//! app's own ids — and one that edits a document's field says which field. The window's
 //! composition moves the control between its bar, an empty state and a columns' header row and
 //! the person's language renames it; neither changes what it does.
 
@@ -23,21 +23,21 @@ impl super::Session {
     /// the app's, in the reader's language.
     pub(super) fn field_key(&mut self, field: &str) -> String {
         let field = self.field_id(field);
-        let editing = |node: &tilo_ui_host::UiNode| {
+        let editing = |node: &tilo_app_window::UiNode| {
             node.binding
                 .as_ref()
                 .and_then(|binding| binding.field())
                 .is_some_and(|(_, edited)| edited == field)
         };
         let view = self.hosted().view().expect("the window is connected");
-        // A window whose page is another's after it opens the page in the lane after its own;
+        // A window whose page is another's after it opens the page in the level after its own;
         // one whose page is its own (a tree beside what it shows) draws it in its content.
         if let Some(detail) = view.detail_tree() {
             let key = find(&detail, &editing)
                 .unwrap_or_else(|| panic!("the window edits no {field:?}"))
                 .key
                 .clone();
-            return format!("{}{}", tilo_ui_host::shell::DETAIL, key);
+            return format!("{}{}", tilo_app_window::shell::DETAIL, key);
         }
         let root = view.root_tree().expect("the window's view");
         let mut page = Vec::new();
@@ -69,7 +69,7 @@ impl super::Session {
     }
 
     /// What the field that edits `field` of what the window shows holds.
-    pub(super) fn field_value(&mut self, field: &str) -> Option<tilo_ui_host::Value> {
+    pub(super) fn field_value(&mut self, field: &str) -> Option<tilo_app_window::Value> {
         let id = self.field_key(field);
         self.hosted().view()?.bound_value(&id)
     }
@@ -79,7 +79,7 @@ impl super::Session {
     /// its columns' header once it does — and so is what the person's language calls it.
     pub(super) fn control(&mut self, identity: &(String, String)) -> (f64, f64) {
         let (kind, action) = identity;
-        // The addresses the instance publishes the action under on records of the kind: what an
+        // The addresses the instance publishes the action under on documents of the kind: what an
         // agent reads, and what the control says it does.
         let published: Vec<String> = self
             .instance()
@@ -114,12 +114,12 @@ impl super::Session {
         )
     }
 
-    /// The kind the app publishes its records of `ty` (`Notebook`) under, as the app names it.
+    /// The kind the app publishes its documents of `ty` (`Notebook`) under, as the app names it.
     pub(super) fn kind(&self, ty: &str) -> String {
         format!("tl.{}.{ty}", self.app)
     }
 
-    /// The app's action `action`, as it publishes it (`new_note`), on records of `ty`: the record
+    /// The app's action `action`, as it publishes it (`new_note`), on documents of `ty`: the document
     /// kind and the action, which [`Self::control`] finds the control of by the address the
     /// instance publishes for it.
     pub(super) fn doing(&self, ty: &str, action: &str) -> (String, String) {
@@ -136,7 +136,7 @@ impl super::Session {
         (self.kind(ty), action.to_owned())
     }
 
-    /// The address the window's instance publishes for the app's action `action` on records of
+    /// The address the window's instance publishes for the app's action `action` on documents of
     /// `ty`, as the broker was handed it: what an agent reading the workspace's actions finds.
     pub(super) fn identity_doing(&self, ty: &str, action: &str) -> String {
         self.published_doing(&self.kind(ty), action)
@@ -366,8 +366,8 @@ fn a_new_task_is_invoked_at_the_api_by_what_its_control_does_and_its_argument() 
         "the API ran what the control does: {answered:?}"
     );
     assert!(
-        super::task_in_record(&session, "Water the plants", false),
-        "the task named by the argument is in the record"
+        super::task_in_document(&session, "Water the plants", false),
+        "the task named by the argument is in the document"
     );
 }
 
@@ -404,17 +404,17 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
         "the API ran what the row's Complete does: {answered:?}"
     );
     assert!(
-        super::task_in_record(&session, "Call the plumber", true),
+        super::task_in_document(&session, "Call the plumber", true),
         "the second task is done: {:?}",
         session.titles()
     );
     assert!(
-        super::task_in_record(&session, "Water the plants", false),
+        super::task_in_document(&session, "Water the plants", false),
         "the task nobody named is still to do"
     );
 }
 
-/// Today's own command acts on another app's records, which Today's window publishes no resource
+/// Today's own command acts on another app's documents, which Today's window publishes no resource
 /// of: the identity its control publishes resolves at Today's api all the same, and the cleanup
 /// runs.
 #[test]
@@ -423,8 +423,8 @@ fn todays_cleanup_runs_at_the_api_by_what_its_control_does() {
     let mut session = super::Session::today(super::Window::live);
     let cleanup = session.identity_named("Morning cleanup");
     // The two places its command acts on, as the window's own cards name them.
-    let list = card_record(&mut session, "Today");
-    let notebook = card_record(&mut session, "Pinned");
+    let list = card_document(&mut session, "Today");
+    let notebook = card_document(&mut session, "Pinned");
     let answered = session.invoke_doing(
         &cleanup,
         &serde_json::json!({ "list": list, "nb": notebook }),
@@ -440,19 +440,19 @@ fn todays_cleanup_runs_at_the_api_by_what_its_control_does() {
 
 /// Today's date, as the window's own clock reads it: a task due by then stands in the day's list.
 fn today() -> String {
-    ui::clock::today().format("%Y-%m-%d").to_string()
+    ui::clock::today().to_string()
 }
 
-/// The record the card `title` on a window shows, as an argument names a resource: the place of
+/// The document the card `title` on a window shows, as an argument names a resource: the place of
 /// another app's the card stands for, by the id and type the window publishes it with.
-fn card_record(session: &mut super::Session, title: &str) -> serde_json::Value {
-    fn walk(node: &tilo_ui_host::UiNode, title: &str, found: &mut Option<serde_json::Value>) {
+fn card_document(session: &mut super::Session, title: &str) -> serde_json::Value {
+    fn walk(node: &tilo_app_window::UiNode, title: &str, found: &mut Option<serde_json::Value>) {
         if found.is_none()
-            && node.kind == tilo_ui_host::adapter::kind("Card")
-            && node.props.get("title") == Some(&tilo_ui_host::Value::text(title))
-            && let Some(tilo_ui_host::Value::Ref(record)) = node.props.get("item")
+            && node.kind == tilo_app_window::adapter::kind("Card")
+            && node.props.get("title") == Some(&tilo_app_window::Value::text(title))
+            && let Some(tilo_app_window::Value::Ref(record)) = node.props.get("item")
         {
-            // The catalogue's reference to it, as any caller of the app's api gives a record.
+            // The catalogue's reference to it, as any caller of the app's api gives a document.
             let (app, ty) = record
                 .ty
                 .split_once('#')
@@ -476,7 +476,7 @@ fn card_record(session: &mut super::Session, title: &str) -> serde_json::Value {
 }
 
 /// A box bound only to a field runs no action of its own and still says what it edits, as the
-/// field's own entry does: the one record, by the id the app publishes it under, and the field,
+/// field's own entry does: the one document, by the id the app publishes it under, and the field,
 /// in a box a view places itself and in a list row's leading column. A caller that names it so
 /// marks the field, where a press and a screen reader's activation do.
 #[test]
@@ -485,7 +485,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     let mut session = super::Session::open(super::FIELDBOX, "ada", super::Window::live);
     assert_eq!(
         session.field_value("done"),
-        Some(tilo_ui_host::Value::Bool(false)),
+        Some(tilo_app_window::Value::Bool(false)),
         "the page starts with the box unmarked"
     );
     let shown = session.controls();
@@ -505,10 +505,10 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     let titled = editing(&session.field_id("title"));
     assert_eq!(
         done.resource, titled.resource,
-        "the box names the record the field's own entry names, the same way"
+        "the box names the document the field's own entry names, the same way"
     );
     let published = format!("tl:{}:", session.app);
-    // Named as an action on the record is: by the id the app publishes the record under.
+    // Named as an action on the document is: by the id the app publishes the document under.
     let named =
         |address: &ui::tilo_actions::ActionAddress| address.resource.starts_with(&published);
     assert!(named(&done), "{done:?}");
@@ -522,7 +522,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     session.settle();
     assert_eq!(
         session.field_value("done"),
-        Some(tilo_ui_host::Value::Bool(true)),
+        Some(tilo_app_window::Value::Bool(true)),
         "the press marked the field the box edits"
     );
     let answered = session.invoke_doing(&done.encode(), &serde_json::json!({}));
@@ -535,7 +535,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     );
     assert_eq!(
         session.field_value("done"),
-        Some(tilo_ui_host::Value::Bool(false)),
+        Some(tilo_app_window::Value::Bool(false)),
         "and its press marked the field the other way"
     );
 
@@ -558,7 +558,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
         .doing
         .expect("the row's box says which field it edits");
     let address = ui::tilo_actions::ActionAddress::parse(&boxed)
-        .unwrap_or_else(|| panic!("{boxed} names a record and a field"));
+        .unwrap_or_else(|| panic!("{boxed} names a document and a field"));
     assert_eq!(address.action, session.field_id("checked"));
     assert!(named(&address), "{address:?}");
     assert!(
@@ -571,7 +571,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     session.settle();
     assert_eq!(
         session.field_value("checked"),
-        Some(tilo_ui_host::Value::Bool(true)),
+        Some(tilo_app_window::Value::Bool(true)),
         "the press marked the task's field"
     );
 }
@@ -587,7 +587,7 @@ impl crate::change_marks::Driven for super::Session {
 }
 
 impl super::Session {
-    /// Read the instance's record as it is now, after everything the window did was taken in.
+    /// Read the instance's document as it is now, after everything the window did was taken in.
     pub(crate) fn read<R>(&mut self, read: impl FnOnce(&mut ui::tilo_resource::Doc) -> R) -> R {
         self.settle();
         read(&mut self.instance().record().doc())
@@ -674,18 +674,18 @@ impl super::Session {
 /// What the person may do in the app, as the session hands it with the launch and says again when
 /// it changes: a viewer's window offers no change as if they could make it, and the instance
 /// refuses one before it reaches the workspace.
-mod standing {
+mod access {
     use collaboration::RouteSpec;
-    use tilolang_host::hosted::Spec;
-    use ui::permissions::policy::{Role, Standing, WorkspacePolicy};
+    use tilolang_process::hosted::Spec;
+    use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
 
-    use super::super::{Session, TASKS, Window, find, task_in_record};
+    use super::super::{Session, TASKS, Window, find, task_in_document};
 
-    /// Ada's standing in `workspace`, whose owner is Bob, as `role`.
-    fn ada_as(workspace: &str, role: Role) -> Standing {
+    /// Ada's access in `workspace`, whose owner is Bob, as `role`.
+    fn ada_as(workspace: &str, role: Role) -> MemberAccess {
         let mut policy = WorkspacePolicy::new(workspace, "bob");
         policy.members.insert("ada".to_owned(), role);
-        Standing::person(policy, "ada")
+        MemberAccess::person(policy, "ada")
     }
 
     /// Ada at a Tasks window of Bob's workspace, as `role`.
@@ -694,7 +694,7 @@ mod standing {
         let workspace = route.cluster_id.to_string();
         let spec = Spec::new(TASKS, workspace.clone(), 1, "ada")
             .in_language("en-US")
-            .standing(ada_as(&workspace, role));
+            .access(ada_as(&workspace, role));
         let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
         let mut session = Session::brokered_as(&route, spec, chunks, None, Window::in_harness);
         session.settle();
@@ -702,12 +702,12 @@ mod standing {
     }
 
     /// The window bar's New task button, as the window draws it.
-    fn new_task_button(session: &mut Session) -> tilo_ui_host::UiNode {
+    fn new_task_button(session: &mut Session) -> tilo_app_window::UiNode {
         let view = session.hosted().view().expect("the window is connected");
         let tree = view.root_tree().expect("the window has a tree");
         find(&tree, &|node| {
             node.kind == "ui.Button"
-                && node.props.get("label") == Some(&tilo_ui_host::Value::text("New task"))
+                && node.props.get("label") == Some(&tilo_app_window::Value::text("New task"))
         })
         .expect("the bar holds New task")
         .clone()
@@ -723,12 +723,12 @@ mod standing {
         let button = new_task_button(&mut session);
         assert_eq!(
             button.props.get("enabled"),
-            Some(&tilo_ui_host::Value::Int(0)),
+            Some(&tilo_app_window::Value::Int(0)),
             "a viewer's New task is disabled: {button:?}"
         );
         assert_eq!(
             button.props.get("description"),
-            Some(&tilo_ui_host::Value::text(
+            Some(&tilo_app_window::Value::text(
                 "That change is not allowed here."
             )),
             "and it says why"
@@ -746,7 +746,7 @@ mod standing {
             "the instance refuses a viewer's change: {answered:?}"
         );
         assert!(
-            !task_in_record(&session, "Water the plants", false),
+            !task_in_document(&session, "Water the plants", false),
             "and nothing is written"
         );
 
@@ -754,13 +754,13 @@ mod standing {
         assert!(
             session
                 .host
-                .set_standing(TASKS, Some(&ada_as(&workspace, Role::Editor)))
+                .set_access(TASKS, Some(&ada_as(&workspace, Role::Editor)))
         );
         session.settle();
         let button = new_task_button(&mut session);
         assert_ne!(
             button.props.get("enabled"),
-            Some(&tilo_ui_host::Value::Int(0)),
+            Some(&tilo_app_window::Value::Int(0)),
             "an editor's New task is offered in the window already open: {button:?}"
         );
         let answered = session.invoke_doing(
@@ -774,12 +774,12 @@ mod standing {
             ),
             "an editor's change runs: {answered:?}"
         );
-        assert!(task_in_record(&session, "Water the plants", false));
+        assert!(task_in_document(&session, "Water the plants", false));
         assert!(
             !session
                 .host
-                .set_standing(TASKS, Some(&ada_as(&workspace, Role::Editor))),
-            "the same standing said again is nothing to do"
+                .set_access(TASKS, Some(&ada_as(&workspace, Role::Editor))),
+            "the same access said again is nothing to do"
         );
     }
 }

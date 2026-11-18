@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
 # Tilo server image — a headless, always-on machine that serves other people's
-# workspaces: the relay and the filesystem replica, the hosted-VM service (one
+# workspaces: the server and the filesystem replica, the hosted-VM service (one
 # jailed Firecracker VM per workspace environment) and the API server, with
 # updates that stage and roll back on this machine's own health verdict.
 # ============================================================================
@@ -76,12 +76,15 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
     && firecracker --version | head -1 | grep -qx 'Firecracker v1.17.0'
 
 # ---- Programs ---------------------------------------------------------------
-# Host image ships the relay, the authenticated filesystem replica and the enroll
+# Host image ships the server, the authenticated filesystem replica and the enroll
 # program as one composite always-on home peer; the hosted-VM service with its
-# jail helper; the API server; and the boot tools the update ledger needs.
-COPY bin/tilo-relay bin/tilo-relay-admin bin/tilo-enroll /usr/libexec/tilo/
+# jail helper; the API server, and beside it the program it starts a task's
+# tilolang programs in; and the boot tools the update log needs.
+COPY bin/tilo-server bin/tilo-server-admin bin/tilo-enroll /usr/libexec/tilo/
 COPY bin/fs /usr/bin/fs
 COPY bin/tilo-api /usr/libexec/tilo/tilo-api
+# The API server looks for it beside itself.
+COPY bin/tilolang-process /usr/libexec/tilo/tilolang-process
 COPY bin/tilo-legacy /usr/libexec/tilo/tilo-legacy
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
@@ -97,12 +100,13 @@ COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
 # the boot-entry pass reads (os/components.toml).
 RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail \
-    && chmod 0755 /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin \
+    && chmod 0755 /usr/libexec/tilo/tilo-server /usr/libexec/tilo/tilo-server-admin \
         /usr/libexec/tilo/tilo-enroll /usr/libexec/tilo/tilo-api \
+        /usr/libexec/tilo/tilolang-process \
         /usr/libexec/tilo/tilo-legacy /usr/libexec/tilo/tilo-image-trust \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
-    && for name in tilo-relay tilo-relay-admin tilo-enroll tilo-legacy; do \
+    && for name in tilo-server tilo-server-admin tilo-enroll tilo-legacy; do \
          ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
        done \
     && ln -s ../libexec/tilo/tilo-image-trust /usr/bin/tilo-image-trust \
@@ -133,7 +137,8 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-update-channel os/usr/libexec/tilo-update-policy-check \
      os/usr/libexec/tilo-update-policy-set \
      os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
-     os/usr/libexec/tilo-relay-firstboot os/usr/libexec/tilo-relay-state-migrate \
+     os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
+     os/usr/libexec/tilo-server-update-policy \
      /usr/libexec/
 RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-server-health /usr/libexec/tilo-server-update-window \
@@ -142,14 +147,14 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-verified-update /usr/libexec/tilo-update-channel \
         /usr/libexec/tilo-update-policy-check /usr/libexec/tilo-update-policy-set \
         /usr/libexec/tilo-image-trust-staged \
-        /usr/libexec/tilo-esp-mount /usr/libexec/tilo-relay-firstboot \
-        /usr/libexec/tilo-relay-state-migrate
+        /usr/libexec/tilo-esp-mount /usr/libexec/tilo-server-firstboot \
+        /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy
 
 # ---- Units ------------------------------------------------------------------
-COPY os/usr/lib/systemd/system/tilo-relay.service \
+COPY os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
-    os/usr/lib/systemd/system/tilo-relay-firstboot.service \
-    os/usr/lib/systemd/system/tilo-relay-state-migrate.service \
+    os/usr/lib/systemd/system/tilo-server-firstboot.service \
+    os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-hosted.service \
     os/usr/lib/systemd/system/tilo-api.service \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
@@ -161,6 +166,8 @@ COPY os/usr/lib/systemd/system/tilo-relay.service \
     os/usr/lib/systemd/system/tilo-server-health.service \
     os/usr/lib/systemd/system/tilo-server-update-apply.service \
     os/usr/lib/systemd/system/tilo-server-update-apply.timer \
+    os/usr/lib/systemd/system/tilo-server-update-policy.service \
+    os/usr/lib/systemd/system/tilo-server-update-policy.path \
     /usr/lib/systemd/system/
 # An update stages where the desktop's does — verified, counted before the
 # reboot, finalized at the next boot — and this image's own step boots into it
@@ -183,16 +190,20 @@ COPY os/usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf \
     /usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf
 
 COPY os/usr/lib/sysusers.d/tilo-identity.conf \
-    os/usr/lib/sysusers.d/tilo-relay.conf \
+    os/usr/lib/sysusers.d/tilo-server.conf \
     os/usr/lib/sysusers.d/tilo-hosted.conf \
     os/usr/lib/sysusers.d/tilo-api.conf \
     /usr/lib/sysusers.d/
-COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-relay.conf \
+COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-server.conf \
     /usr/lib/tmpfiles.d/
+# pasta, one per workspace VM, opens /dev/net/tun; the node exists only once the
+# module is loaded, and the service's own machine setup refuses to start without
+# it.
+COPY os/etc/modules-load.d/tilo-hosted.conf /usr/lib/modules-load.d/tilo-hosted.conf
 # The device-trust group owns the identity directory, so it has to exist before
 # tmpfiles-setup runs. There is no session user on a server image; only the
-# static relay account joins this narrow device-identity boundary.
-RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-relay.conf \
+# static server account joins this narrow device-identity boundary.
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-server.conf \
         /usr/lib/sysusers.d/tilo-hosted.conf /usr/lib/sysusers.d/tilo-api.conf
 
 COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
@@ -215,18 +226,18 @@ RUN mkdir -p /etc/tilo \
     && echo "# Replace with a base32-Crockford enrollment token minted by your primary device." \
         > /etc/tilo/enrollment-token.txt
 
-# Default relay config; `tilo-relay init` inside the first-boot
-# service writes the configuration under `/etc/tilo/relay.toml` once the
+# Default server config; `tilo-server init` inside the first-boot
+# service writes the configuration under `/etc/tilo/server.toml` once the
 # enrollment completes.
-RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
-        > /etc/tilo/relay.toml
+RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-server"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
+        > /etc/tilo/server.toml
 
 # Enable services. The update timer keeps its Tilo drop-ins: it stages a verified
 # image with its try counter and never reboots blindly, and
 # tilo-server-update-apply is the only step that restarts the machine into a
 # staged one.
-RUN systemctl enable tilo-relay-firstboot.service \
-    && systemctl enable tilo-relay.service \
+RUN systemctl enable tilo-server-firstboot.service \
+    && systemctl enable tilo-server.service \
     && systemctl enable tilo-fs-replica.service \
     && systemctl enable tilo-hosted.service \
     && systemctl enable tilo-api.service \
@@ -236,6 +247,7 @@ RUN systemctl enable tilo-relay-firstboot.service \
     && systemctl enable tilo-boot-health.service \
     && systemctl enable tilo-boot-fallback.service \
     && systemctl enable tilo-server-update-apply.timer \
+    && systemctl enable tilo-server-update-policy.path \
     && systemctl enable bootc-fetch-apply-updates.timer \
     && systemctl set-default multi-user.target
 
@@ -288,7 +300,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 
 # firewalld default zone: the FedoraServer zone drops all inbound
-# except explicitly permitted. Iroh punches out; the relay does not
+# except explicitly permitted. Iroh punches out; the server does not
 # need any inbound-hole in the firewall to be reachable.
 RUN firewall-offline-cmd --set-default-zone=FedoraServer
 

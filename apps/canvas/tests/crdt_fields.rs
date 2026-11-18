@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
     {
         let mut start = drawn(rect());
         // The adjustments exist before both change them: two people creating an
-        // absent record at once choose one of their records.
+        // absent resource at once choose one of their resources.
         edit(
             &mut start,
             EditMarks {

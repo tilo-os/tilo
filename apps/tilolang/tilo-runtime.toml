@@ -23,7 +23,7 @@ bin  = "bin/tilolang-app"
 # The packer (`tools/apps/pack-runtime-package.sh`) writes the signed manifest with the
 # publisher's identity; these complete this file as the package manifest a web bundle of the
 # runtime carries (`tilo-app build --target web --bundle app apps/tilolang`).
-# What the runtime's code uses on a device: its records, later builds `tilolang dev` publishes,
+# What the runtime's code uses on a device: its documents, later builds `tilolang dev` publishes,
 # and the threads that wait on its window's connection.
 [capabilities]
 optional = ["app-files", "files.paths", "threads"]

@@ -1,4 +1,4 @@
-//! Durable installer identity authority. Unsupported hosts never mint custody.
+//! Durable installer identity authority. Unsupported hosts never mint ownership.
 use std::io;
 #[path = "prepared_identity/files.rs"]
 mod files;
@@ -13,7 +13,7 @@ mod native;
 #[cfg(unix)]
 pub use native::PreparedIdentity;
 #[cfg(unix)]
-pub use tilo_identity_host::enrolled_transport::{
+pub use tilo_identity::enrolled_transport::{
     CurrentDeviceDeclaration, CurrentDeviceReference, EnrolledDevice, TransportReceipt,
 };
 #[cfg(not(unix))]
@@ -23,14 +23,14 @@ mod unavailable;
 pub use unavailable::PreparedIdentity;
 
 /// Provider selection remains a backend decision.
-pub fn storage_for_session() -> tilo_identity_host::provisioning::IdentityStorage {
+pub fn storage_for_session() -> tilo_identity::provisioning::IdentityStorage {
     #[cfg(unix)]
     {
-        tilo_identity_host::provisioning::IdentityStorage::for_session()
+        tilo_identity::provisioning::IdentityStorage::for_session()
     }
     #[cfg(not(unix))]
     {
-        tilo_identity_host::provisioning::IdentityStorage::Platform
+        tilo_identity::provisioning::IdentityStorage::Platform
     }
 }
 
@@ -38,11 +38,11 @@ pub fn storage_for_session() -> tilo_identity_host::provisioning::IdentityStorag
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
-        "Installer identity custody is unavailable on this host",
+        "Installer identity storage is unavailable on this host",
     )
 }
 
-/// Refuse before publishing restart records on hosts without identity custody.
+/// Refuse before publishing restart records on hosts without identity storage.
 pub fn require_supported() -> io::Result<()> {
     #[cfg(unix)]
     {

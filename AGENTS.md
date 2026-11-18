@@ -89,5 +89,15 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 
 ## Git and delivery
 
+- Commit and push work to `integration` (`git pull --rebase origin integration`,
+  then `git push origin HEAD:integration`). Nothing lints or tests that push.
+  Never force-push `integration`: it holds everyone's work, and the pre-push
+  hook refuses a push that would drop commits from it.
+- No tests while iterating. Test once, when the work is done:
+  `tools/integrate.sh` merges `main` into `integration` (a merge commit, never a
+  rebase), checks what integration adds with `t` (the touched checks and
+  lint-head's wide lint), and fast-forwards `main` to it when nothing fails that
+  `main` does not already fail; when something new fails it names the check and
+  the commit, and `main` stays where it was.
 - After your change lands, watch CI on `main`; fix what you broke.
 - App packaging is affected-only; full image builds stay explicit or scheduled.

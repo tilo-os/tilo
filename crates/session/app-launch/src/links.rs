@@ -3,7 +3,7 @@
 //!
 //! When the session starts a Tilo app in a workspace it keeps one end of a window
 //! link (`runtime_portal::windows`) and hands the other to the launch with
-//! its release ([`launcher::registration_gate`]). Every later window of that
+//! its release ([`launcher::launch_hold`]). Every later window of that
 //! app in that workspace is then a request on the link instead of a second
 //! process, which could never hold the app's records: one process owns them.
 //! The request names the window's instance and carries the window's own
@@ -94,7 +94,7 @@ struct Link {
     ours: OwnedFd,
     /// The launch's end, until the launch takes it with its release.
     theirs: Option<OwnedFd>,
-    /// The launcher process, once it exists: the custody a window's
+    /// The launcher process, once it exists: the ownership a window's
     /// connections are attributed to.
     launcher_pid: Option<u32>,
     /// Which reservation this is, so the end of an earlier launch never
@@ -560,7 +560,7 @@ fn hosted_window(
         .connections
         .collaboration(app, workspace, instance, Some(launcher_pid))
         .ok_or_else(|| std::io::Error::other("the instance has no collaboration connection"))?;
-    let (window, host) = runtime_portal::tilolang_host::pair()?;
+    let (window, host) = runtime_portal::tilolang_process::pair()?;
     runtime_portal::windows::send_patch(&entry.ours, instance, &window)?;
     Ok(HostedWindow {
         app: app.to_owned(),

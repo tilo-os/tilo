@@ -63,7 +63,7 @@ SCOPES = (
     Path("crates/collab/tilo-action-broker"),
     Path("crates/session/client"),
     Path("crates/session/session/src/sync"),
-    Path("crates/hosting/tilo-workspace-host"),
+    Path("crates/server/tilo-workspace-service"),
 )
 
 # A clock read: `Instant::now()`, `std::time::Instant::now()`,
@@ -89,17 +89,17 @@ TIMERS = {
         "crates/collab/tilo-action-broker/src/collab_app_broker.rs"
     ): TIMER_REASON,
     Path(
-        "crates/collab/tilo-action-broker/src/collab_app_broker/action_host.rs"
+        "crates/collab/tilo-action-broker/src/collab_app_broker/action_provider.rs"
     ): TIMER_REASON,
     Path(
         "crates/collab/tilo-action-broker/src/collab_app_broker/committed_document.rs"
     ): TIMER_REASON,
-    Path("crates/hosting/tilo-workspace-host/src/peer/arriving.rs"): TIMER_REASON,
-    Path("crates/hosting/tilo-workspace-host/src/peer/access_audit.rs"): TIMER_REASON,
-    Path("crates/hosting/tilo-workspace-host/src/peer/delivery.rs"): TIMER_REASON,
-    Path("crates/hosting/tilo-workspace-host/src/peer/session/writer.rs"): TIMER_REASON,
-    Path("crates/hosting/tilo-workspace-host/src/presence_mailbox.rs"): TIMER_REASON,
-    Path("crates/hosting/tilo-workspace-host/src/workspace.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/peer/arriving.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/peer/access_audit.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/peer/delivery.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/peer/session/writer.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/presence_mailbox.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/workspace.rs"): TIMER_REASON,
 }
 
 DIRECT = {

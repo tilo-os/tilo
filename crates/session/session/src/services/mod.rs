@@ -1,12 +1,12 @@
 //! Every service this session serves, in one table — the name a client dials it by, how the client
-//! reaches it, and what serves it — and the plane the apps read them on ([`plane`]).
+//! reaches it, and what serves it — and the app wire the apps read them on ([`app_wire`]).
 //!
 //! The session's apps and the person's own devices reach it in two ways. A
 //! socket under the launcher's services root is what the launcher hands an
 //! app at launch and what a program of this login dials by name
 //! ([`launcher::services::socket_for`]): one name, one socket, one server.
 //! Everything else is a registration: a resource the apps reach on the
-//! action plane they already speak on, or, for the work no one calls at
+//! app wire they already speak on, or, for the work no one calls at
 //! all, a worker that counts into the person's own records.
 //!
 //! [`TABLE`] is the whole answer to "does this session serve X". The
@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};
-use tilo_identity_host::broker::{
+use tilo_identity::broker::{
     GroupKeySource, IdentityBrokerHandle, PersonResourceTypes, WorkspaceMembership,
 };
 use tilo_portal::PortalCaller;
@@ -39,12 +39,12 @@ use tilo_system_stats::protocol::Handoff;
 use tilo_system_stats::server::{Prompter, Server};
 use tilo_workspace_keys::KeyProvider;
 
-use crate::plane::LayoutAuthority;
+use crate::app_wire::LayoutAuthority;
 
 use crate::render;
 use crate::tools;
 
-pub(crate) mod plane;
+pub(crate) mod app_wire;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,9 +53,9 @@ pub(crate) enum Reach {
     /// ([`launcher::services::socket_for`]): what it hands an app at launch,
     /// and what a program of this login dials by name.
     Launcher,
-    /// On the action plane the session's apps speak on: a resource published beside the others, or
+    /// On the app wire the session's apps speak on: a resource published beside the others, or
     /// a verb of the person's own records.
-    Plane,
+    AppWire,
     /// Nowhere: a package names the service in its manifest for the grant it carries, and there is
     /// no connection.
     NoConnection,
@@ -89,6 +89,9 @@ pub(crate) enum Service {
     /// The apps' render services: a toolkit app hands its frame to the service of its workspace,
     /// which draws it on the GPU.
     Render,
+    /// The Windows compatibility service the Windows Apps manager sets up and starts Windows
+    /// programs through ([`crate::windows_compat`]).
+    Windows,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -103,7 +106,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::COLLAB_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Module("services::plane"),
+        owner: Owner::Module("services::app_wire"),
     },
     Row {
         name: launcher::services::SHELL_UI_SERVICE,
@@ -123,11 +126,11 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::SYSTEM_SERVICE,
         reach: Reach::NoConnection,
-        owner: Owner::Module("services::plane"),
+        owner: Owner::Module("services::app_wire"),
     },
     Row {
         name: "network-usage",
-        reach: Reach::Plane,
+        reach: Reach::AppWire,
         owner: Owner::Session(Service::DataUsage),
     },
     Row {
@@ -141,10 +144,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::COMPAT_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Nothing(
-            "a Windows application's handoff reaches no compatibility service in this session \
-             yet, because no session runs the appliance it would start",
-        ),
+        owner: Owner::Session(Service::Windows),
     },
     Row {
         name: tools::SERVICE,
@@ -172,9 +172,9 @@ pub(crate) const TABLE: &[Row] = &[
         owner: Owner::Elsewhere("tilo-model-manager"),
     },
     Row {
-        name: launcher::services::APP_HOST_SERVICE,
+        name: launcher::services::PACKAGE_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Elsewhere("tilo-app-host"),
+        owner: Owner::Elsewhere("tilo-package-service"),
     },
     Row {
         name: launcher::services::USH_SERVICE,
@@ -206,12 +206,14 @@ pub(crate) struct Served {
     tools: Option<tools::Tools>,
     /// The apps' render services, one per workspace, and their supervision.
     render: Option<render::Broker>,
+    /// The Windows compatibility service.
+    windows: Option<crate::windows_compat::Served>,
 }
 
 /// What a session serves its services with.
 pub(crate) struct Serving {
     /// The shell the session's apps act on, and the workspace their identity is signed in: a session
-    /// that serves no action plane serves no identity either. Its apps still render, all in the
+    /// that serves no app wire serves no identity either. Its apps still render, all in the
     /// private service.
     pub shell: Option<Arc<LayoutAuthority>>,
     /// The person at this device: whose workspaces are theirs alone, so their apps share one render
@@ -232,6 +234,8 @@ pub(crate) struct Serving {
     pub tools: Option<tools::Handle>,
     /// What wakes the session's loop when a worker read something that the loop counts.
     pub wake: tilo_service::Wake,
+    /// What the Windows compatibility service is served with, for a session that starts apps.
+    pub windows: Option<crate::windows_compat::Serving>,
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
@@ -287,6 +291,9 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                             }
                         });
             }
+            Service::Windows => {
+                served.windows = windows(&mut serving);
+            }
             Service::DataUsage => {}
         }
     }
@@ -311,12 +318,23 @@ impl Served {
     }
 }
 
+/// The Windows compatibility service at the launcher's socket for it, for a session whose apps
+/// start through a launcher and read the workspaces' sandboxes from its app wire.
+fn windows(serving: &mut Serving) -> Option<crate::windows_compat::Served> {
+    let layout = serving.shell.as_ref().map(Arc::clone)?;
+    crate::windows_compat::serve(serving.windows.take()?, layout)
+        .inspect_err(
+            |error| tracing::warn!(%error, "the Windows compatibility service is unavailable"),
+        )
+        .ok()
+}
+
 /// The identity service at the launcher's socket for it, signing in the workspace the shell shows.
 fn identity(
     shell: Option<Arc<LayoutAuthority>>,
     keys: KeyProvider,
 ) -> Option<IdentityBrokerHandle> {
-    // An app reaches its identity the way it reaches its actions: over the plane this session
+    // An app reaches its identity the way it reaches its actions: over the app wire this session
     // serves it. A session that serves none has nothing to sign in.
     let shell = shell?;
     if let Err(error) = launcher::services::ensure_services_root() {
@@ -326,8 +344,7 @@ fn identity(
     let path = launcher::services::socket_for(launcher::services::IDENTITY_SERVICE);
     let membership = shell as Arc<dyn WorkspaceMembership>;
     let keys = Arc::new(keys) as Arc<dyn GroupKeySource>;
-    match tilo_identity_host::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read()))
-    {
+    match tilo_identity::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read())) {
         Ok(handle) => {
             tracing::info!("serving app identity to the apps the launcher starts");
             Some(handle)
@@ -415,8 +432,7 @@ struct ConsentsPrompter {
     consents: tilo_portal::consent::Consents,
 }
 
-/// Who asks: the app, in the workspace its launcher named. An app launched into no workspace asks
-/// as itself, with no workspace's grant behind it.
+/// Who asks: the app, in the workspace its launcher named.
 fn caller(handoff: &Handoff) -> PortalCaller {
     PortalCaller {
         workspace: handoff.workspace_id.clone(),
@@ -426,14 +442,13 @@ fn caller(handoff: &Handoff) -> PortalCaller {
 
 impl Prompter for ConsentsPrompter {
     fn granted(&self, handoff: &Handoff, grant: Grant) -> bool {
-        self.consents
-            .allowed(&caller(handoff), grant.device_scope())
+        self.consents.allowed(&caller(handoff), grant.name())
     }
 
     fn ask(&self, handoff: &Handoff, grant: Grant) -> std::sync::mpsc::Receiver<bool> {
         let caller = caller(handoff);
         let question = tilo_portal::consent::AccessQuestion {
-            capability: grant.device_scope().to_owned(),
+            capability: grant.name().to_owned(),
             reason: None,
             may_remember: true,
             text: None,
@@ -503,7 +518,7 @@ mod data_usage {
                     let mut counter = Counter::default();
                     loop {
                         let at = tilo_clock::unix_now_i64();
-                        let offset = chrono::Local::now().offset().local_minus_utc();
+                        let offset = jiff::Zoned::now().offset().seconds();
                         let readings = read();
                         let idle = readings.is_empty();
                         for due in counter.take(Taken {
@@ -556,7 +571,7 @@ mod data_usage {
     }
 
     impl Taken {
-        fn day(&self) -> Option<chrono::NaiveDate> {
+        fn day(&self) -> Option<jiff::civil::Date> {
             settings_sections::network_usage::local_day(self.at, self.offset)
         }
 
@@ -978,8 +993,8 @@ mod tests {
                         row.name
                     ),
                     Owner::Module(module) => assert!(
-                        !module.is_empty() && row.reach != Reach::Plane,
-                        "`{}` names the module `{module}` but is reached on the plane",
+                        !module.is_empty() && row.reach != Reach::AppWire,
+                        "`{}` names the module `{module}` but is reached on the app wire",
                         row.name
                     ),
                     Owner::Elsewhere(program) => assert!(
@@ -1006,6 +1021,7 @@ mod tests {
                 Service::DataUsage,
                 Service::Tools,
                 Service::Render,
+                Service::Windows,
             ] {
                 assert!(
                     TABLE

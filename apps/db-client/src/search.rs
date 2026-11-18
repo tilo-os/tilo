@@ -562,7 +562,10 @@ mod tests {
                 },
                 3_000,
             );
-            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+            assert_eq!(
+                hit.title,
+                format!("ordinary resource 2999 {LATE_HIT_NEEDLE}")
+            );
             assert_address_resolves(&index, &hit);
         }
 
@@ -584,7 +587,10 @@ mod tests {
                 },
                 3_000,
             );
-            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+            assert_eq!(
+                hit.title,
+                format!("ordinary resource 2999 {LATE_HIT_NEEDLE}")
+            );
             assert_address_resolves(&index, &hit);
         }
 

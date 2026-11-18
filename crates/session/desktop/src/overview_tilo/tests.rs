@@ -1,8 +1,8 @@
-use tilo_actions::remote::host_account::{
-    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Standing, Usage,
+use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
+use tilo_actions::remote::server_account::{
+    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Subscription, Usage,
     WorkspaceUsage,
 };
-use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
 
 use super::*;
 
@@ -34,10 +34,10 @@ fn captions(rows: &[TiloRow]) -> Vec<&str> {
 
 /// Tilo Cloud selling Pro, with the account on it and a workspace's VMs
 /// having run an hour.
-fn tilo_cloud() -> HostAccount {
-    HostAccount {
-        host: "Tilo Cloud".into(),
-        kind: HostKind::Provider,
+fn tilo_cloud() -> ServerAccount {
+    ServerAccount {
+        server: "Tilo Cloud".into(),
+        kind: ServerKind::Provider,
         plans: vec![PlanOffer {
             id: "pro".into(),
             name: "Pro".into(),
@@ -50,7 +50,7 @@ fn tilo_cloud() -> HostAccount {
                 ..Limits::default()
             },
         }],
-        standing: Some(Standing {
+        subscription: Some(Subscription {
             account: "acct-1".into(),
             plan: Some("pro".into()),
             payment_method: Some(PaymentMethod::default()),
@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            hosts: vec![HostAccount::sells_nothing("ada-laptop", HostKind::Device)],
+            hosts: vec![ServerAccount::sells_nothing("ada-laptop", ServerKind::Device)],
             ..TiloOverview::default()
         };
         assert!(!hosting_relevant(&shell.hosts));
@@ -109,9 +109,9 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            hosts: vec![HostAccount::sells_nothing(
+            hosts: vec![ServerAccount::sells_nothing(
                 "Ada's server",
-                HostKind::SelfHosted,
+                ServerKind::SelfHosted,
             )],
             ..TiloOverview::default()
         };
@@ -166,9 +166,9 @@ tilo_test_env::scenario! {
     {
         en();
         let mut host = tilo_cloud();
-        host.standing = Some(Standing {
+        host.subscription = Some(Subscription {
             account: "acct-1".into(),
-            ..Standing::default()
+            ..Subscription::default()
         });
         let rows = rows(&TiloOverview {
             hosts: vec![host],
@@ -220,7 +220,6 @@ tilo_test_env::scenario! {
                 name: "Claude Code".into(),
                 identity: "g1".into(),
                 colour: ui::presence::identity_rgb(PresenceHue::Orange),
-                is_agent: true,
             })),
             "the row wears the agent's own face, in its client's hue"
         );
@@ -288,7 +287,6 @@ tilo_test_env::scenario! {
                 name: "Cursor".into(),
                 identity: "g2".into(),
                 colour: ui::presence::identity_rgb(hue),
-                is_agent: true,
             }))
         );
     }

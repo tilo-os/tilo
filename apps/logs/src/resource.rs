@@ -33,7 +33,7 @@ impl Logs {
 }
 
 impl Logs {
-    /// What the record holds: the shared journal filter: severity, unit, boot and search
+    /// What the resource holds: the shared journal filter: severity, unit, boot and search
     /// text.
     pub fn read_document(
         &self,

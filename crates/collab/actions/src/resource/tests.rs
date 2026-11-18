@@ -312,7 +312,7 @@ tilo_test_env::scenario! {
 
     phase one_action_type_bound_to_many_targets_builds_for_each;
     // One action type serves every item that offers it: each spec is the
-    // type bound to its item, builds for that item on every lane, and a
+    // type bound to its item, builds for that item on every input mode, and a
     // change to one item's action copies the type rather than reaching the
     // others.
     {

@@ -373,7 +373,7 @@ def touch_first(ctx, res):
 
 
 def _keyboard_keys(ctx, display) -> dict:
-    """The on-screen keyboard's key targets: single-letter controls standing low on
+    """The on-screen keyboard's key targets: single-letter controls low on
     `display` while it shows, each with its rect. Empty while it is away."""
     low = display[1] + display[3] * 0.55
     return {name: rect for name, rect in core.target_map(ctx.vm.targets()).items()

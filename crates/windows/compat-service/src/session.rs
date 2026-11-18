@@ -24,9 +24,10 @@ use thiserror::Error;
 use tilo_clock::try_unix_now;
 use wire_frame::{FrameError, Framing};
 
+use crate::programs::{EndsRead, Programs};
 use crate::service::published_vm_explanation;
 use crate::{
-    CapsuleStore, CompatibilityService, HostSession, InstallOutcome, InstallationStatus,
+    CapsuleStore, CompatibilityService, InstallOutcome, InstallationStatus, LaunchDisplays,
     LaunchInput, LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION,
     ProgramKind, ProtocolError, ProtocolRequest, ProtocolResponse, RegisteredProgram, RouteKind,
     RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
@@ -54,7 +55,7 @@ pub struct SessionHandoff {
     pub workspace_id: String,
 }
 
-/// Source of fresh compositor-owned grants. An implementation must look up
+/// Source of fresh session-owned grants. An implementation must look up
 /// `workspace_id` and `app_id`; it must never deserialize grants from this
 /// service connection.
 pub trait CapabilityAuthority: Send + Sync + 'static {
@@ -65,28 +66,33 @@ pub trait CapabilityAuthority: Send + Sync + 'static {
     ) -> Result<Vec<CapOverride>, String>;
 }
 
-/// Compositor-owned, single-use registry of launcher children. `/proc` facts
-/// are only corroboration; this record is the authority that a launch was
-/// actually initiated by Tilo for this app/workspace.
+/// The session's own account of the launcher processes it started. `/proc`
+/// facts are only corroboration; this is the authority that a launch was
+/// actually started by Tilo for this app in this workspace. Each launch hands
+/// off to the service once ([`LauncherAuthenticator`] keeps that).
 pub trait TrustedLauncherRegistry: Send + Sync + 'static {
-    fn consume(
+    /// Whether `pid`, started at `process_start_time`, is a launch of `app_id`
+    /// in `workspace_id` the session started and that still lives.
+    fn is_launch(
         &self,
         pid: u32,
         process_start_time: u64,
         app_id: &str,
         workspace_id: &str,
-    ) -> Option<BTreeSet<String>>;
+    ) -> bool;
 }
 
 pub struct ManagedCompatibility<R, B, E, V> {
     service: CompatibilityService<R, B, E, V>,
     store: CapsuleStore,
+    /// The programs started through the service that are still open, and how the others ended.
+    programs: Arc<Programs>,
 }
 
 impl<R, B, E, V> ManagedCompatibility<R, B, E, V>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -97,7 +103,7 @@ where
         resources: B,
         executor: E,
         vm: V,
-        session: HostSession,
+        displays: Arc<dyn LaunchDisplays>,
     ) -> Result<Self, ServiceError> {
         let service = CompatibilityService::new(
             catalogue,
@@ -106,9 +112,31 @@ where
             resources,
             executor,
             vm,
-            session,
+            displays,
         )?;
-        Ok(Self { service, store })
+        Ok(Self {
+            service,
+            store,
+            programs: Arc::default(),
+        })
+    }
+
+    /// The entries a manager connecting now may address: the programs set up
+    /// in capsules and the appliance's published applications, read as it
+    /// connects. A manager that is already connected keeps its own set, which
+    /// only what it installs itself widens.
+    fn allowed_entries(&self) -> Result<BTreeSet<String>, SessionError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .map(|entry| entry.entry_id)
+            .chain(
+                self.vm_inventory()
+                    .applications
+                    .into_iter()
+                    .map(|application| application.entry_id),
+            )
+            .collect())
     }
 
     fn entries(&self) -> Result<Vec<RegisteredProgram>, SessionError> {
@@ -177,6 +205,23 @@ where
             .map_err(Into::into)
     }
 
+    /// Take up the programs the desktop kept through its last restart: each is open again, ended
+    /// and reported as one this service started.
+    fn take_back(&self) {
+        for taken in self.service.taken_back() {
+            if let Err(error) = crate::programs::watch(
+                &self.programs,
+                &taken.entry_id,
+                &taken.workspace_id,
+                &taken.display_name,
+                taken.program,
+                Box::new(|| {}),
+            ) {
+                tracing::warn!(%error, "a kept Windows program is not watched");
+            }
+        }
+    }
+
     fn launch_entry(
         &self,
         entry: &RegisteredProgram,
@@ -185,49 +230,28 @@ where
     ) -> Result<crate::LaunchReceipt, SessionError> {
         // Query, program, target app identity, and disabled VM fallback all
         // come from server state. The client contributes only `entry.id`.
-        self.service
-            .launch(&LaunchInput {
-                app_id: entry.app_id.clone(),
-                workspace_id: workspace_id.to_string(),
-                program_id: entry.program.id.clone(),
-                query: entry.query.clone(),
-                vm_fallback: VmFallback::Disabled,
-                capabilities,
-                now_unix: try_unix_now(),
-            })
-            .map_err(Into::into)
-    }
-
-    fn launch_published_vm(
-        &self,
-        application: &crate::VmPublishedApplication,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-    ) -> Result<crate::LaunchReceipt, SessionError> {
-        self.service
-            .launch_published_vm(application, workspace_id, capabilities, try_unix_now())
-            .map_err(Into::into)
-    }
-
-    fn launch_published_vm_with_portal_file(
-        &self,
-        application: &crate::VmPublishedApplication,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-        now_unix: Option<u64>,
-        source: File,
-        access: windows_vm::PortalDocumentAccess,
-    ) -> Result<crate::LaunchReceipt, SessionError> {
-        self.service
-            .launch_published_vm_with_portal_file(
-                application,
-                workspace_id,
-                capabilities,
-                now_unix,
-                source,
-                access,
-            )
-            .map_err(Into::into)
+        let crate::Launched {
+            receipt,
+            program,
+            release,
+        } = self.service.launch(&LaunchInput {
+            app_id: entry.app_id.clone(),
+            workspace_id: workspace_id.to_string(),
+            program_id: entry.program.id.clone(),
+            query: entry.query.clone(),
+            vm_fallback: VmFallback::Disabled,
+            capabilities,
+            now_unix: try_unix_now(),
+        })?;
+        crate::programs::watch(
+            &self.programs,
+            &entry.entry_id,
+            workspace_id,
+            &entry.program.display_name,
+            program,
+            release,
+        )?;
+        Ok(receipt)
     }
 
     fn install(
@@ -349,12 +373,78 @@ where
     }
 }
 
+impl<R, B, E, V> ManagedCompatibility<R, B, E, V>
+where
+    R: RuntimeRegistry + 'static,
+    B: LaunchResourceBroker + 'static,
+    E: SandboxExecutor + 'static,
+    V: VmDelegate + 'static,
+{
+    /// Show `application` from the Windows appliance, with the portal-chosen `file` when one is
+    /// given. Answered at once: the appliance starting and its window showing happen on a
+    /// thread of their own, and how it went is reported as the program's end.
+    fn launch_published_vm(
+        self: &Arc<Self>,
+        application: crate::VmPublishedApplication,
+        workspace_id: &str,
+        capabilities: Vec<CapOverride>,
+        file: Option<File>,
+    ) -> Result<crate::LaunchReceipt, SessionError> {
+        let receipt = crate::LaunchReceipt {
+            explanation: published_vm_explanation(application.presentation.label()),
+        };
+        let name = application.display_name.clone();
+        let id = self
+            .programs
+            .started(&application.entry_id, workspace_id, None);
+        let (managed, workspace_id) = (Arc::clone(self), workspace_id.to_owned());
+        let ended_name = name.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-windows-appliance-program".to_owned())
+            .spawn(move || {
+                let now_unix = try_unix_now();
+                let service = &managed.service;
+                let outcome = match file {
+                    Some(file) => service.launch_published_vm_with_portal_file(
+                        &application,
+                        &workspace_id,
+                        &capabilities,
+                        now_unix,
+                        file,
+                        // This protocol action is intentionally read-only. A
+                        // future write-back action must have a distinct portal
+                        // decision rather than trusting a client-supplied bit.
+                        windows_vm::PortalDocumentAccess::ReadOnly,
+                    ),
+                    None => service.launch_published_vm(
+                        &application,
+                        &workspace_id,
+                        &capabilities,
+                        now_unix,
+                    ),
+                };
+                managed
+                    .programs
+                    .ended(id, &ended_name, outcome.map_err(|error| error.to_string()));
+            });
+        if let Err(error) = spawned {
+            self.programs.ended(id, &name, Err(error.to_string()));
+            return Err(error.into());
+        }
+        Ok(receipt)
+    }
+}
+
 #[derive(Clone)]
 pub struct LauncherAuthenticator {
     expected_uid: u32,
     expected_parent_pid: u32,
     expected_executable: PathBuf,
     registry: Arc<dyn TrustedLauncherRegistry>,
+    /// The launches that handed off already, by process and start time: each
+    /// hands off once, so a launcher cannot open a second connection with a
+    /// fresh entry set.
+    handed_off: Arc<Mutex<BTreeSet<(u32, u64)>>>,
 }
 
 impl LauncherAuthenticator {
@@ -370,6 +460,7 @@ impl LauncherAuthenticator {
             expected_parent_pid,
             expected_executable: expected_executable.into(),
             registry,
+            handed_off: Arc::default(),
         }
     }
 
@@ -391,7 +482,7 @@ impl LauncherAuthenticator {
         &self,
         stream: &UnixStream,
         handoff: &SessionHandoff,
-    ) -> Result<BTreeSet<String>, SessionError> {
+    ) -> Result<(), SessionError> {
         let credentials = peer_credentials(stream)?;
         let pid = u32::try_from(credentials.pid).map_err(|_| SessionError::UnauthenticatedPeer)?;
         let start_time = process_start_time(pid)?;
@@ -399,15 +490,33 @@ impl LauncherAuthenticator {
         // may reach connect first on another CPU. Wait briefly for that one
         // parent-side insertion, never for an unregistered identity change.
         for _ in 0..20 {
-            if let Some(entry_ids) =
-                self.registry
-                    .consume(pid, start_time, &handoff.app_id, &handoff.workspace_id)
+            if self
+                .registry
+                .is_launch(pid, start_time, &handoff.app_id, &handoff.workspace_id)
             {
-                return Ok(entry_ids);
+                return self.take_handoff(pid, start_time);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         Err(SessionError::UnauthenticatedPeer)
+    }
+
+    /// Spend the one handoff of the launch `pid` started at `start_time`.
+    /// Launches that ended are forgotten, so a later process given the same
+    /// pid is a launch of its own.
+    fn take_handoff(&self, pid: u32, start_time: u64) -> Result<(), SessionError> {
+        let mut handed_off = self
+            .handed_off
+            .lock()
+            .map_err(|_| SessionError::UnauthenticatedPeer)?;
+        handed_off.retain(|&(earlier, started)| {
+            process_start_time(earlier).is_ok_and(|now| now == started)
+        });
+        if handed_off.insert((pid, start_time)) {
+            Ok(())
+        } else {
+            Err(SessionError::UnauthenticatedPeer)
+        }
     }
 }
 
@@ -485,10 +594,10 @@ impl Drop for CompatSessionHandle {
     }
 }
 
-pub fn spawn_session_service<R, B, E, V, A>(
+pub fn spawn_session_service<R, B, E, V>(
     path: PathBuf,
     managed: Arc<ManagedCompatibility<R, B, E, V>>,
-    authority: Arc<A>,
+    authority: Arc<dyn CapabilityAuthority>,
     authenticator: LauncherAuthenticator,
 ) -> Result<CompatSessionHandle, SessionError>
 where
@@ -496,7 +605,6 @@ where
     B: LaunchResourceBroker + 'static,
     E: SandboxExecutor + 'static,
     V: VmDelegate + 'static,
-    A: CapabilityAuthority,
 {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -526,7 +634,7 @@ where
                         let Some(permit) = WorkerPermit::try_acquire(&thread_active_workers) else {
                             // The only accepted peers are launcher children, but a
                             // compromised manager must still not turn retained
-                            // descriptors into unbounded compositor threads.
+                            // descriptors into unbounded session threads.
                             drop(stream);
                             continue;
                         };
@@ -630,21 +738,23 @@ fn join_workers(workers: &Mutex<Vec<JoinHandle<()>>>) {
 
 fn serve_client<R, B, E, V>(
     mut stream: UnixStream,
-    managed: &ManagedCompatibility<R, B, E, V>,
+    managed: &Arc<ManagedCompatibility<R, B, E, V>>,
     authority: &dyn CapabilityAuthority,
     authenticator: &LauncherAuthenticator,
 ) -> Result<(), SessionError>
 where
-    R: RuntimeRegistry,
-    B: LaunchResourceBroker,
-    E: SandboxExecutor,
-    V: VmDelegate,
+    R: RuntimeRegistry + 'static,
+    B: LaunchResourceBroker + 'static,
+    E: SandboxExecutor + 'static,
+    V: VmDelegate + 'static,
 {
     let handoff: SessionHandoff =
         read_frame(&mut stream, launcher::services::COMPAT_HANDOFF_FRAMING)?;
     validate_handoff(&handoff)?;
-    let mut allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
+    authenticator.consume_handoff(&stream, &handoff)?;
+    let mut allowed_entry_ids = managed.allowed_entries()?;
     let mut pending_vm_install = None;
+    let mut ends_read = EndsRead::default();
     loop {
         let (request, descriptor) = match read_request_frame(&mut stream, FRAMING) {
             Ok(request) => request,
@@ -659,6 +769,7 @@ where
             &handoff,
             &mut allowed_entry_ids,
             &mut pending_vm_install,
+            &mut ends_read,
             request,
             descriptor,
         );
@@ -667,7 +778,7 @@ where
 }
 
 fn validate_handoff(handoff: &SessionHandoff) -> Result<(), SessionError> {
-    if handoff.protocol != PROTOCOL_VERSION
+    if handoff.protocol != launcher::services::COMPAT_HANDOFF_PROTOCOL
         || handoff.app_id != MANAGER_APP_ID
         || !valid_id(&handoff.workspace_id)
     {
@@ -681,24 +792,26 @@ fn validate_handoff(handoff: &SessionHandoff) -> Result<(), SessionError> {
     reason = "the exhaustive protocol dispatch keeps descriptor and authority checks in one boundary"
 )]
 fn handle_request<R, B, E, V>(
-    managed: &ManagedCompatibility<R, B, E, V>,
+    managed: &Arc<ManagedCompatibility<R, B, E, V>>,
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
     allowed_entry_ids: &mut BTreeSet<String>,
     pending_vm_install: &mut Option<PendingVmInstall>,
+    ends_read: &mut EndsRead,
     request: ProtocolRequest,
     descriptor: Option<OwnedFd>,
 ) -> ProtocolResponse
 where
-    R: RuntimeRegistry,
-    B: LaunchResourceBroker,
-    E: SandboxExecutor,
-    V: VmDelegate,
+    R: RuntimeRegistry + 'static,
+    B: LaunchResourceBroker + 'static,
+    E: SandboxExecutor + 'static,
+    V: VmDelegate + 'static,
 {
     let version = match &request {
         ProtocolRequest::List { version }
         | ProtocolRequest::Launch { version, .. }
         | ProtocolRequest::LaunchVmFallback { version, .. }
+        | ProtocolRequest::Stop { version, .. }
         | ProtocolRequest::LaunchVmWithPortalFile { version, .. }
         | ProtocolRequest::Install { version, .. }
         | ProtocolRequest::InstallInVm { version, .. }
@@ -735,9 +848,22 @@ where
             ),
         };
     }
+    // What the desktop kept through its last restart is open again before anything is read of
+    // the programs.
+    managed.take_back();
     let result: Result<ProtocolResponse, SessionError> = (|| match request {
         ProtocolRequest::List { .. } => {
-            list_applications(managed, authority, handoff, allowed_entry_ids)
+            list_applications(managed, authority, handoff, allowed_entry_ids, ends_read)
+        }
+        ProtocolRequest::Stop { entry_id, .. } => {
+            if valid_id(&entry_id)
+                && allowed_entry_ids.contains(&entry_id)
+                && managed.programs.stop(&handoff.workspace_id, &entry_id)
+            {
+                Ok(ProtocolResponse::Stopped { entry_id })
+            } else {
+                Err(SessionError::NotRunning)
+            }
         }
         ProtocolRequest::Resolve(request) => {
             managed
@@ -778,7 +904,7 @@ where
                         .capabilities_for(&handoff.workspace_id, &application.app_id)
                         .map_err(SessionError::Authority)?;
                     managed
-                        .launch_published_vm(&application, &handoff.workspace_id, &capabilities)
+                        .launch_published_vm(application, &handoff.workspace_id, capabilities, None)
                         .map(|receipt| ProtocolResponse::Launched { receipt })
                 } else {
                     // Private capsule entries cannot be mapped to an
@@ -806,16 +932,11 @@ where
                 .map_err(SessionError::Authority)?;
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
             managed
-                .launch_published_vm_with_portal_file(
-                    &application,
+                .launch_published_vm(
+                    application,
                     &handoff.workspace_id,
-                    &capabilities,
-                    try_unix_now(),
-                    source,
-                    // This protocol action is intentionally read-only. A
-                    // future write-back action must have a distinct portal
-                    // decision rather than trusting a client-supplied bit.
-                    windows_vm::PortalDocumentAccess::ReadOnly,
+                    capabilities,
+                    Some(source),
                 )
                 .map(|receipt| ProtocolResponse::Launched { receipt })
         }
@@ -999,14 +1120,19 @@ fn list_applications<R, B, E, V>(
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
     allowed_entry_ids: &mut BTreeSet<String>,
+    ends_read: &mut EndsRead,
 ) -> Result<ProtocolResponse, SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
     let mut applications = Vec::new();
+    // Read before the ends, so a program that ends in between is reported
+    // ended rather than both running and ended.
+    let running = managed.programs.running_in(&handoff.workspace_id);
+    let ended = managed.programs.ends_for(&handoff.workspace_id, ends_read);
     // A list refresh reports real delegate readiness, but never wakes the
     // fallback appliance merely to draw a manager badge.
     let vm_inventory = managed.vm_inventory();
@@ -1029,6 +1155,7 @@ where
             .into_iter()
             .find(|state| state.id == entry.capsule_id)
             .and_then(|state| state.installation.map(|installation| installation.status));
+        let is_running = running.contains(&entry.entry_id);
         applications.push(ManagedApplication {
             id: entry.entry_id,
             app_id: entry.app_id,
@@ -1063,6 +1190,7 @@ where
             installation_status,
             remove_launcher_available: true,
             vendor_uninstall_available: false,
+            running: is_running,
         });
     }
     for application in vm_inventory
@@ -1070,6 +1198,7 @@ where
         .into_iter()
         .filter(|application| allowed_entry_ids.contains(&application.entry_id))
     {
+        let is_running = running.contains(&application.entry_id);
         applications.push(ManagedApplication {
             id: application.entry_id,
             app_id: application.app_id,
@@ -1095,6 +1224,7 @@ where
             installation_status: None,
             remove_launcher_available: true,
             vendor_uninstall_available: application.uninstall_available,
+            running: is_running,
         });
     }
     let authorized_capsules = authorized_capsules(managed, allowed_entry_ids)?;
@@ -1164,6 +1294,7 @@ where
         vm_availability,
         vm_installation,
         vm_uninstallation,
+        ended,
     })
 }
 
@@ -1173,7 +1304,7 @@ fn authorized_capsules<R, B, E, V>(
 ) -> Result<BTreeSet<String>, SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1192,7 +1323,7 @@ fn require_authorized_capsule<R, B, E, V>(
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1211,7 +1342,7 @@ fn authorize_capsule_entries<R, B, E, V>(
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1255,7 +1386,7 @@ fn retain_capsule_control_entry<R, B, E, V>(
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1459,6 +1590,8 @@ pub enum SessionError {
     AlreadyRunning,
     #[error("managed Windows application is not registered")]
     UnknownEntry,
+    #[error("no program of this application is open that can be ended here")]
+    NotRunning,
     #[error("the Windows installer confirmation expired; inspect the portal file again")]
     VmInstallConfirmationExpired,
     #[error("the request did not carry one portal file descriptor")]
@@ -1490,6 +1623,7 @@ impl SessionError {
             Self::AlreadyRunning => "already_running",
             Self::VmInstallConfirmationExpired => "confirmation_expired",
             Self::UnknownEntry => "unknown_entry",
+            Self::NotRunning => "not_running",
             Self::Authority(_) => "authority_unavailable",
             Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
         }
@@ -1500,6 +1634,8 @@ impl SessionError {
 mod tests {
     use std::io::Seek;
 
+    use crate::LaunchDisplay;
+
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -1509,7 +1645,7 @@ mod tests {
         {
             assert!(
                 validate_handoff(&SessionHandoff {
-                    protocol: PROTOCOL_VERSION,
+                    protocol: launcher::services::COMPAT_HANDOFF_PROTOCOL,
                     app_id: MANAGER_APP_ID.to_string(),
                     workspace_id: "workspace-1".to_string(),
                 })
@@ -1517,7 +1653,7 @@ mod tests {
             );
             assert!(matches!(
                 validate_handoff(&SessionHandoff {
-                    protocol: PROTOCOL_VERSION,
+                    protocol: launcher::services::COMPAT_HANDOFF_PROTOCOL,
                     app_id: "arbitrary.client".to_string(),
                     workspace_id: "workspace-1".to_string(),
                 }),
@@ -1734,8 +1870,8 @@ mod tests {
     struct DenyRegistry;
 
     impl TrustedLauncherRegistry for DenyRegistry {
-        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
-            None
+        fn is_launch(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
+            false
         }
     }
 
@@ -1757,10 +1893,10 @@ mod tests {
     struct IdleExecutor;
 
     impl crate::SandboxExecutor for IdleExecutor {
-        fn execute(
+        fn command(
             &self,
             _: &crate::plan::CapsuleCommandPlan,
-        ) -> Result<crate::execute::ExecutionOutcome, crate::execute::ExecutionError> {
+        ) -> Result<crate::SandboxCommand, crate::execute::ExecutionError> {
             Err(crate::execute::ExecutionError::Seccomp(
                 "idle accept test".into(),
             ))
@@ -1789,9 +1925,32 @@ mod tests {
     struct IdleLaunchers;
 
     impl TrustedLauncherRegistry for IdleLaunchers {
-        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
-            None
+        fn is_launch(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
+            false
         }
+    }
+
+    /// A launch hands off once: a second connection of the same launcher process is refused,
+    /// whatever the session says of it.
+    #[test]
+    fn a_launch_hands_off_once() {
+        struct Every;
+
+        impl TrustedLauncherRegistry for Every {
+            fn is_launch(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
+                true
+            }
+        }
+
+        let executable = fs::read_link("/proc/self/exe").unwrap();
+        let auth = LauncherAuthenticator::new(executable, std::process::id(), Arc::new(Every));
+        let pid = std::process::id();
+        let started = process_start_time(pid).unwrap();
+        assert!(auth.take_handoff(pid, started).is_ok());
+        assert!(matches!(
+            auth.take_handoff(pid, started),
+            Err(SessionError::UnauthenticatedPeer)
+        ));
     }
 
     #[test]
@@ -1807,11 +1966,12 @@ mod tests {
                 IdleResources,
                 IdleExecutor,
                 IdleVm,
-                HostSession {
+                Arc::new(LaunchDisplay {
                     uid: 1000,
-                    wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+                    runtime_dir: PathBuf::from("/xdg/1000"),
+                    wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
                     render_node: PathBuf::from("/dev/dri/renderD128"),
-                },
+                }),
             )
             .unwrap(),
         );

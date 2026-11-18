@@ -698,7 +698,7 @@ mod tests {
     tilo_test_env::scenario! {
         /// What the undo status publishes, admits and describes.
         /// Each phase was a test of its own and builds its own fixture.
-        fn undo_status_gates_requests_shortcuts_and_descriptions;
+        fn undo_status_checks_requests_shortcuts_and_descriptions;
 
         phase undo_access_publishes_status_and_refuses_unavailable_verbs_once;
         {

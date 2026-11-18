@@ -9,8 +9,13 @@ pinned upstream source with the patches here, instead of Fedora's package.
 there drives it since the shell's X11 clipboard tests went with the shell.
 
 - Upstream: <https://github.com/Supreeeme/xwayland-satellite>, MPL-2.0.
-- Base: v0.8.2, commit `8d135d3b2854b30fd01ea6cd6c27e523dd50a839`
-  (`xwayland-satellite-8d135d3.tar.gz` in `../github-assets.tsv`).
+- Base: upstream main at `779151fdfc034048c770edbfd2818c7a3389bd12`
+  (v0.8.3-10-g779151f; `xwayland-satellite-779151f.tar.gz` in
+  `../github-assets.tsv`), the first commit with "fix: drain X11 events
+  buffered during Wayland dispatch". Up to v0.8.3, X events that arrive while
+  satellite waits for an X reply stay in its X library's queue, and nothing
+  wakes it for them: a new X window could exist on the X server and never be
+  shown. No release contains the fix yet; move to the first one that does.
 - Features: `systemd,fontconfig`, as Fedora's package builds it; the decoration
   font comes from `open-sans-fonts`.
 

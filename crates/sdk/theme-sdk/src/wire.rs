@@ -494,7 +494,7 @@ impl Writer {
         // that draws without one.
         self.bytes(tokens.shader.wgsl.as_bytes());
         self.u32(tokens.shader.time_centis);
-        // The sides standing on the display's edge, after the shader for the
+        // The sides on the display's edge, after the shader for the
         // same reason as the light: see the module note.
         self.u8(tokens.flush.bits());
     }
@@ -741,7 +741,7 @@ impl Reader<'_> {
                 time_centis: self.u32()?,
             }
         };
-        // The sides standing on the display's edge came after the shader:
+        // The sides on the display's edge came after the shader:
         // bytes that end before them are an encoding from before a flush
         // body could say so, and draw every side's edge as they used to.
         let flush = if self.0.is_empty() {

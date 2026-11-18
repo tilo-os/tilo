@@ -2,7 +2,7 @@
 //! days between) and how a date is written; and the moments a list's items
 //! carry, which a selection orders and bounds them by.
 
-use chrono::{Datelike as _, NaiveDate, NaiveTime, Weekday};
+use jiff::civil::{Date, Time, Weekday};
 
 const MONTHS: [&str; 12] = [
     "January",
@@ -21,7 +21,7 @@ const MONTHS: [&str; 12] = [
 
 /// The date an ISO text names: `2026-10-23`, with or without a time after
 /// it (`2026-10-23T09:00:00Z`, `2026-10-23 09:00`), which is dropped.
-pub(crate) fn parse(text: &str) -> Option<NaiveDate> {
+pub(crate) fn parse(text: &str) -> Option<Date> {
     let text = text.trim();
     let date = text.get(..10)?;
     let rest = text.get(10..)?;
@@ -33,7 +33,7 @@ pub(crate) fn parse(text: &str) -> Option<NaiveDate> {
     if year.len() != 4 || month.len() != 2 || day.len() != 2 {
         return None;
     }
-    NaiveDate::from_ymd_opt(year.parse().ok()?, month.parse().ok()?, day.parse().ok()?)
+    Date::new(year.parse().ok()?, month.parse().ok()?, day.parse().ok()?).ok()
 }
 
 /// The moment `text` names, in milliseconds since the Unix epoch: ISO
@@ -61,7 +61,7 @@ pub(crate) fn instant(text: &str) -> Option<i64> {
     let (clock, zone) = (rest.get(..clock_end)?, rest.get(clock_end..)?);
     let time = clock_time(clock)?;
     let offset = zone_offset(zone.trim())?;
-    let local = day.and_time(time).and_utc().timestamp_millis();
+    let local = utc_ms(day.to_datetime(time))?;
     local.checked_sub(offset.checked_mul(60_000)?)
 }
 
@@ -75,12 +75,18 @@ pub(crate) fn epoch(number: i64) -> Option<i64> {
     }
 }
 
-fn midnight(day: NaiveDate) -> i64 {
-    day.and_time(NaiveTime::MIN).and_utc().timestamp_millis()
+fn midnight(day: Date) -> i64 {
+    utc_ms(day.to_datetime(Time::MIN)).unwrap_or_default()
+}
+
+/// `wall` read as UTC, in milliseconds since the epoch.
+fn utc_ms(wall: jiff::civil::DateTime) -> Option<i64> {
+    let at = wall.to_zoned(jiff::tz::TimeZone::UTC).ok()?;
+    Some(at.timestamp().as_millisecond())
 }
 
 /// `09:15`, `09:15:30`, `09:15:30.250`.
-fn clock_time(text: &str) -> Option<NaiveTime> {
+fn clock_time(text: &str) -> Option<Time> {
     let (seconds_part, fraction) = text.split_once('.').unwrap_or((text, ""));
     let mut parts = seconds_part.split(':');
     let hour = parts.next()?;
@@ -90,12 +96,14 @@ fn clock_time(text: &str) -> Option<NaiveTime> {
         return None;
     }
     let milli = format!("{fraction:0<3}");
-    NaiveTime::from_hms_milli_opt(
+    let milli: i32 = milli.get(..3)?.parse().ok()?;
+    Time::new(
         hour.parse().ok()?,
         minute.parse().ok()?,
         second.parse().ok()?,
-        milli.get(..3)?.parse().ok()?,
+        milli.saturating_mul(1_000_000),
     )
+    .ok()
 }
 
 /// The minutes a zone is ahead of UTC: none written, `Z`, `UTC`, `GMT`,
@@ -125,7 +133,7 @@ fn zone_offset(zone: &str) -> Option<i64> {
 
 /// `October 14, 2026`, `Oct 14, 2026`, `14 October 2026` or `14th of
 /// October 2026`, as [`written`] writes dates and people do.
-pub(crate) fn written_date(text: &str) -> Option<NaiveDate> {
+pub(crate) fn written_date(text: &str) -> Option<Date> {
     let words: Vec<&str> = text
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter(|word| !word.is_empty() && !word.eq_ignore_ascii_case("of"))
@@ -160,18 +168,15 @@ pub(crate) fn day_number(word: &str) -> Option<i64> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Numeric {
     /// Only one reading is a date.
-    Settled(NaiveDate),
+    Settled(Date),
     /// Day first and month first are both dates, and differ.
-    Either {
-        day_first: NaiveDate,
-        month_first: NaiveDate,
-    },
+    Either { day_first: Date, month_first: Date },
 }
 
 impl Numeric {
     /// The date when `day_first` (else month first) is how the text
     /// writes its dates.
-    pub(crate) const fn read(self, day_first: bool) -> NaiveDate {
+    pub(crate) const fn read(self, day_first: bool) -> Date {
         match self {
             Self::Settled(day) => day,
             Self::Either {
@@ -237,42 +242,35 @@ pub(crate) fn month_number(word: &str) -> Option<i64> {
 }
 
 /// The date `year-month-day`, when there is one.
-pub(crate) fn from_parts(year: i64, month: i64, day: i64) -> Option<NaiveDate> {
-    NaiveDate::from_ymd_opt(
-        i32::try_from(year).ok()?,
-        u32::try_from(month).ok()?,
-        u32::try_from(day).ok()?,
+pub(crate) fn from_parts(year: i64, month: i64, day: i64) -> Option<Date> {
+    Date::new(
+        i16::try_from(year).ok()?,
+        i8::try_from(month).ok()?,
+        i8::try_from(day).ok()?,
     )
+    .ok()
 }
 
 /// `count` days after `from`, or before it when negative.
-pub(crate) fn add_days(from: NaiveDate, count: i64) -> Option<NaiveDate> {
-    let days = chrono::Days::new(count.unsigned_abs());
-    if count < 0 {
-        from.checked_sub_days(days)
-    } else {
-        from.checked_add_days(days)
-    }
+pub(crate) fn add_days(from: Date, count: i64) -> Option<Date> {
+    let days = jiff::Span::new().try_days(count).ok()?;
+    from.checked_add(days).ok()
 }
 
 /// `count` calendar months after `from`, or before it when negative, as a
 /// spreadsheet's EDATE moves: a day the month lacks is its last day.
-pub(crate) fn add_months(from: NaiveDate, count: i64) -> Option<NaiveDate> {
-    let months = chrono::Months::new(u32::try_from(count.unsigned_abs()).ok()?);
-    if count < 0 {
-        from.checked_sub_months(months)
-    } else {
-        from.checked_add_months(months)
-    }
+pub(crate) fn add_months(from: Date, count: i64) -> Option<Date> {
+    from.checked_add(jiff::Span::new().try_months(count).ok()?)
+        .ok()
 }
 
 /// Days from `from` to `to`, negative when `to` is earlier.
-pub(crate) fn between(from: NaiveDate, to: NaiveDate) -> i64 {
-    to.signed_duration_since(from).num_days()
+pub(crate) fn between(from: Date, to: Date) -> i64 {
+    i64::from(to.since(from).map_or(0, |span| span.get_days()))
 }
 
-fn weekend(day: NaiveDate) -> bool {
-    matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
+fn weekend(day: Date) -> bool {
+    matches!(day.weekday(), Weekday::Saturday | Weekday::Sunday)
 }
 
 /// The most business days one step moves by: a few decades.
@@ -281,7 +279,7 @@ const MOST_BUSINESS_DAYS: u64 = 20_000;
 /// `count` working days (Monday to Friday) after `from`, or before it when
 /// negative, as a spreadsheet's WORKDAY counts them: `from` itself is not
 /// one of them.
-pub(crate) fn add_business_days(from: NaiveDate, count: i64) -> Option<NaiveDate> {
+pub(crate) fn add_business_days(from: Date, count: i64) -> Option<Date> {
     let mut left = count.unsigned_abs();
     if left > MOST_BUSINESS_DAYS {
         return None;
@@ -299,14 +297,17 @@ pub(crate) fn add_business_days(from: NaiveDate, count: i64) -> Option<NaiveDate
 
 /// How many working days lie from `from` to `to`, both counted, as a
 /// spreadsheet's NETWORKDAYS counts them; negative when `to` is earlier.
-pub(crate) fn business_days_between(from: NaiveDate, to: NaiveDate) -> i64 {
+pub(crate) fn business_days_between(from: Date, to: Date) -> i64 {
     let (low, high, negative) = if from <= to {
         (from, to, false)
     } else {
         (to, from, true)
     };
     let mut count: i64 = 0;
-    for day in low.iter_days().take_while(|day| *day <= high) {
+    for day in low
+        .series(jiff::Span::new().days(1))
+        .take_while(|day| *day <= high)
+    {
         if !weekend(day) {
             count = count.saturating_add(1);
         }
@@ -319,13 +320,13 @@ pub(crate) fn business_days_between(from: NaiveDate, to: NaiveDate) -> i64 {
 }
 
 /// `day` as `2026-10-23`.
-pub(crate) fn iso(day: NaiveDate) -> String {
+pub(crate) fn iso(day: Date) -> String {
     format!("{:04}-{:02}-{:02}", day.year(), day.month(), day.day())
 }
 
 /// `day` as `October 23, 2026`, or `Oct 23, 2026` when `short`.
-pub(crate) fn written(day: NaiveDate, short: bool) -> String {
-    let name = usize::try_from(day.month0())
+pub(crate) fn written(day: Date, short: bool) -> String {
+    let name = usize::try_from(day.month().saturating_sub(1))
         .ok()
         .and_then(|month| MONTHS.get(month))
         .copied()
@@ -339,8 +340,8 @@ pub(crate) fn written(day: NaiveDate, short: bool) -> String {
 }
 
 /// Today, in UTC.
-pub(crate) fn today() -> NaiveDate {
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default();
+pub(crate) fn today() -> Date {
+    let epoch = Date::new(1970, 1, 1).ok().unwrap_or_default();
     let days = tilo_clock::unix_now_ms_i64().div_euclid(86_400_000);
     add_days(epoch, days).unwrap_or(epoch)
 }

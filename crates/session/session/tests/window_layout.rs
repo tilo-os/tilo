@@ -43,7 +43,7 @@ fn notices(session: &Session) -> Vec<String> {
 }
 
 /// A session as `dist/dev/nested-session.sh` starts it: it keeps its layout in
-/// `state`, takes part in the collaboration plane, shows the tilolang shell,
+/// `state`, takes part in the peer network, shows the tilolang shell,
 /// and holds the workspace it founds there.
 ///
 /// The test environment runs no Secret Service and names no
@@ -100,10 +100,10 @@ fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let root = home.root().join("system");
     home.env().set("TILO_IDENTITY_ROOT", &root);
-    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+    tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity,
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
 

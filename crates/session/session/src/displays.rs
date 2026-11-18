@@ -763,7 +763,7 @@ fn level_of(level: f64) -> Result<f32, ApiError> {
 }
 
 impl Displays {
-    /// What the screen says of its edges now: the pointer at an edge, and a window standing where
+    /// What the screen says of its edges now: the pointer at an edge, and a window where
     /// a bar or a dock there rides. What a bar or dock that shows only sometimes follows.
     /// Whether they moved.
     pub(crate) fn set_edges(&self, edges: tilo_session_core::shell::ScreenEdges) -> bool {

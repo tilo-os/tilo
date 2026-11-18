@@ -36,7 +36,7 @@ pub fn app_size_limit_among(meta: &PackageMeta, developer_publishers: &[[u8; 32]
     }
 }
 
-/// The keys of the publisher list at `list`, the path the build's gate let
+/// The keys of the publisher list at `list`, the path the build's check let
 /// through ([`dev_override`]): none without one, or when it cannot be read.
 pub fn developer_publishers_from(list: Option<OsString>) -> Vec<[u8; 32]> {
     let Some(text) = list.and_then(|path| std::fs::read_to_string(path).ok()) else {
@@ -55,7 +55,7 @@ mod tests {
     use crate::dev_env::dev_override_from;
 
     #[test]
-    fn only_an_open_gate_reads_the_developer_publisher_list() {
+    fn only_an_open_check_reads_the_developer_publisher_list() {
         let dir = tempfile::tempdir().unwrap();
         let list = dir.path().join("publishers.txt");
         let key = [7u8; 32];

@@ -51,7 +51,7 @@ what a joined device renews through.
 
 A certificate is due halfway through its lifetime (`renewal_due_at`). Every
 session checks at startup and then sleeps until the next one is due, waking
-early when the network, custody or a host comes back so a device that slept
+early when the network, ownership or a host comes back so a device that slept
 past the deadline renews as soon as it can. A joined device's session also
 asks its person's devices on its own pass, off the loop, from the first pass
 the fabric is up. The certificate is written before anything presents it, so
@@ -75,7 +75,7 @@ certificate. Nothing here deletes a person's identity or changes an id.
 ## Failure
 
 A renewal that fails is retried when what it failed on changes — the fabric
-or a host becoming reachable, custody becoming available — never on a fixed
+or a host becoming reachable, ownership becoming available — never on a fixed
 timer, and a joined device's ask is not repeated on every pass while the
 person's devices are simply away. A certificate that has already run out
 leaves the identity intact: startup reports it (`tilo::join_flow`) and the

@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 use automerge::transaction::Transactable as _;
 use runtime_collab::CollabClient;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, Session};
+use tilo_session::{AppLists, AppSocket, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 use crate::common::held::{WORKSPACE, actor, presentation};
@@ -63,13 +63,13 @@ fn person() -> Person {
         .set(FILE_SECRETS_ENV, "1");
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
+    let profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
@@ -153,7 +153,7 @@ fn serving(
     let mut session = crate::common::headless(Options {
         collab: false,
         wake: LoopWake::default(),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: "Ada".to_owned(),
         launches,
         state: state.map(Path::to_path_buf),
@@ -262,10 +262,11 @@ fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc:
     })
 }
 
-/// An app connected to the session's plane as `APP` in `WORKSPACE` , as the launcher hands it the
+/// An app connected to the session's app wire as `APP` in `WORKSPACE` , as the launcher hands it the
 /// connection.
 fn connect(socket: &PathBuf, app: &str) -> CollabClient {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
     launcher::services::write_collab_handoff(&mut stream, app, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
@@ -494,10 +495,10 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
     let mut session = session(&socket, &person.keys);
 
     let (done, received) = std::sync::mpsc::channel();
-    let plane = socket;
+    let app_wire = socket;
     let keys = person.keys.clone();
     let apps = std::thread::spawn(move || {
-        let joined = apps(&plane, &keys);
+        let joined = apps(&app_wire, &keys);
         let _ = done.send(joined);
     });
     let joined = until_the_apps_are_done(&mut session, &received);
@@ -551,10 +552,10 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_api() {
     let mut session = session_of(&socket, &person.keys, &[SETTINGS], Some(&state));
 
     let (done, received) = std::sync::mpsc::channel();
-    let plane = socket;
+    let app_wire = socket;
     let keys = person.keys;
     std::thread::spawn(move || {
-        let _ = done.send(settings_lists_shortcuts(&plane, &keys));
+        let _ = done.send(settings_lists_shortcuts(&app_wire, &keys));
     });
     let status = until_the_apps_are_done(&mut session, &received);
 
@@ -625,11 +626,11 @@ fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_jso
     };
     let mut session = serving(&socket, person, &[app], None, Lists::fixed(lists));
     let (done, received) = std::sync::mpsc::channel();
-    let plane = socket;
+    let app_wire = socket;
     let keys = person.clone();
     let called = app.to_owned();
     std::thread::spawn(move || {
-        let _ = done.send(settings_read(&plane, &keys, &called));
+        let _ = done.send(settings_read(&app_wire, &keys, &called));
     });
     until_the_apps_are_done(&mut session, &received)
 }

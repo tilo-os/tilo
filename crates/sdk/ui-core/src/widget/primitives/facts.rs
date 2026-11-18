@@ -351,6 +351,31 @@ impl Widget for Facts {
         for (index, fact) in self.items.iter().enumerate() {
             let (width, label_width) = widths.get(index).copied().unwrap_or((0.0, None));
             let start = x + m.mark_width(fact.mark);
+            let cy = self.rect.y0 + height / 2.0;
+            match fact.mark {
+                Some(FactMark::Icon(icon)) => {
+                    let at = Rect::new(x, cy - m.icon / 2.0, x + m.icon, cy + m.icon / 2.0);
+                    cx.icon(
+                        &format!("mark:{index}"),
+                        at,
+                        icon,
+                        theme.tokens.colors.text_dim,
+                    )
+                    .attrs
+                    .push(("aria-hidden", "true".into()));
+                }
+                Some(FactMark::Dot(tone)) => {
+                    let at = Rect::new(x, cy - m.dot / 2.0, x + m.dot, cy + m.dot / 2.0);
+                    let dot = cx.part(&format!("mark:{index}"), "Dot", at);
+                    dot.ground = Some(crate::composition::Ground {
+                        fill: Some(crate::composition::rgba8(tone.colour(theme))),
+                        edge: None,
+                        radius: m.dot / 2.0,
+                    });
+                    dot.attrs.push(("aria-hidden", "true".into()));
+                }
+                None => {}
+            }
             let mut at = start;
             if let Some(label) = &fact.label {
                 let label_width = label_width.unwrap_or(0.0).min(width);
@@ -364,8 +389,14 @@ impl Widget for Facts {
                 );
                 at = start + label_width;
             }
-            let look = TextLook::new(fact.text.clone(), &m.style, Some(theme.text_primary))
-                .with_max_lines(Some(1));
+            // A field's value reads in the ink of a value; a fact alone is dim, as painted.
+            let ink = if fact.label.is_some() {
+                theme.text_primary
+            } else {
+                theme.tokens.colors.text_dim
+            };
+            let look =
+                TextLook::new(fact.text.clone(), &m.style, Some(ink)).with_max_lines(Some(1));
             cx.words(
                 &format!("text:{index}"),
                 "dd",
@@ -492,7 +523,7 @@ mod tests {
             assert_eq!(face.shown_in(10.0, &mut text, &theme), vec![0]);
         }
 
-        // A row of facts standing beside the chips it shares its line with is measured at its
+        // A row of facts beside the chips it shares its line with is measured at its
         // text's exact width, and the solver that places it rounds every edge onto the display's
         // device pixels.
         phase a_row_measured_for_its_text_is_not_handed_a_box_that_shaves_it;

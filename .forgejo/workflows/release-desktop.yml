@@ -54,8 +54,8 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 30
     outputs:
-      matrix: ${{ steps.lanes.outputs.matrix }}
-      release_arches: ${{ steps.lanes.outputs.release_arches }}
+      matrix: ${{ steps.jobs.outputs.matrix }}
+      release_arches: ${{ steps.jobs.outputs.release_arches }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -99,13 +99,13 @@ jobs:
             echo "packaging preflight failed: $PREFLIGHT_DIAGNOSTIC" >&2
             exit 1
           fi
-      - name: Select native release lanes
-        id: lanes
+      - name: Select native release jobs
+        id: jobs
         env:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
         shell: bash
         run: |
-          # The lanes' userspaces and their pinned images
+          # The jobs' userspaces and their pinned images
           # (dist/ci/package-targets.txt).
           amd64_targets=$(dist/ci/package-targets.sh amd64)
           arm64_targets=$(dist/ci/package-targets.sh arm64)
@@ -132,7 +132,7 @@ jobs:
     # Full five-distro compilation runs on a tag or a dispatch, never on a
     # branch push: this workflow only ever sees the promotion ref.
     needs: validate
-    name: package lane / ${{ matrix.arch }}
+    name: package job / ${{ matrix.arch }}
     # Desktop packaging uses the larger native runner class.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -144,7 +144,7 @@ jobs:
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     steps:
       # A full clone: every userspace container gets a copy of this checkout,
-      # and the Nix lane reads it through libgit2, which cannot fetch the
+      # and the Nix job reads it through libgit2, which cannot fetch the
       # objects a blobless partial clone leaves out. From one, `nix build`
       # failed with "getting Git object '<HEAD>': object not found".
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -175,7 +175,7 @@ jobs:
           TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/stable' && !startsWith(github.ref, 'refs/tags/') && '1' || '0' }}
           # The larger runner supports six native compiler processes.
           TILO_CARGO_JOBS: "6"
-          TILO_LANE_TARGETS: ${{ matrix.targets }}
+          TILO_JOB_TARGETS: ${{ matrix.targets }}
         shell: bash
         run: |
           while IFS='|' read -r distro image revision; do
@@ -187,7 +187,7 @@ jobs:
               exit 1
             fi
             echo "::endgroup::"
-          done <<<"$TILO_LANE_TARGETS"
+          done <<<"$TILO_JOB_TARGETS"
       # The v4 artifact pins are Forgejo's builds (tag forgejo/v4): upstream's
       # v4 accepts only GitHub-hosted servers. A copy on GitHub pins upstream's.
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
@@ -351,7 +351,7 @@ jobs:
         run: |
           for arch in ${RELEASE_ARCHES//,/ }; do
             test -s "release/signed-fedora-44-$arch/tilo-rpm-signing-receipt-$arch.json"
-            # Signed copies include every original non-RPM lane artifact.
+            # Signed copies include every original non-RPM job artifact.
             # The broker client already verified identical immutable RPM bytes.
             rm -rf -- "release/fedora-44-$arch"
           done

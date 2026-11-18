@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 pub mod automatic;
-mod custody;
+mod ownership;
 #[cfg(target_os = "linux")]
 pub mod protected_output;
 #[cfg(target_os = "linux")]
@@ -138,7 +138,7 @@ impl PreparedSetupDelivery {
         )?;
         let info = reviewed.info().clone();
         Ok(Self {
-            package: custody::hold(&reviewed, package, password, cancel)?,
+            package: ownership::hold(&reviewed, package, password, cancel)?,
             info,
         })
     }
@@ -246,7 +246,7 @@ fn directory_named(root: &Arc<PinnedDirectory>, name: &str) -> io::Result<Arc<Pi
     match crate::setup::nofollow::metadata_nofollow(&root.file, Path::new(name)) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let mut options = DirOptions::new();
-            // Root helper owns a protected custody namespace. This applies only
+            // Root helper owns a protected ownership namespace. This applies only
             // to fresh creation; existing nonroot/0755 trees are never repaired.
             #[cfg(unix)]
             let mode = if rustix::process::geteuid().as_raw() == 0 {

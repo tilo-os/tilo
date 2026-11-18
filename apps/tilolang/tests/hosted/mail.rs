@@ -474,7 +474,7 @@ impl Session {
         );
         let mut rows = Vec::new();
         for list in view.lists() {
-            if !list.starts_with(tilo_ui_host::shell::DETAIL) {
+            if !list.starts_with(tilo_app_window::shell::DETAIL) {
                 continue;
             }
             let shown = view.rows_of(&list).expect("the list's rows");
@@ -523,7 +523,7 @@ fn accessible_names(widget: &dyn ui::widget::Widget, out: &mut Vec<String>) {
 
 /// Frames until the account's server's mail is in the window as a person sees it: its
 /// conversations, filed in the inbox, with the messages the sync read. A sync makes a
-/// conversation before it fetches its messages and files it, so the conversations standing in
+/// conversation before it fetches its messages and files it, so the conversations in
 /// the account are not the sync's end.
 fn synced(session: &mut Session) {
     session.until("the inbox to sync", |session| {
@@ -579,27 +579,24 @@ fn texts_in(node: &UiNode, out: &mut Vec<String>) {
 
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
-fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
-    use chrono::TimeZone as _;
-    let at = chrono::Local
-        .with_ymd_and_hms(2026, month, day, hour, minute, second)
-        .earliest()
+fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
+    let at = ui::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
         .expect("the time exists where the person is");
-    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+    let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
         .checked_add(ui::time::Duration::from_millis(ms))
         .expect("the clock reaches it")
 }
 
-/// The wall clock at `hour:minute:second` on `day` of 2026, in UTC: what a record names, such as
+/// The wall clock at `hour:minute:second` on `day` of 2026, in UTC: what a document names, such as
 /// the moment a conversation is snoozed until.
-fn utc(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
-    use chrono::TimeZone as _;
-    let at = chrono::Utc
-        .with_ymd_and_hms(2026, month, day, hour, minute, second)
-        .earliest()
-        .expect("the time exists");
-    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+fn utc(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
+    let at = jiff::civil::date(2026, month, day)
+        .at(hour, minute, second, 0)
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .expect("the time exists")
+        .timestamp();
+    let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
         .checked_add(ui::time::Duration::from_millis(ms))
         .expect("the clock reaches it")
@@ -1623,7 +1620,7 @@ fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
         (0..24).any(|hour| (0..60).any(|minute| ui::clock::hour_minute(hour, minute) == when)),
         "the clock time a person reads: {when}, read in {clock:?}"
     );
-    // The step waits for the next sync — and the store answers none of the account's records
+    // The step waits for the next sync — and the store answers none of the account's documents
     // while it takes it in again, as an index that has not caught up with the workspace does.
     store.fail_reads_of(&root.id_string());
     for _ in 0..3 {

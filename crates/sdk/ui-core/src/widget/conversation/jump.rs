@@ -100,7 +100,7 @@ impl JumpFace {
         self
     }
 
-    /// The keyboard's seat, or a reader's: the ring a control wears while it is the one to press.
+    /// The keyboard's focus, or a reader's: the ring a control wears while it is the one to press.
     #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;

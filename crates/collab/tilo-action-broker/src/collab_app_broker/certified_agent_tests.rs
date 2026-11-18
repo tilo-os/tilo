@@ -153,7 +153,7 @@ impl Fixture {
                 .owner
                 .receive(
                     workspace_id(),
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(
                         self.native.key.verifying_key().to_bytes(),
                     ),
                     message,

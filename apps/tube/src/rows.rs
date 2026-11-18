@@ -9,7 +9,7 @@ use ui::tilo_resource::words::RowType;
 use crate::action::SettingFlag;
 use crate::actions::{TubeEffect, comment_key, next_quality, resource_label};
 use crate::model::{Category, Route, Settings, SkipMode, TubeModel};
-use crate::sync::{PeerRecord, SyncStatus, SyncView};
+use crate::sync::{PeerEntry, SyncStatus, SyncView};
 
 const MAX_ROWS: usize = 100;
 const MAX_COMMENTS: usize = 50;
@@ -250,7 +250,7 @@ fn devices(view: &SyncView) -> LiveRow {
     if unavailable {
         return row;
     }
-    if view.peers.iter().any(PeerRecord::is_active) {
+    if view.peers.iter().any(PeerEntry::is_active) {
         row = row.effect(&TubeEffect::SyncDevices);
     }
     for peer in view.peers.iter().filter(|peer| peer.revoked_at.is_none()) {
@@ -259,7 +259,7 @@ fn devices(view: &SyncView) -> LiveRow {
     row
 }
 
-fn device_row(peer: &PeerRecord) -> LiveRow {
+fn device_row(peer: &PeerEntry) -> LiveRow {
     let device = LiveRow::new(
         format!("tube.device:{}", peer.id),
         "tube.device",

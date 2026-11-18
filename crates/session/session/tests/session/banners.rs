@@ -127,7 +127,7 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         "the banner is painted on the shell: {changed} of {area} pixels changed"
     );
     // What the banner offers answers the person like any window's buttons
-    // do: each is a control of the shell, standing on the banner.
+    // do: each is a control of the shell, on the banner.
     assert!(
         session.controls().into_iter().any(|control| {
             let (x, y, w, h) = control.rect;

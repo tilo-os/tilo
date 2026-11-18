@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A newcomer's tour of the built web page against the Lounge's relay, run
+# A newcomer's tour of the built web page against the Lounge's server, run
 # directly as page-boot runs it (integration/tour.mjs): every screen a
 # first-time visitor meets, in the light and dark appearances and at a phone's
 # width, kept as pictures for a person to review.
@@ -18,7 +18,7 @@ trap stop_lounge EXIT
 start_lounge "$bundle" "$work"
 # With TILO_CLI_BIN the newcomer sets Tilo up through an agent running it. The bundle's own app
 # list tells the tour which apps this page can open.
-TILO_BUNDLE=$bundle node "$here/integration/tour.mjs" "$site_origin" "$relay_origin" "$work/tour" \
+TILO_BUNDLE=$bundle node "$here/integration/tour.mjs" "$site_origin" "$server_origin" "$work/tour" \
   ${TILO_CLI_BIN:+"$TILO_CLI_BIN" "$work/site.ca.crt"} \
   || lounge_fail 'the tour stopped'
 # The pictures, in the log as well: a reviewer reads them from `t log page-tour`

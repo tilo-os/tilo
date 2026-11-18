@@ -24,7 +24,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Remote encrypted resource")
@@ -89,7 +89,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let retained = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace.workspace_id)
         .await
@@ -127,7 +127,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     drop(source);
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
     let restored = start(&owner, &host, state.path()).await;
     let mut reader =
         open_admitted_peer(&restored, &reader_device, &host, &workspace.workspace).await;
@@ -144,5 +144,5 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     reader.peer.close();
     restored.agents.shutdown();
     drop(restored.web);
-    restored.relay.shutdown().await;
+    restored.server.shutdown().await;
 }

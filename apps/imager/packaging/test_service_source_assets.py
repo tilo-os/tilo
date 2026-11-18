@@ -18,12 +18,12 @@ qualifier = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualifier)
 
 
-def ledger():
+def manifest():
     return json.loads((HERE / 'service-source-subjects.json').read_text())
 
 
 def located(root):
-    result = ledger()
+    result = manifest()
     for group, row in result['assets'].items():
         row['source_root'] = str(root / group)
     for key, row in result['archives'].items():
@@ -34,18 +34,18 @@ def located(root):
 class SubjectIdentity(unittest.TestCase):
     def test_checked_in_subjects_and_copied_inputs_have_same_identity(self):
         expected = assets.ASSET_MANIFEST_SHA256
-        self.assertEqual(assets.subject_digest(ledger()), expected)
+        self.assertEqual(assets.subject_digest(manifest()), expected)
         for root in (Path('/tmp/builder-one'), Path('/var/lib/builder-two')):
             document = located(root)
             self.assertEqual(assets.subject_digest(document), expected)
             with tempfile.TemporaryDirectory() as temporary:
-                manifest = Path(temporary).resolve() / 'operator.json'
-                manifest.write_text(json.dumps(document))
+                pin = Path(temporary).resolve() / 'operator.json'
+                pin.write_text(json.dumps(document))
                 self.assertEqual(assets.validate(document), document)
                 # A locator-independent subject pin is not proof that the
                 # supplied archives and complete trees actually exist.
                 with self.assertRaises(FileNotFoundError):
-                    qualifier.source_assets(manifest)
+                    qualifier.source_assets(pin)
         legacy = located(Path('/tmp/legacy'))
         del legacy['distribution']
         self.assertEqual(assets.subject_digest(legacy), expected)
@@ -107,9 +107,9 @@ class SubjectIdentity(unittest.TestCase):
 
 
 class CheckoutRecovery(unittest.TestCase):
-    def test_actual_checkout_fixture_matches_unchanged_frozen_ledger(self):
-        assets.verify_tree(assets.FIXTURE_ROOT, ledger()['assets']['app']['files'])
-        self.assertEqual(assets.subject_digest(ledger()), assets.ASSET_MANIFEST_SHA256)
+    def test_actual_checkout_fixture_matches_unchanged_frozen_manifest(self):
+        assets.verify_tree(assets.FIXTURE_ROOT, manifest()['assets']['app']['files'])
+        self.assertEqual(assets.subject_digest(manifest()), assets.ASSET_MANIFEST_SHA256)
 
     def test_recovery_refuses_volatile_storage_before_creating_anything(self):
         for root in ('/tmp/capture-public-assets', '/dev/shm/capture-public-assets',
@@ -123,7 +123,7 @@ class CheckoutRecovery(unittest.TestCase):
             root = Path(temporary).resolve()
             import shutil
             shutil.copytree(assets.FIXTURE_ROOT, root / 'app')
-            files = ledger()['assets']['app']['files']
+            files = manifest()['assets']['app']['files']
             assets.verify_tree(root / 'app', files)
             (root / 'app/main.cjs').write_bytes(b'not the admitted fixture')
             with self.assertRaises(ValueError):

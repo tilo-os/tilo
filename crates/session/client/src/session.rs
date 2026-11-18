@@ -1,4 +1,4 @@
-//! The certified relay session of one device.
+//! The certified server session of one device.
 //!
 //! One task owns the connection to the user's host and everything that must
 //! be serialized with it: document signing, the commit outbox, reconnects.
@@ -10,7 +10,7 @@
 //!   answers `Committed` with its order; the local replica already shows it.
 //! - **Reconnect replays.** After any disconnect the task reconnects with
 //!   backoff, re-subscribes every joined workspace (the host replays retained
-//!   checkpoints and this device's queue), rejoins the live plane and resends
+//!   checkpoints and this device's queue), rejoins the live session and resends
 //!   the whole outbox in order. Re-applying a document change is idempotent.
 //! - **Fail closed.** An expired certificate, or a host that keeps refusing
 //!   the handshake (a revoked device), ends in [`TransportPhase::Failed`]
@@ -27,16 +27,16 @@ use crate::{
 };
 use std::time::Duration;
 
-use tilo_relay_client::{CoeditPayload, DeviceSigner};
-use tilo_relay_protocol::Envelope;
+use tilo_server_client::{CoeditPayload, DeviceSigner};
+use tilo_server_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::custody::{PeerRecord, PeerStore};
+use crate::membership_check::{PeerEntry, PeerStore};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::LinkError;
-use tilo_relay_session::RelayClient;
+use tilo_server_client::LinkError;
+use tilo_server_session::ServerClient;
 
 mod agent_session;
 mod connect;
@@ -44,9 +44,9 @@ mod entry;
 mod governance;
 mod host_voice;
 mod inbound;
+mod live_session;
 mod opened_records;
 mod outbound;
-mod plane;
 mod voice;
 
 use agent_session::AgentSessionCompletion;
@@ -56,7 +56,7 @@ pub use connect::{SessionMemberHost, member_host};
 use connect::{connect, connect_backoff, link_error, transient};
 use entry::{Refusal, refusal};
 use governance::HostGovernance;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -91,15 +91,21 @@ pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
 /// How long a connected session waits for the host to admit its workspaces before
 /// it reports `admission-timeout`. Checked on the keep-alive tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
+/// How long after this device's replica refused a compaction it is behind its workspace is asked
+/// for the document again, the first time; each time after, it waits twice as long, at most
+/// [`BEHIND_ASKED_AT_MOST_EVERY_MS`]. Checked on the keep-alive tick.
+const BEHIND_ASKED_AFTER_MS: u64 = 15_000;
+/// The longest a document this device is behind in waits before it is asked for again.
+const BEHIND_ASKED_AT_MOST_EVERY_MS: u64 = 300_000;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
-/// sessions on ([`tilo_relay_client::Host`]).
-pub use tilo_relay_client::Host;
+/// sessions on ([`tilo_server_client::Host`]).
+pub use tilo_server_client::Host;
 
 /// Where to connect and as whom.
 #[derive(Clone)]
 pub struct PeerConfig {
-    /// The user's host (`tilo-relay`).
+    /// The user's host (`tilo-server`).
     pub host: Host,
     /// This device's certificate.
     pub cert: DeviceCert,
@@ -109,8 +115,8 @@ pub struct PeerConfig {
     pub revocations: RevocationList,
     /// The workspace this device enters through its entry on its first
     /// session, when the host has not admitted it yet
-    /// ([`tilo_relay_protocol::entering`]); taken once the host answered.
-    pub entering: Option<tilo_relay_protocol::entering::Entering>,
+    /// ([`tilo_server_protocol::entering`]); taken once the host answered.
+    pub entering: Option<tilo_server_protocol::entering::Entering>,
 }
 
 impl PeerConfig {
@@ -128,8 +134,8 @@ impl PeerConfig {
     }
 }
 
-/// A write in this device's custody: its id, bytes, channel and retention.
-type CustodyEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
+/// A write in this device's ownership: its id, bytes, channel and retention.
+type OwnershipEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
 
 /// The workspace id a session asks the host's own operations under: none of its workspaces, the
 /// host itself (creating, listing and entering the person's workspaces). Its answers come back
@@ -146,21 +152,21 @@ enum Command {
     Client(Cmd),
     /// The host answered the placement of this workspace.
     Placed(WorkspaceId),
-    /// What asking the host for `workspace_id`'s live plane, and joining it,
-    /// came to: the plane itself, except on wasm, where the page's carrier
-    /// cannot travel in a command and waits in [`plane::arrived`].
+    /// What asking the host for `workspace_id`'s live session, and joining it,
+    /// came to: the live session itself, except on wasm, where the page's carrier
+    /// cannot travel in a command and waits in [`live_session::arrived`].
     #[cfg(not(target_arch = "wasm32"))]
-    PlaneJoined(
+    LiveSessionJoined(
         WorkspaceId,
-        Result<Arc<tilo_live::plane::Plane>, plane::Failed>,
+        Result<Arc<tilo_live::live_session::LiveSession>, live_session::Failed>,
     ),
     #[cfg(target_arch = "wasm32")]
-    PlaneJoined(WorkspaceId),
-    /// The plane of `workspace_id` heard something: drain it.
-    PlaneHeard(WorkspaceId),
-    /// The plane of `workspace_id` ended: the relay closed it, or the plane
+    LiveSessionJoined(WorkspaceId),
+    /// The live session of `workspace_id` heard something: drain it.
+    LiveSessionHeard(WorkspaceId),
+    /// The live session of `workspace_id` ended: the relay closed it, or the live session
     /// no longer admits what it reads.
-    PlaneEnded(WorkspaceId),
+    LiveSessionEnded(WorkspaceId),
     /// The first consumer that reads the members' presence came, or the last one went.
     PresenceReaders,
 }
@@ -169,7 +175,7 @@ enum Command {
 enum Sealing {
     Sealed(Vec<u8>),
     /// This device holds no keys for the record yet.
-    NoKeys(tilo_relay_protocol::live::LiveResource),
+    NoKeys(tilo_server_protocol::live::LiveResource),
     /// Names no record, or does not seal: never sent.
     Dropped,
 }
@@ -189,7 +195,7 @@ pub(crate) type Completion = crate::Answer<Result<(), String>>;
 pub(crate) type LiveCompletion = crate::Answer<Option<Vec<u8>>>;
 /// Where the host's answer to a workspace administration request goes ([`Cmd::Administer`]).
 pub(crate) type WorkspacesCompletion =
-    crate::Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>;
+    crate::Answer<Result<tilo_server_protocol::workspaces::WorkspacesReply, String>>;
 #[derive(Debug, PartialEq, Eq)]
 enum Admission {
     Admitted,
@@ -209,7 +215,7 @@ fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> A
     }
 }
 
-/// Start a certified relay session with `config`'s host. It connects in the background; observe it
+/// Start a certified server session with `config`'s host. It connects in the background; observe it
 /// with [`Link::status`] and [`Link::on_change`]. It ends with its last link.
 pub fn start_session(
     config: PeerConfig,
@@ -233,7 +239,7 @@ pub struct Lent {
     /// group is its own session's.
     pub keys: Option<tilo_workspace_keys::SharedKeys>,
     /// Where the endpoint the device runs under its key lands once bound: the session dials from
-    /// it. A relay keeps one connection per endpoint id, so a second endpoint under the same key
+    /// it. A server keeps one connection per endpoint id, so a second endpoint under the same key
     /// cut the first off; a session opened before the endpoint is bound waits for it and binds
     /// none in its place.
     pub endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
@@ -278,22 +284,25 @@ fn session_task(
     let record = store.load().unwrap_or_default();
     let vault = store.channel_vault().unwrap_or_else(rand::random);
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
-    let key_state = crate::custody::StoredKeys::load(store.as_ref());
+    let key_state = crate::membership_check::StoredKeys::load(store.as_ref());
     // The transport this session settles its own keys over; none when the device's service does.
     let governance = keys.is_none().then(HostGovernance::default);
     let workspace_keys = keys.unwrap_or_else(|| {
-        let gates = Arc::new(tilo_workspace_keys::Gates::default());
+        let checks = Arc::new(tilo_workspace_keys::SealChecks::default());
         tilo_workspace_keys::SharedKeys::new(if lent {
-            keyless_keys(&replicas, &gates)
+            keyless_keys(&replicas, &checks)
         } else {
-            open_keys(&replicas, &key_state, vault, &signer, &gates)
+            open_keys(&replicas, &key_state, vault, &signer, &checks)
         })
     });
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
         Arc::default(),
-        tilo_identity_host::custody::HostIdentity::kept(config.cert.clone(), Arc::clone(&signer)),
-        Arc::new(crate::custody::SessionCustody),
+        tilo_identity::identity_store::DeviceIdentity::kept(
+            config.cert.clone(),
+            Arc::clone(&signer),
+        ),
+        Arc::new(crate::membership_check::SessionMembership),
     ));
     engine.keys().set(Some(workspace_keys.clone()));
     engine.held_writes().lock().extend(key_state.held());
@@ -310,19 +319,23 @@ fn session_task(
         reports: Arc::clone(&reports),
         workspaces: BTreeSet::new(),
         emptied: false,
-        planes_due: BTreeSet::new(),
+        live_sessions_due: BTreeSet::new(),
         governance_batch: None,
         kept: BTreeMap::new(),
         placing: BTreeMap::new(),
-        planes: plane::Planes::default(),
+        live_sessions: live_session::LiveSessions::default(),
         record,
         workspace_keys,
         governance,
         outbound_due: false,
+        held_since: BTreeMap::new(),
+        kept_why: BTreeMap::new(),
+        owed_since: BTreeMap::new(),
         answered: Vec::new(),
         arrived: Vec::new(),
         let_go: BTreeSet::new(),
         held_inbound: BTreeMap::new(),
+        behind: BTreeMap::new(),
         key_state,
         route_keys: BTreeMap::new(),
         new_keys: Vec::new(),
@@ -367,12 +380,12 @@ struct Commands(mpsc::UnboundedSender<Command>);
 
 impl std::fmt::Debug for Commands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("relay session")
+        f.write_str("server session")
     }
 }
 
 /// The session carries the client's commands: what a member says to its workspaces goes
-/// through the relay session it keeps with its host.
+/// through the server session it keeps with its host.
 impl Outbox for Commands {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
         self.0.send(Command::Client(command)).map_err(|_| Closed)
@@ -391,13 +404,13 @@ enum Exit {
     Unproved(LinkError),
 }
 
-/// The host's answer to a write in custody, waiting to retire from it.
+/// The host's answer to a write held, waiting to retire from it.
 struct Answered {
     workspace: tilo_desktop_model::WorkspaceId,
-    /// The custody entry.
+    /// The ownership entry.
     id: [u8; 32],
     /// Durable at this order, or refused, and why.
-    outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
+    outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     /// What a refusal withdraws from the replica.
     withdrawn: Option<Event>,
 }
@@ -425,17 +438,17 @@ struct Task {
     dial: Dial,
     /// What this session reports to its links.
     reports: Arc<Reports>,
-    workspaces: BTreeSet<tilo_relay_protocol::WorkspaceId>,
+    workspaces: BTreeSet<tilo_server_protocol::WorkspaceId>,
     /// Whether the host deleted the last workspace this session held: it has
     /// nothing left to be admitted to, so it stays done instead of dialling a
     /// host that only ends the connection again.
     emptied: bool,
-    /// The joined workspaces whose live plane may have to be joined, followed
-    /// or left ([`Self::settle_planes`]): those whose governance, channel
-    /// keys or plane changed since it last looked, and every one on each
+    /// The joined workspaces whose live session may have to be joined, followed
+    /// or left ([`Self::settle_live_sessions`]): those whose governance, channel
+    /// keys or live session changed since it last looked, and every one on each
     /// channel tick. A page in many workspaces pays for the ones that
     /// changed, not for all of them on every frame it reads.
-    planes_due: BTreeSet<WorkspaceId>,
+    live_sessions_due: BTreeSet<WorkspaceId>,
     /// Governance frames received and not admitted yet, admitted together
     /// ([`Self::admit_governance`]).
     governance_batch: Option<inbound::GovernanceBatch>,
@@ -444,10 +457,10 @@ struct Task {
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<WorkspaceId, (String, String)>,
-    /// This page's own live plane per joined workspace
-    /// ([`crate::session::plane`]).
-    planes: plane::Planes,
-    record: PeerRecord,
+    /// This page's own live session per joined workspace
+    /// ([`crate::session::live_session`]).
+    live_sessions: live_session::LiveSessions,
+    record: PeerEntry,
     /// This device's side of the workspaces' encrypted channels: the engine every member runs,
     /// here as a reader that asks for access and follows the members' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
@@ -455,7 +468,7 @@ struct Task {
     /// settles [`Self::workspace_keys`] ([`start_session_lent`]).
     governance: Option<HostGovernance>,
     /// The channels' state and the writes held for their keys, in the store.
-    key_state: crate::custody::StoredKeys,
+    key_state: crate::membership_check::StoredKeys,
     /// Every route this session opened, and the keys it holds for it.
     route_keys: BTreeMap<DocumentRoute, RouteKeys>,
     /// Routes whose keys arrived since the session last acted on them.
@@ -469,19 +482,33 @@ struct Task {
     surface_wants: neighbour_wire::content::ContentWants<()>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
-    /// Writes were published, or the host answered writes in custody, since held writes were
+    /// Writes were published, or the host answered writes held, since held writes were
     /// last committed: what waits may commit ([`Self::commit_held`]).
     outbound_due: bool,
+    /// Since when each document holds writes of this device that are not committed to its
+    /// replica: how long they have waited, for whoever asks ([`Self::keeps`]).
+    held_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
+    /// What the replica last said a document's held writes wait for, where it named something.
+    kept_why: BTreeMap<DocumentRoute, crate::Waits>,
+    /// Since when each document has committed writes of this device its holder has not answered.
+    owed_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// Documents the host delivered that the replica decides together ([`Self::keep_arrived`]).
     arrived: Vec<Arrived>,
     /// Records of writes the replica let go undecided, its queue of undecided writes full: the
     /// host replays them once what they waited for landed.
     let_go: BTreeSet<DocumentRoute>,
-    /// What the host answered of the writes this connection sent, retired from custody
-    /// together: the workspace, the custody entry, the answer and what a refusal withdraws.
+    /// What the host answered of the writes this connection sent, retired from ownership
+    /// together: the workspace, the ownership entry, the answer and what a refusal withdraws.
     answered: Vec<Answered>,
     /// The records whose last write the replica did not take in, and why.
     held_inbound: BTreeMap<DocumentRoute, String>,
+    /// The documents a compaction of which this device's replica refused: it holds only part of
+    /// what the compaction covers, and could not take it with its keys either (they are not here
+    /// yet, or the compaction lacks something this device holds). Nothing written to such a
+    /// document after the compaction reads here, so each is asked of its workspace again
+    /// ([`Self::ask_behind_again`]) until a compaction of it is taken: it waits for nothing in
+    /// silence.
+    behind: BTreeMap<DocumentRoute, Behind>,
     /// The host's last position per workspace, presented when resubscribing so
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
@@ -497,11 +524,12 @@ struct Task {
     opened_routes: BTreeSet<DocumentRoute>,
     /// The workspaces whose host said they send records only when opened.
     when_opened: BTreeSet<WorkspaceId>,
-    /// Each waits for the writes that were in this device's custody when it was called, and
-    /// completes with the host's refusal of any of them.
-    barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
-    /// What this connection sent its host of each workspace's custody.
-    sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::custody::Sending>,
+    /// Each waits for the writes that were in this device's ownership when it was called, and
+    /// completes with the host's refusal of any of them: the writes of every workspace, or of
+    /// the workspaces it was asked for alone ([`outbound::Scope`]).
+    barriers: Vec<outbound::Owed>,
+    /// What this connection sent its host of each workspace's ownership.
+    sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::membership_check::Sending>,
     /// The writes the host was not ready for: each is sent again once the host says the
     /// workspace is ready, and refused if the host turns it away again.
     not_ready: BTreeSet<[u8; 32]>,
@@ -513,7 +541,7 @@ struct Task {
     /// Compactions the host asked for and this session has not answered yet.
     compactions: Vec<(WorkspaceId, [u8; 16], DocumentRoute)>,
     /// Compactions committed for the host's requests, each with the entries delivered before
-    /// it, answered once custody sends them ([`Self::answer_compactions`]).
+    /// it, answered once ownership sends them ([`Self::answer_compactions`]).
     answering: Vec<Answering>,
     /// Records whose writes the replica asked to hear again, replayed by the host.
     replays: BTreeSet<DocumentRoute>,
@@ -521,8 +549,8 @@ struct Task {
     engine: Arc<crate::engine::Engine>,
     /// Barriers called while frames were held, with the routes those frames
     /// are held on: each waits for them to enter the outbox, then for the
-    /// outbox as it stands then.
-    held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion)>,
+    /// outbox as it stands then, in the workspaces it was asked for.
+    held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion, outbound::Scope)>,
     /// When the workspaces not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
     /// Retained entry ids of every document delivered or published per
@@ -572,6 +600,18 @@ struct Task {
     admitted_here: BTreeSet<WorkspaceId>,
 }
 
+/// A document this device is behind in: its replica refused a compaction of it.
+struct Behind {
+    /// Why, as the replica said it.
+    why: String,
+    /// How often its workspace was asked for the document again.
+    asked: u32,
+    /// When it is asked next (ms since the epoch).
+    next_ms: u64,
+    /// Whether a compaction of it was refused since it was last asked for.
+    refused_since: bool,
+}
+
 /// One action frame held until the host admits this session to its workspace.
 struct HeldAction {
     workspace_id: WorkspaceId,
@@ -608,7 +648,7 @@ impl Task {
     /// Answer the host beginning a workspace's replay (its bootstrap) or
     /// admitting this session to it (its `Ready`) with what the page says
     /// there from then on. `false` when the session took no more.
-    fn begin(&mut self, client: &RelayClient, envelope: &Envelope) -> bool {
+    fn begin(&mut self, client: &ServerClient, envelope: &Envelope) -> bool {
         match envelope {
             Envelope::WorkspaceBootstrap { workspace_id, .. } => {
                 self.introduce(client, *workspace_id)
@@ -633,7 +673,7 @@ impl Task {
     /// request only once they hold its certificate, so a page told only at
     /// `Ready` got its keys a whole replay late. Returns `false` when the
     /// session could not take it.
-    fn introduce(&mut self, client: &RelayClient, workspace_id: WorkspaceId) -> bool {
+    fn introduce(&mut self, client: &ServerClient, workspace_id: WorkspaceId) -> bool {
         if !self.begun.insert(workspace_id) {
             return true;
         }
@@ -645,7 +685,7 @@ impl Task {
     /// certificate (unless the replay's start told it already) and that it
     /// answers compaction requests. Returns `false` when the session could
     /// not take them.
-    fn announce(&mut self, client: &RelayClient, workspace_id: WorkspaceId) -> bool {
+    fn announce(&mut self, client: &ServerClient, workspace_id: WorkspaceId) -> bool {
         if !self.introduce(client, workspace_id) {
             return false;
         }
@@ -661,7 +701,7 @@ impl Task {
     fn revoke(
         &mut self,
         entry: tilo_user_identity::RevocationEntry,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         if entry.user_public_key != self.config.cert.user_public_key {
             return true;
@@ -715,7 +755,7 @@ impl Task {
 
     /// Compact `route`'s sealed history as this device's replica holds it for request `request`:
     /// the compaction is the record's checkpoint, which every replica takes in place of exactly
-    /// the writes it folds. It is answered once custody sends it ([`Self::answer_compactions`]).
+    /// the writes it folds. It is answered once ownership sends it ([`Self::answer_compactions`]).
     async fn compact(
         &mut self,
         (workspace_id, request, route): (WorkspaceId, [u8; 16], DocumentRoute),
@@ -754,10 +794,10 @@ impl Task {
         }
     }
 
-    /// Send the signed statement of each compaction custody sent, of what it covers: every entry
+    /// Send the signed statement of each compaction ownership sent, of what it covers: every entry
     /// delivered for its record before it was asked. Returns `false` when the session could not
     /// take an envelope.
-    async fn answer_compactions(&mut self, client: &RelayClient) -> bool {
+    async fn answer_compactions(&mut self, client: &ServerClient) -> bool {
         for (workspace_id, request, route, covered) in std::mem::take(&mut self.answering) {
             let drafted = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
                 .and_then(|workspace| {
@@ -771,10 +811,10 @@ impl Task {
                 self.answering.push((workspace_id, request, route, covered));
                 continue;
             };
-            let snapshot = vec![tilo_relay_protocol::compaction::entry_id(&entry)];
+            let snapshot = vec![tilo_server_protocol::compaction::entry_id(&entry)];
             // What this device publishes, its own replica holds.
             self.note_delivered(&route, &snapshot);
-            let statement = tilo_relay_protocol::compaction::CoverageStatement {
+            let statement = tilo_server_protocol::compaction::CoverageStatement {
                 workspace_id,
                 channel: neighbour_wire::app_document_channel(&route.app_id, &route.document),
                 request,
@@ -787,7 +827,7 @@ impl Task {
             };
             let Ok(signature) = self
                 .signer
-                .sign(tilo_relay_protocol::compaction::signing_bytes(&statement))
+                .sign(tilo_server_protocol::compaction::signing_bytes(&statement))
                 .await
             else {
                 continue;
@@ -804,7 +844,7 @@ impl Task {
         true
     }
 
-    /// The heads of the record `entry`, custody's compaction of `route`, holds.
+    /// The heads of the record `entry`, ownership's compaction of `route`, holds.
     fn compaction_heads(&self, route: &DocumentRoute, entry: &[u8]) -> Option<Vec<[u8; 32]>> {
         let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(entry).ok()?;
         let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -816,7 +856,7 @@ impl Task {
             .open_content(envelope.artifact, &envelope.encryption?, &ciphertext)
             .ok()?;
         let snapshot = collab_types::DocumentMutation::decode(&plaintext).ok()?;
-        tilo_relay_protocol::compaction::snapshot_heads(snapshot.data())
+        tilo_server_protocol::compaction::snapshot_heads(snapshot.data())
     }
 
     fn fail(&self, code: &'static str, message: impl Into<String>) {
@@ -854,7 +894,7 @@ impl Task {
 
     /// Subscribe every joined workspace again, from now on waiting for its
     /// `Ready`. Returns `false` when the session could not take them.
-    fn resubscribe(&mut self, client: &RelayClient) -> bool {
+    fn resubscribe(&mut self, client: &ServerClient) -> bool {
         self.begun.clear();
         let mut sent_ok = true;
         for workspace_id in &self.workspaces {
@@ -1124,11 +1164,11 @@ impl Task {
         });
     }
 
-    /// Hand the host what this session owes it before waiting for the next event: its planes,
-    /// the app surfaces it asks for, the compactions it was asked for and its custody. Returns
+    /// Hand the host what this session owes it before waiting for the next event: its live sessions,
+    /// the app surfaces it asks for, the compactions it was asked for and its ownership. Returns
     /// `false` when the session could not take an envelope.
-    async fn settle_owed(&mut self, client: &RelayClient) -> bool {
-        self.settle_planes();
+    async fn settle_owed(&mut self, client: &ServerClient) -> bool {
+        self.settle_live_sessions();
         // App surfaces this page holds documents for go out with what the
         // session owes, and a surface that arrived decides what waited
         // for it before anything else is read.
@@ -1155,23 +1195,23 @@ impl Task {
                 tracing::warn!(%error, "sealed histories stay uncompacted");
             }
         }
-        self.renew_custody().await;
-        // What this device's custody still owes the host goes as its queue takes it:
+        self.renew_ownership().await;
+        // What this device's ownership still owes the host goes as its queue takes it:
         // every answer from the host, every command, every tick is a
         // chance to hand it more.
         for workspace_id in self.workspaces.clone() {
-            if !self.send_custody(workspace_id, client) {
+            if !self.send_ownership(workspace_id, client) {
                 return true;
             }
         }
-        // A compaction is answered once custody sent it.
+        // A compaction is answered once ownership sent it.
         self.answer_compactions(client).await
     }
 
     /// Ask the host for every joined workspace whole again, as a refresh
     /// does: no position, no admission failure kept. `false` when the
     /// session took no more.
-    fn refresh(&mut self, client: &RelayClient) -> bool {
+    fn refresh(&mut self, client: &ServerClient) -> bool {
         self.clear_admission_failure();
         self.positions.clear();
         self.received.clear();
@@ -1180,7 +1220,7 @@ impl Task {
 
     async fn serve(
         &mut self,
-        client: RelayClient,
+        client: ServerClient,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
         // The last session's fetch proxy token died with its connection; this
@@ -1190,11 +1230,12 @@ impl Task {
             return Exit::Lost("host session saturated during resume".into());
         }
         self.connected();
-        // Each joined workspace's plane is joined again on this connection.
-        self.planes_due.extend(self.workspaces.iter().copied());
+        // Each joined workspace's live session is joined again on this connection.
+        self.live_sessions_due
+            .extend(self.workspaces.iter().copied());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
-        let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
+        let mut heartbeat = n0_future::time::interval(tilo_server_protocol::voice::HEARTBEAT);
         // A page that stood still beats once when it runs again, not once
         // for every beat it missed.
         heartbeat.set_missed_tick_behavior(n0_future::time::MissedTickBehavior::Delay);
@@ -1266,11 +1307,12 @@ impl Task {
                         return Exit::Lost("host session saturated".into());
                     }
                     self.check_admission();
+                    self.ask_behind_again(tilo_clock::unix_now_ms());
                 }
                 _ = channel_tick.tick() => {
                     self.pump_channels(false);
-                    // A plane that ended or is due to be asked again.
-                    self.planes_due.extend(self.workspaces.iter().copied());
+                    // A live session that ended or is due to be asked again.
+                    self.live_sessions_due.extend(self.workspaces.iter().copied());
                 }
                 _ = heartbeat.tick() => {
                     for beat in self.voice.heartbeats() {
@@ -1287,7 +1329,7 @@ impl Task {
     /// session ends, if it does.
     async fn take_command(
         &mut self,
-        client: &RelayClient,
+        client: &ServerClient,
         command: Option<Command>,
     ) -> Option<Exit> {
         match command {
@@ -1310,7 +1352,7 @@ impl Task {
 
     /// Take in `envelope`, one the host sent: a voice frame, content asked
     /// for, or what [`Self::inbound`] decides.
-    fn received(&mut self, client: &RelayClient, envelope: Envelope) -> Result<(), Exit> {
+    fn received(&mut self, client: &ServerClient, envelope: Envelope) -> Result<(), Exit> {
         // Governance gathered from the frames before is the workspace's before
         // anything after it is decided.
         if !matches!(envelope, Envelope::Delta { .. }) {
@@ -1324,7 +1366,7 @@ impl Task {
         // A host that keeps nothing of this person forgot them: the session
         // stops as not admitted, and the page joins again through its entry.
         if let Envelope::NotAuthorised {
-            refusal: tilo_relay_protocol::refusal::Refusal::NotAdmitted,
+            refusal: tilo_server_protocol::refusal::Refusal::NotAdmitted,
             ..
         } = &envelope
         {
@@ -1371,13 +1413,13 @@ impl Task {
         workspace_id: WorkspaceId,
         to: [u8; 32],
         frame: Vec<u8>,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             self.reports.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
-                refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
+                refusal: tilo_server_protocol::refusal::Refusal::NotReady,
             }));
             return;
         };
@@ -1387,7 +1429,7 @@ impl Task {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
-                    refusal: tilo_relay_protocol::refusal::Refusal::Invalid(
+                    refusal: tilo_server_protocol::refusal::Refusal::Invalid(
                         "outside a workspace, only the host itself is asked".into(),
                     ),
                 }));
@@ -1402,7 +1444,7 @@ impl Task {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id: dropped.workspace_id,
                     to: dropped.to,
-                    refusal: tilo_relay_protocol::refusal::Refusal::Other(
+                    refusal: tilo_server_protocol::refusal::Refusal::Other(
                         "too many actions waited for the workspace's admission".into(),
                     ),
                 }));
@@ -1427,14 +1469,14 @@ impl Task {
 
     fn send_action(
         &self,
-        client: &RelayClient,
+        client: &ServerClient,
         workspace_id: WorkspaceId,
         to: [u8; 32],
         frame: Vec<u8>,
     ) {
         let _ = client.send(Envelope::RemoteAction {
             workspace_id,
-            version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            version: tilo_server_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
             to_device_public_key: to,
             from_device_public_key: self.config.cert.device_public_key,
             from_user_public_key: self.config.cert.user_public_key,
@@ -1445,7 +1487,7 @@ impl Task {
     /// Send the action frames that waited for `workspace_id`'s admission, in
     /// the order they were made. What this session owes another workspace
     /// waits for that one.
-    fn flush_held_actions(&mut self, workspace_id: WorkspaceId, client: &RelayClient) {
+    fn flush_held_actions(&mut self, workspace_id: WorkspaceId, client: &ServerClient) {
         let (due, waiting): (Vec<HeldAction>, Vec<HeldAction>) =
             std::mem::take(&mut self.held_actions)
                 .into_iter()
@@ -1463,7 +1505,7 @@ impl Task {
         &self,
         workspace_id: WorkspaceId,
         request: Vec<u8>,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             return;
@@ -1476,13 +1518,13 @@ impl Task {
     }
 
     /// Say `frames`, one burst, as one group of `workspace_id`'s presence
-    /// track, sealed under the workspace scope's keys by the plane itself.
+    /// track, sealed under the workspace scope's keys by the live session itself.
     fn publish_presence(
         &mut self,
         workspace_id: WorkspaceId,
         frames: Vec<collab_types::presence::Presence>,
     ) {
-        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+        let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
             return;
         };
         let numbered: Vec<(u32, collab_types::presence::Presence)> = frames
@@ -1492,7 +1534,7 @@ impl Task {
                 (joined.presence_seq, frame)
             })
             .collect();
-        let _ = tilo_live::presence::say(&joined.plane, &numbered);
+        let _ = tilo_live::presence::say(&joined.live_session, &numbered);
     }
 
     /// Apply one command while disconnected; what it publishes commits at once.
@@ -1507,7 +1549,7 @@ impl Task {
         clippy::too_many_lines,
         reason = "one arm per command, each handing off to its own method"
     )]
-    async fn apply(&mut self, command: Command, client: Option<&RelayClient>) -> bool {
+    async fn apply(&mut self, command: Command, client: Option<&ServerClient>) -> bool {
         match command {
             Command::Client(Cmd::Join(workspace_id)) => self.join(workspace_id, client),
             Command::Client(Cmd::JoinPlaced(workspace, name)) => {
@@ -1524,21 +1566,21 @@ impl Task {
                 self.open_resource(workspace_id, route, client)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Command::PlaneJoined(workspace_id, joined) => {
-                self.plane_joined(workspace_id, joined);
+            Command::LiveSessionJoined(workspace_id, joined) => {
+                self.live_session_joined(workspace_id, joined);
                 true
             }
             #[cfg(target_arch = "wasm32")]
-            Command::PlaneJoined(workspace_id) => {
-                self.plane_joined(workspace_id, plane::arrived(workspace_id));
+            Command::LiveSessionJoined(workspace_id) => {
+                self.live_session_joined(workspace_id, live_session::arrived(workspace_id));
                 true
             }
-            Command::PlaneHeard(workspace_id) => {
-                self.plane_heard(workspace_id);
+            Command::LiveSessionHeard(workspace_id) => {
+                self.live_session_heard(workspace_id);
                 true
             }
-            Command::PlaneEnded(workspace_id) => {
-                self.plane_ended(workspace_id);
+            Command::LiveSessionEnded(workspace_id) => {
+                self.live_session_ended(workspace_id);
                 true
             }
             Command::PresenceReaders => {
@@ -1587,13 +1629,15 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {
-                let held: BTreeSet<DocumentRoute> =
-                    self.engine.held_writes().lock().keys().cloned().collect();
-                if held.is_empty() {
-                    self.await_custody(done, None);
-                } else {
-                    self.held_barriers.push((held, done));
-                }
+                self.barrier(done, None);
+                true
+            }
+            Command::Client(Cmd::BarrierOf(workspaces, done)) => {
+                self.barrier(done, Some(workspaces.into_iter().collect()));
+                true
+            }
+            Command::Client(Cmd::KeptOf(workspaces, said)) => {
+                let _ = said.send(self.keeps(&workspaces.into_iter().collect()));
                 true
             }
             Command::Client(Cmd::Presence(workspace_id, frames)) => {
@@ -1659,7 +1703,7 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Client(Cmd::Reconnect | Cmd::Retry | Cmd::Refresh | Cmd::Stop) => true,
-            // What only a desktop's own plane carries: nothing a relay session says.
+            // What only a desktop's own live session carries: nothing a server session says.
             Command::Client(_) => true,
         }
     }
@@ -1675,7 +1719,7 @@ impl Task {
         workspace_id: WorkspaceId,
         msg: &neighbour_wire::NeighbourMsg,
         target: iroh_base::EndpointId,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         if !matches!(
             msg,
@@ -1697,14 +1741,14 @@ impl Task {
     }
 
     /// Subscribe to `workspace_id`, now or once connected.
-    fn join(&mut self, workspace_id: WorkspaceId, client: Option<&RelayClient>) -> bool {
+    fn join(&mut self, workspace_id: WorkspaceId, client: Option<&ServerClient>) -> bool {
         // Taking part again is taking part: a page's client says it on every pass over the
         // workspaces it shows, and one still being placed is subscribed once the host governs it.
         if self.workspaces.contains(&workspace_id) || self.placing.contains_key(&workspace_id) {
             return true;
         }
         self.workspaces.insert(workspace_id);
-        self.planes_due.insert(workspace_id);
+        self.live_sessions_due.insert(workspace_id);
         self.reports.change(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
@@ -1718,7 +1762,7 @@ impl Task {
         &mut self,
         workspace: String,
         name: String,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let Some(workspace_id) = WorkspaceId::parse(&workspace) else {
             return true;
@@ -1741,7 +1785,7 @@ impl Task {
 
     /// Ask the host to govern the workspace joined as `workspace_id`; it is
     /// subscribed once the host answers, whatever it answers.
-    fn place(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
+    fn place(&mut self, workspace_id: WorkspaceId, client: &ServerClient) -> bool {
         let Some((workspace, name)) = self.placing.get(&workspace_id).cloned() else {
             return true;
         };
@@ -1756,7 +1800,7 @@ impl Task {
             }
         });
         self.administer(
-            &tilo_relay_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
+            &tilo_server_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
             placed,
             Some(client),
         );
@@ -1764,15 +1808,15 @@ impl Task {
     }
 
     /// Restore this session's workspaces, pending commits and call participations.
-    fn resume_session(&mut self, client: &RelayClient) -> bool {
+    fn resume_session(&mut self, client: &ServerClient) -> bool {
         // A page only follows its channel groups: said first, so no replay
         // this session asks for carries every member's request to be
         // admitted to one, which only a device that admits others reads.
         let mut sent_ok = client.send(Envelope::KeyFollower).is_ok();
-        // A plane's grant is its session's token: the planes of the last
+        // A live session's grant is its session's token: the live sessions of the last
         // session ended with it, and every workspace's is joined again with
-        // this one ([`Self::settle_planes`]).
-        self.planes.end_session();
+        // this one ([`Self::settle_live_sessions`]).
+        self.live_sessions.end_session();
         // Every subscription starts whole: the host replays the workspace's
         // retained state, and duplicate detection begins with it.
         self.received.clear();
@@ -1789,10 +1833,10 @@ impl Task {
         sent_ok &= self.reopen_records(client);
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
-        // answers make room ([`Self::send_custody`]).
+        // answers make room ([`Self::send_ownership`]).
         self.sending.clear();
         for workspace_id in self.workspaces.clone() {
-            if !self.send_custody(workspace_id, client) {
+            if !self.send_ownership(workspace_id, client) {
                 break;
             }
         }
@@ -1807,9 +1851,9 @@ impl Task {
     /// session asking several may come back in any order.
     fn administer(
         &mut self,
-        request: &tilo_relay_protocol::workspaces::WorkspacesRequest,
+        request: &tilo_server_protocol::workspaces::WorkspacesRequest,
         done: WorkspacesCompletion,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             let _ = done.send(Err(NOT_CONNECTED.into()));
@@ -1882,14 +1926,14 @@ impl Task {
                 frame,
             } => match self.seal_live(workspace_id, &frame) {
                 Sealing::Sealed(sealed) => {
-                    // Preview frames ride the workspace's plane, the way the
+                    // Preview frames ride the workspace's live session, the way the
                     // document's own frames ride the session: only a member
                     // of its roster opens the scope's layer, and the frame
                     // inside it is sealed with the record's keys.
-                    if let Some(joined) = self.planes.joined_mut(workspace_id) {
+                    if let Some(joined) = self.live_sessions.joined_mut(workspace_id) {
                         let sequence = joined.activity_seq.wrapping_add(1);
                         joined.activity_seq = sequence;
-                        let _ = joined.plane.publish(
+                        let _ = joined.live_session.publish(
                             tilo_live::live::Track::Activity,
                             sequence,
                             &sealed,
@@ -1932,8 +1976,8 @@ impl Task {
                 from,
                 frame,
             } => match self.open_live(workspace_id, &frame) {
-                // A run's narration is the host's own, signed outside the plane.
-                Opening::Opened(opened) if host_voice::plane_narrates_a_run(&opened) => {}
+                // A run's narration is the host's own, signed outside the live session.
+                Opening::Opened(opened) if host_voice::live_session_narrates_a_run(&opened) => {}
                 Opening::Opened(opened) => self.reports.emit(&Event::Live {
                     ws: workspace_id,
                     from,
@@ -1959,7 +2003,7 @@ impl Task {
         let Ok(workspace_id) = route.workspace_id() else {
             return;
         };
-        let record = tilo_relay_protocol::live::LiveResource {
+        let record = tilo_server_protocol::live::LiveResource {
             app: route.app_id.clone(),
             record: route.document.clone(),
         };
@@ -1972,14 +2016,14 @@ impl Task {
     /// Seal canonical live `frame` of `workspace_id` with the content cipher
     /// of the record it names. A frame naming no record is never sent.
     fn seal_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Sealing {
-        let Some(frame) = tilo_relay_protocol::live::LiveFrame::decode(frame).ok() else {
+        let Some(frame) = tilo_server_protocol::live::LiveFrame::decode(frame).ok() else {
             return Sealing::Dropped;
         };
         let Some((_, _, record)) = frame.seal_tags() else {
             return Sealing::Dropped;
         };
         let keys = self.keyed_routes().find_map(|route| {
-            let names = tilo_relay_protocol::live::LiveResource {
+            let names = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.document.clone(),
             };
@@ -1990,7 +2034,7 @@ impl Task {
         let Some(keys) = keys else {
             return Sealing::NoKeys(record.clone());
         };
-        tilo_relay_protocol::live::SealedLiveFrame::seal(
+        tilo_server_protocol::live::SealedLiveFrame::seal(
             &frame,
             |artifact, retention, cleartext| {
                 keys.seal_content(artifact, retention, cleartext)
@@ -2003,11 +2047,11 @@ impl Task {
     /// Open sealed live `frame` of `workspace_id` with the content cipher of
     /// the record it names into the canonical frame.
     fn open_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Opening {
-        let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
+        let Ok(sealed) = tilo_server_protocol::live::SealedLiveFrame::decode(frame) else {
             return Opening::Dropped;
         };
         let bound = self.keyed_routes().find_map(|route| {
-            let record = tilo_relay_protocol::live::LiveResource {
+            let record = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.document.clone(),
             };
@@ -2037,7 +2081,7 @@ impl Task {
 
     /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
     /// member alone from what this device keeps of it; a workspace it keeps nothing of is left.
-    fn content_wanted(&self, envelope: &Envelope, client: &RelayClient) -> bool {
+    fn content_wanted(&self, envelope: &Envelope, client: &ServerClient) -> bool {
         let Envelope::DocumentContentWant {
             workspace_id,
             from_device_public_key: from,
@@ -2148,11 +2192,11 @@ impl Task {
         }
     }
 
-    /// Act on channel changes: await what the device's custody signs, send
+    /// Act on channel changes: await what the device's ownership signs, send
     /// the governance the channels said, install new keys, open what waited
     /// for them, and seal and commit what was held. Returns `false` when the
     /// session could not take an envelope.
-    async fn settle_channels(&mut self, client: Option<&RelayClient>) -> bool {
+    async fn settle_channels(&mut self, client: Option<&ServerClient>) -> bool {
         let mut delivered = true;
         self.keep_arrived();
         self.retire_answered();
@@ -2166,11 +2210,15 @@ impl Task {
         loop {
             for route in std::mem::take(&mut self.new_keys) {
                 if let Ok(workspace_id) = route.workspace_id() {
-                    self.planes_due.insert(workspace_id);
+                    self.live_sessions_due.insert(workspace_id);
                 }
                 self.release_live(&route);
                 // What the replica holds sealed for these keys opens now.
                 self.landed(&route, None);
+                // A compaction it could not take without them is asked for again at once.
+                if self.behind.contains_key(&route) {
+                    self.replays.insert(route.clone());
+                }
                 self.outbound_due |= self.engine.held_writes().lock().contains_key(&route);
             }
             self.commit_held().await;
@@ -2186,7 +2234,7 @@ impl Task {
         delivered
     }
 
-    /// The key state's diagnostics: each workspace, route, plane and held write.
+    /// The key state's diagnostics: each workspace, route, live session and held write.
     fn describe_keys(&self) -> String {
         let mut channels = self.replicas.describe();
         for (route, keys) in &self.route_keys {
@@ -2210,10 +2258,10 @@ impl Task {
                 route.app_id, route.document
             );
         }
-        let planes = self.planes.describe();
-        if !planes.is_empty() {
+        let live_sessions = self.live_sessions.describe();
+        if !live_sessions.is_empty() {
             channels.push('\n');
-            channels.push_str(&planes);
+            channels.push_str(&live_sessions);
         }
         if self.refused.0 > 0 {
             let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
@@ -2223,13 +2271,13 @@ impl Task {
 }
 
 /// This device's channels as a reader: its state in `state`, sealed under
-/// `vault`, signed by its custody, and their readers its workspaces'.
+/// `vault`, signed by its ownership, and their readers its workspaces'.
 fn open_keys(
     replicas: &crate::replica::Replicas,
-    state: &crate::custody::StoredKeys,
+    state: &crate::membership_check::StoredKeys,
     vault: [u8; 32],
     signer: &Arc<dyn DeviceSigner>,
-    gates: &Arc<tilo_workspace_keys::Gates>,
+    checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
     let directory = || {
         Box::new(crate::workspace_keys::OwnerDirectory::reader(
@@ -2244,10 +2292,10 @@ fn open_keys(
             role: tilo_workspace_keys::KeyRole::Follower,
         },
         directory(),
-        Arc::clone(gates) as Arc<dyn tilo_workspace_keys::GateRegistry>,
+        Arc::clone(checks) as Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     )
     .unwrap_or_else(|_| {
-        tilo_workspace_keys::WorkspaceKeys::without_store(directory(), Arc::clone(gates) as _)
+        tilo_workspace_keys::WorkspaceKeys::without_store(directory(), Arc::clone(checks) as _)
     })
 }
 
@@ -2257,13 +2305,13 @@ fn open_keys(
 /// key in each workspace's group is its engine's.
 fn keyless_keys(
     replicas: &crate::replica::Replicas,
-    gates: &Arc<tilo_workspace_keys::Gates>,
+    checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
     tilo_workspace_keys::WorkspaceKeys::without_store(
         Box::new(crate::workspace_keys::OwnerDirectory::reader(
             replicas.owner(),
         )),
-        Arc::clone(gates) as Arc<dyn tilo_workspace_keys::GateRegistry>,
+        Arc::clone(checks) as Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     )
 }
 
@@ -2430,43 +2478,43 @@ mod tests {
         assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
     }
 
-    /// A page that lists nobody says why: each workspace's plane names what it
-    /// waits for, and only asks that reached no plane count towards the note
+    /// A page that lists nobody says why: each workspace's live session names what it
+    /// waits for, and only asks that reached no live session count towards the note
     /// in the members' place.
     #[test]
-    fn a_plane_that_was_not_reached_is_named_in_the_channel_diagnostics() {
-        let mut planes = plane::Planes::default();
-        planes.later(WorkspaceId::from_u128(7), 12_000);
+    fn a_live_session_that_was_not_reached_is_named_in_the_channel_diagnostics() {
+        let mut live_sessions = live_session::LiveSessions::default();
+        live_sessions.later(WorkspaceId::from_u128(7), 12_000);
         assert_eq!(
-            planes.describe(),
-            "plane 00000000-0000-0000-0000-000000000007: not joined. No live plane was reached; \
+            live_sessions.describe(),
+            "live session 00000000-0000-0000-0000-000000000007: not joined. No live session was reached; \
              asking again at 12000"
         );
-        assert_eq!(planes.missed(WorkspaceId::from_u128(7)), 1);
+        assert_eq!(live_sessions.missed(WorkspaceId::from_u128(7)), 1);
         assert_eq!(
-            planes.missed(WorkspaceId::from_u128(7)),
-            plane::MISSES_BEFORE_NOTE
+            live_sessions.missed(WorkspaceId::from_u128(7)),
+            live_session::MISSES_BEFORE_NOTE
         );
-        planes.refused(WorkspaceId::from_u128(7), 60_000);
+        live_sessions.refused(WorkspaceId::from_u128(7), 60_000);
         assert_eq!(
-            planes.describe(),
-            "plane 00000000-0000-0000-0000-000000000007: not joined. The workspace does not \
-             admit this page's plane; asking again at 60000"
+            live_sessions.describe(),
+            "live session 00000000-0000-0000-0000-000000000007: not joined. The workspace does not \
+             admit this page's live_session; asking again at 60000"
         );
         assert_eq!(
-            planes.missed(WorkspaceId::from_u128(7)),
+            live_sessions.missed(WorkspaceId::from_u128(7)),
             1,
             "an answer starts the count again"
         );
-        // A plane never asked for at all says what the page still lacks.
-        let mut unasked = plane::Planes::default();
+        // A live session never asked for at all says what the page still lacks.
+        let mut unasked = live_session::LiveSessions::default();
         unasked.note_unasked(
             WorkspaceId::from_u128(8),
             "This page holds no channel keys for its workspace yet.",
         );
         assert_eq!(
             unasked.describe(),
-            "plane 00000000-0000-0000-0000-000000000008: not asked. This page holds no channel \
+            "live session 00000000-0000-0000-0000-000000000008: not asked. This page holds no channel \
              keys for its workspace yet."
         );
         // Asked once, the lack is no longer what the page says.
@@ -2475,6 +2523,8 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod behind_tests;
 #[cfg(test)]
 mod iroh_connect_tests;
 #[cfg(test)]

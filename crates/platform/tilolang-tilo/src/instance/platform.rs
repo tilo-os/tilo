@@ -156,7 +156,7 @@ pub trait Platform {
     fn waker(&self) -> Waker;
 
     /// Publish what `host` holds until the returned hold is dropped; `wake` is called when
-    /// records read off the frame are ready to be taken in.
+    /// documents read off the frame are ready to be taken in.
     fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
         let _ = (host, wake);
         None

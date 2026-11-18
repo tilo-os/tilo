@@ -92,7 +92,7 @@ impl Namespace {
     /// The structural index of every node, read from the document once per node. Opening a
     /// namespace and every received peer delta rebuild through here, so this is the
     /// per-node cost of both, and `Self::node_lookup_count` is the work the performance
-    /// gate bounds.
+    /// check bounds.
     pub(super) fn read_nodes_once(&self) -> NodeWalk {
         let parse_document_id = |value: String| Uuid::parse_str(&value).ok().map(FileDocumentId);
         let mut rows = HashMap::new();

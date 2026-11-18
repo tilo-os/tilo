@@ -1,4 +1,4 @@
-//! Bounded output lane on the admitted primary route, independent of CRDT and call commands.
+//! Bounded output queue on the admitted primary route, independent of CRDT and call commands.
 use media::audio_output::{Factory, Observation, Output};
 use runtime_collab::audio_output::{Command, MAX_SAMPLES, Snapshot};
 use std::sync::{
@@ -67,7 +67,7 @@ pub(super) fn install(channel: runtime_collab::ChannelHandle) {
     media::audio_output::install(Arc::new(HostFactory(serve(channel))));
 }
 
-/// Start the lane's worker on the current `LocalSet`.
+/// Start the queue's worker on the current `LocalSet`.
 fn serve(channel: runtime_collab::ChannelHandle) -> Arc<Connection> {
     let (normal, mut receive) = async_mpsc::channel::<Job>(16);
     let (stops, mut stop_receive) = async_mpsc::channel::<Job>(8);
@@ -112,7 +112,7 @@ fn serve(channel: runtime_collab::ChannelHandle) -> Arc<Connection> {
                 _ = progress.tick(), if generation.is_some() && progress_reply.is_none() => {
                     if let Some(current) = generation {
                         // A slow observation must not consume the PCM caller's reply budget.
-                        // Poll one bounded request beside the command lanes, never ahead of them.
+                        // Poll one bounded request beside the command queues, never ahead of them.
                         let channel = channel.clone();
                         progress_superseded = false;
                         progress_reply = Some(Box::pin(async move {
@@ -230,7 +230,7 @@ impl Connection {
         let sender = if stopping { &self.stops } else { &self.normal };
         sender
             .try_send(Job { command, reply })
-            .map_err(|_| "Governed audio output lane is full or closed".to_string())?;
+            .map_err(|_| "Governed audio output queue is full or closed".to_string())?;
         Ok(receive)
     }
     fn call(&self, command: Command) -> Result<Snapshot, String> {
@@ -357,7 +357,7 @@ impl Drop for HostOutput {
 
 #[cfg(test)]
 mod tests {
-    //! SDK wire scheduling fixtures, not proofs of native launcher custody or device output.
+    //! SDK wire scheduling fixtures, not proofs of native launcher ownership or device output.
     use super::*;
     use std::{
         cell::{Cell, RefCell},
@@ -510,8 +510,8 @@ mod tests {
         }
     }
 
-    /// The reply to `command` on the lane, awaited on the paused clock the
-    /// lane's deadlines and the fixtures' delays run on.
+    /// The reply to `command` on the queue, awaited on the paused clock the
+    /// queue's deadlines and the fixtures' delays run on.
     async fn reply(connection: &Connection, command: Command) -> Result<Snapshot, String> {
         let reply = connection.enqueue(command)?;
         loop {
@@ -520,12 +520,12 @@ mod tests {
                 Err(mpsc::TryRecvError::Empty) => {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
-                Err(mpsc::TryRecvError::Disconnected) => panic!("the lane dropped its reply"),
+                Err(mpsc::TryRecvError::Disconnected) => panic!("the queue dropped its reply"),
             }
         }
     }
 
-    /// The lane's own [`HostFactory::open`], awaited on the paused clock.
+    /// The queue's own [`HostFactory::open`], awaited on the paused clock.
     async fn open(connection: &Arc<Connection>) -> HostOutput {
         let snapshot = reply(connection, Command::Open {}).await.unwrap();
         HostOutput {
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn governed_output_full_pcm_lane_still_processes_flush_and_close() {
+    async fn governed_output_full_pcm_queue_still_processes_flush_and_close() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for stop in [

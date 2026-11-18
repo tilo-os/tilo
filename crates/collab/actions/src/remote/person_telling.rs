@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers a person's importance and tellings under.
+/// The provider that answers a person's importance and tellings under.
 pub const PROVIDER: &str = "tilo.telling";
 /// The resource the person's rule is actions of.
 pub const IMPORTANCE: &str = "importance";
@@ -53,7 +53,8 @@ pub const KEEP_ON_HOST: &str = "keep-on-host";
 
 /// Tell the person something ([`Tell`]), answering it as a [`Told`] with
 /// its mark. An agent of the person's asks this; it never says what kind
-/// of thing it is, nor how important.
+/// of thing it is, nor how important. What it tells is news whatever cause
+/// it names, and a button it offers is an action it may invoke itself.
 pub const TELL: &str = "tell";
 /// What was told after a place in the log ([`ListAfter`]): a [`ToldList`].
 /// The person's alone, and every ask counts as a device of theirs looking.
@@ -247,7 +248,9 @@ pub enum Kind {
 
 impl Kind {
     /// What a thing caused by `cause` is, where it asks nothing: a
-    /// reminder, a brief, or news.
+    /// reminder, a brief, or news. It is for whatever carries out an event
+    /// of a person's own to say of that event's own cause; a cause that
+    /// whoever tells names says nothing about what the thing is.
     #[must_use]
     pub fn of_cause(cause: Option<&Cause>) -> Self {
         match cause.map(|cause| cause.kind.as_str()) {
@@ -645,6 +648,12 @@ pub struct Told {
     /// Its buttons.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Offered>,
+    /// Who offered its buttons, where an agent's own telling carried them:
+    /// a device names them beside the buttons, since pressing one invokes
+    /// what that agent chose. None for the buttons Tilo makes itself, like
+    /// the answers of a question that waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offered_by: Option<Teller>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insists: Option<Insists>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -675,7 +684,9 @@ pub struct Tell {
     pub words: String,
     #[serde(default)]
     pub title: String,
-    /// What caused it. With none it is news of the teller's own.
+    /// What caused it, in the teller's words. With none it is news of the
+    /// teller's own, and with any it is news still: no cause a teller
+    /// names makes a reminder or a brief of what it tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<Cause>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -751,7 +762,7 @@ pub struct Stretch {
     pub back_at_ms: Option<u64>,
     /// What came in and was told.
     pub came_in: Vec<Told>,
-    /// What the assistant did alone, by an event's standing instruction.
+    /// What the assistant did alone, by an event's lasting instruction.
     pub did_alone: Vec<Told>,
     /// What waits for them, with its buttons.
     pub waits: Vec<Told>,

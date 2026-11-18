@@ -41,12 +41,7 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     use ui::widget::Collaborative;
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
@@ -110,7 +105,7 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     assert!(app.call_allows(crate::call::CallAction::Join));
     assert!(
         !app.call_allows(crate::call::CallAction::Speak),
-        "the live workspace role still gates publication"
+        "the live workspace role still checks publication"
     );
 }
 
@@ -120,12 +115,7 @@ fn a_call_that_cannot_start_says_why_and_never_does_nothing() {
     use ui::widget::Collaborative;
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
@@ -185,15 +175,9 @@ fn component_projection_never_seeds_or_marks_read() {
         id: MemberId::person("author"),
         name: "Author".into(),
         initials: "A".into(),
-        color_idx: 1,
     };
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let before = (doc.base_heads(), doc.pending_ops());
     let mut app = projection(&doc, identity);
@@ -207,12 +191,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     use winit::event::{ElementState, MouseButton, WindowEvent};
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let mut app = projection(&doc, identity);
     app.sync(&doc, &ROOT);
@@ -268,12 +247,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     use ui::application_view::ApplicationViewState;
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
@@ -295,12 +269,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
 fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let app = projection(&doc, identity);
     let first = app
@@ -316,7 +285,7 @@ fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
 fn canonical_idle_projection_does_not_request_perpetual_frames() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name);
     doc.commit();
     let mut app = projection(&doc, me);
     app.sync(&doc, &ROOT);
@@ -343,7 +312,7 @@ fn idle_chat_asks_no_frame_to_solve_its_layout() {
     // peer's pointer) re-solves nothing in Chat.
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name);
     doc.commit();
     let mut app = projection(&doc, me);
     let _ = app.update(&doc, &ROOT);
@@ -368,7 +337,7 @@ fn idle_chat_asks_no_frame_to_solve_its_layout() {
 
 #[test]
 fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-layout-at-rest");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-layout-at-rest");
     for _ in 0..6 {
         let _ = frame.poll_frame().unwrap();
     }
@@ -383,7 +352,7 @@ fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
 fn canonical_composer_exports_ime_content_through_app_root() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name);
     doc.commit();
     let app = projection(&doc, me);
     assert!(app.is_focusable());
@@ -418,7 +387,7 @@ fn canonical_composer_semantics_follow_the_actual_editor_focus() {
         node.semantics.as_ref().map_or(0, access)
             + node.children.iter().map(focused_count).sum::<usize>()
     }
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-focused-composer");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-focused-composer");
 
     let inspection = frame.inspection();
     let composer = inspect(&inspection.root, "chat.composer")
@@ -511,7 +480,7 @@ fn component_as(
     workspace: &str,
 ) -> (ui::application::AppComponent, ui::resource::ResourceStore) {
     use std::rc::Rc;
-    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -530,9 +499,9 @@ fn component_as(
     } else {
         LaunchTarget::PrimaryNew
     };
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records: records.clone(),
             views,
             device_id: "device".into(),
@@ -912,7 +881,7 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
 
 /// The browser demo: a visitor and an agent mount of one workspace. The agent
 /// finds the visitor's message among the chat's messages, reads it, and
-/// replies and records its work in one call to the record's `record-work`;
+/// replies and records its work in one call to the resource's `record-work`;
 /// its reply is an agent's, by name.
 #[test]
 #[allow(
@@ -939,7 +908,8 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"channel": "c_chat", "text": "Where does Odysseus wake up?"}),
     );
 
-    // The agent introduces itself, and the chat's own record names it by the row it writes.
+    // The workspace's member list names the agent.
+    ui::tilo_resource::members::know([(MemberId::agent("reading"), "Reading agent".to_owned())]);
     let (mut agent, _, _) = component_mount_as(
         &cache,
         MemberId::agent("reading"),
@@ -950,20 +920,6 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         ),
         2,
         "workspace",
-    );
-    let workspace = agent
-        .bound_resources(None)
-        .unwrap()
-        .iter()
-        .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
-        .find(|resource| resource.kind == "chat.workspace")
-        .map(|resource| resource.id.as_str().to_owned())
-        .expect("the chat's workspace is published");
-    invoke(
-        &mut agent,
-        &workspace,
-        "introduce",
-        serde_json::json!({"name": "Reading agent", "initials": "RA", "color": 3}),
     );
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
     let messages = |frame: &ui::headless::FrameHarness| {
@@ -980,7 +936,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     let listed = messages(&agent);
     let question = listed.last().unwrap().clone();
-    // An agent reads the conversation from the chat's record and its parts.
+    // An agent reads the conversation from the chat's resource and its parts.
     let asked = crate::testing::messages_in(&records, "c_chat")
         .pop()
         .unwrap();
@@ -1036,7 +992,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         })
         .unwrap();
     assert_eq!(author, MemberId::agent("reading"));
-    // Each records only its own work: nobody rewrites the agent's.
+    // Each resources only its own work: nobody rewrites the agent's.
     visitor.wait_until(ui::time::Duration::ZERO, |_| true);
     let shown = visitor.bound_resources(Some(&reply)).unwrap();
     let presentation = shown[0].presentation.clone().unwrap_or_default();
@@ -1190,15 +1146,15 @@ fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
 }
 
 #[test]
-fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
-    use ui::headless::host_media::MediaLane;
+fn browser_media_queue_routes_shared_chat_actions_and_retires_closed_owners() {
+    use ui::headless::host_media::MediaQueue;
     use ui::native_media::{Command, Snapshot, State};
     let cache =
         ui::portable_storage::PortableStorage::new("browser-media-controls", "device").unwrap();
     let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let (mut frame, records, checkout) =
         component_mount_in_workspace(&cache, "author", 1, workspace);
-    let mut lane = MediaLane::default();
+    let mut queue = MediaQueue::default();
     let before = records.replication_snapshot(&checkout.id).unwrap().0;
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 1,
@@ -1207,11 +1163,11 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     frame
         .invoke_bound_action(&address, &serde_json::Map::new())
         .unwrap();
-    let requests = lane.take(&mut frame);
+    let requests = queue.take(&mut frame);
     let joining = requests
         .iter()
         .find(|request| matches!(request.command.command, Command::Join { .. }))
-        .expect("the actual shared action enters the browser media lane");
+        .expect("the actual shared action enters the browser media queue");
     assert_eq!(joining.app, "so.tilo.chat");
     assert_eq!(joining.workspace, workspace);
     assert_eq!(joining.record, "", "Chat uses its package-primary route");
@@ -1219,7 +1175,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     let mut live = Snapshot::unavailable();
     live.state = State::Live;
     live.issue = None;
-    assert!(lane.complete(&mut frame, joining.ticket, Ok(live.clone())));
+    assert!(queue.complete(&mut frame, joining.ticket, Ok(live.clone())));
     // A live call is what a continuation carries.
     let continuation =
         ui::widget::capability::capability::<dyn ui::widget::Continuable>(frame.root_widget())
@@ -1229,7 +1185,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         "the completed join is live in the app"
     );
     assert!(
-        !lane.complete(&mut frame, joining.ticket, Ok(live.clone())),
+        !queue.complete(&mut frame, joining.ticket, Ok(live.clone())),
         "a completion is single-use"
     );
     assert_eq!(
@@ -1240,13 +1196,13 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     frame
         .invoke_bound_action(&address, &serde_json::Map::new())
         .unwrap();
-    let pending = lane.take(&mut frame);
+    let pending = queue.take(&mut frame);
     assert!(
         !pending.is_empty(),
         "the closed-owner assertion must observe a pending command"
     );
     frame.close_components();
-    let retired = lane.take(&mut frame);
+    let retired = queue.take(&mut frame);
     assert!(
         retired
             .iter()
@@ -1255,7 +1211,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     );
     for request in pending {
         assert!(
-            !lane.complete(&mut frame, request.ticket, Ok(live.clone())),
+            !queue.complete(&mut frame, request.ticket, Ok(live.clone())),
             "a closed owner cannot accept a late result"
         );
     }
@@ -1320,7 +1276,7 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
 fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
     use tilo_actions::remote::RemoteActionMessage;
     use ui::bound_dispatch::BoundActionAddress;
-    use ui::headless::host_media::MediaLane;
+    use ui::headless::host_media::MediaQueue;
     use ui::native_media::Command;
 
     for catalogue_first in [true, false] {
@@ -1373,13 +1329,13 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
         frame
             .invoke_bound_action(&join, &serde_json::Map::new())
             .unwrap();
-        let mut lane = MediaLane::default();
+        let mut queue = MediaQueue::default();
         let (catalogues, media) = if catalogue_first {
-            let catalogues = lane.take_catalogue_requests(&mut frame);
-            (catalogues, lane.take(&mut frame))
+            let catalogues = queue.take_catalogue_requests(&mut frame);
+            (catalogues, queue.take(&mut frame))
         } else {
-            let media = lane.take(&mut frame);
-            (lane.take_catalogue_requests(&mut frame), media)
+            let media = queue.take(&mut frame);
+            (queue.take_catalogue_requests(&mut frame), media)
         };
         assert!(catalogues.iter().any(|message| matches!(message,
             RemoteActionMessage::CatalogueRequest {query, ..}
@@ -1391,7 +1347,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
                 .any(|request| matches!(request.command.command, Command::Join { .. })),
             "catalogue polling must preserve the actual shared join action"
         );
-        assert!(lane.take_catalogue_requests(&mut frame).is_empty());
+        assert!(queue.take_catalogue_requests(&mut frame).is_empty());
         frame.close_components();
     }
 }
@@ -1399,7 +1355,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
 #[test]
 fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
     use ui::bound_dispatch::BoundActionAddress;
-    use ui::headless::host_media::MediaLane;
+    use ui::headless::host_media::MediaQueue;
     use ui::native_media::Command;
     let cache =
         ui::portable_storage::PortableStorage::new("catalogue-media-retirement", "device").unwrap();
@@ -1415,10 +1371,10 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
             &serde_json::Map::new(),
         )
         .unwrap();
-    let mut lane = MediaLane::default();
-    assert!(lane.take_catalogue_requests(&mut frame).is_empty());
+    let mut queue = MediaQueue::default();
+    assert!(queue.take_catalogue_requests(&mut frame).is_empty());
     frame.close_components();
-    let media = lane.take(&mut frame);
+    let media = queue.take(&mut frame);
     assert!(
         media
             .iter()
@@ -1430,7 +1386,7 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
     );
 }
 
-/// A change to the record from elsewhere: one field written, not committed.
+/// A change to the resource from elsewhere: one field written, not committed.
 fn remote_change(doc: &mut AutoCommit, key: &str, value: &str) {
     ui::tilo_resource::write_key(doc, &ROOT, key, &ui::tilo_resource::Atom(value.into())).unwrap();
 }
@@ -1616,7 +1572,7 @@ fn a_new_message_leaves_the_window_at_rest(frame: &mut ui::headless::FrameHarnes
             .map_or(0, |(_, calls, _)| *calls);
         assert!(
             misses <= 1,
-            "the post rediscovers the bound components once, where the record changed: {report}"
+            "the post rediscovers the bound components once, where the resource changed: {report}"
         );
         assert!(
             frames.len() <= 2,
@@ -1635,7 +1591,7 @@ tilo_test_env::scenario! {
 
     steps;
     {
-        let (mut frame, _records, _checkout) = semantic_component_harness("chat-long-channel");
+        let (mut frame, _resources, _checkout) = semantic_component_harness("chat-long-channel");
         let chain = crate::testing::chain();
         for index in 0..300 {
             frame
@@ -1677,7 +1633,7 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
         .reserve_resource(&primary)
         .unwrap()
         .initialize(|doc| {
-            crate::testing::starter(doc, identity.id.id(), &identity.name, &identity.initials);
+            crate::testing::starter(doc, identity.id.id(), &identity.name);
             Ok(())
         })
         .unwrap();
@@ -1777,7 +1733,7 @@ fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
     use ui::winit::dpi::PhysicalPosition;
     use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-text-menu");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-composer-text-menu");
     let inspection = frame.inspection();
     let composer = semantic_target_rect(&inspection.root, "chat.composer")
         .expect("the composer is drawn")
@@ -1856,10 +1812,10 @@ fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
 /// An agent's send is the action the composer's send button presses: the
 /// marker drawn for it rests on that button, never on a place it guessed. An
 /// agent names the action the way its listing shows it — `send` on the chat's
-/// own record — so that is the address the button has to answer.
+/// own document — so that is the address the button has to answer.
 #[test]
 fn an_agents_send_lands_on_the_composers_send_button() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-agent-send");
+    let (mut frame, _resources, _checkout) = semantic_component_harness("chat-agent-send");
     let button = semantic_target_rect(&frame.inspection().root, "chat.send")
         .expect("the composer's send button is drawn");
     let locus = frame

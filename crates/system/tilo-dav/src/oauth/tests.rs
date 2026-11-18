@@ -12,7 +12,7 @@ fn run<T>(future: impl Future<Output = T>) -> T {
 #[test]
 fn every_operation_rejects_another_origin_before_sending_credentials() {
     let root = tempfile::tempdir().unwrap();
-    let service = Service::new(Custodian::for_root(Some(root.path().to_owned())));
+    let service = Service::new(CredentialStore::for_root(Some(root.path().to_owned())));
     let trusted = Responder::start(vec![Reply::status(204)]);
     let attacker = Responder::silent();
     let client = service
@@ -69,11 +69,11 @@ fn every_operation_rejects_another_origin_before_sending_credentials() {
 fn calendar_only_google_grant_uses_canonical_provider_and_enabled_state() {
     let root = tempfile::tempdir().unwrap();
     let id = AccountId::from("calendar-only");
-    let custodian = Custodian::for_root(Some(root.path().to_owned()));
-    custodian
+    let credential_store = CredentialStore::for_root(Some(root.path().to_owned()));
+    credential_store
         .seal_oauth(
             &id,
-            &account_custody::TokenSet {
+            &account_credentials::TokenSet {
                 access_token: "calendar-only-access".into(),
                 refresh_token: "refresh".into(),
                 obtained_at: u64::MAX / 2,
@@ -83,7 +83,7 @@ fn calendar_only_google_grant_uses_canonical_provider_and_enabled_state() {
         )
         .unwrap();
     let trusted = Responder::start(vec![Reply::status(204)]);
-    let service = Service::for_test_origin(custodian, &trusted.url()).unwrap();
+    let service = Service::for_test_origin(credential_store, &trusted.url()).unwrap();
     let mut store = AccountStore::new();
     let mut account = accounts::Account::new(id.clone(), "caldav");
     account.config = serde_json::json!({"calendar_provider": "google"});
@@ -137,11 +137,11 @@ fn calendar_only_google_grant_uses_canonical_provider_and_enabled_state() {
 }
 
 #[test]
-fn portable_calendar_password_uses_custody_for_plain_and_copied_grants() {
+fn portable_calendar_password_uses_ownership_for_plain_and_copied_grants() {
     let secret = accounts::Secret::password("app-password");
     assert_eq!(calendar_password(&secret), "app-password");
     let account = accounts::Account::new(AccountId::from("nextcloud"), cloud_types::NEXTCLOUD);
-    let copied = account_custody::copied_secret(&account, &secret);
+    let copied = account_credentials::copied_secret(&account, &secret);
     assert_eq!(calendar_password(&copied), "app-password");
 }
 
@@ -156,7 +156,7 @@ fn calendar_transport_keeps_its_deadline_and_refuses_redirects() {
 #[test]
 fn production_google_never_accepts_alternate_origin_or_endpoint() {
     let root = tempfile::tempdir().unwrap();
-    let service = Service::new(Custodian::for_root(Some(root.path().to_owned())));
+    let service = Service::new(CredentialStore::for_root(Some(root.path().to_owned())));
     let attacker = Responder::silent();
     for server in [
         attacker.url(),
@@ -194,7 +194,7 @@ fn discovery_reuses_adopted_nextcloud_password_and_follows_server_identity() {
     let mut vault = SecretVault::open_in(root.path());
     vault.put(
         &id,
-        &account_custody::copied_secret(&account, &accounts::Secret::password("adopted")),
+        &account_credentials::copied_secret(&account, &accounts::Secret::password("adopted")),
     );
     vault.save();
     let xml = |href: &str, properties: &str| {
@@ -207,7 +207,7 @@ fn discovery_reuses_adopted_nextcloud_password_and_follows_server_identity() {
         Reply::status(207).body(xml("/principal/opaque/", "<c:calendar-home-set><d:href>/cal/opaque/</d:href></c:calendar-home-set>")),
         Reply::status(207).body(xml("/cal/opaque/team/", "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>Team</d:displayname>")),
     ]);
-    let service = Service::new(Custodian::for_root(Some(root.path().to_owned())));
+    let service = Service::new(CredentialStore::for_root(Some(root.path().to_owned())));
     let collections = service
         .discover(&id, &format!("{}/dav/", server.url()), "login", false)
         .unwrap();
@@ -232,7 +232,7 @@ fn redirects_never_forward_the_password() {
     let root = tempfile::tempdir().unwrap();
     let attacker = Responder::silent();
     let trusted = Responder::start(vec![Reply::status(302).header("Location", &attacker.url())]);
-    let service = Service::new(Custodian::for_root(Some(root.path().to_owned())));
+    let service = Service::new(CredentialStore::for_root(Some(root.path().to_owned())));
     let client = service
         .authorised(None, &trusted.url(), "ada", "secret", "/")
         .unwrap();
@@ -260,7 +260,7 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
         .body(r#"{"access_token":"calendar-access","token_type":"Bearer","expires_in":3600,"refresh_token":"rotated"}"#)]);
     let mut provider = OAuthIssuer::Google.endpoints();
     provider.token_endpoint = format!("{}/token", token_server.url());
-    let custodian = Custodian::for_root(Some(root.path().to_owned()))
+    let credential_store = CredentialStore::for_root(Some(root.path().to_owned()))
         .with_issuer_endpoints(OAuthIssuer::Google, provider);
     let id = AccountId::from("google");
     let mut store = AccountStore::new();
@@ -269,10 +269,10 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
         cloud_types::GOOGLE_DRIVE,
     ));
     store.save_in(root.path()).unwrap();
-    custodian
+    credential_store
         .seal_oauth(
             &id,
-            &account_custody::TokenSet {
+            &account_credentials::TokenSet {
                 access_token: "expired".into(),
                 refresh_token: "refresh".into(),
                 obtained_at: 1,
@@ -283,7 +283,7 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
         .unwrap();
     let trusted = Responder::start(vec![Reply::status(204)]);
     let attacker = Responder::silent();
-    let service = Service::for_test_origin(custodian.clone(), &trusted.url()).unwrap();
+    let service = Service::for_test_origin(credential_store.clone(), &trusted.url()).unwrap();
     assert!(
         service
             .authorised(Some(id.as_str()), &attacker.url(), "", "", "/")
@@ -313,10 +313,10 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
     assert!(refreshed.body_text().contains("grant_type=refresh_token"));
     assert!(refreshed.body_text().contains("refresh_token=refresh"));
     // A files grant and a wrong account type must fail, even if a token exists.
-    custodian
+    credential_store
         .seal_oauth(
             &id,
-            &account_custody::TokenSet {
+            &account_credentials::TokenSet {
                 access_token: "files-access".into(),
                 refresh_token: "refresh".into(),
                 obtained_at: u64::MAX / 2,

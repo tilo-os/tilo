@@ -6,7 +6,7 @@ Wants=network.target
 # The store volume (/var/lib/tilo/store) is mounted `nofail`, so local-fs.target
 # does not wait for it; wait here instead. tilo-store-volume.service prepares
 # it for the local person (creating an image-backed store on installs without
-# a store partition) and writes the data-plane arguments below.
+# a store partition) and writes the backend arguments below.
 Wants=tilo-store-volume.service var-lib-tilo-store.mount
 After=tilo-store-volume.service var-lib-tilo-store.mount
 # Iroh reconnects as interfaces become usable, so waiting for
@@ -73,27 +73,27 @@ Type=simple
 #
 # `--session-link` is how the mount reaches the network: through the
 # session's endpoint, which holds the device key, rather than an endpoint of
-# its own under the same key (a relay keeps one connection per endpoint id).
+# its own under the same key (a server keeps one connection per endpoint id).
 # The daemon writes where it listens on loopback there, beside the blob
 # socket, where the session finds it. With no session the mount is offline.
 #
-# The data plane. With a store volume mounted, tilo-store-volume.service
-# writes `--data-plane=auto --store=/var/lib/tilo/store --native-owner=UID:GID`
+# The backend. With a store volume mounted, tilo-store-volume.service
+# writes `--backend=auto --store=/var/lib/tilo/store --native-owner=UID:GID`
 # to /run/tilo-store/fs.env on every boot: the daemon then serves the native
 # tree when the volume is dedicated and the kernel probes hold, and FUSE
 # otherwise, logging why. `--native-owner` is the local person, who owns every
-# file the native plane materialises. Without that file (no store, no local
+# file the native backend materialises. Without that file (no store, no local
 # person yet, or the preparation failed) the daemon serves FUSE.
-Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse
+Environment=TILO_FS_BACKEND_ARGS=--backend=fuse
 EnvironmentFile=-/run/tilo-store/fs.env
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
     --storage-sock /run/tilo/fs-storage/storage.sock --blob-sock /run/tilo/fs-blobs.sock \
     --session-link /run/tilo/fs-session-link \
     --acl /var/lib/tilo/fs-capabilities.json --member person:local \
-    $TILO_FS_DATA_PLANE_ARGS
+    $TILO_FS_BACKEND_ARGS
 # No ExecStop=: the daemon ends its own mount. systemd's SIGTERM takes the
 # daemon's stop path, which unmounts and then makes the final namespace save.
-# On the FUSE data plane the mount is held by fusermount3's auto_unmount
+# On the FUSE backend the mount is held by fusermount3's auto_unmount
 # helper, which blocks every signal and lazily detaches /var/workspace (what
 # `fusermount3 -u -z` did) as soon as the daemon releases the session or
 # exits, so a hung client cannot block the stop. An `ExecStop=` naming
@@ -102,12 +102,12 @@ ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/
 # stop ended in 203/EXEC. Do not grant init_t that instead.
 #
 # On a machine with a dedicated store volume at /var/lib/tilo/store
-# (`--store`) the daemon serves the Tier 1 data plane instead: the
+# (`--store`) the daemon serves the Tier 1 backend instead: the
 # workspace's native tree is bind-mounted at /var/workspace and fanotify fills
 # placeholders on first access. Placeholders read as holes once the daemon's
 # fanotify group is gone, so the bind must never outlive the process. The
 # daemon detaches it on a clean stop. This lazy umount is the backstop for
-# both planes when the daemon could not: a crash, or the SIGKILL after
+# both backends when the daemon could not: a crash, or the SIGKILL after
 # TimeoutStopSec= (which also kills fusermount3's helper). It is a no-op
 # after a clean stop. umount is mount_exec_t, which init_t may execute.
 ExecStopPost=-/usr/bin/umount --lazy /var/workspace

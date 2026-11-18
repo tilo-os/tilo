@@ -46,7 +46,7 @@ EXPIRED_ID = {
     "expires": "31/12/2022",
     "issued_long": "01 JAN 2013",
     "expires_long": "31 DEC 2022",
-    "address": "3 TANNERY LANE, EASTMERE EM2 5HB",
+    "address": "3 TANNERY STREET, EASTMERE EM2 5HB",
 }
 
 CURRENT_ADDRESS = {
@@ -58,12 +58,12 @@ CURRENT_ADDRESS = {
 }
 
 PREVIOUS_ADDRESS = {
-    "line1": "3 Tannery Lane",
+    "line1": "3 Tannery Street",
     "town": "Eastmere",
     "postcode": "EM2 5HB",
     "moved_in": "05/2019",
     "moved_out": "02/2024",
-    "single_line": "3 Tannery Lane, Eastmere, EM2 5HB",
+    "single_line": "3 Tannery Street, Eastmere, EM2 5HB",
 }
 
 EMPLOYER = {
@@ -229,7 +229,7 @@ PORTAL_ANSWERS = {
     },
 }
 
-# Where the trial lives on the desktop, relative to the participant's home.
+# Where the trial lives on the desktop, relative to the tester's home.
 TRIAL_DIR = "Documents/Trial"
 SOURCES = "Sources"
 OUT = "Out"

@@ -1,12 +1,12 @@
-//! A package's index in the store: opening it, building it from the record whole (off the
+//! A package's index in the store: opening it, building it from the document whole (off the
 //! frame whenever a frame can be woken to take it in), catching it up from the heads it
 //! reflects, and putting a fresh one in place of a broken one. What is built here is what the
 //! store's reads answer from ([`Inner::view`]).
 //!
-//! A fresh index is built in two steps: the first holds the record's own chunk with the first
+//! A fresh index is built in two steps: the first holds the document's own chunk with the first
 //! chunk it places, which is where a window's first rows are, and is read from while the rest
-//! of the record is derived off the frame. The chunks that arrive while it is built are what
-//! the next step derives. A count read before the index covers the record is the part of the
+//! of the document is derived off the frame. The chunks that arrive while it is built are what
+//! the next step derives. A count read before the index covers the document is the part of the
 //! workspace read so far, which the runtime shows as not yet known rather than as the count
 //! ([`TiloStore::index_whole`]).
 
@@ -26,10 +26,10 @@ use crate::index::view::View;
 use crate::index::{self as idx, Held, Index, IndexError, Opened};
 use crate::reads::Places;
 
-/// Whose the things a chunk the record's manifest names are: the apps the store knows them by, or
-/// every app's, where it holds no record of them ([`Inner::chunks_of_apps`]).
+/// Whose the things a chunk the document's manifest names are: the apps the store knows them by, or
+/// every app's, where it holds no document of them ([`Inner::chunks_of_apps`]).
 enum Theirs<'a> {
-    /// The apps whose runs or placed resources the record has in the chunk.
+    /// The apps whose runs or placed resources the document has in the chunk.
     Apps(BTreeSet<&'a str>),
     /// Any app's: the manifest names something there the store cannot say the app of.
     Any,
@@ -39,11 +39,11 @@ enum Theirs<'a> {
 pub(super) enum IndexState {
     /// Read from: it reflects `heads`, with what the store wrote over it in the overlay.
     Ready,
-    /// A step is being derived from the record off the frame, reflecting the heads given once
+    /// A step is being derived from the document off the frame, reflecting the heads given once
     /// it is taken in; `true` while it is a build's step, `false` while it catches the index up
-    /// to what the record holds.
+    /// to what the document holds.
     Building(Pending<Result<(Stamps, DocReads), IndexError>>, bool),
-    /// Nothing to read, and no record yet to build it from.
+    /// Nothing to read, and no document yet to build it from.
     Missing,
 }
 
@@ -64,14 +64,14 @@ pub(super) struct AppIndex {
     pub(super) heads: Stamps,
     schema: String,
     state: IndexState,
-    /// Whether the index holds rows to read, though they may not be the whole record's yet: a
+    /// Whether the index holds rows to read, though they may not be the whole document's yet: a
     /// kept index does, and so does one after a step of its build was taken in — the window
     /// opens on those rows while the rest is derived off the frame.
     readable: bool,
 }
 
 impl AppIndex {
-    /// Whether the index covers the record: it is neither being built nor waiting for it.
+    /// Whether the index covers the document: it is neither being built nor waiting for it.
     pub(super) fn ready(&self) -> bool {
         matches!(self.state, IndexState::Ready)
     }
@@ -134,8 +134,8 @@ impl TiloStore {
             readable: heads.is_some(),
         };
         inner.apps.insert(AppId::from(app), held);
-        if inner.chunks.has_record() {
-            // The records under ids the app had before are its own from now on.
+        if inner.chunks.has_document() {
+            // The documents under ids the app had before are its own from now on.
             if !crate::schema::previously(app).is_empty() {
                 inner.rescan();
             }
@@ -148,8 +148,8 @@ impl TiloStore {
         self.changing().notify_all();
     }
 
-    /// Whether every package's index covers the record: none is being built, or waits for the
-    /// record. A window that opened over the rows an index holds while the rest of it is still
+    /// Whether every package's index covers the document: none is being built, or waits for the
+    /// document. A window that opened over the rows an index holds while the rest of it is still
     /// being derived shows what it reads; this is what an index read in full, to publish it,
     /// waits for.
     #[must_use]
@@ -158,7 +158,7 @@ impl TiloStore {
     }
 
     /// Whether every package's index holds rows to read, though they may not be the whole
-    /// record's yet: a kept index does, and so does one after the first step of its build was
+    /// document's yet: a kept index does, and so does one after the first step of its build was
     /// taken in, off the frame. Until then its lists would show nothing, and the window shows
     /// the platform's loading state.
     #[must_use]
@@ -167,11 +167,11 @@ impl TiloStore {
     }
 
     /// Whether a sync would take in work that changes what a view reads: an index being derived
-    /// off the frame, an index waiting for the record it is built from, an index a read found
-    /// corrupt that is built anew, or a chunk of the record no index read from reflects, which
+    /// off the frame, an index waiting for the document it is built from, an index a read found
+    /// corrupt that is built anew, or a chunk of the document no index read from reflects, which
     /// the store reads before its rows can be listed. Until it has them, the rows, counts and
     /// lists a window reads are of the part of the workspace read so far, so a frame taken then
-    /// is not the frame of the workspace the record holds.
+    /// is not the frame of the workspace the document holds.
     ///
     /// A window whose store owes one syncs before it rests, whatever else is still
     /// ([`crate::host::Host::index_pending`]). An index derived off the frame wakes the window
@@ -184,7 +184,7 @@ impl TiloStore {
     #[must_use]
     pub fn index_pending(&self) -> bool {
         let held = self.held();
-        if !held.chunks.has_record() {
+        if !held.chunks.has_document() {
             return false;
         }
         // An index that is not read from is built, or waits for the chunks it is built from,
@@ -201,7 +201,7 @@ impl TiloStore {
         held.answers_all() && !held.chunks_to_read().is_empty()
     }
 
-    /// Whether every index read from covers the record: it is read from, every chunk the
+    /// Whether every index read from covers the document: it is read from, every chunk the
     /// manifest names that has something of an app the store reads from is either held and
     /// derived or, not held, stamped by the index an earlier run kept, and no chunk the store
     /// holds is left to derive. Until it does, a length or count the store answers is the part of
@@ -209,7 +209,7 @@ impl TiloStore {
     /// no final answer yet as not yet known, rather than as a count that changes under the person
     /// reading it.
     ///
-    /// A chunk the record names nothing of any app the store reads from in is another app's, and
+    /// A chunk the document names nothing of any app the store reads from in is another app's, and
     /// is no part of what these indexes answer: a window that never reads it holds every row of
     /// its own all the same ([`Inner::chunks_of_apps`]).
     #[must_use]
@@ -225,9 +225,9 @@ impl TiloStore {
 
     /// [`Self::poll_index`], waiting for the indexes being built: for a host without frames.
     /// What a wait is for is every index the store reads from: a chunk read for an index that
-    /// waits for its record starts the build of that index ([`Inner::bring_up`]), and that
+    /// waits for its document starts the build of that index ([`Inner::bring_up`]), and that
     /// build is waited for too. A build is taken in a step at a time, so this waits through
-    /// every step of it: what it returns leaves the index covering the record.
+    /// every step of it: what it returns leaves the index covering the document.
     pub fn wait_index(&self) -> bool {
         self.take_in_builds(true)
     }
@@ -251,14 +251,14 @@ impl TiloStore {
     }
 
     /// One pass of [`Self::take_in_builds`]: the builds that ended, the chunks no index read
-    /// from reflects, and the indexes still waiting for their record.
+    /// from reflects, and the indexes still waiting for their document.
     fn take_in_round(&self, wait: bool) -> bool {
         let mut inner = self.mutate();
         let apps: Vec<AppId> = inner.apps.keys().cloned().collect();
         let mut any = false;
         let mut reopened = false;
         let mut landed = BTreeSet::new();
-        // An index a read found corrupt is not read again: it is built anew from the record.
+        // An index a read found corrupt is not read again: it is built anew from the document.
         let broken: Vec<AppId> = inner
             .apps
             .iter()
@@ -291,7 +291,7 @@ impl TiloStore {
             if let Ok((heads, reads)) = ended {
                 inner.count(reads);
                 if inner.after_step(&app, heads, step) {
-                    // The rest of the record, derived off the frame while the window shows
+                    // The rest of the document, derived off the frame while the window shows
                     // what the step it has read holds.
                     continue;
                 }
@@ -329,8 +329,8 @@ impl TiloStore {
             if reopened {
                 inner.notify_all();
             } else {
-                // A step answers more of the record and changes none of it: what a window
-                // published of the records it shows stands.
+                // A step answers more of the document and changes none of it: what a window
+                // published of the documents it shows stands.
                 inner.notify_indexed(&landed);
             }
         }
@@ -339,7 +339,7 @@ impl TiloStore {
         drop(inner);
         let loaded = self.load_short();
         // What the store was not sent and could read is read: the indexes still waiting for their
-        // record are built now, over every chunk of it ([`Inner::bring_up`] waits for this
+        // document are built now, over every chunk of it ([`Inner::bring_up`] waits for this
         // rather than building over the chunk that arrived first), or over what the store has
         // when the chunks cannot be read.
         let mut inner = self.mutate();
@@ -352,14 +352,14 @@ impl TiloStore {
         any
     }
 
-    /// Read every chunk the record's manifest names that no index read from reflects: an index
+    /// Read every chunk the document's manifest names that no index read from reflects: an index
     /// built over fewer chunks answers no row in the missing ones, and a window would show a
     /// list shorter than the workspace's. A store that can load them loads them, as one that
     /// was sent every chunk opens; an index kept from an open over all of them needs none.
     /// Returns whether a chunk was read.
     ///
     /// An index that answers no row yet is building its first step: the chunk that step derives
-    /// is read first, and a window shows its rows once the step is in. The rest of the record is
+    /// is read first, and a window shows its rows once the step is in. The rest of the document is
     /// read after them, so a workspace of fifty chunks opens on its rows as one of one does.
     pub fn load_short(&self) -> bool {
         let short: Vec<ChunkNo> = {
@@ -368,7 +368,7 @@ impl TiloStore {
                 held.chunks_to_read()
             } else {
                 // An index that answers no row yet is building its first step: the chunk that
-                // step derives is read first, and the rest of the record after them.
+                // step derives is read first, and the rest of the document after them.
                 held.chunks_to_read().into_iter().take(1).collect()
             }
         };
@@ -385,7 +385,7 @@ impl TiloStore {
     }
 
     /// Everything the index of `app` holds now (the store's open writes apart): what tests
-    /// compare with an index built from the record whole.
+    /// compare with an index built from the document whole.
     #[must_use]
     pub fn index_contents(&self, app: &str) -> Option<idx::Contents> {
         let inner = self.held();
@@ -394,8 +394,8 @@ impl TiloStore {
     }
 
     /// Whether the store reads nothing over its indexes: no write of its own is pending, and the
-    /// index each app reads from reflects every write the record took. What tests check once
-    /// the record holds every write and the indexes caught up.
+    /// index each app reads from reflects every write the document took. What tests check once
+    /// the document holds every write and the indexes caught up.
     #[must_use]
     pub fn overlay_empty(&self) -> bool {
         let inner = self.held();
@@ -408,7 +408,7 @@ impl TiloStore {
             if held.index.path().is_some()
                 && let Err(error) = held.index.persist()
             {
-                // The index is rebuilt from the record where the disk lost it.
+                // The index is rebuilt from the document where the disk lost it.
                 tracing::warn!(%error, "an index did not reach the disk");
             }
         }
@@ -418,7 +418,7 @@ impl TiloStore {
 impl Inner {
     /// The index of `app` as the store's writes leave it, when it is read from: one being
     /// built answers from what its steps have derived so far, so a window opened over them
-    /// reads the rows it shows while the rest of the record is derived under them.
+    /// reads the rows it shows while the rest of the document is derived under them.
     pub(super) fn view(&self, app: &str) -> Option<View<'_>> {
         let held = self.apps.get(app).filter(|held| held.answers())?;
         Some(View {
@@ -428,7 +428,7 @@ impl Inner {
         })
     }
 
-    /// The records every index read from holds: what a store without the record knows of
+    /// The documents every index read from holds: what a store without the document knows of
     /// the workspace.
     fn index_docs(&mut self) {
         let mut index = BTreeMap::new();
@@ -452,7 +452,7 @@ impl Inner {
     /// of every row a window shows do not run again for it.
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: Doc) -> bool {
         self.stats.attaches = self.stats.attaches.saturating_add(1);
-        // The chunk the store waited on is here: what reads the record covers it from now on.
+        // The chunk the store waited on is here: what reads the document covers it from now on.
         self.waited.remove(&chunk);
         self.versions.remove(&chunk);
         self.nested.clear();
@@ -484,9 +484,9 @@ impl Inner {
         moved
     }
 
-    /// Have the index of `app` cover the chunks the store holds: the rest of the record derived
+    /// Have the index of `app` cover the chunks the store holds: the rest of the document derived
     /// off the frame while the window shows what is already there, else caught up on the frame
-    /// in a store nothing wakes, else built anew when the record lacks its heads.
+    /// in a store nothing wakes, else built anew when the document lacks its heads.
     fn bring_up(&mut self, app: &str) {
         let Some(held) = self.apps.get(app) else {
             return;
@@ -495,21 +495,21 @@ impl Inner {
         match stage {
             // The build derives the rest itself when its step ends ([`Inner::after_step`]).
             Stage::Building => {}
-            // The record names chunks the store does not hold yet, and it can read them: an
-            // index built now would cover the record's own chunk alone, with no row of what the
+            // The document names chunks the store does not hold yet, and it can read them: an
+            // index built now would cover the document's own chunk alone, with no row of what the
             // window's first screen shows. The chunks are read first, and the build starts over
             // them ([`TiloStore::take_in_builds`]).
             Stage::Missing if self.waits_for_rows() => {}
             Stage::Missing => self.rebuild(app),
-            // Caught up, or built anew when the record lacks its heads. Finding a change by
-            // its hash reads the record's whole history: an index at the record's heads, the
+            // Caught up, or built anew when the document lacks its heads. Finding a change by
+            // its hash reads the document's whole history: an index at the document's heads, the
             // usual open, asks for none.
             Stage::Ready => self.catch_up(app),
         }
     }
 
-    /// The chunks the store holds that the index of `app` does not reflect: what the record
-    /// gained since the heads the index carries, and the whole of a record it has not derived
+    /// The chunks the store holds that the index of `app` does not reflect: what the document
+    /// gained since the heads the index carries, and the whole of a document it has not derived
     /// yet. The chunks the store was not sent are not here to derive.
     fn unreflected(&self, app: &str) -> Vec<ChunkNo> {
         let Some(held) = self.apps.get(app) else {
@@ -532,15 +532,15 @@ impl Inner {
         self.apps.values().all(AppIndex::answers)
     }
 
-    /// The chunks the record's manifest names that no index read from reflects, the store does
+    /// The chunks the document's manifest names that no index read from reflects, the store does
     /// not hold, and that hold something of an app the store reads from: what it reads to cover
-    /// the record ([`TiloStore::load_short`]). Empty when it cannot read chunks: its indexes are
-    /// what the record's manifest was read into.
+    /// the document ([`TiloStore::load_short`]). Empty when it cannot read chunks: its indexes are
+    /// what the document's manifest was read into.
     ///
     /// A chunk the source could not give is not here to read: it is waited on rather than asked
     /// for again ([`Inner::waited`]), so the store owes no sync for it until it arrives.
     fn chunks_to_read(&self) -> Vec<ChunkNo> {
-        if !self.adopted || !self.chunks.has_record() {
+        if !self.adopted || !self.chunks.has_document() {
             return Vec::new();
         }
         let reflected: BTreeSet<ChunkNo> = self
@@ -561,11 +561,11 @@ impl Inner {
             .collect()
     }
 
-    /// Whether every index read from covers the record: none is being built, every chunk the
+    /// Whether every index read from covers the document: none is being built, every chunk the
     /// manifest names that has something of an app the store reads from is covered by that app's
     /// index, and no chunk the store holds is left to derive ([`TiloStore::index_whole`]).
     fn whole(&self) -> bool {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return true;
         }
         if self.apps.values().any(|held| !held.ready()) {
@@ -573,8 +573,8 @@ impl Inner {
         }
         // A chunk the store holds is the index's once it derived it ([`Self::unreflected`]), and
         // one it does not hold is the index's when the index was read stamped with it: a window
-        // opens over the index a run kept without reading the whole record, and counts the whole
-        // of it from that index. A chunk the record names nothing of an app in is another app's:
+        // opens over the index a run kept without reading the whole document, and counts the whole
+        // of it from that index. A chunk the document names nothing of an app in is another app's:
         // an index that never read it holds every row of its own all the same, and waits for no
         // stamp it can never write ([`Self::chunks_of_apps`]).
         let unheld: Vec<ChunkNo> = self
@@ -595,7 +595,7 @@ impl Inner {
         self.apps.keys().all(|app| self.unreflected(app).is_empty())
     }
 
-    /// The apps the record's manifest says have something in each chunk it names: the runs of a
+    /// The apps the document's manifest says have something in each chunk it names: the runs of a
     /// collection of one of their resources, and the resources it places there. A chunk the
     /// manifest names nothing of any app in is missing here, and is no app's.
     fn chunks_of_apps(&self) -> BTreeMap<ChunkNo, Theirs<'_>> {
@@ -613,8 +613,8 @@ impl Inner {
                         }
                     }
                 },
-                // What the store holds no record of may be any app's: it is read before the
-                // index that would count it is said to cover the record.
+                // What the store holds no document of may be any app's: it is read before the
+                // index that would count it is said to cover the document.
                 None => {
                     whose.insert(chunk, Theirs::Any);
                 }
@@ -651,7 +651,7 @@ impl Inner {
         }
     }
 
-    /// Whether the record names something of an app the store reads from in `chunk`: what it
+    /// Whether the document names something of an app the store reads from in `chunk`: what it
     /// reads, as no index reflects it ([`Self::chunks_to_read`]). A chunk that is no loaded
     /// app's holds nothing a window can show, and is not read for one.
     fn read_for_an_app(&self, whose: &BTreeMap<ChunkNo, Theirs<'_>>, chunk: ChunkNo) -> bool {
@@ -662,14 +662,14 @@ impl Inner {
         }
     }
 
-    /// Whether the store still expects the chunks beside the record's own that the manifest
+    /// Whether the store still expects the chunks beside the document's own that the manifest
     /// names, none of which it holds: a workspace opens over the chunks its window shows and
     /// reads the rest as it reaches for them ([`TiloStore::load_short`]), so the build starts
-    /// once one of them is read, rather than over a record with no rows. A store that cannot
+    /// once one of them is read, rather than over a document with no rows. A store that cannot
     /// read them builds over what it has, once the round that would have read them has passed
     /// ([`Inner::build_missing`]).
     fn waits_for_rows(&self) -> bool {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return false;
         }
         let chunks = self.chunks.placement().chunks();
@@ -679,11 +679,11 @@ impl Inner {
                 .all(|chunk| self.chunks.mirror(*chunk).is_none())
     }
 
-    /// Build the index of each app still waiting for its record: what a cold open does once the
-    /// chunks of the record are read, once over all of them, and what an open over the record
+    /// Build the index of each app still waiting for its document: what a cold open does once the
+    /// chunks of the document are read, once over all of them, and what an open over the document
     /// alone does over what the store has when the chunks cannot be read.
     fn build_missing(&mut self) -> bool {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return false;
         }
         let missing: Vec<AppId> = self
@@ -699,13 +699,13 @@ impl Inner {
         built
     }
 
-    /// Put a fresh index in place of the broken one of `app`, built from the record (once it
+    /// Put a fresh index in place of the broken one of `app`, built from the document (once it
     /// is had).
     fn reopen_broken(&mut self, app: &str) {
         let Some(held) = self.apps.remove(app) else {
             return;
         };
-        // Another window of the record reads the file: it is not this one's to remove.
+        // Another window of the document reads the file: it is not this one's to remove.
         let path = (!held.index.shared())
             .then(|| held.index.path().map(Path::to_path_buf))
             .flatten();
@@ -759,16 +759,16 @@ impl Inner {
             },
         );
         self.rebuild(app);
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             self.index_docs();
         }
     }
 
     /// Build the index of `app` anew from the documents the store holds: its first step now,
-    /// the rest of the record once the window shows what that step holds
+    /// the rest of the document once the window shows what that step holds
     /// ([`Inner::after_step`]).
     pub(super) fn rebuild(&mut self, app: &str) {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             if let Some(held) = self.apps.get_mut(app) {
                 held.state = IndexState::Missing;
             }
@@ -778,7 +778,7 @@ impl Inner {
             return;
         };
         if held.index.shared() {
-            // Another window of the record reads the index: emptied, it would read nothing while
+            // Another window of the document reads the index: emptied, it would read nothing while
             // this one builds. This one builds its own, in memory.
             match in_memory(app, &held.schema) {
                 Ok(index) => held.index = index,
@@ -804,13 +804,13 @@ impl Inner {
         self.derive_off_frame(app, self.first_step(), Stamps::new(), true, true);
     }
 
-    /// The chunks a fresh index is first derived from: the first chunk the record places that
+    /// The chunks a fresh index is first derived from: the first chunk the document places that
     /// the store holds — where a window's first rows are, and what its first screen shows. The
-    /// rest of the record, the record's own chunk among it, follows once the window shows them.
+    /// rest of the document, the document's own chunk among it, follows once the window shows them.
     ///
-    /// A record that places nothing keeps everything in its own chunk, which is then the step:
+    /// A document that places nothing keeps everything in its own chunk, which is then the step:
     /// that chunk holds a change an item of a collection wrote of the manifest, and reading it
-    /// costs what the record holds. Read only with the rest, it would hold up the first rows of
+    /// costs what the document holds. Read only with the rest, it would hold up the first rows of
     /// a workspace of a hundred thousand tasks for the manifest's changes, which name no
     /// resource and show no row.
     fn first_step(&self) -> Vec<ChunkNo> {
@@ -826,7 +826,7 @@ impl Inner {
     }
 
     /// Take in the step of `app`'s build that ended, reflecting `heads`: the index answers the
-    /// rows it holds from now on, and the rest of the record — every chunk the store holds that
+    /// rows it holds from now on, and the rest of the document — every chunk the store holds that
     /// it does not reflect — is derived off the frame, still as the build's `build` says.
     /// Whether there was one.
     fn after_step(&mut self, app: &str, heads: Stamps, build: bool) -> bool {
@@ -843,8 +843,8 @@ impl Inner {
             self.stats.catch_ups = self.stats.catch_ups.saturating_add(1);
         }
         let rest = self.unreflected(app);
-        if !self.chunks.has_record() {
-            // What the step derived names records the store without the record finds by their
+        if !self.chunks.has_document() {
+            // What the step derived names records the store without the document finds by their
             // index: a window opened over its rows routes reads to them as they are derived.
             self.index_docs();
         }
@@ -855,7 +855,7 @@ impl Inner {
         true
     }
 
-    /// Derive the chunks `part` of the record into the index of `app`, since the heads `from`,
+    /// Derive the chunks `part` of the document into the index of `app`, since the heads `from`,
     /// off the frame, as a step of the build `build` says. A step of a build leaves the index
     /// readable while the rest are derived: what ended here is taken in on a frame
     /// ([`TiloStore::poll_index`]).
@@ -884,7 +884,7 @@ impl Inner {
         let clock = self.clock.read();
         let pending = Pending::start(
             move || {
-                // A cold build's index is its own: what a record written before items were flat
+                // A cold build's index is its own: what a document written before items were flat
                 // keeps is read from the chunks as it goes.
                 let nested = Nested::default();
                 let source = Source {
@@ -906,7 +906,7 @@ impl Inner {
 
     /// Build the index of `app` from the documents the store holds, here: one kept in memory.
     fn build_now(&mut self, app: &str) {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return;
         }
         let heads = self.chunks.heads();
@@ -952,10 +952,10 @@ impl Inner {
     /// loads it.
     ///
     /// The changes are derived off the frame whenever a frame can be woken to take them in: a
-    /// workspace that arrives whole reads its rows while the index catches up to what the record
+    /// workspace that arrives whole reads its rows while the index catches up to what the document
     /// holds, rather than the frame the chunks arrived in reading all of it.
     fn catch_up(&mut self, app: &str) {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return;
         }
         let Some(held) = self.apps.get(app) else {
@@ -979,7 +979,7 @@ impl Inner {
             return;
         };
         let now = stamps_after(&self.chunks, &from, &moved);
-        // Named against the records the index held: a record made since is derived whole.
+        // Named against the documents the index held: a document made since is derived whole.
         let mut before: BTreeMap<DocId, (AppId, TypeId)> = BTreeMap::new();
         for (doc, ty, _chunk) in held.snapshot.docs().unwrap_or_default() {
             before.insert(doc, (AppId::from(app), ty));
@@ -1012,19 +1012,19 @@ impl Inner {
     }
 }
 
-/// What a derivation reads: the index it derives into, and the record it derives from.
+/// What a derivation reads: the index it derives into, and the document it derives from.
 struct Source<'a> {
     /// The index the step is derived into.
     index: &'a Index,
     /// The chunks the store holds, where the step's changes are read.
     chunks: &'a crate::chunk::Chunks,
-    /// Every resource of the record, by document.
+    /// Every resource of the document, by document.
     docs: &'a BTreeMap<DocId, (AppId, TypeId)>,
-    /// Where the items of records written before items were flat are.
+    /// Where the items of documents written before items were flat are.
     nested: &'a Nested,
 }
 
-/// Derive into the source's index what the chunks `part` of the record hold since the heads
+/// Derive into the source's index what the chunks `part` of the document hold since the heads
 /// `from`: the changes of each chunk the index does not reflect, and only those. `before` is
 /// what the index held of each resource. The heads it ends at, and what it read.
 fn derive(
@@ -1052,7 +1052,7 @@ fn derive(
         let since = doc
             .committed_document()
             .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
-        // What wrote a resource of the record, as the run tails a collection's every item
+        // What wrote a resource of the document, as the run tails a collection's every item
         // writes in its manifest write none: a workspace of a hundred thousand items holds a
         // hundred thousand changes that name no resource, and their messages are not read.
         let mut naming = Vec::new();
@@ -1070,7 +1070,7 @@ fn derive(
     for doc in &changed.nested {
         nested.forget(doc);
     }
-    // A change that laid the record out again may have read anything: every record the step
+    // A change that laid the document out again may have read anything: every document the step
     // brings is derived again, and every one the index already held. The chunks the step does
     // not derive are left to their own, which is what makes the first step small.
     let reached = if changed.unplaced || changed.layout {

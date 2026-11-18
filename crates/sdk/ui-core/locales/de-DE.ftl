@@ -111,7 +111,7 @@ history-mode-confirm = Zulassen
 history-mode-cancel = Abbrechen
 history-mode-type-to-confirm = Gib „{ $phrase }“ ein, um zu bestätigen
 history-mode-owner-gone = Dieses Dokument ist hier nicht mehr geöffnet
-history-mode-custody-lost = Der Verlauf konnte nicht zurückholen, was diese Aktion gebraucht hätte
+history-mode-ownership-lost = Der Verlauf konnte nicht zurückholen, was diese Aktion gebraucht hätte
 history-mode-control-owner-closed = Die App, die danach gefragt hat, ist geschlossen
 history-mode-loading-media = Frühere Medien werden geladen
 history-media-too-many = Diese Version hat zu viele Bilder zum Anzeigen
@@ -586,9 +586,7 @@ relative-compact-years = { $count } J.
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
 history-invocation-step-separator = {", "}
-member-agent = { $name } · Agent
 member-shortcut = { $name } · Kurzbefehl
-member-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
 member-numbered = { $name } ({ $number })
@@ -835,6 +833,8 @@ author-persona-suffix = { $name }, über { $service }
 history-writer-agent = Externer Agent
 history-writer-app = App
 history-writer-program = Programm
+history-acted-for = Für { $person }
+history-acted-for-you = Für dich
 author-spoken-writer = { $person }, mit { $writer }
 author-spoken-device = { $who }, auf { $device }
 
@@ -1195,6 +1195,7 @@ attention-defer = Für später beiseitelegen
 attention-deferred = { $count } beiseitegelegt
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+action-own-route-not-open = Diese Aktion wurde nicht ausgeführt, weil dieses Fenster noch nicht fertig mit seinem Arbeitsbereich verbunden ist. Versuche es gleich noch einmal.
 
 # One-shot action proposals: one model call's answer, before it is written.
 proposal-model-on-device = { $model }, läuft auf diesem Gerät

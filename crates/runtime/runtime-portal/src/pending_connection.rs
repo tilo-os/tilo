@@ -341,7 +341,7 @@ mod tests {
         let pending = PendingResponse::start(
             "delayed-discovery",
             move |cancellation| {
-                tilo_test_env::recv("the discovery gate", &delayed_discovery);
+                tilo_test_env::recv("the discovery check", &delayed_discovery);
                 let result = cancellation
                     .track(&connection)
                     .and_then(|()| connection.write_all(b"request"));

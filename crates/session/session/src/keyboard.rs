@@ -122,7 +122,7 @@ pub enum Run {
     /// not appear by waiting.
     Failed,
     /// It runs on `display` , `size` logical pixels wide and tall.
-    Standing { display: String, size: (u32, u32) },
+    Running { display: String, size: (u32, u32) },
 }
 
 /// What the keyboard's resource asks of the session: the person's own word on whether it shows,
@@ -332,7 +332,7 @@ impl crate::Session {
         }
         // The app may have exited since the last pass: the keyboard stands on nothing then, and is
         // started again where the person types.
-        if matches!(self.keyboard_run, Run::Standing { .. }) && !self.surfaces.running(SURFACE) {
+        if matches!(self.keyboard_run, Run::Running { .. }) && !self.surfaces.running(SURFACE) {
             self.keyboard_run = Run::Down;
             self.keyboard_starts = self.keyboard_starts.saturating_add(1);
             if self.keyboard_starts >= TRIES {
@@ -352,12 +352,12 @@ impl crate::Session {
             return;
         };
         let (size, margin) = band(width, height);
-        let started = Run::Standing {
+        let started = Run::Running {
             display: screen.clone(),
             size,
         };
         if self.keyboard_run != started {
-            if matches!(self.keyboard_run, Run::Standing { .. }) {
+            if matches!(self.keyboard_run, Run::Running { .. }) {
                 // Another display, or one that changed size: a fresh start,
                 // and its tries with it.
                 self.keyboard_starts = 0;
@@ -412,7 +412,7 @@ impl crate::Session {
 
     /// Stop the on-screen keyboard's app, if it runs.
     pub(crate) fn stop_keyboard(&mut self) {
-        if matches!(self.keyboard_run, Run::Standing { .. }) {
+        if matches!(self.keyboard_run, Run::Running { .. }) {
             self.keyboard_run = Run::Down;
             self.surfaces.stop(SURFACE);
         }

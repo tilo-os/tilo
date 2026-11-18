@@ -4,11 +4,10 @@ use ui::framework::testing::TestApp;
 use ui::window_toolbar::SearchOpening;
 
 fn raw_at(app: &TestApp<crate::resource::SheetsShell>, idx: usize, addr: Addr) -> String {
-    app.state()
-        .sheets
-        .values()
-        .nth(idx)
-        .map(crate::workbook::Sheet::snapshot)
+    let state = app.state();
+    state
+        .sheet_id(idx)
+        .and_then(|id| state.snapshot_of(id))
         .and_then(|snapshot| snapshot.raw.get(&addr).cloned())
         .unwrap_or_default()
 }

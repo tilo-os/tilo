@@ -5,7 +5,7 @@
 //! this service for their keys ([`DeviceGroupKeys`]), so its apps get
 //! their route keys without any network. In a workspace
 //! hosted elsewhere it is one key holder among the workspace's member devices:
-//! it asks them for access over the workspace's relay session, follows and
+//! it asks them for access over the workspace's server session, follows and
 //! checks their commits against the workspace's governance, and commits itself
 //! when the group falls behind the membership. While nobody who can admit
 //! it is online, groups this device already reads keep their keys and a
@@ -21,13 +21,13 @@ use std::{
     time::Duration,
 };
 use tilo_action_broker::{
-    collab_core::{BrokerChannels, BrokerGates},
+    collab_core::{BrokerChannels, BrokerSealChecks},
     workspace_keys::{
         GovernancePump, KeyDir, KeyDirectory, KeyProvider, KeysConfig, SharedKeys, WorkspaceKeys,
     },
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 
 /// Sealed group state, and where a Linux profile keeps the key that seals
 /// it (owner-only).
@@ -72,7 +72,7 @@ pub(super) fn open(
         Box::new(Directory {
             joined: Arc::clone(&joined),
         }),
-        Arc::new(BrokerGates(broker)),
+        Arc::new(BrokerSealChecks(broker)),
     )?;
     let park = joined.governance_wake();
     let poke = Arc::clone(&park);
@@ -103,7 +103,7 @@ impl KeyDirectory for Directory {
 
 /// The workspace host this runtime runs holds no group keys of its own: it
 /// takes part in a workspace's groups as this device's one peer, asking this
-/// device's key service for them ([`tilo_workspace_host::workspaces::GroupKeys`]),
+/// device's key service for them ([`tilo_workspace_service::workspaces::GroupKeys`]),
 /// so the host and the device never found two groups under one leaf.
 pub(super) struct DeviceGroupKeys {
     keys: KeyProvider,
@@ -117,8 +117,8 @@ impl DeviceGroupKeys {
     pub(super) fn device(
         keys: KeyProvider,
         joined: &Arc<Joined>,
-    ) -> tilo_workspace_host::workspaces::DeviceKeyGroups {
-        tilo_workspace_host::workspaces::DeviceKeyGroups {
+    ) -> tilo_workspace_service::workspaces::DeviceKeyGroups {
+        tilo_workspace_service::workspaces::DeviceKeyGroups {
             keys: Arc::new(Self { keys }),
             sink: Some(Arc::new(DeviceKeySink {
                 joined: Arc::clone(joined),
@@ -133,7 +133,7 @@ struct DeviceKeySink {
     joined: Arc<Joined>,
 }
 
-impl tilo_workspace_host::workspaces::KeySink for DeviceKeySink {
+impl tilo_workspace_service::workspaces::KeySink for DeviceKeySink {
     fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
         self.joined.take_governance(messages);
     }
@@ -143,7 +143,7 @@ impl tilo_workspace_host::workspaces::KeySink for DeviceKeySink {
     fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
 }
 
-impl tilo_workspace_host::workspaces::GroupKeys for DeviceGroupKeys {
+impl tilo_workspace_service::workspaces::GroupKeys for DeviceGroupKeys {
     fn group_keys<'a>(
         &'a self,
         workspace: &'a str,

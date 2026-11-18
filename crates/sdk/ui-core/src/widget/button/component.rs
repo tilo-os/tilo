@@ -49,7 +49,7 @@ pub struct ButtonProps {
     #[component(data)]
     pub key: Option<String>,
     /// How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count
-    /// standing on its icon's top-trailing corner, as an app icon's does, and nothing at 0.
+    /// on its icon's top-trailing corner, as an app icon's does, and nothing at 0.
     pub count: Option<i64>,
     /// Something new behind it without a number: a dot on its icon's corner.
     pub dot: bool,
@@ -182,7 +182,7 @@ impl Described for Button {
                 .faces
                 .iter()
                 .zip(&self.faces)
-                .all(|(name, (shown, _))| name == shown)
+                .all(|(name, shown)| *name == shown.name)
             && props.icon == self.icon
             && role == self.role
             && size == self.control_size

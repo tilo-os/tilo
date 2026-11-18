@@ -46,8 +46,8 @@ the journal keeps the host's normal per-user/root access controls.
 The complete ARM64 package definitions and release verifier are enabled by
 `TILO_DESKTOP_ARM64_RELEASES`, which the workflow sets to `"1"`. Tagged and
 explicit full-native builds therefore select the native `runner-large-arm64`
-package lane and publish both architecture sets; weekly and default manual runs
-select only the amd64 lane for faster feedback. The single workflow switch
+package job and publish both architecture sets; weekly and default manual runs
+select only the amd64 job for faster feedback. The single workflow switch
 remains the emergency control for temporarily pausing ARM64 scheduling.
 
 Building and install-testing the ARM64 packages is not a release qualification:
@@ -164,7 +164,7 @@ or reinstall release RPMs by hand.
 
 ### What the package route is tested to do
 
-Fedora 44 on x86-64 is the release-gated combination
+Fedora 44 on x86-64 is the release-guarded combination
 (`docs/install-contract.json`). ARM64 packages build and install-test in tagged
 and full-native runs, but no ARM64 combination is release-qualified or publicly
 supported.
@@ -340,24 +340,24 @@ can build or substitute the package declaratively.
 
 ## CI and publishing
 
-`.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests that
+`.forgejo/workflows/release-desktop.yml` is the release check. Pull requests that
 touch packaging or the packaged binaries execute preflight contracts only.
-`desktop-v*` tags execute the lane matrix regardless of changed paths, wait for
+`desktop-v*` tags execute the job matrix regardless of changed paths, wait for
 every enabled native-architecture install test, download the artifacts, require
 the complete current output set, and only then publish the apt, RPM, pacman, and
 generic Nix registries plus a checksummed Forgejo release. The five target
-userspaces run sequentially in one capacity-bounded lane per architecture.
+userspaces run sequentially in one capacity-bounded job per architecture.
 
 The workflow uses the existing `runner` Forgejo label. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
 than a mutable distribution tag. The `dist/ci` runner can execute other
 architectures through a job-private PRoot and checksum-pinned QEMU without
-registering a host binfmt handler, but that mechanism is not the release gate:
+registering a host binfmt handler, but that mechanism is not the release check:
 the Nix closure must be validated on a native ARM64 runner first. Each selected
-architecture runs all five distribution targets as one sequential lane; native
+architecture runs all five distribution targets as one sequential job; native
 Cargo builds use at most six compiler jobs in tagged and full-native runs and
 two otherwise. Ordinary (weekly and default manual) runs allocate only the
-x86-64 lane; tags and manual runs with `full_native` add the native ARM64 lane
+x86-64 job; tags and manual runs with `full_native` add the native ARM64 job
 and verify its Nix closure without QEMU-user. The Debian-family, Fedora, and Arch jobs reuse the runners'
 optional remote compiler cache in an architecture namespace and fail open to an
 ordinary build if that service is unavailable. Cache credentials are only
@@ -378,7 +378,7 @@ uses native Forgejo OIDC; package build/install-test userspaces receive neither
 OIDC nor a private key. Only the isolated service holds a dedicated compatible
 OpenPGP authority. The runner receives signed copies and public provenance,
 verifies their signatures and identical immutable headers/payloads, and retains
-both signing and host-session gates. See
+both signing and host-session checks. See
 [the broker protocol and exact separate live approval boundary](desktop-rpm-broker.md).
 No private key belongs in a repository-wide Actions secret. The existing
 `REGISTRY_TOKEN` remains the package-upload credential and must have repository

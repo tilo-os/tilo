@@ -11,10 +11,10 @@ use collab_types::DocumentMutation;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_content::ContentStore;
 use ui::application::{
-    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    ComponentRunnerInputs, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
-use ui::collaboration::document_content::{ContentLane, DocumentContent};
+use ui::collaboration::document_content::{ContentLink, DocumentContent};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
@@ -170,8 +170,8 @@ struct Worker {
 struct WorkerContent {
     /// What the supervisor put and the app stored.
     local: ContentStore,
-    lane: Arc<ContentLane>,
-    /// `local` joined to `lane`: the store the view is lent.
+    link: Arc<ContentLink>,
+    /// `local` joined to `link`: the store the view is lent.
     store: ContentStore,
 }
 
@@ -181,9 +181,9 @@ impl WorkerContent {
         // holds, of its one workspace, so a reference an action names
         // resolves in it.
         let local = ContentStore::memory().for_one_workspace();
-        let lane = Arc::new(ContentLane::default());
-        let store = DocumentContent::store(local.clone(), Arc::clone(&lane));
-        Self { local, lane, store }
+        let link = Arc::new(ContentLink::default());
+        let store = DocumentContent::store(local.clone(), Arc::clone(&link));
+        Self { local, link, store }
     }
 
     fn put(&self, bytes: &[u8]) -> Reply {
@@ -196,7 +196,7 @@ impl WorkerContent {
     /// What the app stored since the last take, up to a batch, and what it
     /// asked for and lacks.
     fn take(&self) -> Reply {
-        let requests = self.lane.take_requests();
+        let requests = self.link.take_requests();
         let mut offered = Vec::new();
         let mut size = 0usize;
         for (hash, bytes) in requests.offers {
@@ -207,7 +207,7 @@ impl WorkerContent {
                 size = size.saturating_add(bytes.len());
                 offered.push(bytes);
             } else {
-                self.lane.retry_offer(hash, bytes);
+                self.link.retry_offer(hash, bytes);
             }
         }
         let wanted = requests
@@ -357,26 +357,14 @@ impl Worker {
                 invoker,
                 context,
                 appearance,
+                members,
             } => {
-                let invoker = invoker.as_deref().map(decode).transpose();
-                let context = context.as_deref().map(decode).transpose();
-                let appearance = appearance.as_deref().map(decode).transpose();
-                let scope = invoker.and_then(|invoker| {
-                    context.and_then(|context| {
-                        appearance.map(|appearance| (invoker, context, appearance))
-                    })
-                });
-                match (decode(&address), decode(&arguments), scope) {
-                    (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
-                        replica.invoke_within(
-                            invoker, context, appearance, &address, &arguments, confirm,
-                        ),
-                        &address,
-                    ),
-                    (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => {
-                        Reply::Failed(reason)
-                    }
-                }
+                ui::tilo_resource::members::know(members);
+                invoked(
+                    replica,
+                    (&address, &arguments, confirm),
+                    (invoker, context, appearance),
+                )
             }
             Request::TakeMutation => taken_mutation(replica),
             Request::Apply { snapshot, bytes } => {
@@ -747,17 +735,15 @@ impl ReadSession {
             checkout,
             reveal: None,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "canonical-reader".into(),
                 instance_id: INSTANCE,
                 permissions: permissions.clone(),
-                author: MemberId::person(
-                    policy.standing.person_id().unwrap_or_default().to_owned(),
-                ),
+                author: MemberId::person(policy.access.person_id().unwrap_or_default().to_owned()),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,
@@ -817,6 +803,28 @@ impl ReadSession {
 /// collected: a failure, never "nothing changed", so a write that made them
 /// is not answered as done.
 /// [`crate::Replica::renew`] as the worker answers it.
+/// `replica`'s answer to an invocation of `address` with `arguments`, as the caller pinned who
+/// invoked it, in what context and appearing how (each JSON, when given).
+fn invoked(
+    replica: &mut crate::Replica,
+    (address, arguments, confirm): (&str, &str, bool),
+    (invoker, context, appearance): (Option<String>, Option<String>, Option<String>),
+) -> Reply {
+    let invoker = invoker.as_deref().map(decode).transpose();
+    let context = context.as_deref().map(decode).transpose();
+    let appearance = appearance.as_deref().map(decode).transpose();
+    let scope = invoker.and_then(|invoker| {
+        context.and_then(|context| appearance.map(|appearance| (invoker, context, appearance)))
+    });
+    match (decode(address), decode(arguments), scope) {
+        (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
+            replica.invoke_within(invoker, context, appearance, &address, &arguments, confirm),
+            &address,
+        ),
+        (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => Reply::Failed(reason),
+    }
+}
+
 fn renewed(replica: &mut crate::Replica, actor: &str) -> Reply {
     match decode(actor).map(|actor| replica.renew(actor)) {
         Ok(Ok(())) => Reply::Done,

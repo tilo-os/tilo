@@ -109,7 +109,7 @@ tilo_test_env::scenario! {
     phase network_wake_uses_only_the_certified_settings_capability;
     {
         let service = Arc::new(RecordingWifi::default());
-        let services = HostServices {
+        let services = ProcessServices {
             wifi_continuity: Some(service.clone()),
             ..Default::default()
         };
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
     phase wifi_continuity_delegates_only_the_certified_settings_route;
     {
         let service = Arc::new(RecordingWifi::default());
-        let services = HostServices {
+        let services = ProcessServices {
             wifi_continuity: Some(service.clone()),
             ..Default::default()
         };
@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
     phase wifi_continuity_is_unavailable_without_a_host_service;
     {
         let unsupported = delegate_wifi_continuity_command(
-            &HostServices::default(),
+            &ProcessServices::default(),
             WIFI_CONTINUITY_APP_ID,
             WIFI_CONTINUITY_APP_ID,
             &lookup(),
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
         let service = Arc::new(RecordingNearby::answering(
             runtime_collab::NearbyTransferReply::Accepted,
         ));
-        let services = HostServices {
+        let services = ProcessServices {
             nearby_transfer: Some(service.clone()),
             ..Default::default()
         };
@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
     {
         use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
         let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
-        let services = HostServices {
+        let services = ProcessServices {
             nearby_transfer: Some(service.clone()),
             ..Default::default()
         };
@@ -315,7 +315,7 @@ tilo_test_env::scenario! {
                 reason: String::new(),
             },
         ));
-        let services = HostServices {
+        let services = ProcessServices {
             nearby_transfer: Some(service),
             ..Default::default()
         };
@@ -334,7 +334,7 @@ tilo_test_env::scenario! {
         let service = Arc::new(RecordingNearby::answering(
             runtime_collab::NearbyTransferReply::Accepted,
         ));
-        let services = HostServices {
+        let services = ProcessServices {
             nearby_transfer: Some(service.clone()),
             ..Default::default()
         };
@@ -372,8 +372,8 @@ tilo_test_env::scenario! {
             "a refused route never reaches the host"
         );
         for services in [
-            HostServices::default(),
-            HostServices {
+            ProcessServices::default(),
+            ProcessServices {
                 nearby_transfer: Some(Arc::new(UnannouncedNearby)),
                 ..Default::default()
             },
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
             announces: true,
             waits: Mutex::new(Vec::new()),
         });
-        let services = HostServices {
+        let services = ProcessServices {
             speakers: Some(service.clone()),
             ..Default::default()
         };
@@ -415,8 +415,8 @@ tilo_test_env::scenario! {
         );
 
         for services in [
-            HostServices::default(),
-            HostServices {
+            ProcessServices::default(),
+            ProcessServices {
                 speakers: Some(Arc::new(WaitingSpeakers {
                     announces: false,
                     waits: Mutex::new(Vec::new()),
@@ -434,7 +434,7 @@ tilo_test_env::scenario! {
     phase nearby_transfer_is_unavailable_without_a_host_service;
     {
         let unsupported = delegate_nearby_transfer_command(
-            &HostServices::default(),
+            &ProcessServices::default(),
             &files_context(),
             NEARBY_TRANSFER_APP_ID,
             &snapshot(),

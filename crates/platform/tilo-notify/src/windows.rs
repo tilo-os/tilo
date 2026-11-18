@@ -10,7 +10,7 @@
     clippy::needless_pass_by_value,
     clippy::cmp_owned,
     clippy::borrow_as_ptr,
-    reason = "moved unchanged from tilo-host's Windows toasts, which no Windows lint lane covers yet"
+    reason = "moved unchanged from tilo-host's Windows toasts, which no Windows lint job covers yet"
 )]
 
 use std::{marker::PhantomData, path::Path, rc::Rc, sync::OnceLock};

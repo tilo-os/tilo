@@ -29,7 +29,7 @@ struct LegacyEntry {
     parent_mode: u32,
     kind: Kind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    seed: Option<seeds::Witness>,
+    seed: Option<seeds::RecoveryBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     structure: Option<Vec<structure::Item>>,
 }
@@ -299,7 +299,7 @@ fn checkpoint_membership_rebuilds_exact_durable_ordinals_under_shared_quota() {
     assert!(!derived.insert(2).unwrap());
     assert_eq!(derived.len(), 1);
     assert!(!derived.contains(0).unwrap());
-    // Losing private scratch custody invalidates every cached query, even when
+    // Losing private scratch ownership invalidates every cached query, even when
     // the anonymous membership bytes themselves remain readable.
     std::fs::rename(
         fixture.path().join("workspace"),

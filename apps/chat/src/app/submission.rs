@@ -109,7 +109,7 @@ impl ChatApp {
 
     /// The last action an on-screen affordance applied.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<crate::record::ChatAction> {
+    pub(crate) fn last_dispatched(&self) -> Option<crate::chat::ChatAction> {
         self.dispatched.borrow().last().cloned()
     }
 
@@ -129,7 +129,7 @@ impl ChatApp {
 
     /// Test-only: apply what this window asked the person to confirm (a
     /// destructive verb), as the API does once they agree, and read the
-    /// record again.
+    /// resource again.
     #[cfg(test)]
     pub(crate) fn confirm_asked(&mut self, doc: &mut AutoCommit) {
         let Some(dispatch) = &self.dispatch else {

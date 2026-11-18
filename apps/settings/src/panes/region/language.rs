@@ -4,9 +4,8 @@
 //! One whose pack is installed is chosen at once; one the repositories offer is
 //! installed first, through the host's package portal.
 
-use std::sync::Mutex;
-
-use runtime_portal::runtime_request::{Client, OfferedLanguage, Response};
+use package_service::client::BlockingClient;
+use package_service::wire::OfferedLanguage;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
@@ -132,35 +131,31 @@ pub fn name(language: Option<&str>) -> String {
     )
 }
 
-fn with_host<T>(ask: impl FnOnce(&mut Client) -> std::io::Result<T>) -> Result<T, String> {
-    static HOST: std::sync::OnceLock<Option<Mutex<Client>>> = std::sync::OnceLock::new();
+#[cfg(unix)]
+fn with_host<T>(ask: impl FnOnce(&BlockingClient) -> Result<T, String>) -> Result<T, String> {
+    static HOST: std::sync::OnceLock<Option<BlockingClient>> = std::sync::OnceLock::new();
     let host = HOST
-        .get_or_init(|| Client::from_service().map(Mutex::new))
+        .get_or_init(|| BlockingClient::from_service().ok())
         .as_ref()
         .ok_or_else(|| t("settings-region-language-no-installer"))?;
-    let mut client = host
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let answer = ask(&mut client);
-    drop(client);
-    answer.map_err(|error| error.to_string())
+    ask(host)
+}
+
+/// No session hands the service off unix.
+#[cfg(not(unix))]
+fn with_host<T>(_ask: impl FnOnce(&BlockingClient) -> Result<T, String>) -> Result<T, String> {
+    Err(t("settings-region-language-no-installer"))
 }
 
 fn read_offered() -> Offered {
-    match with_host(Client::language_packs) {
-        Ok(Response::LanguagePacks { offered }) => Offered {
-            languages: offered,
+    match with_host(BlockingClient::language_packs) {
+        Ok(languages) => Offered {
+            languages,
             unavailable: None,
         },
-        Ok(Response::Failed { message } | Response::Refused { message }) | Err(message) => {
-            Offered {
-                languages: Vec::new(),
-                unavailable: Some(message),
-            }
-        }
-        Ok(other) => Offered {
+        Err(message) => Offered {
             languages: Vec::new(),
-            unavailable: Some(format!("the installer answered {other:?}")),
+            unavailable: Some(message),
         },
     }
 }
@@ -168,19 +163,7 @@ fn read_offered() -> Offered {
 /// Install the pack of `locale`, following the install until it lands or
 /// stops. Off the UI thread.
 fn install(locale: &str) -> Result<(), String> {
-    loop {
-        match with_host(|host| host.install_language_pack(locale))? {
-            Response::Installed => return Ok(()),
-            Response::Installing { .. } => {
-                tilo_rt::sleep_thread(std::time::Duration::from_millis(250))
-                    .map_err(|error| error.to_string())?;
-            }
-            Response::Failed { message } | Response::Refused { message } => return Err(message),
-            other @ Response::LanguagePacks { .. } => {
-                return Err(format!("the installer answered {other:?}"));
-            }
-        }
-    }
+    with_host(|host| host.install_language_pack(locale, |_| {}))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

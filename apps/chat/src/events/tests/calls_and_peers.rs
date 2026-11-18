@@ -113,12 +113,12 @@ fn voice_channels(app: &ChatApp) -> usize {
 /// A workspace whose only channel is `#chat`: its voice channel deleted.
 fn text_only_workspace() -> (ChatApp, crate::testing::Workspace) {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, model::ME, "You");
     crate::testing::apply_as(
         &mut doc,
         model::ME,
         Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
-            channel: item(crate::record::VOICE_CHANNEL),
+            channel: item(crate::chat::VOICE_CHANNEL),
         }),
     )
     .unwrap();
@@ -145,7 +145,7 @@ fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
 }
 
 /// Answer every voice request with the broker's reply when this app has
-/// no native media lane; returns how many there were.
+/// no native media queue; returns how many there were.
 fn refuse_voice(app: &mut ChatApp) -> usize {
     use ui::widget::Collaborative as _;
     let mut sent = 0;
@@ -154,7 +154,7 @@ fn refuse_voice(app: &mut ChatApp) -> usize {
             sent += 1;
             app.handle_collab_event(&ui::collaboration::CollabEvent::NativeMediaCommandResult {
                 request_id,
-                result: Err("native media requires the bounded control lane".into()),
+                result: Err("native media requires the bounded control media queue".into()),
             });
         }
     }
@@ -285,19 +285,18 @@ fn emoji_search_enter_picks_the_best_match() {
 
 /// A distinct member: a fresh app bound to the shared workspace
 /// starter, authoring under `id` — genuinely different from any other peer.
-fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
+fn peer(id: &str, name: &str, initials: &str) -> ChatApp {
     let mut app = ChatApp::new_ephemeral();
     app.me = crate::identity::LocalIdentity {
         id: MemberId::person(id),
         name: name.into(),
         initials: initials.into(),
-        color_idx: color,
     };
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
         &app.me.id.clone(),
     ));
-    app.active_channel = crate::record::CHAT_CHANNEL.into();
+    app.active_channel = crate::chat::CHAT_CHANNEL.into();
     app.thread_open = None;
     app.focus = Focus::Main;
     app
@@ -327,14 +326,14 @@ tilo_test_env::scenario! {
         // Alice opens the workspace's chat; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
         let mut doc_a = AutoCommit::new();
-        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice");
         let snapshot = doc_a.save(); // resets alice's incremental cursor
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        crate::testing::introduce(&mut doc_b, "u_bob", "Bob", "BO");
+        crate::testing::member("u_bob", "Bob");
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_alice", "Alice", "AL");
+        let mut b = peer("u_bob", "Bob", "BO");
         let parts = crate::testing::Workspace::default();
         a.attach_workspace(&parts);
         b.attach_workspace(&parts);
@@ -453,14 +452,14 @@ tilo_test_env::scenario! {
         // (begin_edit → insert_text → commit_edit → edit-message), then
         // shuttles the incremental delta a peer would receive from the broker.
         let mut doc_a = AutoCommit::new();
-        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice");
         let snapshot = doc_a.save();
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        crate::testing::introduce(&mut doc_b, "u_bob", "Bob", "BO");
+        crate::testing::member("u_bob", "Bob");
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_alice", "Alice", "AL");
+        let mut b = peer("u_bob", "Bob", "BO");
         let parts = crate::testing::Workspace::default();
         a.attach_workspace(&parts);
         b.attach_workspace(&parts);
@@ -553,10 +552,10 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     );
     assert!(
         !app.embed_allowed("/var/workspace/secret.png"),
-        "an ungranted embed is gated"
+        "an ungranted embed is guarded"
     );
 
-    // Sending is a no-op under the gate.
+    // Sending is a no-op under the check.
     let before = crate::testing::messages(&doc, "c_crit").len();
     app.insert_text(&mut ui::widget::Edits::lend(&mut doc), "should not post");
     app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
@@ -568,7 +567,7 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     assert_eq!(
         crate::testing::messages(&doc, "c_crit").len(),
         before,
-        "gated peer posts nothing"
+        "guarded peer posts nothing"
     );
 
     // Attaching is a no-op too.
@@ -577,10 +576,10 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     write_real_png(&png, 32, 32);
     assert!(
         !app.attach_file(&mut ui::widget::Edits::lend(&mut doc), &png),
-        "a gated peer can't attach either"
+        "a guarded peer can't attach either"
     );
 
-    // And reacting is gated.
+    // And reacting is guarded.
     if let Some(id) = app
         .messages
         .iter()
@@ -597,7 +596,7 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
         let after = app.messages.iter().find(|mm| mm.id == id).unwrap();
         assert!(
             after.reactions.iter().all(|r| r.emoji != "👍"),
-            "gated: no reaction added"
+            "guarded: no reaction added"
         );
     }
 }
@@ -1279,10 +1278,10 @@ tilo_test_env::scenario! {
     phase two_peers_join_through_native_service_without_publishing_legacy_tickets;
     {
         let mut doc_a = AutoCommit::new();
-        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice");
         let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_alice", "Alice", "AL");
+        let mut b = peer("u_bob", "Bob", "BO");
         a.reload(&doc_a);
         b.reload(&doc_b);
         let before_a = doc_a.save();

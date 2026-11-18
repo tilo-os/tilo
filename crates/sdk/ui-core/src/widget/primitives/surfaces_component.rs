@@ -250,7 +250,7 @@ impl Described for DeclaredModal {
         dialog.set_secondary_action(answer(secondary, &act_secondary));
         dialog.set_tertiary_action(answer(tertiary, &act_tertiary));
         dialog.set_destructive(destructive);
-        dialog.set_primary_gate(None);
+        dialog.set_primary_check(None);
         dialog.set_primary_enabled(primary_enabled);
         dialog.set_on_dismiss((!dismiss.is_none()).then(|| {
             let close = dismiss.clone();

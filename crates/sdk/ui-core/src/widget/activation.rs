@@ -356,13 +356,13 @@ impl Activation {
         self.state.pressed = false;
     }
 
-    pub(crate) fn install_custody(
+    pub(crate) fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
     }
 
@@ -830,14 +830,14 @@ impl PaintedTargets {
 macro_rules! activation_controls {
     ($ty:ty, $($field:tt).+) => {
         impl crate::widget::controls::ActionControls for $ty {
-            fn install_control_custody(
+            fn attach_controls(
                 &mut self,
                 domain: &crate::ControlDomain,
-                attachment: crate::control_custody::CustodyAttachment,
+                attachment: crate::control_domain::DomainAttachment,
             ) {
-                self.$($field).+.install_custody(domain, attachment);
+                self.$($field).+.attach(domain, attachment);
                 for child in crate::widget::Widget::children_mut(self) {
-                    crate::widget::controls::install_control_custody(child, domain, attachment);
+                    crate::widget::controls::attach_controls(child, domain, attachment);
                 }
             }
             fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

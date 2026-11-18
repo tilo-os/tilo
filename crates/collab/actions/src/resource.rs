@@ -527,7 +527,7 @@ impl ResourceViewSpec {
         self
     }
 
-    /// Make it what a place of the resource shows standing on its own ([`Self::place`]).
+    /// Make it what a place of the resource shows on its own ([`Self::place`]).
     #[must_use]
     pub fn with_place(mut self, place: bool) -> Self {
         self.place = place;
@@ -723,7 +723,6 @@ pub fn listed_for_people(kind: &str, label: &str) -> bool {
 
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).
-#[derive(Clone)]
 pub struct ResourceSpec {
     pub id: ResourceId,
     /// A stable kind tag (e.g. `"tube.video"`, `"ebook.annotation"`),
@@ -752,6 +751,27 @@ pub struct ResourceSpec {
     pub personal: bool,
     /// What it is, as people name it, when its type says ([`ResourceType`]).
     pub resource_type: Option<ResourceType>,
+}
+
+/// Written out rather than derived: a derived `clone` is inlined into every
+/// app that copies a resource, this one is compiled once.
+impl Clone for ResourceSpec {
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            label: self.label.clone(),
+            presentation: self.presentation.clone(),
+            semantic_identity: self.semantic_identity.clone(),
+            app_id: self.app_id.clone(),
+            children: self.children.clone(),
+            actions: self.actions.clone(),
+            views: self.views.clone(),
+            personal: self.personal,
+            resource_type: self.resource_type.clone(),
+        }
+    }
 }
 
 impl ResourceSpec {
@@ -920,7 +940,7 @@ pub enum ActionInput<'a> {
 
 /// What an action type keeps of how the palette collects its input.
 #[derive(Clone)]
-enum Lane {
+enum InputMode {
     /// Fires at once. `Some` holds the encoding made when the action was
     /// declared (an action with no target, so one encoding for every
     /// invocation); `None` builds it from the target per invocation.
@@ -1073,7 +1093,7 @@ enum InvocationBuilder {
         build: ArgsBuilder,
         deferred_type: Option<String>,
     },
-    /// A prompted action's builder of its one text, which the typed lane
+    /// A prompted action's builder of its one text, which the typed input mode
     /// reads from the action's [`prompt parameter`](ActionSpec::prompt_param).
     Text(TargetTextBuilder),
 }
@@ -1133,13 +1153,13 @@ pub struct ActionType {
     /// Machine-readable safety, availability, lifecycle, and result contract.
     pub contract: ActionContract,
     /// How the palette collects the input. See [`ActionSpec::input`].
-    lane: Lane,
+    input: InputMode,
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
     /// together by a constructor, never independently.
     params: Vec<ActionParam>,
     /// Builds the encoded action from arguments bound against `params`. The
-    /// palette's lane uses the same closure, which is what makes the palette
+    /// palette's input mode uses the same closure, which is what makes the palette
     /// path and the external path provably one function.
     build: InvocationBuilder,
     /// Classifies one invocation's bound arguments when the action's risk
@@ -1250,7 +1270,7 @@ struct TypedActionSeed {
     params: Vec<ActionParam>,
 }
 
-/// What a constructor declares of a new action type before its lane and
+/// What a constructor declares of a new action type before its input mode and
 /// builder.
 struct Declared {
     id: String,
@@ -1305,10 +1325,10 @@ impl ActionSpec {
     /// How the palette collects this action's input.
     #[must_use]
     pub fn input(&self) -> ActionInput<'_> {
-        match &self.lane {
-            Lane::Immediate(encoded) => ActionInput::Immediate(encoded.as_ref()),
-            Lane::Deferred { type_id } => ActionInput::Deferred { type_id },
-            Lane::Prompted {
+        match &self.input {
+            InputMode::Immediate(encoded) => ActionInput::Immediate(encoded.as_ref()),
+            InputMode::Deferred { type_id } => ActionInput::Deferred { type_id },
+            InputMode::Prompted {
                 prompt,
                 placeholder,
                 collects,
@@ -1326,12 +1346,12 @@ impl ActionSpec {
     /// one bound to a target is encoded for it now.
     #[must_use]
     pub fn encode_immediate(&self) -> Option<Arc<EncodedAction>> {
-        match &self.lane {
-            Lane::Immediate(Some(encoded)) => Some(Arc::clone(encoded)),
-            Lane::Immediate(None) => {
+        match &self.input {
+            InputMode::Immediate(Some(encoded)) => Some(Arc::clone(encoded)),
+            InputMode::Immediate(None) => {
                 Some(Arc::new(self.ty.encode(&self.target, &ActionArgs::none())))
             }
-            Lane::Deferred { .. } | Lane::Prompted { .. } => None,
+            InputMode::Deferred { .. } | InputMode::Prompted { .. } => None,
         }
     }
 
@@ -1341,9 +1361,9 @@ impl ActionSpec {
     /// items runs no action.
     #[must_use]
     pub fn published_encoding(&self) -> Option<&Arc<EncodedAction>> {
-        match &self.lane {
-            Lane::Immediate(encoded) => encoded.as_ref(),
-            Lane::Deferred { .. } | Lane::Prompted { .. } => None,
+        match &self.input {
+            InputMode::Immediate(encoded) => encoded.as_ref(),
+            InputMode::Deferred { .. } | InputMode::Prompted { .. } => None,
         }
     }
 
@@ -1352,9 +1372,9 @@ impl ActionSpec {
     /// declared one, as the API does.
     #[must_use]
     pub fn build_deferred(&self) -> Option<EncodedAction> {
-        match &self.lane {
-            Lane::Deferred { .. } => Some(self.ty.encode(&self.target, &ActionArgs::none())),
-            Lane::Immediate(_) | Lane::Prompted { .. } => None,
+        match &self.input {
+            InputMode::Deferred { .. } => Some(self.ty.encode(&self.target, &ActionArgs::none())),
+            InputMode::Immediate(_) | InputMode::Prompted { .. } => None,
         }
     }
 
@@ -1451,8 +1471,8 @@ impl ActionSpec {
     }
 
     pub(crate) fn validate_deferred_shape(&self) -> Result<(), ArgError> {
-        match (&self.lane, self.deferred_invocation_type()) {
-            (Lane::Deferred { type_id }, Some(expected))
+        match (&self.input, self.deferred_invocation_type()) {
+            (InputMode::Deferred { type_id }, Some(expected))
                 if !type_id.is_empty()
                     && type_id == expected
                     && self.params.is_empty()
@@ -1465,7 +1485,7 @@ impl ActionSpec {
             {
                 Ok(())
             }
-            (Lane::Deferred { .. }, _) | (_, Some(_)) => Err(ArgError::Constraint {
+            (InputMode::Deferred { .. }, _) | (_, Some(_)) => Err(ArgError::Constraint {
                 name: "deferred".into(),
                 reason: "deferred input and retained declaration disagree".into(),
             }),
@@ -1599,7 +1619,7 @@ impl ActionSpec {
     fn declared(
         seed: Declared,
         contract: ActionContract,
-        lane: Lane,
+        input: InputMode,
         build: InvocationBuilder,
     ) -> Self {
         Self::of(ActionType {
@@ -1615,7 +1635,7 @@ impl ActionSpec {
             kind: seed.kind,
             operation_type: seed.operation_type,
             contract,
-            lane,
+            input,
             params: seed.params,
             build,
             risk_of: None,
@@ -1629,7 +1649,7 @@ impl ActionSpec {
     }
 
     /// A document operation whose no-argument builder runs only at execution.
-    /// Both invocation lanes share this one closure; construction never runs it.
+    /// Both invocation input modes share this one closure; construction never runs it.
     pub fn deferred(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -1681,7 +1701,7 @@ impl ActionSpec {
         Self::declared(
             seed,
             contract,
-            Lane::Deferred {
+            InputMode::Deferred {
                 type_id: type_id.clone(),
             },
             InvocationBuilder::Dynamic {
@@ -1698,7 +1718,7 @@ impl ActionSpec {
         Self::declared(
             seed,
             contract,
-            Lane::Immediate(Some(Arc::clone(&encoded))),
+            InputMode::Immediate(Some(Arc::clone(&encoded))),
             InvocationBuilder::Fixed(encoded),
         )
     }
@@ -1792,7 +1812,7 @@ impl ActionSpec {
         Self::declared(
             seed,
             unnamed_kind(ActionContract::default()),
-            Lane::Prompted {
+            InputMode::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
@@ -1806,8 +1826,10 @@ impl ActionSpec {
     /// caller holding the text of a prompt (the palette, a broker request, a
     /// continuation) learns where it belongs.
     pub fn prompt_param(&self) -> Option<&str> {
-        match self.lane {
-            Lane::Prompted { .. } => primary_param(self.params()).map(|param| param.name.as_ref()),
+        match self.input {
+            InputMode::Prompted { .. } => {
+                primary_param(self.params()).map(|param| param.name.as_ref())
+            }
             _ => None,
         }
     }
@@ -1884,7 +1906,7 @@ impl ActionSpec {
         Self::declared(
             seed,
             ActionContract::for_operation(kind),
-            Lane::Prompted {
+            InputMode::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
@@ -2029,11 +2051,11 @@ impl ActionSpec {
         } else {
             build
         };
-        let lane = match primary_param(&seed.params) {
-            None => Lane::Immediate(
+        let input = match primary_param(&seed.params) {
+            None => InputMode::Immediate(
                 eager.then(|| Arc::new(build(&Target::none(), &ActionArgs::none()))),
             ),
-            Some(primary) => Lane::Prompted {
+            Some(primary) => InputMode::Prompted {
                 prompt: primary.description.to_string(),
                 placeholder: seed.placeholder,
                 collects: Collects::Words,
@@ -2050,7 +2072,7 @@ impl ActionSpec {
                 params: seed.params,
             },
             contract,
-            lane,
+            input,
             InvocationBuilder::Dynamic {
                 build,
                 deferred_type: None,
@@ -2064,7 +2086,7 @@ impl ActionSpec {
     /// arguments all have a meaning when left out (open search, unnarrowed).
     #[must_use]
     pub fn with_immediate(mut self, encoded: EncodedAction) -> Self {
-        self.type_mut().lane = Lane::Immediate(Some(Arc::new(encoded)));
+        self.type_mut().input = InputMode::Immediate(Some(Arc::new(encoded)));
         self
     }
 
@@ -2076,7 +2098,7 @@ impl ActionSpec {
     #[must_use]
     pub fn with_immediate_per_target(mut self) -> Self {
         if self.params().iter().all(|param| !param.required) {
-            self.type_mut().lane = Lane::Immediate(None);
+            self.type_mut().input = InputMode::Immediate(None);
         }
         self
     }
@@ -2144,7 +2166,7 @@ impl ActionSpec {
             locus,
             build,
         );
-        if let Lane::Prompted { collects, .. } = &mut spec.type_mut().lane {
+        if let InputMode::Prompted { collects, .. } = &mut spec.type_mut().input {
             *collects = Collects::Content;
         }
         spec
@@ -2373,7 +2395,7 @@ impl ActionSpec {
     /// writes only the comments, a deletion changes the document). The
     /// declared [`ActionContract::kind`] and [`ActionContract::field`] stay
     /// the least any invocation is, which is what a host offers the action
-    /// under; every gate that admits an invocation asks
+    /// under; every check that admits an invocation asks
     /// [`need_for`](Self::need_for) too.
     #[must_use]
     pub fn with_need_of(
@@ -2462,7 +2484,7 @@ impl ActionSpec {
     /// The confirmation one invocation with these bound arguments needs: the
     /// declared policy when there is one, else
     /// [`Confirm`](ConfirmationPolicy::Confirm) when
-    /// [`risk_for`](Self::risk_for) requires confirmation. Every gate that
+    /// [`risk_for`](Self::risk_for) requires confirmation. Every check that
     /// admits an invocation asks this, never the declared policy alone.
     pub fn confirmation_for_args(&self, args: &ActionArgs) -> ConfirmationPolicy {
         if self.contract.confirmation != ConfirmationPolicy::None || self.risk_of.is_none() {
@@ -2608,12 +2630,12 @@ impl ActionSpec {
                 InvocationBuilder::Text(Arc::new(move |target, text| wrap(build(target, text))))
             }
         };
-        match &mut ty.lane {
-            Lane::Immediate(Some(encoded)) => {
+        match &mut ty.input {
+            InputMode::Immediate(Some(encoded)) => {
                 *encoded = Arc::new(wrap(encoded.as_ref().clone()));
             }
-            Lane::Deferred { type_id } => wrapped_type.clone_into(type_id),
-            Lane::Immediate(None) | Lane::Prompted { .. } => {}
+            InputMode::Deferred { type_id } => wrapped_type.clone_into(type_id),
+            InputMode::Immediate(None) | InputMode::Prompted { .. } => {}
         }
         self
     }
@@ -2677,10 +2699,10 @@ impl ActionSpec {
         self.validate_built(self.ty.encode(&self.target, &bound))
     }
 
-    /// The palette lane's encoding for one typed text argument, exactly as a
+    /// The palette input mode's encoding for one typed text argument, exactly as a
     /// prompted affordance builds it. `None` when this action collects no text.
     pub fn build_text(&self, text: &str) -> Option<EncodedAction> {
-        if !matches!(self.lane, Lane::Prompted { .. }) {
+        if !matches!(self.input, InputMode::Prompted { .. }) {
             return None;
         }
         Some(match &self.build {

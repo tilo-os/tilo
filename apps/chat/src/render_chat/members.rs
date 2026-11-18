@@ -74,14 +74,7 @@ impl ChatApp {
                 }
                 // Named as the workspace names them, numbered when shared: the
                 // same label as their lines in the timeline.
-                let display = if person.is_agent && !self.is_me(&person.id) {
-                    crate::i18n::t_args(
-                        "chat-agent-author",
-                        &[("name", person.name.clone().into())],
-                    )
-                } else {
-                    self.user_name(&person.id)
-                };
+                let display = self.user_name(&person.id);
                 // A plain "Online" under every name says nothing the section
                 // has not; where someone is, or that they are away, does.
                 let status = match voice {
@@ -96,7 +89,7 @@ impl ChatApp {
                 let name = self.user_name(&person.id);
                 let mut face = ListRowFace::new(&display)
                     .leading(RowLeading::Avatar(
-                        AvatarFace::new(&name, person.id.id())
+                        AvatarFace::member(&name, &person.id)
                             .presence(self.identity_colour(&person.id))
                             .status(avatar_status(person.status)),
                     ))
@@ -119,7 +112,7 @@ impl ChatApp {
                         row,
                         Hit::ShowPerson {
                             person: person.id.clone(),
-                            place: format!("member:{}", crate::record::member_slot(&person.id)),
+                            place: format!("member:{}", crate::chat::member_slot(&person.id)),
                         },
                     );
                 }
@@ -175,7 +168,7 @@ impl ChatApp {
                 .secondary(&m.text)
                 .two_line_secondary()
                 .leading(RowLeading::Avatar(
-                    AvatarFace::new(&name, m.author.id()).presence(self.identity_colour(&m.author)),
+                    AvatarFace::member(&name, &m.author).presence(self.identity_colour(&m.author)),
                 ));
             let row_h = face.height(ctx.text, theme);
             let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);

@@ -1,5 +1,5 @@
 /**
- * Where a request goes: the one seam under the API.
+ * Where a request goes: the one boundary under the API.
  *
  * The SDK speaks Tilo's `/v1` API (`docs/developers/api.md`), and two things
  * serve it: an API server, reached with `fetch` ([`HttpTransport`]), and a

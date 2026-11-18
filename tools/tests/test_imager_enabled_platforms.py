@@ -1,4 +1,4 @@
-"""Check enabled release lanes and execute the real artifact gate without builds."""
+"""Check enabled release jobs and execute the real artifact check without builds."""
 import hashlib
 from pathlib import Path
 import subprocess
@@ -44,13 +44,13 @@ class EnabledImagerPlatforms(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
 
-    def test_release_gate_requires_every_enabled_platform_artifact(self):
+    def test_release_check_requires_every_enabled_platform_artifact(self):
         with self.subTest(phase='a tag or a full-native dispatch requires both macos architectures'):
             self.doCleanups()
             self.setUp()
             macos = section(self.workflow, "macos", 2)
             # macOS and Windows need hosts this fleet does not serve, so a
-            # promotion publishes the Linux media and these lanes wait for a
+            # promotion publishes the Linux media and these jobs wait for a
             # tag or for a dispatch that names them.
             self.assertIn(
                 "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",
@@ -72,7 +72,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
             self.assertIn('TILO_IMAGER_MACOS_ENABLED: "1"', homebrew)
             site = section(self.workflow, "site-downloads", 2)
             self.assertIn("    needs: [homebrew-install-test, homebrew-macos-install-test, winget]", site)
-        with self.subTest(phase='real release gate accepts linux windows and rejects missing or corrupt'):
+        with self.subTest(phase='real release check accepts linux windows and rejects missing or corrupt'):
             self.doCleanups()
             self.setUp()
             script = step_script(self.workflow, "enabled-assets")
@@ -89,7 +89,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
                         (assets / name).write_bytes(b"fixture")
                         digest = hashlib.sha256(b"fixture").hexdigest()
                         (assets / (name + ".sha256")).write_text(f"{digest}  {name}\n")
-                        # This gate checks signature presence; real signature verification
+                        # This check checks signature presence; real signature verification
                         # belongs to verify-linux-release.sh and its existing tests.
                         (assets / (name + ".asc")).write_text("signature fixture")
                 for name in ("Tilo.Imager.installer.yaml", "Tilo.Imager.yaml", "Tilo.Imager.locale.en-US.yaml"):
@@ -107,7 +107,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
                 corrupt = run()
                 self.assertNotEqual(0, corrupt.returncode)
                 self.assertIn("invalid release digest", corrupt.stderr)
-        with self.subTest(phase='release gate explicitly requires every macos artifact'):
+        with self.subTest(phase='release check explicitly requires every macos artifact'):
             self.doCleanups()
             self.setUp()
             script = step_script(self.workflow, "enabled-assets")

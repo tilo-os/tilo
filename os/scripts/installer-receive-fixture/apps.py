@@ -130,7 +130,7 @@ def _invoke(control, row, args, services, deadline):
         receipt = reply.get('receipt')
         if (not isinstance(receipt, dict) or receipt.get('broker_invocation_id') != broker
                 or not isinstance(receipt.get('update'), dict)):
-            raise RuntimeError('actual broker status changed custody')
+            raise RuntimeError('actual broker status changed ownership')
         _pause(services, deadline)
     raise RuntimeError('actual invocation completion remains unknown')
 
@@ -308,7 +308,7 @@ def _retirement_entries(control, services, deadline):
                 or type(entry['child_reaped']) is not bool
                 or not isinstance(entry['proof_terminations'], list) or len(entry['proof_terminations']) > 258
                 or (entry['root_pid'] is not None and (type(entry['root_pid']) is not int or entry['root_pid'] <= 1))):
-            raise RuntimeError('actual source retirement identity/custody is invalid')
+            raise RuntimeError('actual source retirement identity/ownership is invalid')
         seen.add(identity)
     return entries
 
@@ -323,7 +323,7 @@ def _retired(control, original, services, deadline):
                                   for key in ('source_operation', 'context_sha256', 'root_pid')):
             raise RuntimeError('actual root retirement record disappeared or changed identity')
         if current['state'] == 'unknown':
-            raise RuntimeError('actual root/source retirement custody is unknown')
+            raise RuntimeError('actual root/source retirement ownership is unknown')
         if current['state'] == 'retired':
             terminations = current['proof_terminations']
             if (current['child_reaped'] is not True or current['pending_proofs'] != 0

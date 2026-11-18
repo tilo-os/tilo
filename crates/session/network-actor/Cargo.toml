@@ -1,6 +1,6 @@
 [package]
 name = "tilo-network-actor"
-description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace host sessions, sessions with the person's own devices, direct links and a person's private device lane."
+description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace host sessions, sessions with the person's own devices, direct links and a person's private device connection."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -32,20 +32,20 @@ thiserror.workspace = true
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 # Who a device is and the revision a fact carries, as every host reads them.
 tilo-fabric-core = { path = "../../collab/fabric-core" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
+tilo-server-client = { path = "../../server/tilo-server-client" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
+tilo-server-session = { path = "../../server/tilo-server-session" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service" }
 tilo-rt.workspace = true
 tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }

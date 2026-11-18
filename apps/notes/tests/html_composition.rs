@@ -18,6 +18,13 @@ fn find<'a>(node: &'a Composed, widget: &str) -> Vec<&'a Composed> {
     found
 }
 
+/// Whether a list row's own parts say `title`.
+fn says(row: &Composed, title: &str) -> bool {
+    row.children
+        .iter()
+        .any(|part| matches!(&part.own, Some(Own::Text(look)) if look.text == title))
+}
+
 /// Whether `path` is `node` or stands somewhere under it.
 fn holds(node: &Composed, path: &str) -> bool {
     node.children
@@ -93,7 +100,7 @@ fn a_note_renders_as_its_own_elements() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].tag, Some("li"));
     assert!(
-        matches!(&rows[0].own, Some(Own::Text(look)) if look.text == "Groceries"),
+        says(rows[0], "Groceries"),
         "the sidebar's row says the note's title"
     );
     assert!(
@@ -289,7 +296,7 @@ fn the_page_tree_composes_as_a_tree() {
     let rows = find(&composition.root, "ListRow");
     let row = |title: &str| {
         rows.iter()
-            .find(|row| matches!(&row.own, Some(Own::Text(look)) if look.text == title))
+            .find(|row| says(row, title))
             .copied()
             .unwrap_or_else(|| panic!("the row saying {title:?} composes"))
     };
@@ -321,14 +328,12 @@ fn the_page_tree_composes_as_a_tree() {
     let composition = app.harness().composition();
     let rows = find(&composition.root, "ListRow");
     assert!(
-        !rows
-            .iter()
-            .any(|row| matches!(&row.own, Some(Own::Text(look)) if look.text == "Engineering")),
+        !rows.iter().any(|row| says(row, "Engineering")),
         "the folded note leaves the page"
     );
     let parent_row = rows
         .iter()
-        .find(|row| matches!(&row.own, Some(Own::Text(look)) if look.text == "Handbook"))
+        .find(|row| says(row, "Handbook"))
         .expect("the note holding others stays");
     let disclosure = find(parent_row, "RowDisclosure")
         .into_iter()

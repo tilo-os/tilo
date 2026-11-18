@@ -504,6 +504,10 @@ pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
 
 /// [`domain_xml`] for a domain that already exists: libvirt redefines a
 /// domain only under its own UUID.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one domain document assembled from the entry, field by field"
+)]
 pub fn domain_xml_with_uuid(
     vm: &Vm<'_>,
     root_key: &str,
@@ -522,6 +526,23 @@ pub fn domain_xml_with_uuid(
     let e = quick_xml::escape::escape;
     let uuid = uuid.or(vm.entry.uuid.as_deref());
     let lan = crate::lan::mac(vm.entry);
+    // libvirt otherwise picks the machine's default render node, which on a
+    // laptop with a discrete NVIDIA card is that card: its EGL stack
+    // initialises no context for virglrenderer, the guest gets no GL, and a
+    // screenshot taken from outside the guest has no surface. Name the node
+    // the boot reports instead.
+    let gl = if vm.entry.gl {
+        let node = match vm.entry.render_node.as_deref() {
+            Some(node) => node.to_owned(),
+            None => crate::qemu::resolve_rendernode(None)?.path,
+        };
+        format!(
+            "\n    <graphics type='egl-headless'><gl enable='yes' rendernode='{}'/></graphics>",
+            quick_xml::escape::escape(node.as_str())
+        )
+    } else {
+        String::new()
+    };
     Ok(format!(
         "<domain type='{domain_type}'{namespace}>
   <name>{name}</name>{uuid}
@@ -583,11 +604,7 @@ pub fn domain_xml_with_uuid(
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
         video = video_model(vm.entry),
-        gl = if vm.entry.gl {
-            "\n    <graphics type='egl-headless'/>"
-        } else {
-            ""
-        },
+        gl = gl,
         disk_boot = if vm.entry.boot_esp.is_some() {
             "\n      <boot order='2'/>"
         } else {
@@ -790,7 +807,11 @@ impl Hypervisor for Qemu {
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         let disk = vm.entry.disk.clone().unwrap_or_default();
         let display = if vm.entry.gl { "--gl" } else { "--2d" };
-        let mut command = Self::script(vm, &["boot", display, "--disk", &disk])
+        let mut args = vec!["boot", display, "--disk", disk.as_str()];
+        if let (true, Some(node)) = (vm.entry.gl, vm.entry.render_node.as_deref()) {
+            args.extend(["--rendernode", node]);
+        }
+        let mut command = Self::script(vm, &args)
             .env("TILO_MEM", vm.memory().to_string())
             .env("TILO_SMP", vm.cpus().to_string());
         if let Some(key) = &vm.entry.key {
@@ -2440,6 +2461,7 @@ mod tests {
             );
             let gl = VmEntry {
                 gl: true,
+                render_node: Some("/dev/dri/renderD128".into()),
                 resolution: Some("5120x2880".into()),
                 ..entry()
             };
@@ -2453,7 +2475,7 @@ mod tests {
             .unwrap();
             assert!(
                 xml.contains(
-                    "<graphics type='spice' autoport='yes'/>\n    <graphics type='egl-headless'/>"
+                    "<graphics type='spice' autoport='yes'/>\n    <graphics type='egl-headless'><gl enable='yes' rendernode='/dev/dri/renderD128'/></graphics>"
                 ),
                 "{xml}"
             );

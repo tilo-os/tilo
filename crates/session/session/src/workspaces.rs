@@ -128,7 +128,7 @@ pub(crate) struct Adoption {
 pub(crate) struct Personal {
     /// This device's collaboration identity: the list's updates are signed with its key, and its
     /// certificate names the device to the person's others.
-    identity: tilo_network_actor::HostIdentity,
+    identity: tilo_network_actor::DeviceIdentity,
     directory: WorkspaceDirectory,
     /// This device, as the list's device registers name it.
     device: [u8; 32],
@@ -165,13 +165,13 @@ pub(crate) struct Personal {
     unreadable: bool,
     /// The list as the person's keys read it, last kept on the hosts of their workspaces and handed
     /// to this device's API: kept again when it moves.
-    kept: Option<tilo_relay_session::workspaces::PersonalList>,
+    kept: Option<tilo_server_session::workspaces::PersonalList>,
     /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
     /// serves, so a list said before then is kept on them once it does.
     kept_on_hosts: bool,
     /// What the files this device's fleet is read from looked like when the list was last said:
     /// a fleet that moved since — a device this device's root just certified — is said again.
-    pub(crate) fleet: Option<tilo_identity_host::device_fleet::FleetStamps>,
+    pub(crate) fleet: Option<tilo_identity::device_fleet::FleetStamps>,
     /// The workspaces whose host has not taken this device in yet that the person was told of:
     /// once each, not on every ask that times out.
     told_awaiting: BTreeSet<WorkspaceId>,
@@ -297,7 +297,7 @@ impl Personal {
     /// only when there is no state directory.
     /// A file this build cannot read starts empty: the first pass lists this device's workspaces
     /// again, and the person's other devices answer with theirs.
-    pub(crate) fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Self {
+    pub(crate) fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Self {
         let user = identity.device_cert.user_public_key;
         let device = identity.device_cert.device_public_key;
         let store = state.map(|state| state.join("tilo").join(FILE));
@@ -830,7 +830,7 @@ impl Personal {
     pub(crate) fn readable(
         &self,
         hint: impl Fn(&str) -> Option<Vec<u8>>,
-    ) -> tilo_relay_session::workspaces::PersonalList {
+    ) -> tilo_server_session::workspaces::PersonalList {
         let mut listed = self.directory.list_workspaces();
         listed.sort_by(|a, b| {
             a.order
@@ -843,19 +843,19 @@ impl Personal {
             .map(|meta| {
                 let workspace = meta.id;
                 let host = hint(&workspace.to_string()).and_then(|hint| {
-                    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(&hint)
+                    tilo_server_session::workspaces::KeepingDeviceAddress::of_hint(&hint)
                 });
-                tilo_relay_session::workspaces::PersonalWorkspace {
+                tilo_server_session::workspaces::PersonalWorkspace {
                     name: meta.name,
                     host,
                     role: meta.governor.is_none().then(|| "owner".to_owned()),
                     workspace: workspace.to_string(),
-                    labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                    labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
                     unattended: false,
                 }
             })
             .collect();
-        tilo_relay_session::workspaces::PersonalList {
+        tilo_server_session::workspaces::PersonalList {
             workspaces,
             devices: Vec::new(),
         }
@@ -1119,7 +1119,7 @@ impl crate::Shared {
     /// with its invitation: this device becomes a member of the workspace and
     /// takes in its state. A
     /// session that holds no workspaces, or takes no part in the collaboration
-    /// plane,
+    /// peer network,
     /// shows the workspace with what this computer itself keeps in it.
     ///
     /// A workspace the session does not already hold is put on it when the
@@ -1141,7 +1141,7 @@ impl crate::Shared {
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
                 held_locally = true,
-                "join: this session holds no workspaces or takes no part in the collaboration plane, so the workspace stays as this computer keeps it"
+                "join: this session holds no workspaces or takes no part in the peer network, so the workspace stays as this computer keeps it"
             );
             self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
@@ -1254,7 +1254,7 @@ impl crate::Shared {
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
-                    // The workspace's live plane opens now, not when a key of some workspace
+                    // The workspace's live session opens now, not when a key of some workspace
                     // next moves here.
                     sync.workspace_arrived();
                     // The workspace is put on the shell now, once the host admitted this
@@ -1550,7 +1550,7 @@ impl crate::Shared {
                 &engine.identity().device_cert.user_public_key,
             )
             .into_iter()
-            .map(|cert| tilo_relay_session::workspaces::PersonalDevice {
+            .map(|cert| tilo_server_session::workspaces::PersonalDevice {
                 cert,
                 // The person names their devices where the record is kept.
                 name: None,
@@ -1762,7 +1762,7 @@ mod tests {
 
     /// The list as a later session opens it: a session flushes its writes before it ends, and
     /// opening here stands for that start.
-    fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Personal {
+    fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Personal {
         written();
         Personal::open(identity, state)
     }
@@ -1773,7 +1773,7 @@ mod tests {
     }
 
     /// A device of the person's, certified for their own root key.
-    fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::HostIdentity {
+    fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::DeviceIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
         let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
         let mut cert = DeviceCert {
@@ -1787,7 +1787,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        tilo_network_actor::HostIdentity::kept(cert, this)
+        tilo_network_actor::DeviceIdentity::kept(cert, this)
     }
 
     /// The session a fresh device starts from.
@@ -1897,6 +1897,8 @@ mod tests {
                 version: 1,
                 holds_keys: true,
                 runs_work: false,
+                label: String::new(),
+                cloud: false,
                 workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
                 endpoint_addr: iroh::EndpointAddr::new(
                     iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
@@ -2341,7 +2343,7 @@ mod tests {
 
     /// Where `identity` is reached for a workspace, as it signed it: `opaque` says which address.
     fn host_hint(
-        identity: &tilo_network_actor::HostIdentity,
+        identity: &tilo_network_actor::DeviceIdentity,
         opaque: &str,
     ) -> tilo_peer_state::join::TransportHint {
         tilo_peer_state::join::sign_transport_hint(

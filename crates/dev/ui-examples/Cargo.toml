@@ -21,7 +21,7 @@ presentation-feedback = ["tilo-ui/presentation-feedback"]
 # inherited its dependency graph. Keep the same direct crates they `use`.
 accesskit = "0.25.0"
 automerge.workspace = true
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 image.workspace = true
 tilo-doc = { path = "../../doc/tilo-doc" }

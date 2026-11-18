@@ -43,7 +43,7 @@ fn deferred_fixture() -> (
             crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
         ),
         resources: Rc::new(RefCell::new(vec![resource])),
-        ledger: Rc::new(RefCell::new(vec![])),
+        log: Rc::new(RefCell::new(vec![])),
         output: Rc::new(RefCell::new(None)),
     };
     (widget, calls, domain)
@@ -57,7 +57,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::Ordering;
         for native in [true, false] {
             let (widget, calls, _) = deferred_fixture();
-            let ledger = widget.ledger.clone();
+            let log = widget.log.clone();
             let mut host = Host::new(native, managed(Box::new(widget)));
             for _ in 0..3 {
                 host.frame();
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
                     expected + 1,
                     "one admitted handler builds once"
                 );
-                assert_eq!(ledger.borrow()[expected], serde_json::json!(expected));
+                assert_eq!(log.borrow()[expected], serde_json::json!(expected));
             }
         }
     }
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
         for native in [true, false] {
             for change in ["draft", "permission"] {
                 let (widget, calls, domain) = deferred_fixture();
-                let ledger = widget.ledger.clone();
+                let log = widget.log.clone();
                 let mut host = Host::new(native, managed(Box::new(widget)));
                 host.activate("Emit request");
                 if change == "draft" {
@@ -104,7 +104,7 @@ tilo_test_env::scenario! {
                 }
                 host.activate("Run fixture");
                 assert_eq!(calls.load(Ordering::SeqCst), 0, "{native}:{change}");
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
             }
         }
     }
@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
         for native in [true, false] {
             for changed in [false, true] {
                 let (widget, calls, domain) = deferred_fixture();
-                let ledger = widget.ledger.clone();
+                let log = widget.log.clone();
                 let mut host = Host::new(native, managed(Box::new(widget)));
                 host.activate("Emit request");
                 host.activate("History");
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
                     usize::from(!changed),
                     "{native}:{changed}"
                 );
-                assert_eq!(ledger.borrow().len(), usize::from(!changed));
+                assert_eq!(log.borrow().len(), usize::from(!changed));
             }
         }
     }
@@ -140,14 +140,14 @@ tilo_test_env::scenario! {
         use std::sync::atomic::Ordering;
         for native in [true, false] {
             let (widget, calls, _) = deferred_fixture();
-            let ledger = widget.ledger.clone();
+            let log = widget.log.clone();
             let (root, guard) = owned(widget);
             let mut host = Host::new(native, guard.managed(root));
             host.activate("Emit request");
             guard.close();
             host.activate("Run fixture");
             assert_eq!(calls.load(Ordering::SeqCst), 0);
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
         }
     }
 
@@ -155,7 +155,7 @@ tilo_test_env::scenario! {
     {
         use std::sync::atomic::Ordering;
         let (widget, calls, _) = deferred_fixture();
-        let ledger = widget.ledger.clone();
+        let log = widget.log.clone();
         let mut host = Host::new(true, managed(Box::new(widget)));
         let Host::Native(app) = &mut host else {
             unreachable!()
@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
         layout(app);
         host.activate("Run fixture");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
+        assert_eq!(&*log.borrow(), &[serde_json::json!(0)]);
     }
 
     phase deferred_semantic_no_confirmation_reaches_final_owner_once;
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
             .type_mut()
             .contract
             .confirmation = tilo_actions::ConfirmationPolicy::None;
-        let ledger = widget.ledger.clone();
+        let log = widget.log.clone();
         let mut app =
             App::from_managed_root_with_controlled_inputs(State::new(), managed(Box::new(widget)))
                 .unwrap();
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
             1,
             "no-confirmation semantic activation must reach the ordinary owner api"
         );
-        assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
+        assert_eq!(&*log.borrow(), &[serde_json::json!(0)]);
     }
 }
 fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
@@ -219,7 +219,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
         spec.type_mut().kind = tilo_actions::OperationKind::View;
         spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::None;
     }
-    let ledger = widget.ledger.clone();
+    let log = widget.log.clone();
     let (root, guard) = owned(widget);
     let binding = &guard.binding;
     let target = crate::bound_dispatch::BoundActionTarget {
@@ -257,7 +257,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
             matches!(result, Err(tilo_actions::ApiError::Unavailable { ref code, .. }) if code == "private_view")
         );
         assert!(
-            ledger.borrow().is_empty(),
+            log.borrow().is_empty(),
             "the private View handler must not run"
         );
         assert_eq!(
@@ -272,7 +272,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "one local owner mint");
         assert_eq!(
-            &*ledger.borrow(),
+            &*log.borrow(),
             &[serde_json::json!(0)],
             "one local View handler"
         );

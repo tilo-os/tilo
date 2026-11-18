@@ -19,25 +19,26 @@
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
 import {notifyThisBrowser} from './web-push.mjs';
-import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
+import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside, visitorLocale} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
-import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
-import {pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {deviceLabel, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, whenRequested} from './pairing.mjs';
+import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
+import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
@@ -147,6 +148,27 @@ const element = (tag, className, text) => {
   if (text !== undefined) node.textContent = text;
   return node;
 };
+
+/** The name the invitation card shows for who sent it: the one the workspace
+ * signed into the invitation, which is its name for them; else the one their
+ * profile keeps, which the machine serving the workspace at `origin` answers
+ * by their key, as the desktop names someone not here to say theirs; else
+ * plain words. A key of theirs is never a name: it says what it is, not who
+ * they are. */
+async function inviterName(inviter, origin) {
+  const named = typeof inviter?.name === 'string' ? inviter.name.trim() : '';
+  if (named) return named;
+  const user = inviter?.userPublicKey;
+  if (typeof user !== 'string') return '';
+  const profile = typeof origin === 'string' && origin
+    ? await fetchPersonProfile(origin, user).catch(error => {
+      console.warn('the inviter’s profile was not read', error?.message ?? error);
+      return null;
+    })
+    : null;
+  const kept = typeof profile?.display_name === 'string' ? profile.display_name.trim() : '';
+  return kept || 'Someone';
+}
 
 /** What an invitation offers, before the person joins: the workspace it is
  * for, who it is from and how many people are in it, and what the role lets
@@ -411,16 +433,75 @@ function pairingAsk(request, decide) {
   return {close};
 }
 
+/**
+ * Asked on a device before it asks a host to make it a person's: whose
+ * device it becomes (`whose`, the sentence of `pairingWhose`), which server
+ * adds it (`where`, the sentence of `pairingWhere`), what follows from
+ * that, what it means for a browser that is somebody already (`already`),
+ * and the two ways on. Stop has the focus, so a stray Enter pairs nothing.
+ * Resolves to whether the person went on.
+ */
+function pairingAgree(whose, where, {already = false} = {}) {
+  return new Promise(resolve => {
+    const card = pairCard('pair-whose', PAIRING_WHOSE.heading, 'alertdialog');
+    const actions = document.createElement('div');
+    actions.className = 'tilo-entry-actions';
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'tilo-entry-primary';
+    go.textContent = PAIRING_WHOSE.go;
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.textContent = PAIRING_WHOSE.stop;
+    const answer = agreed => { card.remove(); resolve(agreed); };
+    go.addEventListener('click', () => answer(true));
+    stop.addEventListener('click', () => answer(false));
+    actions.append(go, stop);
+    card.append(paragraph(whose, 'tilo-pair-whose'), paragraph(where, 'tilo-pair-whose'), paragraph(PAIRING_WHOSE.consequence),
+      ...(already ? [paragraph(PAIRING_WHOSE.already)] : []), actions);
+    document.body.append(card);
+    stop.focus();
+  });
+}
+
 /** Said on a new device while the person's other device decides on it:
- * which device that is, the code it shows beside its ask, and what to do
- * when it does not ask (`PAIRING_WAIT`). */
-function pairingWait(code) {
+ * which device that is, the code it shows beside its ask, whose device this
+ * one becomes and which server adds it (`whose` and `where`, as it said
+ * before it asked), and what to do when nothing asks (`PAIRING_WAIT`). Its
+ * Stop is the way out (`onStop`). */
+function pairingWait(code, whose, where, onStop) {
   document.documentElement.dataset.pairingCode = code;
   const card = pairCard('pair-wait', PAIRING_WAIT.heading, 'status');
+  const stop = document.createElement('button');
+  stop.type = 'button';
+  stop.textContent = PAIRING_WHOSE.stop;
+  stop.addEventListener('click', () => onStop());
   card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'),
-    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'));
+    ...[whose, where].filter(Boolean).map(said => paragraph(said, 'tilo-pair-whose')),
+    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
   document.body.append(card);
   return () => card.remove();
+}
+
+/** Said on a tab its person signed in with their agent while its pairing
+ * goes through (`ownPairing`): nothing asks the person anything, since
+ * their stand-in approves the request their own computer's claim named, so
+ * the tab shows no code and points at no other device. */
+function pairingSigningIn() {
+  const card = pairCard('pair-own', PAIRING_SIGNING_IN, 'status');
+  document.body.append(card);
+  return () => card.remove();
+}
+
+/** Leave a pairing that waits: the address loses its link and the page
+ * loads again as the bare site. The host hears the page's request go with
+ * it, so nobody can approve this device any more. */
+function leavePairing() {
+  const bare = new URL(location.href);
+  bare.hash = '';
+  bare.search = '';
+  location.assign(bare.href);
+  location.reload();
 }
 
 /**
@@ -759,7 +840,7 @@ export async function startEntryPage({mode}) {
     if (root.arrival === 'done' && step !== 'stopped') return;
     // A page that cannot go on has no workspace to set an agent up in: the
     // first screen says so rather than wait.
-    if (step === 'stopped') firstRun?.unavailable({code: 'refused'});
+    if (step === 'stopped') firstRun?.unavailable({code: 'stopped'});
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
@@ -1072,7 +1153,7 @@ export async function startEntryPage({mode}) {
     // person approves new devices elsewhere): nobody joins the home just to
     // report. It connects with this tab's device key for the home's host (a
     // second one where the workspace's peer holds the first), without calls
-    // or a live plane, gives up rather than waiting at the entry, and is kept
+    // or a live session, gives up rather than waiting at the entry, and is kept
     // while the page is.
     homePeer: async home => {
       const kept = remembering(() => keptMembership(home));
@@ -1094,12 +1175,17 @@ export async function startEntryPage({mode}) {
     invite: ({peer, entry}) => peer?.workspace && !embed ? {base: entry.base, origin: peer.origin,
       workspace: peer.workspace, name: displayName ?? '', user: peer.userPublicKey ?? '',
       host: hex(peer.host?.hostCert?.user_public_key ?? [])} : null,
-    confirmInvitation: offer => {
+    confirmInvitation: (offer, origin) => {
       workspaceName = offer.workspaceName || workspaceName;
       invitedTo = offer.workspaceName || null;
       const inviter = offer.inviter?.userPublicKey;
-      return invitationCard(offer,
-        typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined);
+      const colour = typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined;
+      // The workspace signs the name it knows for who asked. When it knows
+      // none, the card waits for the name their profile keeps.
+      const signed = typeof offer.inviter?.name === 'string' ? offer.inviter.name.trim() : '';
+      if (!offer.inviter || signed) return invitationCard(offer, colour);
+      return inviterName(offer.inviter, origin).then(name =>
+        invitationCard({...offer, inviter: {...offer.inviter, name}}, colour));
     },
     joinWorkspace: async options => {
       const identity = await browserPerson();
@@ -1119,10 +1205,10 @@ export async function startEntryPage({mode}) {
       const paired = remembering(() => keptMembership({host: {origin}}));
       if (paired?.paired) {
         const profile = identityProfile(paired, paired.origin);
-        const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
+        const deviceKey = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true});
         displayName = chosenDisplayName(paired.userPublicKey) ?? defaultDisplayName(paired.userPublicKey);
-        return withCustody(custody, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
-          profile, custody, displayName, runtime, requireExistingCertificate: true}));
+        return withDeviceKey(deviceKey, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
+          profile, deviceKey, displayName, runtime, requireExistingCertificate: true}));
       }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
       const kept = identity && hostToReconnect(origin, identity.userPublicKey);
@@ -1147,14 +1233,14 @@ export async function startEntryPage({mode}) {
       // enters through the workspace's entry on its session, which lets a
       // device it admitted straight back in and admits any other device of
       // a member at the part the person holds.
-      const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
+      const deviceKey = await openDeviceKey({profile: identityProfile(identity, origin), storage: idbStorage()});
       if (!kept.owner) {
         const entry = new URL(`directory/${workspace}/`, `${origin}/`).href;
-        const entered = await withCustody(custody, () => joinWorkspace({origin, entry, identity, runtime, displayName, custody}));
+        const entered = await withDeviceKey(deviceKey, () => joinWorkspace({origin, entry, identity, runtime, displayName, deviceKey}));
         keepJoinedHost({origin, workspace, userPublicKey: identity.userPublicKey});
         return entered;
       }
-      const peer = await withCustody(custody, () => connectPeer({origin, workspace, identity, runtime, displayName, custody}));
+      const peer = await withDeviceKey(deviceKey, () => connectPeer({origin, workspace, identity, runtime, displayName, deviceKey}));
       // What is kept names the workspace the host's entry let this browser
       // into (`keepJoinedHost`): reconnecting to another of the host's
       // workspaces, such as the person's own, leaves it as it is.
@@ -1166,13 +1252,38 @@ export async function startEntryPage({mode}) {
     pairDevice: async ({origin, workspace, userPublicKey, invite, listed}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
+      // Whose device this becomes and which server adds it, as its person
+      // was told before anything was asked, and whether they stopped while
+      // it waited.
+      let whose = '';
+      let where = '';
+      let stopped = false;
+      // A link this tab opened for itself, signing its person in with their
+      // agent (`signInAs`), is theirs: they asked for it on this page, so
+      // they are not asked whose device this becomes.
+      const own = ownPairing(userPublicKey, invite);
       try {
         // The person this browser already is, where it keeps one: the one
         // this tab opened, else the one it keeps (a tab that opens a link
         // has opened nobody yet). It is told so, never paired to them.
         const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
         return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
-          label: deviceLabel(), onPairingCode: code => { waiting(); waiting = pairingWait(code); }});
+          label: deviceLabel(),
+          // The link wrote the server it names. Only one this site names as
+          // its own (its `entry.json`, read before anything is asked) is
+          // asked who the link's person is; any other names nobody.
+          ofSite: ofThisSite(origin, {page: location.href, entry: admitting?.entry}),
+          agree: who => {
+            if (own) return true;
+            whose = pairingWhose(who.name, who);
+            where = pairingWhere(who.origin, who);
+            return pairingAgree(whose, where, {already: Boolean(who.holds)});
+          },
+          stopped: () => stopped,
+          onPairingCode: code => {
+            waiting();
+            waiting = own ? pairingSigningIn() : pairingWait(code, whose, where, () => { stopped = true; leavePairing(); });
+          }});
       } catch (error) {
         // The host's answer, or this browser's own, said as what to do next; anything else as any failure.
         const said = pairingFailure(error);
@@ -1190,10 +1301,10 @@ export async function startEntryPage({mode}) {
     // read from the host's own certificate, so the link need not carry it.
     redeemTicket: async ({origin, workspace, ticket, tickets}) => {
       viaTicket = true;
-      const {connectRelayPeer} = await import('./relay.mjs');
+      const {connectServerPeer} = await import('./server.mjs');
       const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(workspace)}/admit`, tickets).href;
-      return connectRelayPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
+      return connectServerPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
         onPairingCode: async pairingCode => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({ticket, pairingCode})});
@@ -1205,11 +1316,11 @@ export async function startEntryPage({mode}) {
     },
     connectMember: async ({origin, workspace, account}) => {
       const {userPublicKey, profile, device} = account;
-      const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
+      const deviceKey = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true});
       // The account names the profile's first device; a tab that took
       // another of its device keys is that device, with its own namespace.
-      return withCustody(custody, () => connectPeer({origin, workspace, userPublicKey, profile, custody,
-        device: custody.slot ? profileDevice(profile, globalThis.localStorage, custody.slot) : device,
+      return withDeviceKey(deviceKey, () => connectPeer({origin, workspace, userPublicKey, profile, deviceKey,
+        device: deviceKey.slot ? profileDevice(profile, globalThis.localStorage, deviceKey.slot) : device,
         runtime, requireExistingCertificate: true}));
     },
   };
@@ -1576,15 +1687,24 @@ export async function startEntryPage({mode}) {
     // reached the page; else the name the page was served or remembered.
     const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
     const messages = await localeMessagesSoon();
+    // This browser was removed from its person's devices: its server's own word at the
+    // handshake, which nothing here undoes. Said in the words an open page says it in.
+    if (deviceRemoved(error)) {
+      error = Object.assign(new AdmissionError('device-revoked', refusalText('device-revoked', named || null)), {cause: error});
+      document.documentElement.dataset.refusal = 'device-revoked';
+    }
     // A refusal is the host's answer, which trying again does not change.
     arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Turned away for coming without an invitation: the entry is a page of
-    // its own, with its own ways in, and nothing else is shown over it.
+    // its own, with its own ways in, and nothing else is shown over it. No
+    // desktop speaks behind it, so it speaks the visitor's own language.
     if (error?.code === 'invitation-only') {
+      const language = visitorLocale();
+      const messages = await localeMessagesSoon(1500, globalThis, language);
       const screen = failureScreen('invitation-only', {workspace: named, messages});
       status.textContent = `${screen.heading}. ${screen.body}`;
-      offerRefusal({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home, runtime, link: admitting?.link});
+      offerRefusal({messages, language, named, error, workspace: visitedAt ?? admitting?.entry?.home, runtime, link: admitting?.link});
       if (admitting && !embed) void offerOwnDesktop({...admitting, runtime});
       // Its answer, not a failure of this page to report as an uncaught
       // error (every stranger at such an entry would send one).
@@ -1593,7 +1713,7 @@ export async function startEntryPage({mode}) {
     const known = admitting && remembering(() => rememberedWorkspace(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the workspace.
-    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
+    const local = error?.name === 'DeviceKeyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
     // A workspace this browser was a member of: forgotten when its origin says
     // another host holds it now, and no longer reopened on a bare entry.
     const settled = known && !local ? await settleWorkspace(known, runtime) : null;
@@ -1624,7 +1744,7 @@ function rememberedWorkspace(scope) {
 }
 
 /** The workspace the site's own entry names, as its admission address spells it
- * (`<relay>/peer/v1/directory/<workspace>/`): the site's home. */
+ * (`<server>/peer/v1/directory/<workspace>/`): the site's home. */
 function homeAdmissionWorkspace(entry) {
   const admission = entry?.home?.admission;
   const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
@@ -1729,8 +1849,8 @@ async function offerUpdate({page, status}) {
 
 /** Whether this page may offer the person's own desktop under `home`
  * (`ownDesktopOpen`), asked once per page. */
-let ownDesktopGate = null;
-const ownDesktopAllowed = home => (ownDesktopGate ??= ownDesktopOpen(home).catch(() => false));
+let ownDesktopCheck = null;
+const ownDesktopAllowed = home => (ownDesktopCheck ??= ownDesktopOpen(home).catch(() => false));
 
 /** The bundle version this page runs, for the reconnect screen's details. */
 const PAGE_BUILD = servedVersion(import.meta.url)?.version ?? 'development';
@@ -1752,7 +1872,7 @@ const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
  */
-function offerRefusal({messages, named, error, workspace, runtime, link}) {
+function offerRefusal({messages, language, named, error, workspace, runtime, link}) {
   const entry = document.getElementById('arrival-refusal');
   // The first screen of a first visit is not for someone the entry turns
   // away: it asks them to set an agent up in a workspace they are not in. It
@@ -1781,7 +1901,7 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
       entry.querySelector('.refusal-foot')?.append(own);
     });
   }
-  if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages});
+  if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages, language});
   offerSignIn({workspace, named, messages, runtime, link});
   // The link that lets someone in, an invitation or a pairing from a device
   // of theirs: behind a small toggle beside the wait list; shown where it is
@@ -1817,7 +1937,7 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
  * An entry that mails (`mail`) sends links back to this page: one that
  * confirms the address (`?wait-list-confirm=`) or takes it off
  * (`?wait-list-remove=`), done here and taken out of the address bar. */
-function offerWaitList({workspace, contact, mail, messages}) {
+function offerWaitList({workspace, contact, mail, messages, language}) {
   const form = document.getElementById('arrival-wait');
   const elements = {form, submit: form?.querySelector('button')};
   for (const [name, id] of [['email', 'arrival-wait-email'], ['done', 'arrival-wait-done'], ['againLine', 'arrival-wait-again-line'],
@@ -1834,7 +1954,7 @@ function offerWaitList({workspace, contact, mail, messages}) {
     history.replaceState(history.state, '', url);
   }
   mountWaitList({elements, root: document.documentElement, workspace, contact, mail,
-    arrival: arrival.confirm || arrival.remove ? arrival : null, messages});
+    arrival: arrival.confirm || arrival.remove ? arrival : null, messages, language});
 }
 
 /**
@@ -2049,7 +2169,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
   const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
-    // A peer that cannot set a name of its own (a guest the relay admitted)
+    // A peer that cannot set a name of its own (a guest the server admitted)
     // goes by none; the person's own desktop (no peer) and a workspace they
     // joined do.
     identity, name, pairing: pairingOf({peer, identity, link}), naming: !peer || peer.setDisplayName ? naming : null,
@@ -2128,7 +2248,7 @@ function offerFirstRun({page, identityActions, runtime}) {
   if (identityActions) firstRun.offerSignIn(() => identityActions.signIn());
   const identity = currentIdentity();
   if (!peer?.origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
-    if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-workspace'});
+    if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-codes'});
     return;
   }
   offerFirstRunCodes({origin: peer.origin, identity, runtime, link: page.link});
@@ -2245,7 +2365,7 @@ function connectAnAgent({origin, identity, runtime, link, workspace = null}) {
   const run = openFirstRun(document);
   if (!run) return false;
   if (!origin || !runtime?.createLoginCode) {
-    run.unavailable({code: 'no-workspace'});
+    run.unavailable({code: 'no-codes'});
     return true;
   }
   const {make, resume} = agentSetupCodes({origin, identity, runtime, link, workspace});
@@ -2292,6 +2412,7 @@ async function signInAs({user, invite}, {origin, workspace}, link) {
   const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
   setupDone();
   try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
+  askOwnPairing(user, invite);
   globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
   globalThis.location.reload();
 }

@@ -7,13 +7,16 @@
 //! toplevel on the desktop, keeps the desktop's ping, and answers it once the last of them
 //! answered. An app that never pongs means the keeper never pongs, and the desktop sees the
 //! hang. While no desktop is attached nothing is pinged.
+//!
+//! The X11 server answers for itself, never for its programs, so its X11 programs that answer
+//! pings (`_NET_WM_PING`) are asked too, through [`crate::x11_windows`]: a hung X11 program
+//! shows as not responding just as a hung Wayland one does.
 
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::utils::Serial;
 use smithay::wayland::shell::PingError;
 use smithay::wayland::shell::xdg::ShellClient;
-use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
 
 use crate::state::State;
 use crate::surfaces::{Role, UpRole};
@@ -25,6 +28,8 @@ pub(crate) struct Pings {
     desktop: Vec<u32>,
     /// App connections that owe the keeper a pong, each with a live handle to its shell.
     waiting: Vec<(ClientId, ShellClient)>,
+    /// The X11 programs were asked and have not all answered.
+    x11_waiting: bool,
     next_serial: u32,
 }
 
@@ -33,18 +38,15 @@ impl Pings {
     pub(crate) fn clear(&mut self) {
         self.desktop.clear();
         self.waiting.clear();
+        self.x11_waiting = false;
     }
 }
 
 impl State {
     /// The desktop asks whether the app is alive.
-    pub(crate) fn desktop_ping(&mut self, wm_base: &XdgWmBase, serial: u32) {
+    pub(crate) fn desktop_ping(&mut self, serial: u32) {
         self.pings.desktop.push(serial);
         let clients = self.shell_clients();
-        if clients.is_empty() {
-            self.answer_pings(wm_base);
-            return;
-        }
         for (owner, client) in clients {
             if self
                 .pings
@@ -65,20 +67,33 @@ impl State {
                 Err(PingError::DeadSurface) => {}
             }
         }
+        if !self.pings.x11_waiting {
+            self.pings.next_serial = self.pings.next_serial.wrapping_add(1);
+            self.pings.x11_waiting = self.xdnd.ping_x11(self.pings.next_serial);
+        }
+        self.answer_pings();
     }
 
     /// One app connection answered the keeper's ping.
     pub(crate) fn app_ponged(&mut self, client: &ShellClient) {
         self.pings.waiting.retain(|(_, waiting)| waiting != client);
-        if !self.pings.waiting.is_empty() || self.pings.desktop.is_empty() {
-            return;
-        }
-        if let Some(wm_base) = self.up.as_ref().and_then(|up| up.wm_base.clone()) {
-            self.answer_pings(&wm_base);
-        }
+        self.answer_pings();
     }
 
-    fn answer_pings(&mut self, wm_base: &XdgWmBase) {
+    /// The X11 programs answered, or can no longer be asked.
+    pub(crate) fn x11_ponged(&mut self) {
+        self.pings.x11_waiting = false;
+        self.answer_pings();
+    }
+
+    /// Answer the desktop once nobody owes the keeper an answer.
+    fn answer_pings(&mut self) {
+        if !self.pings.waiting.is_empty() || self.pings.x11_waiting {
+            return;
+        }
+        let Some(wm_base) = self.up.as_ref().and_then(|up| up.wm_base.clone()) else {
+            return;
+        };
         for serial in std::mem::take(&mut self.pings.desktop) {
             wm_base.pong(serial);
         }

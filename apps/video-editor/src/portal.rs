@@ -166,9 +166,9 @@ mod tests {
                 assert_eq!(r.filter_names(), vec!["Media", "All files"]);
             }
             {
-                let (services, recorder) = ui::host::HostServices::recording();
+                let (services, recorder) = ui::process::ProcessServices::recording();
                 recorder.respond_to_pick_multiple(ImportOutcome::Cancelled);
-                let rx = ui::host::scoped(&services, request_import);
+                let rx = ui::process::scoped(&services, request_import);
                 assert_eq!(rx.try_recv(), Ok(ImportOutcome::Cancelled));
                 assert!(recorder.pick_requests()[0].is_multiple());
             }

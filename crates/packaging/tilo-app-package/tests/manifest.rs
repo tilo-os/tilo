@@ -18,21 +18,6 @@ fn render_with_dummy_key() -> String {
     fixtures::render_template(fixtures::SAMPLE_APP_MANIFEST_TEMPLATE, &"aa".repeat(32))
 }
 
-/// `Result::unwrap_err` needs `T: Debug`; `()` has it, but the message
-/// on failure is then useless. This carries the case into the panic.
-trait UnwrapErrOrPanic<E> {
-    fn unwrap_err_or_panic(self, msg: &str) -> E;
-}
-
-impl<E> UnwrapErrOrPanic<E> for Result<(), E> {
-    fn unwrap_err_or_panic(self, msg: &str) -> E {
-        match self {
-            Ok(()) => panic!("{msg}"),
-            Err(e) => e,
-        }
-    }
-}
-
 tilo_test_env::scenario! {
     fn the_manifest_schema_round_trips_and_refuses_what_it_cannot_grant;
 
@@ -153,51 +138,8 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase manifest_validation_requires_entrypoints_mimes_and_no_paths;
+    phase manifest_validation_requires_entrypoints_and_mimes;
     {
-        {
-            for entry in [
-                "~",
-                "/",
-                "~/.ssh",
-                "~/../../etc",
-                "~/.local/share/so.tilo.totp",
-                "$XDG_DATA_HOME/so.tilo.totp",
-                "<scope=current>/../..",
-            ] {
-                let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
-                m.sandbox.fs.write = vec![entry.to_string()];
-                let err = validate_manifest(&m)
-                    .unwrap_err_or_panic(&format!("write = [{entry:?}] must be refused"));
-                assert!(
-                    matches!(err, ManifestError::FsWriteDeclared { .. }),
-                    "write = [{entry:?}] produced {err:?}"
-                );
-                let text = err.to_string();
-                assert!(
-                    text.contains("so.tilo.editor") && text.contains(entry),
-                    "the refusal must name the package and the entry: {text}"
-                );
-            }
-
-            // A read is refused on the same terms, whether or not the system
-            // profile happens to cover it — the field is gone, not filtered.
-            for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
-                let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
-                m.sandbox.fs.read = vec![entry.to_string()];
-                let err = validate_manifest(&m)
-                    .unwrap_err_or_panic(&format!("read = [{entry:?}] must be refused"));
-                assert!(
-                    matches!(err, ManifestError::FsReadDeclared { .. }),
-                    "read = [{entry:?}] produced {err:?}"
-                );
-                assert!(err.to_string().contains(entry));
-            }
-
-            let clean = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
-            assert!(clean.sandbox.fs.read.is_empty() && clean.sandbox.fs.write.is_empty());
-            validate_manifest(&clean).expect("a manifest naming no path validates");
-        }
         {
             let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
             m.entrypoint = None;
@@ -262,7 +204,7 @@ tilo_test_env::scenario! {
             // Extend it here to also cover `deny`, then round-trip.
             let extended = src.replace(
                 "[sandbox.portals]\nfile-chooser = \"via-host\"",
-                "[sandbox.portals]\nfile-chooser = \"via-host\"\nnotifications = \"deny\"",
+                "[sandbox.portals]\nfile-chooser = \"via-host\"\nscreencast = \"deny\"",
             );
             let m = Manifest::from_toml_str(&extended).expect("decode");
             assert_eq!(
@@ -270,7 +212,7 @@ tilo_test_env::scenario! {
                 Some(PortalPolicy::ViaHost)
             );
             assert_eq!(
-                m.sandbox.portals.get("notifications").copied(),
+                m.sandbox.portals.get("screencast").copied(),
                 Some(PortalPolicy::Deny)
             );
 

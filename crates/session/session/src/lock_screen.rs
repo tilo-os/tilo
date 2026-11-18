@@ -199,7 +199,7 @@ impl crate::Session {
         };
         lock.show(tilo_sheets::lock::Shown {
             screens: self.lock_screens(),
-            clock: ui::clock::time_of_day(&ui::clock::local_now()),
+            clock: ui::clock::time_of_day(ui::clock::local_now()),
             date: ui::format::day_heading(ui::clock::today(), false),
             person,
             hue,

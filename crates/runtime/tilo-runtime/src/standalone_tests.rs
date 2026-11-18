@@ -13,7 +13,7 @@ use tilo_action_broker::services::{
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_identity::broker::WorkspaceMembership;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
@@ -70,7 +70,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         services,
     );
     let qualified = broker
-        .certified_local_action_host(admission.caller(), admission.presentation())
+        .certified_local_action_provider(admission.caller(), admission.presentation())
         .unwrap();
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
@@ -104,14 +104,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let owner = Caller::local_person(actor)
         .in_workspace(&workspace_id)
         .in_new_execution();
-    let host = RuntimeActionHost {
+    let provider = RuntimeActionProvider {
         broker,
         workspace: workspace_id.clone(),
         joined,
         apps: None,
         session: Some(Arc::new(AdmittedRuntimeSession {
             policy_time: time,
-            host: qualified,
+            provider: qualified,
             admission,
             agent: None,
             projection: Some(owner.clone()),
@@ -136,7 +136,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         wait_ms: None,
         appearance: None,
     };
-    let mut pending = host.invoke(&owner, request.clone());
+    let mut pending = provider.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
     turn();
     // Answered once the admission is durable, from the journal's writer.
@@ -148,39 +148,41 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
-    assert!(host.observe(&owner, &id).is_some());
-    assert!(host.observe(&other, &id).is_none());
+    assert!(provider.observe(&owner, &id).is_some());
+    assert!(provider.observe(&other, &id).is_none());
     // Waiting on a change is authorized exactly as observing.
-    assert!(host.next_change(&other, &id).is_none());
-    let change = host
+    assert!(provider.next_change(&other, &id).is_none());
+    let change = provider
         .next_change(&owner, &id)
         .expect("the owner may wait on its invocation");
     assert_eq!(
-        host.cancel(&other, &id)
+        provider
+            .cancel(&other, &id)
             .wait_timeout(std::time::Duration::from_secs(30))
             .ok()
             .flatten()
-            .expect("the host answers"),
-        Err(ActionHostError::NotPermitted)
+            .expect("the provider answers"),
+        Err(ActionCallError::NotPermitted)
     );
     assert!(matches!(
-        host.invoke(&owner, request.clone()).poll_ready(),
+        provider.invoke(&owner, request.clone()).poll_ready(),
         PendingPoll::Ready(Ok(retry)) if retry == receipt
     ));
     assert!(matches!(
-        host.invoke(&other, request).poll_ready(),
-        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        provider.invoke(&other, request).poll_ready(),
+        PendingPoll::Ready(Err(ActionCallError::NotPermitted))
     ));
     assert!(
         invocations.try_recv().is_err(),
         "retries must not dispatch again"
     );
     assert_eq!(
-        host.cancel(&owner, &id)
+        provider
+            .cancel(&owner, &id)
             .wait_timeout(std::time::Duration::from_secs(30))
             .ok()
             .flatten()
-            .expect("the host answers"),
+            .expect("the provider answers"),
         Ok(())
     );
     // The cancellation request changed the invocation: the waiter wakes on
@@ -236,7 +238,7 @@ pub(super) fn isolated_command(test: &str, root: &Path) -> std::process::Command
         .env("XDG_CACHE_HOME", environment.join("cache"))
         .env("XDG_STATE_HOME", environment.join("state"))
         .env("TILO_IDENTITY_ROOT", environment.join("identity"))
-        .env(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
+        .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD");
     command
@@ -247,15 +249,15 @@ pub(super) fn isolated_home(root: &Path) -> PathBuf {
     root.join("environment").join("home")
 }
 
-/// Provision only the receipt signer's host custody in an isolated process.
+/// Provision only the receipt signer's host ownership in an isolated process.
 /// The synthetic caller still uses its independently certified admission.
 pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
     let root = isolated_root(test)?;
-    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    let registry = tilo_identity::registry::IdentityRegistryStore::from_env().unwrap();
+    tilo_identity::provisioning::ensure_collaboration_identity(
         registry.identity_dir(),
-        &tilo_identity_host::provisioning::collaboration_identity_paths(),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
     Some(root)
@@ -304,7 +306,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     assert!(root.join(INVOCATION_JOURNAL).exists());
     assert!(
         Standalone::start_reporting(&root, &mut |_| {}).is_err(),
-        "a second host must not serve a held profile"
+        "a second provider must not serve a held profile"
     );
     let executable = std::env::current_exe().unwrap();
     let mut children = Vec::new();
@@ -503,7 +505,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
         .stderr(Stdio::from(log));
     let mut child = session.launch(WRITER_APP, command).unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    let mut stopped = "the host keeps no body of the record".to_owned();
+    let mut stopped = "the provider keeps no body of the record".to_owned();
     let stored = loop {
         match written(&session) {
             Ok(Some(stored)) => break Some(stored),
@@ -521,7 +523,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     assert_eq!(
         stored.as_deref(),
         Some(WRITTEN),
-        "the sealed write reaches the workspace's host, which reports {stopped}: {logs}"
+        "the sealed write reaches the workspace's provider, which reports {stopped}: {logs}"
     );
     drop(session);
     // Served again, the profile's workspace host still keeps the write.
@@ -530,7 +532,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     assert_eq!(
         again.as_ref().ok().and_then(|stored| stored.as_deref()),
         Some(WRITTEN),
-        "the workspace host serves the write again: {again:?}"
+        "the workspace provider serves the write again: {again:?}"
     );
 }
 
@@ -637,7 +639,7 @@ fn listed_workspace(root: &Path) -> String {
 /// A running host holds the person's own documents store: asserted on the
 /// host a test starts first on its new profile, before anything is written.
 fn holds_the_persons_own_documents_store(session: &Standalone) {
-    let identity = tilo_identity_host::registry::identity_for_workspace(session.workspace())
+    let identity = tilo_identity::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let personal = session.personal();
@@ -1035,7 +1037,7 @@ tilo_test_env::scenario! {
         assert!(!retained.same_origin(&replacement.capture().unwrap()));
         assert!(
             retained.now_ns().is_err(),
-            "a new runtime clock cannot revive the original custody"
+            "a new runtime clock cannot revive the original ownership"
         );
     }
 }

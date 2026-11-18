@@ -16,8 +16,8 @@ use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
 use tilo_lock::MutexRecover as _;
 
-pub(super) const BUILD_GATE: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
-pub(super) const RUNTIME_GATE_VAR: &str = "TILO_IMAGER_ALLOW_INTERNAL_INSTALL";
+pub(super) const BUILD_ALLOW: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
+pub(super) const RUNTIME_ALLOW_VAR: &str = "TILO_IMAGER_ALLOW_INTERNAL_INSTALL";
 
 const GIB: u64 = 1 << 30;
 
@@ -52,13 +52,16 @@ fn remember_tpm_handoff(
 pub(super) use super::staging::{PROVISIONAL_STAGING_ESP_BYTES, PROVISIONAL_STAGING_ROOT_BYTES};
 
 #[must_use]
-pub(super) fn gate_open(build: Option<&str>, runtime: Option<&str>) -> bool {
+pub(super) fn install_allowed(build: Option<&str>, runtime: Option<&str>) -> bool {
     build == Some("1") || runtime == Some("1")
 }
 
 #[must_use]
-pub(super) fn live_gate_open() -> bool {
-    gate_open(BUILD_GATE, std::env::var(RUNTIME_GATE_VAR).ok().as_deref())
+pub(super) fn live_install_allowed() -> bool {
+    install_allowed(
+        BUILD_ALLOW,
+        std::env::var(RUNTIME_ALLOW_VAR).ok().as_deref(),
+    )
 }
 
 pub(super) trait HelperRun: Send {
@@ -145,7 +148,7 @@ struct Intent {
     migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     profile: serde_json::Map<String, serde_json::Value>,
     prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
-    prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    prepared_ownership: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     deferred: bool,
     operation_id: String,
     plan: Plan,
@@ -289,7 +292,7 @@ fn stage_request(
         .bundle()
         .require_service_session_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .and_then(|media| media.service_session_protocol()),
         )
@@ -303,9 +306,9 @@ fn stage_request(
         .bundle()
         .require_account_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
-                .and_then(|media| media.account_custody_protocol()),
+                .and_then(|media| media.account_credentials_protocol()),
         )
         .map_err(|_| {
             refusal(
@@ -317,7 +320,7 @@ fn stage_request(
         .bundle()
         .require_home_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .and_then(|media| media.home_archive_protocol()),
         )
@@ -331,7 +334,7 @@ fn stage_request(
         .bundle()
         .require_applications_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .and_then(|media| media.applications_protocol()),
         )
@@ -425,12 +428,12 @@ fn stage_request(
                     )
                 })?;
             let prepared = intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .ok_or_else(|| {
                     refusal(
                         "migration-changed",
-                        "Computer application preparation custody is missing.",
+                        "Computer application preparation ownership is missing.",
                     )
                 })?
                 .prepare_computer_applications(
@@ -453,7 +456,7 @@ fn stage_request(
             );
             remember_tpm_handoff(&mut intent.profile, &prepared)
                 .map_err(|error| refusal("migration-changed", error))?;
-            intent.prepared_custody = Some(prepared);
+            intent.prepared_ownership = Some(prepared);
         }
         if source.home_policy == imager_backend::setup::migration_handoff::HomePolicy::Copy
             && (source.categories.home || source.categories.flatpak)
@@ -479,12 +482,12 @@ fn stage_request(
                 // until first login; the installed onboarding then performs
                 // the copy with a renewed source grant and its own receipt.
                 let prepared = intent
-                    .prepared_custody
+                    .prepared_ownership
                     .as_ref()
                     .ok_or_else(|| {
                         refusal(
                             "migration-changed",
-                            "Original-copy preparation custody is missing.",
+                            "Original-copy preparation ownership is missing.",
                         )
                     })?
                     .prepare_staging_copy(grant, &source, reservation, cancel)
@@ -503,11 +506,11 @@ fn stage_request(
                     .map_err(|error| refusal("migration-changed", error))?;
                 // prepare_staging_copy caches the final generation in the actual
                 // previous Arc retained by the download consumer through drive().
-                intent.prepared_custody = Some(prepared);
+                intent.prepared_ownership = Some(prepared);
             }
         }
     }
-    if let Some(prepared) = &intent.prepared_custody {
+    if let Some(prepared) = &intent.prepared_ownership {
         prepared
             .validate_recovery_for_stage(&plan, cancel)
             .map_err(|error| refusal("recovery-unverified", error.to_string()))?;
@@ -561,7 +564,7 @@ pub(super) fn staging_consumer(
             return Err(outcome.message.unwrap_or_default());
         };
         let mut intent = intent;
-        if let Some(prepared) = &intent.prepared_custody {
+        if let Some(prepared) = &intent.prepared_ownership {
             if let Ok((fresh, artifact, expected)) = prepared
                 .refreshed_for_transfer(cancel.signal())
                 .and_then(|fresh| {
@@ -578,7 +581,7 @@ pub(super) fn staging_consumer(
                     return Err(outcome.message.unwrap_or_default());
                 }
                 intent.prepared_setup = Some(artifact);
-                intent.prepared_custody = Some(fresh);
+                intent.prepared_ownership = Some(fresh);
             } else {
                 let outcome = refusal(
                     "prepared-source",
@@ -588,7 +591,7 @@ pub(super) fn staging_consumer(
                 return Err(outcome.message.unwrap_or_default());
             }
         }
-        let _prepared_custody = intent.prepared_custody.clone();
+        let _prepared_ownership = intent.prepared_ownership.clone();
         let manifest_dir = tempfile::Builder::new()
             .prefix("tilo-staging-")
             .tempdir()
@@ -620,7 +623,7 @@ fn new_operation_id() -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Readiness {
-    Gated,
+    NotEnabled,
     Checking,
     NoRelease,
     Unsupported(Vec<Blocker>),
@@ -632,11 +635,11 @@ pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 
 pub(super) struct InternalInstall {
     migration_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
-    prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    prepared_ownership: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     deferred: bool,
     profile: serde_json::Map<String, serde_json::Value>,
     link: StagingLink,
-    gate: bool,
+    check: bool,
     host: HostOs,
     readiness: Readiness,
     facts: Option<HostFacts>,
@@ -655,22 +658,22 @@ pub(super) struct InternalInstall {
 }
 
 impl InternalInstall {
-    pub(super) fn new(runtime: StagingRuntime, gate: bool, host: HostOs) -> Self {
+    pub(super) fn new(runtime: StagingRuntime, check: bool, host: HostOs) -> Self {
         Self {
             migration_intent: None,
-            prepared_custody: None,
+            prepared_ownership: None,
             deferred: false,
             profile: serde_json::Map::new(),
             link: StagingLink {
                 runtime,
                 shared: Arc::new(Mutex::new(RunShared::default())),
             },
-            gate,
+            check,
             host,
-            readiness: if gate {
+            readiness: if check {
                 Readiness::Checking
             } else {
-                Readiness::Gated
+                Readiness::NotEnabled
             },
             facts: None,
             pending: Vec::new(),
@@ -688,7 +691,7 @@ impl InternalInstall {
         }
     }
 
-    pub(super) fn gated(host: HostOs) -> Self {
+    pub(super) fn guarded(host: HostOs) -> Self {
         Self::new(StagingRuntime::live(), false, host)
     }
 
@@ -700,8 +703,8 @@ impl InternalInstall {
         &self.link.runtime
     }
 
-    pub(super) fn gate(&self) -> bool {
-        self.gate
+    pub(super) fn check(&self) -> bool {
+        self.check
     }
 
     pub(super) fn host(&self) -> HostOs {
@@ -719,7 +722,7 @@ impl InternalInstall {
     pub(super) fn probe_task(
         &mut self,
     ) -> Option<impl FnOnce() -> (HostFacts, Vec<Record>) + Send + 'static> {
-        if !self.gate || self.probing {
+        if !self.check || self.probing {
             return None;
         }
         self.probing = true;
@@ -744,8 +747,8 @@ impl InternalInstall {
         has_release: bool,
     ) {
         self.probing = false;
-        self.readiness = if !self.gate {
-            Readiness::Gated
+        self.readiness = if !self.check {
+            Readiness::NotEnabled
         } else if !has_release {
             Readiness::NoRelease
         } else if facts.offers_full_os() {
@@ -996,7 +999,7 @@ impl InternalInstall {
         if canonical != reviewed.plan {
             return Err(refused());
         }
-        if !self.gate || !has_release || !reviewed.facts.offers_full_os() {
+        if !self.check || !has_release || !reviewed.facts.offers_full_os() {
             return Err(super::strings::t("imager-setup-internal-error-unavailable"));
         }
         if let Some(prepared) = &reviewed.prepared {
@@ -1008,7 +1011,7 @@ impl InternalInstall {
         self.minimum_target_bytes = minimum;
         self.migration_intent = reviewed.migration;
         self.profile = profile;
-        self.prepared_custody = reviewed.prepared;
+        self.prepared_ownership = reviewed.prepared;
         self.deferred = reviewed.deferred;
         self.accept_probe(reviewed.facts, Vec::new(), has_release);
         self.plan = Some(Ok(reviewed.plan));
@@ -1031,7 +1034,7 @@ impl InternalInstall {
                 migration: None,
                 profile: record.profile.clone(),
                 prepared_setup: None,
-                prepared_custody: None,
+                prepared_ownership: None,
                 deferred: record.profile.get("prepared_setup").is_none(),
                 operation_id: record.operation_id.clone(),
                 plan: record.plan.clone(),
@@ -1047,7 +1050,7 @@ impl InternalInstall {
                 deferred: self.deferred,
                 prepared_setup: {
                     {
-                        self.prepared_custody
+                        self.prepared_ownership
                             .as_ref()
                             .map(|prepared| prepared.staging_artifact())
                             .transpose()
@@ -1056,7 +1059,7 @@ impl InternalInstall {
                             })?
                     }
                 },
-                prepared_custody: self.prepared_custody.clone(),
+                prepared_ownership: self.prepared_ownership.clone(),
                 operation_id: new_operation_id(),
                 plan: plan.clone(),
                 plan_sha256: plan.digest().map_err(|error| error.to_string())?,
@@ -1456,7 +1459,7 @@ pub(super) mod fixture {
 pub(super) mod tests {
     use super::fixture::{basis, facts, fake_bounds, fake_plan};
     use super::*;
-    use crate::setup::staging::record::{OriginalFirmware, StepRecord, StepState};
+    use crate::setup::staging::record::{OriginalFirmware, StepEntry, StepState};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1577,7 +1580,7 @@ pub(super) mod tests {
                 manifest_sha256: "a".repeat(64),
                 architecture: "x86_64".into(),
             },
-            steps: vec![StepRecord {
+            steps: vec![StepEntry {
                 step: Step::WriteRoot,
                 state: StepState::Intended,
                 detail: serde_json::Map::new(),
@@ -1640,7 +1643,7 @@ pub(super) mod tests {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let identity_bytes = std::fs::read(root.join("identity/primary.json")).unwrap();
@@ -1681,7 +1684,7 @@ pub(super) mod tests {
         missing.profile.prepared_setup = None;
         assert!(
             install.adopt_reviewed(missing, true).is_err(),
-            "a non-deferred review without prepared custody must be refused"
+            "a non-deferred review without prepared ownership must be refused"
         );
         let mut deferred = reviewed.clone();
         deferred.prepared = None;
@@ -1689,8 +1692,8 @@ pub(super) mod tests {
         deferred.profile.prepared_setup = None;
         let mut deferred_install = probed(&fakes, true);
         deferred_install.adopt_reviewed(deferred, true).unwrap();
-        let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Linux);
-        assert!(gated.adopt_reviewed(reviewed.clone(), true).is_err());
+        let mut guarded = InternalInstall::new(fakes.runtime(), false, HostOs::Linux);
+        assert!(guarded.adopt_reviewed(reviewed.clone(), true).is_err());
         assert!(install.adopt_reviewed(reviewed.clone(), false).is_err());
         install.adopt_reviewed(reviewed.clone(), true).unwrap();
         assert_eq!(
@@ -1700,7 +1703,7 @@ pub(super) mod tests {
         let digest = reviewed.plan.digest().unwrap();
         install.begin_stage(&digest, true).unwrap();
         let intent = install.link.lock().intent.take().unwrap();
-        assert!(intent.prepared_custody.is_some());
+        assert!(intent.prepared_ownership.is_some());
         let manifest = selected_sizes(
             PROVISIONAL_STAGING_ESP_BYTES,
             PROVISIONAL_STAGING_ROOT_BYTES,
@@ -1743,22 +1746,22 @@ pub(super) mod tests {
 
     tilo_test_env::scenario! {
         #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
-        fn the_internal_install_gate_follows_blockers_and_replans_within_bounds;
+        fn the_internal_install_check_follows_blockers_and_replans_within_bounds;
 
-        phase internal_install_gate_readiness_and_remedies_follow_blockers;
+        phase internal_install_check_readiness_and_remedies_follow_blockers;
         {
             {
-                assert!(!gate_open(None, None));
-                assert!(!gate_open(Some("0"), Some("true")));
-                assert!(gate_open(Some("1"), None));
-                assert!(gate_open(None, Some("1")));
+                assert!(!install_allowed(None, None));
+                assert!(!install_allowed(Some("0"), Some("true")));
+                assert!(install_allowed(Some("1"), None));
+                assert!(install_allowed(None, Some("1")));
 
                 let fakes = Fakes::new(Vec::new());
-                let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
-                assert!(gated.probe_task().is_none());
-                assert_eq!(gated.readiness(), &Readiness::Gated);
-                gated.accept_probe(facts(Vec::new()), Vec::new(), true);
-                assert!(!gated.offers_full_os());
+                let mut guarded = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
+                assert!(guarded.probe_task().is_none());
+                assert_eq!(guarded.readiness(), &Readiness::NotEnabled);
+                guarded.accept_probe(facts(Vec::new()), Vec::new(), true);
+                assert!(!guarded.offers_full_os());
                 assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
             }
 

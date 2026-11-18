@@ -1,7 +1,7 @@
 //! What a build sandbox may reach.
 //!
 //! A build downloads packages and nothing else, so by default it reaches the
-//! runtime's package repositories and nothing else ([`Network::Gated`]): the
+//! runtime's package repositories and nothing else ([`Network::Guarded`]): the
 //! sandbox gets its own network namespace, and [`tilo_egress`] puts a DNS
 //! stub and a packet filter in it that admit only those hosts. A scriptlet
 //! that tries to phone anywhere else gets no answer for the name and no
@@ -25,7 +25,7 @@ use crate::sandbox::{BuildSandbox, SandboxError};
 pub enum Network {
     /// Its own namespace, reaching only `policy`'s hosts. Setting it up
     /// fails closed: no egress, no build.
-    Gated {
+    Guarded {
         policy: EgressPolicy,
         options: EgressOptions,
     },
@@ -33,14 +33,14 @@ pub enum Network {
     /// nothing, such as a fixture).
     Offline,
     /// The caller's network, unfiltered: for a CI catalog build of a fixed
-    /// list on a builder that has no `/dev/net/tun` for the gate.
+    /// list on a builder that has no `/dev/net/tun` for the check.
     Host,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NetworkChoice {
     #[default]
-    Gated,
+    Guarded,
     Offline,
     Host,
 }
@@ -74,8 +74,8 @@ pub fn repo_policy(tree: &Path, scratch: &Path) -> Result<EgressPolicy, SandboxE
     Ok(repos.policy())
 }
 
-pub fn gated(policy: EgressPolicy) -> Network {
-    Network::Gated {
+pub fn guarded(policy: EgressPolicy) -> Network {
+    Network::Guarded {
         policy,
         options: EgressOptions::from_host(Path::new("/")),
     }

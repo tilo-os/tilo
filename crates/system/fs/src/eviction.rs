@@ -521,9 +521,9 @@ struct EvictionQueueDocument {
     requests: Vec<EvictionRequest>,
 }
 
-/// Crash-safe ledger for explicit eviction intent and observed completion.
+/// Crash-safe log for explicit eviction intent and observed completion.
 ///
-/// The ledger does not trigger deletion by itself: the content-store bridge reauthorizes a
+/// The log does not trigger deletion by itself: the content-store bridge reauthorizes a
 /// pending request, releases only its deterministic service-owned tags, and lets iroh-blobs'
 /// background GC collect them. Completion is recorded only after exact backend observation.
 pub struct EvictionQueue {

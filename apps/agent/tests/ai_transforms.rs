@@ -2,7 +2,7 @@
 //!
 //! The host below offers exactly [`transform::descriptors`] and answers an
 //! invocation the way the agent does — binding the wire argument and running
-//! the transform — with a scripted model standing in for the gateway. So the
+//! the transform — with a scripted model in place of the gateway. So the
 //! checker reads the real published parameters and result specs, and the
 //! interpreter holds the real answers to them.
 
@@ -24,9 +24,9 @@ use serde_json::{Map, Value, json};
 use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    CatalogueRow, Confirmation, InvocationLog, InvocationReceipt, InvocationState, InvokeRequest,
+    Pending,
 };
 use tilo_agent::transform::{self, TransformModel};
 use tilo_automation::{
@@ -86,7 +86,7 @@ struct AgentHost {
     model: Scripted,
     answering: Answering,
     content: ui::content::ContentStore,
-    ledger: Mutex<InvocationLedger<InvocationUpdate>>,
+    log: Mutex<InvocationLog<InvocationUpdate>>,
 }
 
 impl AgentHost {
@@ -114,7 +114,7 @@ impl AgentHost {
             model: Scripted::new(answers),
             answering: Answering::AsTheAgent,
             content: ui::content::ContentStore::memory(),
-            ledger: Mutex::new(InvocationLedger::default()),
+            log: Mutex::new(InvocationLog::default()),
         }
     }
 
@@ -159,12 +159,12 @@ impl AgentHost {
     }
 }
 
-impl ActionHost for AgentHost {
+impl ActionProvider for AgentHost {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::from_rows(
             "1".into(),
             self.rows.clone(),
@@ -176,16 +176,16 @@ impl ActionHost for AgentHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let offered = self.rows.iter().any(|row| {
             row.provider == request.target.provider
                 && row.action.as_ref().map(|a| &a.address) == Some(&request.target.address)
         });
         if !offered {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let receipt = self
-            .ledger
+            .log
             .lock()
             .unwrap()
             .admit(caller, &request, || Ok(self.answer(&request)))
@@ -194,7 +194,7 @@ impl ActionHost for AgentHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.ledger
+        self.log
             .lock()
             .unwrap()
             .get(caller, id)
@@ -205,8 +205,8 @@ impl ActionHost for AgentHost {
         &self,
         _caller: &Caller,
         _id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "finished".into(),
         }))
     }

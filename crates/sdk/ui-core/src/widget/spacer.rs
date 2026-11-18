@@ -99,7 +99,7 @@ impl Widget for Spacer {
         cx.element("div");
     }
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -144,7 +144,9 @@ impl Widget for Spacer {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -178,7 +180,7 @@ impl crate::presence::capability::PublishesPresence for Spacer {
     }
 }
 
-impl crate::permissions::capability::PermissionGated for Spacer {
+impl crate::permissions::capability::PermissionGuarded for Spacer {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

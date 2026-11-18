@@ -120,7 +120,7 @@ pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
 pub mod arriving;
-/// What wants a person: the waiting stack, and the ledger an outcome goes to when it does not.
+/// What wants a person: the waiting stack, and the log an outcome goes to when it does not.
 pub mod attention;
 pub mod author;
 pub mod capability;
@@ -303,12 +303,12 @@ pub mod host_operation {
         resource_operation_handlers, start_in_children, start_operation,
     };
 }
+mod app_core;
 #[cfg_attr(
     not(any(feature = "native", test)),
     expect(dead_code, reason = "only a native host's frame culls its draw")
 )]
 pub(crate) mod draw_cull;
-mod host_core;
 pub mod mentions;
 pub mod own_paint;
 pub mod published;
@@ -389,9 +389,9 @@ pub mod widget;
 pub mod window_icon;
 
 #[doc(inline)]
-pub use tilo_host::{
-    background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
-    secrets, shell_choosers, time, wake,
+pub use tilo_process_services::{
+    background, capture, clipboard, env, jpeg, location, models, mpris, notify, png, portal,
+    process, secrets, shell_choosers, time, wake,
 };
 
 /// The AccessKit types the bridge and [`headless::FrameHarness`] hand back, re-exported so an app crate
@@ -415,7 +415,7 @@ pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arri
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{RowMotion, RowMotions};
 pub use color_compat::ColorCompat;
-pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
+pub use content_layout::{FocusedContentArea, ResponsiveControlBar};
 pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, HostImageLoader, ImageStore};
@@ -542,8 +542,8 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::sentence::{
-    AuthorParts, acting_line, attribution_hover, author_line, author_parts, author_spoken,
-    wire_author_line, writer_badge,
+    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, wire_author_line,
+    writer_badge,
 };
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
@@ -560,10 +560,6 @@ pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use gesture::{DragSelect, Granularity};
-pub use history_source::invocation_undo::{
-    InvocationUndoReport, StepOutcome, StepState, refuse_invocation, undo_invocation, undo_step,
-    unreachable_steps,
-};
 pub use history_source::invocations::{
     AgentSession, InvocationStep, forget_invocation, invocation_starting_at, read_invocations,
     record_invocation, record_invocation_with_details,
@@ -633,9 +629,9 @@ pub(crate) mod retained_widgets;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
-/// Emission-time local control custody.
-pub mod control_custody;
-pub use control_custody::{
+/// Emission-time local control ownership.
+pub mod control_domain;
+pub use control_domain::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
 mod focus_navigation;

@@ -25,12 +25,12 @@ use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{EndpointAddr, RelayMode};
 use tilo_compositor::OutputConfig;
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_relay_client::frame::{read_frame, write_frame};
-use tilo_relay_protocol::auth::{self, HandshakeTrust, ServerIdentity};
-use tilo_relay_protocol::certify::CERTIFY_ALPN;
-use tilo_relay_protocol::certify::{
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_server_client::frame::{read_frame, write_frame};
+use tilo_server_protocol::auth::{self, HandshakeTrust, ServerIdentity};
+use tilo_server_protocol::certify::CERTIFY_ALPN;
+use tilo_server_protocol::certify::{
     ApproverReply, ApproverRequest, CertifyOpen, ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES,
     PendingConfirmation,
 };
@@ -62,13 +62,13 @@ fn person() -> Person {
         .set(FILE_SECRETS_ENV, "1");
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
+    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
         .expect("the identity registry")
         .load_reconciled_cached()
         .expect("the registry reads");
@@ -131,7 +131,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let asked = Arc::new(Mutex::new(Vec::<ConfirmationAnswer>::new()));
     let questions = Questions::new();
 
-    // The host answers the person's approver as a relay serves it: the certification handshake,
+    // The host answers the person's approver as a server serves it: the certification handshake,
     // then one listed question until it is answered.
     let (router, host_addr) = runtime.block_on(async {
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)

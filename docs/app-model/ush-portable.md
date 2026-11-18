@@ -37,7 +37,7 @@ commands that need Linux, and only for as long as they need it.
 - **Sandboxed WebAssembly.** wasmi is already a workspace dependency, and runs
   on devices and hosts alike.
 - **Compute jobs that run where it's best.** Offloadable actions and compute
-  jobs (`tilo_relay::offload`, `tilo_relay::compute`) place a job on the person's best
+  jobs (`tilo_server::offload`, `tilo_server::compute`) place a job on the person's best
   device, or run it locally. A job names a signed package and an entrypoint,
   takes its inputs by digest, and its outputs come back as workspace content.
   It never carries a shell string or a host path.

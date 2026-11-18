@@ -1,4 +1,4 @@
-//! Materialising the record plane into the live tree. Remote versions reach the live tree only
+//! Materialising the record protocol into the live tree. Remote versions reach the live tree only
 //! through here, and only in ways a reader cannot observe half done.
 //!
 //! A new or changed small file is staged in the same directory and renamed over its path, so an
@@ -68,7 +68,7 @@ pub fn rel_path(components: &[Vec<u8>]) -> PathBuf {
 
 /// Whether `rel` stays inside the tree it is joined onto: at least one component, every one of them
 /// a plain name. A `..`, a root or a prefix component would make `live.join(rel)` name something
-/// outside `live`, which this plane writes as root.
+/// outside `live`, which this backend writes as root.
 pub fn confined_rel(rel: &Path) -> bool {
     let mut components = rel.components().peekable();
     components.peek().is_some() && components.all(|c| matches!(c, Component::Normal(_)))
@@ -206,9 +206,9 @@ pub struct Projector {
     pub parallel_chunks: usize,
     owner: Option<(u32, u32)>,
     seq: AtomicU64,
-    /// Write gates of lease-class files. A new version of a gated file is gated before it is
-    /// renamed into place, so no writer gets through ungated.
-    write_gates: Arc<super::lease::WriteGates>,
+    /// Write checks of lease-class files. A new version of a guarded file is guarded before it is
+    /// renamed into place, so no writer gets through unguarded.
+    write_guards: Arc<super::lease::WriteGuards>,
     last_unavailable: std::sync::Mutex<Option<String>>,
     held: std::sync::Mutex<Option<(PathBuf, u64, std::time::Instant)>>,
 }
@@ -226,7 +226,7 @@ impl Projector {
         content: Arc<Hydrator>,
         runtime: tokio::runtime::Handle,
         owner: Option<(u32, u32)>,
-        write_gates: Arc<super::lease::WriteGates>,
+        write_guards: Arc<super::lease::WriteGuards>,
     ) -> Self {
         Self {
             live,
@@ -238,7 +238,7 @@ impl Projector {
             parallel_chunks: super::fetch::DEFAULT_PARALLEL_CHUNKS,
             owner,
             seq: AtomicU64::new(0),
-            write_gates,
+            write_guards,
             last_unavailable: std::sync::Mutex::new(None),
             held: std::sync::Mutex::new(None),
         }
@@ -251,7 +251,7 @@ impl Projector {
         Ok(())
     }
 
-    /// Brings the live tree to `tree`, the record plane's current state. `changesets` are the
+    /// Brings the live tree to `tree`, the record protocol's current state. `changesets` are the
     /// version-time spans of other devices' latest changesets: a version that cannot be applied yet
     /// holds back the rest of the changeset it belongs to.
     pub fn project(
@@ -492,7 +492,7 @@ impl Projector {
                 Ok(())
             }
             Ok(_) => {
-                // A file stands where the record plane now has a directory.
+                // A file stands where the record protocol now has a directory.
                 let ours = materialized
                     .get(rel)
                     .is_some_and(|m| m.local.is_some() && m.local == LocalStat::of(&abs));
@@ -605,7 +605,7 @@ impl Projector {
             match &install {
                 Install::Staged(staging) => {
                     if !record.symlink {
-                        self.write_gates.gate_new_version(
+                        self.write_guards.check_new_version(
                             &self.placeholders,
                             staging,
                             &abs,
@@ -623,8 +623,8 @@ impl Projector {
                     } else {
                         self.placeholders.create_placeholder(&abs, spec)?;
                     }
-                    self.write_gates
-                        .gate_new_version(&self.placeholders, &abs, &abs, &rel)
+                    self.write_guards
+                        .check_new_version(&self.placeholders, &abs, &abs, &rel)
                 }
                 Install::Chmod(mode) => {
                     fs::set_permissions(&abs, fs::Permissions::from_mode(*mode))

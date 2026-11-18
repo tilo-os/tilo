@@ -14,7 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-# The canonical gate and the single-writer guard around the actor sidecar.
+# The canonical check and the single-writer guard around the actor sidecar.
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
@@ -22,7 +22,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # `standalone_state_dir` come from the CLI SDK, which is also what
 # `cli::resolve_workspace_path` falls back to. One resolver, two callers.
 tilo-cli-kit = { version = "0.1.0", path = "../../runtime/cli" }
-# The storage seam `FsStore` implements and `DocWriter` persists through.
+# The storage interface `FsStore` implements and `DocWriter` persists through.
 durable-store = { version = "0.1.0", path = "../durable-store" }
 # The typed id of the app whose document a store holds.
 tilo-app-id.workspace = true

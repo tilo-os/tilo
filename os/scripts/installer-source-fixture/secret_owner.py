@@ -1,4 +1,4 @@
-"""Owned PAM Secret Service retirement, witnessed through its actual private bus.
+"""Owned PAM Secret Service retirement, observed through its actual private bus.
 
 The bus name supplies no credential or source authority. Kernel parentage,
 UID, executable, namespace and pidfd bind this infrastructure process to the

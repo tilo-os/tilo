@@ -85,7 +85,7 @@ ptuuid="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(js
 devnum="$(lsblk -dno MAJ:MIN "$loop" | xargs)"
 
 # Loop devices do not expose a hardware serial. Wrap only that one lsblk query
-# so the helper's production stable-identity gate remains exercised.
+# so the helper's production stable-identity check remains exercised.
 mkdir "$tmp/bin"
 sed "s|@LOOP@|$loop|g" > "$tmp/bin/lsblk" <<'SH'
 #!/bin/sh

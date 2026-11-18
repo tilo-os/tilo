@@ -13,17 +13,17 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 
 /// A document op as the transport delivered it: the route its publishing
-/// host stamped, and the author's standing in the workspace.
+/// host stamped, and the author's access in the workspace.
 pub struct RemoteDocument {
     pub app_id: String,
     pub cluster_id: String,
     pub document_id: String,
     /// The author, the workspace's policy and any bound on them (a device not
     /// theirs), as the host established them for the authenticated peer.
-    pub author: Standing,
+    pub author: MemberAccess,
     /// A workspace host replayed it from its retained, host-ordered history
     /// (before answering the subscription): old by nature.
     pub replayed: bool,
@@ -46,7 +46,7 @@ const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 /// replayed history.
 pub fn validate_document(
     envelope: &SignedOp,
-    author: &Standing,
+    author: &MemberAccess,
     replayed: bool,
     state: &mut InboundState,
     now: SystemTime,
@@ -128,7 +128,7 @@ fn deliver_at(
                     record = %document.document_id,
                     epoch = encryption.map(|metadata| metadata.epoch),
                     replayed,
-                    "collab_broker (net): a document op its workspace's gate does not take"
+                    "collab_broker (net): a document op its workspace's check does not take"
                 );
                 Err(ValidationError::DocumentRouteMismatch)
             }
@@ -313,18 +313,18 @@ mod tests {
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
 
     /// An editor of the workspace the ops are written in.
-    fn editor() -> Standing {
+    fn editor() -> MemberAccess {
         let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "owner");
         policy
             .members
             .insert("editor".into(), tilo_action_policy::Role::Editor);
-        Standing::person(policy, "editor")
+        MemberAccess::person(policy, "editor")
     }
 
-    /// The gate of a workspace that requires encryption: its group's, which
+    /// The check of a workspace that requires encryption: its group's, which
     /// every record of the workspace seals under.
-    fn gate() -> key_group::SealGate {
-        key_group::SealGate {
+    fn check() -> key_group::SealCheck {
+        key_group::SealCheck {
             encryption_required: true,
         }
     }
@@ -483,10 +483,10 @@ mod tests {
     /// the writes it was shown in the order it was shown them.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .register_gate(collab_types::WorkspaceId::parse(WORKSPACE).unwrap(), gate());
+        channels.lock().unwrap().register_seal_check(
+            collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+            check(),
+        );
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = Arc::clone(&shown);
@@ -537,7 +537,7 @@ mod tests {
     }
 
     /// A record's writes in the clear before its seal are its base, live or
-    /// replayed, though the channel's gate has closed: a device away while
+    /// replayed, though the channel's check has closed: a device away while
     /// the record sealed reads it only by taking them in. Once a sealed
     /// write of the record entered, one in the clear is refused however it
     /// came.
@@ -560,10 +560,10 @@ mod tests {
             op
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .register_gate(collab_types::WorkspaceId::parse(WORKSPACE).unwrap(), gate());
+        channels.lock().unwrap().register_seal_check(
+            collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+            check(),
+        );
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let app = Arc::clone(&delivered);

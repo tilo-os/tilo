@@ -125,7 +125,7 @@ struct HeldSend {
 #[derive(Clone)]
 enum AccountsPersist {
     /// A page keeps no account store of its own: the person's accounts
-    /// record is all it reads.
+    /// resource is all it reads.
     #[cfg(feature = "live")]
     Profile(std::path::PathBuf),
     #[cfg(test)]
@@ -195,7 +195,7 @@ struct PendingEngineRequest {
 
 /// What the mailbox was hydrated at: the document's heads and pending
 /// changes, the mailbox's search revision and how much content had arrived.
-type HydratedAt = (Vec<ui::automerge::ChangeHash>, usize, u64, u64);
+type HydratedAt = (Vec<ui::automerge::ChangeHash>, usize, u64, u64, u64);
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -245,7 +245,7 @@ pub struct MailApp {
     /// that keeps the accounts reads and sends here.
     #[cfg(any(test, not(feature = "live")))]
     host_mail: Option<host_mail::HostMail>,
-    custody: Option<crate::custody::SecretRelease>,
+    ownership: Option<crate::account_secrets::SecretRelease>,
     sender_pictures_seen: Option<(u64, Vec<String>)>,
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
     followed_preferences: crate::resource::MailPreferences,
@@ -356,7 +356,7 @@ impl MailApp {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(waker.clone());
         // New mail is said through the host's notifications; a click on one
         // opens its message here.
-        self.notifier = Some(ui::host::current().notifications);
+        self.notifier = Some(ui::process::current().notifications);
         let activations = Arc::clone(&self.activations);
         ui::notify::set_activation_handler(NOTIFICATION_SCHEME, move |uri| {
             if let Some(id) = uri
@@ -446,8 +446,8 @@ impl MailApp {
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         // In a session the accounts' secrets are the session's to release;
-        let custody = crate::custody::SecretRelease::capture();
-        let accounts = match (&custody, persist.root()) {
+        let ownership = crate::account_secrets::SecretRelease::capture();
+        let accounts = match (&ownership, persist.root()) {
             (_, None) => AccountStore::new(),
             (Some(_), Some(root)) => AccountStore::load_without_secrets_in(&root),
             (None, Some(root)) => AccountStore::load_in(&root),
@@ -461,7 +461,7 @@ impl MailApp {
         let (tx, rx) = crate::engine::spawn(content.clone(), wake_through(&waker));
         let mut app = Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist);
         app.waker = waker;
-        app.custody = custody;
+        app.ownership = ownership;
         // Fetched mail is kept in the app's cache area; a host without one
         // fetches every time.
         let store = storage.files().paths().cache().native_path().map_or_else(
@@ -476,7 +476,7 @@ impl MailApp {
 
     /// A window someone uses in a browser page: it shows the mail the
     /// workspace holds (the person's accounts and kept copies, the mailbox
-    /// record) and queues what needs a server in the mailbox's outboxes,
+    /// resource) and queues what needs a server in the mailbox's outboxes,
     /// which a device holding the account carries out. A page opens no
     /// sockets and no account vault, so it starts no engine.
     #[cfg(not(feature = "live"))]
@@ -621,7 +621,7 @@ impl MailApp {
             person_accounts: None,
             #[cfg(any(test, not(feature = "live")))]
             host_mail: None,
-            custody: None,
+            ownership: None,
             sender_pictures_seen: None,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
@@ -2436,7 +2436,7 @@ impl MailApp {
         if std::mem::replace(&mut self.kept_registered, true) {
             return;
         }
-        let mail = read_mail(doc.doc()).unwrap_or_default();
+        let mail = self.shared.borrow().messages();
         let baselines: Vec<crate::actions::IngestBaseline> = self
             .shared
             .borrow()
@@ -2663,10 +2663,7 @@ impl MailApp {
                     .retain(|_, pending| *pending != request_id);
                 let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
                 if let Some((update, done)) = sent {
-                    st.submit(
-                        doc,
-                        Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
-                    );
+                    st.confirm(doc, update);
                     done(Ok(()));
                 }
                 let check = self.server_outbox.borrow_mut().checking.remove(&request_id);
@@ -2860,7 +2857,7 @@ impl MailApp {
         not(feature = "live"),
         allow(
             dead_code,
-            reason = "a page reads the accounts the host keeps, not a record of its own"
+            reason = "a page reads the accounts the host keeps, not a resource of its own"
         )
     )]
     pub(crate) fn follow_person_accounts(&mut self, accounts: PersonResource<PersonAccounts>) {
@@ -2892,9 +2889,9 @@ impl MailApp {
         }
         let root = self.state().accounts_persist.root();
         if let Some(root) = root {
-            // In a session the secrets are custody's: this sandbox keeps no
+            // In a session the secrets are ownership's: this sandbox keeps no
             // vault of its own, and a released secret stays in memory.
-            if self.custody.is_none() {
+            if self.ownership.is_none() {
                 updated.keep_secrets_in(&root, &removed)?;
             }
             record.get().project_in(&root)?;
@@ -3004,6 +3001,7 @@ impl MailApp {
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
             ui::collaboration::document_content::arrivals(),
+            self.shared.borrow().messages_revision(),
         );
         if self.hydrated_at.borrow().as_ref() == Some(&at) {
             return;
@@ -3016,6 +3014,7 @@ impl MailApp {
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
             ui::collaboration::document_content::arrivals(),
+            self.shared.borrow().messages_revision(),
         );
         *self.hydrated_at.borrow_mut() = Some(settled);
     }
@@ -3023,14 +3022,12 @@ impl MailApp {
     fn hydrate_domain_state_now(&self, doc: &mut ui::widget::Edits<'_>) {
         let mail = read_mail(doc.doc()).unwrap_or_default();
         {
-            let mut st = self.shared.borrow_mut();
             let store = ui::tilo_resource::content::current();
-            mail.show_held(
-                &mut st.mailbox,
+            self.shared.borrow_mut().show_parts(
                 store.as_ref(),
                 &mut self.held_whole.borrow_mut(),
+                ui::collaboration::document_content::arrivals(),
             );
-            mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
         // force another member's composer open.
@@ -3738,7 +3735,8 @@ impl Widget for MailApp {
 
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::undo::UndoControl
+        dyn ui::undo::UndoControl,
+        dyn ui::undo::LocalUndo
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         #[cfg(any(test, not(feature = "live")))]
@@ -4312,7 +4310,7 @@ impl Widget for MailApp {
         // waits for `sync` to show it, then idle rather than busy-loop once
         // results have arrived.
         // `wants_older` is what the list last painted wanting (`MessageList`:
-        // the end of the rows is on screen), a standing condition rather than
+        // the end of the rows is on screen), an access condition rather than
         // news: on its own it would ask for a pass on every frame, and a pass
         // paints the end again. It asks for one only while a page is really
         // left to ask a server for, which is what `load_older` then does.
@@ -4345,18 +4343,6 @@ fn recipient_line(draft: &crate::actions::DraftData) -> String {
         "nobody yet".to_owned()
     } else {
         to.join(", ")
-    }
-}
-
-impl ui::undo::UndoControl for MailApp {
-    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
-        self.nav.take_toast_action()?;
-        if self.send_notice && !self.sent_here.is_empty() {
-            self.unsend = true;
-            self.dirty = true;
-            return None;
-        }
-        Some(ui::undo::UndoRequest::Undo)
     }
 }
 
@@ -5490,6 +5476,7 @@ mod empty;
 #[cfg(test)]
 mod tests;
 
+mod undo;
 mod view;
 pub(crate) use view::window;
 

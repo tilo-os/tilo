@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# The Lounge's host: tilo-relay's persistent public workspace with the
+# The Lounge's host: tilo-server's persistent public workspace with the
 # deployment routes beside it (/mode, /avatars/<name>, /discord/callback) and
 # the Discord bridge in the same process. Nothing here compiles: the programs
 # are built by tools/ci/publish/lounge-binaries.sh and laid out with the bot
@@ -27,11 +27,11 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
   && microdnf clean all \
   && command -v bash rpm grep sort tr >/dev/null \
   && bash /run/tilo-verify-no-cisco-openh264.sh
-# tilo-relay, and the Discord connector's outside worker beside it (the
-# connector finds `<app>-worker` next to the relay it runs under).
+# tilo-server, and the Discord connector's outside worker beside it (the
+# connector finds `<app>-worker` next to the server it runs under).
 COPY bin/ /usr/local/bin/
-# Every version of the built-in apps' surface.toml, which the relay publishes
-# into its content plane at start: history written by an older version than this
+# Every version of the built-in apps' surface.toml, which the server publishes
+# into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/
 # Bot programs the deployment installs by path (TILO_WORKSPACES_BOTS) and the app
@@ -47,19 +47,27 @@ USER 10001
 # state volume, and /run/secrets is mounted from the operator's secrets.
 # The session limits are the measured capacity of one such host: 100 guests
 # and 2000 watching pages at 122 MiB and 1.1 cores, plus the handshakes and
-# grants those hold. They are the relay's own variables, so the deployment may
+# grants those hold. They are the server's own variables, so the deployment may
 # still raise them without a new image.
+# TILO_PEOPLE_KEYS is where the keys of people's sealed stores (their
+# sign-ins, provider keys and vault items) are kept: a volume of its own,
+# apart from the state volume, so that a copy or a backup of the state alone
+# opens none of them. The server keeps them there only when a volume is
+# mounted at that path. With none it keeps each key in the state, beside what
+# it opens, as before there was the setting, and says so in its log at every
+# start.
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
     TILO_WORKSPACES_STATE=/run/tilo-workspaces \
     TILO_SECRETS_DIR=/run/tilo-workspaces/secrets \
-    TILO_RELAY_MAX_WEB_SESSIONS=2164 \
-    TILO_RELAY_MAX_HANDSHAKES=1024 \
-    TILO_RELAY_MAX_WORKSPACE_GRANTS=34624
+    TILO_PEOPLE_KEYS=/var/lib/tilo-people-keys \
+    TILO_SERVER_MAX_WEB_SESSIONS=2164 \
+    TILO_SERVER_MAX_HANDSHAKES=1024 \
+    TILO_SERVER_MAX_WORKSPACE_GRANTS=34624
 # 8790: the deployment routes (/mode, /avatars, /discord/callback, plain HTTP
 #       behind the ingress).
-# 9780: the relay's plain listener the ingress forwards the workspace's own
+# 9780: the server's plain listener the ingress forwards the workspace's own
 #       host to.
-# 9781/udp: the pages' live plane (WebTransport), which the ingress publishes
+# 9781/udp: the pages' live session (WebTransport), which the ingress publishes
 #       on its own address.
 EXPOSE 8790 9780 9781/udp
 ENTRYPOINT ["/usr/local/bin/tilo-lounge"]

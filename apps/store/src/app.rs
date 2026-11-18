@@ -394,7 +394,7 @@ type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 /// An operation as a job the whole system sees. It offers no Stop, because
 /// there is nothing here that could honour one: the package manager runs the
 /// operation to the end in a process of its own, and the Store holds no
-/// handle to that child (the app host's `flatpak` call has no cancel), so
+/// handle to that child (the package service's `flatpak` call has no cancel), so
 /// stopping here would only stop the Store watching (`APP-store-01`). The
 /// job's row and the app's page say that, and what the person can do instead:
 /// leave it running, or close the window.
@@ -411,7 +411,7 @@ fn store_owner() -> ui::attention::Owner {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (host flatpak \
-              availability, a layout-rebuild gate, a pending worker action, \
+              availability, a layout-rebuild check, a pending worker action, \
               and which of the remotes and trust pages is open); \
               grouping them into enums would not express any real invariant \
               between them and would touch sync/draw/handle_event call sites \
@@ -957,7 +957,7 @@ impl StoreState {
         }
     }
 
-    /// Merge an enriched record into the current list and keep the app's page
+    /// Merge an enriched resource into the current list and keep the app's page
     /// focused on it.
     pub fn set_detail(&mut self, detail: StoreItem) {
         if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
@@ -2299,7 +2299,7 @@ impl StoreState {
         status: &str,
         cx: &EffectCx<Store>,
     ) -> Result<(), String> {
-        match case_record(app_id, package_id, case_id, status) {
+        match case_resource(app_id, package_id, case_id, status) {
             Ok(record) => {
                 cx.submit(Store::RECORD_MODERATION_CASE.with(record));
                 self.status_line = format!("Moderation case {case_id} is {status}.");
@@ -2581,7 +2581,7 @@ impl StoreState {
     }
 }
 
-fn case_record(
+fn case_resource(
     app_id: &str,
     package_id: &str,
     case_id: &str,
@@ -3348,7 +3348,7 @@ mod tests {
             visible.contains("When its connector reports an event"),
             "{visible}"
         );
-        assert!(visible.contains("When a record changes"));
+        assert!(visible.contains("When a resource changes"));
         assert!(visible.contains("so.tilo.discord"));
         assert!(
             visible.contains("May post under other names and avatars. Always tagged as a bot.")
@@ -3662,8 +3662,8 @@ mod tests {
                 .state()
                 .set_operation_error(Some(crate::flathub_client::remote_error(
                     &remote,
-                    &app_host::client::CatalogueError::Refused {
-                        refusal: app_host::client::Refusal::TimedOut,
+                    &package_service::client::CatalogueError::Refused {
+                        refusal: package_service::client::Refusal::TimedOut,
                         detail: "command timed out after 8000 ms".into(),
                     },
                 )));
@@ -4834,7 +4834,7 @@ mod tests {
             {
                 let mut app = seeded_app();
                 // "Term" only matches Terminal — Notes contains "te" but not
-                // "term", so the substring gate drops it.
+                // "term", so the substring check drops it.
                 app.set_query("Term".into());
                 let visible = app.visible_items();
                 assert_eq!(visible.len(), 1);
@@ -5178,7 +5178,7 @@ mod tests {
     }
 
     /// The `CardGrid` control test drains `take_control_invocation`, which the
-    /// harness's control custody would take first, so it lays out by hand.
+    /// harness's control ownership would take first, so it lays out by hand.
     fn layout_card_grid(widget: &mut CardGrid, width: f32) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
@@ -5890,7 +5890,8 @@ mod tests {
         }
 
         {
-            let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
+            let record =
+                case_resource("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
                 (
                     record.app_id.as_str(),
@@ -5899,8 +5900,8 @@ mod tests {
                 ),
                 ("id.notes", "case-authoritative", "Open")
             );
-            assert!(case_record("id.notes", "id.notes", "case-../../outside", "Open").is_err());
-            assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());
+            assert!(case_resource("id.notes", "id.notes", "case-../../outside", "Open").is_err());
+            assert!(case_resource("id.notes", "id.other", "case-authoritative", "Open").is_err());
         }
 
         {

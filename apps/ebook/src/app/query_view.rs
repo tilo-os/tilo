@@ -344,11 +344,11 @@ impl BooksApp {
         if opening.0 != book {
             return None;
         }
-        let (fetching, standing) = self.query.index.fetching()?;
+        let (fetching, state) = self.query.index.fetching()?;
         if fetching != book {
             return None;
         }
-        match standing.failure()? {
+        match state.failure()? {
             BookUnreachable::Waiting => Some((WAITING_STATUS, Some(WAITING_DETAIL))),
             BookUnreachable::Unavailable => Some((UNAVAILABLE_STATUS, None)),
         }

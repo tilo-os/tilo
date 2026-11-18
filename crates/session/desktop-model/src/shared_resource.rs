@@ -4,7 +4,7 @@
 //! reconnects with an old desktop writes only the entries it changed itself. A
 //! strip holds its window groups, and a group the order of its windows: putting
 //! a window into a strip writes inside that strip, so taking back the change that
-//! made the strip leaves it standing while it holds what another person put in
+//! made the strip leaves it in place while it holds what another person put in
 //! it: an undo keeps a map somebody wrote inside since. Who may change which
 //! entry is [`crate::ownership`]'s rule.
 //! ```text
@@ -473,7 +473,7 @@ pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<Sh
     Some(desktop)
 }
 
-/// The custody key of a package's primary record, as a page that predates
+/// The ownership key of a package's primary record, as a page that predates
 /// routes wrote it where a window's route belongs: not a route, so a layout
 /// holding it holds the primary under a spelling that names nothing.
 const LEGACY_PRIMARY_RECORD: &str = "@tilo:package-primary";
@@ -805,7 +805,7 @@ fn map_at(
 }
 
 /// Stand the containers every entry of the record is kept in, empty, where `doc` holds none yet: a
-/// change that takes back the entries a later change wrote leaves them standing.
+/// change that takes back the entries a later change wrote leaves them in place.
 ///
 /// # Errors
 /// The document refused a write.

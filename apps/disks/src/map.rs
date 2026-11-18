@@ -119,7 +119,7 @@ impl PartitionMap {
         let track_h = f64::from(spacing.s12);
         let track = Rect::new(0.0, chip.y1 + gap, width, chip.y1 + gap + track_h);
 
-        let seam = f64::from(spacing.s1) / 2.0;
+        let gap = f64::from(spacing.s1) / 2.0;
         let floor = f64::from(spacing.s2);
         let total: f64 = self
             .entries
@@ -143,7 +143,7 @@ impl PartitionMap {
         let segments: Vec<Rect> = widths
             .iter()
             .map(|w| {
-                let rect = Rect::new(x, track.y0, (x + w - seam).max(x + 1.0), track.y1);
+                let rect = Rect::new(x, track.y0, (x + w - gap).max(x + 1.0), track.y1);
                 x += w;
                 rect
             })

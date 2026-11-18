@@ -418,7 +418,7 @@ export class InvocationList {
     raw: Record<string, unknown> = {},
     more: ((cursor: string) => Promise<InvocationList>) | null = null,
   ) {
-    this.invocations = arrayOf(raw.invocations).map(invocationInfoOf);
+    this.invocations = arrayOf(raw.items).map(invocationInfoOf);
     this.total = intOf(raw.total) ?? 0;
     this.waiting = intOf(raw.waiting) ?? 0;
     this.pending = raw.pending === true;
@@ -571,16 +571,16 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
   };
 }
 
-/**
- * An action's answer, and an invocation's: what it did, what it changed, and the link
- * to the one record a person opens it with.
- */
 /** An item a write made: its id, and the address it is published under. */
 export interface Made {
   id: string;
   address: string;
 }
 
+/**
+ * An action's answer, and an invocation's: what it did, what it changed, and the link
+ * to the one record a person opens it with.
+ */
 export interface ActionAnswer {
   /** `ok`, `pending` or `cancelled`. */
   status: string;
@@ -692,8 +692,8 @@ export interface Usage {
 }
 
 export function usageOf(raw: Record<string, unknown>): Usage {
-  const standing = recordOf(raw.standing);
-  const usage = recordOf(standing.usage);
+  const subscription = recordOf(raw.subscription);
+  const usage = recordOf(subscription.usage);
   const workspaces = arrayOf(usage.workspaces).map((row) => ({
     workspace: String(row.workspace ?? ""),
     vmSeconds: intOf(row.vm_seconds) ?? 0,
@@ -703,7 +703,7 @@ export function usageOf(raw: Record<string, unknown>): Usage {
   }));
   return {
     host: String(raw.host ?? ""),
-    plan: textOf(standing.plan),
+    plan: textOf(subscription.plan),
     workspaces,
     vmSeconds: workspaces.reduce((total, row) => total + row.vmSeconds, 0),
     running: workspaces.filter((row) => row.running).map((row) => row.workspace),

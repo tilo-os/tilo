@@ -57,7 +57,7 @@ impl SourceProjection {
         }
     }
 
-    /// Descriptive identity only; callers must retain live source custody.
+    /// Descriptive identity only; callers must retain live source ownership.
     pub fn context_sha256(&self) -> [u8; 32] {
         #[cfg(target_os = "linux")]
         {

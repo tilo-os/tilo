@@ -78,7 +78,20 @@ fn drive(
         !host.join("so.tilo.notes/state.automerge").exists(),
         "widget-owned notebook must not open a substitute host document"
     );
-    serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap()
+    let mut dump: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap();
+    // The notes are kept in parts beside the notebook: the dump's `pages`
+    // are every part's.
+    let mut pages = serde_json::Map::new();
+    if let Some(parts) = dump["parts"].as_object() {
+        for part in parts.values() {
+            if let Some(held) = part["pages"].as_object() {
+                pages.extend(held.clone());
+            }
+        }
+    }
+    dump["pages"] = serde_json::Value::Object(pages);
+    dump
 }
 
 /// The paragraphs of a page in a dumped notebook, in no particular order.
@@ -143,7 +156,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     );
 }
 
-/// A launch opens the workspace's notebook, the one record every Notes window in
+/// A launch opens the workspace's notebook, the one resource every Notes window in
 /// the workspace opens (not one per window), so they edit one notebook.
 #[test]
 fn a_launch_opens_the_workspaces_notebook() {
@@ -161,9 +174,19 @@ fn a_launch_opens_the_workspaces_notebook() {
         .next()
         .expect("the launch kept the workspace's notebook");
     assert!(workspace.join("state.automerge").is_file(), "{workspace:?}");
+    // Beside the notebook the workspace keeps only its notes (their parts and
+    // the chain's head) and the person's writes waiting for a part, never a
+    // record of one window's.
+    let beside: Vec<String> = std::fs::read_dir(workspace.join("documents"))
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     assert!(
-        !workspace.join("documents").exists(),
-        "no per-window record beside the workspace's notebook"
+        beside
+            .iter()
+            .all(|name| name.contains("pages") || name.contains("chain-unsent")),
+        "no per-window resource beside the workspace's notebook: {beside:?}"
     );
 }
 

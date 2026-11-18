@@ -9,7 +9,7 @@ Slack **4.52.178**, Snap revision **263**. No other architecture or version is
 silently admitted. This is the source fixture distribution, not a declaration
 that release targets on other architectures have passed native qualification.
 
-`service-source-subjects.json` contains the full measured ledger: both archive
+`service-source-subjects.json` contains the full measured list: both archive
 subjects and every file's relative name, size, mode and SHA-256, including the
 repository fixture app. It contains no builder path. Its canonical SHA-256 is
 pinned in `service-source-assets.py`, independently of the archive SHA-256 pins.
@@ -39,7 +39,7 @@ independently. Do not fabricate a substitute package or reduce the extracted
 file set to just the binary/ASAR. No network request is needed by the admission
 helper.
 
-Generate an operator manifest from the checked-in subject ledger. `$ASSETS` is
+Generate an operator manifest from the checked-in subject list. `$ASSETS` is
 your chosen absolute builder-local directory on durable host storage, for example
 `/srv/tilo/tasks/installer-public-source/target/capture-public-assets`, not a
 container layer, `/tmp` or `/dev/shm`:
@@ -74,7 +74,7 @@ The generator source is already checked in at
 SHA-256 `c138828e660c41f53bad6bc3eff0c372b8950588b209ff2cbce583916dbb62e3`;
 `package.json` has 151 bytes and SHA-256
 `c460efc2fcb42a233ed251afc8846c94f59c5d6c63ce150975ee2eac2962f886`.
-Both are mode 0644 and match the unchanged frozen ledger. This is our synthetic
+Both are mode 0644 and match the unchanged frozen list. This is our synthetic
 **test app**, not upstream Electron or the official Slack app. It runs through
 upstream Electron APIs only during the later protected qualification; recovery
 never runs it or copies live app data.
@@ -106,11 +106,11 @@ these inputs. Do not relocate them into erased temporary storage to bypass it.
 
 ## Audit basis
 
-The frozen ledger was reconstructed from the existing public asset manifest,
+The frozen list was reconstructed from the existing public asset manifest,
 not its saved execution claims. Both actual archive hashes and every current
 extracted file size/mode/hash were independently remeasured. Electron's complete
-ZIP entries were also compared to the ledger; Slack's version was read directly
+ZIP entries were also compared to the list; Slack's version was read directly
 from the measured `resources/app.asar` package entry. The fixture app hashes were
 checked against this repository. Local archive/extraction paths do not appear in
-the new subject ledger. This audit supplies no native or provider-authentication
+the new subject list. This audit supplies no native or provider-authentication
 qualification evidence.

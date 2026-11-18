@@ -8,7 +8,8 @@
 //! the layout of two workspaces and heard the first one's answer as the
 //! second's, so whoever waited for the first never heard it answered; and
 //! after a reconnect only the last was opened again. A workspace its owner
-//! deleted is followed no more, and its records are not opened again.
+//! deleted, or that took this person out, is followed no more, and its records
+//! are not opened again.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,10 +19,10 @@
 use super::*;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
 use tilo_peer_state::owner::testing::{LateAdmission, late_admission_at};
-use tilo_relay_protocol::DocumentAnswer;
+use tilo_server_protocol::DocumentAnswer;
 
-#[test]
-fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
+/// A session of a device the workspace's server admitted late, as a page's is.
+fn session() -> (Task, Link, tokio::sync::mpsc::UnboundedReceiver<Command>) {
     let LateAdmission {
         bootstrap,
         device_key,
@@ -29,7 +30,7 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
     } = late_admission_at(web_time::SystemTime::now());
     let host = bootstrap.host;
     let config = PeerConfig {
-        host: tilo_relay_client::Host::through(
+        host: tilo_server_client::Host::through(
             iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(&host.device_public_key).unwrap(),
             ),
@@ -40,13 +41,18 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
         revocations: RevocationList::new(),
         entering: None,
     };
-    let (mut task, link, _commands) = session_task(
+    session_task(
         config,
         Arc::new(device_key),
         Arc::new(crate::MemoryPeerStore::default()),
         None,
         false,
-    );
+    )
+}
+
+#[test]
+fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
+    let (mut task, link, _commands) = session();
     let events = link.events();
     let layout = |workspace: WorkspaceId| DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
@@ -78,13 +84,69 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
     // no later subscription, and the second's as before.
     task.inbound(Envelope::NotAuthorised {
         workspace_id: first,
-        refusal: tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted,
+        refusal: tilo_server_protocol::refusal::Refusal::WorkspaceDeleted,
     });
     assert_eq!(task.opened_records.len(), 1);
     for workspace in [first, second] {
         task.resource_opened(workspace, channel, DocumentAnswer::Sent { frames: 0 });
     }
     assert_eq!(answered(&events), [(second, layout(second))]);
+}
+
+/// A person taken out of a workspace is let into it no more: the session follows it no longer,
+/// and once it holds no other workspace it ends as not admitted, which the page turns them away
+/// on. A permission they could still ask for stays a notice.
+#[test]
+fn a_person_taken_out_of_a_workspace_is_told_they_are_no_longer_a_member() {
+    use tilo_server_protocol::refusal::Refusal;
+
+    let (mut task, link, _commands) = session();
+    let (lounge, own) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
+    task.workspaces.extend([lounge, own]);
+
+    task.inbound(Envelope::NotAuthorised {
+        workspace_id: own,
+        refusal: Refusal::NotGranted("invite".to_owned()),
+    });
+    let status = link.status();
+    assert_ne!(status.phase, TransportPhase::Failed);
+    assert!(
+        status
+            .failures
+            .iter()
+            .any(|failure| failure.code == "permission-required")
+    );
+
+    task.inbound(Envelope::NotAuthorised {
+        workspace_id: lounge,
+        refusal: Refusal::NotAMember("removed".to_owned()),
+    });
+    assert!(
+        !task.workspaces.contains(&lounge),
+        "the Lounge is followed no more"
+    );
+    assert_ne!(
+        link.status().phase,
+        TransportPhase::Failed,
+        "another workspace still holds the session"
+    );
+
+    task.inbound(Envelope::NotAuthorised {
+        workspace_id: own,
+        refusal: Refusal::NotAMember("removed".to_owned()),
+    });
+    let status = link.status();
+    assert_eq!(
+        status.phase,
+        TransportPhase::Failed,
+        "nothing is left to follow"
+    );
+    assert!(
+        status
+            .failures
+            .iter()
+            .any(|failure| failure.code == "not-admitted")
+    );
 }
 
 /// The records `events` heard answered since it was last asked, each with the

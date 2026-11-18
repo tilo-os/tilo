@@ -181,7 +181,7 @@ fn network_picker_remains_open_through_window_resize() -> Result<(), String> {
     })
 }
 
-struct SnapshotGate {
+struct SnapshotHold {
     started: crate::channel::Sender<()>,
     release: crate::channel::Receiver<()>,
 }
@@ -200,7 +200,7 @@ fn pending_network() -> Result<(NetworkModel, ReleaseSnapshot), String> {
     let (started, starts) = crate::channel::channel();
     let (release, releases) = crate::channel::channel();
     let fake = Arc::new(FakeNetwork::default());
-    *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+    *fake.snapshot_hold.lock().unwrap() = Some(SnapshotHold {
         started,
         release: releases,
     });
@@ -275,7 +275,7 @@ struct FakeNetwork {
     created: Mutex<Vec<String>>,
     profiles: Mutex<Vec<SavedNetworkProfile>>,
     settings: Mutex<HashMap<String, os_actions::ConnectionProfileSettings>>,
-    snapshot_gate: Mutex<Option<SnapshotGate>>,
+    snapshot_hold: Mutex<Option<SnapshotHold>>,
     snapshot_reads: std::sync::atomic::AtomicUsize,
     connectivity_rechecks: std::sync::atomic::AtomicUsize,
     scans: Mutex<Vec<usize>>,
@@ -422,10 +422,10 @@ impl NetworkService for FakeNetwork {
     fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
         self.snapshot_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let gate = self.snapshot_gate.lock().unwrap().take();
-        if let Some(gate) = gate {
-            gate.started.send(()).unwrap();
-            gate.release
+        let hold = self.snapshot_hold.lock().unwrap().take();
+        if let Some(hold) = hold {
+            hold.started.send(()).unwrap();
+            hold.release
                 .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
         }
@@ -788,7 +788,7 @@ fn network_inspection_observes_the_actual_pending_refresh_and_failed_snapshot() 
     app.settle();
     let (started, starts) = crate::channel::channel();
     let (release, releases) = crate::channel::channel();
-    *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+    *fake.snapshot_hold.lock().unwrap() = Some(SnapshotHold {
         started,
         release: releases,
     });
@@ -2720,7 +2720,7 @@ fn data_usage_is_charted_per_connection_and_forgotten() {
     app.harness().resize((1280, 1400)).unwrap();
     let kind = <NetworkUsage as ui::tilo_resource::Resource>::KIND;
     let now = tilo_clock::unix_now_i64();
-    let offset = ui::clock::local_now().offset().local_minus_utc();
+    let offset = ui::clock::local_now().offset().seconds();
     for received in [1_000_u64, 2_001_000] {
         invoke_section(
             &mut app,

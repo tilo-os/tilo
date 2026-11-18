@@ -1,5 +1,5 @@
 //! One link per enrolled workspace: dialling the host its enrollment pins,
-//! holding the link ([`hold`]) over the direct lane, admitting what arrives
+//! holding the link ([`hold`]) over the direct connection, admitting what arrives
 //! into this device's owner, and publishing what the owner holds.
 mod hold;
 mod reach;
@@ -12,7 +12,7 @@ use crate::join::TransportHint;
 use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// An enrolled workspace to hold a link for.
@@ -31,7 +31,7 @@ impl std::fmt::Debug for Connect {
 
 impl NativeWorkspaceOwner {
     /// Where `workspace`'s host is reached, with the device its enrollment
-    /// pins: the address a plane of the workspace dials that host at,
+    /// pins: the address a live session of the workspace dials that host at,
     /// decoded from the hint the host signed. `None` while the workspace is
     /// not held here or its enrollment names no iroh address.
     #[must_use]
@@ -66,9 +66,9 @@ impl Connect {
     /// pins and the owner's continuity.
     pub fn material(
         &self,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(TransportHint, DeviceCert, u64), String> {
-        let (cert, continuity) = self.custody(identity)?;
+        let (cert, continuity) = self.ownership(identity)?;
         let hint = self
             .owner
             .with_current(self.workspace, |view| Ok(view.transport_hint()?.clone()))?;
@@ -76,11 +76,11 @@ impl Connect {
     }
     /// Whether this device may act as `workspace`'s own member now, and the
     /// continuity its record is at ([`Self::material`]).
-    pub fn custody(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
+    pub fn ownership(&self, identity: &DeviceIdentity) -> Result<(DeviceCert, u64), String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, entries) = identity.current_material(view.workspace_id())?;
             if &cert != view.device() {
-                return Err("native custody differs from enrollment".into());
+                return Err("native ownership differs from enrollment".into());
             }
             view.peer()
                 .permissions(cert.device_public_key, tilo_clock::wall())
@@ -99,7 +99,7 @@ impl Connect {
     }
     /// Every holder of the workspace a link may reach, each alike: the host
     /// this device's enrollment names, then each holder the workspace's
-    /// governance names ([`crate::workspace_hosts_of`]) in the order it holds
+    /// governance names ([`crate::keeping_devices_of`]) in the order it holds
     /// them. A holder the workspace revoked, or another naming this device,
     /// is left out.
     pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
@@ -109,7 +109,7 @@ impl Connect {
             let named = view
                 .peer()
                 .governance()
-                .workspace_hosts()
+                .keeping_devices()
                 .into_iter()
                 .filter(|hint| {
                     let device = hint.host.device_public_key;
@@ -125,7 +125,7 @@ impl Connect {
     /// enrollment pins is this very device. Such a workspace is never dialled:
     /// its link pairs with the host in this process.
     #[must_use]
-    pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
+    pub fn hosted_here(&self, identity: &DeviceIdentity) -> bool {
         self.owner
             .with_current(self.workspace, |view| {
                 let (cert, _) = identity.current_material(view.workspace_id())?;
@@ -134,10 +134,10 @@ impl Connect {
             .unwrap_or(false)
     }
     /// The renewal of the certificate the workspace's record holds, when this
-    /// device's custody holds one: the device proves its membership with it
+    /// device's ownership holds one: the device proves its membership with it
     /// ([`crate::owner::enroll::renew_membership`]) before its links dial again,
-    /// as [`Self::material`] refuses custody that differs from the record.
-    pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
+    /// as [`Self::material`] refuses ownership that differs from the record.
+    pub fn renewal(&self, identity: &DeviceIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, _) = identity.current_material(view.workspace_id())?;
             Ok(crate::owner::renewal::renews(&cert, view.device()).then_some(cert))
@@ -167,7 +167,7 @@ impl Connect {
 /// The pin is the host it reached and the certificate it signs as. The owner's
 /// continuity moves with any security change of the workspace, another member
 /// joining included; the link follows it in place once this device's own
-/// standing was checked again ([`Connect::material`]), rather than ending and
+/// member access was checked again ([`Connect::material`]), rather than ending and
 /// redialling every member for one person's join.
 pub struct Scope {
     connect: Connect,
@@ -204,7 +204,7 @@ impl Scope {
     }
     /// Whether this link is still pinned to this material: the same host
     /// and certificate. `continuity` is the owner's current one, which the
-    /// caller read with the material that re-validated this device's standing
+    /// caller read with the material that re-validated this device's access
     /// ([`Connect::material`] refuses a device no longer admitted, permitted
     /// or behind an unrevoked host); the link adopts it.
     #[must_use]
@@ -229,8 +229,8 @@ impl Scope {
     /// is the one the link is pinned to ([`Connect::material`]).
     ///
     /// # Errors
-    /// This device's standing in the workspace, or the link's pin, changed.
-    pub fn current(&self, identity: &HostIdentity) -> Result<(), String> {
+    /// This device's access in the workspace, or the link's pin, changed.
+    pub fn current(&self, identity: &DeviceIdentity) -> Result<(), String> {
         let (hint, device, continuity) = self.connect.material(identity)?;
         if self.pinned_to(&hint, &device, continuity) {
             Ok(())
@@ -238,7 +238,7 @@ impl Scope {
             Err("native publication session changed".into())
         }
     }
-    /// Whether the custody `view` holds still publishes over this link, as it stands in the
+    /// Whether the ownership `view` holds still publishes over this link, as it stands in the
     /// owner's turn: the same certificate, host and continuity, the certificate this device
     /// selects for the workspace, and its permission to write.
     ///
@@ -247,7 +247,7 @@ impl Scope {
     pub fn authorize(
         &self,
         view: &NativeCommittedView,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(), String> {
         if view.device() != &self.device
             || view.transport_hint()? != &self.hint
@@ -257,7 +257,7 @@ impl Scope {
         }
         let (selected, _) = identity.current_material(view.workspace_id())?;
         if &selected != view.device() {
-            return Err("native publication custody changed".into());
+            return Err("native publication ownership changed".into());
         }
         view.peer()
             .permissions(selected.device_public_key, tilo_clock::wall())
@@ -268,7 +268,7 @@ impl Scope {
 
 /// The app write a frame carries, for this device's apps: `None` for anything
 /// else, a write the owner neither accepted nor already held, this device's own
-/// write, a write naming another workspace, or an author without standing.
+/// write, a write naming another workspace, or an author without member access.
 #[must_use]
 pub fn app_write(
     owner: &NativeWorkspaceOwner,
@@ -296,10 +296,13 @@ pub fn app_write(
     if cluster_id != &workspace.to_string() {
         return None;
     }
-    let standing = owner
+    // What its author may do, as the write was taken: what the device may
+    // now, or, for a device its person removed since, what its person may
+    // when the cut of the removal keeps the write as history.
+    let access = owner
         .with_current(workspace, |view| {
             view.peer()
-                .permissions(author, tilo_clock::wall())
+                .permissions_as_written(app_id, document_id, envelope, tilo_clock::wall())
                 .map_err(|error| error.to_string())
         })
         .ok()?;
@@ -308,7 +311,7 @@ pub fn app_write(
         app_id: app_id.clone(),
         cluster_id: cluster_id.clone(),
         document_id: document_id.clone(),
-        author: standing,
+        author: access,
         replayed,
         envelope: (**envelope).clone(),
         own: own.clone().filter(|own| own.names(document_id)),
@@ -406,7 +409,7 @@ impl Input {
     /// The app write `report` took in from another device, for this device's
     /// apps: `None` for anything else, a write the owner neither accepted nor
     /// already held, this device's own write, a write naming another
-    /// workspace, or an author without standing.
+    /// workspace, or an author without member access.
     #[must_use]
     pub fn app_write(&self, report: &crate::AdmissionReport) -> Option<AppWrite> {
         app_write(
@@ -442,9 +445,9 @@ impl Input {
             }))
             .collect()
     }
-    /// The author's current standing in the workspace: the workspace's policy, and
+    /// The author's current member access in the workspace: the workspace's policy, and
     /// the bound on a device not theirs.
-    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
+    pub fn access(&self) -> Result<tilo_action_policy::MemberAccess, String> {
         self.scope
             .connect
             .owner

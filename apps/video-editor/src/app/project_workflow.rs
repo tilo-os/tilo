@@ -352,7 +352,7 @@ impl VideoEditorApp {
         self.export_job.is_some()
     }
 
-    /// The dialog paints the button from this and the press path gates on it, so the offer and
+    /// The dialog paints the button from this and the press path waits for it, so the offer and
     /// the behaviour cannot disagree, as they did when the dialog said "Export needs the
     /// `GStreamer` build" over an enabled Export button.
     ///

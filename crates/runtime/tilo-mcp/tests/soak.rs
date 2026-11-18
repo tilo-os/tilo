@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_mcp::McpServer;
@@ -117,12 +117,12 @@ fn row(index: usize) -> CatalogueRow {
     }
 }
 
-impl ActionHost for Notes {
+impl ActionProvider for Notes {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let mut page = CataloguePage::from_rows("1".into(), self.rows.clone(), &query);
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
@@ -138,7 +138,7 @@ impl ActionHost for Notes {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         let mut invoked = self.invoked.lock().unwrap();
         invoked.push_back(invocation);
@@ -166,7 +166,7 @@ impl ActionHost for Notes {
         })
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }

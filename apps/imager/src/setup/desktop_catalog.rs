@@ -51,7 +51,7 @@ pub struct DesktopRelease {
     pub sha256: String,
     pub verified_runtime: Option<RuntimeEvidence>,
     #[serde(default)]
-    pub account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
+    pub account_credentials: Option<imager_backend::account_admission::ConsumerCapability>,
 }
 
 impl DesktopRelease {
@@ -107,7 +107,7 @@ impl DesktopRelease {
                 );
             }
         }
-        if let Some(capability) = &self.account_custody {
+        if let Some(capability) = &self.account_credentials {
             capability
                 .validate()
                 .map_err(|_| "Invalid Desktop account consumer proof.".to_string())?;
@@ -119,7 +119,7 @@ impl DesktopRelease {
         self.validate_metadata()?;
         if let Some(protocol) = required {
             if !self
-                .account_custody
+                .account_credentials
                 .as_ref()
                 .is_some_and(|proof| proof.protected_grant_protocol == protocol)
             {
@@ -137,7 +137,7 @@ impl DesktopRelease {
     ) -> Result<(), String> {
         self.validate_metadata()?;
         if required.is_some_and(|protocol| {
-            self.account_custody.as_ref().is_none_or(|proof| {
+            self.account_credentials.as_ref().is_none_or(|proof| {
                 !proof.supports_service_session_protocol(protocol)
                     && !imager_backend::account_admission::source_candidate(protocol, proof)
                         .unwrap_or(false)
@@ -285,7 +285,7 @@ mod tests {
         phase desktop_catalog_authenticates_strict_package_consumer_declaration;
         {
             let mut entry = release_json();
-            entry["account_custody"] = json!({"schema":1,"protected_grant_protocol":1,
+            entry["account_credentials"] = json!({"schema":1,"protected_grant_protocol":1,
                 "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
                 "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
                 "runtime_version":"fixture-1","runtime_library":"lib/libruntime_dylib.so"});
@@ -303,7 +303,7 @@ mod tests {
                 ("unknown", json!(true)),
             ] {
                 let mut altered = entry.clone();
-                altered["account_custody"][field] = value;
+                altered["account_credentials"][field] = value;
                 assert!(parse_catalog(&catalog(vec![altered])).is_err());
             }
             let legacy = parse_catalog(&catalog(vec![release_json()]))

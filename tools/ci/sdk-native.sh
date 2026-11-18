@@ -3,11 +3,11 @@
 # addon `tilo-sdk-native` (sdk/typescript/native), the one Rust client of Tilo's API bound for
 # each, built and then driven against a real Tilo host.
 #
-#   sdk-native.sh build <dir>   Build both with the api-on-relay harness, into <dir>:
+#   sdk-native.sh build <dir>   Build both with the api-on-server harness, into <dir>:
 #                                 <dir>/python/tilo/_native.abi3.so
 #                                 <dir>/typescript/tilo-sdk-native.<platform>.node
 #                                 <dir>/{python/tilo,typescript}/tilo-automerge-worker
-#                                 <dir>/api-on-relay
+#                                 <dir>/api-on-server
 #                                 <dir>/font-catalogs (the fonts its app workers set text in,
 #                                   found above the program as in the build directory)
 #                               Needs cargo (the sdk-native-build check, in the builder image).
@@ -15,7 +15,7 @@
 #                               links the same client. The binaries a release ships are
 #                               maturin's and napi's release builds of the same crates.
 #   sdk-native.sh test <dir>    Run each SDK's native test with what `build` wrote: the harness
-#                               serves a relay with its app workers on loopback and hands the
+#                               serves a server with its app workers on loopback and hands the
 #                               tests a key file of a device of its person (TILO_KEY_FILE).
 #                               Needs uv with the Python SDK's environment and bun (the
 #                               sdk-native check, in the ci-sdk image; locally, the tools on
@@ -38,7 +38,7 @@ build() {
   cd "$root"
   cargo build --locked -p tilo-sdk-python-native -p tilo-sdk-node-native
   cargo build --locked -p tilo-automerge-isolate --bin tilo-automerge-worker
-  cargo build --locked -p tilo-agent-session --example api-on-relay
+  cargo build --locked -p tilo-agent-session --example api-on-server
   local target=${CARGO_TARGET_DIR:-$root/target}
   rm -rf "$out"
   mkdir -p "$out/python/tilo" "$out/typescript"
@@ -46,7 +46,7 @@ build() {
   cp "$target/debug/libtilo_sdk_node_native.so" "$out/typescript/tilo-sdk-native.$(platform).node"
   cp "$target/debug/tilo-automerge-worker" "$out/python/tilo/"
   cp "$target/debug/tilo-automerge-worker" "$out/typescript/"
-  cp "$target/debug/examples/api-on-relay" "$out/api-on-relay"
+  cp "$target/debug/examples/api-on-server" "$out/api-on-server"
   cp -a "$target/debug/font-catalogs" "$out/font-catalogs"
 }
 
@@ -72,7 +72,7 @@ run_tests() {
   ln -s "$binaries"/python/tilo/* "$work/python/src/tilo/"
   ln -s "$binaries"/typescript/* "$work/typescript/native/"
 
-  "$binaries/api-on-relay" -- bash -euo pipefail -c '
+  "$binaries/api-on-server" -- bash -euo pipefail -c '
     cd "$1/python"
     uv run --frozen --extra dev python -m pytest -q -p no:cacheprovider tests/test_native.py
     cd "$1/typescript/native"

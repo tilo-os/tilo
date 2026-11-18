@@ -357,7 +357,8 @@ impl ContactDirectory {
                 email,
             }));
         }
-        hints.sort_by(|a, b| (&a.person, &a.email).cmp(&(&b.person, &b.email)));
+        // A person's mailboxes are deduplicated above, so no two hints compare equal.
+        hints.sort_unstable_by(|a, b| (&a.person, &a.email).cmp(&(&b.person, &b.email)));
         hints
     }
 
@@ -549,7 +550,7 @@ impl ContactDirectory {
     fn candidates(
         &self,
         wanted: &str,
-        values: impl Fn(&Person) -> &Vec<String>,
+        values: fn(&Person) -> &Vec<String>,
         canonical: fn(&str) -> Option<String>,
     ) -> Vec<Id> {
         let Some(wanted) = canonical(wanted) else {
@@ -566,7 +567,7 @@ impl ContactDirectory {
             })
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
-        candidates.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        candidates.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
         candidates
     }
 }

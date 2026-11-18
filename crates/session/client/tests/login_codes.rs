@@ -1,5 +1,5 @@
 //! A host's login codes and the person's stand-in, through the one client of them
-//! (`tilo_relay_client::login_code`) that both the tab (through the runtime) and `tilo login` ask
+//! (`tilo_server_client::login_code`) that both the tab (through the runtime) and `tilo login` ask
 //! with: the tab makes a code and follows it, the computer resolves it, reports its steps and
 //! claims a sign-in code, and the root keeps and retires its stand-in.
 
@@ -14,9 +14,9 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_relay_client::invite::guest_certificate;
-use tilo_relay_client::login_code;
-use tilo_relay_protocol::login_code::{Report, Step};
+use tilo_server_client::invite::guest_certificate;
+use tilo_server_client::login_code;
+use tilo_server_protocol::login_code::{Report, Step};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{enrol, enter as enter_as, entry_grant, start_workspace_host};
@@ -32,7 +32,7 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let lounge = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Lounge")
@@ -77,8 +77,8 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     // its person copies the prompt.
     let unkept = login_code::resolve(&*https, &made.code).await.unwrap_err();
     assert_eq!(unkept.code(), "unknown", "{unkept:?}");
-    let offer = |made: &tilo_relay_protocol::login_code::Created, link: Option<String>| {
-        tilo_relay_protocol::login_code::Offer {
+    let offer = |made: &tilo_server_protocol::login_code::Created, link: Option<String>| {
+        tilo_server_protocol::login_code::Offer {
             code: made.code.clone(),
             expires_at_ms: made.expires_at_ms,
             link,
@@ -181,5 +181,5 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
 
     tab.close();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

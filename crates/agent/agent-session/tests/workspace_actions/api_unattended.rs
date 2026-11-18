@@ -1,4 +1,4 @@
-//! A workspace whose person let its keys run commands unattended, on the relay
+//! A workspace whose person let its keys run commands unattended, on the server
 //! as tilo.sh hosts it, through the API: each command a key runs in a
 //! workspace's machine (`terminal#run`) is put to the person, until they allow,
 //! on their approving device, that the keys made for that workspace alone run
@@ -10,20 +10,20 @@
 //! apart from it; a key for one workspace neither turns on nor uses another's.
 //!
 //! The person is a tilo.sh tab holding their root: the page's approver session
-//! ([`tilo_relay_client::questions`]) shows each question the relay asks them,
+//! ([`tilo_server_client::questions`]) shows each question the server asks them,
 //! and the test answers it there, as they would.
 
 use super::api::ISSUER;
-use super::api_on_relay::{OnRelay, api_on_relay_shelled, approved_key, headers, json_of};
+use super::api_on_server::{OnServer, api_on_server_shelled, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tilo_api::Server;
-use tilo_relay_client::MemberApprover;
-use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_client::MemberApprover;
+use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tokio::sync::mpsc;
 
 /// A key's calls of `/v1`.
@@ -119,7 +119,7 @@ impl Key<'_> {
     }
 }
 
-/// What the page's sheet shows: every question the relay put to the person.
+/// What the page's sheet shows: every question the server put to the person.
 pub(super) struct Sheet {
     pub(super) asked: Arc<Mutex<Vec<PendingConfirmation>>>,
 }
@@ -153,20 +153,20 @@ impl Person {
     }
 }
 
-/// `call`, while the person's page keeps its session with the relay.
+/// `call`, while the person's page keeps its session with the server.
 pub(super) async fn beside<T>(
-    page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
+    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     call: impl Future<Output = T>,
 ) -> T {
     tokio::select! {
         out = call => out,
-        error = page.as_mut() => panic!("the page's session with the relay ended: {error}"),
+        error = page.as_mut() => panic!("the page's session with the server ended: {error}"),
     }
 }
 
 /// Wait, beside the page, until it was asked `count` questions in all.
 pub(super) async fn asked(
-    page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
+    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     person: &Person,
     count: usize,
 ) {
@@ -181,12 +181,12 @@ pub(super) async fn asked(
     }
 }
 
-/// A person on `on_relay` with their page and a key reaching all their
+/// A person on `on_server` with their page and a key reaching all their
 /// workspaces, as their backend holds it.
-pub(super) async fn backend(on_relay: &OnRelay) -> (SigningKey, String) {
+pub(super) async fn backend(on_server: &OnServer) -> (SigningKey, String) {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&root, "Ada's browser", DeviceCapabilities::member());
-    let token = Box::pin(approved_key(on_relay, &root, &page, "Visa backend")).await;
+    let token = Box::pin(approved_key(on_server, &root, &page, "Visa backend")).await;
     (root, token)
 }
 
@@ -214,9 +214,9 @@ async fn a_workspaces_own_key_runs_commands_unasked_only_while_its_person_lets_i
     reason = "one story, polled once from the heap by its test"
 )]
 async fn own_key_runs_unasked_only_while_let() {
-    let on_relay = Box::pin(api_on_relay_shelled(ISSUER)).await;
-    let api = Arc::clone(&on_relay.api);
-    let (ada, token) = backend(&on_relay).await;
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, token) = backend(&on_server).await;
     let backend = Key { api: &api, token };
     let ws = workspace(&backend, "Applicant: Jane Doe").await;
     let agent = Key {
@@ -224,8 +224,8 @@ async fn own_key_runs_unasked_only_while_let() {
         token: backend.mint(&ws, "Jane Doe's agent").await,
     };
 
-    // Ada's tab holds her root: it is her approver at the relay.
-    let host = MemberApprover::new(on_relay.relay_host());
+    // Ada's tab holds her root: it is her approver at the server.
+    let host = MemberApprover::new(on_server.server_host());
     let (answers, mut answered) = mpsc::unbounded_channel();
     let person = Person {
         asked: Arc::default(),
@@ -336,12 +336,12 @@ async fn own_key_runs_unasked_only_while_let() {
     // Another action of the key's that reaches outside the records still
     // asks: running a recorded command again goes to the session's pane,
     // which need not be the workspace's machine.
-    let recorded = recorded_run(&mut page, &agent, &ws).await;
+    let recorded = recorded_command(&mut page, &agent, &ws).await;
     let (status, rerun) = beside(
         &mut page,
         agent.post(
             &format!("/v1/workspaces/{ws}/resources/{}/actions/rerun", recorded.0),
-            &json!({"runs": recorded.1}),
+            &json!({"command": recorded.1}),
         ),
     )
     .await;
@@ -369,10 +369,10 @@ async fn own_key_runs_unasked_only_while_let() {
     host.close().await;
 }
 
-/// The Terminal session of `workspace` and the id of a run it recorded, as
+/// The Terminal session of `workspace` and the id of a command it ran, as
 /// `key` reads them.
-async fn recorded_run(
-    page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
+async fn recorded_command(
+    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     key: &Key<'_>,
     workspace: &str,
 ) -> (String, String) {
@@ -399,16 +399,17 @@ async fn recorded_run(
         )
         .await;
         assert_eq!(status, 200, "{read}");
-        let run = read["fields"]["runs"]
+        // A command's entry is its id, which is the run's.
+        let command = read["fields"]["commands"]
             .as_array()
             .into_iter()
             .flatten()
-            .find_map(|run| run["run"].as_str().or_else(|| run["id"].as_str()));
-        if let Some(run) = run {
-            return (encoded, run.to_owned());
+            .find_map(|entry| entry["id"].as_str());
+        if let Some(command) = command {
+            return (encoded, command.to_owned());
         }
     }
-    panic!("no Terminal session of {workspace} recorded a run: {listed}");
+    panic!("no Terminal session of {workspace} ran a command: {listed}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -421,9 +422,9 @@ async fn a_branch_runs_its_own_keys_commands_unasked_and_goes_on_apart() {
     reason = "one story, polled once from the heap by its test"
 )]
 async fn branch_runs_unasked_and_goes_on_apart() {
-    let on_relay = Box::pin(api_on_relay_shelled(ISSUER)).await;
-    let api = Arc::clone(&on_relay.api);
-    let (ada, token) = backend(&on_relay).await;
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, token) = backend(&on_server).await;
     let backend = Key { api: &api, token };
     let template = workspace(&backend, "Visa template").await;
     let other = workspace(&backend, "Another applicant").await;
@@ -436,7 +437,7 @@ async fn branch_runs_unasked_and_goes_on_apart() {
         token: backend.mint(&other, "Other's agent").await,
     };
 
-    let host = MemberApprover::new(on_relay.relay_host());
+    let host = MemberApprover::new(on_server.server_host());
     let (answers, mut answered) = mpsc::unbounded_channel();
     let person = Person {
         asked: Arc::default(),

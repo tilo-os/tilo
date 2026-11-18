@@ -268,6 +268,40 @@ pub struct ScheduleEvent {
     pub due_ms: i64,
 }
 
+/// A moment before, at or after a time a resource holds having come
+/// ([`crate::shortcut::TriggerSpec::ResourceTime`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimeEvent {
+    /// The workspace whose holder keeps the time.
+    pub workspace: String,
+    /// Index of the trigger among the program's triggers.
+    pub trigger: usize,
+    /// What holds the time: one item's field, or one occurrence of an entry
+    /// that repeats. It stays the same when the time moves.
+    pub key: String,
+    /// The time held, ms since the epoch.
+    pub at_ms: i64,
+    /// What the invocation is told ([`crate::resource_time::told`]).
+    #[serde(default)]
+    pub payload: Map<String, Value>,
+}
+
+/// Something new found in a source
+/// ([`crate::shortcut::TriggerSpec::SourceChanged`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceEvent {
+    /// The workspace whose holder looks at the source.
+    pub workspace: String,
+    /// Index of the trigger among the program's triggers.
+    pub trigger: usize,
+    /// What names the new thing for good
+    /// ([`crate::source_change::Found::key`]).
+    pub key: String,
+    /// What the invocation is told ([`crate::source_change::told`]).
+    #[serde(default)]
+    pub payload: Map<String, Value>,
+}
+
 /// Either kind of event.
 #[derive(Clone, Copy, Debug)]
 pub enum Event<'a> {
@@ -275,11 +309,14 @@ pub enum Event<'a> {
     Connector(&'a ConnectorEvent),
     AppEvent(&'a AppEvent),
     Schedule(&'a ScheduleEvent),
+    Time(&'a TimeEvent),
+    Source(&'a SourceEvent),
 }
 
 impl Event<'_> {
     /// What identifies the event: the change hash, `app/source/id` for
-    /// a connector event, or the fire time of a schedule.
+    /// a connector event, the fire time of a schedule, or what holds a time
+    /// with the time it holds, so a time that moved is another event.
     #[must_use]
     pub fn identity(&self) -> String {
         match self {
@@ -294,6 +331,15 @@ impl Event<'_> {
             Self::Schedule(event) => format!(
                 "schedule\0{}\0{}\0{}",
                 event.workspace, event.trigger, event.due_ms
+            ),
+            Self::Time(event) => format!(
+                "time\0{}\0{}\0{}\0{}",
+                event.workspace, event.trigger, event.key, event.at_ms
+            ),
+            // The same thing found again is the same event.
+            Self::Source(event) => format!(
+                "source\0{}\0{}\0{}",
+                event.workspace, event.trigger, event.key
             ),
         }
     }
@@ -319,13 +365,19 @@ impl Event<'_> {
                 "due_ms": event.due_ms,
                 "at_ms": event.due_ms,
             }),
+            Self::Time(event) => Value::Object(event.payload.clone()),
+            Self::Source(event) => Value::Object(event.payload.clone()),
         }
     }
 
     pub(super) const fn caused_by(&self) -> Option<&Cause> {
         match self {
             Self::Record(event) => event.caused_by.as_ref(),
-            Self::Connector(_) | Self::AppEvent(_) | Self::Schedule(_) => None,
+            Self::Connector(_)
+            | Self::AppEvent(_)
+            | Self::Schedule(_)
+            | Self::Time(_)
+            | Self::Source(_) => None,
         }
     }
 }

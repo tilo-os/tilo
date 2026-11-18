@@ -22,8 +22,8 @@ use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{Job, Ledger, Needs, Outcome, Performed, Shared, Worker};
-use tilo_relay_protocol::WorkspaceId;
+use super::{InvocationLog, Job, Needs, Outcome, Performed, Shared, Worker};
+use tilo_server_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
 /// replica holds it at all.
@@ -64,6 +64,22 @@ const SAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
 /// whether it is saved after all (a write held for its record's keys is
 /// saved once they arrive, however late).
 const SAVE_WATCH: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often a write still not saved after [`SAVE_WATCH`] is said again in the log, with what
+/// the session says it waits for and for how long, while its own document is what the session
+/// keeps: a write that only waits behind another document's says so once.
+const SAVE_SAID_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long the session is given to say what it keeps: it answers from what it holds.
+const KEPT_ASK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The most documents one line names of what the session keeps.
+const MOST_KEPT_SAID: usize = 4;
+
+/// What the session says it still keeps of the workspaces a request wrote to, asked when its
+/// writes stay unsaved: in the log's words, and whether a document the request wrote is among
+/// them. `None` where it keeps nothing, or does not answer.
+type KeptAsk = Box<dyn Fn() -> Option<(String, bool)> + Send>;
 
 /// How long a caller's next action waits for the replica set aside while
 /// its last write was saved. Long enough for a save that outlived
@@ -146,6 +162,8 @@ pub(super) enum Saving {
 /// Writes handed to the session that the host has not said it holds yet.
 pub(super) struct Unsaved {
     saved: tilo_session_client::Receipt<Result<(), String>>,
+    /// What says why they are not saved, once they stay so ([`Worker::asks_what_is_kept`]).
+    asking: Option<KeptAsk>,
     written: Vec<Written>,
     /// Who hears whether the writes were saved, besides the caller
     /// ([`Self::watched`]).
@@ -208,9 +226,20 @@ impl Unsaved {
     pub(super) const fn waiting(saved: tilo_session_client::Receipt<Result<(), String>>) -> Self {
         Self {
             saved,
+            asking: None,
             written: Vec::new(),
             heard: Vec::new(),
         }
+    }
+
+    /// These writes, with `asking` saying what the session keeps: what a test answers itself.
+    #[cfg(test)]
+    pub(super) fn asked_by(
+        mut self,
+        asking: impl Fn() -> Option<(String, bool)> + Send + 'static,
+    ) -> Self {
+        self.asking = Some(Box::new(asking));
+        self
     }
 
     /// Hear whether these writes are saved: told once [`Self::settle`] knows,
@@ -224,7 +253,9 @@ impl Unsaved {
     /// Wait, off the service's thread, until the host holds the writes or
     /// refuses them, then `settled` hears which: `Ok` once saved, or why
     /// not. Writes still unsaved after [`SAVE_WATCH`] are answered failed
-    /// then, and logged as and when they are saved after all.
+    /// then, with what the session says it keeps and waits for, which the
+    /// log names too, again every [`SAVE_SAID_AGAIN`] while one of their own
+    /// documents is kept; and logged as and when they are saved after all.
     pub(super) fn settle(self, settled: impl FnOnce(Result<(), ActionFailure>) + Send + 'static) {
         self.settle_within(SAVE_WATCH, settled);
     }
@@ -237,6 +268,7 @@ impl Unsaved {
     ) {
         let Self {
             saved,
+            asking,
             written,
             heard,
         } = self;
@@ -246,16 +278,28 @@ impl Unsaved {
                 let outcome = match saved.recv_timeout(bound) {
                     Ok(outcome) => outcome,
                     Err(tilo_session_client::RecvTimeoutError::Timeout) => {
-                        for write in &written {
-                            write.unsaved(
-                                "not saved yet: it waits for its record's keys or the host",
-                            );
-                        }
+                        let kept = say_unsaved(&written, asking.as_ref());
                         drop(heard);
-                        settled(Err(unconfirmed_failure()));
-                        let outcome = saved.recv().unwrap_or_else(|_| {
-                            Err("the session ended before the host saved the change".into())
-                        });
+                        settled(Err(unconfirmed_failure(
+                            kept.as_ref().map(|(kept, _)| kept.as_str()),
+                        )));
+                        let mut again = kept.is_some_and(|(_, own)| own);
+                        let outcome = loop {
+                            match saved.recv_timeout(SAVE_SAID_AGAIN) {
+                                Ok(outcome) => break outcome,
+                                Err(tilo_session_client::RecvTimeoutError::Timeout) => {
+                                    if again {
+                                        again = say_unsaved(&written, asking.as_ref())
+                                            .is_some_and(|(_, own)| own);
+                                    }
+                                }
+                                Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
+                                    break Err(
+                                        "the session ended before the host saved the change".into(),
+                                    );
+                                }
+                            }
+                        };
                         log_saved(&written, &outcome);
                         return;
                     }
@@ -275,6 +319,54 @@ impl Unsaved {
             tracing::warn!(%error, "workspace actions: whether a write was saved is not watched");
         }
     }
+}
+
+/// Log each of `written` as not saved yet, with what the session says it keeps and waits for
+/// where it says: its words, and whether a document of these writes is among what it keeps.
+fn say_unsaved(written: &[Written], asking: Option<&KeptAsk>) -> Option<(String, bool)> {
+    let kept = asking.and_then(|ask| ask());
+    let reason = kept.as_ref().map_or_else(
+        || "not saved yet: it waits for its record's keys or the host".to_owned(),
+        |(kept, _)| format!("not saved yet: the session keeps {kept}"),
+    );
+    for write in written {
+        write.unsaved(&reason);
+    }
+    kept
+}
+
+/// What `peer`'s session says it still keeps of what it wrote to `workspaces`, each document
+/// with what its writes wait for and for how long, and whether one of `own` is among them.
+fn kept_said(
+    peer: &tilo_session_client::Link,
+    workspaces: &[WorkspaceId],
+    own: &HashSet<DocumentRoute>,
+) -> Option<(String, bool)> {
+    let kept = peer.kept_of(workspaces).ok()?.recv_timeout(KEPT_ASK).ok()?;
+    if kept.is_empty() {
+        return None;
+    }
+    let mut said: Vec<String> = kept
+        .iter()
+        .take(MOST_KEPT_SAID)
+        .map(|kept| {
+            format!(
+                "{}/{}, which waits for {}, for {} s",
+                kept.route.app_id,
+                kept.route.document,
+                kept.waits,
+                kept.age.as_secs()
+            )
+        })
+        .collect();
+    if kept.len() > said.len() {
+        said.push(format!(
+            "and {} more",
+            kept.len().saturating_sub(said.len())
+        ));
+    }
+    let theirs = kept.iter().any(|kept| own.contains(&kept.route));
+    Some((said.join("; "), theirs))
 }
 
 fn log_saved(written: &[Written], outcome: &Result<(), String>) {
@@ -377,16 +469,16 @@ impl Worker {
         (output, left_at): (ActionOutput, Option<ActorPlace>),
         unsaved: Unsaved,
     ) -> InvocationReceipt {
-        let mut ledger = self.ledger();
-        ledger.running.remove(&invocation);
-        if let Some(entry) = ledger.entries.get_mut(&invocation) {
+        let mut log = self.log();
+        log.running.remove(&invocation);
+        if let Some(entry) = log.entries.get_mut(&invocation) {
             entry.saving = true;
             entry.left_at = left_at;
         }
-        drop(ledger);
+        drop(log);
         let shared = Arc::clone(&self.shared);
         unsaved.settle(move |saved| {
-            settle_saved(&shared.ledger, invocation, output, saved);
+            settle_saved(&shared.log, invocation, output, saved);
         });
         InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt()
     }
@@ -441,10 +533,12 @@ impl Worker {
     /// Every write, whoever it was made for, is answered by this one rule:
     /// done only once the host holds it.
     pub(super) fn saving(&mut self, workspace_id: WorkspaceId) -> Saving {
-        let written: Vec<Written> = std::mem::take(&mut self.handed)
-            .into_values()
-            .flatten()
-            .collect();
+        let handed = std::mem::take(&mut self.handed);
+        // Asked of the workspaces the request wrote to and of no other: the service's one
+        // session carries every workspace's writes, and a write that waits in another
+        // workspace says nothing about these.
+        let workspaces: Vec<WorkspaceId> = handed.keys().copied().collect();
+        let written: Vec<Written> = handed.into_values().flatten().collect();
         if written.is_empty() {
             return Saving::Saved;
         }
@@ -455,7 +549,7 @@ impl Worker {
             .and_then(|workspace| {
                 workspace
                     .peer
-                    .barrier()
+                    .barrier_of(&workspaces)
                     .map_err(|closed| closed.to_string())
             }) {
             Ok(saved) => saved,
@@ -490,6 +584,7 @@ impl Worker {
                 );
                 Saving::Pending(Unsaved {
                     saved,
+                    asking: self.asks_what_is_kept(workspace_id, &workspaces, &written),
                     written,
                     heard: Vec::new(),
                 })
@@ -509,17 +604,32 @@ impl Worker {
             let Some(saved) = self
                 .workspaces
                 .get(&workspace_id)
-                .and_then(|workspace| workspace.peer.barrier().ok())
+                .and_then(|workspace| workspace.peer.barrier_of(&[workspace_id]).ok())
             else {
                 continue;
             };
             Unsaved {
                 saved,
+                asking: self.asks_what_is_kept(workspace_id, &[workspace_id], &written),
                 written,
                 heard: Vec::new(),
             }
             .settle(|_| {});
         }
+    }
+
+    /// What asks the session of the workspace `workspace_id` what it keeps of `workspaces`,
+    /// once `written` stays unsaved.
+    fn asks_what_is_kept(
+        &self,
+        workspace_id: WorkspaceId,
+        workspaces: &[WorkspaceId],
+        written: &[Written],
+    ) -> Option<KeptAsk> {
+        let peer = self.workspaces.get(&workspace_id)?.peer.clone();
+        let workspaces = workspaces.to_vec();
+        let own: HashSet<DocumentRoute> = written.iter().map(Written::route).collect();
+        Some(Box::new(move || kept_said(&peer, &workspaces, &own)))
     }
 
     /// What the record at `route` is called in its app's index of the
@@ -708,13 +818,13 @@ fn queue_rename(
 /// as the save did: done with `output` once the host holds it, or failed
 /// with why it does not, or that it was not confirmed in time.
 pub(super) fn settle_saved(
-    ledger: &Mutex<Ledger>,
+    log: &Mutex<InvocationLog>,
     invocation: InvocationId,
     output: ActionOutput,
     saved: Result<(), ActionFailure>,
 ) {
-    let mut ledger = ledger.lock_recover();
-    if let Some(entry) = ledger.entries.get_mut(&invocation) {
+    let mut log = log.lock_recover();
+    if let Some(entry) = log.entries.get_mut(&invocation) {
         entry.saving = false;
         entry.update = match saved {
             Ok(()) => InvocationUpdate::Succeeded { invocation, output },
@@ -726,13 +836,19 @@ pub(super) fn settle_saved(
 /// Why an action whose change the host has not confirmed saving within
 /// [`SAVE_WATCH`] failed. The change may still be saved (it may wait for its
 /// record's keys), so asking again could make it twice: not retryable, the
-/// caller reads the record first.
-fn unconfirmed_failure() -> ActionFailure {
+/// caller reads the record first. With what the session says it keeps and
+/// waits for (`kept`), where it said.
+fn unconfirmed_failure(kept: Option<&str>) -> ActionFailure {
+    let mut message = "the host has not confirmed saving the change within a minute; it may still \
+                       be saved, so read the record before making the change again"
+        .to_owned();
+    if let Some(kept) = kept {
+        message.push_str(": the session keeps ");
+        message.push_str(kept);
+    }
     ActionFailure {
         code: "save_unconfirmed".into(),
-        message: "the host has not confirmed saving the change within a minute; it may still \
-                  be saved, so read the record before making the change again"
-            .into(),
+        message,
         details: None,
         retryable: false,
     }

@@ -29,7 +29,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
 
 const NOTES: &str = "so.tilo.notes";
@@ -42,7 +42,7 @@ const TERMINAL: &str = "so.tilo.terminal";
 struct Member {
     host: HostDevice,
     /// The host's workspaces, which hand the service the keys its device holds.
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     person: [u8; 32],
     devices: Vec<[u8; 32]>,
     asked: AtomicUsize,
@@ -52,7 +52,7 @@ struct Member {
 }
 
 impl Member {
-    fn standing(&self, caller: &Caller) -> Option<ui::permissions::Standing> {
+    fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
         (caller.user_public_key() == Some(&self.person)
             && caller
                 .device_public_key()
@@ -60,7 +60,7 @@ impl Member {
             && caller.acting().is_person())
         .then(|| {
             let person = hex::encode(self.person);
-            tilo_action_policy::Standing::person(workspace_policy(&person), person)
+            tilo_action_policy::MemberAccess::person(workspace_policy(&person), person)
         })
     }
 }
@@ -74,7 +74,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
         &ui::permissions::MemberId::person(member.to_owned()),
         Role::Editor,
     )
-    .standing()
+    .access()
     .policy
     .as_ref()
     .clone();
@@ -101,7 +101,7 @@ impl WorkspaceDocumentsLink for Member {
         self.host.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
-        self.standing(caller).is_some()
+        self.access(caller).is_some()
     }
     fn view_read_policy(
         &self,
@@ -112,9 +112,10 @@ impl WorkspaceDocumentsLink for Member {
     ) -> Option<ViewReadPolicy> {
         Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: self.standing(caller)?,
+            access: self.access(caller)?,
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+            agent_bound: Vec::new(),
         })
     }
     fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
@@ -140,7 +141,7 @@ impl WorkspaceDocumentsLink for Member {
         _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         assert_eq!(
             caller.user_public_key(),
             Some(&self.person),
@@ -181,8 +182,21 @@ fn listed(
     caller: &Caller,
     provider: &str,
 ) -> Vec<tilo_actions::ActionDescriptor> {
+    listed_under(actions, workspace, caller, provider, None)
+}
+
+/// What `caller` is listed of `provider` under `parent`: its top resources
+/// for `None`.
+fn listed_under(
+    actions: &tilo_agent_session::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    provider: &str,
+    parent: Option<&str>,
+) -> Vec<tilo_actions::ActionDescriptor> {
     let query = CatalogueQuery {
         provider: Some(provider.to_owned()),
+        parent_resource: parent.map(str::to_owned),
         max_results: 500,
         ..CatalogueQuery::default()
     };
@@ -244,7 +258,7 @@ fn settled(
         let again = matches!(
             &status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&status, ReceiptStatus::Failed { error } if error.retryable);
         if !again || Instant::now() >= deadline {
@@ -385,16 +399,27 @@ fn claimed_run() -> tilo_actions::ActionContext {
 /// The runs the changes of `route` the page received are grouped under.
 fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
     page.pump();
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in page.documents.get(route).into_iter().flatten() {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
-    }
-    doc.get_changes(&[])
+    // The document and every document its app keeps beside it (the parts
+    // Notes keeps its notes in), each read on its own.
+    let mut groups = Vec::new();
+    for (_, changes) in page
+        .documents
         .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
-        .filter_map(|context| context.group)
-        .collect()
+        .filter(|(held, _)| held.app_id == route.app_id && held.cluster_id == route.cluster_id)
+    {
+        let mut doc = automerge::AutoCommit::new();
+        for (_, bytes) in changes {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+        }
+        groups.extend(
+            doc.get_changes(&[])
+                .iter()
+                .filter_map(|change| change.message())
+                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter_map(|context| context.group),
+        );
+    }
+    groups
 }
 
 /// The acting key a live presence row stands for: the board names a member by the publisher that
@@ -433,13 +458,13 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let member = Arc::new(Member {
         host: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person,
         devices: vec![
             guest_device.cert.device_public_key,
@@ -449,7 +474,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         ],
         asked: AtomicUsize::new(0),
         content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
-        shell: tilo_relay::agents::host_shells(shells.clone()).unwrap(),
+        shell: tilo_server::agents::host_shells(shells.clone()).unwrap(),
     });
     let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(member.clone()).unwrap();
@@ -567,6 +592,18 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 ));
             }
         }
+        // An action of a resource kept beside the top ones (a new note, on
+        // the parts the notes are in) is listed under them.
+        let beside: Vec<_> = all
+            .iter()
+            .map(|descriptor| descriptor.address.resource.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .flat_map(|resource| {
+                listed_under(&actions, workspace, &owner, &provider, Some(&resource))
+            })
+            .collect();
+        all.extend(beside);
         every.insert(route.app_id.clone(), (route.clone(), all));
     }
 
@@ -621,9 +658,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
             let by_host = match &status {
                 ReceiptStatus::Rejected {
                     error:
-                        ActionHostError::NotPermitted
-                        | ActionHostError::UnknownAction
-                        | ActionHostError::ConfirmationRequired { .. },
+                        ActionCallError::NotPermitted
+                        | ActionCallError::UnknownAction
+                        | ActionCallError::ConfirmationRequired { .. },
                 } => Admitted::Refused,
                 _ if was_asked => Admitted::AsksFirst,
                 // It ran: what the action answered is its own.
@@ -668,6 +705,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
             .all(|name| agents.iter().any(|agent| agent == name)),
         "every agent and key made a note: {agents:?}"
     );
+    // The notes are kept in parts beside the notebook, which the page's
+    // window follows.
+    browser.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     let runs = loop {
         let runs = runs_of(&mut browser, notes);
@@ -698,7 +738,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         differences.push("the host took a run a client claimed".into());
     }
 
-    // Seen live: no client here says anything of itself on the live plane,
+    // Seen live: no client here says anything of itself on the live session,
     // as an SDK client never does. The host speaks for each run it executes:
     // the run is present as an agent named as the host knows it, said by the
     // host for it, and its actions are narrated as that run's.
@@ -876,9 +916,10 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 /// Seen on another person's host: a workspace a node someone else runs
 /// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
 /// once, named and narrated, as the run that host speaks for, by the member's
-/// own page, though the host is no member of the workspace's live plane and
-/// never holds its keys. A member device that says a run on the host's track
-/// is not heard, and one it says on the plane is its own, never the host's.
+/// own page, and the host's device is listed as its operator's, the
+/// workspace's owner, never as the member's. A member device that says a run
+/// on the host's track is not heard, and one it says on the live session is
+/// its own, never the host's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::Role;
@@ -897,7 +938,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&operator, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap().clone();
+    let workspaces = hosted.server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Grace's workspace").await.unwrap();
     let cluster = workspace.workspace.clone();
     for device in [&page_device, &computer] {
@@ -919,9 +960,8 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .with_agent_session("session-guest", "Claude Code");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
-    // The host is no member device of the workspace: its governance never
-    // makes it a reader of the workspace's scope, whose keys seal the live
-    // plane and open every member-readable record.
+    // The host founded the workspace, so its operator owns it and the host
+    // is the owner's device: the page lists it as the operator's.
     let host_key = hex::encode(host.cert.device_public_key);
     let members = loop {
         browser.pump();
@@ -937,13 +977,14 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert!(
-        !members.contains_key(&host_key),
-        "the operator's host is a member device of the workspace: {members:?}"
+    assert_eq!(
+        members.get(&host_key),
+        Some(&hex::encode(operator.verifying_key().to_bytes())),
+        "the host is listed as another person's device: {members:?}"
     );
 
     // A member device that says it speaks for a run, as the host would: on
-    // the host's own track (signed by itself, not the host) and on the plane.
+    // the host's own track (signed by itself, not the host) and on the live session.
     let forged = collab_types::presence::Presence::desktop(
         cluster.clone(),
         collab_types::presence::Payload::Shell(Box::new(tilo_session_client::presence::view(
@@ -961,7 +1002,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .peer
         .send(Cmd::SayForSession(
             agent.workspace,
-            tilo_relay_protocol::host_voice::HostWords::Presence(forged.clone()),
+            tilo_server_protocol::host_voice::HostWords::Presence(forged.clone()),
         ))
         .unwrap();
     agent

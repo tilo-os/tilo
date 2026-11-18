@@ -64,7 +64,7 @@ impl App {
                 .actions
                 .action_palette
                 .as_deref()
-                .filter(|palette| !palette.history_has_custody())
+                .filter(|palette| !palette.history_has_ownership())
                 .and_then(crate::action_palette::ActionPalette::history_pending_address);
             let invocation = self
                 .actions
@@ -76,7 +76,7 @@ impl App {
                 .action_palette
                 .as_deref()
                 .and_then(|palette| palette.history_pending_continuation_arguments());
-            let custody = address.as_ref().map(|address| {
+            let ownership = address.as_ref().map(|address| {
                 let original = self
                     .actions
                     .action_palette
@@ -106,9 +106,9 @@ impl App {
                         )?,
                     }
                 };
-                let witness = invocation.as_ref().zip(original_arguments.as_ref()).map(
+                let observation = invocation.as_ref().zip(original_arguments.as_ref()).map(
                     |(invocation, original_arguments)| {
-                        crate::bound_dispatch::control_witness_with_arguments(
+                        crate::bound_dispatch::control_observation_with_arguments(
                             self.root_widget.as_ref(),
                             &self.state.doc,
                             &target,
@@ -118,8 +118,8 @@ impl App {
                         .map_err(|error| error.to_string())
                     },
                 );
-                let identity = match &witness {
-                    Some(Ok(witness)) => Some(Ok(witness.identity().clone())),
+                let identity = match &observation {
+                    Some(Ok(observation)) => Some(Ok(observation.identity().clone())),
                     Some(Err(reason)) => Some(Err(reason.clone())),
                     None => Some(
                         crate::bound_dispatch::control_draft_identity(
@@ -131,14 +131,14 @@ impl App {
                         .map_err(|error| error.to_string()),
                     ),
                 };
-                Ok::<_, tilo_actions::ApiError>((target, identity, witness))
+                Ok::<_, tilo_actions::ApiError>((target, identity, observation))
             });
             if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.suspend_for_history();
-                if let Some(custody) = custody {
-                    match custody {
-                        Ok((target, identity, witness)) => {
-                            palette.retain_history_custody(target, identity, witness);
+                if let Some(ownership) = ownership {
+                    match ownership {
+                        Ok((target, identity, observation)) => {
+                            palette.retain_history_ownership(target, identity, observation);
                         }
                         Err(error) => {
                             palette.retain_history_resolution_error(error.to_string());
@@ -162,7 +162,7 @@ impl App {
         let tree = self.tree_generation();
         let routes = super::runtime::RouteInputs {
             tree,
-            witness: self.bound_broker_route().cloned(),
+            observation: self.bound_broker_route().cloned(),
             autosave_generation: self.autosave_generation,
             document: crate::doc::settle_mark(&self.state.doc),
         };

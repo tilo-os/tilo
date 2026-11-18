@@ -22,11 +22,11 @@ use crate::model::{
 };
 
 fn planned_replica(pages: usize) -> Replica<PdfMarkup> {
-    Replica::load(&PdfMarkup::planned(pages)).expect("the record loads")
+    Replica::load(&PdfMarkup::planned(pages)).expect("the resource loads")
 }
 
 fn markup(replica: &Replica<PdfMarkup>) -> PdfMarkup {
-    replica.state().expect("the record reads")
+    replica.state().expect("the resource reads")
 }
 
 fn anno(page: usize, kind: AnnoKind, color: HighlightColor, author: &str) -> Annotation {
@@ -697,7 +697,7 @@ tilo_test_env::scenario! {
             !saved
                 .windows(bytes.len())
                 .any(|window| window == bytes.as_slice()),
-            "the bytes are not in the record"
+            "the bytes are not in the resource"
         );
         assert!(markup(&replica).page_plan().iter().any(|entry| {
             entry

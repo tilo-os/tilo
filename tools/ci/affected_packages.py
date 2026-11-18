@@ -53,11 +53,11 @@ from ci import suites as path_suites
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
 # The shell, and the crates the session composes it from. A change to any of them
-# reaches tilo-session, so the desktop gate keys on the session: whatever the
+# reaches tilo-session, so the desktop check keys on the session: whatever the
 # change, if it can alter the shell and the session's whole test suite is not
 # scheduled anyway, the shell's own integration tests run instead — a window
 # becomes a tab of the strip, an app opens where the shell puts it, the owner's
-# API answers. When the suite is scheduled they come with it and the gate adds
+# API answers. When the suite is scheduled they come with it and the check adds
 # nothing.
 SHELL_PACKAGES = (
     "crates/session/desktop",
@@ -66,53 +66,53 @@ SHELL_PACKAGES = (
     "crates/session/desktop-surface",
     "crates/session/core",
 )
-DESKTOP_GATE_PACKAGE = "tilo-session"
-DESKTOP_GATE_MANIFEST = "crates/session/session/Cargo.toml"
+DESKTOP_CHECK_PACKAGE = "tilo-session"
+DESKTOP_CHECK_MANIFEST = "crates/session/session/Cargo.toml"
 # The shell's integration tests, by the file each is written in. They are modules
 # of the package's one test binary (`tests/it.rs` includes each file), so the
-# gate names that binary once and picks the modules out by the name each test
+# check names that binary once and picks the modules out by the name each test
 # gained from it.
-DESKTOP_GATE_TESTS = ("hosted_windows", "launch", "owner_control")
-DESKTOP_GATE_BINARY = "it"
+DESKTOP_CHECK_TESTS = ("hosted_windows", "launch", "owner_control")
+DESKTOP_CHECK_BINARY = "it"
 
 
-def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
+def desktop_check(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
     """The shell's integration tests, refused when the tree lacks what they name.
 
-    The gate keys on a package name, so a renamed or deleted crate would be in
+    The check keys on a package name, so a renamed or deleted crate would be in
     no plan's selection: it would select nothing and run nothing, silently. A
-    test target that went away fails a job only once the gate fires, and a shell
-    crate the session no longer depends on takes the gate's reason with it. All
+    test target that went away fails a job only once the check fires, and a shell
+    crate the session no longer depends on takes the check's reason with it. All
     three fail here instead, where every plan is computed.
     """
-    session = root / DESKTOP_GATE_MANIFEST
+    session = root / DESKTOP_CHECK_MANIFEST
     manifest = tomllib.loads(session.read_text(encoding="utf-8")) if session.is_file() else {}
-    if manifest.get("package", {}).get("name") != DESKTOP_GATE_PACKAGE:
-        raise ValueError(f"the desktop gate names {DESKTOP_GATE_PACKAGE!r}, "
-                         f"which {DESKTOP_GATE_MANIFEST} does not declare")
+    if manifest.get("package", {}).get("name") != DESKTOP_CHECK_PACKAGE:
+        raise ValueError(f"the desktop check names {DESKTOP_CHECK_PACKAGE!r}, "
+                         f"which {DESKTOP_CHECK_MANIFEST} does not declare")
     targets = {target.get("name") for target in manifest.get("test", [])}
-    if DESKTOP_GATE_BINARY not in targets:
-        raise ValueError(f"the desktop gate names test binary {DESKTOP_GATE_BINARY!r}, "
-                         f"which {DESKTOP_GATE_MANIFEST} does not declare")
-    missing = [test for test in DESKTOP_GATE_TESTS
+    if DESKTOP_CHECK_BINARY not in targets:
+        raise ValueError(f"the desktop check names test binary {DESKTOP_CHECK_BINARY!r}, "
+                         f"which {DESKTOP_CHECK_MANIFEST} does not declare")
+    missing = [test for test in DESKTOP_CHECK_TESTS
                if not (session.parent / "tests" / f"{test}.rs").is_file()]
     if missing:
-        raise ValueError(f"the desktop gate names test files {missing} "
+        raise ValueError(f"the desktop check names test files {missing} "
                          f"that {session.parent / 'tests'} does not hold")
     linked = {(session.parent / entry["path"]).resolve()
               for entry in manifest.get("dependencies", {}).values()
               if isinstance(entry, dict) and "path" in entry}
     unreached = [shell for shell in SHELL_PACKAGES if (root / shell).resolve() not in linked]
     if unreached:
-        raise ValueError(f"the desktop gate names shell crates {unreached} that {DESKTOP_GATE_PACKAGE} "
+        raise ValueError(f"the desktop check names shell crates {unreached} that {DESKTOP_CHECK_PACKAGE} "
                          "does not depend on: a change to one no longer reaches the shell's tests")
     # One entry: the modules share the binary, so a run of it covers them all.
-    modules = " or ".join(f"test({test}::)" for test in DESKTOP_GATE_TESTS)
-    return {(DESKTOP_GATE_PACKAGE, DESKTOP_GATE_BINARY): path_suites.ReaderScope(
-        (), DESKTOP_GATE_BINARY, f"binary({DESKTOP_GATE_BINARY}) and ({modules})")}
+    modules = " or ".join(f"test({test}::)" for test in DESKTOP_CHECK_TESTS)
+    return {(DESKTOP_CHECK_PACKAGE, DESKTOP_CHECK_BINARY): path_suites.ReaderScope(
+        (), DESKTOP_CHECK_BINARY, f"binary({DESKTOP_CHECK_BINARY}) and ({modules})")}
 
 
-DESKTOP_GATE = desktop_gate(TOOLS.parent)
+DESKTOP_CHECK = desktop_check(TOOLS.parent)
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
@@ -200,7 +200,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     # These wrappers select/request the existing image workflow; they change
     # no compiler, app source or packaging inputs. Mandatory policy tests
-    # observe their request gate, paths, architecture selection and delegation.
+    # observe their request check, paths, architecture selection and delegation.
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
     ),
@@ -363,7 +363,7 @@ TEST_SHARD_APART = (
     frozenset({
         "tilo-action-broker",
         "tilo-peer-state",
-        "tilo-relay",
+        "tilo-server",
     }),
 )
 
@@ -989,7 +989,7 @@ def package_cost(pkg: dict) -> int:
 
 
 def has_native_tests(package: dict) -> bool:
-    """Conservatively retain runnable targets; whole-crate wasm gates are native-empty."""
+    """Conservatively retain runnable targets; whole-crate wasm checks are native-empty."""
     for target in package.get("targets", []):
         if target.get("test") is False or "custom-build" in target.get("kind", []):
             continue
@@ -1396,19 +1396,19 @@ def make_plan(
         tested &= selected
         reason += "; re-check limited to what the base branch changed since the last green run"
     # Scoped tests by (package, test target): a package's reading scope and the
-    # shell's gate can name different targets of the same package, and each target
+    # shell's check can name different targets of the same package, and each target
     # is its own run.
     scoped_tests = {(name, scope.test): scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
-    for key, gate in DESKTOP_GATE.items():
+    for key, check in DESKTOP_CHECK.items():
         if key[0] not in selected or key[0] in tested:
             continue
         reading = scoped_tests.get(key)
         if reading is None:
-            scoped_tests[key] = gate
+            scoped_tests[key] = check
         else:
             scoped_tests[key] = path_suites.ReaderScope(
-                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
+                reading.inputs, reading.test, f"({reading.filter}) or ({check.filter})")
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
@@ -1534,7 +1534,7 @@ def make_plan(
                        (seeds | checked | dev_only | readers | tested
                         | {name for seed in seeds for name in reverse.get(seed, ())}) & selected),
         # Packages that only read a changed file through a scoped input, or that
-        # the shell's gate reads, and the target of each the test job runs.
+        # the shell's check reads, and the target of each the test job runs.
         "scoped_tests": {f"{package}:{test}": f"--test {scope.test} -E '{scope.filter}'"
                          for (package, test), scope in sorted(scoped_tests.items())},
         # Changed packages whose direct dependants are only type-checked here

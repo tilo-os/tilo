@@ -1,7 +1,7 @@
 //! Git — a graphical git client for Tilo, built on the `ui` toolkit. The app
 //! presents three screens over a repository: **Changes** (staged, unstaged and
 //! untracked lists, a syntax-highlighted diff pane with per-hunk staging, and a
-//! commit box), **History** (a commit graph with lanes, and each commit's message,
+//! commit box), **History** (a commit graph with columns, and each commit's message,
 //! refs and changed files) and **Branches** (local and remote branches, tags,
 //! stashes and remotes, with fetch, pull, push and tracking). The live binary reads
 //! a real repository through [`repo`]; screenshots use the bundled [`sample`]. Git

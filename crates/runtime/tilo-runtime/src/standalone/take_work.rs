@@ -1,12 +1,12 @@
 //! A member device that takes its workspaces' work: the shell commands of
-//! the Terminal sessions of the workspaces a relay places on it
+//! the Terminal sessions of the workspaces a server places on it
 //! (`docs/app-model/environments.md`, "Members that take work").
 //!
-//! A workspace whose relay hosts it has no device of the person's running
+//! A workspace whose server hosts it has no device of the person's running
 //! its Terminal sessions. The VM host that holds the workspace's VM does
-//! instead, as a member device of the relay's own person: it holds the
-//! workspace and its files as any member does, and answers the relay's runs
-//! on its device plane ([`ACTIONS_ALPN`]) with a
+//! instead, as a member device of the server's own person: it holds the
+//! workspace and its files as any member does, and answers the server's runs
+//! on its device action service ([`ACTIONS_ALPN`]) with a
 //! [`EnvironmentCommands`](ush::environment_commands::EnvironmentCommands) dispatcher over
 //! the workspace's shells ([`ush::workspace_shell::WorkspaceShells`]):
 //!
@@ -17,18 +17,23 @@
 //! - a Linux program runs in the workspace's VM, which is the local hosted-VM
 //!   service the member's environment names (`TILO_HOSTED_VM_SOCKET`,
 //!   `TILO_HOSTED_PLANS`, `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`), with
-//!   the account and size each run is paid for coming from the relay's
+//!   the account and size each run is paid for coming from the server's
 //!   request.
 //!
-//! The member's endpoint listens on [`PORT`], where the relay's members file
+//! The member keeps the lease of each VM its hosted-VM service keeps
+//! (`tilo_peer_state::vm_lease`), claiming it in the VM's workspace as its
+//! own member's write and renewing it while the VM is there: the server reads
+//! the lease to know which machine keeps the VM.
+//!
+//! The member's endpoint listens on [`PORT`], where the server's members file
 //! reaches it. It serves only the workspaces it holds; the first request for
-//! one it does not hold yet makes it ask the relay to enter it (the
+//! one it does not hold yet makes it ask the server to enter it (the
 //! workspaces this profile joined, entering on a miss). What it answers is
-//! the relay's own runs: a device of another person is refused as every
+//! the server's own runs: a device of another person is refused as every
 //! device outside a workspace is.
 //!
 //! A profile served by the standalone runtime takes work when
-//! [`RELAY_ENV`] and [`RELAY_DEVICE_ENV`] name its relay; [`Member`] is the
+//! [`SERVER_ENV`] and [`SERVER_DEVICE_ENV`] name its server; [`Member`] is the
 //! same member for a host that serves nothing else.
 
 use super::Joined;
@@ -37,39 +42,43 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tilo_actions::remote::ActionHost;
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane};
+use tilo_actions::remote::ActionProvider;
+use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
 /// The UDP port a member's endpoint listens on, and the one the relay's
 /// members file names for it.
 pub const PORT: u16 = 7703;
-/// Where the relay a member serves is reached, `host:port`.
-pub const RELAY_ENV: &str = "TILO_TAKE_WORK_RELAY";
-/// The device key of the relay a member serves, hex.
-pub const RELAY_DEVICE_ENV: &str = "TILO_TAKE_WORK_DEVICE";
-/// The relay's endpoint id, hex, when its endpoint is keyed apart from its
-/// device: a Tilo relay's is (`tilo-enroll device-key` prints it as
-/// `relay_service_node_id`). Without it the endpoint is the device key.
-pub const RELAY_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
+/// Where the server a member serves is reached, `host:port`.
+pub const SERVER_ENV: &str = "TILO_TAKE_WORK_SERVER";
+/// The device key of the server a member serves, hex.
+pub const SERVER_DEVICE_ENV: &str = "TILO_TAKE_WORK_DEVICE";
+/// The server's endpoint id, hex, when its endpoint is keyed apart from its
+/// device: a Tilo server's is (`tilo-enroll device-key` prints it as
+/// `server_node_id`). Without it the endpoint is the device key.
+pub const SERVER_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
 
 /// What a member keeps of its shells, under the profile, and where each
 /// workspace's files are below it.
 const STATE: &str = "state/take-work";
+/// How long a VM lease this member claims lasts unrenewed, and how often it
+/// renews the leases of the VMs it keeps.
+const VM_LEASE: std::time::Duration = std::time::Duration::from_secs(30);
+const VM_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 const FILES: &str = "state/take-work/files";
 
-/// The relay a member serves: the host that places work here. It is the
+/// The server a member serves: the host that places work here. It is the
 /// member's own person's relay, and the one host this member enters a
 /// workspace for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Relay {
+pub struct Server {
     device: [u8; 32],
     endpoint: [u8; 32],
     address: String,
 }
 
-impl Relay {
-    /// The relay whose device key is `device` (hex), reached at `address`
+impl Server {
+    /// The server whose device key is `device` (hex), reached at `address`
     /// (`host:port`).
     ///
     /// # Errors
@@ -78,7 +87,7 @@ impl Relay {
     pub fn new(device: &str, address: &str) -> Result<Self, String> {
         let key = key(device).ok_or_else(|| format!("{device} is not a device key"))?;
         if address.trim().is_empty() {
-            return Err("the relay's address is empty".into());
+            return Err("the server's address is empty".into());
         }
         Ok(Self {
             device: key,
@@ -87,8 +96,8 @@ impl Relay {
         })
     }
 
-    /// This relay with its endpoint keyed `endpoint` (hex), apart from its
-    /// device key, as a Tilo relay's is.
+    /// This server with its endpoint keyed `endpoint` (hex), apart from its
+    /// device key, as a Tilo server's is.
     ///
     /// # Errors
     ///
@@ -98,39 +107,39 @@ impl Relay {
         Ok(self)
     }
 
-    /// The relay the environment names ([`RELAY_ENV`], [`RELAY_DEVICE_ENV`]),
+    /// The server the environment names ([`SERVER_ENV`], [`SERVER_DEVICE_ENV`]),
     /// when it names one: this profile is a member that takes work.
     ///
     /// # Errors
     ///
-    /// A relay is named but its address or device key is not usable.
+    /// A server is named but its address or device key is not usable.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let Ok(address) = std::env::var(RELAY_ENV) else {
+        let Ok(address) = std::env::var(SERVER_ENV) else {
             return Ok(None);
         };
-        let device = std::env::var(RELAY_DEVICE_ENV).map_err(|_| {
-            format!("{RELAY_ENV} is set, so {RELAY_DEVICE_ENV} must name the relay's device key")
+        let device = std::env::var(SERVER_DEVICE_ENV).map_err(|_| {
+            format!("{SERVER_ENV} is set, so {SERVER_DEVICE_ENV} must name the server's device key")
         })?;
-        let relay = Self::new(&device, &address)?;
-        match std::env::var(RELAY_ENDPOINT_ENV) {
-            Ok(endpoint) => relay.with_endpoint(&endpoint).map(Some),
-            Err(_) => Ok(Some(relay)),
+        let server = Self::new(&device, &address)?;
+        match std::env::var(SERVER_ENDPOINT_ENV) {
+            Ok(endpoint) => server.with_endpoint(&endpoint).map(Some),
+            Err(_) => Ok(Some(server)),
         }
     }
 
-    /// The relay's device key.
+    /// The server's device key.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.device
     }
 
-    /// Where the relay is reached, `host:port`.
+    /// Where the server is reached, `host:port`.
     #[must_use]
     pub fn address(&self) -> &str {
         &self.address
     }
 
-    /// The relay's endpoint, as a session with it is dialed.
+    /// The server's endpoint, as a session with it is dialed.
     pub(in crate::standalone) fn endpoint_addr(&self) -> Result<EndpointAddr, String> {
         let id = EndpointId::from_bytes(&self.endpoint).map_err(|error| error.to_string())?;
         let sockets = self
@@ -172,38 +181,85 @@ fn named(workspace: &str) -> String {
         .collect()
 }
 
-/// The device plane that serves the work of the workspaces `joined` holds,
-/// entering the ones `relay` places here that this member does not hold yet.
+/// The device action service that serves the work of the workspaces `joined` holds,
+/// entering the ones `server` places here that this member does not hold yet.
 ///
 /// # Errors
 ///
 /// This host cannot run a workspace's shell at all.
-pub(in crate::standalone) fn plane(
+pub(in crate::standalone) fn action_service(
     profile: &Path,
     joined: &Arc<Joined>,
-    relay: Relay,
+    server: Server,
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> std::io::Result<ActionPlane> {
+) -> std::io::Result<ActionService> {
+    let vms = browsers
+        .clone()
+        .or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from));
+    if let Some(vms) = vms {
+        keep_vm_leases(joined, vms);
+    }
     let dispatcher = shell_runs(profile, joined, replicas, browsers).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "a member that takes work runs the workspace's shell on Linux",
         )
     })?;
-    let (device, endpoint) = (relay.device, relay.endpoint);
+    let (device, endpoint) = (server.device, server.endpoint);
     let entering = Arc::new(super::joined::enter::Entering::new(
         Arc::clone(joined),
-        relay,
+        server,
     ));
-    let plane = {
+    let action_service = {
         let _entered = tilo_rt::app().handle().enter();
-        ActionPlane::over(joined.signer(), dispatcher, entering)
+        ActionService::over(joined.signer(), dispatcher, entering)
     };
-    // The relay asks from its endpoint, which a Tilo relay keys apart from
+    // The server asks from its endpoint, which a Tilo server keys apart from
     // the device it signs its runs as.
-    plane.reach_device_at(device, endpoint);
-    Ok(plane)
+    action_service.reach_device_at(device, endpoint);
+    Ok(action_service)
+}
+
+/// Claim and renew, for as long as `joined` is held, the lease of each VM the
+/// hosted-VM service at `vms` keeps, in the VM's workspace where this member
+/// holds it: a VM is kept where its disk is, so the member ranks itself as
+/// the machine that holds it ([`tilo_peer_state::vm_rank`]). A workspace
+/// this member enters is looked at once it holds it, so a VM it was entered
+/// for is claimed at once.
+fn keep_vm_leases(holding: &Arc<Joined>, vms: PathBuf) {
+    let entered = holding.entered();
+    let joined = Arc::downgrade(holding);
+    let renewing = move || {
+        while let Some(joined) = joined.upgrade() {
+            for (workspace, environment) in ush::hosted_vm::kept(&vms) {
+                let Some(id) = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                    .filter(|id| joined.holds(*id))
+                else {
+                    continue;
+                };
+                let rank = tilo_peer_state::vm_rank(tilo_peer_state::unranked(), 0, true);
+                let lease = tilo_peer_state::vm_lease(&environment);
+                if let Err(error) = tilo_rt::app()
+                    .handle()
+                    .block_on(joined.claim_lease(id, lease, VM_LEASE, rank))
+                {
+                    tracing::warn!(%workspace, %error, "the lease of a VM kept here was not claimed");
+                }
+            }
+            drop(joined);
+            // The timer is made on the runtime, which drives it.
+            tilo_rt::app().handle().block_on(async {
+                let _ = tokio::time::timeout(VM_RENEWAL, entered.notified()).await;
+            });
+        }
+    };
+    if let Err(error) = std::thread::Builder::new()
+        .name("vm-leases".into())
+        .spawn(renewing)
+    {
+        tracing::warn!(%error, "the leases of the VMs kept here are not claimed");
+    }
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the
@@ -220,7 +276,7 @@ fn shell_runs(
     joined: &Arc<Joined>,
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
     use ush::environment_commands::EnvironmentCommands;
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
@@ -239,7 +295,7 @@ fn shell_runs(
         })
         // Browser starts on the hosted-VM service this host names, else the
         // one its environment does: the account each open is paid by comes
-        // with the relay's request, so the socket alone says this member
+        // with the server's request, so the socket alone says this member
         // runs the workspaces' VMs.
         .with_browsers_on(
             browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from)),
@@ -260,15 +316,15 @@ fn shell_runs(
     _joined: &Arc<Joined>,
     _replicas: Option<super::files::ReplicaSlot>,
     _browsers: Option<PathBuf>,
-) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
     None
 }
 
 /// A member device that takes work over a profile of its own: the workspaces
-/// it holds, and the device plane their runs are answered on. Drop it to stop
+/// it holds, and the device action service their runs are answered on. Drop it to stop
 /// serving; the workspaces it entered stay held in the profile.
 pub struct Member {
-    /// Answers the member's plane on its endpoint, holding the workspaces it
+    /// Answers the member's action service on its endpoint, holding the workspaces it
     /// serves.
     _router: iroh::protocol::Router,
     profile: PathBuf,
@@ -277,7 +333,7 @@ pub struct Member {
 impl Member {
     /// Serve, as the device `key` and `cert` certify, the work of the
     /// workspaces kept in `profile` over `endpoint`, entering the ones
-    /// `relay` places here. `endpoint` is keyed by the same device key.
+    /// `server` places here. `endpoint` is keyed by the same device key.
     /// `browsers` names the hosted-VM service a workspace's browser
     /// environment starts on, when this member runs them.
     ///
@@ -289,19 +345,19 @@ impl Member {
         profile: &Path,
         (key, cert): (SigningKey, DeviceCert),
         endpoint: Endpoint,
-        relay: Relay,
+        server: Server,
         browsers: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        let custody = tilo_identity_host::custody::HostIdentity::kept(cert, key);
-        let joined = Joined::from_profile(profile, custody, endpoint.clone())?;
-        let plane = plane(profile, &joined, relay, None, browsers)?;
-        // The plane holds the workspaces it serves; this member answers them
+        let identity = tilo_identity::identity_store::DeviceIdentity::kept(cert, key);
+        let joined = Joined::from_profile(profile, identity, endpoint.clone())?;
+        let action_service = action_service(profile, &joined, server, None, browsers)?;
+        // The action service holds the workspaces it serves; this member answers them
         // through the router.
         drop(joined);
         let router = {
             let _entered = tilo_rt::app().handle().enter();
             iroh::protocol::Router::builder(endpoint)
-                .accept(ACTIONS_ALPN, plane)
+                .accept(ACTIONS_ALPN, action_service)
                 .spawn()
         };
         Ok(Self {

@@ -6,7 +6,7 @@
 //! - Rclone's `obscure` password format is AES-256-CTR under a published
 //!   constant key, with a random 16-byte IV before the ciphertext and
 //!   URL-safe base64 around both. Rclone documents it as obfuscation, not
-//!   secure custody; the caller reseals the plaintext in Tilo's own storage.
+//!   secure ownership; the caller reseals the plaintext in Tilo's own storage.
 //! - NSS (Thunderbird's and Firefox's saved logins, `key4.db` and
 //!   `logins.json`) keeps a key under PBES2: the SHA-1 of a global salt and
 //!   the primary password, stretched with `PBKDF2-HMAC-SHA256`, then
@@ -176,7 +176,7 @@ pub fn nss_cbc_plaintext(
 }
 
 /// Encrypt `plaintext` as an NSS PBES2 entry: what writes a sample profile
-/// for tests and proofs, never Tilo's own custody.
+/// for tests and proofs, never Tilo's own ownership.
 ///
 /// # Errors
 /// As [`nss_pbes2_plaintext`].
@@ -193,7 +193,7 @@ pub fn nss_pbes2_ciphertext(
 }
 
 /// Encrypt `plaintext` as NSS does one saved login: what writes a sample
-/// profile for tests and proofs, never Tilo's own custody.
+/// profile for tests and proofs, never Tilo's own ownership.
 ///
 /// # Errors
 /// [`Error::InvalidKey`] for a key or IV of the wrong length.

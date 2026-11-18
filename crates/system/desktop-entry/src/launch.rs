@@ -71,7 +71,7 @@ const CLEARED_ENV: &[&str] = &[
     "TILO_USER_IDENTITY",
     "TILO_IDENTITY_BROKER_FD",
     "TILO_CLI_COMMAND",
-    "TILO_NET_GATE",
+    "TILO_EGRESS_PROXY",
     "TILO_HOST_ACTIVATION_TOKEN",
 ];
 
@@ -278,7 +278,7 @@ pub fn terminal_argv(
 
 /// The parent's environment that a host app may inherit ([`INHERITED_ENV`]), as
 /// this process has it. A caller that starts another process to launch — the
-/// session starting `tilo-launcher run-host` — hands it exactly these.
+/// session starting `tilo-launcher machine-app` — hands it exactly these.
 #[must_use]
 pub fn inherited_environment() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
@@ -594,7 +594,7 @@ mod tests {
                     "TILO_WORKSPACE_ID",
                     "TILO_APP_DIR",
                     "TILO_USER_IDENTITY",
-                    "TILO_NET_GATE",
+                    "TILO_EGRESS_PROXY",
                 ] {
                     assert!(
                         !launch.env.contains_key(absent),

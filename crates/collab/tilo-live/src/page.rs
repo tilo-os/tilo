@@ -12,9 +12,9 @@
 //!
 //! One track per window: `page/<tab as 16 hex digits>` ([`track`]). It is
 //! sealed for the scope's members as video is, so the relay copies what it
-//! cannot read, and it is published only while someone shows it: the plane
+//! cannot read, and it is published only while someone shows it: the live session
 //! accepts the track when a member asks for it and ends it when the last one
-//! stops ([`crate::plane::Plane::wanted_pages`]).
+//! stops ([`crate::live_session::LiveSession::wanted_pages`]).
 //!
 //! # Groups and objects
 //!

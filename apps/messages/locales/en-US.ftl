@@ -125,7 +125,7 @@ messages-group-remove-choice = Remove { $member }
 
 ## History: what each change did, by verb and by field
 
-# The conversations kept in the record.
+# The conversations kept in the resource.
 messages-deliver-message = Delivered a message from { $from }
 messages-send-message = Queued a message to { $to }
 messages-reply = Queued a reply
@@ -202,7 +202,7 @@ tilo-messages-view-send = Send message
 
 ## What the app is called in a window and in the launcher
 messages-app-title = Messages
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 messages-drafts = Message drafts
 messages-drafts-keep-draft = Keep a draft
 messages-drafts-drop-draft = Drop a draft

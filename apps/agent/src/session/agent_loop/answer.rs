@@ -80,7 +80,7 @@ impl LoopState {
     /// A turn that would end the run with nothing said to the person: no reply, or words that say
     /// nothing (`said`: "…", "placeholder", nothing at all; [`tools::says_nothing`]). That is never
     /// an answer. The model is told why and asked once for its answer; one that still gives none
-    /// ends the run with the readable failure, the words it gave kept as the record. `None` while
+    /// ends the run with the readable failure, the words it gave kept as the resource. `None` while
     /// the model has its turn to answer.
     pub(super) fn unanswered(
         &mut self,

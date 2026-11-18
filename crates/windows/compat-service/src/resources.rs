@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use launcher::netgate::{EgressPolicy, NetGate, RELAY_PORT};
-use launcher::sandbox::NetGateBind;
+use launcher::egress_proxy::{EgressPolicy, EgressProxy, RELAY_PORT};
+use launcher::sandbox::EgressProxyBind;
 
 use crate::{
     AudioBinding, AudioProtocol, AudioProxyError, AudioProxyLease, LaunchLease,
@@ -12,18 +12,18 @@ use crate::{
 };
 
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
-const SANDBOX_GATE: &str = "/run/tilo/network/gate.sock";
+const SANDBOX_PROXY: &str = "/run/tilo/network/proxy.sock";
 
 type StartAudioProxy = fn(PathBuf, u32, bool) -> Result<AudioProxyLease, AudioProxyError>;
 
 /// Concrete Tilo adapter for resources that already have a secure broker.
-/// Host-filtered networking reuses the launcher's net-gate implementation.
+/// Host-filtered networking reuses the launcher's net-proxy implementation.
 /// Each capsule receives a private `PipeWire` graph, never the session audio
 /// socket. The graph has a playback tunnel on every launch and materializes a
 /// microphone source only when the canonical Tilo device grant says so.
 pub struct SystemResourceBroker {
     next: AtomicU64,
-    gates: Mutex<BTreeMap<String, NetGate>>,
+    proxies: Mutex<BTreeMap<String, EgressProxy>>,
     audio: Mutex<BTreeMap<String, AudioProxyLease>>,
     uid: u32,
     start_audio_proxy: StartAudioProxy,
@@ -36,14 +36,14 @@ impl SystemResourceBroker {
         Self::for_uid(uid)
     }
 
-    /// Construct for a compositor session uid. This is deliberately numeric
+    /// Construct for a session uid. This is deliberately numeric
     /// rather than a path supplied by a caller; the only host endpoint the
     /// audio proxy names is `/run/user/<uid>/pulse/native`.
     #[must_use]
     pub fn for_uid(uid: u32) -> Self {
         Self {
             next: AtomicU64::new(1),
-            gates: Mutex::new(BTreeMap::new()),
+            proxies: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
             start_audio_proxy: AudioProxyLease::start,
@@ -54,7 +54,7 @@ impl SystemResourceBroker {
     fn for_uid_with_audio_proxy(uid: u32, start_audio_proxy: StartAudioProxy) -> Self {
         Self {
             next: AtomicU64::new(1),
-            gates: Mutex::new(BTreeMap::new()),
+            proxies: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
             start_audio_proxy,
@@ -79,8 +79,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
         let microphone = request
             .capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone");
+            .contains(&collab_types::caps::DeviceCap::Microphone);
         let audio_proxy =
             (self.start_audio_proxy)(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
                 .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;
@@ -97,24 +96,24 @@ impl LaunchResourceBroker for SystemResourceBroker {
             },
         ];
         let network = NetworkShape::from_capabilities(request.capabilities);
-        let net_gate = if network == NetworkShape::Filtered {
+        let egress_proxy = if network == NetworkShape::Filtered {
             let host_socket = PathBuf::from(LEASE_ROOT).join(&id).join("net.sock");
-            let gate = match NetGate::start(
+            let proxy = match EgressProxy::start(
                 &host_socket,
                 EgressPolicy::from_grants(
                     request.capabilities.net_hosts.iter().map(String::as_str),
                 ),
             ) {
-                Ok(gate) => gate,
+                Ok(proxy) => proxy,
                 Err(error) => return Err(ResourceError::Refused(error.to_string())),
             };
-            self.gates
+            self.proxies
                 .lock()
                 .map_err(|_| ResourceError::Unavailable)?
-                .insert(id.clone(), gate);
-            Some(NetGateBind {
+                .insert(id.clone(), proxy);
+            Some(EgressProxyBind {
                 host_socket,
-                sandbox_socket: PathBuf::from(SANDBOX_GATE),
+                sandbox_socket: PathBuf::from(SANDBOX_PROXY),
                 port: RELAY_PORT,
             })
         } else {
@@ -127,13 +126,13 @@ impl LaunchResourceBroker for SystemResourceBroker {
         Ok(LaunchLease {
             id,
             audio,
-            net_gate,
+            egress_proxy,
         })
     }
 
     fn revoke(&self, lease_id: &str) {
-        if let Ok(mut gates) = self.gates.lock() {
-            gates.remove(lease_id);
+        if let Ok(mut proxies) = self.proxies.lock() {
+            proxies.remove(lease_id);
         }
         if let Ok(mut audio) = self.audio.lock() {
             audio.remove(lease_id);

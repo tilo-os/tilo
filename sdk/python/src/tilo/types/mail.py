@@ -20,19 +20,20 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Delivery",
     "DraftAttachment",
     "DraftCopy",
     "DraftData",
     "DraftSender",
     "DraftState",
     "Folder",
+    "LocalFolder",
+    "RetiredCopy",
+    "ServerUpdate",
+    "Delivery",
     "HeldMessage",
     "IngestBaseline",
-    "LocalFolder",
     "MessageState",
     "ServerCopy",
-    "ServerUpdate",
     "PersonAccount",
     "Endpoint",
     "Person",
@@ -40,10 +41,18 @@ __all__ = [
     "KeptCopy",
     "NewCopy",
     "Mailbox",
+    "Messages",
     "Accounts",
     "Identities",
     "TrustedSenders",
     "Copies",
+    "MarkReadArgs",
+    "ArchiveArgs",
+    "TrashArgs",
+    "MoveMessagesArgs",
+    "PurgeArgs",
+    "IngestArgs",
+    "ServerAppliedArgs",
     "PublishBrowserIdentityArgs",
     "SaveAccountArgs",
     "RemoveAccountArgs",
@@ -63,21 +72,6 @@ __all__ = [
     "KeepCopiesArgs",
     "ForgetCopiesArgs",
 ]
-
-Delivery = TypedDict("Delivery", {
-    "from": "str",
-    "to": "str | None",
-    "cc": "str | None",
-    "subject": "str",
-    "body": "str",
-    "date": "str | None",
-    "folder": "Folder | None",
-    "read": "bool | None",
-    "reply_to": "str | None",
-    "conversation": "str | None",
-    "message_id": "str | None",
-    "original": "Any | None",
-})
 
 class DraftAttachment(TypedDict):
     content_id: str
@@ -124,6 +118,33 @@ class DraftState(TypedDict):
 
 Folder = Literal["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"]
 
+class LocalFolder(TypedDict):
+    name: str
+
+class RetiredCopy(TypedDict):
+    account: str
+    locator: str
+    removed: bool
+
+ServerUpdate = dict[str, Any]
+"""One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with."""
+
+Delivery = TypedDict("Delivery", {
+    "from": "str",
+    "to": "str | None",
+    "cc": "str | None",
+    "subject": "str",
+    "body": "str",
+    "date": "str | None",
+    "folder": "Folder | None",
+    "read": "bool | None",
+    "reply_to": "str | None",
+    "conversation": "str | None",
+    "message_id": "str | None",
+    "original": "Any | None",
+    "answers": "str | None",
+})
+
 HeldMessage = TypedDict("HeldMessage", {
     "message_id": "str",
     "from": "str",
@@ -146,9 +167,6 @@ class IngestBaseline(TypedDict):
     locator: str | None
     label: str | None
 
-class LocalFolder(TypedDict):
-    name: str
-
 class MessageState(TypedDict):
     read: bool
     starred: bool
@@ -165,9 +183,6 @@ class ServerCopy(TypedDict):
     starred: bool
     folder: Folder
     removed: bool
-
-ServerUpdate = dict[str, Any]
-"""One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with."""
 
 class PersonAccount(TypedDict):
     type_id: str
@@ -214,6 +229,43 @@ class NewCopy(TypedDict):
     folder: Folder
     uid: int
     uid_validity: int
+
+MarkReadArgs = TypedDict("MarkReadArgs", {
+    "messages": "list[str]",
+    "read": "bool",
+})
+"""The arguments of `mark-read`."""
+
+ArchiveArgs = TypedDict("ArchiveArgs", {
+    "messages": "list[str]",
+})
+"""The arguments of `archive`."""
+
+TrashArgs = TypedDict("TrashArgs", {
+    "messages": "list[str]",
+})
+"""The arguments of `trash`."""
+
+MoveMessagesArgs = TypedDict("MoveMessagesArgs", {
+    "messages": "list[str]",
+    "to": "Folder",
+})
+"""The arguments of `move-messages`."""
+
+PurgeArgs = TypedDict("PurgeArgs", {
+    "messages": "list[str]",
+})
+"""The arguments of `purge`."""
+
+IngestArgs = TypedDict("IngestArgs", {
+    "messages": "list[IngestBaseline]",
+})
+"""The arguments of `ingest`."""
+
+ServerAppliedArgs = TypedDict("ServerAppliedArgs", {
+    "updates": "list[ServerUpdate]",
+})
+"""The arguments of `server-applied`."""
 
 PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
     "root": "str",
@@ -337,44 +389,14 @@ ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@3de88f51444d06e9"
-    messages: list[Entry[MessageState]]
+    __surface__ = "so.tilo.mail@854a528313f33a18"
     folders: list[Entry[LocalFolder]]
     draft: DraftState
     drafts: list[Entry[DraftState]]
-    held: list[Entry[HeldMessage]]
-
-    def mark_read(self,
-        *,
-        messages: list[str],
-        read: bool,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("mark-read", messages=messages, read=read)
-
-    def archive(self, *, messages: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("archive", messages=messages)
-
-    def trash(self, *, messages: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("trash", messages=messages)
-
-    def move_messages(self,
-        *,
-        messages: list[str],
-        to: Folder,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("move-messages", messages=messages, to=to)
-
-    def purge(self, *, messages: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("purge", messages=messages)
-
-    def ingest(self, *, messages: list[IngestBaseline]) -> None:
-        """Runs the app's action."""
-        return self.action("ingest", messages=messages)
+    @property
+    def retired(self) -> list[Entry[RetiredCopy]]:
+        """Read only."""
+        return self.fields["retired"]
 
     def server_applied(self, *, update: ServerUpdate) -> None:
         """Runs the app's action."""
@@ -491,46 +513,6 @@ class Mailbox(Resource):
         """Runs the app's action."""
         return self.action("check-mail", account=account, folder=folder)
 
-    def deliver_message(self,
-        *,
-        from_: str,
-        subject: str,
-        body: str,
-        to: str | None = None,
-        cc: str | None = None,
-        date: str | None = None,
-        folder: Folder | None = None,
-        read: bool | None = None,
-        reply_to: str | None = None,
-        conversation: str | None = None,
-        message_id: str | None = None,
-        original: Any | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["from"] = from_
-        if to is not None:
-            args["to"] = to
-        if cc is not None:
-            args["cc"] = cc
-        args["subject"] = subject
-        args["body"] = body
-        if date is not None:
-            args["date"] = date
-        if folder is not None:
-            args["folder"] = folder
-        if read is not None:
-            args["read"] = read
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        if conversation is not None:
-            args["conversation"] = conversation
-        if message_id is not None:
-            args["message_id"] = message_id
-        if original is not None:
-            args["original"] = original
-        return self.action("deliver-message", **args)
-
     def draft_message(self,
         *,
         to: str,
@@ -600,12 +582,133 @@ class Mailbox(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"mark_read", "archive", "trash", "move_messages", "purge", "ingest", "server_applied", "start_draft_body", "save_draft", "create_draft", "show_draft", "attach", "discard_draft", "send_message", "check_mail", "deliver_message", "draft_message", "cancel_send", "search_messages", "export_content"})
+    __actions__ = frozenset({"server_applied", "start_draft_body", "save_draft", "create_draft", "show_draft", "attach", "discard_draft", "send_message", "check_mail", "draft_message", "cancel_send", "search_messages", "export_content"})
+
+
+class Messages(Resource):
+    """Messages — `mail.messages`."""
+    __surface__ = "so.tilo.mail@854a528313f33a18"
+    messages: list[Entry[MessageState]]
+    @property
+    def held(self) -> list[Entry[HeldMessage]]:
+        """Read only."""
+        return self.fields["held"]
+
+    def mark_read(self,
+        *,
+        messages: list[str],
+        read: bool,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("mark-read", messages=messages, read=read)
+
+    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
+        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("mark-read", items)
+
+    def archive(self, *, messages: list[str]) -> None:
+        """Runs the app's action."""
+        return self.action("archive", messages=messages)
+
+    def archive_many(self, items: list[ArchiveArgs]) -> list[dict[str, Any]]:
+        """Runs `archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("archive", items)
+
+    def trash(self, *, messages: list[str]) -> None:
+        """Runs the app's action."""
+        return self.action("trash", messages=messages)
+
+    def trash_many(self, items: list[TrashArgs]) -> list[dict[str, Any]]:
+        """Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("trash", items)
+
+    def move_messages(self,
+        *,
+        messages: list[str],
+        to: Folder,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("move-messages", messages=messages, to=to)
+
+    def move_messages_many(self, items: list[MoveMessagesArgs]) -> list[dict[str, Any]]:
+        """Runs `move-messages` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move-messages", items)
+
+    def purge(self, *, messages: list[str]) -> None:
+        """Runs the app's action."""
+        return self.action("purge", messages=messages)
+
+    def purge_many(self, items: list[PurgeArgs]) -> list[dict[str, Any]]:
+        """Runs `purge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("purge", items)
+
+    def ingest(self, *, messages: list[IngestBaseline]) -> None:
+        """Runs the app's action."""
+        return self.action("ingest", messages=messages)
+
+    def ingest_many(self, items: list[IngestArgs]) -> list[dict[str, Any]]:
+        """Runs `ingest` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ingest", items)
+
+    def server_applied(self, *, updates: list[ServerUpdate]) -> None:
+        """Runs the app's action."""
+        return self.action("server-applied", updates=updates)
+
+    def server_applied_many(self, items: list[ServerAppliedArgs]) -> list[dict[str, Any]]:
+        """Runs `server-applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("server-applied", items)
+
+    def deliver_message(self,
+        *,
+        from_: str,
+        subject: str,
+        body: str,
+        to: str | None = None,
+        cc: str | None = None,
+        date: str | None = None,
+        folder: Folder | None = None,
+        read: bool | None = None,
+        reply_to: str | None = None,
+        conversation: str | None = None,
+        message_id: str | None = None,
+        original: Any | None = None,
+        answers: str | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["from"] = from_
+        if to is not None:
+            args["to"] = to
+        if cc is not None:
+            args["cc"] = cc
+        args["subject"] = subject
+        args["body"] = body
+        if date is not None:
+            args["date"] = date
+        if folder is not None:
+            args["folder"] = folder
+        if read is not None:
+            args["read"] = read
+        if reply_to is not None:
+            args["reply_to"] = reply_to
+        if conversation is not None:
+            args["conversation"] = conversation
+        if message_id is not None:
+            args["message_id"] = message_id
+        if original is not None:
+            args["original"] = original
+        if answers is not None:
+            args["answers"] = answers
+        return self.action("deliver-message", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"mark_read", "mark_read_many", "archive", "archive_many", "trash", "trash_many", "move_messages", "move_messages_many", "purge", "purge_many", "ingest", "ingest_many", "server_applied", "server_applied_many", "deliver_message"})
 
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    __surface__ = "so.tilo.mail@854a528313f33a18"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -661,7 +764,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    __surface__ = "so.tilo.mail@854a528313f33a18"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -801,7 +904,7 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    __surface__ = "so.tilo.mail@854a528313f33a18"
     senders: list[str]
 
     def trust(self, *, sender: str) -> None:
@@ -827,7 +930,7 @@ class TrustedSenders(Resource):
 
 class Copies(Resource):
     """Mail on your devices — `mail.copies`."""
-    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    __surface__ = "so.tilo.mail@854a528313f33a18"
     @property
     def copies(self) -> list[Entry[KeptCopy]]:
         """Read only."""

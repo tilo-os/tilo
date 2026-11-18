@@ -2,7 +2,7 @@
 use super::*;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
             matches!(
                 &asked,
                 PendingPoll::Ready(Err(
-                    tilo_actions::remote::ActionHostError::ConfirmationRequired { .. }
+                    tilo_actions::remote::ActionCallError::ConfirmationRequired { .. }
                 ))
             ),
             "the agent waits for the person: {asked:?}"
@@ -273,7 +273,7 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     answered,
-                    PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                    PendingPoll::Ready(Err(ActionCallError::UnknownAction))
                 ),
                 "{answered:?}"
             );
@@ -290,7 +290,7 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     answered,
-                    PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired { .. }))
+                    PendingPoll::Ready(Err(ActionCallError::ConfirmationRequired { .. }))
                 ),
                 "{answered:?}"
             );
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 answered,
-                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                PendingPoll::Ready(Err(ActionCallError::UnknownAction))
             ),
             "an observer member is not offered a change: {answered:?}"
         );
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
         assert!(
             !matches!(
                 answered,
-                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                PendingPoll::Ready(Err(ActionCallError::UnknownAction))
             ),
             "the device-handed session carries the device's delegation: {answered:?}"
         );
@@ -427,7 +427,7 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     let mut arguments = serde_json::Map::new();
     arguments.insert("text".into(), "Buy milk".into());
     invoke.argument = InvokeArgument::Json(arguments);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (question, answer) = asked.recv().await.expect("the person is asked");
     let draft = question.draft.expect("the question carries the draft");
     assert_eq!(draft.action_label, "Update");
@@ -438,12 +438,12 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     answer
         .send(crate::app_actions::AppActionConsent::Once.into())
         .unwrap();
-    let witnessed = witness.await.expect("answered").expect("witnessed");
+    let approved = approval.await.expect("answered").expect("approved");
     assert_eq!(
-        witnessed.arguments, None,
+        approved.arguments, None,
         "an unedited answer changes nothing"
     );
-    witnessed.apply(&mut invoke);
+    approved.apply(&mut invoke);
     assert!(matches!(
         state
             .action_invoke(&agent, None, None, &invoke)
@@ -508,7 +508,7 @@ async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
     let (state, person, mut app) =
         fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
     let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     answer
         .send(crate::app_actions::AppActionAnswer {
@@ -525,14 +525,14 @@ async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
             ],
         })
         .unwrap();
-    let witnessed = witness.await.expect("answered").expect("witnessed");
+    let approved = approval.await.expect("answered").expect("approved");
     let edited = serde_json::json!({"text": "Buy oat milk", "pin": true});
     assert_eq!(
-        witnessed.arguments.clone().map(serde_json::Value::Object),
+        approved.arguments.clone().map(serde_json::Value::Object),
         Some(edited.clone()),
         "the agent is handed the person's arguments"
     );
-    witnessed.apply(&mut invoke);
+    approved.apply(&mut invoke);
     assert!(matches!(
         state
             .action_invoke(&agent, None, None, &invoke)
@@ -557,7 +557,7 @@ async fn arguments_changed_after_the_person_allowed_them_are_refused() {
         serde_json::json!({"text": "Buy oat milk and wine", "pin": false}),
     ] {
         let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
-        let witness = state.request_witness(&agent, None, &invoke);
+        let approval = state.request_approval(&agent, None, &invoke);
         let (_question, answer) = asked.recv().await.expect("the person is asked");
         answer
             .send(crate::app_actions::AppActionAnswer {
@@ -568,8 +568,8 @@ async fn arguments_changed_after_the_person_allowed_them_are_refused() {
                 }],
             })
             .unwrap();
-        let witnessed = witness.await.expect("answered").expect("witnessed");
-        invoke.confirmation = Some(witnessed.confirmation);
+        let approved = approval.await.expect("answered").expect("approved");
+        invoke.confirmation = Some(approved.confirmation);
         invoke.argument = InvokeArgument::Json(tampered.as_object().cloned().unwrap());
         assert!(
             matches!(
@@ -590,7 +590,7 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
     let (state, person, mut app) =
         fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
     let (agent, invoke, mut asked) = ask_to_update(&state, &person);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     answer
         .send(crate::app_actions::AppActionAnswer {
@@ -602,8 +602,8 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
         })
         .unwrap();
     assert!(matches!(
-        witness.await,
-        Some(Err(ActionHostError::InvalidRequest { .. }))
+        approval.await,
+        Some(Err(ActionCallError::InvalidRequest { .. }))
     ));
     assert!(app.try_recv().is_err(), "nothing runs");
 }
@@ -857,7 +857,7 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
 #[test]
 fn the_catalogue_lists_connections_in_the_order_they_came() {
     let (state, caller, _app) = fixture();
-    let published = state.live_surfaces(action_host::RowScope::All);
+    let published = state.live_surfaces(action_provider::RowScope::All);
     let surface = published.first().expect("the fixture's surface").clone();
     let peers: Vec<u64> = (0..24).map(|i| (i * 7) % 24 + 10).collect();
     state.replace_published_surfaces_for_test(
@@ -871,7 +871,7 @@ fn the_catalogue_lists_connections_in_the_order_they_came() {
     );
     let listed = || -> Vec<String> {
         state
-            .eager_catalogue(&caller, action_host::RowScope::All)
+            .eager_catalogue(&caller, action_provider::RowScope::All)
             .0
             .into_iter()
             .filter(|row| row.action.is_some())
@@ -1160,7 +1160,7 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
     assert!(
         matches!(
             refused,
-            PendingPoll::Ready(Err(tilo_actions::remote::ActionHostError::UnknownAction))
+            PendingPoll::Ready(Err(tilo_actions::remote::ActionCallError::UnknownAction))
         ),
         "the denied edit was refused"
     );
@@ -1372,16 +1372,16 @@ tilo_test_env::scenario! {
 
 /// The broker's api, counting how often a shortcut run observes through it.
 struct CountedApi {
-    api: action_host::BrokerApi,
+    api: action_provider::BrokerApi,
     observes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl ActionHost for CountedApi {
+impl ActionProvider for CountedApi {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.api.query(caller, query)
     }
 
@@ -1389,7 +1389,7 @@ impl ActionHost for CountedApi {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.api.invoke(caller, request)
     }
 
@@ -1406,7 +1406,7 @@ impl ActionHost for CountedApi {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         self.api.cancel(caller, id)
     }
 }
@@ -1487,7 +1487,7 @@ async fn shortcut_step_observes_once_per_change() {
         let observes = Arc::clone(&observes);
         async move {
             let api = CountedApi {
-                api: action_host::BrokerApi::new(state),
+                api: action_provider::BrokerApi::new(state),
                 observes,
             };
             tilo_automation::run(
@@ -1618,7 +1618,7 @@ fn agent_answered(
     answer: tilo_action_policy::Answer,
     api: impl FnOnce(&str) -> Caller,
 ) -> (
-    PendingPoll<Result<InvocationReceipt, ActionHostError>>,
+    PendingPoll<Result<InvocationReceipt, ActionCallError>>,
     bool,
 ) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
@@ -1696,8 +1696,8 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
             .cloned()
             .unwrap(),
     );
-    let refused = state.request_witness(&caller, None, &invoke).poll_ready();
-    let PendingPoll::Ready(Err(ActionHostError::InvalidRequest { reason })) = &refused else {
+    let refused = state.request_approval(&caller, None, &invoke).poll_ready();
+    let PendingPoll::Ready(Err(ActionCallError::InvalidRequest { reason })) = &refused else {
         panic!("refused for its operation: {refused:?}");
     };
     assert!(
@@ -1713,13 +1713,40 @@ async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() 
     let (state, person, mut app) =
         fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
     let (agent, invoke, mut asked) = ask_to_update(&state, &person);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     drop(answer);
-    let answered = witness.await.expect("answered");
-    let Err(ActionHostError::Unavailable { reason }) = &answered else {
+    let answered = approval.await.expect("answered");
+    let Err(ActionCallError::Unavailable { reason }) = &answered else {
         panic!("unanswered, not declined: {answered:?}");
     };
     assert!(reason.contains("without the person's answer"), "{reason}");
     assert!(app.try_recv().is_err(), "nothing runs");
+}
+
+/// One app takes another app's action only as a person lets it. With nobody
+/// to ask, no workspace, nowhere to keep the answer or no such action offered,
+/// the call is refused with what to say, never served unasked.
+#[tokio::test]
+async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
+    use super::app_consent::ConsentStep;
+    let (state, person, _app) = fixture();
+    let refusal = |caller: &Caller, request: &InvokeRequest| match state.app_action_consent(
+        caller,
+        "so.tilo.other",
+        request,
+    ) {
+        ConsentStep::Refuse(refused) => refused.to_string(),
+        ConsentStep::Serve => panic!("served unasked"),
+        ConsentStep::Ask(_) => panic!("asked"),
+    };
+    let nobody = Caller::local_agent("scribe").in_workspace(person.workspace().unwrap());
+    assert!(refusal(&nobody, &request()).contains("no person"));
+    let nowhere = Caller::local_person("a1".repeat(32));
+    assert!(refusal(&nowhere, &request()).contains("no workspace"));
+    let mut unoffered = request();
+    unoffered.target.address = tilo_actions::ActionAddress::new("test:block-a", "erase");
+    let unknown = ActionCallError::UnknownAction.to_string();
+    assert_eq!(refusal(&person, &unoffered), unknown);
+    assert!(refusal(&person, &request()).contains("keeps no answers"));
 }

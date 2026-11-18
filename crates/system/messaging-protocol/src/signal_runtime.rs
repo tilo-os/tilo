@@ -20,11 +20,11 @@ pub const MAX_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenError {
     WrongOwner,
-    CustodyUnavailable,
+    OwnershipUnavailable,
     TransportUnavailable,
 }
 
-/// One local owner, one authenticated daemon connection and one durable ledger.
+/// One local owner, one authenticated daemon connection and one durable log.
 /// No other stream or journal handle escapes this session.
 pub struct SignalRuntime {
     session: Session<DeadlineReader, DeadlineStream>,
@@ -46,11 +46,11 @@ impl SignalRuntime {
             return Err(OpenError::WrongOwner);
         }
         let journal = EncryptedJournal::open_system(root, &owner)
-            .map_err(|_| OpenError::CustodyUnavailable)?;
+            .map_err(|_| OpenError::OwnershipUnavailable)?;
         Self::from_journal(owner, signal_account, stream, journal)
     }
 
-    /// Host-injected custody, without weakening the production OS-keychain path.
+    /// Host-injected ownership, without weakening the production OS-keychain path.
     /// The journal's frozen device/account/link generation must match exactly.
     pub fn from_journal(
         owner: Owner,
@@ -122,7 +122,7 @@ impl SignalRuntime {
     /// Call on the broker worker, never on the UI/render thread.
     ///
     /// # Errors
-    /// Route/custody failures write nothing. Any post-reservation failure is
+    /// Route/ownership failures write nothing. Any post-reservation failure is
     /// uncertain and cannot be retried, including after process restart.
     pub fn send(
         &mut self,

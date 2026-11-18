@@ -88,8 +88,8 @@ mod tests {
         use ui::framework::testing::TestApp;
 
         // The worker that asks the desktop sees the host installed for the process.
-        let (host, recorder) = ui::host::HostServices::recording();
-        ui::host::install_default(host);
+        let (host, recorder) = ui::process::ProcessServices::recording();
+        ui::process::install_default(host);
         let mut app = TestApp::<ChatShell>::new().unwrap();
         app.effect(&ChatEffect::OpenSlackChannel {
             workspace: "T123".into(),

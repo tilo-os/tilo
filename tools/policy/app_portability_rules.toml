@@ -3,7 +3,7 @@
 # One engine, two scopes:
 #   * `tilo-app check --lint` (crates/dev/tilo-app-cli/src/portability.rs,
 #     which embeds this file) reports each site to the app developer;
-#   * `tilo-app check --lint --all` (the repository gate, run by lint.yml)
+#   * `tilo-app check --lint --all` (the repository check, run by lint.yml)
 #     counts findings per package and rule against the shrink-only baseline
 #     tools/policy/app_portability_baseline.toml.
 #
@@ -19,7 +19,7 @@
 #                tilo-os; "web" applies only when web is in the platforms.
 #   severity     how the lint treats a finding in an app that runs on every
 #                default platform: "error" fails it, "warn" is reported only.
-#                The gate counts both.
+#                The check counts both.
 
 schema = 1
 
@@ -41,7 +41,7 @@ model-allowed-packages = [
 exempt-dirs = ["tests", "benches", "examples"]
 
 # Apps that declare every one of these platforms may contain none of these
-# findings: the gate fails on the first one, with no baseline allowance. Other
+# findings: the check fails on the first one, with no baseline allowance. Other
 # apps count them against the shrink-only baseline.
 [strict]
 platforms = ["linux", "macos", "web"]
@@ -65,7 +65,7 @@ allowed = [
 rules = ["R1", "W1", "W2", "W3"]
 crates = [
     "crates/sdk/ui-core",
-    "crates/sdk/tilo-host",
+    "crates/sdk/tilo-process-services",
     "crates/sdk/tilo-app",
     "crates/system/settings-store",
     "crates/system/app-state",
@@ -156,7 +156,7 @@ summary = "depends on a platform or SDK-internal crate"
 help = "depend on the platform crate (crates/platform/*) that wraps it, or reach it through `ui`"
 applies = "always"
 # The repository's apps still hold baselined dependencies of both kinds; the
-# gate's baseline shrinks them, so the lint reports them without failing.
+# check's baseline shrinks them, so the lint reports them without failing.
 severity = "warn"
 # A trailing `*` matches any suffix.
 crates = [

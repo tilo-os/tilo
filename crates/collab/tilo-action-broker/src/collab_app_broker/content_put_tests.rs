@@ -6,7 +6,7 @@
 use std::sync::Mutex;
 
 use super::*;
-use crate::services::HostServices;
+use crate::services::ProcessServices;
 use crate::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceId, WorkspaceTree};
 
 fn owner_id() -> String {
@@ -118,7 +118,7 @@ fn fixture() -> Fixture {
     tree.persist_path = Some(home.path().join("state.json"));
     let membership = tree.shared();
     let shelf = Arc::new(Mutex::new(Shelf::default()));
-    let services = HostServices {
+    let services = ProcessServices {
         content_store: Some(Arc::new(FakeStore(Arc::clone(&shelf)))),
         ..membership.services()
     };
@@ -152,11 +152,11 @@ fn agent(id: &str, person: &str, workspace: &str) -> Caller {
     .in_new_execution()
 }
 
-fn reason(error: &ActionHostError) -> &str {
+fn reason(error: &ActionCallError) -> &str {
     match error {
-        ActionHostError::Refused { reason }
-        | ActionHostError::InvalidRequest { reason }
-        | ActionHostError::Unavailable { reason } => reason,
+        ActionCallError::Refused { reason }
+        | ActionCallError::InvalidRequest { reason }
+        | ActionCallError::Unavailable { reason } => reason,
         _ => panic!("no reason in {error:?}"),
     }
 }
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(
             refused,
-            ActionHostError::Refused {
+            ActionCallError::Refused {
                 reason: "not allowed to add content to this workspace: allow content uploads in this workspace to let it".into()
             }
         );
@@ -312,7 +312,7 @@ tilo_test_env::scenario! {
             .begin(&agent("stranger", "outsider", &fixture.workspace), 3)
             .err()
             .unwrap();
-        assert_eq!(refused, ActionHostError::NotPermitted);
+        assert_eq!(refused, ActionCallError::NotPermitted);
         let shelf = fixture.shelf.lock().unwrap();
         assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
     }

@@ -1,12 +1,12 @@
 //! Root-admitted receiving-namespace qualification; no live installer entry.
 //! Reuses the existing receiving namespace guard/held-directory contract.
 use accounts::{
-    AccountStore, AccountSyncHealth, AccountSyncStatusStore, SecretCustody, SecretVault,
+    AccountStore, AccountSyncHealth, AccountSyncStatusStore, SecretVault, VaultBackend,
 };
 use cloud_source_dav::fake::{FakeDav, USER};
 use fs::cloud::{CloudService, ProcessLauncher, ServiceConfig};
 use imager_backend::account_transfer::{Connector, PasswordSealedAccounts, SourceRoots, discover};
-use imager_backend::setup::service_sessions::official_format_native as custody;
+use imager_backend::setup::service_sessions::official_format_native as backend;
 use serde::Deserialize;
 use std::{
     fs::{File, OpenOptions},
@@ -35,7 +35,7 @@ fn executable(path: &str, expected: &str) -> File {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .expect("admitted cloud executable absent");
-    assert_eq!(custody::held_executable_digest(&file), expected);
+    assert_eq!(backend::held_executable_digest(&file), expected);
     file
 }
 fn artifacts() -> (Artifacts, File, File) {
@@ -102,8 +102,8 @@ fn mounted(path: &Path) -> bool {
 }
 
 #[test]
-fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_files() {
-    let owner = custody::guarded_owner();
+fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_files() {
+    let owner = backend::guarded_owner();
     for forbidden in [runtime_identity::FILE_SECRETS_ENV, "TILO_SECRETS_DIR"] {
         assert!(
             std::env::var_os(forbidden).is_none(),
@@ -139,7 +139,7 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
     );
     let target = accounts::config_root().unwrap();
     assert_eq!(target, fixture.join("config/tilo"));
-    let destination = custody::held_directory(86, &target, owner);
+    let destination = backend::held_directory(86, &target, owner);
     assert!(AccountStore::load().is_empty());
     let (admitted, fs_file, helper_file) = artifacts();
     let fuse = OpenOptions::new()
@@ -192,8 +192,8 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
         .unwrap();
     // Observe the genuine offline-import boundary before default-session use.
     assert_eq!(
-        SecretVault::open_read_only_in(&target).custody(),
-        SecretCustody::LocalFile
+        SecretVault::open_read_only_in(&target).backend(),
+        VaultBackend::LocalFile
     );
     let local_key = accounts::vault_dir_in(&target).join("vault.key");
     assert!(local_key.is_file());
@@ -231,9 +231,11 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
         "default helper must retire the migrated local key"
     );
     let live = SecretVault::open();
-    assert_eq!(live.custody(), SecretCustody::System);
+    assert_eq!(live.backend(), VaultBackend::System);
     assert!(live.recovery_error().is_none());
-    assert!(account_custody::is_copied_secret(&live.get(&id).unwrap()));
+    assert!(account_credentials::is_copied_secret(
+        &live.get(&id).unwrap()
+    ));
     assert_eq!(
         std::fs::read(accounts::vault_dir_in(&target).join("vault.enc")).unwrap(),
         cipher_before
@@ -283,11 +285,11 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
         before
     );
     assert_eq!(
-        custody::held_executable_digest(&fs_file),
+        backend::held_executable_digest(&fs_file),
         admitted.fs_sha256
     );
     assert_eq!(
-        custody::held_executable_digest(&helper_file),
+        backend::held_executable_digest(&helper_file),
         admitted.helper_sha256
     );
     let named = File::open(&target).unwrap().metadata().unwrap();
@@ -299,7 +301,7 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
     );
     let mut receipt = unsafe { File::from_raw_fd(87) };
     let public = serde_json::json!({"schema":1,"qualification":"migrated-dav-default-session",
-        "migrated_grant_verified":true,"default_system_custody_verified":true,"local_key_retired":true,
+        "migrated_grant_verified":true,"default_system_ownership_verified":true,"local_key_retired":true,
         "real_helper_verified":true,"kernel_read_write_verified":true,"account_removal_unmounted":true,
         "source_unchanged":true,"provider_authentication_verified":false});
     let bytes = serde_json::to_vec(&public).unwrap();

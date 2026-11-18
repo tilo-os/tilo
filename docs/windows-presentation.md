@@ -6,7 +6,7 @@ the host and guest presentation stack enforce.
 
 ## Selection
 
-At Tilo session startup, the compatibility service runs
+When the appliance is first found set up, the compatibility service starts
 `/usr/libexec/tilo-windows-rail --probe`. Native RAIL is selected only when the
 immutable image contains both upstream FreeRDP and `xwayland-satellite`, and
 the active Tilo Wayland socket exists. Otherwise the authenticated guest bridge
@@ -115,7 +115,7 @@ virtio-scsi with native I/O, discard, and a fixed 8 GiB/4-vCPU baseline. For a
 machine with one ordinary GPU, RDP AVC444 or the 2D SPICE fallback is the safe
 default: Windows has no production virgl/virtio-gpu 3D path equivalent to a
 Linux guest, and passing the only GPU through would remove it from Tilo.
-Hardware 3D remains gated on an independently assignable second GPU or a
+Hardware 3D still needs an independently assignable second GPU or a
 hardware/driver-supported SR-IOV VF or mediated device. The read-only
 `tilo-windows-vm-control graphics-capabilities` probe reports those kernel
 interfaces but never creates or automatically assigns a partition. A separate
@@ -125,7 +125,7 @@ Tilo's exact root-only record. Looking Glass is useful only after such
 assignment and is still a whole framebuffer, not RAIL. See
 `windows-presentation-capabilities.md` for the exact probe and source contracts.
 
-## Live versus gated
+## Live versus guarded
 
 Live in the shipped image:
 
@@ -142,7 +142,7 @@ Live in the shipped image:
 - server-derived shared-session permission reporting; and
 - KVM/host-passthrough storage and CPU tuning.
 
-Still gated by a missing authority, guest component, upstream limitation, or
+Still guarded by a missing authority, guest component, upstream limitation, or
 hardware:
 
 - ambient cross-desktop file clipboard drag/drop (the explicit **Open file…**

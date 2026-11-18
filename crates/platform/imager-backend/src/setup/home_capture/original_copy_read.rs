@@ -1,4 +1,4 @@
-//! Root-only source custody for a genuinely authenticated installed copy.
+//! Root-only source ownership for a genuinely authenticated installed copy.
 //! This contains no output grant, launch permit or target credential mapping.
 use super::{OriginalReadClaim, SourceReadContext, store::original::mounted::MountedReadEpoch};
 use crate::setup::{
@@ -21,11 +21,11 @@ fn refused(message: &'static str) -> io::Error {
 // Consuming native retirement APIs retain failed mount leases themselves. Their
 // errors must also retain the authenticated installed owner, including failures
 // before a ReviewedInstalledOriginalCopy wrapper has been constructed.
-struct RetirementCustody {
+struct RetirementOwnership {
     owner: Option<Arc<dyn launcher::owned_service::ServiceAuthority>>,
     installed: Option<Arc<AuthenticatedInstalledOriginalCopy>>,
 }
-impl RetirementCustody {
+impl RetirementOwnership {
     fn new(
         owner: &Arc<dyn launcher::owned_service::ServiceAuthority>,
         installed: &Arc<AuthenticatedInstalledOriginalCopy>,
@@ -40,12 +40,12 @@ impl RetirementCustody {
         self.installed.take();
     }
 }
-impl Drop for RetirementCustody {
+impl Drop for RetirementOwnership {
     fn drop(&mut self) {
         if let (Some(owner), Some(installed)) = (self.owner.take(), self.installed.take()) {
             uncertain();
             // The controller must stay alive when retirement_pending is true.
-            // Never release live proof custody after an unobserved retirement.
+            // Never release live proof ownership after an unobserved retirement.
             std::mem::forget((owner, installed));
         }
     }
@@ -110,7 +110,7 @@ impl OriginalCopyReadAdmission {
             ));
         }
         declaration.validate()?;
-        let construction_custody = RetirementCustody::new(&owner, &installed);
+        let construction_ownership = RetirementOwnership::new(&owner, &installed);
         // The constructor preserves the immutable requested declaration while
         // independently verifying any authenticated completed resize against
         // the actual held physical source before a reader can be admitted.
@@ -127,21 +127,19 @@ impl OriginalCopyReadAdmission {
             }),
             validation: Mutex::new(()),
         };
-        construction_custody.completed();
+        construction_ownership.completed();
         let reviewed = (|| {
             let sources = owned.sources.as_mut().ok_or(io::ErrorKind::NotConnected)?;
             sources.original.verify_requested(
                 owned.declaration.source(),
-                owned.declaration.source_witness(),
+                owned.declaration.source_proof(),
                 owned.declaration.requested_caller(),
             )?;
             sources.inventory = OriginalInventoryGrant::review(&sources.original)?;
             sources.flatpak = OriginalFlatpakSources::review(&sources.original)?;
-            if let Some(witness) = owned.declaration.mounted_witness() {
+            if let Some(proof) = owned.declaration.mounted_proof() {
                 sources.mounted = Some(Arc::new(
-                    sources
-                        .original
-                        .retain_mounted_for_export(witness, cancel)?,
+                    sources.original.retain_mounted_for_export(proof, cancel)?,
                 ));
             }
             owned.revalidate(cancel)
@@ -167,13 +165,13 @@ impl OriginalCopyReadAdmission {
         let sources = self.sources.as_ref().ok_or(io::ErrorKind::NotConnected)?;
         sources.original.verify_requested(
             self.declaration.source(),
-            self.declaration.source_witness(),
+            self.declaration.source_proof(),
             self.declaration.requested_caller(),
         )?;
-        match (&sources.mounted, self.declaration.mounted_witness()) {
+        match (&sources.mounted, self.declaration.mounted_proof()) {
             (Some(epoch), Some(_)) => epoch.with_sources(cancel, |_| Ok(()))?,
             (None, None) => {}
-            _ => return Err(refused("Original copy mounted source custody differs")),
+            _ => return Err(refused("Original copy mounted source ownership differs")),
         }
         if let Some(sources) = &sources.flatpak {
             sources.files()?;
@@ -291,9 +289,9 @@ impl OriginalCopyReadAdmission {
         let home = sources.original.clone_original_home()?;
         let omissions = sources.original.original_omissions()?;
         let exclusions = sources.original.original_exclusions()?;
-        let mounted = match (&sources.mounted, self.declaration.mounted_witness()) {
-            (Some(epoch), Some(witness)) => Some(super::worker::OriginalMountedClaim::admitted(
-                witness,
+        let mounted = match (&sources.mounted, self.declaration.mounted_proof()) {
+            (Some(epoch), Some(proof)) => Some(super::worker::OriginalMountedClaim::admitted(
+                proof,
                 epoch.table_sha256(cancel)?,
             )?),
             (None, None) => None,
@@ -331,7 +329,7 @@ impl OriginalCopyReadAdmission {
         let request = super::worker::Request {
             schema: authority.required_protocol(),
             operation: self.declaration.source().operation_id.clone(),
-            custody: None,
+            ownership: None,
             command: super::worker::Command::ReviewOriginal {
                 authority: authority.clone(),
             },
@@ -356,7 +354,7 @@ impl OriginalCopyReadAdmission {
                 flatpak: sources.flatpak.as_ref(),
             },
             &authority,
-            Arc::new(ReadCustody {
+            Arc::new(ReadOwnership {
                 read: self.clone(),
                 mounted: authority.mounted_binding()?,
             }),
@@ -367,17 +365,17 @@ impl OriginalCopyReadAdmission {
         Ok(result)
     }
     /// Only after actual reader namespace death and all read guards have left.
-    /// Outstanding guards retain custody rather than report successful teardown.
+    /// Outstanding guards retain ownership rather than report successful teardown.
     pub fn retire(self: Arc<Self>) -> io::Result<()> {
         let mut owned = match Arc::try_unwrap(self) {
             Ok(owned) => owned,
             Err(shared) => {
                 uncertain();
                 std::mem::forget(shared);
-                return Err(refused("Original copy still has reader custody"));
+                return Err(refused("Original copy still has reader ownership"));
             }
         };
-        let custody = RetirementCustody::new(&owned.owner, &owned.installed);
+        let ownership = RetirementOwnership::new(&owned.owner, &owned.installed);
         let sources = owned.sources.take().ok_or(io::ErrorKind::NotConnected)?;
         let Sources {
             original,
@@ -407,16 +405,16 @@ impl OriginalCopyReadAdmission {
         roots.push(Arc::new(original.into_retirement_source()));
         let result = migration_handoff::ResolvedSource::retire_many(roots);
         if result.is_ok() {
-            custody.completed();
+            ownership.completed();
         }
         result
     }
 }
-struct ReadCustody {
+struct ReadOwnership {
     read: Arc<OriginalCopyReadAdmission>,
     mounted: Option<launcher::owned_service::OriginalMountedBinding>,
 }
-impl launcher::owned_service::ServiceAuthority for ReadCustody {
+impl launcher::owned_service::ServiceAuthority for ReadOwnership {
     fn original_mounted_binding(
         &self,
     ) -> io::Result<Option<launcher::owned_service::OriginalMountedBinding>> {

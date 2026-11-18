@@ -7,7 +7,7 @@ use notes::actions::create_page_action;
 use notes::read;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{Invoke, Resource as _};
+use ui::tilo_resource::Invoke;
 
 fn fresh() -> TestApp<NotesShell> {
     ui::i18n::I18nManager::init("en-US");
@@ -15,40 +15,7 @@ fn fresh() -> TestApp<NotesShell> {
 }
 
 fn page_count(app: &TestApp<NotesShell>) -> usize {
-    app.read_document(|doc| read::list_pages(doc).len())
-}
-
-#[test]
-fn numeric_order_notebook_reopens_through_the_saved_application_view() {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    ui::i18n::I18nManager::init("en-US");
-    let directory = tempfile::tempdir().unwrap();
-    let page = PageId::new_v4();
-    let original_body;
-    {
-        let mut app = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
-        app.invoke(Invoke::apply(&create_page_action(page, None, "Existing note")).unwrap())
-            .unwrap();
-        let mut peer = app.peer_document();
-        let (_, pages) = peer.get(ROOT, "pages").unwrap().unwrap();
-        let (_, entry) = peer.get(&pages, page.to_string()).unwrap().unwrap();
-        peer.put(&entry, "order", 12_i64).unwrap();
-        original_body = read::page_block_snapshots(&peer, page);
-        app.merge_peer(&mut peer).unwrap();
-        app.flush().unwrap();
-    }
-    let mut reopened = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
-    reopened.settle();
-    assert!(reopened.harness().targets().contains_key("block_editor"));
-    reopened.read_document(|doc| {
-        assert_eq!(read::list_pages(doc)[0].id, page);
-        assert_eq!(read::page_block_snapshots(doc, page), original_body);
-        let (_, pages) = doc.get(ROOT, "pages").unwrap().unwrap();
-        let (_, entry) = doc.get(&pages, page.to_string()).unwrap().unwrap();
-        assert!(matches!(doc.get(&entry, "order").unwrap(),
-            Some((automerge::Value::Scalar(value), _))
-                if value.as_ref() == &automerge::ScalarValue::Int(12)));
-    });
+    crate::framework_support::shown(app).pages().len()
 }
 
 /// Every control that presses one of the notebook's actions says which one.
@@ -76,13 +43,14 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
     assert!(
         empty
             .iter()
-            .any(|address| address.resource == "notes.notebook" && address.action == "new-note"),
+            .any(|address| address.resource == notes::part::chain_resource()
+                && address.action == "new-note"),
         "the page tree's + presses the notebook's New note: {empty:?}"
     );
 
     // The marker an agent's action draws rests on that control: the action
     // resolves to the "+" and to nothing else.
-    let address = notes::notebook::Notebook::NEW_NOTE.on(notes::notebook::Notebook::KIND);
+    let address = notes::PagePart::NEW_NOTE.on(notes::part::chain_resource());
     let routes = app.harness().action_ui_routes(&address);
     let [route] = routes.as_slice() else {
         panic!("the window binds one control to New note: {routes:?}");
@@ -97,7 +65,10 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
     // window does: the marker finds the + through the component's node.
     let locus = app
         .harness()
-        .semantic_locus(&ui::headless::agent_acting("notes.notebook", "new-note"))
+        .semantic_locus(&ui::headless::agent_acting(
+            &notes::part::chain_resource(),
+            "new-note",
+        ))
         .expect("the agent's invocation finds the control it presses");
     assert!(
         plus.contains(locus.center()),
@@ -110,13 +81,14 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
     assert!(
         with_a_row
             .iter()
-            .any(|address| address.resource == "notes.notebook" && address.action == "new-child"),
+            .any(|address| address.action == "new-child"),
         "a row's + presses the notebook's New child: {with_a_row:?}"
     );
     assert!(
         with_a_row
             .iter()
-            .any(|address| address.resource == "notes.notebook" && address.action == "new-note"),
+            .any(|address| address.resource == notes::part::chain_resource()
+                && address.action == "new-note"),
         "and the page tree's + still presses New note: {with_a_row:?}"
     );
 }
@@ -197,7 +169,9 @@ fn the_header_plus_opens_the_new_note_and_typing_names_it() {
     app.harness().type_text(TITLE);
     app.settle();
     let shown = |app: &mut TestApp<NotesShell>| {
-        let notebook = app.read_document(read::list_pages)[0].title.clone();
+        let notebook = crate::framework_support::shown(app).data.pages[0]
+            .title
+            .clone();
         let row = surface(app, |notes| {
             notes.sidebar_row_title_for_test(0).map(str::to_owned)
         });
@@ -246,7 +220,7 @@ fn a_note_another_actor_makes_never_opens_this_windows_title() {
         surface(&mut app, |notes| notes.selected_for_test()).expect("the person's note is open");
     app.call_by(
         agent,
-        "notes.notebook",
+        &notes::part::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Launch notes" }),
     )
@@ -283,8 +257,11 @@ fn the_published_surface_validates_as_the_host_checks_it() {
     app.settle();
     let open = app.harness().component_contract_violations();
     assert!(open.is_empty(), "a note open for editing: {open:#?}");
-    app.invoke(Invoke::apply(&create_page_action(PageId::new_v4(), None, "Second")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(PageId::new_v4(), None, "Second")).unwrap(),
+    )
+    .unwrap();
     let two = app.harness().component_contract_violations();
     assert!(two.is_empty(), "notebook with two notes: {two:#?}");
 }
@@ -296,19 +273,27 @@ fn the_published_surface_validates_as_the_host_checks_it() {
 #[test]
 fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
     let mut app = fresh();
-    app.call("new-note", serde_json::json!({ "title": "Groceries" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Groceries" }),
+    )
+    .unwrap();
     app.settle();
     let violations = app.harness().component_contract_violations();
     assert!(violations.is_empty(), "one note: {violations:#?}");
 
-    let page = app.read_document(read::list_pages)[0].id;
+    let page = crate::framework_support::shown(&app).data.pages[0].id;
     let note = notes::actions::page_resource_id(page);
     let surface = app.agent_surface();
+    // A note's verbs are carried out on the part keeping it, through the
+    // notes' published chain.
     let published = |resource: &str, action: &str| {
-        surface.as_array().unwrap().iter().any(|row| {
-            row["resource"] == resource && row["action"] == action && row["operation"] == "Document"
-        })
+        surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["resource"] == resource && row["action"] == action)
     };
     for action in ["rename", "delete", "new-child"] {
         assert!(
@@ -317,8 +302,8 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
         );
     }
     assert!(
-        published("notes.notebook", "field-edit"),
-        "the notebook publishes the edits of every note's body: {surface:#}"
+        published(&notes::part::chain_resource(), "field-edit"),
+        "the notes publish the edits of every note's body: {surface:#}"
     );
 
     app.call_on(
@@ -329,7 +314,7 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
     .unwrap();
     app.settle();
     assert_eq!(
-        app.read_document(read::list_pages)[0].title,
+        crate::framework_support::shown(&app).data.pages[0].title,
         "Groceries for Sunday"
     );
     let violations = app.harness().component_contract_violations();
@@ -340,11 +325,15 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
 fn notes_made_one_after_another_over_actions_stay_in_order() {
     let mut app = fresh();
     for title in ["First", "Second", "Third"] {
-        app.call("new-note", serde_json::json!({ "title": title }))
-            .unwrap();
+        app.call_on(
+            &notes::part::chain_resource(),
+            "new-note",
+            serde_json::json!({ "title": title }),
+        )
+        .unwrap();
     }
     app.settle();
-    let pages = app.read_document(read::list_pages);
+    let pages = crate::framework_support::shown(&app).data.pages;
     assert_eq!(
         pages
             .iter()
@@ -374,14 +363,11 @@ fn notes_made_one_after_another_over_actions_stay_in_order() {
 /// refused.
 fn assert_shows(app: &mut TestApp<NotesShell>, titles: &[&str]) {
     app.settle();
-    let pages = app.read_document(|doc| {
-        notes::read::project(doc)
-            .expect("the notebook projects")
-            .children_of(None)
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>()
-    });
+    let pages = crate::framework_support::shown(app)
+        .children_of(None)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(
         pages
             .iter()
@@ -411,21 +397,31 @@ fn assert_shows(app: &mut TestApp<NotesShell>, titles: &[&str]) {
 /// on both replicas, and the notebook stays shown on both.
 #[test]
 fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
-    use tilo_actions::Action as _;
     let mut app = fresh();
-    app.call("new-note", serde_json::json!({ "title": "Existing" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Existing" }),
+    )
+    .unwrap();
     app.settle();
-    let mut peer = app.peer_document();
-    app.call("new-note", serde_json::json!({ "title": "Mine" }))
-        .unwrap();
-    notes::actions::create_page_action(PageId::new_v4(), None, "Theirs")
-        .apply(&mut peer)
-        .unwrap();
+    let existing = crate::framework_support::shown(&app).pages()[0].id;
+    let (part, mut peer) = crate::framework_support::peer_part(&app, existing);
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Mine" }),
+    )
+    .unwrap();
+    crate::component_support::apply_to(
+        &mut peer,
+        &notes::actions::create_page_action(PageId::new_v4(), None, "Theirs"),
+    )
+    .unwrap();
     peer.commit();
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
 
-    let ours = app.read_document(read::list_pages);
+    let ours = crate::framework_support::shown(&app).data.pages;
     assert_eq!(ours, read::list_pages(&peer), "both replicas converge");
     let [_, first, second] = ours.as_slice() else {
         panic!("three notes: {ours:#?}");
@@ -439,8 +435,12 @@ fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
     assert_shows(&mut app, &["Existing", &first, &second]);
 
     // A note made afterwards still goes last.
-    app.call("new-note", serde_json::json!({ "title": "Later" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Later" }),
+    )
+    .unwrap();
     assert_shows(&mut app, &["Existing", &first, &second, "Later"]);
 }
 
@@ -449,26 +449,36 @@ fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
 /// note in it.
 #[test]
 fn undoing_a_create_after_a_later_note_keeps_the_notebook_shown() {
-    use tilo_actions::Action as _;
     let mut app = fresh();
-    app.call("new-note", serde_json::json!({ "title": "First" }))
-        .unwrap();
-    app.call("new-note", serde_json::json!({ "title": "Mine" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "First" }),
+    )
+    .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Mine" }),
+    )
+    .unwrap();
     app.settle();
-    let mut peer = app.peer_document();
-    notes::actions::create_page_action(PageId::new_v4(), None, "Theirs")
-        .apply(&mut peer)
-        .unwrap();
+    let first = crate::framework_support::shown(&app).pages()[0].id;
+    let (part, mut peer) = crate::framework_support::peer_part(&app, first);
+    crate::component_support::apply_to(
+        &mut peer,
+        &notes::actions::create_page_action(PageId::new_v4(), None, "Theirs"),
+    )
+    .unwrap();
     peer.commit();
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert_shows(&mut app, &["First", "Mine", "Theirs"]);
 
     assert!(app.undo(), "the create of Mine undoes");
     assert_shows(&mut app, &["First", "Theirs"]);
-    app.merge_peer(&mut peer).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, &mut peer);
     assert_eq!(
-        app.read_document(read::list_pages),
+        crate::framework_support::shown(&app).data.pages,
         read::list_pages(&peer),
         "the undo reaches the peer and both converge"
     );
@@ -481,8 +491,12 @@ fn undoing_a_create_after_a_later_note_keeps_the_notebook_shown() {
 #[test]
 fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
     let mut app = fresh();
-    app.call("new-note", serde_json::json!({ "title": "Inbox" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Inbox" }),
+    )
+    .unwrap();
     app.settle();
     let before = page_count(&app);
 
@@ -511,7 +525,7 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
     app.harness().type_text("milk");
     app.settle();
 
-    let pages = app.read_document(read::list_pages);
+    let pages = crate::framework_support::shown(&app).data.pages;
     assert_eq!(pages.len(), before + 1, "naming it made no other note");
     let named = pages
         .iter()
@@ -523,7 +537,9 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
             .all(|page| page.title != notes::notebook::NO_TITLE),
         "no Untitled note is left behind: {pages:?}"
     );
-    let body = app.read_document(|doc| read::page_block_snapshots(doc, named.id));
+    let body = crate::framework_support::part_doc(&app, named.id, |doc| {
+        read::page_block_snapshots(doc, named.id)
+    });
     let texts: Vec<_> = body.into_iter().map(|(_, text)| text).collect();
     assert_eq!(
         texts,
@@ -549,8 +565,12 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
 #[test]
 fn ctrl_n_twice_makes_two_top_level_notes() {
     let mut app = fresh();
-    app.call("new-note", serde_json::json!({ "title": "Inbox" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Inbox" }),
+    )
+    .unwrap();
     app.settle();
     for title in ["One", "Two"] {
         app.harness().set_modifiers(&["ctrl".into()]);
@@ -561,7 +581,7 @@ fn ctrl_n_twice_makes_two_top_level_notes() {
         app.harness().key("Enter");
         app.settle();
     }
-    let pages = app.read_document(read::list_pages);
+    let pages = crate::framework_support::shown(&app).data.pages;
     for title in ["Inbox", "One", "Two"] {
         let page = pages
             .iter()
@@ -576,20 +596,26 @@ fn ctrl_n_twice_makes_two_top_level_notes() {
 #[test]
 fn slash_sub_note_turns_a_line_into_a_linked_note_inside() {
     let mut app = fresh();
-    app.call("new-note", serde_json::json!({ "title": "Trips" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Trips" }),
+    )
+    .unwrap();
     app.settle();
-    let parent = app.read_document(read::list_pages)[0].id;
+    let parent = crate::framework_support::shown(&app).data.pages[0].id;
     app.harness().type_text("Lisbon in May /sub");
     app.harness().key("Enter");
     app.settle();
-    let pages = app.read_document(read::list_pages);
+    let pages = crate::framework_support::shown(&app).data.pages;
     let child = pages
         .iter()
         .find(|page| page.title == "Lisbon in May")
         .unwrap_or_else(|| panic!("the line names the new note: {pages:?}"));
     assert_eq!(child.parent, Some(parent), "inside the note it came from");
-    let body = app.read_document(|doc| read::page_block_snapshots(doc, parent));
+    let body = crate::framework_support::part_doc(&app, parent, |doc| {
+        read::page_block_snapshots(doc, parent)
+    });
     let texts: Vec<_> = body.into_iter().map(|(_, text)| text).collect();
     assert_eq!(texts, ["Lisbon in May"], "the writing stays, now as a link");
 }

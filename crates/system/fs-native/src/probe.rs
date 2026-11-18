@@ -1,4 +1,4 @@
-//! Capability probes for the Tier 1 data plane and the tier they select. Every
+//! Capability probes for the Tier 1 backend and the tier they select. Every
 //! probe exercises the feature on the store volume and reports what the kernel
 //! actually did; nothing is inferred from a version string.
 
@@ -379,7 +379,7 @@ fn kernel_checks(
                 if p99 < Duration::from_millis(50) {
                     Outcome::Yes(detail)
                 } else {
-                    Outcome::No(format!("{detail} (gate: p99 < 50 ms)"))
+                    Outcome::No(format!("{detail} (check: p99 < 50 ms)"))
                 }
             }
             Err(e) => Outcome::No(e.to_string()),

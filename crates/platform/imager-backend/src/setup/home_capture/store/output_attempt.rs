@@ -393,7 +393,7 @@ impl Store {
         attempt: &str,
     ) -> io::Result<Arc<PinnedDirectory>> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
-            return Err(failure("Completed original setup requires root custody"));
+            return Err(failure("Completed original setup requires root ownership"));
         }
         parent.validate_destination()?;
         self.check_original_output_filesystem(parent.file.metadata()?.dev())?;
@@ -704,7 +704,7 @@ impl Store {
         &self,
         attempt: &str,
         output: &File,
-        facts: &launcher::owned_service::ServiceCustody,
+        facts: &launcher::owned_service::ServiceOwnership,
     ) -> io::Result<()> {
         let mut record = load(self)?.ok_or_else(|| failure("Original output attempt missing"))?;
         if record.attempt != attempt
@@ -1022,7 +1022,7 @@ pub fn review_committed_original_selection(
     let pending = crate::setup::media_setup::protected_output::PendingArea::parse(
         &bounded_private_bytes(private, "original-pending-area.json", 4096)?,
     )?;
-    let filesystem = crate::setup::home_capture::offline_output::review_filesystem_witness(
+    let filesystem = crate::setup::home_capture::offline_output::review_filesystem_proof(
         private,
         declaration.media(),
     )?;
@@ -1120,7 +1120,7 @@ fn review_uncommitted_original_selection_plan(
         &declaration.authenticated_source_plans()?,
     )?)
     .into();
-    let filesystem = crate::setup::home_capture::offline_output::review_filesystem_witness(
+    let filesystem = crate::setup::home_capture::offline_output::review_filesystem_proof(
         private,
         declaration.media(),
     )?;
@@ -1245,7 +1245,7 @@ pub fn lookup_committed_original_selection(
 ) -> io::Result<Option<CommittedOriginalSelection>> {
     // SAFETY: geteuid only observes the native controller's credentials.
     if rustix::process::geteuid().as_raw() != 0 {
-        return Err(failure("Committed lookup requires root custody"));
+        return Err(failure("Committed lookup requires root ownership"));
     }
     private.validate_destination()?;
     storage(private)?.validate_privacy(Privacy::OwnerOnly)?;
@@ -1271,7 +1271,7 @@ pub fn lookup_committed_original_selection(
         ));
     }
     // `load()` rejects malformed phase and checkpoint combinations; the canonical reviewer below
-    // separately verifies declaration, namespace, witnesses, caller, expectations and marker.
+    // separately verifies declaration, namespace, proofs, caller, expectations and marker.
     let (home, completed) = attempt_stages(&parent, &record.attempt)?;
     let facts = review_committed_original_selection(
         private,
@@ -1346,7 +1346,7 @@ pub fn review_committed_original_applications_selection(
     let pending = crate::setup::media_setup::protected_output::PendingArea::parse(
         &bounded_private_bytes(private, "original-pending-area.json", 4096)?,
     )?;
-    let filesystem = crate::setup::home_capture::offline_output::review_filesystem_witness(
+    let filesystem = crate::setup::home_capture::offline_output::review_filesystem_proof(
         private,
         declaration.media(),
     )?;
@@ -1414,7 +1414,7 @@ pub fn lookup_committed_original_applications_selection(
 ) -> io::Result<Option<CommittedOriginalApplicationsSelection>> {
     // SAFETY: geteuid only observes the native controller's credentials.
     if rustix::process::geteuid().as_raw() != 0 {
-        return Err(failure("Committed lookup requires root custody"));
+        return Err(failure("Committed lookup requires root ownership"));
     }
     private.validate_destination()?;
     storage(private)?.validate_privacy(Privacy::OwnerOnly)?;

@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.firewall@311c05008d41672c";
+export const SURFACE = "so.tilo.firewall@d4e5e1b79ae77004";
 
-/** One of "Allow", "Deny". */
-export type Action = "Allow" | "Deny";
+/** One of "allow", "deny". */
+export type Action = "allow" | "deny";
 
 /** One of Service, Port: an object whose case the app tags it with. */
 export type Matcher = Record<string, unknown>;
@@ -49,8 +49,8 @@ export interface StoredZone {
   deleted_rules: string[];
 }
 
-/** One of "Default", "Accept", "Reject", "Drop". */
-export type Target = "Default" | "Accept" | "Reject" | "Drop";
+/** One of "default", "accept", "reject", "drop". */
+export type Target = "default" | "accept" | "reject" | "drop";
 
 /** One of "drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted". */
 export type ZoneKind = "drop" | "block" | "public" | "external" | "dmz" | "work" | "home" | "internal" | "trusted";

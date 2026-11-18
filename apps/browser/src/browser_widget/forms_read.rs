@@ -19,7 +19,7 @@
 //!
 //! The read is the one `read-page-forms` makes, sent as the tab's one
 //! unnamed actor, as the page's review reads ([`super::page_review_view`]):
-//! it takes no place in the tab's record and tells no agent anything. It
+//! it takes no place in the tab's resource and tells no agent anything. It
 //! holds no turn of the tab. The engine runs it in the order it came, like
 //! any read, so an action admitted meanwhile goes to the engine at once and
 //! waits there no longer than the read takes. An answer for a page the

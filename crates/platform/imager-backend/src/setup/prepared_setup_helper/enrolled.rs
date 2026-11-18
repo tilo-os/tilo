@@ -1,4 +1,4 @@
-//! Root-owned machine-custody phase before target-user persona activation.
+//! Root-owned machine-ownership phase before target-user persona activation.
 use super::{failed, private_parent};
 use crate::setup::prepared_setup::{IdentityKind, PreparedSetupReview};
 use serde::Serialize;
@@ -17,7 +17,7 @@ struct Receipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     device_public_key: Option<[u8; 32]>,
 }
-/// Authenticate the selected setup and publish only its enrolled machine custody.
+/// Authenticate the selected setup and publish only its enrolled machine ownership.
 /// Legacy root-key backups authenticate without changing machine files. The
 /// privileged caller owns the mounted target and repairs canonical public/group
 /// permissions through the existing firstboot service before user activation.

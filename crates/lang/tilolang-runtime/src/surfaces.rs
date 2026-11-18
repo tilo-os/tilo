@@ -431,7 +431,7 @@ impl Core {
         Ok(None)
     }
 
-    /// Each node standing for an item gets that item's actions in its menu, and the row's
+    /// Each node for an item gets that item's actions in its menu, and the row's
     /// destructive action (or its first) as its swipe: what a view attached to it stays first.
     ///
     /// An action that reads a place gets the item the view says it shows over the row

@@ -1,10 +1,10 @@
-//! What the runtime invokes is decided by the workspace's one policy: the person's standing, the
+//! What the runtime invokes is decided by the workspace's one policy: the person's access, the
 //! answers they gave their agents, and the authors of the code, the minimum winning.
 
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Grantee, Standing, WorkspacePolicy};
+use tilo_action_policy::{ActionKind, Answer, Grantee, MemberAccess, WorkspacePolicy};
 use tilolang_runtime::{Actor, AgentBlock};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, PlanRequest};
@@ -28,14 +28,14 @@ fn agent() -> Caller {
     }
 }
 
-/// Ada's standing in a workspace she owns and Grace edits, with `answers` she gave her agents.
-fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
+/// Ada's access in a workspace she owns and Grace edits, with `answers` she gave her agents.
+fn access(answers: Vec<tilo_action_policy::Grant>) -> MemberAccess {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
     policy
         .members
         .insert("grace".to_owned(), tilo_action_policy::Role::Editor);
     policy.grants.extend(answers);
-    Standing::person(policy, "ada")
+    MemberAccess::person(policy, "ada")
 }
 
 /// The block that adds `title` to the todo list.
@@ -63,11 +63,11 @@ fn an_agent_the_person_denied_the_app_is_denied() {
         Answer::Deny,
         Grantee::person("ada"),
     );
-    let (mut ada, packages) = Replica::standing(
+    let (mut ada, packages) = Replica::access(
         "ada",
         AutoCommit::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
-        Some(standing(vec![answer])),
+        Some(access(vec![answer])),
     );
     let meta = &packages.last().unwrap().meta;
     let list = ada.host.root_of(APP).unwrap();
@@ -108,11 +108,11 @@ tilo_test_env::scenario! {
 
     phase untrusted_code_asks_and_the_persons_agents_code_runs;
     {
-        let (mut ada, _) = Replica::standing(
+        let (mut ada, _) = Replica::access(
             "ada",
             AutoCommit::new(),
             &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
-            Some(standing(Vec::new())),
+            Some(access(Vec::new())),
         );
         ada.host.root_of(APP).unwrap();
         ada.commit();
@@ -141,11 +141,11 @@ tilo_test_env::scenario! {
 
     phase reaching_outside_from_untrusted_or_an_agents_code_asks;
     {
-        let (mut ada, packages) = Replica::standing(
+        let (mut ada, packages) = Replica::access(
             "ada",
             AutoCommit::new(),
             &[(LETTERS, LETTERS_IDS)],
-            Some(standing(Vec::new())),
+            Some(access(Vec::new())),
         );
         let meta = &packages.last().unwrap().meta;
         let letters = ada.host.root_of("test.letters").unwrap();

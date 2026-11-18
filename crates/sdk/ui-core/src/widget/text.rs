@@ -137,7 +137,7 @@ pub struct Text {
     max_lines: Option<u32>,
     /// It elides at the width it is given instead of wrapping wider: it never
     /// holds its longest word's width, so a title in a narrow card ends in an
-    /// ellipsis rather than standing the card up.
+    /// ellipsis rather than making the card taller.
     truncate: bool,
     live: Option<crate::a11y::Politeness>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,
@@ -151,6 +151,8 @@ pub struct Text {
     spoken: Option<String>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
+    /// The field and the item whose text it shows ([`Self::edits`]).
+    edits: Option<(String, String)>,
     permission_scope: Option<PermissionScope>,
     face: crate::widget::CachedPaint,
     drawn_color: Option<vello::peniko::Color>,
@@ -203,6 +205,7 @@ impl Text {
             spoken: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
+            edits: None,
             permission_scope: None,
             face: crate::widget::CachedPaint::default(),
             drawn_color: None,
@@ -807,10 +810,58 @@ impl Text {
         self
     }
 
+    /// It shows the text of `item`'s field `field` (a comment's words in an issue's `comments`,
+    /// named `<issue>/<comment>`): what someone else's action writes there is drawn on it in
+    /// their colour, fading, with their caret at its end saying what they did, as a field or a
+    /// list row's title draws it.
+    #[must_use]
+    pub fn edits(mut self, field: impl Into<String>, item: impl Into<String>) -> Self {
+        self.edits = Some((field.into(), item.into()));
+        self
+    }
+
     #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
+    }
+}
+
+impl Text {
+    /// Each write in the field it shows, drawn on its words ([`Self::edits`]).
+    fn draw_writes(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        let Some((field, item)) = &self.edits else {
+            return;
+        };
+        let (label, style, rect) = (self.resolved_label(), &self.style, self.rect);
+        presence.draw_writes_in(
+            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (Some(field), item, &label),
+            (None, None),
+            &mut |text, _, start, end| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a text's width in logical pixels"
+                )]
+                let lines = text.wrap_lines(&label, style, rect.width() as f32 + 1.0);
+                let line = f64::from(style.line_height_px_at(text.text_scale()));
+                let (bands, caret) = crate::presence::LabeledCaret::after_span(
+                    text,
+                    (&label, &lines, style),
+                    (rect.x0, rect.y0, line),
+                    (rect.y0, rect.x1),
+                    (start, end),
+                );
+                (bands, Some(caret))
+            },
+        );
     }
 }
 
@@ -824,7 +875,7 @@ impl Widget for Text {
     }
 
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1102,7 +1153,10 @@ impl Widget for Text {
             }
         }
         self.face.append(scene, transform, self.rect);
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        self.draw_writes(scene, transform, text_renderer, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -1173,7 +1227,7 @@ impl crate::presence::capability::PublishesPresence for Text {
     }
 }
 
-impl crate::permissions::capability::PermissionGated for Text {
+impl crate::permissions::capability::PermissionGuarded for Text {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

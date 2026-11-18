@@ -1,4 +1,4 @@
-//! A workspace's runs, listed through the API on the relay as tilo.sh
+//! A workspace's runs, listed through the API on the server as tilo.sh
 //! hosts it (`GET /v1/workspaces/{workspace}/invocations`, `tilo_read
 //! workspace/invocations` over MCP): two keys made for the workspace and the
 //! person's own key each run something there, and each of those keys, which
@@ -7,18 +7,18 @@
 //! it, then as ended; a run taken back reads as undone, and one that someone's
 //! later change stands on says so. Pages hold `limit` runs and read on from
 //! their cursor; a key for another workspace is refused as it is on the
-//! neighbouring routes. After the relay restarts, every run that changed a
+//! neighbouring routes. After the server restarts, every run that changed a
 //! record is still listed, by the same step, from what the records keep.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{api_on_relay_shelled, approved_key, headers, json_of};
+use super::api_on_server::{api_on_server_shelled, approved_key, headers, json_of};
 use super::api_unattended::{Key, Person, Sheet, asked, backend, beside, waiting, workspace};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tilo_relay_client::MemberApprover;
-use tilo_relay_client::questions::{MemberQuestions, answer_questions};
-use tilo_relay_protocol::certify::ConfirmationAnswer;
+use tilo_server_client::MemberApprover;
+use tilo_server_client::questions::{MemberQuestions, answer_questions};
+use tilo_server_protocol::certify::ConfirmationAnswer;
 use tokio::sync::mpsc;
 
 /// `key` runs `action` on `path` in `workspace` with `args`, as a step of the
@@ -35,8 +35,8 @@ async fn in_run(
     let pairs = [
         ("authorization", bearer.as_str()),
         ("content-type", "application/json"),
-        ("tilo-run", run.as_str()),
-        ("tilo-run-title", title),
+        ("tilo-invocation", run.as_str()),
+        ("tilo-invocation-title", title),
     ];
     let route = format!("/v1/workspaces/{workspace}/resources/{path}/actions/{action}");
     let reply = Box::pin(key.api.dispatch(
@@ -109,6 +109,96 @@ const LETTERS: [(&str, &str); 3] = [
     ("Visa backend", "Backend's postscript"),
 ];
 
+/// An invocation is taken back by a key other than the one that ran it, on
+/// a connection of its own, by the id the invocation's answer named; after the server
+/// restarted, when no call of an invocation is remembered, by the step the listing
+/// names it by and by the id its answer named, as history keeps both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_invocation_is_taken_back_after_a_reconnect_and_a_restart() {
+    Box::pin(taken_back_after_a_restart()).await;
+}
+
+#[allow(
+    clippy::large_futures,
+    reason = "one story, polled once from the heap by its test"
+)]
+async fn taken_back_after_a_restart() {
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let (ada, token) = backend(&on_server).await;
+    let person = Key {
+        api: &on_server.api,
+        token,
+    };
+    let ws = workspace(&person, "Applicant: Jane Doe").await;
+    let later = workspace(&person, "Applicant: John Doe").await;
+    let third = workspace(&person, "Applicant: Max Doe").await;
+    let agent = Key {
+        api: &on_server.api,
+        token: person.mint(&ws, "Jane Doe's agent").await,
+    };
+    let other = Key {
+        api: &on_server.api,
+        token: person.mint(&later, "John Doe's agent").await,
+    };
+    let another = Key {
+        api: &on_server.api,
+        token: person.mint(&third, "Max Doe's agent").await,
+    };
+    let letter = write_letter(&agent, &ws, "Dear Visa Officer,", "Cover letter").await;
+    write_letter(&other, &later, "Yours faithfully", "Closing").await;
+    let postscript = write_letter(&another, &third, "P.S. Enclosed", "Postscript").await;
+
+    let (status, undone) = person
+        .post(
+            &format!("/v1/workspaces/{ws}/invocations/{letter}/undo"),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    let listed = invocations(&person, &ws, "").await;
+    let taken = titled(&listed, "Cover letter");
+    assert_eq!(taken["status"], "undone", "{listed}");
+    assert_eq!(taken["undone"], taken["changes"], "{taken}");
+
+    drop((agent, other, another, person));
+    let on_server = on_server.restart(false).await;
+    let page = enrol(&ada, "Ada's browser again", DeviceCapabilities::member());
+    let person = Key {
+        api: &on_server.api,
+        token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
+    };
+    let listed = invocations(&person, &third, "").await;
+    let postscript_run = titled(&listed, "Postscript");
+    assert_eq!(postscript_run["remembered"], false, "{postscript_run}");
+    let (status, undone) = person
+        .post(
+            &format!("/v1/workspaces/{third}/invocations/{postscript}/undo"),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    let listed = invocations(&person, &third, "").await;
+    let taken = titled(&listed, "Postscript");
+    assert_eq!(taken["status"], "undone", "{listed}");
+    assert_eq!(taken["undone"], taken["changes"], "{taken}");
+
+    let listed = invocations(&person, &later, "").await;
+    let closing = titled(&listed, "Closing");
+    assert_eq!(closing["remembered"], false, "{closing}");
+    let step = closing["step"].as_str().unwrap();
+    let (status, undone) = person
+        .post(
+            &format!("/v1/workspaces/{later}/invocations/{step}/undo"),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    let listed = invocations(&person, &later, "").await;
+    let closing = titled(&listed, "Closing");
+    assert_eq!(closing["status"], "undone", "{listed}");
+    assert_eq!(closing["undone"], closing["changes"], "{closing}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn keys_reading_a_workspace_list_its_runs_newest_first_also_after_a_restart() {
     Box::pin(every_run_listed()).await;
@@ -119,9 +209,9 @@ async fn keys_reading_a_workspace_list_its_runs_newest_first_also_after_a_restar
     reason = "one story, polled once from the heap by its test"
 )]
 async fn every_run_listed() {
-    let on_relay = Box::pin(api_on_relay_shelled(ISSUER)).await;
-    let api = Arc::clone(&on_relay.api);
-    let (ada, token) = backend(&on_relay).await;
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, token) = backend(&on_server).await;
     let person = Key { api: &api, token };
     let ws = workspace(&person, "Applicant: Jane Doe").await;
     let agent = Key {
@@ -206,7 +296,7 @@ async fn every_run_listed() {
     assert_eq!(titled(&listed, "Backend's postscript")["undoable"], true);
 
     // A command the person must allow reads as waiting, then as ended.
-    let host = MemberApprover::new(on_relay.relay_host());
+    let host = MemberApprover::new(on_server.server_host());
     let (answers, mut answered) = mpsc::unbounded_channel();
     let ada_at_page = Person {
         asked: Arc::default(),
@@ -366,7 +456,7 @@ async fn every_run_listed() {
     assert_eq!(over_mcp["total"], total, "{read}");
     titled(over_mcp, "Agent's letter");
 
-    // After the relay restarts, every run that changed a record is still
+    // After the server restarts, every run that changed a record is still
     // listed, by the same step, though no call of it is remembered.
     let steps: Vec<(String, Value)> = LETTERS
         .iter()
@@ -375,11 +465,11 @@ async fn every_run_listed() {
     let command_step = with_id(&listed, &command)["step"].clone();
     drop((agent, reviewer, others, person, mcp));
     drop(api);
-    let on_relay = on_relay.restart(false).await;
+    let on_server = on_server.restart(false).await;
     let page = enrol(&ada, "Ada's browser again", DeviceCapabilities::member());
     let person = Key {
-        api: &on_relay.api,
-        token: Box::pin(approved_key(&on_relay, &ada, &page, "Visa backend")).await,
+        api: &on_server.api,
+        token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
     };
     let listed = invocations(&person, &ws, "").await;
     for (title, step) in &steps {

@@ -10,7 +10,7 @@ components.md and layout.md.
   presence, notifications. It is chosen per person and device class, and switching keeps the
   layout.
 - **Rust keeps the mechanics, tilolang the structure.** The compositor, input, rendering and
-  the UI host are Rust; so are the hot interactions, as described components: window drag and
+  the app window are Rust; so are the hot interactions, as described components: window drag and
   resize, strip scrolling, canvas pan and zoom, gestures at native refresh. Each commits one
   arranging action when its gesture ends. Which parts exist and where they sit is tilolang.
 - **Apps draw no chrome, colours or fonts.** Frames, menus, bars and their look belong to the
@@ -35,7 +35,7 @@ type Strips { strips: List<Strip> }            type Strip { places: List<Place>,
 type Canvas { places: Map<Place, Point> }      type Place { shows: Resource, view: View, state: … }
 ```
 
-- It lives in the person's own record (`records: .own`), synced across their devices that use
+- It lives in the person's own document (`resources: .own`), synced across their devices that use
   the same shell, with history and undo. Nothing about it is shared with other members.
 - A shell that doesn't know a place a different shell made ignores it and leaves it alone.
 - Today's layout in `tilo_desktop_model` (shared, on the workspace) moves here; the
@@ -89,7 +89,7 @@ view frame_classic(p: Place) {
 
 ## 5. What a person sees of a task
 
-The record, marks and seen are task-legibility.md. How a task's work shows up is the person's
+The resource, marks and seen are task-legibility.md. How a task's work shows up is the person's
 choice: settings in the one Settings place, overridable per task while it runs, changeable by
 an agent acting for them, and anything beyond them by editing the shell's views.
 
@@ -137,7 +137,7 @@ reads installed packages from the person's package store the way it reads every 
 - `compile_shell()`'s built-in copy (`include_str!` of `apps/tl/shell`) stays only as the
   fallback described below. It is not the way the shell normally loads.
 
-**Picking a style.** The person's `Viewing` record (`layout.tl`, `records: .own`) holds
+**Picking a style.** The person's `Viewing` resource (`layout.tl`, `resources: .own`) holds
 the style as a view reference: package and view name. It is not the closed `Preset` enum,
 which goes away.
 - The style switch in the bar and the Appearance page of Settings list every style of every
@@ -159,7 +159,7 @@ colours, so every theme reaches it.
   `chrome.tl` (`bar_on`, `set_bar_size`, `dock_on`, `set_dock_zoom`, `move_part`, `reset`, …).
   The Appearance page of Settings shows the chosen style's settings view, the same way it shows any
   app's. A style an agent writes gets settings the same way: by declaring actions on its own
-  record. Nothing in Settings is per style.
+  document. Nothing in Settings is per style.
 - **With an agent, in conversation.** The person asks the canvas chat for a change ("put the
   calendar where the dock is", "a shell that shows what happened while I was away"). The agent
   composes `so.tilo.shell`'s exported parts (bar, dock, notices, quick settings, places, window
@@ -225,29 +225,29 @@ A shell's own data is derived, not saved. What the session owns and can make aga
 clock, the shell, the device's state, the session origin's resources) is written into the store's
 unsaved layer, never into a collaborative record: a change of one reaches the views at once, and
 leaves no change to be committed, synced or replayed. A minute therefore costs a view run and a
-draw, not a record round-trip. Data that is the person's (their layout, their settings)
-stays a saved record, synced and undoable like any app's.
+draw, not a resource round-trip. Data that is the person's (their layout, their settings)
+stays a saved resource, synced and undoable like any app's.
 
 ## 8. On the native session
 
-The native session (`crates/session/session`) is already a thin host: the compositor
+The native session (`crates/session/session`) is already thin: the compositor
 (`tilo-compositor`) shows buffers and routes input and draws no interface; a `WindowPolicy`
-decides placement and focus; surface apps reach the screen as `SurfaceHost` layers through
-`tilo-surface-host`; the shell and chrome are the Rust widgets of `tilo-desktop`
+decides placement and focus; surface apps reach the screen as `ShellSurface` layers through
+`tilo-shell-surface`; the shell and chrome are the Rust widgets of `tilo-desktop`
 (`desktop_host`, `topbar`, `overview`, `window_switcher`, …) over `tilo-desktop-model`, and
 everything a person can do is a published action (`Session::resources`, `Session::invoke`).
 The tilolang shell takes the place of `tilo-desktop`'s widgets, one part at a time, on the same
-seams:
+boundaries:
 
-- **Shell views on layers.** A shell package's views run in the tilolang host like any app's
-  and draw through the same UI host; a `SurfaceHost` shows each part (bar, layout, overlays) as
-  layers, exactly as `tilo-surface-host` shows a toolkit app. Headless, nested and DRM work
+- **Shell views on layers.** A shell package's views run in the tilolang process like any app's
+  and draw through the same app window; a `ShellSurface` shows each part (bar, layout, overlays) as
+  layers, exactly as `tilo-shell-surface` shows a toolkit app. Headless, nested and DRM work
   unchanged, because the compositor's backends do.
 - **System resources for the shell.** What the chrome reads today through `chrome.rs` (clock,
   person, notifications), the desktop model (workspaces, strips, windows), tasks and presence
   become typed resources and actions a shell view reads and invokes through the action API, the same
   ones agents use. A shell view never reaches Rust state any other way.
-- **Layout through the policy.** A shell's layout type is a record of the person's.
+- **Layout through the policy.** A shell's layout type is a resource of the person's.
   A `WindowPolicy` implementation per layout mechanic (scrolling strips: today's
   `tilo-desktop-policy`; canvas; floating desktop) reads it and places windows; gestures are
   Rust and commit one arranging action at their end.
@@ -271,8 +271,8 @@ seams:
   the window is composited above the shell layer. After each layout, and on each frame that a
   component around it moves it (`ui.Map`'s pan and zoom, a strip row's scroll), it reports its
   rectangle in layout coordinates to the host's `Wells`, keyed by place. The shell's views run in
-  the compositor's process (`tilo-surface-host`), so the surface host and the policy share one
-  `Wells` handle, as `DesktopHost` and `StripPolicy` share `Shell` today.
+  the compositor's process (`tilo-shell-surface`), so the surface host and the policy share one
+  `Wells` handle, as `ShellDesktop` and `StripPolicy` share `Shell` today.
 
   The policy for a tilolang shell answers `initial_size`, `place` and `arrange` from `Wells`, as
   `StripPolicy` answers them from `Shell::shown`. A well that moves without changing size moves
@@ -304,7 +304,7 @@ seams:
   package's authority, reading that app's live readings. The host loads the other app's
   package with its module (`Runtime::load_foreign_package`): its views run in the shell's
   runtime as that package's code, so what they invoke carries its module as the author; its
-  records stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
+  resources stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
   `tilolang_runtime::foreign`), and its actions are child invocations at its action API. A view that
   `use`s the app calls its views by name (`mail.inbox(m)`, a `view:` node). The canvas, which
   can't `use` every app, finds the resource by the id the layout keeps and names the view
@@ -328,7 +328,7 @@ seams:
   reading another app published of it (until that reading arrives it finds nothing, and the
   view runs again when it does). `show(r, view:)` draws it through the offered view of its
   package the place names (by id or name, taking the resource alone), or its type's default
-  view. An entry made from a resource fills `record` and `shown_as`. `ui.WindowWell` stays only
+  view. An entry made from a resource fills `resource` and `shown_as`. `ui.WindowWell` stays only
   for surfaces that can't be composed (Xwayland, legacy native apps). `OpenEffect::Open` on
   every resource goes away once nothing needs it.
 
@@ -357,7 +357,7 @@ no run and no transcript; it places the channel like any resource.
   script run. It lands in their direct conversation with the agent, and Chat opens that
   conversation on the shell, started without a window first when it was not running.
 - **Asking from search.** The palette offers the same send for what was typed: one row, "Send to
-  {agent}: …", standing after everything the query names. Choosing it runs
+  {agent}: …", access after everything the query names. Choosing it runs
   `session:send-to#send` with the agent the person keeps in the workspace the search was opened
   in (a new one when they keep none), so the request lands in their conversation with it exactly
   as the canvas's text does. It is a row every query is offered, so text that names nothing is a
@@ -431,7 +431,7 @@ carries its own actions:
   as session` and calls the actions directly: `w.focus()`, `n.dismiss()`,
   `session.surfaces.launcher.show()`. Nothing in the shell turns a string into an action, and the
   shell declares no wrapper action around one of these.
-- No reading bundles them. `Shell` (the old chrome's every input in one record) and the
+- No reading bundles them. `Shell` (the old chrome's every input in one resource) and the
   `desktop:shell`, `desktop:chrome` and `desktop:tab:N` addresses are replaced by the types above.
   `Room` and `LayoutWorkspace` are replaced by `Workspace`, and `Win` by `Window`.
 - Values the session derives (the time, which surface is up, whether the pointer is at an edge)
@@ -439,8 +439,8 @@ carries its own actions:
 
 ### The layout belongs to each shell
 
-Each layout is a shell package with its own layout type in the person's own record
-(`records: .own`), as §2 says. A place is a resource and a view, and never an app. The app follows
+Each layout is a shell package with its own layout type in the person's own document
+(`resources: .own`), as §2 says. A place is a resource and a view, and never an app. The app follows
 from the resource, and a foreign window's place names the `Window`.
 
 ```
@@ -467,7 +467,7 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
   frames and the canvas's pan and zoom are all the view's layout.
 - **Arranging is the shell's own actions on its own type**, declared once in its package:
   `place`, `move`, `close`, `resize`, `raise`. Each is attributed and undoable like any action on
-  a record.
+  a resource.
 - **Every shell answers two actions under the same names**: `place(resource, view)` and
   `close(place)` on its layout root. The checker enforces this for a package of category
   `.shell`. The session publishes the person's active shell's layout root as
@@ -494,7 +494,7 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
   and when they show. How a bar or dock looks (floating or edge to edge, translucent or solid,
   its size) is the theme's, as roles `bar` and `dock`. A dock item is what the person pinned
   (a resource or an app). Whether it runs, its badge and whether it wants attention are read
-  live from `Window` and `Notice`, never saved in the person's record.
+  live from `Window` and `Notice`, never saved in the person's resource.
 
 ## 8.4 Apps written in Rust on the canvas
 

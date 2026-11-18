@@ -22,7 +22,8 @@ use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource, seed_tree,
 };
 use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use ui::automerge::{ROOT, transaction::Transactable};
 use ui::kurbo::{Point, Rect};
@@ -559,7 +560,7 @@ thread_local! {
 }
 
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
@@ -656,9 +657,9 @@ impl TileSource for Source {
                 &ui::permissions::MemberId::person("keyboard-author"),
                 ui::permissions::Role::Owner,
             ));
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "device".into(),
@@ -1361,7 +1362,7 @@ fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
 }
 
 /// An app's action chosen in search over everything runs inside that app,
-/// under its custody, not at the desktop's API, and its window comes
+/// under its ownership, not at the desktop's API, and its window comes
 /// forward to show it.
 #[test]
 fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {

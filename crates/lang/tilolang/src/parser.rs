@@ -199,7 +199,7 @@ struct AppOptions {
     icon: Option<String>,
     category: Option<String>,
     previously: Vec<String>,
-    own_records: bool,
+    own_resources: bool,
     web: Vec<String>,
 }
 
@@ -422,7 +422,7 @@ impl<'a> Parser<'a> {
         let mut out = AppOptions::default();
         let mut seen_previously = false;
         let mut seen_web = false;
-        let mut records: Option<String> = None;
+        let mut resources: Option<String> = None;
         if !self.eat(&Tok::LParen) {
             return Ok(out);
         }
@@ -431,7 +431,7 @@ impl<'a> Parser<'a> {
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon`, `category`, `previously`, `records` or `web`")?;
+            let key = self.ident("`icon`, `category`, `previously`, `resources` or `web`")?;
             self.expect(&Tok::Colon)?;
             if key.name == "web" {
                 if std::mem::replace(&mut seen_web, true) {
@@ -478,11 +478,11 @@ impl<'a> Parser<'a> {
                     out.previously.push(self.app_id()?);
                 }
             } else {
-                if !matches!(key.name.as_str(), "icon" | "category" | "records") {
+                if !matches!(key.name.as_str(), "icon" | "category" | "resources") {
                     return self.fail(
                         key.span,
                         format!(
-                            "an app has an `icon:`, a `category:`, `previously:`, `records:` \
+                            "an app has an `icon:`, a `category:`, `previously:`, `resources:` \
                              and `web:`, not `{}:`",
                             key.name
                         ),
@@ -509,24 +509,24 @@ impl<'a> Parser<'a> {
                         }
                         &mut out.category
                     }
-                    "records" => {
+                    "resources" => {
                         if !matches!(value.name.as_str(), "own" | "shared") {
                             return self.fail(
                                 value.span,
                                 format!(
-                                    "`.{}` is not where records are kept; an app's records are \
+                                    "`.{}` is not where resources are kept; an app's resources are \
                                      `.shared` with the workspace or each member's `.own`",
                                     value.name
                                 ),
                             );
                         }
-                        &mut records
+                        &mut resources
                     }
                     other => {
                         return self.fail(
                             key.span,
                             format!(
-                                "an app has an `icon:`, a `category:`, `previously:`, `records:` \
+                                "an app has an `icon:`, a `category:`, `previously:`, `resources:` \
                                  and `web:`, not `{other}:`"
                             ),
                         );
@@ -543,7 +543,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        out.own_records = records.as_deref() == Some("own");
+        out.own_resources = resources.as_deref() == Some("own");
         Ok(out)
     }
 
@@ -749,7 +749,7 @@ impl<'a> Parser<'a> {
                 icon: options.icon,
                 category: options.category,
                 previously: options.previously,
-                own_records: options.own_records,
+                own_resources: options.own_resources,
                 web: options.web,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
@@ -796,7 +796,7 @@ impl<'a> Parser<'a> {
                         icon: options.icon,
                         category: options.category,
                         previously: options.previously,
-                        own_records: options.own_records,
+                        own_resources: options.own_resources,
                         web: options.web,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });

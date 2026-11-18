@@ -12,7 +12,7 @@
 )]
 
 use crate::framework_support::{add_note, apply, notes, open, root_order, send, shown, surface};
-use notes::{Notebook, NotesShell, PageId};
+use notes::{NotesShell, PageId};
 use serde_json::json;
 use ui::framework::testing::TestApp;
 use ui::synthetic_input::{char_key, cursor_moved, named_key};
@@ -34,9 +34,9 @@ fn call(app: &mut App, resource: &str, id: &str, args: serde_json::Value) {
         .unwrap_or_else(|error| panic!("{id} on {resource}: {error:?}"));
 }
 
-/// The notebook's published resource.
-fn kind() -> &'static str {
-    <Notebook as ui::tilo_resource::Resource>::KIND
+/// Where the notes are published: what a note is made on.
+fn kind() -> String {
+    notes::part::chain_resource()
 }
 
 /// The published resource of note `page`.
@@ -156,7 +156,7 @@ fn sidebar_new_note_controls_create_the_notebooks_note() {
 
         call(
             &mut twin,
-            kind(),
+            &kind(),
             "new-note",
             json!({ "title": notes::notebook::NO_TITLE }),
         );
@@ -302,7 +302,7 @@ fn sidebar_delete_and_duplicate_submit_the_notebooks_verbs() {
             shown(&app).pages().iter().all(|page| page.id != two),
             "the menu's Delete removed its note"
         );
-        let entries = app.history();
+        let entries = crate::framework_support::history(&app);
         let last = entries.len() - 1;
         assert_eq!(
             app.sentences(&entries[last..]),
@@ -316,7 +316,7 @@ fn sidebar_delete_and_duplicate_submit_the_notebooks_verbs() {
             outline(&twin),
             "the menu's Delete is the notebook's own delete"
         );
-        let entries = twin.history();
+        let entries = crate::framework_support::history(&twin);
         let last = entries.last().expect("the agent's delete is in history");
         assert_eq!(
             last.invoker
@@ -359,8 +359,8 @@ fn sidebar_delete_and_duplicate_submit_the_notebooks_verbs() {
 #[test]
 fn sidebar_copy_link_asks_the_notebooks_own_effect() {
     eprintln!("phase menu_copy_link_asks_the_notebooks_own_effect");
-    let (services, _recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, _recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let (mut app, welcome, _one, _two) = seeded();
 
     let title = shown(&app).get(welcome).unwrap().title.clone();

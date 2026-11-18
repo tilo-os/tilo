@@ -49,7 +49,7 @@ pub struct Surface {
     pub person: bool,
     /// A member's own record in the workspace: one per member, which only
     /// their devices receive, as the package's manifest declares it (a
-    /// tilolang package's `records: .own`). What carries the declaration to
+    /// tilolang package's `resources: .own`). What carries the declaration to
     /// every process that runs a package installed after the build.
     #[serde(default, skip_serializing_if = "is_false")]
     pub own: bool,
@@ -324,7 +324,7 @@ impl Surface {
 
     /// The units the verb `action` may write, on the item `item` when it
     /// acts on one: the record (the empty path), its item's unit, and the
-    /// units of the fields it declares, `*` standing for any item.
+    /// units of the fields it declares, `*` for any item.
     #[must_use]
     pub fn footprint(&self, action: &str, item: Option<&str>) -> Vec<Vec<PathStep>> {
         let Some(verb) = self.verbs.iter().find(|verb| verb.id == action) else {

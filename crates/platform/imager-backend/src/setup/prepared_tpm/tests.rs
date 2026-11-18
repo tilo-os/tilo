@@ -790,7 +790,7 @@ fn a_real_swtpm_sidecar_and_a_large_mail_journal_compose_without_growing_the_pac
         prepared_identity::PreparedIdentity,
         prepared_setup::{IDENTITY_FILE, LIMITS, Manifest},
     };
-    use tilo_identity_host::provisioning::IdentityStorage;
+    use tilo_identity::provisioning::IdentityStorage;
 
     fn write(path: &Path, bytes: impl AsRef<[u8]>) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

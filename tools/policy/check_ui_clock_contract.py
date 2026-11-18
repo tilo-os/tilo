@@ -2,7 +2,7 @@
 """Keep the UI toolkit's clock behind ``ui::time``.
 
 The toolkit (``crates/sdk/ui-core``), its host services
-(``crates/sdk/tilo-host``) and the collab client under it
+(``crates/sdk/tilo-process-services``) and the collab client under it
 (``crates/collab/collaboration``) name their clock types through
 ``crate::time`` —
 defined once, in ``tilo-host``'s ``src/time.rs``, and re-exported by the
@@ -56,13 +56,13 @@ from rust_source import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 CRATES = (
     Path("crates/sdk/ui-core"),
-    Path("crates/sdk/tilo-host"),
+    Path("crates/sdk/tilo-process-services"),
     Path("crates/collab/collaboration"),
 )
-CLOCK_MODULE = Path("crates/sdk/tilo-host/src/time.rs")
+CLOCK_MODULE = Path("crates/sdk/tilo-process-services/src/time.rs")
 
 # Every Rust source of the tree: a crate that depends on the toolkit names the
-# clock module as `ui::time`, and reads it past the seam wherever it sits.
+# clock module as `ui::time`, and reads it past the clock module wherever it sits.
 SOURCE_ROOTS = ("crates", "apps", "examples", "tools", "os", "fuzz")
 
 CLOCK_ITEM = r"(?:Instant|SystemTime|UNIX_EPOCH)"
@@ -74,24 +74,24 @@ GROUPED_TIME = re.compile(rf"\btime::(?:{CLOCK_ITEM}\b|\{{[^}}]*\b{CLOCK_ITEM}\b
 # The clock types `ui::time` names. `now()` on one reads the machine whatever
 # module path it is reached by, where `ui::time::now()` is the reading a test
 # holds still and a host lends.
-SEAM_TYPES = r"(?:Instant|SystemTime)"
-SEAM_READ = re.compile(
+CLOCK_TYPES = r"(?:Instant|SystemTime)"
+CLOCK_READ = re.compile(
     rf"\b(?P<module>ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\s*::"
-    rf"\s*(?P<clock>{SEAM_TYPES})\s*::\s*now\s*\("
+    rf"\s*(?P<clock>{CLOCK_TYPES})\s*::\s*now\s*\("
 )
-BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{SEAM_TYPES})\s*::\s*now\s*\(")
+BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{CLOCK_TYPES})\s*::\s*now\s*\(")
 USE_STATEMENT = re.compile(r"\buse\s+[^;]*;", re.DOTALL)
-RENAMED = re.compile(rf"\b{SEAM_TYPES}\s+as\b")
+RENAMED = re.compile(rf"\b{CLOCK_TYPES}\s+as\b")
 # A file that never names the clock module cannot read it or import from it.
-SEAM_MENTION = re.compile(r"\b(?:ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\b")
+CLOCK_MENTION = re.compile(r"\b(?:ui|ui_core|tilo_ui|crate|tilo_host)\s*::\s*time\b")
 
-SEAM_REASON = {
+CLOCK_REASON = {
     "Instant": (
-        "reads the ui clock's Instant directly, past the seam a test holds and "
+        "reads the ui clock's Instant directly, past the clock module a test holds and "
         "a host lends; use ui::time::now()"
     ),
     "SystemTime": (
-        "reads the ui clock's SystemTime directly, past the seam a test holds "
+        "reads the ui clock's SystemTime directly, past the clock module a test holds "
         "and a host lends; use ui::time::wall()"
     ),
 }
@@ -142,7 +142,7 @@ def audit_sources(files: Judged, crate: Path) -> list[Violation]:
     return violations
 
 
-def seam_modules(relative: Path) -> tuple[str, ...]:
+def clock_modules(relative: Path) -> tuple[str, ...]:
     """How the clock module is named from this file's crate."""
     inside = any(relative.is_relative_to(crate) for crate in CRATES)
     named = ("ui", "ui_core", "tilo_ui", "tilo_host")
@@ -150,45 +150,45 @@ def seam_modules(relative: Path) -> tuple[str, ...]:
 
 
 def clock_imports(text: str, modules: tuple[str, ...]) -> list[tuple[int, str, bool]]:
-    """The clock types a file's `use` statements bring in, and from which seam.
+    """The clock types a file's `use` statements bring in, and from which clock module.
 
-    ``(offset, type, from the seam)`` per statement. A renamed import
+    ``(offset, type, from the clock module)`` per statement. A renamed import
     (`Instant as Clock`) binds another name, and a bare `Instant::now()` after
-    it is not the seam's; a glob (`use ui::time::*`) brings in both types.
+    it is not the clock module's; a glob (`use ui::time::*`) brings in both types.
     """
     found: list[tuple[int, str, bool]] = []
     for statement in USE_STATEMENT.finditer(text):
         body = statement.group()
-        from_seam = any(
+        from_clock = any(
             re.search(rf"\b{module}\s*::\s*time\b", body) for module in modules
         )
         renamed = set(RENAMED.findall(body))
-        glob = from_seam and re.search(r"\btime\s*::\s*\*", body) is not None
+        glob = from_clock and re.search(r"\btime\s*::\s*\*", body) is not None
         for name in ("Instant", "SystemTime"):
             if name not in renamed and (glob or re.search(rf"\b{name}\b", body)):
-                found.append((statement.start(), name, from_seam))
+                found.append((statement.start(), name, from_clock))
     return found
 
 
 def audit_reads(files: Judged) -> list[Violation]:
-    """A clock type read past the seam, in either spelling."""
+    """A clock type read past the clock module, in either spelling."""
     violations: list[Violation] = []
     for root in SOURCE_ROOTS:
         if not (files.root / root).is_dir():
             continue
         for relative, source in files.sources(root, errors="strict"):
-            if is_test_file(relative) or not SEAM_MENTION.search(source):
+            if is_test_file(relative) or not CLOCK_MENTION.search(source):
                 continue
             text = code_only(production_source(source))
-            modules = seam_modules(relative)
-            for found in SEAM_READ.finditer(text):
+            modules = clock_modules(relative)
+            for found in CLOCK_READ.finditer(text):
                 if found.group("module") not in modules:
                     continue
                 violations.append(
                     Violation(
                         str(relative),
                         line_number(text, found.start()),
-                        SEAM_REASON[found.group("clock")],
+                        CLOCK_REASON[found.group("clock")],
                     )
                 )
             # The bare name is whichever import of it is in scope: the nearest
@@ -202,7 +202,7 @@ def audit_reads(files: Judged) -> list[Violation]:
                 if not in_scope or not max(in_scope)[2]:
                     continue
                 violations.append(
-                    Violation(str(relative), line_number(text, found.start()), SEAM_REASON[clock])
+                    Violation(str(relative), line_number(text, found.start()), CLOCK_REASON[clock])
                 )
     return violations
 

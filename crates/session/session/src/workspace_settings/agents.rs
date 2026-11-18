@@ -1,4 +1,4 @@
-//! The Agents tab: who works in the workspace, held in Chat's record of the workspace's agents.
+//! The Agents tab: who works in the workspace, held in Chat's list of the workspace's agents.
 //! An agent is a workspace record of its own kind ([`tilo_app::tilo_workspace_agent::KIND`]), kept
 //! by Chat ([`tilo_app::tilo_workspace_agent::OWNER`]) and opened here the way every app of the
 //! workspace opens it ([`WorkspaceResource`]): in the store this device's apps keep, as the person
@@ -19,10 +19,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_action_policy::MemberId;
+use tilo_action_policy::agent_answers::AnswerScope;
+use tilo_action_policy::{ActionKind, Answer, MemberId};
 use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::{
-    OWNER, WorkspaceAgents as Record, workspace_agents as actions,
+    Agent, Bound, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
@@ -53,11 +54,6 @@ pub trait Host {
 
     /// Whether `person` looks after `workspace`'s agents: makes, bounds and retires them.
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool;
-
-    /// Whether this host writes the workspace's grants, so what an agent may do app by app is
-    /// changed here. A page asks the workspace's host for its changes and shows the answers as
-    /// they stand.
-    fn writes_grants(&self) -> bool;
 }
 
 /// A computer's copy of its workspaces: their records, decided by the grants the workspace's
@@ -70,7 +66,7 @@ impl Host for crate::engine_records::EngineRecords {
         person: &UserId,
     ) -> (WorkspaceResources, Option<LivePermissions>) {
         use ui::permissions::PermissionContext;
-        let context = PermissionContext::from_standing(tilo_action_policy::Standing::person(
+        let context = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
             workspace.policy.clone(),
             person.clone(),
         ))
@@ -86,17 +82,13 @@ impl Host for crate::engine_records::EngineRecords {
         use tilo_desktop::authority::WorkspaceAuthority as _;
         workspace.may_administer(person)
     }
-
-    fn writes_grants(&self) -> bool {
-        true
-    }
 }
 
 /// What the tab made of one of the sheet's asks.
 pub(crate) enum Answered {
     /// The tab is shown again: the review of the agent named, or the roster.
     Show(Option<String>),
-    /// Nothing to show anew: the record's change shows when it lands.
+    /// Nothing to show anew: the list's change shows when it lands.
     Done,
     /// The change was refused, in the person's words.
     Refused(String),
@@ -112,7 +104,7 @@ pub(crate) struct Agents {
     /// The record, once the tab showed it: the workspace, the person and the grants it was opened
     /// for.
     open: RefCell<Option<Open>>,
-    /// What the tab last drew: the record's revision. The tab is shown again at each change.
+    /// What the tab last drew: the list's revision. The tab is shown again at each change.
     shown: RefCell<Option<Seen>>,
     /// The record whose admitted agents and keeper's choices this device was last brought in step
     /// with: its workspace and revision.
@@ -137,15 +129,13 @@ struct Seen {
     revision: u64,
 }
 
-/// What the person may change on the tab: the workspace's agents (`manage`), and — where this host
-/// writes the workspace's grants — what each may do (`grant`).
+/// What the person may change on the tab: the workspace's agents, and what each may do here.
 #[derive(Clone, Copy)]
 struct May {
     manage: bool,
-    grant: bool,
 }
 
-/// What one agent's review reads: the record that keeps it, the workspace it works in, the agents
+/// What one agent's review reads: the list that keeps it, the workspace it works in, the agents
 /// the tab lists, and this device's apps and Settings.
 #[derive(Clone, Copy)]
 struct Review<'a> {
@@ -196,7 +186,6 @@ impl Agents {
         });
         let may = May {
             manage: self.host.manages(workspace, person),
-            grant: self.host.writes_grants(),
         };
         Self::pane_of(workspace, &record, (names, apps), may, review)
     }
@@ -215,8 +204,6 @@ impl Agents {
             create: t("workspace-settings-create-agent"),
             cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
-            colour: t("workspace-settings-agent-colour"),
-            colour_hint: t("workspace-settings-agent-colour-hint"),
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
             manage: false,
@@ -238,26 +225,20 @@ impl Agents {
         review: Option<&str>,
     ) -> sheet::Agents {
         let state = record.get();
-        let me = record.me();
         let manage = may.manage;
         let config = agent_provider_config::ProviderConfig::load();
         let agents: Vec<sheet::Agent> = state
             .made_by_people()
-            .map(|agent| {
-                let mine = agent.keeper == me.id();
-                sheet::Agent {
-                    key: agent.id.0.clone(),
-                    name: agent.name.clone(),
-                    colour: agent.slot(),
-                    mine,
-                    status: keeper_line(names, workspace, record, &agent.keeper),
-                    spend: spend_line(agent),
-                    model: if agent.on_host {
-                        t("workspace-settings-agent-on-host")
-                    } else {
-                        model_line(&config, &agent.id.0, agent.model.as_deref())
-                    },
-                }
+            .map(|agent| sheet::Agent {
+                key: agent.id.0.clone(),
+                name: agent.name.clone(),
+                status: keeper_line(names, workspace, record, &agent.keeper),
+                spend: spend_line(agent),
+                model: if agent.on_host {
+                    t("workspace-settings-agent-on-host")
+                } else {
+                    model_line(&config, &agent.id.0, agent.model.as_deref())
+                },
             })
             .collect();
         let count = agents.len();
@@ -291,8 +272,6 @@ impl Agents {
             create: t("workspace-settings-create-agent"),
             cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
-            colour: t("workspace-settings-agent-colour"),
-            colour_hint: t("workspace-settings-agent-colour-hint"),
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
             // An agent made here runs on the workspace's server, on its model: nothing to choose.
@@ -371,7 +350,6 @@ impl Agents {
     /// One agent's review: what it may do in each app, the model it plans with and the actions it
     /// may always take. `None` once the record no longer names it.
     fn reviewed(review: &Review<'_>, agent: &str, may: May) -> Option<sheet::AgentReview> {
-        let editable = may.manage && may.grant;
         let Review {
             record,
             workspace,
@@ -381,6 +359,9 @@ impl Agents {
         } = *review;
         let state = record.get();
         let kept = state.get(&Id::from_raw(agent.to_owned()))?;
+        // An entry whose keeper is no person's root key, which no device of ours writes, is
+        // not shown.
+        MemberId::parsed_person(&kept.keeper)?;
         let name = kept.name.clone();
         let status = keeper_line(names, workspace, record, &kept.keeper);
         let tag = (kept.keeper == record.me().id()).then(|| t("workspace-settings-agent-yours"));
@@ -393,11 +374,15 @@ impl Agents {
             &kept.bound_rules().unwrap_or_default(),
         );
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
-        let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
+        let exceptions =
+            agent_access::agent_exceptions(&kept.bound_rules().unwrap_or_default(), apps);
         // What an agent plans with is its keeper's to choose, alone, and the record holds the
         // choice.
         let offered = agent_access::agent_models(config, agent);
         let keeps = kept.keeper == record.me().id();
+        // What it may do here is the bound its list entry keeps: whoever looks after the workspace's agents,
+        // and its keeper, set it.
+        let editable = may.manage || keeps;
         let keeper = domain::member_row_name(
             names,
             workspace,
@@ -617,7 +602,6 @@ impl Agents {
                 keeper: None,
                 id: Some(agent.clone()),
                 model,
-                colour: None,
                 mcp_client: None,
             }));
             if let Err(refusal) = made {
@@ -681,15 +665,10 @@ impl Agents {
             Err(reason) => Answered::Refused(reason),
         };
         Some(match effect {
-            Ask::AddAgent {
-                name,
-                model,
-                colour,
-            } => {
+            Ask::AddAgent { name, model } => {
                 // The record is the admission: the agent works here because Chat's record names
                 // it and this person keeps it.
-                let colour = presence_slot(colour);
-                match self.create(workspace, person, (name.as_str(), None), model, colour) {
+                match self.create(workspace, person, (name.as_str(), None), model) {
                     Ok(_) => Answered::Done,
                     Err(reason) => Answered::Refused(reason),
                 }
@@ -716,12 +695,45 @@ impl Agents {
                     Some(agent),
                 )
             }
-            Ask::SetAgentColour { agent, colour } => {
-                let Some(colour) = presence_slot(colour) else {
-                    tracing::debug!(%colour, "no such presence colour: nothing changed");
+            Ask::SetAgentAnswer {
+                agent,
+                scope,
+                kind,
+                answer,
+            } => {
+                let (Some(scope), Some(kind)) =
+                    (AnswerScope::parse(scope), agent_access::kind_from_key(kind))
+                else {
+                    tracing::debug!(%scope, %kind, "no such answer: nothing changed");
                     return Some(Answered::Done);
                 };
-                shown(self.set_colour(workspace, person, agent, colour), None)
+                let answer = if answer.is_empty() {
+                    None
+                } else {
+                    let Some(answer) = tilo_action_policy::Answer::parse(answer) else {
+                        tracing::debug!(%answer, "no such answer: nothing changed");
+                        return Some(Answered::Done);
+                    };
+                    Some(answer)
+                };
+                shown(
+                    self.set_answers(workspace, person, agent, &[(scope, kind, answer)]),
+                    Some(agent),
+                )
+            }
+            Ask::ResetAgentApp { agent, scope } => {
+                let Some(scope) = AnswerScope::parse(scope) else {
+                    tracing::debug!(%scope, "no such app: nothing changed");
+                    return Some(Answered::Done);
+                };
+                let answers: Vec<_> = agent_access::KINDS
+                    .into_iter()
+                    .map(|kind| (scope.clone(), kind, None))
+                    .collect();
+                shown(
+                    self.set_answers(workspace, person, agent, &answers),
+                    Some(agent),
+                )
             }
             _ => return None,
         })
@@ -739,7 +751,6 @@ impl Agents {
         person: &UserId,
         (name, mcp_client): (&str, Option<&str>),
         model: &str,
-        colour: Option<u8>,
     ) -> Result<(String, String), String> {
         let record = self
             .record(workspace, person)
@@ -753,7 +764,6 @@ impl Agents {
                 keeper: None,
                 id: Some(id.clone()),
                 model: (!model.is_empty()).then(|| model.to_owned()),
-                colour,
                 mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
@@ -807,26 +817,37 @@ impl Agents {
             .map_err(|error| error.to_string())
     }
 
-    /// Choose the colour the agent `agent` is drawn in, as its keeper.
+    /// Set what the agent `agent` may do in `workspace`, each answer for a kind of action at a scope
+    /// (`None` follows its admission there again): the bound the workspace's list keeps for it, which every
+    /// device and the workspace's host hold its calls to.
     ///
     /// # Errors
-    /// The workspace's agents could not be opened here, Chat's grants refuse
-    /// the change, or the person does not keep the agent.
-    pub(crate) fn set_colour(
+    /// The workspace's agents could not be opened here, or Chat's grants or the list refuse the
+    /// bound.
+    pub(crate) fn set_answers(
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
         agent: &str,
-        colour: u8,
+        answers: &[(AnswerScope, ActionKind, Option<Answer>)],
     ) -> Result<(), String> {
-        let record = self
+        let agents = self
             .record(workspace, person)
             .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        record
-            .invoke(&Record::SET_AGENT_COLOUR.with(actions::SetAgentColour {
-                agent: Id::from_raw(agent.to_owned()),
-                colour,
-            }))
+        let id = Id::from_raw(agent.to_owned());
+        let held = agents
+            .get()
+            .get(&id)
+            .and_then(Agent::bound_rules)
+            .unwrap_or_default();
+        let root =
+            workspace.map_or_else(String::new, |workspace| workspace.policy.workspace.clone());
+        let bound = agent_access::bound_with(&held, &root, answers)
+            .iter()
+            .map(Bound::of)
+            .collect();
+        agents
+            .invoke(&Record::SET_AGENT_BOUND.with(actions::SetAgentBound { agent: id, bound }))
             .map_err(|error| error.to_string())
     }
 
@@ -878,11 +899,6 @@ impl Agents {
             )
             .map_err(|error| error.to_string())
     }
-}
-
-/// The presence colour `id` names, by its slot.
-fn presence_slot(id: &str) -> Option<u8> {
-    ui::tokens::PresenceHue::from_id(id).and_then(|hue| u8::try_from(hue.slot()).ok())
 }
 
 /// Today, as a day's counter keeps it: this device's clock, which is its keeper's on the device
@@ -962,17 +978,14 @@ fn keeper_line(
     if keeper == record.me().id() {
         return t("workspace-settings-agent-keeper-you");
     }
+    let Some(member) = MemberId::parsed_person(keeper) else {
+        return keeper.to_owned();
+    };
     t_args(
         "workspace-settings-agent-keeper",
         &[(
             "name",
-            domain::member_row_name(
-                names,
-                workspace,
-                record.me().id(),
-                &MemberId::person(keeper),
-            )
-            .into(),
+            domain::member_row_name(names, workspace, record.me().id(), &member).into(),
         )],
     )
 }

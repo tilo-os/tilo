@@ -16,7 +16,7 @@ use crate::model::{FirewallConfig, ZoneKind};
 use ui::capability::Resolved;
 
 impl Firewall {
-    /// What the record holds: the stored configuration — each zone's policy, members and
+    /// What the resource holds: the stored configuration — each zone's policy, members and
     /// rules, and the active zone.
     pub fn read_document(
         &self,
@@ -184,7 +184,7 @@ pub struct AppliedConfig {
 }
 
 impl AppliedConfig {
-    /// What the record holds: what each device last pushed to, or read from, its firewalld.
+    /// What the resource holds: what each device last pushed to, or read from, its firewalld.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -364,8 +364,8 @@ impl ResourceApp for FirewallShell {
         invokes
     }
 
-    /// A new record starts with what firewalld already holds on the creating device; a
-    /// record created without a window is no device's and starts empty with a retry.
+    /// A new resource starts with what firewalld already holds on the creating device; a
+    /// resource created without a window is no device's and starts empty with a retry.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
         if cx.host().is_none_or(|host| host.capture().is_some()) {
             return Vec::new();
@@ -437,7 +437,7 @@ mod tests {
         // its variant's name.
         {
             use ui::automerge::{ObjType, ReadDoc as _, ScalarValue};
-            use ui::tilo_resource::{Model as _, Replica, Slot, evolution, read_key};
+            use ui::tilo_resource::{Replica, Slot, evolution, read_key};
             let mut replica = Replica::<Firewall>::new();
             replica
                 .apply(Firewall::import_of(&sample_config()))
@@ -453,7 +453,16 @@ mod tests {
                     let map = Slot::Key(&rule, "matcher")
                         .object(doc, ObjType::Map)
                         .unwrap();
-                    evolution::fixture(doc, &map, &matcher.to_json()).unwrap();
+                    // Each variant by the key it was stored under.
+                    let shape = match &matcher {
+                        crate::model::Matcher::Service(name) => {
+                            serde_json::json!({"$variant": "service", "0": name})
+                        }
+                        crate::model::Matcher::Port { port, proto } => serde_json::json!({
+                            "$variant": "port", "port": port, "proto": proto.label()
+                        }),
+                    };
+                    evolution::fixture(doc, &map, &shape).unwrap();
                     flattened.push(rule);
                 }
             }
@@ -634,10 +643,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_record_round_trips_reconciles_and_merges;
+        fn the_resource_round_trips_reconciles_and_merges;
 
-        phase the_record_round_trips_and_an_import_reconciles;
-        // The record reads back as the canonical configuration, and an import removes the
+        phase the_resource_round_trips_and_an_import_reconciles;
+        // The resource reads back as the canonical configuration, and an import removes the
         // members and rules firewalld no longer reports.
         {
             let config = sample_config();

@@ -1,4 +1,4 @@
-//! A probe that reports the control results a test drives, standing in for an app.
+//! A probe that reports the control results a test drives, in place of an app.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test support")]
 
@@ -208,7 +208,7 @@ impl crate::widget::controls::ActionControls for Probe {
 }
 thread_local! { static NEXT: RefCell<Option<Probe>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -222,7 +222,7 @@ fn factory(
     ))
 }
 pub(crate) fn component(
-    host: &crate::application_test_support::ProbeHost,
+    host: &crate::application_test_support::ProbeHarness,
     instance: u64,
     accepted: bool,
 ) -> (crate::application::AppComponent, Observed) {

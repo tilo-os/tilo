@@ -94,8 +94,8 @@ fn a_fresh_project_starts_at_zero_and_titles_land_there() {
 fn the_import_shortcut_asks_the_host_chooser_at_every_size() {
     // The empty bin names Ctrl+Shift+O as its keyboard route to Import.
     for size in [(960, 820), (1280, 800), (1440, 900)] {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = blank(true);
         app.harness().resize(size).unwrap();
         assert!(

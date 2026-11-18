@@ -429,7 +429,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         Err(why) => {
             // This connection starts no session of its own. The device has one live connection,
             // its holder's: a session here would bind the device's endpoint too, take the
-            // holder's place at the relay and then be taken by the holder's, so neither serves
+            // holder's place at the server and then be taken by the holder's, so neither serves
             // and every call fails with "another endpoint connected with the same endpoint id".
             // The holder is started again in the background; every call says why until it is.
             eprintln!(

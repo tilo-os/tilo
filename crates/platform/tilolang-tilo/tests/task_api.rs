@@ -16,7 +16,7 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession};
-use tilolang_tilo::task_records::{RecordReads, RecordSource};
+use tilolang_tilo::task_documents::{DocumentReads, DocumentSource};
 
 use crate::fixtures::Replica;
 
@@ -31,11 +31,17 @@ pub struct Apps {
     pub refused: Vec<&'static str>,
     /// Apps the API cannot reach (not open), and why.
     pub unreachable: Vec<(&'static str, &'static str)>,
-    /// The apps whose record a task fetched, in order.
+    /// The apps whose document a task fetched, in order.
     pub fetched: RefCell<Vec<String>>,
-    /// The copy of an app's record the API hands over while it lags the app's host: the
-    /// record as it was when [`Self::lag`] froze it.
+    /// The copy of an app's document the API hands over while it lags the app's host: the
+    /// document as it was when [`Self::lag`] froze it.
     lagging: RefCell<HashMap<String, Vec<u8>>>,
+    /// The readings the session publishes of its own resources, by the resource's id (the
+    /// device's styles, the session's windows): what a program reads within a call, as the
+    /// session's services answer it.
+    pub readings: RefCell<HashMap<String, Json>>,
+    /// The readings a program asked the API for, in order, by the app and resource it named.
+    pub read_for: RefCell<Vec<(String, String)>>,
 }
 
 impl Apps {
@@ -91,11 +97,13 @@ impl Apps {
             unreachable: Vec::new(),
             fetched: RefCell::default(),
             lagging: RefCell::default(),
+            readings: RefCell::default(),
+            read_for: RefCell::default(),
         }
     }
 
-    /// From now on the API hands over `app`'s record as it is now, whatever its host applies
-    /// later: the workspace's copy lagging the record's origin.
+    /// From now on the API hands over `app`'s document as it is now, whatever its host applies
+    /// later: the workspace's copy lagging the document's origin.
     pub fn lag(&self, app: &str) {
         let copy = self.replica(app).doc.save();
         self.lagging.borrow_mut().insert(app.to_owned(), copy);
@@ -106,17 +114,17 @@ impl Apps {
         self.replicas[self.by_app[app]].borrow_mut()
     }
 
-    /// A task of these apps acting for ada, reading their records itself as the session's
-    /// api hands them over ([`RecordReads`]): no app's host answers its reads, only its
+    /// A task of these apps acting for ada, reading their documents itself as the session's
+    /// api hands them over ([`DocumentReads`]): no app's host answers its reads, only its
     /// invocations.
-    pub fn record_task(self: &Rc<Self>) -> (TaskSession, Rc<RecordsApi>) {
-        let api = Rc::new(RecordsApi {
+    pub fn document_task(self: &Rc<Self>) -> (TaskSession, Rc<DocumentsApi>) {
+        let api = Rc::new(DocumentsApi {
             apps: Rc::clone(self),
-            reads: RecordReads::new(
+            reads: DocumentReads::new(
                 &self.bundles,
                 std::collections::BTreeMap::new(),
                 Some("ada"),
-                Rc::clone(self) as Rc<dyn RecordSource>,
+                Rc::clone(self) as Rc<dyn DocumentSource>,
             ),
         });
         let task = TaskSession::new(
@@ -141,11 +149,11 @@ impl Apps {
     }
 }
 
-impl RecordSource for Apps {
+impl DocumentSource for Apps {
     fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         if !record.is_empty() {
             return Err(format!(
-                "the test's apps keep their records in the workspace's record, not in {record}"
+                "the test's apps keep their documents in the workspace's document, not in {record}"
             ));
         }
         if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
@@ -160,13 +168,13 @@ impl RecordSource for Apps {
     }
 }
 
-/// A task's api that reads records itself: what [`Apps::record_task`] runs over.
-pub struct RecordsApi {
+/// A task's api that reads documents itself: what [`Apps::document_task`] runs over.
+pub struct DocumentsApi {
     apps: Rc<Apps>,
-    pub reads: RecordReads,
+    pub reads: DocumentReads,
 }
 
-impl TaskApi for RecordsApi {
+impl TaskApi for DocumentsApi {
     fn read(&self, app: &str, item: &str, _: &str) -> Result<Json, String> {
         self.reads.read(app, item)
     }
@@ -183,20 +191,43 @@ impl TaskApi for RecordsApi {
         let app = call["app"].as_str().unwrap();
         let before = self.apps.replica(app).doc.get_heads();
         let answered = self.apps.invoke(call);
-        // The record's origin says what it wrote, which the task's reads take in, as the
+        // The document's origin says what it wrote, which the task's reads take in, as the
         // session's task host does.
         let wrote = self.apps.replica(app).doc.save_after(&before);
         if let Err(why) = (!wrote.is_empty())
             .then(|| self.reads.take_in(app, &wrote))
             .transpose()
         {
-            panic!("what the origin wrote applies to the record the task read: {why}");
+            panic!("what the origin wrote applies to the document the task read: {why}");
         }
         answered
     }
 }
 
 impl TaskApi for Apps {
+    fn reading(
+        &self,
+        target: &tilolang_runtime::value::ResourceRef,
+    ) -> Result<Option<Json>, String> {
+        let (app, _) = target
+            .ty
+            .split_once('#')
+            .unwrap_or((target.ty.as_str(), ""));
+        self.read_for
+            .borrow_mut()
+            .push((app.to_owned(), target.id_string()));
+        if let Some(reading) = self.readings.borrow().get(&target.id_string()) {
+            return Ok(Some(reading.clone()));
+        }
+        // The session publishes a platform root no service of this device serves (no battery, no
+        // Bluetooth) empty, as the shell's own parts are handed it: a program reads its fields as
+        // absent and goes on.
+        let platform = tilolang_tilo::platform_apps::platform_roots()
+            .iter()
+            .any(|(published, ty)| *published == target.id_string() && *ty == target.ty);
+        Ok(platform.then(|| json!({})))
+    }
+
     fn read(&self, app: &str, item: &str, _: &str) -> Result<Json, String> {
         if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
             return Err((*why).to_owned());

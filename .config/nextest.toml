@@ -59,7 +59,9 @@ command = ["bash", "tools/test-env-setup.sh", "root"]
 
 # The programs the session's tests start beside their own: the lock screen,
 # the on-screen keyboard and the quick-settings panel are apps of other
-# packages, which Cargo builds for no test. The harness builds them before any
+# packages, tilolang-process runs a task's programs, and the launcher is what
+# a test asks whether it takes the command line the session starts an app
+# with; Cargo builds none of them for a test. The harness builds them before any
 # test starts, in one Cargo invocation (tools/build-sibling-binaries.sh), and
 # hands each path to the run's tests as TILO_SIBLING_BIN_<bin>, which
 # tilo_test_env::sibling_binary answers with. A test starts only programs its
@@ -74,6 +76,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilo-quick-settings:tilo-quick-settings",
+    "tilolang-process:tilolang-process", "launcher:tilo-launcher",
 ]
 
 [[profile.default.scripts]]
@@ -81,13 +84,13 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
-# The session's workspace-service test starts the relay as the Lounge image does
-# (`tilo-relay workspace --persistent` with its deployment routes), a program of
+# The session's workspace-service test starts the server as the Lounge image does
+# (`tilo-server workspace --persistent` with its deployment routes), a program of
 # another package: the feature `agents` is what gives it that subcommand.
 [scripts.setup.lounge-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-relay:tilo-relay=tilo-relay/agents",
+    "tilo-server:tilo-server=tilo-server/agents",
 ]
 
 [[profile.default.scripts]]
@@ -100,9 +103,9 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
-# The relay's coding-agent tests start the guest's own agent program in its
+# The server's coding-agent tests start the guest's own agent program in its
 # serving mode (`tilo-legacy-agent serve-run`), as a workspace's machine starts
-# it: a program of another package, which Cargo builds for no test of the relay's.
+# it: a program of another package, which Cargo builds for no test of the server's.
 [scripts.setup.machine-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
@@ -111,12 +114,24 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-relay) and test(coding_agents::)"
+filter = "package(tilo-server) and test(coding_agents::)"
 setup = "machine-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-relay) and test(coding_agents::)"
+filter = "package(tilo-server) and test(coding_agents::)"
+setup = "machine-siblings"
+
+# So do the agent session's tests of a coding agent on a person's server, which start it
+# through that server's own keeper of coding agents.
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session) and test(hosted_coding_agents::)"
+setup = "machine-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session) and test(hosted_coding_agents::)"
 setup = "machine-siblings"
 
 # The browser peer's Lounge test starts the same workspace service the deployment
@@ -151,10 +166,10 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session-client) and binary(it) and (test(passkey_root::) or test(node_workspace::))"
 setup = "page-bundle"
 
-# Chat's acceptance, and a branched device running it with its host away, drive
-# the app itself, as a desktop starts it: the app, the launcher that starts it
-# and the runtime host the app runs on are packages of other crates, which Cargo
-# builds for no test of the session's.
+# Chat's acceptance, a branched device running it with its host away, and the
+# agents a session makes drive the app itself, as a desktop starts it: the app,
+# the launcher that starts it and the runtime host the app runs on are packages
+# of other crates, which Cargo builds for no test of the session's.
 [scripts.setup.chat-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
@@ -163,7 +178,7 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted) or test(workspace_agents::))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]
@@ -194,7 +209,7 @@ setup = "headless-audio"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted) or test(workspace_agents::))"
 setup = "chat-siblings"
 
 # Tasks' own package, which the closed-app test starts without a window, and the launcher the
@@ -288,10 +303,10 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# Each app gate seeds a workspace of a thousand items and one of ten thousand and
-# runs the open, the filter and the changes over both: 42 s of CPU a gate on a quiet
+# Each app check seeds a workspace of a thousand items and one of ten thousand and
+# runs the open, the filter and the changes over both: 42 s of CPU a check on a quiet
 # machine, and a loaded one reached the eight-minute suite-wide bound without a
-# finish. The bound only has to catch a gate that stopped.
+# finish. The bound only has to catch a check that stopped.
 [[profile.default.overrides]]
 filter = 'package(tilolang-tilo) and binary(budgets)'
 slow-timeout = { period = "30s", terminate-after = 40 }
@@ -306,6 +321,15 @@ filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions:
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 30 }
 
+# How fast a workspace takes records and files at each size it is filled to:
+# seeding the larger sizes and timing every path takes minutes, so the bound
+# only has to catch a run that stopped. Printed on a pass too, so the table
+# shows in every log.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::throughput::)'
+success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 60 }
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16
@@ -315,14 +339,14 @@ priority = 100
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
-# Each tilo-agent-session integration test runs a relay host, agents and
+# Each tilo-agent-session integration test runs a server host, agents and
 # browser sessions that drive every web app natively against fixed deadlines;
 # the all-app coverage runs starve a concurrent session of the CPU it needs.
 [[profile.default.overrides]]
 filter = 'package(tilo-agent-session) and kind(test)'
 test-group = "agent-sessions"
 
-# A thousand keystrokes, each a durable relay commit (file and directory
+# A thousand keystrokes, each a durable server commit (file and directory
 # fsyncs) before it fans out: the run time is the node's fsync latency a
 # thousand times over, not CPU. Alone on a busy CI node it took 348 s at 0.4
 # cores; beside the parallel suite it passed the 8 min suite-wide bound while
@@ -330,7 +354,7 @@ test-group = "agent-sessions"
 # bound already, so this bound only has to catch a run that stopped; it starts
 # with the longest tests.
 [[profile.default.overrides]]
-filter = 'package(tilo-relay) and binary(it) and test(=hosting_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
+filter = 'package(tilo-server) and binary(it) and test(=server_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
 priority = 50
 slow-timeout = { period = "30s", terminate-after = 40 }
 
@@ -341,7 +365,7 @@ filter = 'package(tilo-session-client) and binary(it) and test(compaction::)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-server) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50
 
 # A lock starts the lock screen app, which draws under llvmpipe: beside the

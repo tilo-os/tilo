@@ -397,7 +397,8 @@ refuse the new history's change at that number as a duplicate. Only one
 change can hold an actor's sequence number in a history, so the receiver
 (`tilo-peer-state`'s `room::base::lineage`) drops the waiting one once a
 change built on the base it holds claims that number. For that it reads
-`Automerge::applied_seq` and `Automerge::queued_changes`, and drops with
+`Automerge::applied_seq` and `Automerge::queued_changes` (a history entry
+finds its writer's previous change by `Automerge::hash_of_actor_seq`), and drops with
 `Automerge::discard_queued` / `AutoCommit::discard_queued`, which remove the
 named queued changes and those queued on them (`ChangeQueue::
 remove_with_dependents`, which `remove_actor_branch_from` now uses too).

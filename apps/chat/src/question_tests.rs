@@ -12,7 +12,7 @@ use crate::messages::chat_part;
 use crate::model::ME;
 use crate::parts::ChatPart;
 use crate::question::{
-    ACTION, ALLOW, ALWAYS, Choice, DENY, DONE, DROPPED, Question, STARTED, Standing,
+    ACTION, ALLOW, ALWAYS, Choice, DENY, DONE, DROPPED, Question, QuestionState, STARTED,
 };
 use crate::resource::ChatShell;
 use crate::testing::{MountedChat, chain, message_item, mounted_rows};
@@ -72,7 +72,7 @@ fn answer(message: &Id, answer: &str, device: &str) -> chat_part::AnswerQuestion
 /// One part of a chat's messages, written by whoever a test says.
 struct Part {
     doc: AutoCommit,
-    chat: crate::record::Chat,
+    chat: crate::chat::Chat,
 }
 
 /// Who a verb is attributed to, as a host admits them.
@@ -90,7 +90,7 @@ impl Part {
     fn new() -> Self {
         Self {
             doc: AutoCommit::new(),
-            chat: crate::demo::demo(ME),
+            chat: crate::demo::demo(),
         }
     }
 
@@ -222,8 +222,8 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
     )
     .expect("its person answers it");
     let (_, question) = part.asked();
-    let Standing::Answered(given) = question.standing() else {
-        panic!("it is answered: {:?}", question.standing());
+    let QuestionState::Answered(given) = question.state() else {
+        panic!("it is answered: {:?}", question.state());
     };
     assert_eq!(given.answer.0, ALLOW);
     assert_eq!(given.device.0, "Phone", "it says where it was pressed");
@@ -308,8 +308,8 @@ fn its_asker_says_what_came_of_the_answer_once() {
         .expect("its asker says it is done");
     let (_, question) = part.asked();
     assert!(matches!(
-        question.standing(),
-        Standing::Settled(given, outcome) if given.answer.0 == ALLOW && outcome.outcome.0 == DONE
+        question.state(),
+        QuestionState::Settled(given, outcome) if given.answer.0 == ALLOW && outcome.outcome.0 == DONE
     ));
     part.apply(By::AgentFor(ME), 3 * SECOND_MS, settle(DONE))
         .expect("saying it again changes nothing");
@@ -350,8 +350,8 @@ fn a_question_taken_back_stops_waiting_and_keeps_what_was_asked() {
     )
     .expect("its asker takes it back");
     let (_, question) = part.asked();
-    let Standing::Withdrawn(withdrawn) = question.standing() else {
-        panic!("it is taken back: {:?}", question.standing());
+    let QuestionState::Withdrawn(withdrawn) = question.state() else {
+        panic!("it is taken back: {:?}", question.state());
     };
     assert_eq!(withdrawn.why, "The mail was answered elsewhere");
     assert_eq!(
@@ -452,6 +452,78 @@ fn ask_action_in(app: &mut TestApp<ChatShell>, person: &MemberId) -> crate::mode
     asked_in(app)
 }
 
+/// An action that would use an item of its person's vault says which one in
+/// the system's words, never by its address, and words "always" for that
+/// item at that place. A question that names no item keeps the event's words.
+#[test]
+fn an_action_that_uses_a_vault_item_says_which_and_what_always_covers() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let me = window_person(&mut app);
+    let mut detail = draft();
+    detail["use"] = json!({
+        "ask": "0123456789abcdef0123456789abcdef",
+        "item": {
+            "kind": "login",
+            "belongsTo": ["imap://mail.example.test:993", "smtp://mail.example.test:465"],
+        },
+    });
+    app.call_by(
+        agent_for(&me),
+        &chain(),
+        "ask",
+        json!({
+            "channel": CHANNEL,
+            "text": "You asked me to read your mail.",
+            "kind": ACTION,
+            "answers": [{"id": ALLOW}, {"id": ALWAYS}, {"id": DENY}],
+            "detail": detail,
+        }),
+    )
+    .expect("the agent's server asks its person");
+    let asked = asked_in(&mut app);
+
+    let label = app.chat().model_message_label(&asked);
+    let item = "From your vault: Password for imap://mail.example.test:993, \
+                smtp://mail.example.test:465";
+    assert!(label.contains(item), "the card says which item: {label}");
+    assert!(
+        !label.contains("0123456789abcdef"),
+        "what the server keeps the question under is not read out: {label}"
+    );
+    let named: Vec<String> = {
+        let chat = app.chat();
+        chat.semantic_hits()
+            .into_iter()
+            .filter(|(_, hit, ..)| matches!(hit, crate::app::Hit::Answer { .. }))
+            .map(|(_, _, name, _, _)| name.text)
+            .collect()
+    };
+    assert_eq!(
+        named,
+        [
+            "Allow once",
+            "Always allow with this item here",
+            "Don’t allow"
+        ]
+    );
+
+    press(&mut app, &asked.id, ALWAYS);
+    let answered = row(&mut app, &asked.id);
+    let label = app.chat().model_message_label(&answered);
+    assert!(
+        label.contains("always allowed with this item here"),
+        "{label}"
+    );
+
+    let plain = ask_action_in(&mut app, &me);
+    let question = plain.question.as_ref().expect("it asks");
+    assert!(question.uses_item().is_none());
+    assert_eq!(
+        crate::question_card::answer_label(question, ALWAYS),
+        "Always allow for this event"
+    );
+}
+
 #[test]
 fn the_window_draws_an_action_question_as_a_card_with_named_buttons_and_takes_the_press() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -494,9 +566,9 @@ fn the_window_draws_an_action_question_as_a_card_with_named_buttons_and_takes_th
     let answered = row(&mut app, &asked.id);
     let question = answered.question.clone().expect("it still asks");
     assert!(
-        matches!(question.standing(), Standing::Answered(given) if given.answer.0 == ALLOW),
+        matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == ALLOW),
         "{:?}",
-        question.standing()
+        question.state()
     );
     assert!(answer_buttons(&mut app).is_empty());
     let label = app.chat().model_message_label(&answered);
@@ -525,7 +597,7 @@ fn a_question_for_someone_else_shows_that_it_waits_and_offers_this_reader_nothin
             json!({"answer": ALLOW}),
         )
         .is_err(),
-        "and the record refuses this reader's answer"
+        "and the resource refuses this reader's answer"
     );
 }
 
@@ -556,7 +628,7 @@ fn a_choice_posts_the_answer_pressed_as_the_persons_own_message() {
     assert!(said.question.is_none());
     let question = row(&mut app, &asked.id).question.expect("it asked");
     assert!(
-        matches!(question.standing(), Standing::Answered(given) if given.answer.0 == "tomorrow")
+        matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == "tomorrow")
     );
     assert!(answer_buttons(&mut app).is_empty());
 }
@@ -601,5 +673,5 @@ fn a_question_survives_the_window_closing_and_is_answered_after() {
     assert_eq!(answer_buttons(&mut app).len(), 3);
     press(&mut app, &asked.id, DENY);
     let question = row(&mut app, &asked.id).question.expect("it asked");
-    assert!(matches!(question.standing(), Standing::Answered(given) if given.answer.0 == DENY));
+    assert!(matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == DENY));
 }

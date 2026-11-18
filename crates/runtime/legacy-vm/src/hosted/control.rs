@@ -9,7 +9,7 @@ use legacy_agent_protocol::link::AgentLink;
 use serde::{Deserialize, Serialize};
 use wire_frame::Framing;
 
-use super::meter::{SizeUsage, UsageRecord};
+use super::meter::{SizeUsage, UsageEntry};
 use super::size::VmSize;
 
 pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024).reject_empty();
@@ -37,7 +37,7 @@ pub struct ShareRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenBrowser {
     pub workspace: String,
-    /// The account the VM belongs to, as the relay knows it; opening Browser needs no card, since
+    /// The account the VM belongs to, as the server knows it; opening Browser needs no card, since
     /// its page actions are counted instead.
     pub account: String,
     pub size: VmSize,
@@ -115,6 +115,23 @@ pub enum Request {
         workspace: String,
         environment: String,
     },
+    /// Move the workspace's VM to the machine listening at `to`: it is suspended, its disk and
+    /// snapshot streamed there, and this machine forgets it once that one has all of it.
+    MoveVm {
+        workspace: String,
+        environment: String,
+        to: PathBuf,
+    },
+    /// Copy the workspace's VM to the replica machine listening at `to`, incrementally: the blocks
+    /// that changed since its last copy.
+    ReplicateVm {
+        workspace: String,
+        environment: String,
+        to: PathBuf,
+    },
+    /// Drain this machine for a rolling update: take no more wakes and suspend every awake VM onto
+    /// the state directory, as the cloud's eviction notice does.
+    Drain,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -161,7 +178,7 @@ pub enum Reply {
     },
     /// The account's plan does not allow it: why, in words for whoever
     /// ran it, and what would let it through.
-    Refused(tilo_actions::remote::host_account::Refusal),
+    Refused(tilo_actions::remote::server_account::Refusal),
     Done,
     Status {
         vms: Vec<VmStatus>,
@@ -169,7 +186,7 @@ pub enum Reply {
     },
     Usage {
         #[serde(with = "usage_on_the_wire")]
-        records: Vec<UsageRecord>,
+        records: Vec<UsageEntry>,
         by_size: Vec<SizeUsage>,
     },
     Error(String),
@@ -190,15 +207,20 @@ pub enum Reply {
     NoVm {
         workspace: String,
     },
+    /// The VM moved, or was copied to the replica, as `bytes` of its state went.
+    Moved {
+        vm: String,
+        bytes: u64,
+    },
 }
 
-/// The socket's frames are postcard, which encodes neither the ledger's
+/// The socket's frames are postcard, which encodes neither the log's
 /// flattened identity nor its skipped empty fields: on the socket a record
 /// travels field by field, every field always present.
 mod usage_on_the_wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use super::super::meter::{RunEnd, UsageKind, UsageRecord, VmIdentity};
+    use super::super::meter::{RunEnd, UsageEntry, UsageKind, VmIdentity};
 
     #[derive(Serialize, Deserialize)]
     struct Wire {
@@ -212,7 +234,7 @@ mod usage_on_the_wire {
         snapshot_bytes: Option<u64>,
     }
 
-    pub fn serialize<S: Serializer>(records: &[UsageRecord], to: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(records: &[UsageEntry], to: S) -> Result<S::Ok, S::Error> {
         to.collect_seq(records.iter().map(|record| Wire {
             kind: record.kind,
             identity: record.identity.clone(),
@@ -225,10 +247,10 @@ mod usage_on_the_wire {
         }))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<UsageRecord>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<UsageEntry>, D::Error> {
         Ok(Vec::<Wire>::deserialize(from)?
             .into_iter()
-            .map(|wire| UsageRecord {
+            .map(|wire| UsageEntry {
                 kind: wire.kind,
                 identity: wire.identity,
                 start_ms: wire.start_ms,
@@ -285,7 +307,7 @@ mod tests {
         };
         let reply = Reply::Usage {
             records: vec![
-                UsageRecord {
+                UsageEntry {
                     kind: UsageKind::Running,
                     identity: identity.clone(),
                     start_ms: 1_000,
@@ -295,7 +317,7 @@ mod tests {
                     ended: Some(RunEnd::Suspended),
                     snapshot_bytes: None,
                 },
-                UsageRecord {
+                UsageEntry {
                     kind: UsageKind::Snapshot,
                     identity,
                     start_ms: 4_500,
@@ -425,11 +447,37 @@ mod tests {
         ]
     }
 
-    /// A placer, a relay and ush built before a request was added still speak to this host: every
+    /// Moving a VM away, and draining a machine for a rolling update: the requests a lease or an
+    /// operator sends.
+    fn moving(named: &[u8]) -> Vec<(Request, Vec<u8>)> {
+        vec![
+            (
+                Request::MoveVm {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                    to: "/m".into(),
+                },
+                bytes(&[b"\x0c", named, b"\x02/m"]),
+            ),
+            (
+                Request::ReplicateVm {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                    to: "/m".into(),
+                },
+                bytes(&[b"\x0d", named, b"\x02/m"]),
+            ),
+            (Request::Drain, b"\x0e".to_vec()),
+        ]
+    }
+
+    /// A placer, a server and ush built before a request was added still speak to this host: every
     /// request they send means here what it meant to them, byte for byte.
     #[test]
     fn every_request_keeps_its_encoding() {
-        for (request, expected) in encoded() {
+        let named: &[u8] = b"\x02ws\x07default";
+        let all = encoded().into_iter().chain(moving(named));
+        for (request, expected) in all {
             assert_eq!(payload(&request), expected, "{request:?}");
             let frame = FRAMING.encode_value(&request).unwrap();
             let read: Request = FRAMING.read_value(&mut frame.as_slice()).unwrap().unwrap();

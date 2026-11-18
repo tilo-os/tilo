@@ -172,7 +172,7 @@ impl<'a> Membership<'a> {
         .await
     }
 
-    /// Write `command` into the workspace's governance as this device, signed by its custody,
+    /// Write `command` into the workspace's governance as this device, signed by its ownership,
     /// saying why when the workspace refuses it or cannot publish it.
     async fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
         let identity = self.engine.identity();
@@ -194,7 +194,7 @@ impl<'a> Membership<'a> {
             .await?;
         // What this device just committed leaves for the workspace's other devices now, rather
         // than with whatever it next writes there.
-        tilo_broker_core::custody::OwnerCustody::schedule_publication(
+        tilo_broker_core::owner_service::OwnerService::schedule_publication(
             self.engine,
             self.workspace_id,
         );

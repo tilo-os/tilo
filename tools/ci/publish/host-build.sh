@@ -18,7 +18,8 @@ rpms=${2:?$usage}
 binaries=${3:?$usage}
 out=${4:?$usage}
 cd "$repo_root"
-for bin in tilo-relay tilo-relay-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api \
+for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api \
+  tilolang-process \
   tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
@@ -45,6 +46,7 @@ context=$scratch/host-context
 rm -rf "$context"
 mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/containers/tilo-vm-host" "$context/os/etc/containers/registries.d" \
+  "$context/os/etc/modules-load.d" \
   "$context/os/usr/lib/bootc/install" "$context/os/usr/lib/sysusers.d" \
   "$context/os/usr/lib/tmpfiles.d" "$context/os/usr/lib/systemd/system" \
   "$context/os/usr/libexec" "$context/docs/app-model"
@@ -56,6 +58,7 @@ cp os/etc/containers/registries.d/*.yaml "$context/os/etc/containers/registries.
 cp os/usr/lib/bootc/install/40-tilo.toml "$context/os/usr/lib/bootc/install/"
 cp os/usr/lib/sysusers.d/*.conf "$context/os/usr/lib/sysusers.d/"
 cp os/usr/lib/tmpfiles.d/*.conf "$context/os/usr/lib/tmpfiles.d/"
+cp os/etc/modules-load.d/tilo-hosted.conf "$context/os/etc/modules-load.d/"
 cp os/usr/libexec/* "$context/os/usr/libexec/"
 cp -r os/usr/lib/systemd/system/. "$context/os/usr/lib/systemd/system/"
 cp docs/recovery.md "$context/docs/"

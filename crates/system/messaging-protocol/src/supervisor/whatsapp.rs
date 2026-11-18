@@ -76,7 +76,7 @@ impl WhatsappBootstrap {
         authority.check()?;
         Ok(bootstrap)
     }
-    /// Open existing OS-keychain custody on the native supervisor worker.
+    /// Open existing OS-keychain ownership on the native supervisor worker.
     /// No key is provisioned and no weaker store or ambient account is used.
     pub async fn open_system(
         root: &std::path::Path,
@@ -95,7 +95,7 @@ impl WhatsappBootstrap {
         .map_err(|_| SendError::Unavailable)?;
         Self::build(backend, network).await
     }
-    /// Build with already owned encrypted custody and supplied native transports.
+    /// Build with already owned encrypted ownership and supplied native transports.
     /// No connection, login, grant or key is created. Linking is a separate
     /// explicit user operation on the native host's returned client.
     /// # Errors

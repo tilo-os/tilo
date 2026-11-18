@@ -92,10 +92,10 @@ pub fn read(path: &Path) -> Option<Lease> {
 pub fn utc(seconds: u64) -> String {
     i64::try_from(seconds)
         .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .and_then(|s| jiff::Timestamp::from_second(s).ok())
         .map_or_else(
             || format!("{seconds}"),
-            |time| time.format("%Y-%m-%d %H:%M UTC").to_string(),
+            |time| time.strftime("%Y-%m-%d %H:%M UTC").to_string(),
         )
 }
 

@@ -1,27 +1,27 @@
 //! Dialling the host: the session, and the links beside it.
 //!
 //! Every link goes through one [`Dialer`] the session keeps for its host, over
-//! the host's carrier ([`tilo_relay_client::link`]): iroh on a native device,
+//! the host's carrier ([`tilo_server_client::link`]): iroh on a native device,
 //! the browser's WebTransport in a page.
 //!
 //! Over iroh a device that holds its key dials as its device key. A device
-//! whose key stays in custody (a page's, or a test's page-shaped peer) speaks
+//! whose key stays held (a page's, or a test's page-shaped peer) speaks
 //! under a key derived from its store's channel vault — a reload dials as the
-//! same endpoint — and its device signs, for every plane grant, that the
+//! same endpoint — and its device signs, for every live session grant, that the
 //! endpoint speaks for it. Over WebTransport there is no endpoint: the device
-//! proves itself with the relay handshake on each link that needs it.
+//! proves itself with the server handshake on each link that needs it.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_relay_client::Carrier;
-use tilo_relay_client::link::{Dialer, Purpose};
+use tilo_server_client::Carrier;
+use tilo_server_client::link::{Dialer, Purpose};
 
-use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
+use super::{DeviceSigner, LinkError, PeerConfig, ServerClient, Task};
 
 /// The statement a page's device signs to speak through `endpoint` for a day:
-/// long enough for a session and its planes to outlive one roster change,
+/// long enough for a session and its live sessions to outlive one roster change,
 /// short enough that a leaked page key is bounded by the page's device.
 #[cfg(not(target_arch = "wasm32"))]
 const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
@@ -48,7 +48,7 @@ pub(super) struct Dial {
     /// Made on the first connect and kept: a reload, and the links beside the
     /// session, dial the same way.
     dialer: Option<Arc<Dialer>>,
-    /// The key a custody-held device's endpoint speaks as over iroh, derived
+    /// The key an ownership-held device's endpoint speaks as over iroh, derived
     /// from its store's channel vault: a reload dials as the same endpoint.
     key: [u8; 32],
     /// This device's signed statement that the endpoint speaks for it.
@@ -66,14 +66,14 @@ impl Dial {
     /// The dialer this session reaches its host through, with this device's
     /// statement that its endpoint speaks for it (empty where none is
     /// needed); `None` before the first connect.
-    /// The dialer a plane of this session's own opens, and the statement that its endpoint
-    /// speaks for the device; `None` when this session runs no plane.
+    /// The dialer a live session of this session's own opens, and the statement that its endpoint
+    /// speaks for the device; `None` when this session runs no live session.
     ///
-    /// A session lent the endpoint its device's own session runs joins no plane of its own: the
-    /// device has one session in each workspace's live plane, and a second one under the same key
+    /// A session lent the endpoint its device's own session runs joins no live session of its own: the
+    /// device has one session in each workspace's live session, and a second one under the same key
     /// shadows the broadcast the device publishes its presence on, so the people around it hear
-    /// the cached group and then silence. The device's own session opens the plane instead.
-    pub(super) fn plane(&self) -> Option<(Arc<Dialer>, Vec<u8>)> {
+    /// the cached group and then silence. The device's own session opens the live session instead.
+    pub(super) fn live_session(&self) -> Option<(Arc<Dialer>, Vec<u8>)> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.lent.is_some() {
             return None;
@@ -112,7 +112,7 @@ impl Task {
     /// A dial or handshake that fails without a final answer is tried a few
     /// times with jittered, doubling waits before its error reaches the
     /// session loop, which then backs off and retries on its own.
-    pub(super) async fn connect(&mut self) -> Result<RelayClient, LinkError> {
+    pub(super) async fn connect(&mut self) -> Result<ServerClient, LinkError> {
         let access = self.entry_access().await;
         let mut attempt: u32 = 0;
         loop {
@@ -141,12 +141,12 @@ impl Task {
     /// own.
     pub(super) fn ask_member(
         &self,
-        approval: Box<tilo_relay_protocol::certify::MemberApproval>,
+        approval: Box<tilo_server_protocol::certify::MemberApproval>,
         done: crate::Answer<
-            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
+            Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>,
         >,
     ) {
-        let Some((dialer, _)) = self.dial.plane() else {
+        let Some((dialer, _)) = self.dial.live_session() else {
             let _ = done.send(Err(LinkError::Unavailable(
                 "the session has not reached its host yet".into(),
             )
@@ -156,7 +156,7 @@ impl Task {
         n0_future::task::spawn(async move {
             let asked = async {
                 let link = dialer.link(Purpose::Certify).await?;
-                let reply = tilo_relay_client::ask_member(&link, &approval).await;
+                let reply = tilo_server_client::ask_member(&link, &approval).await;
                 link.close("");
                 reply
             };
@@ -171,15 +171,15 @@ pub(super) async fn connect(
     config: &PeerConfig,
     signer: &dyn DeviceSigner,
     dial: &mut Dial,
-) -> Result<RelayClient, LinkError> {
+) -> Result<ServerClient, LinkError> {
     connect_entering(config, None, signer, dial).await
 }
 
 /// The session to `config`'s host, dialled from `dial`'s endpoint — bound there
 /// on the first connect and kept for reconnects. A device that holds its key
 /// dials as its device key, as a native peer does; a page's device key never
-/// leaves custody, so its endpoint speaks under its own key for the device,
-/// which signs that it does for every plane grant.
+/// leaves ownership, so its endpoint speaks under its own key for the device,
+/// which signs that it does for every live session grant.
 ///
 /// An entry ([`PeerConfig::entering`]) carries `access`, this device's request
 /// for the keys of the workspace's channel group.
@@ -188,11 +188,11 @@ async fn connect_entering(
     access: Option<collab_types::MlsAccessRequestV1>,
     signer: &dyn DeviceSigner,
     dial: &mut Dial,
-) -> Result<RelayClient, LinkError> {
+) -> Result<ServerClient, LinkError> {
     let host = &config.host;
     // A lent endpoint that is not bound yet is waited for: the dial fails as
     // one to make again, and no endpoint is bound under the device's key in
-    // its place, which would take the device's place at its relay.
+    // its place, which would take the device's place at its server.
     #[cfg(not(target_arch = "wasm32"))]
     if dial.dialer.is_none()
         && let Some(lent) = &dial.lent
@@ -211,8 +211,8 @@ async fn connect_entering(
             ))
         })
         .clone();
-    // Over iroh a custody-held device's endpoint speaks for it by its signed
-    // statement, which every plane grant carries; over WebTransport the
+    // Over iroh an ownership-held device's endpoint speaks for it by its signed
+    // statement, which every live session grant carries; over WebTransport the
     // device proves itself on each link instead.
     #[cfg(not(target_arch = "wasm32"))]
     if host.carrier() != Carrier::WebTransport {
@@ -226,18 +226,18 @@ async fn connect_entering(
         .await?;
     }
     let link = dialer.link(Purpose::Session).await?;
-    RelayClient::connect_over_link(
+    ServerClient::connect_over_link(
         link,
         Some(config.host_cert.user_public_key),
         Some(config.host_cert.device_public_key),
-        tilo_relay_session::ClientCredentials {
+        tilo_server_session::ClientCredentials {
             cert: config.cert.clone(),
             signer,
             revocations: config.revocations.clone(),
             entering: config
                 .entering
                 .clone()
-                .map(|entering| tilo_relay_session::Entry {
+                .map(|entering| tilo_server_session::Entry {
                     entering,
                     access,
                     host_cert: config.host_cert.clone(),
@@ -250,7 +250,7 @@ async fn connect_entering(
 
 /// This device's statement that `endpoint` speaks for `device`, for as long
 /// as [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
-/// key, and the device's own signature otherwise (through custody, which keeps
+/// key, and the device's own signature otherwise (through ownership, which keeps
 /// a page's key unextractable).
 #[cfg(not(target_arch = "wasm32"))]
 async fn sign_delegation(
@@ -305,20 +305,26 @@ pub(super) fn connect_backoff(attempt: u32) -> std::time::Duration {
 /// How a failed dial reads to the session loop: reachability
 /// (`Unavailable`, `Malformed`, retried with backoff) or a host that turned
 /// this device away without saying why (`Refused`, which fails the session
-/// after `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
-/// client error must be classified here rather than fall into a default.
-pub(super) fn link_error(error: tilo_relay_session::ClientError) -> LinkError {
-    use tilo_relay_session::ClientError;
+/// after `REFUSALS_BEFORE_FAILING` in a row), or one that said why
+/// (`DeviceRevoked`, which stops the session at once). Every variant is named,
+/// so a new client error must be classified here rather than fall into a
+/// default.
+pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
+    use tilo_server_session::ClientError;
     match error {
         ClientError::UnsupportedProtocol => {
-            LinkError::Unavailable("host does not speak tilo-relay/1".into())
+            LinkError::Unavailable("host does not speak tilo-server/1".into())
         }
         ClientError::Transport(reason) => LinkError::Unavailable(reason),
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
-        // A host that turns a device away closes the handshake stream
-        // without a word.
+        // The server said why, and proved the refusal its own.
+        ClientError::Refused(tilo_server_protocol::auth::HelloRefusal::DeviceRevoked) => {
+            LinkError::DeviceRevoked
+        }
+        // A server that refuses a device and does not say why closes the
+        // handshake stream with nothing said.
         ClientError::NoHandshakeAnswer(reason) => LinkError::Refused(reason),
         // A host that rejects the device either fails its ack (auth) or
         // closes the handshake stream, which surfaces as an I/O error on the
@@ -340,14 +346,14 @@ pub fn member_host(link: &crate::Link) -> SessionMemberHost {
     SessionMemberHost(std::sync::Arc::clone(link.outbox()))
 }
 
-impl tilo_relay_client::MemberHost for SessionMemberHost {
+impl tilo_server_client::MemberHost for SessionMemberHost {
     fn ask(
         &self,
-        approval: &tilo_relay_protocol::certify::MemberApproval,
+        approval: &tilo_server_protocol::certify::MemberApproval,
     ) -> impl std::future::Future<
         Output = Result<
-            tilo_relay_protocol::certify::ApproverReply,
-            tilo_relay_client::CertifyError,
+            tilo_server_protocol::certify::ApproverReply,
+            tilo_server_client::CertifyError,
         >,
     > + Send {
         let (done, answer) = crate::answer();

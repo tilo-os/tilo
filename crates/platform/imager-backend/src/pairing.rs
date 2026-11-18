@@ -107,7 +107,7 @@ mod unsupported_tests {
     use super::*;
 
     #[test]
-    fn unsupported_pairing_never_launches_or_adopts_custody() {
+    fn unsupported_pairing_never_launches_or_adopts_ownership() {
         let mut pairing = Pairing::default();
         assert!(!Pairing::supported());
         assert_eq!(

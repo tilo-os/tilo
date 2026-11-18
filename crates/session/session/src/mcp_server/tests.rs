@@ -174,7 +174,7 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
         },
     );
     assert!(
-        matches!(&read, Err(ActionHostError::Unavailable { reason })
+        matches!(&read, Err(ActionCallError::Unavailable { reason })
             if reason == "this desktop keeps no records of its own"),
         "answered from the broker, which this shell has none of: {read:?}"
     );
@@ -202,4 +202,160 @@ fn the_peer_must_be_this_accounts_own_process_in_its_namespaces() {
         Err(PeerRefusal::Sandboxed),
         "a program inside a sandbox"
     );
+}
+
+/// A service publishing the one style the person may switch to, as the device's does.
+struct Styles {
+    offered: serde_json::Value,
+}
+
+impl tilo_service::Service for Styles {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == crate::device_lists::STYLES_RESOURCE).then(|| self.offered.clone())
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unknown(
+            tilo_actions::ActionAddress::new(resource, action),
+        ))
+    }
+}
+
+/// A program's read of a resource the session publishes (the device's styles) is answered from
+/// the session's own services on the loop's pass, where they are: one `tilo` call reads
+/// `device.styles.offered` with no record and no app, as the shell's own parts read it.
+#[test]
+fn a_program_reads_the_reading_a_session_service_publishes() {
+    let offered = serde_json::json!({
+        "offered": [{"style": "so.tilo.shell:strips", "package": "so.tilo.shell",
+                     "name": "strips", "line": "The shell's strips", "loads": true, "reason": ""}],
+    });
+    let mut services = tilo_service::Services::default();
+    services.add(Box::new(Styles {
+        offered: offered.clone(),
+    }));
+    let app = tilolang_tilo::platform_apps::DEVICE_APP;
+    assert_eq!(
+        published_reading(&services, app, crate::device_lists::STYLES_RESOURCE),
+        Some(offered),
+        "the reading its service publishes"
+    );
+    // A device resource no service of this device serves is published empty, as the shell's
+    // parts are handed it: a program reads its fields as absent and goes on.
+    assert_eq!(
+        published_reading(&services, app, "power"),
+        Some(serde_json::json!({})),
+        "a resource no service serves is published empty"
+    );
+    // The session's own roots (`device.windows`) are published as its own app's.
+    assert_eq!(
+        published_reading(
+            &services,
+            tilolang_tilo::platform_apps::DEVICE_APP,
+            "session:windows",
+        ),
+        Some(serde_json::json!({})),
+        "a resource of the session's own, read as it stands here"
+    );
+}
+
+/// A resource the session does not publish itself is no reading of its, whatever app names it:
+/// an app's record is read through the record API, never from a service.
+#[test]
+fn what_the_session_does_not_publish_is_no_reading_of_its() {
+    let mut services = tilo_service::Services::default();
+    services.add(Box::new(Styles {
+        offered: serde_json::json!({"offered": []}),
+    }));
+    // An app whose records are read, by the id its own record's resource has, is no reading the
+    // session publishes: none of `platform_roots` names it.
+    assert_eq!(
+        published_reading(&services, "so.tilo.notes", "notes.notebook"),
+        None,
+        "no reading of an app's record"
+    );
+    // Nor is a session resource asked of an app that does not publish it.
+    assert_eq!(
+        published_reading(
+            &services,
+            tilolang_tilo::platform_apps::SETTINGS_APP,
+            crate::device_lists::STYLES_RESOURCE,
+        ),
+        None,
+        "the device publishes the styles, not Settings"
+    );
+}
+
+/// A program's reading of a resource the session publishes is decided for its caller, as every
+/// read is: the person reads their own device, and an agent reads it only where the broker lets
+/// it read the resource. With no broker to decide it, an agent reads none of it.
+#[test]
+fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
+    use tilo_actions::remote::Readings as _;
+    let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
+    let readings = SessionReadings {
+        session: Arc::clone(&session),
+        state: None,
+    };
+    let offered = serde_json::json!({"offered": []});
+    // The loop's pass, answering the reading asked of it with the styles, published under the
+    // kind `kind` (`None`: under none).
+    let answer_once = |session: &SessionServices, kind: Option<&str>| {
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            let asked = std::mem::take(&mut *session.asks.lock_recover());
+            if let Some(ApiAsk::Reading { done, .. }) = asked.into_iter().next() {
+                done.complete(Some(Published {
+                    kind: kind.map(str::to_owned),
+                    reading: offered.clone(),
+                }));
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "no reading was asked");
+            std::thread::yield_now();
+        }
+    };
+    let app = tilolang_tilo::platform_apps::DEVICE_APP;
+    let resource = crate::device_lists::STYLES_RESOURCE;
+    let read_as = |caller: &Caller, kind: Option<&str>| {
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| readings.reading(caller, app, resource));
+            answer_once(&session, kind);
+            reader.join().expect("the reader")
+        })
+    };
+    // A reading published under no kind has no node to decide it at: nobody reads it, the
+    // person included, rather than anyone reading it unchecked.
+    for caller in [
+        Caller::local_person("person"),
+        Caller::local_agent("helper").in_workspace("studio"),
+    ] {
+        assert_eq!(read_as(&caller, None), Ok(None), "no kind, no reading");
+    }
+    for (caller, theirs) in [
+        (Caller::local_person("person"), true),
+        (Caller::local_agent("helper").in_workspace("studio"), false),
+    ] {
+        let read = read_as(&caller, Some("session.styles"));
+        if theirs {
+            assert_eq!(read, Ok(Some(offered.clone())), "the person's own device");
+        } else {
+            assert!(
+                matches!(
+                    read,
+                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+                ),
+                "an agent no broker lets read it reads none of it: {read:?}"
+            );
+        }
+    }
 }

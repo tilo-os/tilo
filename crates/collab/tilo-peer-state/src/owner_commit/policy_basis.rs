@@ -6,7 +6,7 @@ pub struct PrivatePolicyBasis {
 }
 impl PrivatePolicyBasis {
     /// Preserves the historical strict capability/expiry checks and revision.
-    /// This legacy output carries no allocation, owner, caller or clock witness.
+    /// This legacy output carries no allocation, owner, caller or clock proof.
     pub fn from_peer(peer: &crate::StatePeer) -> Result<Self, String> {
         let (revision, expiries) = crate::legacy_policy::private_policy_basis(peer)?;
         Ok(Self { revision, expiries })

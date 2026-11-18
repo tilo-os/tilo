@@ -6,7 +6,7 @@
 //! session reads each app's payload from its store row, and the app runs through the launcher
 //! like any other. Loading it here publishes the record it keeps: the app's root made and filled
 //! by its first scenario (the seed data its shots and tests start from), published as the session
-//! publishes a room's records ([`tilolang_tilo::records_service::RecordService`]), so every note,
+//! publishes a room's records ([`tilolang_tilo::resource_service::ResourceService`]), so every note,
 //! task, channel and mailbox is a resource the session's `find` finds, a layout places and
 //! an agent reads and changes through its actions.
 //!
@@ -24,7 +24,7 @@ use app_catalogue::apps::InstalledApp;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::notices::NOTICE_TAGS;
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 
 use crate::platform::notice::Toolkit;
 
@@ -55,7 +55,7 @@ pub const APPS: [&str; 5] = [
 pub fn seeded(
     person: &str,
     catalog: &package_store::Catalog,
-) -> Result<Vec<RecordService>, String> {
+) -> Result<Vec<ResourceService>, String> {
     let installed = installed_apps(catalog)?;
     let mut services = vec![session_document(person)?];
     for app in &installed {
@@ -69,7 +69,7 @@ pub fn seeded(
 ///
 /// # Errors
 /// The store cannot be located, or [`seeded`] fails.
-pub fn seeded_from_env(person: &str) -> Result<Vec<RecordService>, String> {
+pub fn seeded_from_env(person: &str) -> Result<Vec<ResourceService>, String> {
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
     seeded(person, &catalog)
 }
@@ -82,7 +82,7 @@ pub fn seeded_from_env(person: &str) -> Result<Vec<RecordService>, String> {
 ///
 /// # Errors
 /// The document's host does not open.
-pub fn session_document(person: &str) -> Result<RecordService, String> {
+pub fn session_document(person: &str) -> Result<ResourceService, String> {
     let host = Host::new(
         &tilo_resource::Doc::new(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
@@ -90,12 +90,12 @@ pub fn session_document(person: &str) -> Result<RecordService, String> {
     )
     .map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::SeededWords);
-    Ok(told(RecordService::session_document(host, person)))
+    Ok(told(ResourceService::session_document(host, person)))
 }
 
 /// The record of the installed app `app`: its root made and filled by its first scenario as
 /// steps its authorship names, in a record of its own.
-fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String> {
+fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, String> {
     let host = Host::new(
         &tilo_resource::Doc::new(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
@@ -121,12 +121,12 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String>
             )
             .map_err(|error| format!("{name} {:?}: {error}", scenario.name))?;
     }
-    Ok(RecordService::of_app(name, host, person))
+    Ok(ResourceService::of_app(name, host, person))
 }
 
 /// `service`, what its apps tell reaching the person through the platform's notifier this
 /// session serves, as any app's notification does, and its records published.
-fn told(mut service: RecordService) -> RecordService {
+fn told(mut service: ResourceService) -> ResourceService {
     service.set_tell(Toolkit::new(
         ui::notify::system(Some("so.tilo.session")),
         NOTICE_TAGS,

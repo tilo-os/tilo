@@ -664,8 +664,8 @@ mod tests {
 
         {
             let pool = ThreadPool::new(1);
-            let (release, gate) = mpsc::channel::<()>();
-            pool.spawn("gated", Box::new(move || gate.recv().unwrap()))
+            let (release, check) = mpsc::channel::<()>();
+            pool.spawn("guarded", Box::new(move || check.recv().unwrap()))
                 .unwrap();
             release.send(()).unwrap();
             let deadline = tilo_clock::now() + tilo_test_env::hang_bound();

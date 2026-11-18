@@ -1,4 +1,4 @@
-//! Developer/release-gate helper for putting an Imager profile into a regular
+//! Developer/release-check helper for putting an Imager profile into a regular
 //! media image. This calls the production encoder and read-back verifier; it
 //! never accepts a block device.
 

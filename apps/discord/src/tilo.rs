@@ -1,4 +1,4 @@
-//! The Tilo side as the planners read it: Chat's records as the record api
+//! The Tilo side as the planners read it: Chat's resources as the resource api
 //! reads them ([`ChatRead`]), and the workspace's member list. Read from JSON
 //! rather than Chat's types so the connector does not carry Chat's code.
 
@@ -41,14 +41,14 @@ pub struct Attachment {
     pub size: Option<u64>,
 }
 
-/// The record a message shares, and the part of it: the address Chat
+/// The resource a message shares, and the part of it: the address Chat
 /// keeps, never its content.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reference {
     pub kind: String,
     pub id: String,
     pub label: String,
-    /// The record it lives in (`record:<app>:<record>`), its record empty
+    /// The resource it lives in (`record:<app>:<record>`), its resource empty
     /// for the app's own one.
     pub provider: Option<String>,
 }
@@ -80,7 +80,7 @@ pub struct Message {
     /// The name the message shows instead of its author's, when a bot posted
     /// it for someone (`Message.appearance`).
     pub appearance_name: Option<String>,
-    /// The record it shares, when it was written by sharing something.
+    /// The resource it shares, when it was written by sharing something.
     pub reference: Option<Reference>,
     /// The live share of a window it carries.
     pub share: Option<Share>,
@@ -105,8 +105,8 @@ pub struct WorkspaceChat {
     pub busy: Vec<String>,
 }
 
-/// Chat's records as the bridge reads them through the record api: Chat's
-/// record of the workspace and the messages of the parts read of its chain
+/// Chat's resources as the bridge reads them through the resource api: Chat's
+/// resource of the workspace and the messages of the parts read of its chain
 /// (its newest, and the one a change was made in), in the chain's order,
 /// with each filed report's message after them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -116,10 +116,13 @@ pub struct ChatRead {
     /// The channels holding a message in a part not read, as the parts read
     /// count them ([`ChatRead::of`]).
     earlier: std::collections::BTreeSet<String>,
+    /// The workspace's members as its host binds them ([`ChatRead::knowing`]): who wrote what
+    /// the chat holds.
+    members: Vec<Value>,
 }
 
 impl ChatRead {
-    /// The API's readings `{"chat", "changed", "messages"}`: Chat's record
+    /// The API's readings `{"chat", "changed", "messages"}`: Chat's resource
     /// of the workspace, the part of its messages a change was made in
     /// (`null` for none), and the chain's head, its newest part, each
     /// `{revision, records: [{record, value}]}`. A part still arriving or
@@ -166,7 +169,7 @@ impl ChatRead {
         }
     }
 
-    /// Chat's record of the workspace and the messages its parts hold, in
+    /// Chat's resource of the workspace and the messages its parts hold, in
     /// order.
     #[must_use]
     pub fn new(record: Value, mut messages: Vec<(String, Value)>) -> Self {
@@ -175,11 +178,24 @@ impl ChatRead {
             record,
             messages,
             earlier: std::collections::BTreeSet::new(),
+            members: Vec::new(),
         }
+    }
+
+    /// The same records, read with the workspace's members as its host binds them
+    /// (`{"members": [{"member", "name"}]}`), those it removed among them.
+    #[must_use]
+    pub fn knowing(mut self, workspace: &Value) -> Self {
+        self.members = workspace
+            .get("members")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        self
     }
 }
 
-/// The items of the collection `field` of a record, as a record keeps them
+/// The items of the collection `field` of a resource, as a resource keeps them
 /// (`{id: {"k": order, "v": value}}`), in their order.
 fn entries(value: &Value, field: &str) -> Vec<(String, Value)> {
     let mut items: Vec<(&str, &str, Value)> = value
@@ -309,7 +325,7 @@ impl WorkspaceChat {
     }
 }
 
-/// A message's reactions, as a record keeps them (`{key: {emoji, by,
+/// A message's reactions, as a resource keeps them (`{key: {emoji, by,
 /// persona?, name?, at}}`), in the order they were made.
 fn reactions(value: &Value) -> Vec<Reaction> {
     let mut made: Vec<&Value> = match value.get("reactions") {
@@ -331,7 +347,7 @@ fn reactions(value: &Value) -> Vec<Reaction> {
 
 /// What a message carries besides its words: the files it posts, and the
 /// record it shares. A data enum names its variant beside its fields
-/// (`{"$variant": "image", "blob": …}`); a record from before kept serde's
+/// (`{"$variant": "image", "blob": …}`); a resource from before kept serde's
 /// externally tagged form (`{"Image": {…}}`) as JSON text.
 fn carried(value: &Value) -> (Vec<Attachment>, Option<Reference>) {
     let mut files = Vec::new();
@@ -363,8 +379,8 @@ fn carried(value: &Value) -> (Vec<Attachment>, Option<Reference>) {
     (files, shared)
 }
 
-/// The `record:<app>:<record>` provider of the record `at` names, its
-/// record empty for the app's own one.
+/// The `record:<app>:<record>` provider of the resource `at` names, its
+/// resource empty for the app's own one.
 fn provider(at: &Value) -> Option<String> {
     let app = opt_text(at, "app")?;
     let record = opt_text(at, "record").unwrap_or_default();
@@ -412,7 +428,7 @@ pub fn message(chat: &ChatRead, id: &str) -> Option<Message> {
     read_message(id, value)
 }
 
-/// The member `value` holds under `field`: a record stores a member as its
+/// The member `value` holds under `field`: a resource stores a member as its
 /// JSON text.
 fn member(value: &Value, field: &str) -> Option<MemberId> {
     serde_json::from_str(value.get(field)?.as_str()?).ok()
@@ -451,17 +467,16 @@ fn read_message(id: &str, v: &Value) -> Option<Message> {
     })
 }
 
-/// The person or agent `id` of the workspace's chat.
+/// The person or agent `id` of the workspace, as its member list names them.
 #[must_use]
 pub fn person(chat: &ChatRead, id: &MemberId) -> Option<Person> {
-    let people = chat.record.get("people")?.as_object()?;
-    people.values().find_map(|p| {
-        let p = p.get("v").unwrap_or(p);
-        (member(p, "id").as_ref() == Some(id)).then(|| Person {
+    chat.members.iter().find_map(|row| {
+        let member: MemberId = serde_json::from_value(row.get("member")?.clone()).ok()?;
+        (member == *id).then(|| Person {
             id: id.clone(),
-            name: text(p, "name"),
-            agent: flag(p, "agent"),
-            avatar: opt_text(p, "avatar"),
+            name: text(row, "name"),
+            agent: !id.is_person(),
+            avatar: opt_text(row, "avatar"),
         })
     })
 }
@@ -494,8 +509,7 @@ mod tests {
                     "c_goal": {"k": "a", "v": {"category": null, "name": "goal", "topic": "", "kind": "text", "archived": false}},
                     "c_general": {"k": "b", "v": {"category": "k_chat", "name": "general", "topic": "talk", "kind": "text", "archived": false}},
                     "c_voice": {"k": "c", "v": {"category": "k_chat", "name": "voice", "topic": "", "kind": "voice", "archived": false}}
-                },
-                "people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false, "avatar": "aa"}}
+                }
             }),
             vec![(
                 "m1".into(),
@@ -506,10 +520,11 @@ mod tests {
                   "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}]}),
             )],
         )
+        .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada", "avatar": "aa"}]}))
     }
 
     tilo_test_env::scenario! {
-        fn chat_is_read_from_what_the_record_api_gives;
+        fn chat_is_read_from_what_the_resource_api_gives;
 
         phase reads_the_parts_read_and_counts_the_channels_of_the_parts_before;
         {
@@ -595,7 +610,7 @@ mod tests {
         }
 
         phase reads_a_shared_window;
-        // A window shared live: its address, its record and the share's
+        // A window shared live: its address, its resource and the share's
         // state, the access stored as a data enum or as text.
         {
             let chat = crate::tilo::ChatRead::new(

@@ -16,10 +16,10 @@ use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
     MenuAction, MenuTarget,
 };
+use crate::chat::chat;
 use crate::messages::{NewMessage, chat_part};
 use crate::model::{ChannelKind, Id};
 use crate::parts::ChatPart;
-use crate::record::chat;
 use crate::resource::Chat;
 
 mod attachment_import;
@@ -684,7 +684,7 @@ impl ChatApp {
             }
             return;
         }
-        // A draft is made in the person's own record the first time its
+        // A draft is made in the person's own document the first time its
         // composer is written in.
         let ensure = ui::tilo_resource::profiling::Phase::start("chat.composer.ensure_draft");
         self.focused_composer_mut().ensure_draft(doc);
@@ -876,7 +876,7 @@ impl ChatApp {
                 self.focus = Focus::Thread;
                 self.set_composer_focus();
             }
-            Hit::HostModel(command) => {
+            Hit::ModelStream(command) => {
                 self.activate_model_control(&command);
             }
             Hit::Send | Hit::RetrySend => self.send_focused(doc),
@@ -1000,7 +1000,7 @@ impl ChatApp {
             Hit::CallOpenWindow => {
                 // The card asks for the window that draws the call: the shell
                 // brings Chat's window forward and the call is drawn there
-                // again, rather than in a card standing over it.
+                // again, rather than in a card over it.
                 self.call.placement.request_app_return();
                 self.request_relayout();
             }
@@ -1030,7 +1030,7 @@ impl ChatApp {
             }
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and drag handles are
-            // handled at press time; permission-gated fallthroughs are no-ops.
+            // handled at press time; permission-guarded fallthroughs are no-ops.
             _ => {}
         }
         self.reload(doc);
@@ -1125,7 +1125,7 @@ impl ChatApp {
         }
     }
 
-    /// Make or change what the sheet settled on, through the record's verbs
+    /// Make or change what the sheet settled on, through the resource's verbs
     /// and field edits; a new text channel opens.
     pub(crate) fn apply_channel_sheet(
         &mut self,
@@ -1440,7 +1440,7 @@ impl ChatApp {
                         self.apply_now(
                             doc,
                             Chat::REPORT_PERSON.with(chat::ReportPerson {
-                                person: crate::record::member_slot(&author),
+                                person: author,
                                 reason,
                             }),
                         );
@@ -1774,7 +1774,7 @@ impl ChatApp {
             .map(|m| m.id.clone())
     }
 
-    /// Commit the inline message editor: submit the record's `edit-message`
+    /// Commit the inline message editor: submit the resource's `edit-message`
     /// (which keeps the prior text in the message's history and flags it
     /// edited), then close the editor. An
     /// edit that empties the message is discarded rather than blanking it.
@@ -1792,14 +1792,13 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        let mentions = self.agent_mentions(&text);
         self.apply_part(
             doc,
             ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
                 message: item(&id),
                 text,
                 body: Some(body),
-                mentions: Some(mentions),
+                mentions: None,
             }),
         );
         self.reload(doc);
@@ -1813,7 +1812,7 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // Sending is a write into the workspace: gated by the OS permission
+        // Sending is a write into the workspace: guarded by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
             return;
@@ -1832,7 +1831,7 @@ impl ChatApp {
         // send-to box run, answered here in the press that asked for it. The
         // post binds `@name` to members once, so no reader re-parses the
         // body to work out who it was addressed to. The draft is the writer's
-        // own and is emptied in their own record once the send is taken; a
+        // own and is emptied in their own document once the send is taken; a
         // refused send keeps it, to send again, and says so beside the
         // composer.
         let to = [ui::floating_surface::Recipient::found(
@@ -1887,7 +1886,7 @@ impl ChatApp {
             && channel == self.active_channel
             && self.composer_main.value().trim().is_empty()
         {
-            // The draft is the person's own record (or this device's), not
+            // The draft is the person's own document (or this device's), not
             // the workspace's document: no workspace edit carries it.
             let mut own = ui::tilo_resource::Doc::new();
             self.composer_main.ensure_draft(&own);
@@ -1897,7 +1896,7 @@ impl ChatApp {
     }
 
     /// Return to the newest message. This is intentionally local state: it
-    /// changes no shared message/read record by itself; the next sync records
+    /// changes no shared message/read resource by itself; the next sync resources
     /// a read watermark only because the reader can then see that edge.
     pub(crate) fn jump_to_latest(&mut self) {
         self.scroll = 0.0;
@@ -2005,7 +2004,7 @@ impl ChatApp {
             return;
         }
         self.attach_open = false;
-        let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+        let limit = usize::try_from(crate::chat::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
         self.device_pick = Some(
             ui::portal::PickRequest::open_multiple(
                 &crate::i18n::t("chat-attach-picker-title"),

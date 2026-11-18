@@ -57,7 +57,7 @@ pub fn seeded(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> 
 
 /// The session's seed blob for this device, when the launcher provided one.
 pub(crate) fn seed_data(device: &crate::gpu::DeviceHandle) -> Option<Vec<u8>> {
-    let dir = crate::host::environment().paths.pipeline_seed.clone()?;
+    let dir = crate::process::environment().paths.pipeline_seed.clone()?;
     let file = seed_file(&dir, &device.adapter.get_info())?;
     let (dir, name) = tilo_files::file_at(&file).ok()?;
     tilo_files::blocking::read(&dir, &name).ok()

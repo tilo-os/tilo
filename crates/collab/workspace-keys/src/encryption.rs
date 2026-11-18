@@ -8,7 +8,7 @@
 //! are published again, and two geneses made at once resolve to one without losing what was sealed
 //! under the other ([`key_group::peer`]).
 //!
-//! Every change registers the group's gate ([`GateRegistry`]: plaintext and another group's
+//! Every change registers the group's check ([`SealCheckRegistry`]: plaintext and another group's
 //! ciphertext are refused on every ingress path) and is announced
 //! ([`KeyProvider::workspace_changed`]), so an endpoint holding a route's keys asks the identity
 //! service again only when they change.
@@ -28,8 +28,8 @@ use collab_types::{
 use key_group::{Access, ContentKeys, GroupPeer, PeerEvent, VaultKey, WelcomeRefusal};
 use neighbour_wire::NeighbourMsg;
 
-use crate::gates::GateRegistry;
 use crate::schedule::{PolicySchedule, RECHECK_INTERVAL};
+use crate::seal_checks::SealCheckRegistry;
 use tilo_desktop_model::WorkspaceId;
 
 /// How often groups re-check the access policy when their directory
@@ -229,7 +229,7 @@ impl InboundGovernance {
 }
 
 /// Where the group protocol's messages travel: the workspace transport of the
-/// host (the desktop session's network, the runtime's relay sessions).
+/// host (the desktop session's network, the runtime's server sessions).
 pub trait GovernanceTransport {
     /// Hand one message to the transport. `false` when it was not accepted.
     fn publish(&self, message: NeighbourMsg) -> bool;
@@ -251,7 +251,7 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>>;
-    /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
+    /// The [`tilo_identity::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: groups then re-check on announcements and
     /// at [`Self::next_policy_change`]. `None` (the default) keeps the
@@ -270,7 +270,7 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
     /// Announce a policy change when the wall clock reaches `at` (seconds
     /// since the Unix epoch), an instant [`Self::next_policy_change`] named.
     fn announce_at(&self, at: u64) {
-        tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
+        tilo_identity::policy_change::wake_at(at.saturating_mul(1_000_000_000));
     }
     /// Whether this device created `workspace` and so founds its group. Every
     /// other device waits for the genesis and joins by Welcome.
@@ -300,7 +300,7 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// Where the peer of each workspace's group is kept.
     fn peers(&self) -> Arc<dyn key_group::PeerStates>;
     /// Every workspace this store holds a peer for, so a service registers
-    /// their gates before the first op after a restart. A store that cannot
+    /// their checks before the first op after a restart. A store that cannot
     /// list them answers none: its groups open as an endpoint asks about them.
     fn held(&self) -> Vec<WorkspaceId> {
         Vec::new()
@@ -397,7 +397,7 @@ pub struct KeysConfig {
     pub state: Arc<dyn KeyStorage>,
     /// Key sealing that state, held by the platform secret store.
     pub vault: VaultKey,
-    /// This device's certified key, kept in its custody: the request and frame signer.
+    /// This device's certified key, kept in its ownership: the request and frame signer.
     pub signer: Arc<dyn DeviceSigner>,
     /// Whether this device settles its groups or only follows them.
     pub role: KeyRole,
@@ -454,7 +454,7 @@ struct PeerEntry {
     peer: GroupPeer,
     /// The request this device asks with while it waits, re-sent on `retry`.
     request: Option<MlsAccessRequestV1>,
-    /// A request whose signature the device's custody has not answered yet.
+    /// A request whose signature the device's ownership has not answered yet.
     signing: Option<(MlsAccessRequestV1, SignFuture<'static>)>,
     retry: Backoff,
     /// When the next request mints a fresh member key: an admission whose
@@ -537,7 +537,7 @@ pub struct WorkspaceKeys {
     /// This device's own group state; `None` when no secret store opened.
     store: Option<KeysConfig>,
     directory: Box<dyn KeyDirectory>,
-    gates: Arc<dyn GateRegistry>,
+    seal_checks: Arc<dyn SealCheckRegistry>,
     peers: HashMap<WorkspaceId, PeerEntry>,
     /// When the groups last re-checked the access policy, and what the next
     /// re-check waits for.
@@ -554,14 +554,14 @@ pub struct WorkspaceKeys {
     queued: bool,
     /// Groups asked about that could not be opened; see [`Unopened`].
     unopened: HashMap<WorkspaceId, Unopened>,
-    /// The gate this service last registered with the broker for each
-    /// group. Every access re-asserts its group's gate, and a group's
+    /// The check this service last registered with the broker for each
+    /// group. Every access re-asserts its group's check, and a group's
     /// keys are read for every live frame sealed or opened; taking the
     /// broker's lock for each made every such read wait for as long as a
     /// broker thread held it to append and sync durable history, which froze
-    /// the desktop while its frame loop was the reader. Only a changed gate
+    /// the desktop while its frame loop was the reader. Only a changed check
     /// takes the lock.
-    registered: HashMap<WorkspaceId, key_group::SealGate>,
+    registered: HashMap<WorkspaceId, key_group::SealCheck>,
     /// Groups whose frames arrived while this device took no part in
     /// them: they have a group, so this device never creates one.
     groups_seen: std::collections::HashSet<WorkspaceId>,
@@ -596,16 +596,16 @@ impl WorkspaceKeys {
     }
 
     /// Open every group state the host keeps and register each group's
-    /// gate with the broker, so the plaintext gate holds from the first op after
+    /// check with the broker, so the plaintext check holds from the first op after
     /// a restart.
     pub fn open(
         config: KeysConfig,
         directory: Box<dyn KeyDirectory>,
-        gates: Arc<dyn GateRegistry>,
+        seal_checks: Arc<dyn SealCheckRegistry>,
     ) -> std::io::Result<Self> {
         config.state.prepare().map_err(std::io::Error::other)?;
         let held = config.state.held();
-        let mut service = Self::with_store(Some(config), directory, gates);
+        let mut service = Self::with_store(Some(config), directory, seal_checks);
         let now = tilo_clock::now();
         for workspace in held {
             if let Err(error) = service.open_peer(workspace, now) {
@@ -617,19 +617,22 @@ impl WorkspaceKeys {
 
     /// The service of a device whose secret store did not open: it answers
     /// every workspace [`KeyAccess::NoSecretStore`].
-    pub fn without_store(directory: Box<dyn KeyDirectory>, gates: Arc<dyn GateRegistry>) -> Self {
-        Self::with_store(None, directory, gates)
+    pub fn without_store(
+        directory: Box<dyn KeyDirectory>,
+        seal_checks: Arc<dyn SealCheckRegistry>,
+    ) -> Self {
+        Self::with_store(None, directory, seal_checks)
     }
 
     fn with_store(
         store: Option<KeysConfig>,
         directory: Box<dyn KeyDirectory>,
-        gates: Arc<dyn GateRegistry>,
+        seal_checks: Arc<dyn SealCheckRegistry>,
     ) -> Self {
         Self {
             store,
             directory,
-            gates,
+            seal_checks,
             peers: HashMap::new(),
             reconcile: PolicySchedule::default(),
             delivery: 0,
@@ -828,14 +831,14 @@ impl WorkspaceKeys {
             .is_some_and(|store| store.role == KeyRole::Follower)
     }
 
-    /// Whether a request waits on its signature from the device's custody: [`Self::signatures`]
+    /// Whether a request waits on its signature from the device's ownership: [`Self::signatures`]
     /// then has something to await.
     #[must_use]
     pub fn signing(&self) -> bool {
         self.peers.values().any(|entry| entry.signing.is_some())
     }
 
-    /// Await every signature the device's custody owes, keeping each signed request for the next
+    /// Await every signature the device's ownership owes, keeping each signed request for the next
     /// [`Self::pump`] to send.
     pub async fn signatures(&mut self) {
         for (workspace, request, signing) in self.take_signing() {
@@ -844,7 +847,7 @@ impl WorkspaceKeys {
         }
     }
 
-    /// The access requests whose signatures the device's custody owes, taken out of the service
+    /// The access requests whose signatures the device's ownership owes, taken out of the service
     /// so a shared one is not held while they are awaited; each answer goes back with
     /// [`Self::signed`].
     pub fn take_signing(
@@ -863,7 +866,7 @@ impl WorkspaceKeys {
             .collect()
     }
 
-    /// Keep `request`, signed by the device's custody, for the next [`Self::pump`] to send.
+    /// Keep `request`, signed by the device's ownership, for the next [`Self::pump`] to send.
     pub fn signed(
         &mut self,
         workspace: WorkspaceId,
@@ -1236,8 +1239,8 @@ impl WorkspaceKeys {
             | PeerEvent::WelcomeRefused(WelcomeRefusal::DeviceNotAllowed) => false,
         };
         let changed = entry.hold_welcome(&event, kept, allowed, epoch, store, now) || changed;
-        let gate = entry.peer.gate();
-        self.register_gate(workspace, gate);
+        let seal_check = entry.peer.seal_check();
+        self.register_seal_check(workspace, seal_check);
         if changed {
             self.bump(workspace);
         }
@@ -1376,8 +1379,8 @@ impl WorkspaceKeys {
         if outcome.changed() {
             tracing::debug!(%workspace, admitted = ?outcome.admitted, removed = ?outcome.removed, "key group changed");
             entry.committed_at = Some(now);
-            let gate = entry.peer.gate();
-            self.register_gate(workspace, gate);
+            let seal_check = entry.peer.seal_check();
+            self.register_seal_check(workspace, seal_check);
             self.bump(workspace);
         }
     }
@@ -1467,7 +1470,7 @@ impl WorkspaceKeys {
             let signer = Arc::clone(&store.signer);
             let mut signing: SignFuture<'static> =
                 Box::pin(async move { signer.sign(message).await });
-            // A key that answers at once (a native one) signs in this pass; custody that answers
+            // A key that answers at once (a native one) signs in this pass; ownership that answers
             // later (a page's) leaves the request for [`Self::signatures`].
             match signing
                 .as_mut()
@@ -1548,8 +1551,8 @@ impl WorkspaceKeys {
                 // The requests it holds are admitted at once.
                 entry.dirty = true;
                 entry.wanted = true;
-                let gate = entry.peer.gate();
-                self.register_gate(workspace, gate);
+                let seal_check = entry.peer.seal_check();
+                self.register_seal_check(workspace, seal_check);
                 self.bump(workspace);
             }
             Ok(false) => {}
@@ -1611,7 +1614,7 @@ impl WorkspaceKeys {
     }
 
     fn insert_peer(&mut self, workspace: WorkspaceId, peer: GroupPeer, now: Instant) {
-        let gate = peer.gate();
+        let seal_check = peer.seal_check();
         let found_at = now
             .checked_add(found_after(&peer.device(), workspace))
             .unwrap_or(now);
@@ -1637,15 +1640,15 @@ impl WorkspaceKeys {
                 welcome: None,
             },
         );
-        self.register_gate(workspace, gate);
+        self.register_seal_check(workspace, seal_check);
     }
 
-    fn register_gate(&mut self, workspace: WorkspaceId, gate: key_group::SealGate) {
-        if !gate.encryption_required || self.registered.get(&workspace) == Some(&gate) {
+    fn register_seal_check(&mut self, workspace: WorkspaceId, seal_check: key_group::SealCheck) {
+        if !seal_check.encryption_required || self.registered.get(&workspace) == Some(&seal_check) {
             return;
         }
-        self.gates.register_gate(workspace, gate);
-        self.registered.insert(workspace, gate);
+        self.seal_checks.register_seal_check(workspace, seal_check);
+        self.registered.insert(workspace, seal_check);
     }
 
     /// Record that `workspace`'s keys or access changed, and announce it.
@@ -1714,7 +1717,7 @@ impl SharedKeys {
         Some(operation(&mut service))
     }
 
-    /// See [`WorkspaceKeys::ask_on_entry`]; the custody's signature is awaited without
+    /// See [`WorkspaceKeys::ask_on_entry`]; the ownership's signature is awaited without
     /// holding the service.
     pub async fn ask_on_entry(
         &self,
@@ -1803,7 +1806,7 @@ impl SharedKeys {
     }
 
     /// [`WorkspaceKeys::signatures`] on the shared service, never holding it while the
-    /// device's custody signs.
+    /// device's ownership signs.
     pub async fn signatures(&self) {
         let Some(owed) = self.run(WorkspaceKeys::take_signing) else {
             return;
@@ -1825,7 +1828,7 @@ impl SharedKeys {
         }
     }
 
-    /// Whether the device's custody owes a signature ([`WorkspaceKeys::signing`]).
+    /// Whether the device's ownership owes a signature ([`WorkspaceKeys::signing`]).
     pub fn signing(&self) -> bool {
         self.run(|service| service.signing()).unwrap_or(false)
     }
@@ -1914,7 +1917,7 @@ impl SharedKeys {
     ///
     /// A device taking part in no group never arms it, and so sleeps
     /// through every announcement.
-    pub fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
+    pub fn arm_policy_watch(&self, watch: &tilo_identity::policy_change::Watch) -> bool {
         let Ok(service) = self.inner.lock() else {
             return true;
         };
@@ -2136,12 +2139,12 @@ fn not_ready(wait: Duration) -> String {
 
 /// The identity service's route keys, from this host's key service once
 /// one runs.
-impl tilo_identity_host::sources::GroupKeySource for KeyProvider {
+impl tilo_identity::sources::GroupKeySource for KeyProvider {
     fn access(
         &self,
         workspace: WorkspaceId,
         known_generation: u64,
-    ) -> Option<Result<tilo_identity_host::sources::GroupKeys, String>> {
+    ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
         use runtime_identity::wire::KeyAccess as Wire;
         let groups = self.get()?;
         let (access, generation) = groups.access(workspace);
@@ -2165,7 +2168,7 @@ impl tilo_identity_host::sources::GroupKeySource for KeyProvider {
 }
 
 mod entry;
-mod standing;
+mod handover;
 
 #[cfg(test)]
 mod tests {

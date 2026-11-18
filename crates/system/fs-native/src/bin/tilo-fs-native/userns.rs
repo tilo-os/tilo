@@ -1,7 +1,7 @@
 //! What an unprivileged user namespace allows: the process enters a new user
 //! and mount namespace (it must still be single-threaded), maps itself to root
 //! inside it, mounts a tmpfs it owns, and tries each fanotify and Btrfs
-//! operation the data plane uses.
+//! operation the backend uses.
 
 use std::fs;
 use std::io;

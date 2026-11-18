@@ -251,7 +251,7 @@ fn remote_writing_tints_once_per_run() {
     }
 
     // An explicit `Typing` payload is a peer *stating* it wrote something, and is
-    // not gated: it is a report, not an inference.
+    // not guarded: it is a report, not an inference.
     {
         let mut a = app();
         let key = PresenceKey::Widget {

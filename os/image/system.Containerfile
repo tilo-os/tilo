@@ -92,7 +92,7 @@ COPY \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
     os/usr/lib/systemd/user/tilo-secret-service.service \
-    os/usr/lib/systemd/user/tilo-app-host.socket \
+    os/usr/lib/systemd/user/tilo-package-service.socket \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
@@ -103,10 +103,10 @@ COPY \
     os/usr/lib/systemd/user/tilo-runtime-resident.path \
     /usr/lib/systemd/user/
 COPY \
-    os/usr/lib/systemd/system/tilo-relay.service \
+    os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
-    os/usr/lib/systemd/system/tilo-relay-firstboot.service \
-    os/usr/lib/systemd/system/tilo-relay-state-migrate.service \
+    os/usr/lib/systemd/system/tilo-server-firstboot.service \
+    os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
@@ -116,7 +116,7 @@ COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
     /usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf
-COPY os/usr/libexec/tilo-relay-firstboot os/usr/libexec/tilo-relay-state-migrate /usr/libexec/
+COPY os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate /usr/libexec/
 COPY \
     os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
     os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
@@ -239,7 +239,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-device-vpn.service \
     os/usr/lib/systemd/system/tilo-device-vpn-reset.service \
     /usr/lib/systemd/system/
-# NTFS drives: the kernel driver loads only when the consent-gated mount
+# NTFS drives: the kernel driver loads only when the consent-guarded mount
 # service asks for it, and UDisks may not mount one around that service.
 COPY os/etc/modprobe.d/tilo-ntfs.conf /etc/modprobe.d/tilo-ntfs.conf
 COPY os/usr/lib/tmpfiles.d/tilo-ntfs-mount.conf /usr/lib/tmpfiles.d/tilo-ntfs-mount.conf
@@ -385,26 +385,26 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-relay.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
-# The relay's static account: a desktop set up as a node runs the relay
-# (tilo-node-relay@) under it, as the host image runs tilo-relay.service. Its
-# snippet ships with the relay component (os/components.toml), which arrives
+# The server's static account: a desktop set up as a node runs the server
+# (tilo-node-server@) under it, as the host image runs tilo-server.service. Its
+# snippet ships with the server component (os/components.toml), which arrives
 # with the compiled binaries, so the account is made from the source file here.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
     /usr/lib/sysusers.d/
-RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-relay.conf,target=/run/tilo-relay-sysusers.conf,ro \
+RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-server.conf,target=/run/tilo-server-sysusers.conf,ro \
     systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
- && systemd-sysusers /run/tilo-relay-sysusers.conf \
+ && systemd-sysusers /run/tilo-server-sysusers.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
 # xdg-desktop-portal backend registration.
@@ -576,7 +576,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/dracut/modules.d/92tilo-sibling-unlock/module-setup.sh \
         /usr/lib/dracut/modules.d/94tilo-greeter/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
-        /usr/libexec/tilo/boot-units-gate.sh \
+        /usr/libexec/tilo/boot-units-check.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
@@ -744,7 +744,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
     systemctl --global enable tilo-projector.socket && \
-    systemctl --global enable tilo-app-host.socket && \
+    systemctl --global enable tilo-package-service.socket && \
     systemctl --global enable tilo-ush.socket && \
     systemctl --global enable tilo-fs-cloud.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \

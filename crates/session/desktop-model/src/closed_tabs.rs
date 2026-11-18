@@ -15,6 +15,7 @@
 
 use std::collections::VecDeque;
 
+use crate::apps::{app_ids_match, canonical_app_id};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Tab, WindowGroup};
 use crate::tree::Layout;
@@ -84,10 +85,11 @@ impl ClosedTabs {
         self.entries.push_back(entry);
     }
 
-    /// The newest close, taken off the stack: a close is undone once, never
-    /// twice.
-    pub fn pop(&mut self) -> Option<ClosedTab> {
-        self.entries.pop_back()
+    /// The newest close `pick` takes, taken off the stack: a close is undone
+    /// once, never twice.
+    pub fn take_newest(&mut self, pick: impl Fn(&ClosedTab) -> bool) -> Option<ClosedTab> {
+        let at = self.entries.iter().rposition(pick)?;
+        self.entries.remove(at)
     }
 
     #[must_use]
@@ -156,7 +158,8 @@ impl Workspace {
         self.closed_tabs = from.closed_tabs.clone();
     }
 
-    /// Put the newest close back where it was and return where it landed:
+    /// Put the newest close back where it was — the newest of `app`'s windows
+    /// when an app asks, which reopens only its own — and return where it landed:
     /// into its group at its old index when that group is still there, else
     /// into the group made again at its old place in its strip — or in the
     /// strip this workspace shows (`focused_strip`) when that strip is gone
@@ -167,9 +170,18 @@ impl Workspace {
     /// again. A remembered window that is open again already — a peer's tree
     /// or a document brought it back — has had its close undone, and is
     /// skipped rather than reopened as a second window under one identity.
-    pub fn reopen_closed(&mut self, focused_strip: Option<StripId>) -> Option<Reopened> {
+    pub fn reopen_closed(
+        &mut self,
+        focused_strip: Option<StripId>,
+        app: Option<&str>,
+    ) -> Option<Reopened> {
+        let of_app = |entry: &ClosedTab| {
+            app.is_none_or(|app| {
+                canonical_app_id(&entry.tab.tile).is_some_and(|id| app_ids_match(id.as_str(), app))
+            })
+        };
         loop {
-            let entry = self.closed_tabs.pop()?;
+            let entry = self.closed_tabs.take_newest(of_app)?;
             let tab = entry.tab.id;
             if self.holds(tab) {
                 continue;
@@ -241,18 +253,18 @@ impl Workspace {
 }
 
 impl Layout {
-    /// Put the window closed most recently in `workspace` back where it was
-    /// and focus it, as the person's reopen does: the workspace shows the
+    /// Put the window closed most recently in `workspace` — of `app`, when an
+    /// app asks — back where it was and focus it, as the person's reopen does: the workspace shows the
     /// strip it lands in, and that strip its group, on the display the group
     /// was shown on while that display is still here. `None`, changing
     /// nothing, when the workspace is gone or remembers no close.
-    pub fn reopen_closed(&mut self, workspace: WorkspaceId) -> Option<Reopened> {
+    pub fn reopen_closed(&mut self, workspace: WorkspaceId, app: Option<&str>) -> Option<Reopened> {
         let focused = self.active_strip.get(&workspace).copied();
         let reopened = self
             .workspaces
             .iter_mut()
             .find(|candidate| candidate.id() == workspace)?
-            .reopen_closed(focused)?;
+            .reopen_closed(focused, app)?;
         self.active = workspace;
         self.active_strip.insert(workspace, reopened.strip);
         self.set_active_group(reopened.strip, reopened.group);

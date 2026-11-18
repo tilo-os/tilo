@@ -11,9 +11,10 @@ use std::sync::Arc;
 use assistant::App;
 use serde_json::json;
 use ui::prelude::*;
-use ui::tilo_actions::remote::{Caller, InvokeArgument, TestHost};
+use ui::tilo_actions::remote::{Caller, InvokeArgument, TestProvider};
 use ui::tilo_reference::ResourceRef;
-use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
+use ui::tilo_resource::NonBlank;
+use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents, workspace_agents};
 
 /// The workspace the window is in.
 const WORKSPACE: &str = "6f0c3a52-8e1b-4d6a-9c2f-3b7e5d1a4c90";
@@ -38,14 +39,14 @@ fn says(app: &mut TestApp<App>, text: &str) -> bool {
 
 /// Chat as the session's API reaches it: it takes each message it is sent and answers
 /// nothing, as `send` does for a caller that opens no window.
-fn chat_api() -> TestHost {
-    TestHost::new().completing(|_| ui::tilo_actions::ActionOutput {
+fn chat_api() -> TestProvider {
+    TestProvider::new().completing(|_| ui::tilo_actions::ActionOutput {
         value: None,
         resources: Vec::new(),
     })
 }
 
-/// The agents working in the window's workspace, as its own record of them has them.
+/// The agents working in the window's workspace, as its own document of them has them.
 fn agents(app: &mut TestApp<App>) -> Vec<(String, String, Option<String>)> {
     let record = app
         .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
@@ -137,7 +138,7 @@ fn a_task_is_listed_where_it_stands_and_never_under_another_stage() {
 }
 
 #[test]
-fn a_window_someone_uses_says_what_no_record_answers_instead_of_none() {
+fn a_window_someone_uses_says_what_no_resource_answers_instead_of_none() {
     english();
     let mut app = TestApp::<App>::in_workspace(WORKSPACE).expect("the window");
     app.frame();
@@ -165,7 +166,7 @@ fn creating_the_assistant_makes_an_agent_of_the_workspace_the_person_keeps() {
     assert_eq!(
         made.len(),
         1,
-        "one agent, in Chat's record of them: {made:?}"
+        "one agent, in Chat's resource of them: {made:?}"
     );
     assert_eq!(made[0].0, "assistant", "the id its actor works under");
     assert_eq!(made[0].1, "Assistant");
@@ -260,4 +261,92 @@ fn a_job_for_a_sub_agent_goes_to_the_main_agent_through_chats_own_send() {
     app.frame();
     assert!(shows(&mut app, "assistant-open-in-chat"));
     assert!(!shows(&mut app, "assistant-job"));
+}
+
+/// The workspace's document of its agents, by its id.
+fn agents_document() -> DocumentId {
+    DocumentId::parse(&ui::resource::workspace::document_id(workspace_agent::KIND))
+        .expect("the id of the workspace's agents")
+}
+
+#[test]
+fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
+    english();
+    let mut app = TestApp::<App>::awaiting_the_workspace(WORKSPACE, workspace_agent::OWNER)
+        .expect("the window");
+    app.frame();
+    // On their way, the agents are neither read nor taken for none: nothing offers to make
+    // an assistant the workspace may already hold.
+    assert!(shows(&mut app, "assistant-agents-not-here"));
+    assert!(!shows(&mut app, "assistant-create"));
+    assert!(
+        app.wanted_resources().contains(&agents_document()),
+        "the workspace is asked for them"
+    );
+    // The person looks at the supervision meanwhile.
+    app.harness().click_named("assistant-supervision").unwrap();
+    app.frame();
+    assert!(shows(&mut app, "assistant-agents-not-here"));
+
+    // The workspace delivers its agents, the person's assistant among them.
+    app.workspace_delivers::<WorkspaceAgents>(workspace_agent::OWNER, |agents| {
+        agents
+            .invoke(
+                &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    name: NonBlank::parse("Assistant").expect("a name"),
+                    keeper: None,
+                    id: Some("assistant".to_owned()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())
+    })
+    .expect("delivered");
+    for _ in 0..4 {
+        app.frame();
+    }
+    // The window shows them with nobody opening it again, where the person was: the
+    // supervision is the assistant's now.
+    assert!(!shows(&mut app, "assistant-agents-not-here"));
+    assert!(
+        shows(&mut app, "assistant-supervision-facts"),
+        "the place the person had open reads the assistant"
+    );
+    assert!(!shows(&mut app, "assistant-create"));
+    // Back on the main chat: the conversation is Chat's, and there is someone to hand a
+    // job to.
+    app.harness().click_named("assistant-supervision").unwrap();
+    app.frame();
+    assert!(shows(&mut app, "assistant-open-in-chat"));
+    assert!(says(&mut app, "The conversation with Assistant is in Chat"));
+    assert!(shows(&mut app, "assistant-start-sub-agent"));
+    assert_eq!(agents(&mut app).len(), 1, "the one the workspace holds");
+}
+
+#[test]
+fn a_window_opened_before_the_workspace_answered_offers_the_first_assistant_once_it_holds_none() {
+    english();
+    let mut app = TestApp::<App>::awaiting_the_workspace(WORKSPACE, workspace_agent::OWNER)
+        .expect("the window");
+    app.frame();
+    assert!(shows(&mut app, "assistant-agents-not-here"));
+    assert!(!shows(&mut app, "assistant-create"));
+
+    // The workspace holds no agents yet: their document is new here, and the one step that
+    // makes the first assistant stands where the sentence was.
+    app.workspace_answered(agents_document(), WorkspaceAnswer::HoldsNone);
+    for _ in 0..4 {
+        app.frame();
+    }
+    assert!(!shows(&mut app, "assistant-agents-not-here"));
+    assert!(shows(&mut app, "assistant-create"));
+    app.harness().click_named("assistant-create").unwrap();
+    app.frame();
+    assert_eq!(
+        agents(&mut app).len(),
+        1,
+        "the first agent of the workspace"
+    );
+    assert!(shows(&mut app, "assistant-open-in-chat"));
 }

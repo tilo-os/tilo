@@ -1,4 +1,4 @@
-//! UI-only chooser adapter; native request custody and grants stay in the backend.
+//! UI-only chooser adapter; native request ownership and grants stay in the backend.
 use imager_backend::migration_review::{
     self as native, GrantedHomeRoots, MountedHomeLocations, MountedRootRequest,
     MountedRootSelection, RootKind,

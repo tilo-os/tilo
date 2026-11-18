@@ -435,7 +435,7 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 ActionParam::optional(
                     "step",
                     ParamType::Text,
-                    "A change id from history: undo only the step it is part of",
+                    "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
                 )
                 .nullable(),
             ],
@@ -445,12 +445,8 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 if to.is_some() && args.integer("steps").is_some() {
                     return Err("give steps or to, not both".into());
                 }
-                if step.is_some()
-                    && (to.is_some()
-                        || args.integer("steps").is_some()
-                        || args.text("invocation").is_some())
-                {
-                    return Err("give step alone".into());
+                if step.is_some() && (to.is_some() || args.integer("steps").is_some()) {
+                    return Err("give step alone, or with whose it is (invocation or by)".into());
                 }
                 let by = args
                     .get("by")
@@ -525,7 +521,7 @@ fn view_specs() -> Vec<ActionSpec> {
         view(
             "history",
             "History",
-            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, checkpoints.",
+            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, what an undo took back or a redo brought back, checkpoints.",
             vec![
                 ActionParam::optional(
                     "last",
@@ -676,6 +672,7 @@ fn sentence(version: &Version, words: &dyn HistoryWords) -> String {
 }
 
 fn entry(
+    doc: &AutoCommit,
     version: &Version,
     undone: &HashSet<String>,
     checkpoints: &[Checkpoint],
@@ -694,6 +691,19 @@ fn entry(
     entry.insert("time_ms".into(), version.time_ms.into());
     if undone.contains(&version.hash.to_string()) {
         entry.insert("undone".into(), true.into());
+    }
+    // The changes an undo or redo moved: what tells it from an edit of its own.
+    let moved = match steps::kind_of(doc, version) {
+        steps::Kind::Undo(moved) => Some(("takes_back", moved)),
+        steps::Kind::Redo(moved) => Some(("brings_back", moved)),
+        steps::Kind::Edit | steps::Kind::Bookkeeping => None,
+    };
+    if let Some((key, moved)) = moved {
+        let moved: Vec<String> = moved
+            .iter()
+            .map(|hash| hash.chars().take(12).collect())
+            .collect();
+        entry.insert(key.into(), json!(moved));
     }
     let named: Vec<&str> = checkpoints
         .iter()
@@ -815,7 +825,7 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
         .iter()
         .skip(total.saturating_sub(last))
         .filter(|version| !steps::is_schema_genesis(version))
-        .map(|version| entry(version, &undone, &checkpoints, words))
+        .map(|version| entry(doc, version, &undone, &checkpoints, words))
         .collect();
     carry_over(&mut listed);
     json!({
@@ -854,7 +864,7 @@ pub fn entries_after(
         .iter()
         .filter(|version| since.contains(&version.hash))
         .filter(|version| !steps::is_schema_genesis(version) && !is_document_making(version))
-        .map(|version| entry(version, &undone, &checkpoints, words))
+        .map(|version| entry(doc, version, &undone, &checkpoints, words))
         .collect()
 }
 
@@ -912,7 +922,7 @@ pub fn answer(
 }
 
 /// The root keys `patches` put (`true`) or delete under `prefix`, without it.
-fn ledger(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
+fn log(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
     patches
         .iter()
         .filter(|patch| patch.path.is_empty())
@@ -993,14 +1003,14 @@ pub fn result(
     };
     let value = match action {
         "undo" => {
-            json!({"undone": described(ledger(patches, steps::UNDONE_KEY, true), &mut doc), "now": now})
+            json!({"undone": described(log(patches, steps::UNDONE_KEY, true), &mut doc), "now": now})
         }
         "redo" => {
-            json!({"redone": described(ledger(patches, steps::UNDONE_KEY, false), &mut doc), "now": now})
+            json!({"redone": described(log(patches, steps::UNDONE_KEY, false), &mut doc), "now": now})
         }
         "restore" | "restore-reviewed" => json!({"restored": items(patches), "now": now}),
         "checkpoint" => {
-            let name = ledger(patches, steps::CHECKPOINT_KEY, true);
+            let name = log(patches, steps::CHECKPOINT_KEY, true);
             let version = steps::checkpoints(&doc)
                 .into_iter()
                 .find(|checkpoint| name.contains(&checkpoint.name))
@@ -1245,5 +1255,90 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    /// One step of `actor`'s adding `words` at the end of `body`, under a
+    /// gesture of its own: the step history lists, and its change.
+    fn wrote(
+        doc: &mut AutoCommit,
+        body: &automerge::ObjId,
+        actor: &[u8],
+        words: &str,
+    ) -> (String, automerge::ChangeHash) {
+        use automerge::transaction::CommitOptions;
+        doc.set_actor(automerge::ActorId::from(actor));
+        let end = doc.length(body);
+        doc.splice_text(body, end, 0, words).unwrap();
+        let gesture = tilo_actions::ActionId::new();
+        let message = tilo_actions::ActionContext::default()
+            .in_gesture(Some(gesture))
+            .change_message()
+            .unwrap();
+        let hash = doc
+            .commit_with(CommitOptions::default().with_message(message))
+            .unwrap();
+        (gesture.0.to_string(), hash)
+    }
+
+    fn take_back(doc: &mut AutoCommit, actor: &[u8], change: &automerge::ChangeHash) {
+        let scope = Scope::Actor(automerge::ActorId::from(actor).to_hex_string());
+        steps::undo_step(doc, &scope, change, |_, _| Ok(None), &TestWords).unwrap();
+        doc.commit();
+    }
+
+    /// What holds the undo of `step` back, read from the history as a caller reads it.
+    fn holding_back(doc: &AutoCommit, step: &str) -> Option<Value> {
+        let listed = history(doc, 50, &TestWords);
+        let entries = listed["versions"].as_array().unwrap();
+        tilo_actions::remote::workspace_invocations::edited_after(entries, |entry| {
+            entry["step"] == step
+        })
+        .cloned()
+    }
+
+    #[test]
+    fn steps_are_taken_back_newest_first_and_a_later_edit_by_someone_else_holds_one_back() {
+        const AGENT: &[u8] = b"agent";
+        let mut doc = AutoCommit::new();
+        let body = doc
+            .put_object(ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        doc.commit();
+        let (cover, cover_change) = wrote(&mut doc, &body, AGENT, "Dear Visa Officer,");
+        let (_, closing_change) = wrote(&mut doc, &body, AGENT, " Yours faithfully");
+
+        take_back(&mut doc, AGENT, &closing_change);
+        let listed = history(&doc, 50, &TestWords);
+        let undo = listed["versions"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            undo["takes_back"],
+            json!([steps::short(&closing_change)]),
+            "{undo}"
+        );
+        assert_eq!(
+            holding_back(&doc, &cover),
+            None,
+            "an undo of a later step holds none back"
+        );
+        take_back(&mut doc, AGENT, &cover_change);
+        assert_eq!(doc.text(&body).unwrap(), "");
+
+        let mut doc = AutoCommit::new();
+        let body = doc
+            .put_object(ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        doc.commit();
+        let (cover, _) = wrote(&mut doc, &body, AGENT, "Dear Visa Officer,");
+        let (_, bobs) = wrote(&mut doc, &body, b"bob", " Kind regards");
+        assert_eq!(
+            holding_back(&doc, &cover).map(|entry| entry["change"].clone()),
+            Some(json!(steps::short(&bobs))),
+            "someone else's later edit holds it back"
+        );
     }
 }

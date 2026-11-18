@@ -60,7 +60,10 @@ impl LegacyAppearance {
     /// reduced-motion request from the host environment.
     pub fn configured() -> Self {
         let text = serde_json::Value::Object(settings_store::load()).to_string();
-        Self::from_settings_text(&text, ui::host::environment().accessibility.reduce_motion)
+        Self::from_settings_text(
+            &text,
+            ui::process::environment().accessibility.reduce_motion,
+        )
     }
 
     /// Pure projection of a settings document body. A missing or malformed document yields the

@@ -1,6 +1,6 @@
-//! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
+//! Same-barrier native outgoing ownership; server queue acceptance is never an ACK.
 use crate::StatePeer;
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, record};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use collab_types::signer::DeviceSigner;
 use collab_types::{EncryptionMetadata, OpKind, SignedOp};
@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use web_time::SystemTime;
 
-/// Writes custody keeps in its record at its head, where the relay session sends them from,
+/// Writes ownership keeps in its record at its head, where the server session sends them from,
 /// and at most as many again at its tail. Every write past them waits in runs of the store's
-/// beside the record ([`super::Store::put_custody`]): custody takes every write this device
+/// beside the record ([`super::Store::put_ownership`]): ownership takes every write this device
 /// makes, linked or not, however long its host is away. This crate's tests keep fewer, so a
 /// test crosses the bound many times over in the writes it can afford.
 #[cfg(not(test))]
@@ -21,9 +21,9 @@ pub(crate) const MAX_ENTRIES: usize = 64;
 #[cfg(test)]
 pub(crate) const MAX_ENTRIES: usize = 8;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
-/// Bytes of writes one run of custody's backlog gathers before the store keeps it.
+/// Bytes of writes one batch of ownership's backlog gathers before the store keeps it.
 const RUN_BYTES: usize = 1024 * 1024;
-/// Most bytes a run the store keeps can hold: its writes, then one more that did not fit.
+/// Most bytes a batch the store keeps can hold: its writes, then one more that did not fit.
 pub(crate) const MAX_RUN_BYTES: usize = RUN_BYTES + MAX_BYTES + 64 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 /// Passes (writes, and asks of the workspace's holder) before a compaction that
@@ -103,7 +103,7 @@ pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
         snapshot: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
     /// Seal `write` again under its channel's current epoch: one of this device's sealed writes
-    /// of `workspace` that expired in custody before its host took it. Answers the encryption and
+    /// of `workspace` that expired held before its host took it. Answers the encryption and
     /// payload its renewal carries.
     ///
     /// # Errors
@@ -133,7 +133,7 @@ pub(crate) struct StoredPublication {
     pub(crate) projection: Vec<StoredOutgoing>,
     #[serde(default, deserialize_with = "read_entries")]
     governance: Vec<StoredOutgoing>,
-    /// What the workspace's relay host answered to this device's writes, per record.
+    /// What the workspace's server host answered to this device's writes, per record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     answered: Vec<AnsweredDocument>,
     /// Writes behind `entries` the store keeps beside the record, oldest first: they move to
@@ -153,15 +153,15 @@ pub(crate) struct StoredPublication {
     /// newest writes wait in runs the store keeps, so an answer never rewrites them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hosted: Vec<HostedHistory>,
-    /// Custody's compactions not drafted yet. Each keeps its place, and the sequence it was
-    /// committed under, until it is the next write custody sends: it is drafted then, against
+    /// Ownership's compactions not drafted yet. Each keeps its place, and the sequence it was
+    /// committed under, until it is the next write ownership sends: it is drafted then, against
     /// the history its host acknowledged ([`NativeWorkspaceOwner::compact_outgoing`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     slots: Vec<[u8; 32]>,
 }
 /// One of [`StoredPublication::hosted`]: the host's writes of `record` of `app` the record
 /// holds here only inside this device's compaction, in the host's order: those of `runs`
-/// ([`super::Store::put_custody`]), then `writes`.
+/// ([`super::Store::put_ownership`]), then `writes`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct HostedHistory {
     app: String,
@@ -210,9 +210,9 @@ impl Hosted {
 }
 /// A write of a [`HostedHistory`], as postcard bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct HostedWrite(#[serde(with = "crate::owner::record::base64_bytes")] Vec<u8>);
+struct HostedWrite(#[serde(with = "crate::owner::stored::base64_bytes")] Vec<u8>);
 impl HostedHistory {
-    /// Keep all but the newest writes in runs, as custody keeps its backlog.
+    /// Keep all but the newest writes in runs, as ownership keeps its backlog.
     fn spill(&mut self, (store, workspace): Runs<'_>) -> Result<(), String> {
         let runs = spill(&mut self.writes, |write| write.0.len(), store, workspace)?;
         self.runs.extend(runs.into_iter().map(|(hash, _)| hash));
@@ -237,15 +237,15 @@ pub(crate) fn hosted_in_document(view: &NativeCommittedView) -> (usize, usize) {
             })
     })
 }
-/// Writes of custody's backlog the store keeps as one run, named by the hash of its bytes
-/// ([`super::Store::put_custody`]), and how many of them moved to custody's head already.
+/// Writes of ownership's backlog the store keeps as one run, named by the hash of its bytes
+/// ([`super::Store::put_ownership`]), and how many of them moved to ownership's head already.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SpilledRun {
     hash: [u8; 32],
     writes: u32,
     taken: u32,
 }
-/// The relay host's answers to this device's writes to one record, kept with the custody they
+/// The server host's answers to this device's writes to one record, kept with the ownership they
 /// left.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct AnsweredDocument {
@@ -256,7 +256,7 @@ struct AnsweredDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_order: Option<u64>,
 }
-/// What a workspace's relay host answered to one of this device's writes.
+/// What a workspace's server host answered to one of this device's writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostAnswer {
     /// Kept durably, at this place in the host's order.
@@ -264,8 +264,8 @@ pub enum HostAnswer {
     /// Refused: it never becomes durable.
     Refused,
 }
-/// This device's writes to one record: those still in its custody, and what the workspace's
-/// relay host answered to the others.
+/// This device's writes to one record: those still in its ownership, and what the workspace's
+/// server host answered to the others.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DocumentWrites {
     pub pending: usize,
@@ -299,7 +299,7 @@ pub(crate) struct StoredOutgoing {
     /// opaque bytes; entries written before that held JSON arrays of
     /// numbers, one line per byte pretty-printed, and still read back.
     #[serde(
-        serialize_with = "crate::owner::record::base64_bytes::serialize",
+        serialize_with = "crate::owner::stored::base64_bytes::serialize",
         deserialize_with = "read_message_bytes"
     )]
     pub(crate) bytes: Vec<u8>,
@@ -320,7 +320,7 @@ pub struct NativeOutgoingStatus {
     pub blocked: usize,
 }
 impl<'a> NativeOutgoing<'a> {
-    /// Every entry still in custody, whether or not it may be sent now.
+    /// Every entry still held, whether or not it may be sent now.
     pub fn queued(&self) -> impl Iterator<Item = [u8; 32]> + 'a {
         self.state
             .governance
@@ -472,8 +472,8 @@ pub(crate) fn state(view: &NativeCommittedView) -> Result<&StoredPublication, St
     state_of(&view.record)
 }
 
-/// The outgoing custody of a record, published or in the making.
-pub(crate) fn state_of(record: &record::StoredWorkspace) -> Result<&StoredPublication, String> {
+/// The outgoing ownership of a record, published or in the making.
+pub(crate) fn state_of(record: &stored::StoredWorkspace) -> Result<&StoredPublication, String> {
     record
         .publication
         .as_ref()
@@ -509,7 +509,7 @@ fn allowed(
         }
     }
     let governance_len = publication.governance.len();
-    // The records with a compaction ahead in custody: none of their writes leaves before the host
+    // The records with a compaction ahead held: none of their writes leaves before the host
     // answered it, so one it refuses is drafted again in its place.
     let mut compacting: Vec<(String, String)> = Vec::new();
     for (index, entry) in publication.entries.iter().enumerate() {
@@ -517,7 +517,7 @@ fn allowed(
         if publication.slots.contains(&entry.id) {
             tracing::debug!(
                 held = publication.entries.len().saturating_sub(index),
-                "this device's writes wait in custody behind a compaction not drafted yet"
+                "this device's writes wait held behind a compaction not drafted yet"
             );
             break;
         }
@@ -537,7 +537,7 @@ fn allowed(
             tracing::debug!(
                 app = %route.0,
                 record = %route.1,
-                "a write waits in custody behind its record's compaction the host has not answered"
+                "a write waits held behind its record's compaction the host has not answered"
             );
             continue;
         }
@@ -547,13 +547,13 @@ fn allowed(
         let (app_id, document_id) = route;
         // A sealed write expires with the channel epoch it was made under:
         // its key holder renews it ([`NativeWorkspaceOwner::renew_outgoing`]),
-        // and the relay never re-sends the expired original beside a renewal.
+        // and the server never re-sends the expired original beside a renewal.
         // A cleartext frame is re-sent as it was signed, however old it is.
         if envelope.encryption.is_some() && !fresh(entry, now) {
             tracing::debug!(
                 app = %app_id,
                 record = %document_id,
-                "a sealed write in custody is past its epoch and waits for its renewal"
+                "a sealed write held is past its epoch and waits for its renewal"
             );
             continue;
         }
@@ -569,7 +569,7 @@ fn allowed(
                 tracing::debug!(
                     app = %app_id,
                     record = %document_id,
-                    "a write in custody is not this device's as its replica holds it, and stays"
+                    "a write held is not this device's as its replica holds it, and stays"
                 );
             }
         }
@@ -580,11 +580,11 @@ fn allowed(
 /// records came in with layout 4; later layouts carry them as it does.
 pub fn validate_file_layout(
     version: u32,
-    storage: &record::NativeAuthorityStorage,
+    storage: &stored::NativeAuthorityStorage,
 ) -> Result<(), String> {
     for workspace in storage.workspaces.values() {
         match (version, workspace.version, workspace.publication.is_some()) {
-            (4.., record::WORKSPACE_VERSION, true) => {}
+            (4.., stored::WORKSPACE_VERSION, true) => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &workspace.publication {
@@ -638,7 +638,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
         workspace: cluster_id.clone(),
         operation: CommitOperation::Document {
             app: app_id.clone(),
-            record: document_id.clone(),
+            document: document_id.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
         },
@@ -649,7 +649,7 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
         return Err("native outgoing requires document".into());
     };
     // The one host classifier (`neighbour_wire::retention`), shared with
-    // browser peers and the relay. A single-use MLS application message has
+    // browser peers and the server. A single-use MLS application message has
     // no retention class and is refused here like any live frame.
     let (channel, kind) = neighbour_wire::retention(message, false)
         .ok_or("unsupported native outgoing document payload")?;
@@ -705,18 +705,18 @@ pub(crate) fn encode(message: &NeighbourMsg, limit: usize) -> Result<Vec<u8>, St
         .map_err(|e| e.to_string())?;
     postcard::to_allocvec(message).map_err(|e| e.to_string())
 }
-/// The bytes custody keeps, and its relay session sends, for `request`, one of this device's
+/// The bytes ownership keeps, and its server session sends, for `request`, one of this device's
 /// document writes as the owner committed it.
 ///
 /// # Errors
-/// `request` is not a document write, or it exceeds custody's cap.
+/// `request` is not a document write, or it exceeds ownership's cap.
 pub fn outgoing_bytes(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     prepare(request)
 }
 pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     let CommitOperation::Document {
         app,
-        record,
+        document: record,
         envelope,
         own,
     } = &request.operation
@@ -747,7 +747,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
 }
 pub(crate) fn replace_governance_checkpoint(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     binding: CommitBinding,
     now: SystemTime,
 ) -> Result<(), String> {
@@ -800,7 +800,7 @@ pub(crate) fn replace_governance_checkpoint(
 /// ([`retire_member_changes`]).
 pub(crate) fn add_member_changes(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     changes: Vec<Vec<u8>>,
     binding: CommitBinding,
     now: SystemTime,
@@ -892,7 +892,7 @@ pub(crate) fn change_hashes(
 /// changes of its own waiting.
 pub(crate) fn retire_member_changes(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     governed: &[Vec<Vec<u8>>],
 ) -> Result<(), String> {
     let Some(existing) = state_of(view)?.governance.first() else {
@@ -921,7 +921,7 @@ pub(crate) fn retire_member_changes(
 
 pub(crate) fn refresh_governance_checkpoint(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
 ) -> Result<(), String> {
     let Some(existing) = state_of(view)?.governance.first().cloned() else {
         return Ok(());
@@ -956,22 +956,22 @@ pub(crate) fn refresh_governance_checkpoint(
     }];
     Ok(())
 }
-/// Take `bytes`, one of this device's writes, into custody: at its head while the head has room
+/// Take `bytes`, one of this device's writes, into ownership: at its head while the head has room
 /// and nothing waits behind it, else at its tail, which the store keeps in runs once it is long
-/// ([`settle`]). Custody refuses no write for how many it holds.
-fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
+/// ([`settle`]). Ownership refuses no write for how many it holds.
+fn append(view: &mut stored::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
     let workspace = view.workspace;
-    let custody = state_of(view)?;
-    if custody
+    let ownership = state_of(view)?;
+    if ownership
         .entries
         .iter()
-        .chain(&custody.tail)
+        .chain(&ownership.tail)
         .any(|entry| entry.id == id && entry.bytes == bytes)
     {
         return Ok(());
     }
-    let head = bounds(custody)?;
+    let head = bounds(ownership)?;
     let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
     let (timestamp_ns, channel, incremental) = metadata(&message)?;
     let binding = request(&message)?.binding()?;
@@ -1003,7 +1003,7 @@ fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), Stri
         publication.entries.push(entry);
     } else {
         // Nothing is lost: the write waits behind the others, kept beside the record, and leaves
-        // as the workspace's host answers those. Said once each time custody fills.
+        // as the workspace's host answers those. Said once each time ownership fills.
         if publication.tail.is_empty() && publication.spilled.is_empty() {
             tracing::warn!(
                 %workspace,
@@ -1039,19 +1039,19 @@ fn spill<T: Serialize>(
             .count();
         let run: Vec<T> = tail.drain(..count).collect();
         let encoded = postcard::to_allocvec(&run).map_err(|e| e.to_string())?;
-        runs.push((store.put_custody(workspace, &encoded)?, count));
+        runs.push((store.put_ownership(workspace, &encoded)?, count));
     }
     Ok(runs)
 }
 
-/// Keep `workspace`'s custody in shape before its record is published: its head takes the
+/// Keep `workspace`'s ownership in shape before its record is published: its head takes the
 /// oldest writes waiting behind it while it has room, and a tail that grew long becomes a run
 /// `store` keeps beside the record. Every write stays in the order it was committed.
 ///
 /// # Errors
 /// A run could not be kept or read back.
 pub(crate) fn settle(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     store: &dyn super::Store,
 ) -> Result<(), String> {
     let workspace = view.workspace;
@@ -1071,7 +1071,7 @@ pub(crate) fn settle(
                 writes
                     .get(usize::try_from(front.taken).map_err(|e| e.to_string())?)
                     .cloned()
-                    .ok_or("a kept run of custody is shorter than its record says")?
+                    .ok_or("a kept run of ownership is shorter than its record says")?
             }
             None => match publication.tail.first() {
                 Some(first) => first.clone(),
@@ -1122,8 +1122,8 @@ pub(crate) fn settle(
     Ok(())
 }
 
-/// The runs of custody's backlog `view` names, which its store keeps while it does.
-pub(crate) fn kept_runs(view: &record::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
+/// The runs of ownership's backlog `view` names, which its store keeps while it does.
+pub(crate) fn kept_runs(view: &stored::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
     view.publication.iter().flat_map(|publication| {
         publication.spilled.iter().map(|run| run.hash).chain(
             publication
@@ -1134,22 +1134,40 @@ pub(crate) fn kept_runs(view: &record::StoredWorkspace) -> impl Iterator<Item = 
     })
 }
 
-/// The name a store keeps the run of `workspace`'s custody named `hash` under
-/// ([`super::Store::put_custody`]).
+/// The name a store keeps the run of `workspace`'s ownership named `hash` under
+/// ([`super::Store::put_ownership`]). It is the name stores have kept such writes under since
+/// they kept any, which is not what the code calls them: a store finds what it wrote by it.
 #[must_use]
-pub fn custody_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
+pub fn ownership_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
+    kept_name(workspace, "custody", hash)
+}
+
+/// The name builds kept the same writes under for a while. A store reads them from here when
+/// they are not under the name above, and keeps them while its entry names them.
+#[must_use]
+pub fn ownership_name_between(workspace: WorkspaceId, hash: [u8; 32]) -> String {
+    kept_name(workspace, "ownership", hash)
+}
+
+fn kept_name(workspace: WorkspaceId, kept_as: &str, hash: [u8; 32]) -> String {
     format!(
-        "{workspace}.custody.{}",
+        "{workspace}.{kept_as}.{}",
         blake3::Hash::from_bytes(hash).to_hex()
     )
 }
 
-impl record::NativeAuthorityStorage {
-    /// The name of every run of outgoing custody this record names: what its store keeps
+impl stored::NativeAuthorityStorage {
+    /// The name of every run of outgoing ownership this record names: what its store keeps
     /// beside it, and may let go of once a record it publishes no longer names it.
-    pub fn custody_runs(&self) -> impl Iterator<Item = String> + '_ {
+    /// Each is named twice, by the two names a store may hold it under.
+    pub fn ownership_runs(&self) -> impl Iterator<Item = String> + '_ {
         self.workspaces.iter().flat_map(|(workspace, stored)| {
-            kept_runs(stored).map(|hash| custody_run_name(*workspace, hash))
+            kept_runs(stored).flat_map(|hash| {
+                [
+                    ownership_run_name(*workspace, hash),
+                    ownership_name_between(*workspace, hash),
+                ]
+            })
         })
     }
 }
@@ -1160,9 +1178,9 @@ fn read_run(
     workspace: WorkspaceId,
     run: &SpilledRun,
 ) -> Result<Vec<StoredOutgoing>, String> {
-    let bytes = store.read_custody(workspace, run.hash)?;
+    let bytes = store.read_ownership(workspace, run.hash)?;
     if bytes.len() > MAX_RUN_BYTES || *blake3::hash(&bytes).as_bytes() != run.hash {
-        return Err("a kept run of custody differs from its record".into());
+        return Err("a kept run of ownership differs from its record".into());
     }
     let writes: Vec<StoredOutgoing> = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
     if usize::try_from(run.writes).ok() != Some(writes.len())
@@ -1170,7 +1188,7 @@ fn read_run(
             .iter()
             .any(|write| write.id != *blake3::hash(&write.bytes).as_bytes())
     {
-        return Err("a kept run of custody differs from its record".into());
+        return Err("a kept run of ownership differs from its record".into());
     }
     Ok(writes)
 }
@@ -1189,7 +1207,7 @@ fn spilled_writes(
     Ok(writes)
 }
 pub(crate) fn append_local(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
     if !view.hosted_here() {
@@ -1198,7 +1216,7 @@ pub(crate) fn append_local(
     // The workspace's own device is its keeper: what it admits is already
     // where the workspace's records live, and no one else answers a publish.
     // Nothing waits here, and what an earlier record kept waiting is released
-    // with this commit, so custody of a device-hosted workspace stays empty.
+    // with this commit, so ownership of a device-hosted workspace stays empty.
     let publication = view.publication.as_mut().ok_or("publication absent")?;
     if publication.entries.is_empty()
         && publication.tail.is_empty()
@@ -1216,7 +1234,7 @@ pub(crate) fn append_local(
     Ok(())
 }
 pub(crate) fn has_exact(
-    view: &record::StoredWorkspace,
+    view: &stored::StoredWorkspace,
     bytes: &[u8],
     store: &dyn super::Store,
 ) -> Result<bool, String> {
@@ -1233,7 +1251,7 @@ pub(crate) fn has_exact(
         .iter()
         .any(|entry| entry.bytes == bytes))
 }
-// qps validates historical custody separately from current send/sign permission.
+// qps validates historical ownership separately from current send/sign permission.
 fn validate_exact(
     peer: &StatePeer,
     message: &NeighbourMsg,
@@ -1422,7 +1440,7 @@ fn validate_member_changes(
 /// is no retirement or checkpoint refresh to publish.
 pub(crate) fn exact_replay_unchanged(
     live: &StatePeer,
-    view: &record::StoredWorkspace,
+    view: &stored::StoredWorkspace,
 ) -> Result<bool, String> {
     let publication = state_of(view)?;
     let device = view.device.device_public_key;
@@ -1462,7 +1480,7 @@ impl StoredPublication {
         let mut writes = Vec::new();
         for hash in &held.runs {
             let run: Vec<HostedWrite> =
-                postcard::from_bytes(&store.read_custody(workspace, *hash)?)
+                postcard::from_bytes(&store.read_ownership(workspace, *hash)?)
                     .map_err(|e| e.to_string())?;
             writes.extend(run);
         }
@@ -1566,7 +1584,7 @@ impl StoredPublication {
         }
     }
 }
-pub(crate) fn retire(live: &StatePeer, view: &mut record::StoredWorkspace) -> Result<bool, String> {
+pub(crate) fn retire(live: &StatePeer, view: &mut stored::StoredWorkspace) -> Result<bool, String> {
     let publication = state_of(view)?;
     let mut remove = BTreeSet::new();
     for entry in &publication.entries {
@@ -1592,14 +1610,14 @@ pub(crate) fn retire(live: &StatePeer, view: &mut record::StoredWorkspace) -> Re
 }
 pub(crate) fn retry_covered(
     live: &StatePeer,
-    view: &record::StoredWorkspace,
+    view: &stored::StoredWorkspace,
     bytes: &[u8],
 ) -> Result<bool, String> {
     let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
     retired(live, &message, view.device.device_public_key)
 }
 impl NativeWorkspaceOwner {
-    /// Read `workspace`'s outgoing custody: what the relay session may send now.
+    /// Read `workspace`'s outgoing ownership: what the server session may send now.
     pub fn with_outgoing<T>(
         &self,
         workspace: WorkspaceId,
@@ -1620,7 +1638,7 @@ impl NativeWorkspaceOwner {
         })
     }
     /// How many of this device's committed writes to `workspace` are still in
-    /// its outgoing custody: not yet admitted by the workspace's governor.
+    /// its outgoing ownership: not yet admitted by the workspace's governor.
     pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {
         self.with_current(workspace, |view| {
             let publication = state(view)?;
@@ -1637,12 +1655,12 @@ impl NativeWorkspaceOwner {
                 ))
         })
     }
-    /// Every write of this device to `workspace` still in its outgoing custody, sendable now or
+    /// Every write of this device to `workspace` still in its outgoing ownership, sendable now or
     /// not, by id, in the order it sends them: what a caller waits on to know all of them reached
     /// the workspace's host.
     ///
     /// # Errors
-    /// The workspace is not held here, or custody's backlog could not be read.
+    /// The workspace is not held here, or ownership's backlog could not be read.
     pub fn owed_writes(&self, workspace: WorkspaceId) -> Result<Vec<[u8; 32]>, String> {
         self.with_current(workspace, |view| {
             let publication = state(view)?;
@@ -1681,7 +1699,7 @@ impl NativeWorkspaceOwner {
     /// device's own count, and two of them stamping the same receipts would
     /// leave every member with a receipt no other member can merge.
     ///
-    /// The snapshots are signed by `signer`, this device's custody of its key,
+    /// The snapshots are signed by `signer`, this device's ownership of its key,
     /// outside the owner's turn.
     ///
     /// # Errors
@@ -1754,8 +1772,8 @@ impl NativeWorkspaceOwner {
             .ok_or("native owner generation exhausted")?;
         self.publish_document(workspace, &candidate, record, None)
     }
-    /// Retire the custody entries `answers` names, which the workspace's relay host answered:
-    /// a relay host acknowledges each commit, durable or refused, rather than receipting it in
+    /// Retire the ownership entries `answers` names, which the workspace's server host answered:
+    /// a server host acknowledges each commit, durable or refused, rather than receipting it in
     /// the workspace's governance, and an answered entry is never sent again. Each answer
     /// counts toward its record's [`DocumentWrites`], and a refused write leaves this device's
     /// replica as well: the workspace never holds it, so neither does this device.
@@ -1792,7 +1810,7 @@ impl NativeWorkspaceOwner {
                 return Ok(false);
             }
             for entry in answered {
-                // Custody holds governance entries too, which belong to no record.
+                // Ownership holds governance entries too, which belong to no record.
                 let Ok(NeighbourMsg::AppDocument {
                     app_id,
                     document_id,
@@ -1847,7 +1865,7 @@ impl NativeWorkspaceOwner {
         self.publish_document(workspace, &candidate, record, None)
     }
     /// This device's writes to each record of `workspace` it wrote, by app and record: those
-    /// in its custody, and the relay host's answers to the others.
+    /// in its ownership, and the server host's answers to the others.
     pub fn document_writes(
         &self,
         workspace: WorkspaceId,
@@ -1881,7 +1899,7 @@ impl NativeWorkspaceOwner {
                     document_id,
                     ..
                 }) = tilo_failure::ignored!(
-                    "custody holds governance entries too, which belong to no record",
+                    "ownership holds governance entries too, which belong to no record",
                     postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
                 ) {
                     let writes = writes.entry((app_id, document_id)).or_default();
@@ -1892,7 +1910,7 @@ impl NativeWorkspaceOwner {
         })
         .unwrap_or_default()
     }
-    /// Renew this device's sealed writes that expired in custody before the
+    /// Renew this device's sealed writes that expired held before the
     /// governor retired them, with the keys [`Self::keep_sealed_histories`] gave
     /// (see [`PeerOutbox::draft_sealed_renewals`](crate::PeerOutbox::draft_sealed_renewals)).
     /// Each renewal replaces its original in one durable commit and moves behind every other
@@ -1965,7 +1983,7 @@ impl NativeWorkspaceOwner {
 
     /// Compact every sealed record history of `workspace` that has used most of
     /// its bound into one sealed checkpoint, and commit the compactions
-    /// into this device's outgoing custody, where they publish as the
+    /// into this device's outgoing ownership, where they publish as the
     /// checkpoints they are, after the writes they cover. The keys
     /// [`Self::keep_sealed_histories`] gave open any write of a history this
     /// device can read and seal a record's merged snapshot under its channel's
@@ -2008,8 +2026,8 @@ impl NativeWorkspaceOwner {
         self.compact(workspace, Some(route), signer, now).await
     }
 
-    /// Custody's entry of this device's latest compaction of `record` of `app` in `workspace`,
-    /// once it is drafted to send: `None` while it waits for its place, or when custody holds
+    /// Ownership's entry of this device's latest compaction of `record` of `app` in `workspace`,
+    /// once it is drafted to send: `None` while it waits for its place, or when ownership holds
     /// none.
     ///
     /// # Errors
@@ -2133,8 +2151,8 @@ impl NativeWorkspaceOwner {
         Ok(compacted)
     }
 
-    /// Draft the compaction custody of `workspace` sends next, against the history its host
-    /// acknowledged: every write custody held before it is answered. It takes the place and
+    /// Draft the compaction ownership of `workspace` sends next, against the history its host
+    /// acknowledged: every write ownership held before it is answered. It takes the place and
     /// sequence of the compaction this device made of its own history, and the record's own
     /// history takes it too where it was that compaction. One the host holds nothing for, or
     /// that cannot be drafted, is let go.
@@ -2159,7 +2177,7 @@ impl NativeWorkspaceOwner {
             ..
         } = &message
         else {
-            return Err("a compaction in custody is a document write".into());
+            return Err("a compaction held is a document write".into());
         };
         let route = (app_id.as_str(), document_id.as_str());
         let draft = |_: &NativeCommittedView| Ok(vec![(Some(id), message.clone(), op)]);
@@ -2178,7 +2196,7 @@ impl NativeWorkspaceOwner {
                 now,
             )
         };
-        // A compaction that cannot go as drafted is let go: custody never waits on it.
+        // A compaction that cannot go as drafted is let go: ownership never waits on it.
         match self
             .commit_outgoing(workspace, signer, now, draft, admit)
             .await
@@ -2192,7 +2210,7 @@ impl NativeWorkspaceOwner {
         }
     }
 
-    /// Let go of `id`, a compaction custody holds the place of: custody never waits on one
+    /// Let go of `id`, a compaction ownership holds the place of: ownership never waits on one
     /// that cannot go.
     fn drop_slot(&self, workspace: WorkspaceId, id: [u8; 32]) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
@@ -2220,12 +2238,12 @@ impl NativeWorkspaceOwner {
         self.publish_document(workspace, &candidate, record, None)
     }
 
-    /// Commit the writes `draft` drafts of `workspace`, each with the custody entry it replaces,
-    /// into the outgoing custody in one durable commit of a signed turn of `signer`, this device's
-    /// custody of its key: what the first run drafted is kept, and signed between the runs. A
-    /// write `admit` refuses, or one whose entry left custody meanwhile, stays out. A write that
-    /// replaces a compaction custody holds the place of takes that place; any other goes behind
-    /// every write custody holds, and a compaction keeps its place there until it is drafted.
+    /// Commit the writes `draft` drafts of `workspace`, each with the ownership entry it replaces,
+    /// into the outgoing ownership in one durable commit of a signed turn of `signer`, this device's
+    /// ownership of its key: what the first run drafted is kept, and signed between the runs. A
+    /// write `admit` refuses, or one whose entry left ownership meanwhile, stays out. A write that
+    /// replaces a compaction ownership holds the place of takes that place; any other goes behind
+    /// every write ownership holds, and a compaction keeps its place there until it is drafted.
     /// Answers how many writes were taken.
     ///
     /// # Errors
@@ -2287,8 +2305,8 @@ impl NativeWorkspaceOwner {
                     }
                     let compaction = ops.first().is_some_and(|op| op.kind == OpKind::Compaction);
                     let segments: Vec<SignedOp> = ops.iter().skip(1).cloned().collect();
-                    // Admitted on copies: a write that cannot be committed as custody entries
-                    // leaves the replica and custody as they were. A compaction in segments is
+                    // Admitted on copies: a write that cannot be committed as ownership entries
+                    // leaves the replica and ownership as they were. A compaction in segments is
                     // admitted whole, and its segments go right behind it.
                     let mut attempt = live.clone();
                     let mut kept = publication.clone();
@@ -2438,7 +2456,7 @@ impl NativeWorkspaceOwner {
 }
 /// Commit `op`, a compaction of this device's own history of `record` of `app`, into the
 /// record: its history becomes the compaction, and the host's writes it holds only inside it now
-/// are what this device knows of the host's history beside it. `owed` are the writes custody
+/// are what this device knows of the host's history beside it. `owed` are the writes ownership
 /// still owes the host.
 fn compacted_here(
     live: &mut StatePeer,
@@ -2476,9 +2494,9 @@ fn compacted_here(
     publication.set_hosted(runs, (app, record), Some(&hosted))?;
     Ok(message)
 }
-/// The compaction custody of `view` sends next, when custody holds its place at its head:
+/// The compaction ownership of `view` sends next, when ownership holds its place at its head:
 /// drafted against `history`, the host's history as it acknowledged it, under the sequence of
-/// the place, as the record's custody message, or `None` when it cannot be drafted.
+/// the place, as the record's ownership message, or `None` when it cannot be drafted.
 type NextDrafted = (
     [u8; 32],
     NeighbourMsg,
@@ -2507,7 +2525,7 @@ fn next_drafted(
         ..
     } = &message
     else {
-        return Err("a compaction in custody is a document write".into());
+        return Err("a compaction held is a document write".into());
     };
     let route = (app_id.as_str(), document_id.as_str());
     let owed = owed_to(publication, runs, route)?;
@@ -2528,9 +2546,9 @@ fn next_drafted(
     Ok(Some((entry.id, message, drafted.map(|ops| (ops, history)))))
 }
 /// Commit `op`, drafted against `history` (the host's history of `record` of `app` as it
-/// acknowledged it) in place of `message`, custody's compaction of this device's own history:
+/// acknowledged it) in place of `message`, ownership's compaction of this device's own history:
 /// where the record's history is that compaction, it takes `op` in its place. Answers the
-/// custody message `op` goes as.
+/// ownership message `op` goes as.
 fn drafted_here(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
@@ -2554,7 +2572,7 @@ fn drafted_here(
         own,
     } = message
     else {
-        return Err("a compaction in custody is a document write".into());
+        return Err("a compaction held is a document write".into());
     };
     let first = live
         .publication()
@@ -2596,11 +2614,11 @@ fn with_envelope(message: &NeighbourMsg, envelope: SignedOp) -> NeighbourMsg {
     }
     message
 }
-/// Commit `bytes` into custody right behind the entry `after`, as the next segment of the
+/// Commit `bytes` into ownership right behind the entry `after`, as the next segment of the
 /// compaction there, and answer its own entry's id. Behind it a store keeps a segment in the
 /// tail of the compaction it continues.
 fn append_after(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     after: [u8; 32],
     bytes: Vec<u8>,
 ) -> Result<[u8; 32], String> {
@@ -2620,10 +2638,10 @@ fn append_after(
     }
     Ok(id)
 }
-/// Put `bytes`, a compaction drafted for the host, where the compaction custody held the
+/// Put `bytes`, a compaction drafted for the host, where the compaction ownership held the
 /// place of as `id` stands: it goes in that compaction's turn.
 fn in_place(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     id: [u8; 32],
     bytes: Vec<u8>,
 ) -> Result<(), String> {
@@ -2635,7 +2653,7 @@ fn in_place(
         .entries
         .iter_mut()
         .find(|entry| entry.id == id)
-        .ok_or("the compaction custody held left it")?;
+        .ok_or("the compaction ownership held left it")?;
     *entry = StoredOutgoing {
         ordinal: entry.ordinal,
         id: *blake3::hash(&bytes).as_bytes(),
@@ -2652,7 +2670,7 @@ fn in_place(
         .ok_or("native publication revision exhausted")?;
     Ok(())
 }
-/// Whether `entry` of custody is a compaction.
+/// Whether `entry` of ownership is a compaction.
 fn is_compaction(entry: &StoredOutgoing) -> bool {
     matches!(postcard::from_bytes(&entry.bytes),
         Ok(NeighbourMsg::AppDocument { envelope, .. })
@@ -2664,7 +2682,7 @@ fn covers(compaction: &SignedOp, write: &SignedOp) -> bool {
         && collab_types::SealedCompaction::parse(compaction)
             .is_ok_and(|wrapper| wrapper.covers(write))
 }
-/// This device's writes of `record` of `app` its custody still owes the host, in the order it
+/// This device's writes of `record` of `app` its ownership still owes the host, in the order it
 /// sends them.
 fn owed_to(
     publication: &StoredPublication,
@@ -2689,7 +2707,7 @@ fn owed_to(
         .collect())
 }
 /// The history the host holds of `record` of `app` as far as it acknowledged it: what this
-/// device holds of it, but `owed`, the writes custody still owes the host.
+/// device holds of it, but `owed`, the writes ownership still owes the host.
 fn host_history(
     live: &StatePeer,
     publication: &StoredPublication,
@@ -2719,9 +2737,9 @@ fn host_history(
         .collect())
 }
 /// Take `compaction`, which the host now holds first in its history of `record` of `app`, into
-/// what this device knows of that history. Once that holds nothing beside it and custody owes
+/// what this device knows of that history. Once that holds nothing beside it and ownership owes
 /// none of the writes the record's own compaction folded, the record's history takes it in
-/// that compaction's place: it is the host's again. `owed` are the writes custody still owes.
+/// that compaction's place: it is the host's again. `owed` are the writes ownership still owes.
 fn take_hosted(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
@@ -2797,7 +2815,7 @@ mod encoding_tests {
         fn a_publication_entry_keeps_its_class_and_its_bytes_in_json;
 
         phase an_entry_leaves_as_the_class_it_was_published_by;
-        // Custody leaves each entry as the class it was published by: a write
+        // Ownership leaves each entry as the class it was published by: a write
         // appends after the record's checkpoint, while a member's sealed
         // compaction replaces that author's retained history with itself.
         {
@@ -2909,6 +2927,23 @@ mod tests {
 
     fn workspace() -> WorkspaceId {
         WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
+    }
+
+    /// What a store keeps beside an entry has the name stores wrote it with before the code
+    /// called it anything else, and the name builds gave it for a while is the other one a
+    /// store looks under.
+    #[test]
+    fn kept_writes_are_named_as_stores_have_kept_them() {
+        let hash = [0xab; 32];
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            super::ownership_run_name(workspace(), hash),
+            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.custody.{hex}")
+        );
+        assert_eq!(
+            super::ownership_name_between(workspace(), hash),
+            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.ownership.{hex}")
+        );
     }
 
     /// One history that cannot fold yet rests a while, and every other history of the

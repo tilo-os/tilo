@@ -19,7 +19,8 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext,
-    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
+    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch,
+    resolve_shell_ui_bind, to_service_binds,
 };
 use entrypoint_runtime::preflight_entrypoint_runtime;
 use seccomp_fds::SeccompFds;
@@ -30,14 +31,12 @@ mod verified_installation;
 #[cfg(test)]
 pub(crate) use verified_installation::verified_launch_installation_against;
 pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
-pub mod tilolang_host;
+pub mod tilolang_process;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[error(transparent)]
     Manifest(#[from] crate::manifest::ManifestReadError),
-    #[error("refusing to launch: {0}")]
-    FsPolicy(#[from] crate::manifest::FsPolicyViolation),
     #[error(
         "refusing to launch `{package}`: could not create its directory at {path} ({source}). \
          An app with nowhere to write loses the user's work on exit, so this is a refusal \
@@ -123,20 +122,20 @@ pub enum RunError {
     RuntimeBundleSignature { path: PathBuf, reason: String },
     #[error(
         "`{desktop_id}` is a host application, not a Tilo package: it has no manifest, so \
-         there is no sandbox to build for it. Launch it with `tilo-launcher run-host \
+         there is no sandbox to build for it. Launch it with `tilo-launcher machine-app \
          --desktop-id {desktop_id}`, which runs it unconfined and says so."
     )]
     HostAppNotAPackage { desktop_id: String },
     #[error(
         "refusing to launch: this app was granted access to {hosts:?} and that can only be \
-         enforced by brokering its traffic, but the egress gate could not start ({source}). \
+         enforced by brokering its traffic, but the egress proxy could not start ({source}). \
          Launching anyway would mean giving it unrestricted outbound access, which is not \
-         what was granted. Set TILO_LAUNCHER_NET_GATE=off to do that deliberately."
+         what was granted. Set TILO_LAUNCHER_EGRESS_PROXY=off to do that deliberately."
     )]
-    EgressGate {
+    EgressProxy {
         hosts: Vec<String>,
         #[source]
-        source: crate::netgate::GateError,
+        source: crate::egress_proxy::ProxyError,
     },
     #[error("refusing URI open: {0}")]
     InvalidOpenUri(String),
@@ -249,7 +248,7 @@ pub struct RunOptions {
     pub retained_files_host_path: Option<PathBuf>,
     /// Verified, selected browser data; projected read-only to Browser GUI only.
     pub browser_continuity_host_path: Option<PathBuf>,
-    /// Separate host action policy projection; never a sandbox capability grant.
+    /// Separate process action policy projection; never a sandbox capability grant.
     pub action_authority_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id ([`crate::sandbox::WORKSPACE_ID_ENV`]).
     pub workspace_id: Option<String>,
@@ -270,7 +269,7 @@ pub struct RunOptions {
     pub headless_console: Option<u64>,
     /// A tilolang host runs this app's instance: its process is its window and keeps none of the app's
     /// data.
-    pub tilolang_hosted: bool,
+    pub tilolang_process: bool,
     /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
     /// the app reach it over the socket the launcher hands it.
     pub tilolang_connector: Option<String>,
@@ -308,7 +307,7 @@ impl Default for RunOptions {
             gui_argv: Vec::new(),
             open_as_visitor: false,
             headless_console: None,
-            tilolang_hosted: false,
+            tilolang_process: false,
             tilolang_connector: None,
         }
     }
@@ -367,9 +366,9 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
         .ok_or_else(|| RunError::InvalidOpenUri("URI has no scheme".into()))?;
     let scheme = scheme.to_ascii_lowercase();
     // Every app opens its own records; the record names nothing outside them.
-    let own_record = scheme == collab_types::DOCUMENT_URI_SCHEME;
+    let own_document = scheme == collab_types::DOCUMENT_URI_SCHEME;
     if rest.is_empty()
-        || !(own_record || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
+        || !(own_document || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
     {
         return Err(RunError::InvalidOpenUri(format!(
             "{} does not declare scheme {scheme}",
@@ -509,11 +508,11 @@ mod headless_console_launch_tests {
                     ..Default::default()
                 };
                 validate_open_uri(&manifest, &accepted).unwrap();
-                let own_record = RunOptions {
+                let own_document = RunOptions {
                     open_uri: Some("tilo-document:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
                     ..Default::default()
                 };
-                validate_open_uri(&manifest, &own_record)
+                validate_open_uri(&manifest, &own_document)
                     .expect("every app opens its own records unclaimed");
 
                 for uri in [
@@ -581,7 +580,8 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
+    let sandbox = crate::capabilities::declared(manifest, grants.sandbox);
+    let mut plan = CapabilityPlan::for_app(&app_id, &sandbox, Some(unix_now()));
     // A workspace launch may change the space when its person may.
     if grants.author {
         plan.participation = crate::capabilities::Participation::Author;
@@ -648,10 +648,10 @@ fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<Path
         .clone()
         .or_else(crate::appdir::host_data_home)
         .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
-    crate::appdir::prepare_host_person_dir(&data_home, &manifest.package_id).map_err(|source| {
+    crate::appdir::prepare_local_person_dir(&data_home, &manifest.package_id).map_err(|source| {
         RunError::AppDir {
             package: manifest.package_id.clone(),
-            path: crate::appdir::host_person_dir(&data_home, &manifest.package_id),
+            path: crate::appdir::local_person_dir(&data_home, &manifest.package_id),
             source,
         }
     })
@@ -1263,7 +1263,7 @@ pub(crate) fn load_trusted_publishers_for_bundle(
 /// The image's runtime trusted-publisher list.
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
 
-/// Where the trusted-publisher list is read from, given the override the build's gate let through.
+/// Where the trusted-publisher list is read from, given the override the build's check let through.
 fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
     allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
 }
@@ -1320,13 +1320,13 @@ mod dev_override_tests {
             assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
         }
         {
-            let gated = dev_override_from(
+            let guarded = dev_override_from(
                 false,
                 runtime_bundle::RUNTIME_DIR_ENV,
                 Some("/tmp/attacker-runtime".into()),
             );
             // Resolution may fail with no data dir; it must never land under the override.
-            if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
+            if let Ok(path) = runtime_bundle::default_bundle_path_from(guarded, "1") {
                 assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
             }
             let honoured = dev_override_from(
@@ -1433,38 +1433,44 @@ pub enum LaunchMode {
     },
 }
 
-/// Env override that turns the egress gate off, downgrading a host-scoped grant to unrestricted access.
-pub const NET_GATE_ENV: &str = crate::dev_env::NET_GATE_ENV;
+/// Whether a launch opens a window, which gets the shell-UI connection: a command, a headless service
+/// or an origin connector has no window to describe.
+fn opens_window(mode: &LaunchMode, connector: Option<&str>) -> bool {
+    matches!(mode, LaunchMode::Gui) && connector.is_none()
+}
 
-/// Start the egress gate if this launch needs one; a gate that cannot start refuses the launch.
-fn start_egress_gate(
-    egress: &crate::netgate::EgressDecision,
+/// Env override that turns the egress proxy off, downgrading a host-scoped grant to unrestricted access.
+pub const EGRESS_PROXY_ENV: &str = crate::dev_env::EGRESS_PROXY_ENV;
+
+/// Start the egress proxy if this launch needs one; a check that cannot start refuses the launch.
+fn start_egress_proxy(
+    egress: &crate::egress_proxy::EgressDecision,
 ) -> Result<
     (
-        Option<crate::sandbox::NetGateBind>,
-        Option<crate::netgate::NetGate>,
+        Option<crate::sandbox::EgressProxyBind>,
+        Option<crate::egress_proxy::EgressProxy>,
     ),
     RunError,
 > {
-    // Only a `Filtered` decision needs a gate; the env override shares the network instead.
+    // Only a `Filtered` decision needs a check; the env override shares the network instead.
     let Some(policy) = egress.policy() else {
         return Ok((None, None));
     };
 
-    let host_socket = crate::netgate::gate_socket_path(
+    let host_socket = crate::egress_proxy::proxy_socket_path(
         &crate::dbus_proxy::session_runtime_dir(),
         std::process::id(),
     );
-    match crate::netgate::NetGate::start(&host_socket, policy.clone()) {
-        Ok(gate) => {
-            let bind = crate::sandbox::NetGateBind {
+    match crate::egress_proxy::EgressProxy::start(&host_socket, policy.clone()) {
+        Ok(check) => {
+            let bind = crate::sandbox::EgressProxyBind {
                 host_socket,
-                sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
-                port: crate::netgate::RELAY_PORT,
+                sandbox_socket: PathBuf::from(crate::egress_proxy::SANDBOX_PROXY_PATH),
+                port: crate::egress_proxy::RELAY_PORT,
             };
-            Ok((Some(bind), Some(gate)))
+            Ok((Some(bind), Some(check)))
         }
-        Err(source) => Err(RunError::EgressGate {
+        Err(source) => Err(RunError::EgressProxy {
             hosts: policy.describe(),
             source,
         }),
@@ -1945,14 +1951,14 @@ fn splice_wayland(
     Ok(wayland_bind)
 }
 
-/// The egress gate socket: the app's only route out of an empty network namespace.
-fn splice_net_gate_bind(
+/// The egress proxy socket: the app's only route out of an empty network namespace.
+fn splice_egress_proxy_bind(
     argv: &mut Vec<String>,
-    net_gate: Option<&crate::sandbox::NetGateBind>,
+    egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
 ) -> Result<(), RunError> {
-    if let Some(bind) = net_gate {
+    if let Some(bind) = egress_proxy {
         let entry = pop_entry(argv)?;
-        crate::sandbox::push_net_gate(argv, bind);
+        crate::sandbox::push_egress_proxy(argv, bind);
         argv.push(entry);
     }
     Ok(())
@@ -2071,10 +2077,10 @@ pub(crate) fn push_projection_landlock_rules(
 /// Everything [`splice_sandbox_shim`] needs beyond `argv` and `opts`.
 struct ShimSpliceCtx<'a> {
     manifest: &'a ManifestView,
-    net_gate: &'a Option<crate::sandbox::NetGateBind>,
+    egress_proxy: &'a Option<crate::sandbox::EgressProxyBind>,
     runtime_arg: Option<(&'a Path, &'a str)>,
     extra_ro_paths: &'a [String],
-    egress: &'a crate::netgate::EgressDecision,
+    egress: &'a crate::egress_proxy::EgressDecision,
     capabilities: &'a CapabilityPlan,
     dbus_plan: &'a Option<DBusBindPlan>,
     system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
@@ -2095,7 +2101,7 @@ fn splice_sandbox_shim(
     opts: &RunOptions,
     ctx: &ShimSpliceCtx<'_>,
 ) -> Result<(), RunError> {
-    let need_shim = opts.landlock_enforce || ctx.net_gate.is_some();
+    let need_shim = opts.landlock_enforce || ctx.egress_proxy.is_some();
     if !need_shim {
         return Ok(());
     }
@@ -2121,10 +2127,10 @@ fn splice_sandbox_shim(
         argv.push(fd.to_string());
     }
     // The relay's endpoints.
-    if let Some(bind) = ctx.net_gate {
-        argv.push("--net-gate".to_string());
+    if let Some(bind) = ctx.egress_proxy {
+        argv.push("--net-proxy".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
-        argv.push("--net-gate-port".to_string());
+        argv.push("--net-proxy-port".to_string());
         argv.push(bind.port.to_string());
     }
     // Sandbox-side read paths for Landlock: payload, runtime, minimal-libs binds and the manifest's
@@ -2182,13 +2188,13 @@ fn splice_sandbox_shim(
     }
     push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no rule: they arrive connected, never opened by path.
-    if let Some(bind) = ctx.net_gate {
+    if let Some(bind) = ctx.egress_proxy {
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
     }
     // Landlock's network rule mirrors the namespace: `Blocked` denies TCP, `Filtered` pins the relay
     // port.
-    if matches!(ctx.egress, crate::netgate::EgressDecision::Blocked) {
+    if matches!(ctx.egress, crate::egress_proxy::EgressDecision::Blocked) {
         argv.push("--net-restricted".to_string());
     }
     argv.push("--".to_string());
@@ -2396,15 +2402,15 @@ struct ChildSetup {
 /// service sockets wired into the child via `pre_exec`, then wait for it.
 #[expect(
     clippy::too_many_lines,
-    reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
+    reason = "one ordered spawn sequence: descriptor ownership must stay visible from preparation to reaping"
 )]
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
     opts: &RunOptions,
     child_setup: ChildSetup,
-    egress: &crate::netgate::EgressDecision,
-    net_gate: Option<&crate::sandbox::NetGateBind>,
+    egress: &crate::egress_proxy::EgressDecision,
+    egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
     observer: Option<(
         &dyn crate::managed::EnrolledProcessObserver,
         Option<PathBuf>,
@@ -2611,7 +2617,7 @@ fn spawn_and_wait(
             PathBuf::from(crate::appdir::SANDBOX_PERSON_DIR),
         ],
     );
-    let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
+    let net_restricted = matches!(egress, crate::egress_proxy::EgressDecision::Blocked);
     // The shim enforces Landlock via opts.landlock_enforce (argv splice above); this just logs intent
     // — the shim's own line has the real outcome.
     tracing::info!(
@@ -2622,9 +2628,9 @@ fn spawn_and_wait(
         "landlock plan derived",
     );
     tracing::info!(
-        target: "tilo_launcher::netgate",
-        gated = net_gate.is_some(),
-        hosts = ?egress.policy().map(super::netgate::EgressPolicy::describe),
+        target: "tilo_launcher::egress_proxy",
+        guarded = egress_proxy.is_some(),
+        hosts = ?egress.policy().map(super::egress_proxy::EgressPolicy::describe),
         shares_host_network = egress.shares_host_network(),
         "egress resolved",
     );
@@ -2650,7 +2656,7 @@ fn spawn_and_wait(
         });
     }
 
-    // Last parent-side policy/custody check after preparation, immediately before spawn.
+    // Last parent-side policy/ownership check after preparation, immediately before spawn.
     if let Some(observer) = observer {
         observer.before_spawn().map_err(RunError::Spawn)?;
     }
@@ -2894,7 +2900,7 @@ fn build_initial_argv(
 
 /// Build and exec the sandbox for an already-parsed `manifest`: validates the launch-mode/fs policy,
 /// resolves service/identity binds, the runtime bundle, the app's writable directory and its network
-/// egress gate, then spawns `bwrap` and waits for it.
+/// egress proxy, then spawns `bwrap` and waits for it.
 pub fn run_with(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -3000,7 +3006,7 @@ fn prepare_launch_host(
                 Some(&services.binding().workspace),
                 &services.binding().app,
             )?,
-            crate::appdir::prepare_host_person_dir(services.data_home(), &services.binding().app)?,
+            crate::appdir::prepare_local_person_dir(services.data_home(), &services.binding().app)?,
         )
     } else {
         resolve_launch_dirs(manifest, opts)?
@@ -3073,9 +3079,6 @@ pub(crate) fn run_with_context(
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
 
-    // 0.
-    crate::manifest::enforce_fs_policy(manifest)?;
-
     // Hold the payload and runtime trees before they are looked at, until the sandbox that mounts them
     // has exited: an update or collection meanwhile leaves them alone (`crate::lease`).
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
@@ -3083,7 +3086,7 @@ pub(crate) fn run_with_context(
     // The user's capability decision.
     let mut capabilities = resolve_capabilities(manifest, opts);
 
-    // Host preflight precedes connected service custody.
+    // Host preflight precedes connected service ownership.
     let seccomp_fds = stage_seccomp(
         manifest,
         crate::seccomp::syscall_grants(
@@ -3156,7 +3159,7 @@ pub(crate) fn run_with_context(
     }
 
     // Connect only after cold runtime verification, loader preflight and host preparation.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let resolved = if let Some((services, _)) = enrolled.as_mut() {
         let binding = services.binding().clone();
@@ -3167,7 +3170,7 @@ pub(crate) fn run_with_context(
         // A window whose instance a tilolang host runs holds none of the app's data: it gets no
         // collaboration connection (the host's instance has the app's own).
         let mut services = manifest.sandbox.services.clone();
-        if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
+        if opts.tilolang_process || opts.tilolang_connector.is_some() {
             services.remove(crate::services::COLLAB_SERVICE);
         }
         let mut resolved = resolve_service_binds_for_launch(
@@ -3178,7 +3181,11 @@ pub(crate) fn run_with_context(
                 workspace_id: opts.workspace_id.as_deref(),
             },
         )?;
-        crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+        if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+            && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+        {
+            resolved.push(shell_ui);
+        }
         if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
             package_id,
             opts.workspace_id.as_deref(),
@@ -3224,7 +3231,7 @@ pub(crate) fn run_with_context(
         // of the app attach over it.
         #[cfg(target_os = "linux")]
         if opts.tilolang_connector.is_some()
-            && let Some(link) = crate::registration_gate::take_window_link()
+            && let Some(link) = crate::launch_hold::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
@@ -3237,7 +3244,7 @@ pub(crate) fn run_with_context(
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
-            && let Some(link) = crate::registration_gate::take_window_link()
+            && let Some(link) = crate::launch_hold::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::windows::SERVICE.to_owned(),
@@ -3269,9 +3276,9 @@ pub(crate) fn run_with_context(
         keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
     }
 
-    // Egress: a grant naming specific hosts runs a gate; `*` or bare `host` mode shares the host
-    // network with no allowlist to enforce, so neither needs a gate.
-    let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
+    // Egress: a grant naming specific hosts runs a check; `*` or bare `host` mode shares the host
+    // network with no allowlist to enforce, so neither needs a check.
+    let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress)?;
     tilo_startup_metrics::handoff_mark("egress-ready");
 
     // Pick the entrypoint bin per launch mode and build the initial argv.
@@ -3297,10 +3304,13 @@ pub(crate) fn run_with_context(
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
         )?;
     }
-    if opts.tilolang_hosted {
+    if opts.tilolang_process {
         splice_cli_setenv(
             &mut argv,
-            Some((runtime_portal::tilolang_host::HOSTED_ENV.into(), "1".into())),
+            Some((
+                runtime_portal::tilolang_process::HOSTED_ENV.into(),
+                "1".into(),
+            )),
         )?;
     }
     if let Some(origin) = &opts.tilolang_connector {
@@ -3373,7 +3383,7 @@ pub(crate) fn run_with_context(
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
-    splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
+    splice_egress_proxy_bind(&mut argv, egress_proxy.as_ref())?;
     let (gpu, pipeline_seed) = if retained_io.is_some() || target_projection.is_some() {
         (None, None)
     } else {
@@ -3385,7 +3395,7 @@ pub(crate) fn run_with_context(
         opts,
         &ShimSpliceCtx {
             manifest,
-            net_gate: &net_gate,
+            egress_proxy: &egress_proxy,
             runtime_arg,
             extra_ro_paths: &ro_paths,
             egress: &egress,
@@ -3461,7 +3471,7 @@ pub(crate) fn run_with_context(
             latency_sensitive,
         },
         &egress,
-        net_gate.as_ref(),
+        egress_proxy.as_ref(),
         native_owner
             .map(|observer| {
                 (
@@ -3919,7 +3929,6 @@ fn run_with_capture_spawn<T>(
     // one enforced route is a route beside it.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
-    crate::manifest::enforce_fs_policy(manifest)?;
 
     // Seccomp baseline resolved identically to `run_with` — two paths reaching different conclusions
     // would make capture a way around the filter.
@@ -3954,7 +3963,7 @@ fn run_with_capture_spawn<T>(
         dbus_proxy::media_player_for(manifest).as_deref(),
     );
     // As in `run_with_context`, cold runtime checks precede service handoff.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
@@ -3964,7 +3973,11 @@ fn run_with_capture_spawn<T>(
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+    if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+        && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+    {
+        resolved.push(shell_ui);
+    }
     if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
         package_id,
         opts.workspace_id.as_deref(),
@@ -4015,9 +4028,9 @@ fn run_with_capture_spawn<T>(
     if identity_broker_app.is_some() {
         keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
     }
-    // Same egress decision as `run_with`: without the gate spliced in here too, a host-scoped grant
+    // Same egress decision as `run_with`: without the check spliced in here too, a host-scoped grant
     // would be silently offline.
-    let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
+    let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress)?;
     // Entrypoint + trailing arguments, resolved the same way `run_with` does — both entries must agree
     // on binary and arguments.
     let (mut argv, extra_setenv, passthrough) = build_initial_argv(
@@ -4042,7 +4055,7 @@ fn run_with_capture_spawn<T>(
     }
     let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, runtime_arg)?;
     splice_tool_context(&mut argv)?;
-    splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
+    splice_egress_proxy_bind(&mut argv, egress_proxy.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     let (app_dir, person_dir) = resolve_launch_dirs(manifest, opts)?;
     let mut headless_console = opts
@@ -4064,7 +4077,7 @@ fn run_with_capture_spawn<T>(
         opts,
         &ShimSpliceCtx {
             manifest,
-            net_gate: &net_gate,
+            egress_proxy: &egress_proxy,
             runtime_arg,
             extra_ro_paths: &ro_paths,
             egress: &egress,
@@ -4253,8 +4266,7 @@ fn resolve_dbus_bind_at(
     media_player: Option<&str>,
     sockets: &ProxySockets,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
-    let wants_portals = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_portals && !graphical && media_player.is_none() {
+    if dbus_proxy::portal_filter_args(portals, graphical).is_empty() && media_player.is_none() {
         return (None, Vec::new());
     }
     let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
@@ -4285,7 +4297,7 @@ fn resolve_dbus_bind_at(
                 spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             })
         });
-        let filter = dbus_proxy::session_filter_args(wants_portals, graphical, media_player);
+        let filter = dbus_proxy::session_filter_args(portals, graphical, media_player);
         let filter = filter.iter().map(String::as_str).collect::<Vec<_>>();
         let session = dbus_proxy::spawn_filtered_proxy_within(
             &binary,
@@ -4387,7 +4399,7 @@ mod dbus_resolution_tests {
             )
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
             let portals = std::collections::BTreeMap::from([(
-                "notifications".to_string(),
+                "file-chooser".to_string(),
                 PortalPolicy::ViaHost,
             )]);
 
@@ -5000,24 +5012,6 @@ mod app_dir_tests {
                     .expect("another app");
                 assert_ne!(a, other, "an app keeps only its own records of the person");
             }
-            {
-                let data = tempfile::tempdir().expect("tempdir");
-
-                let mut m = manifest("so.tilo.fixture");
-                let victim = data.path().join("so.tilo.totp");
-                m.sandbox.fs.write.push(victim.display().to_string());
-                let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
-
-                let err = refused.expect_err("a manifest naming a write path must be refused");
-                assert!(
-                    matches!(err, RunError::FsPolicy(_)),
-                    "expected a policy refusal, got: {err}"
-                );
-                assert!(
-                    !victim.exists(),
-                    "the launcher must not create a path a package named"
-                );
-            }
         }
 
         phase settings_binds_its_accounts_but_never_the_session_settings_and_other_apps_bind_nothing;
@@ -5175,7 +5169,7 @@ mod managed_spawn_policy_tests {
                         identity_broker: (None, None, None),
                         latency_sensitive: false,
                     },
-                    &crate::netgate::EgressDecision::Blocked,
+                    &crate::egress_proxy::EgressDecision::Blocked,
                     None,
                     Some((&owner, None)),
                 );
@@ -5229,7 +5223,7 @@ mod managed_spawn_policy_tests {
                         identity_broker: (None, None, None),
                         latency_sensitive: false,
                     },
-                    &crate::netgate::EgressDecision::Blocked,
+                    &crate::egress_proxy::EgressDecision::Blocked,
                     None,
                     Some((&owner, None)),
                 );
@@ -5267,7 +5261,7 @@ mod managed_spawn_policy_tests {
                         identity_broker: (None, None, None),
                         latency_sensitive: false,
                     },
-                    &crate::netgate::EgressDecision::Blocked,
+                    &crate::egress_proxy::EgressDecision::Blocked,
                     None,
                     Some((&policy, None)),
                 );
@@ -5634,6 +5628,9 @@ mod render_service_launch_tests {
 }
 
 #[cfg(test)]
+mod shell_ui_tests;
+
+#[cfg(test)]
 mod gui_argv_tests {
     use super::*;
 
@@ -5812,10 +5809,10 @@ mod retained_files_tests {
                 &enforced,
                 &ShimSpliceCtx {
                     manifest: &manifest,
-                    net_gate: &None,
+                    egress_proxy: &None,
                     runtime_arg: None,
                     extra_ro_paths: &[],
-                    egress: &crate::netgate::EgressDecision::Blocked,
+                    egress: &crate::egress_proxy::EgressDecision::Blocked,
                     capabilities: &after,
                     dbus_plan: &None,
                     system_authority: &None,
@@ -5899,10 +5896,10 @@ mod retained_files_tests {
                     &opts,
                     &ShimSpliceCtx {
                         manifest: &manifest,
-                        net_gate: &None,
+                        egress_proxy: &None,
                         runtime_arg: None,
                         extra_ro_paths: &[],
-                        egress: &crate::netgate::EgressDecision::Blocked,
+                        egress: &crate::egress_proxy::EgressDecision::Blocked,
                         capabilities: &capabilities,
                         dbus_plan: &None,
                         system_authority: &None,
@@ -5936,7 +5933,7 @@ mod retained_files_tests {
             }
         }
 
-        phase retained_projection_refuses_redirected_or_nonprivate_custody;
+        phase retained_projection_refuses_redirected_or_nonprivate_ownership;
         {
             let root = tempfile::tempdir().unwrap();
             std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -800,12 +800,12 @@ mod tests {
         assert_eq!(
             exported(&mut app, &switch_name, Role::Switch).toggled(),
             Some(Toggled::True),
-            "the switch says the state the record holds"
+            "the switch says the state the resource holds"
         );
         assert_eq!(
             exported(&mut app, &chooser_name, Role::ComboBox).value(),
             Some("3×"),
-            "the chooser says the zoom the record holds"
+            "the chooser says the zoom the resource holds"
         );
     }
 
@@ -816,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_writes_the_appearance_section_kept_in_the_persons_records() {
+    fn a_click_writes_the_appearance_section_kept_in_the_persons_resources() {
         ui::i18n::I18nManager::init("en-US");
         click_and_check(TestApp::<SettingsShell>::for_person(&"ad".repeat(32)).unwrap());
     }

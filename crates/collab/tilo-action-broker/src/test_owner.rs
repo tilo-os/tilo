@@ -291,7 +291,7 @@ impl SessionOwner {
         match &request.operation {
             CommitOperation::Document {
                 app,
-                record,
+                document: record,
                 envelope,
                 ..
             } => {
@@ -344,7 +344,7 @@ impl SessionOwner {
                     .collect();
                 candidate
                     .receive_from(
-                        TransportOrigin::RelayDelta(self.key.verifying_key().to_bytes()),
+                        TransportOrigin::ServerDelta(self.key.verifying_key().to_bytes()),
                         NeighbourMsg::SyncResp {
                             changes,
                             workspace: request.workspace.clone(),

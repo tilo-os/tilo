@@ -1,5 +1,5 @@
 //! The Linux side of the prepared-setup TPM handoff: TPM commands, the privileged helper,
-//! caller-owned package custody and the local target bundle.
+//! caller-owned package ownership and the local target bundle.
 
 use std::ffi::OsStr;
 use std::fs::File;

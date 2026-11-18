@@ -3,7 +3,7 @@ const check=(condition,message)=>{if(!condition)throw Error(message);};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const bytes=async name=>new Uint8Array(await(await fetch(`fixtures/${name}`)).arrayBuffer());
 const hash=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',value)),b=>b.toString(16).padStart(2,'0')).join('');
-const owner=(pool,id,signal)=>pool.bindOwner({owner:id,lifetime:'qualification-1',domain:'image',lane:'foreground',authorize:()=>true,signal});
+const owner=(pool,id,signal)=>pool.bindOwner({owner:id,lifetime:'qualification-1',domain:'image',priority:'foreground',authorize:()=>true,signal});
 async function refused(p,pattern){try{await p;}catch(e){check(pattern.test(e.message),e.message);return;}throw Error('expected refusal');}
 export async function qualify(){
   const qualificationStarted=performance.now();

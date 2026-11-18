@@ -593,3 +593,92 @@ fn a_press_outside_the_map_reports_nothing() {
         "a press beside the map is not the canvas's"
     );
 }
+
+/// A hugging pin reports the height it is drawn at, in canvas pixels, once: a view that reads the
+/// canvas's free area learns what the pin takes without a report a frame, and hears of it again
+/// only when its view comes to another height.
+#[test]
+fn a_hugging_pin_reports_the_height_it_is_drawn_at_once() {
+    let _frame = crate::motion::pin_frame();
+    let queue = crate::Intents::default();
+    let mut map = pointing_map(&queue, MapCamera::default());
+    map.drawn = Event::View(Intent::new(&queue, CANVAS, "drawn"));
+    // A pin that hugs its words: as tall as they come to, up to its own height.
+    map = map.pin(
+        "turn",
+        PinPlace {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: Some(480.0),
+            band: 0.0,
+            hug: true,
+            grows: true,
+        },
+        Box::new(crate::widget::Text::new("Here are your mails.")),
+    );
+    lay_out(&mut map);
+    // The first solve reports the height the words come to, once.
+    let first = reported(&queue);
+    let height = drawn_height(&first);
+    assert!(
+        height > 0 && height < 480,
+        "the turn hugs its words, under its own height: {height}"
+    );
+    // A frame that changes nothing reports nothing: the map rests.
+    lay_out(&mut map);
+    assert_eq!(reported(&queue), Vec::new(), "a still canvas says nothing");
+    // The pin's view comes to another height: it is reported once more, taller.
+    map.put_pin_view(
+        0,
+        Box::new(crate::widget::Text::new(
+            "Here are your mails. This is a longer answer, so the card it stands in is taller \
+             than the last one, and the height it is drawn at changes with it.",
+        )),
+    );
+    lay_out(&mut map);
+    let again = reported(&queue);
+    let taller = drawn_height(&again);
+    assert!(
+        taller > height,
+        "the taller answer is drawn taller: {taller} was {height}, {again:?}"
+    );
+    // And the frame after it says nothing, the change reported once.
+    lay_out(&mut map);
+    assert_eq!(reported(&queue), Vec::new(), "the change was reported once");
+}
+
+/// The drawn height `reports` carries, as the one `drawn` report's key and height: the pin's key
+/// and its height in canvas pixels.
+fn drawn_height(reports: &[Fired]) -> i64 {
+    assert_eq!(reports.len(), 1, "one report: {reports:?}");
+    let Fired {
+        key,
+        event,
+        value: Some(Value::List(parts)),
+    } = &reports[0]
+    else {
+        panic!("the report is a list: {reports:?}");
+    };
+    assert_eq!((key.as_str(), event.as_str()), (CANVAS, "drawn"));
+    assert_eq!(parts[0], Value::Text("turn".into()), "the pin's key");
+    let Some(Value::List(height)) = parts.get(1) else {
+        panic!("the report carries its height: {parts:?}");
+    };
+    let Some(Value::Int(height)) = height.first() else {
+        panic!("a height in canvas pixels: {parts:?}");
+    };
+    *height
+}
+
+/// Lay `map` out at the pointing tests' viewport: what a change inside a pin lays out again.
+fn lay_out(map: &mut Map) {
+    let mut text = crate::font_catalog::fixture_renderer();
+    crate::widget::layout::lay_out_detached(
+        map,
+        Rect::new(0.0, 0.0, 800.0, 600.0),
+        &crate::Theme::dark(),
+        &mut text,
+    )
+    .expect("the map lays out");
+}

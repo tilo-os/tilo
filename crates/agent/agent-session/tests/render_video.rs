@@ -79,8 +79,11 @@ fn timeline(source: Option<&str>) -> Project {
 fn agents_document(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
     let agent = crate::common::confined(
         VIDEO,
-        &MemberId::person("editor"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("editor"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap()
@@ -269,7 +272,7 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
 }
 
 /// One agent brings footage into a new project and places it on V1, the
-/// lane a new project lacks until a clip names it; another member's
+/// track a new project lacks until a clip names it; another member's
 /// replica of the same record, on the workspace's content, views a frame of it.
 #[test]
 fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
@@ -291,8 +294,11 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
 
     let editor = crate::common::confined(
         VIDEO,
-        &MemberId::person("editor"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("editor"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap()
@@ -321,8 +327,11 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
 
     let reviewer = crate::common::confined(
         VIDEO,
-        &MemberId::person("reviewer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("reviewer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("reviewer"),
+            name: String::new(),
+        },
         Seed::Existing {
             record: editor.document_id().clone(),
             changes: vec![snapshot],

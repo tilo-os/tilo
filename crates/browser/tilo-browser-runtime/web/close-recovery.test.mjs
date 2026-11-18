@@ -27,10 +27,10 @@ test('close is idempotent once it has settled', async () => {
 
 test('concurrent closes share the run already under way', async () => {
   let began = 0, settled = 0, release;
-  const gate = new Promise(resolve => { release = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
   const close = recoverableClose({
     begin() { began += 1; },
-    async settle() { settled += 1; await gate; },
+    async settle() { settled += 1; await hold; },
   });
   const first = close(), second = close();
   assert.equal(first, second, 'a second caller gets the run in flight, not a second teardown');

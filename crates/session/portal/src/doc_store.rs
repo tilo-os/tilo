@@ -103,7 +103,7 @@ fn export(
             // What the store keeps is the file as it resolved the choice (a
             // save's folder, an open's links), which is what the path stands
             // for from here on.
-            host_path: standing_for(documents, key, &app_path)
+            host_path: stored_path_for(documents, key, &app_path)
                 .unwrap_or_else(|| chosen.to_path_buf()),
             app_path,
         },
@@ -121,7 +121,7 @@ fn export(
 
 /// The host file the store keeps at `app_path`, when that is one of `key`'s
 /// documents.
-fn standing_for(documents: &Documents, key: &AppKey, app_path: &Path) -> Option<PathBuf> {
+fn stored_path_for(documents: &Documents, key: &AppKey, app_path: &Path) -> Option<PathBuf> {
     let (token, _) = tilo_documents::split_sandbox_path(app_path)?;
     Some(documents.document(key, &token)?.host)
 }

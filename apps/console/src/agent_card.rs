@@ -9,7 +9,7 @@ use ui::widget::{ButtonRole, ListRow, Section, SectionHeader};
 
 use crate::agents::{self, Seen};
 use crate::effects::{AgentCommand, ConsoleEffect};
-use crate::{Console, Nav, Reads, Records, ago, faced, page, tr, trf};
+use crate::{Console, Nav, Reads, Resources, ago, faced, page, tr, trf};
 
 pub(crate) const AGENT_KIND: &str = "console.agent";
 
@@ -86,7 +86,7 @@ fn grant_of<'a>(seen: &'a Seen, client: &str) -> Option<&'a mcp_server::Grant> {
 }
 
 /// Carry out `command` on the agent of `client`, as its card's buttons do.
-pub(crate) fn act(records: &Records, seen: &Seen, client: &str, command: AgentCommand) -> bool {
+pub(crate) fn act(records: &Resources, seen: &Seen, client: &str, command: AgentCommand) -> bool {
     let newest = sessions_of(seen, client).into_iter().next();
     match command {
         AgentCommand::Stop => newest.is_some_and(|session| agents::stop(records, seen, session)),
@@ -125,7 +125,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str)
                 && !matches!(server, Arrival::Pending { .. })
             {
                 nav.command.set(None);
-                act(&Records::of(cx), &seen, &client, command);
+                act(&Resources::of(cx), &seen, &client, command);
             }
             card(cx, &nav, &seen, &client)
         })
@@ -133,7 +133,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str)
 }
 
 fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
-    let records = Records::of(cx);
+    let records = Resources::of(cx);
     let sessions = sessions_of(seen, client);
     let newest = sessions.first().copied();
     let working = newest.filter(|session| seen.working(session));

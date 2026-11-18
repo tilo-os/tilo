@@ -38,7 +38,7 @@ mod eager_bridge_tests {
     }
 
     // Deliberately missing its original certificate: dispatch must revalidate
-    // this retained custody, not turn the queue into an admission bypass.
+    // this retained ownership, not turn the queue into an admission bypass.
     fn uncertified_origin(fixture: &LocalDirectoryFixture) -> InvocationCaller {
         InvocationCaller::Local {
             route: fixture.route.clone(),
@@ -62,7 +62,7 @@ mod eager_bridge_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn authenticated_eager_admission_waits_for_broker_and_revalidates_custody() {
+    async fn authenticated_eager_admission_waits_for_broker_and_revalidates_ownership() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut fixture = local_directory_fixture();
@@ -145,7 +145,7 @@ mod eager_bridge_tests {
         assert!(matches!(
             refused.poll_ready(),
             PendingPoll::Ready(Err(
-                tilo_actions::remote::ActionHostError::Unavailable { .. }
+                tilo_actions::remote::ActionCallError::Unavailable { .. }
             ))
         ));
         assert!(fixture.take_invocation_identity().is_none());

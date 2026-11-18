@@ -9,7 +9,9 @@ use std::sync::Arc;
 use tilolang_runtime::{Actor, Words};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
-use tilolang_tilo::publish::{ActionTypes, PlanRequest, Planner, publish_package, publish_record};
+use tilolang_tilo::publish::{
+    ActionTypes, PlanRequest, Planner, publish_package, publish_resource,
+};
 
 const NOTES: &str = "so.tilo.lang.notes";
 
@@ -19,19 +21,19 @@ struct Toolkit;
 
 impl Words for Toolkit {
     fn add(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
+        tilo_app_window::i18n::add_catalogues(catalogues);
     }
 
     fn add_used(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        tilo_app_window::i18n::add_shared_catalogues(catalogues);
     }
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
-        tilo_ui_host::i18n::word(key, args, source)
+        tilo_app_window::i18n::word(key, args, source)
     }
 
     fn revision(&self) -> u64 {
-        tilo_ui_host::i18n::revision()
+        tilo_app_window::i18n::revision()
     }
 }
 
@@ -96,7 +98,7 @@ fn types_of(host: &Host, package: &Package) -> ActionTypes {
 
 /// The notes package's one notebook, as it publishes it to the workspace's search.
 fn notebook(host: &Host, package: &Package) -> tilo_actions::ResourceSpec {
-    publish_record(
+    publish_resource(
         &types_of(host, package),
         "Notebook",
         "tl.notes/root",
@@ -364,7 +366,7 @@ fn a_german_counter_window_draws_german() {
 }
 
 #[test]
-fn a_packages_words_are_published_without_a_record() {
+fn a_packages_words_are_published_without_a_document() {
     let (host, package) = notes("de-DE");
     let planner: Arc<dyn Planner> = Arc::new(Unasked);
     let words = host.runtime().words();
@@ -378,7 +380,7 @@ fn a_packages_words_are_published_without_a_record() {
             .actions
             .iter()
             .all(|action| !action.label.is_empty()),
-        "and every action it offers without a record says what it does"
+        "and every action it offers without a document says what it does"
     );
 }
 

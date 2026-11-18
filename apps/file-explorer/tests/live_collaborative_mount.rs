@@ -34,7 +34,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     let temp = tempfile::tempdir().unwrap();
     let mount = temp.path().join("mount");
     std::fs::create_dir(&mount).unwrap();
-    let endpoint = test_relay::direct_endpoint().await;
+    let endpoint = test_server::direct_endpoint().await;
     let shutdown_endpoint = endpoint.clone();
     let store = Arc::new(ContentStore::memory());
     let shutdown_store = store.clone();

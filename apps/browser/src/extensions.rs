@@ -306,7 +306,7 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     parse_manifest_with(text, |_| None)
 }
 
-/// The manifest's inventory record with its names in the default locale; `read`
+/// The manifest's inventory resource with its names in the default locale; `read`
 /// gives a file of the package by its path within it.
 fn parse_manifest_with(
     text: &str,

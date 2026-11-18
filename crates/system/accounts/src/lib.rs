@@ -64,20 +64,21 @@ pub mod cloud_types {
     pub const MOUNT_CONFIG_KEY: &str = "mount";
 }
 
-/// Custody is decided against the accounts' keeper, which is the person's
-/// own record: without that record there is nothing to decide.
-#[cfg(feature = "person")]
-pub mod custody;
 pub mod email;
 pub mod handoff;
+/// Ownership is decided against the accounts' keeper, which is the person's
+/// own record: without that record there is nothing to decide.
+#[cfg(feature = "person")]
+pub mod secret_release;
 pub mod thunderbird;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
     HandoffStore, RefreshError,
 };
 pub mod vault;
-pub use vault::{Saved, Secret, SecretCustody, SecretVault};
+pub use vault::{Saved, Secret, SecretVault, VaultBackend};
 pub mod secrets;
+pub mod typed_for;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
     CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,
@@ -397,6 +398,15 @@ pub fn store_path_in(config_root: &Path) -> PathBuf {
 
 pub fn vault_dir_in(config_root: &Path) -> PathBuf {
     accounts_dir_in(config_root).join("vault")
+}
+
+/// Keep the key of every sealed store under `stores` under `keys`, at the
+/// same place below it, instead of beside its sealed file: what a machine
+/// that keeps many people's stores under one folder names once, so that a
+/// copy of that folder alone opens none of them
+/// ([`secret_vault::keep_keys_apart`]).
+pub fn keep_vault_keys_apart(stores: &Path, keys: &Path) {
+    secret_vault::keep_keys_apart(stores, keys);
 }
 
 pub fn store_path() -> Option<PathBuf> {

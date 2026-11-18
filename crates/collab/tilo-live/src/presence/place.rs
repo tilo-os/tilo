@@ -21,7 +21,7 @@ pub struct Tile {
 }
 
 impl Tile {
-    /// The tile of `tab` standing at `(x, y)`, `width` by `height`.
+    /// The tile of `tab` at `(x, y)`, `width` by `height`.
     #[must_use]
     pub const fn new(tab: u64, x: f64, y: f64, width: f64, height: f64) -> Self {
         Self {

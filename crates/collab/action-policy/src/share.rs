@@ -6,12 +6,12 @@
 //! resource's own node, decided by [`crate::decide`] at every action API and by
 //! every receiver like any other grant, and revoked when the share ends.
 //!
-//! - **One resource.** A share names one record
+//! - **One resource.** A share names one resource
 //!   (`workspace › app › kind › resource`) or one item of it
-//!   (`… › resource › item`). An app's own record of the workspace travels under
+//!   (`… › resource › item`). An app's own document of the workspace travels under
 //!   an empty route that a node cannot name, so an item of it is named under
 //!   `resource:*`: item ids are unique, so the node stays one item. A bare
-//!   `resource:*` would be every record of the kind and is refused.
+//!   `resource:*` would be every resource of the kind and is refused.
 //! - **Everyone in the workspace.** One grant to the Viewer role, which every
 //!   higher role holds too: Read for a view share, Read and Undoable for an
 //!   edit share. A grant covers only the kinds it names, so a view share
@@ -80,7 +80,7 @@ impl FromStr for ShareAccess {
 pub enum ShareRefusal {
     /// The share's id is empty, too long or has characters ids may not.
     Id,
-    /// The node is not one record or one item of a record of this workspace.
+    /// The node is not one resource or one item of a resource of this workspace.
     Node(String),
     /// The access is neither `view` nor `edit`.
     Access(String),
@@ -92,7 +92,10 @@ impl std::fmt::Display for ShareRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Id => f.write_str("a share's id is 1 to 128 letters, digits or . _ : -"),
-            Self::Node(why) => write!(f, "only one record or one item of it can be shared: {why}"),
+            Self::Node(why) => write!(
+                f,
+                "only one resource or one item of it can be shared: {why}"
+            ),
             Self::Access(access) => write!(f, "a share gives `view` or `edit`, not `{access}`"),
             Self::NotHeld(refusal) => write!(f, "you can't share more than you hold: {refusal}"),
         }
@@ -122,7 +125,7 @@ pub fn is_of_share(grant: &Grant, share: &str) -> bool {
 ///
 /// # Errors
 /// [`ShareRefusal::Id`] for a malformed id and [`ShareRefusal::Node`] for a
-/// node that is not one record or one item of it in `workspace`.
+/// node that is not one resource or one item of it in `workspace`.
 pub fn share_grants(
     workspace: &str,
     sharer: &str,
@@ -149,7 +152,7 @@ pub fn share_grants(
     )])
 }
 
-/// Whether `node` names one record of `workspace`, or one item of a record.
+/// Whether `node` names one resource of `workspace`, or one item of a resource.
 fn check_node(workspace: &str, node: &TreePath) -> Result<(), ShareRefusal> {
     let named = |segment: Option<&Segment>, level: Level| matches!(segment, Some(Segment::Name(at, id)) if *at == level && !id.is_empty());
     let segments = node.segments();
@@ -165,14 +168,14 @@ fn check_node(workspace: &str, node: &TreePath) -> Result<(), ShareRefusal> {
     let item = match segments.len() {
         4 => false,
         5 if named(segments.get(4), Level::Item) => true,
-        _ => return Err(ShareRefusal::Node("it is not a record or an item".into())),
+        _ => return Err(ShareRefusal::Node("it is not a resource or an item".into())),
     };
     match segments.get(3) {
         Some(segment) if named(Some(segment), Level::Resource) => Ok(()),
-        // An item of the app's own record, which no name names.
+        // An item of the app's own document, which no name names.
         Some(Segment::Any(Level::Resource)) if item => Ok(()),
         _ => Err(ShareRefusal::Node(
-            "it names no one record (every record of a kind can't be shared)".into(),
+            "it names no one resource (every resource of a kind can't be shared)".into(),
         )),
     }
 }
@@ -240,7 +243,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_share_reaches_one_item_within_its_sharers_standing;
+        fn a_share_reaches_one_item_within_its_sharers_access;
 
         phase an_edit_share_lets_a_viewer_change_that_item_only;
         {
@@ -340,15 +343,15 @@ mod tests {
             );
         }
 
-        phase a_share_is_one_record_or_one_item_of_this_workspace;
+        phase a_share_is_one_resource_or_one_item_of_this_workspace;
         {
-            let record = TreePath::workspace(WORKSPACE)
+            let resource = TreePath::workspace(WORKSPACE)
                 .app("so.tilo.notes")
                 .kind("notes.notebook")
                 .resource("plan");
             let ok = |node: &TreePath| share_grants(WORKSPACE, "ada", "m1", node, ShareAccess::View);
-            assert_eq!(ok(&record).unwrap().len(), 1);
-            assert!(ok(&record.clone().item("p1")).is_ok());
+            assert_eq!(ok(&resource).unwrap().len(), 1);
+            assert!(ok(&resource.clone().item("p1")).is_ok());
             assert!(ok(&item("p1")).is_ok());
             let every = TreePath::workspace(WORKSPACE)
                 .app("so.tilo.notes")
@@ -361,7 +364,7 @@ mod tests {
                     .app("so.tilo.notes")
                     .kind("notes.notebook")
                     .resource("plan"),
-                record.clone().item("p1").field("body"),
+                resource.clone().item("p1").field("body"),
                 TreePath::workspace(WORKSPACE).rest(),
             ] {
                 assert!(
@@ -370,14 +373,14 @@ mod tests {
                 );
             }
             assert_eq!(
-                share_grants(WORKSPACE, "ada", "", &record, ShareAccess::View),
+                share_grants(WORKSPACE, "ada", "", &resource, ShareAccess::View),
                 Err(ShareRefusal::Id)
             );
             assert_eq!(
-                share_grants(WORKSPACE, "ada", "a/b", &record, ShareAccess::View),
+                share_grants(WORKSPACE, "ada", "a/b", &resource, ShareAccess::View),
                 Err(ShareRefusal::Id)
             );
-            let grants = ok(&record).unwrap();
+            let grants = ok(&resource).unwrap();
             assert!(grants.iter().all(|grant| is_of_share(grant, "m1")
                 && grant.granted_by == Grantee::person("ada")
                 && grant.answer == Answer::Allow));

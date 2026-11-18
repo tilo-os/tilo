@@ -395,7 +395,11 @@ impl AppBrokerState {
             ),
             owner: owner.clone(),
             original: None,
-            policy_time: None,
+            // The registered clock the turn is decided under. A turn carries no retained
+            // caller time of its own, but the broker does register one: leaving this `None`
+            // makes every later check (the terminal's effect receipt above all) fail with
+            // "original policy clock or origin does not match runtime registration".
+            policy_time: self.registered_policy_time()?,
             journal_key: None,
             peer_id: peer,
             tx,

@@ -44,7 +44,7 @@ tilo_test_env::scenario! {
                 && (rect.y0 - at.y0).abs() < 0.5
                 && (rect.width() - at.width()).abs() < 0.5
                 && (rect.height() - at.height()).abs() < 0.5,
-            "the floating window stands at its rect, not in the lane flow: {rect:?}"
+            "the floating window stands at its rect, not in the section flow: {rect:?}"
         );
         assert!(
             row.groups[2].get_rect().x0 < in_flow_right - 1.0,

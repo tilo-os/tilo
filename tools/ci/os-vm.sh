@@ -7,7 +7,7 @@
 #
 # The disk is this tree's dev image as os-dev-disk-ARCH installed it, never booted itself: the VM
 # runs on a throwaway overlay of it, so nothing it does outlives the job. QEMU runs it through
-# os/dev/vm.sh, the same harness the gates boot with, serving its serial console and its display
+# os/dev/vm.sh, the same harness the checks boot with, serving its serial console and its display
 # (VNC) on sockets and its SSH on a forwarded port inside the job; t's attach agent (served by
 # the t server that ran the job, so it speaks its protocol) registers those three channels and
 # relays each connection the session makes. Nothing listens on the node's network. As root in a

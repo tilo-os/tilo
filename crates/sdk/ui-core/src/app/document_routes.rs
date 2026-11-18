@@ -106,7 +106,7 @@ thread_local! {
 impl App {
     pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
         let _background = crate::local_document_action::suspend();
-        // Document traffic enters only the exact custody-checked merge API.
+        // Document traffic enters only the exact ownership-checked merge API.
         // A mutable widget callback is not a read-only notification boundary.
         if !matches!(
             event,
@@ -184,7 +184,7 @@ impl App {
             return Some(Cow::Owned(unsynced));
         }
         // A change still on its way to the history says nothing.
-        let key = if self.document_routes.witness.is_none() {
+        let key = if self.document_routes.observation.is_none() {
             let manager = &self.collaboration.manager;
             if !self.native_document_chrome {
                 return None;
@@ -268,10 +268,10 @@ impl App {
         let before = self
             .document_sync_status()
             .map(std::borrow::Cow::into_owned);
-        let witness = self.bound_broker_route().cloned();
+        let observation = self.bound_broker_route().cloned();
         let joins = self.document_routes.reconcile(
             self.root_widget.as_ref(),
-            witness,
+            observation,
             self.autosave_generation,
             &self.state.doc,
         );
@@ -280,9 +280,9 @@ impl App {
         let live = LiveOwners::of(self.root_widget.as_ref());
         let routes = self
             .document_routes
-            .witness
+            .observation
             .iter()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
             .chain(
                 self.document_routes
                     .owners
@@ -313,15 +313,15 @@ impl App {
 
     pub(super) fn published_action_history_ready_after_refresh(&self) -> bool {
         // A later event may replace owners or the primary route in this batch.
-        // Withhold publication until the normal pump reconciles that new custody.
-        if self.document_routes.witness.as_ref() != self.bound_broker_route() {
+        // Withhold publication until the normal pump reconciles that new ownership.
+        if self.document_routes.observation.as_ref() != self.bound_broker_route() {
             return false;
         }
         let route = self
             .document_routes
-            .witness
+            .observation
             .as_ref()
-            .map(|witness| witness.route());
+            .map(|observation| observation.route());
         let live = LiveOwners::of(self.root_widget.as_ref());
         live.all.iter().all(|owner| {
             self.document_routes.owners.iter().any(|entry| {
@@ -351,8 +351,8 @@ impl App {
         &self,
     ) -> tilo_startup_metrics::NativeAdmissionSnapshot {
         let manager = &self.collaboration.manager;
-        let witness = self.document_routes.witness.as_ref();
-        let route = witness.map(|witness| witness.route());
+        let observation = self.document_routes.observation.as_ref();
+        let route = observation.map(|observation| observation.route());
         let (enqueued, counts) = manager.action_directory_observation();
         let installed = self
             .document_routes
@@ -360,7 +360,7 @@ impl App {
             .iter()
             .map(|entry| entry.owners.len())
             .sum();
-        let continuity = crate::host::environment()
+        let continuity = crate::process::environment()
             .identity
             .continuity_instance
             .as_deref()
@@ -370,7 +370,7 @@ impl App {
             continuity_instance: continuity,
             connection: tilo_startup_metrics::NativeAdmissionConnection {
                 manager_connected: manager.is_connected(),
-                custody_reconciled: witness == self.bound_broker_route(),
+                ownership_reconciled: observation == self.bound_broker_route(),
             },
             live_document_owners: live_document_owners(self.root_widget.as_ref()).len(),
             installed_document_owners: installed,
@@ -416,7 +416,7 @@ impl App {
         if current.is_empty() {
             return Ok(Handoff::Queued);
         }
-        if self.document_routes.witness.is_none() {
+        if self.document_routes.observation.is_none() {
             return Err("the admitted document route is unavailable");
         }
         let blocked = current
@@ -602,7 +602,7 @@ impl App {
                 .collaboration
                 .manager
                 .primary_route()
-                .map(|witness| witness.route().clone())
+                .map(|observation| observation.route().clone())
             {
                 let _ = self.apply_workspace_index_document_envelope(
                     &route,
@@ -613,7 +613,7 @@ impl App {
             return;
         }
         self.refresh_document_routes();
-        if self.document_routes.witness.is_none() {
+        if self.document_routes.observation.is_none() {
             return;
         }
         // Signature/role/replay verification remains the SDK's responsibility.
@@ -629,27 +629,28 @@ impl App {
             self.drain_document_routes_after_refresh();
             return;
         }
-        let Some(witness) = self.document_routes.witness.as_ref() else {
+        let Some(observation) = self.document_routes.observation.as_ref() else {
             return;
         };
-        let primary = validated_route_payload_with(witness.route(), envelope, decrypted_payload)
-            .and_then(|payload| {
-                let active = !self.document_routes.retired_route(witness.route())
-                    && match witness.route().document.as_deref() {
-                        Some(record) => self
-                            .persistence
-                            .records
-                            .as_ref()
-                            .and_then(|set| set.active())
-                            .is_some_and(|id| id.as_str() == record),
-                        None => self
-                            .persistence
-                            .records
-                            .as_ref()
-                            .is_none_or(|set| set.active().is_none()),
-                    };
-                active.then_some(payload)
-            });
+        let primary =
+            validated_route_payload_with(observation.route(), envelope, decrypted_payload)
+                .and_then(|payload| {
+                    let active = !self.document_routes.retired_route(observation.route())
+                        && match observation.route().document.as_deref() {
+                            Some(record) => self
+                                .persistence
+                                .records
+                                .as_ref()
+                                .and_then(|set| set.active())
+                                .is_some_and(|id| id.as_str() == record),
+                            None => self
+                                .persistence
+                                .records
+                                .as_ref()
+                                .is_none_or(|set| set.active().is_none()),
+                        };
+                    active.then_some(payload)
+                });
         let Some(payload) = primary else {
             return;
         };
@@ -698,7 +699,7 @@ pub(super) struct Published {
 struct Part {
     route: crate::collaboration::RouteSpec,
     mutation: collab_types::DocumentMutation,
-    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
+    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentAuthority>>,
     heads: Vec<automerge::ChangeHash>,
     document: automerge::AutoCommit,
 }
@@ -706,7 +707,7 @@ struct Part {
 /// The commit each part of the pass travels under: the units one action
 /// wrote share one, so a peer applies all of it or none. `None` for a part
 /// that carries no commit of its own — a whole document, or a change the
-/// record's own custody carries.
+/// record's own ownership carries.
 ///
 /// A commit names one workspace, so the parts of another workspace's route
 /// are committed to apart. The author's device is left as zeros: the
@@ -752,12 +753,10 @@ pub(super) fn unit_commits(
         actor: None,
         device: [0; 32],
     };
-    collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, units).unwrap_or_else(
-        |error| {
-            tracing::warn!(%error, "collab: a published change commits to no action");
-            vec![None; units.len()]
-        },
-    )
+    collab_types::WorkspaceCommit::of_units(workspace, &author, units).unwrap_or_else(|error| {
+        tracing::warn!(%error, "collab: a published change commits to no action");
+        vec![None; units.len()]
+    })
 }
 
 /// What one part of the pass sends: its changes under the commit of the
@@ -765,7 +764,7 @@ pub(super) fn unit_commits(
 /// no action's.
 pub(super) fn part_request(
     mutation: collab_types::DocumentMutation,
-    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
+    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentAuthority>>,
     commit: Option<collab_types::WorkspaceCommit>,
 ) -> CollabRequest {
     match commit {
@@ -869,7 +868,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 mutation,
                 authorization: authorization.map(|authorization| {
                     std::sync::Arc::new(authorization)
-                        as std::sync::Arc<dyn crate::collaboration::DocumentCustody>
+                        as std::sync::Arc<dyn crate::collaboration::DocumentAuthority>
                 }),
                 heads,
                 document,

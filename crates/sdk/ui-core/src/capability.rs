@@ -15,7 +15,7 @@
 //!
 //! **No inert control may exist**: a control for a privileged act is drawn only in the granted
 //! face. **Discovery is not resolution**: `which()`, `$PATH` and environment variables are test
-//! seams (`#[cfg(test)]`, the `testing` module), never the product path.
+//! boundaries (`#[cfg(test)]`, the `testing` module), never the product path.
 //!
 //! ```
 //! use tilo_ui::capability::{Capability, Resolved};

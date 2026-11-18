@@ -1,5 +1,7 @@
 use super::*;
-use crate::application::{ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget};
+use crate::application::{
+    ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+};
 use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
 use crate::permissions::{MemberId, PermissionContext};
@@ -56,9 +58,9 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         create: |_, _, _| unreachable!(),
     };
     let prepare = |instance| {
-        let mut context = HostContext::prepare(
+        let mut context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views: views.clone(),
                 device_id: "D".into(),

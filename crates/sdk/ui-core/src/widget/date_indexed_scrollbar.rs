@@ -19,8 +19,8 @@ use crate::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 pub const MAX_PROJECTED_MARKERS: usize = 28;
 /// The visible 16px rail gets an 8px acquisition margin either side.  This
 /// remains a 32px target, rather than stealing a photo column with an
-/// invisible sidebar-sized hover lane.
-pub const PREVIEW_LANE_WIDTH: f64 = 8.0;
+/// invisible sidebar-sized hover gutter.
+pub const PREVIEW_GUTTER_WIDTH: f64 = 8.0;
 /// Horizontal target expansion is deliberately independent of the vertical
 /// marker tolerance: a marker may be easy to find along the timeline without
 /// capturing unrelated image content beside it.
@@ -134,7 +134,7 @@ impl DateIndexedScrollbar {
     }
 
     /// The narrow right-edge track used by the widget.  Hosts may provide a
-    /// wider rect for touch-first surfaces; the marker lane expands leftward.
+    /// wider rect for touch-first surfaces; the marker gutter expands leftward.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
     }
@@ -161,9 +161,9 @@ impl DateIndexedScrollbar {
 
     /// Whether an immediate-mode host should offer this widget first refusal
     /// of a pointer press/release.  It includes the visible track and the
-    /// adjacent marker/preview lane, never the collection content itself.
+    /// adjacent marker/preview gutter, never the collection content itself.
     pub fn contains_interaction_point(&self, point: Point) -> bool {
-        self.preview_lane().contains(point)
+        self.preview_gutter().contains(point)
     }
 
     /// Normalise an offset without trusting callers to have clamped it.
@@ -270,9 +270,9 @@ impl DateIndexedScrollbar {
             .collect()
     }
 
-    fn preview_lane(&self) -> Rect {
+    fn preview_gutter(&self) -> Rect {
         Rect::new(
-            self.rect.x0 - PREVIEW_LANE_WIDTH,
+            self.rect.x0 - PREVIEW_GUTTER_WIDTH,
             self.rect.y0 - MARKER_HIT_RADIUS,
             self.rect.x1 + HORIZONTAL_HIT_EXPANSION,
             self.rect.y1 + MARKER_HIT_RADIUS,
@@ -284,7 +284,7 @@ impl DateIndexedScrollbar {
         markers: &[ProjectedDateMarker],
         cursor: Point,
     ) -> Option<DateIndexPreview> {
-        if !self.preview_lane().contains(cursor) {
+        if !self.preview_gutter().contains(cursor) {
             return None;
         }
         markers
@@ -318,7 +318,7 @@ impl DateIndexedScrollbar {
     ) -> Option<DateIndexIntent> {
         self.last_cursor = cursor;
         let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
-        self.hovered = self.preview_lane().contains(cursor);
+        self.hovered = self.preview_gutter().contains(cursor);
         if self.bar.is_dragging() {
             return self.bar.drag_to(self.rect, metrics, cursor).map(|offset| {
                 DateIndexIntent::ScrollTo {
@@ -344,7 +344,7 @@ impl DateIndexedScrollbar {
         }
         let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
         if let Some(marker) = projected.iter().find(|marker| {
-            self.preview_lane().contains(self.last_cursor)
+            self.preview_gutter().contains(self.last_cursor)
                 && (marker.axis - self.last_cursor.y).abs() <= MARKER_HIT_RADIUS
         }) {
             return Some(DateIndexIntent::ScrollTo {
@@ -425,7 +425,7 @@ impl DateIndexedScrollbar {
     /// Translate a winit event for immediate-mode hosts.  This deliberately
     /// does not consume pinch gestures: the collection needs the raw pinch
     /// anchor to keep the same item under a user's fingers while density
-    /// changes, so `PinchGesture` is exposed as an integration seam instead.
+    /// changes, so `PinchGesture` is exposed as an integration boundary instead.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -478,7 +478,7 @@ impl DateIndexedScrollbar {
         ];
         for marker in self.project_markers(markers, 12) {
             let bounds = Rect::new(
-                self.rect.x0 - PREVIEW_LANE_WIDTH,
+                self.rect.x0 - PREVIEW_GUTTER_WIDTH,
                 marker.axis - MARKER_HIT_RADIUS,
                 self.rect.x1 + HORIZONTAL_HIT_EXPANSION,
                 marker.axis + MARKER_HIT_RADIUS,
@@ -501,7 +501,7 @@ impl DateIndexedScrollbar {
                 "widget-timeline-group-hint",
                 &[],
             ))
-            .with_bounds(self.preview_lane())
+            .with_bounds(self.preview_gutter())
             .with_semantic_key(format!("{}:index", self.semantic_id))
             .with_hashed_key(format!("{}:index", self.semantic_id))
             .with_children(children)
@@ -559,13 +559,13 @@ impl DateIndexedScrollbar {
         if !metrics.overflows() || self.rect.is_zero_area() {
             return;
         }
-        let lane = self.preview_lane();
+        let gutter = self.preview_gutter();
         let active = self.hovered || self.focused || self.bar.is_active();
         self.paint_track(scene, transform, theme, active);
         let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
         self.paint_markers(scene, transform, theme, &projected, active);
         self.paint_thumb(scene, transform, theme, metrics, active);
-        self.paint_preview(scene, transform, text_renderer, theme, lane, &projected);
+        self.paint_preview(scene, transform, text_renderer, theme, gutter, &projected);
     }
 
     fn paint_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme, _active: bool) {
@@ -651,7 +651,7 @@ impl DateIndexedScrollbar {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        lane: Rect,
+        gutter: Rect,
         markers: &[ProjectedDateMarker],
     ) {
         let Some(preview) = &self.preview else {
@@ -673,7 +673,8 @@ impl DateIndexedScrollbar {
         let label_w = f64::from(w) + 2.0 * pad_x;
         let label_h = f64::from(h) + 2.0 * pad_y;
         let x1 = self.rect.x0 - f64::from(spacing.s2);
-        let top = (marker.axis - label_h / 2.0).clamp(lane.y0, (lane.y1 - label_h).max(lane.y0));
+        let top =
+            (marker.axis - label_h / 2.0).clamp(gutter.y0, (gutter.y1 - label_h).max(gutter.y0));
         let label = Rect::new(x1 - label_w, top, x1, top + label_h);
         crate::surface::panel(
             scene,
@@ -771,7 +772,7 @@ mod tests {
                 );
             }
 
-            fn thumb_drag_keeps_tracking_after_pointer_leaves_lane() {
+            fn thumb_drag_keeps_tracking_after_pointer_leaves_gutter() {
                 let mut bar = scrollbar();
                 let all = markers();
                 let m = metrics(0.0);
@@ -785,11 +786,11 @@ mod tests {
                 assert!(matches!(intent, DateIndexIntent::ScrollTo { position } if position > 0.6));
             }
 
-            fn acquisition_lane_is_a_tight_rail_not_a_sidebar() {
+            fn acquisition_gutter_is_a_tight_rail_not_a_sidebar() {
                 let bar = scrollbar();
-                let lane = bar.preview_lane();
+                let gutter = bar.preview_gutter();
                 assert!(
-                    lane.width() <= 32.0,
+                    gutter.width() <= 32.0,
                     "date index must not capture photo tiles"
                 );
                 assert_eq!(PREVIEW_BUBBLE_MAX_WIDTH, 96.0);
@@ -799,8 +800,8 @@ mod tests {
 
             marker_projection_is_bounded_ordered_and_keeps_years();
             pointer_marker_jump_uses_normalised_collection_position();
-            thumb_drag_keeps_tracking_after_pointer_leaves_lane();
-            acquisition_lane_is_a_tight_rail_not_a_sidebar();
+            thumb_drag_keeps_tracking_after_pointer_leaves_gutter();
+            acquisition_gutter_is_a_tight_rail_not_a_sidebar();
         }
 
         phase date_scrollbar_keyboard_semantics_and_density_controls;

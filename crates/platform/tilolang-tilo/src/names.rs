@@ -1,6 +1,6 @@
 //! How a view names the workspace's members.
 //!
-//! The record holds ids, the same on every replica; the workspace's member list knows the names:
+//! The document holds ids, the same on every replica; the workspace's member list knows the names:
 //! what it calls each member, the instance's own person among them. A tilolang host names
 //! people by the list its instance's connection heard last ([`Told`]).
 //!
@@ -68,13 +68,7 @@ impl MemberNames for Installed {}
 /// What a member reads as when the reader's own process knows no name for them.
 pub struct Unnamed;
 
-impl MemberNames for Unnamed {
-    /// An agent by its name, and that it is one: a row of history, a face and a mark say so
-    /// beside a person's changes.
-    fn agent(&self, name: &str) -> String {
-        format!("{} (agent)", name_words(name))
-    }
-}
+impl MemberNames for Unnamed {}
 
 impl NameHost for Unnamed {
     fn name(&self, who: &Actor) -> String {
@@ -188,7 +182,7 @@ mod tests {
     fn a_member_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
         let told = Told::new("me-id".into(), Rc::new(Unnamed));
         let rows: &[(Actor, &str, &str)] = &[
-            (agent("planner"), "Planner (agent)", "an agent by its name"),
+            (agent("planner"), "Planner", "an agent by its name"),
             (
                 person("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
                 "Unknown member",
@@ -214,8 +208,8 @@ mod tests {
             ),
             (
                 agent(""),
-                "Unknown member (agent)",
-                "an agent that gave no name still reads as an agent",
+                "Unknown member",
+                "an agent that gave no name is unknown, as a person is",
             ),
             (
                 app("org.gnome.TextEditor"),
@@ -252,7 +246,7 @@ mod tests {
             "Unknown member",
             "a key nobody named is never shown, in full or cut short"
         );
-        assert_eq!(told.name(&agent("planner")), "Planner (agent)");
+        assert_eq!(told.name(&agent("planner")), "Planner");
         assert_eq!(
             told.name(&app("so.tilo.lang.today")),
             "Today",

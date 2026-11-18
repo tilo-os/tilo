@@ -1,4 +1,4 @@
-//! A file's bytes as a field of the record, stored as pages of a few KiB: an edit
+//! A file's bytes as a field of the resource, stored as pages of a few KiB: an edit
 //! rewrites only the pages it touches, so two people editing different pages merge
 //! cleanly. A [`BufferEdit`] applies at the path and reads only those pages.
 

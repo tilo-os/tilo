@@ -26,10 +26,6 @@ use crate::desktop_services::DesktopServices;
 /// The capability the question is worded for in the person's language (`portal-access-host-shell`).
 pub const HOST_SHELL: &str = "host-shell";
 
-/// The runtime's socket: a service of the login, outside every app sandbox,
-/// which is what lets it take the allow this session gives it.
-const USH_SERVICE: &str = "ush";
-
 /// How long this session waits for the supervisor to record an allow before it takes the answer as
 /// not recorded.
 const SUPERVISOR_ANSWER: Duration = Duration::from_secs(5);
@@ -50,19 +46,21 @@ struct Waiting {
 
 impl HostShellAsks {
     /// Ask the person, for the app on `connection` , whether it may reach the device's own shell.
-    /// The answer reaches the app on the same connection.
+    /// The answer reaches the app on the same connection. An app whose launches are not handed
+    /// `ush` has no use for it: it is told no without asking, and this returns false.
     pub(crate) fn ask(
         &mut self,
         services: Option<&DesktopServices>,
         app: &str,
         connection: u64,
         reply: Arc<Mutex<UnixStream>>,
-    ) {
-        let Some(services) = services else {
-            // A session without the questions service has nobody to ask, so the target stays closed
-            // and the app is told.
+    ) -> bool {
+        let handed = crate::apps::declares_service(app, launcher::services::USH_SERVICE);
+        let Some(services) = services.filter(|_| handed) else {
+            // A session without the questions service has nobody to ask, and an app not handed
+            // `ush` is asked nothing: the target stays closed and the app is told.
             answer(&reply, app, false);
-            return;
+            return handed;
         };
         // Asking again on the same connection replaces the question it is already waiting on rather
         // than stacking a second one.
@@ -87,6 +85,7 @@ impl HostShellAsks {
             reply,
             app: app.to_owned(),
         });
+        true
     }
 
     /// The connection closed: the question it waits on goes with it, and the person is asked no
@@ -181,7 +180,9 @@ fn answer(reply: &Arc<Mutex<UnixStream>>, app: &str, allowed: bool) {
 /// Hand `expiry` to the supervisor, which records it where the device's own shell reads it. Returns
 /// whether it did.
 fn record(expiry: Expiry) -> bool {
-    let socket = launcher::services::socket_for(USH_SERVICE);
+    // The runtime's socket: a service of the login, outside every app sandbox, which is what lets
+    // it take the allow this session gives it.
+    let socket = launcher::services::socket_for(launcher::services::USH_SERVICE);
     ask_supervisor(&socket, expiry, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
         tracing::warn!(%error, "the allow for the device's own shell could not be recorded");
         false

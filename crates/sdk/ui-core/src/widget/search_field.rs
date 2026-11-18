@@ -167,7 +167,7 @@ pub struct SearchField {
     applied: Option<String>,
     /// The placeholder as written; the input shows it elided to its width.
     placeholder: String,
-    /// Standing in a floating panel's header: no fill, no outline
+    /// MemberAccess in a floating panel's header: no fill, no outline
     /// ([`crate::widget::primitives::FloatingPanel`]).
     embedded: bool,
     /// What the field is asking for, drawn dim before the text ("New

@@ -35,11 +35,11 @@ pub(super) fn route(service: crate::Service) -> Route {
         revision: "reviewed-identity".into(),
     }
 }
-pub(super) struct Gate {
+pub(super) struct Hold {
     pub(super) owner: Owner,
     pub(super) revoked: Arc<AtomicBool>,
 }
-impl ExternalAuthority for Gate {
+impl ExternalAuthority for Hold {
     fn incoming(&self, recipient: &str) -> Result<Authorization, SendError> {
         let current = route(self.owner.service);
         if current.recipient != recipient {
@@ -135,13 +135,13 @@ impl Drop for RetainedLease {
         self.live.fetch_sub(1, Ordering::SeqCst);
     }
 }
-struct RetainingGate {
-    gate: Gate,
+struct RetainingHold {
+    hold: Hold,
     live: Arc<AtomicUsize>,
 }
-impl ExternalAuthority for RetainingGate {
+impl ExternalAuthority for RetainingHold {
     fn authorize(&self, route: &Route) -> Result<Authorization, SendError> {
-        let auth = self.gate.authorize(route)?;
+        let auth = self.hold.authorize(route)?;
         self.live.fetch_add(1, Ordering::SeqCst);
         Ok(auth.retaining(Arc::new(RetainedLease {
             live: self.live.clone(),
@@ -197,8 +197,8 @@ async fn authority_revoked_during_native_submission_keeps_uncertain_reservation_
             )
             .unwrap(),
             "verified-provider".into(),
-            Arc::new(RetainingGate {
-                gate: Gate {
+            Arc::new(RetainingHold {
+                hold: Hold {
                     owner: owner.clone(),
                     revoked: revoked.clone(),
                 },
@@ -274,7 +274,7 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
             }),
             history,
             "verified-provider".into(),
-            Arc::new(Gate {
+            Arc::new(Hold {
                 owner: owner.clone(),
                 revoked: revoked.clone(),
             }),
@@ -379,7 +379,7 @@ fn messages_actions_use_hosted_whatsapp_and_sms_and_keep_text_outside_shared_sta
             }),
             history,
             route.scope.clone(),
-            Arc::new(Gate {
+            Arc::new(Hold {
                 owner: owner.clone(),
                 revoked: revoked.clone(),
             }),

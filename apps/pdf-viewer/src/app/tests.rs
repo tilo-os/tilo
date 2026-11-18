@@ -177,12 +177,14 @@ fn forty_pages_read_in_one_call_and_a_page_without_text_is_named() {
     let pdf = pdf_saying(&pages);
     let content = ContentStore::memory();
     let hash = content.put(&pdf).expect("the store keeps the PDF");
-    let mut app = PdfApp::empty_with_content(content);
-    app.record_source = Some(crate::markup::PinnedSource {
+    let app = PdfApp::empty_with_content(content);
+    let pinned = crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&pdf, &hash),
         name: "report.pdf".into(),
-    });
-    let read = app.read_text(None, None).expect("the report reads");
+    };
+    let read = app
+        .read_text(Some(&pinned), None, None)
+        .expect("the report reads");
     assert_eq!(read["page_count"], 41, "{read}");
     let read_pages = read["pages"].as_array().expect("the pages read");
     assert_eq!(read_pages.len(), 41, "one read answers every page");
@@ -198,7 +200,9 @@ fn forty_pages_read_in_one_call_and_a_page_without_text_is_named() {
         serde_json::json!([41]),
         "the page that draws no words is named: {read}"
     );
-    let look = app.look_page(41, Some(200)).expect("the page still draws");
+    let look = app
+        .look_page(Some(&pinned), 41, Some(200))
+        .expect("the page still draws");
     assert!(
         look.value.is_some_and(|value| value["format"] == "png"),
         "what a page without text shows is seen as a picture"
@@ -210,16 +214,18 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
     let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
     let content = ContentStore::memory();
     let hash = content.put(&bytes).expect("the store keeps the PDF");
-    let mut app = PdfApp::empty_with_content(content);
+    let app = PdfApp::empty_with_content(content);
     assert_eq!(
-        app.read_text(None, None).unwrap_err(),
+        app.read_text(None, None, None).unwrap_err(),
         content_import::NO_PDF
     );
-    app.record_source = Some(crate::markup::PinnedSource {
+    let mut pinned = crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
         name: "report.pdf".into(),
-    });
-    let read = app.read_text(None, Some(1)).expect("the pinned PDF reads");
+    };
+    let read = app
+        .read_text(Some(&pinned), None, Some(1))
+        .expect("the pinned PDF reads");
     assert_eq!(read["file"], "report.pdf");
     assert_eq!(read["pages"][0]["page"], 1);
     assert_eq!(
@@ -231,7 +237,9 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
         !read["pages"][0]["text"].as_str().unwrap().trim().is_empty(),
         "{read}"
     );
-    let look = app.look_page(1, Some(200)).expect("the page draws");
+    let look = app
+        .look_page(Some(&pinned), 1, Some(200))
+        .expect("the page draws");
     let address = look.resources[0].clone();
     let value = look.value.unwrap();
     assert_eq!(value["content"], address.as_str());
@@ -248,26 +256,26 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
         .read(ui::tilo_actions::content_hash(&address).unwrap())
         .expect("the picture is kept as content");
     assert!(picture.starts_with(b"\x89PNG"));
-    assert!(app.look_page(0, None).is_err());
-    assert!(app.look_page(1, Some(4000)).is_err());
-    app.record_source.as_mut().unwrap().source = ui::tilo_resource::Bytes::Blob {
+    assert!(app.look_page(Some(&pinned), 0, None).is_err());
+    assert!(app.look_page(Some(&pinned), 1, Some(4000)).is_err());
+    pinned.source = ui::tilo_resource::Bytes::Blob {
         hash: [0; 32],
         len: u64::try_from(bytes.len()).unwrap(),
         sealed: None,
     };
     assert_eq!(
-        app.read_text(None, None).unwrap_err(),
+        app.read_text(Some(&pinned), None, None).unwrap_err(),
         "report.pdf is not on this device yet"
     );
 }
 
 #[test]
 fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
-    use ui::collaboration::document_content::{ContentLane, DocumentContent};
+    use ui::collaboration::document_content::{ContentLink, DocumentContent};
     let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
     let hash = tilo_content::hash_bytes(&bytes);
-    let lane = std::sync::Arc::new(ContentLane::default());
-    let content = DocumentContent::store(ContentStore::memory(), std::sync::Arc::clone(&lane));
+    let link = std::sync::Arc::new(ContentLink::default());
+    let content = DocumentContent::store(ContentStore::memory(), std::sync::Arc::clone(&link));
     let mut app = PdfApp::empty_with_content(content);
     app.record_source = Some(crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
@@ -279,28 +287,28 @@ fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
     assert_eq!(app.load_error, None, "nothing failed yet");
     assert_eq!(title(&app), Some(crate::t("pdf-empty-arriving-title")));
     assert_eq!(
-        lane.take_requests().wants,
+        link.take_requests().wants,
         vec![hash.clone()],
         "the document is asked of the workspace"
     );
 
-    lane.stands(hash.clone(), ContentState::Waiting);
+    link.stands(hash.clone(), ContentState::Waiting);
     app.reopen_pinned_source();
     assert_eq!(title(&app), Some(crate::t("pdf-empty-waiting-title")));
-    lane.stands(hash.clone(), ContentState::Unavailable);
+    link.stands(hash.clone(), ContentState::Unavailable);
     app.reopen_pinned_source();
     let (waited, message, error) = app.source_wait_text().unwrap();
     assert_eq!(waited, crate::t("pdf-empty-elsewhere-title"));
     assert!(error && message.contains("shared.pdf"), "{message}");
 
-    lane.arrive(hash, bytes);
+    link.arrive(hash, bytes);
     app.reopen_pinned_source();
     assert_eq!(title(&app), None);
     assert!(app.pending_open.is_some(), "the arrived document opens");
     drain_until(&mut app, |app| app.pending_open.is_none());
     if matches!(
-        pdfium_gate(app.raster_active(), require_pdfium()),
-        PdfiumGate::Skip
+        pdfium_check(app.raster_active(), require_pdfium()),
+        PdfiumCheck::Skip
     ) {
         return;
     }
@@ -341,7 +349,7 @@ fn highlight_on_first_page() -> ui::tilo_resource::Invoke<crate::PdfMarkup> {
 
 #[serial(pdfium)]
 #[test]
-fn each_document_keeps_its_markup_in_a_record_of_its_own() {
+fn each_document_keeps_its_markup_in_a_resource_of_its_own() {
     eprintln!("phase launching_on_another_document_shows_none_of_the_first");
     {
         let (_dir, a, b) = two_documents();
@@ -349,26 +357,30 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         app.invoke(highlight_on_first_page())
             .expect("the owner annotates");
         assert_eq!(app.state().annotations.len(), 1);
-        let a_record = app.record().clone();
+        let a_resource = app.record().clone();
         assert_eq!(
             app.state().pinned_source().map(|source| source.name),
             Some("a.pdf".to_string()),
-            "the record pins the document it marks up"
+            "the resource pins the document it marks up"
         );
 
         let other = settled(app.relaunch(&[b.to_str().unwrap()]).unwrap());
-        assert_ne!(other.record(), &a_record, "b.pdf is a record of its own");
+        assert_ne!(
+            other.record(),
+            &a_resource,
+            "b.pdf is a resource of its own"
+        );
         assert!(
             other.state().annotations.is_empty(),
             "a.pdf's markup is not b.pdf's"
         );
 
         let again = settled(other.relaunch(&[a.to_str().unwrap()]).unwrap());
-        assert_eq!(again.record(), &a_record);
+        assert_eq!(again.record(), &a_resource);
         assert_eq!(again.state().annotations.len(), 1, "a.pdf keeps its markup");
 
         let mut bare = again.reopen().unwrap();
-        assert_eq!(bare.record(), &a_record);
+        assert_eq!(bare.record(), &a_resource);
         assert!(
             bare.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| {
@@ -378,7 +390,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         );
     }
 
-    eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
+    eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_resource");
     {
         let open = |path: &std::path::Path| PdfEffect::OpenPdf {
             path: Some(path.try_into().expect("an absolute path")),
@@ -387,7 +399,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         let mut app = launched(&a);
         app.invoke(highlight_on_first_page())
             .expect("the owner annotates");
-        let a_record = app.record().clone();
+        let a_resource = app.record().clone();
 
         app.effect_confirmed(&open(&b))
             .expect("the app opens another document");
@@ -395,20 +407,20 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         app.harness().relayout();
         assert_ne!(
             app.record(),
-            &a_record,
-            "b.pdf shows on a record of its own"
+            &a_resource,
+            "b.pdf shows on a resource of its own"
         );
         assert!(app.state().annotations.is_empty(), "without a.pdf's markup");
         assert_eq!(
             app.state().pinned_source().map(|source| source.name),
             Some("b.pdf".to_string())
         );
-        let b_record = app.record().clone();
+        let b_resource = app.record().clone();
 
         app.effect_confirmed(&open(&a)).expect("and back");
         settle_document(&mut app);
         app.harness().relayout();
-        assert_eq!(app.record(), &a_record);
+        assert_eq!(app.record(), &a_resource);
         assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
 
         let missing = a.with_file_name("gone.pdf");
@@ -420,7 +432,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
             "the operation fails with the reason: {failure}"
         );
         app.harness().relayout();
-        assert_eq!(app.record(), &a_record, "the window keeps its record");
+        assert_eq!(app.record(), &a_resource, "the window keeps its resource");
         let note = app
             .with_surface::<PdfApp, _>(|pdf| pdf.status_note.get().cloned())
             .flatten()
@@ -438,7 +450,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         bare.effect_confirmed(&open(&b))
             .expect("the bare window opens b.pdf");
         bare.harness().relayout();
-        assert_eq!(bare.record(), &b_record);
+        assert_eq!(bare.record(), &b_resource);
     }
 
     eprintln!("phase the_reader_on_its_own_opens_the_chosen_document_itself");
@@ -447,7 +459,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         let mut app = PdfApp::empty();
         let mut st = crate::scenarios::record_state();
         app.open_chosen(&a);
-        settle_record(&mut app, &mut st);
+        settle_resource(&mut app, &mut st);
         assert!(app.has_document);
         assert_eq!(
             PdfMarkup::of(&st.doc)
@@ -456,7 +468,7 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
             app.source_blob
                 .as_ref()
                 .map(|source| hex::encode(source.hash())),
-            "the window's record now marks up the chosen document"
+            "the window's resource now marks up the chosen document"
         );
     }
 }
@@ -630,7 +642,7 @@ pub(super) fn app_with_state() -> (PdfApp, ui::State) {
 }
 
 #[test]
-fn opening_seeds_the_record_once_not_every_frame() {
+fn opening_seeds_the_resource_once_not_every_frame() {
     let mut app = crate::scenarios::sample_reader();
     let mut st = crate::scenarios::record_state();
     sync_fixture(&mut app, &mut st);
@@ -650,7 +662,7 @@ fn opening_seeds_the_record_once_not_every_frame() {
     assert_eq!(
         st.doc.get_heads(),
         seeded,
-        "a record that has its plan gets nothing more when writing is allowed again"
+        "a resource that has its plan gets nothing more when writing is allowed again"
     );
 }
 
@@ -763,7 +775,7 @@ fn semantic_targets_and_global_search_address_stable_pages() {
         assert!(resolve(&app, &state.doc, &hit).is_some());
 
         let markup = <crate::PdfMarkup as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the record reads");
+            .expect("the resource reads");
         let entries = <crate::PdfMarkup as ui::tilo_resource::Resource>::search(&markup);
         let markup_hit = |needle: &str| {
             entries
@@ -884,7 +896,7 @@ fn pdf_bookmarks_are_globally_searchable() {
         return;
     };
     let mut state = crate::scenarios::record_state();
-    settle_record(&mut app, &mut state);
+    settle_resource(&mut app, &mut state);
     assert!(!app.doc.outline.is_empty(), "the fixture has bookmarks");
     let provider = searched(&app);
     let bookmark_address = provider
@@ -1105,7 +1117,7 @@ fn worker_reader_says_when_imported_page_bytes_are_missing() {
         return;
     };
     let mut state = crate::scenarios::record_state();
-    settle_record(&mut app, &mut state);
+    settle_resource(&mut app, &mut state);
     app.perform_action(
         &mut Edits::lend(&mut state.doc),
         crate::actions::import_pages_action(
@@ -2585,7 +2597,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         assert_eq!(
             thread.comment.author,
             member("test-author"),
-            "the record keeps the member"
+            "the resource keeps the member"
         );
         assert_eq!(
             app.comment_author_name(&thread.comment.author),
@@ -2612,7 +2624,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
                 .expect("the reader for a person");
         let record = host
             .person::<crate::signature::SignatureProfile>()
-            .expect("the person's signature record");
+            .expect("the person's signature resource");
         let (mut app, mut st) = app_with_state();
         app.attach_signature(record.clone());
         app.begin_edit(EditTarget::Signer, "");
@@ -2672,7 +2684,7 @@ fn the_signatures_panel_reads_stored_days_in_the_windows_language() {
     );
     assert!(
         !heard.contains(&format!("Signed {} on page", placed.date)),
-        "the panel never speaks the record's ISO spelling"
+        "the panel never speaks the resource's ISO spelling"
     );
 }
 
@@ -2685,13 +2697,13 @@ pub(super) fn open_settled(path: impl AsRef<std::path::Path>) -> Option<PdfApp> 
     let path = path.as_ref();
     let mut app = PdfApp::open(path);
     drain_until(&mut app, |app| app.pending_open.is_none());
-    match pdfium_gate(app.raster_active(), require_pdfium()) {
-        PdfiumGate::Run => Some(app),
-        PdfiumGate::Fail => panic!(
+    match pdfium_check(app.raster_active(), require_pdfium()) {
+        PdfiumCheck::Run => Some(app),
+        PdfiumCheck::Fail => panic!(
             "TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM} ({:?})",
             app.load_error
         ),
-        PdfiumGate::Skip => {
+        PdfiumCheck::Skip => {
             eprintln!(
                 "SKIPPING a pdfium-backend test on {}: {NO_PDFIUM}. The \
                  raster text layer, save-back and page-editing paths went \
@@ -2710,7 +2722,7 @@ fn open_raster_sample() -> Option<PdfApp> {
 pub(crate) fn open_sample_review() -> Option<(PdfApp, ui::State)> {
     let mut app = open_raster_sample()?;
     let mut st = crate::scenarios::sample_state();
-    settle_record(&mut app, &mut st);
+    settle_resource(&mut app, &mut st);
     app.apply_stage(None);
     app.read_text_for_search();
     settle_until(&mut app, &mut st, |app| !app.search_text_pending());
@@ -2740,7 +2752,7 @@ pub(super) fn settle_until(
     }
 }
 
-pub(super) fn settle_record(app: &mut PdfApp, st: &mut ui::State) {
+pub(super) fn settle_resource(app: &mut PdfApp, st: &mut ui::State) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync_settled(&mut st.doc, &st.root);
@@ -2752,7 +2764,7 @@ pub(super) fn settle_record(app: &mut PdfApp, st: &mut ui::State) {
         }
         assert!(
             ui::time::now() < deadline,
-            "the record never took the document over ({:?})",
+            "the resource never took the document over ({:?})",
             app.status_note
         );
         std::thread::sleep(Duration::from_millis(5));
@@ -2801,17 +2813,17 @@ pub(super) fn save_settled(app: &mut PdfApp, out: &std::path::Path) -> bool {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PdfiumGate {
+enum PdfiumCheck {
     Run,
     Skip,
     Fail,
 }
 
-fn pdfium_gate(has_raster: bool, required: bool) -> PdfiumGate {
+fn pdfium_check(has_raster: bool, required: bool) -> PdfiumCheck {
     match (has_raster, required) {
-        (true, _) => PdfiumGate::Run,
-        (false, true) => PdfiumGate::Fail,
-        (false, false) => PdfiumGate::Skip,
+        (true, _) => PdfiumCheck::Run,
+        (false, true) => PdfiumCheck::Fail,
+        (false, false) => PdfiumCheck::Skip,
     }
 }
 
@@ -2821,19 +2833,19 @@ fn require_pdfium() -> bool {
 
 #[serial(pdfium)]
 #[test]
-fn raster_open_is_gated_measured_and_budgeted_on_the_first_frame() {
+fn raster_open_is_guarded_measured_and_budgeted_on_the_first_frame() {
     eprintln!("phase a_missing_pdfium_skips_unless_it_was_required");
     {
-        assert_eq!(pdfium_gate(true, false), PdfiumGate::Run);
-        assert_eq!(pdfium_gate(true, true), PdfiumGate::Run);
+        assert_eq!(pdfium_check(true, false), PdfiumCheck::Run);
+        assert_eq!(pdfium_check(true, true), PdfiumCheck::Run);
         assert_eq!(
-            pdfium_gate(false, false),
-            PdfiumGate::Skip,
+            pdfium_check(false, false),
+            PdfiumCheck::Skip,
             "with no backend and no demand for one, say so and stand down"
         );
         assert_eq!(
-            pdfium_gate(false, true),
-            PdfiumGate::Fail,
+            pdfium_check(false, true),
+            PdfiumCheck::Fail,
             "TILO_REQUIRE_PDFIUM has to turn the absence back into a failure, \
              or the skip has no floor under it"
         );
@@ -2844,10 +2856,10 @@ fn raster_open_is_gated_measured_and_budgeted_on_the_first_frame() {
         let t = ui::time::now();
         let loaded = crate::source::open(std::path::Path::new(SAMPLE_PDF), &ContentStore::memory());
         let open_ms = t.elapsed().as_secs_f64() * 1000.0;
-        match pdfium_gate(loaded.is_ok(), require_pdfium()) {
-            PdfiumGate::Run => {}
-            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-            PdfiumGate::Skip => {
+        match pdfium_check(loaded.is_ok(), require_pdfium()) {
+            PdfiumCheck::Run => {}
+            PdfiumCheck::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumCheck::Skip => {
                 eprintln!("SKIPPING the pdfium open/render measurement: {NO_PDFIUM}.");
                 break 'phase;
             }
@@ -3241,10 +3253,10 @@ fn zoomed_pages_draw_from_reusable_worker_tiles_matching_full_renders() {
     eprintln!("phase a_tile_matches_the_same_region_of_a_whole_page_render");
     'phase: {
         let loaded = crate::source::open(std::path::Path::new(LATIN_PDF), &ContentStore::memory());
-        match pdfium_gate(loaded.is_ok(), require_pdfium()) {
-            PdfiumGate::Run => {}
-            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-            PdfiumGate::Skip => {
+        match pdfium_check(loaded.is_ok(), require_pdfium()) {
+            PdfiumCheck::Run => {}
+            PdfiumCheck::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumCheck::Skip => {
                 eprintln!("SKIPPING the tile-versus-page render check: {NO_PDFIUM}");
                 break 'phase;
             }

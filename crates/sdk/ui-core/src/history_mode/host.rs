@@ -175,7 +175,7 @@ pub struct HistoryHost {
     built_composition: Option<Composition>,
     live_root_lifetime: uuid::Uuid,
     control_domain: Option<crate::ControlDomain>,
-    control_lease: Option<crate::control_custody::SuspensionLease>,
+    control_lease: Option<crate::control_domain::SuspensionLease>,
     invalid_owner: bool,
     rect: Rect,
     chrome_node: Option<NodeId>,
@@ -281,7 +281,7 @@ impl HistoryHost {
     }
 
     /// The host presents History elsewhere, or the system surface omits document chrome: retain History
-    /// custody without its closed button.
+    /// ownership without its closed button.
     pub(crate) fn remove_fallback_bar(&mut self) {
         self.fallback_bar = false;
         self.rebuild_toolbar();
@@ -690,7 +690,7 @@ impl HistoryHost {
     }
     #[allow(
         clippy::single_match_else,
-        reason = "owner-bearing capture keeps the component and legacy custody variants adjacent"
+        reason = "owner-bearing capture keeps the component and legacy ownership variants adjacent"
     )]
     pub(crate) fn capture_pending_controls(
         &mut self,
@@ -714,7 +714,7 @@ impl HistoryHost {
                     self.pending_controls.capture(
                         super::pending_controls::PendingControlOrigin::Component(sealed.target),
                         sealed.invocation,
-                        sealed.witness,
+                        sealed.observation,
                     );
                 } else {
                     waiting.push(sealed);
@@ -730,16 +730,17 @@ impl HistoryHost {
             self.control_lease = Some(lease);
             for control in controls {
                 // Embedded capture has already borrowed the enclosing owner's exact
-                // content. Preserve its dispatch origin; resolve only the witness
+                // content. Preserve its dispatch origin; resolve only the observation
                 // against the checked owner document, never by address selection.
-                let witness = crate::bound_dispatch::control_witness(
+                let observation = crate::bound_dispatch::control_observation(
                     live,
                     doc,
                     &control.origin.target(),
                     &control.invocation,
                 )
                 .map_err(|error| error.to_string());
-                self.pending_controls.capture_registered(control, witness);
+                self.pending_controls
+                    .capture_registered(control, observation);
             }
         }
         self.pending_control_capture_failures.clear();
@@ -749,7 +750,7 @@ impl HistoryHost {
             .controls
             .into_iter()
             .map(|(target, invocation)| {
-                let witness = crate::bound_dispatch::control_witness(
+                let observation = crate::bound_dispatch::control_observation(
                     live,
                     doc,
                     &crate::bound_dispatch::local_target::LocalResourceTarget::Component(
@@ -761,7 +762,7 @@ impl HistoryHost {
                 super::pending_controls::SealedComponentControl {
                     target,
                     invocation,
-                    witness,
+                    observation,
                 }
             })
             .collect::<Vec<_>>();
@@ -777,10 +778,15 @@ impl HistoryHost {
             .collect();
         for (target, invocation) in bound.controls {
             let origin = super::pending_controls::PendingControlOrigin::Component(target);
-            let witness =
-                crate::bound_dispatch::control_witness(live, doc, &origin.target(), &invocation)
-                    .map_err(|error| error.to_string());
-            self.pending_controls.capture(origin, invocation, witness);
+            let observation = crate::bound_dispatch::control_observation(
+                live,
+                doc,
+                &origin.target(),
+                &invocation,
+            )
+            .map_err(|error| error.to_string());
+            self.pending_controls
+                .capture(origin, invocation, observation);
         }
         self.pending_control_capture_failures.extend(
             bound
@@ -794,7 +800,7 @@ impl HistoryHost {
                 .as_ref()
                 .and_then(super::HistoryOwner::component_binding)
                 .cloned();
-            let (origin, witness) = match enclosing {
+            let (origin, observation) = match enclosing {
                 Some(binding) => {
                     let origin = super::pending_controls::PendingControlOrigin::Component(
                         crate::bound_dispatch::BoundActionTarget {
@@ -806,29 +812,30 @@ impl HistoryHost {
                             },
                         },
                     );
-                    let witness = crate::bound_dispatch::control_witness(
+                    let observation = crate::bound_dispatch::control_observation(
                         live,
                         doc,
                         &origin.target(),
                         &invocation,
                     )
                     .map_err(|error| error.to_string());
-                    (origin, witness)
+                    (origin, observation)
                 }
                 None => {
                     let origin =
                         super::pending_controls::PendingControlOrigin::Outer { root_lifetime };
-                    let witness = crate::bound_dispatch::control_witness(
+                    let observation = crate::bound_dispatch::control_observation(
                         live,
                         doc,
                         &origin.target(),
                         &invocation,
                     )
                     .map_err(|error| error.to_string());
-                    (origin, witness)
+                    (origin, observation)
                 }
             };
-            self.pending_controls.capture(origin, invocation, witness);
+            self.pending_controls
+                .capture(origin, invocation, observation);
         }
         self.name_pending_controls(live, doc);
         // Capture can run with the preceding frame's raw maps still admitted.
@@ -877,18 +884,18 @@ impl HistoryHost {
         }
     }
     pub(crate) fn finish_return_to_live(&mut self) {
-        // If custody never recovered, preserve the sealed descriptor as a
+        // If ownership never recovered, preserve the sealed descriptor as a
         // visible refusal instead of losing it on the next History entry.
         for sealed in self.pending_control_recovery.drain(..) {
             self.pending_controls.capture(
                 super::pending_controls::PendingControlOrigin::Component(sealed.target),
                 sealed.invocation,
                 Err(crate::i18n::I18nManager::lookup_plain(
-                    "history-mode-custody-lost",
+                    "history-mode-ownership-lost",
                 )),
             );
         }
-        // Chrome is prepared while raw maps are cleared. Registered custody
+        // Chrome is prepared while raw maps are cleared. Registered ownership
         // remains suspended until layout and focus restoration have completed.
         if self.pending_controls.return_to_live() {
             self.toolbar_dirty = true;
@@ -1116,7 +1123,7 @@ impl HistoryHost {
             .take()
             .and_then(|focus| unsafe { focus.restore(nodes, bindings, None) });
         // Focus restoration is part of exit work. The runner completes
-        // custody only after all remaining frame callbacks have finished.
+        // ownership only after all remaining frame callbacks have finished.
         restored
     }
     pub(crate) fn returning_live(&self) -> bool {
@@ -1336,9 +1343,9 @@ impl HistoryHost {
             })
     }
     /// Whether every document this surface answers for is a hosted component's (or the host's own),
-    /// whose standing a quiet frame's witness follows: its record's frontier, and whether it can be
+    /// whose member access a quiet frame's observation follows: its record's frontier, and whether it can be
     /// read at all.
-    pub(crate) fn owners_followed_by_frame_witness(&self) -> bool {
+    pub(crate) fn owners_followed_by_frame_observation(&self) -> bool {
         let followed =
             |owner: &super::HistoryOwner| matches!(owner.0, super::owner::OwnerKind::Component(_));
         self.enclosing_owner.as_ref().is_none_or(followed)
@@ -2453,7 +2460,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool;
     fn refresh_without_owners(&self, width: f64) -> Option<bool>;
     fn heads_need_refresh(&self, doc: &AutoCommit) -> bool;
-    fn owners_followed_by_frame_witness(&self) -> bool;
+    fn owners_followed_by_frame_observation(&self) -> bool;
     fn review_is_open(&self) -> bool;
     fn review_layout_node(&self) -> Option<NodeId>;
     fn observe_pointer(&mut self, event: &WindowEvent, scale: f64);
@@ -2800,8 +2807,8 @@ impl HistoryChromeApi for HistoryHost {
     fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
         HistoryHost::heads_need_refresh(self, doc)
     }
-    fn owners_followed_by_frame_witness(&self) -> bool {
-        HistoryHost::owners_followed_by_frame_witness(self)
+    fn owners_followed_by_frame_observation(&self) -> bool {
+        HistoryHost::owners_followed_by_frame_observation(self)
     }
     fn review_is_open(&self) -> bool {
         HistoryHost::review_is_open(self)

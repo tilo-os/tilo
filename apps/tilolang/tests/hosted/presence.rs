@@ -1,10 +1,10 @@
 //! Who else is in a conversation and who of them is writing, as the people at two devices see it:
-//! each device's instance runs in its own host, on a connection to the same record, the broker
+//! each device's instance runs in its own host, on a connection to the same document, the broker
 //! relays what each says of its person to the other, and names everyone by the workspace's member
 //! list it hands each connection.
 
 use super::*;
-use tilolang_host::testing::Bus;
+use tilolang_process::testing::Bus;
 use tilolang_tilo::chunk::Chunks;
 
 /// Whether the window says someone is typing.
@@ -22,19 +22,19 @@ fn composer(session: &mut Session) -> (f64, f64) {
         .detail_tree()
         .expect("the window shows the conversation");
     let key = find(&tree, &|node| {
-        matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == "Message #design")
+        matches!(node.props.get("placeholder"), Some(tilo_app_window::Value::Text(p)) if p == "Message #design")
     })
     .expect("the conversation has its composer")
     .key
     .clone();
-    let key = format!("{}{key}", tilo_ui_host::shell::DETAIL);
+    let key = format!("{}{key}", tilo_app_window::shell::DETAIL);
     let rect = widget_by_id(session.window.root(), &key)
         .expect("the composer is laid out")
         .get_rect();
     (rect.center().x, rect.center().y)
 }
 
-/// Ada and Bo, members of one workspace, each at a Chat window on its record, both in the
+/// Ada and Bo, members of one workspace, each at a Chat window on its document, both in the
 /// conversation #design, which Ada made.
 fn ada_and_bo_in_design() -> (Session, Session) {
     let bus = Rc::new(Bus::default());
@@ -54,7 +54,7 @@ fn ada_and_bo_in_design() -> (Session, Session) {
         "the channel was made: {made:?}"
     );
     ada.settle();
-    // Bo's device holds the workspace's record as Ada's does.
+    // Bo's device holds the workspace's document as Ada's does.
     let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"), record(&ada));
     for session in [&mut ada, &mut bo] {
         let (x, y) = shown_at(session, "design");

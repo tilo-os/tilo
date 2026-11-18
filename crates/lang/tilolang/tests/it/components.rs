@@ -576,6 +576,45 @@ view thread(c: Conversation) {{
         assert!(strings.contains("ui.Chart") && strings.contains("ui.GraphCanvas"));
     }
 
+    phase bars_and_a_pie_are_drawn_from_values;
+    // A bar chart's bars and a pie's slices are cases of the toolkit's `ui.Bars` and `ui.Slice`: a
+    // view gives readings and what they are of, never a colour or a size.
+    {
+        let c = compile_body(&with_note(
+            r#"view stats(n: Note) {
+    ui.BarChart(
+        [
+            .bars(values: [1.0, 3.0, 2.0], label: "Done"),
+            .bars(values: [0.0, 1.0, 1.0], label: "Opened"),
+        ],
+        categories: ["Mon", "Tue", "Wed"],
+        title: .some(n.title),
+        layout: .stacked,
+    )
+    ui.PieChart(
+        [.slice(label: "Open", value: 3.0), .slice(label: "Done", value: 5.0)],
+        ring: true,
+        total: .some("8"),
+    )
+}"#,
+        ));
+        validate(&c.wasm);
+        let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+        assert!(strings.contains("ui.BarChart") && strings.contains("ui.PieChart"));
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.PieChart([.slice(label: "Open", value: 3.0, color: "red")])
+}"#,
+        ));
+        assert!(!got.is_empty(), "a slice is given no colour: {got:#?}");
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.BarChart([.bars(values: [1.0])], categories: ["Mon"], height: .some(900.0))
+}"#,
+        ));
+        assert!(!got.is_empty(), "a bar chart is given no size: {got:#?}");
+    }
+
     phase a_list_maps_with_each_items_place;
     // `map` and `flat_map` give the lambda the item's place from 0 as its second name, so a
     // drawing lays its shapes out by where each reading stands.

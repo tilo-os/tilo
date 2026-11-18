@@ -488,7 +488,7 @@ route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
 exact route's `KeyGroup`. The crypto layer now supplies vault-key-sealed
 atomic OpenMLS state, signed revision-bound governance frames, a durable
 targeted Welcome/commit/removal journal, partial-failure rollback, and a
-snapshot-acknowledged plaintext gate. The session now has a broker-internal,
+snapshot-acknowledged plaintext check. The session now has a broker-internal,
 handle-only workspace authority transaction with idempotency and crash recovery
 tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
@@ -500,7 +500,7 @@ restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
 recovery UX, plus an authenticated peer-control adapter that drains and
 acknowledges the already durable targeted governance outbox. The ciphertext
-document relay is intentionally not that adapter; it must never broadcast
+document server is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
 **Production adapter now present.** `crates/collab/tilo-action-broker/src/workspace_keys.rs`
@@ -523,7 +523,7 @@ Provisioning and recovery UX were not assessed by this reconciliation.
 
 The 8-step (extended to 9) validation pipeline in
 `crates/collab/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
-broker's default state is correctly fail-closed (`crates/session/session/src/plane.rs:797-800`: an
+broker's default state is correctly fail-closed (`crates/session/session/src/app_wire.rs:797-800`: an
 empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
@@ -548,7 +548,7 @@ bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
 `crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
-and `crates/session/session/src/plane.rs`, plus
+and `crates/session/session/src/app_wire.rs`, plus
 `crates/collab/collab-types/tests/validator.rs`.
 
 ---
@@ -643,10 +643,10 @@ as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/tilo-relay/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
-  a floating tag — it never breaks, it just silently changes, so the relay image was not
+- `os/containers/tilo-server/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
+  a floating tag — it never breaks, it just silently changes, so the server image was not
   reproducible across time. **Closed:** the runtime stage of every server image that ships
-  without a bootc base (the relay, the API server, the VM host, the agent host) is pinned by
+  without a bootc base (the server, the API server, the VM host, the agent host) is pinned by
   digest from `registry.fedoraproject.org`, which keeps the digests quay.io prunes — the same pin
   the Lounge and the browser runtime already carry, so a pin there keeps resolving and no mirrored
   copy is needed. `BASE_REF` stays the bootc base: the runtime's minimal base is a second, separately
@@ -765,7 +765,7 @@ checked the tree against the workspace the ticket names:
   authenticated to it and merged it, with no check of the local policy at all.
 - Bootstrap merged documents from every persisted content peer, including peers registered for
   another workspace and ticketless legacy entries.
-- On the session plane only the server compared the request's `workspace_id`. The client applied
+- On the session protocol only the server compared the request's `workspace_id`. The client applied
   whatever `Sync` and `NamespaceChunk` frames came back.
 - The exact-record share client ignored the response's session, so a snapshot from a session on
   another workspace or record was taken as the invite's.
@@ -848,16 +848,79 @@ from signing locally. Held by
 (a heartbeat's hello is what admits a device, and its revocation removes it),
 `crates/collab/tilo-peer-state/src/direct.rs::a_revocation_refuses_only_the_device_its_own_root_certified`,
 `crates/collab/tilo-peer-state/src/admission_tests.rs::a_banned_person_cannot_redeem_an_invitation_until_unbanned`,
-and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wire_is_pinned` with
+and `crates/runtime/tilo-identity/src/broker.rs::tests::identity_service_wire_is_pinned` with
 `::privileged_moderation_signing_requires_the_selected_trusted_device`.
+
+
+## P2-3a — A removed device's past is kept by its cut; the moment of distrust is not built
+
+§3.4 of the design: removing a device takes its future, not its person's past, and where the past
+ends is a place in each document, never a time.
+
+**As built.** Before this entry every replica refused every change a removed device had ever
+signed, at whatever time: a device added later, or one that came back, could read no document the
+removed device had written into (four of the five scenarios of
+`crates/session/client/tests/revoked_device_history.rs` failed, for each of the four reasons
+alike). Now the device that writes a removal into a workspace's governance writes its cut beside it
+(`crates/collab/tilo-peer-state/src/removals.rs`); a removed device's change is decided, when it is
+taken in and when it is handed to an app, by that cut
+(`crates/collab/tilo-peer-state/src/state/authority.rs::written_as`); a replica that knows a
+removal and not its cut holds such changes undecided; and the governing device writes the cut of a
+removal that was written before cuts were kept the next time it opens the workspace. Held by
+`crates/collab/tilo-peer-state/src/state/removal_tests.rs::removing_a_device_takes_its_future_and_keeps_its_persons_past`
+(history for each reason; a device that keeps writing, dates its writes back, sends an old one
+again or signs a new compaction under a number it used; a cut nobody lowers or erases) and by the
+five scenarios named above.
+
+**Not built.** The moment a person names for a stolen or compromised device, and the mark on what
+it wrote after it. Every change at or below the cut is plain history today, whatever the reason.
+
+**Residual.** The cut fixes where a removed device's history ends in each document, not what that
+history says. A holder that has the removed device's key can show a device that joins later
+another change under a number below the cut; a device that holds the original refuses it. Closing
+this needs the cut to name the content it keeps. And a cut holds what its writer had taken: a
+write the governing device kept without having decided it yet (one waiting for a change it builds
+on) is above the cut, so everyone refuses it afterwards, and a device that merged it before the
+removal holds a change the others never take.
+
+## P2-3b — A removed device is told so at the handshake; every other refusal says nothing
+
+§3.4 of the design: a removed device is refused at the handshake, and told that it was removed.
+
+**As built.** Before this entry a server closed a refused hello with nothing said. The device read
+a server that was away and tried again, and a page that had not got in yet showed "Can't reach …"
+for as long as it stayed open. Now a server that refuses a hello for the removal alone answers it
+with that one reason, signed for that hello
+(`crates/server/tilo-server-protocol/src/auth.rs::HelloRefusal::said_of`, written by
+`say_refusal` in the server's own `handshake.rs`). The device checks it as it
+checks that server's acknowledgement and stops with `device-revoked`
+(`crates/server/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
+browser was removed from your devices". A device built before reads the refusal as it did, and a
+server built before sends none, which reads as it did too. Held by
+`crates/session/client/tests/carriers.rs::a_removed_device_is_told_that_it_was_removed`
+(a real server, a page removed as Settings removes it, over each carrier),
+that handshake's own tests (`a_removed_device_is_told_so_before_its_hello_is_closed`,
+`a_hello_refused_for_anything_else_is_closed_with_nothing_said`,
+`a_removed_device_at_an_entry_is_told_only_once_it_proved_its_key`,
+`a_refusal_that_says_why_is_held_until_its_device_let_go_of_the_stream`), and
+`crates/server/tilo-server-protocol/src/auth.rs::tests::a_refusal_says_why_only_where_the_refusal_already_tells`.
+
+**Not built.** Every other refusal at the handshake is still closed with nothing said: a person
+the server no longer admits, and a certificate that expired or does not verify. Such a device
+reads a server that is away until it was refused three times in a row, and a page that has not got
+in yet says "Can't reach …" meanwhile.
+
+**Residual.** Outside a workspace's entry the reason is said to whoever shows the removed device's
+certificate where its person is admitted, before any proof of its key. The refusal alone already
+told them as much, since nothing else refuses that certificate there.
 
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.
 The code has no DNS proxy — `dns-only` resolves to `EgressDecision::Blocked`
-(`crates/packaging/launcher/src/netgate.rs:241`) and address literals arrive as
+(`crates/packaging/launcher/src/egress_proxy.rs:241`) and address literals arrive as
 `Destination::Addr` and are matched as literals, pinned by the test
-`an_address_literal_never_matches_a_hostname_grant` (`netgate.rs:1112`).
+`an_address_literal_never_matches_a_hostname_grant` (`egress_proxy.rs:1112`).
 
 The code is correct; the document is stale. Recorded because a stale doc describing a weaker
 mechanism is how a strong one gets "simplified" later.
@@ -865,12 +928,12 @@ mechanism is how a strong one gets "simplified" later.
 **Resolved.** `docs/app-model/sandbox.md` now says an address literal never satisfies a hostname
 grant and describes no DNS filtering. The test is now the phase
 `an_address_literal_never_matches_a_hostname_grant` of
-`grants_narrow_but_never_widen_the_manifest_allowlist` in `netgate.rs`.
+`grants_narrow_but_never_widen_the_manifest_allowlist` in `egress_proxy.rs`.
 
 ## P2-5 — `tilo-security-audit` cannot fail
 
 `os/usr/libexec/tilo-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
-`SuccessExitStatus=0 1`. It reports; it never gates a boot. Its image-signing check greps
+`SuccessExitStatus=0 1`. It reports; it never checks a boot. Its image-signing check greps
 `policy.json` for the string `sigstoreSigned` (`:63-67`) rather than verifying anything.
 
 **Resolved.** Required-invariant failures now accumulate and return a non-zero
@@ -946,10 +1009,10 @@ certified device identity, the AVCs were collected with the domain permissive an
 disabled, then this module was loaded and the same workload re-run enforcing: mounting
 `/var/workspace`, file create/write/append/rename/copy/truncate/chmod/xattr/delete as two local
 accounts, a 5 MB content round trip, the storage socket's snapshot and eviction requests, Iroh
-waking (relays, net report, DNS), a stop and start, and the native data plane's probes on a Btrfs
+waking (relays, net report, DNS), a stop and start, and the native backend's probes on a Btrfs
 store volume. No `tilo_fs_t` denial was logged and every operation matched the permissive run.
 Peer sync with a second device was not part of that run. The shipped kernel has no fanotify, so
-the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
+the native backend itself cannot start there (fs serves FUSE); its own rules will come from
 AVCs on a kernel that has it.
 
 ## P1-11 — A Read Deny inside a workspace does not withhold keys
@@ -1012,7 +1075,7 @@ The Settings app's own bind of the store is not a grant, and it used to bind the
 narrowed (`appdir::SESSION_SETTINGS_BINDS`, `run::splice_session_settings`): the settings document
 moved into its own directory, `~/.config/tilo/session/` (`settings_store::SESSION_DIR`; a document
 left at the old path is moved there once), and Settings is given that directory, the account
-stores it is the custodian of (`accounts/`, with their vault), and, read-only, `state.json` and
+stores it is the owner of (`accounts/`, with their vault), and, read-only, `state.json` and
 `continuity-provenance.json`. The identity store (records, fallback root secrets, the active
 selector, device fleets), the trust and revocation lists, the app registries, the session's
 settings records and anything added to the root later stay out. Settings lists, activates,
@@ -1071,7 +1134,7 @@ draws with the CPU rasterizer onto KMS. libinput gives it touch, and it shows it
 on-screen keyboard. The toolkit's own screen reader speaks through `tilo-tts`. A
 `tilo-comforts` header token carries the device's sign-in comforts, and Ctrl +
 Super + Enter or both volume keys turn speech on. The initramfs size and the time
-to first frame are gated.
+to first frame are guarded.
 
 **Status in source:** the Plymouth sign-in layout this describes is removed. The
 sign-in screen in the initramfs is the greeter in boot mode
@@ -1115,9 +1178,9 @@ These are load-bearing and correct. Changing them requires understanding why the
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
 - `crates/session/session/src/:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.
-- `crates/packaging/launcher/src/netgate.rs` — egress is fail-closed: if the gate cannot start the
+- `crates/packaging/launcher/src/egress_proxy.rs` — egress is fail-closed: if the check cannot start the
   launch is refused, not downgraded.
 - `crates/collab/collab-types/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
-  egress gate specifically so the two interpretations cannot diverge.
+  egress proxy specifically so the two interpretations cannot diverge.
 - `docs/app-model/trust.md:218` — package revocation is re-read at every launch; there is no
   "trust the install-time verification forever" cache.

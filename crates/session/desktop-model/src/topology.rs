@@ -13,7 +13,7 @@ use crate::tree::Layout;
 use crate::width::WindowWidth;
 
 /// Where a dragged tab lands within a strip: at an exact index in an
-/// existing group, or as a new group at an exact seam between groups.
+/// existing group, or as a new group at an exact border between groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropTarget {
     ExistingGroup { group_id: GroupId, tab_index: usize },
@@ -140,7 +140,7 @@ impl Layout {
 
     /// Split `tab_id` out of its group into a new single-tab group at
     /// `insert_at` in the same strip — the tree side of dragging a tab out
-    /// into a seam, or "Split Right". The source group's active tab follows
+    /// into a border, or "Split Right". The source group's active tab follows
     /// the tab bar's rule: the neighbour that slid into its place, else the
     /// last tab.
     ///

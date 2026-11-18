@@ -1,8 +1,8 @@
 //! A workspace's entry: who it lets in, and where it is listed.
 //!
-//! The entry is one of the workspace's settings, not a host's: a relay serves a
+//! The entry is one of the workspace's settings, not a host's: a server serves a
 //! public workspace, and a person's own machine holds the same workspace, so
-//! both read the same record and decide alike. Whoever may change the
+//! both read the same resource and decide alike. Whoever may change the
 //! workspace's settings ([`crate::roles::governance::SETTINGS`]) makes the
 //! change once; every host reading the workspace then answers its entry the
 //! same way, including after a restart.

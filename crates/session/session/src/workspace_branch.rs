@@ -181,7 +181,7 @@ async fn found(
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
-    use tilo_action_broker::owner_commits::OwnerCustody as _;
+    use tilo_action_broker::owner_commits::OwnerService as _;
     let sealed = if engine.commits_documents(workspace) {
         None
     } else {
@@ -420,7 +420,7 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
         app_state::ACTOR_FILE,
         app_state::LOAD_HINT_FILE,
         app_state::LOCK_FILE,
-        app_state::CANONICAL_GATE,
+        app_state::CANONICAL_LOCK,
         "successor-claim",
     ]
     .contains(&name)
@@ -1527,18 +1527,18 @@ mod tests {
     /// This device's engine, opened again under `state` as a session that starts afresh does.
     fn reopened(
         state: &tempfile::TempDir,
-        identity: &tilo_identity_host::custody::HostIdentity,
+        identity: &tilo_identity::identity_store::DeviceIdentity,
     ) -> Engine {
         Engine::open(
             identity.clone(),
             Some(state.path()),
             Vec::new(),
-            crate::platform::custody::of_this_session(),
+            crate::platform::membership_check::of_this_session(),
         )
         .expect("this device's engine opens")
     }
 
-    fn identity() -> tilo_identity_host::custody::HostIdentity {
+    fn identity() -> tilo_identity::identity_store::DeviceIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
@@ -1552,7 +1552,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        tilo_identity_host::custody::HostIdentity::kept(cert, device)
+        tilo_identity::identity_store::DeviceIdentity::kept(cert, device)
     }
 
     /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.

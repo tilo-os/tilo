@@ -360,7 +360,8 @@ impl<'a> ChipFace<'a> {
 pub(crate) struct PillPaint<'a> {
     pub rect: Rect,
     pub label: &'a str,
-    pub face: &'a str,
+    /// Who a [`ChipLead::Face`] shows; without one, the label names them.
+    pub face: Option<&'a crate::component::Person>,
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
@@ -385,7 +386,7 @@ impl<'a> PillPaint<'a> {
         Self {
             rect,
             label,
-            face: "",
+            face: None,
             lead: ChipLead::None,
             style,
             selected: false,
@@ -534,14 +535,12 @@ pub(crate) fn paint_pill(
             let side = metrics.face();
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
             let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-            let name = if pill.face.is_empty() {
-                pill.label
-            } else {
-                pill.face
-            };
-            crate::widget::avatar::AvatarFace::new(name, name)
-                .presence(colour)
-                .paint(&mut ctx, face);
+            match pill.face {
+                Some(who) => crate::widget::avatar::AvatarFace::of(who),
+                None => crate::widget::avatar::AvatarFace::new(pill.label, pill.label),
+            }
+            .presence(colour)
+            .paint(&mut ctx, face);
             x += side + metrics.gap;
         }
         ChipLead::Glyph(icon) => {
@@ -626,7 +625,7 @@ pub use component::ChipProps;
 
 pub struct Chip {
     label: String,
-    face: String,
+    face: Option<crate::component::Person>,
     selectable: bool,
     selected: bool,
     /// How chosen the chip shows: it eases between the looks when a person picks it.
@@ -695,7 +694,7 @@ impl Chip {
             tooltip: None,
             accessible_name: None,
             label,
-            face: String::new(),
+            face: None,
             selectable: false,
             selected: false,
             chosen: None,
@@ -723,8 +722,8 @@ impl Chip {
     }
 
     #[must_use]
-    pub fn with_face(mut self, name: impl Into<String>, colour: Color) -> Self {
-        self.face = name.into();
+    pub fn with_face(mut self, who: crate::component::Person, colour: Color) -> Self {
+        self.face = Some(who);
         self.lead = ChipLead::Face(colour);
         self
     }
@@ -1042,45 +1041,43 @@ impl Widget for Chip {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Face, TextLook, rgba8};
         cx.element("button");
+        // Set as the canvas paints its pill: its role's type, its style's colours on the
+        // window's ground, its content from the inset.
         let theme = cx.theme();
-        let colors = &theme.tokens.colors;
-        let ink = colors.text_primary;
+        let metrics = PillMetrics::of(theme, TextRole::Label);
+        let colors = self.style.colors(
+            theme,
+            theme.tokens.colors.surfaces.content,
+            self.shows_chosen(),
+            false,
+        );
         let leader = match self.lead {
-            ChipLead::Glyph(icon) => crate::composition::glyph(icon, 14.0, ink, false),
+            ChipLead::Glyph(icon) => {
+                crate::composition::glyph(icon, metrics.glyph, colors.lead, false)
+            }
             _ => None,
+        };
+        let trailing = if self.removable {
+            Some(crate::icons::Icon::X)
+        } else {
+            self.menu.then_some(crate::icons::Icon::ChevronDown)
         };
         cx.face(Face {
             icon: leader,
-            label: Some(
-                TextLook::new(
-                    self.label.clone(),
-                    &theme.text(crate::tokens::TextRole::Body),
-                    Some(ink),
-                )
-                .with_max_lines(Some(1)),
-            ),
+            label: (!self.label.is_empty()).then(|| {
+                TextLook::new(self.label.clone(), &metrics.label, Some(colors.ink))
+                    .with_max_lines(Some(1))
+            }),
             detail: None,
-            trailing: self
-                .menu
-                .then(|| {
-                    crate::composition::glyph(
-                        crate::icons::Icon::ChevronDown,
-                        14.0,
-                        colors.text_dim,
-                        false,
-                    )
-                })
-                .flatten(),
-            fill: Some(rgba8(if self.selected {
-                colors.intent.accent
-            } else {
-                colors.surfaces.raised
-            })),
-            edge: Some(rgba8(colors.border_standard)),
-            radius: self.metrics.height / 2.0,
-            pad: self.metrics.pad_x,
-            gap: 6.0,
-            spread: false,
+            trailing: trailing.and_then(|icon| {
+                crate::composition::glyph(icon, metrics.glyph, colors.lead, false)
+            }),
+            fill: Some(rgba8(colors.fill)),
+            edge: colors.edge.map(rgba8),
+            radius: f64::from(theme.tokens.radii.full).min(self.rect.height() / 2.0),
+            pad: metrics.pad_x.min(self.rect.width() / 4.0),
+            gap: metrics.gap,
+            spread: trailing.is_some(),
         });
     }
 
@@ -1234,7 +1231,7 @@ impl Widget for Chip {
         };
         paint_pill(
             &PillPaint {
-                face: &self.face,
+                face: self.face.as_ref(),
                 lead: self.lead,
                 selected: chosen,
                 selecting,
@@ -1403,21 +1400,21 @@ impl Widget for Chip {
 }
 
 impl crate::widget::controls::ActionControls for Chip {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.activation.install_custody(domain, attachment);
-        self.remove_press.install_custody(domain, attachment);
+        self.activation.attach(domain, attachment);
+        self.remove_press.attach(domain, attachment);
         for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
             .into_iter()
             .flatten()
         {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
         for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

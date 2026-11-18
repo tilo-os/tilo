@@ -3,7 +3,7 @@
 //!
 //! The folder is an ordinary directory any program on the host can use.
 //! The workspace stays the authority. A change made in the folder enters it
-//! through the path-level operations the mount and the native data plane
+//! through the path-level operations the mount and the native backend
 //! use ([`QuickFS::write_path`], [`QuickFS::apply_local_move`], ...), so it
 //! becomes a version in the file's history like any other write, and a
 //! document is imported through its format's codec rather than stored as

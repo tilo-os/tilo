@@ -42,7 +42,7 @@ Review must still pass on the virtio Btrfs source; current installed SDK roles,
 read-only publisher pins, the native-feature Root-source proof and the existing
 Root UI, app-grant and codec tests remain required. An old frozen candidate or
 published base cannot qualify a changed source. No producer receipts, source
-ledgers, installed roles or production `BackingWitness` checks are rewritten by
+logs, installed roles or production `BackingProof` checks are rewritten by
 this tool.
 
 Refusal and lifecycle tests:

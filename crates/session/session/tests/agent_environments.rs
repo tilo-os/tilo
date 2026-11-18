@@ -1,8 +1,9 @@
 //! Coding agents in confined environments, and several at once: each environment `ush` opens
 //! asks the session for a socket of its own, and a program inside it is served there as an agent
 //! of that environment, working in the environment's workspace rather than the one in front of
-//! the person. Every connection the person admits is an agent of its own (`claude-code@dev#1`),
-//! and "Always allow" is remembered per environment.
+//! the person. Every connection the person admits works as the agent member of its workspace,
+//! under the name the workspace calls it by, with the environment it came in by beside it, and
+//! "Always allow" is remembered per environment.
 //!
 //! The environments here are this test's own processes, as `ush` is the person's: a process asks
 //! for the socket through the production request ([`runtime_portal::environment_socket`]) and holds
@@ -32,7 +33,7 @@ use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::{Dialog, PortalEffect};
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -339,7 +340,7 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
             questions: Some(questions.clone()),
             collab: false,
             person: PERSON.to_owned(),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(socket.clone()),
             ..Options::default()
         },
@@ -394,8 +395,9 @@ fn allow(session: &mut Session, choice: usize) {
 }
 
 /// The agent sessions at the person's MCP servers, as their shell lists them: each one's id, how
-/// the shell names it, and the workspace it works in.
-fn agent_sessions(session: &Session) -> Vec<(String, String, String)> {
+/// the shell names it, the workspace it works in, and the environment it came in by (empty for a
+/// program of the session's own server).
+fn agent_sessions(session: &Session) -> Vec<(String, String, String, String)> {
     session
         .read("session:agents")
         .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
@@ -404,18 +406,41 @@ fn agent_sessions(session: &Session) -> Vec<(String, String, String)> {
         .filter(|agent| agent["stoppable"] == true)
         .map(|agent| {
             let text = |field: &str| agent[field].as_str().unwrap_or_default().to_owned();
-            (text("key"), text("name"), text("doing"))
+            (
+                text("key"),
+                text("name"),
+                text("doing"),
+                text("environment"),
+            )
         })
         .collect()
 }
 
-/// Wait until a session the shell calls `name` is here, and say how.
+/// The sessions the shell calls `name`, from the environment `environment` (empty for a program
+/// of the session's own server): every connection of one client is called the same.
+fn sessions_named(
+    session: &Session,
+    name: &str,
+    environment: &str,
+) -> Vec<(String, String, String, String)> {
+    agent_sessions(session)
+        .into_iter()
+        .filter(|(_, shown, _, from)| shown.as_str() == name && from.as_str() == environment)
+        .collect()
+}
+
+/// Wait until a session the shell calls `name` is here, from `environment` (empty for a program
+/// of the session's own server), and say how.
 #[track_caller]
-fn session_for(session: &mut Session, name: &str) -> (String, String, String) {
+fn session_for(
+    session: &mut Session,
+    name: &str,
+    environment: &str,
+) -> (String, String, String, String) {
     crate::common::wait_for(session, format!("{name} at the shell"), |session| {
-        agent_sessions(session)
+        sessions_named(session, name, environment)
             .into_iter()
-            .find(|(_, shown, _)| shown == name)
+            .next()
     })
 }
 
@@ -495,8 +520,8 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
 
     let shown = asked(&mut session, &questions);
     assert_eq!(
-        shown.title, "Work in “Studio” as the agent claude-code@dev#1",
-        "the environment's workspace, not Garden in front, and an agent of its own"
+        shown.title, "Work in “Studio” as the agent Claude Code",
+        "the environment's workspace, not Garden in front, and the agent the workspace names"
     );
     assert!(
         shown.heading.starts_with("Claude Code (")
@@ -515,10 +540,14 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
         listed.get("error").is_none(),
         "it reaches the desktop's actions: {listed}"
     );
-    let (dev_session, _, doing) = session_for(&mut session, "Claude Code in Env dev #1");
+    let (dev_session, _, doing, environment) = session_for(&mut session, "Claude Code", "Env dev");
     assert_eq!(
         doing, "Studio",
         "the shell shows the agent, from its environment, working in Studio"
+    );
+    assert_eq!(
+        environment, "Env dev",
+        "the shell says the environment it came in by beside its name"
     );
 
     // A program in an environment works in its environment's workspace only: asking for the
@@ -614,7 +643,7 @@ fn always_allow_is_remembered_per_environment() {
     asked(&mut session, &questions);
     allow(&mut session, 2);
     assert!(first.answer(&mut session).get("result").is_some());
-    session_for(&mut session, "Claude Code in Env dev #1");
+    session_for(&mut session, "Claude Code", "Env dev");
 
     let again = Environment::open(&socket, "dev", Some(STUDIO), Some(("Claude Code", "own")));
     again.socket(&mut session);
@@ -623,15 +652,16 @@ fn always_allow_is_remembered_per_environment() {
         "let in as the person said"
     );
     assert!(questions.pending().is_empty(), "without asking");
-    session_for(&mut session, "Claude Code in Env dev #2");
+    crate::common::wait_for(
+        &mut session,
+        "the second session in the environment",
+        |session| (sessions_named(session, "Claude Code", "Env dev").len() == 2).then_some(()),
+    );
 
     let other = Environment::open(&socket, "other", Some(STUDIO), Some(("Claude Code", "own")));
     other.socket(&mut session);
     let shown = asked(&mut session, &questions);
-    assert_eq!(
-        shown.title,
-        "Work in “Studio” as the agent claude-code@other#1"
-    );
+    assert_eq!(shown.title, "Work in “Studio” as the agent Claude Code");
     press(&mut session, PortalEffect::CANCEL.id, json!({}));
     assert_eq!(
         refusal(&other.answer(&mut session)),
@@ -641,7 +671,7 @@ fn always_allow_is_remembered_per_environment() {
     let host = Program::connect(&socket, None);
     let shown = asked(&mut session, &questions);
     assert_eq!(
-        shown.title, "Work in “Garden” as the agent claude-code@host#1",
+        shown.title, "Work in “Garden” as the agent Claude Code",
         "outside every environment, in the workspace in front"
     );
     press(&mut session, PortalEffect::CANCEL.id, json!({}));
@@ -654,8 +684,8 @@ fn always_allow_is_remembered_per_environment() {
     first.end();
 }
 
-/// Two Claude Codes at once are two agents: each its own id, at the shell as its own, and the
-/// person's Stop ends the one they stop.
+/// Two Claude Codes at once are two sessions of the one agent member: the shell calls both alike,
+/// each row its own session, and the person's Stop ends the one they stop.
 #[test]
 fn two_programs_of_one_name_are_two_agents() {
     let _one = ONE_SESSION
@@ -674,8 +704,12 @@ fn two_programs_of_one_name_are_two_agents() {
         second.answers(&mut session)[0].get("result").is_some(),
         "the person let this program in for the session"
     );
-    let (first_session, ..) = session_for(&mut session, "Claude Code #1");
-    let (second_session, _, doing) = session_for(&mut session, "Claude Code #2");
+    let listed = crate::common::wait_for(&mut session, "two sessions at the shell", |session| {
+        let listed = sessions_named(session, "Claude Code", "");
+        (listed.len() == 2).then_some(listed)
+    });
+    let (first_session, _, doing, _) = listed[0].clone();
+    let (second_session, ..) = listed[1].clone();
     assert_ne!(first_session, second_session, "two sessions");
     assert_eq!(doing, "Garden");
 
@@ -708,13 +742,10 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
 
     let studio = Program::connect(&socket, Some(STUDIO));
     let shown = asked(&mut session, &questions);
-    assert_eq!(
-        shown.title,
-        "Work in “Studio” as the agent claude-code@host#1"
-    );
+    assert_eq!(shown.title, "Work in “Studio” as the agent Claude Code");
     allow(&mut session, 0);
     assert!(studio.answers(&mut session)[0].get("result").is_some());
-    let (_, _, doing) = session_for(&mut session, "Claude Code #1");
+    let (_, _, doing, _) = session_for(&mut session, "Claude Code", "");
     assert_eq!(doing, "Studio", "where it asked, not Garden in front");
 
     for workspace in [ELSEWHERE, "00000000-0000-4000-8000-000000000000"] {

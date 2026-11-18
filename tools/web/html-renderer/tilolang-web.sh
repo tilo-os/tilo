@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One command: build a tilolang app for the web on the builder
-# (build-tilolang-web.sh through `rcargo exec`), fetch it, and serve it on this
+# (build-tilolang-web.sh through `$CARGO exec`), fetch it, and serve it on this
 # machine's loopback, printing the page that shows it on the canvas and as
 # HTML side by side. Serving is all that runs here.
 #
@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
 done
 cd "$repo"
 if [[ $build == 1 ]]; then
-  rcargo --fetch htmlrenderer/tilolang exec tools/web/html-renderer/build-tilolang-web.sh "${args[@]}"
+  "${CARGO:-cargo}" exec tools/web/html-renderer/build-tilolang-web.sh "${args[@]}"
 fi
 target=${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps --offline | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')}
 dir=$target/htmlrenderer/tilolang

@@ -246,7 +246,7 @@ impl std::fmt::Display for ThawError {
 
 impl std::error::Error for ThawError {}
 
-/// Freeze/thaw for a Tilo app, extendable at exactly one seam.
+/// Freeze/thaw for a Tilo app, extendable at exactly one boundary.
 pub trait FreezeThaw {
     /// Serialize this app's state to bytes.
     fn serialize_state(&self) -> Vec<u8>;

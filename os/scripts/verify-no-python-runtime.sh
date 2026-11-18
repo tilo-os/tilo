@@ -27,6 +27,7 @@ power-profiles-daemon its powerprofilesctl client is Python
 at-spi2-core declares python(abi) for the Python bindings it carries
 flatpak its flatpak-bisect and flatpak-coredumpctl tools are Python
 libwacom its libwacom-update-db tool is Python
+freerdp its Microsoft Entra ID sign-in helpers (freerdp-aad-handler, freerdp-xdg-aad-helper) are Python
 gstreamer1 its gst-plugins-doc-cache-generator helper is Python
 samba-common-tools its samba-log-parser tool is Python
 sos the support-report tool the base ships, kept on purpose (os/Containerfile), is Python

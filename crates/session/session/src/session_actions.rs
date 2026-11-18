@@ -144,17 +144,17 @@ impl HostStepServices for SessionActions {
 mod tests {
     use std::time::Duration;
 
-    use tilo_actions::remote::{ActionHostError, Caller, CatalogueQuery, PendingPoll};
+    use tilo_actions::remote::{ActionCallError, Caller, CatalogueQuery, PendingPoll};
 
-    /// A headless session serving its own broker on `plane`, so the session's own actions reach
+    /// A headless session serving its own broker on `app_wire`, so the session's own actions reach
     /// the catalogue every caller of the desktop is offered.
-    fn serving(state: &std::path::Path, plane: &std::path::Path) -> crate::Session {
+    fn serving(state: &std::path::Path, app_wire: &std::path::Path) -> crate::Session {
         crate::Session::headless(
             crate::Options {
                 presentation: ui::headless::fixture_runner_inputs,
                 collab: false,
                 state: Some(state.to_path_buf()),
-                action_plane: crate::ActionPlane::At(plane.join("collab.sock")),
+                app_socket: crate::AppSocket::At(app_wire.join("collab.sock")),
                 ..crate::Options::default()
             },
             &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -166,8 +166,8 @@ mod tests {
     /// its invocation are read on the loop, which steps here until the answer is in.
     fn answered<T: Send + 'static>(
         session: &mut crate::Session,
-        ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionHostError>>,
-    ) -> Result<T, ActionHostError> {
+        ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionCallError>>,
+    ) -> Result<T, ActionCallError> {
         let (done, mut answered) = tilo_actions::remote::pending();
         ask().then(move |answer| done.complete(answer));
         let deadline = tilo_test_env::hang_deadline();
@@ -177,12 +177,12 @@ mod tests {
                 return answer.expect("the broker answers");
             }
         }
-        Err(ActionHostError::Refused {
+        Err(ActionCallError::Refused {
             reason: "the session did not answer".to_owned(),
         })
     }
 
-    /// The session's own actions are its broker's: the person at this seat is offered the
+    /// The session's own actions are its broker's: the person at this device is offered the
     /// layout's `place` on the session's own provider, read on the loop's pass and listed
     /// by the broker — one catalogue, whichever API the caller came in by. Its invocation, and
     /// the turn's admission of it, are proven against a real tracker in the broker's own
@@ -194,10 +194,10 @@ mod tests {
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         // The broker binds in a directory only this account reaches.
-        let plane = tempfile::tempdir().expect("a directory to serve the broker in");
-        std::fs::set_permissions(plane.path(), std::fs::Permissions::from_mode(0o700))
+        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
+        std::fs::set_permissions(app_wire.path(), std::fs::Permissions::from_mode(0o700))
             .expect("the broker's directory is this user's");
-        let mut session = serving(state.path(), plane.path());
+        let mut session = serving(state.path(), app_wire.path());
         session.step(Duration::from_millis(1)).expect("a frame");
         let me = session.shared.person.clone();
         let broker = session

@@ -1,4 +1,4 @@
-//! Descriptor helpers for callers that keep custody of a directory hierarchy by holding
+//! Descriptor helpers for callers that keep owning a directory hierarchy by holding
 //! descriptors rather than paths.
 use rustix::fs::{AtFlags, Statx, StatxFlags};
 use std::{

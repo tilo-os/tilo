@@ -1,4 +1,4 @@
-//! Native target identity, exclusive custody and platform preparation.
+//! Native target identity, exclusive ownership and platform preparation.
 #[cfg(target_os = "linux")]
 pub fn attest_target_descriptor(target: &TargetDrive, file: &std::fs::File) -> io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};

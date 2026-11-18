@@ -337,7 +337,7 @@ fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
 /// The name a window's bar shows: the location its app names, or the
 /// window's own title while the app names none. A blank label names
 /// nothing — an app whose window has nothing open to name — so the bar
-/// says what the window is instead of standing empty.
+/// says what the window is instead of being empty.
 #[test]
 fn a_window_whose_app_names_no_location_shows_its_own_name() {
     let _settled = crate::motion::testing::settled();
@@ -900,7 +900,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
 /// holds the bar, so a person gets one answer either way: the search and the window's controls
 /// stand at the bar's trailing end, and the bar's ground moves the window.
 #[test]
-fn a_row_standing_as_parts_keeps_the_windows_functions() {
+fn a_row_shown_as_parts_keeps_the_windows_functions() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
@@ -1160,9 +1160,9 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
 fn leading_menu_parts() -> crate::window_toolbar::WindowToolbar {
     crate::window_toolbar::WindowToolbar {
         leading: vec![
-            crate::window_toolbar::ToolbarAction::new("custody", "bot", "Visitor window")
+            crate::window_toolbar::ToolbarAction::new("ownership", "bot", "Visitor window")
                 .with_items(vec![crate::window_toolbar::ToolbarAction::new(
-                    "custody~open",
+                    "ownership~open",
                     "",
                     "Open in your window",
                 )]),
@@ -1201,7 +1201,7 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
     let (mut frame, window, toolbar, heard) = menu_window_with(leading_menu_parts(), W);
     let mut parts = crate::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
-    let button = leading_button(&mut frame, "custody");
+    let button = leading_button(&mut frame, "ownership");
 
     frame.click_at(button.x, button.y);
     frame_of(&mut frame, &mut parts, &window);
@@ -1233,13 +1233,13 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
     assert_eq!(
         heard.borrow().as_slice(),
         [crate::window_toolbar::ToolbarEvent::Action {
-            id: "custody~open".into()
+            id: "ownership~open".into()
         }],
         "the row chosen runs for the button the menu belongs to"
     );
     assert!(!menu(&mut frame).0, "choosing a row closes the menu");
 
-    let button = leading_button(&mut frame, "custody");
+    let button = leading_button(&mut frame, "ownership");
     frame.click_at(button.x, button.y);
     frame_of(&mut frame, &mut parts, &window);
     assert!(menu(&mut frame).0, "the button opens it again");
@@ -1252,7 +1252,7 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
 }
 
 /// A leading menu the row cannot fit lists its items in the overflow menu, under its name, and
-/// a row chosen there runs for it: never one dead row standing for the button.
+/// a row chosen there runs for it: never one dead row for the button.
 #[test]
 fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     let _settled = crate::motion::testing::settled();
@@ -1293,7 +1293,7 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     assert_eq!(
         heard.borrow().as_slice(),
         [crate::window_toolbar::ToolbarEvent::Action {
-            id: "custody~open".into()
+            id: "ownership~open".into()
         }],
         "the row chosen runs for the folded menu"
     );

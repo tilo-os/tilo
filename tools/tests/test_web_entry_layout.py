@@ -70,7 +70,7 @@ class Layout(unittest.TestCase):
             'in-a-comment.mjs': "export const no = 1;\n",
             'in-a-string.mjs': "export const no = 1;\n",
             'identity.mjs': "export const keptIdentity = () => null;\n",
-            'device-custody.mjs': "export const openDeviceCustody = () => null;\n",
+            'device-key.mjs': "export const openDeviceKey = () => null;\n",
             'identity-profile.mjs': "export const identityProfile = () => '';\n",
             'entered-workspaces.mjs': "export const enteredWorkspaces = () => [];\n",
             # The first screen's module, which the entry page loads by a script
@@ -105,7 +105,7 @@ class Layout(unittest.TestCase):
 
     # The sign-in page's module and what it statically imports, in the order a
     # browser meets them.
-    SIGN_IN = ('sign-in.mjs', 'device-custody.mjs', 'entered-workspaces.mjs', 'identity.mjs', 'identity-profile.mjs')
+    SIGN_IN = ('sign-in.mjs', 'device-key.mjs', 'entered-workspaces.mjs', 'identity.mjs', 'identity-profile.mjs')
 
     def hints(self, site, page):
         return re.findall(r'<link rel="modulepreload" href="([^"]+)">', self.page(site, page))
@@ -269,9 +269,9 @@ class ShippedGraph(unittest.TestCase):
         self.assertIn('host.mjs', names)
         self.assertIn('entry-page.mjs', names)
         # A module a dynamic import names is preloaded only if a static import
-        # reaches it too: the relay a page connects to when it has one is not
+        # reaches it too: the server a page connects to when it has one is not
         # preloaded.
-        self.assertNotIn('relay.mjs', names)
+        self.assertNotIn('server.mjs', names)
 
     @unittest.skipUnless((WEB / 'entry-page.mjs').is_file(), 'the runtime sources are not here')
     def test_every_hint_is_a_file_of_the_runtime(self):

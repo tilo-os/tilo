@@ -46,7 +46,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_user_identity::UserIdentity;
@@ -104,13 +104,13 @@ fn desktop_part(base: &mut automerge::AutoCommit, member: usize, size: usize) ->
 /// network round trip of `round_trip` beside what the host spends on it, and
 /// is counted with what it asked.
 struct Network<'a> {
-    inner: &'a dyn tilo_relay_client::https::HttpClient,
+    inner: &'a dyn tilo_server_client::https::HttpClient,
     round_trip: Duration,
     asked: std::sync::Mutex<Vec<(String, Duration, usize)>>,
 }
 
-impl tilo_relay_client::https::HttpClient for Network<'_> {
-    fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::https::HttpFuture<'_> {
+impl tilo_server_client::https::HttpClient for Network<'_> {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_server_client::https::HttpFuture<'_> {
         let path = path.to_owned();
         let sent = body.len();
         Box::pin(async move {
@@ -387,7 +387,7 @@ fn trace_steps() {
         return;
     }
     let filter =
-        std::env::var("TILO_CROWD_LOG").unwrap_or_else(|_| "tilo_relay::timing=debug".into());
+        std::env::var("TILO_CROWD_LOG").unwrap_or_else(|_| "tilo_server::timing=debug".into());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .with_timer(SinceOrigin)
@@ -425,21 +425,21 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
         .unwrap();
     let https = host.https();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let desktop = DocumentRoute {
@@ -495,7 +495,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         )
         .unwrap();
     first
-        .leave_part(&author, desktop_part(&mut base, 0, 600))
+        .leave_part("Member 0", &author, desktop_part(&mut base, 0, 600))
         .await;
     let staying = vec![author];
     let mut arriving = tokio::task::JoinSet::new();
@@ -521,7 +521,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         let member = first.clone();
         arriving.spawn(async move {
             let page = member.arrive(&name).await;
-            member.leave_part(&page, part).await;
+            member.leave_part(&name, &page, part).await;
             page.close();
         });
     }
@@ -537,7 +537,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // quiet, as the Lounge's host does between the people who come over a day: wait until it
     // did. A guest that comes in the moment the last of 300 members wrote meets their parts
     // one by one; that is not the entry this measures.
-    let compactor = host.relay.compactor();
+    let compactor = host.server.compactor();
     let deadline = Instant::now() + Duration::from_secs(60);
     while compactor.rounds() == 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -556,8 +556,8 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     }
 
     // What the site hands its page about the host, which its deployment asked
-    // once, as `tilo-relay page-host` does: no guest asks it again.
-    let site = tilo_relay_client::https::host_info(&*https)
+    // once, as `tilo-server page-host` does: no guest asks it again.
+    let site = tilo_server_client::https::host_info(&*https)
         .await
         .unwrap()
         .for_site();
@@ -648,7 +648,7 @@ impl Member {
 
     /// Write `part`, `page`'s own part of the shared desktop, and wait until
     /// the host keeps it.
-    async fn leave_part(&self, page: &Link, part: Vec<u8>) {
+    async fn leave_part(&self, name: &str, page: &Link, part: Vec<u8>) {
         page.write(self.desktop.clone(), &DocumentMutation::Incremental(part))
             .unwrap();
         let receipt = page.barrier().unwrap();
@@ -658,9 +658,13 @@ impl Member {
                 kept.unwrap();
                 break;
             }
+            let status = page.status();
             assert!(
                 std::time::Instant::now() < deadline,
-                "a member's part of the desktop was never kept"
+                "{name}'s part of the desktop was never kept: {} write(s) wait, failures: {:?}\n{}",
+                status.outgoing_pending,
+                status.failures,
+                status.key_state
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -671,14 +675,14 @@ impl Member {
 /// and the workspace's join take them, in process: the crowd that came before leaves no session
 /// behind it, only the members it made.
 async fn through_the_entry(
-    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     name: &str,
 ) -> (SigningKey, tilo_user_identity::DeviceCert) {
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::workspaces::JoinReply;
     let root = new_key();
     let key = new_key();
-    let cert = tilo_relay_client::invite::guest_certificate(
+    let cert = tilo_server_client::invite::guest_certificate(
         &root,
         key.verifying_key().to_bytes(),
         "Browser",
@@ -689,7 +693,7 @@ async fn through_the_entry(
     let (issued, token) = workspaces
         .admit_listed(
             workspace,
-            &tilo_relay_protocol::directory::EntryJoin {
+            &tilo_server_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(cert.user_public_key),
                 display_name: name.to_owned(),
             },
@@ -715,10 +719,10 @@ async fn through_the_entry(
 /// What every guest enters: the host's entry and session, and the record it
 /// shows first.
 struct Place<'a> {
-    https: &'a dyn tilo_relay_client::https::HttpClient,
+    https: &'a dyn tilo_server_client::https::HttpClient,
     /// Who the host is and where it is dialled, as the page's site hands it
-    /// over with the page (`tilo-relay page-host`).
-    site: &'a tilo_relay_protocol::web::PageHost,
+    /// over with the page (`tilo-server page-host`).
+    site: &'a tilo_server_protocol::web::PageHost,
     workspace: &'a str,
     workspace_id: WorkspaceId,
     host: iroh::EndpointId,
@@ -1013,12 +1017,12 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 .expect("the WebTransport listener's address");
             let datagrams = Datagrams::start(listener, round_trip).await;
             origin.set_port(Some(datagrams.addr.port())).unwrap();
-            let proxied = tilo_relay_protocol::web::WebLink {
+            let proxied = tilo_server_protocol::web::WebLink {
                 origin: origin.as_str().trim_end_matches('/').to_owned(),
                 ..web
             };
             let host = Host::published(&named.clone().into())
-                .over(tilo_relay_client::Carrier::WebTransport)
+                .over(tilo_server_client::Carrier::WebTransport)
                 .with_web(Some(proxied));
             (Wire::Datagrams(datagrams), host)
         }
@@ -1036,7 +1040,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
             let mut relay: url::Url = (*place.relay).clone();
             relay.set_port(Some(link.addr.port())).unwrap();
             let host = Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
-                .over(tilo_relay_client::Carrier::Relay);
+                .over(tilo_server_client::Carrier::Relay);
             (Wire::Stream(link), host)
         }
     };

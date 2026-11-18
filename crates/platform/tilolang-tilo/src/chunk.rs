@@ -3,14 +3,14 @@
 //! One document per app and workspace is the unit of sync and storage, so a workspace of a
 //! hundred thousand items loads and moves wholesale. A chunk is a smaller document holding some
 //! of the app's resources (or a run of one collection's items), and a manifest says which. The
-//! manifest is a map at the root of the app's record, [`CHUNKS_KEY`]: which resource is in which
+//! manifest is a map at the root of the app's document, [`CHUNKS_KEY`]: which resource is in which
 //! chunk ([`Placement::chunk`]), and which chunks carry which run of a collection
-//! ([`Placement::runs`]). A chunk is a record of its own (`derived:chunk.<n>@<base>`), sealed and
-//! synced like any record of the workspace, so a write reaches only the chunk it changed.
+//! ([`Placement::runs`]). A chunk is a document of its own (`derived:chunk.<n>@<base>`), sealed and
+//! synced like any document of the workspace, so a write reaches only the chunk it changed.
 //!
-//! **Chunk 0 is today's record.** Its resources are read in place: nothing is copied, no id
+//! **Chunk 0 is today's document.** Its resources are read in place: nothing is copied, no id
 //! changes, and a workspace written before chunks opens as one chunk with an empty manifest.
-//! Everything a record holds that the manifest does not name is in chunk 0.
+//! Everything a document holds that the manifest does not name is in chunk 0.
 //!
 //! **The platform picks the chunk, not the app.** A new resource or item is placed by the action
 //! that makes it, recorded as [`DynEdit::PlaceChunk`](crate::action::DynEdit::PlaceChunk) and
@@ -35,9 +35,9 @@
 //! ids stay, and their history is the workspace's action log, which names resources, never
 //! documents.
 //!
-//! **[`Chunks`]** is the set a store holds: the record and the chunks above it it was sent, each
+//! **[`Chunks`]** is the set a store holds: the document and the chunks above it it was sent, each
 //! a document of its own, and the heads it has applied of each. A read or a write of a resource
-//! is routed by the record's manifest to the chunk that holds it.
+//! is routed by the document's manifest to the chunk that holds it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -53,13 +53,13 @@ use crate::reads::map_at;
 
 type Doc = tilo_resource::Doc;
 
-/// A chunk's number. Chunk [`FIRST`] is the app's record itself.
+/// A chunk's number. Chunk [`FIRST`] is the app's document itself.
 pub type ChunkNo = u64;
 
-/// The chunk every record written before chunks is: the app's record, read in place.
+/// The chunk every document written before chunks is: the app's document, read in place.
 pub const FIRST: ChunkNo = 0;
 
-/// The map at the root of the app's record that says where its resources are.
+/// The map at the root of the app's document that says where its resources are.
 pub const CHUNKS_KEY: &str = "$chunks";
 
 /// Items a chunk holds before a new run starts.
@@ -67,7 +67,7 @@ pub const CHUNKS_KEY: &str = "$chunks";
 /// Chosen from the measured curve above: at two thousand items a chunk loads in a few
 /// milliseconds and holds well under a megabyte, and one change in it costs a tenth of a
 /// millisecond, which is where the cost of a document stops being worth splitting further
-/// against the fixed cost of a record (about 200 us to make, 36 us to open, 19 KiB held).
+/// against the fixed cost of a document (about 200 us to make, 36 us to open, 19 KiB held).
 pub const ITEMS: u64 = 2048;
 
 /// What a chunk may hold: [`ITEMS`] items. Bytes are not a second limit to keep: a chunk's size
@@ -84,11 +84,11 @@ impl Default for Limits {
     }
 }
 
-/// The record id of chunk `chunk` of the record `base`: `derived:chunk.<n>@<base>`, the id
+/// The document id of chunk `chunk` of the document `base`: `derived:chunk.<n>@<base>`, the id
 /// [`document_sync`](crate::chunk) syncs on demand and the channel its changes travel on. Chunk
-/// [`FIRST`] is the record itself, which has its own id (`base`).
+/// [`FIRST`] is the document itself, which has its own id (`base`).
 #[must_use]
-pub fn record_id(base: &str, chunk: ChunkNo) -> String {
+pub fn document_id(base: &str, chunk: ChunkNo) -> String {
     format!("derived:chunk.{chunk}@{base}")
 }
 
@@ -102,8 +102,8 @@ pub struct Run {
     pub len: u64,
 }
 
-/// Where an app's resources are, as its record's manifest says: read once per change of the
-/// record, and consulted for every placement.
+/// Where an app's resources are, as its document's manifest says: read once per change of the
+/// document, and consulted for every placement.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Placement {
     /// The chunk a resource is in, when it is not chunk [`FIRST`].
@@ -115,14 +115,14 @@ pub struct Placement {
 }
 
 impl Placement {
-    /// The placement `doc` (an app's record, chunk [`FIRST`]) holds. A record written before
+    /// The placement `doc` (an app's document, chunk [`FIRST`]) holds. A document written before
     /// chunks holds nothing: every resource is in chunk [`FIRST`].
     #[must_use]
     pub fn read(doc: &Doc) -> Self {
         let mut placement = Self::default();
         // Every copy of the manifest, and of each map in it, a replica made before it met the
-        // others: the record keeps one of each, and what the others place is placed just the
-        // same ([`crate::containers`]). The last copy read is the one the record keeps, which
+        // others: the document keeps one of each, and what the others place is placed just the
+        // same ([`crate::containers`]). The last copy read is the one the document keeps, which
         // is what a write goes to.
         for manifest in crate::containers::maps(doc, &automerge::ROOT, CHUNKS_KEY) {
             if let Some((AmValue::Scalar(scalar), _)) = doc.get(&manifest, "next").ok().flatten()
@@ -187,14 +187,14 @@ impl Placement {
         &self.runs
     }
 
-    /// Whether the manifest names any chunk at all: a record written before chunks names none.
+    /// Whether the manifest names any chunk at all: a document written before chunks names none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.of.is_empty() && self.runs.is_empty()
     }
 
-    /// Every chunk the manifest names, above the record: the resources it places, and the runs
-    /// it keeps. What a replica holds of a record is these, chunk [`FIRST`] being the record
+    /// Every chunk the manifest names, above the document: the resources it places, and the runs
+    /// it keeps. What a replica holds of a document is these, chunk [`FIRST`] being the document
     /// itself.
     #[must_use]
     pub fn chunks(&self) -> std::collections::BTreeSet<ChunkNo> {
@@ -263,33 +263,33 @@ impl Placement {
 /// them reflects.
 pub type Stamps = BTreeMap<ChunkNo, Vec<ChangeHash>>;
 
-/// The documents a store holds: chunk [`FIRST`], the record itself, and the chunks above it the
+/// The documents a store holds: chunk [`FIRST`], the document itself, and the chunks above it the
 /// store was sent, each a copy of what its holder has with the store's own writes as its open
-/// transaction. Every resource is read and written in the chunk the record's manifest places it
+/// transaction. Every resource is read and written in the chunk the document's manifest places it
 /// in ([`Placement`]); a chunk the store was not sent is not held, and nothing is read of it
 /// until it arrives.
 #[derive(Clone, Default)]
 pub struct Chunks {
     first: Option<Arc<Doc>>,
     more: BTreeMap<ChunkNo, Arc<Doc>>,
-    /// The chunks above the record that its holder has and the store has not read yet: kept
+    /// The chunks above the document that its holder has and the store has not read yet: kept
     /// here, the one copy of each, until something reads or writes into it
-    /// ([`Self::unpark`]). Only the record's holder sees them ([`Self::held`], [`Self::all`]).
+    /// ([`Self::unpark`]). Only the document's holder sees them ([`Self::held`], [`Self::all`]).
     parked: BTreeMap<ChunkNo, Arc<Doc>>,
-    /// Where the record's manifest places its resources, as of its last change.
+    /// Where the document's manifest places its resources, as of its last change.
     placement: Placement,
     /// The heads the store has applied of each chunk it holds.
     seen: Stamps,
 }
 
 impl Chunks {
-    /// Whether the store holds the record (chunk [`FIRST`]).
+    /// Whether the store holds the document (chunk [`FIRST`]).
     #[must_use]
-    pub fn has_record(&self) -> bool {
+    pub fn has_document(&self) -> bool {
         self.first.is_some()
     }
 
-    /// Chunk [`FIRST`], the record, when the store holds it.
+    /// Chunk [`FIRST`], the document, when the store holds it.
     #[must_use]
     pub fn first(&self) -> Option<&Doc> {
         self.first.as_deref()
@@ -333,7 +333,7 @@ impl Chunks {
         }
     }
 
-    /// The chunk `chunk` the record's holder has: one the store reads, or one it has not read
+    /// The chunk `chunk` the document's holder has: one the store reads, or one it has not read
     /// yet.
     #[must_use]
     pub fn held(&self, chunk: ChunkNo) -> Option<&Doc> {
@@ -341,7 +341,7 @@ impl Chunks {
             .or_else(|| self.parked.get(&chunk).map(AsRef::as_ref))
     }
 
-    /// A copy of the chunk `chunk` the record's holder has, its committed changes only: the
+    /// A copy of the chunk `chunk` the document's holder has, its committed changes only: the
     /// store's unsaved writes are no change, and a copy that kept them would commit them as one
     /// when it is saved.
     #[must_use]
@@ -351,7 +351,7 @@ impl Chunks {
         Some(doc)
     }
 
-    /// The chunk `chunk` the record's holder writes into: the one it has, else one started
+    /// The chunk `chunk` the document's holder writes into: the one it has, else one started
     /// here, as a write into a run that starts there is made before that chunk arrives.
     pub fn open_held(&mut self, chunk: ChunkNo) -> &mut Doc {
         if let Some(doc) = self.parked.get_mut(&chunk) {
@@ -367,7 +367,7 @@ impl Chunks {
         Arc::make_mut(doc)
     }
 
-    /// Every chunk the record's holder has, the record first and the rest by number: the ones
+    /// Every chunk the document's holder has, the document first and the rest by number: the ones
     /// the store reads and the ones it has not read yet.
     pub fn all(&self) -> impl Iterator<Item = (ChunkNo, &Doc)> {
         let mut all: Vec<(ChunkNo, &Doc)> = self.docs().collect();
@@ -380,7 +380,7 @@ impl Chunks {
         all.into_iter()
     }
 
-    /// Keep every chunk above the record unread: what the store reads of them it takes out
+    /// Keep every chunk above the document unread: what the store reads of them it takes out
     /// ([`Self::unpark`]) when something reaches into one.
     pub fn park_above_first(&mut self) {
         for (chunk, doc) in std::mem::take(&mut self.more) {
@@ -412,12 +412,12 @@ impl Chunks {
         self.seen.contains_key(&chunk)
     }
 
-    /// The set holding `doc` as the record, chunk [`FIRST`], and nothing above it.
+    /// The set holding `doc` as the document, chunk [`FIRST`], and nothing above it.
     #[must_use]
     pub fn of(doc: Doc) -> Self {
         let mut chunks = Self::default();
         chunks.insert(FIRST, doc);
-        // What the record's manifest places is where this set routes its reads and writes.
+        // What the document's manifest places is where this set routes its reads and writes.
         chunks.reread_placement();
         chunks
     }
@@ -431,7 +431,7 @@ impl Chunks {
         }
     }
 
-    /// The number of the chunk the resource `id` is stored in, as the record's manifest places
+    /// The number of the chunk the resource `id` is stored in, as the document's manifest places
     /// it: [`FIRST`] for a resource the manifest does not name.
     #[must_use]
     pub fn chunk(&self, id: &str) -> ChunkNo {
@@ -450,13 +450,13 @@ impl Chunks {
         self.mirror_mut(chunk)
     }
 
-    /// The numbers of the chunks the store holds, the record first and the rest by number.
+    /// The numbers of the chunks the store holds, the document first and the rest by number.
     pub fn numbers(&self) -> impl Iterator<Item = ChunkNo> + '_ {
         self.docs().map(|(chunk, _)| chunk)
     }
 
     /// The chunk an edit is written in: the one it names, else the chunk holding the item it
-    /// writes, else the one the record's manifest places its resource in. What the workspace
+    /// writes, else the one the document's manifest places its resource in. What the workspace
     /// routes an action's edits by, and the store its own writes: a write reaches one document.
     #[must_use]
     pub fn chunk_of(&self, edit: &DynEdit) -> ChunkNo {
@@ -469,12 +469,12 @@ impl Chunks {
     }
 
     /// `action` by the chunk each of its edits is written in ([`Self::chunk_of`]): per chunk,
-    /// the action with that chunk's edits alone. Each part is what the chunk's change records, so
+    /// the action with that chunk's edits alone. Each part is what the chunk's change documents, so
     /// a peer replaying it on the chunk it was written in reproduces the same change.
     ///
-    /// The parts come in the order they are committed: the chunks above the record first, the
-    /// record's own last. Committing a part derives the action's writes still open again, and
-    /// the record's part of an action that also writes above it is the manifest's run, which
+    /// The parts come in the order they are committed: the chunks above the document first, the
+    /// document's own last. Committing a part derives the action's writes still open again, and
+    /// the document's part of an action that also writes above it is the manifest's run, which
     /// derives nothing; committed last, the items above are not derived twice.
     #[must_use]
     pub fn parts_of(&self, action: &DynAction) -> Vec<(ChunkNo, DynAction)> {
@@ -513,7 +513,7 @@ impl Chunks {
         FIRST
     }
 
-    /// The chunks the store holds, the record first and the rest by number.
+    /// The chunks the store holds, the document first and the rest by number.
     pub fn docs(&self) -> impl Iterator<Item = (ChunkNo, &Doc)> {
         let first = self.first.as_deref().map(|doc| (FIRST, doc));
         first
@@ -521,13 +521,13 @@ impl Chunks {
             .chain(self.more.iter().map(|(chunk, doc)| (*chunk, doc.as_ref())))
     }
 
-    /// Where the record's manifest places its resources, as of its last change.
+    /// Where the document's manifest places its resources, as of its last change.
     #[must_use]
     pub fn placement(&self) -> &Placement {
         &self.placement
     }
 
-    /// Read the record's manifest again: after the record's changes reached it.
+    /// Read the document's manifest again: after the document's changes reached it.
     pub fn reread_placement(&mut self) {
         self.placement = self
             .first
@@ -594,8 +594,8 @@ fn read_run(doc: &Doc, chunks: &automerge::ObjId, number: &str) -> Option<Run> {
     })
 }
 
-/// The map at the root of the record that holds the manifest, made when absent; the copies of
-/// it a replica made are folded into the one the record keeps.
+/// The map at the root of the document that holds the manifest, made when absent; the copies of
+/// it a replica made are folded into the one the document keeps.
 fn manifest(doc: &mut Doc) -> Result<automerge::ObjId, ActionError> {
     crate::containers::single(doc, &automerge::ROOT, CHUNKS_KEY)
 }
@@ -626,7 +626,7 @@ fn note_next(
 }
 
 /// Write that the resource `id` is stored in `chunk`, in the manifest of `doc` (the app's
-/// record). The same write on every replica: what the action that placed it recorded.
+/// document). The same write on every replica: what the action that placed it recorded.
 pub fn place(doc: &mut Doc, id: &str, chunk: ChunkNo) -> Result<(), ActionError> {
     let manifest = manifest(doc)?;
     note_next(doc, &manifest, chunk)?;
@@ -673,17 +673,17 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn chunks_place_and_order_what_a_record_holds;
+        fn chunks_place_and_order_what_a_document_holds;
 
-        phase a_record_written_before_chunks_opens_as_one_chunk;
+        phase a_document_written_before_chunks_opens_as_one_chunk;
         {
-            // A workspace written before chunks: its app's resources in the record's own map, and no
+            // A workspace written before chunks: its app's resources in the document's own map, and no
             // manifest. It reads as one chunk with everything in it, in place.
             let mut doc = record();
             {
                 use automerge::transaction::Transactable as _;
                 let records = doc
-                    .put_object(&automerge::ROOT, crate::action::RECORDS_KEY, ObjType::Map)
+                    .put_object(&automerge::ROOT, crate::action::RESOURCES_KEY, ObjType::Map)
                     .expect("records");
                 let app = doc
                     .put_object(&records, "so.tilo.tasks", ObjType::Map)
@@ -718,7 +718,7 @@ mod tests {
         {
             let limits = Limits { items: 2 };
             let mut doc = record();
-            // The first run stays in the record itself, where the collection is; the second is a chunk.
+            // The first run stays in the document itself, where the collection is; the second is a chunk.
             run(&mut doc, "tracker", "issues", FIRST, "a2", 2).expect("write");
             run(&mut doc, "tracker", "issues", 3, "a5", 1).expect("write");
             run(&mut doc, "tracker", "issues", 2, "a4", 1).expect("write");

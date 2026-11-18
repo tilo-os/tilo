@@ -1,5 +1,5 @@
 //! Opening and addressing an app's actions in a workspace: the targets a
-//! host routes to a running app or launches one for, and the launch an app
+//! provider routes to a running app or launches one for, and the launch an app
 //! offers as an action on its own resources.
 
 use crate::api::ActionAddress;
@@ -25,7 +25,7 @@ pub fn application_open_target(workspace: &str, app_id: &str) -> RemoteActionTar
 /// Opening another installed app into the workspace, optionally with
 /// verified content it opens read-only: Photos with a captured picture, a
 /// player with a recorded clip. An app offers it as an action on its own
-/// resources ([`ApplicationLaunch::spec`]); the host routes the admitted
+/// resources ([`ApplicationLaunch::spec`]); the provider routes the admitted
 /// invocation through the workspace broker, which stages the bytes and owns
 /// the launched process. It can instead deliver a published resource action
 /// after launch ([`ApplicationLaunch::with_action`]). The source app never
@@ -44,7 +44,7 @@ pub struct ApplicationLaunch {
 }
 
 impl ApplicationLaunch {
-    /// The operation type the host routes to the broker.
+    /// The operation type the provider routes to the broker.
     pub const TYPE: &'static str = "tilo.application.launch";
 
     /// Open `app_id` empty.
@@ -72,7 +72,7 @@ impl ApplicationLaunch {
         }
     }
 
-    /// Resolve the destination only from the host's admitted workspace route.
+    /// Resolve the destination only from the provider's admitted workspace route.
     #[must_use]
     pub fn target(&self, workspace: &str) -> RemoteActionTarget {
         self.action.as_ref().map_or_else(
@@ -203,7 +203,7 @@ impl ApplicationLaunch {
 pub const APPLICATION_PROVIDER: &str = "application";
 
 /// The target of the action `app_id` offers on `resource` in workspace
-/// `workspace`. The host delivers it to the running app, or launches the app into
+/// `workspace`. The provider delivers it to the running app, or launches the app into
 /// the workspace first and delivers it once the app offers the action; the
 /// app's own published contract admits it either way.
 #[must_use]
@@ -219,7 +219,7 @@ pub fn application_action_target(
     }
 }
 
-/// [`application_action_target`] in `app_id`'s record `record`: the host
+/// [`application_action_target`] in `app_id`'s record `record`: the provider
 /// delivers to the app showing that record, or launches the app on it.
 /// Opening a reference is the resource's `open` on this target.
 #[must_use]

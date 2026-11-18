@@ -2,7 +2,7 @@
 #
 # An input surface, not a document app: it needs the compositor's
 # input-method/virtual-keyboard protocols on the compositor's private,
-# process-credential-gated OSK display and its own keymap + swipe-model
+# process-credential-guarded OSK display and its own keymap + swipe-model
 # files. Paste optionally uses the shared clipboard; it needs no documents,
 # network or exec.
 #

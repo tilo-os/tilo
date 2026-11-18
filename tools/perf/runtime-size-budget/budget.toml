@@ -18,7 +18,7 @@
 #
 # A budget is a measurement plus `headroom`, rounded up to 64 KiB (a count to
 # 64). Budgets only decrease. Intended growth adds raises/<change>.toml, one
-# file per change; when the runtime shrinks, both gates print the lower budget
+# file per change; when the runtime shrinks, both checks print the lower budget
 # to commit here. docs/measurements/runtime-size.md has the steps.
 headroom = 0.01
 architectures = ["x86_64", "aarch64"]
@@ -33,7 +33,7 @@ apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
 # few enough symbol lookups for relocation to take under 3 ms. Every app loads
 # a DT_NEEDED library, so none of needed_absent belongs there: media libraries
 # are for the apps that play media, and the runtime loads them on first use
-# (tools/ci/runtime-dylib-lazy-link.py, #4020); the gates fail on one. The
+# (tools/ci/runtime-dylib-lazy-link.py, #4020); the checks fail on one. The
 # other targets are reported when not met; the budgets below are what fails.
 # Targets only tighten.
 [targets]
@@ -80,7 +80,7 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 119558): x86_64 151648352 bytes, 5152768 dirtied per process, 6439 symbol
 # relocations; aarch64 137517640, 4935680, 6470. The two engines are
 # 900880 + 2789552 bytes on x86_64 and 760616 + 2600216 on aarch64.
-# Moving account custody, the contact directory and the time-zone database
+# Moving account credentials, the contact directory and the time-zone database
 # into their own engines leaves 148084128 / 134312888 bytes in the runtime,
 # with 4100096 / 3887104 bytes dirtied per process (x86_64 / aarch64).
 # Native app-build checks also exercise the engine probes and loader traces;
@@ -99,9 +99,9 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 
 [runtime.x86_64]
 bytes = 149618688
-relocation_bytes = 262144
+relocation_bytes = 131072
 relocated_bytes = 4194304
-symbol_relocations = 6528
+symbol_relocations = 1472
 
 [runtime.aarch64]
 bytes = 135659520
@@ -124,21 +124,21 @@ symbol_relocations = 6592
 "libtilo_agent_web_engine.so" = 393216
 "libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
-"libtilo_app_host_engine.so" = 1245184
+"libtilo_app_process_engine.so" = 720896
 "libtilo_archive_engine.so" = 1048576
 "libtilo_browser_import_engine.so" = 2818048
 "libtilo_contact_directory_engine.so" = 393216
 "libtilo_emoji_engine.so" = 65536
-"libtilo_fuse_engine.so" = 3145728
+"libtilo_fuse_engine.so" = 1638400
 "libtilo_highlight_engine.so" = 2818048
 "libtilo_mail_engine.so" = 851968
 "libtilo_paint_engine.so" = 917504
 "libtilo_pdf_engine.so" = 10551296
-"libtilo_settings_engine.so" = 10223616
+"libtilo_settings_engine.so" = 14155776
 "libtilo_spotify_engine.so" = 11599872
 "libtilo_theme_painter_engine.so" = 131072
-"libtilo_timezone_engine.so" = 1310720
-"libtilo_typst_engine.so" = 43581440
+"libtilo_timezone_engine.so" = 327680
+"libtilo_typst_engine.so" = 41156608
 "libtilo_youtube_engine.so" = 5898240
 
 [engines.aarch64]
@@ -146,7 +146,7 @@ symbol_relocations = 6592
 "libtilo_agent_web_engine.so" = 393216
 "libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
-"libtilo_app_host_engine.so" = 1179648
+"libtilo_app_process_engine.so" = 1179648
 "libtilo_archive_engine.so" = 983040
 "libtilo_browser_import_engine.so" = 2686976
 "libtilo_contact_directory_engine.so" = 393216

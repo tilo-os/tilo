@@ -21,7 +21,7 @@ use std::{
 };
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, Completer, InvocationReceipt, InvocationState, InvokeRequest,
     Pending,
 };
@@ -132,28 +132,28 @@ impl StubHost {
 }
 
 /// The confirmation the person gives `request` on their device.
-pub fn witnessed(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
-    tilo_actions::remote::Confirmation::Witnessed(format!("person:{}", request.invocation.0))
+pub fn approved(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
+    tilo_actions::remote::Confirmation::Approved(format!("person:{}", request.invocation.0))
 }
 
-impl ActionHost for StubHost {
+impl ActionProvider for StubHost {
     fn query(
         &self,
         _caller: &Caller,
         mut query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if matches!(self.availability, CatalogueAvailability::ExitDuringQuery)
             && query.provider.is_some()
         {
             self.exited.store(true, Ordering::SeqCst);
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "owner exited".into(),
             }));
         }
         if matches!(self.availability, CatalogueAvailability::NotPermitted)
             && query.provider.is_some()
         {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         let mut row = self.row();
         if let Some(provider) = query.provider.clone() {
@@ -184,16 +184,16 @@ impl ActionHost for StubHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        // Only the person's own answer, witnessed on their device, gets past
+        // Only the person's own answer, approved on their device, gets past
         // a contract that asks for a phrase.
         if matches!(
             self.confirmation,
             tilo_actions::ConfirmationPolicy::Phrase { .. }
-        ) && request.confirmation != Some(witnessed(&request))
+        ) && request.confirmation != Some(approved(&request))
         {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
         self.callers.lock().unwrap().push(caller.clone());
         self.invoked.lock().unwrap().push(request);
@@ -210,9 +210,9 @@ impl ActionHost for StubHost {
         &self,
         _caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
         Pending::ready(Ok(tilo_actions::remote::ConfirmedInvocation::unchanged(
-            witnessed(request),
+            approved(request),
         )))
     }
 
@@ -250,7 +250,7 @@ impl ActionHost for StubHost {
         )
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }
@@ -276,7 +276,7 @@ pub fn run_paused<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// One `tools/call` of `server`, answering with its `result`.
-pub async fn tool<H: ActionHost + Send + Sync + 'static>(
+pub async fn tool<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,
@@ -310,7 +310,7 @@ impl crate::MediaReader for StoredByTestApp {
 /// cancelled, and which says when one changed, as the broker's hosts do:
 /// only to the caller that may observe it.
 #[derive(Clone, Default)]
-pub struct GatedHost {
+pub struct HeldHost {
     pub stub: StubHost,
     pub owner: Arc<StdMutex<Option<Caller>>>,
     pub finished: Arc<StdMutex<HashSet<InvocationId>>>,
@@ -334,7 +334,7 @@ pub struct GatedHost {
 }
 
 /// An admission answer the host holds back.
-type AdmissionCompleter = Completer<Result<InvocationReceipt, ActionHostError>>;
+type AdmissionCompleter = Completer<Result<InvocationReceipt, ActionCallError>>;
 
 /// Why a host refuses an invocation that names no revision.
 #[derive(Clone, Copy)]
@@ -360,24 +360,24 @@ pub enum Stale {
 /// A half-polled answer put back as a [`Pending`], for the few tests that
 /// have to look at a page before answering it.
 fn map_poll(
-    poll: tilo_actions::remote::PendingPoll<Result<CataloguePage, ActionHostError>>,
-) -> Pending<Result<CataloguePage, ActionHostError>> {
+    poll: tilo_actions::remote::PendingPoll<Result<CataloguePage, ActionCallError>>,
+) -> Pending<Result<CataloguePage, ActionCallError>> {
     match poll {
         tilo_actions::remote::PendingPoll::Ready(answer) => Pending::ready(answer),
         tilo_actions::remote::PendingPoll::Waiting => {
-            Pending::ready(Err(ActionHostError::Unavailable {
+            Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the host answered nothing".into(),
             }))
         }
         tilo_actions::remote::PendingPoll::Abandoned => {
-            Pending::ready(Err(ActionHostError::Unavailable {
+            Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the host gave up".into(),
             }))
         }
     }
 }
 
-impl GatedHost {
+impl HeldHost {
     /// Finish `id` and wake whoever waits on a change.
     pub fn finish(&self, id: InvocationId) {
         self.finished.lock().unwrap().insert(id);
@@ -404,9 +404,9 @@ impl GatedHost {
         self.owner.lock().unwrap().as_ref() == Some(caller) && self.invoked().contains(id)
     }
 
-    fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+    fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionCallError> {
         if !self.owns(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
+            return Err(ActionCallError::UnknownInvocation);
         }
         self.cancelled.lock().unwrap().insert(*id);
         self.wake();
@@ -414,18 +414,18 @@ impl GatedHost {
     }
 }
 
-impl ActionHost for GatedHost {
+impl ActionProvider for HeldHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.queries.lock().unwrap().push(query.clone());
         let revision = self.revision.lock().unwrap().clone();
         let named = query.revision.clone();
         let moved = named.as_deref().is_some_and(|named| named != revision);
         if self.stale == Some(Stale::Reads) && moved {
-            return Pending::ready(Err(ActionHostError::StaleRevision));
+            return Pending::ready(Err(ActionCallError::StaleRevision));
         }
         let mut answer = self.stub.query(caller, query);
         if !moved {
@@ -446,14 +446,14 @@ impl ActionHost for GatedHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if request.revision.is_none() {
             match self.without_revision {
                 Some(WithoutRevision::Stale) => {
-                    return Pending::ready(Err(ActionHostError::StaleRevision));
+                    return Pending::ready(Err(ActionCallError::StaleRevision));
                 }
                 Some(WithoutRevision::NeedsConfirmation) => {
-                    return Pending::ready(Err(ActionHostError::InvalidRequest {
+                    return Pending::ready(Err(ActionCallError::InvalidRequest {
                         reason: tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION.into(),
                     }));
                 }
@@ -466,7 +466,7 @@ impl ActionHost for GatedHost {
                 .as_deref()
                 .is_some_and(|revision| revision != self.revision.lock().unwrap().as_str())
         {
-            return Pending::ready(Err(ActionHostError::StaleRevision));
+            return Pending::ready(Err(ActionCallError::StaleRevision));
         }
         self.owner.lock().unwrap().replace(caller.clone());
         let answer = self.stub.invoke(caller, request);
@@ -482,7 +482,7 @@ impl ActionHost for GatedHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
         self.stub.confirm(caller, request)
     }
 
@@ -517,7 +517,7 @@ impl ActionHost for GatedHost {
         Some(change)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(self.cancel_now(caller, id))
     }
 }
@@ -537,7 +537,7 @@ pub fn long_invoke(invocation: InvocationId) -> Value {
 /// could not — and each reply comes back whole, on a line of its own, as
 /// soon as it is ready rather than in the order asked. Closing the client's
 /// side ends the connection.
-pub fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
+pub fn overlapping_lines(host: &HeldHost, client: &std::os::unix::net::UnixStream) {
     client
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();

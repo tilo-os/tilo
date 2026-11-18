@@ -148,8 +148,8 @@ tilo_test_env::scenario! {
                 "TILO_CLI_COMMAND".to_string(),
                 // The shared font index's directory, set beside its bind (`appdir::push_font_index`).
                 tilo_process::environment::FONT_INDEX_ENV.to_string(),
-                // The egress gate and proxy variables naming it.
-                "TILO_NET_GATE".to_string(),
+                // The egress proxy and proxy variables naming it.
+                "TILO_EGRESS_PROXY".to_string(),
                 "HTTPS_PROXY".to_string(),
                 "HTTP_PROXY".to_string(),
                 "ALL_PROXY".to_string(),

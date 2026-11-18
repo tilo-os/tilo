@@ -613,6 +613,43 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
     },
+    /// A moment before, at or after a time a resource holds: the field
+    /// `field` of each item of a resource of `kind` (`issues.*.due_ms` of a
+    /// `tasks.issues`), or each occurrence of an entry that repeats
+    /// (`entries.*.start` of a person's calendars,
+    /// [`crate::resource_time::PERSON_CALENDARS`]). `offset_secs` is counted
+    /// from that time, negative for before it. `filter` is equality on the
+    /// item's own fields ([`crate::resource_time::matches`]). The trigger
+    /// fires once for each time held, again when that time moves, and never
+    /// for a time that is no longer held ([`crate::resource_time::due`]).
+    ResourceTime {
+        kind: String,
+        field: String,
+        #[serde(default)]
+        offset_secs: i64,
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        filter: serde_json::Map<String, serde_json::Value>,
+    },
+    /// Something new in a source: what it holds differs from what it held
+    /// when whoever keeps the automation last looked
+    /// ([`crate::source_change`]). `kind` says what sort of source it is
+    /// ([`crate::source_change::PERSON_MAIL`]) and `at` which one of that
+    /// sort, empty for every one of them. `filter` is equality on the fields
+    /// of what is new ([`crate::resource_time::matches`]). The trigger fires
+    /// once for each new thing, never for what the source held before the
+    /// trigger was first seen, and what is new goes with the invocation as
+    /// its event. A source that tells nobody of what is new is looked at on a
+    /// clock ([`crate::source_change::looked_at`]), every `every_secs`
+    /// seconds, or as often as whoever looks keeps to when it names none.
+    SourceChanged {
+        kind: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        every_secs: Option<u64>,
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        filter: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Whose changes a [`TriggerSpec::ResourceChanged`] counts.
@@ -699,7 +736,9 @@ impl TriggerSpec {
             | Self::IncomingMessage { .. }
             | Self::AppEvent { .. }
             | Self::Schedule { .. }
-            | Self::Once { .. } => &EVENT_PAYLOAD,
+            | Self::Once { .. }
+            | Self::ResourceTime { .. }
+            | Self::SourceChanged { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
     }
@@ -722,6 +761,8 @@ impl TriggerSpec {
             Self::AppEvent { .. } => "app_event",
             Self::IncomingMessage { .. } => "incoming_message",
             Self::NearbyDevice { .. } => "nearby_device",
+            Self::ResourceTime { .. } => "resource_time",
+            Self::SourceChanged { .. } => "source_changed",
         }
     }
 }

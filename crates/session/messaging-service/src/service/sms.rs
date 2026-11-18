@@ -10,7 +10,7 @@ use tilo_messaging_protocol::external_broker::ExternalBroker;
 use tilo_messaging_protocol::sms_runtime::{DbusTransport, SimBinding, SmsRuntime};
 use tilo_messaging_protocol::supervisor::AccountSupervisor;
 
-use super::gate::{Gate, Running};
+use super::guard::{AccountGuard, Running};
 use super::identity::Identity;
 
 /// A SIM the person may choose: the bus it is on, its binding and the label
@@ -152,13 +152,13 @@ pub(crate) async fn capture(
 
 /// A running SMS account.
 pub(crate) struct Account {
-    gate: Arc<Gate>,
+    guard: Arc<AccountGuard>,
     supervisor: Arc<AccountSupervisor>,
 }
 
 impl Running for Account {
-    fn gate(&self) -> &Arc<Gate> {
-        &self.gate
+    fn guard(&self) -> &Arc<AccountGuard> {
+        &self.guard
     }
     fn supervisor(&self) -> &Arc<AccountSupervisor> {
         &self.supervisor
@@ -166,8 +166,8 @@ impl Running for Account {
 }
 
 impl Account {
-    pub(crate) fn new(gate: Arc<Gate>, supervisor: Arc<AccountSupervisor>) -> Self {
-        Self { gate, supervisor }
+    pub(crate) fn new(guard: Arc<AccountGuard>, supervisor: Arc<AccountSupervisor>) -> Self {
+        Self { guard, supervisor }
     }
 
     /// Start on the SIM the person chose, saving its binding under the
@@ -182,7 +182,7 @@ impl Account {
             .assemble(selected.connection, selected.binding, root, scope, true)
             .await;
         if result.is_err() {
-            let state = if self.gate.check().is_ok() {
+            let state = if self.guard.check().is_ok() {
                 AccountState::Failed
             } else {
                 AccountState::Locked
@@ -200,46 +200,46 @@ impl Account {
         scope: String,
         save: bool,
     ) -> Result<(), SendError> {
-        self.gate.check()?;
+        self.guard.check()?;
         if !root.is_absolute() {
             return Err(SendError::InvalidRequest);
         }
-        let owner = &self.gate.identity.owner;
-        let transport = DbusTransport::new(connection, binding.clone(), self.gate.clone())
+        let owner = &self.guard.identity.owner;
+        let transport = DbusTransport::new(connection, binding.clone(), self.guard.clone())
             .map_err(|_| SendError::Revoked)?;
         transport.validate().await.map_err(|_| SendError::Revoked)?;
-        self.gate.check()?;
+        self.guard.check()?;
         if save {
             tilo_files::native::private::directory(&root).map_err(|_| SendError::Unavailable)?;
-            self.gate.check()?;
+            self.guard.check()?;
             binding
                 .save(
                     &root.join("sim.enc"),
                     owner,
-                    &self.gate.credential.profile_key()?,
+                    &self.guard.credential.profile_key()?,
                 )
                 .map_err(|_| SendError::Unavailable)?;
-            self.gate.check()?;
+            self.guard.check()?;
         }
         let journal = tilo_messaging_protocol::journal::EncryptedJournal::open(
             &root.join("journal"),
             owner,
-            self.gate.credential.profile_key()?,
+            self.guard.credential.profile_key()?,
         )
         .map_err(|_| SendError::Unavailable)?;
-        self.gate.check()?;
+        self.guard.check()?;
         let history = tilo_messaging_protocol::signal_broker::History::open(
             &root.join("history"),
             owner,
-            self.gate.credential.profile_key()?,
+            self.guard.credential.profile_key()?,
         )?;
-        self.gate.check()?;
+        self.guard.check()?;
         let runtime = SmsRuntime::new(owner.clone(), transport, journal)
             .map_err(|_| SendError::Unavailable)?;
-        let broker = ExternalBroker::new(Box::new(runtime), history, scope, self.gate.clone())?;
-        self.gate.check()?;
+        let broker = ExternalBroker::new(Box::new(runtime), history, scope, self.guard.clone())?;
+        self.guard.check()?;
         self.supervisor.install_sms_receiving(&broker).await?;
-        self.gate.check()
+        self.guard.check()
     }
 
     /// Start again on the SIM saved at enrollment.
@@ -249,16 +249,16 @@ impl Account {
         root: std::path::PathBuf,
         scope: String,
     ) -> Result<(), SendError> {
-        self.gate.check()?;
+        self.guard.check()?;
         let binding = SimBinding::load(
             &root.join("sim.enc"),
-            &self.gate.identity.owner,
-            &self.gate.credential.profile_key()?,
+            &self.guard.identity.owner,
+            &self.guard.credential.profile_key()?,
             &connection,
         )
         .await
         .map_err(|_| SendError::Revoked)?;
-        self.gate.check()?;
+        self.guard.check()?;
         self.assemble(connection, binding, root, scope, false).await
     }
 }

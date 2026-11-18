@@ -3680,7 +3680,7 @@ tilo_test_env::scenario! {
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
-fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
+fn app_task_plans_are_scoped_to_the_app_and_guarded_by_doctor() {
     let starter = Scaffold::new(Template::Starter);
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -5226,7 +5226,7 @@ fn test_symlink() {
 
 include!("included.rs");
 
-pub fn gated() {
+pub fn guarded() {
     #[cfg(test)]
     if true {
         let _ = std::os::raw::c_int::default();
@@ -5348,7 +5348,7 @@ impl Drop for KillOnDrop {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    fn the_dev_loop_starts_restarts_and_reloads_the_app_process;
+    fn the_dev_loop_starts_restarts_and_reloads_the_package_service;
 
     phase dev_restart_hands_the_checkpoint_to_the_next_process;
     {
@@ -6089,7 +6089,7 @@ tilo_test_env::scenario! {
                 .findings
                 .iter()
                 .all(|finding| !finding.what.contains("c_int")),
-            "a test-gated statement is not shipped"
+            "a test-guarded statement is not shipped"
         );
         assert_eq!(
             report
@@ -6369,7 +6369,7 @@ fn code_only_reads_past_quote_characters_and_raw_strings() {
     assert_eq!(code.lines().count(), source.lines().count());
 }
 
-mod portability_gate;
+mod portability_check;
 
 #[test]
 fn every_graph_template_declares_the_contract_its_template_kind_expects() {

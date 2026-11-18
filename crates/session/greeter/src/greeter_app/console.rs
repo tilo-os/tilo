@@ -498,7 +498,7 @@ impl ui::resources::PublishesResources for GreeterApp {
             resource = resource.with_action(spec);
         }
         // The footer's controls stay usable while an attempt runs, so their
-        // actions are never gated on the authentication phase.
+        // actions never wait for the authentication phase.
         for spec in screen_actions() {
             resource = resource.with_action(spec);
         }

@@ -68,7 +68,7 @@ pub enum ModalEmphasis {
     /// A primary action that destroys something. Enter never fires it: in
     /// a sheet with a way out, Enter is that way out (Cancel).
     Danger,
-    /// A third answer that is neither the default nor the way out ("Don't save"), standing at the
+    /// A third answer that is neither the default nor the way out ("Don't save"), at the
     /// footer's leading edge; Enter never fires it.
     Alternate,
     /// An [`Self::Alternate`] answer that discards something: danger ink on
@@ -843,7 +843,7 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     tertiary_action: Option<DialogAction>,
     tertiary_destructive: bool,
     primary_enabled: bool,
-    primary_gate: Option<Box<dyn Fn(&dyn Widget) -> bool>>,
+    primary_check: Option<Box<dyn Fn(&dyn Widget) -> bool>>,
     dismiss: Option<super::dismissal::Dismissal>,
     destructive: bool,
     max_width: f64,
@@ -900,7 +900,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             tertiary_action: None,
             tertiary_destructive: false,
             primary_enabled: true,
-            primary_gate: None,
+            primary_check: None,
             dismiss: None,
             destructive: false,
             max_width: MODAL_MAX_WIDTH,
@@ -1081,7 +1081,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self.as_dyn_mut().footer_changed();
     }
 
-    /// A third answer for a three-way question (Save / Don't save / Cancel), standing apart from
+    /// A third answer for a three-way question (Save / Don't save / Cancel), apart from
     /// the other two; Enter never fires it.
     #[must_use]
     pub fn tertiary_action(
@@ -1132,27 +1132,27 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self
     }
 
-    pub fn set_primary_gate(&mut self, gate: Option<Box<dyn Fn(&C) -> bool + 'static>>) {
-        self.primary_gate = gate.map(|gate| {
-            let gate: Box<dyn Fn(&dyn Widget) -> bool> = Box::new(move |content: &dyn Widget| {
-                // SAFETY: the gate is only ever called with this dialog's content
+    pub fn set_primary_check(&mut self, check: Option<Box<dyn Fn(&C) -> bool + 'static>>) {
+        self.primary_check = check.map(|check| {
+            let check: Box<dyn Fn(&dyn Widget) -> bool> = Box::new(move |content: &dyn Widget| {
+                // SAFETY: the check is only ever called with this dialog's content
                 // (`primary_enabled_now`), and the content of a `ModalDialog<C>` is a `C`.
-                gate(unsafe { &*std::ptr::from_ref(content).cast::<C>() })
+                check(unsafe { &*std::ptr::from_ref(content).cast::<C>() })
             });
-            gate
+            check
         });
     }
 
-    /// Enable the primary action only while `gate` holds, read every time the sheet is painted,
+    /// Enable the primary action only while `check` holds, read every time the sheet is painted,
     /// announced or fired: a confirmation waiting for a typed phrase, a form waiting for a valid
     /// value.
     #[must_use]
-    pub fn primary_enabled_if(mut self, gate: impl Fn(&C) -> bool + 'static) -> Self {
-        self.primary_gate = Some(Box::new(move |content: &dyn Widget| {
-            // SAFETY: the gate is only ever called with this dialog's content
+    pub fn primary_enabled_if(mut self, check: impl Fn(&C) -> bool + 'static) -> Self {
+        self.primary_check = Some(Box::new(move |content: &dyn Widget| {
+            // SAFETY: the check is only ever called with this dialog's content
             // (`primary_enabled_now`), and the content of a `ModalDialog<C>` is
             // a `C`: erasing its type to `dyn Widget` keeps the data pointer.
-            gate(unsafe { &*std::ptr::from_ref(content).cast::<C>() })
+            check(unsafe { &*std::ptr::from_ref(content).cast::<C>() })
         }));
         self
     }
@@ -1280,7 +1280,7 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
 
 impl ModalDialog<dyn Widget> {
     fn primary_enabled_now(&self) -> bool {
-        self.primary_enabled && self.primary_gate.as_ref().is_none_or(|g| g(&self.content))
+        self.primary_enabled && self.primary_check.as_ref().is_none_or(|g| g(&self.content))
     }
 
     fn closable(&self) -> bool {

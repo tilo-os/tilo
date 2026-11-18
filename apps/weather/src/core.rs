@@ -149,7 +149,7 @@ pub struct Core {
 
     nav_request: Option<NavIntent>,
 
-    /// Where saved-place edits go; network data never reaches the record.
+    /// Where saved-place edits go; network data never reaches the resource.
     dispatcher: Option<ui::framework::Dispatcher<Weather>>,
     default_location: Option<LocationId>,
     fixture_forecasts: Option<std::rc::Rc<WeatherModel>>,
@@ -305,7 +305,7 @@ impl Core {
         self.fixture_forecasts = Some(forecasts);
     }
 
-    /// The model has already previewed the edit; the record's answer replaces it.
+    /// The model has already previewed the edit; the resource's answer replaces it.
     fn submit(&self, submit: impl Submit<Weather>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.submit(submit);
@@ -313,7 +313,7 @@ impl Core {
     }
 
     /// Adopt the presented places, dropping the gestures and unsent work they
-    /// invalidate. The place on view stays this window's unless the record's default
+    /// invalidate. The place on view stays this window's unless the resource's default
     /// changed.
     pub(crate) fn adopt_saved_places(&mut self, persisted: &mut WeatherModel) {
         let changed = self.model.locations != persisted.locations;
@@ -1472,7 +1472,7 @@ impl Core {
     pub fn seed_fetched(&mut self, ago: std::time::Duration) {
         // The toolkit's clock, which the page reads the age back with; the process clock
         // would read as "just now" in a capture.
-        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        let now = u64::try_from(ui::clock::local_now().timestamp().as_second()).unwrap_or_default();
         let fetched_at = now.saturating_sub(ago.as_secs());
         for snapshot in self.model.snapshots.values_mut() {
             snapshot.fetched_at = fetched_at;

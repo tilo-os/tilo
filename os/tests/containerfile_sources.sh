@@ -63,11 +63,18 @@ for spec in "os/Containerfile:$REPO" \
     # Build-arg-interpolated or stage-relative paths cannot be resolved from here.
     case "$src" in *'$'*|'') continue ;; esac
     path="${ctx_rel:+$ctx_rel/}$src"; path="${path%/}"
-    case "$path" in os|os/*|.) ;; *) outside+=("$path") ;; esac
-    [ -e "$ctx/$src" ] && { checked=$((checked+1)); continue; }
+    # A source that exists, or that .containerignore declares staged, is not missing.
+    if [ -e "$ctx/$src" ]; then
+      case "$path" in os|os/*|.) ;; *) outside+=("$path") ;; esac
+      checked=$((checked+1)); continue
+    fi
     if staged_at_build_time "${ctx_rel:+$ctx_rel/}$src"; then
       skipped=$((skipped+1)); continue
     fi
+    # A source that exists is listed among the group's inputs so deleting it runs this suite.
+    # A staged one has none here to list: the build that writes it is watched through the
+    # crates it builds from.
+    case "$path" in os|os/*|.) ;; *) outside+=("$path") ;; esac
     bad "$file: COPY $src — not in the build context ($ctx), and not declared in
          .containerignore as staged at build time"
     missing=1

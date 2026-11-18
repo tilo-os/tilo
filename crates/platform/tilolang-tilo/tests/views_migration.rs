@@ -1,8 +1,8 @@
-//! Views kept its answers in the workspace's record, one `kept` for everyone; it now keeps each
-//! person's views in their own record (`records: .own`). A person's own record, opened for the
-//! first time on a device that holds the workspace's record of Views, starts as that record
+//! Views kept its answers in the workspace's document, one `kept` for everyone; it now keeps each
+//! person's views in their own document (`resources: .own`). A person's own document, opened for the
+//! first time on a device that holds the workspace's document of Views, starts as that document
 //! (`collaboration::document::save::open_stored_adopting`): every answer they saw, kept ones kept,
-//! under the ids it had, drawn as the view it was. The workspace's record is left as it was.
+//! under the ids it had, drawn as the view it was. The workspace's document is left as it was.
 
 use std::rc::Rc;
 
@@ -26,7 +26,7 @@ macro_rules! app {
     };
 }
 
-/// Views as it was: answers in the workspace's record, over four apps it named.
+/// Views as it was: answers in the workspace's document, over four apps it named.
 const BEFORE: (&str, &str) = (
     include_str!("legacy/views/app.tl"),
     include_str!("legacy/views/app.ids"),
@@ -82,7 +82,7 @@ fn of_kind<'a>(
 
 #[test]
 fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
-    // The workspace's record of Views as it was: an agent answered, the answer was kept.
+    // The workspace's document of Views as it was: an agent answered, the answer was kept.
     let (mut before, _) = Replica::new(
         "ada",
         AutoCommit::new(),
@@ -118,8 +118,8 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
     let mut workspace = workspace_document(&documents, VIEWS, WORKSPACE).unwrap();
     workspace.save(&mut before.doc).unwrap();
 
-    // Ada's own record of Views has no copy here yet: it starts as the workspace's record.
-    let own = tilolang_tilo::member_record_of(VIEWS, ADA).unwrap();
+    // Ada's own document of Views has no copy here yet: it starts as the workspace's document.
+    let own = tilolang_tilo::member_document_of(VIEWS, ADA).unwrap();
     let key = collab_types::document::DocumentId::parse(&own)
         .unwrap()
         .storage_key();

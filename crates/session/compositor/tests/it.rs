@@ -28,8 +28,6 @@ mod gamma;
 mod hdr_surface_colour;
 #[path = "headless.rs"]
 mod headless;
-#[path = "host_frames.rs"]
-mod host_frames;
 #[path = "hotplug.rs"]
 mod hotplug;
 #[path = "layers.rs"]
@@ -40,6 +38,8 @@ mod output_management;
 mod server_side_decorations;
 #[path = "shared_window_color.rs"]
 mod shared_window_color;
+#[path = "surface_frames.rs"]
+mod surface_frames;
 #[path = "xwayland.rs"]
 mod xwayland;
 #[path = "xwayland_dnd.rs"]

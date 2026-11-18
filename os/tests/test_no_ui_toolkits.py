@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-GATE = REPO / 'os/scripts/verify-no-ui-toolkits.sh'
+CHECK = REPO / 'os/scripts/verify-no-ui-toolkits.sh'
 CONTAINERFILE = REPO / 'os/Containerfile'
 
 MOCK = r'''#!/usr/bin/env python3
@@ -27,20 +27,20 @@ for row in fixture[kind]:
 '''
 
 
-class ToolkitGate(unittest.TestCase):
-    def run_gate(self, installed, requirements=(), fail=None):
-        with tempfile.TemporaryDirectory(prefix='tilo-toolkit-gate-') as directory:
+class ToolkitCheck(unittest.TestCase):
+    def run_check(self, installed, requirements=(), fail=None):
+        with tempfile.TemporaryDirectory(prefix='tilo-toolkit-check-') as directory:
             root = Path(directory)
             rpm = root / 'rpm'
             rpm.write_text(MOCK)
             rpm.chmod(0o755)
             fixture = root / 'fixture.json'
             fixture.write_text(json.dumps(dict(installed=installed, requirements=requirements, fail=fail)))
-            return subprocess.run(['bash', str(GATE)], capture_output=True, text=True, timeout=15,
+            return subprocess.run(['bash', str(CHECK)], capture_output=True, text=True, timeout=15,
                                   env=dict(os.environ, TILO_RPM_BIN=str(rpm), RPM_FIXTURE=str(fixture)))
 
     def assert_rejected(self, installed, requirements=(), culprit=None):
-        result = self.run_gate(installed, requirements)
+        result = self.run_check(installed, requirements)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('third-party UI toolkit', result.stderr)
         if culprit:
@@ -68,7 +68,7 @@ class ToolkitGate(unittest.TestCase):
         gtk = 'libgtk-3.so.0()(64bit)'
         names = ['gtk3', 'gstreamer1-plugins-bad-free', 'libdecor', 'gcr3', 'virt-viewer', 'spice-gtk3',
                  'gtk-vnc2', 'vte291']
-        result = self.run_gate(names, [[name, gtk] for name in names])
+        result = self.run_check(names, [[name, gtk] for name in names])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_toolkit_free_desktop_packages_pass(self):
@@ -76,27 +76,27 @@ class ToolkitGate(unittest.TestCase):
                      'adwaita-sans-fonts', 'adwaita-icon-theme', 'at-spi2-atk', 'libqtxdg-free',
                      'qt5-srpm-macros', 'qt6-srpm-macros']
         requirements = [['fcitx5-rime', 'librime.so.1()(64bit)'], ['at-spi2-atk', 'libatk-1.0.so.0()(64bit)']]
-        result = self.run_gate(installed, requirements)
+        result = self.run_check(installed, requirements)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.run_gate([]).returncode, 0)
+        self.assertEqual(self.run_check([]).returncode, 0)
 
     def test_queries_fail_closed(self):
         for query in ['installed', 'requirements']:
             with self.subTest(query=query):
-                result = self.run_gate([], fail=query)
+                result = self.run_check([], fail=query)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('fixture query failed', result.stderr)
 
-    def test_image_runs_the_gate_on_the_finished_rootfs(self):
+    def test_image_runs_the_check_on_the_finished_rootfs(self):
         text = CONTAINERFILE.read_text()
         lines = text.splitlines()
         self.assertIn('    os/scripts/verify-no-ui-toolkits.sh \\', lines)
-        gate = next(i for i, line in enumerate(lines) if 'bash /usr/local/bin/verify-no-ui-toolkits.sh' in line)
+        check = next(i for i, line in enumerate(lines) if 'bash /usr/local/bin/verify-no-ui-toolkits.sh' in line)
         split = next(i for i, line in enumerate(lines) if line.startswith('FROM rootfs AS split'))
         mutation = re.compile(r'dnf .*\b(install|remove)\b|rpm -[ei]')
         last_mutation = max(i for i, line in enumerate(lines[:split]) if mutation.search(line))
-        self.assertLess(last_mutation, gate)
-        self.assertLess(gate, split)
+        self.assertLess(last_mutation, check)
+        self.assertLess(check, split)
         self.assertRegex(text, r'rm -f [^\n]*/usr/local/bin/verify-no-ui-toolkits\.sh')
 
     def test_image_requests_no_toolkit_package(self):

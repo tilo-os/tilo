@@ -40,7 +40,7 @@ impl DisplayRect {
     }
 }
 
-/// A physical connector in its owner's logical seat coordinate space.
+/// A physical connector in its owner's logical coordinate space.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayConnectorPlacement {
     pub connector: String,

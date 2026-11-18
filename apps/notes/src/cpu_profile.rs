@@ -21,27 +21,29 @@ pub(super) fn fixture(
     ui::i18n::I18nManager::init("en-US");
     let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
     let target = crate::PageId::new_v4();
-    // Author the corpus on a real member replica, then merge once.
-    // Each real action still commits; setup does not render 255 intermediate frames.
-    let mut peer = app.peer_document();
+    // Author the corpus through the actions a person's edits use, with no
+    // frame between them: setup does not render 255 intermediate frames.
+    let mut corpus = Vec::new();
     for index in 0..pages {
         let page = if index == 0 {
             target
         } else {
             crate::PageId::new_v4()
         };
-        apply_fixture_action(
-            &mut peer,
-            &crate::actions::create_page_action(page, None, &format!("CPU fixture {index}")),
-        );
+        corpus.push(crate::actions::create_page_action(
+            page,
+            None,
+            &format!("CPU fixture {index}"),
+        ));
         if index != 0 {
             let body = format!("Authored fixture {index}. {}", "notebook text ".repeat(160));
             let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
-            apply_fixture_action(&mut peer, &crate::actions::write_body_action(page, &blocks));
+            corpus.push(crate::actions::write_body_action(page, &blocks));
         }
     }
-    app.merge_peer(&mut peer).unwrap();
-    assert_eq!(app.read_document(crate::read::list_pages).len(), pages);
+    author(&mut app, corpus);
+    app.settle();
+    assert_eq!(listed(&app).len(), pages);
     app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(target))
         .unwrap();
     let rect = app
@@ -54,8 +56,83 @@ pub(super) fn fixture(
     (app, target)
 }
 
-fn apply_fixture_action(doc: &mut ui::tilo_resource::Doc, action: &crate::actions::Action) {
-    tilo_actions::apply_local(doc, action, crate::actions::encode(action)).unwrap();
+type App = ui::framework::testing::TestApp<crate::NotesShell>;
+
+/// Write `actions` into the notes as the window's person does, through the
+/// notes' chain, with no frame between them.
+pub(super) fn author(app: &mut App, actions: impl IntoIterator<Item = crate::actions::Action>) {
+    let chain = app
+        .surface(|notes: &mut crate::NotesApp| notes.pages_chain())
+        .unwrap()
+        .expect("the notes are held");
+    for action in actions {
+        chain.apply(&action).unwrap();
+    }
+}
+
+/// Apply a note's `action` through the notes' published chain, as a control
+/// or an agent addresses it.
+pub(super) fn invoke_page(app: &mut App, action: &crate::actions::Action) {
+    app.invoke_child::<crate::PagePart>(
+        &crate::part::chain_resource(),
+        ui::tilo_resource::Invoke::apply(action).unwrap(),
+    )
+    .unwrap();
+}
+
+/// A note's `action` from another member, arriving in the part keeping its
+/// note as sync delivers it; no frame is drawn.
+pub(super) fn arrives(app: &mut App, action: &crate::actions::Action) {
+    let parts = app.chain_parts::<crate::PagePart>();
+    let mut action = action.clone();
+    crate::part::prepare(&mut action, &app.state(), &parts, None).unwrap();
+    let index = crate::part::part_for(&action, &parts).unwrap();
+    app.replica_arrives(&crate::part::chain().part(index), |doc| {
+        tilo_actions::apply_local_by(
+            doc,
+            &action,
+            crate::actions::encode(&action),
+            Some(b"member"),
+        )
+        .unwrap();
+    })
+    .unwrap();
+}
+
+/// What the notebook and every part of the notes hold: what any write
+/// changes.
+fn stored(app: &App) -> Vec<(Vec<automerge::ChangeHash>, usize)> {
+    use automerge::transaction::Transactable as _;
+    let read = |doc: &ui::tilo_resource::Doc| (doc.base_heads(), doc.pending_ops());
+    let mut held = vec![app.read_document(read)];
+    for (index, _) in app.chain_parts::<crate::PagePart>() {
+        held.push(
+            app.read_document_of(&crate::part::chain().part(index), read)
+                .unwrap(),
+        );
+    }
+    held
+}
+
+/// Every note, in notebook order.
+fn listed(app: &App) -> Vec<crate::model::PageMeta> {
+    crate::read::workspace(&app.state(), &app.chain_parts::<crate::PagePart>())
+        .data
+        .pages
+}
+
+/// Read the document of the part keeping note `page`.
+fn part_doc<T>(
+    app: &App,
+    page: crate::PageId,
+    read: impl FnOnce(&ui::tilo_resource::Doc) -> T,
+) -> T {
+    let parts = app.chain_parts::<crate::PagePart>();
+    let index = crate::Pages::of(&parts)
+        .part_of(&crate::notebook::page_id(page))
+        .expect("a part keeps the note");
+    app.read_document_of(&crate::part::chain().part(index), read)
+        .expect("the part is held")
 }
 
 #[test]
@@ -75,7 +152,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
             let (drain_elapsed, drain_rows) = observe(|| {
                 frames = app.harness().take_profile_samples();
             });
-            let text = app.read_document(|doc| {
+            let text = part_doc(&app, target, |doc| {
                 crate::read::page_block_snapshots(doc, target)
                     .into_iter()
                     .map(|(_, text)| text)
@@ -113,7 +190,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                         "pages": pages, "corpus_repeated_chars_per_other_page": "notebook text ".len() * 160,
                         "sample": sample - 2, "headless_event_pair_elapsed_ns": elapsed,
                         "profile_drain_elapsed_ns": drain_elapsed, "setup_ns": setup_ns,
-                        "fixture_initialization": "peer_action_commits",
+                        "fixture_initialization": "chain_action_commits",
                         "setup_action_commits": pages * 2 - 1,
                         "phases": rows, "profile_drain_phases": drain_rows, "frames": frames,
                         "framework_phases": framework_rows, "resource_phases": resource_rows,
@@ -128,7 +205,6 @@ fn mounted_typing_observes_canonical_projection_scaling() {
 
 #[test]
 fn mounted_wheel_observes_long_note_main_thread_phases() {
-    use automerge::transaction::Transactable;
     use std::fmt::Write as _;
     let (mut app, target) = fixture(1);
     let mut body = String::new();
@@ -141,11 +217,10 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
         .unwrap();
     }
     let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
-            .unwrap(),
-    )
-    .unwrap();
+    invoke_page(
+        &mut app,
+        &crate::actions::write_body_action(target, &blocks),
+    );
     app.harness().relayout_at((1051, 952)).unwrap();
     let rect = app
         .harness()
@@ -159,7 +234,7 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
             rect.y0 + 40.0,
         ));
     assert_action_inventory(app.harness().root_widget());
-    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let before = stored(&app);
     let event = ui::synthetic_input::mouse_wheel(0.0, -1.0);
     app.harness().begin_profiling();
     for sample in 0u32..150 {
@@ -197,7 +272,7 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
         );
     }
     assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        stored(&app),
         before,
         "scrolling does not mutate canonical note"
     );
@@ -238,7 +313,6 @@ fn assert_action_inventory(root: &dyn ui::Widget) {
 
 #[test]
 fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() {
-    use automerge::transaction::Transactable;
     fn contains(resources: &[tilo_actions::ResourceSpec], id: &str) -> bool {
         resources
             .iter()
@@ -249,7 +323,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
     // Settle and publish once before observing ordinary repeated catalogue reads.
     let original = app.harness().resources();
     assert!(contains(&original, "notes.notebook"));
-    let before = app.read_document(Transactable::base_heads);
+    let before = stored(&app);
     let ((), rows) = ui::tilo_resource::profiling::observe(|| {
         for _ in 0..10 {
             let resources = app.harness().resources();
@@ -263,7 +337,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
             .any(|row| row.phase == "framework.resource_tree"),
         "unchanged catalogue reads must reuse the published resource tree"
     );
-    assert_eq!(app.read_document(Transactable::base_heads), before);
+    assert_eq!(stored(&app), before);
 
     let locale = ui::i18n::I18nManager::pseudo_locale();
     ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
@@ -276,15 +350,14 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
             .any(|row| row.phase == "framework.resource_tree"),
         "translation changes must invalidate cached resource labels"
     );
-    assert_eq!(app.read_document(Transactable::base_heads), before);
+    assert_eq!(stored(&app), before);
 
     let page = crate::PageId::new_v4();
-    let mut peer = app.peer_document();
-    apply_fixture_action(
-        &mut peer,
+    arrives(
+        &mut app,
         &crate::actions::create_page_action(page, None, "Remote creation"),
     );
-    app.merge_peer(&mut peer).unwrap();
+    app.harness().relayout();
     let resources = app.harness().resources();
     assert!(
         contains(&resources, &crate::actions::page_resource_id(page)),
@@ -294,15 +367,13 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
 
 #[test]
 fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
-    use automerge::transaction::Transactable;
     let (mut app, target) = fixture(1);
     let body = "Ordinary text-note scrolling words.\n\n".repeat(32);
     let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
-            .unwrap(),
-    )
-    .unwrap();
+    invoke_page(
+        &mut app,
+        &crate::actions::write_body_action(target, &blocks),
+    );
     app.harness().relayout_at((1051, 240)).unwrap();
     let rect = app
         .harness()
@@ -348,7 +419,7 @@ fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
         "cancelled title resumes text-note scrolling"
     );
 
-    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let before = stored(&app);
     assert!(
         app.harness().dispatch_to_root(&event),
         "real text-note wheel is handled"
@@ -357,15 +428,11 @@ fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
         .surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().scroll_y_for_test())
         .unwrap();
     assert!(scrolled > 0.0, "real note body scrolls");
-    assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
-        before
-    );
+    assert_eq!(stored(&app), before);
 }
 
 #[test]
 fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
-    use automerge::transaction::Transactable;
     use std::fmt::Write as _;
     let (mut app, target) = fixture(1);
     let mut body = String::new();
@@ -374,11 +441,10 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
         write!(&mut body, "Paragraph {index}: {paragraph}\n\n").unwrap();
     }
     let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
-            .unwrap(),
-    )
-    .unwrap();
+    invoke_page(
+        &mut app,
+        &crate::actions::write_body_action(target, &blocks),
+    );
     app.harness().relayout_at((1051, 952)).unwrap();
     let rect = app
         .harness()
@@ -391,7 +457,7 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
             rect.x0 + 40.0,
             rect.y0 + 20.0,
         ));
-    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let before = stored(&app);
     let event = ui::synthetic_input::mouse_wheel(0.0, -1.0);
     let (elapsed, rows) = observe(|| {
         for _ in 0..100 {
@@ -420,7 +486,7 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
         "handled scrolling must not enter the editor's document-projection path"
     );
     assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        stored(&app),
         before,
         "view scrolling leaves the canonical note untouched"
     );
@@ -439,9 +505,9 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
         "a real text edit must still reach the instrumented editor"
     );
     assert_ne!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        stored(&app),
         before,
-        "the real edit reaches the canonical record"
+        "the real edit reaches the canonical resource"
     );
     assert!(
         app.surface(|notes: &mut crate::NotesApp| notes.editor_text_for_test())
@@ -452,7 +518,6 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
 
 #[test]
 fn mounted_text_note_draw_frame_phase_probe() {
-    use automerge::transaction::Transactable;
     use std::fmt::Write as _;
     let (mut app, target) = fixture(1);
     let mut body = String::new();
@@ -461,11 +526,10 @@ fn mounted_text_note_draw_frame_phase_probe() {
         write!(&mut body, "Paragraph {index}: {paragraph}\n\n").unwrap();
     }
     let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
-            .unwrap(),
-    )
-    .unwrap();
+    invoke_page(
+        &mut app,
+        &crate::actions::write_body_action(target, &blocks),
+    );
     app.harness().relayout_at((1051, 952)).unwrap();
     let rect = app
         .harness()
@@ -478,8 +542,8 @@ fn mounted_text_note_draw_frame_phase_probe() {
             rect.x0 + 40.0,
             rect.y0 + 80.0,
         ));
-    let document = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
-    assert_eq!(document.1, 0);
+    let document = stored(&app);
+    assert!(document.iter().all(|(_, pending)| *pending == 0));
     app.harness().begin_profiling();
     for sample in 0..12 {
         let started = ui::time::now();
@@ -504,7 +568,7 @@ fn mounted_text_note_draw_frame_phase_probe() {
             "actual visible text is encoded"
         );
         assert_eq!(
-            app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+            stored(&app),
             document,
             "drawing and view input preserve the canonical document"
         );
@@ -520,8 +584,7 @@ fn mounted_text_note_draw_frame_phase_probe() {
 #[test]
 fn choosing_a_note_reads_no_notebook_and_shows_it() {
     let (mut app, _) = fixture(16);
-    let other = app
-        .read_document(crate::read::list_pages)
+    let other = listed(&app)
         .into_iter()
         .find(|page| page.title == "CPU fixture 5")
         .expect("fixture note")
@@ -565,33 +628,35 @@ fn owned_notebook() -> (
     use std::fmt::Write as _;
     ui::i18n::I18nManager::init("en-US");
     let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-    let mut peer = app.peer_document();
     let tags: Vec<crate::model::TagId> = ["work", "reading", "ideas", "travel", "home"]
         .into_iter()
         .map(|name| {
             let tag = crate::model::TagId::new_v4();
-            apply_fixture_action(&mut peer, &crate::actions::new_tag_action(tag, name));
+            app.invoke(
+                ui::tilo_resource::Invoke::apply(&crate::actions::new_tag_action(tag, name))
+                    .unwrap(),
+            )
+            .unwrap();
             tag
         })
         .collect();
+    let mut corpus = Vec::new();
     let mut pages = Vec::new();
     let mut titles = std::collections::HashMap::new();
     for folder in 0..OWNED_FOLDERS {
         let parent = crate::PageId::new_v4();
         let title = format!("Project {folder}");
-        apply_fixture_action(
-            &mut peer,
-            &crate::actions::create_page_action(parent, None, &title),
-        );
+        corpus.push(crate::actions::create_page_action(parent, None, &title));
         titles.insert(title, parent);
         pages.push(parent);
         for child in 0..OWNED_CHILDREN {
             let page = crate::PageId::new_v4();
             let title = format!("Meeting {folder}-{child}");
-            apply_fixture_action(
-                &mut peer,
-                &crate::actions::create_page_action(page, Some(parent), &title),
-            );
+            corpus.push(crate::actions::create_page_action(
+                page,
+                Some(parent),
+                &title,
+            ));
             titles.insert(title, page);
             pages.push(page);
         }
@@ -615,25 +680,24 @@ fn owned_notebook() -> (
         )
         .unwrap();
         let blocks = crate::MainPanel::seed_blocks(&body, resolve);
-        apply_fixture_action(
-            &mut peer,
-            &crate::actions::write_body_action(*page, &blocks),
-        );
-        apply_fixture_action(
-            &mut peer,
-            &crate::actions::set_tag_assignment_action(*page, tags[index % tags.len()], true),
-        );
+        corpus.push(crate::actions::write_body_action(*page, &blocks));
+        corpus.push(crate::actions::set_tag_assignment_action(
+            *page,
+            tags[index % tags.len()],
+            true,
+        ));
     }
     let long = crate::PageId::new_v4();
-    apply_fixture_action(
-        &mut peer,
-        &crate::actions::create_page_action(long, None, "Research journal"),
-    );
+    corpus.push(crate::actions::create_page_action(
+        long,
+        None,
+        "Research journal",
+    ));
     let mut body = String::new();
     for section in 0..OWNED_LONG_SECTIONS {
         writeln!(
             body,
-            "## Section {section}\n\nParagraph {section} records ordinary findings with **bold** \
+            "## Section {section}\n\nParagraph {section} resources ordinary findings with **bold** \
              words, `inline code` and a link to [[Meeting {}-{}]] among enough prose to wrap. \
              {}\n\n- observation {section}\n- follow-up {section}\n",
             section % OWNED_FOLDERS,
@@ -643,13 +707,11 @@ fn owned_notebook() -> (
         .unwrap();
     }
     let blocks = crate::MainPanel::seed_blocks(&body, resolve);
-    apply_fixture_action(&mut peer, &crate::actions::write_body_action(long, &blocks));
+    corpus.push(crate::actions::write_body_action(long, &blocks));
     pages.push(long);
-    app.merge_peer(&mut peer).unwrap();
-    assert_eq!(
-        app.read_document(crate::read::list_pages).len(),
-        pages.len()
-    );
+    author(&mut app, corpus);
+    app.settle();
+    assert_eq!(listed(&app).len(), pages.len());
     app.harness().relayout_at((1280, 900)).unwrap();
     app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(long))
         .unwrap();
@@ -742,10 +804,9 @@ fn profile_typing(app: &mut OwnedApp) {
 
 /// Scrolling the long note, moving the pointer over it and an idle frame.
 fn profile_viewing(app: &mut OwnedApp, pointer: (f64, f64)) {
-    use automerge::transaction::Transactable;
     app.harness()
         .dispatch_to_root(&ui::synthetic_input::cursor_moved(pointer.0, pointer.1));
-    let heads = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let heads = stored(app);
     let wheel = ui::synthetic_input::mouse_wheel(0.0, -1.0);
     for sample in 0..owned_samples(60) {
         let (elapsed, rows) = observe(|| {
@@ -776,11 +837,7 @@ fn profile_viewing(app: &mut OwnedApp, pointer: (f64, f64)) {
         let frames = app.harness().take_profile_samples();
         emit_owned("idle_frame", sample, elapsed, &rows, &frames);
     }
-    assert_eq!(
-        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
-        heads,
-        "viewing leaves the notebook untouched"
-    );
+    assert_eq!(stored(app), heads, "viewing leaves the notebook untouched");
 }
 
 /// Choosing notes across the notebook, as the note tree does.
@@ -804,11 +861,8 @@ fn profile_opening(app: &mut OwnedApp, pages: &[crate::PageId]) {
 /// A rename from the note tree, on the tree's own event path, and a
 /// member's rename arriving.
 fn profile_writes(app: &mut OwnedApp, pages: &[crate::PageId]) {
-    let titled = |app: &mut OwnedApp, title: &str| {
-        app.read_document(crate::read::list_pages)
-            .iter()
-            .any(|page| page.title == title)
-    };
+    let titled =
+        |app: &mut OwnedApp, title: &str| listed(app).iter().any(|page| page.title == title);
     for sample in 0..owned_samples(12) {
         let title = format!("Renamed locally {sample}");
         let (elapsed, rows) = observe(|| {
@@ -823,13 +877,12 @@ fn profile_writes(app: &mut OwnedApp, pages: &[crate::PageId]) {
         emit_owned("rename_note", sample, elapsed, &rows, &frames);
     }
     for sample in 0..owned_samples(30) {
-        let mut peer = app.peer_document();
         let title = format!("Renamed remotely {sample}");
-        apply_fixture_action(
-            &mut peer,
-            &crate::actions::rename_page_action(pages[3], &title),
-        );
-        let (elapsed, rows) = observe(|| app.merge_peer(&mut peer).unwrap());
+        let rename = crate::actions::rename_page_action(pages[3], &title);
+        let (elapsed, rows) = observe(|| {
+            arrives(app, &rename);
+            app.harness().relayout();
+        });
         let frames = app.harness().take_profile_samples();
         assert!(titled(app, &title), "the member's edit landed");
         emit_owned("remote_edit", sample, elapsed, &rows, &frames);
@@ -868,20 +921,20 @@ fn profile_search_and_read(app: &mut OwnedApp, notes: usize) {
     for sample in 0..owned_samples(5) {
         let ((projected, elapsed), rows) = ui::tilo_resource::profiling::observe(|| {
             let began = ui::time::now();
-            let notebook = ui::tilo_resource::profiling::measure("notebook_read.resource", || {
-                app.read_document(<crate::Notebook as ui::tilo_resource::Resource>::read)
-            })
-            .unwrap();
+            let (notebook, parts) =
+                ui::tilo_resource::profiling::measure("notebook_read.resource", || {
+                    (app.state(), app.chain_parts::<crate::PagePart>())
+                });
             let projected =
                 ui::tilo_resource::profiling::measure("notebook_read.workspace", || {
-                    crate::Workspace::of(&notebook, &crate::Workspace::default())
+                    crate::Workspace::of(&notebook, &parts, &crate::Workspace::default())
                 });
             (projected, began.elapsed().as_nanos())
         });
         assert_eq!(projected.pages().len(), notes, "every note is read");
         assert_eq!(
             projected.pages(),
-            app.read_document(crate::read::project).unwrap().pages(),
+            listed(app),
             "the profiled read is the one Notes projects"
         );
         assert_eq!(bodies_read(&rows), notes, "every body is read once");
@@ -960,12 +1013,8 @@ fn profile_restore(app: &mut OwnedApp, pages: &[crate::PageId]) {
     // has not followed it yet.
     leave(app);
     let title = "Renamed before restore";
-    let mut peer = app.peer_document();
-    apply_fixture_action(
-        &mut peer,
-        &crate::actions::rename_page_action(pages[9], title),
-    );
-    let doc = peer.clone();
+    arrives(app, &crate::actions::rename_page_action(pages[9], title));
+    let doc = app.read_document(Clone::clone);
     let (shown, rows) = app
         .surface(|notes: &mut crate::NotesApp| {
             ui::tilo_resource::profiling::observe(|| {
@@ -986,7 +1035,7 @@ fn profile_restore(app: &mut OwnedApp, pages: &[crate::PageId]) {
         bodies_read(&rows) <= 2,
         "catching up on a rename read note bodies: {rows:?}"
     );
-    app.merge_peer(&mut peer).unwrap();
+    app.harness().relayout();
     drop(app.harness().take_profile_samples());
 }
 
@@ -1045,7 +1094,7 @@ fn await_note_dates(app: &mut OwnedApp) {
         .surface(|notes: &mut crate::NotesApp| notes.selected_for_test())
         .unwrap()
         .expect("the relaunched window opens a note");
-    let expected = app.read_document(|doc| read_note_dates(doc, page));
+    let expected = part_doc(app, page, |doc| read_note_dates(doc, page));
     assert!(expected.edited.is_some(), "the open note has an edit time");
     let started = ui::time::now();
     while app

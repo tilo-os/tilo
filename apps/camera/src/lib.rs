@@ -22,6 +22,7 @@
 )]
 pub mod actions;
 pub mod app;
+pub mod camera;
 pub mod document_scan;
 mod files;
 pub mod frame;
@@ -29,7 +30,6 @@ pub mod library;
 pub mod media;
 pub mod model;
 pub mod paint;
-pub mod record;
 pub mod resource;
 pub mod scan;
 pub mod video;
@@ -39,7 +39,7 @@ pub mod worker;
 pub mod capture;
 
 pub use app::CameraApp;
-pub use record::Record;
+pub use camera::Camera;
 pub use resource::CameraShell;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);

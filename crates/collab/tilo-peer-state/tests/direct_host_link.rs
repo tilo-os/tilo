@@ -37,8 +37,8 @@ const OTHER_WORKSPACE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
-fn workspace_id() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
+fn workspace_id() -> tilo_server_protocol::WorkspaceId {
+    tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Write `value` into the workspace's record as `key`'s device, making the record
@@ -253,10 +253,12 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     .expect("the host retains the member's sealed edit");
     assert_eq!(retained().frames, vec![kept.clone()]);
     // What the host wrote is ciphertext: neither the edit's plaintext nor a
-    // readable copy of it is on disk, one file per frame.
+    // readable copy of it is on disk, one file per frame beside what the
+    // member said it holds.
     let mut kept_files = Vec::new();
-    files(scratch.path(), &mut kept_files);
+    files(&scratch.path().join("workspaces"), &mut kept_files);
     assert_eq!(kept_files.len(), 1, "a file per frame");
+    files(&scratch.path().join("holders"), &mut kept_files);
     for file in &kept_files {
         let bytes = std::fs::read(file).unwrap();
         assert!(
@@ -334,6 +336,8 @@ pub(crate) fn hint(
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: workspace,
         endpoint_addr: addr(endpoint),
         user_public_key: certificate.user_public_key,
@@ -403,9 +407,9 @@ async fn joins_in(
     tilo_peer_state::owner::NativeWorkspaceOwner,
     tilo_desktop_model::WorkspaceId,
 ) {
-    use tilo_identity_host::custody::HostIdentity;
+    use tilo_identity::identity_store::DeviceIdentity;
     let owner = owner_at(state);
-    let identity = HostIdentity::kept(cert.clone(), key.clone());
+    let identity = DeviceIdentity::kept(cert.clone(), key.clone());
     let topic = tilo_peer_state::join::WorkspaceId::parse(named).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
@@ -470,7 +474,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
     // What the device's own channels hold of the workspace: a member that links is handed it as
     // its link starts, since the device says a channel's frame once, to the members linked then.
-    let standing = NeighbourMsg::MlsGovernance {
+    let access = NeighbourMsg::MlsGovernance {
         workspace: WORKSPACE.into(),
         frame: Box::new(
             collab_types::MlsGovernanceFrame::signed(
@@ -484,7 +488,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         ),
         delivery: 7,
     };
-    let handed = standing.clone();
+    let handed = access.clone();
     let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store))
         .with_channel_history(Arc::new(move |asked| {
             if asked == workspace {
@@ -538,7 +542,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
             workspace: workspace.to_string(),
             operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                 app: APP.into(),
-                record: RECORD.into(),
+                document: RECORD.into(),
                 envelope,
                 own: None,
             },
@@ -650,7 +654,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     // it, and none of it is the workspace's state.
     let first = hears(
         &mut c_first,
-        &standing,
+        &access,
         "a member that links is handed the channel governance the device holds",
     )
     .await;
@@ -819,7 +823,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
     let host_device = host_key.verifying_key().to_bytes();
     host.publish(|peer| {
         peer.receive_from_report(
-            tilo_peer_state::TransportOrigin::RetainedRelayDelta(host_device),
+            tilo_peer_state::TransportOrigin::RetainedServerDelta(host_device),
             old.clone(),
             SystemTime::now(),
         )
@@ -921,7 +925,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
         .unwrap();
     assert_eq!(
         ended,
-        Err(tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted)
+        Err(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted)
     );
     // A member that was away dials it again, and hears the same.
     let again = tokio::time::timeout(
@@ -932,14 +936,14 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
     .expect("the dial is answered");
     assert_eq!(
         again,
-        Err(tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted)
+        Err(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted)
     );
     assert!(serving.link(workspace_id()).is_none());
 }
 
 /// What a device commits to a workspace it hosts itself reaches the members linked to it at
 /// once, and a member that links later catches up on it. Such a workspace keeps no outgoing
-/// custody (its own device is its keeper) and holds no link to a host, so the commit went
+/// ownership (its own device is its keeper) and holds no link to a host, so the commit went
 /// nowhere live: e2e-branch's box showed windows its copy opened, and the copy saw box's only
 /// after it linked again. A member's link signs the device's snapshots for its catch-up between
 /// the device's commits, with the same key: the commit after it is refused unless both take
@@ -986,7 +990,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
     // The device commits the record as a session's engine does, numbered from the durable view.
     // A member's link signs the device's snapshots for its catch-up between two of these commits.
     let commit = |value: &str| {
-        commit_record(&host, workspace, &host_key, value);
+        commit_entry(&host, workspace, &host_key, value);
         host.with_current(workspace, |view| {
             Ok(view.peer().document_heads(APP, RECORD))
         })
@@ -1071,8 +1075,8 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
 /// How many grants of the share `share` the governance `peer` holds gives, as `device` reads it.
 fn grants_of(peer: &StatePeer, device: [u8; 32], share: &str) -> usize {
     peer.permissions(device, SystemTime::now())
-        .map_or(0, |standing| {
-            standing
+        .map_or(0, |access| {
+            access
                 .policy
                 .grants
                 .iter()
@@ -1111,7 +1115,7 @@ pub(crate) async fn commit_membership(
 
 /// A window a device shares in a workspace it hosts itself is shared with the members linked to
 /// it, now: the share is a change of the governance the device keeps itself, so no host hands it
-/// on, and the device's own commit has to. Committed into its custody for a host to take, the
+/// on, and the device's own commit has to. Committed into its ownership for a host to take, the
 /// share reached a member only when its link was next made: a person shared a window on the
 /// machine hosting the workspace, and their other machine never showed it.
 ///
@@ -1458,17 +1462,17 @@ async fn a_device_the_host_admits_is_known_to_the_members_linked_to_it_at_once()
 /// Commit `value` to the test record of `workspace` as `owner`'s device, numbered from the
 /// durable view as a session's engine does (the record's first write founds it empty), and
 /// answer the write's sequence number.
-pub(crate) fn commit_record(
+pub(crate) fn commit_entry(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     key: &SigningKey,
     value: &str,
 ) -> u64 {
-    commit_record_at(owner, workspace, key, value, SystemTime::now())
+    commit_entry_at(owner, workspace, key, value, SystemTime::now())
 }
 
-/// [`commit_record`], the write signed as made at `when`.
-pub(crate) fn commit_record_at(
+/// [`commit_entry`], the write signed as made at `when`.
+pub(crate) fn commit_entry_at(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     key: &SigningKey,
@@ -1508,7 +1512,7 @@ pub(crate) fn commit_record_at(
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: APP.into(),
-                    record: RECORD.into(),
+                    document: RECORD.into(),
                     envelope,
                     own: None,
                 },
@@ -1534,7 +1538,7 @@ async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
         .create_workspace(workspace, "Hosted", &cert, &key, None, SystemTime::now())
         .await
         .expect("the workspace is founded here");
-    commit_record(&owner, workspace, &key, "first");
+    commit_entry(&owner, workspace, &key, "first");
     let handed = owner
         .commit_bootstrap(workspace, &key, SystemTime::now())
         .await
@@ -1551,13 +1555,13 @@ async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
         .max()
         .expect("the catch-up hands the record as a snapshot this device signed");
     assert!(
-        commit_record(&owner, workspace, &key, "second") > taken,
+        commit_entry(&owner, workspace, &key, "second") > taken,
         "the next write numbers past the catch-up"
     );
     drop(owner);
 
     let restarted = owner_at(state.path());
-    let next = commit_record(&restarted, workspace, &key, "after a restart");
+    let next = commit_entry(&restarted, workspace, &key, "after a restart");
     assert!(
         next > taken,
         "a restarted device numbers past what a member was handed: {next} after {taken}"

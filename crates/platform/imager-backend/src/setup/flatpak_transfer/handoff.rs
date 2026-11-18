@@ -594,7 +594,7 @@ pub struct SourceScopedRunner<R: Runner> {
 }
 impl<R: Runner> SourceScopedRunner<R> {
     /// Consuming root-controller teardown only: close every projected directory before handing native
-    /// resolver custody to the combined retirement batch.
+    /// resolver ownership to the combined retirement batch.
     pub(in crate::setup::flatpak_transfer) fn into_original_sources(
         self,
     ) -> io::Result<Vec<Arc<crate::setup::migration_handoff::ResolvedSource>>> {
@@ -624,11 +624,11 @@ impl<R: Runner> SourceScopedRunner<R> {
         }
         #[cfg(any(feature = "capture-worker", test))]
         if borrowed {
-            // Refuse and retain known native custody rather than silently unmounting a subset through
+            // Refuse and retain known native ownership rather than silently unmounting a subset through
             // ordinary Drop.
             std::mem::forget(sources);
             return Err(io::Error::other(
-                "Original application teardown lacks typed native resolver custody",
+                "Original application teardown lacks typed native resolver ownership",
             ));
         }
         Ok(sources)

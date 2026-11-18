@@ -80,7 +80,7 @@ mod dbus_tests;
 mod session_dbus_tests;
 
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
-pub use consent::{Consents, WorkspaceGrants};
+pub use consent::Consents;
 pub use inhibit::{Inhibition, Inhibitions, SessionState};
 pub use remote_desktop::{InputInjector, NoInput, RemoteInput};
 pub use requester::Requesters;
@@ -292,9 +292,7 @@ impl Portal {
             inhibitions: Inhibitions::default(),
             requests: lifecycle::Requests::default(),
             captures: captures::Captures::new(&sessions),
-            grants: restore::Grants::load(
-                private_state_root().map(|root| root.join("tilo/portal/restore.json")),
-            ),
+            grants: restore::Grants::default(),
             permissions: permission_store::PermissionStore::load(
                 private_state_root().map(|root| root.join("tilo/portal/permissions.json")),
             ),
@@ -340,13 +338,6 @@ impl Portal {
     #[must_use]
     pub const fn clipboards(&self) -> &clipboard::Clipboards {
         &self.clipboards
-    }
-
-    /// The same, keeping remembered shares in `grants`.
-    #[must_use]
-    pub fn with_grants(mut self, grants: restore::Grants) -> Self {
-        self.grants = grants;
-        self
     }
 
     /// The same, keeping the frontend's permissions and restore data in
@@ -436,20 +427,12 @@ impl Portal {
         &self.app_states
     }
 
-    /// The person's access decisions, which the portal gates its requests
+    /// The person's access decisions, which the portal checks its requests
     /// with: what every other service of the session that asks about a
     /// capability shares, so an answer given to one stands for the other.
     #[must_use]
     pub const fn consents(&self) -> &Consents {
         &self.consents
-    }
-
-    /// The same, letting what `grants` says of a caller's workspace stand
-    /// for the person's answer to an access question.
-    #[must_use]
-    pub fn with_consent_grants(mut self, grants: consent::WorkspaceGrants) -> Self {
-        self.consents = self.consents.clone().with_grants(grants);
-        self
     }
 
     /// The same, keeping access answered for good in `consents`.

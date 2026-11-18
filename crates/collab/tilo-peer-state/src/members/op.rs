@@ -74,7 +74,7 @@ pub enum MembershipOpCommand {
     Governance { rows: Vec<GovernanceRow> },
     /// Its author's device recorded `person` (a user key) redeeming the
     /// invitation `invite` (its id): replay checks the invitation the
-    /// workspace's ledger holds for them against the membership at that point,
+    /// workspace's log holds for them against the membership at that point,
     /// and admits them with the invitation's role at the operation's time.
     /// Whoever records the redemption writes it; the invitation is its
     /// authority, not its writer.

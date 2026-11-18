@@ -601,7 +601,7 @@ mod tests {
         #[cfg(unix)]
         fn a_prepared_ciphertext_stage_delivers_its_slots_or_refuses_before_writing;
 
-        phase prepared_ciphertext_stage_delivers_exact_slots_and_arm_uses_private_custody;
+        phase prepared_ciphertext_stage_delivers_exact_slots_and_arm_uses_private_ownership;
         {
             let mut platform = linux_platform();
             let mut world = world_with_esp(
@@ -677,11 +677,11 @@ mod tests {
                     .unwrap(),
                 original
             );
-            let custody = world
+            let ownership = world
                 .store
                 .prepared_path(&world.request.operation_id)
                 .unwrap();
-            std::fs::write(custody, [b"TILOMIG1".as_slice(), &[9u8; 2048]].concat()).unwrap();
+            std::fs::write(ownership, [b"TILOMIG1".as_slice(), &[9u8; 2048]].concat()).unwrap();
             assert!(run(&mut platform, &world, Action::Arm).is_err());
         }
 
@@ -751,7 +751,7 @@ mod tests {
         #[cfg(target_os = "linux")]
         fn a_browser_ciphertext_stage_delivers_its_slots_or_refuses_before_writing;
 
-        phase browser_ciphertext_stage_delivers_slots_and_arm_uses_protected_custody;
+        phase browser_ciphertext_stage_delivers_slots_and_arm_uses_protected_ownership;
         {
             let mut platform = linux_platform();
             let mut world = world_with_esp(

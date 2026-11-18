@@ -1,4 +1,4 @@
-//! A heading in a note's body: the line's kind and level in the record, made by the format menu
+//! A heading in a note's body: the line's kind and level in the document, made by the format menu
 //! or typed as `## `, which another person's typing merges into, which the Markdown export
 //! writes as the `## ` it is, and whose words search reads as text.
 
@@ -68,7 +68,7 @@ fn noted(r: &mut Replica, notebook: &ResourceRef, title: &str, body: &str) -> Re
         "retitle",
         vec![Value::resource(&made), Value::text(title)],
     );
-    // The note is in the record before its body is edited, as a window's writes reach it one
+    // The note is in the document before its body is edited, as a window's writes reach it one
     // change after the other.
     r.commit();
     splice(r, &made, 0, 0, body);
@@ -76,7 +76,7 @@ fn noted(r: &mut Replica, notebook: &ResourceRef, title: &str, body: &str) -> Re
     made
 }
 
-/// The blocks of `note`'s body as the record holds them.
+/// The blocks of `note`'s body as the document holds them.
 fn blocks(r: &Replica, note: &ResourceRef) -> Vec<tilo_doc::snapshot::BlockView> {
     match r.host.runtime().read(note, "body") {
         Ok(Value::Rich(rich)) => rich.blocks,
@@ -84,7 +84,7 @@ fn blocks(r: &Replica, note: &ResourceRef) -> Vec<tilo_doc::snapshot::BlockView>
     }
 }
 
-/// What the line at `block` of `note`'s body is, as the record keeps it: its kind and its
+/// What the line at `block` of `note`'s body is, as the document keeps it: its kind and its
 /// heading level.
 fn line(r: &Replica, note: &ResourceRef) -> (String, Option<i64>) {
     let block = blocks(r, note).into_iter().next().expect("one line");
@@ -92,7 +92,7 @@ fn line(r: &Replica, note: &ResourceRef) -> (String, Option<i64>) {
 }
 
 /// `r`'s person edits the `field` of `item` with `action`, as its editor writes one step of
-/// theirs: a rich-text action at the field's path, kept in the record.
+/// theirs: a rich-text action at the field's path, kept in the document.
 fn rich_edit(
     r: &mut Replica,
     item: &ResourceRef,
@@ -168,7 +168,7 @@ fn exported(r: &Replica, note: &ResourceRef) -> String {
 }
 
 #[test]
-fn a_heading_made_from_the_format_menu_is_the_lines_kind_and_level_in_the_record() {
+fn a_heading_made_from_the_format_menu_is_the_lines_kind_and_level_in_the_document() {
     let (mut ada, _grace, notebook) = workspace();
     let note = noted(&mut ada, &notebook, "Groceries", "Oat milk, eggs.");
     assert_eq!(
@@ -225,7 +225,7 @@ fn a_heading_merges_with_another_persons_typing_in_the_same_line() {
     assert_eq!(
         ada.host.store().record(&note.doc).unwrap(),
         grace.host.store().record(&note.doc).unwrap(),
-        "the record they hold is the same"
+        "the document they hold is the same"
     );
 }
 

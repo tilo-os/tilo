@@ -19,6 +19,7 @@
 //! one. Each runs the section's own field edit or verb, as the control in
 //! Settings does, and asks first exactly when that edit would.
 
+pub mod agent_models;
 pub mod effects;
 mod i18n;
 
@@ -131,6 +132,9 @@ pub struct SettingsService {
     seen: Option<SettingsRevision>,
     /// What it publishes, built again only when the settings changed.
     published: Vec<ResourceSpec>,
+    /// The agent model choice the canvas reads and changes, over both
+    /// provider sections.
+    agent_models: agent_models::Served,
 }
 
 impl Default for SettingsService {
@@ -151,6 +155,7 @@ impl SettingsService {
             invoker: None,
             seen: None,
             published: Vec::new(),
+            agent_models: agent_models::Served::new(),
         };
         service.published = service.build();
         service
@@ -178,6 +183,7 @@ impl SettingsService {
         let mut resources = self.records.resources();
         let index = self.index(&resources);
         resources.push(index);
+        resources.push(agent_models::Served::resource());
         resources
     }
 
@@ -459,6 +465,9 @@ impl Service for SettingsService {
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
+        if resource == agent_models::RESOURCE {
+            return self.agent_models.read(resource);
+        }
         let kind = resource.strip_prefix(SECTION_PREFIX)?;
         self.stored(kind)
     }
@@ -477,6 +486,15 @@ impl Service for SettingsService {
                 "the session has not said who sits here".to_owned(),
             ));
         };
+        // The agent model choice is one step over both provider sections:
+        // what it writes, and what its undo takes back, is theirs.
+        if resource == agent_models::RESOURCE {
+            let done =
+                self.agent_models
+                    .invoke(&self.published, resource, action, arguments, invoker);
+            self.published = self.build();
+            return done;
+        }
         // The service host asked the person first where the published
         // action asks it: what reaches here is confirmed.
         if let Some(id) = setting_of(resource) {

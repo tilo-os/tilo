@@ -6,10 +6,10 @@
 )]
 
 //! What the bridge reads of a real Chat record: the ids a verb created come
-//! back in its answer, and Chat's records as the record api reads them are
+//! back in its answer, and Chat's resources as the resource api reads them are
 //! what the planners read.
 
-use chat::record::Chat;
+use chat::chat::Chat;
 use chat::resource::ChatShell;
 use discord::tilo::{self, WorkspaceChat};
 use serde_json::json;
@@ -20,11 +20,7 @@ use ui::tilo_resource::Resource as _;
 
 fn begun() -> (TestApp<ChatShell>, String) {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.call(
-        "begin-chat",
-        json!({"name": "Ada", "initials": "A", "color": 1}),
-    )
-    .unwrap();
+    app.call("begin-chat", json!({})).unwrap();
     let state = app.state();
     let (channel, _) = state.channels.iter().next().unwrap();
     (app, channel.to_string())
@@ -74,8 +70,8 @@ fn a_verb_answers_the_ids_it_created() {
     assert_eq!(held.get(&Id::from_raw(&message)).unwrap().text, "hello");
 }
 
-/// Chat's records as the bridge's program reads them through the record api:
-/// its record of the workspace, and the newest part of its messages' chain.
+/// Chat's resources as the bridge's program reads them through the resource api:
+/// its resource of the workspace, and the newest part of its messages' chain.
 fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
     use ui::tilo_actions::remote::{Caller, HeldCopies, ResourceAddress, ResourceAsk};
     let own = app.record().clone();
@@ -108,7 +104,7 @@ fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
 }
 
 #[test]
-fn the_record_api_reads_what_the_planners_read() {
+fn the_resource_api_reads_what_the_planners_read() {
     let (mut app, channel) = begun();
     let root = created(
         app.call_on_output(
@@ -146,14 +142,6 @@ fn the_record_api_reads_what_the_planners_read() {
         [root, reply],
         "in the order they were posted"
     );
-    let author = tilo::person(&read, &message.author).expect("its author");
-    let state = app.state();
-    let stored = state
-        .people
-        .iter()
-        .find(|p| p.id == message.author)
-        .unwrap();
-    assert_eq!(author.name, stored.name);
 }
 
 /// A feedback report filed in a channel reads as the message the channel
@@ -195,7 +183,6 @@ fn a_filed_report_reads_as_its_message_with_its_picture() {
     let attachment = message.attachments.first().expect("its picture");
     assert_eq!(attachment.blob, picture);
     assert_eq!(attachment.name, "report.png");
-    assert!(tilo::person(&read, &message.author).is_some(), "{read:?}");
 }
 
 /// A message reads with the files it carries and the reactions people

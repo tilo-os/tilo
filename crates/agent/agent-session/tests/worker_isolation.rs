@@ -171,8 +171,11 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     };
     let agent = crate::common::confined(
         app,
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![snapshot],
@@ -227,8 +230,11 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
 fn bytes_that_are_not_automerge_never_reach_the_worker() {
     let agent = crate::common::confined(
         "so.tilo.scratchpad",
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap();
@@ -251,8 +257,11 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
     let note = crate::common::scratchpad_body("").0;
     let agent = crate::common::confined(
         "so.tilo.scratchpad",
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap();
@@ -291,8 +300,11 @@ fn records_of_many_workspaces_share_the_pools_workers_and_outlive_one_that_stops
                 &catalogue(),
                 "so.tilo.scratchpad",
                 &workspace,
-                &MemberId::person("writer"),
-                &ReplicaActor::Agent,
+                &MemberId::agent("writer"),
+                &ReplicaActor::Agent {
+                    person: MemberId::person("writer"),
+                    name: String::new(),
+                },
                 Seed::New,
             )
             .unwrap();
@@ -383,8 +395,11 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
     };
     let agent = crate::common::confined(
         app,
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+            name: String::new(),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![snapshot],
@@ -419,8 +434,11 @@ const SHEETS: &str = "so.tilo.sheets";
 fn agents_document(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
     let agent = crate::common::confined(
         app,
-        &MemberId::person("painter"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("painter"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("painter"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .unwrap();
@@ -667,8 +685,11 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
     // into its worker before the export runs.
     let exporting = crate::common::confined(
         CANVAS,
-        &MemberId::person("exporter"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("exporter"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("exporter"),
+            name: String::new(),
+        },
         Seed::Existing {
             record: agent.document_id().clone(),
             changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],
@@ -883,20 +904,28 @@ fn pin_pdf(agent: &ConfinedReplica, reference: &str, name: &str) {
             false,
         )
         .expect("the record pins the workspace's PDF");
-    // The view opens the PDF it now names, and the record takes on what
-    // opening it adds the first time (its page plan, the markup the file
-    // carries) before the pin answers: the app's own work, caused by the
-    // pin and never by a later read.
+    // The pin answers once the record names the PDF: it does not wait for
+    // the view to open it.
     let pinned = agent
         .take_mutation()
         .unwrap()
         .expect("the pin is the agent's change");
-    let mut pinning = did(&pinned);
-    pinning.sort();
+    assert_eq!(did(&pinned), ["pin-source"]);
+    // The view opens the PDF the record names when it is next read, and the
+    // record takes on what opening it adds the first time (its page plan,
+    // the markup the file carries) in that frame: the app's own work, which
+    // whoever reads the view sees whole.
+    let _ = agent.survey();
+    let opened = agent
+        .take_mutation()
+        .unwrap()
+        .expect("opening the PDF adds to the record");
+    let mut opening = did(&opened);
+    opening.sort();
     assert_eq!(
-        pinning,
-        ["adopt-existing", "pin-source", "start-page-plan"],
-        "{pinning:?}"
+        opening,
+        ["adopt-existing", "start-page-plan"],
+        "{opening:?}"
     );
 }
 
@@ -948,8 +977,11 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
     let open = |lent: Option<&ContentStore>| {
         let replica = crate::common::confined(
             PDF,
-            &MemberId::person("reader"),
-            &ReplicaActor::Agent,
+            &MemberId::agent("reader"),
+            &ReplicaActor::Agent {
+                person: MemberId::person("reader"),
+                name: String::new(),
+            },
             Seed::Existing {
                 record: agent.document_id().clone(),
                 changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],

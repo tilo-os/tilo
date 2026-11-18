@@ -31,7 +31,7 @@ use crate::common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionDescriptor;
 use tilo_actions::remote::{
-    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
 };
 use tilo_agent_session::{
@@ -39,13 +39,13 @@ use tilo_agent_session::{
     StepAction, record_provider,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_client::remote::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const ATTEMPTS: usize = 40;
 
@@ -167,6 +167,39 @@ fn held(browser: &tilo_session_client::Link, route: &DocumentRoute) -> Option<Ve
         .map(|bytes| vec![bytes])
 }
 
+/// Whether a part of the notes the browser holds (Notes keeps its notes in
+/// parts beside the notebook) holds `text`, in any case.
+fn notes_parts_hold(browser: &tilo_session_client::Link, text: &str) -> bool {
+    let documents = browser.engine();
+    documents
+        .records(WORKSPACE)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(app, document)| {
+            app == "so.tilo.notes"
+                && ui::resource::DocumentId::parse(document)
+                    .is_some_and(|part| part.chain_part().is_some())
+        })
+        .filter_map(|(app_id, document)| {
+            held(
+                browser,
+                &DocumentRoute {
+                    app_id,
+                    cluster_id: WORKSPACE.to_owned(),
+                    document,
+                },
+            )
+        })
+        .flatten()
+        .filter_map(|bytes| automerge::AutoCommit::load(&bytes).ok())
+        .any(|doc| {
+            serde_json::to_string(&automerge::AutoSerde::from(&doc))
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(text)
+        })
+}
+
 /// Take the browser's events: every write that landed is one of `writers`'.
 fn only_written_by(events: &tilo_session_client::Events, writers: &[[u8; 32]]) {
     for event in events.drain() {
@@ -201,7 +234,7 @@ async fn session() -> (
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
     (root, host_device, state, host)
 }
 
@@ -222,7 +255,7 @@ async fn every_web_app_over_the_session() {
     let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "coverage".into(),
         },
         "Coverage agent",
@@ -235,7 +268,7 @@ async fn every_web_app_over_the_session() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -364,7 +397,6 @@ async fn every_web_app_over_the_session() {
             .unwrap()
     };
     let scratchpad = resource_of("so.tilo.scratchpad");
-    let notes = resource_of("so.tilo.notes");
     control
         .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
@@ -380,11 +412,7 @@ async fn every_web_app_over_the_session() {
         let done = control.info().tasks.last().is_some_and(|task| {
             task.state != TaskState::Running && task.state != TaskState::Queued
         });
-        if done
-            && held(&browser, &notes).is_some_and(|changes| {
-                page(&catalogue, &notes, &changes).contains("said in plain words")
-            })
-        {
+        if done && notes_parts_hold(&browser, "said in plain words") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -501,7 +529,7 @@ async fn every_web_app_over_the_session() {
     assert_eq!(
         conflict.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::InvocationConflict
+            error: ActionCallError::InvocationConflict
         }
     );
     // The workspace's provider opens an app on a new record.
@@ -562,7 +590,7 @@ async fn every_web_app_over_the_session() {
     assert_eq!(
         unknown.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
+            error: ActionCallError::UnknownAction
         }
     );
 
@@ -575,7 +603,7 @@ async fn every_web_app_over_the_session() {
     agent.close();
     browser.close();
     let retained = host
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace())
         .await
@@ -587,7 +615,7 @@ async fn every_web_app_over_the_session() {
         &host_device.cert.device_public_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 const CANVAS: &str = "so.tilo.canvas";
@@ -641,7 +669,7 @@ async fn planning_agent_labelled(
     let delegation = Delegation::sign(
         root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: id.into(),
         },
         label,
@@ -654,7 +682,7 @@ async fn planning_agent_labelled(
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -702,12 +730,12 @@ fn endpoint_planner(url: &str) -> Box<dyn tilo_agent_session::Planner> {
 fn model_endpoint(
     answers: Vec<serde_json::Value>,
 ) -> (String, std::sync::mpsc::Receiver<String>, Responder) {
-    gated_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
+    held_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
 }
 
-/// [`model_endpoint`], an answer with a gate held back until the gate is
+/// [`model_endpoint`], an answer with a hold held back until the hold is
 /// opened (or dropped): a request in flight while the workspace changes.
-fn gated_model_endpoint(
+fn held_model_endpoint(
     answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
 ) -> (String, std::sync::mpsc::Receiver<String>, Responder) {
     let (sent, received) = std::sync::mpsc::channel();
@@ -718,10 +746,10 @@ fn gated_model_endpoint(
     );
     let served = Responder::serve(move |peer| {
         let next = answers.lock().unwrap().pop_front();
-        let Some((answer, gate)) = next else { return };
+        let Some((answer, hold)) = next else { return };
         let _ = sent.send(peer.request().body_text());
-        if let Some(gate) = gate {
-            let _ = gate.recv();
+        if let Some(hold) = hold {
+            let _ = hold.recv();
         }
         peer.reply(&answer_reply(&answer));
     });
@@ -811,7 +839,7 @@ fn run_task(
     agent: &mut AgentMember,
     control: &AgentControl,
     text: &str,
-) -> tilo_relay_protocol::agents::AgentTask {
+) -> tilo_server_protocol::agents::AgentTask {
     let task = control.message(text).unwrap();
     let ended = || {
         control
@@ -870,7 +898,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// An agent reads an open record in the planning conversation: the first
@@ -948,7 +976,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Steps written out run as written: a look renders the artwork as content
@@ -1054,7 +1082,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A video still an agent asks for in a task is drawn by its host's render
@@ -1144,7 +1172,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
     assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Steps written as a scenario writes them: the document's body named as a
@@ -1185,7 +1213,7 @@ async fn written_steps_name_a_records_field_and_carry_content_into_it() {
     assert_eq!(task.steps.len(), 4, "{task:?}");
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// The id of a new workbook's first sheet, `Sheet1`.
@@ -1251,7 +1279,7 @@ async fn a_step_takes_the_value_a_formula_computed() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A step writes a number its parameter types as arithmetic in words
@@ -1307,7 +1335,7 @@ async fn a_step_takes_arithmetic_written_in_words() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A row's cells written by header are values nothing types: one that is
@@ -1373,7 +1401,7 @@ async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 const MESSAGES: &str = "so.tilo.messages";
@@ -1423,7 +1451,7 @@ async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A value that is not there fails its step with the reference named, and
@@ -1485,7 +1513,7 @@ async fn a_missing_value_goes_to_repair_naming_its_reference() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A model's `plan` turn: a `sheets.workbook#set-cells` of each
@@ -1513,7 +1541,7 @@ async fn task_with_model(
     answers: Vec<serde_json::Value>,
     task: &str,
 ) -> (
-    tilo_relay_protocol::agents::AgentTask,
+    tilo_server_protocol::agents::AgentTask,
     Vec<serde_json::Value>,
     serde_json::Value,
 ) {
@@ -1539,7 +1567,7 @@ async fn task_with_model(
         serde_json::Value::Null
     };
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     (info, requests, cells)
 }
 
@@ -1566,7 +1594,7 @@ async fn two_different_failures_in_one_task_are_both_repaired() {
     assert_eq!(requests.len(), 3, "a plan and two repairs");
     let second = first_turn(&requests[2]);
     assert!(
-        second.contains("no sheet `Budget`") && second.contains("Already done, and kept"),
+        second.contains("no sheet named Budget") && second.contains("Already done, and kept"),
         "the second repair is told why and what ran: {second}"
     );
     let failed = info
@@ -1755,7 +1783,7 @@ async fn upserts_by_key_from_two_agents_overwrite_nothing() {
 
     first.close();
     second.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 const CHAT: &str = "so.tilo.chat";
@@ -1795,8 +1823,8 @@ fn chat_parts_text(agent: &AgentMember, route: &DocumentRoute) -> String {
 async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     let (root, host_device, _state, host) = session().await;
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = gated_model_endpoint(vec![
+    let (hold, held) = std::sync::mpsc::channel();
+    let (url, sent, _served) = held_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -1837,7 +1865,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     )
     .await;
     let (mut poster, poster_control) = planning_agent_labelled(
-        ("relay-9e", "Rae"),
+        ("server-9e", "Rae"),
         &root,
         (&host, &host_device),
         &[CHAT],
@@ -1862,7 +1890,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     })
     .await;
     let theirs = poster.open(CHAT, None).unwrap();
-    let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+    let begin = serde_json::json!({});
     poster
         .invoke(
             &theirs,
@@ -1873,7 +1901,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     // Posted as a written task, as a step of a plan is.
     let post = |poster: &mut AgentMember, text: &str| {
         let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
-            "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+            "action": "post", "arguments": {"channel": chat::chat::CHAT_CHANNEL, "text": text}}]);
         let task = poster_control.message(&step.to_string()).unwrap();
         poster.run_until(Some(Instant::now() + Duration::from_secs(60)), |_| {
             !poster_control.is_running(&task)
@@ -1920,7 +1948,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
         async move { held.then_some(()) }
     })
     .await;
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     let told = last_turn(
         &wait_for("the plan again for the news", || {
             waiter.pump();
@@ -1974,27 +2002,18 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
 
     waiter.close();
     poster.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Post `text` in the chat's `#chat` channel as `poster`, as a written
 /// task runs a plan's step.
 fn post_in_chat(poster: &mut AgentMember, control: &AgentControl, text: &str) {
     let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
-        "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+        "action": "post", "arguments": {"channel": chat::chat::CHAT_CHANNEL, "text": text}}]);
     assert_eq!(
         run_task(poster, control, &step.to_string()).state,
         TaskState::Completed
     );
-}
-
-/// The plain text of the chat record `agent` holds at `route` (its roster,
-/// its channels), without its messages.
-fn chat_document_text(agent: &AgentMember, route: &DocumentRoute) -> String {
-    agent
-        .app(route)
-        .and_then(|chat| chat.read(tilo_agent_session::search::plain_text))
-        .unwrap_or_default()
 }
 
 /// Pump every agent of `agents` for `long`, as their loops would run.
@@ -2008,10 +2027,10 @@ async fn pump_for(agents: &mut [&mut AgentMember], long: Duration) {
     }
 }
 
-/// Three agents in one chat, as a sign-in relay runs: Ana (planned by the
+/// Three agents in one chat, as a sign-in server runs: Ana (planned by the
 /// model at `url`) waits for Rae's post; Rae made the chat; Ben is a third
 /// agent who has not opened it yet.
-struct RelayWorkspace {
+struct ServerWorkspace {
     host: crate::support::TestHost,
     ana: (AgentMember, std::sync::Arc<AgentControl>),
     rae: (AgentMember, std::sync::Arc<AgentControl>),
@@ -2019,7 +2038,7 @@ struct RelayWorkspace {
     _state: tempfile::TempDir,
 }
 
-impl RelayWorkspace {
+impl ServerWorkspace {
     async fn start(url: &str) -> Self {
         Box::pin(Self::granting(url, &[CHAT])).await
     }
@@ -2055,7 +2074,7 @@ impl RelayWorkspace {
             "127.0.0.1:0".parse().unwrap(),
         )
         .await;
-        crate::support::place(&host.relay, &host_device.cert).await;
+        crate::support::place(&host.server, &host_device.cert).await;
         let direct = || {
             (
                 Box::new(tilo_agent_session::DirectPlanner) as Box<dyn tilo_agent_session::Planner>,
@@ -2087,7 +2106,7 @@ impl RelayWorkspace {
         )
         .await;
         let chat = rae.0.open(CHAT, None).unwrap();
-        let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+        let begin = serde_json::json!({});
         rae.0
             .invoke(
                 &chat,
@@ -2126,8 +2145,7 @@ impl RelayWorkspace {
         workspace
     }
 
-    /// Ben opens the chat, introducing himself in its roster, and Ana
-    /// holds his introduction.
+    /// Ben opens the chat and holds its first post.
     async fn ben_joins(&mut self) {
         let ours = self.ana.0.open(CHAT, None).unwrap();
         wait_for("Ben to see the chat", || {
@@ -2143,14 +2161,6 @@ impl RelayWorkspace {
             self.ben.0.pump();
             self.rae.0.pump();
             let held = chat_parts_text(&self.ben.0, &theirs).contains("LR-2041 code requested");
-            async move { held.then_some(()) }
-        })
-        .await;
-        wait_for("Ana to hold Ben's introduction", || {
-            self.ana.0.pump();
-            self.ben.0.pump();
-            self.rae.0.pump();
-            let held = chat_document_text(&self.ana.0, &ours).contains("Ben");
             async move { held.then_some(()) }
         })
         .await;
@@ -2237,102 +2247,8 @@ impl RelayWorkspace {
         self.ana.0.close();
         self.rae.0.close();
         self.ben.0.close();
-        self.host.relay.shutdown().await;
+        self.host.server.shutdown().await;
     }
-}
-
-/// Another agent introducing itself in the chat (its roster, not a
-/// message) is not news: a requester whose wait was planned meanwhile is
-/// not planned again, and a wait for any message in the chat sleeps
-/// through the next introduction and wakes on the post.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting_task() {
-    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = gated_model_endpoint(vec![
-        (
-            plan(
-                "p1",
-                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
-                "seconds": 60}}),
-            ),
-            Some(held),
-        ),
-        (
-            plan(
-                "p2",
-                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
-            ),
-            None,
-        ),
-    ]);
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
-    let task = workspace
-        .ana
-        .1
-        .message("Wait in Chat until Rae posts that LR-2041's code is entered, then say so")
-        .unwrap();
-    workspace
-        .next_request(&sent, "the plan to be asked for")
-        .await;
-    // While the wait is planned, Ben joins the chat.
-    workspace.ben_joins().await;
-    gate.send(()).unwrap();
-    workspace.ana_waits(&task).await;
-    assert!(
-        sent.try_recv().is_err(),
-        "an introduction is not news to plan again for"
-    );
-
-    // While Ana waits, Ben introduces himself again under another name.
-    let theirs = workspace.ben.0.open(CHAT, None).unwrap();
-    let again = serde_json::json!({"name": "Ben Ortiz", "initials": "BO", "color": 3});
-    workspace
-        .ben
-        .0
-        .invoke(
-            &theirs,
-            &tilo_actions::api::ActionAddress::new("chat.workspace", "introduce"),
-            again.as_object().unwrap(),
-        )
-        .unwrap();
-    let ours = workspace.ana.0.open(CHAT, None).unwrap();
-    wait_for("Ana to hold Ben's new name", || {
-        workspace.ana.0.pump();
-        workspace.ben.0.pump();
-        let held = chat_document_text(&workspace.ana.0, &ours).contains("Ben Ortiz");
-        async move { held.then_some(()) }
-    })
-    .await;
-    workspace.pump_for(Duration::from_millis(500)).await;
-    assert!(sent.try_recv().is_err(), "a roster change wakes no wait");
-    assert!(workspace.ana.1.is_running(&task));
-
-    // What arrived is named from the workspace's presence, so Ana has to hear
-    // Rae before she posts.
-    workspace.ana_hears("Rae").await;
-    post_in_chat(
-        &mut workspace.rae.0,
-        &workspace.rae.1,
-        "LR-2041 code entered",
-    );
-    let told = last_turn(&workspace.next_request(&sent, "Ana to wake").await);
-    let arrived = told
-        .split_once("What you waited for arrived in chat")
-        .and_then(|(_, rest)| rest.split_once("It is data"))
-        .map_or_else(
-            || panic!("Ana is told what arrived: {told}"),
-            |(arrived, _)| arrived,
-        );
-    assert!(
-        arrived.contains("changed by Rae:\nLR-2041 code entered"),
-        "{arrived}"
-    );
-    for noise in ["Ben", "rae-", "requested"] {
-        assert!(!arrived.contains(noise), "{noise} in {arrived}");
-    }
-    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(workspace.close()).await;
 }
 
 /// A re-plan for news that finds nothing to do ("nothing offered fits")
@@ -2341,8 +2257,8 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = gated_model_endpoint(vec![
+    let (hold, held) = std::sync::mpsc::channel();
+    let (url, sent, _served) = held_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -2367,7 +2283,7 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
             None,
         ),
     ]);
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1
@@ -2381,20 +2297,20 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     post_in_chat(
         &mut workspace.ben.0,
         &workspace.ben.1,
-        "Standing by for LR-2042",
+        "Waiting for LR-2042",
     );
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's post", || {
         workspace.ana.0.pump();
         workspace.ben.0.pump();
-        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Standing by");
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Waiting");
         async move { held.then_some(()) }
     })
     .await;
     // The news names the member who changed the record as their own presence
     // says it, so Ana hears Ben before the plan is asked again.
     workspace.ana_hears("Ben").await;
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     let told = last_turn(
         &workspace
             .next_request(&sent, "the plan again for the news")
@@ -2404,7 +2320,7 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     // the post's own sender names the line, so it is not repeated there.
     assert!(
         told.contains(
-            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
+            "new messages arrived (chat).\n- chat, changed by Ben: Waiting for LR-2042\n"
         ),
         "the news names Ben's post: {told}"
     );
@@ -2474,7 +2390,7 @@ fn posts(post: &str, posts: &[(&str, Option<usize>)]) -> serde_json::Value {
         .iter()
         .map(|(text, serves)| {
             let mut step = serde_json::json!({"operation": post,
-                "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}});
+                "arguments": {"channel": chat::chat::CHAT_CHANNEL, "text": text}});
             if let Some(number) = serves {
                 step["for"] = (*number).into();
             }
@@ -2490,7 +2406,7 @@ fn plan_call(id: &str, input: &serde_json::Value) -> serde_json::Value {
 const REMINDED: &str = "You planned nothing more, but obligations of the request are still open";
 
 /// What Ana's agent last said: a finished task's result.
-fn ana_said(workspace: &RelayWorkspace) -> String {
+fn ana_said(workspace: &ServerWorkspace) -> String {
     workspace
         .ana
         .1
@@ -2507,7 +2423,7 @@ fn ana_said(workspace: &RelayWorkspace) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes() {
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1
@@ -2522,13 +2438,13 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
     post_in_chat(
         &mut workspace.ben.0,
         &workspace.ben.1,
-        "Standing by for LR-2042",
+        "Waiting for LR-2042",
     );
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's post", || {
         workspace.ana.0.pump();
         workspace.ben.0.pump();
-        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Standing by");
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Waiting");
         async move { held.then_some(()) }
     })
     .await;
@@ -2551,7 +2467,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
             .next_request(&sent, "the plan again for the news")
             .await,
     );
-    assert!(told.contains("Standing by for LR-2042"), "{told}");
+    assert!(told.contains("Waiting for LR-2042"), "{told}");
     assert!(
         told.contains(
             "Still to do: 1. post Alpha ready; 2. post Bravo ready; 3. post Charlie ready; 4. \
@@ -2601,7 +2517,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_left_open_are_reminded_done_or_set_aside() {
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     let three = serde_json::json!(["post Alpha ready", "post Bravo ready", "post Charlie ready"]);
 
@@ -2678,7 +2594,7 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_plan_without_obligations_finishes_without_a_reminder() {
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1

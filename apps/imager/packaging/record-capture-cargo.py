@@ -25,7 +25,7 @@ ROLES = {
     'backend_tests': ('crates/platform/imager-backend', 'imager_backend', 'lib', True),
     'shell': ('crates/session/session', 'tilo-session', 'bin', False),
     'fs': ('crates/system/fs', 'fs', 'bin', False),
-    'credential_helper': ('crates/system/account-custody', 'tilo-account-credential', 'bin', False),
+    'credential_helper': ('crates/system/account-credentials', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),
     'home_seeds': ('crates/system/install-helpers', 'tilo-firstboot-home-seeds', 'bin', False),
     'staging_handoff': ('crates/system/install-helpers', 'tilo-staging-handoff', 'bin', False),

@@ -3,8 +3,8 @@
 //! failure stays readable with the dialog closed and in its details.
 
 use ui::accesskit::{Node, Role};
-use ui::host::HostServices;
 use ui::prelude::*;
+use ui::process::ProcessServices;
 use video_editor::actions::VideoEditorEffect;
 use video_editor::resource::load_project;
 use video_editor::seed::sample_project;
@@ -73,8 +73,8 @@ fn unreadable() -> Project {
 
 #[test]
 fn footage_that_is_not_here_withdraws_export_before_any_chooser() {
-    let (services, recorder) = HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = hosting(&sample_project());
     ctrl_e(&mut app);
     assert!(node(&mut app, "Export video").is_some_and(|n| n.role() == Role::Dialog));

@@ -1,7 +1,7 @@
 //! Original checked activation: actual Scene ink versus final focus and IME. TEST-only.
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
-use crate::application_test_support::{self as probe, ProbeHost};
+use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
+use crate::application_test_support::{self as probe, ProbeHarness};
 use crate::owner_wake::OwnerWakeQueue;
 use crate::view::{ViewContribution, capability::ViewState};
 use crate::widget::{AppKind, AppWidget, BoundAppWidget, Column, IconDescriptor, TextInput};
@@ -267,7 +267,7 @@ impl AppWidget for Owner {
 }
 thread_local! { static NEXT: RefCell<Option<(Seen, u64, &'static str)>> = const { RefCell::new(None) }; }
 fn factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -297,7 +297,7 @@ fn factory(
     ))
 }
 fn prepared(
-    host: &ProbeHost,
+    host: &ProbeHarness,
     queue: &OwnerWakeQueue,
     id: u64,
     name: &'static str,
@@ -379,7 +379,7 @@ impl ViewState for Pair {
 }
 struct Fixture {
     frame: FrameHarness,
-    _host: ProbeHost,
+    _host: ProbeHarness,
     old: Seen,
     selected: Seen,
     tail: Tail,
@@ -389,7 +389,7 @@ impl Fixture {
         Self::with_history(false)
     }
     fn with_history(managed_history: bool) -> Self {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let queue = OwnerWakeQueue::default();
         let (old, old_seen) = prepared(&host, &queue, OLD, "activation-old");
         let (selected, selected_seen) = prepared(&host, &queue, SELECTED, "activation-selected");
@@ -630,7 +630,7 @@ fn closed_destination_is_not_restored_as_a_keyboard_owner_control() {
     let node = f.frame.named_target_nodes()["activation-selected"];
     let closing = f.frame.bindings.binding_for(node).unwrap().closing.clone();
     let draws = f.selected.draws.get();
-    closing.set(true); // original live binding gate; allocation remains owned
+    closing.set(true); // original live binding check; allocation remains owned
     f.frame.activate_app_focus(SELECTED);
     assert!(f.frame.focused().is_none());
     assert!(f.frame.ime_window().is_none());
@@ -778,7 +778,7 @@ fn original_history_preflight_preserves_suspended_live_caret_control() {
         .unwrap();
     assert!(frame.history.as_ref().unwrap().captures_input());
     let before = frame.relayout_frames();
-    // Same preflight gate used by DesktopHandle.navigate; do not bypass History
+    // Same preflight check used by DesktopHandle.navigate; do not bypass History
     // by calling activation after a refusal.
     assert!(frame.check_app_activation().is_err());
     assert_eq!(frame.relayout_frames(), before);

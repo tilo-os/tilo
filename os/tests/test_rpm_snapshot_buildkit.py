@@ -176,8 +176,8 @@ class SnapshotManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no regular package manifest"):
             self.check(files={"../" + VERIFY.MANIFEST_PATH: "example-package\n"})
 
-    def test_the_relay_image_verifies_its_snapshot_before_building(self):
-        build = (SCRIPT.parents[2] / "tools/ci/publish/relay-build.sh").read_text()
+    def test_the_server_image_verifies_its_snapshot_before_building(self):
+        build = (SCRIPT.parents[2] / "tools/ci/publish/server-build.sh").read_text()
         verify = build.index('python3 os/dev/verify-rpm-snapshot-buildkit.py "$rpms_ref"\n')
         self.assertLess(verify, build.index("bash tools/ci/publish/oci-build.sh"))
 

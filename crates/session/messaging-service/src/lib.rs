@@ -2,7 +2,7 @@
 //!
 //! Signal, `WhatsApp`, SMS and Tilo accounts are enrolled and run here, not in
 //! the compositor and not in the Messages app: the service holds the
-//! person's device custody, the vault keys and grants Messages was given,
+//! person's device identity, the vault keys and grants Messages was given,
 //! starts the Signal provider in its sandbox and keeps every account's
 //! encrypted history. Messages reaches it over the `messaging` session
 //! socket, connected and named by the launcher like every app→service

@@ -1,8 +1,8 @@
-//! Telling people apart by name: the one rule every surface that names a
+//! Telling members apart by name: the one rule every surface that names a
 //! member — chat lines, cursor pills, people lists, the top bar,
 //! mentions — follows.
 //!
-//! Two people in a workspace may go by the same name. Each is then shown with a
+//! Two members of a workspace may go by the same name. Each is then shown with a
 //! number, "Ada (1)" and "Ada (2)", and everyone in the workspace must see the
 //! same numbers, so they come from an order every replica shares: when each
 //! joined the workspace, as its membership records it, so a newcomer never takes
@@ -13,8 +13,8 @@
 //! "Ada Lovelace" collide). Once the names no longer collide, the numbers
 //! go away.
 //!
-//! Only people are numbered: an agent, a Shortcut or an app is already
-//! told apart by its kind label.
+//! Every member is numbered alike, a person, an agent or a bot: what a member
+//! is shows in the face beside the name, never in it.
 
 use std::collections::{BTreeMap, HashMap};
 use tilo_sort::CompactSort as _;

@@ -970,7 +970,7 @@ pub(crate) fn encode_to(
 mod gst_pipeline {
     #[allow(
         clippy::wildcard_imports,
-        reason = "the pipeline module is the gated half of this file and shares its scope"
+        reason = "the pipeline module is the guarded half of this file and shares its scope"
     )]
     use super::*;
     use std::sync::atomic::Ordering;
@@ -1638,7 +1638,10 @@ mod tests {
             );
 
             let p = project_with_tone(&clip, &tone, 1.5, false);
-            assert!(crate::audio::has_audio(&p), "the project has an audio lane");
+            assert!(
+                crate::audio::has_audio(&p),
+                "the project has an audio track"
+            );
 
             let out = std::env::temp_dir().join(format!("tilo-ve-audio-{pid}.mp4"));
             std::fs::remove_file(&out).ok();

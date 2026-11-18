@@ -1,4 +1,4 @@
-//! Containers a revert leaves standing because somebody built on them.
+//! Containers a revert leaves in place because somebody built on them.
 //!
 //! Undoing an action that created a container — a paragraph, a row, a card —
 //! removes the container. When anyone has written inside it since, removing

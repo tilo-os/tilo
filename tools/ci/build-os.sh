@@ -220,7 +220,7 @@ mirrored() {
 }
 
 # A cargo build of a tool in the project's builder image, with cargo's home and the build
-# directory kept below DIR. Tools to run, not lint gates: warnings stay warnings, so the
+# directory kept below DIR. Tools to run, not lint checks: warnings stay warnings, so the
 # workspace's -D warnings rustflags are cleared.
 tool_build() {
   step podman run --rm --security-opt label=disable --workdir /src \

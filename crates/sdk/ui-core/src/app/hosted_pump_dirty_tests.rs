@@ -455,7 +455,7 @@ tilo_test_env::scenario! {
     phase hosted_pump_host_owner_permission_replacement_refreshes;
     {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
@@ -486,9 +486,9 @@ tilo_test_env::scenario! {
         let permissions = crate::permissions::SharedPermissions::new(
             crate::permissions::PermissionContext::permissive(),
         );
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),
@@ -513,7 +513,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -558,7 +558,7 @@ tilo_test_env::scenario! {
     // it woke keeps the directory's revision and the continuation it issued.
     {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
@@ -586,9 +586,9 @@ tilo_test_env::scenario! {
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),
@@ -616,7 +616,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -764,7 +764,7 @@ tilo_test_env::scenario! {
         let query = || directory_query("", "", 8, 8192, 8);
         let listed = fixture.ask_directory(query(), true).0.unwrap().rows;
         assert_eq!(listed.len(), 3);
-        crate::host_core::HostCore::remounted(&mut fixture.app, 0);
+        crate::app_core::AppCore::remounted(&mut fixture.app, 0);
         assert!(fixture.app.actions.action_directory_snapshot.is_none());
         let (page, _) = fixture.ask_directory(query(), true);
         assert_eq!(page.unwrap().rows, listed, "a remount keeps the listing");

@@ -8,7 +8,7 @@ use crate::TileSource;
 use crate::navigation;
 
 /// Put a window for `app` after the focused one of the shown strip, or at
-/// the place `at` in it (a drop's [`StripPart::index`]), standing over the
+/// the place `at` in it (a drop's [`StripPart::index`]), over the
 /// shell beside it when the app asked for a window that floats.
 pub(super) fn open(
     tiles: &mut dyn TileSource,
@@ -110,7 +110,7 @@ pub struct StripPart {
     pub x: f64,
 }
 
-/// The slot at `x` among windows standing at `windows` (each window's place
+/// The slot at `x` among windows at `windows` (each window's place
 /// in its strip and its left and right edge, in strip order).
 #[must_use]
 pub fn part_among(windows: &[(usize, f64, f64)], x: f64) -> StripPart {

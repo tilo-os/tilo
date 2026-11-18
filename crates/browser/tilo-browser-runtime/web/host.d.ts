@@ -36,6 +36,11 @@ export interface RuntimeStatus {
   desktopErrors?: string[];
   /** A desktop mount's active workspace, as its top bar names it. */
   workspaceName?: string | null;
+  /**
+   * The size what a mount of one app asks for, in CSS pixels, where its app
+   * says one (a message's view shown alone); whoever holds the mount gives it that much.
+   */
+  content?: {width: number; height: number} | null;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;
@@ -277,10 +282,10 @@ export function mountDesktop(target: HTMLElement, options?: MountOptions): Promi
 /** Terminal page-host shutdown. Individual peers must use their own cleanup method. */
 export function shutdown(): Promise<void>;
 
-/** Retry retained close failures before releasing exclusive actor custody. */
+/** Retry retained close failures before releasing exclusive actor device key. */
 export function retryPendingRecovery(): Promise<void>;
 
-/** Number of failed closes retaining actor custody and pending durable bytes. */
+/** Number of failed closes retaining actor device key and pending durable bytes. */
 export function pendingRecoveryCount(): number;
 
 

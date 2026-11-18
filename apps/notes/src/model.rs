@@ -1,6 +1,7 @@
 //! The notebook as the window shows it: every note's title and place in the
 //! tree, the tags, and what each note says, projected from the [`Notebook`]
-//! record the framework reads. Pure logic, no IO, no rendering.
+//! record and the parts its notes are kept in ([`PagePart`]), as the
+//! framework reads them. Pure logic, no IO, no rendering.
 //!
 //! Page and tag ids are the UUIDs their items are stored under, so a link,
 //! a route and a search hit name a note the same way every replica does.
@@ -13,6 +14,7 @@ use ui::tilo_resource::{Bytes, Map};
 use uuid::Uuid;
 
 use crate::notebook::{Notebook, page_of};
+use crate::part::{PagePart, Pages};
 
 /// Identifier for a single page. Stable across renames; every link and
 /// route names a note by it.
@@ -71,6 +73,8 @@ pub struct Workspace {
     /// The notes whose bodies changed since the workspace this one was made
     /// after ([`Self::of`]); every note for a first projection.
     pub changed: Vec<PageId>,
+    /// The part each note is kept in.
+    pub parts: Rc<HashMap<PageId, u64>>,
 }
 
 impl Workspace {
@@ -78,33 +82,27 @@ impl Workspace {
         Self::default()
     }
 
-    /// The workspace showing `notebook`, after `previous`: a note whose body
-    /// did not change keeps what `previous` read of it.
+    /// The workspace showing `notebook` and the notes its `parts` keep,
+    /// after `previous`: a note whose body did not change keeps what
+    /// `previous` read of it. A note under one that is gone is not shown.
     #[must_use]
-    pub fn of(notebook: &Notebook, previous: &Self) -> Self {
-        let mut ids = std::collections::HashSet::new();
-        let mut pages = Vec::with_capacity(notebook.pages.len());
-        for (id, page) in notebook.pages.iter() {
-            let Some(page_id) = page_of(id).filter(|id| ids.insert(*id)) else {
+    pub fn of(notebook: &Notebook, parts: &[(u64, Rc<PagePart>)], previous: &Self) -> Self {
+        let shown = Pages::of(parts);
+        let mut known = std::collections::HashSet::with_capacity(shown.len());
+        let mut pages = Vec::with_capacity(shown.len());
+        let mut kept = HashMap::with_capacity(shown.len());
+        let mut notes = Vec::with_capacity(shown.len());
+        for (id, page) in shown.iter() {
+            let Some(page_id) = page_of(id).filter(|id| known.insert(*id)) else {
                 continue;
             };
             pages.push(PageMeta {
                 id: page_id,
                 title: page.title.clone(),
-                parent: page.parent.as_ref().and_then(page_of),
+                parent: shown.parent_of(id).and_then(page_of),
             });
-        }
-        let known: std::collections::HashSet<PageId> = ids;
-        // A parent removed while a peer filed a note under it, or a cycle
-        // two peers' moves made, leaves the note at the top level.
-        let parents: HashMap<PageId, Option<PageId>> =
-            pages.iter().map(|page| (page.id, page.parent)).collect();
-        for page in &mut pages {
-            if page.parent.is_some_and(|parent| !known.contains(&parent))
-                || in_cycle(&parents, page.id)
-            {
-                page.parent = None;
-            }
+            kept.insert(page_id, shown.part_of(id).unwrap_or_default());
+            notes.push((page_id, page));
         }
         let mut tags: Vec<TagMeta> = notebook
             .tags
@@ -123,24 +121,22 @@ impl Workspace {
                 .cmp(&b.name.to_lowercase())
                 .then(a.id.cmp(&b.id))
         });
+        // A tag the notebook no longer names is not shown on its notes.
         let tag_ids: std::collections::HashSet<TagId> = tags.iter().map(|tag| tag.id).collect();
-        let mut tag_assignments: Vec<TagAssignment> = notebook
-            .pages
+        let mut tag_assignments: Vec<TagAssignment> = notes
             .iter()
-            .filter_map(|(id, page)| Some((page_of(id)?, page)))
             .flat_map(|(page, note)| {
                 note.tags
                     .iter()
                     .filter_map(page_of)
                     .filter(|tag| tag_ids.contains(tag))
-                    .map(move |tag| TagAssignment { page, tag })
+                    .map(move |tag| TagAssignment { page: *page, tag })
             })
             .collect();
         tag_assignments.sort_by_key(|edge| (edge.page, edge.tag));
         tag_assignments.dedup();
-        let (bodies, body_cursors, changed) = project_bodies(notebook, &pages, previous);
-        // A pointer per few dozen pictures: the copy shares the notebook's.
-        let images = notebook.images.clone();
+        let (bodies, body_cursors, changed) = project_bodies(&notes, previous);
+        let images = crate::part::images(parts);
         Self {
             data: WorkspaceData {
                 pages,
@@ -152,7 +148,14 @@ impl Workspace {
             bodies: std::sync::Arc::new(bodies),
             body_cursors: Rc::new(body_cursors),
             changed,
+            parts: Rc::new(kept),
         }
+    }
+
+    /// The part note `page` is kept in, while it is shown.
+    #[must_use]
+    pub fn part_of(&self, page: PageId) -> Option<u64> {
+        self.parts.get(&page).copied()
     }
 
     pub fn pages(&self) -> &[PageMeta] {
@@ -184,7 +187,7 @@ impl Workspace {
             .find(|tag| tag.name.to_lowercase() == name)
     }
 
-    /// Whether note `page` has its body stored in the record yet.
+    /// Whether note `page` has its body stored in the resource yet.
     pub fn has_stored_body(&self, page: PageId) -> bool {
         self.body_cursors.get(&page).is_some_and(Option::is_some)
     }
@@ -264,11 +267,10 @@ impl Workspace {
     }
 }
 
-/// What every note in `pages` says, read from `notebook` after `previous`,
-/// with where each body's history stood and the notes whose blocks changed.
+/// What every note of `notes` says, read after `previous`, with where each
+/// body's history stood and the notes whose blocks changed.
 fn project_bodies(
-    notebook: &Notebook,
-    pages: &[PageMeta],
+    notes: &[(PageId, &crate::notebook::Page)],
     previous: &Workspace,
 ) -> (
     crate::actions::Bodies,
@@ -276,27 +278,26 @@ fn project_bodies(
     Vec<PageId>,
 ) {
     let mut changed = Vec::new();
-    let mut cursors = HashMap::with_capacity(pages.len());
-    let bodies = pages
+    let mut cursors = HashMap::with_capacity(notes.len());
+    let bodies = notes
         .iter()
-        .filter_map(|meta| {
-            let page = notebook.pages.get(&crate::notebook::page_id(meta.id))?;
+        .map(|(id, page)| {
             let cursor = page.body.state().map(RichTextState::change_cursor);
-            cursors.insert(meta.id, cursor);
-            let before = previous.bodies.get(&meta.id);
+            cursors.insert(*id, cursor);
+            let before = previous.bodies.get(id);
             // A body whose change cursor stands where it stood is the
             // body `previous` read: no paragraph of it changed, came,
             // went or moved. Any other is read, and kept as before when
             // it reads the same.
             let blocks = match before {
                 Some(blocks)
-                    if cursor.is_some() && previous.body_cursors.get(&meta.id) == Some(&cursor) =>
+                    if cursor.is_some() && previous.body_cursors.get(id) == Some(&cursor) =>
                 {
                     std::sync::Arc::clone(blocks)
                 }
                 _ => {
                     let read = before
-                        .zip(previous.body_cursors.get(&meta.id).copied().flatten())
+                        .zip(previous.body_cursors.get(id).copied().flatten())
                         .and_then(|(blocks, at)| changed_blocks(page, blocks, at))
                         .unwrap_or_else(|| {
                             crate::actions::stored_blocks(page)
@@ -307,13 +308,13 @@ fn project_bodies(
                     match before {
                         Some(blocks) if **blocks == *read => std::sync::Arc::clone(blocks),
                         _ => {
-                            changed.push(meta.id);
+                            changed.push(*id);
                             read.into()
                         }
                     }
                 }
             };
-            Some((meta.id, blocks))
+            (*id, blocks)
         })
         .collect();
     (bodies, cursors, changed)
@@ -335,21 +336,9 @@ fn changed_blocks(
     Some(read)
 }
 
-/// Whether `page`'s chain of parents comes back to itself.
-fn in_cycle(parents: &HashMap<PageId, Option<PageId>>, page: PageId) -> bool {
-    let mut current = parents.get(&page).copied().flatten();
-    for _ in 0..parents.len() {
-        match current {
-            None => return false,
-            Some(id) if id == page => return true,
-            Some(id) => current = parents.get(&id).copied().flatten(),
-        }
-    }
-    current.is_some()
-}
-
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
     use std::sync::Arc;
 
     use tilo_document::RichTextAction;
@@ -360,28 +349,31 @@ mod tests {
     use super::{PageId, Workspace};
     use crate::actions;
     use crate::notebook::Notebook;
+    use crate::part::PagePart;
 
-    fn note(notebook: &mut Replica<Notebook>, title: &str, text: &str) -> PageId {
+    fn note(part: &mut Replica<PagePart>, title: &str, text: &str) -> PageId {
         let page = PageId::new_v4();
-        notebook
-            .apply_action(&actions::create_page_action(page, None, title))
+        part.apply_action(&actions::create_page_action(page, None, title))
             .unwrap();
         let blocks = [BlockContent::paragraph("", text)];
-        notebook
-            .apply(Invoke::apply(&actions::write_body_action(page, &blocks)).unwrap())
+        part.apply(Invoke::apply(&actions::write_body_action(page, &blocks)).unwrap())
             .unwrap();
         page
     }
 
+    fn of(part: PagePart, previous: &Workspace) -> Workspace {
+        Workspace::of(&Notebook::default(), &[(0, Rc::new(part))], previous)
+    }
+
     /// A projection after an edit re-reads only the edited note: the others
     /// keep the blocks the last projection read, shared rather than copied,
-    /// whether the notebook was kept current in place or read afresh.
+    /// whether the part was kept current in place or read afresh.
     #[test]
     fn projection_rereads_only_the_note_that_changed() {
-        let mut notebook = Replica::<Notebook>::new();
-        let kept = note(&mut notebook, "Kept", "Unchanged words");
-        let edited = note(&mut notebook, "Edited", "Before");
-        let first = Workspace::of(&notebook.live().unwrap().clone(), &Workspace::default());
+        let mut part = Replica::<PagePart>::new();
+        let kept = note(&mut part, "Kept", "Unchanged words");
+        let edited = note(&mut part, "Edited", "Before");
+        let first = of(part.live().unwrap().clone(), &Workspace::default());
         assert_eq!(
             first.changed.len(),
             2,
@@ -395,15 +387,14 @@ mod tests {
             del: 0,
             ins: "Now ".into(),
         };
-        notebook
-            .apply(Invoke::apply(&actions::edit_body_action(edited, &splice)).unwrap())
+        part.apply(Invoke::apply(&actions::edit_body_action(edited, &splice)).unwrap())
             .unwrap();
-        let live = Workspace::of(&notebook.live().unwrap().clone(), &first);
+        let live = of(part.live().unwrap().clone(), &first);
         assert_eq!(live.changed, vec![edited]);
         assert_eq!(live.bodies[&edited][0].text, "Now Before");
         assert!(Arc::ptr_eq(&live.bodies[&kept], &first.bodies[&kept]));
 
-        let fresh = Workspace::of(&notebook.state().unwrap(), &live);
+        let fresh = of(part.state().unwrap(), &live);
         assert!(
             fresh.changed.is_empty(),
             "a fresh read of the same notes changes none"

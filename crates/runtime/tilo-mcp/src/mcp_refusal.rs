@@ -12,7 +12,7 @@ pub(crate) fn said(error: BridgeError) -> String {
         // What happened, and what to do: a bare code leaves the caller
         // guessing whether to retry, and a caller that retries the same
         // stale revision fails the same way.
-        BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision) => {
+        BridgeError::Host(tilo_actions::remote::ActionCallError::StaleRevision) => {
             "stale_revision: the resource changed since the revision this call named, \
                  which you read: the action is offered at a newer revision now. Invoke it \
                  again and omit revision, which runs it against the directory as it is now, \
@@ -25,13 +25,13 @@ pub(crate) fn said(error: BridgeError) -> String {
             let code = match host {
                 // What the host could not run now is `unavailable`: the code
                 // the API documents, not the one this crate spells.
-                tilo_actions::remote::ActionHostError::Unavailable { .. } => "unavailable",
+                tilo_actions::remote::ActionCallError::Unavailable { .. } => "unavailable",
                 host => host.code(),
             };
             match host {
-                tilo_actions::remote::ActionHostError::InvalidRequest { reason }
-                | tilo_actions::remote::ActionHostError::Refused { reason }
-                | tilo_actions::remote::ActionHostError::Unavailable { reason } => {
+                tilo_actions::remote::ActionCallError::InvalidRequest { reason }
+                | tilo_actions::remote::ActionCallError::Refused { reason }
+                | tilo_actions::remote::ActionCallError::Unavailable { reason } => {
                     format!("{code}: {reason}")
                 }
                 host => format!("{code}: {host}"),

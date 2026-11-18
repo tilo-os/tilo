@@ -1,4 +1,4 @@
-//! Fixed consuming-helper role and opaque namespace custody.
+//! Fixed consuming-helper role and opaque namespace ownership.
 use std::{ffi::OsString, io};
 
 pub mod endpoint;

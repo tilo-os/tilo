@@ -1,6 +1,6 @@
-//! The external-moderation lane as a dispatched operation target and an
+//! The external-moderation endpoint as a dispatched operation target and an
 //! invocation scope use it: the exact record route, the exact invocation and
-//! operation, one bounded lane per route.
+//! operation, one bounded endpoint per route.
 
 use crate::collaboration::external_moderation::{admit_for_test, enqueue};
 use crate::collaboration::{CollabRequest, RouteSpec};
@@ -81,7 +81,7 @@ async fn external_moderation_bridge_preserves_exact_record_invocation_operation_
 }
 
 #[tokio::test]
-async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_and_cancelled_receipt()
+async fn external_moderation_bridge_scoped_ownership_rejects_changed_parameters_and_cancelled_receipt()
  {
     use crate::invocation_scope::{
         PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,

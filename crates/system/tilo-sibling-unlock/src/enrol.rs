@@ -290,7 +290,7 @@ fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> 
     Ok(available)
 }
 
-/// The enrolment itself, with the registrar as a seam.
+/// The enrolment itself, with the registrar as a boundary.
 ///
 /// # Errors
 /// As [`run`].

@@ -9,26 +9,26 @@ use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const APP: &str = "test.app";
-const RECORD: &str = "tab:1";
+pub(super) const APP: &str = "test.app";
+pub(super) const RECORD: &str = "tab:1";
 const SECRET: &str = "a sentence only key holders may read";
 
-struct Fixture {
+pub(super) struct Fixture {
     /// A durable replica holding the seeded record and no channel key.
-    host: StatePeer,
+    pub(super) host: StatePeer,
     /// The workspace's governing device, which holds the owner role.
-    owner: SigningKey,
+    pub(super) owner: SigningKey,
     /// The owner's second device.
-    other: SigningKey,
+    pub(super) other: SigningKey,
     /// A member with the editor role.
     editor: SigningKey,
     authority: DeviceCert,
     /// The record channel's group, whose content keys key holders use.
     group: KeyGroup,
-    now: SystemTime,
+    pub(super) now: SystemTime,
 }
 
-fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
+pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[root; 32]);
     let key = SigningKey::from_bytes(&[seed; 32]);
     let mut cert = DeviceCert {
@@ -45,7 +45,7 @@ fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let (owner, authority) = device(1, 2);
     let (other, other_cert) = device(1, 3);
     let (editor, editor_cert) = device(110, 111);
@@ -124,7 +124,7 @@ fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    fn keys(&self) -> ContentKeys {
+    pub(super) fn keys(&self) -> ContentKeys {
         self.group.content_keys().unwrap()
     }
 
@@ -136,7 +136,7 @@ impl Fixture {
         self.keys()
     }
 
-    fn restore(&self, bytes: &[u8]) -> Result<StatePeer, String> {
+    pub(super) fn restore(&self, bytes: &[u8]) -> Result<StatePeer, String> {
         StatePeer::restore(
             bytes,
             WORKSPACE,
@@ -156,8 +156,8 @@ fn artifact() -> collab_types::ArtifactId {
     collab_types::document_artifact_id(APP, WORKSPACE, RECORD)
 }
 
-fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RelayDelta(key.verifying_key().to_bytes())
+pub(super) fn origin(key: &SigningKey) -> TransportOrigin {
+    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
 }
 
 fn route() -> Route {
@@ -167,11 +167,11 @@ fn route() -> Route {
     }
 }
 
-fn held(peer: &StatePeer) -> Vec<SignedOp> {
+pub(super) fn held(peer: &StatePeer) -> Vec<SignedOp> {
     peer.core.documents[&route()].sealed.to_vec()
 }
 
-fn envelope_of(message: &NeighbourMsg) -> SignedOp {
+pub(super) fn envelope_of(message: &NeighbourMsg) -> SignedOp {
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
         panic!("a document write")
     };
@@ -228,14 +228,14 @@ fn signed(
 
 /// Edits of the seeded record, each an incremental on the one before, as
 /// the plaintext a key holder's sealed write opens to.
-struct Author(AutoCommit);
+pub(super) struct Author(AutoCommit);
 
 impl Author {
-    fn new(peer: &StatePeer) -> Self {
+    pub(super) fn new(peer: &StatePeer) -> Self {
         Self(AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap())
     }
 
-    fn edit(&mut self, key: &str, value: &str) -> Vec<u8> {
+    pub(super) fn edit(&mut self, key: &str, value: &str) -> Vec<u8> {
         let heads = self.0.get_heads();
         self.0.put(ROOT, key, value).unwrap();
         self.0.commit();
@@ -256,7 +256,7 @@ impl Author {
 }
 
 /// `key`'s next sealed write to `peer`'s record.
-fn write(
+pub(super) fn write(
     peer: &StatePeer,
     key: &SigningKey,
     keys: &ContentKeys,
@@ -301,7 +301,12 @@ fn checkpoint(
     ))
 }
 
-fn admit(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: SystemTime) {
+pub(super) fn admit(
+    peer: &mut StatePeer,
+    key: &SigningKey,
+    message: NeighbourMsg,
+    now: SystemTime,
+) {
     let report = peer.receive_from_report(origin(key), message, now).unwrap();
     assert!(
         matches!(report.primary(), InputDisposition::Accepted(_)),
@@ -310,7 +315,7 @@ fn admit(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: Sys
 }
 
 /// A key holder's opener: any epoch it holds, compactions included.
-fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
+pub(super) fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
     let metadata = op.encryption.ok_or("not sealed")?;
     let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
     keys.open_content(op.artifact, &metadata, &ciphertext)
@@ -319,7 +324,7 @@ fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
 }
 
 /// A compaction of a record small enough for one op.
-fn mint(
+pub(super) fn mint(
     peer: &mut StatePeer,
     keys: &ContentKeys,
     key: &SigningKey,
@@ -357,7 +362,7 @@ fn mint_pieces(
 }
 
 /// A compaction of `superseded`, sealed with `keys` but not signed.
-fn wrapper(
+pub(super) fn wrapper(
     peer: &StatePeer,
     keys: &ContentKeys,
     superseded: &[SignedOp],
@@ -376,7 +381,7 @@ fn wrapper(
 
 /// A correctly numbered compaction, so each forgery is refused for what it
 /// forges and not for its author's sequence.
-fn forged(
+pub(super) fn forged(
     _peer: &StatePeer,
     key: &SigningKey,
     (wrapper, metadata): &(SealedCompaction, EncryptionMetadata),
@@ -401,7 +406,7 @@ fn refused(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: S
     refused_with(peer, key, message, now, "");
 }
 
-fn refused_with(
+pub(super) fn refused_with(
     peer: &mut StatePeer,
     key: &SigningKey,
     message: NeighbourMsg,
@@ -729,7 +734,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds;
-    // The device that signs a compaction writes the record as well (a relay's host does what its
+    // The device that signs a compaction writes the record as well (a server's host does what its
     // agents do), numbering each write after its last one. A page that opens the record takes the
     // compaction first and then refuses every write of its author numbered at or below it as a
     // replay, so a compaction numbered past the writes it folds would stop the page at the fold.
@@ -1143,7 +1148,7 @@ tilo_test_env::scenario! {
 /// with the channel's keys: the record's base, the last member snapshot,
 /// the governor's own write, then two visitors' writes that build on a
 /// change of a third visitor's snapshot the governor had taken in and lost
-/// at a stop. `lost` is that snapshot, as the relay still retained it.
+/// at a stop. `lost` is that snapshot, as the server still retained it.
 /// Its postcard `Vec<(label, bytes)>`, hex.
 const LOUNGE_CHAT_GAP: &str = include_str!("fixtures/lounge-chat-gap.hex");
 
@@ -2740,7 +2745,7 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
 }
 
 /// What `peer`'s record reads as for its authority, opened with `keys`.
-fn captured(
+pub(super) fn captured(
     f: &Fixture,
     peer: &StatePeer,
     keys: &ContentKeys,
@@ -2755,7 +2760,7 @@ fn captured(
     .map(|capture| AutoCommit::load(&capture.into_bytes()).unwrap())
 }
 
-fn text(doc: &AutoCommit, key: &str) -> Option<String> {
+pub(super) fn text(doc: &AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)
         .unwrap()
         .and_then(|(value, _)| value.into_string().ok())

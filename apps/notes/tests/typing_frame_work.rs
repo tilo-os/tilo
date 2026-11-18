@@ -290,7 +290,7 @@ fn a_keystroke_draws_one_frame_and_services_its_owner_once() {
         // The first key may settle what the click left (focus, the caret).
         harness.key("x");
         for _ in 0..6 {
-            let _ = f.records.try_flush();
+            let _ = f.store.try_flush();
             if harness.has_pending_owner_models() {
                 harness.service_pending_owner_models().unwrap();
             }
@@ -328,7 +328,7 @@ fn a_keystroke_draws_one_frame_and_services_its_owner_once() {
                 // The store lands the key's write, as the browser's host
                 // acknowledges it after the key's frame: its wake waits for
                 // the host's next turn, where a frame may come first.
-                let _ = f.records.try_flush();
+                let _ = f.store.try_flush();
             }
             assert_eq!(frames, 1, "typing {key:?} drew {frames} frames");
             assert_eq!(
@@ -372,7 +372,7 @@ fn a_keystroke_in_an_app_mounted_alone_draws_one_frame() {
         // The first key may settle what the click left (focus, the caret).
         harness.key("x");
         for _ in 0..6 {
-            let _ = f.records.try_flush();
+            let _ = f.store.try_flush();
             if harness.has_pending_owner_models() {
                 harness.service_pending_owner_models().unwrap();
             }
@@ -402,7 +402,7 @@ fn a_keystroke_in_an_app_mounted_alone_draws_one_frame() {
                     break;
                 }
                 // The store lands the key's write after the key's frame.
-                let _ = f.records.try_flush();
+                let _ = f.store.try_flush();
             }
             assert_eq!(frames, 1, "typing {key:?} drew {frames} frames");
         }

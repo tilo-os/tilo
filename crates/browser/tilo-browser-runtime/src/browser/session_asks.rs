@@ -141,7 +141,7 @@ impl Desktop {
                 Box::new(move |reply| {
                     // What the workspace permits beyond the person's role (an
                     // item shared with them to edit) reaches their windows.
-                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
+                    if let Ok(tilo_server_protocol::workspaces::WorkspacesReply::Permits(may)) =
                         &reply
                     {
                         permitted
@@ -176,9 +176,9 @@ fn node_request(
     workspace: &str,
     node: String,
     action: tilo_desktop_surface::session::NodeAction,
-) -> tilo_relay_protocol::workspaces::WorkspacesRequest {
+) -> tilo_server_protocol::workspaces::WorkspacesRequest {
     use tilo_desktop_surface::session::NodeAction;
-    use tilo_relay_protocol::workspaces::WorkspacesRequest;
+    use tilo_server_protocol::workspaces::WorkspacesRequest;
     let workspace = workspace.to_owned();
     match action {
         NodeAction::Share { share, access } => WorkspacesRequest::Share {
@@ -194,9 +194,9 @@ fn node_request(
 
 /// A node ask's output from the workspace's reply.
 fn node_answer(
-    reply: Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>,
+    reply: Result<tilo_server_protocol::workspaces::WorkspacesReply, String>,
 ) -> Result<serde_json::Value, String> {
-    use tilo_relay_protocol::workspaces::WorkspacesReply;
+    use tilo_server_protocol::workspaces::WorkspacesReply;
     match reply? {
         WorkspacesReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
         WorkspacesReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),
@@ -228,7 +228,7 @@ impl Opening {
             return true;
         }
         if let Some(answer) = &self.reveal.answer {
-            answer.refused(tilo_actions::remote::ActionHostError::Unavailable {
+            answer.refused(tilo_actions::remote::ActionCallError::Unavailable {
                 reason: "The app did not take that in time".into(),
             });
         }
@@ -247,26 +247,26 @@ fn coming(error: &tilo_actions::ApiError) -> bool {
 }
 
 /// The window's refusal `error`, as the window that asked hears it from its session.
-fn refusal(error: tilo_actions::ApiError) -> tilo_actions::remote::ActionHostError {
+fn refusal(error: tilo_actions::ApiError) -> tilo_actions::remote::ActionCallError {
     use tilo_actions::ApiError;
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     let said = error.to_string();
     match error {
-        ApiError::ConfirmationRequired => ActionHostError::confirmation_required(),
-        ApiError::Unknown(_) => ActionHostError::UnknownAction,
+        ApiError::ConfirmationRequired => ActionCallError::confirmation_required(),
+        ApiError::Unknown(_) => ActionCallError::UnknownAction,
         ApiError::Unavailable { code, .. }
             if code == "permission_denied" || code == "not_permitted" =>
         {
-            ActionHostError::NotPermitted
+            ActionCallError::NotPermitted
         }
-        ApiError::Unavailable { reason, .. } => ActionHostError::Unavailable { reason },
-        ApiError::Refused { reason, .. } => ActionHostError::Refused { reason },
+        ApiError::Unavailable { reason, .. } => ActionCallError::Unavailable { reason },
+        ApiError::Refused { reason, .. } => ActionCallError::Refused { reason },
         ApiError::MissingArgument(_)
         | ApiError::UnexpectedArgument(_)
         | ApiError::InvalidArguments(_)
-        | ApiError::ArgumentOutOfRange { .. } => ActionHostError::InvalidRequest { reason: said },
+        | ApiError::ArgumentOutOfRange { .. } => ActionCallError::InvalidRequest { reason: said },
         ApiError::UnregisteredType(_) | ApiError::Failed(_) => {
-            ActionHostError::Refused { reason: said }
+            ActionCallError::Refused { reason: said }
         }
     }
 }
@@ -286,6 +286,9 @@ impl Mount {
     pub(super) fn reveal_opened(&mut self) {
         self.answer_ended_calls();
         let Some(desktop) = &self.desktop else {
+            // A mount of one app answers what its window reads of other apps' documents, with
+            // code the peer's module holds.
+            crate::replicated::answer_reads_alone(self);
             return;
         };
         // What a window reads of another app's records, and each read held for a write that

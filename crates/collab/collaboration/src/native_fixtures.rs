@@ -23,11 +23,11 @@ pub(super) fn native_history_invocation_fixture(
             "so.tilo.initial-history-probe",
             Uuid::new_v4(),
         ),
-        refresh: Box::new(move |history, gate| {
+        refresh: Box::new(move |history, hold| {
             let mut captures = refresh_captures.lock().unwrap();
             captures.committed_history_fixture = Some(history);
             captures.committed_revision = Some([8; 32]);
-            captures.committed_recheck_gate = Some(gate);
+            captures.committed_recheck_hold = Some(hold);
         }),
         invoke: Box::new(move |id, uuid| {
             invocation_captures
@@ -87,18 +87,18 @@ pub(super) fn native_initial_fixture(
     workspace: Uuid,
     history: Vec<u8>,
 ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
-    native_initial_fixture_gated(app, workspace, history, None)
+    native_initial_fixture_held(app, workspace, history, None)
 }
 
-pub(super) fn native_initial_fixture_gated(
+pub(super) fn native_initial_fixture_held(
     app: &str,
     workspace: Uuid,
     history: Vec<u8>,
-    gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    hold: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
     let initial = Captures {
         committed_history_fixture: Some(history),
-        committed_recheck_gate: gate,
+        committed_recheck_hold: hold,
         ..Captures::default()
     };
     let broker = FakeBroker {
@@ -117,6 +117,7 @@ pub(super) fn native_initial_invocation_fixture(
     workspace: Uuid,
     history: Vec<u8>,
     refused_channels: Vec<String>,
+    hold: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> (
     CollaborationManager,
     Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
@@ -125,6 +126,7 @@ pub(super) fn native_initial_invocation_fixture(
         captures: Arc::new(std::sync::Mutex::new(Captures {
             committed_history_fixture: Some(history),
             committed_open_refused_channels: refused_channels,
+            committed_recheck_hold: hold,
             ..Captures::default()
         })),
         ..FakeBroker::default()
@@ -140,12 +142,12 @@ pub(super) fn native_initial_parked_fixture(
     app: &str,
     workspace: Uuid,
     history: Vec<u8>,
-    gate: tokio::sync::oneshot::Receiver<()>,
+    hold: tokio::sync::oneshot::Receiver<()>,
 ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
     let broker = FakeBroker {
         captures: Arc::new(std::sync::Mutex::new(Captures {
             committed_history_fixture: Some(history),
-            committed_recheck_gate: Some(gate),
+            committed_recheck_hold: Some(hold),
             ..Captures::default()
         })),
         ..FakeBroker::default()

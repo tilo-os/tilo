@@ -20,8 +20,8 @@
               unused half is live in a sibling binary, not dead"
 )]
 
-// Everything below is reached only from the decode-gated test modules, so it
-// carries the same gate they do: without it a hermetic build (no gstreamer dev
+// Everything below is reached only from the decode-guarded test modules, so it
+// carries the same check they do: without it a hermetic build (no gstreamer dev
 // stack, `--features decode` off) compiles a fixture loader nothing can call
 // and warns about every item in the file.
 #[cfg(feature = "decode")]

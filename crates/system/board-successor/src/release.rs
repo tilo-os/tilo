@@ -214,10 +214,10 @@ pub fn provenance(output: &str, digest: &str) -> Result<(String, u64)> {
         firmware == 1,
         "release has no unique source and immutable board firmware",
     )?;
-    let witness = json!({"name": "independent-rebuild", "uri": "urn:tilo:verification:manifest-digest-equal"});
+    let proof = json!({"name": "independent-rebuild", "uri": "urn:tilo:verification:manifest-digest-equal"});
     require(
-        matches!(get(details, "byproducts")?, Some(Value::Array(items)) if items.contains(&witness)),
-        "release has no independent rebuild witness",
+        matches!(get(details, "byproducts")?, Some(Value::Array(items)) if items.contains(&proof)),
+        "release has no independent rebuild proof",
     )?;
     Ok((source.clone(), generation))
 }

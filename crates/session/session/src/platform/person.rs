@@ -54,7 +54,7 @@ fn given_by_person(name: &str) -> bool {
 /// The name this host knows whoever is at it by, where the person chose none.
 #[cfg(target_os = "linux")]
 fn account_name() -> String {
-    tilo_identity_host::provisioning::login_account_display_name()
+    tilo_identity::provisioning::login_account_display_name()
 }
 
 /// The page has no login account: whoever is at it is named by the identity they signed in with.

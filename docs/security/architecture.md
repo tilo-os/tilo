@@ -49,7 +49,7 @@ removal, or forge authority over a shared space.
 **A4 — Compromised supply chain.** Wants to ship a malicious image or package, downgrade the system
 to a known-vulnerable release, or sign as us.
 
-**A5 — Honest-but-curious host operator.** Runs a relay or hosted workspace. Sees ciphertext and
+**A5 — Honest-but-curious host operator.** Runs a server or hosted workspace. Sees ciphertext and
 routing metadata and wants content.
 
 ### 2.2 Out of scope, stated plainly
@@ -73,7 +73,7 @@ routing metadata and wants content.
 | T1 | first-party apps | our code, assume bugs | sandbox + capability grants |
 | T2 | third-party apps | untrusted code | same, default-deny, no network |
 | T3 | peer-supplied rendering code | **hostile** | out of scope today (§2.2) |
-| T4 | hosted relay operator | honest-but-curious | end-to-end encryption; relay sees ciphertext + routing metadata |
+| T4 | hosted server operator | honest-but-curious | end-to-end encryption; server sees ciphertext + routing metadata |
 
 ---
 
@@ -116,6 +116,25 @@ account key, or, for a device that holds none, through the person's other device
 that works, and what it is allowed to grant, is in
 [device-certificate-renewal.md](device-certificate-renewal.md).
 
+**Two clocks never agree, and one rule says how far they may differ: 60 seconds**
+(`CERTIFICATION_CLOCK_ALLOWANCE_NS`). Whoever dates a thing applies it; no check of a certificate
+is loosened for it, and every verifier keeps a certificate's exact start and exact expiry. A new
+device's pairing request may be dated up to that far ahead of the clock that checks it. A
+certificate the person's root issues for another machine to read the moment it arrives is valid
+from that long before the issuer's clock: the certificate of a paired device, and, since
+17 November 2026, the two a person's Tilo on the web answers a service's sign-in with (the
+browser's own, which the proof carries, and the grant's for an agent or an API key).
+
+Accepted since then that was refused before: an approval on the sign-in page from a computer whose
+clock is up to 60 seconds ahead of the API server's. Until then it was refused as not yet valid at
+any difference at all, 6.5 ms on a real site. It gives nothing to anyone who does not hold the
+person's root key and the device's key. Only the root signs the two certificates, and the device's
+key still signs the server's own challenge. The server's checks are unchanged: a computer more
+than 60 seconds ahead, a certificate past its expiry, a revoked device and another server's
+challenge are refused exactly as before. The certificates name the same keys and grant the same.
+The grant ends when the server asked, and the most it may last counts from its earlier start; the
+browser's 30 days count from the earlier start too, so nothing lasts longer than it did.
+
 ### 3.3 What this replaces
 
 Every identity in the system derives from the device certificate. There is exactly one
@@ -125,9 +144,42 @@ subsystem mints its own.
 ### 3.4 Revocation
 
 "Forget this device" from any other device signs a revocation into the account's identity
-document, which replicates like any other data. A revoked device's operations are rejected from
-the revocation's timestamp forward; operations it signed before that point remain valid, because
-retroactively invalidating history would destroy the audit log the system depends on.
+document, which replicates like any other data. Removing a device takes its future, not its
+person's past: the operations a workspace had taken from it when the removal was written down remain
+valid for everyone, because retroactively invalidating history would destroy the audit log the
+system depends on, and would leave a workspace unreadable for every device added later.
+Everything else the device signs is rejected.
+
+Where the past ends is a place in each document, never a time. A revocation's timestamp is its
+signer's and an operation's timestamp is its author's, so no clock can say what a removed device
+wrote before: it would only have to date its operations earlier. Every operation carries its
+author's own running number per document, so the device that writes a removal into a workspace's
+governance writes its **cut** beside it: for each document, the number of the removed device's last
+operation the workspace had taken. An operation at or below its document's cut is history, whatever
+the reason for the removal. A compaction restates history under a number its author used before, so
+the cut also names each compaction of the removed device that the workspace had taken, and no other
+compaction of its is history. One above the cut, or in a document the cut does not name, is refused by
+every device and holder, whoever hands it over and whatever time it claims. A replica that knows of
+a removal and not yet of its cut holds that device's operations undecided, and a cut is never
+lowered or erased. The device itself is refused everywhere from the instant its removal is known:
+at the handshake, for everything it asks after it, and for keys.
+
+At the handshake the device is also told so, and told nothing else. Where the removal alone refuses
+it, its certificate being valid and its person admitted there, the server answers its hello with
+that one reason, signed for that hello as an acknowledgement is. The device believes it only from
+the server it dialled, by the check it makes of that server's acknowledgement, stops asking, and
+tells its person that it was removed. Who removed it, when, for what reason and which other
+devices the person has are never said. The reason gives away no more than the refusal does:
+nothing else refuses that certificate there, and a device that enters through a workspace's entry
+is told only once its proof of its key verified.
+
+For a device that was stolen or compromised the person may also name the moment from which it is
+not to be trusted. What it wrote after that moment and before its removal was written down cannot
+be untaken, since devices merged it before anyone knew. It stays in its document marked as written
+while the device was not trusted, is handed to apps with that mark and not as its person's own act,
+and the document's history offers to take it back. The moment becomes a second place per document,
+fixed by the governing device from when each operation reached it, which it notes itself: the
+removed device's own dates are never asked.
 
 ### 3.5 Recovery
 
@@ -411,7 +463,7 @@ maximum capability envelope. Neither the user nor the app can exceed it.
 signing identity.
 
 An app can never exceed its manifest even with enthusiastic user consent, and a prompt is never
-the only thing standing between an app and a capability it never declared.
+the only thing access between an app and a capability it never declared.
 
 ### 6.2 Denial is absence, not refusal
 
@@ -481,8 +533,8 @@ accepted.
 Decides whether an operation is something its claimed author was permitted to perform. Per
 operation, verified against the author's key, **independent of who delivered it**.
 
-This is what admission cannot do. A relay, by definition, delivers operations it did not author.
-Under admission alone a receiver can only ever conclude "the relay sent this" — authority does not
+This is what admission cannot do. A server, by definition, delivers operations it did not author.
+Under admission alone a receiver can only ever conclude "the server sent this" — authority does not
 survive the hop. Since always-on replicas and store-and-forward are core to the product, operations
 must carry their own proof.
 
@@ -491,16 +543,16 @@ follows. Each operation carries a sequence number so a replayed operation is rej
 
 ### 7.3 Why both
 
-The hop check gates the *connection*. The operation check gates the *change*. A relay passes the
+The hop check checks the *connection*. The operation check checks the *change*. A server passes the
 hop check by being an admitted peer; the operations it carries still verify independently against
 their authors. Neither is redundant.
 
 The two checks must remain separate. A shared decision point and a boundary test enforce that
 separation.
 
-### 7.4 Confidentiality from the relay
+### 7.4 Confidentiality from the server
 
-Content is encrypted to the group; routing metadata stays clear so a relay can do its job without
+Content is encrypted to the group; routing metadata stays clear so a server can do its job without
 reading anything. The group key rotates on **every** membership change, including removal.
 
 ---

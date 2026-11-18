@@ -420,6 +420,11 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         why: "runs frames through `relayout`, which invalidates first.",
     },
     QuietEntry {
+        file: "headless/root_wake.rs",
+        entry: "settle_if_owed",
+        why: "dispatches through `idle_control_tick` as `idle` does, whose edits move the document a frame follows; frames run only through `settle_owed`.",
+    },
+    QuietEntry {
         file: "headless/sidebar_button.rs",
         entry: "window_sidebar_shown",
         why: "reads the bar, the window's shell and its frame; paints a scratch bar and changes nothing a frame reads.",

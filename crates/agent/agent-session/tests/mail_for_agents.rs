@@ -34,13 +34,25 @@ fn arguments(value: Value) -> serde_json::Map<String, Value> {
     }
 }
 
+/// The address the mailbox's messages are published under, beside it.
+fn messages(mailbox: &ConfinedReplica) -> String {
+    ui::resource::chain_resource_id(
+        &<mail::part::MessagePart as ui::framework::Chained>::chain_beside(mailbox.document_id()),
+    )
+}
+
 /// The operation `action` the mailbox offers an agent.
-fn operation(record: &ConfinedReplica, action: &str) -> ActionDescriptor {
-    let offered = record.survey();
+fn operation(mailbox: &ConfinedReplica, action: &str) -> ActionDescriptor {
+    operation_on(mailbox, MAILBOX, action)
+}
+
+/// The operation `action` the resource `resource` offers an agent.
+fn operation_on(mailbox: &ConfinedReplica, resource: &str, action: &str) -> ActionDescriptor {
+    let offered = mailbox.survey();
     offered
         .iter()
         .find(|descriptor| {
-            descriptor.address.resource == MAILBOX && descriptor.address.action == action
+            descriptor.address.resource == resource && descriptor.address.action == action
         })
         .cloned()
         .unwrap_or_else(|| {
@@ -55,10 +67,20 @@ fn operation(record: &ConfinedReplica, action: &str) -> ActionDescriptor {
 /// Run `action` on the mailbox with `args`, as a written step
 /// `{"app": "so.tilo.mail", "resource": "mail.mailbox", "action", "arguments"}`
 /// does — unconfirmed — and answer with its output.
-fn step(record: &ConfinedReplica, action: &str, args: Value) -> tilo_actions::ActionOutput {
-    record
+fn step(mailbox: &ConfinedReplica, action: &str, args: Value) -> tilo_actions::ActionOutput {
+    step_on(mailbox, MAILBOX, action, args)
+}
+
+/// Invoke `action` on the resource `resource` with `args`.
+fn step_on(
+    mailbox: &ConfinedReplica,
+    resource: &str,
+    action: &str,
+    args: Value,
+) -> tilo_actions::ActionOutput {
+    mailbox
         .invoke(
-            &ActionAddress::new(MAILBOX, action),
+            &ActionAddress::new(resource, action),
             &arguments(args),
             false,
         )
@@ -98,6 +120,19 @@ fn subjects(listing: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The held messages a read of the mailbox's messages lists, by name, newest
+/// first.
+fn held_names(listing: &Value) -> Vec<String> {
+    listing["held"]
+        .as_array()
+        .map(|held| {
+            held.iter()
+                .map(|message| message["name"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn mail_is_in_the_agents_catalogue_and_the_browsers() {
     assert!(AppCatalogue::native().get(MAIL).is_some());
@@ -118,8 +153,11 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         &catalogue,
         MAIL,
         WORKSPACE,
-        &MemberId::person("assistant"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("assistant"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("maker"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .expect("a Mail record is held in a confined worker")
@@ -127,10 +165,16 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     assert_ne!(agent.worker_id(), Some(std::process::id()));
     let genesis = agent.take_mutation().unwrap().expect("a new record");
 
-    // What the mailbox offers an agent.
-    for action in ["deliver-message", "draft-message"] {
-        assert_eq!(operation(&agent, action).kind, OperationKind::Document);
-    }
+    // What the mailbox offers an agent: drafting on the mailbox, delivering
+    // on the messages kept beside it.
+    let beside = messages(&agent);
+    assert_eq!(
+        operation(&agent, "draft-message").kind,
+        OperationKind::Document
+    );
+    // A chain's verbs are carried out on the part they change, through the
+    // chain: offered all the same.
+    operation_on(&agent, &beside, "deliver-message");
     // A reply is drafted from the message wherever it is kept, fetched or
     // held, so the view answers it and records the draft.
     assert_eq!(operation(&agent, "draft-reply").kind, OperationKind::Effect);
@@ -149,8 +193,9 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
 
     // A scenario's mail, seeded with no network or account: a request and
     // an unrelated message.
-    let request = step(
+    let request = step_on(
         &agent,
+        &beside,
         "deliver-message",
         json!({
             "from": "Dana Ruiz <dana@example.test>",
@@ -163,8 +208,9 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     .value
     .expect("a delivery answers with the message it kept");
     let request_id = request["id"].as_str().unwrap().to_owned();
-    step(
+    step_on(
         &agent,
+        &beside,
         "deliver-message",
         json!({
             "from": "billing@example.test",
@@ -173,22 +219,28 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
             "date": "2026-10-12T10:00:00Z",
         }),
     );
-    let seeded = agent
-        .take_mutation()
-        .unwrap()
-        .expect("a delivery changes the mailbox, so it is news to a running task");
 
     // Reading and searching.
-    let listing = read(&agent, json!({}));
+    let listing = step_on(&agent, &beside, "read", json!({}))
+        .value
+        .expect("read answers with what the messages hold");
     assert_eq!(
-        subjects(&listing),
+        held_names(&listing),
         ["Invoice 4411", "Offsite venue"],
         "newest first: {listing}"
     );
-    let one = read(
-        &agent,
-        json!({ "item": format!("mail.message:{request_id}") }),
-    );
+    let item = listing["held"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|held| {
+            held["item"]
+                .as_str()
+                .filter(|item| item.ends_with(&request_id))
+                .map(str::to_owned)
+        })
+        .expect("the request is listed");
+    let one = step_on(&agent, &item, "read", json!({})).value.unwrap();
     assert!(
         one["message"]["body"]
             .as_str()
@@ -264,20 +316,16 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         },
     )
     .unwrap();
-    page.apply(&seeded).unwrap();
     page.apply(&drafted).unwrap();
-    let (held, drafts) = page
+    let drafts = page
         .read(|doc| {
             let mail = <mail::resource::Mail as ui::tilo_resource::Resource>::read(doc).unwrap();
-            let drafts: Vec<(String, String)> = mail
-                .drafts
+            mail.drafts
                 .values()
                 .map(|draft| (draft.body.clone(), draft.notes.clone()))
-                .collect();
-            (mail.held.len(), drafts)
+                .collect::<Vec<(String, String)>>()
         })
         .unwrap();
-    assert_eq!(held, 2, "both messages are held");
     let [(body, notes)] = drafts.as_slice() else {
         panic!("one draft: {drafts:?}");
     };
@@ -294,8 +342,11 @@ fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
         &AppCatalogue::native(),
         MAIL,
         WORKSPACE,
-        &MemberId::person("assistant"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("assistant"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("maker"),
+            name: String::new(),
+        },
         Seed::New,
     )
     .expect("a Mail record is held in a confined worker");

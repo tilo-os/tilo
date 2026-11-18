@@ -18,7 +18,7 @@ use tilo_delivery_protocol::workspace_join::{
 use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, Role};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_peer_state::owner_commit::CommitOperation;
-use tilo_relay::workspace_join::WorkspaceJoinProtocol;
+use tilo_server::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 type Authority = Arc<std::sync::Mutex<TestGovernor>>;
@@ -108,12 +108,12 @@ fn ns(at: SystemTime) -> u64 {
 /// `starting`, a host or a relay starting on one of these fixtures'
 /// endpoints, awaited past its wait for a relay. Each starts only after its
 /// endpoint had `tilo_endpoint_reachability::RELAY_WAIT` to reach a relay
-/// (`tilo_workspace_host::workspaces::Workspaces::open`, `tilo_relay`'s start), and
+/// (`tilo_workspace_service::workspaces::Workspaces::open`, `tilo_server`'s start), and
 /// these endpoints have none to reach. A test on a runtime whose clock it can
 /// hold holds it over the start: the same whole wait runs on that clock, which
 /// passes it when nothing else can run instead of five seconds later. The
 /// clock runs again before anything else of the test does.
-async fn past_the_relay_wait<T>(starting: impl std::future::Future<Output = T>) -> T {
+async fn past_the_server_wait<T>(starting: impl std::future::Future<Output = T>) -> T {
     let held = matches!(
         tokio::runtime::Handle::current().runtime_flavor(),
         tokio::runtime::RuntimeFlavor::CurrentThread
@@ -141,7 +141,7 @@ async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
 
 impl Joined {
     pub(in crate::standalone) fn test_certificate(&self) -> &DeviceCert {
-        &self.custody.device_cert
+        &self.identity.device_cert
     }
 
     pub(in crate::standalone) async fn test_empty() -> (Arc<Self>, tempfile::TempDir) {
@@ -161,7 +161,7 @@ impl Joined {
         sign_device_cert(&mut cert, &root).unwrap();
         let joined = Self::open(
             directory.path(),
-            HostIdentity::kept(cert, key.clone()),
+            DeviceIdentity::kept(cert, key.clone()),
             local_endpoint(&key).await,
             BTreeSet::new(),
             (
@@ -180,20 +180,22 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = past_the_relay_wait(Box::pin(tilo_workspace_host::host::WorkspaceHost::open(
-            tilo_workspace_host::host::HostConfig::new(
-                directory.path().join("workspace-host"),
-                tilo_relay_protocol::WorkSetting::none(),
+        let host = past_the_server_wait(Box::pin(
+            tilo_workspace_service::service::WorkspaceService::open(
+                tilo_workspace_service::service::ServiceConfig::new(
+                    directory.path().join("workspace-host"),
+                    tilo_server_protocol::WorkSetting::none(),
+                ),
+                tilo_workspace_service::service::ServiceIdentity {
+                    user_public_key: joined.identity.device_cert.user_public_key,
+                    device_signing_key: native_key(&joined.identity),
+                    device_cert: joined.identity.device_cert.clone(),
+                    revocations: RevocationList::new(),
+                },
+                joined.endpoint(),
+                None,
             ),
-            tilo_workspace_host::host::HostIdentity {
-                user_public_key: joined.custody.device_cert.user_public_key,
-                device_signing_key: native_key(&joined.custody),
-                device_cert: joined.custody.device_cert.clone(),
-                revocations: RevocationList::new(),
-            },
-            joined.endpoint(),
-            None,
-        )))
+        ))
         .await
         .unwrap();
         joined
@@ -217,7 +219,7 @@ impl Joined {
 /// once it publishes.
 struct HostedWorkspace {
     authority: Authority,
-    relay: tilo_relay::Relay,
+    server: tilo_server::Server,
     workspace: WorkspaceId,
     governor: DeviceCert,
     governor_key: SigningKey,
@@ -244,14 +246,14 @@ impl HostedWorkspace {
         let workspace = WorkspaceId::parse(governing.workspace()).unwrap();
         let topic = workspace;
         let hint = governing.hint(server.addr());
-        let relay_root = dir.join("relay");
+        let server_root = dir.join("server");
         let baseline = governing
             .peer()
             .admitted_workspace()
             .unwrap()
             .clone()
             .save();
-        tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
+        tilo_server::store::WorkspaceStore::open(&server_root, topic, true)
             .unwrap()
             .save_snapshot(&baseline)
             .unwrap();
@@ -263,19 +265,19 @@ impl HostedWorkspace {
             serving: tilo_peer_state::direct::Serving::new(),
         };
         let join = JoinService(hosted.clone());
-        let relay = past_the_relay_wait(Box::pin(
-            tilo_relay::Relay::start_on_endpoint_with_protocols(
-                tilo_relay::RelayConfig {
-                    state_root: relay_root.clone(),
-                    identity_root: dir.join("relay-identity"),
+        let server = past_the_server_wait(Box::pin(
+            tilo_server::Server::start_on_endpoint_with_protocols(
+                tilo_server::ServerConfig {
+                    state_root: server_root.clone(),
+                    identity_root: dir.join("server-identity"),
                     full_replica_status: dir.join("replica/status.json"),
                     home_peer_bundle: dir.join("home-peer.toml"),
-                    trust_policy: tilo_relay::TrustPolicy::AllowList {
+                    trust_policy: tilo_server::TrustPolicy::AllowList {
                         users: vec![hex::encode(governor.user_public_key)],
                     },
                     ..Default::default()
                 },
-                tilo_relay::daemon::RelayIdentity {
+                tilo_server::daemon::ServerIdentity {
                     user_public_key: governor.user_public_key,
                     device_signing_key: host_key,
                     device_cert: host.clone(),
@@ -299,7 +301,7 @@ impl HostedWorkspace {
         hosted.serve();
         Self {
             authority,
-            relay,
+            server,
             workspace,
             governor,
             governor_key,
@@ -413,27 +415,27 @@ impl HostedWorkspace {
     }
 }
 
-fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
-    let mut custody = joined.custody.clone();
+fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
+    let mut identity = joined.identity.clone();
     // In memory only: this probe compares what it holds, never a disk.
-    custody.custody = std::sync::Arc::new(tilo_identity_host::custody::Kept::new(
-        custody.device_cert.clone(),
-        std::sync::Arc::clone(&custody.signer),
+    identity.identity_store = std::sync::Arc::new(tilo_identity::identity_store::Kept::new(
+        identity.device_cert.clone(),
+        std::sync::Arc::clone(&identity.signer),
     ));
-    let workspace_cert = custody.device_cert.clone();
+    let workspace_cert = identity.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
-    custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
-    sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
+    identity.device_cert.user_public_key = default_root.verifying_key().to_bytes();
+    sign_device_cert(&mut identity.device_cert, &default_root).unwrap();
     let default_actor = tilo_action_broker::collab_app_broker::person_id_for_root(
-        custody.device_cert.user_public_key,
+        identity.device_cert.user_public_key,
     );
-    custody = HostIdentity::held(
-        custody.device_cert.clone(),
-        std::sync::Arc::clone(&custody.signer),
+    identity = DeviceIdentity::held(
+        identity.device_cert.clone(),
+        std::sync::Arc::clone(&identity.signer),
         std::sync::Arc::new(
-            tilo_identity_host::custody::Kept::new(
-                custody.device_cert.clone(),
-                std::sync::Arc::clone(&custody.signer),
+            tilo_identity::identity_store::Kept::new(
+                identity.device_cert.clone(),
+                std::sync::Arc::clone(&identity.signer),
             )
             .in_workspace(workspace, workspace_cert, Vec::new()),
         ),
@@ -441,7 +443,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let mut probe = Joined {
         executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
-        custody,
+        identity,
         endpoint: joined.endpoint.clone(),
         refused: joined.refused.clone(),
         channels: Arc::clone(&joined.channels),
@@ -452,6 +454,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
         own_host: std::sync::OnceLock::new(),
+        entered: Arc::default(),
         this: std::sync::Weak::new(),
     };
     assert!(
@@ -473,46 +476,46 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     probe.recheck_mcp_executions(workspace).unwrap();
     assert!(retained.execution_is_live());
     // What this profile holds for the workspace is not what the run was admitted
-    // with: the read succeeds and says the custody changed, so the run ends.
-    let mut renewed = probe.custody.device_cert.clone();
+    // with: the read succeeds and says the ownership changed, so the run ends.
+    let mut renewed = probe.identity.device_cert.clone();
     renewed.device_label = "a reissued certificate".into();
     sign_device_cert(&mut renewed, &default_root).unwrap();
-    let kept = tilo_identity_host::custody::Kept::new(
-        probe.custody.device_cert.clone(),
-        std::sync::Arc::clone(&probe.custody.signer),
+    let kept = tilo_identity::identity_store::Kept::new(
+        probe.identity.device_cert.clone(),
+        std::sync::Arc::clone(&probe.identity.signer),
     )
     .in_workspace(workspace, renewed, Vec::new());
-    probe.custody = HostIdentity::held(
-        probe.custody.device_cert.clone(),
-        std::sync::Arc::clone(&probe.custody.signer),
+    probe.identity = DeviceIdentity::held(
+        probe.identity.device_cert.clone(),
+        std::sync::Arc::clone(&probe.identity.signer),
         std::sync::Arc::new(kept),
     );
     assert!(
         probe.recheck_mcp_executions(workspace).is_err(),
-        "a custody the read confirms is not what the run was admitted with"
+        "an ownership the read confirms is not what the run was admitted with"
     );
     assert!(
         !retained.execution_is_live(),
-        "authority-side original-pin recheck closes retained custody without a wrapper call"
+        "authority-side original-pin recheck closes retained ownership without a wrapper call"
     );
     assert!(
         probe
             .action_workspace(actor, &workspace.to_string())
             .is_err(),
-        "changed selected custody must not reuse the retained roster identity"
+        "changed selected ownership must not reuse the retained roster identity"
     );
     assert!(!probe.workspaces().iter().any(|held| held.id() == workspace));
 }
 
 fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId, actor: &str) {
-    use crate::standalone::RuntimeActionHost;
+    use crate::standalone::RuntimeActionProvider;
     use tilo_action_broker::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
     use tilo_actions::remote::{
-        ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeRequest,
+        ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeRequest,
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
@@ -541,7 +544,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
         services,
     );
     let qualified = broker
-        .certified_local_action_host(admission.caller(), admission.presentation())
+        .certified_local_action_provider(admission.caller(), admission.presentation())
         .unwrap();
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
@@ -575,12 +578,12 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
     let owner = Caller::local_person(actor).in_workspace(workspace_id.clone());
     let session = Arc::new(crate::standalone::AdmittedRuntimeSession {
         policy_time: origin.capture().unwrap(),
-        host: qualified,
+        provider: qualified,
         admission,
         agent: None,
         projection: Some(owner.clone()),
     });
-    let host = RuntimeActionHost {
+    let host = RuntimeActionProvider {
         broker,
         workspace: "private-profile-workspace".into(),
         joined: Arc::clone(joined),
@@ -628,15 +631,15 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
             .ok()
             .flatten()
             .expect("the host answers"),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     );
     assert!(matches!(
         host.invoke(&owner, request).poll_ready(),
-        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        PendingPoll::Ready(Err(ActionCallError::NotPermitted))
     ));
     assert!(matches!(
         host.query(&owner, CatalogueQuery::default()).poll_ready(),
-        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        PendingPoll::Ready(Err(ActionCallError::NotPermitted))
     ));
     assert!(
         invocations.try_recv().is_err(),
@@ -671,11 +674,11 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
 
-    let custody = HostIdentity::kept(device.clone(), device_key.clone());
+    let identity = DeviceIdentity::kept(device.clone(), device_key.clone());
     let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
-        custody,
+        identity,
         local_endpoint(&device_key).await,
         BTreeSet::from([own_workspace]),
         (
@@ -848,7 +851,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             workspace: workspace.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
-                record: String::new(),
+                document: String::new(),
                 envelope,
                 own: None,
             },
@@ -909,7 +912,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             workspace: workspace.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
-                record: String::new(),
+                document: String::new(),
                 envelope,
                 own: None,
             },
@@ -928,11 +931,11 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         }
     })
     .await;
-    assert_changed_custody_refused(&joined, workspace, &actor);
+    assert_changed_ownership_refused(&joined, workspace, &actor);
     assert_runtime_admission_revoked(&joined, workspace, &actor);
     assert!(
         !retained_caller.execution_is_live(),
-        "native enrollment fence synchronously closes captured run custody"
+        "native enrollment fence synchronously closes captured run ownership"
     );
     assert!(execution.check(&joined).is_err());
     assert!(
@@ -954,7 +957,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         "stale identity removes the selected audience"
     );
     drop(governor);
-    governing.relay.shutdown().await;
+    governing.server.shutdown().await;
     for (file, bytes) in settled_files(directory.path()) {
         assert!(
             !bytes
@@ -997,8 +1000,7 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
         return;
     };
     let session = super::super::Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    let (_, device) =
-        tilo_identity_host::broker::trusted_current_device(session.workspace()).unwrap();
+    let (_, device) = tilo_identity::broker::trusted_current_device(session.workspace()).unwrap();
     let governor_root = profile.parent().unwrap().join("governor");
     std::fs::create_dir_all(&governor_root).unwrap();
     let governing = tilo_rt::app()
@@ -1107,7 +1109,7 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     assert_eq!(text.as_deref(), Some(SDK_WRITTEN));
     drop(governor);
     tilo_rt::app()
-        .block_on(async { governing.relay.shutdown().await })
+        .block_on(async { governing.server.shutdown().await })
         .unwrap();
     // Neither the runtime's profile nor the host keeps it in the clear.
     for root in [&profile, &governor_root] {
@@ -1123,10 +1125,10 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     }
 }
 
-/// Every regular file under `root` with its contents: the host's relay store,
+/// Every regular file under `root` with its contents: the host's server store,
 /// the runtime's record. A service socket holds no data.
 ///
-/// The relay's detached store work and the joined session's record
+/// The server's detached store work and the joined session's record
 /// replacement can outlive the services' shutdown, so an entry listed but
 /// gone when read was renamed over or discarded: the scan starts again until
 /// one pass reads every entry it lists.
@@ -1244,7 +1246,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity::kept(device.clone(), device_key.clone()),
+        DeviceIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1391,7 +1393,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity::kept(device.clone(), device_key.clone()),
+        DeviceIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1508,7 +1510,7 @@ fn signed_write(
         workspace,
         operation: CommitOperation::Document {
             app: app.into(),
-            record: RECORD.into(),
+            document: RECORD.into(),
             envelope: Box::new(envelope),
             own: None,
         },
@@ -1548,7 +1550,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let key = native_key(&joined.custody);
+    let key = native_key(&joined.identity);
     for (app, kind) in [
         ("dev.tilo.declared", None),
         ("dev.tilo.declared", Some("dev.tilo.other")),
@@ -1584,7 +1586,7 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
     let (empty, directory) = Joined::test_empty().await;
     let joined = Joined::open(
         directory.path(),
-        empty.custody.clone(),
+        empty.identity.clone(),
         empty.endpoint(),
         BTreeSet::from([workspace]),
         (
@@ -1598,14 +1600,14 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         .commit(signed_write(
             workspace,
             "dev.tilo.declared",
-            &native_key(&empty.custody),
+            &native_key(&empty.identity),
         ))
         .await
         .unwrap_err();
     assert!(refused.contains("read only"), "{refused}");
 }
 
-/// The key `custody` holds in the clear, for a test that hands it to a host or writes it to disk.
-pub(super) fn native_key(custody: &HostIdentity) -> ed25519_dalek::SigningKey {
-    ed25519_dalek::SigningKey::from_bytes(&custody.signer.endpoint_secret().expect("a native key"))
+/// The key `ownership` holds in the clear, for a test that hands it to a host or writes it to disk.
+pub(super) fn native_key(identity: &DeviceIdentity) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret().expect("a native key"))
 }

@@ -1,9 +1,9 @@
-//! Reading one field of one resource straight from the workspace record, and naming the fields a
+//! Reading one field of one resource straight from the workspace document, and naming the fields a
 //! set of Automerge changes wrote.
 //!
-//! A read walks from the record's root to the resource's map (`tl/<app>/<id>`), to the item's
+//! A read walks from the resource's root to the resource's map (`tl/<app>/<id>`), to the item's
 //! map by its id ([`crate::items`]), and reads the one field: its cost does not grow with the
-//! size of the resource. Materializing the resource as a [`crate::DynRecord`] instead
+//! size of the resource. Materializing the resource as a [`crate::DynResource`] instead
 //! would read every item of every collection in it for each field a view reads.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -19,7 +19,7 @@ use tilolang_runtime::place::{AT_KEY, ITEMS_KEY};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Scalar, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
-use crate::action::RECORDS_KEY;
+use crate::action::RESOURCES_KEY;
 use crate::schema::{FieldSchema, MergeKind, TYPE_KEY, TypeSchema, lookup};
 
 type Doc = tilo_resource::Doc;
@@ -40,12 +40,12 @@ pub(crate) fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
 }
 
 /// The map of the resource `id` of `app`: under the app's id, or under an id it was published as
-/// before (`previously:`), where its older records stay. Every copy of the levels above it is
-/// read ([`crate::containers::reach`]): a record made before two replicas met may be in the map
-/// the document does not keep, and it is as much the app's record as any.
+/// before (`previously:`), where its older documents stay. Every copy of the levels above it is
+/// read ([`crate::containers::reach`]): a document made before two replicas met may be in the map
+/// the document does not keep, and it is as much the app's document as any.
 pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
     crate::schema::stored_under(app).iter().find_map(|stored| {
-        crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY, stored])
+        crate::containers::reach(doc, &automerge::ROOT, &[RESOURCES_KEY, stored])
             .iter()
             .rev()
             .find_map(|held| map_at(doc, held, id))
@@ -57,7 +57,7 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
 #[must_use]
 pub fn item_maps(doc: &Doc) -> Vec<ObjId> {
     let mut out = Vec::new();
-    for records in crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY]) {
+    for records in crate::containers::reach(doc, &automerge::ROOT, &[RESOURCES_KEY]) {
         for stored in doc.keys(&records) {
             for app in crate::containers::maps(doc, &records, &stored) {
                 for id in doc.keys(&app) {
@@ -74,13 +74,13 @@ pub fn item_maps(doc: &Doc) -> Vec<ObjId> {
 }
 
 /// The ids of the resources the document `doc` holds: the keys below the levels above the
-/// records, under every copy of them a replica made. A chunk of a record's items holds the items
+/// documents, under every copy of them a replica made. A chunk of a document's items holds the items
 /// of a few resources of the app, never all of them, so a step of a build reads the items of the
 /// ones a chunk names rather than look each resource of the store up in each chunk.
 #[must_use]
 pub fn held_ids(doc: &Doc) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for records in crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY]) {
+    for records in crate::containers::reach(doc, &automerge::ROOT, &[RESOURCES_KEY]) {
         for stored in doc.keys(&records) {
             for app in crate::containers::maps(doc, &records, &stored) {
                 out.extend(doc.keys(&app));
@@ -111,12 +111,12 @@ pub struct Located {
     pub chunk: crate::chunk::ChunkNo,
 }
 
-/// Locate the resource `at`, given the app and type of its document: the record's map, or the
+/// Locate the resource `at`, given the app and type of its document: the document's map, or the
 /// map of its item `at.item` wherever that is stored ([`crate::items`]). Whether the item is
 /// in a collection now is the index's to say.
 ///
 /// # Errors
-/// `NotFound` for a document the record does not hold, or an item it holds none of.
+/// `NotFound` for a document the document does not hold, or an item it holds none of.
 pub fn locate_ref(
     doc: &Doc,
     chunks: Option<&crate::chunk::Chunks>,
@@ -369,34 +369,34 @@ pub fn default_value(field: &FieldSchema) -> FieldValue {
 pub struct Changed {
     /// Per document, the fields that changed; an empty list for a document changed as a whole.
     pub docs: BTreeMap<DocId, Vec<FieldKey>>,
-    /// Whether a resource was created or removed, or the record's layout above the resources
+    /// Whether a resource was created or removed, or the document's layout above the resources
     /// changed: the index of resources must be read again.
     pub structure: bool,
-    /// Whether an op's object could not be placed in the record: every document must be read
+    /// Whether an op's object could not be placed in the document: every document must be read
     /// again.
     pub unplaced: bool,
-    /// Whether the record's layout above the resources changed (not just one resource):
+    /// Whether the document's layout above the resources changed (not just one resource):
     /// anything read of any resource may be stale.
     pub layout: bool,
     /// Per document, the items whose placement was written (moved, removed, inserted), each
     /// with whether the change made it.
     pub placed: Placed,
-    /// The documents an entry of a nested collection (a record written before items were
+    /// The documents an entry of a nested collection (a document written before items were
     /// flat) was put in or deleted from: where their nested items are is read again.
     pub nested: BTreeSet<DocId>,
-    /// Per document, the person the record's change names as the one who made it: `None` for a
+    /// Per document, the person the document's change names as the one who made it: `None` for a
     /// document several people changed, and for a change that names nobody.
     pub by: By,
 }
 
-/// Per document, who made the record's change to it.
+/// Per document, who made the document's change to it.
 pub type By = BTreeMap<DocId, Option<crate::runtime::Actor>>;
 
 /// Per document, the items whose placement changes wrote, each with whether they made it.
 pub type Placed = BTreeMap<DocId, BTreeMap<String, bool>>;
 
 impl Changed {
-    /// Whether the change wrote anything but where the record places its resources (`$chunks`):
+    /// Whether the change wrote anything but where the document places its resources (`$chunks`):
     /// whether it names a resource at all, and so whether its message is read for one.
     ///
     /// A run's tail in the manifest is written once an item of a collection, names no resource,
@@ -413,7 +413,7 @@ impl Changed {
             || self.layout
     }
 
-    /// What `other` changed as well: the changes of another document of the record, read on
+    /// What `other` changed as well: the changes of another document of the document, read on
     /// that document.
     pub fn take_in(&mut self, other: Self) {
         for (doc, fields) in other.docs {
@@ -454,7 +454,7 @@ impl Changed {
 /// placed. `index` gives each document's app and type, so the walk knows which fields are
 /// collections whose items are resources of their own.
 ///
-/// Each op names its object and key; the object's place in the record is found by walking up
+/// Each op names its object and key; the object's place in the document is found by walking up
 /// its parents ([`Places`]). (Automerge's own patches would name the same places, but building
 /// one walks every entry of each map above the change, which in a collection of 10,000 items
 /// costs milliseconds per keystroke.) Ops overwritten by a concurrent op are named as well: a
@@ -473,8 +473,8 @@ pub fn changed_by(
     out
 }
 
-/// The changes of `doc` that wrote a resource of the record, and whose messages are read for
-/// one: a change that wrote nothing but where the record places its resources (`$chunks`) names
+/// The changes of `doc` that wrote a resource of the document, and whose messages are read for
+/// one: a change that wrote nothing but where the document places its resources (`$chunks`) names
 /// no resource and makes no version of one ([`Places::wrote`]).
 #[must_use]
 pub fn naming<'c>(changes: &'c [Change], doc: &Doc) -> Vec<&'c Change> {
@@ -495,7 +495,7 @@ pub fn naming<'c>(changes: &'c [Change], doc: &Doc) -> Vec<&'c Change> {
 /// change, and a hundred thousand of them half a minute.
 pub struct Places<'d> {
     doc: &'d Doc,
-    /// The place from the record's root of each object walked, by the id Automerge prints for
+    /// The place from the document's root of each object walked, by the id Automerge prints for
     /// it; `None` for one the document does not hold.
     at: HashMap<String, Option<Rc<[Prop]>>>,
 }
@@ -510,7 +510,7 @@ impl<'d> Places<'d> {
         }
     }
 
-    /// What `change` wrote of the record, and whether it wrote more than where the record
+    /// What `change` wrote of the document, and whether it wrote more than where the document
     /// places its resources (`$chunks`) at all ([`Changed::wrote`]).
     ///
     /// A run's tail in the manifest is written once an item of a collection, so a workspace of a
@@ -525,9 +525,9 @@ impl<'d> Places<'d> {
         let doc = self.doc;
         let expanded = change.decode();
         let mut out = ChangedBuilder::default();
-        // The objects the change wrote, each where it stands in the record and the keys written
+        // The objects the change wrote, each where it stands in the document and the keys written
         // of it: a change on a workspace of a hundred thousand items writes one key of one
-        // object, and the record's own document holds a hundred thousand such changes.
+        // object, and the document's own document holds a hundred thousand such changes.
         let mut writes: Vec<Writes<'_>> = Vec::new();
         // Where each object the change wrote stands, once walked, by its id: most changes write
         // one object, but the change that adds ten thousand items writes ten thousand, and a
@@ -539,7 +539,7 @@ impl<'d> Places<'d> {
             } else {
                 let at = writes.len();
                 let walked = match self.path(&op.obj.to_string()) {
-                    // Where the record places its resources: written once an item, and no
+                    // Where the document places its resources: written once an item, and no
                     // resource's fields, place or version is read of it.
                     Some(path) if places_only(&path) => None,
                     path => {
@@ -588,7 +588,7 @@ impl<'d> Places<'d> {
         out.finish()
     }
 
-    /// Whether `change` wrote anything but where the record places its resources (`$chunks`),
+    /// Whether `change` wrote anything but where the document places its resources (`$chunks`),
     /// for a change read only for that: the first object it wrote elsewhere answers, and what
     /// it wrote there is not read. A change that adds ten thousand items is answered by its
     /// first op, not walked to each item's place.
@@ -601,14 +601,14 @@ impl<'d> Places<'d> {
             }
             match self.path(&op.obj.to_string()) {
                 Some(path) if places_only(&path) => {}
-                // Written elsewhere in the record, or where no place could be walked.
+                // Written elsewhere in the document, or where no place could be walked.
                 _ => return true,
             }
         }
         false
     }
 
-    /// The keys from the record's root down to the object `obj` (as Automerge prints its id),
+    /// The keys from the document's root down to the object `obj` (as Automerge prints its id),
     /// walking no further than the first object this already walked.
     fn path(&mut self, obj: &str) -> Option<Rc<[Prop]>> {
         if let Some(held) = self.at.get(obj) {
@@ -662,10 +662,10 @@ impl<'d> Places<'d> {
     }
 }
 
-/// The keys a change wrote of one object of the record, and whether it made an object under
+/// The keys a change wrote of one object of the document, and whether it made an object under
 /// each: a key written twice (made, then a value put in it) is read once, as made.
 struct Writes<'a> {
-    /// Where the object stands in the record; `None` when its place could not be walked.
+    /// Where the object stands in the document; `None` when its place could not be walked.
     path: Option<Rc<[Prop]>>,
     keys: Vec<(Option<&'a str>, bool)>,
     /// Where each key stands in `keys`: a map the change put ten thousand keys in is read a
@@ -685,7 +685,7 @@ impl<'a> Writes<'a> {
     }
 }
 
-/// Whether an object stands where the record places its resources (`$chunks`): a write there
+/// Whether an object stands where the document places its resources (`$chunks`): a write there
 /// names no resource, and makes no version of one.
 fn places_only(path: &[Prop]) -> bool {
     path.first()
@@ -729,11 +729,11 @@ impl ChangedBuilder {
         let keys: Vec<Option<&str>> = props.iter().map(|p| key_of(p)).collect();
         let above = keys.first().copied().flatten();
         if above == Some(crate::chunk::CHUNKS_KEY) {
-            // Where the record places its resources: written once an item of a collection, and
+            // Where the document places its resources: written once an item of a collection, and
             // no resource's fields, place or version is read of it.
             return;
         }
-        if above != Some(RECORDS_KEY) {
+        if above != Some(RESOURCES_KEY) {
             return;
         }
         let Some(Some(doc)) = keys.get(2).copied() else {
@@ -781,7 +781,7 @@ impl ChangedBuilder {
         self.within(doc, doc, schema, keys.get(3..).unwrap_or_default());
     }
 
-    /// A write below `$items` of the record `doc`: `below` are the keys from the item's id on.
+    /// A write below `$items` of the document `doc`: `below` are the keys from the item's id on.
     fn flat_item(
         &mut self,
         record: &Doc,
@@ -790,7 +790,7 @@ impl ChangedBuilder {
         made: bool,
     ) {
         let Some(Some(item)) = below.first().copied() else {
-            // The map the record's items sit in, made with the first of them and removed with
+            // The map the document's items sit in, made with the first of them and removed with
             // the last: the items it gains or loses are named by their own writes.
             if !made {
                 self.whole(doc);
@@ -828,8 +828,8 @@ impl ChangedBuilder {
         }
     }
 
-    /// A write below the map of `resource` (of type `schema`) of the record `doc`: `keys` are
-    /// the keys from the field on. A collection field here is one of a record written before
+    /// A write below the map of `resource` (of type `schema`) of the document `doc`: `keys` are
+    /// the keys from the field on. A collection field here is one of a document written before
     /// items were flat, holding its items nested.
     fn within(
         &mut self,
@@ -866,14 +866,14 @@ impl ChangedBuilder {
                 return;
             };
             let below = keys.get(at.saturating_add(1)..).unwrap_or_default();
-            let item_record = spec.record.as_deref().and_then(lookup);
+            let item_document = spec.record.as_deref().and_then(lookup);
             match (spec.kind, below) {
                 // A nested item's value changed below its `v`: descend into the item, named by
                 // its id.
                 (MergeKind::Collection, [Some(item), Some("v"), _, ..]) => {
                     resource = format!("{doc}/{item}");
                     // An item of a collection of several types: read again whole.
-                    let Some(item_schema) = item_record else {
+                    let Some(item_schema) = item_document else {
                         self.any(doc, &resource);
                         return;
                     };
@@ -974,7 +974,7 @@ impl ChangedBuilder {
 }
 
 /// Whether a resource of type `schema` can hold a text at all: a text field of its own, or one
-/// in a record or a collection's items it holds. Naming a resource skips a collection whose
+/// in a document or a collection's items it holds. Naming a resource skips a collection whose
 /// items cannot, rather than open each of its items to find none.
 #[must_use]
 pub fn may_hold_text(schema: &TypeSchema) -> bool {
@@ -996,9 +996,9 @@ pub fn may_hold_text(schema: &TypeSchema) -> bool {
     holds(schema, &mut Vec::new())
 }
 
-/// The items of a record, found and resolved into their collections: what
+/// The items of a document, found and resolved into their collections: what
 /// [`first_text`] reads a collection's items from.
-pub struct RecordItems<'a> {
+pub struct DocumentItems<'a> {
     pub doc: &'a str,
     pub items: &'a crate::items::Items,
     pub resolved: &'a tilolang_runtime::place::Resolved,
@@ -1012,7 +1012,7 @@ pub struct RecordItems<'a> {
 /// line.
 ///
 /// A channel called "design" whose messages hold text is "design", not the first of its
-/// messages (a milestone's tasks are not its name either); only a record that is nothing but
+/// messages (a milestone's tasks are not its name either); only a document that is nothing but
 /// its list is named by its first item — and never a root, which is named by a text of its own
 /// alone ([`crate::store`]'s `named_by`).
 #[must_use]
@@ -1020,10 +1020,10 @@ pub fn first_text(
     doc: &Doc,
     obj: &ObjId,
     schema: &TypeSchema,
-    (path, items): (&str, &RecordItems<'_>),
+    (path, items): (&str, &DocumentItems<'_>),
 ) -> Option<(String, String)> {
-    // A type that says which field names its records is named by that field alone: a title it
-    // holds nothing in leaves the record untitled rather than named by another text it holds
+    // A type that says which field names its documents is named by that field alone: a title it
+    // holds nothing in leaves the document untitled rather than named by another text it holds
     // (`(title: subject)` on a draft whose subject is not typed yet).
     if let Some(field) = schema
         .title
@@ -1033,7 +1033,7 @@ pub fn first_text(
     {
         return Some((field_text(doc, obj, field)?, path.to_owned()));
     }
-    // Its own texts, in the order the type declares them, then the records and collections it
+    // Its own texts, in the order the type declares them, then the documents and collections it
     // holds ([`TypeSchema::naming_scan`], the one order naming uses).
     let fields = schema.naming_scan();
     if let Some(own) = own_text(doc, obj, &fields, path) {
@@ -1085,7 +1085,7 @@ pub fn first_text(
 }
 
 /// The first non-blank line of the text `field` holds in `obj`, a text or rich text: what a
-/// record named by that field alone says.
+/// document named by that field alone says.
 fn field_text(doc: &Doc, obj: &ObjId, field: &FieldSchema) -> Option<String> {
     let text = match field.kind {
         MergeKind::Text => read_key(doc, obj, field.id.as_str()).ok()?,

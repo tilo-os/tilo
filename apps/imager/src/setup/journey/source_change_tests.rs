@@ -92,10 +92,10 @@ fn open_preparation(app: &mut App, home: &Path) {
         "{belongings}"
     );
     assert_eq!(belongings["categories"][0], true, "{belongings}");
-    let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(
+    let services = ui::process::ProcessServices::null().with_files(std::sync::Arc::new(
         RecognizedHomePicker(home.to_path_buf()),
     ));
-    let _picker = ui::host::enter(&services);
+    let _picker = ui::process::enter(&services);
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
     wait(app, |v| {
@@ -106,7 +106,7 @@ fn open_preparation(app: &mut App, home: &Path) {
     });
 }
 struct RecognizedHomePicker(PathBuf);
-impl ui::host::FilePicker for RecognizedHomePicker {
+impl ui::process::FilePicker for RecognizedHomePicker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
         assert!(request.is_directory());
         assert_eq!(request.directory_hint(), Some(self.0.as_path()));
@@ -178,14 +178,14 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     std::fs::write(&document, b"before").unwrap();
     std::fs::write(home.join(".var/app/story.app/data"), b"hidden app data").unwrap();
     // Live inventories spill only into acknowledged, native block-backed
-    // preparation custody. NBD is not admitted as native inventory storage;
+    // preparation ownership. NBD is not admitted as native inventory storage;
     // grant a fresh actor-owned directory on the builder's native filesystem.
-    let custody = tempfile::tempdir_in("/var/tmp").unwrap();
+    let ownership = tempfile::tempdir_in("/var/tmp").unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _platform = main_story_tests::source_fixture(&root);
     env.set("HOME", &home);
     env.set("XDG_CONFIG_HOME", home.join(".config"));
-    env.set("XDG_STATE_HOME", custody.path().join("state"));
+    env.set("XDG_STATE_HOME", ownership.path().join("state"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     let mut app = App::launched(&["--setup"]).unwrap();
     open_preparation(&mut app, &home);

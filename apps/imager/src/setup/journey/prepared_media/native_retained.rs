@@ -54,7 +54,7 @@ mod actor {
             &root.join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let password = "a sufficiently long installation password";
@@ -114,7 +114,7 @@ mod actor {
         assert!(conflicting.write(&root.join("conflicting-plan")).is_err());
         assert_eq!(review.manifest().identity_public_key, identity.public_key());
         assert_eq!(media.projection()["shared_original_files"], true);
-        assert!(!media._custody.path().join("setup").exists());
+        assert!(!media._ownership.path().join("setup").exists());
         assert!(!root.join("imported-home").exists());
         assert_eq!(
             std::fs::read(home.join("document")).unwrap(),

@@ -42,6 +42,11 @@ pub type TextSearch = dyn Fn(&str, usize) -> Vec<ResourceRef>;
 #[derive(Debug, Default)]
 pub struct ProgramIo {
     pub output: Vec<String>,
+    /// The same lines as a person reads them: what a program printed, with each field a person
+    /// reads (`fields:` rows) shown their way — a day or a moment in their formats, an option
+    /// that is `none` left out, a resource by its title — and no reference literals. The
+    /// model keeps [`Self::output`] for its next program; a reply the person reads takes these.
+    pub person_output: Vec<String>,
     pub kept: Vec<(String, Value)>,
     pub inputs: ProgramInputs,
     pub missing: Vec<ReadRequest>,
@@ -67,6 +72,8 @@ pub enum ProgramOutcome {
 #[derive(Debug)]
 pub struct ProgramReply {
     pub output: Vec<String>,
+    /// [`ProgramIo::person_output`]: the same lines as a person reads them.
+    pub person_output: Vec<String>,
     pub outcome: ProgramOutcome,
 }
 
@@ -120,6 +127,7 @@ impl Session {
             Err(diagnostics) => {
                 return ProgramReply {
                     output: Vec::new(),
+                    person_output: Vec::new(),
                     outcome: ProgramOutcome::Rejected(
                         diagnostics
                             .iter()
@@ -134,6 +142,7 @@ impl Session {
         if matches!(outcome, ProgramOutcome::NeedsReads(_)) {
             return ProgramReply {
                 output: io.output,
+                person_output: io.person_output,
                 outcome,
             };
         }
@@ -147,6 +156,7 @@ impl Session {
         }
         ProgramReply {
             output: io.output,
+            person_output: io.person_output,
             outcome,
         }
     }
@@ -285,6 +295,27 @@ impl Runtime {
         *self.core.reader.borrow_mut() = Some(Box::new(reader));
     }
 
+    /// Ask `reading` for the reading of a resource of an app this runtime does not run, when the
+    /// code meets one this holds no reading of, and take what it answers at once; the runtime of
+    /// a task's host, whose programs read the session's own resources (the device's, the
+    /// session's, Settings') within the program they run. `None` for a resource its session
+    /// publishes nothing of; a host that answers nothing with `Err` fails the read with why.
+    ///
+    /// A host that hands readings in as the session publishes them ([`Self::set_reading`], the
+    /// shell's) sets none: its reads wait for the reading to arrive, as a view's does.
+    pub fn set_readings_asked_for(
+        &self,
+        reading: impl Fn(&ResourceRef) -> Result<Option<serde_json::Value>, String> + 'static,
+    ) {
+        self.core.foreign.borrow_mut().set_ask(reading);
+    }
+
+    /// Forget the readings a program asked for, so the next one asks again: what a session
+    /// publishes moved between them.
+    pub fn forget_asked_readings(&self) {
+        self.core.foreign.borrow_mut().forget_asked();
+    }
+
     /// Find resources by text for programs' `find`: the host's search, which answers words
     /// with the resources that hold them, the best first.
     pub fn set_text_search(&self, search: impl Fn(&str, usize) -> Vec<ResourceRef> + 'static) {
@@ -309,17 +340,31 @@ impl Core {
             Imp::Print => {
                 let types: Vec<String> =
                     serde_json::from_str(&self.text(a.h(1)?)?).unwrap_or_default();
-                let said = match self.val(a.h(0)?)? {
-                    Value::Tuple(items) => items
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| self.show_typed(v, types.get(i).map_or("", String::as_str)))
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    other => self.show(&other),
+                let value = self.val(a.h(0)?)?;
+                let (said, said_for_a_person) = match value {
+                    Value::Tuple(items) => {
+                        let line = |for_a_person: bool| {
+                            items
+                                .iter()
+                                .enumerate()
+                                .map(|(i, v)| {
+                                    let ty = types.get(i).map_or("", String::as_str);
+                                    if for_a_person {
+                                        self.show_typed_for_a_person(v, ty)
+                                    } else {
+                                        self.show_typed(v, ty)
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        };
+                        (line(false), line(true))
+                    }
+                    other => (self.show(&other), self.show_for_a_person(&other)),
                 };
                 if let Some(io) = self.program.borrow_mut().as_mut() {
                     io.output.push(said);
+                    io.person_output.push(said_for_a_person);
                 }
                 Ok(None)
             }

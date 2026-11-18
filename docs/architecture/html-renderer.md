@@ -114,7 +114,7 @@ over a page that mounts one app, is a `<header>` toolbar of real buttons over
 its painted band.
 
 A widget shows what it paints itself from parts of its own: `cx.words` puts a
-run of text as an element (`h3`, `dt`, `td`, `li`) standing where the widget
+run of text as an element (`h3`, `dt`, `td`, `li`) access where the widget
 sets it, `cx.attr` gives its element what only its kind carries (an `<img>`'s
 `src` and `alt`, a `<progress>`'s `value`, a `<time>`'s `datetime`), and
 `cx.ground` fills its element with the ground the widget paints under it (a
@@ -155,7 +155,7 @@ fetches it the first time a page asks for `dom: true`.
 
 A development build of the Notes bundle (`wasm-dev`, unoptimized), headless
 Chrome on a laptop, with a note made through Notes' own
-`import-markdown-content` action:
+`create-page` action:
 
 | | 1280 px | 390 px |
 |---|---|---|

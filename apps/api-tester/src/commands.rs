@@ -87,7 +87,9 @@ pub(crate) enum Table {
 }
 
 impl Table {
-    pub(crate) fn rows(self) -> Path<Workspace, ui::tilo_resource::Collection<crate::record::Row>> {
+    pub(crate) fn rows(
+        self,
+    ) -> Path<Workspace, ui::tilo_resource::Collection<crate::workspace::Row>> {
         let request = Workspace::paths().request;
         match self {
             Table::Params => request.params,

@@ -1,4 +1,4 @@
-//! The app's record of the workspace: which changes History shows.
+//! The app's resource of the workspace: which changes History shows.
 
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
@@ -62,7 +62,7 @@ pub fn period(key: &str) -> wire::Period {
 }
 
 impl Filter {
-    /// What the record holds: which changes History shows — the agent, the workspace and
+    /// What the resource holds: which changes History shows — the agent, the workspace and
     /// the span of time, each picked whole from a list.
     pub fn read_document(
         &self,

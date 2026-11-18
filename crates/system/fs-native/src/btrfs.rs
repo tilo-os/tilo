@@ -102,7 +102,7 @@ fn entry_name(name: &OsStr) -> io::Result<&[u8]> {
 }
 
 /// Creates a readonly snapshot through held source and private broker-parent
-/// handles. The caller retains custody of the parent; this does not grant an
+/// handles. The caller keeps owning the parent; this does not grant an
 /// app access to it.
 pub fn snapshot_readonly_at(
     source: BorrowedFd<'_>,
@@ -134,7 +134,7 @@ pub fn destroy_snapshot_id(
         || subvolume_identity(snapshot)? != *expected
         || subvolume_identity(parent)?.filesystem != expected.filesystem
     {
-        return Err(invalid("snapshot identity or custody changed"));
+        return Err(invalid("snapshot identity or ownership changed"));
     }
     // SAFETY: zero is valid input; SPEC_BY_ID selects the union's first u64.
     let mut args: VolArgsV2 = unsafe { std::mem::zeroed() };

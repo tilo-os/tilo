@@ -20,7 +20,7 @@ pub enum SessionEvent {
     Ended(io::Result<()>),
 }
 
-/// What [`supervise`] needs of a running session: a seam so tests can stand
+/// What [`supervise`] needs of a running session: a boundary so tests can stand
 /// in for the kernel.
 pub trait SupervisedSession {
     /// The session's own thread, taken out to be joined elsewhere.

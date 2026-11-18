@@ -991,7 +991,7 @@ fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
         host.mark_drawn();
         assert!(
             !Widget::needs_redraw(&host),
-            "the step standing was the one painted"
+            "the step shown was the one painted"
         );
         host
     });
@@ -1100,7 +1100,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
             !drawn.get(),
             "the app painted into a tile that is still holding its place; \
          its buffer is not the size of the tab yet, and putting it on \
-         screen is the resize-after-open this gate exists to prevent",
+         screen is the resize-after-open this check exists to prevent",
         );
     }
 
@@ -1111,7 +1111,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         assert!(
             drawn.get(),
             "an app with a frame that fits its tab must be what the tile \
-         paints; anything else is a placeholder standing in front of a \
+         paints; anything else is a placeholder access in front of a \
          window that is already there",
         );
     }

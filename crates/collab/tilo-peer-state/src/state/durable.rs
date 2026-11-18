@@ -39,8 +39,8 @@ pub struct Durable<'a> {
 }
 
 impl<'a> Durable<'a> {
-    /// The durable state `bytes` hold, of `workspace` owned by `owner`.
-    fn read(bytes: &'a [u8], workspace: &str, owner: [u8; 32]) -> Result<Self, String> {
+    /// The durable state `bytes` hold, of `workspace`.
+    fn read(bytes: &'a [u8], workspace: &str) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         if version != DURABLE_VERSION {
             return Err(format!("unsupported durable version {version}"));
@@ -53,7 +53,7 @@ impl<'a> Durable<'a> {
         if !durable.sealed.is_empty() && durable.exact.is_none() {
             return Err("sealed record history requires exact admissions".into());
         }
-        if durable.workspace != workspace || durable.owner != owner {
+        if durable.workspace != workspace {
             return Err("durable admission namespace mismatch".into());
         }
         Ok(durable)
@@ -545,6 +545,9 @@ impl StatePeer {
     }
 
     /// Restore a peer from durable state produced by [`StatePeer::durable`].
+    /// The workspace's owner is the one its governance names, which the
+    /// durable state carries; `owner_device` is the device this replica was
+    /// made on or joined through ([`StatePeer::from_join`]).
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public API: callers hand over the pinned revocation list"
@@ -557,7 +560,8 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let durable = Durable::read(bytes, workspace, owner_device.user_public_key)?;
+        let durable = Durable::read(bytes, workspace)?;
+        let owner = durable.owner;
         let exact_admissions = durable
             .exact
             .map(ExactAdmissions::decode)
@@ -574,7 +578,7 @@ impl StatePeer {
         let mut peer = Self {
             core: PeerCore {
                 workspace: canonical_workspace,
-                owner: owner_device.user_public_key,
+                owner,
                 origin: owner_device.device_public_key,
                 certificates: verified_certificates.into(),
                 revocations: RevocationList::new(),
@@ -602,11 +606,8 @@ impl StatePeer {
         )
         .map_err(err)?;
         peer.core.receipts = durable.receipts.into();
-        peer.core.workspace_doc = durable
-            .workspace_bytes
-            .as_deref()
-            .map(restored_workspace)
-            .transpose()?;
+        peer.core.workspace_doc =
+            restored_governance(durable.workspace_bytes.as_deref(), workspace, owner)?;
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.workspace_doc.as_deref(),
@@ -642,6 +643,7 @@ impl StatePeer {
                 .into(),
             );
         }
+        peer.raise_floors_to_marks();
         for (route, ops) in durable.sealed {
             peer.restore_sealed(&route, ops)?;
         }
@@ -663,6 +665,39 @@ impl StatePeer {
         }
         peer.check_exact_within_floors()?;
         Ok(peer)
+    }
+
+    /// Every write of an author a compaction folded is decided: the author's floor is at least
+    /// its mark. A record whose floor fell below a mark took no write of that author again,
+    /// each one numbered under writes it decided already; it comes back with its floor at the
+    /// mark.
+    fn raise_floors_to_marks(&mut self) {
+        let marks: Vec<(Route, [u8; 32], u64)> = self
+            .core
+            .exact_admissions
+            .marks()
+            .filter(|(writer, _)| writer.workspace == self.core.workspace)
+            .map(|(writer, mark)| {
+                (
+                    Route {
+                        app: writer.app.clone(),
+                        record: writer.record.clone(),
+                    },
+                    writer.author,
+                    mark,
+                )
+            })
+            .collect();
+        for (route, author, mark) in marks {
+            if let Some(document) = self.core.documents.get_mut(&route) {
+                let floor = document
+                    .channel
+                    .last_seq_per_author
+                    .entry(Ed25519PublicKey::from_bytes(author))
+                    .or_default();
+                *floor = (*floor).max(mark);
+            }
+        }
     }
 
     /// Every exact entry and every compaction mark lies within its route's
@@ -818,4 +853,21 @@ fn restored_workspace(bytes: &[u8]) -> Result<CachedDocument, String> {
         .map(CachedDocument::from)
         .map_err(err)
         .and_then(|doc| doc.stored_as(bytes))
+}
+
+/// `bytes`, the workspace's governance as durable state kept it, checked as
+/// the governance of `owner`'s workspace: what names another owner is not
+/// this workspace's.
+fn restored_governance(
+    bytes: Option<&[u8]>,
+    workspace: &str,
+    owner: [u8; 32],
+) -> Result<Option<CachedDocument>, String> {
+    let governance = bytes.map(restored_workspace).transpose()?;
+    if let Some(doc) = governance.as_deref()
+        && super::receiving::owner_named_by(doc, workspace) != Some(owner)
+    {
+        return Err("durable admission namespace mismatch".into());
+    }
+    Ok(governance)
 }

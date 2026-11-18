@@ -63,6 +63,16 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     author
         .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
+    // A file put into the document: changes larger than one segment, and everything written
+    // after them builds on them.
+    doc.put(ROOT, "file", noise(3 * 1024 * 1024 / 2, 1_000))
+        .unwrap();
+    author
+        .write(
+            route(),
+            &DocumentMutation::Incremental(doc.save_incremental()),
+        )
+        .unwrap();
     for index in 0..TAIL {
         doc.put(
             ROOT,
@@ -100,5 +110,10 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
             .map(|(value, _)| value),
         doc.get(ROOT, "checkpoint").unwrap().map(|(value, _)| value),
         "the segmented checkpoint is whole"
+    );
+    assert_eq!(
+        held.get(ROOT, "file").unwrap().map(|(value, _)| value),
+        doc.get(ROOT, "file").unwrap().map(|(value, _)| value),
+        "the changes that travelled in segments are whole"
     );
 }

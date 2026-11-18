@@ -95,7 +95,7 @@ fn local_prefs_and_accounts_persist_to_disk() {
         );
         assert!(
             account_root.statuses().get(&account_id).is_none(),
-            "Remove also purged the account's local sync-health record"
+            "Remove also purged the account's local sync-health resource"
         );
     }
 }

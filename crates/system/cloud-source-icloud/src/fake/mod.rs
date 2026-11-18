@@ -221,7 +221,7 @@ impl FakeICloud {
 
     /// A trusted session, as a completed sign-in leaves it (idmsa session
     /// and trust tokens, the web cookies `accountLogin` sets), issued
-    /// directly. Signing in is custody's (`account_custody::icloud::auth`),
+    /// directly. Signing in is ownership's (`account_credentials::icloud::auth`),
     /// whose tests run the full SRP and two-factor flow against this server.
     pub fn session(&self) -> StoredSession {
         let mut state = self.lock();

@@ -1,15 +1,15 @@
 //! Who sits at this device, as far as undo attribution and history authors
 //! are concerned.
 //!
-//! This is the process's one identity seam, the toolkit's and the collab
+//! This is the process's one identity boundary, the toolkit's and the collab
 //! client's. The toolkit reads the person's
 //! public identity only through the process's [`LocalIdentitySource`]. The
 //! native implementation reads the runtime identity the launcher bound
 //! (`TILO_USER_IDENTITY`), then `$XDG_CONFIG_HOME/tilo/identity/primary.json`
 //! (feature `local-daemons`). A browser page installs one derived from its
-//! certified device (the relay peer's `DeviceCert` names the user root) with
+//! certified device (the server peer's `DeviceCert` names the user root) with
 //! [`install_source`] once certification completes; the device key itself
-//! stays in the page's custody and signs through the relay client's
+//! stays in the page's ownership and signs through the server client's
 //! `DeviceSigner`, never through the toolkit. Without either there is no
 //! local identity, and callers fall back to their account-name ladders.
 
@@ -262,7 +262,7 @@ mod name_tests {
     use super::*;
 
     /// Peers learn what to call this person from the name the app announces
-    /// on joining: the profile name, never an id standing in for one.
+    /// on joining: the profile name, never an id in place of one.
     #[test]
     fn an_app_names_its_person_by_their_profile_name() {
         let _guard = tilo_test_env::lock();

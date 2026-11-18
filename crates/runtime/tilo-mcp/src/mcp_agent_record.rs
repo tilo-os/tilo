@@ -2,7 +2,7 @@
 //! ([`tilo_actions::remote::ResourceReads`]): its content as a structured value whatever app keeps
 //! it, decided as the agent may read it now, and woken by the next write to it.
 
-use super::{ActionHost, Failure, McpServer, Reply};
+use super::{ActionProvider, Failure, McpServer, Reply};
 use tilo_actions::remote::{ResourceAddress, ResourceAsk, read_resources};
 
 /// How long a record read waits for a write past the revision it was given.
@@ -10,7 +10,7 @@ const RECORD_WAIT_MS: u64 = 25_000;
 /// Longest answer, in characters, a record read gives: a longer chain is read a part at a time.
 const RECORD_CHARS: usize = 200_000;
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_read` of `record:<app>:<record>`: the record (its chain of parts, when `parts`), once
     /// it differs from the revision `after` or the wait passed.
     pub(super) async fn agent_record(

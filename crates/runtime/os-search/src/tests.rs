@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus, workspace_provider,
 };
@@ -42,12 +42,12 @@ impl Host {
     }
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let (unanswered, revision, all) = {
             let catalogue = self.0.lock().unwrap();
             (
@@ -57,7 +57,7 @@ impl ActionHost for Host {
             )
         };
         if unanswered {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "test".into(),
             }));
         }
@@ -89,7 +89,7 @@ impl ActionHost for Host {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         self.0
             .lock()
@@ -110,8 +110,8 @@ impl ActionHost for Host {
         &self,
         _caller: &Caller,
         _id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
 
@@ -373,6 +373,6 @@ async fn an_unanswered_walk_leaves_the_index_as_it_was() {
     let id: EntryId = search.search("travel", 1)[0].id;
     assert!(matches!(
         search.open(&id.to_string()).await,
-        Err(OpenError::Host(ActionHostError::Unavailable { .. }))
+        Err(OpenError::Provider(ActionCallError::Unavailable { .. }))
     ));
 }

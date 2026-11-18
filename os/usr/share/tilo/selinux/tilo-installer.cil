@@ -1,7 +1,7 @@
 ; Tilo installer live-medium SELinux policy module (CIL).
 ; ===========================================================================
 ; Loaded ONLY on the installer live medium, at boot, by
-; tilo-installer-setup.service (which is gated on the `tilo.install` kernel
+; tilo-installer-setup.service (which depends on the `tilo.install` kernel
 ; cmdline). The INSTALLED system never loads this module.
 ;
 ; WHY THIS EXISTS

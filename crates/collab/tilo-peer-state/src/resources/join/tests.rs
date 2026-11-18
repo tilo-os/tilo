@@ -27,7 +27,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     peer.receive_from(
-        crate::TransportOrigin::RelayDelta(peer.owner_certificates()[0].device_public_key),
+        crate::TransportOrigin::ServerDelta(peer.owner_certificates()[0].device_public_key),
         crate::NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(peer.owner_certificates()[0].clone()),

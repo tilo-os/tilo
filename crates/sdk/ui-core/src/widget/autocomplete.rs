@@ -44,7 +44,7 @@ pub struct Suggestion {
     pub detail: Option<String>,
     pub subtitle: Option<String>,
     pub icon: Option<Icon>,
-    pub person: Option<SuggestionPerson>,
+    pub person: Option<crate::component::Person>,
     /// What the row is: a pickable item (the default), a group's header or a
     /// notice ("No matches").
     pub role: RowRole,
@@ -72,14 +72,6 @@ impl Suggestion {
     pub fn is_pickable(&self) -> bool {
         self.role == RowRole::Item
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SuggestionPerson {
-    pub identity: tilo_actions::Actor,
-    pub hue: crate::tokens::PresenceHue,
-    /// Software acting in the workspace rather than a person.
-    pub agent: bool,
 }
 
 impl Suggestion {
@@ -144,7 +136,7 @@ impl Suggestion {
     }
 
     #[must_use]
-    pub fn with_person(mut self, person: SuggestionPerson) -> Self {
+    pub fn with_person(mut self, person: crate::component::Person) -> Self {
         self.person = Some(person);
         self
     }
@@ -319,21 +311,8 @@ fn paint_item(
             x + side,
             row.center().y + side / 2.0,
         );
-        let colour = theme.tokens.colors.presence.hue(person.hue);
-        if person.agent {
-            crate::agent_identity::draw_agent_identity_mark(
-                scene,
-                transform,
-                mark,
-                colour,
-                theme,
-                crate::agent_identity::AgentIdentityStyle::Solid,
-            );
-        } else {
-            crate::widget::AvatarFace::new(&s.label, person.identity.id())
-                .presence(colour)
-                .paint(&mut PaintCtx::new(scene, transform, text, theme), mark);
-        }
+        crate::widget::AvatarFace::of(person)
+            .paint(&mut PaintCtx::new(scene, transform, text, theme), mark);
         x += side + m.spacing;
     } else if let Some(icon) = s.icon {
         let iy = row.center().y - m.icon / 2.0;
@@ -1361,12 +1340,12 @@ impl Widget for Autocomplete {
 }
 
 impl crate::widget::controls::ActionControls for Autocomplete {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.input.install_control_custody(domain, attachment);
+        self.input.attach_controls(domain, attachment);
     }
 }
 

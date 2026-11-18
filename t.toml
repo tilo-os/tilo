@@ -5,13 +5,13 @@
 # says how much a check costs: t books each job from what its runs measured and grows it.
 #
 # When a check runs is two fields. A check that names no `on` is a default one: it is in `all` and
-# in the run of every new head of a followed branch, so `main` integrates ungated: a push is never
+# in the run of every new head of a followed branch, so `main` integrates unguarded: a push is never
 # held, and whoever broke a check is told and fixes it forward. `default = false` leaves it out of
 # those. `on` names the places the server runs a check by itself: `idle` (main's newest head when t
 # has room, bisected and attributed when it fails), `dispatch`, `schedule:<cron>` and `tag:<glob>`
 # (a release, for the `tag:vMAJOR.MINOR.PATCH` glob). A check that names an `on` runs there and when
 # asked, not with every change; `default = true` beside an `on` runs it on every change too. There
-# is no queue and no gate: a change runs what `t scope` says it reaches, and `t suggest` names the
+# is no queue and no check: a change runs what `t scope` says it reaches, and `t suggest` names the
 # opt-in checks it moves.
 #
 # `heavy = true` marks a check a release is verified by, and not part of an ordinary change's run.
@@ -125,13 +125,13 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # package .config/nextest-capabilities.toml names first runs the capability probe
 # (tools/ci/capability_filter.py), handed the same way (tools/tests/test_capability_filter.py
 # holds every such package to it).
-# The Lounge tests start the workspace service, which `tilo-relay` has only with `agents`, for both
+# The Lounge tests start the workspace service, which `tilo-server` has only with `agents`, for both
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo.
-# The relay's coding-agent tests start the guest's own agent program in its serving mode, as the
+# The server's coding-agent tests start the guest's own agent program in its serving mode, as the
 # machine-siblings setup names it.
-starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-relay:bin:tilo-relay=agents"], tilo-session-client = ["tilo-relay:bin:tilo-relay=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-relay = ["legacy-agent:tilo-legacy-agent"] }
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["legacy-agent:tilo-legacy-agent"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -142,7 +142,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch={arch}"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
-# tilolang-tilo's budget gates are test-bench's, below.
+# tilolang-tilo's budget checks are test-bench's, below.
 args = ["--locked", "--profile", "ci", "--tests", "-E", "not (package(tilolang-tilo) & (binary(budgets) | test(/^bench::costs::/)))"]
 unify = "workspace-unify"
 packages = [
@@ -155,11 +155,12 @@ packages = [
 isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-vmd", "ush"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # The programs of other packages these tests find beside their own build: the installer the app
-# CLI's install tests run, and the render helper an agent's host renders video in. Each shard is
+# CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
+# host a task's programs run in. Each shard is
 # handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
 # the package, and a shard names none. So is the capability probe a run of a package
 # .config/nextest-capabilities.toml names runs first.
-starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "legacy-agent:tilo-legacy-agent"] }
+starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "legacy-agent:tilo-legacy-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "legacy-agent:tilo-legacy-agent"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -178,10 +179,10 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 heavy = true
 on = ["dispatch", "idle"]
 
-# tilolang-tilo's budget gates: each app's views read at a thousand and at ten thousand records,
+# tilolang-tilo's budget checks: each app's views read at a thousand and at ten thousand records,
 # asserting they do the same work at both. Seeding ten thousand records in a test build makes them
 # 10.4 of the package's 39.6 test-minutes a run (11-14), at every head of main; their counts are
-# deterministic, so main's newest head with room bisects a gate a commit breaks as surely.
+# deterministic, so main's newest head with room bisects a check a commit breaks as surely.
 [[cargo]]
 name = "test-bench"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -230,8 +231,8 @@ packages = [
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
-    "tilo-paint-stream", "tilo-pdf", "tilo-relay", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
-    "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-host", "tilolang-tilo",
+    "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
+    "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-process", "tilolang-tilo",
     "tube", "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
 ]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", TILO_TEST_NTFS_FIXTURES = "0" }
@@ -327,12 +328,13 @@ exclude = [
 ]
 default = false
 
-# What the push gate lints, on every new head of a followed branch: the packages
-# the head changes and the packages whose own source names something it changed,
-# natively and for the page. It is the same selection a push is refused for
-# (tools/ci/pre_push_lint.py), so a head that reached main without the gate - a
-# merge the forge made, a branch pushed from a clone without the hook - has a
-# verdict within minutes, where the whole-tree `clippy` family reaches the same
+# What the push check lints and more, on every new head of a followed branch: the
+# packages the head changes and the packages whose own source names something it
+# changed, natively, as they ship and for the page (tools/ci/pre_push_lint.py
+# --wide). A push lints only the packages it changes, for the host, so it lands
+# before main moves on; this check is where a commit that broke a dependent or
+# the page is named, and a head that reached main without the hook - a merge the
+# forge made, a branch pushed from a clone without it - has a verdict within minutes, where the whole-tree `clippy` family reaches the same
 # crates only after everything a merge widens its selection to.
 #
 # It is not `heavy`: it is the check that says a head is red while whoever
@@ -341,9 +343,11 @@ default = false
 name = "lint-head"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 # It reads the commit's own diff, so it needs the Git view and reruns on every
-# commit (the lint's own pass cache is what keeps it cheap).
+# commit (the lint's own pass cache is what keeps it cheap). A merge's diff is
+# taken from where its parents met, so a merge of main into integration that main
+# fast-forwards to is linted for what integration brings, not only main's side.
 git = true
-run = "set -eu\nrustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true\nbase=$(git rev-parse HEAD^)\npython3 -I tools/ci/pre_push_lint.py --range \"$base..$(git rev-parse HEAD)\"\n"
+run = "set -eu\nrustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true\nbase=$(git merge-base --octopus $(git rev-parse HEAD^@))\npython3 -I tools/ci/pre_push_lint.py --wide --range \"$base..$(git rev-parse HEAD)\"\n"
 
 # The visual goldens: the three packages whose baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), in the image whose fonts and lavapipe they were
@@ -899,8 +903,8 @@ requires = ["arch=x86_64"]
 
 # The SDKs' native part (tools/ci/sdk-native.sh): the Python extension and the Node addon that
 # bind the one Rust client of Tilo's API, so a program reaches a Tilo host directly as a device
-# of its person. The first check builds both beside the api-on-relay harness; the second drives
-# each SDK's native test through them against that harness's relay, in the SDKs' image. What the
+# of its person. The first check builds both beside the api-on-server harness; the second drives
+# each SDK's native test through them against that harness's server, in the SDKs' image. What the
 # build writes is mostly the compiler cache: about 120 MB with every unit cached, and about 2 GB
 # in the run after a vendor patch or a dependency bump, which compiles the client and the harness
 # again. The same commit writes both, so a run past this check's disk envelope says what was stale.
@@ -921,14 +925,14 @@ requires = ["arch=x86_64"]
 
 # The developer docs' code examples, run the way a reader runs them: every block of an example
 # is a whole program that reaches the API with TILO_API_URL and TILO_API_KEY (tools/docs/
-# doc_examples.py). The host that serves them is the api-on-relay example of
+# doc_examples.py). The host that serves them is the api-on-server example of
 # tilo-agent-session, and sh examples run the tilo command, so both are built here and
 # handed to the check that runs the examples in the SDKs' image, with the font catalog this
 # build sets text from: the binaries name it beside themselves.
 [[check]]
 name = "docs-examples-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-session --example api-on-relay\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/api-on-relay\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\ncp -a \"$CARGO_TARGET_DIR/debug/font-catalogs\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-session --example api-on-server\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/api-on-server\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\ncp -a \"$CARGO_TARGET_DIR/debug/font-catalogs\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/docs-examples/**"]
 
@@ -1124,10 +1128,10 @@ on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
-name = "real-fuse-relay"
+name = "real-fuse-server"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-relay --test it personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-server --test it personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1148,15 +1152,15 @@ heavy = true
 [[check]]
 name = "real-fuse-privileged-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest=$(cargo test --locked -p tilo-relay --test it --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"it\"))')\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\ncp \"$test\" \"$CARGO_TARGET_DIR/vm/tilo-relay-it\"\n"
+run = "# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest=$(cargo test --locked -p tilo-server --test it --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"it\"))')\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\ncp \"$test\" \"$CARGO_TARGET_DIR/vm/tilo-server-it\"\n"
 requires = ["arch=x86_64"]
-outputs = ["/target/vm/tilo-relay-it", "/target/debug/tilo-enroll", "/target/debug/tilo-home-peer-control"]
+outputs = ["/target/vm/tilo-server-it", "/target/debug/tilo-enroll", "/target/debug/tilo-home-peer-control"]
 on = ["dispatch"]
 heavy = true
 
 [[check]]
 name = "real-fuse-privileged"
-run = "cd crates/hosting/tilo-relay\n/target/vm/tilo-relay-it --ignored --exact personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection --nocapture --test-threads=1\n"
+run = "cd crates/server/tilo-server\n/target/vm/tilo-server-it --ignored --exact personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection --nocapture --test-threads=1\n"
 needs = ["real-fuse-privileged-build"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -1200,15 +1204,15 @@ secrets = ["TILO_LIVE_WEBDAV_URL", "TILO_LIVE_WEBDAV_USER", "TILO_LIVE_WEBDAV_PA
 [[check]]
 name = "sandbox-host-ids-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_target tilo-sandbox job tilo-sandbox-job\nbinary_lib runtime-fs runtime_fs runtime-fs-lib\nbinary_lib account-custody account_custody account-custody-lib\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers it tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers it installer-accounts-native\nbinary_lib tilo-identity-host tilo_identity_host identity-host-lib --features native-current-device-qualification\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_target tilo-sandbox job tilo-sandbox-job\nbinary_lib runtime-fs runtime_fs runtime-fs-lib\nbinary_lib account-credentials account_credentials account-credentials-lib\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers it tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers it installer-accounts-native\nbinary_lib tilo-identity tilo_identity identity-host-lib --features native-current-device-qualification\n"
 requires = ["arch=x86_64"]
-outputs = ["/target/vm/tilo-sandbox-job", "/target/vm/runtime-fs-lib", "/target/vm/account-custody-lib", "/target/vm/runtime-bundle-lib", "/target/vm/tilo-install-helpers-native-python", "/target/vm/env-tools-it", "/target/vm/installer-accounts-native", "/target/vm/identity-host-lib", "/target/debug/tilo-firstboot-home-seeds", "/target/debug/install-test-firstboot-files", "/target/debug/staging-handoff-native-extractor"]
+outputs = ["/target/vm/tilo-sandbox-job", "/target/vm/runtime-fs-lib", "/target/vm/account-credentials-lib", "/target/vm/runtime-bundle-lib", "/target/vm/tilo-install-helpers-native-python", "/target/vm/env-tools-it", "/target/vm/installer-accounts-native", "/target/vm/identity-host-lib", "/target/debug/tilo-firstboot-home-seeds", "/target/debug/install-test-firstboot-files", "/target/debug/staging-handoff-native-extractor"]
 on = ["dispatch"]
 heavy = true
 
 [[check]]
 name = "sandbox-host-ids"
-run = "set -eu\n# These fixtures must run as real root in the micro-VM. If t ever stops giving\n# the guest root, fail here instead of letting the fixtures take their\n# unprivileged branches or skip.\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"sandbox-host-ids: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\n# Every fixture below must run the exact cases it exists for. A filter that\n# matches fewer (or no) tests still exits 0, so compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  if output=$(\"$@\" 2>&1); then\n    printf '%s\\n' \"$output\"\n    case \"$output\" in\n      *\"skipping:\"*|*\"skipped:\"*)\n        echo \"selected fixture skipped: $*\" >&2\n        return 1\n        ;;\n    esac\n    actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n    if [ \"${actual:-}\" != \"$expected\" ]; then\n      echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n      return 1\n    fi\n  else\n    status=$?\n    printf '%s\\n' \"$output\"\n    return \"$status\"\n  fi\n}\nrepo=$PWD\ncd \"$repo/crates/platform/tilo-sandbox\"\nrun_tests 16 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1\ncd \"$repo\"\nrun_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_original_uid --nocapture --test-threads=1\nrun_tests 1 /target/vm/account-custody-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1\nrun_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1\nrun_tests 2 /target/vm/tilo-install-helpers-native-python native_python::native_home_seeds --nocapture --test-threads=1\n# The current-device qualifier gives its fixture files to another user and becomes it;\n# a job sandbox's root holds neither capability, so it runs here as real root.\nrun_tests 1 /target/vm/identity-host-lib --exact enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_custody --nocapture --test-threads=1\n# The installer's account handoff mounts a disposable chroot; the job sandbox\n# ignores it, as it never gives root.\nrun_tests 1 /target/vm/installer-accounts-native --ignored --exact accounts_native::tests::production_stage_adopt_accounts --nocapture --test-threads=1\n# The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime\n# chain) and the network. Selecting them here would turn a missing fixture\n# into a pass, so name the five sandbox fixtures this lane exists for.\nrun_tests 5 /target/vm/env-tools-it build::a_fixture_build_seals_only_what_the_packages_added build::two_fixture_builds_are_identical build::a_catalog_hit_skips_the_build build::requests_dnf_rejects_fail_before_building build::set_runtime_rebuilds_every_tool_or_none --nocapture --test-threads=1\n"
+run = "set -eu\n# These fixtures must run as real root in the micro-VM. If t ever stops giving\n# the guest root, fail here instead of letting the fixtures take their\n# unprivileged branches or skip.\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"sandbox-host-ids: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\n# Every fixture below must run the exact cases it exists for. A filter that\n# matches fewer (or no) tests still exits 0, so compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  if output=$(\"$@\" 2>&1); then\n    printf '%s\\n' \"$output\"\n    case \"$output\" in\n      *\"skipping:\"*|*\"skipped:\"*)\n        echo \"selected fixture skipped: $*\" >&2\n        return 1\n        ;;\n    esac\n    actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n    if [ \"${actual:-}\" != \"$expected\" ]; then\n      echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n      return 1\n    fi\n  else\n    status=$?\n    printf '%s\\n' \"$output\"\n    return \"$status\"\n  fi\n}\nrepo=$PWD\ncd \"$repo/crates/platform/tilo-sandbox\"\nrun_tests 16 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1\ncd \"$repo\"\nrun_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_original_uid --nocapture --test-threads=1\nrun_tests 1 /target/vm/account-credentials-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1\nrun_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1\nrun_tests 2 /target/vm/tilo-install-helpers-native-python native_python::native_home_seeds --nocapture --test-threads=1\n# The current-device qualifier gives its fixture files to another user and becomes it;\n# a job sandbox's root holds neither capability, so it runs here as real root.\nrun_tests 1 /target/vm/identity-host-lib --exact enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership --nocapture --test-threads=1\n# The installer's account handoff mounts a disposable chroot; the job sandbox\n# ignores it, as it never gives root.\nrun_tests 1 /target/vm/installer-accounts-native --ignored --exact accounts_native::tests::production_stage_adopt_accounts --nocapture --test-threads=1\n# The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime\n# chain) and the network. Selecting them here would turn a missing fixture\n# into a pass, so name the five sandbox fixtures this job exists for.\nrun_tests 5 /target/vm/env-tools-it build::a_fixture_build_seals_only_what_the_packages_added build::two_fixture_builds_are_identical build::a_catalog_hit_skips_the_build build::requests_dnf_rejects_fail_before_building build::set_runtime_rebuilds_every_tool_or_none --nocapture --test-threads=1\n"
 needs = ["sandbox-host-ids-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
@@ -1347,7 +1351,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 name = "nightly-live-sign-in"
 # Runs against live services on the internet; never served.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/test-env.sh cargo nextest run -p account-custody --locked --profile ci --run-ignored all --test live_sign_in_contracts\n"
+run = "bash tools/test-env.sh cargo nextest run -p account-credentials --locked --profile ci --run-ignored all --test live_sign_in_contracts\n"
 cache = false
 on = ["schedule:0 3 * * *", "dispatch"]
 
@@ -1429,13 +1433,13 @@ on = ["dispatch"]
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  server)\n    run -p tilo-server --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-server --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  server-agents)\n    run -p tilo-server --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-server --features agents --bin tilo-server -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
 on = ["dispatch"]
 heavy = true
 [check.matrix]
-part = ["relay", "relay-agents", "agent-session"]
+part = ["server", "server-agents", "agent-session"]
 
 [[check]]
 name = "visual-baselines"
@@ -1572,13 +1576,13 @@ timeout_secs = 7200
 on = ["dispatch"]
 
 [[check]]
-name = "perf-hosting"
+name = "perf-server"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/perf-scheduled.sh hosting"
+run = "bash tools/ci/perf-scheduled.sh server"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64"]
-outputs = ["/target/perf/hosting/**"]
+outputs = ["/target/perf/server/**"]
 timeout_secs = 7200
 on = ["dispatch"]
 
@@ -1599,7 +1603,7 @@ name = "perf-scheduled"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-hosting", "perf-browser"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server", "perf-browser"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf/compare/**"]
 cache = false
@@ -1610,7 +1614,7 @@ name = "perf-publish"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh /target/perf-publish"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-hosting", "perf-browser"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server", "perf-browser"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf-publish/**"]
 cache = false
@@ -1622,7 +1626,7 @@ dispatch_inputs = { accept = "", synthetic_series = "", synthetic_factor = "1.0"
 name = "perf-ab"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "[[ -n $T_INPUT_GROUPS ]] || { echo \"perf-ab needs --input groups=...\" >&2; exit 2; }\n[[ $T_INPUT_ROUNDS =~ ^[0-9]+$ && $T_INPUT_ROUNDS -ge 6 ]] || { echo \"rounds must be a number of at least 6\" >&2; exit 2; }\nif [[ ,$T_INPUT_GROUPS, == *,browser,* ]]; then\n  bash tools/ci/ensure-browser-dependencies.sh\n  npx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\n  export CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfi\nrm -rf /target/perf-ab\npython3 tools/perf/ab.py run --groups \"$T_INPUT_GROUPS\" --base \"$T_INPUT_BASE\" --candidate \"${T_INPUT_CANDIDATE:-${T_COMMIT:-HEAD}}\" --rounds \"$T_INPUT_ROUNDS\" --out /target/perf-ab --hosting-relay-cpus \"${T_INPUT_RELAY_CPUS:-0}\" --virtualization kvm --runner t\n"
+run = "[[ -n $T_INPUT_GROUPS ]] || { echo \"perf-ab needs --input groups=...\" >&2; exit 2; }\n[[ $T_INPUT_ROUNDS =~ ^[0-9]+$ && $T_INPUT_ROUNDS -ge 6 ]] || { echo \"rounds must be a number of at least 6\" >&2; exit 2; }\nif [[ ,$T_INPUT_GROUPS, == *,browser,* ]]; then\n  bash tools/ci/ensure-browser-dependencies.sh\n  npx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\n  export CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfi\nrm -rf /target/perf-ab\npython3 tools/perf/ab.py run --groups \"$T_INPUT_GROUPS\" --base \"$T_INPUT_BASE\" --candidate \"${T_INPUT_CANDIDATE:-${T_COMMIT:-HEAD}}\" --rounds \"$T_INPUT_ROUNDS\" --out /target/perf-ab --server-cpus \"${T_INPUT_SERVER_CPUS:-0}\" --virtualization kvm --runner t\n"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 outputs = ["/target/perf-ab/**"]
@@ -1630,7 +1634,7 @@ cache = false
 git = true
 timeout_secs = 10800
 on = ["dispatch"]
-dispatch_inputs = { groups = "", base = "origin/main", candidate = "", rounds = "8", relay_cpus = "" }
+dispatch_inputs = { groups = "", base = "origin/main", candidate = "", rounds = "8", server_cpus = "" }
 
 [[check]]
 name = "vm-acceptance/{shard}"
@@ -2008,8 +2012,8 @@ if [[ $CHECK_BOOT_PERFORMANCE == true ]]; then
   sshpass -p "$TILO_PASS" scp -q -P 2222 \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-    os/tests/boot_performance_gate.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-gate.sh"
-  ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-gate.sh" > "$TILO_RUN/boot-performance.log" 2>&1
+    os/tests/boot_performance_check.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-check.sh"
+  ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-check.sh" > "$TILO_RUN/boot-performance.log" 2>&1
 fi
 # A broken update must roll itself back on this disk's own boot chain.
 # It ends booted on the deployment that came back, so the greeter
@@ -2243,7 +2247,7 @@ default = false
 name = "vm-acceptance-perf"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Each shard of vm-acceptance writes the records of the checks it ran, and the\n# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,\n# never every check of the lane's.\nrecords=$TMPDIR/records.jsonl\ncat /target/vm-acceptance/*/report/records.jsonl > \"$records\" 2>/dev/null || true\n[[ -s $records ]] || { echo \"the acceptance run wrote no performance records\" >&2; exit 1; }\n[[ -s /target/vm-acceptance/only ]] || { echo \"the acceptance run did not record the checks it ran\" >&2; exit 1; }\nselection=$(cat /target/vm-acceptance/only)\npublish=false\n[[ -n ${T_REF:-} ]] && publish=true\nstatus=0\npython3 tools/perf/compare.py --results \"$records\" --store https://code.tilo.so --owner tilo --lane vm-acceptance --groups \"$(python3 scripts/vm-acceptance/selected_groups.py \"$selection\")\" --publish-dir \"$TMPDIR/publish\" --run \"t-${T_COMMIT:-tree}-vm\" --summary \"$TMPDIR/summary.md\" || status=1\nif [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then\n  manifest=$(mktemp)\n  for file in \"$TMPDIR\"/publish/*/*.jsonl; do\n    month=$(basename \"$(dirname \"$file\")\")\n    printf '%s\t%s\n' \"$file\" \"https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename \"$file\")\"\n  done > \"$manifest\"\n  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh \"$manifest\" || status=1\nfi\ncat \"$TMPDIR/summary.md\" 2>/dev/null || true\nexit \"$status\"\n"
+run = "# Each shard of vm-acceptance writes the records of the checks it ran, and the\n# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,\n# never every check of the job's.\nrecords=$TMPDIR/records.jsonl\ncat /target/vm-acceptance/*/report/records.jsonl > \"$records\" 2>/dev/null || true\n[[ -s $records ]] || { echo \"the acceptance run wrote no performance records\" >&2; exit 1; }\n[[ -s /target/vm-acceptance/only ]] || { echo \"the acceptance run did not record the checks it ran\" >&2; exit 1; }\nselection=$(cat /target/vm-acceptance/only)\npublish=false\n[[ -n ${T_REF:-} ]] && publish=true\nstatus=0\npython3 tools/perf/compare.py --results \"$records\" --store https://code.tilo.so --owner tilo --job vm-acceptance --groups \"$(python3 scripts/vm-acceptance/selected_groups.py \"$selection\")\" --publish-dir \"$TMPDIR/publish\" --run \"t-${T_COMMIT:-tree}-vm\" --summary \"$TMPDIR/summary.md\" || status=1\nif [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then\n  manifest=$(mktemp)\n  for file in \"$TMPDIR\"/publish/*/*.jsonl; do\n    month=$(basename \"$(dirname \"$file\")\")\n    printf '%s\t%s\n' \"$file\" \"https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename \"$file\")\"\n  done > \"$manifest\"\n  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh \"$manifest\" || status=1\nfi\ncat \"$TMPDIR/summary.md\" 2>/dev/null || true\nexit \"$status\"\n"
 needs = ["vm-acceptance/{shard}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 cache = false
@@ -2253,7 +2257,7 @@ on = ["dispatch"]
 name = "vm-acceptance-perf-publish"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Each shard of vm-acceptance writes the records of the checks it ran, and the\n# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,\n# never every check of the lane's.\nrecords=$TMPDIR/records.jsonl\ncat /target/vm-acceptance/*/report/records.jsonl > \"$records\" 2>/dev/null || true\n[[ -s $records ]] || { echo \"the acceptance run wrote no performance records\" >&2; exit 1; }\n[[ -s /target/vm-acceptance/only ]] || { echo \"the acceptance run did not record the checks it ran\" >&2; exit 1; }\nselection=$(cat /target/vm-acceptance/only)\npublish=false\n[[ -n ${T_REF:-} ]] && publish=true\nstatus=0\npython3 tools/perf/compare.py --results \"$records\" --store https://code.tilo.so --owner tilo --lane vm-acceptance --groups \"$(python3 scripts/vm-acceptance/selected_groups.py \"$selection\")\" --publish-dir \"$TMPDIR/publish\" --run \"t-${T_COMMIT:-tree}-vm\" --summary \"$TMPDIR/summary.md\" || status=1\nif [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then\n  manifest=$(mktemp)\n  for file in \"$TMPDIR\"/publish/*/*.jsonl; do\n    month=$(basename \"$(dirname \"$file\")\")\n    printf '%s\t%s\n' \"$file\" \"https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename \"$file\")\"\n  done > \"$manifest\"\n  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh \"$manifest\" || status=1\nfi\ncat \"$TMPDIR/summary.md\" 2>/dev/null || true\nexit \"$status\"\n"
+run = "# Each shard of vm-acceptance writes the records of the checks it ran, and the\n# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,\n# never every check of the job's.\nrecords=$TMPDIR/records.jsonl\ncat /target/vm-acceptance/*/report/records.jsonl > \"$records\" 2>/dev/null || true\n[[ -s $records ]] || { echo \"the acceptance run wrote no performance records\" >&2; exit 1; }\n[[ -s /target/vm-acceptance/only ]] || { echo \"the acceptance run did not record the checks it ran\" >&2; exit 1; }\nselection=$(cat /target/vm-acceptance/only)\npublish=false\n[[ -n ${T_REF:-} ]] && publish=true\nstatus=0\npython3 tools/perf/compare.py --results \"$records\" --store https://code.tilo.so --owner tilo --job vm-acceptance --groups \"$(python3 scripts/vm-acceptance/selected_groups.py \"$selection\")\" --publish-dir \"$TMPDIR/publish\" --run \"t-${T_COMMIT:-tree}-vm\" --summary \"$TMPDIR/summary.md\" || status=1\nif [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then\n  manifest=$(mktemp)\n  for file in \"$TMPDIR\"/publish/*/*.jsonl; do\n    month=$(basename \"$(dirname \"$file\")\")\n    printf '%s\t%s\n' \"$file\" \"https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename \"$file\")\"\n  done > \"$manifest\"\n  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh \"$manifest\" || status=1\nfi\ncat \"$TMPDIR/summary.md\" 2>/dev/null || true\nexit \"$status\"\n"
 needs = ["vm-acceptance/{shard}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 cache = false
@@ -2352,27 +2356,27 @@ git = true
 default = false
 
 # The same bundle for the local tilo.sh stack (os/containers/tilo-sh/stack.sh), built as
-# `lounge-gate-binaries` builds its programs: release optimisation without the whole-program link
-# (Cargo.toml's `wasm-split-gate`), so a change to one app compiles that app and relinks instead of
+# `lounge-check-binaries` builds its programs: release optimisation without the whole-program link
+# (Cargo.toml's `wasm-split-check`), so a change to one app compiles that app and relinks instead of
 # running fat LTO over every app in one codegen unit. Split and optimized as the shipped bundle is;
 # what ships, and what the page checks drive, stays `web-desktop-bundle`.
 [[check]]
-name = "web-desktop-gate-wasm"
+name = "web-desktop-check-wasm"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop-gate/wasm gate"
+run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop-check/wasm check"
 needs = ["test-assets"]
 env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/web-desktop-gate/wasm/**"]
+outputs = ["/target/publish/web-desktop-check/wasm/**"]
 default = false
 
 [[check]]
-name = "web-desktop-gate-bundle"
+name = "web-desktop-check-bundle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop-gate/bundle /target/publish/web-desktop-gate/wasm gate"
-needs = ["web-desktop-gate-wasm"]
+run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop-check/bundle /target/publish/web-desktop-check/wasm check"
+needs = ["web-desktop-check-wasm"]
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/web-desktop-gate/bundle/**"]
+outputs = ["/target/publish/web-desktop-check/bundle/**"]
 git = true
 default = false
 
@@ -2383,7 +2387,7 @@ default = false
 # the same image.
 [[check]]
 name = "source-date-ci-fast"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast os/scripts/finalize-rpmdb.sh os/scripts/clean-dnf-layer-state.sh os/scripts/pin-directory-times.py"
 git = true
 outputs = ["/target/source-date/ci-fast"]
 default = false
@@ -2411,9 +2415,18 @@ default = false
 
 [[check]]
 name = "image-ci-fast"
-# Fetches from mirrors, registries and release hosts no fixed list names.
+# Fetches from mirrors, registries and release hosts no fixed list names. Not `pinned`: its two
+# FROMs are named by digest, but the `dnf install`s in os/Containerfile.ci-fast name packages, not
+# bytes, and a mirror may answer with another build of one. It can be served again once the build
+# installs those from a snapshot named by digest and this line declares that egress `pinned`, as
+# the OS image does with registry.tilo.so/tilo/rpms.
+#
+# The build's date is source-date-ci-fast's: rpm records it as the transactions' install time
+# (its signature check is the real clock's, so a mirror's newest update installs regardless), and
+# oci-build.sh dates the image and its layers with it. A commit that changes none of the files
+# the date covers builds the same image again.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-fast)\nexport SOURCE_DATE_EPOCH\nmkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast\n"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-fast)\nexport SOURCE_DATE_EPOCH\n# The only files the build reads from the tree are the scripts that clean up after the\n# package transactions and pin the times they leave (os/Containerfile.ci-fast).\ncontext=$TMPDIR/ci-fast-context\nrm -rf \"$context\"\nmkdir -p \"$context/os/scripts\"\ncp os/scripts/finalize-rpmdb.sh os/scripts/clean-dnf-layer-state.sh os/scripts/pin-directory-times.py \"$context/os/scripts/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-fast /target/publish/ci-fast --build-arg \"TILO_BUILD_EPOCH=$SOURCE_DATE_EPOCH\"\n"
 needs = ["source-date-ci-fast"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
@@ -2589,7 +2602,7 @@ arch = ["x86_64", "aarch64"]
 # browser peer and the agent session, which read nearly every source file, so in every
 # head's publication they ran again for each commit while the image stayed the same. Each commit
 # runs the same tests in the pinned builder (`test/tilo-session-client`,
-# `test-x86_64/tilo-agent-session`), so what this adds is the canary: it gates a release's
+# `test-x86_64/tilo-agent-session`), so what this adds is the canary: it checks a release's
 # signature and publication, runs when dispatched and on main's newest head when t has room
 # (bisected to the commit that broke it), and main's development tags go without it.
 [[check]]
@@ -2609,8 +2622,8 @@ on = ["dispatch", "idle"]
 
 [[check]]
 name = "image-ci-fast-smoke"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Reads nothing of the network: it runs the image it needs and asks its tools their versions.
+# What it reaches is refused and told instead of quietly making every run the network's.
 run = "bash os/tests/ci_fast_images.sh /target/publish/ci-fast/image.oci.tar"
 needs = ["image-ci-fast"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2985,8 +2998,8 @@ on = ["idle"]
 name = "web-desktop-menus-and-links"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfailed=0\nfor page in context-menu app-link; do\n  node crates/browser/tilo-web-desktop/scripts/$page.mjs /target/publish/web-desktop-gate/bundle /target/web-desktop-pages || failed=1\ndone\nexit $failed\n"
-needs = ["web-desktop-gate-bundle"]
+run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfailed=0\nfor page in context-menu app-link; do\n  node crates/browser/tilo-web-desktop/scripts/$page.mjs /target/publish/web-desktop-check/bundle /target/web-desktop-pages || failed=1\ndone\nexit $failed\n"
+needs = ["web-desktop-check-bundle"]
 env = { npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 outputs = ["/target/web-desktop-pages/**"]
@@ -3134,7 +3147,7 @@ on = ["dispatch"]
 name = "desktop-package-{deb}"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash dist/ci/package-lane.sh {deb}"
+run = "bash dist/ci/package-job.sh {deb}"
 isolation = "vm"
 outputs = ["dist/ci-output/**"]
 git = true
@@ -3187,8 +3200,12 @@ id_token = ["registry.tilo.so"]
 # node of the other.
 [[check]]
 name = "rpm-snapshot-{arch}"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the fingerprint the tree's sources hold names the tag (set-<fingerprint>-<arch>), a tag
+# is written once (oci-publish.sh) so it names one digest forever, and the signature, its
+# attestation and an installed system's policy are verified against keys the sources pin. What
+# it reads: the registry, the object storage its blobs redirect to, and the transparency log's
+# key.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash tools/ci/publish/rpm-snapshot-ref.sh {arch} /target/publish/rpm-snapshot/{arch}"
 needs = ["signing-tools"]
 optional_needs = ["publish-rpms-{arch}"]
@@ -3198,54 +3215,54 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
-# The relay's programs: the image packages what this leaves, so it compiles no Rust inside its
+# The server's programs: the image packages what this leaves, so it compiles no Rust inside its
 # build.
 [[check]]
-name = "relay-binaries"
+name = "server-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/server-binaries.sh relay /target/publish/relay/binaries"
+run = "bash tools/ci/publish/server-binaries.sh server /target/publish/server/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/relay/binaries/**"]
+outputs = ["/target/publish/server/binaries/**"]
 timeout_secs = 7200
 default = false
 
 [[check]]
-name = "image-relay"
+name = "image-server"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
-needs = ["relay-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/server-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/server/binaries /target/publish/server"
+needs = ["server-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
-outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest", "/target/publish/relay/rpms-source"]
+outputs = ["/target/publish/server/image.oci.tar", "/target/publish/server/digest", "/target/publish/server/rpms-source"]
 default = false
 
 [[check]]
-name = "sign-relay"
+name = "sign-server"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-relay /target/publish/relay"
-needs = ["image-relay", "signing-tools"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-server /target/publish/server"
+needs = ["image-server", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/dry-run.pub", "/target/publish/relay/bundle.json"]
-# The release tag signs the relay it builds, and refuses one built from an RPM set that tag did
+outputs = ["/target/publish/server/payload.json", "/target/publish/server/signature", "/target/publish/server/dry-run.pub", "/target/publish/server/bundle.json"]
+# The release tag signs the server it builds, and refuses one built from an RPM set that tag did
 # not publish (oci-sign.sh, require_published_snapshot). Dispatched on a release tag it finishes a
 # release whose own run stopped here.
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
-name = "publish-relay"
+name = "publish-server"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-relay /target/publish/relay '{version}' 'sha-{commit}' 'final:latest'"
-needs = ["image-relay", "sign-relay", "signing-tools"]
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-server /target/publish/server '{version}' 'sha-{commit}' 'final:latest'"
+needs = ["image-server", "sign-server", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-outputs = ["/target/publish/relay/receipt.json"]
+outputs = ["/target/publish/server/receipt.json"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["registry.tilo.so"]
 
@@ -3254,7 +3271,7 @@ id_token = ["registry.tilo.so"]
 # What `curl -fsSL https://tilo.sh | sh` installs (dist/install/tilo.sh), by
 # tools/ci/publish/cli-release.sh: one statically linked archive per Linux architecture, both
 # built on the x86_64 node (aarch64 cross-compiles, so a node of that architecture is not needed);
-# their SHA256SUMS; its signature by the release key. It is released with the relay, on release
+# their SHA256SUMS; its signature by the release key. It is released with the server, on release
 # tags: sign-cli alone holds the release key, publish-cli alone the package token, and neither
 # runs anywhere else. Either may also be dispatched, on a release tag whose own run did not
 # publish it (`t dispatch publish-cli --ref tag:vX.Y.Z`): the release key's token is issued for
@@ -3606,33 +3623,77 @@ id_token = ["registry.tilo.so"]
 # and needs no node, build or tag of the other, and an architecture publishes later — dispatched on
 # a node of its own — without republishing what is already published.
 #
-# Every image that installs from RPMs (the relay, the servers, the environment
-# runtime, the OS image) installs from the published set of its own architecture: rpm-snapshot-ARCH
-# resolves it, verifies its signature, its provenance for that architecture's package set and the
-# image's own architecture, and the build records which set it installed from. An image built from
-# a package set no tag has published yet — the run's own image-rpms, loaded unsigned — is built and
-# tested everywhere and is never signed or published: the signing guard (oci-sign.sh,
-# require_published_snapshot) refuses it. So a release tag publishes the set before it builds its
-# images from it, and main only ever builds and tests.
+# Every image that installs from RPMs (the server, the servers, the environment runtime, the OS
+# image) installs from a set the registry holds by digest, so an unchanged tree copies a few
+# gigabytes instead of resolving Fedora again (tens of minutes). rpms-source-ARCH resolves this
+# tree's package set — the published set where a release tag published one, else the development
+# snapshot an earlier job mirrored, else it builds one — and rpms-mirror-ARCH puts that one in
+# the registry under `dev-set-<fingerprint>-<arch>`, also written once, so the tag names one
+# digest forever. image-rpms-ARCH copies whichever the source found by digest, and
+# rpm-snapshot-ARCH resolves the published set, verifies its signature, its provenance for that
+# architecture's package set and the image's own architecture, and the build records which set
+# it installed from.
+#
+# Nothing signs a development snapshot: a release tag publishes the signed set under its own tag
+# from the same bytes (publish-rpms), and a build that installed from the unsigned one records
+# that, which the signing guard (oci-sign.sh, require_published_snapshot) refuses.
 
 [[check]]
-name = "image-rpms-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
+name = "rpms-source-{arch}"
+# dnf installs from Fedora's mirrors, which are no fixed host list, and the resolution it makes
+# is what it leaves: its answer is the resolution's, so it is not pinned. Only what it leaves
+# behind — the set's reference — is what the checks above it read, and those are served.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms/{arch}"
-needs = ["os-assets", "rpm-package-set", "signing-tools"]
+run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms-source/{arch} --ref-only"
+needs = ["os-assets", "rpm-package-set"]
 optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-# No Git: the snapshot is dated by when it was resolved (rpms-build.sh), never by the commit, so
-# its key is the package set's and every OS layer above it is reused across commits that keep it.
-# It is not served from the cache either way — the job asks the registry and, unpublished, Fedora —
-# but once this package set is published the job verifies and copies the published snapshot (about
-# a minute) instead of resolving Fedora again, so an image rebuild after a code change does not pay
-# a resolution.
-outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
+# `ref` where the registry holds the set, the snapshot it built here where no tag does (a package
+# set no tag has published yet); the mirror then takes that one into the registry.
+outputs = ["/target/publish/rpms-source/{arch}/**"]
 timeout_secs = 10800
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "rpms-mirror-{arch}"
+# dnf installs from Fedora's mirrors when the set is not in the registry, which are no fixed host
+# list; what it mirrors is what rpms-source-ARCH read. The registry token it writes with is what
+# makes it a trusted job's (main, a release tag, a dispatch): a branch reads or builds its own.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/rpms-mirror.sh {arch} /target/publish/rpms-source/{arch} /target/publish/rpms-mirror/{arch}"
+needs = ["rpms-source-{arch}"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/rpms-mirror/{arch}/**"]
+timeout_secs = 3600
+default = false
+# Mirrored when a main head resolves a new package set, as the base is (mirror-base), and when
+# dispatched; the images that install from it then read it by digest.
+on = ["main", "dispatch"]
+id_token = ["registry.tilo.so"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "image-rpms-{arch}"
+# Pinned: it copies the snapshot the registry holds, by the digest the reference
+# rpms-source-ARCH left names, and reads nothing else. The registry answers a blob read with a
+# redirect into its object storage, named here.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/rpms-copy.sh {arch} /target/publish/rpms-source/{arch} /target/publish/rpms/{arch}"
+needs = ["rpms-source-{arch}"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+requires = ["arch={arch}"]
+# No Git: the snapshot is dated by its packages' newest signature (rpms-copy.sh), never by the
+# commit, so its key is the package set's and every OS layer above it is reused across commits
+# that keep it.
+outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
+timeout_secs = 3600
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -4132,7 +4193,7 @@ on = ["tag:imager-v*"]
 secrets = ["HOMEBREW_TAP_TOKEN"]
 
 # The install tests are one script over the two package kinds on the two platforms: the formula
-# on Linux, the cask on macOS, each on both architectures. A lane is the pair, so the axis
+# on Linux, the cask on macOS, each on both architectures. A job is the pair, so the axis
 # carries the platform with the package kind it installs.
 [[check]]
 name = "homebrew-{package_kind}-{arch}"
@@ -4444,7 +4505,7 @@ arch = ["x86_64", "aarch64"]
 # cache instead of building the image and installing the disk again. Everything else is the same
 # build: the OS image, the dev components, the env-runtime, the install. Work on the disk, its
 # install or what boots on it asks for `os-dev-disk-lean-x86_64`; the end-to-end checks of boxes
-# boot it. Main's published dev images and disks, the gate and acceptance keep os-dev-image-ARCH
+# boot it. Main's published dev images and disks, the check and acceptance keep os-dev-image-ARCH
 # and os-dev-disk-ARCH: those name their commit, which publishing checks and the dev channel
 # moves forward by, and carry this tree's runtimes in their catalog.
 [[check]]
@@ -4479,16 +4540,16 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "os-dev-gate-{arch}"
+name = "os-dev-check-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-check.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-check/{arch}"
 needs = ["os-dev-image-{arch}", "tilo-vm-binary-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["/dev/kvm", "disk-100g"]
 isolation = "vm"
-outputs = ["/target/publish/os-dev-gate/{arch}/**"]
+outputs = ["/target/publish/os-dev-check/{arch}/**"]
 git = true
 timeout_secs = 5400
 default = false
@@ -4532,7 +4593,7 @@ name = "publish-os-dev-{arch}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-dev-publish.sh image {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}", "sign-dev-os-{arch}", "signing-tools"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-check-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
 isolation = "vm"
@@ -4834,7 +4895,7 @@ name = "publish-os-board-{board}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
-needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "sign-dev-os-board-{board}", "signing-tools"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-check-aarch64", "sign-dev-os-board-{board}", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 on = ["idle", "dispatch"]
@@ -5525,7 +5586,7 @@ proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
-# it something (its actions; its window, opened on a throwaway headless Tilo standing in for the
+# it something (its actions; its window, opened on a throwaway headless Tilo in place of the
 # developer's desktop) and stops it, with listening traps where the host's session bus, system bus,
 # login bus and systemd would be. A connection to any of them fails the check: the commands must
 # never reach the session of whoever runs them.
@@ -5671,7 +5732,7 @@ id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
 # Signed on a release tag and on a dispatch: the web entry is released at a release tag, with the
-# relay of the same commit (`t dispatch publish-web-entry --ref tag:vX.Y.Z`). The signing role
+# server of the same commit (`t dispatch publish-web-entry --ref tag:vX.Y.Z`). The signing role
 # trusts v* tags only, so a dispatch on main gets no signature and publishes nothing.
 on = ["dispatch"]
 
@@ -5695,10 +5756,10 @@ env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 on = ["dispatch"]
 
-# The Lounge, built and gated here: the programs, the image and the image used by people — two
+# The Lounge, built and guarded here: the programs, the image and the image used by people — two
 # headless browsers joining it through the web entry, chatting, sharing a shell and seeing each
 # other present, then one of them opening a shared document's link. One check per step, so a
-# change leaves the earlier ones cached, and the gate runs on any commit and branch instead of
+# change leaves the earlier ones cached, and the check runs on any commit and branch instead of
 # only in the publication on main. Image-lounge-context publishes the app surfaces from the
 # apps' history, so these read Git; the image is built at the commit time of the newest commit
 # that changed it, as every image here is.
@@ -5712,24 +5773,24 @@ outputs = ["/target/publish/lounge/binaries/**"]
 # The image's programs, built as the image ships them: a release build whose whole-program link
 # covers everything a host that serves pages carries. Only the image waits for this build; the
 # checks that run these programs themselves (e2e, page-tour, the tilo.sh stack) ask for
-# `lounge-gate-binaries` below. A release waits
+# `lounge-check-binaries` below. A release waits
 # for it, so it gets longer than a check of a change does: the whole-program link grows with the
 # graph and this is the only build of it left.
 timeout_secs = 5400
 default = false
 
 # The same two programs, for the checks that run them directly (e2e, page-tour, the tilo.sh
-# stack): the profile Cargo.toml's `lounge-gate` describes, which is release optimisation
+# stack): the profile Cargo.toml's `lounge-check` describes, which is release optimisation
 # without the whole-program link. A check starts from an empty build directory, so a run takes
 # every unit it reuses from the compiler cache, recompiles the crates the change touched and the
 # crates above them, and links whole — for a binary no check reads the speed of.
 [[check]]
-name = "lounge-gate-binaries"
+name = "lounge-check-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge-gate/binaries lounge-gate"
+run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge-check/binaries lounge-check"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/lounge-gate/binaries/**"]
+outputs = ["/target/publish/lounge-check/binaries/**"]
 # A node's first run of this builds the whole graph from nothing through the compiler cache; after
 # that t books it from what it measured. A change to a leaf crate recompiles that crate and what
 # depends on it, and relinks; a change to a crate the programs carry recompiles everything above
@@ -5767,52 +5828,52 @@ image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b3502
 run = "bash os/containers/tilo-lounge/test-entrypoint.sh\nbash tools/ci/publish/oci-build.sh /target/publish/lounge/context /target/publish/lounge/context/Containerfile /target/publish/lounge --build-arg SOURCE_REVISION=$(cat /target/publish/lounge/context/source-revision)\nbash os/containers/tilo-lounge/test-image.sh /target/publish/lounge/image.oci.tar"
 needs = ["image-lounge-context"]
 # The entrypoint is also held against the programs the image carries, not only against its stub:
-# every flag it passes has to be one this build's `tilo-relay workspace` reads.
-env = { TILO_RELAY_BIN = "/target/publish/lounge/context/bin/tilo-relay" }
+# every flag it passes has to be one this build's `tilo-server workspace` reads.
+env = { TILO_SERVER_BIN = "/target/publish/lounge/context/bin/tilo-server" }
 outputs = ["/target/publish/lounge/image.oci.tar", "/target/publish/lounge/digest"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
 default = false
 
-# The gate's own certificate mint, built for the node's architecture as a development build: the
+# The check's own certificate mint, built for the node's architecture as a development build: the
 # site's TLS needs it, and it is no published artifact. A one-package selection resolves fewer
 # features than the whole workspace's build does, so the warnings-as-errors flags are off here (as
 # they are for the other checks that only build a program to run it): the lints themselves are
 # `clippy`'s, over every package at once.
 [[check]]
-name = "lounge-gate-tools"
+name = "lounge-check-tools"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-crypto --bin tilo-crypto\nrm -rf /target/publish/lounge/gate-tools\nmkdir -p /target/publish/lounge/gate-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" /target/publish/lounge/gate-tools/\n"
+run = "cargo build --locked -p tilo-crypto --bin tilo-crypto\nrm -rf /target/publish/lounge/check-tools\nmkdir -p /target/publish/lounge/check-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" /target/publish/lounge/check-tools/\n"
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/lounge/gate-tools/**"]
+outputs = ["/target/publish/lounge/check-tools/**"]
 default = false
 
-# The tilo command an agent runs in e2e's setups, built as the relay beside it is (Cargo.toml's
-# `lounge-gate`: the release's code and opt-level without its whole-program link), from the same
+# The tilo command an agent runs in e2e's setups, built as the server beside it is (Cargo.toml's
+# `lounge-check`: the release's code and opt-level without its whole-program link), from the same
 # compiler cache. A change to the command recompiles the crates above the change and relinks, not
-# the command alone, and what this selection resolves differently from the relay's is its own
-# units (`lounge-gate-binaries`). The static musl build a release publishes is cli-x86_64's, which
+# the command alone, and what this selection resolves differently from the server's is its own
+# units (`lounge-check-binaries`). The static musl build a release publishes is cli-x86_64's, which
 # cli-rehearsal installs the way a person does: its build from cold is no part of what a change to
 # a page waits for.
 [[check]]
-name = "lounge-gate-cli"
+name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked --profile lounge-gate -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-gate/cli\nmkdir -p /target/publish/lounge-gate/cli\ncp \"$CARGO_TARGET_DIR/lounge-gate/tilo\" /target/publish/lounge-gate/cli/\n"
+run = "cargo build --locked --profile lounge-check -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" /target/publish/lounge-check/cli/\n"
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/lounge-gate/cli/**"]
+outputs = ["/target/publish/lounge-check/cli/**"]
 default = false
 
 # The web page and the stack it runs on, end to end, on every change that reaches either, in
-# minutes: tilo.sh as production's manifests bring it up (stack.sh: the Lounge's relay, the front
+# minutes: tilo.sh as production's manifests bring it up (stack.sh: the Lounge's server, the front
 # API server and the web entry, with their images' entrypoints and environment behind production's Caddy)
 # from what the checks beside it built, so it compiles nothing; one headless Chromium started per
 # flow; then every flow at the same time against that one stack, each as people of its own
 # (os/containers/tilo-lounge/test-e2e.sh says which flows there are). Every app opening from the
 # search on the next frame is the desktop surface's in-process test, not a browser's walk. A change
-# to a page driver reruns only this, and the relay, the API server, the site and the command are the
+# to a page driver reruns only this, and the server, the API server, the site and the command are the
 # cached outputs the other checks share. One flow alone: `bash os/containers/tilo-lounge/test-e2e.sh
 # BUNDLE WORK people-call`.
 #
@@ -5824,17 +5885,17 @@ name = "e2e"
 # a failure is still bisected to the commit that broke it and told to its pusher. At every head
 # it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
 on = ["idle"]
-# No egress: every flow meets the stack on loopback (the relay and API on 127.0.0.1 and localhost,
+# No egress: every flow meets the stack on loopback (the server and API on 127.0.0.1 and localhost,
 # the site at tilo.localhost, which the image's resolver answers itself), and its programs, fonts
 # and Caddy are its needs'. Its sandbox refuses a router search (UPnP, 239.255.255.250:1900, as
 # iroh's endpoints make) and DNS lookups: with the open network the same flows failed as without
 # it, so none of them needs either.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
@@ -5847,7 +5908,7 @@ timeout_secs = 1200
 # A fresh tilo.sh stack admits a page: the site's own page, in a headless Chromium, reaches the
 # host over the browser's WebTransport and is let into the Lounge through its entry, on a stack
 # brought up fresh from what the checks beside it built (so it compiles nothing). One flow of
-# test-e2e.sh's, not the whole gate, so a page the stack turns away fails here by name in about a
+# test-e2e.sh's, not the whole check, so a page the stack turns away fails here by name in about a
 # minute, where the entry-speed flows would show it only as a slower number.
 #
 # Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
@@ -5860,11 +5921,11 @@ name = "tilo-sh-admits-a-page"
 on = ["idle"]
 # No egress: as e2e, the page and the stack meet on loopback alone.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/entry entry"
-needs = ["lounge-gate-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1" }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: the visitor's page and console, and the stack's own logs.
@@ -5882,11 +5943,11 @@ timeout_secs = 600
 name = "e2e-reloads"
 # No egress: as e2e, it meets the stack on loopback alone; see e2e.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["/target/e2e-reloads/*.log", "/target/e2e-reloads/reloads/**"]
@@ -5901,8 +5962,8 @@ name = "page-tour"
 # No egress: as e2e, the tour meets its Lounge on loopback (direct-lounge.sh) and its programs and
 # fonts are its needs'.
 run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle", "cli-x86_64"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle", "cli-x86_64"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
 timeout_secs = 1800
@@ -5915,33 +5976,33 @@ default = false
 [[check]]
 name = "tilo-sh-tools"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-relay --bin tilo-enroll --bin tilo-approve\nrm -rf /target/tilo-sh-tools && mkdir -p /target/tilo-sh-tools\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/tilo-sh-tools/\n"
+run = "cargo build --locked -p tilo-server --bin tilo-enroll --bin tilo-approve\nrm -rf /target/tilo-sh-tools && mkdir -p /target/tilo-sh-tools\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/tilo-sh-tools/\n"
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/tilo-sh-tools/**"]
 default = false
 
-# The programs the local tilo.sh stack's checks run, and its relay's laid-out context: built once
+# The programs the local tilo.sh stack's checks run, and its server's laid-out context: built once
 # here, at the release's code and opt-level without its whole-program link (Cargo.toml's
-# `lounge-gate`), so a check's bring-up compiles nothing. The relay and its Discord worker are
-# lounge-gate-binaries' (the Lounge's page checks run those); this adds the API server, the fake Discord,
+# `lounge-check`), so a check's bring-up compiles nothing. The server and its Discord worker are
+# lounge-check-binaries' (the Lounge's page checks run those); this adds the API server, the fake Discord,
 # the context's bots, surfaces and font catalog.
 [[check]]
 name = "tilo-sh-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-gate/binaries /target/publish/lounge/fonts"
-needs = ["lounge-gate-binaries", "lounge-fonts"]
+run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-check/binaries /target/publish/lounge/fonts"
+needs = ["lounge-check-binaries", "lounge-fonts"]
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh/**"]
 git = true
 default = false
 
-# The local tilo.sh stack's programs (os/containers/tilo-sh/stack.sh): the relay, the Discord
-# worker, the API server, the fake Discord and the tilo command, in one `lounge-gate` build, so a
-# change to the relay compiles it once and relinks every program at once rather than in checks
+# The local tilo.sh stack's programs (os/containers/tilo-sh/stack.sh): the server, the Discord
+# worker, the API server, the fake Discord and the tilo command, in one `lounge-check` build, so a
+# change to the server compiles it once and relinks every program at once rather than in checks
 # that wait on each other. It reads no git, so a commit that changes none of what it compiles
-# takes the last build; the stack lays the relay's context out itself.
+# takes the last build; the stack lays the server's context out itself.
 [[check]]
 name = "tilo-sh-programs"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -5951,7 +6012,36 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh-programs/**"]
 default = false
 
-# Production's Caddy, which serves the local stack's relay and site as its tls container and web
+# A fresh tilo.sh stack answers an agent's program: brought up from tilo-sh-programs' one build
+# with a stub site (nothing opens a page), it takes one small tilolang program at the API server's
+# POST /v1/workspaces/{workspace}/programs, sent with the key of the stack's own person, and must
+# answer `ok`. The API server starts such a program in tilolang-process, which it looks for beside
+# itself: every other check of the stack passes on a build without that program, and this one
+# fails there in the API server's own words. Named only: it and the build it needs cost nothing
+# until somebody asks for them.
+#
+# Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
+# of its own.
+[[check]]
+name = "tilo-sh-answers-a-program"
+# No egress: the stack and the one call meet on loopback alone.
+run = "bash os/containers/tilo-sh/test-program.sh /target/tilo-sh-program"
+needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
+git = true
+outputs = ["/target/tilo-sh-program/answer.json", "/target/tilo-sh-program/state/logs/*.log"]
+# What a failure keeps of why: every service's log.
+evidence = ["/target/tilo-sh-program/state/logs/**"]
+timeout_secs = 900
+default = false
+
+# Production's Caddy, which serves the local stack's server and site as its tls container and web
 # entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked
 # here, so a check's bring-up downloads nothing.
 [[check]]
@@ -5966,7 +6056,7 @@ default = false
 
 # The same stack with the VM hosts' own machines in it: tilo.sh's VM host (privileged, with its
 # loop-backed state disk and Firecracker) runs here from its image, so a hosted workspace's Browser
-# runs in the workspace's VM, on the guest image this checkout built, while the relay, the API server and
+# runs in the workspace's VM, on the guest image this checkout built, while the server, the API server and
 # the site beside it are this commit's programs. A one-workspace key opens Browser and the
 # open is timed; the VM it woke must be a clone of the host's warm template, not a cold boot; the
 # agent fills the visa test page with page actions and is asked nothing, the
@@ -6009,7 +6099,7 @@ timeout_secs = 5400
 default = false
 
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
-# the gate runs), with the entrypoint and image tests its check runs, signed with the release key
+# the check runs), with the entrypoint and image tests its check runs, signed with the release key
 # and published as `sha-<commit>` for cloud-deploy, on a release tag. Published on
 # dispatch as `dev-<commit>`, so a deployment can try a commit before it is released. The release
 # needs no registry image made elsewhere first: any commit tagged is released from its own build.
@@ -6166,7 +6256,7 @@ timeout_secs = 1800
 default = false
 
 # The server OS (os/Containerfile.host): the machine that serves other people's
-# workspaces — the relay and the file replica, the hosted-VM service with
+# workspaces — the server and the file replica, the hosted-VM service with
 # Firecracker and its jail helper, the API server — with updates that stage and
 # are judged by the server's own health verdict. Its programs are t's own compile
 # (host-binaries), so the image is packaging only: the mirrored bootc base and the
@@ -6341,12 +6431,11 @@ on = ["dispatch"]
 
 [[check]]
 name = "release-tilo-sh"
-# tilo.sh in one dispatch: the Lounge relay, the web entry and the API published from this one
-# commit, once the people the live relay's release kept come through the export and the import,
-# every browser flow passing and a fresh stack admitting a page. It prints the three digests;
-# pinning them in the infra repo rolls it out.
+# tilo.sh in one dispatch: the Lounge server, the web entry and the API published from this one
+# commit, every browser flow passing and a fresh stack admitting a page. It prints the three
+# digests; pinning them in the infra repo rolls it out.
 run = "python3 -I -c 'import json,sys\nfor name,path in [(\"lounge\",\"/target/publish/lounge/release/receipt.json\"),(\"web-entry\",\"/target/publish/web-entry/receipt.json\"),(\"api\",\"/target/publish/api/receipt.json\")]:\n    print(name, json.load(open(path))[\"image\"])'"
-needs = ["publish-lounge", "publish-web-entry", "publish-api", "relay-upgrade", "e2e", "tilo-sh-admits-a-page"]
+needs = ["publish-lounge", "publish-web-entry", "publish-api", "e2e", "tilo-sh-admits-a-page"]
 requires = ["arch=any"]
 on = ["dispatch"]
 
@@ -6367,36 +6456,3 @@ pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
-
-# The people the live relay's release kept, carried into a release that starts its relay on fresh
-# state (tools/relay-upgrade/run.sh). `relay-upgrade-release` builds that release and has its own
-# relay keep a Lounge: the source is fetched from the forge by its commit and checked against the
-# SHA-256 tools/relay-upgrade/<release>/source pins, so the network it reaches is pinned, and its
-# result is kept until that directory changes. `relay-upgrade` exports the people out of a copy of
-# that state (read-only), starts this checkout's relay on a fresh directory of the same volume and
-# imports them: the wait list matches, the administrators stay administrators, and each person
-# with an address was mailed an invitation. Moving the live relay to a new release is a new
-# directory there and these two lines.
-[[check]]
-name = "relay-upgrade-release"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/relay-upgrade/run.sh release v0.1.5 /target/relay-upgrade/v0.1.5/kept"
-env = { RUST_BACKTRACE = "1" }
-requires = ["arch=x86_64"]
-outputs = ["/target/relay-upgrade/v0.1.5/kept/**"]
-timeout_secs = 5400
-
-[[check]]
-name = "relay-upgrade"
-run = "bash tools/relay-upgrade/run.sh upgrade v0.1.5 /target/relay-upgrade/v0.1.5/kept"
-# The relay with its agents links every app, and some apps embed image fixtures whose build
-# script fetches them: this check has no network, so the seeded cache is their only source. The
-# upgrade builds this checkout's relay tests, so what it writes is mostly the compiler cache:
-# about 240 MB with every unit cached, and about 4 GB in the run after a vendor patch or a
-# dependency bump. The same commit writes both, so a run past this check's disk envelope says
-# what was stale.
-needs = ["relay-upgrade-release", "test-assets"]
-env = { RUST_BACKTRACE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-requires = ["arch=x86_64"]
-timeout_secs = 3600
-

@@ -628,14 +628,14 @@ tilo_test_env::scenario! {
         let again = rows_of(list);
         for (before, after) in first.iter().zip(&again) {
             let name = before.name.as_deref().unwrap_or_default();
-            let gated = (0..4).any(|index| name == format!("Folder {index}"));
+            let guarded = (0..4).any(|index| name == format!("Folder {index}"));
             assert_eq!(
-                after.state.disabled, gated,
+                after.state.disabled, guarded,
                 "{name} is disabled exactly when its action is unavailable"
             );
             assert_eq!(
                 std::sync::Arc::ptr_eq(before, after),
-                !gated,
+                !guarded,
                 "{name}: only the rows the list disables are copied"
             );
         }
@@ -1198,7 +1198,7 @@ tilo_test_env::scenario! {
         let work = list.row_rect("work").expect("work");
         assert!(
             (line.center().y - work.y0).abs() < 2.0,
-            "the line is the seam above Work"
+            "the line is the boundary above Work"
         );
     }
 
@@ -1362,7 +1362,7 @@ tilo_test_env::scenario! {
             "rows",
             vec![
                 NavItem::new("talk", "talk").unread(true),
-                NavItem::new("dana", "Dana").person("u_dana", Some(colour), true),
+                NavItem::new("dana", "Dana").person(tilo_actions::MemberId::person("u_dana"), Some(colour), true),
             ],
         )]);
         let h = harness(list, Theme::dark());
@@ -1394,7 +1394,7 @@ tilo_test_env::scenario! {
             "rows",
             vec![
                 NavItem::new("dana", "Dana Reyes (via Discord)")
-                    .person("discord:7", Some(colour), false)
+                    .person(tilo_actions::MemberId::person("dana"), Some(colour), false)
                     .person_face("Dana Reyes", None),
             ],
         )]);
@@ -1722,13 +1722,13 @@ fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
         ],
     )])
     .on_check_action(bound());
-    let mut h = uncustodied(list);
+    let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     click_at(&mut h, work.center().x, work.center().y);
     assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
     assert_eq!(list_of(&h).selected_id(), None);
     crate::widget::Widget::set_focus(
-        &mut *h.root_mut::<crate::widget::Uncustodied<NavList>>().0.list,
+        &mut *h.root_mut::<crate::widget::Unattached<NavList>>().0.list,
         true,
     );
     h.relayout_at((280, 360)).expect("layout");
@@ -2289,9 +2289,9 @@ tilo_test_env::scenario! {
         .with_header(crate::widget::SectionHeader::group("Connections"))
         .collapsible();
         let month = crate::widget::DatePicker::new(
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default(),
+            jiff::civil::Date::new(2026, 10, 27).ok().unwrap_or_default(),
         )
-        .with_today(chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default());
+        .with_today(jiff::civil::Date::new(2026, 10, 27).ok().unwrap_or_default());
         assert_sidebar_hovers_damage_only_their_rows(Box::new(
             crate::widget::Column::new()
                 .push(Box::new(section))
@@ -2361,10 +2361,10 @@ fn bound<I: serde::Serialize + 'static>() -> tilo_actions::ActionBinding<I> {
 
 /// `list` laid out in a harness that leaves its control intents to the
 /// test ([`take`]).
-fn uncustodied(list: NavList) -> FrameHarness {
+fn unowned(list: NavList) -> FrameHarness {
     let mut h = FrameHarness::for_root(
         State::new(),
-        crate::widget::Uncustodied(list),
+        crate::widget::Unattached(list),
         (280, 360),
         Theme::dark(),
     );
@@ -2373,12 +2373,12 @@ fn uncustodied(list: NavList) -> FrameHarness {
 }
 
 fn list_of(h: &FrameHarness) -> &NavList {
-    &h.root::<crate::widget::Uncustodied<NavList>>().0
+    &h.root::<crate::widget::Unattached<NavList>>().0
 }
 
 fn take(h: &mut FrameHarness) -> Option<serde_json::Value> {
     use crate::widget::controls::ActionControls;
-    h.root_mut::<crate::widget::Uncustodied<NavList>>()
+    h.root_mut::<crate::widget::Unattached<NavList>>()
         .0
         .take_control_invocation()
         .and_then(|invocation| invocation.arguments.get("value").cloned())
@@ -2392,7 +2392,7 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
             crate::widget::test_string_action_binding(),
         )
         .section_action("new-folder", crate::widget::test_string_action_binding());
-    let mut h = uncustodied(list);
+    let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     let s2 = f64::from(Theme::dark().tokens.spacing.s2);
     click_at(&mut h, work.x1 - s2 - 10.0, work.center().y);
@@ -2420,7 +2420,7 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     assert_eq!(take(&mut h), None);
 
     crate::widget::controls::refresh_control_action_availability(
-        &mut h.root_mut::<crate::widget::Uncustodied<NavList>>().0,
+        &mut h.root_mut::<crate::widget::Unattached<NavList>>().0,
         &HashSet::new(),
     );
     let node = Widget::accessibility(list_of(&h)).expect("semantics");
@@ -2454,7 +2454,7 @@ fn a_row_menu_button_opens_the_menu_and_runs_no_action() {
     let list = NavList::new(mailboxes())
         .item_menu(NavAction::new("more", Icon::MoreHorizontal, "More"))
         .on_context_menu(move |id, _, _| seen.borrow_mut().push(id.to_owned()));
-    let mut h = uncustodied(list);
+    let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     let s2 = f64::from(Theme::dark().tokens.spacing.s2);
     click_at(&mut h, work.x1 - s2 - 10.0, work.center().y);
@@ -2475,12 +2475,12 @@ fn bound_check_rename_and_delete_run_their_actions() {
     .on_check_action(bound())
     .on_rename_action(bound())
     .on_delete_action(crate::widget::test_string_action_binding());
-    let mut h = uncustodied(list);
+    let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     click_at(&mut h, work.center().x, work.center().y);
     assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
     crate::widget::Widget::set_focus(
-        &mut *h.root_mut::<crate::widget::Uncustodied<NavList>>().0.list,
+        &mut *h.root_mut::<crate::widget::Unattached<NavList>>().0.list,
         true,
     );
     h.relayout_at((280, 360)).expect("layout");

@@ -47,7 +47,7 @@ pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
 pub use widget::{WordProcessorWidget, WriterLayout};
 
-/// The record kind of a Writer document.
+/// The resource kind of a Writer document.
 pub const RECORD_KIND: &str = <model::Document as tilo_resource::Resource>::KIND;
 
 pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {

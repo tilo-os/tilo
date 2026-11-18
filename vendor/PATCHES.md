@@ -956,7 +956,15 @@ shared-memory buffer names the pool it lies in (`shm::with_buffer_pool`), so
 the app keeper hands an app's pixels on to the compositor without copying them,
 and a parent surface's whole stack is readable in drawing order
 (`compositor::children_in_stack_order`), the parent included at its place, so
-the app keeper mirrors subsurfaces above and below it. Five
+the app keeper mirrors subsurfaces above and below it. A dma-buf plane whose
+descriptor cannot be sized (a pipe, a socket) is refused when the buffer is
+made, instead of crashing a software renderer that maps it. A tablet tool's
+hardware identity reaches a client whole: both 64-bit values are sent as
+their two uint32 words. An output's
+description can be set, beyond what make, model and name derive. A drag
+still open does not keep the display (and its clients' sockets) alive. A compositor
+names the client that may set a selection without keyboard focus, which is how an
+app keeper re-asserts what its app owned across a desktop restart. Five
 imports and a cast are fixed so it builds without warnings. See
 `vendor/smithay/TILO-PATCH.md` for the details and when to drop each change.
 

@@ -184,7 +184,7 @@ enrollment authority from being mistaken for routine signing state.
 
 If an enrolled machine does not boot, clearing the Secure Boot keys in firmware
 setup returns it to setup mode and it boots exactly as before. That is the escape
-hatch, and it is why enrolment is gated on setup mode rather than attempting to
+hatch, and it is why enrolment depends on setup mode rather than attempting to
 displace a live Platform Key.
 
 ### Prerequisite: the signing tools
@@ -272,9 +272,9 @@ and RPM snapshot digest
 `912255637bab849ee5c3f62a963481f0b994576ef08cec8ff4fe4bc4cfb9e02f`.
 Build-only compiler, Cargo and signing packages are not admitted by copying the
 snapshot inventory. Package metadata can conservatively retain an ABI edge even
-when an unused plugin was removed; the separate ELF gate continues to check the
+when an unused plugin was removed; the separate ELF check continues to check the
 actual Tilo outputs. The final installed inventory must still pass the build
-gate: dependency-graph review alone does not prove a finished image or a boot.
+check: dependency-graph review alone does not prove a finished image or a boot.
 
 The workspace also patches `rustls-native-certs` with the small
 `tilo-native-certs` loader: on Tilo it reads only
@@ -423,7 +423,7 @@ gets a PCR 4 value that matches a prediction the TPM will honour. Refusing that
 needs monotonicity the PCRs cannot express — a TPM NV counter that only moves
 forward, with the policy bound to its current value. `systemd-cryptenroll` does
 not expose that today, so anti-rollback is a gap in any PCR-only design, UKI or
-not. Worth knowing before PCR 11 gets treated as the thing standing between the
+not. Worth knowing before PCR 11 gets treated as the thing access between the
 system and a rollback attack.
 
 #### Is `bootc --composefs-backend` close enough to depend on?
@@ -432,7 +432,7 @@ Evidence from bootc 1.15.2 as shipped, rather than from upstream's roadmap:
 
 - `--composefs-backend` is an ordinary documented flag on `install to-disk` and
   `install to-filesystem`. It is not hidden, and no `BOOTC_*` environment
-  variable gates it — the only `BOOTC_*` knobs in the binary are for debugging,
+  variable checks it — the only `BOOTC_*` knobs in the binary are for debugging,
   loopback cleanup and SELinux.
 - The lifecycle verbs exist, not just install: the binary carries
   `bootc_composefs/{boot,update,switch,status,delete,finalize,export,repo,selinux}.rs`,
@@ -649,7 +649,7 @@ measurement device-bound. These pieces form one atomic security boundary:
    PIN-authorized object: the update UI must ask for it when staging needs a new
    generation. Cancellation leaves the current deployment and floor untouched.
 
-The release gate for enabling the installer's short-PIN choice is correspondingly
+The release check for enabling the installer's short-PIN choice is correspondingly
 end-to-end, not a source grep:
 
 - an encrypted full-disk VM installs without any target UKI byte rewrite, boots

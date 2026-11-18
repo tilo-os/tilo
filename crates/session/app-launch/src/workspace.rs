@@ -106,6 +106,32 @@ impl Workspace {
         grants
     }
 
+    /// The network `app` declares that nobody in this workspace has answered for yet: the hosts
+    /// its manifest names, or `*` when it may ask for any. The launcher lets an app reach only what
+    /// both its manifest and a network grant here allow, so the person is asked for these before
+    /// it starts. `None` for an app the image ships, which reaches what it declares; for one that
+    /// declares no network; and once any network grant or restriction here names the app.
+    #[must_use]
+    pub fn unanswered_reach(
+        &self,
+        app: &str,
+        net: &tilo_app_package::manifest::SandboxNet,
+        image_shipped: bool,
+    ) -> Option<Vec<String>> {
+        use tilo_app_package::manifest::NetMode;
+        let declared = match net.mode {
+            NetMode::Allowlist if !net.hosts.is_empty() => net.hosts.clone(),
+            NetMode::Host => vec!["*".to_owned()],
+            _ => return None,
+        };
+        let answered = self
+            .grants
+            .sandbox
+            .iter()
+            .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)));
+        (!image_shipped && !answered).then_some(declared)
+    }
+
     /// Whether `person` may change this workspace through `app`: what its
     /// answer in the workspace's policy says, and nothing where the session
     /// holds no policy for the workspace.
@@ -193,6 +219,67 @@ mod tests {
             .through(app),
         );
         grants
+    }
+
+    #[test]
+    fn an_installed_app_s_declared_network_is_asked_for_until_a_grant_names_it() {
+        use tilo_app_package::manifest::{NetMode, SandboxNet};
+        let maps = SandboxNet {
+            mode: NetMode::Allowlist,
+            hosts: vec!["tile.openstreetmap.org".into()],
+        };
+        let mut workspace = Workspace::new("w", "/tmp/x");
+        assert_eq!(
+            workspace.unanswered_reach("so.example.maps", &maps, false),
+            Some(vec!["tile.openstreetmap.org".to_owned()])
+        );
+        // The image's own copy reaches what it declares; an app declaring none is asked nothing.
+        assert_eq!(
+            workspace.unanswered_reach("so.example.maps", &maps, true),
+            None
+        );
+        let off = SandboxNet {
+            mode: NetMode::Off,
+            hosts: Vec::new(),
+        };
+        assert_eq!(
+            workspace.unanswered_reach("so.example.maps", &off, false),
+            None
+        );
+        let any = SandboxNet {
+            mode: NetMode::Host,
+            hosts: Vec::new(),
+        };
+        assert_eq!(
+            workspace.unanswered_reach("so.example.mail", &any, false),
+            Some(vec!["*".to_owned()])
+        );
+        // Another app's grant answers nothing for this one; its own does.
+        workspace.grants.sandbox.push(
+            CapOverride::grant(
+                Grantee::person("person-7"),
+                Scope::NetHost("tile.openstreetmap.org".into()),
+                Access::Read,
+            )
+            .through("so.example.other"),
+        );
+        assert!(
+            workspace
+                .unanswered_reach("so.example.maps", &maps, false)
+                .is_some()
+        );
+        workspace.grants.sandbox.push(
+            CapOverride::grant(
+                Grantee::person("person-7"),
+                Scope::NetHost("tile.openstreetmap.org".into()),
+                Access::Read,
+            )
+            .through("so.example.maps"),
+        );
+        assert_eq!(
+            workspace.unanswered_reach("so.example.maps", &maps, false),
+            None
+        );
     }
 
     #[test]

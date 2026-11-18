@@ -31,7 +31,7 @@ impl Done {
         self.count
     }
     fn bit(&self, index: usize) -> io::Result<(u64, u8, u8)> {
-        self.scratch.check_custody()?;
+        self.scratch.check_ownership()?;
         if index >= self.entries || self.file.file.metadata()?.len() != self.bytes {
             return Err(changed("Adoption checkpoint index changed"));
         }

@@ -377,7 +377,7 @@ fn answer_at_once(app: &mut App, ada: &ActionInvoker, ben: &ActionInvoker) -> Re
     )
 }
 
-/// Whoever reviews reads every field with who set it, and the tab's record.
+/// Whoever reviews reads every field with who set it, and the tab's resource.
 fn review(app: &mut App) -> Result<(), Failure> {
     let fields = invoke(app, None, &BrowserEffect::ReadPageFields { frame: None })?;
     let set_by = |question: &str| {
@@ -422,7 +422,7 @@ fn review(app: &mut App) -> Result<(), Failure> {
                 (Some("agent:ada"), Some("fill_form")),
                 (Some("agent:ben"), Some("fill_form")),
             ],
-        "the tab's record holds both agents' actions, in order",
+        "the tab's resource holds both agents' actions, in order",
         &record,
     )
 }

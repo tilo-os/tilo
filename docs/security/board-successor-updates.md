@@ -23,7 +23,7 @@ root-owned pull identity in `/run/ostree/auth.json`, `/etc/ostree/auth.json`, th
 Pull credentials provide transport access and never replace the release key.
 
 `bootc switch --download-only` receives only the verified immutable digest.
-Before activation the staged gate revalidates the actual staged image, matching
+Before activation the staged check revalidates the actual staged image, matching
 UKI composefs digest and unique sealed generation, authenticated NTS time, and
 signed freshness expiry. If owner trust is armed, `renew-under-update-lock`
 validates the existing endorsement and current revocations, then endorses only

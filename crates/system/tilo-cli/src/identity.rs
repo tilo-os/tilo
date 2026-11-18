@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
-use tilo_relay_client::https::{self, Origin};
+use tilo_server_client::https::{self, Origin};
 use tilo_session_client::device::{self, Entering, Held};
 use tilo_user_identity::persist::{
     read_device_cert, read_public_key, read_signing_key, write_device_cert, write_public_key,
@@ -222,7 +222,7 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
     let mut grant = DeviceCert {
         user_public_key: person.root.verifying_key().to_bytes(),
         device_public_key: asked.grant_key,
-        device_label: tilo_relay_client::sign_in::grant_label(&asked.client, &asked.audience),
+        device_label: tilo_server_client::sign_in::grant_label(&asked.client, &asked.audience),
         capabilities: DeviceCapabilities::server_key_grant(),
         issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
         expires_at_ns: asked.expires_at_ns,
@@ -238,8 +238,8 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
     )?;
     Ok(vec![
         ("pending", asked.pending.clone()),
-        ("proof", tilo_relay_client::sign_in::encode(&proof)?),
-        ("grant", tilo_relay_client::sign_in::encode(&grant)?),
+        ("proof", tilo_server_client::sign_in::encode(&proof)?),
+        ("grant", tilo_server_client::sign_in::encode(&grant)?),
     ])
 }
 
@@ -260,8 +260,8 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
         .pointer("/home/host/origin")
         .and_then(Value::as_str)
         .with_context(|| format!("{site} names no Tilo host"))?;
-    let Some(workspace) = tilo_relay_client::login::site_entry(&entry, host)
-        .and_then(|(_, path)| tilo_relay_client::login::Entry { path }.workspace())
+    let Some(workspace) = tilo_server_client::login::site_entry(&entry, host)
+        .and_then(|(_, path)| tilo_server_client::login::Entry { path }.workspace())
     else {
         return Ok(());
     };
@@ -292,7 +292,7 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
         .map_err(|refused| anyhow!(refused.message))?;
         let session = tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
-                host: tilo_relay_client::Host::published(address),
+                host: tilo_server_client::Host::published(address),
                 cert,
                 host_cert: info.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),

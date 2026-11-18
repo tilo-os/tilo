@@ -22,13 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.api-tester@d34f2cdf6de15455";
+export const SURFACE = "so.tilo.api-tester@3269c62757803c40";
 
-/** One of "None", "Bearer", "Basic", "ApiKey". */
-export type AuthScheme = "None" | "Bearer" | "Basic" | "ApiKey";
+/** One of "none", "bearer", "basic", "api_key". */
+export type AuthScheme = "none" | "bearer" | "basic" | "api_key";
 
-/** One of "None", "Json", "Form", "Raw". */
-export type BodyMode = "None" | "Json" | "Form" | "Raw";
+/** One of "none", "json", "form", "raw". */
+export type BodyMode = "none" | "json" | "form" | "raw";
 
 export interface Credentials {
   scheme: AuthScheme;
@@ -42,10 +42,10 @@ export interface Environment {
   variables: Array<tilo.Entry<Variable>>;
 }
 
-/** One of "Get", "Post", "Put", "Patch", "Delete", "Head", "Options". */
-export type HttpMethod = "Get" | "Post" | "Put" | "Patch" | "Delete" | "Head" | "Options";
+/** One of "get", "post", "put", "patch", "delete", "head", "options". */
+export type HttpMethod = "get" | "post" | "put" | "patch" | "delete" | "head" | "options";
 
-export interface RequestRecord {
+export interface RequestResource {
   name: string;
   method: HttpMethod;
   url: string;
@@ -65,7 +65,7 @@ export interface Row {
 
 export interface SavedCollection {
   name: string;
-  requests: Array<tilo.Entry<RequestRecord>>;
+  requests: Array<tilo.Entry<RequestResource>>;
 }
 
 export interface Sent {
@@ -176,7 +176,7 @@ export interface Workspace extends tilo.Resource {
   collections: Array<tilo.Entry<SavedCollection>>;
   environments: Array<tilo.Entry<Environment>>;
   active_environment: string | null;
-  request: RequestRecord;
+  request: RequestResource;
   readonly opened: string;
   readonly history: Array<tilo.Entry<Sent>>;
   newRequest(): Promise<void>;

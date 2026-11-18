@@ -6,7 +6,7 @@ publish = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Host identity custody, recovery and broker lifecycle."
+description = "Host identity storage, recovery and broker lifecycle."
 
 [lib]
 name = "runtime_identity"

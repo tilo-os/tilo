@@ -5,7 +5,7 @@
 //! on [`ALPN`], to B's MCP server, where the person — or B's own setting —
 //! admits it as an agent delegated by them, via A. Nothing else is new
 //! authority: B serves the connection as it serves a program of its own login
-//! ([`crate::session_api`]), through its broker's ordinary gate, in one
+//! ([`crate::session_api`]), through its broker's ordinary check, in one
 //! workspace, under an agent id that names A ([`agent_id`]).
 //!
 //! B knows who dials from the transport alone. The connection's endpoint id is
@@ -87,7 +87,7 @@ pub enum Answer {
     /// The person's workspaces, as this device holds them, for a hello that
     /// asked only for them.
     List {
-        list: tilo_relay_session::workspaces::PersonalList,
+        list: tilo_server_session::workspaces::PersonalList,
     },
     /// It refuses, and why.
     Refused { reason: String },
@@ -267,7 +267,7 @@ pub trait Arrivals: Send + Sync {
     /// The person's workspaces as this device holds them, each with its
     /// host's signed address: what a key of theirs that dials this server reads
     /// to find where to enter. `None` while this device holds no list.
-    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+    fn listed(&self) -> Option<tilo_server_session::workspaces::PersonalList> {
         None
     }
 }
@@ -303,8 +303,8 @@ impl DeviceServer {
         let mut workspace = hello
             .workspace
             .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok());
-        // A key made for an agent works where its scope reaches, as a relay
-        // admits it (`tilo_workspace_host::workspace_access`): a key for one
+        // A key made for an agent works where its scope reaches, as a server
+        // admits it (`tilo_workspace_service::workspace_access`): a key for one
         // workspace in that one alone, never the one in front of the person.
         if let Some(scope) = device.capabilities.agent
             && !hello.list
@@ -608,7 +608,7 @@ pub async fn read_list(
     endpoint: &Endpoint,
     addr: EndpointAddr,
     own: &DeviceCert,
-) -> Result<tilo_relay_session::workspaces::PersonalList, String> {
+) -> Result<tilo_server_session::workspaces::PersonalList, String> {
     let reading = async {
         let connection = endpoint
             .connect(addr, ALPN)
@@ -1091,7 +1091,7 @@ mod tests {
                 forward_request(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
                 None
             );
-            assert_eq!(forward_request(br#"{"op":"agent_seat"}"#), None);
+            assert_eq!(forward_request(br#"{"op":"agent_place"}"#), None);
             assert_eq!(
                 forward_request(br#"{"forward":{"device":"studio","as":"person"}}"#),
                 None,

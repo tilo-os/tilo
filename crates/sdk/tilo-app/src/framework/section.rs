@@ -22,7 +22,7 @@ use ui_core::storage::{
 };
 
 use super::live::Live;
-use super::record::{Held, ResourceApi};
+use super::resources::{Held, ResourceApi};
 
 /// One thing a section's record asks of the section's type.
 #[derive(Clone, Copy)]
@@ -215,7 +215,7 @@ where
         SectionOp::Decode(action) => {
             let decoded = tilo_actions::decode_json::<T::Action>(&action.payload)
                 .map_err(|error| refused(&error))?;
-            super::record::not_by_app::<T>(&decoded).map_err(|error| refused(&error))?;
+            super::resources::not_by_app::<T>(&decoded).map_err(|error| refused(&error))?;
             SectionOut::Decoded(Box::new(decoded))
         }
         SectionOp::Stored => {
@@ -377,7 +377,7 @@ impl ResourceApi for SectionApi {
             tracing::warn!(kind = self.kind.kind, %error, "settings section unreadable");
             tilo_actions::ResourceSpec::new(self.id.as_str(), self.kind.kind, self.kind.label)
         });
-        let published = super::record::route(published, &self.id, true);
+        let published = super::resources::route(published, &self.id, true);
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -439,7 +439,7 @@ impl SettingsResources {
         document: SettingsDocument,
     ) -> Self {
         Self::declared(
-            super::record::Sections {
+            super::resources::Sections {
                 app_id,
                 document,
                 person: None,
@@ -462,7 +462,7 @@ impl SettingsResources {
         records: ui_core::resource::person::PersonResources,
     ) -> Self {
         Self::declared(
-            super::record::Sections {
+            super::resources::Sections {
                 app_id,
                 document: SettingsDocument::Session,
                 person: Some(Rc::new(super::person::PersonState::new(
@@ -512,7 +512,7 @@ impl SettingsResources {
         document: SettingsDocument,
     ) -> Self {
         Self::declared(
-            super::record::Sections {
+            super::resources::Sections {
                 app_id,
                 document,
                 person: Some(Rc::new(super::person::PersonState::without_resources(
@@ -527,9 +527,9 @@ impl SettingsResources {
         )
     }
 
-    fn declared(sections: super::record::Sections, declares: &[super::Declare]) -> Self {
+    fn declared(sections: super::resources::Sections, declares: &[super::Declare]) -> Self {
         let person = sections.person.clone();
-        let mut records = super::Records::sections(sections);
+        let mut records = super::Resources::sections(sections);
         for declare in declares {
             declare(&mut records);
         }
@@ -611,7 +611,7 @@ impl SettingsResources {
                 .answer_for(&encoded.payload, invoker)
                 .map_err(tilo_actions::ApiError::Failed);
         }
-        let request: super::record::ResourceAction = tilo_actions::decode_json(&encoded.payload)
+        let request: super::resources::ResourceAction = tilo_actions::decode_json(&encoded.payload)
             .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
         let api = self
             .apis
@@ -627,7 +627,7 @@ impl SettingsResources {
 impl SettingsResources {
     /// What answers these sections' actions where the host keeps them in its
     /// own process, as `person`'s: the controls a window binds to them
-    /// ([`Records::kept_by`](super::Records::kept_by)) are invoked here, as a
+    /// ([`Resources::kept_by`](super::Resources::kept_by)) are invoked here, as a
     /// session's broker invokes them where it keeps them. The person's own
     /// settings: nobody else changes them.
     #[must_use]

@@ -78,7 +78,7 @@ An IP address is only a hint.
   The route is served by `tilo-device-admin.service` on dev images, a system
   service rather than the session's endpoint, so a device at the greeter, or
   one nobody has logged in to since boot, stays reachable. It shares the
-  device key: its endpoint id is derived from it, as tilo-relay's is, since
+  device key: its endpoint id is derived from it, as tilo-server's is, since
   one endpoint id published by two processes would take each other's relay
   slot, and the device key proves who answers inside the handshake. Both
   sides present their root-signed certificate and sign a challenge bound to
@@ -244,7 +244,7 @@ It unlocks like any other machine with a TPM.
   1. A remote admin's lease keeps device B awake past its idle timeout.
   2. Once the lease expires, B suspends.
   3. Device A invokes `device.wake` by B's name. The harness checks that the
-     magic packet for B's MAC was sent and resumes B, standing in for the NIC.
+     magic packet for B's MAC was sent and resumes B, access in for the NIC.
   4. A's action reaches B again without being reconfigured.
   5. B's link is cut and restored, and the action route reconnects.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a

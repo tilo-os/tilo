@@ -2,23 +2,23 @@
 # review a change here like an API change (docs/architecture/compatibility.md).
 # Everything above [schema] is authored; [schema] and `version` are written.
 
-# Device ↔ device: the certified handshake, the relay session's frames and
+# Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 52
+version = 55
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
 sources = [
-    "crates/hosting/tilo-relay-protocol/src/auth.rs",
-    "crates/hosting/tilo-relay-protocol/src/transport.rs",
-    "crates/hosting/tilo-relay-protocol/src/refusal.rs",
-    "crates/hosting/tilo-relay-protocol/src/entering.rs",
-    "crates/hosting/tilo-relay-protocol/src/directory.rs",
-    "crates/hosting/tilo-relay-protocol/src/workspaces.rs",
-    "crates/hosting/tilo-delivery-protocol/src/transport_v2.rs",
-    "crates/hosting/tilo-delivery-protocol/src/transport_v2/delta.rs",
-    "crates/hosting/tilo-delivery-protocol/src/transport_v2/presence.rs",
+    "crates/server/tilo-server-protocol/src/auth.rs",
+    "crates/server/tilo-server-protocol/src/transport.rs",
+    "crates/server/tilo-server-protocol/src/refusal.rs",
+    "crates/server/tilo-server-protocol/src/entering.rs",
+    "crates/server/tilo-server-protocol/src/directory.rs",
+    "crates/server/tilo-server-protocol/src/workspaces.rs",
+    "crates/server/tilo-delivery-protocol/src/transport_v2.rs",
+    "crates/server/tilo-delivery-protocol/src/transport_v2/delta.rs",
+    "crates/server/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
     "crates/collab/collab-types/src/own_resource.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
@@ -31,7 +31,7 @@ sources = [
     "crates/collab/neighbour-wire/src/content.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
     "crates/collab/collab-types/src/artifact.rs",
-    "crates/hosting/tilo-relay-protocol/src/voice.rs",
+    "crates/server/tilo-server-protocol/src/voice.rs",
     "crates/collab/collab-types/src/mls_governance.rs",
     "crates/collab/tilo-user-identity/src/directory.rs",
     "crates/collab/actions/src/outcome.rs",
@@ -50,18 +50,21 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
+roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
 Value = "serde_json::Value: any JSON value, carried as its text"
-RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the relay transport's remote-action envelope"
+RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the server transport's remote-action envelope"
 
 [schema]
 "ActionKey" = "struct"
 "ActionKey.action" = "#2 String"
 "ActionKey.app" = "#0 String"
 "ActionKey.kind" = "#1 String"
+"ActionServiceFrame" = "enum external"
+"ActionServiceFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
+"ActionServiceFrame::Offer" = "#1 tuple(Box<Query>)"
 "AgentScope" = "enum external"
 "AgentScope::AllWorkspaces" = "#0 unit"
 "AgentScope::Workspace" = "#1 tuple([u8; 16])"
@@ -164,7 +167,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeviceCapabilities.can_admit_devices" = "#1 bool"
 "DeviceCapabilities.can_own_workspaces" = "#0 bool"
 "DeviceCapabilities.foreign" = "#2 bool"
-"DeviceCapabilities.retired" = "#8 RetiredFlags"
 "DeviceCapabilities.server_key" = "#6 bool"
 "DeviceCapabilities.stand_in" = "#5 bool"
 "DeviceCert" = "struct"
@@ -189,9 +191,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DocumentAnswer::Sent" = "#0 struct"
 "DocumentAnswer::Sent.frames" = "#0 u32"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
-"EncryptionMetadata" = "struct"
+"EncryptionMetadata" = "struct deny_unknown_fields"
 "EncryptionMetadata.epoch" = "#0 u64"
-"EncryptionMetadata.retired_channel" = "#2 Option<Uuid>"
 "EncryptionMetadata.scheme" = "#1 EncryptionScheme"
 "EncryptionScheme" = "enum external"
 "EncryptionScheme::ContentKey" = "#1 struct"
@@ -276,9 +277,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::DocumentContent.from_device_public_key" = "#2 [u8; 32]"
 "Envelope::DocumentContent.to_device_public_key" = "#1 [u8; 32]"
 "Envelope::DocumentContent.workspace_id" = "#0 WorkspaceId"
-"Envelope::DocumentContentRefused" = "#51 struct"
-"Envelope::DocumentContentRefused.refusal" = "#1 Refusal"
-"Envelope::DocumentContentRefused.workspace_id" = "#0 WorkspaceId"
 "Envelope::DocumentContentWant" = "#39 struct"
 "Envelope::DocumentContentWant.frame" = "#2 Vec<u8> with=serde_bytes"
 "Envelope::DocumentContentWant.from_device_public_key" = "#1 [u8; 32]"
@@ -306,9 +304,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::OpenDocument.channel" = "#1 [u8; 32]"
 "Envelope::OpenDocument.own" = "#2 Option<OwnedChannel>"
 "Envelope::OpenDocument.workspace_id" = "#0 WorkspaceId"
-"Envelope::PeerRelayHello" = "#8 struct"
-"Envelope::PeerRelayHello.hosted_workspaces" = "#0 Vec<WorkspaceId>"
-"Envelope::PersonalList" = "#52 struct"
+"Envelope::PeerServerHello" = "#8 struct"
+"Envelope::PeerServerHello.hosted_workspaces" = "#0 Vec<WorkspaceId>"
+"Envelope::PersonalList" = "#51 struct"
 "Envelope::PersonalList.list" = "#0 Vec<u8> with=serde_bytes"
 "Envelope::Ping" = "#6 unit"
 "Envelope::Pong" = "#7 unit"
@@ -450,6 +448,13 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "HelloAck.sig_over_client_nonce" = "#3 [u8; 64] with=serde_bytes"
 "HelloAck2" = "struct"
 "HelloAck2.sig_over_server_nonce" = "#0 [u8; 64] with=serde_bytes"
+"HelloRefusal" = "enum external"
+"HelloRefusal::DeviceRevoked" = "#0 unit"
+"HelloRefused" = "struct"
+"HelloRefused.cert" = "#1 DeviceCert"
+"HelloRefused.protocol" = "#0 u32"
+"HelloRefused.refusal" = "#2 HelloRefusal"
+"HelloRefused.sig_over_refusal" = "#3 [u8; 64] with=serde_bytes"
 "HistoryOp" = "enum external"
 "HistoryOp::checkpoint" = "#3 struct"
 "HistoryOp::checkpoint.name" = "#0 String"
@@ -715,9 +720,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PersonalHost" = "struct"
 "PersonalHost.hint" = "#1 Vec<u8> with=serde_bytes"
 "PersonalHost.workspace" = "#0 String"
-"PlaneFrame" = "enum external"
-"PlaneFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
-"PlaneFrame::Offer" = "#1 tuple(Box<Query>)"
 "Power" = "enum external"
 "Power::battery" = "#3 unit"
 "Power::charging" = "#1 unit"
@@ -740,22 +742,18 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Rank.load_permille" = "#1 u32"
 "Rank.power" = "#0 Power"
 "Refusal" = "enum external"
-"Refusal::Conflict" = "#12 unit"
-"Refusal::Full" = "#3 unit"
-"Refusal::Invalid" = "#11 tuple(String)"
-"Refusal::NotAMember" = "#6 tuple(String)"
-"Refusal::NotAdmitted" = "#7 unit"
-"Refusal::NotAllowed" = "#5 tuple(String)"
-"Refusal::NotGranted" = "#4 tuple(String)"
+"Refusal::Conflict" = "#10 unit"
+"Refusal::Full" = "#1 unit"
+"Refusal::Invalid" = "#9 tuple(String)"
+"Refusal::NotAMember" = "#4 tuple(String)"
+"Refusal::NotAdmitted" = "#5 unit"
+"Refusal::NotAllowed" = "#3 tuple(String)"
+"Refusal::NotGranted" = "#2 tuple(String)"
 "Refusal::NotReady" = "#0 unit"
-"Refusal::Offline" = "#9 unit"
-"Refusal::Other" = "#13 tuple(String)"
-"Refusal::Superseded" = "#10 unit"
-"Refusal::TooFast" = "#1 struct"
-"Refusal::TooFast.wait_ms" = "#0 u64"
-"Refusal::TooMuchContent" = "#2 struct"
-"Refusal::TooMuchContent.wait_ms" = "#0 u64"
-"Refusal::WorkspaceDeleted" = "#8 unit"
+"Refusal::Offline" = "#7 unit"
+"Refusal::Other" = "#11 tuple(String)"
+"Refusal::Superseded" = "#8 unit"
+"Refusal::WorkspaceDeleted" = "#6 unit"
 "RefusalReason" = "enum external"
 "RefusalReason::Conflict" = "#6 unit"
 "RefusalReason::Expired" = "#1 unit"
@@ -766,9 +764,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "RefusalReason::NotCertified" = "#2 unit"
 "RefusalReason::Other" = "#8 unit"
 "RefusalReason::Revoked" = "#0 unit"
-"RetiredFlags" = "struct"
-"RetiredFlags.act_as_host" = "#0 bool"
-"RetiredFlags.read_all_workspaces" = "#1 bool"
 "RevocationEntry" = "struct deny_unknown_fields"
 "RevocationEntry.reason" = "#3 RevocationReason"
 "RevocationEntry.revoked_at_ns" = "#2 u64"
@@ -833,8 +828,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedOp.artifact" = "#1 ArtifactId"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"
-"SignedOp.claims" = "#8 Vec<ChangeClaim>"
-"SignedOp.encryption" = "#7 Option<EncryptionMetadata> with=encryption_wire"
+"SignedOp.claims" = "#8 Vec<ChangeClaim> with=claims_wire"
+"SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"

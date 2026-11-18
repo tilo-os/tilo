@@ -225,7 +225,7 @@ impl WindowWidth {
                 .clamp(min_group_px(usable), max_group_px(usable));
         }
         // Rounded: a client's geometry is integers, and a fractional width
-        // would leave sub-pixel seams between groups.
+        // would leave sub-pixel borders between groups.
         let px = (usable * self.fraction()).round();
         // The default width suits the screen it is on: never wider than
         // reads well on a big display, and never narrower than an app's

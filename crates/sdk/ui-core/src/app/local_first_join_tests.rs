@@ -31,9 +31,9 @@ fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
         )
         .unwrap(),
     );
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: "fixture-device".into(),

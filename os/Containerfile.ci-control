@@ -12,4 +12,4 @@ RUN test -x /usr/local/bin/docker \
     && test -x /usr/local/libexec/docker/cli-plugins/docker-buildx
 
 # Native qualification must run os/tests/named_public_trust_context.sh docker
-# against the runner's isolated daemon before this image replaces a CI lane.
+# against the runner's isolated daemon before this image replaces a CI job.

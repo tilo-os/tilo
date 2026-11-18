@@ -55,6 +55,54 @@ impl LabeledCaret {
         self
     }
 
+    /// Where the bytes `start..end` of `text` stand as it is drawn in `lines` (each line's words
+    /// in order, a cut line ending in an ellipsis) from `x` and `top`, `line` apart in `style`: one
+    /// band per line they reach, and the caret after them, its chip kept below `ceiling`, left of
+    /// `right` and off every line's ink. No bands for a range the shown lines cut off.
+    pub(crate) fn after_span(
+        renderer: &mut TextRenderer,
+        (text, lines, style): (&str, &[String], &crate::text_render::TextStyle),
+        (x, top, line): (f64, f64, f64),
+        (ceiling, right): (f64, f64),
+        (start, end): (usize, usize),
+    ) -> (Vec<Rect>, Self) {
+        let (mut bands, mut caret, mut ink) = (Vec::new(), None, Vec::new());
+        let mut from = 0;
+        let mut y = top;
+        for shown in lines {
+            let shown = shown.trim_end_matches('\u{2026}');
+            let Some(at) = text.get(from..).and_then(|rest| rest.find(shown)) else {
+                break;
+            };
+            let (line_start, line_end) = (from + at, from + at + shown.len());
+            from = line_end;
+            let mut x_of = |byte: usize| {
+                let before = text.get(line_start..byte).unwrap_or_default();
+                x + f64::from(renderer.measure_style(before, None, style).0)
+            };
+            ink.push(Rect::new(x, y, x_of(line_end), y + line));
+            let (a, b) = (start.max(line_start), end.min(line_end));
+            if a <= b {
+                let (x0, x1) = (x_of(a), x_of(b));
+                if a < b {
+                    bands.push(Rect::new(x0, y, x1, y + line));
+                }
+                if (line_start..=line_end).contains(&end) {
+                    caret = Some(Rect::new(x1, y, x1 + 1.5, y + line));
+                }
+            }
+            y += line;
+        }
+        let caret = caret.unwrap_or_else(|| {
+            let last = ink
+                .last()
+                .copied()
+                .unwrap_or(Rect::new(x, top, x, top + line));
+            Rect::new(last.x1, last.y0, last.x1 + 1.5, last.y1)
+        });
+        (bands, Self::within(caret, ceiling).among(ink, right))
+    }
+
     /// Where a `w` by `h` name chip goes.
     ///
     /// Where the glyphs around the caret are known ([`Self::among`]), the chip
@@ -133,7 +181,7 @@ impl LabeledCaret {
 }
 
 /// Whether `a` and `b` share any area.
-fn overlaps(a: Rect, b: Rect) -> bool {
+pub(super) fn overlaps(a: Rect, b: Rect) -> bool {
     a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 

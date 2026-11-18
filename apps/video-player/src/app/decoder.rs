@@ -162,7 +162,7 @@ impl PlayerState {
                 }
             }
             media::MediaEvent::Ended => {
-                // Queue advancement is gated on the engine's end event, not on the
+                // Queue advancement depends on the engine's end event, not on the
                 // playhead looking close to its duration.
                 self.advance_after_engine_end();
             }

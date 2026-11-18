@@ -598,8 +598,8 @@ tilo_test_env::scenario! {
     phase copy_puts_the_edited_pixels_on_the_clipboard;
     {
         let recorder = Arc::new(RecordingClipboard::default());
-        let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(recorder.clone());
+        let _host = ui::process::enter(&services);
 
         {
             let mut empty = Harness::new(900.0, 600.0);
@@ -1126,12 +1126,12 @@ fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
         .image
         .content
         .reference()
-        .expect("the picture is kept outside the record");
+        .expect("the picture is kept outside the resource");
     assert!(tilo_content::is_sealed(&reference), "{reference}");
     assert_eq!(
         photo.image.hash(),
         tilo_content::hash_bytes(&bytes),
-        "the record names the bytes it was opened from"
+        "the resource names the bytes it was opened from"
     );
     assert!(
         !writer.has(&tilo_content::hash_bytes(&bytes)),

@@ -246,12 +246,12 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
     });
     if let Some(person) = &spec.person {
         let name = person.name.as_deref().unwrap_or(label);
-        let mut avatar = crate::widget::AvatarFace::new(name, &person.identity)
-            .image(person.image.as_ref())
-            .presence_ring();
-        if person.agent {
-            avatar = avatar.agent();
+        let mut avatar = match person.who.member_id() {
+            Some(member) => crate::widget::AvatarFace::member(name, member),
+            None => crate::widget::AvatarFace::new(name, person.who.id()),
         }
+        .image(person.image.as_ref())
+        .presence_ring();
         if let Some(colour) = person.colour {
             avatar = avatar.presence(colour);
         }
@@ -713,7 +713,7 @@ impl Widget for NavRow {
                 )
             }
             NavRowKind::Caption { caption, .. } => (caption.clone(), None, None),
-            // A row standing in for an item still being read says so, as every
+            // A row in place of an item still being read says so, as every
             // skeleton in a window does: a person who reaches it with a
             // keyboard hears what it waits for, not an unnamed control.
             NavRowKind::Pending { .. } => ("Loading".to_owned(), None, None),
@@ -771,7 +771,7 @@ impl Widget for NavRow {
     }
 }
 
-/// A row standing in for an item still being read: its icon and its label
+/// A row in place of an item still being read: its icon and its label
 /// where a row puts them, in the skeleton tone.
 fn paint_nav_pending(
     scene: &mut Scene,

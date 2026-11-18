@@ -22,13 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@0eaa347d94dcdb19";
+export const SURFACE = "so.tilo.settings@cf796b4970963810";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
 
-/** One of "Lens", "FullScreen". */
-export type MagnifierView = "Lens" | "FullScreen";
+/** One of "lens", "full_screen". */
+export type MagnifierView = "lens" | "full_screen";
 
 /** One of "auto", "always", "never". */
 export type OnScreenKeyboard = "auto" | "always" | "never";

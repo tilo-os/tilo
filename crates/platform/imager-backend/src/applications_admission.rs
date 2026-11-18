@@ -54,7 +54,7 @@ pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -
     }
     Ok(())
 }
-/// Authenticate the actual installed consumer proof before target custody writes.
+/// Authenticate the actual installed consumer proof before target ownership writes.
 /// The check re-executes the installed probes and compares the image receipt.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {

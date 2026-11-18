@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use tilo_desktop_model::{IdMinter, Tab, TabId, TileContent as ModelTile, Workspace};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, Elsewhere, NeighbourMsg, PeerAction, PeerId, PeerOutcome,
-    PeerRead, PeerStreamStart, PeerSurface, PeerSurfaces, Standing, SurfaceId, TileSource,
+    PeerRead, PeerStreamStart, PeerSurface, PeerSurfaces, StreamState, SurfaceId, TileSource,
     WhyEnded, seed_tree,
 };
 use tilo_window_share::streaming::InputEvent;
@@ -224,7 +224,7 @@ fn a_received_stream_is_pictured_in_its_tile() {
     driver.relayout();
 
     let before = handle.peer_surface_read(tab).expect("the share has a tile");
-    assert_eq!(before.standing, Standing::Started);
+    assert_eq!(before.state, StreamState::Started);
     assert_eq!(
         before.picture, None,
         "nothing is pictured before the first unit"
@@ -246,7 +246,7 @@ fn a_received_stream_is_pictured_in_its_tile() {
     }
 
     let read = settle(&mut driver, &handle, tab);
-    assert_eq!(read.standing, Standing::Pictured);
+    assert_eq!(read.state, StreamState::Pictured);
     assert_eq!(
         read.picture,
         Some((WIDTH, HEIGHT, (WIDTH as usize) * (HEIGHT as usize) * 4)),
@@ -365,7 +365,7 @@ fn three_pushes_at_a_held_paint_leave_the_newest_picture_in_the_resource() {
         read.frames_dropped, 1,
         "exactly the one the ceiling evicted"
     );
-    assert_eq!(read.standing, Standing::Pictured);
+    assert_eq!(read.state, StreamState::Pictured);
     let resource = tile.borrow().resource();
     assert_eq!(
         resource.presentation.as_ref().unwrap().preview.as_deref(),
@@ -512,19 +512,19 @@ fn notice(driver: &FrameHarness) -> Option<(String, String)> {
 }
 
 /// The notice `driver` 's shell shows once `handle` was told the window in `tab` stands as
-/// `standing` .
+/// `state` .
 fn notice_for(
     driver: &mut FrameHarness,
     handle: &DesktopHandle,
     tab: TabId,
-    standing: &Elsewhere,
+    state: &Elsewhere,
 ) -> Option<(String, String)> {
-    handle.set_elsewhere(vec![(tab, standing.clone())]);
+    handle.set_elsewhere(vec![(tab, state.clone())]);
     driver.relayout();
     driver.relayout();
     assert_eq!(
         &handle.elsewhere(tab),
-        standing,
+        state,
         "the shell keeps what it was told"
     );
     notice(driver)
@@ -549,7 +549,7 @@ fn a_window_on_another_device_says_where_it_runs_and_why_it_is_not_here() {
         "a shell nobody told says where the window runs, and no more"
     );
     let waits_for_keys = "Waiting for this workspace's keys to reach this device";
-    for (standing, why) in [
+    for (state, why) in [
         (
             Elsewhere::NotShared,
             "It is not shared with this workspace right now",
@@ -573,7 +573,7 @@ fn a_window_on_another_device_says_where_it_runs_and_why_it_is_not_here() {
         (Elsewhere::Left, "Laptop is no longer in this workspace"),
     ] {
         assert_eq!(
-            notice_for(&mut driver, &handle, tab, &standing),
+            notice_for(&mut driver, &handle, tab, &state),
             Some(words("Writer runs on Laptop", why))
         );
     }
@@ -591,7 +591,7 @@ fn a_device_nothing_names_is_another_device_of_the_workspace_and_never_its_key()
     for label in ["", "  ", key.as_str()] {
         let (mut driver, handle, tab) = shell_of_device(label);
         let title = "Writer runs on another device of this workspace";
-        for (standing, why) in [
+        for (state, why) in [
             (
                 Elsewhere::NotShared,
                 "It is not shared with this workspace right now",
@@ -609,7 +609,7 @@ fn a_device_nothing_names_is_another_device_of_the_workspace_and_never_its_key()
             (Elsewhere::Left, "Its device is no longer in this workspace"),
         ] {
             assert_eq!(
-                notice_for(&mut driver, &handle, tab, &standing),
+                notice_for(&mut driver, &handle, tab, &state),
                 Some(words(title, why)),
                 "a device labelled {label:?}"
             );
@@ -682,8 +682,8 @@ fn a_share_takes_the_tab_from_the_notice_and_gives_it_back_when_its_sender_stops
     );
     driver.relayout();
     assert_eq!(
-        handle.peer_surface_read(tab).map(|read| read.standing),
-        Some(Standing::Started)
+        handle.peer_surface_read(tab).map(|read| read.state),
+        Some(StreamState::Started)
     );
     assert_eq!(
         notice(&driver),
@@ -701,8 +701,8 @@ fn a_share_takes_the_tab_from_the_notice_and_gives_it_back_when_its_sender_stops
         handle.peer_surface_picture(SHARER, SURFACE, seq, &unit);
     }
     assert_eq!(
-        settle(&mut driver, &handle, tab).standing,
-        Standing::Pictured
+        settle(&mut driver, &handle, tab).state,
+        StreamState::Pictured
     );
     driver.relayout();
     assert_eq!(notice(&driver), None, "a pictured window shows its picture");
@@ -737,8 +737,8 @@ fn a_window_this_device_let_go_says_so_and_refuses_in_the_language_read_now() {
         handle.peer_surface_picture(SHARER, SURFACE, seq, &unit);
     }
     assert_eq!(
-        settle(&mut driver, &handle, tab).standing,
-        Standing::Pictured
+        settle(&mut driver, &handle, tab).state,
+        StreamState::Pictured
     );
     let id = format!("desktop.peer-surface:{SURFACE}");
     driver
@@ -747,8 +747,8 @@ fn a_window_this_device_let_go_says_so_and_refuses_in_the_language_read_now() {
     driver.relayout();
     driver.relayout();
     assert_eq!(
-        handle.peer_surface_read(tab).map(|read| read.standing),
-        Some(Standing::Ended {
+        handle.peer_surface_read(tab).map(|read| read.state),
+        Some(StreamState::Ended {
             why: WhyEnded::LetGo
         })
     );

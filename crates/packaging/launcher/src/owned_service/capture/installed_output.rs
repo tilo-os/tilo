@@ -36,7 +36,7 @@ pub struct InstalledCopyOutputFiles {
 }
 /// Implemented by the canonical installed root controller ONLY after protected setup/source review and
 /// actual target QPE/person proof.
-pub trait InstalledCopyOutputCustody: ServiceAuthority {
+pub trait InstalledCopyOutputOwnership: ServiceAuthority {
     /// Return the authenticated installed transaction binding.
     fn binding(&self) -> io::Result<InstalledCopyOutputBinding>;
     /// Clone the held output and namespace descriptors.
@@ -48,12 +48,12 @@ pub trait InstalledCopyOutputCustody: ServiceAuthority {
         Err(refuse())
     }
     /// Revalidate physical disjointness and the operation lease.
-    fn check_physical_and_operation_custody(&self) -> io::Result<()> {
+    fn check_physical_and_operation_ownership(&self) -> io::Result<()> {
         Err(refuse())
     }
 }
 pub struct InstalledCopyOutputAdmission {
-    custody: Arc<dyn InstalledCopyOutputCustody>,
+    ownership: Arc<dyn InstalledCopyOutputOwnership>,
     binding: InstalledCopyOutputBinding,
     files: InstalledCopyOutputFiles,
     peer: Arc<ExecutingPeer>,
@@ -94,7 +94,7 @@ fn mount_id(file: &File) -> io::Result<u64> {
 
 impl InstalledCopyOutputAdmission {
     /// Admit held output for an authenticated installed-copy transaction.
-    pub fn admit(custody: Arc<dyn InstalledCopyOutputCustody>) -> io::Result<Self> {
+    pub fn admit(ownership: Arc<dyn InstalledCopyOutputOwnership>) -> io::Result<Self> {
         // SAFETY: observes real/effective/fs uid without changing it.
         if rustix::process::getuid().as_raw() != 0
             || rustix::process::geteuid().as_raw() != 0
@@ -102,8 +102,8 @@ impl InstalledCopyOutputAdmission {
         {
             return Err(refuse());
         }
-        custody.check()?;
-        let binding = custody.binding()?;
+        ownership.check()?;
+        let binding = ownership.binding()?;
         if !uuid(&binding.operation)
             || !uuid(&binding.attempt)
             || binding.read_claim_digest == [0; 32]
@@ -120,16 +120,16 @@ impl InstalledCopyOutputAdmission {
         {
             return Err(refuse());
         }
-        let files = custody.files()?;
-        let peer = custody.target_peer()?;
+        let files = ownership.files()?;
+        let peer = ownership.target_peer()?;
         let result = Self {
-            custody,
+            ownership,
             binding,
             files,
             peer,
         };
         result.check()?;
-        let additional = result.custody.additional_output_reservation()?;
+        let additional = result.ownership.additional_output_reservation()?;
         if additional > result.binding.reserve_bytes || additional > capacity(&result.files.output)?
         {
             return Err(refuse());
@@ -137,10 +137,10 @@ impl InstalledCopyOutputAdmission {
         Ok(result)
     }
     pub(crate) fn check(&self) -> io::Result<()> {
-        self.custody.check()?;
-        self.custody.check_physical_and_operation_custody()?;
-        let peer = self.custody.target_peer()?;
-        if self.custody.binding()? != self.binding
+        self.ownership.check()?;
+        self.ownership.check_physical_and_operation_ownership()?;
+        let peer = self.ownership.target_peer()?;
+        if self.ownership.binding()? != self.binding
             || !Arc::ptr_eq(&peer, &self.peer)
             || !self.peer.current()
             || self.peer.uid() != self.binding.target_uid
@@ -178,8 +178,8 @@ impl InstalledCopyOutputAdmission {
             return Err(refuse());
         }
         writable_directory(&self.files.output)?;
-        self.custody.check_physical_and_operation_custody()?;
-        self.custody.check()
+        self.ownership.check_physical_and_operation_ownership()?;
+        self.ownership.check()
     }
     pub(super) fn bind_source(&self, source: &File, uid: u32, digest: [u8; 32]) -> io::Result<()> {
         self.check()?;

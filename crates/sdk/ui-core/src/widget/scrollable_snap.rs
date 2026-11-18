@@ -9,7 +9,7 @@ use crate::motion::{ScrollJump, Snap};
 use crate::tokens::{EffectiveMotion, MotionSource};
 use crate::widget::Scrollable;
 
-/// Two detents closer than this (logical px) are one: a lane's leading edge
+/// Two detents closer than this (logical px) are one: a list's leading edge
 /// and the end of the scrollable content are often the same place.
 const SAME_DETENT_PX: f32 = 0.5;
 
@@ -96,7 +96,7 @@ impl Scrollable {
         let down = settle_on(&self.snap_y, drawn.y, velocity.1, self.motion);
         let target = Vec2::new(across.unwrap_or(drawn.x), down.unwrap_or(drawn.y));
         // An axis the content offers no detent on stays where it is, and its
-        // velocity with it: a fling sideways in a list of lanes must not
+        // velocity with it: a fling sideways in a list of lists must not
         // overshoot up and down.
         let carried = Vec2::new(
             if across.is_some() { velocity.0 } else { 0.0 },

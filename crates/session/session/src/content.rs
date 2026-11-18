@@ -50,18 +50,18 @@ const MAX_QUEUED: usize = 512;
 
 /// The session's side of the records' content: the broker's service, the workspace's topic as its
 /// route, and the worker that takes members' asks and answers off the session's loop.
-pub(crate) struct Plane {
+pub(crate) struct ContentService {
     route: Arc<RouteContent>,
     shelf: Arc<Shelf>,
     peers: Arc<Peers>,
     inbound: SyncSender<Inbound>,
     /// The store of each record the session keeps itself, by workspace and app
-    /// ([`Plane::store`]).
+    /// ([`ContentService::store`]).
     kept: Mutex<HashMap<(String, String), Arc<Kept>>>,
 }
 
-impl Plane {
-    /// The record-content plane of a session whose state is `state` : content under it outlives the
+impl ContentService {
+    /// The record-content service of a session whose state is `state` : content under it outlives the
     /// session, as the records do. A session that keeps no state keeps content for as long as it
     /// runs.
     pub(crate) fn open(state: Option<&Path>) -> Arc<Self> {
@@ -219,7 +219,7 @@ impl Plane {
         }
     }
 
-    /// Where this device's plane says and hears on the network: the workspace topics it publishes
+    /// Where this device's content service says and hears on the network: the workspace topics it publishes
     /// on, and this device's handle there.
     pub(crate) fn bind(&self, outgoing: HostOutbox, publisher: EndpointId) {
         self.peers.bind(outgoing, publisher);
@@ -233,7 +233,7 @@ impl Plane {
     }
 
     /// A message `from` published on the topic of `ws` , which is the workspace `workspace` :
-    /// whether it was about a record's content, which this plane takes and the session's loop then
+    /// whether it was about a record's content, which this content service takes and the session's loop then
     /// leaves to it.
     pub(crate) fn heard(
         &self,
@@ -252,10 +252,10 @@ impl Plane {
     }
 }
 
-/// What this session's plane holds of a record's content, as an offload round that ran its
-/// invocation on another device reads what that device produced: [`Plane::fetch`] from the devices
+/// What this session's content service holds of a record's content, as an offload round that ran its
+/// invocation on another device reads what that device produced: [`ContentService::fetch`] from the devices
 /// that have it.
-impl tilo_runtime::offload::OutputContent for Plane {
+impl tilo_runtime::offload::OutputContent for ContentService {
     fn content<'a>(
         &'a self,
         workspace: &'a str,
@@ -369,7 +369,7 @@ enum Inbound {
 
 /// Hand what the workspace's members said about content to `content` , off the session's loop: the
 /// service reads and writes this device's store, which the loop, which walks no path, must not do
-/// itself. Ends when the plane drops.
+/// itself. Ends when the content service drops.
 fn serve(content: &RouteContent, arriving: &Receiver<Inbound>) {
     while let Ok(entry) = arriving.recv() {
         match entry {
@@ -504,7 +504,7 @@ struct Kept {
     route: Arc<RouteContent>,
     on: CrdtRoute,
     /// The content secret of the members who read the record, once the engine holds it
-    /// ([`Plane::seal_under`]).
+    /// ([`ContentService::seal_under`]).
     secret: Mutex<Option<tilo_seal::SymmetricKey>>,
 }
 
@@ -653,7 +653,7 @@ impl ContentSink for Upload {
 /// and the address of each device that asked it for content through them.
 #[derive(Default)]
 struct Peers {
-    /// Where this device's plane is reached on the network, once it runs: its handle there and the
+    /// Where this device's content service is reached on the network, once it runs: its handle there and the
     /// channel it says a message on.
     link: Mutex<Option<Link>>,
     /// The devices this device reaches in each workspace, as the workspaces reported them.
@@ -677,7 +677,7 @@ impl Peers {
         });
     }
 
-    /// This device's handle here, or zero while the plane runs nowhere: no message names it then.
+    /// This device's handle here, or zero while the content service runs nowhere: no message names it then.
     fn own(&self) -> ContentPeer {
         self.link.lock_recover().as_ref().map_or(0, |link| link.own)
     }
@@ -698,10 +698,10 @@ impl Peers {
         self.requesters.lock_recover().get(&(ws, peer)).copied()
     }
 
-    /// Say `msg` on the topic of `ws` , when this device's plane runs.
+    /// Say `msg` on the topic of `ws` , when this device's content service runs.
     fn say(&self, ws: WorkspaceId, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
-            let _ = link.outgoing.plane(Cmd::Publish {
+            let _ = link.outgoing.network(Cmd::Publish {
                 ws,
                 msg: Box::new(msg),
             });
@@ -782,7 +782,7 @@ fn topic(route: &CrdtRoute) -> Option<WorkspaceId> {
     (!workspace.is_nil()).then_some(workspace)
 }
 
-/// The devices a workspace's topic carries to this session, from what the plane heard: those that
+/// The devices a workspace's topic carries to this session, from what the content service heard: those that
 /// published there, and the workspace's hosts, which the members it reaches are behind.
 #[derive(Debug, Default)]
 pub(crate) struct Topology {

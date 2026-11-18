@@ -148,7 +148,7 @@ async fn local_report_admission(
             let before_stale = receipt_barriers(&rig);
             no_delivery(&rig).await;
             let mut request = crate::local_document_action::Request {
-                custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
+                ownership: Some(runtime_collab::committed_document::ConnectionSnapshot {
                     root: env.cert.user_public_key,
                     device: env.cert.device_public_key,
                     agent: identity.agent_id.clone(),
@@ -199,16 +199,16 @@ async fn local_report_admission(
             ] {
                 let mut wrong = request.clone();
                 if field == "missing" {
-                    wrong.custody = None;
+                    wrong.ownership = None;
                 } else {
-                    let custody = wrong.custody.as_mut().unwrap();
+                    let ownership = wrong.ownership.as_mut().unwrap();
                     match field {
-                        "root" => custody.root = [91; 32],
-                        "device" => custody.device = [92; 32],
-                        "agent" => custody.agent = Some("other-agent".into()),
-                        "app" => custody.app_id.push_str("-other"),
-                        "workspace" => custody.workspace.push_str("-other"),
-                        "document" => custody.document.push_str("-other"),
+                        "root" => ownership.root = [91; 32],
+                        "device" => ownership.device = [92; 32],
+                        "agent" => ownership.agent = Some("other-agent".into()),
+                        "app" => ownership.app_id.push_str("-other"),
+                        "workspace" => ownership.workspace.push_str("-other"),
+                        "document" => ownership.document.push_str("-other"),
                         _ => unreachable!(),
                     }
                 }
@@ -216,7 +216,7 @@ async fn local_report_admission(
                 assert_ne!(wrong.invocation, invocation, "{field}");
                 let error = admit(&raw, &wrong)
                     .await
-                    .expect_err("custody must be refused");
+                    .expect_err("ownership must be refused");
                 assert!(rejected(&error), "{field}: {error}");
                 assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
                 no_delivery(&rig).await;
@@ -260,7 +260,7 @@ async fn local_report_admission(
                 .expect_err("local admission also requires the exact retained revision");
             assert!(
                 !rejected(&error),
-                "unknown requests must retain reconciliation custody: {error}"
+                "unknown requests must retain reconciliation ownership: {error}"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             let mut never_offered = request.clone();
@@ -301,7 +301,7 @@ async fn local_report_admission(
                 let error = reply.expect_err("malformed non-document report must fail");
                 assert!(
                     rejected(&error),
-                    "definitive structural refusal must release SDK custody: {error}"
+                    "definitive structural refusal must release SDK ownership: {error}"
                 );
                 assert_eq!(receipt_barriers(&rig).writes, before.writes);
                 assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
@@ -461,7 +461,7 @@ async fn local_report_admission(
                 }
                 assert_eq!(receipt_barriers(&rig), before_burst);
                 // A failed fresh lookup cannot prove that this evicted
-                // report was never admitted; SDK custody must remain pending.
+                // report was never admitted; SDK ownership must remain pending.
                 pin_dropped.set(true);
                 let error = admit(&raw, &request).await.err().unwrap();
                 assert!(
@@ -480,7 +480,7 @@ async fn local_report_admission(
                 assert_eq!(receipt_barriers(&rig), before_burst);
                 no_delivery(&rig).await;
             }
-            // Cached observations still consult current host custody, even if
+            // Cached observations still consult current host ownership, even if
             // the original connection and receipt are both retained.
             let original_host = env.authority.certificate.lock().unwrap().take();
             assert!(admit(&raw, &request).await.is_err());
@@ -490,7 +490,7 @@ async fn local_report_admission(
             pin_dropped.set(true);
             assert!(
                 admit(&raw, &request).await.is_err(),
-                "cached receipt requires live host custody"
+                "cached receipt requires live host ownership"
             );
             substituted.capture_id = uuid::Uuid::new_v4();
             substituted.invocation = substituted.bound_invocation().unwrap();

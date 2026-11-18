@@ -1,5 +1,5 @@
 //! Where the session's input path consults its overlay stack: the press that
-//! falls outside a surface standing where the session placed it closes that
+//! falls outside a surface where the session placed it closes that
 //! surface, and nothing else.
 //!
 //! The stack itself is the desktop's ([`tilo_desktop::overlays::Overlays`]),
@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_desktop::overlays::Overlays;
 
@@ -31,8 +31,8 @@ impl PartsHost {
     }
 }
 
-impl SurfaceHost for PartsHost {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for PartsHost {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -44,7 +44,7 @@ impl SurfaceHost for PartsHost {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    /// A press outside the surface it landed in: the topmost popup the session placed, standing
+    /// A press outside the surface it landed in: the topmost popup the session placed
     /// where the press is not, goes down — and stays down for that press, so it does not reopen
     /// under it.
     fn pressed_elsewhere(&mut self, x: f64, y: f64) {
@@ -66,5 +66,5 @@ impl SurfaceHost for PartsHost {
 
 /// Mount the session's reader of presses outside the overlays over `compositor` .
 pub(crate) fn mount(compositor: &mut tilo_compositor::Compositor, overlays: &Overlays) {
-    compositor.add_host(Rc::new(RefCell::new(PartsHost::new(overlays.clone()))));
+    compositor.add_surface(Rc::new(RefCell::new(PartsHost::new(overlays.clone()))));
 }

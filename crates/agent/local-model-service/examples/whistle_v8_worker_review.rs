@@ -2,8 +2,8 @@
 //! Reuses the production private-pipe dispatcher and parser confinement.
 #[path = "whistle_v8_worker_review/bridge.rs"]
 mod bridge;
-#[path = "whistle_v8_worker_review/custody.rs"]
-mod custody;
+#[path = "whistle_v8_worker_review/ownership.rs"]
+mod ownership;
 #[path = "whistle_v8_worker_review/policy.rs"]
 mod policy;
 use local_model_service::speech::{self, DraftPolicy, SpeechConfig, SpeechError, worker};
@@ -103,12 +103,12 @@ fn run() -> Result<(), SpeechError> {
     let [_, module_path, model_path, bridge_path, bridge_sha] = args.as_slice() else {
         return Err(SpeechError::Protocol);
     };
-    let module = custody::verified(
+    let module = ownership::verified(
         module_path,
         923_348,
         "c43f48e11f302087250d1e406024956781cd2f02595a5e343b3d7ddd5ef707fa",
     )?;
-    let model = custody::verified(
+    let model = ownership::verified(
         model_path,
         16_919_407,
         "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",

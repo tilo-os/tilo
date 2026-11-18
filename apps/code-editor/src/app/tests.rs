@@ -189,7 +189,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
             doc,
             key,
             &base,
-            &format!("fn revision_gate_needle() {{}}\n{base}"),
+            &format!("fn revision_check_needle() {{}}\n{base}"),
         )
         .unwrap();
         app.sync(doc.doc(), &automerge::ROOT);
@@ -200,7 +200,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
                 &ui::framework::testing::search_source::<crate::project::Project>(
                     app.code_search_entries()
                 ),
-                "revision_gate_needle"
+                "revision_check_needle"
             )
             .iter()
             .any(|hit| hit.kind == crate::search_entries::SYMBOL_KIND)
@@ -331,7 +331,7 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
                 .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
     tilo_test_env::wait_until(
-        "the shell's output to show, in the session the project records",
+        "the shell's output to show, in the session the project resources",
         || {
             app.settle();
             shown(&mut app)
@@ -575,7 +575,7 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
         let created = EditorDoc::files(doc)
             .into_iter()
             .find(|file| !before.contains(&file.id))
-            .expect("the action created a file record");
+            .expect("the action created a file resource");
         assert!(EditorDoc::read_buffer_key(doc, &created.id).is_some());
         created
     });
@@ -872,8 +872,8 @@ fn save_as_makes_the_new_file_the_one_the_window_shows() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.rs");
     std::fs::write(&file, "fn main() {}\n").unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let launch = [file.to_str().unwrap()];
     let mut app =
         ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&launch).unwrap();

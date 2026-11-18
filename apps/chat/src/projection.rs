@@ -1,4 +1,4 @@
-//! The chat record as the window and the agents read it: the workspace's
+//! The chat resource as the window and the agents read it: the workspace's
 //! channels and messages in the shapes [`crate::model`] draws, and the
 //! composers' drafts, which are rich text in the document.
 
@@ -8,24 +8,20 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_actions::policy::MemberId;
 use ui::tilo_resource::{Id, Identified, Resource};
 
-use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
-use crate::record::{Chat, Conversation};
+use crate::chat::{Chat, Conversation};
+use crate::model::{AgentStep, AgentWork, Category, Channel, EditEntry, Message, User};
 
-/// What the workspace calls each of its agents, by the bare id its actor carries
-/// (`agent:<id>`): the answer of the workspace's own record of its agents.
-pub type AgentNames = HashMap<String, String>;
-
-/// What the workspace's member list calls each of its people.
+/// What the workspace's member list calls each of its people and agents.
 pub type PeopleNames = HashMap<MemberId, String>;
 
-/// The published id of the item `id` of the record's `field`
+/// The published id of the item `id` of the resource's `field`
 /// (`channels`, `messages`, …): what a caller addresses its actions to.
 #[must_use]
 pub fn item_id(field: &str, id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
 
-/// The chat record in `doc`; an empty one when `doc` holds none.
+/// The chat resource in `doc`; an empty one when `doc` holds none.
 #[must_use]
 pub fn read(doc: &AutoCommit) -> Chat {
     Chat::read(doc).unwrap_or_default()
@@ -81,22 +77,21 @@ impl Chat {
     /// channels, and one direct conversation with each of the workspace's
     /// other people — the same one on every device, because its id names
     /// the members ([`Chat::direct_id`]) — with the conversations the
-    /// record keeps for an agent among them.
+    /// resource keeps for an agent among them.
     ///
-    /// A conversation with an agent is named by what the workspace calls its agents (`agents`),
-    /// whether or not the agent is working here this moment, and one with a person by what its
-    /// member list calls them (`people`), whether or not they ever opened Chat.
+    /// A conversation is named by what the workspace's member list calls its people and agents
+    /// (`people`), whether or not they ever opened Chat.
     #[must_use]
     pub fn conversation_rows(
         &self,
         me: &MemberId,
         messages: &crate::messages::Messages,
-        (agents, people): (&AgentNames, &PeopleNames),
+        people: &PeopleNames,
     ) -> Vec<Channel> {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         let mut push = |id: &Id, members: Vec<MemberId>, recorded: Option<&Conversation>| {
-            let name = self.display_names(id, Some(me), (agents, people));
+            let name = self.display_names(id, Some(me), people);
             direct.push((
                 name.clone(),
                 Channel {
@@ -120,18 +115,18 @@ impl Chat {
             }
         }
         let mut listed: std::collections::HashSet<Id> = std::collections::HashSet::new();
-        for person in &self.people {
-            if person.is_agent() || person.id == *me {
+        for person in people.keys() {
+            if !person.is_person() || person == me {
                 continue;
             }
-            let pair = vec![me.clone(), person.id.clone()];
+            let pair = vec![me.clone(), person.clone()];
             let id = Chat::direct_id(pair.clone());
             if !self.channels.contains(&id) && listed.insert(id.clone()) {
                 push(&id, pair, None);
             }
         }
         // A conversation written to by its id alone (one with an agent that a send opened) is
-        // listed once it holds a message, though the record keeps no row for it.
+        // listed once it holds a message, though the resource keeps no row for it.
         for (_, message) in messages.iter().chain(messages.sending()) {
             let id = &message.channel;
             if self.channels.contains(id) || listed.contains(id) {
@@ -167,15 +162,9 @@ impl Chat {
     /// The one place a conversation is named, for the window and for whatever
     /// else names it (an agent's run on a turn in it).
     ///
-    /// An agent is named by what the workspace's own record calls it (`agents`), the identity
-    /// record every app of the workspace reads, not by whether its device happens to be here.
+    /// A member is named by what the member list calls them (`people`).
     #[must_use]
-    pub fn display_names(
-        &self,
-        id: &Id,
-        me: Option<&MemberId>,
-        (agents, people): (&AgentNames, &PeopleNames),
-    ) -> String {
+    pub fn display_names(&self, id: &Id, me: Option<&MemberId>, people: &PeopleNames) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.members.is_empty()
             && !conversation.name.trim().is_empty()
@@ -186,20 +175,11 @@ impl Chat {
         let named: Vec<String> = members
             .iter()
             .map(|member| {
-                let listed = if member.is_person() {
-                    people.get(member)
-                } else {
-                    agents.get(member.id())
-                };
-                listed
+                people
+                    .get(member)
                     .map(|name| name.trim().to_owned())
                     .filter(|name| !name.is_empty())
-                    .or_else(|| {
-                        self.people
-                            .find(&crate::record::member_slot(member))
-                            .map(|person| person.name.trim().to_owned())
-                            .filter(|name| !name.is_empty())
-                    })
+                    .or_else(|| ui::tilo_resource::members::name_of(member))
                     .unwrap_or_else(|| crate::identity::unnamed_label(member))
             })
             .collect();
@@ -211,22 +191,6 @@ impl Chat {
             .collect();
         let shown = if others.is_empty() { named } else { others };
         shown.join(", ")
-    }
-
-    /// The people and agents in the workspace.
-    #[must_use]
-    pub fn user_rows(&self) -> Vec<User> {
-        self.people
-            .iter()
-            .map(|person| User {
-                id: person.id.clone(),
-                name: person.name.clone(),
-                initials: person.initials.clone(),
-                color_idx: usize::try_from(person.color).unwrap_or_default(),
-                status: person.status,
-                is_agent: person.is_agent(),
-            })
-            .collect()
     }
 
     /// The rows of `channel`, read from the parts' rows already read (`parts`,
@@ -273,7 +237,7 @@ impl Chat {
 
     /// Every filed report as the message its channel shows, under its
     /// message id ([`crate::feedback::message_id`]).
-    pub fn feedback_messages(&self) -> impl Iterator<Item = (Id, crate::record::Message)> + '_ {
+    pub fn feedback_messages(&self) -> impl Iterator<Item = (Id, crate::chat::Message)> + '_ {
         self.feedback.iter().filter_map(|(id, report)| {
             Some((
                 Id::from_raw(crate::feedback::message_id(id.as_str())),
@@ -305,7 +269,7 @@ impl Chat {
     #[must_use]
     pub fn read_mark(&self, channel: &str, user: &MemberId) -> crate::parts::ReadMark {
         self.read
-            .get(crate::record::member_slot(user).as_str())
+            .get(crate::chat::member_slot(user).as_str())
             .and_then(|marks| marks.get(channel))
             .copied()
             .unwrap_or_default()
@@ -345,7 +309,7 @@ impl Chat {
 
 /// One message as the timeline's row for it.
 #[must_use]
-pub fn row_of(id: &Id, message: &crate::record::Message) -> Message {
+pub fn row_of(id: &Id, message: &crate::chat::Message) -> Message {
     message_row(id, message)
 }
 
@@ -397,7 +361,7 @@ fn with_filed_and_sending(
     rows
 }
 
-pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message {
+pub(crate) fn message_row(id: &Id, message: &crate::chat::Message) -> Message {
     let reactions = message.reactions.groups();
     Message {
         id: id.to_string(),
@@ -414,7 +378,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
         history: message
             .history
             .iter()
-            .map(|revision| EditRecord {
+            .map(|revision| EditEntry {
                 ts: revision.ts,
                 text: revision.text.clone(),
             })
@@ -437,6 +401,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
         share: message.share.clone(),
         question: message.question.clone(),
         cause: message.cause.clone(),
+        view: message.view.clone(),
         attempts: message.attempts,
         sending: false,
     }
@@ -458,8 +423,8 @@ fn origin_appearance(origin: &ui::tilo_resource::Origin) -> tilo_actions::Appear
     }
 }
 
-/// An agent's record of its work, as the reply card draws it.
-fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
+/// An agent's resource of its work, as the reply card draws it.
+fn work_row(work: &crate::chat::Work) -> Option<AgentWork> {
     let transition = work.state.as_ref()?;
     let mut trace: Vec<AgentStep> = work
         .trace
@@ -479,8 +444,8 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
         stream: work
             .stream
             .as_ref()
-            .map(crate::record::ProviderStream::output),
-        // Older records stored terminal provider output beside a stale Taken
+            .map(crate::chat::ProviderStream::output),
+        // Older resources stored terminal provider output beside a stale Taken
         // claim. Project the outcome without rewriting their operation trace.
         state: work
             .stream
@@ -497,7 +462,7 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
 }
 
 /// The rich text of the draft stored under `key` in the person's drafts
-/// record ([`crate::drafts::ChatDrafts`]), when it has one.
+/// resource ([`crate::drafts::ChatDrafts`]), when it has one.
 #[must_use]
 pub fn draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
     let Ok(Some((Value::Object(ObjType::Map), drafts))) = doc.get(ROOT, "drafts") else {
@@ -526,4 +491,20 @@ pub fn draft_text(doc: &AutoCommit, key: &str) -> String {
 #[must_use]
 pub fn has_draft(doc: &AutoCommit, key: &str) -> bool {
     draft(doc, key).is_some()
+}
+
+/// The people and agents of the workspace, as its member list names them
+/// ([`ui::tilo_resource::members`]).
+#[must_use]
+pub fn member_rows() -> Vec<User> {
+    ui::tilo_resource::members::named()
+        .into_iter()
+        .map(|(id, name)| User {
+            initials: crate::identity::initials_for(&name),
+            is_agent: !id.is_person(),
+            status: crate::model::Presence::Online,
+            id,
+            name,
+        })
+        .collect()
 }

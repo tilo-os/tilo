@@ -2,8 +2,8 @@
 //! of a workspace holds ([`fs_protocol::tree`]), listed where a person can
 //! open them.
 //!
-//! A computer's Files browses that record through the folder it mounts. A
-//! page has no disk and mounts nothing, so this surface reads the record
+//! A computer's Files browses that resource through the folder it mounts. A
+//! page has no disk and mounts nothing, so this surface reads the resource
 //! itself, over the page's session: the folder the window shows, the folders
 //! and files in it with their size, when they changed and who changed them,
 //! and the content of a file by the hash its node names, which the page asks
@@ -18,7 +18,7 @@ use fs_protocol::files::{FIRST_TREE_CHUNK, FileNodeKind, TreeChunk};
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeChunks, TreeEntry, chunk_document_id};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
 use ui::framework::{
-    Dispatcher, Live, People, RecordOpener, ResourceApp, ViewCx, WorkspaceResource,
+    Dispatcher, Live, People, ResourceApp, ResourceOpener, ViewCx, WorkspaceResource,
 };
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
@@ -49,7 +49,7 @@ pub struct FilesWindow {
 impl FilesWindow {}
 
 impl FilesWindow {
-    /// What the record holds: the folder the window shows.
+    /// What the resource holds: the folder the window shows.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -58,7 +58,7 @@ impl FilesWindow {
     }
 
     /// Nothing: a workspace's files are found by name and by what their text
-    /// holds in the tree's own search source, not as rows of this record.
+    /// holds in the tree's own search source, not as rows of this resource.
     fn search(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
         Vec::new()
     }
@@ -73,7 +73,7 @@ impl ResourceApp for FilesTreeShell {
     const TITLE: &'static str = "Files";
     const TITLE_KEY: &'static str = "files-app-title";
     const ICON: Option<&'static str> = Some("file-explorer");
-    /// The workspace's tree, the record every member holds: the window shows it and its
+    /// The workspace's tree, the resource every member holds: the window shows it and its
     /// History reads its changes, so it is opened with the window.
     const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
@@ -115,14 +115,14 @@ struct Shown {
     names: u64,
 }
 
-/// The workspace's tree as the page holds it: the record that names its root and lists its
+/// The workspace's tree as the page holds it: the resource that names its root and lists its
 /// chunks, and each chunk opened as the tree lists it, so a change of one chunk is the only
 /// one read again.
 struct Held {
-    /// The tree's own record (chunk 0): the root's identity and the chunks it lists.
+    /// The tree's own document (chunk 0): the root's identity and the chunks it lists.
     index: WorkspaceResource<fs_protocol::tree::FilesTree>,
-    /// Opens a chunk's record as the tree lists it.
-    chunks_open: RecordOpener<fs_protocol::tree::FilesTree>,
+    /// Opens a chunk's resource as the tree lists it.
+    chunks_open: ResourceOpener<fs_protocol::tree::FilesTree>,
     /// Each chunk, by number, with the revision its nodes were last read at.
     chunks: BTreeMap<TreeChunk, HeldChunk>,
     /// The whole tree, kept as each chunk's nodes move.
@@ -131,7 +131,7 @@ struct Held {
     revision: u64,
 }
 
-/// One chunk of the tree, read as its record changes.
+/// One chunk of the tree, read as its resource changes.
 struct HeldChunk {
     record: WorkspaceResource<fs_protocol::tree::FilesTree>,
     /// The revision the nodes were last read at; `None` before the first read.
@@ -142,7 +142,7 @@ struct HeldChunk {
 impl Held {
     fn new(
         index: WorkspaceResource<fs_protocol::tree::FilesTree>,
-        chunks_open: RecordOpener<fs_protocol::tree::FilesTree>,
+        chunks_open: ResourceOpener<fs_protocol::tree::FilesTree>,
     ) -> Self {
         Self {
             index,
@@ -167,7 +167,7 @@ impl Held {
     /// moved, in place of what it held before. Whether the page's nodes moved.
     fn follow(&mut self) -> bool {
         let mut moved = false;
-        // A chunk is opened as the tree's own record lists it; one still on its way here is
+        // A chunk is opened as the tree's own document lists it; one still on its way here is
         // tried again on the next wake.
         let mut index = TreeChunks::default();
         if self.index.read(|doc| index.read_index(doc)).is_some() {
@@ -192,7 +192,7 @@ impl Held {
                 }
             }
         }
-        // Each chunk's nodes are read only when its record moved: the rest of the tree is
+        // Each chunk's nodes are read only when its resource moved: the rest of the tree is
         // left as it was, so a change costs its chunk.
         let mut tree = std::mem::take(&mut self.tree);
         for held in self.chunks.values_mut() {
@@ -232,11 +232,11 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
 /// The window: the folder it shows and the entries in it.
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
-    /// The workspace's tree, as the page holds it: its own record and the chunks it lists.
+    /// The workspace's tree, as the page holds it: its own document and the chunks it lists.
     tree: Option<Held>,
     /// What the workspace calls the people its nodes name.
     people: People,
-    /// The window's own record, which the open folder is set in.
+    /// The window's own document, which the open folder is set in.
     dispatch: Dispatcher<FilesWindow>,
     read: Option<Reads>,
     keep: Option<Keeps>,
@@ -269,16 +269,16 @@ impl TreeBrowser {
             .content()
             .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
         let people = cx.people();
-        // The workspace's tree is the record every member holds, under the
+        // The workspace's tree is the resource every member holds, under the
         // Files app's own name for it — the one the page's search reads
         // when it finds a file by what it says. Its chunks are opened as
-        // the record lists them: one record each, read as each one changes.
+        // the resource lists them: one resource each, read as each one changes.
         let tree = cx
             .shared_resource::<fs_protocol::tree::FilesTree>(
                 FILES_APP,
                 &fs_protocol::tree::document_id(),
             )
-            .map(|index| Held::new(index, cx.record_opener(FILES_APP)));
+            .map(|index| Held::new(index, cx.resource_opener(FILES_APP)));
         let mut browser = Self {
             live: cx.live().clone(),
             tree,
@@ -297,7 +297,7 @@ impl TreeBrowser {
         browser
     }
 
-    /// The folder the window shows: the one its record names, or the root
+    /// The folder the window shows: the one its resource names, or the root
     /// when it names none the tree holds.
     fn folder(&self, tree: Option<&Tree>) -> String {
         let named = self.live.get().folder.0.clone();
@@ -447,13 +447,12 @@ impl TreeBrowser {
                 row = row.tooltip(hover);
             }
         } else if let Some(author) = node.author.as_deref() {
-            // A tree that records no version here yet: the person or device
+            // A tree that resources no version here yet: the person or device
             // the workspace names, as a name alone. One it does not name (the
             // workspace's host, which writes the files of notes) is left
             // unnamed rather than shown as its key.
-            let name = self
-                .people
-                .name(&ui::tilo_resource::MemberId::person(author));
+            let name = ui::tilo_resource::MemberId::parsed_person(author)
+                .map_or_else(|| author.to_owned(), |member| self.people.name(&member));
             if name != author {
                 row = row.meta(name);
             }
@@ -483,12 +482,12 @@ impl TreeBrowser {
         }))
     }
 
-    /// The author of `node`'s newest version, as the folder's versions record
+    /// The author of `node`'s newest version, as the folder's versions resource
     /// it: the person whose device signed it, and the agent that wrote for them
     /// when one did. `None` for a node the tree holds no version of.
     fn author_of(&self, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
         let document_id = node.document_id?;
-        // A file's versions are in the document of the chunk its record id names.
+        // A file's versions are in the document of the chunk its resource id names.
         let chunk = self.tree.as_ref()?.chunk(document_id.chunk())?;
         let (version, attribution) = chunk
             .record
@@ -605,8 +604,9 @@ impl TreeBrowser {
 
     /// When the entry last changed.
     fn changed_of(node: &TreeEntry) -> Option<String> {
-        chrono::DateTime::from_timestamp_millis(i64::try_from(node.mtime).unwrap_or(i64::MAX))
-            .map(|at| format_datetime(at.with_timezone(&chrono::Local)))
+        jiff::Timestamp::from_millisecond(i64::try_from(node.mtime).unwrap_or(i64::MAX))
+            .ok()
+            .map(format_datetime)
     }
 
     /// The path of `folder` from the workspace's root, as `a / b`.
@@ -1019,8 +1019,8 @@ mod window_tests {
             (2_500, &hex::encode([9_u8; 32])),
         )
         .unwrap();
-        let folder_record = held.node(&folder.id).unwrap().document_id.unwrap();
-        write_version(doc, folder_record, 2);
+        let folder_resource = held.node(&folder.id).unwrap().document_id.unwrap();
+        write_version(doc, folder_resource, 2);
     }
 
     #[test]
@@ -1048,8 +1048,8 @@ mod window_tests {
             .record()
             .merge_peer_document(doc.save())
             .expect("the chunk arrives");
-        // The tree's own record lists the chunk it wrote the file into.
-        let mut index_doc: AutoCommit = index.read(Clone::clone).expect("the record reads");
+        // The tree's own document lists the chunk it wrote the file into.
+        let mut index_doc: AutoCommit = index.read(Clone::clone).expect("the resource reads");
         fs_protocol::tree::list_chunk(&mut index_doc, 1).unwrap();
         index
             .record()
@@ -1162,7 +1162,7 @@ mod window_tests {
             .record()
             .merge_peer_document(second_doc.save())
             .expect("the second chunk arrives");
-        let mut index_doc: AutoCommit = index.read(Clone::clone).expect("the record reads");
+        let mut index_doc: AutoCommit = index.read(Clone::clone).expect("the resource reads");
         fs_protocol::tree::list_chunk(&mut index_doc, 1).unwrap();
         fs_protocol::tree::list_chunk(&mut index_doc, 2).unwrap();
         index

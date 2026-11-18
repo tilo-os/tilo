@@ -390,7 +390,7 @@ pub fn ownership<F: Files + ?Sized>(
                 }
                 // A chown strips set-id bits, and ownership transfer must not restore
                 // them. Even a no-op chown changes ctime and invalidates an attesting
-                // helper's content-source witness on retry.
+                // helper's content-source proof on retry.
                 if !owner.matches(&opened) {
                     let (uid, gid) = owner.ids()?;
                     fchown(&fd, uid, gid).map_err(at("chown", &name))?;

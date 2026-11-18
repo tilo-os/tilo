@@ -56,7 +56,7 @@ fn one_line(text: &str) -> String {
 
 /// The tasks showing a conversation, the newest task first: a task that was
 /// asked later reads above one asked before it.
-fn rows(issues: &Issues<'_>, people: &ui::framework::People) -> Vec<(Id, Row)> {
+fn rows(issues: &Issues, people: &ui::framework::People) -> Vec<(Id, Row)> {
     let mut shown: Vec<(Id, Row)> = issues
         .iter()
         .filter(|(_, issue)| !issue.comments.is_empty())
@@ -99,7 +99,7 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element 
 }
 
 fn list_of(
-    issues: &Issues<'_>,
+    issues: &Issues,
     nav: &Nav,
     filter: &Filter,
     me: Option<&ui::tilo_resource::MemberId>,

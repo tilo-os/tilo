@@ -140,7 +140,7 @@ impl TerminalWidget {
         self.sessions.target.as_ref()
     }
 
-    pub fn take_session_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    pub fn take_session_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         self.sessions.take_intent()
     }
 
@@ -941,7 +941,7 @@ impl TerminalWidget {
                 .sessions
                 .target
                 .as_ref()
-                .and_then(SessionTarget::environment_record)
+                .and_then(SessionTarget::environment_resource)
                 == Some(env.key.as_str());
             let band = Rect::new(panel_rect.x0 + margin, y, grant.x0 - gap, y + button_h);
             let mut name_x = band.x0;

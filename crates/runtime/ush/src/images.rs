@@ -33,7 +33,7 @@ pub trait Images: Send + Sync {
 
 /// OCI references (`host/repo[:tag]`, comma-separated) to fetch images no
 /// local store holds from instead of the repositories CI publishes to. A
-/// relay sets it for its members' supervisors; a device leaves it unset.
+/// server sets it for its members' supervisors; a device leaves it unset.
 pub const IMAGE_SOURCES_ENV: &str = "TILO_USH_IMAGE_SOURCES";
 
 pub const IMAGE_CACHE_ENV: &str = "TILO_USH_IMAGE_CACHE";
@@ -41,7 +41,7 @@ pub const IMAGE_CACHE_ENV: &str = "TILO_USH_IMAGE_CACHE";
 pub const TRUSTED_PUBLISHER_ENV: &str = "TILO_USH_TRUSTED_PUBLISHER";
 
 /// The shelf images are fetched from and shared on, when not the one in
-/// the user's synced files: on a relay, the member's own shelf, where the
+/// the user's synced files: on a server, the member's own shelf, where the
 /// worker leaves the tools it signed for them.
 pub const IMAGE_SHELF_ENV: &str = "TILO_USH_IMAGE_SHELF";
 
@@ -162,7 +162,7 @@ fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
 }
 
 /// The OCI registry images no local store or shelf holds come from:
-/// [`IMAGE_SOURCES_ENV`] (cached in [`IMAGE_CACHE_ENV`]) on a relay, else the
+/// [`IMAGE_SOURCES_ENV`] (cached in [`IMAGE_CACHE_ENV`]) on a server, else the
 /// repositories CI publishes env-runtimes and catalog tools to, cached under
 /// `$XDG_CACHE_HOME/tilo/env-images`. `None` on a device without a cache
 /// directory. Where an image came from earns it no trust: the CI key the
@@ -452,8 +452,8 @@ mod tests {
             let laptop_images = StoreImages::new(Store::new(laptop_store)).with_shelf(shelf.clone());
             laptop_images.share(&tool.meta.id).unwrap();
 
-            let relay_store = |fleet: CertifiedFleet| {
-                let store = Store::new(PackageStore::at(dir.path().join("relay")))
+            let server_store = |fleet: CertifiedFleet| {
+                let store = Store::new(PackageStore::at(dir.path().join("server")))
                     .with_system(package_store::Layout::new(&system))
                     .with_trust(ImageTrust::new().with_fleet(fleet));
                 Arc::new(StoreImages::new(store).with_shelf(shelf.clone()))
@@ -464,7 +464,7 @@ mod tests {
             let mut session = Session::new(
                 ush,
                 SessionOptions::default(),
-                relay_store(fleet.clone()),
+                server_store(fleet.clone()),
                 builds.clone(),
             );
             session.resolve().unwrap();
@@ -483,7 +483,7 @@ mod tests {
             assert_eq!(builds.0.load(Ordering::Relaxed), 0, "fetched, not rebuilt");
             let (label, tree) = &resolved.images[0];
             assert!(label.contains("pandoc"), "{label}");
-            assert!(tree.starts_with(dir.path().join("relay")));
+            assert!(tree.starts_with(dir.path().join("server")));
             assert!(tree.join("usr/bin/pandoc").is_file());
 
             let mut removal = tilo_user_identity::RevocationEntry {
@@ -495,7 +495,7 @@ mod tests {
             };
             tilo_user_identity::sign_revocation_entry(&mut removal, &root).unwrap();
             fleet.revoke(removal).unwrap();
-            session.images = relay_store(fleet);
+            session.images = server_store(fleet);
             let refused = session.resolve().unwrap_err().to_string();
             assert!(refused.contains("removed from your devices"), "{refused}");
             assert_eq!(builds.0.load(Ordering::Relaxed), 1, "built here instead");

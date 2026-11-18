@@ -3,7 +3,7 @@
 //! runs and executions the calls are attributed to.
 use super::*;
 use crate::test_hosts::{
-    CatalogueAvailability, PNG, StoredByTestApp, StubHost, run, run_paused, tool, witnessed,
+    CatalogueAvailability, PNG, StoredByTestApp, StubHost, approved, run, run_paused, tool,
 };
 use std::sync::Arc;
 
@@ -601,10 +601,10 @@ tilo_test_env::scenario! {
             assert_eq!(reply["isError"], false, "{reply}");
             let started = invoked.lock().unwrap().clone();
             assert_eq!(started.len(), 1, "one admitted start");
-            let expected = asked.then(|| witnessed(&started[0]));
+            let expected = asked.then(|| approved(&started[0]));
             assert_eq!(
                 started[0].confirmation, expected,
-                "the call starts unconfirmed, or with the person's witnessed answer when the host asks"
+                "the call starts unconfirmed, or with the person's approved answer when the host asks"
             );
         }
     }

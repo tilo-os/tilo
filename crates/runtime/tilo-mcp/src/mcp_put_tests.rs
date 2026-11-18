@@ -22,21 +22,21 @@ struct Log {
 #[derive(Clone, Default)]
 struct Shelf(Arc<Mutex<Log>>);
 
-impl ActionHost for Shelf {
+impl ActionProvider for Shelf {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn invoke(
         &self,
         _caller: &Caller,
         _request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(
@@ -51,8 +51,8 @@ impl ActionHost for Shelf {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
@@ -62,7 +62,7 @@ impl ActionHost for Shelf {
 }
 
 impl ContentPuts for Shelf {
-    fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
+    fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         self.0
             .lock_recover()
             .begun
@@ -92,9 +92,9 @@ impl ContentPut for Put {
         self.bytes.len() as u64
     }
 
-    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
+    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
         if offset != self.written() {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!("append at offset {}", self.written()),
             });
         }
@@ -102,7 +102,7 @@ impl ContentPut for Put {
         Ok(self.written())
     }
 
-    fn finish(mut self: Box<Self>) -> Result<String, ActionHostError> {
+    fn finish(mut self: Box<Self>) -> Result<String, ActionCallError> {
         self.done = true;
         let hash = blake3::hash(&self.bytes).to_hex().to_string();
         self.log

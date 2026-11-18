@@ -487,7 +487,7 @@ tilo_test_env::scenario! {
 
     // A list offers its actions again as what it shows changes: the row takes the ones it is
     // handed now, so an action that arrives with the icon it draws gives its label up for the
-    // icon, and the title keeps its words instead of standing cut beside it.
+    // icon, and the title keeps its words instead of being cut beside it.
     phase a_row_gives_its_labels_up_when_its_actions_are_offered_again;
     {
         let theme = Theme::dark();
@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
 /// A title's box reaches the actions that follow it, not just the width its words measure: a
 /// box the size of the measure itself cuts the last glyph where the renderer shaping the words
 /// rounds wider than the measure that sized the box, so a short column name reads as
-/// "Not…" beside a column standing empty.
+/// "Not…" beside a column left empty.
 #[test]
 fn a_titles_box_reaches_the_actions_that_follow_it() {
     let theme = Theme::dark();

@@ -279,7 +279,7 @@ fn account_or_recipient_cannot_be_substituted_into_a_dropdown_selection() {
         .expect("fixture endpoint");
     let accounts = app
         .shared_person::<tilo_messaging::PersonAccounts>()
-        .expect("account record");
+        .expect("account resource");
     assert!(
         !accounts.editable(),
         "Messages has no account-editor authority"
@@ -511,11 +511,11 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
 ) -> TestApp<MessagesShell> {
     let person = "11".repeat(32);
     let mut settings = TestApp::<AccountOwnerFixture>::for_person(&person).expect("metadata owner");
-    let account_record = settings
+    let account_resource = settings
         .shared_person::<tilo_messaging::PersonAccounts>()
-        .expect("owner account record");
-    assert!(account_record.editable());
-    account_record
+        .expect("owner account resource");
+    assert!(account_resource.editable());
+    account_resource
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
             "fixture-signal".into(),
             "signal".into(),
@@ -536,19 +536,19 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
         .expect("read-only accounts");
     assert_eq!(
         accounts.record().route(),
-        account_record.record().route(),
-        "same owner's shared record route"
+        account_resource.record().route(),
+        "same owner's shared resource route"
     );
     accounts
         .record()
         .merge_peer_document(
-            account_record
+            account_resource
                 .record()
                 .document()
-                .expect("owner record document"),
+                .expect("owner resource document"),
         )
         .expect("existing shared-record sync path");
-    drop(account_record);
+    drop(account_resource);
     drop(settings);
     assert!(!accounts.editable());
     assert!(
@@ -598,7 +598,7 @@ fn group_fixture(host: std::sync::Arc<GroupHostFixture>) -> TestApp<MessagesShel
         TestApp::<AccountOwnerFixture>::for_person(&"11".repeat(32)).expect("group account owner");
     let accounts = owner
         .shared_person::<tilo_messaging::PersonAccounts>()
-        .expect("group account record");
+        .expect("group account resource");
     accounts
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
             "fixture-whatsapp".into(),
@@ -773,9 +773,9 @@ fn with_nobody_yet_the_window_says_how_to_start() {
         "no route to choose while no conversation is open"
     );
 
-    let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+    let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
     harness.set_session_api(
-        ui::RemoteActions::with_host(
+        ui::RemoteActions::with_provider(
             session.clone(),
             ui::tilo_actions::remote::Caller::local_app("so.tilo.messages")
                 .in_workspace(ui::framework::testing::TEST_WORKSPACE),

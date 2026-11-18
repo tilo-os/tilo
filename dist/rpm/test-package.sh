@@ -9,7 +9,7 @@ expect_devel=0
 for package in "$@"; do
     [[ $(basename "$package") != tilo-session-devel-* ]] || expect_devel=1
 done
-# Package lanes deliberately install build dependencies without weak deps, so
+# Package jobs deliberately install build dependencies without weak deps, so
 # install the recommended software Vulkan ICD explicitly before exercising the
 # display-free compositor. Fedora desktops normally already carry a GPU
 # ICD; the isolated package userspace must still prove the fallback path.
@@ -37,7 +37,7 @@ rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
 # Inspect installed, package-owned tools and parse help only. This must never
 # enroll, initialize, start a Files service or create credentials during QA.
-for program in fs tilo-relay-admin tilo-enroll; do
+for program in fs tilo-server-admin tilo-enroll; do
     test -x "/usr/bin/$program"
     test "$(rpm -qf "/usr/bin/$program")" = "$(rpm -q tilo-session)"
     "/usr/bin/$program" --help >/dev/null
@@ -88,7 +88,7 @@ for program in /usr/libexec/tilo-ush /usr/libexec/tilo/tilo-legacy; do
     test -x "$program"
     test "$(rpm -qf "$program")" = "$(rpm -q tilo-session-apps)"
 done
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
     test -f "/usr/lib/systemd/user/$unit.service"
     test -f "/usr/lib/systemd/user/$unit.socket"
     grep -q "^Service=$unit.service$" "/usr/lib/systemd/user/$unit.socket"

@@ -1,4 +1,4 @@
-//! Records an app opens beside the one it shows: its own record of a kind
+//! Resources an app opens beside the one it shows: its own record of a kind
 //! (what was watched, the words taught to the keyboard, where reading
 //! stopped), kept with its other records in the workspace it is open in,
 //! and the person's shared records another app keeps for all of theirs
@@ -12,7 +12,7 @@ use std::rc::Rc;
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 
 use super::live::Live;
-use super::record::{Held, ResourceApi};
+use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
@@ -141,7 +141,7 @@ impl<P: Resource> PersonResource<P> {
     /// person (or to whoever the invocation carried out here is for), recorded in its history and — for content the person made —
     /// one undo step of theirs.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        self.apply_as(action, &super::record::acting(&self.shared.me))
+        self.apply_as(action, &super::resources::acting(&self.shared.me))
     }
 
     /// [`Self::apply`] by `invoker`: the person, or software acting for
@@ -798,7 +798,7 @@ impl PersonState {
 
     /// Answer an undo or redo of an open record: how many steps it took.
     pub(crate) fn answer(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
-        let invoker = super::record::acting(&self.me);
+        let invoker = super::resources::acting(&self.me);
         self.answer_for(payload, &invoker)
     }
 
@@ -901,20 +901,20 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     })
 }
 
-impl<P: Resource> super::record::sealed::Hold<P> for PersonResource<P> {
-    fn held(&self, _storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<P>>> {
+impl<P: Resource> super::resources::sealed::Hold<P> for PersonResource<P> {
+    fn held(&self, _storage: super::resources::sealed::Storage<'_>) -> Option<Rc<Held<P>>> {
         self.shared.held.borrow().clone()
     }
 
     fn api(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
         self.shared
             .held
             .borrow()
             .clone()
-            .map(|held| super::record::sealed::Api(held as Rc<dyn ResourceApi>))
+            .map(|held| super::resources::sealed::Api(held as Rc<dyn ResourceApi>))
     }
 }
 

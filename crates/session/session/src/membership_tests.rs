@@ -11,7 +11,7 @@ use pollster::FutureExt as _;
 use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId};
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::engine::Engine;
@@ -20,8 +20,8 @@ use tilo_session_client::membership::{Membership, project};
 const WORKSPACE: &str = testing::WORKSPACE;
 
 /// The identity of the device certified as `cert` , signing with `key` .
-fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity::kept(cert.clone(), key.clone())
+fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> DeviceIdentity {
+    DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
 /// This device's engine, holding the workspace it governs, and the session's own view of it with
@@ -33,12 +33,12 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
 
 /// When a signer that holds its signatures back answers: once the asking loop turned.
 #[derive(Default)]
-struct SignGate {
+struct SignHold {
     held: std::sync::atomic::AtomicBool,
     waiting: std::sync::Mutex<Vec<std::task::Waker>>,
 }
 
-impl SignGate {
+impl SignHold {
     fn held(&self) -> bool {
         self.held.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -51,18 +51,18 @@ impl SignGate {
     /// The loop turned: answer what was held back.
     fn open(&self) {
         self.held.store(false, std::sync::atomic::Ordering::SeqCst);
-        let waiting = std::mem::take(&mut *self.waiting.lock().expect("the gate"));
+        let waiting = std::mem::take(&mut *self.waiting.lock().expect("the hold"));
         for waker in waiting {
             waker.wake();
         }
     }
 }
 
-/// This device's key behind a gate: what a page's key, which signs through a promise, or a signer
+/// This device's key behind a hold: what a page's key, which signs through a promise, or a signer
 /// that answers through the session's own loop looks like to the code that asks it.
 struct LateSigner {
     key: SigningKey,
-    gate: std::sync::Arc<SignGate>,
+    hold: std::sync::Arc<SignHold>,
 }
 
 impl collab_types::signer::DeviceSigner for LateSigner {
@@ -76,14 +76,14 @@ impl collab_types::signer::DeviceSigner for LateSigner {
 
     fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
         let signature = ed25519_dalek::Signer::sign(&self.key, &message).to_bytes();
-        let gate = std::sync::Arc::clone(&self.gate);
+        let hold = std::sync::Arc::clone(&self.hold);
         Box::pin(std::future::poll_fn(move |context| {
-            if gate.held() {
-                gate.waiting
+            if hold.held() {
+                hold.waiting
                     .lock()
-                    .expect("the gate")
+                    .expect("the hold")
                     .push(context.waker().clone());
-                if gate.held() {
+                if hold.held() {
                     return std::task::Poll::Pending;
                 }
             }
@@ -92,21 +92,21 @@ impl collab_types::signer::DeviceSigner for LateSigner {
     }
 }
 
-/// [`workspace_here`] with this device signing through `gate` when one is given.
+/// [`workspace_here`] with this device signing through `hold` when one is given.
 fn workspace_signed_through(
     joiner: &str,
-    gate: Option<std::sync::Arc<SignGate>>,
+    hold: Option<std::sync::Arc<SignHold>>,
 ) -> (Engine, Workspace, String, tempfile::TempDir) {
     let person_root = SigningKey::from_bytes(&[9; 32]);
     let person_key = SigningKey::from_bytes(&[10; 32]);
     let cert = testing::certificate(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
-    let identity = match gate {
-        Some(gate) => HostIdentity::kept(
+    let identity = match hold {
+        Some(hold) => DeviceIdentity::kept(
             cert.clone(),
             LateSigner {
                 key: person_key.clone(),
-                gate,
+                hold,
             },
         ),
         None => identity(&cert, &person_key),
@@ -115,7 +115,7 @@ fn workspace_signed_through(
         identity,
         Some(directory.path()),
         std::iter::empty(),
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this device's engine opens");
     let governor = TestGovernor::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
@@ -133,7 +133,7 @@ fn workspace_signed_through(
     governor = testing::enroll_into(governor, &hers, &her_key, &her)
         .expect("the workspace admits her device");
     // What her admission changed reaches this device's copy of the workspace, as it would over
-    // the workspace's own plane.
+    // the workspace's own peer network.
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
     let now = tilo_clock::wall();
     for (bytes, _) in governor.outgoing() {
@@ -141,7 +141,7 @@ fn workspace_signed_through(
             .owner()
             .receive(
                 workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                 postcard::from_bytes(bytes).expect("a workspace change"),
                 now,
             )
@@ -203,7 +203,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         identity(&a_cert, &a_key),
         Some(a_state.path()),
         std::iter::empty(),
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("the owner's engine opens");
     let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
@@ -217,7 +217,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         identity(&b_cert, &b_key),
         Some(b_state.path()),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this session's engine opens");
     governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
@@ -240,7 +240,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
                 .owner()
                 .receive(
                     workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(a_cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(a_cert.device_public_key),
                     message.clone(),
                     now,
                 )
@@ -299,7 +299,7 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
             .owner()
             .receive(
                 sessions.workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(
                     sessions.owner_cert.device_public_key,
                 ),
                 message,
@@ -547,8 +547,8 @@ fn session_as(
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             state: Some(state.to_path_buf()),
-            action_plane: socket.map_or(crate::ActionPlane::Off, |socket| {
-                crate::ActionPlane::At(socket.to_path_buf())
+            app_socket: socket.map_or(crate::AppSocket::Off, |socket| {
+                crate::AppSocket::At(socket.to_path_buf())
             }),
             ..crate::Options::default()
         },
@@ -811,12 +811,14 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     let mut tree = session.session().handle().read(Clone::clone);
     tree.active_workspace_mut()
         .expect("a workspace in front")
-        .grant_app(
-            "ada",
-            "so.tilo.notes",
-            &tilo_desktop_model::Capability::Camera {
-                scope: tilo_desktop_model::GRANT_SESSION,
-            },
+        .grant_sandbox(
+            collab_types::caps::CapOverride::grant(
+                tilo_action_policy::Grantee::person("ada"),
+                collab_types::caps::Scope::Device(collab_types::caps::DeviceCap::Camera),
+                collab_types::caps::Access::Read,
+            )
+            .through("so.tilo.notes")
+            .expiring(collab_types::caps::Expiry::EndOfSession),
         );
     session.session().handle().replace_tree(tree);
     let mut app = settings_sheet(&mut session);
@@ -1005,7 +1007,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
             identity(&cert, &key),
             Some(state.path()),
             [workspace_id],
-            crate::platform::custody::of_this_session(),
+            crate::platform::membership_check::of_this_session(),
         )
         .expect("this computer's engine opens");
         the_fixture_governs(&engine, workspace_id);
@@ -1024,7 +1026,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
                 .owner()
                 .receive(
                     workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
                     now,
                 )
@@ -1085,11 +1087,11 @@ fn provisioned_identity(
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &home.config().join("tilo").join("identity"),
         &paths,
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer is provisioned as a device");
     let key = tilo_user_identity::persist::load_device_key(&paths).expect("this computer's key");
@@ -1116,7 +1118,7 @@ fn session_serving(state: &std::path::Path, socket: &std::path::Path) -> crate::
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             state: Some(state.to_path_buf()),
-            action_plane: crate::ActionPlane::At(socket.to_path_buf()),
+            app_socket: crate::AppSocket::At(socket.to_path_buf()),
             ..crate::Options::default()
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -1189,7 +1191,7 @@ fn a_second_device(
         identity(&her, &her_key),
         Some(her_state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("her engine opens");
     // This computer's device governs the workspace, and admits her.
@@ -1197,7 +1199,7 @@ fn a_second_device(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     // The workspace the session made is this computer's own already: a fixture host governs it
@@ -1217,7 +1219,7 @@ fn a_second_device(
                 .owner()
                 .receive(
                     workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
                     now,
                 )
@@ -1237,9 +1239,9 @@ fn change_governance(
     command: &WorkspaceMembershipCommand,
 ) {
     let broker = session
-        .action_plane
+        .app_wire
         .as_ref()
-        .and_then(crate::plane::Plane::action_broker)
+        .and_then(crate::app_wire::AppWire::action_broker)
         .expect("the session serves its broker");
     wait_for_people(&broker, workspace_id);
     let job = broker
@@ -1328,7 +1330,7 @@ fn her_device_takes(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     let written = mine
@@ -1345,7 +1347,7 @@ fn her_device_takes(
         hers.owner()
             .receive(
                 workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                 message,
                 now,
             )
@@ -1480,7 +1482,7 @@ fn an_agent_is_refused_a_role(
         .expect("the host answers");
     matches!(
         answer,
-        Err(tilo_actions::remote::ActionHostError::NotPermitted)
+        Err(tilo_actions::remote::ActionCallError::NotPermitted)
     )
 }
 
@@ -1502,9 +1504,9 @@ fn an_agent_cannot_change_a_workspaces_people() {
         .step(std::time::Duration::from_millis(1))
         .expect("a frame");
     let broker = session
-        .action_plane
+        .app_wire
         .as_ref()
-        .and_then(crate::plane::Plane::action_broker)
+        .and_then(crate::app_wire::AppWire::action_broker)
         .expect("the session serves its broker");
     wait_for_people(&broker, workspace_id);
     assert!(
@@ -1517,7 +1519,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
         crate::sync::device_identity().expect("this computer is a device"),
         Some(state.path()),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     assert!(
@@ -1543,7 +1545,7 @@ fn invite_from_this_device(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     let now = tilo_clock::wall();
@@ -1755,8 +1757,8 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
     use tilo_actions::remote::PendingPoll;
     use tilo_broker_core::services::WorkspaceNodeAsk;
 
-    let gate = Arc::new(SignGate::default());
-    let (engine, _, _, _state) = workspace_signed_through("ada", Some(Arc::clone(&gate)));
+    let hold = Arc::new(SignHold::default());
+    let (engine, _, _, _state) = workspace_signed_through("ada", Some(Arc::clone(&hold)));
     let engine = Arc::new(engine);
     let asks = WorkspaceNodes::service(Some(&engine)).expect("this session holds a workspace");
     let node = TreePath::workspace(WORKSPACE)
@@ -1764,7 +1766,7 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
         .kind("notes.notebook")
         .resource("plan")
         .to_string();
-    gate.hold();
+    hold.hold();
     let mut share = asks
         .ask(
             WORKSPACE,
@@ -1780,7 +1782,7 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
         "nothing is shared before the signer answered"
     );
     // The loop that asked goes on, and its turn is what lets the signer answer.
-    gate.open();
+    hold.open();
     let shared = landed(share).expect("the workspace's owner shares what they hold");
     assert_eq!(
         shared["grants"], 1,
@@ -1804,16 +1806,16 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         workspaces: vec![workspace.clone()],
         ..tilo_desktop_model::Layout::default()
     };
-    let session = std::sync::Arc::new(crate::plane::LayoutAuthority::new(
+    let session = std::sync::Arc::new(crate::app_wire::LayoutAuthority::new(
         tree(&workspace),
         crate::engine::revocations_of(None),
         None,
-        crate::plane::Names {
+        crate::app_wire::Names {
             person: person.clone(),
             earlier: Vec::new(),
         },
     ));
-    let grants = crate::plane::SessionGrants::new(
+    let grants = crate::app_wire::SessionGrants::new(
         std::sync::Arc::clone(&engine),
         std::sync::Arc::clone(&session),
     );

@@ -285,9 +285,9 @@ mod tests {
             assert_eq!(
                 person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
                 "Pat",
-                "an unnamed identity leaves the session's name standing"
+                "an unnamed identity leaves the session's name in place"
             );
-            let account = tilo_identity_host::provisioning::login_account_display_name();
+            let account = tilo_identity::provisioning::login_account_display_name();
             assert_eq!(
                 person_name(None, &key),
                 account,

@@ -66,7 +66,7 @@ fn enrolled_with(
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(governor),
+                TransportOrigin::RetainedServerDelta(governor),
                 message,
                 now,
             )
@@ -84,8 +84,8 @@ fn enrolled_with(
 
 /// The file one workspace's record is in, as this device holds it: the
 /// snapshot the index names (`<workspace>.<revision>.json`), not the journal
-/// beside it (`<workspace>.<revision>.log`) nor a run of its outgoing custody
-/// (`<workspace>.custody.<hash>`), whose names begin the same way and hold
+/// beside it (`<workspace>.<revision>.log`) nor a run of its outgoing ownership
+/// (named by the workspace and the hash of its bytes), whose names begin the same way and hold
 /// bytes that are no document.
 fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
     let name = format!("{workspace}.");
@@ -169,7 +169,7 @@ fn edit_from_view(
         workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
-            record: String::new(),
+            document: String::new(),
             envelope,
             own: None,
         },
@@ -263,7 +263,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_local_write_is_committed_durably_or_not_at_all;
 
-    phase a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt;
+    phase a_local_write_is_durable_with_its_outgoing_ownership_before_its_receipt;
     {
         let joined = enrolled();
         assert_eq!(joined.owner.unadmitted_writes(joined.workspace).unwrap(), 0);
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
         assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
     }
 
-    phase a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted;
+    phase a_write_its_server_host_refused_leaves_the_replica_and_every_answer_is_counted;
     {
         let joined = enrolled();
         let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
             .owner
             .receive(
                 joined.workspace,
-                TransportOrigin::RetainedRelayDelta(governor),
+                TransportOrigin::RetainedServerDelta(governor),
                 message,
                 joined.now,
             )
@@ -554,7 +554,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
         workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
-            record: String::new(),
+            document: String::new(),
             envelope: Box::new(envelope),
             own: None,
         },
@@ -794,7 +794,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
                     frame,
                     joined.now,
                 )
@@ -957,7 +957,7 @@ fn commit_sealed_as(
                 workspace: WORKSPACE.into(),
                 operation: CommitOperation::Document {
                     app: APP.into(),
-                    record: String::new(),
+                    document: String::new(),
                     envelope: envelope.clone(),
                     own: None,
                 },
@@ -987,7 +987,7 @@ tilo_test_env::scenario! {
     // Native publication classifies through the one host classifier browser
     // peers use, so a sealed checkpoint is a checkpoint to it there too. A
     // member still never replaces the record's retained checkpoint under its own
-    // relay author: the sealed checkpoint leaves as a delta after it, while a
+    // server author: the sealed checkpoint leaves as a delta after it, while a
     // cleartext snapshot stays a checkpoint the member never releases.
     {
         use neighbour_wire::{Retention, retention};
@@ -1366,7 +1366,7 @@ async fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_
 }
 
 #[tokio::test]
-async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
+async fn a_refused_renewal_leaves_the_sealed_write_in_ownership_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);

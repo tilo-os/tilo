@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers the person's mail accounts under.
+/// The provider that answers the person's mail accounts under.
 pub const PROVIDER: &str = "tilo.accounts";
 /// The resource the accounts are actions of.
 pub const RESOURCE: &str = "accounts";
@@ -190,6 +190,10 @@ pub struct AddMailWithItem {
     pub outgoing_port: u16,
     /// The vault item that is the account's sign-in.
     pub password: super::person_vault::ItemRef,
+    /// Why whoever asks needs it, in a sentence its person reads when they
+    /// are asked first; empty when nothing was said.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// One address as mail carries it.

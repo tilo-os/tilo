@@ -34,7 +34,7 @@
 //! The device a member dials answers each of the member's own writes it took
 //! in, or refused for good, on a unidirectional stream of its own opened after
 //! its frames' ([`Answered`]); the member lets an answered write go from its
-//! custody, as it does what a relay host answers. That stream is the
+//! ownership, as it does what a server host answers. That stream is the
 //! difference between [`DIRECT_ALPN`] and [`DIRECT_ALPN_V2`], which a device
 //! still answers and dials where the other device answers nothing newer: on a
 //! link of the older protocol nothing is answered, and a member lets its writes
@@ -53,7 +53,7 @@ use iroh::{Endpoint, EndpointAddr};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_relay_protocol::refusal::Refusal;
+use tilo_server_protocol::refusal::Refusal;
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
@@ -70,7 +70,7 @@ pub const DIRECT_ALPN_V2: &[u8] = b"tilo-peer-state-direct/2";
 pub const DIRECT_ALPNS: [&[u8]; 2] = [DIRECT_ALPN, DIRECT_ALPN_V2];
 
 /// What the dialled device made of one of the dialling device's own writes,
-/// named by the hash of the write's frame as the writer keeps it in custody.
+/// named by the hash of the write's frame as the writer keeps it held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Answered {
     /// The hash of the write's frame.
@@ -445,7 +445,7 @@ struct Inner {
     /// Where this device's engine owns the workspace: frames are admitted into
     /// its live replica and published as they land.
     admission: Option<Admission>,
-    /// This device's custody of its key, which signs what the link writes.
+    /// This device's ownership of its key, which signs what the link writes.
     signer: Arc<dyn DeviceSigner>,
     /// The sealed history this device keeps for the workspace, when it is a
     /// store device.
@@ -527,7 +527,7 @@ impl std::fmt::Debug for DirectSync {
 }
 
 impl DirectSync {
-    /// Share `replica`, the replica of the device `signer` is the custody of
+    /// Share `replica`, the replica of the device `signer` is the ownership of
     /// (and whose key its iroh endpoint's secret key is).
     #[must_use]
     pub fn new(replica: StatePeer, signer: impl DeviceSigner + 'static) -> Self {
@@ -535,7 +535,7 @@ impl DirectSync {
     }
 
     /// Sync `replica`, which other parts of the engine read as well: the
-    /// action plane authorizes against the state this link admits into.
+    /// action service authorizes against the state this link admits into.
     #[must_use]
     pub fn over(replica: Replica, signer: impl DeviceSigner + 'static) -> Self {
         Self(Arc::new(Inner {
@@ -713,7 +713,7 @@ impl DirectSync {
     }
 
     /// What the device this one dialled answers of this device's own writes,
-    /// on a link of [`DIRECT_ALPN`]: what its custody lets go of. A receiver
+    /// on a link of [`DIRECT_ALPN`]: what its ownership lets go of. A receiver
     /// that falls behind loses answers, and the writes they name wait for the
     /// next link's catch-up.
     #[must_use]
@@ -832,7 +832,7 @@ impl DirectSync {
     }
 
     /// Carry `message`, `from`'s frame the workspace admitted on another
-    /// carrier (a relay session), to every device on this link, once: kept at
+    /// carrier (a server session), to every device on this link, once: kept at
     /// this device's store, the history a device that joins later replays, and
     /// sent live to the devices linked now. A sealed frame the store already
     /// holds went out when it first arrived, and is not sent again. Returns
@@ -867,7 +867,7 @@ impl DirectSync {
 
     /// Take `message`, `from`'s channel governance another carrier admitted
     /// for this workspace, as a genesis this host carries: one that reaches it
-    /// over a member's relay session is not one it sends its links, and a
+    /// over a member's server session is not one it sends its links, and a
     /// device asking after it must be answered with it rather than told the
     /// channel has none.
     pub fn remember_genesis(&self, from: [u8; 32], message: &NeighbourMsg) {
@@ -922,8 +922,8 @@ impl DirectSync {
 
     /// Dial `device` at `addr` from `endpoint` and answer its admission,
     /// leaving the link ready to run ([`Dialed::run`]). `addr` is the device's
-    /// own key, or the service address of a relay its signed host hint binds
-    /// to it: a relay answers on a key of its own, and what its history names
+    /// own key, or the service address of a server its signed host hint binds
+    /// to it: a server answers on a key of its own, and what its history names
     /// no author for is still its device's.
     ///
     /// # Errors
@@ -1299,6 +1299,13 @@ impl DirectSync {
             let LinkFrame::Cursors(cursors) = frame else {
                 return Err("the device asked for something else than retained frames".into());
             };
+            if let Some(store) = &self.0.store {
+                // What the device asks from is what it holds: the store keeps
+                // what it still lacks when it compacts.
+                store
+                    .holds(self.workspace()?, remote, &cursors)
+                    .map_err(|error| error.to_string())?;
+            }
             let (kept, more) = self.replay(&cursors)?;
             let mut frames = Vec::new();
             if opens_an_ask {
@@ -1577,20 +1584,20 @@ impl DirectSync {
 
     /// Whether `authored`, a frame `remote` sent live on its link, is decided as history: a
     /// member's own record write to the workspace this device hosts. A member keeps its writes
-    /// in custody while its host is away, or while custody's head is full, and sends them when it
-    /// can: how long one waited says nothing of it. A relay host decides a member's writes the
-    /// same way, whatever carried them ([`TransportOrigin::RetainedRelayDelta`]).
+    /// held while its host is away, or while ownership's head is full, and sends them when it
+    /// can: how long one waited says nothing of it. A server host decides a member's writes the
+    /// same way, whatever carried them ([`TransportOrigin::RetainedServerDelta`]).
     ///
-    /// What stands in for the live window is what a relay host relies on too: the write's own
+    /// What stands in for the live window is what a server host relies on too: the write's own
     /// signature by its author, its author's sequence on the record (a write replayed or
-    /// numbered below one already taken is never taken again), and its author's standing in the
+    /// numbered below one already taken is never taken again), and its author's access in the
     /// workspace's current governance (the role it holds now, not the one it held when it
     /// wrote, and no revoked device), decided as of the write's own time for what is timed. The
     /// link's other end is besides the device the link authenticated, and is still a device
     /// of the roster, unrevoked, unexpired and of a person not removed ([`Self::admits`]), as
-    /// a relay's session proves of the member it carries. A write that founds a record this
+    /// a server's session proves of the member it carries. A write that founds a record this
     /// device does not hold yet is history only from a device that may edit the record now, as
-    /// a relay host founds a record only for one. Any other frame, and every frame a device
+    /// a server host founds a record only for one. Any other frame, and every frame a device
     /// that does not host the workspace takes in, is judged live.
     fn member_history(&self, remote: [u8; 32], authored: &Authored) -> bool {
         let NeighbourMsg::AppDocument {
@@ -1648,7 +1655,7 @@ impl DirectSync {
             }
             return;
         }
-        // The other device's own write is answered, named as its custody names it.
+        // The other device's own write is answered, named as its ownership names it.
         let write = match &authored.message {
             NeighbourMsg::AppDocument { envelope, .. } if authored.from == remote => {
                 postcard::to_allocvec(&authored.message)
@@ -1798,9 +1805,9 @@ impl DirectSync {
         history: bool,
     ) -> Heard {
         let origin = if retained || history {
-            TransportOrigin::RetainedRelayDelta(author)
+            TransportOrigin::RetainedServerDelta(author)
         } else {
-            TransportOrigin::RelayDelta(author)
+            TransportOrigin::ServerDelta(author)
         };
         match &self.0.admission {
             Some(admission) => {
@@ -2199,7 +2206,7 @@ impl std::fmt::Debug for Owning {
 }
 
 impl Owning {
-    /// Answer for `owner`'s workspaces as the device `signer` is the custody
+    /// Answer for `owner`'s workspaces as the device `signer` is the ownership
     /// of, keeping the frames of each at `store`.
     #[must_use]
     pub fn new(
@@ -2211,7 +2218,7 @@ impl Owning {
         let serving = Serving::new();
         // What this device commits to a workspace it hosts itself reaches the
         // members linked to it now, as this device's frame; the workspace keeps
-        // no custody for it and holds no link to a host. Nothing is kept for a
+        // no ownership for it and holds no link to a host. Nothing is kept for a
         // member linked later: the workspace's own state is what its link's
         // catch-up hands it.
         let device = signer.device_public_key();
@@ -2398,7 +2405,7 @@ async fn forward(
 /// (one not its author's own on a link to its host, [`DirectSync::member_history`]) that waited
 /// somewhere on its way. That says nothing of the write, so it is
 /// neither answered as refused nor filed as a verdict: the writer keeps it, in its replica and
-/// in its custody, rather than losing an edit the workspace never judged.
+/// in its ownership, rather than losing an edit the workspace never judged.
 fn arrived_late(error: &crate::AdmissionError) -> bool {
     error
         .to_string()

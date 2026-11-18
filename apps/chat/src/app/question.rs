@@ -20,7 +20,7 @@ impl ChatApp {
     /// reads next.
     ///
     /// Nothing is sent for a question that asks someone else or no longer
-    /// waits: its buttons are not drawn, and the record refuses it anyway.
+    /// waits: its buttons are not drawn, and the resource refuses it anyway.
     pub(crate) fn answer_question(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,

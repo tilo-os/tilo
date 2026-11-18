@@ -487,7 +487,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase content_insets_keep_the_child_clear_of_footer_lanes_and_the_bar;
+    phase content_insets_keep_the_child_clear_of_footer_gutters_and_the_bar;
     {
         {
             let pointer_events = Rc::new(Cell::new(0));
@@ -551,7 +551,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(
                 focus_target, None,
-                "the footer lane cannot focus the scroll view"
+                "the footer gutter cannot focus the scroll view"
             );
 
             for event in [cursor_moved(40.0, 70.0), mouse(ElementState::Pressed)] {
@@ -581,7 +581,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 scroll.vertical_track().expect("content overflows").y1,
                 clip.y1 - BAR_MARGIN,
-                "the scrollbar and content clip both stop above the footer lane",
+                "the scrollbar and content clip both stop above the footer gutter",
             );
 
             scroll.set_offset_y(f32::MAX);
@@ -589,7 +589,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 scroll.offset_y() + scroll.effective_viewport_h(),
                 scroll.content_h,
-                "reserving the paint-free lane must not make the final content unreachable",
+                "reserving the paint-free gutter must not make the final content unreachable",
             );
         }
 
@@ -639,7 +639,7 @@ tilo_test_env::scenario! {
                     },
                 )
                 .unwrap();
-            // The host's adjust pass reserves the lane once the content
+            // The host's adjust pass reserves the gutter once the content
             // overflows; solve again as the host does.
             assert!(scroll.adjust_layout_style(&mut taffy, node, &mut tr));
             taffy
@@ -660,7 +660,7 @@ tilo_test_env::scenario! {
                 .unwrap();
             assert!(
                 !scroll.adjust_layout_style(&mut taffy, node, &mut tr),
-                "the lane settles in one step"
+                "the gutter settles in one step"
             );
             scroll.apply_layout(&taffy, node, Point::ZERO);
 
@@ -732,7 +732,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_bar_lane_is_reserved_only_while_the_content_overflows;
+    phase the_bar_gutter_is_reserved_only_while_the_content_overflows;
     {
         let short = || -> Element {
             Box::new(
@@ -766,7 +766,7 @@ tilo_test_env::scenario! {
         assert!((track.width() - thumb).abs() < 1e-6);
         assert!(
             ((overflows.rect.x1 - track.x1) - (track.x0 - child.x1)).abs() < 0.5,
-            "the thumb is centred in its lane"
+            "the thumb is centred in its gutter"
         );
     }
 
@@ -817,7 +817,7 @@ tilo_test_env::scenario! {
         assert!(
             (scroll.rect.height() - f64::from(scroll.viewport_h)).abs() < 0.5
                 && scroll.children()[0].get_rect().height() <= 80.0 - gutter + 0.5,
-            "the bar's lane at the bottom is reserved"
+            "the bar's gutter at the bottom is reserved"
         );
     }
 
@@ -2257,13 +2257,13 @@ fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
             .unwrap();
         assert!(
             !short_bar,
-            "a stable empty lane does not fabricate a scrollbar"
+            "a stable empty gutter does not fabricate a scrollbar"
         );
         assert!(long_bar, "overflow still exposes the real scrollbar");
         assert!(
             (short_grid.rect[2] - (952.0 - f64::from(theme.tokens.metrics.scrollbar_gutter))).abs()
                 < 0.1,
-            "the reserved lane follows the actual theme metric"
+            "the reserved gutter follows the actual theme metric"
         );
     }
 }

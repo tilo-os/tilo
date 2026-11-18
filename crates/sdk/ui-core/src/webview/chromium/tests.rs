@@ -641,6 +641,34 @@ tilo_test_env::scenario! {
                     json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test","secret":false})
                 )
             );
+            // A text released for one site is written once, printed by nothing and held by
+            // nothing once it is written.
+            let released = crate::webview::ReleasedText::new("released-for-one-site".to_owned());
+            let command = WebViewCommand::Page {
+                request_id: 5,
+                actor: None,
+                request: PageRequest::FillReleased {
+                    element: "d2e9".into(),
+                    text: released.clone(),
+                    at: "https://example.test".into(),
+                    into: crate::webview::FillInto::Password,
+                },
+            };
+            assert!(command_within_limits(&command));
+            assert!(!format!("{command:?}").contains("released-for-one-site"));
+            let mut written = encode_command(command.clone()).unwrap();
+            assert_eq!(
+                written,
+                json!({"op":"page","request_id":5,"action":"fill","element":"d2e9","text":"released-for-one-site","secret":true,"at":"https://example.test","into":"password"})
+            );
+            assert!(released.take().is_none(), "the write took it");
+            assert!(
+                !command_within_limits(&command),
+                "and it is written no second time"
+            );
+            wipe_released(&mut written);
+            assert_eq!(written["text"], "");
+            assert_eq!(written["at"], "https://example.test");
             for invalid in [
                 WebViewCommand::Page {
                     request_id: 0,
@@ -680,14 +708,14 @@ tilo_test_env::scenario! {
             // a caller that gives up stops its own request, never another's.
             let named = WebViewCommand::Page {
                 request_id: 7,
-                actor: PageActor::named("agent:ada"),
-                request: PageRequest::Ledger { since: 3 },
+                actor: PageActor::listed("agent:ada"),
+                request: PageRequest::Log { since: 3 },
             };
             assert!(command_within_limits(&named));
             assert_eq!(
                 encode_command(named),
                 Some(
-                    json!({"op":"page","request_id":7,"action":"ledger","since":3,"actor":"agent:ada"})
+                    json!({"op":"page","request_id":7,"action":"log","since":3,"actor":"agent:ada"})
                 )
             );
             let review = WebViewCommand::Page {
@@ -750,13 +778,27 @@ tilo_test_env::scenario! {
                 encode_command(forms),
                 Some(json!({"op":"page","request_id":11,"action":"forms"}))
             );
+            let table = WebViewCommand::Page {
+                request_id: 12,
+                actor: None,
+                request: PageRequest::Table {
+                    element: Some("d1e7".into()),
+                    from: Some(201),
+                    frame: None,
+                },
+            };
+            assert!(command_within_limits(&table));
+            assert_eq!(
+                encode_command(table),
+                Some(json!({"op":"page","request_id":12,"action":"table","element":"d1e7","from":201}))
+            );
             // A form's answers reach the host as the object they are, and the
             // way it is sent as a boolean or as the button's label.
             let answers = json!({"Arrival": "2027-02-03", "Guests": 2, "Languages": ["English"],
                 "Newsletter": false});
             let fill = |request_id, submit| WebViewCommand::Page {
                 request_id,
-                actor: PageActor::named("agent:ada"),
+                actor: PageActor::listed("agent:ada"),
                 request: PageRequest::FillForm {
                     form: "form1".into(),
                     answers: answers.as_object().unwrap().clone(),
@@ -1182,7 +1224,7 @@ tilo_test_env::scenario! {
     // reads it as before.
     {
         use crate::webview::{AnsweredBy, PageActor};
-        let rev = || AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"));
+        let rev = || AnsweredBy::Actor(PageActor::listed("agent:rev").expect("a named actor"));
         assert_eq!(
             encode_command(WebViewCommand::AnswerHeldRequest {
                 id: 3,

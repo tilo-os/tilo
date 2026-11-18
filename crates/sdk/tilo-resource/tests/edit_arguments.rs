@@ -76,14 +76,14 @@ pub struct Row {
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Ledger {
+pub struct Log {
     pub title: String,
     pub rows: Collection<Row>,
 }
 
-#[resource(kind = "test.ledger", catalogue = "tests/locales")]
-impl Ledger {
-    /// Name the ledger.
+#[resource(kind = "test.log", catalogue = "tests/locales")]
+impl Log {
+    /// Name the log.
     #[action]
     pub fn name(&mut self, title: String) {
         self.title = title;
@@ -92,15 +92,15 @@ impl Ledger {
 
 #[test]
 fn every_published_action_says_what_it_reads() {
-    let replica = Replica::<Ledger>::new();
+    let replica = Replica::<Log>::new();
     let unstated =
-        tilo_resource::schema_check::unstated_arguments::<Ledger>(&replica.state().unwrap());
+        tilo_resource::schema_check::unstated_arguments::<Log>(&replica.state().unwrap());
     assert!(unstated.is_empty(), "{unstated:#?}");
 }
 
 #[test]
 fn removing_an_item_by_the_published_listing_works() {
-    let mut replica = Replica::<Ledger>::new();
+    let mut replica = Replica::<Log>::new();
     let published = replica.published().unwrap();
     let edit_spec = published
         .actions

@@ -88,7 +88,7 @@ pub struct DesktopEntry {
     /// Raw `Exec=` value, *unexpanded*: field codes are expanded at launch time by
     /// [`crate::exec`], since `%f`/`%u` depend on what the caller is opening.
     pub exec: Option<String>,
-    /// `TryExec=`: a program whose presence gates the entry.
+    /// `TryExec=`: a program whose presence checks the entry.
     pub try_exec: Option<String>,
     pub icon: Option<String>,
     pub categories: Vec<String>,

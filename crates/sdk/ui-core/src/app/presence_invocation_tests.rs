@@ -179,7 +179,7 @@ impl crate::collaboration::presences::Presences for TwoViews {
 fn app() -> (App, Rc<RefCell<Probe>>) {
     let probe = Rc::new(RefCell::new(Probe::default()));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(TwoViews(probe.clone())));
-    // Deliveries below are host-set fixture inputs on the legacy peer seam.
+    // Deliveries below are host-set fixture inputs on the legacy peer boundary.
     app.collaboration.manager = super::semantic_tree_app_tests::admitted_delivery_manager();
     app.action_registry_mut().register::<Mark>(MARK_TYPE);
     app.init_layout();
@@ -232,7 +232,7 @@ thread_local! {
 
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn bound_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -419,9 +419,9 @@ tilo_test_env::scenario! {
             create: bound_factory,
         };
         let target = crate::application::LaunchTarget::New;
-        let context = crate::application::HostContext::prepare(
+        let context = crate::application::ProcessContext::prepare(
             &definition,
-            crate::application::HostContextInputs {
+            crate::application::ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "D".into(),

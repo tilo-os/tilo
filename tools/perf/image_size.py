@@ -17,7 +17,7 @@ Totals, each in bytes:
 - `unique_content`: `content` with identical files counted once, which is
   what composefs stores after install.
 - `usr_content`: `content` restricted to files `/usr` names (a file hard-linked
-  into `/usr` and elsewhere counts once). The image-size budget gates it.
+  into `/usr` and elsewhere counts once). The image-size budget checks it.
 - `undeployed`: files only `/sysroot` names. The base image carries its own
   ostree repository there, hard-linked to its `/usr`; bootc does not deploy
   it, so removing a base package from `/usr` leaves its bytes here: pulled,

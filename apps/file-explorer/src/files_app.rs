@@ -211,7 +211,10 @@ fn entry_answer(entry: &Entry) -> serde_json::Value {
         "folder": entry.is_dir,
         "type": entry.mime,
         "size": entry.app.as_ref().map_or(Some(entry.size), |app| app.size),
-        "modified": entry.modified.map(|modified| modified.to_rfc3339()),
+        "modified": entry.modified.map(|modified| {
+            let local = modified.to_zoned(jiff::tz::TimeZone::system());
+            modified.display_with_offset(local.offset()).to_string()
+        }),
         "app": entry.app.as_ref().map(|app| crate::applications::kind_label(app.kind)),
         "content_here": entry.content_is_local(),
         "conflict": entry.is_conflict(),
@@ -410,7 +413,7 @@ fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
 pub struct StartupInputs {
     pub initial_dir: PathBuf,
     pub workspace_roots: Vec<PathBuf>,
-    pub record_roots: Vec<PathBuf>,
+    pub resource_roots: Vec<PathBuf>,
     pub remote_accounts: Vec<crate::remote_accounts::RemoteAccount>,
     pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
 }
@@ -418,7 +421,7 @@ pub struct StartupInputs {
 #[derive(Clone)]
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
-    /// The host supplies the native clipboard lane; this is availability, not a grant.
+    /// The host supplies the native clipboard descriptor stream; this is availability, not a grant.
     pub local_clipboard: bool,
 }
 
@@ -528,8 +531,8 @@ pub struct FilesState {
     collaborative_search_revision: Cell<u64>,
     remote_accounts_search_revision: u64,
     places_search: crate::search_provider::PlacesSearch,
-    collaborative_search: crate::search_provider::CollaborativeRecordSearch,
-    collaborative_record_pager: RefCell<crate::model::WorkspaceRecordIndexPager>,
+    collaborative_search: crate::search_provider::CollaborativeResourceSearch,
+    collaborative_resource_pager: RefCell<crate::model::WorkspaceDocumentIndexPager>,
     remote_accounts_search: crate::search_provider::RemoteAccountSearch,
     pin_drag: Option<PathBuf>,
     drag_paths: Vec<PathBuf>,
@@ -562,7 +565,7 @@ pub struct FilesState {
     mounted_cloud: mounted_cloud::MountedCloud,
     drives: drives::Drives,
     applications: applications::Applications,
-    host_intent: Option<ui::widget::AppHostIntent>,
+    process_intent: Option<ui::widget::AppProcessIntent>,
     drop_targets: crate::views::file_view::DropTargets,
     item_rects: crate::views::file_view::ItemRects,
     marquee: Option<(Point, Point, Vec<usize>)>,
@@ -571,7 +574,7 @@ pub struct FilesState {
     widths_at_press: Option<std::collections::BTreeMap<String, u32>>,
     thumbs: Option<Arc<ThumbnailService>>,
     recent: crate::recent::RecentFiles,
-    recent_record: Option<ui::framework::PersonResource<crate::recent::RecentRecord>>,
+    recent_resource: Option<ui::framework::PersonResource<crate::recent::RecentResource>>,
     open_request: crate::open_with::OpenRequest,
     document_candidates: crate::open_with::CandidateList,
     open_replies: crate::open_with::OpenReplies,
@@ -587,7 +590,7 @@ pub struct FilesState {
 
 struct StagedScenario(Option<String>);
 
-/// One test at a time: the waiting stack and the ledger are the process's,
+/// One test at a time: the waiting stack and the log are the process's,
 /// so two tests running at once would see each other's rows.
 #[cfg(test)]
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -689,7 +692,7 @@ impl FileExplorerWidget {
             Some(StartupInputs {
                 initial_dir: scene.home.clone(),
                 workspace_roots: scene.workspace_roots.clone(),
-                record_roots: Vec::new(),
+                resource_roots: Vec::new(),
                 remote_accounts: Vec::new(),
                 trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
             }),
@@ -724,7 +727,7 @@ impl FileExplorerWidget {
         let inputs = inputs.unwrap_or_else(|| StartupInputs {
             initial_dir: initial_path(),
             workspace_roots: crate::model::workspace_roots(),
-            record_roots: crate::model::workspace_record_authority_roots(),
+            resource_roots: crate::model::workspace_resource_authority_roots(),
             remote_accounts: Vec::new(),
             trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
                 .unwrap_or_default(),
@@ -739,10 +742,10 @@ impl FileExplorerWidget {
         let show_hidden = false;
         let workspace_roots = inputs.workspace_roots;
         let places_search = crate::search_provider::PlacesSearch::new(&favorites);
-        let mut collaborative_record_pager =
-            crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
-        let initial_collaborative_page = collaborative_record_pager.next_page();
-        let collaborative_search = crate::search_provider::CollaborativeRecordSearch::new(
+        let mut collaborative_resource_pager =
+            crate::model::WorkspaceDocumentIndexPager::new(&inputs.resource_roots);
+        let initial_collaborative_page = collaborative_resource_pager.next_page();
+        let collaborative_search = crate::search_provider::CollaborativeResourceSearch::new(
             &initial_collaborative_page.records,
         );
         let remote_accounts = inputs.remote_accounts;
@@ -875,7 +878,7 @@ impl FileExplorerWidget {
             remote_accounts_search_revision: 0,
             places_search,
             collaborative_search,
-            collaborative_record_pager: RefCell::new(collaborative_record_pager),
+            collaborative_resource_pager: RefCell::new(collaborative_resource_pager),
             remote_accounts_search,
             pin_drag: None,
             drag_paths: Vec::new(),
@@ -911,7 +914,7 @@ impl FileExplorerWidget {
             mounted_cloud: mounted_cloud::MountedCloud::default(),
             drives: drives::Drives::default(),
             applications: applications::Applications::default(),
-            host_intent: None,
+            process_intent: None,
             open_request: crate::open_with::request,
             document_candidates: crate::open_with::candidates,
             open_replies: Arc::default(),
@@ -923,7 +926,7 @@ impl FileExplorerWidget {
             widths_at_press: None,
             thumbs,
             recent: crate::recent::RecentFiles::default(),
-            recent_record: None,
+            recent_resource: None,
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
@@ -947,13 +950,13 @@ impl FilesState {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
-        recent: Option<ui::framework::PersonResource<crate::recent::RecentRecord>>,
+        recent: Option<ui::framework::PersonResource<crate::recent::RecentResource>>,
         device: Option<String>,
         ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
-        self.recent_record = recent;
+        self.recent_resource = recent;
         self.device = device;
         self.ops_drain = ops_drain;
         self.adopt_preferences();
@@ -1649,8 +1652,8 @@ impl FilesState {
             .refresh(self.places_search_revision, &favorites);
     }
 
-    fn advance_collaborative_search_page(&self) -> crate::model::WorkspaceRecordIndexPage {
-        let page = self.collaborative_record_pager.borrow_mut().next_page();
+    fn advance_collaborative_search_page(&self) -> crate::model::WorkspaceDocumentIndexPage {
+        let page = self.collaborative_resource_pager.borrow_mut().next_page();
         let revision = self.collaborative_search_revision.get();
         if page.reset {
             let next = revision.wrapping_add(1);
@@ -1709,7 +1712,7 @@ impl FilesState {
     fn entry_resource_id(entry: &Entry) -> String {
         entry.document_id.map_or_else(
             || crate::search_provider::entry_resource_id(&entry.path),
-            |id| crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(id)),
+            |id| crate::search_provider::resource_resource_id(uuid::Uuid::from_bytes(id)),
         )
     }
 
@@ -1733,7 +1736,7 @@ impl FilesState {
         if let Some(record) = entry.document_id {
             identities.push((
                 "files.record".to_string(),
-                crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(record)),
+                crate::search_provider::resource_resource_id(uuid::Uuid::from_bytes(record)),
             ));
         }
         identities.push((
@@ -1966,7 +1969,7 @@ impl FilesState {
                 Some(entry_answer(entry))
             }
             FilesEffect::Reveal { record } => {
-                self.reveal_record(&record)?;
+                self.reveal_resource(&record)?;
                 None
             }
             FilesEffect::RevealRecent { entry } => {
@@ -2450,15 +2453,15 @@ impl FilesState {
         }
     }
 
-    fn reveal_record(&mut self, record: &str) -> Result<(), String> {
+    fn reveal_resource(&mut self, record: &str) -> Result<(), String> {
         let document_id = uuid::Uuid::parse_str(record)
-            .map_err(|_| "invalid collaborative record id".to_string())?;
+            .map_err(|_| "invalid collaborative resource id".to_string())?;
         let record = self
             .collaborative_search
             .record(document_id)
-            .ok_or_else(|| "collaborative record is not indexed yet".to_string())?;
+            .ok_or_else(|| "collaborative resource is not indexed yet".to_string())?;
         if crate::model::read_document_id(&record.path) != Some(*document_id.as_bytes()) {
-            return Err("collaborative record is no longer available".into());
+            return Err("collaborative resource is no longer available".into());
         }
         if record.path.parent() != Some(self.current_path.as_path())
             && let Some(parent) = record.path.parent().map(Path::to_path_buf)
@@ -3097,7 +3100,7 @@ impl FilesState {
             || (poll_due
                 && self.catalog_watch.coverage() != crate::directory_watch::Coverage::Complete))
             && self
-                .collaborative_record_pager
+                .collaborative_resource_pager
                 .borrow_mut()
                 .poll_generation();
         let identities_changed = (identity_signal
@@ -3120,8 +3123,11 @@ impl FilesState {
     }
 
     fn catalog_roots_to_watch(&self) -> Vec<PathBuf> {
-        let roots = self.collaborative_record_pager.borrow().generation_roots();
-        if roots.len() > crate::model::WorkspaceRecordIndexPager::GENERATION_ROOTS_PER_POLL {
+        let roots = self
+            .collaborative_resource_pager
+            .borrow()
+            .generation_roots();
+        if roots.len() > crate::model::WorkspaceDocumentIndexPager::GENERATION_ROOTS_PER_POLL {
             return Vec::new();
         }
         roots
@@ -3147,7 +3153,7 @@ impl FilesState {
             Coverage::Partial => Some(metadata_refresh::interval(entries)),
             Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
         };
-        let catalog = (self.collaborative_record_pager.borrow().has_roots()
+        let catalog = (self.collaborative_resource_pager.borrow().has_roots()
             && self.catalog_watch.coverage() != Coverage::Complete)
             .then_some(metadata_refresh::BACKGROUND_INTERVAL);
         let identities = (self.startup_accounts.is_none()
@@ -3916,7 +3922,7 @@ impl FilesState {
                         target: None,
                     }
                 });
-                self.host_intent = Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+                self.process_intent = Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
                     resource_id: document_id,
                     version_id: Some(*version_id.0.as_bytes()),
                     entry,
@@ -7426,7 +7432,7 @@ impl FilesState {
     fn live_other_resources(&self) -> Vec<ResourceSpec> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
-        if ui::bound_dispatch::host_person_invocation_permitted() {
+        if ui::bound_dispatch::local_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
         let mut nearby_root = ResourceSpec::new(
@@ -7445,7 +7451,7 @@ impl FilesState {
     fn live_remote_account_resources(&self) -> Vec<ResourceSpec> {
         // Account discovery belongs to the host person, not to whoever owns
         // the workspace. Checked resource reads install this trusted scope too.
-        if !ui::bound_dispatch::host_person_invocation_permitted() {
+        if !ui::bound_dispatch::local_person_invocation_permitted() {
             return Vec::new();
         }
         self.remote_account_snapshot()
@@ -7799,7 +7805,7 @@ impl FilesState {
         self.take_incoming_drop();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
-        if self.collaborative_record_pager.borrow().has_more() {
+        if self.collaborative_resource_pager.borrow().has_more() {
             let page = self.advance_collaborative_search_page();
             if page.truncated {
                 tracing::debug!("collaborative search catalogue truncated; continues on refresh");
@@ -8137,7 +8143,7 @@ impl FilesState {
     pub(crate) fn search_entries_shown(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         let mut entries = self.places_search.entries();
         entries.extend(self.collaborative_search.entries());
-        if ui::bound_dispatch::host_person_invocation_permitted() {
+        if ui::bound_dispatch::local_person_invocation_permitted() {
             entries.extend(self.remote_accounts_search.entries());
         }
         entries
@@ -8171,7 +8177,7 @@ impl FilesState {
                     .resource(id)
                     .or_else(|| self.collaborative_search.resource(id))
                     .or_else(|| {
-                        ui::bound_dispatch::host_person_invocation_permitted()
+                        ui::bound_dispatch::local_person_invocation_permitted()
                             .then(|| self.remote_accounts_search.resource(id))
                             .flatten()
                     })
@@ -8185,8 +8191,8 @@ impl FilesState {
 }
 
 impl FilesState {
-    pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.host_intent.take()
+    pub(crate) fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
+        self.process_intent.take()
     }
 }
 

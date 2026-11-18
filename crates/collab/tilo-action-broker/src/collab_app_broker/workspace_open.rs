@@ -120,7 +120,7 @@ impl AppBrokerState {
         admitted: AdmittedHostAction,
         (app_id, workspace): (&str, &str),
         launched: Launched,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
         let Launched::Started { ticket } = launched else {
             self.complete_host_action(
                 &admitted,
@@ -299,7 +299,7 @@ mod tests {
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 launcher: Some(Arc::new(Ticketed::default())),
                 ..Default::default()
             },
@@ -328,7 +328,7 @@ mod tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
         state
             .action_invoke(caller, None, None, request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -420,7 +420,7 @@ mod tests {
 
     impl NativeDevice {
         fn new(launcher: Arc<dyn crate::services::LauncherServices>) -> Self {
-            use tilo_identity_host::provisioning::{self, IdentityStorage};
+            use tilo_identity::provisioning::{self, IdentityStorage};
             let scratch = tempfile::tempdir().unwrap();
             let config = scratch.path().join("config");
             let system = scratch.path().join("system");
@@ -437,14 +437,14 @@ mod tests {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Signed opens");
             let workspace_id = workspace.id().to_string();
             let (_, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
+                tilo_identity::broker::trusted_current_device(&workspace_id).unwrap();
             let person = hex::encode(certificate.user_public_key);
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let (state, bridge) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     launcher: Some(launcher),
                     local_person: Some(Arc::new(NativePerson(certificate.clone()))),
                     ..Default::default()
@@ -514,7 +514,7 @@ mod tests {
             clippy::too_many_lines,
             reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
         )]
-        fn opening_an_app_keeps_custody_and_its_ticket;
+        fn opening_an_app_keeps_ownership_and_its_ticket;
 
         phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
         {
@@ -535,7 +535,7 @@ mod tests {
                     request.target.address.action = "close".into();
                 }
                 let pending = state.action_invoke_local_person(&caller, &request);
-                // Native custody is inert until the broker services its admission
+                // Native ownership is inert until the broker services its admission
                 // turn. Drive the same eager dispatch as the live accept loop,
                 // rather than waiting for a worker this fixture never started.
                 let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
@@ -690,7 +690,7 @@ mod tests {
             assert_eq!(record.update, terminal);
         }
 
-        phase missing_original_custody_cannot_launch_or_allocate_a_ticket;
+        phase missing_original_ownership_cannot_launch_or_allocate_a_ticket;
         {
             let (state, workspace) = broker();
             let caller = Caller::authenticated([41; 32], [42; 32]).in_workspace(&workspace);

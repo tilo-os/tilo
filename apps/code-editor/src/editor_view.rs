@@ -433,7 +433,7 @@ impl EditorView {
 
     /// Set the find bar's matches so they are tinted in the buffer.
     ///
-    /// Showing *all* matches rather than only the one you are standing on is
+    /// Showing *all* matches rather than only the one you are on is
     /// what makes a find useful for reading — you can see at a glance whether a
     /// symbol appears twice on screen or thirty times.
     pub fn set_find_matches(&mut self, matches: &[crate::find::Match], current: Option<usize>) {

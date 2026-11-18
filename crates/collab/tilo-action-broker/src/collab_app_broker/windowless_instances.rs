@@ -4,7 +4,7 @@
 
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, Caller, InvokeRequest, provider_workspace,
+    ActionCallError, Caller, InvokeRequest, provider_workspace,
 };
 
 use super::AppBrokerState;
@@ -29,7 +29,7 @@ impl AppBrokerState {
         &self,
         app_id: &str,
         workspace: &str,
-    ) -> Result<Option<crate::services::WindowlessStart>, ActionHostError> {
+    ) -> Result<Option<crate::services::WindowlessStart>, ActionCallError> {
         let started = match (
             self.launchable.windowless(),
             self.services.launcher.as_ref(),
@@ -38,7 +38,7 @@ impl AppBrokerState {
             (None, Some(launcher)) => launcher.windowless(app_id, workspace),
             (None, None) => Ok(None),
         };
-        started.map_err(|why| ActionHostError::Unavailable {
+        started.map_err(|why| ActionCallError::Unavailable {
             reason: format!("{app_id} could not run without a window: {why}"),
         })
     }
@@ -80,7 +80,7 @@ impl AppBrokerState {
         request: &InvokeRequest,
         (app_id, workspace): (&str, &str),
         peer_id: u64,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let name = self
             .services
             .launcher
@@ -93,7 +93,7 @@ impl AppBrokerState {
             super::host_action_admission::HostActionAdmission {
                 workspace,
                 app_id,
-                descriptor: &super::action_host::app_start_descriptor(app_id, &name),
+                descriptor: &super::action_provider::app_start_descriptor(app_id, &name),
                 request,
             },
         )?;
@@ -161,7 +161,7 @@ pub(super) fn started_output(peer_id: u64) -> tilo_actions::ActionOutput {
 pub(super) async fn start_failed(
     starting: &mut Option<crate::services::WindowlessStart>,
     app_id: &str,
-) -> ActionHostError {
+) -> ActionCallError {
     let Some(start) = starting.as_mut() else {
         return std::future::pending().await;
     };
@@ -175,7 +175,7 @@ pub(super) async fn start_failed(
             format!("the host stopped starting it ({error})")
         }
     };
-    ActionHostError::Unavailable {
+    ActionCallError::Unavailable {
         reason: format!("{app_id} could not run without a window: {why}"),
     }
 }

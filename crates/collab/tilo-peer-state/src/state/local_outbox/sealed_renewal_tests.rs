@@ -59,7 +59,7 @@ fn fixture() -> Fixture {
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RelayDelta(key.verifying_key().to_bytes())
+    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
 }
 
 fn metadata(epoch: u64) -> EncryptionMetadata {
@@ -174,7 +174,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
 
 tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
-    fn a_sealed_write_is_renewed_only_for_its_standing_author_by_the_key_holder;
+    fn a_sealed_write_is_renewed_only_for_its_current_author_by_the_key_holder;
 
     phase an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_retires_with_it;
     {
@@ -348,7 +348,7 @@ tilo_test_env::scenario! {
         assert_eq!(fixture.member.durable().unwrap(), before);
     }
 
-    phase a_renewal_survives_restart_as_exact_custody;
+    phase a_renewal_survives_restart_as_exact_ownership;
     {
         let mut fixture = fixture();
         let later = expired(fixture.now);

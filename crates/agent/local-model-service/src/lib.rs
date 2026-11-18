@@ -91,7 +91,7 @@ pub trait ProcessSupervisor {
         archive: &Path,
         signed_image: &str,
     ) -> Result<(), ServiceError>;
-    /// Prepare a stopped container and return its exact custody before model code runs.
+    /// Prepare a stopped container and return its exact ownership before model code runs.
     fn prepare(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
     /// Launch the durably recorded `handle` and wait for exact endpoint health.
     ///
@@ -564,7 +564,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &self.state
     }
 
-    /// Observe current exact runtime custody without starting or changing it.
+    /// Observe current exact runtime ownership without starting or changing it.
     #[must_use]
     pub fn runtime_observations(
         &self,
@@ -761,7 +761,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .checked_sub(start)
             .ok_or(ServiceError::PartialTooLarge)?;
         let mut reported = start;
-        let mut relay = |written: u64| {
+        let mut server = |written: u64| {
             reported = start.saturating_add(written);
             progress(reported);
         };
@@ -769,7 +769,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             0
         } else {
             self.transport
-                .resume(url, start, maximum, &mut relay, &mut file)?
+                .resume(url, start, maximum, &mut server, &mut file)?
         };
         file.sync_all()?;
         let total = start
@@ -1060,7 +1060,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
-    /// Mark `model_id` failed with `message`, retaining any outstanding process custody.
+    /// Mark `model_id` failed with `message`, retaining any outstanding process ownership.
     ///
     /// # Errors
     /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
@@ -1173,7 +1173,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .is_some_and(|model| model.process.is_some())
         {
             return Err(ServiceError::Backend(
-                "local model still has runtime custody; stop it before replacing it".into(),
+                "local model still has runtime ownership; stop it before replacing it".into(),
             ));
         }
         Ok(())
@@ -1188,19 +1188,21 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         if let Err(error) =
             self.update_status(model_id, LocalModelStatus::Starting, Some(handle.clone()))
         {
-            // Retain detached custody before attempting cleanup: canonical CAS
+            // Retain detached ownership before attempting cleanup: canonical CAS
             // refusal must never erase the only selector for a prepared container.
-            let custody = ownership::retain_orphan(&self.root, model_id, &handle);
+            let orphan = ownership::retain_orphan(&self.root, model_id, &handle);
             let cleanup = self.supervisor.stop(&handle);
             if cleanup.is_ok()
-                && let Ok(id) = &custody
+                && let Ok(id) = &orphan
             {
                 let _ = std::fs::remove_file(
-                    self.root.join("orphan-custody").join(format!("{id}.json")),
+                    self.root
+                        .join("orphan-ownership")
+                        .join(format!("{id}.json")),
                 );
             }
             return Err(ServiceError::Backend(format!(
-                "prepared runtime was not admitted: {error}; detached custody: {custody:?}; cleanup: {cleanup:?}"
+                "prepared runtime was not admitted: {error}; detached ownership: {orphan:?}; cleanup: {cleanup:?}"
             )));
         }
         if let Err(error) = self.supervisor.start(command, &handle) {
@@ -1257,7 +1259,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             LocalModelStatus::Starting | LocalModelStatus::Ready { .. }
         ) {
             return Err(ServiceError::Backend(
-                "runtime state has no observable process custody".into(),
+                "runtime state has no observable process ownership".into(),
             ));
         }
         let publication = self.update_status(model_id, LocalModelStatus::Installed, None);
@@ -1693,7 +1695,7 @@ mod tests {
         /// The offline developer transport: what it delivers and what it refuses.
         fn offline_developer_fetch_keeps_the_signed_identity_and_refuses_what_it_cannot_verify;
 
-        phase offline_developer_fetch_uses_signed_identity_and_existing_hash_gate;
+        phase offline_developer_fetch_uses_signed_identity_and_existing_hash_check;
         {
             let bytes = b"actual offline fixture";
             let dir = tempfile::tempdir().unwrap();
@@ -1944,7 +1946,7 @@ mod tests {
     tilo_test_env::scenario! {
         /// The runtime the service owns: observation, stop, failed launch, refused admission and the
         /// state transactions that record them, each case on a service of its own.
-        fn an_owned_runtime_keeps_exact_custody_through_stop_failure_and_refusal;
+        fn an_owned_runtime_keeps_exact_ownership_through_stop_failure_and_refusal;
 
         phase owned_runtime_unavailable_observation_and_retention_failure_do_not_prevent_stop;
         {
@@ -2036,7 +2038,7 @@ mod tests {
             assert!(observed.models["tiny"].process.is_none());
         }
 
-        phase owned_runtime_failed_launch_and_cleanup_retain_durable_exact_custody;
+        phase owned_runtime_failed_launch_and_cleanup_retain_durable_exact_ownership;
         {
             let dir = tempfile::tempdir().unwrap();
             let bytes = b"failed runtime fixture";
@@ -2082,10 +2084,10 @@ mod tests {
             );
         }
 
-        phase owned_runtime_refused_admission_retains_detached_custody_and_exact_recovery;
+        phase owned_runtime_refused_admission_retains_detached_ownership_and_exact_recovery;
         {
             let dir = tempfile::tempdir().unwrap();
-            let bytes = b"orphan custody fixture";
+            let bytes = b"orphan ownership fixture";
             let mut canonical = service_for(dir.path(), bytes);
             canonical.install_model(&model(bytes)).unwrap();
             let mut stale = LocalModelService::open(
@@ -2123,7 +2125,7 @@ mod tests {
             assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), prior);
             let receipt_path = dir
                 .path()
-                .join("orphan-custody")
+                .join("orphan-ownership")
                 .join(format!("{}.json", "b".repeat(64)));
             assert!(receipt_path.is_file());
             assert!(
@@ -2172,7 +2174,7 @@ mod tests {
             );
         }
 
-        phase owned_runtime_state_transactions_merge_foreign_models_and_refuse_stale_custody;
+        phase owned_runtime_state_transactions_merge_foreign_models_and_refuse_stale_ownership;
         {
             let dir = tempfile::tempdir().unwrap();
             let bytes = b"merge fixture";
@@ -2291,7 +2293,7 @@ mod tests {
             if model.process.as_ref() != Some(handle) || model.status != LocalModelStatus::Starting
             {
                 return Err(ServiceError::Backend(
-                    "launch attempted before durable custody".into(),
+                    "launch attempted before durable ownership".into(),
                 ));
             }
             if let Some(entered) = self.entered.take() {
@@ -2923,7 +2925,7 @@ mod tests {
         {
             use crate::catalog::VerifiedCatalog;
             let (verified, signed, catalog_path, keys_path) =
-                signed_speech_witness(dir.path(), &release);
+                signed_speech_approval(dir.path(), &release);
             if format == ModelArtifactFormat::SileroGgml {
                 service.state.models.get_mut("speech").unwrap().status =
                     LocalModelStatus::NotInstalled;
@@ -2936,24 +2938,24 @@ mod tests {
                     LocalModelStatus::Installed;
                 service.persist().unwrap();
             }
-            assert_speech_witness(dir.path(), &verified, format, bytes);
+            assert_speech_approval(dir.path(), &verified, format, bytes);
             fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
             assert!(matches!(
-                read_speech_witness(dir.path(), &verified, format),
+                read_speech_approval(dir.path(), &verified, format),
                 Err(crate::speech::SpeechError::ModelReceipt)
             ));
             fs::write(&installed.path, bytes).unwrap();
             service.state.accepted_licenses.clear();
             service.persist().unwrap();
             assert!(matches!(
-                read_speech_witness(dir.path(), &verified, format),
+                read_speech_approval(dir.path(), &verified, format),
                 Err(crate::speech::SpeechError::ModelUnavailable)
             ));
             service.record_license_acceptance(&release).unwrap();
             fs::remove_file(&installed.path).unwrap();
             std::os::unix::fs::symlink(&catalog_path, &installed.path).unwrap();
             assert!(matches!(
-                read_speech_witness(dir.path(), &verified, format),
+                read_speech_approval(dir.path(), &verified, format),
                 Err(crate::speech::SpeechError::ModelUnavailable)
             ));
             fs::remove_file(&installed.path).unwrap();
@@ -2970,7 +2972,7 @@ mod tests {
         );
     }
 
-    fn signed_speech_witness(
+    fn signed_speech_approval(
         root: &Path,
         release: &LocalModelRelease,
     ) -> (
@@ -3009,7 +3011,7 @@ mod tests {
         (verified, signed, catalog_path, keys_path)
     }
 
-    fn assert_speech_witness(
+    fn assert_speech_approval(
         root: &Path,
         verified: &crate::catalog::VerifiedCatalog,
         format: ModelArtifactFormat,
@@ -3032,7 +3034,7 @@ mod tests {
             crate::speech::speech_model_file(root, verified).unwrap()
         };
         assert_eq!(sealed.format(), format);
-        assert_eq!(read_speech_witness(root, verified, format).unwrap(), bytes);
+        assert_eq!(read_speech_approval(root, verified, format).unwrap(), bytes);
         #[cfg(feature = "whisper")]
         if format == ModelArtifactFormat::WhistleCact {
             // These authenticated fixture weights deliberately have the wrong
@@ -3048,7 +3050,7 @@ mod tests {
         }
     }
 
-    fn read_speech_witness(
+    fn read_speech_approval(
         root: &Path,
         verified: &crate::catalog::VerifiedCatalog,
         format: ModelArtifactFormat,

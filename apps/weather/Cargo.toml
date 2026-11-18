@@ -40,7 +40,7 @@ taffy.workspace = true
 # Networking is used only by the live event loop; shots render bundled sample
 # data without opening a connection.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
-chrono = { workspace = true, features = ["std", "clock"] }
+jiff.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

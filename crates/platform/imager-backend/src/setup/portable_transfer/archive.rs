@@ -18,7 +18,7 @@ pub use index::Scratch;
 pub(super) enum Kind {
     Directory,
     File([u8; 32]),
-    Sparse(super::sparse::Witness),
+    Sparse(super::sparse::Proof),
     Link(#[serde(with = "index::native_path")] PathBuf),
     HardLink(#[serde(with = "index::native_path")] PathBuf),
 }
@@ -434,32 +434,32 @@ fn verify_root_acl(
 }
 pub(super) fn verify_mapped(
     records: &Records,
-    witness: &super::super::home_transfer::promotion::AdoptionWitness,
+    proof: &super::super::home_transfer::promotion::AdoptionProof,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
-    verify_root_acl(records, &witness.quarantine, true)?;
+    verify_root_acl(records, &proof.quarantine, true)?;
     let paths = records.iter().filter_map(|record| match record {
         Ok(record) if record.path.as_os_str().is_empty() => None,
         Ok(record) => Some(Ok(record.path)),
         Err(error) => Some(Err(error)),
     });
-    witness.verify_archive_items(paths)?;
+    proof.verify_archive_items(paths)?;
     verify_records(records, false, cancel, |path: &Path| {
-        Ok((witness.target(path)?, witness.changed_parent(path)?))
+        Ok((proof.target(path)?, proof.changed_parent(path)?))
     })
 }
 pub(super) fn verify_mapped_after_applications(
     records: &Records,
-    witness: &super::super::home_transfer::promotion::AdoptionWitness,
+    proof: &super::super::home_transfer::promotion::AdoptionProof,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
-    verify_root_acl(records, &witness.quarantine, true)?;
+    verify_root_acl(records, &proof.quarantine, true)?;
     let paths = records.iter().filter_map(|record| match record {
         Ok(record) if record.path.as_os_str().is_empty() => None,
         Ok(record) => Some(Ok(record.path)),
         Err(error) => Some(Err(error)),
     });
-    witness.verify_archive_items_beside(paths, Some(Path::new(".local/share/flatpak")))?;
+    proof.verify_archive_items_beside(paths, Some(Path::new(".local/share/flatpak")))?;
     let installation = Path::new(".local/share/flatpak");
     let mutable = |record: &Record| {
         matches!(record.kind, Kind::File(_) | Kind::Sparse(_))
@@ -472,7 +472,7 @@ pub(super) fn verify_mapped_after_applications(
     for record in records.iter() {
         let record = record?;
         if mutable(&record) {
-            verify_mutable_application_file(&record, &witness.target(&record.path)?)?;
+            verify_mutable_application_file(&record, &proof.target(&record.path)?)?;
         }
     }
     verify_records_skipping(
@@ -481,8 +481,8 @@ pub(super) fn verify_mapped_after_applications(
         cancel,
         |path| {
             Ok((
-                witness.target(path)?,
-                witness.changed_parent(path)?
+                proof.target(path)?,
+                proof.changed_parent(path)?
                     || path.starts_with(installation)
                     || installation.starts_with(path),
             ))
@@ -649,8 +649,8 @@ fn verify_records_skipping(
                     return Err(changed("Transferred file content differs"));
                 }
             }
-            Kind::Sparse(witness) => {
-                witness.verify(&file, cancel)?;
+            Kind::Sparse(proof) => {
+                proof.verify(&file, cancel)?;
             }
             Kind::HardLink(target) => {
                 let target_record = records
@@ -752,7 +752,7 @@ fn verify_tree_inventory(
         let record = record?;
         if excluded.iter().any(|path| record.path.starts_with(path)) {
             return Err(changed(
-                "Archive contains installer custody outside the reviewed user data",
+                "Archive contains installer ownership outside the reviewed user data",
             ));
         }
         if !matches!(record.kind, Kind::Directory) {

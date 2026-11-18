@@ -12,7 +12,7 @@ const runtime = runtimeFake({
   nodeSessionVouched: () => true,
 });
 
-/** A node waiting for its owner, as `tilo-relay`'s install route answers;
+/** A node waiting for its owner, as `tilo-server`'s install route answers;
  * once installed it serves as a host, which has no install route. */
 async function waitingNode({owner = person.userPublicKey} = {}) {
   const nodeKey = 'ef'.repeat(32);

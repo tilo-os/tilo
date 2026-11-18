@@ -52,7 +52,7 @@ d-ks6wodcv = Einträge
 d-crrlhv3r = Entwurf
 
 d-knnd7epb = Release
-    .doc = Die Einträge des Teams auf einem Board, eine Spur je Stufe.
+    .doc = Die Einträge des Teams auf einem Board, eine Liste je Stufe.
     .noun = { $count ->
         [one] Release
        *[other] Releases
@@ -747,9 +747,9 @@ d-rygoropv = Rahmenteile
     .w-invite = Einladen
     .w-bo-is-viewing = Bo sieht zu
     .w-drag-run = Ziehreihe
-    .w-items-a-person-reorders-by-dragging = Elemente, die man durch Ziehen umordnet, quer oder stehend.
+    .w-items-a-person-reorders-by-dragging = Elemente, die man durch Ziehen umordnet, quer oder gestapelt.
     .w-pinned = Angeheftet
-    .w-pinned-standing = Angeheftet, stehend
+    .w-pinned-stacked = Angeheftet, gestapelt
     .w-drag-source-and-drop-target = Ziehquelle und Ablageziel
     .w-a-view-picked-up-and-carried = Eine Ansicht, aufgenommen und zu einem Ziel getragen, das sie nimmt.
     .w-a-drop-target = Ein Ablageziel
@@ -793,6 +793,13 @@ d-juvyfisd = Eigenes
     .w-hours-worked-each-day-this-week = Arbeitsstunden pro Tag in dieser Woche
     .w-charts-and-graphs = Diagramme und Graphen
     .w-the-last-ten-minutes = Die letzten zehn Minuten
+    .w-week-1 = Woche 1
+    .w-week-2 = Woche 2
+    .w-week-3 = Woche 3
+    .w-week-4 = Woche 4
+    .w-issues-each-week = Vorgänge pro Woche
+    .w-hours-by-team = Stunden nach Team
+    .w-88-hours = 88 Stunden
     .w-release-pipeline = Release-Pipeline
     .w-fetch = Abrufen
     .w-fetched = Abgerufen

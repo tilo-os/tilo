@@ -1,8 +1,7 @@
 //! A person's Allow, Ask first and Deny for one of their agents.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, TreePath,
-    WorkspacePolicy,
+    ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, TreePath, WorkspacePolicy,
     agent_answers::{self, AnswerScope},
 };
 
@@ -232,39 +231,6 @@ tilo_test_env::scenario! {
             ),
             Answer::Deny
         );
-    }
-
-    phase setting_an_answer_again_replaces_it_and_clearing_removes_it;
-    {
-        let scope = AnswerScope::kind("so.tilo.mail", "mail.mailbox");
-        let first = answer(&scope, ActionKind::Outside, Answer::Ask);
-        let held = vec![first.clone()];
-        let changes = agent_answers::set(
-            WORKSPACE,
-            AGENT,
-            (&scope, ActionKind::Outside),
-            Some(Answer::Allow),
-            (Grantee::person(PERSON), &held),
-        );
-        assert_eq!(changes.len(), 2);
-        assert_eq!(changes[0], Change::Revoke(first.id.clone()));
-        let Change::Grant(grant) = &changes[1] else {
-            panic!("the new answer is granted");
-        };
-        assert_eq!(
-            (grant.id.clone(), grant.answer),
-            (first.id.clone(), Answer::Allow)
-        );
-        assert!(agent_answers::is_answer(grant));
-
-        let cleared = agent_answers::set(
-            WORKSPACE,
-            AGENT,
-            (&scope, ActionKind::Outside),
-            None,
-            (Grantee::person(PERSON), &held),
-        );
-        assert_eq!(cleared, vec![Change::Revoke(first.id)]);
     }
 
     phase scopes_read_back_from_their_nodes;

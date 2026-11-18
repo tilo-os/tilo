@@ -27,7 +27,7 @@ pub enum Takes {
     ContentTitled,
     /// Its reference as `content` alone.
     Content,
-    /// Its words: the file's name as `title`, its text as `body`.
+    /// Its words: the file's name as `title`, its text as `markdown`.
     Text,
     /// A picture: `image`, with its name, its size and its reference.
     Image,
@@ -79,7 +79,7 @@ const PHOTOS: Landing = Landing {
 };
 const NOTES: Landing = Landing {
     app: "notes",
-    action: "import-markdown-content",
+    action: "create-page",
     own_resource: false,
     takes: Takes::Text,
 };

@@ -360,7 +360,7 @@ fn a_build_reaches_its_repositories_and_nothing_else() {
     let policy = env_tools::network::repo_policy(&tree, &dir.path().join("mirrors")).unwrap();
     let sandbox = env_tools::sandbox::BuildSandbox::create(&tree, &dir.path().join("sandbox"))
         .unwrap()
-        .with_network(env_tools::network::gated(policy));
+        .with_network(env_tools::network::guarded(policy));
     let curl = |url: &str| {
         sandbox
             .run(

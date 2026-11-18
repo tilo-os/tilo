@@ -1,5 +1,5 @@
 use super::*;
-use tilo_actions::{ActionInvoker, PathStep};
+use tilo_actions::PathStep;
 
 const SNIPPETS_EN: &str = r"
 snippets-snippet-favorite = { $new ->
@@ -202,8 +202,6 @@ fn a_task_names_the_person_who_acted_through_it() {
     assert_eq!(
         reader.actor(&Who {
             actor: "Ada",
-            for_person: Some("Ada"),
-            for_reader: false,
             is_reader: false,
             task: Some(&task),
         }),
@@ -212,8 +210,6 @@ fn a_task_names_the_person_who_acted_through_it() {
     assert_eq!(
         Reader::new("de-DE").actor(&Who {
             actor: "Ada",
-            for_person: Some("Ada"),
-            for_reader: false,
             is_reader: false,
             task: Some(&task),
         }),
@@ -223,8 +219,6 @@ fn a_task_names_the_person_who_acted_through_it() {
     assert_eq!(
         reader.actor(&Who {
             actor: "Ada",
-            for_person: None,
-            for_reader: false,
             is_reader: false,
             task: Some(&Task {
                 id: task.id,
@@ -236,25 +230,11 @@ fn a_task_names_the_person_who_acted_through_it() {
 }
 
 #[test]
-fn actors_are_named_with_the_person_they_act_for() {
+fn an_actor_is_named_by_its_own_name_alone() {
     let reader = Reader::new("en-US");
-    let agent = ActionInvoker::agent("claude").acting_for("ada");
-    assert!(agent.acting.is_agent());
     assert_eq!(
         reader.actor(&Who {
             actor: "Claude",
-            for_person: Some("Ada"),
-            for_reader: false,
-            is_reader: false,
-            task: None
-        }),
-        "Claude for Ada"
-    );
-    assert_eq!(
-        reader.actor(&Who {
-            actor: "Claude",
-            for_person: None,
-            for_reader: false,
             is_reader: false,
             task: None
         }),
@@ -263,43 +243,10 @@ fn actors_are_named_with_the_person_they_act_for() {
     assert_eq!(
         reader.actor(&Who {
             actor: "Ada",
-            for_person: None,
-            for_reader: false,
             is_reader: true,
             task: None
         }),
         "You"
-    );
-    // Software that acted for the reader says so, and names no kind.
-    assert_eq!(
-        reader.actor(&Who {
-            actor: "Claude",
-            for_person: Some("Ada"),
-            for_reader: true,
-            is_reader: false,
-            task: None
-        }),
-        "Claude for you"
-    );
-    assert_eq!(
-        Reader::new("de-DE").actor(&Who {
-            actor: "Morgens",
-            for_person: Some("Ada"),
-            for_reader: false,
-            is_reader: false,
-            task: None
-        }),
-        "Morgens für Ada"
-    );
-    assert_eq!(
-        reader.actor(&Who {
-            actor: "Discord Bridge",
-            for_person: Some("Ada"),
-            for_reader: false,
-            is_reader: false,
-            task: None
-        }),
-        "Discord Bridge for Ada"
     );
 }
 

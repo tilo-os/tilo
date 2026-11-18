@@ -1,4 +1,4 @@
-//! A notebook as a tree, through the real packages and the record: a note moves under the one
+//! A notebook as a tree, through the real packages and the document: a note moves under the one
 //! it lands on and among its own, a branch copies whole, a branch is deleted as one change a
 //! person takes back at once, and a note's own follow their titles when the person asks it.
 
@@ -26,7 +26,7 @@ fn workspace() -> (Replica, ResourceRef) {
     (ada, notebook)
 }
 
-/// The notes the notebook holds, in the order the record keeps them.
+/// The notes the notebook holds, in the order the document keeps them.
 fn notes(ada: &Replica, notebook: &ResourceRef) -> Vec<ResourceRef> {
     match ada
         .host

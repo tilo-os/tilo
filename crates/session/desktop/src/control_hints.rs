@@ -122,7 +122,7 @@ pub struct HintFrame {
 }
 
 impl HintFrame {
-    /// The cards a hint keeps clear of, from what the strip's row knows: those standing over the
+    /// The cards a hint keeps clear of, from what the strip's row knows: those over the
     /// shell, and the corners a window's app stands its own activity cards in. An app's card and the
     /// hint share one place rule, so neither covers the other.
     #[must_use]
@@ -372,7 +372,7 @@ impl ControlHints {
     }
 }
 
-/// How hint `spec` shows over `frame` , if its anchor is on screen and no card standing over the
+/// How hint `spec` shows over `frame` , if its anchor is on screen and no card over the
 /// shell covers it.
 fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     let area = frame.area;
@@ -451,7 +451,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             )
         }
     };
-    // A card standing over the shell hides the control a hint points at: nothing is taught where
+    // A card over the shell hides the control a hint points at: nothing is taught where
     // there is nothing to take, and the hint's card would stand over the card's content.
     let covered = |rect: Rect| over.iter().any(|card| card.overlaps(rect));
     if stand.anchor().is_some_and(covered)
@@ -491,7 +491,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     })
 }
 
-/// The content no hint may stand over: the cards standing over the shell, an app's activity cards
+/// The content no hint may stand over: the cards over the shell, an app's activity cards
 /// in a window's corner, and every window's body — the one whose bar or edge a hint teaches
 /// included, since a hint below that bar would stand over the window itself.
 fn clear_of(frame: &HintFrame, over: &[Rect]) -> Vec<Rect> {
@@ -638,7 +638,7 @@ mod tests {
         phase a_bar_with_no_room_beside_its_clock_teaches_no_shortcut;
         // Search and moving the view are taught in the bar, beside its clock: a bar that keeps no room
         // there — hidden behind a window the person filled, or crowded by its own controls — teaches
-        // nothing, rather than standing over the clock or a control beside it.
+        // nothing, rather than over the clock or a control beside it.
         {
             let mut frame = frame();
             frame.hint_room = None;
@@ -703,7 +703,7 @@ mod tests {
         }
 
         phase a_card_over_the_handle_keeps_the_hint_away;
-        // A card standing over the shell is another surface: a hint points at a control the card does
+        // A card over the shell is another surface: a hint points at a control the card does
         // not cover, and its own card keeps clear of the card's content.
         {
             let mut frame = frame();

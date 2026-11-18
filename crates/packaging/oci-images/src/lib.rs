@@ -4,7 +4,7 @@
 //! images whose layers hold the `.tapp` files (`registry.tilo.so/tilo/env-runtime:set-<fingerprint>`,
 //! `registry.tilo.so/tilo/env-tools:<tag>`). They are not in the app registry: they are not apps, and
 //! its review would cap and list them. [`OciImages`] is a [`PackageFetcher`] over those repositories,
-//! for a node that did not ship the images in its system store, such as a relay or a node of another
+//! for a node that did not ship the images in its system store, such as a server or a node of another
 //! architecture.
 //!
 //! Nothing here is trusted: a layer is checked against its digest, the tapps in it are cached by the

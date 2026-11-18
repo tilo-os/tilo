@@ -4,7 +4,7 @@
 //! host folded the record's history included.
 
 use super::api::ISSUER;
-use super::api_on_relay::{accept_invitation, api_on_relay, approved_key, headers, json_of};
+use super::api_on_server::{accept_invitation, api_on_server, approved_key, headers, json_of};
 use super::resource_support::open_admitted_peer;
 use super::*;
 use serde_json::{Value, json};
@@ -49,16 +49,12 @@ fn notes_held(
     reader: &Browser,
     workspace: &str,
 ) -> Option<BTreeMap<String, (String, Option<String>)>> {
-    let bytes = reader
-        .peer
-        .engine()
-        .record(workspace, "so.tilo.notes", "")
-        .ok()??;
-    let doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let notebook = <notes::notebook::Notebook as ui::tilo_resource::Resource>::read(&doc).ok()?;
+    let parts = super::resource_support::notes_parts(reader.peer.engine(), workspace);
+    if parts.is_empty() {
+        return None;
+    }
     Some(
-        notebook
-            .pages
+        notes::Pages::of(&parts)
             .iter()
             .map(|(id, note)| {
                 (
@@ -82,11 +78,11 @@ fn notes_held(
 /// as the agent left it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let token = approved_key(&on_relay, &ada, &page, "Mover").await;
+    let token = approved_key(&on_server, &ada, &page, "Mover").await;
     let made = post(&api, &token, "/v1/workspaces", &json!({"name": "Company"})).await;
     let workspace = made["id"].as_str().unwrap().to_owned();
     let base = format!("/v1/workspaces/{workspace}");
@@ -97,7 +93,7 @@ async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
         &json!({}),
     )
     .await;
-    let notebook = format!("{base}/resources/notes/Notebook/actions");
+    let notebook = format!("{base}/resources/notes/Notes/actions");
     let act = |action: &str, args: Value| {
         let path = format!("{notebook}/{action}");
         let (api, token) = (&api, &token);
@@ -120,7 +116,14 @@ async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
     let mut folders = BTreeMap::<String, String>::new();
     let mut expected = BTreeMap::<String, String>::new();
     for (name, _) in &files {
-        let found = act("find-page", json!({"title": name})).await;
+        // Finding a note is the notebook's; the notes are kept beside it.
+        let found = post(
+            &api,
+            &token,
+            &format!("{base}/resources/notes/Notebook/actions/find-page"),
+            &json!({"title": name}),
+        )
+        .await;
         let note = found["result"]["pages"][0]["page"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: {found}"))
@@ -171,9 +174,10 @@ async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
         .unwrap_or_else(|| panic!("{invited}"))
         .to_owned();
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
-    let (rosa_page, _) = accept_invitation(&on_relay, &link, &rosa, "Rosa").await;
+    let (rosa_page, _) = accept_invitation(&on_server, &link, &rosa, "Rosa").await;
     let joined = Instant::now();
-    let reader = open_admitted_peer(&on_relay.hosted, &rosa_page, &on_relay.host, &workspace).await;
+    let reader =
+        open_admitted_peer(&on_server.hosted, &rosa_page, &on_server.host, &workspace).await;
     let deadline = joined + Duration::from_secs(60);
     loop {
         let left: Vec<String> = notes_held(&reader, &workspace).map_or_else(
@@ -220,11 +224,11 @@ async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
 async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     use tilo_session_client::{Cmd, Event};
 
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let token = approved_key(&on_relay, &ada, &page, "Writer").await;
+    let token = approved_key(&on_server, &ada, &page, "Writer").await;
     let made = post(&api, &token, "/v1/workspaces", &json!({"name": "Company"})).await;
     let workspace = made["id"].as_str().unwrap().to_owned();
     let base = format!("/v1/workspaces/{workspace}");
@@ -238,7 +242,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     post(
         &api,
         &token,
-        &format!("{base}/resources/notes/Notebook/actions/new-note"),
+        &format!("{base}/resources/notes/Notes/actions/new-note"),
         &json!({"title": "Supplier contract"}),
     )
     .await;
@@ -257,8 +261,9 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
         .unwrap_or_else(|| panic!("{invited}"))
         .to_owned();
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
-    let (rosa_page, _) = accept_invitation(&on_relay, &link, &rosa, "Rosa").await;
-    let reader = open_admitted_peer(&on_relay.hosted, &rosa_page, &on_relay.host, &workspace).await;
+    let (rosa_page, _) = accept_invitation(&on_server, &link, &rosa, "Rosa").await;
+    let reader =
+        open_admitted_peer(&on_server.hosted, &rosa_page, &on_server.host, &workspace).await;
 
     // What a window opening Notes asks for: the workspace's own record of
     // the app, which this page does not hold.
@@ -272,6 +277,18 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
         .send(Cmd::OpenDocumentAt(
             WorkspaceId::parse(&workspace).unwrap(),
             ask.clone(),
+        ))
+        .unwrap();
+    // And the newest part of its notes, which the window's chain asks for by
+    // the chain's head.
+    reader
+        .peer
+        .send(Cmd::OpenDocumentAt(
+            WorkspaceId::parse(&workspace).unwrap(),
+            tilo_peer_state::document_frame::DocumentRoute {
+                document: notes::part::chain().chain_head().as_str().to_owned(),
+                ..ask.clone()
+            },
         ))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -311,23 +328,18 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
 
 /// Note `title`'s body as the notebook `reader` holds it, as Markdown.
 fn note_body(reader: &Browser, workspace: &str, title: &str) -> Option<String> {
-    let bytes = reader
-        .peer
-        .engine()
-        .record(workspace, "so.tilo.notes", "")
-        .ok()??;
-    let doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let notebook = <notes::notebook::Notebook as ui::tilo_resource::Resource>::read(&doc).ok()?;
-    let (id, _) = notebook
-        .pages
-        .iter()
-        .find(|(_, note)| note.title == title)?;
-    let body = notes::notebook::body_object(&doc, notes::notebook::page_of(id)?)?;
-    let containers = tilo_doc::model::open(&doc, &body).ok()?;
+    let docs = super::resource_support::notes_part_docs(reader.peer.engine(), workspace);
+    let (page, doc) = docs.iter().find_map(|(_, doc)| {
+        let part = <notes::PagePart as ui::tilo_resource::Resource>::read(doc).ok()?;
+        let (id, _) = part.pages.iter().find(|(_, note)| note.title == title)?;
+        Some((notes::notebook::page_of(id)?, doc))
+    })?;
+    let body = notes::part::body_object(doc, page)?;
+    let containers = tilo_doc::model::open(doc, &body).ok()?;
     let markdown = tilo_doc_codecs::provider_for_ext("md")?
         .export(
             tilo_doc::DocRef {
-                doc: &doc,
+                doc,
                 c: &containers,
             },
             &tilo_content::NoContent,
@@ -343,11 +355,11 @@ fn note_body(reader: &Browser, workspace: &str, title: &str) -> Option<String> {
 /// publishes, so a verb missing there is a change no page ever reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_write_note_changes_the_notes_body() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let token = approved_key(&on_relay, &ada, &page, "Writer").await;
+    let token = approved_key(&on_server, &ada, &page, "Writer").await;
     let made = post(&api, &token, "/v1/workspaces", &json!({"name": "Company"})).await;
     let workspace = made["id"].as_str().unwrap().to_owned();
     let base = format!("/v1/workspaces/{workspace}");
@@ -358,7 +370,7 @@ async fn an_agents_write_note_changes_the_notes_body() {
         &json!({}),
     )
     .await;
-    let notebook = format!("{base}/resources/notes/Notebook/actions");
+    let notebook = format!("{base}/resources/notes/Notes/actions");
     let made = post(
         &api,
         &token,
@@ -400,8 +412,9 @@ async fn an_agents_write_note_changes_the_notes_body() {
         .unwrap_or_else(|| panic!("{invited}"))
         .to_owned();
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
-    let (rosa_page, _) = accept_invitation(&on_relay, &link, &rosa, "Rosa").await;
-    let reader = open_admitted_peer(&on_relay.hosted, &rosa_page, &on_relay.host, &workspace).await;
+    let (rosa_page, _) = accept_invitation(&on_server, &link, &rosa, "Rosa").await;
+    let reader =
+        open_admitted_peer(&on_server.hosted, &rosa_page, &on_server.host, &workspace).await;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let body = note_body(&reader, &workspace, "Terms");

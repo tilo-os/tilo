@@ -6,11 +6,11 @@
 //!
 //! * [`disks`]: target disks and partitions, from `lsblk`.
 //! * [`install`] and [`backend`]: the privileged install, preflight and power
-//!   helpers, behind the seam host tests replace.
+//!   helpers, behind the boundary host tests replace.
 //! * [`internal_handoff`]: the staged (USB-free) installation's handoff.
 //! * [`media_profile`]: the profile the host side prepared on the medium.
 //! * [`network`]: connectivity, Wi-Fi and captive portals, off the UI thread.
-//! * [`online_accounts`]: device-private account sign-in and custody.
+//! * [`online_accounts`]: device-private account sign-in and ownership.
 //! * [`power_readiness`]: the battery rule before installing.
 //! * [`probes`]: what this computer proves about its boot chain.
 //! * [`private_io`]: the unattended recipe and recovery key's private files.

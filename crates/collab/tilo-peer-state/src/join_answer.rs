@@ -4,7 +4,7 @@
 //! to it becomes durable and reaches its members: a [`JoinWorkspaces`].
 //! Everything decided (which invitation a device redeems, what a challenge
 //! binds, who is admitted, which certificate a member holds) is decided
-//! here, against the workspace's [`JoinLedger`] and its committed governance, so
+//! here, against the workspace's [`JoinLog`] and its committed governance, so
 //! a workspace is joined the same way whichever device answers.
 
 use crate::StatePeer;
@@ -14,8 +14,8 @@ use crate::join::{
     JoinTransportRequest, JoinTransportResponse, MembershipChallengeResponse,
     MembershipCompleteRequest,
 };
-use crate::join_ledger::{
-    Governed, JoinError, JoinLedger, Redeeming, invitation_workspace, request_digest,
+use crate::join_log::{
+    Governed, JoinError, JoinLog, Redeeming, invitation_workspace, request_digest,
 };
 use crate::owner::write::{SIGNED_RUNS, Signatures, UNSIGNED};
 use collab_types::signer::DeviceSigner;
@@ -29,26 +29,26 @@ use tilo_user_identity::DeviceCert;
 pub trait WorkspaceTxn {
     /// The workspace's id.
     fn workspace(&self) -> &str;
-    /// The workspace as committed now, as its join ledger reads it.
+    /// The workspace as committed now, as its join log reads it.
     fn governed(&self) -> Governed<'_>;
-    /// The workspace's join ledger as it stands, staged changes included.
-    fn ledger(&self) -> &JoinLedger;
-    /// Stage `ledger` as the workspace's join ledger. The store makes it durable
+    /// The workspace's join log as it stands, staged changes included.
+    fn log(&self) -> &JoinLog;
+    /// Stage `log` as the workspace's join log. The store makes it durable
     /// before the answer it belongs to is given.
-    fn stage_ledger(&mut self, ledger: JoinLedger);
+    fn stage_log(&mut self, log: JoinLog);
     /// Commit `peer` as the workspace's next governance, signed at `now`, and,
-    /// against the workspace as then committed, `ledger`'s answer as its join
-    /// ledger: durable when this returns, and sent to the workspace's members
+    /// against the workspace as then committed, `log`'s answer as its join
+    /// log: durable when this returns, and sent to the workspace's members
     /// before the answer it belongs to is given. Nothing changes when
-    /// `ledger` refuses.
+    /// `log` refuses.
     ///
     /// # Errors
-    /// `ledger` refuses, or the change cannot be committed.
+    /// `log` refuses, or the change cannot be committed.
     fn commit_governance(
         &mut self,
         peer: StatePeer,
         now: u64,
-        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
+        log: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError>;
 
     /// [`Self::commit_governance`] of a change that only admits people
@@ -63,15 +63,15 @@ pub trait WorkspaceTxn {
         &mut self,
         peer: StatePeer,
         now: u64,
-        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
+        log: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError> {
-        self.commit_governance(peer, now, ledger)
+        self.commit_governance(peer, now, log)
     }
 }
 
 /// Where the workspaces a join is answered for live.
 pub trait JoinWorkspaces: Send + Sync {
-    /// This device's custody of the key it signs the workspaces' governance with.
+    /// This device's ownership of the key it signs the workspaces' governance with.
     fn signer(&self) -> &dyn DeviceSigner;
 
     /// Fresh randomness for a challenge.
@@ -103,7 +103,7 @@ fn at(now: u64) -> SystemTime {
 }
 
 /// The workspace a join request is about, read without trusting it: the
-/// ledger then verifies it against what that workspace issued.
+/// log then verifies it against what that workspace issued.
 pub fn requested_workspace(
     request: &JoinTransportRequest,
     now: u64,
@@ -123,10 +123,10 @@ pub fn requested_workspace(
 
 /// Admit the verified `joins` to `workspace` in one governance change signed
 /// with `key`. Each is checked on its own and refused alone; everyone
-/// admitted is then committed and recorded in the workspace's ledger,
+/// admitted is then committed and recorded in the workspace's log,
 /// together. Answers each join in order, with its admission: what the
 /// bootstrap says of the device, without the workspace's state, which
-/// [`crate::join_ledger::Governed::filled`] adds for a device it is sent to.
+/// [`crate::join_log::Governed::filled`] adds for a device it is sent to.
 pub fn admit(
     workspace: &mut dyn WorkspaceTxn,
     joins: &[Redeeming<'_>],
@@ -145,7 +145,7 @@ fn admit_signed(
     now: u64,
 ) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
     let mut candidate = workspace.governed().peer.clone();
-    let refusals = workspace.ledger().admit(&mut candidate, joins, key, now);
+    let refusals = workspace.log().admit(&mut candidate, joins, key, now);
     settled().map_err(JoinError::new)?;
     for (join, refused) in joins.iter().zip(&refusals) {
         if let Some(error) = refused {
@@ -163,9 +163,9 @@ fn admit_signed(
         return Ok(refusals.into_iter().flatten().map(Err).collect());
     }
     let mut delivered = Vec::new();
-    let ledger = workspace.ledger().clone();
+    let log = workspace.log().clone();
     workspace.commit_admission(candidate, now, &mut |governed| {
-        let mut completed = ledger.clone();
+        let mut completed = log.clone();
         delivered = completed.complete(governed, joins, &refusals)?;
         Ok(completed)
     })?;
@@ -214,7 +214,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
             JoinTransportRequest::Inspect { signed_invitation } => {
                 store
                     .with_workspace(&workspace, |workspace| {
-                        let join = workspace.ledger().inspect(
+                        let join = workspace.log().inspect(
                             &workspace.governed(),
                             &signed_invitation,
                             now,
@@ -230,15 +230,15 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 let nonce = store.nonce()?;
                 store
                     .with_workspace(&workspace, |workspace| {
-                        let mut ledger = workspace.ledger().clone();
-                        let challenge = ledger.challenge(
+                        let mut log = workspace.log().clone();
+                        let challenge = log.challenge(
                             &workspace.governed(),
                             remote_endpoint,
                             request,
                             nonce,
                             now,
                         )?;
-                        workspace.stage_ledger(ledger);
+                        workspace.stage_log(log);
                         Ok(JoinTransportResponse::Challenge(JoinChallengeResponse {
                             challenge,
                         }))
@@ -260,15 +260,15 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                     // member's device, and it proves the membership it was
                     // admitted as.
                     admit_member_device(workspace, &request.device_cert, signed, now)?;
-                    let mut ledger = workspace.ledger().clone();
-                    let challenge = ledger.membership_challenge(
+                    let mut log = workspace.log().clone();
+                    let challenge = log.membership_challenge(
                         &workspace.governed(),
                         remote_endpoint,
                         request.clone(),
                         nonce,
                         now,
                     )?;
-                    workspace.stage_ledger(ledger);
+                    workspace.stage_log(log);
                     Ok(JoinTransportResponse::MembershipChallenge(
                         MembershipChallengeResponse { challenge },
                     ))
@@ -329,7 +329,7 @@ fn complete(
     let prior = {
         let governed = workspace.governed();
         workspace
-            .ledger()
+            .log()
             .completed(&governed, remote_endpoint, request_id, proof_digest, now)?
     };
     if let Some(prior) = prior {
@@ -337,7 +337,7 @@ fn complete(
     }
     let redemption =
         workspace
-            .ledger()
+            .log()
             .redeem(&workspace.governed(), remote_endpoint, &request.proof, now)?;
     let joins = [Redeeming {
         remote_endpoint,
@@ -379,8 +379,8 @@ fn admit_member_device(
         .admit_member_device(device, signed, at(now))
         .map_err(JoinError::new)?;
     signed.settled().map_err(JoinError::new)?;
-    let ledger = workspace.ledger().clone();
-    workspace.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
+    let log = workspace.log().clone();
+    workspace.commit_governance(candidate, now, &mut |_| Ok(log.clone()))?;
     tracing::info!(
         workspace = %workspace.workspace(),
         person = %hex::encode(device.user_public_key),
@@ -402,20 +402,18 @@ fn membership_complete(
     signed: &Signatures,
     now: u64,
 ) -> Result<JoinBootstrap, JoinError> {
-    let renewal = workspace.ledger().membership_renewal(
-        &workspace.governed(),
-        remote_endpoint,
-        request,
-        now,
-    )?;
+    let renewal =
+        workspace
+            .log()
+            .membership_renewal(&workspace.governed(), remote_endpoint, request, now)?;
     if let Some(renewed) = renewal {
         let mut candidate = workspace.governed().peer.clone();
         candidate
             .governance_mut()
             .renew_member_certificate(&renewed, signed, at(now))?;
         signed.settled().map_err(JoinError::new)?;
-        let ledger = workspace.ledger().clone();
-        workspace.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
+        let log = workspace.log().clone();
+        workspace.commit_governance(candidate, now, &mut |_| Ok(log.clone()))?;
         tracing::info!(
             workspace = %workspace.workspace(),
             person = %hex::encode(renewed.user_public_key),
@@ -425,7 +423,7 @@ fn membership_complete(
         );
     }
     workspace
-        .ledger()
+        .log()
         .membership_complete(&workspace.governed(), remote_endpoint, request, now)
 }
 

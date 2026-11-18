@@ -8,6 +8,9 @@ public struct Sidebar: View {
     private let chose: () -> Void
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
+    @Environment(\.dynamicTypeSize) private var textSize
+    /// How much larger the person's text is than the drawing's.
+    @ScaledMetric(relativeTo: .body) private var grown: CGFloat = 1
     @State private var searches = false
 
     public init(chose: @escaping () -> Void = {}) {
@@ -29,8 +32,8 @@ public struct Sidebar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint(AssistantWords.assistantView.said)
-                .help(AssistantWords.assistantView.said)
+                .accessibilityLabel(AssistantWords.assistantView.said)
+                .tip(AssistantWords.assistantView.said)
                 Button {
                     searches = true
                 } label: {
@@ -39,7 +42,7 @@ public struct Sidebar: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Token.ink3)
                 .accessibilityLabel(AssistantWords.search.said)
-                .help(AssistantWords.search.said)
+                .tip(AssistantWords.search.said)
                 .popover(isPresented: $searches) { SearchList { chose() } }
             }
             .padding(EdgeInsets(top: 6, leading: 8, bottom: 14, trailing: 8))
@@ -75,7 +78,7 @@ public struct Sidebar: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Token.ink3)
                 .accessibilityLabel(AssistantWords.newSubAgent.said)
-                .help(AssistantWords.newSubAgent.said)
+                .tip(AssistantWords.newSubAgent.said)
             }
             .padding(EdgeInsets(top: 14, leading: 10, bottom: 4, trailing: 10))
 
@@ -104,22 +107,36 @@ public struct Sidebar: View {
                 } label: {
                     HStack(spacing: 10) {
                         Text(person.initials).font(.tilo(11, .semibold, relativeTo: .caption2)).foregroundStyle(Token.onColour)
-                            .frame(width: 24, height: 24).background(Token.you, in: Circle())
+                            .lineLimit(1).minimumScaleFactor(0.5)
+                            .frame(width: 24 * min(max(grown, 1), 2), height: 24 * min(max(grown, 1), 2)).background(Token.you, in: Circle())
                             .accessibilityHidden(true)
-                        Text(person.name).font(.body14).foregroundStyle(Token.ink).lineLimit(1)
-                        Spacer(minLength: 0)
-                        Text(person.workspace).font(.small12).foregroundStyle(Token.ink3).lineLimit(1)
+                        // At the largest text sizes the workspace stands under the name, both read whole.
+                        let large = textSize.isAccessibilitySize
+                        let names = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(spacing: 10))
+                        names {
+                            Text(person.name).font(.body14).foregroundStyle(Token.ink).lineLimit(large ? 3 : 1)
+                            if !large { Spacer(minLength: 0) }
+                            Text(person.workspace).font(.small12).foregroundStyle(Token.ink3).lineLimit(large ? 3 : 1)
+                        }
+                        .multilineTextAlignment(.leading)
+                        if large { Spacer(minLength: 0) }
                     }
                     .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(person.name), \(person.workspace)")
                 }
                 .menuStyle(.button)
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
+                .accessibilityLabel("\(person.name), \(person.workspace)")
                 .padding(EdgeInsets(top: 10, leading: 8, bottom: 4, trailing: 8))
                 .overlay(alignment: .top) { Rectangle().fill(Token.line).frame(height: 1) }
             }
         }
         .padding(10)
+        // One part of the window, read as one: the assistant, the main chat, the sub-agents, the person.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(AssistantWords.sidebar.said)
     }
 }
 
@@ -130,14 +147,19 @@ private struct AgentRow: View {
     let open: () -> Void
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
+    @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
+        // At the largest text sizes a job's name is read whole, on as many lines as it takes.
+        let lines = textSize.isAccessibilitySize ? 4 : 1
         Button(action: open) {
             HStack(alignment: .top, spacing: 10) {
                 Circle().fill(dot).frame(width: 8, height: 8).padding(.top, 6)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(agent.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink).lineLimit(1)
-                    Text(wording.sidebarLine(agent)).font(.small12).foregroundStyle(Token.ink3).lineLimit(1)
+                    Text(agent.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink).lineLimit(lines)
+                        .multilineTextAlignment(.leading)
+                    Text(wording.sidebarLine(agent)).font(.small12).foregroundStyle(Token.ink3).lineLimit(lines)
+                        .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)
             }
@@ -147,17 +169,17 @@ private struct AgentRow: View {
             .contentShape(RoundedRectangle(cornerRadius: Measure.rowRadius))
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
+        .accessibilityLabel([agent.title, agent.role, wording.state(agent)].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contextMenu {
-            if agent.standing == .working || agent.standing == .needsYou {
+            if agent.state == .working || agent.state == .needsYou {
                 Button(AssistantWords.stop.said, role: .destructive) { model.stop(agent.id) }
             }
         }
     }
 
     private var dot: Token {
-        switch agent.standing {
+        switch agent.state {
         case .working: .asst
         case .needsYou: .you
         case .done: .on

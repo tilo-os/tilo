@@ -529,9 +529,9 @@ draw_child_of_dyn!(
     crate::jobs::BandApi,
 );
 
-/// What a gated, presence-publishing widget draws over itself once drawn:
+/// What a guarded, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
-pub(crate) fn draw_gate_and_peer_focus(
+pub(crate) fn draw_permission_scrim_and_peer_focus(
     widget: &(impl Widget + ?Sized),
     scene: &mut Scene,
     transform: Affine,
@@ -1029,7 +1029,7 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 #[cfg(test)]
 mod test_controls;
 #[cfg(test)]
-pub(crate) use test_controls::{Uncustodied, test_value_action_binding};
+pub(crate) use test_controls::{Unattached, test_value_action_binding};
 
 #[cfg(test)]
 fn test_action_binding<I>(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionBinding<I>
@@ -1240,8 +1240,8 @@ pub trait FloatingSurfaceProvider {
         None
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-        None
+    fn take_pip_area_request(&mut self) -> bool {
+        false
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
@@ -1602,7 +1602,8 @@ pub trait FloatingSurfaceWidgetExt {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode>;
+    /// Whether the person asked to pick an area of the screen to float. Consumed.
+    fn take_pip_area_request(&mut self) -> bool;
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
     fn draw_floating_surfaces(
         &mut self,
@@ -1693,9 +1694,9 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
             .and_then(FloatingSurfaceProvider::take_floating_surface_request)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
-            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+            .is_some_and(FloatingSurfaceProvider::take_pip_area_request)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
@@ -2098,7 +2099,7 @@ pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
     LayoutInfo, LayoutOrigin, ListLayout, ListPillLayout, ManualConflict, ManualLayout, PageLayout,
-    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding,
+    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarPosition,
     TextLayout,
 };
 mod embedded;
@@ -2249,7 +2250,7 @@ pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
 pub mod autocomplete;
 pub use autocomplete::{
     Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,
-    SuggestionList, SuggestionPerson, SuggestionProps,
+    SuggestionList, SuggestionProps,
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
@@ -2306,7 +2307,7 @@ pub use date_indexed_scrollbar::{
     ProjectedDateMarker,
 };
 pub mod board;
-pub use board::{Board, BoardCardProps, BoardDrop, BoardLaneProps, BoardProps};
+pub use board::{Board, BoardCardProps, BoardDrop, BoardListProps, BoardProps};
 pub use drag_bus::{InFlight, Landed};
 pub use drag_run::{DragDrop, DragRun, RunAxis, RunGroup, RunItem};
 pub use drag_run_component::{DragItemProps, DragRunProps};
@@ -2334,7 +2335,7 @@ pub use tile_host::{
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppHostIntent, AppWidget, HostShellAllow, IconDescriptor, WindowPublication,
+    AppCommand, AppProcessIntent, AppWidget, HostShellAllow, IconDescriptor, WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;
@@ -2417,7 +2418,7 @@ mod group_row;
 pub use group_row::{
     CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_MARGIN,
     FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT,
-    OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane,
+    OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripSection,
     TabDropTarget, WheelJumpAccum, keep_float_inside, pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
@@ -2589,7 +2590,7 @@ pub use tree_component::{
 };
 /// A box a widget paints text into, whose own box cannot hold that text: the height the text
 /// takes at the width of its box, the width the box gives it, and what it says. Rows a box lays
-/// out and never paints read as a line that had nothing to say above space standing empty, so
+/// out and never paints read as a line that had nothing to say above space left empty, so
 /// an audit looks for them rather than trusting the geometry around them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CutText {
@@ -2608,10 +2609,10 @@ mod row_selection;
 mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
-    DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    PaintedRowLifts, RowActionRects, RowBuild, RowContentBox, RowGroup, RowLift, RowRenameField,
-    RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel,
-    VirtualList, VirtualListProps, row_content_box,
+    AnyModel, DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps,
+    ListKey, ListModel, PaintedRowLifts, RowActionRects, RowBuild, RowContentBox, RowGroup,
+    RowLift, RowRenameField, RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove,
+    TreeRow, VecListModel, VirtualList, VirtualListProps, VirtualRows, row_content_box,
 };
 mod activation;
 pub(crate) mod control_verb;

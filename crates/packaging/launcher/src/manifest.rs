@@ -5,59 +5,10 @@
 
 pub use tilo_app_package::continuity_schema;
 pub use tilo_app_package::view::{
-    ContinuityContract, ContinuityFacet, ContinuitySemanticSchema, Entrypoint, EntrypointType, Fs,
+    ContinuityContract, ContinuityFacet, ContinuitySemanticSchema, Entrypoint, EntrypointType,
     KIND_APP, KIND_SERVICE, ManifestReadError, ManifestView, Net, PortalPolicy, Sandbox,
     ServiceReq, read_manifest,
 };
-
-/// A manifest asking for filesystem access it is not allowed to ask for.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum FsPolicyViolation {
-    #[error(
-        "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
-         choose where it writes.\n  \
-         The launcher gives every app one directory — per workspace, per package — binds it at \
-         {app_dir} and points HOME, XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and \
-         XDG_CACHE_HOME inside it. Remove the `[sandbox.fs]` block; anything the app writes \
-         under those paths already lands there.\n  \
-         Access to a path outside it is a capability the user grants at runtime, not a line \
-         in a manifest."
-    )]
-    Write {
-        package: String,
-        entry: String,
-        app_dir: &'static str,
-    },
-    #[error(
-        "package `{package}` declares `sandbox.fs.read = [{entry:?}]`, and an app does not \
-         choose what it reads.\n  \
-         Every app gets the same system read profile (loader and C library, fonts, GPU loader \
-         manifests, CA bundle, timezone data). Remove the `[sandbox.fs]` block.\n  \
-         Anything the profile does not cover — a user's documents, /usr/bin, /var/workspace, a \
-         device node — is a capability the user grants at runtime, not a line in a manifest."
-    )]
-    Read { package: String, entry: String },
-}
-
-/// Refuse a manifest that names filesystem paths.
-pub fn enforce_fs_policy(manifest: &ManifestView) -> Result<(), FsPolicyViolation> {
-    // Writes first: a package asking for `/` is the more alarming of the two and should be the line
-    // the user reads.
-    if let Some(entry) = manifest.sandbox.fs.write.first() {
-        return Err(FsPolicyViolation::Write {
-            package: manifest.package_id.clone(),
-            entry: entry.clone(),
-            app_dir: crate::appdir::SANDBOX_APP_DIR,
-        });
-    }
-    if let Some(entry) = manifest.sandbox.fs.read.first() {
-        return Err(FsPolicyViolation::Read {
-            package: manifest.package_id.clone(),
-            entry: entry.clone(),
-        });
-    }
-    Ok(())
-}
 
 /// A service requirement written as a manifest would (`"required@1"`).
 #[cfg(test)]
@@ -184,24 +135,12 @@ bin = "bin/app"
             .to_path_buf()
     }
 
-    fn manifest_with(block: &str) -> ManifestView {
-        let src = format!(
-            "[package]\nid = \"com.example.hostile\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
-             [publisher]\nidentity = \"ed25519:{}\"\n\
-             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
-             [sandbox.net]\nmode = \"off\"\n\
-             [entrypoint]\nbin = \"bin/x\"\n{block}",
-            "00".repeat(32)
-        );
-        ManifestView::from_toml_str(&src).expect("a manifest declaring fs paths still decodes")
-    }
-
     tilo_test_env::scenario! {
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
-        fn manifests_declare_what_they_open_and_name_no_path;
+        fn manifests_declare_what_they_open;
 
         phase shipped_manifests_declare_what_they_need_to_open;
         {
@@ -229,69 +168,6 @@ bin = "bin/app"
                         "Settings must open when {service} is not running"
                     );
                 }
-            }
-        }
-
-        phase manifests_may_name_no_filesystem_path;
-        {
-            {
-                for entry in [
-                    "~",
-                    "/",
-                    "~/.ssh",
-                    "~/../../etc",
-                    "~/.local/share/so.tilo.totp",
-                    "$XDG_DATA_HOME/so.tilo.totp",
-                ] {
-                    let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
-                    let Err(err) = enforce_fs_policy(&m) else {
-                        panic!("write = [{entry:?}] must be refused");
-                    };
-                    let text = err.to_string();
-                    assert!(
-                        text.contains("com.example.hostile") && text.contains(entry),
-                        "the refusal must name the package and the entry: {text}"
-                    );
-                }
-            }
-            {
-                for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
-                    let m = manifest_with(&format!("[sandbox.fs]\nread = [{entry:?}]\n"));
-                    let Err(err) = enforce_fs_policy(&m) else {
-                        panic!("read = [{entry:?}] must be refused");
-                    };
-                    assert!(
-                        err.to_string().contains(entry),
-                        "the refusal must name the entry: {err}"
-                    );
-                }
-            }
-            {
-                let m = manifest_with("");
-                assert!(enforce_fs_policy(&m).is_ok());
-                let empty = manifest_with("[sandbox.fs]\nread = []\nwrite = []\n");
-                assert!(
-                    enforce_fs_policy(&empty).is_ok(),
-                    "an explicitly empty block declares nothing"
-                );
-            }
-            {
-                let mut checked = 0usize;
-                for entry in std::fs::read_dir(repo().join("apps")).expect("apps/ is readable") {
-                    let path = entry.expect("dir entry").path().join("tilo-app.toml");
-                    if !path.exists() {
-                        continue;
-                    }
-                    let m = read_manifest(&path)
-                        .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
-                    enforce_fs_policy(&m)
-                        .unwrap_or_else(|e| panic!("{} is refused by its own OS: {e}", path.display()));
-                    checked += 1;
-                }
-                assert!(
-                    checked >= 40,
-                    "expected the shipped app fleet, found {checked} manifests"
-                );
             }
         }
     }

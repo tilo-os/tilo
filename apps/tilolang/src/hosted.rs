@@ -5,11 +5,11 @@
 //! app's instance runs in the tilolang host of its workspace and author, on the app's own
 //! connection, and sends this window component patches over a patch connection the session
 //! hands it over its window link (`ui::window_link::take_patch`). The window shows them through
-//! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
+//! the app window's half (`tilo_app_window::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
 //!
 //! Without a session (`tilolang dev`, a capture), there is no host to run the instance: the
-//! window runs one in its own process ([`start`]), over the app's record on this device alone,
+//! window runs one in its own process ([`start`]), over the app's document on this device alone,
 //! and turns it on its own frames. The instance runs the same either way.
 
 use std::cell::RefCell;
@@ -18,14 +18,14 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
-use tilo_ui_host::AppWindow;
-use tilolang_host::TilolangHost;
-use tilolang_host::hosted::{Hosted, Kept, Spec};
-use tilolang_host::phrases::Phrases;
+use tilolang_process::TilolangProcess;
+use tilolang_process::hosted::{Hosted, Kept, Spec};
+use tilolang_process::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::record::{InstanceRecord, RecordError};
+use tilolang_tilo::instance::document::{DocumentError, InstanceDocument};
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
@@ -65,7 +65,7 @@ pub fn window_instance() -> Option<u64> {
 /// arrived. Idle, nothing runs.
 ///
 /// It wakes the component that runs the window now. The window is made by the component shown
-/// before the record ([`ui::framework::Opened`]) and taken over by the one the record opens,
+/// before the document ([`ui::framework::Opened`]) and taken over by the one the document opens,
 /// which closes the first: a wake captured once would go to a closed component, and the window
 /// would show what its instance sent only when something else woke it. Every pass of the
 /// window points the watch at the component running it ([`Watch::follow`]).
@@ -227,32 +227,32 @@ impl Woken {
     }
 }
 
-/// A tilolang host in this process running the one instance `spec` of `bundle`, over the record
-/// `record` opens where the host keeps the app's data, its words read by `phrases`, woken by
+/// A tilolang host in this process running the one instance `spec` of `bundle`, over the document
+/// `document` opens where the host keeps the app's data, its words read by `phrases`, woken by
 /// `wake`; the host keeps what it keeps under `storage` (in memory without). Answers the host
 /// and the window's end of the instance's patch connection: what a window shows it through
 /// ([`HostedWindow::over`]). The host is the one a session runs, and turns as it does; its
 /// instance takes over the later builds `tilolang dev` publishes for it ([`crate::updates`]).
 ///
 /// # Errors
-/// The app's data cannot be kept, its record does not open, or the patch connection cannot be
+/// The app's data cannot be kept, its document does not open, or the patch connection cannot be
 /// made.
 pub fn start(
     spec: Spec,
-    record: impl FnOnce(&Kept) -> Result<InstanceRecord, RecordError>,
+    record: impl FnOnce(&Kept) -> Result<InstanceDocument, DocumentError>,
     bundle: Arc<Bundle>,
     phrases: &Rc<Phrases>,
     storage: Option<std::path::PathBuf>,
     wake: tilolang_tilo::background::Waker,
-) -> Result<(TilolangHost, Channel), StartError> {
-    let mut host = TilolangHost::new(storage, Arc::clone(&wake));
+) -> Result<(TilolangProcess, Channel), StartError> {
+    let mut host = TilolangProcess::new(storage, Arc::clone(&wake));
     let kept = host.kept(&spec.app)?;
     let record = record(&kept)?;
     let (ours, theirs) = Channel::pair()?;
     let watched = ours.as_fd().try_clone_to_owned()?;
     crate::updates::start(&spec.app);
     host.follow_builds(&spec.app, crate::updates::builds());
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         spec,
         record,
         bundle,
@@ -272,7 +272,7 @@ pub enum StartError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Record(#[from] RecordError),
+    Record(#[from] DocumentError),
 }
 
 /// The longest a capture waits for the instance it runs to show what it stages.
@@ -280,29 +280,29 @@ const STAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The host a window runs in its own process ([`start`]), and what wakes it.
 struct InProcess {
-    host: TilolangHost,
+    host: TilolangProcess,
     /// The app the instance runs.
     app: String,
     woken: Arc<Woken>,
     /// What a search hit or an agent's `open` asked the window to show, for its instance.
     reveals: Rc<RefCell<Vec<String>>>,
-    /// The person's standing in the workspace as the window's host keeps it, read each turn,
+    /// The person's access in the workspace as the window's host keeps it, read each turn,
     /// and what the instance was last told of it: it offers and invokes by that.
-    standing: Option<StandingSource>,
-    told_standing: Option<ui::permissions::Standing>,
+    access: Option<AccessSource>,
+    told_access: Option<ui::permissions::MemberAccess>,
 }
 
-/// Where a window running its instance in this process reads the person's standing from.
-type StandingSource = Box<dyn Fn() -> Option<ui::permissions::Standing>>;
+/// Where a window running its instance in this process reads the person's access from.
+type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
 
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
-        if let Some(source) = &self.standing {
-            let standing = source();
-            if standing != self.told_standing {
-                self.host.set_standing(&self.app, standing.as_ref());
-                self.told_standing = standing;
+        if let Some(source) = &self.access {
+            let access = source();
+            if access != self.told_access {
+                self.host.set_access(&self.app, access.as_ref());
+                self.told_access = access;
             }
         }
         for anchor in self.reveals.borrow_mut().drain(..) {
@@ -337,7 +337,7 @@ impl InProcess {
         tracing::error!(owed = ?self.host.owed(), "the instance did not settle for the capture");
     }
 
-    /// Close the instance as a session's host does when its window goes: its record is written
+    /// Close the instance as a session's host does when its window goes: its document is written
     /// to disk.
     fn close(mut self) {
         let began = std::time::Instant::now();
@@ -436,14 +436,14 @@ impl HostedWindow {
     }
 
     /// The window running its instance in this process ([`start`]): `spec` of `bundle`, over the
-    /// record `record` opens, the host keeping the app's data under `storage`. The window turns
+    /// document `document` opens, the host keeping the app's data under `storage`. The window turns
     /// the host on its frames, and is woken when the host's work off the frame is ready.
     ///
     /// # Errors
     /// As [`start`].
     pub fn in_process(
         spec: Spec,
-        record: impl FnOnce(&Kept) -> Result<InstanceRecord, RecordError>,
+        record: impl FnOnce(&Kept) -> Result<InstanceDocument, DocumentError>,
         bundle: Arc<Bundle>,
         storage: Option<std::path::PathBuf>,
     ) -> Result<Self, StartError> {
@@ -466,21 +466,21 @@ impl HostedWindow {
             app,
             woken,
             reveals: Rc::default(),
-            standing: None,
-            told_standing: None,
+            access: None,
+            told_access: None,
         });
         Ok(window)
     }
 
-    /// Have the instance running in this process offer and invoke by the person's standing in
+    /// Have the instance running in this process offer and invoke by the person's access in
     /// the workspace, as `source` reads it when the window turns: what a session tells a hosted
     /// window on its launch and whenever the workspace's policy changes.
-    pub fn follow_standing(
+    pub fn follow_access(
         &mut self,
-        source: impl Fn() -> Option<ui::permissions::Standing> + 'static,
+        source: impl Fn() -> Option<ui::permissions::MemberAccess> + 'static,
     ) {
         if let Some(running) = &mut self.in_process {
-            running.standing = Some(Box::new(source));
+            running.access = Some(Box::new(source));
         }
     }
 
@@ -505,7 +505,7 @@ impl HostedWindow {
         }
     }
 
-    /// The window's half of the UI host, once its patch connection arrived.
+    /// The window's half of the app window, once its patch connection arrived.
     #[must_use]
     pub fn view(&self) -> Option<&AppWindow> {
         self.connected.as_ref().map(|connected| &connected.view)
@@ -565,7 +565,7 @@ impl HostedWindow {
 
 impl Drop for HostedWindow {
     /// A window running its instance in this process closes it as a session's host does: the
-    /// patch connection goes first, and the instance ends, its record written to disk.
+    /// patch connection goes first, and the instance ends, its document written to disk.
     fn drop(&mut self) {
         if let Some(running) = self.in_process.take() {
             self.connected = None;
@@ -598,11 +598,11 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
-/// The window's undo and redo (Ctrl+Z, Ctrl+Shift+Z, Edit › Undo) are the record's, and the
-/// record is the instance's: they go to the instance, which takes back the person's last step
+/// The window's undo and redo (Ctrl+Z, Ctrl+Shift+Z, Edit › Undo) are the document's, and the
+/// document is the instance's: they go to the instance, which takes back the person's last step
 /// there, typing into a field included, and sends the window what it shows then. The window
-/// holds no record, so no undo of its own could take anything back; and a field keeps no
-/// history beside the record's.
+/// holds no document, so no undo of its own could take anything back; and a field keeps no
+/// history beside the document's.
 impl ui::undo::LocalUndo for HostedWindow {
     fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
         let Some(connected) = &mut self.connected else {
@@ -622,10 +622,10 @@ impl ui::undo::LocalUndo for HostedWindow {
 
 /// A change mark in the window asks the shell to show the task run that made the change.
 impl ui::component_lifecycle::HostIntents for HostedWindow {
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
         let connected = self.connected.as_mut()?;
         let run = connected.view.take_shown_run()?;
-        Some(ui::widget::AppHostIntent::ShowTaskRun { group: run })
+        Some(ui::widget::AppProcessIntent::ShowTaskRun { group: run })
     }
 }
 
@@ -639,67 +639,32 @@ impl ui::component_lifecycle::HearsElsewhere for HostedWindow {
     }
 }
 
-/// The window is named by what it shows: the item it shows as its page, else the page, the record,
+/// The window is named by what it shows: the item it shows as its page, else the page, the document,
 /// the place its instance's composed shell names in its content header. Two windows of the app
 /// read apart in the desktop's tabs, the switcher and assistive technology without either being
 /// opened.
 impl ui::component_lifecycle::WindowTitle for HostedWindow {
     fn window_title(&self) -> Option<&str> {
-        self.view().and_then(tilo_ui_host::AppWindow::title)
+        self.view().and_then(tilo_app_window::AppWindow::title)
     }
 }
 
-/// The window stands for what it shows (the UI host's window, or the loading state before it)
+/// The window stands for what it shows (the app window's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
     type Inner = dyn Widget;
 
-    /// What the window itself answers, and everything else the widget it shows: the UI host's
-    /// window publishes the app's actions for the command palette and runs the one the person
-    /// chooses ([`tilo_ui_host::catalogue`]), so a request for either reaches it through here.
-    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
-            request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
-            return;
-        }
-        if request.wants::<dyn ui::component_lifecycle::WindowTitle>() {
-            request.provide::<dyn ui::component_lifecycle::WindowTitle>(self);
-            return;
-        }
-        if request.wants::<dyn ui::component_lifecycle::HostIntents>() {
-            request.provide::<dyn ui::component_lifecycle::HostIntents>(self);
-            return;
-        }
-        if request.wants::<dyn ui::undo::LocalUndo>() {
-            request.provide::<dyn ui::undo::LocalUndo>(self);
-            return;
-        }
-        self.content().provide(request);
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
-            request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
-            return;
-        }
-        if request.wants::<dyn ui::component_lifecycle::WindowTitle>() {
-            request.provide::<dyn ui::component_lifecycle::WindowTitle>(self);
-            return;
-        }
-        if request.wants::<dyn ui::component_lifecycle::HostIntents>() {
-            request.provide::<dyn ui::component_lifecycle::HostIntents>(self);
-            return;
-        }
-        if request.wants::<dyn ui::undo::LocalUndo>() {
-            request.provide::<dyn ui::undo::LocalUndo>(self);
-            return;
-        }
-        if request.wants::<dyn ui::component_lifecycle::HearsElsewhere>() {
-            request.provide::<dyn ui::component_lifecycle::HearsElsewhere>(self);
-            return;
-        }
-        self.content_mut().provide_mut(request);
-    }
+    // What the window itself answers, and everything else the widget it shows: the app window's
+    // window publishes the app's actions for the command palette and does the one the person
+    // chooses ([`tilo_app_window::catalogue`]), so a request for either reaches it through here.
+    ui::provides!(
+        dyn ui::component_lifecycle::WindowActivation,
+        dyn ui::component_lifecycle::WindowTitle,
+        dyn ui::component_lifecycle::HostIntents,
+        dyn ui::undo::LocalUndo,
+        dyn ui::component_lifecycle::HearsElsewhere;
+        decorated
+    );
 
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.content()
@@ -710,7 +675,7 @@ impl ui::widget::Decorator for HostedWindow {
     }
 
     fn name(&self) -> &'static str {
-        "TilolangHostedWindow"
+        "TilolangProcessedWindow"
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

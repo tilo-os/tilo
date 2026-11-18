@@ -21,7 +21,7 @@ pub struct SystemWriteRequest {
     pub provision_migration_data: bool,
 }
 
-/// Device custody and the lifecycle around these adapters stay in this module.
+/// Device identity and the lifecycle around these adapters stay in this module.
 pub trait WriteSetup {
     fn output_preflight(&self) -> io::Result<()>;
     fn validate_pending_source_disks(&self) -> io::Result<()>;
@@ -186,7 +186,7 @@ pub fn run_system_job(
     };
     let output_preflight = setup.output_preflight();
     let mut result = if output_preflight.is_err() {
-        JobResult::WriteFailed("Original migration requires authenticated helper custody".into())
+        JobResult::WriteFailed("Original migration requires authenticated helper ownership".into())
     } else if should_cancel() {
         JobResult::Cancelled
     } else if let Err(error) = revalidate_target(&request.target) {

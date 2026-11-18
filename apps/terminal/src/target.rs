@@ -41,7 +41,7 @@ impl SessionTarget {
         matches!(self, Self::Host)
     }
 
-    pub fn environment_record(&self) -> Option<&str> {
+    pub fn environment_resource(&self) -> Option<&str> {
         match self {
             Self::Environment { record, .. } => Some(
                 record

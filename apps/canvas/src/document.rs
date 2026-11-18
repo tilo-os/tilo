@@ -416,7 +416,7 @@ pub struct RecentArtworks {
 
 tilo_resource::json_model!(RecentArtworks);
 
-/// The artworks opened or saved lately, by device: a record Canvas keeps
+/// The artworks opened or saved lately, by device: a resource Canvas keeps
 /// beside the artwork in the workspace. Their paths name files on one
 /// device, so each device reads and writes only its own list.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
@@ -425,11 +425,11 @@ pub struct ArtworkRecents {
 }
 
 impl ArtworkRecents {
-    /// What the record holds: the artworks opened or saved lately, by device.
+    /// What the resource holds: the artworks opened or saved lately, by device.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,

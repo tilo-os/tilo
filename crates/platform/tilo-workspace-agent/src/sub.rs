@@ -12,7 +12,7 @@
 //! The record holds what is wanted of one, each a recorded change: that it was started
 //! ([`WorkspaceAgents::start_sub_agent`]), a note its starter gives it
 //! ([`WorkspaceAgents::note_sub_agent`]), that it is to stop
-//! ([`WorkspaceAgents::stop_sub_agent`]). Whoever runs it carries that into its conversation and
+//! ([`WorkspaceAgents::stop_sub_agent`]). Whoever works it carries that into its conversation and
 //! writes back how it stands ([`WorkspaceAgents::sub_agent_stands`]), so a runner that restarts
 //! finds everything it owes in the records.
 //!
@@ -28,7 +28,7 @@ use std::fmt;
 
 use collab_types::MemberId;
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
+use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_resource::{ActionCx, Atom, Id, JsonSchema, Model, Refusal};
 
 use crate::{Agent, AgentState, OWNER, WorkspaceAgents};
@@ -76,40 +76,80 @@ pub const KINDS: [&str; 5] = ["subtask", "task", "request", "classifier", "one_s
 /// The kind of work of a sub-agent that was given none: a part of a task.
 pub const DEFAULT_KIND: &str = "subtask";
 
-/// Where a sub-agent runs that the workspace's host works itself, with its own loop.
+/// Where a sub-agent works that the workspace's host works itself, with its own loop.
 pub const RUNS_ON_HOST: &str = "host";
 
-/// The rules that keep a sub-agent from reading upward in `workspace`: no read of anything
-/// Chat keeps there. It is more specific than the workspace-wide allow every agent's turn
-/// starts from, so it holds whatever else the turn carries.
+/// The kind of Chat's messages, as its actions are decided under it.
+const MESSAGES: &str = "chat.messages";
+
+/// What a sub-agent's turn writes in Chat, and nothing else of Chat's: its answer to what it
+/// was asked, a question to its person, and its words while it works. Whoever serves its turn
+/// takes each only in its own conversation, since a rule's path cannot say which conversation
+/// a message is in.
+pub const OWN_WRITES: [&str; 3] = ["record-work", "ask", "post"];
+
+/// The actions on the workspace's agents a sub-agent's turn keeps: those of its own team. The
+/// list itself guards them, and refuses a sub-agent every other
+/// ([`WorkspaceAgents::not_by_sub_agent`]).
+///
+/// What else is said of a sub-agent on its own item, what it made and how its harness works,
+/// is written by whatever works it, on the list as the sub-agent, and by no tool of its turn.
+const OWN_TEAM: [&str; 4] = [
+    "start-sub-agent",
+    "note-sub-agent",
+    "stop-sub-agent",
+    "sub-agent-stands",
+];
+
+/// The rules that keep a sub-agent from reading upward in `workspace`, and from writing
+/// there: no read of anything Chat keeps, and no action of Chat's but its [`OWN_WRITES`] and
+/// what steers its own team. The refusal is more specific than the workspace-wide allow every
+/// agent's turn starts from, so it holds whatever else the turn carries.
 #[must_use]
 pub fn one_way(workspace: &str) -> Vec<Rule> {
-    vec![Rule::new(
-        TreePath::workspace(workspace).app(OWNER),
-        KindSet::READ,
-        Answer::Deny,
-    )]
+    let chat = TreePath::workspace(workspace).app(OWNER);
+    let mut rules = vec![
+        // It reads nothing Chat keeps, and nothing of Chat's reaches outside for it.
+        Rule::new(
+            chat.clone(),
+            KindSet::READ.union(KindSet::OUTSIDE),
+            Answer::Deny,
+        ),
+        // No action of Chat's is its to call, one added later included: the kept ones are
+        // named below. What a kept action changes is saved field by field, under no action,
+        // so those writes stay with what every agent's turn starts from.
+        Rule::new(
+            chat.clone().rest().any(Level::Action),
+            KindSet::ALL,
+            Answer::Deny,
+        ),
+    ];
+    for (kind, items, kept) in [
+        (MESSAGES, "messages", &OWN_WRITES[..]),
+        (crate::KIND, "agents", &OWN_TEAM[..]),
+    ] {
+        // An action on one item of a collection is decided under the collection's own kind,
+        // which is the kind and the collection's field: both are named.
+        for held in [kind.to_owned(), format!("{kind}.{items}")] {
+            rules.extend(kept.iter().map(|action| {
+                Rule::new(
+                    chat.clone().kind(held.clone()).rest().action(*action),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                )
+            }));
+        }
+    }
+    rules
 }
 
-/// Make `rules`, what a sub-agent's record bounds it to, keep the one-way rule in `workspace`:
-/// a rule written for Chat alone would be more specific than [`one_way`] and so could allow a
-/// read under it, so such a rule loses its say over reads; then the rule itself is added. What
-/// the bound narrows anywhere else stands as it is.
+/// Make `rules`, what a sub-agent's item bounds it to, keep the one-way rule in `workspace`:
+/// a rule written for Chat alone would be more specific than [`one_way`] and so could allow
+/// under it, so only what such a rule refuses stands; then the rule itself is added. What the
+/// bound narrows anywhere else stands as it is.
 pub(crate) fn keep_one_way(rules: &mut Vec<Rule>, workspace: &str) {
     let chat = TreePath::workspace(workspace).app(OWNER);
-    rules.retain_mut(|rule| {
-        if rule.answer != Answer::Deny
-            && rule.kinds.contains(ActionKind::Read)
-            && chat.covers(&rule.node)
-        {
-            rule.kinds = rule
-                .kinds
-                .iter()
-                .filter(|kind| *kind != ActionKind::Read)
-                .fold(KindSet::NONE, KindSet::with);
-        }
-        !rule.kinds.is_empty()
-    });
+    rules.retain(|rule| rule.answer == Answer::Deny || !chat.covers(&rule.node));
     rules.extend(one_way(workspace));
 }
 
@@ -177,7 +217,8 @@ pub struct Sub {
     pub role: String,
     /// The kind of work that picks its model ([`KINDS`]).
     pub kind: String,
-    /// Where it runs: [`RUNS_ON_HOST`], or the word of another runner.
+    /// Where it works: [`RUNS_ON_HOST`], or the word of another runner
+    /// ([`crate::coding::MACHINE`]).
     pub runs: String,
     /// How far below the person's own agent it stands: 1 when that agent started it.
     pub depth: u8,
@@ -195,6 +236,11 @@ pub struct Sub {
     pub line: String,
     /// The newest notes its starter gave it ([`MAX_NOTES`]), oldest first.
     pub notes: Vec<Note>,
+    /// What it made, each a thing one can open ([`crate::coding::Produced`]), oldest first.
+    pub produced: Vec<crate::coding::Produced>,
+    /// Its work in the workspace's machine, when a coding harness does it there
+    /// ([`crate::coding`]); `None` for a sub-agent that is Tilo's own loop.
+    pub coding: Option<crate::coding::Coding>,
 }
 
 /// A sub-agent to start: the parameters of [`WorkspaceAgents::start_sub_agent`].
@@ -224,6 +270,10 @@ pub struct NewSubAgent {
     /// Its id: letters, digits and dashes; leave it out and its name makes one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Have a coding harness do the work in the workspace's machine: the folder it starts
+    /// in, and when not the default which harness, its branch and what the branch starts from
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding: Option<crate::coding::NewCoding>,
 }
 
 fn by_an_agent() -> Refusal {
@@ -271,7 +321,7 @@ fn plain(text: &str, most: usize, what: &str) -> Result<String, Refusal> {
 }
 
 /// Refuses `text` that is more than one line of at most `most` bytes.
-fn check_words(text: &str, most: usize, what: &str) -> Result<(), Refusal> {
+pub(crate) fn check_words(text: &str, most: usize, what: &str) -> Result<(), Refusal> {
     if text.len() > most || text.chars().any(char::is_control) {
         return Err(Refusal::new(format!(
             "{what} is a few words on one line, at most {most} bytes"
@@ -281,7 +331,11 @@ fn check_words(text: &str, most: usize, what: &str) -> Result<(), Refusal> {
 }
 
 /// What was given for an optional line of words: trimmed, `None` when nothing was.
-fn words(given: Option<String>, most: usize, what: &str) -> Result<Option<String>, Refusal> {
+pub(crate) fn words(
+    given: Option<String>,
+    most: usize,
+    what: &str,
+) -> Result<Option<String>, Refusal> {
     let Some(given) = given.map(|given| given.trim().to_owned()) else {
         return Ok(None);
     };
@@ -293,7 +347,7 @@ fn words(given: Option<String>, most: usize, what: &str) -> Result<Option<String
 }
 
 /// The first line of `text` that says something, cut to `most` bytes at a character.
-fn one_line(text: &str, most: usize) -> String {
+pub(crate) fn one_line(text: &str, most: usize) -> String {
     let line: String = text
         .lines()
         .map(str::trim)
@@ -325,7 +379,7 @@ pub(crate) fn check(agent: &Agent) -> Result<(), Refusal> {
     check_plain(&sub.job, MAX_JOB, "a sub-agent's job")?;
     check_words(&sub.role, MAX_ROLE, "a role")?;
     check_words(&sub.line, MAX_LINE, "how a sub-agent stands")?;
-    check_words(&sub.runs, MAX_ROLE, "where a sub-agent runs")?;
+    check_words(&sub.runs, MAX_ROLE, "where a sub-agent works")?;
     if let Some(task) = &sub.task {
         check_words(task, MAX_TASK, "the issue a sub-agent works for")?;
     }
@@ -348,7 +402,7 @@ pub(crate) fn check(agent: &Agent) -> Result<(), Refusal> {
     for note in &sub.notes {
         check_plain(&note.text, MAX_NOTE, "a note")?;
     }
-    Ok(())
+    crate::coding::check(sub)
 }
 
 impl WorkspaceAgents {
@@ -400,6 +454,26 @@ impl WorkspaceAgents {
             at = next;
         }
         false
+    }
+
+    /// The team under `above`: the sub-agents it started and theirs that work here, oldest
+    /// first. Nothing of whoever started `above` is among them, and nothing of a sub-agent
+    /// beside it: whoever started sub-agents reads those below it and nobody else.
+    #[must_use]
+    pub fn team_of<'a>(&'a self, above: &Agent) -> Vec<&'a Agent> {
+        let mut team: Vec<&Agent> = self
+            .agents
+            .iter()
+            .filter(|agent| {
+                agent.is_active()
+                    && agent.keeper == above.keeper
+                    && self.started_under(agent, &above.id.0)
+            })
+            .collect();
+        team.sort_by(|one, other| {
+            (one.created_at, &one.id.0).cmp(&(other.created_at, &other.id.0))
+        });
+        team
     }
 
     /// Refuses an action a sub-agent invokes. A sub-agent changes nothing of the workspace's
@@ -523,18 +597,9 @@ impl WorkspaceAgents {
         }
     }
 
-    pub(crate) fn start_sub(&mut self, cx: &ActionCx, new: NewSubAgent) -> Result<(), Refusal> {
-        let (starter, person) = agent_acting(cx)?;
-        let by = self
-            .agents
-            .find(&Id::from_raw(starter.clone()))
-            .filter(|by| by.is_active())
-            .ok_or_else(|| Refusal::new("only an agent that works here starts a sub-agent"))?;
-        if by.keeper != person {
-            return Err(Refusal::new(
-                "an agent starts sub-agents for the person who keeps it",
-            ));
-        }
+    /// How far below its person's own agent a sub-agent that `by` starts now stands, where
+    /// that agent's person allows one more: so deep, and so many at work at once.
+    fn place_under(&self, by: &Agent) -> Result<u8, Refusal> {
         let root = self.root_of(by);
         let depth = by.sub.as_ref().map_or(0, |sub| sub.depth).saturating_add(1);
         let deepest = root.sub_depth.unwrap_or(DEFAULT_DEPTH);
@@ -561,6 +626,22 @@ impl WorkspaceAgents {
                 root.name
             )));
         }
+        Ok(depth)
+    }
+
+    pub(crate) fn start_sub(&mut self, cx: &ActionCx, new: NewSubAgent) -> Result<(), Refusal> {
+        let (starter, person) = agent_acting(cx)?;
+        let by = self
+            .agents
+            .find(&Id::from_raw(starter.clone()))
+            .filter(|by| by.is_active())
+            .ok_or_else(|| Refusal::new("only an agent that works here starts a sub-agent"))?;
+        if by.keeper != person {
+            return Err(Refusal::new(
+                "an agent starts sub-agents for the person who keeps it",
+            ));
+        }
+        let depth = self.place_under(by)?;
         let name = new.name.trim().to_owned();
         crate::check_name(&name)?;
         let job = plain(&new.job, MAX_JOB, "a sub-agent's job")?;
@@ -585,6 +666,10 @@ impl WorkspaceAgents {
         if self.agents.find(&Id::from_raw(id.clone())).is_some() {
             return Err(Refusal::new(format!("there is already an agent {id:?}")));
         }
+        let coding = new
+            .coding
+            .map(|coding| crate::coding::started(coding, &id))
+            .transpose()?;
         self.make_room()?;
         let now = cx.now_ms();
         let conversation = MemberId::direct_conversation([
@@ -594,7 +679,6 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            colour: None,
             keeper: person,
             on_host: true,
             model,
@@ -610,7 +694,12 @@ impl WorkspaceAgents {
                 job,
                 role,
                 kind,
-                runs: RUNS_ON_HOST.to_owned(),
+                runs: if coding.is_some() {
+                    crate::coding::MACHINE
+                } else {
+                    RUNS_ON_HOST
+                }
+                .to_owned(),
                 depth,
                 task,
                 conversation,
@@ -618,6 +707,8 @@ impl WorkspaceAgents {
                 since: now,
                 line: String::new(),
                 notes: Vec::new(),
+                produced: Vec::new(),
+                coding,
             }),
             sub_depth: None,
             sub_at_once: None,
@@ -644,22 +735,25 @@ impl WorkspaceAgents {
 
     pub(crate) fn stop_sub(&mut self, cx: &ActionCx, agent: &Id) -> Result<(), Refusal> {
         let acting = cx.invoked_by().ok_or_else(by_an_agent)?;
-        if acting.is_agent() {
+        let by = if acting.is_agent() {
             let (by, person) = agent_acting(cx)?;
             self.steered_by(agent, &by, &person)?;
+            format!("agent:{by}")
         } else {
             // Its person themselves, and nothing that only acts for them.
             let person = acting.person_id().ok_or_else(|| {
                 Refusal::new("a sub-agent is stopped by its person, or by the agent that steers it")
             })?;
             self.kept_sub(agent, person)?;
-        }
+            format!("person:{person}")
+        };
         let now = cx.now_ms();
         let sub = self.sub_mut(agent)?;
         if sub.stands.at_work() {
             sub.stands = Stands::Stopped;
             sub.since = now;
             sub.line.clear();
+            crate::coding::stopped(sub, by);
         }
         Ok(())
     }

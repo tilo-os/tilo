@@ -58,7 +58,7 @@ python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_arg
   cat ci-plan.json
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
-# App size budgets are gated where the collection publishes: Release / apps
+# App size budgets are guarded where the collection publishes: Release / apps
 # measures every affected tapp on stable; t's app-sizes-<arch> checks measure
 # each commit's. Packaging the affected apps here would repeat both, so the
 # tapps job of the pre-promotion workflow is not part of this one.

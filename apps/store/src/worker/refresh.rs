@@ -4,7 +4,7 @@ use crate::resource::CATALOG;
 use std::collections::{HashMap, HashSet, VecDeque};
 use ui::time::Instant;
 
-use app_host::client::{
+use package_service::client::{
     CatalogueError, FlatpakStatus, ListedPackage, PackageAbout, PendingRead, Refusal,
 };
 use package_store::InstalledPackage;
@@ -49,7 +49,7 @@ enum Response {
 }
 
 impl Read {
-    fn poll(&mut self, host: &app_host::client::BlockingClient) -> Option<Response> {
+    fn poll(&mut self, host: &package_service::client::BlockingClient) -> Option<Response> {
         match self {
             Self::Status(read) => read.poll(host).map(Response::Status),
             Self::Repositories(read) => read.poll(host).map(Response::Repositories),
@@ -718,7 +718,7 @@ mod tests {
             .unwrap();
             refresh.apply(
                 &mut state,
-                Response::Flathub(Ok(FlathubFeed::from_records(
+                Response::Flathub(Ok(FlathubFeed::from_resources(
                     "en-US",
                     &[record],
                     &[],
@@ -967,7 +967,7 @@ mod tests {
         fn a_refused_or_expired_catalogue_says_why;
 
         phase a_repository_the_system_is_too_old_to_read_says_the_system_needs_an_update;
-        // When the app host cannot read the system's interface declaration it
+        // When the package service cannot read the system's interface declaration it
         // refuses the repository; the Store says the device needs a system
         // update, naming the repository, as visibly as an outage and without
         // the RPC's internals.
@@ -1069,12 +1069,12 @@ mod tests {
                 "declaration unreadable",
                 "Failed: remote exception: timed out",
             ] {
-                let (service, connection) = app_host::testing::ConnectedService::start(RefusingHost(
-                    app_host::client::Refusal::SystemUpdateNeeded,
+                let (service, connection) = package_service::testing::ConnectedService::start(RefusingServer(
+                    package_service::client::Refusal::SystemUpdateNeeded,
                     detail,
                 ))
                 .unwrap();
-                let client = app_host::client::BlockingClient::from_connected_fd(connection).unwrap();
+                let client = package_service::client::BlockingClient::from_connected_fd(connection).unwrap();
                 let error = client.registry_catalogue(MAIN).unwrap_err();
                 assert_eq!(
                     error.refusal(),
@@ -1121,14 +1121,15 @@ mod tests {
 
     /// A host that refuses every catalogue read with one refusal and the
     /// detail it is given.
-    struct RefusingHost(app_host::client::Refusal, &'static str);
-    impl app_host::wire::Host for RefusingHost {
+    struct RefusingServer(package_service::client::Refusal, &'static str);
+    impl package_service::wire::Server for RefusingServer {
         fn handle(
             self: std::rc::Rc<Self>,
-            request: app_host::wire::Operation,
-        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+            request: package_service::wire::Operation,
+            _progress: package_service::wire::Sink,
+        ) -> impl core::future::Future<Output = Result<package_service::wire::Answer, String>> + 'static
         {
-            use app_host::wire::{Answer, Catalogue, Operation, Resource};
+            use package_service::wire::{Answer, Catalogue, Operation, Resource};
             std::future::ready(match request {
                 Operation::Read(Resource::RegistryCatalogue { .. }) => {
                     Ok(Answer::Catalogue(Catalogue::Refused {
@@ -1136,7 +1137,7 @@ mod tests {
                         detail: self.1.into(),
                     }))
                 }
-                other => app_host::testing::refuse(&other),
+                other => package_service::testing::refuse(&other),
             })
         }
     }

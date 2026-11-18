@@ -2,7 +2,7 @@
 //! a program they downloaded puts the question on the shell, listing every copy that goes, and its
 //! answers reach the registry of their downloaded programs — the one place their apps are kept.
 //! Uninstalling takes every copy to the Trash and says so; keeping the app changes nothing; and
-//! asking about an app that is not there any more says so rather than leaving a question standing
+//! asking about an app that is not there any more says so rather than leaving a question open
 //! about it.
 //! Search's Uninstall row asks that same question, and an uninstall that cannot move the app's file
 //! says why instead of quietly doing nothing.
@@ -26,7 +26,7 @@ use tilo_actions::ResourceSpec;
 use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::{Options, Session};
 
-/// A session on the headless backend, taking no part in the collaboration plane.
+/// A session on the headless backend, taking no part in the peer network.
 fn session() -> Session {
     crate::common::headless(Options {
         collab: false,
@@ -346,7 +346,7 @@ fn asking_about_an_app_that_is_not_there_any_more_says_so() {
     });
     assert!(
         publisher(&session, "confirm").is_none(),
-        "no question is left standing about it"
+        "no question is left in place about it"
     );
     assert_eq!(
         notices(&session),

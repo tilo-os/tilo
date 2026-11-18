@@ -4,10 +4,10 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 ## State and actions
 
-- **`DynEdit`, not a bare `Edit<DynRecord>`.** A `DynAction` carries `DynEdit`s: `Create` (a
-  resource's JSON form), `Edit { id, edit: Edit<DynRecord> }` and `Remove`. The edit's path starts
-  at a *field* of the record; the resource id is the edit's address. `tilo_resource`'s
-  `Edit::apply` addresses the document root, and a workspace record holds many resources under
+- **`DynEdit`, not a bare `Edit<DynResource>`.** A `DynAction` carries `DynEdit`s: `Create` (a
+  resource's JSON form), `Edit { id, edit: Edit<DynResource> }` and `Remove`. The edit's path starts
+  at a *field* of the document; the resource id is the edit's address. `tilo_resource`'s
+  `Edit::apply` addresses the document root, and a workspace document holds many resources under
   `tl/<app>/<id>`, so the resource must be named next to the edit.
 - **Schemas come from metadata, not from the document.** Every field edit is dispatched by merge
   kind, which only the schema knows. The registry (`schema.rs`) is filled from a package's metadata
@@ -18,14 +18,14 @@ Each entry is the closest working design to `docs/designs/app-language`.
   store reads it back as `Scalar::Json` because the schema marks the field `composite`. Scalars
   are native automerge scalars. An unset register (`null`) reads as absent.
 - **The runtime plans on a mirror.** The runtime expects its commits to be visible at once, but
-  the workspace record belongs to the framework. `TiloStore` applies a transaction's mutations to a
-  copy of the record, queues the recorded `DynAction`, and the host commits it through the API.
-  When the record's heads move, the mirror is replaced by a copy and subscribers are told. One
+  the workspace document belongs to the framework. `TiloStore` applies a transaction's mutations to a
+  copy of the document, queues the recorded `DynAction`, and the host commits it through the API.
+  When the document's heads move, the mirror is replaced by a copy and subscribers are told. One
   transaction may be open at a time (a rollback discards the mirror's open change).
 - **Press goes through a `commit` action.** A press runs in the runtime (`ViewInstance::press`,
   whose action reference is not reachable from outside), which queues a `DynAction`; the window
   then invokes the host's `tl:host/commit(ticket)`, whose build closure encodes the queued action.
-  An agent calling a published record action takes the other path: the build closure plans with the
+  An agent calling a published document action takes the other path: the build closure plans with the
   runtime and the API commits what it returns. Both end in the executor, so both write the
   change's `ActionContext`.
 - **Closures reach the host through a thread-local.** The API's closures are `Send + Sync`; the
@@ -41,18 +41,18 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **A run's changes name its invocation.** Every change an action makes, and every change of an
   action it calls, carries the run's invocation (`Authorship::invocation`, applied as the change's
   `source_invocation`), which is what makes the workspace commit the run as one action. A run that
-  fails anywhere leaves nothing of itself queued or in the record (`Store::begin_run` /
+  fails anywhere leaves nothing of itself queued or in the document (`Store::begin_run` /
   `abort_run`). A call that waits for a person ends the run: what it does on from the answer is an
   action of its own.
-- **An undo across units is read from the records.** The units an action wrote are the units whose
-  documents hold a change of its invocation (`InstanceRecord::changes_of`), asked unit by unit when
+- **An undo across units is read from the documents.** The units an action wrote are the units whose
+  documents hold a change of its invocation (`InstanceDocument::changes_of`), asked unit by unit when
   the undo needs them, so an undo works after a restart that left no transport log remembering the
   action. The reverts go out as one action under an invocation of their own.
 
 ## Authority
 
 - The invoker's own verdict is `Allow` in the window: permission to change the workspace is decided
-  where the change is committed (the API refuses a viewer's `commit`). The seam is
+  where the change is committed (the API refuses a viewer's `commit`). The boundary is
   `TiloAuthority::new(invoker_verdict)` for a host that wants the verdict earlier.
 - A foreign author in the chain asks (the runtime's rule); the Ask bar offers Allow, Decline and
   Always allow (trust the code that asked). The bar shows the action and who asked. A proposal
@@ -60,15 +60,15 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 ## Outside effects
 
-- **The outbox is in the workspace record.** `outside("post", ..)` queues an entry in `$outbox` of the
+- **The outbox is in the workspace document.** `outside("post", ..)` queues an entry in `$outbox` of the
   resource it acts on (`DynEdit::OutboxPush`): capability, payload, and the `owner`, the device
   whose store queued it. The owning device alone settles it (`Host::settle_outbox`): it delivers to
   the runtime's sink and records the outcome (`DynEdit::OutboxSettle`). The sink of the app is a
   log, one JSON line per effect, under `$XDG_STATE_HOME/tilolang-dev/outside.log`.
 - **Approving the same suggestion twice queues it once.** An approval of a recorded `Invocation`
   keys the entry by that invocation (`ExecCtx::origin`), so two devices approving concurrently
-  write one key; after the record converges one entry has one owner and it is delivered once.
-  Settling before the record converged can deliver twice, so the window settles after it synced.
+  write one key; after the document converges one entry has one owner and it is delivered once.
+  Settling before the document converged can deliver twice, so the window settles after it synced.
   A press's own effect has no origin and is an entry of its own.
 
 ## The API and who invokes
@@ -79,11 +79,11 @@ Each entry is the closest working design to `docs/designs/app-language`.
   commits is queued under the effect's invocation, so the framework applies it for that invoker in
   the context it carries (group, on behalf of): history and undo group it by task.
 - **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every api
-  decides: the person's standing in the workspace (the window's, from its host), bounded by an agent's
+  decides: the person's access in the workspace (the window's, from its host), bounded by an agent's
   delegation and the answers the person gave that agent in the workspace, and by each author of the
   code that led to the action (`tilo_action_policy::authorship`: a package's code is its app,
   `Target::App`; a block's is its writer). Installed and built-in packages are trusted, an
-  admitted agent's code as far as its standing goes. Without a standing the person's own part is
+  admitted agent's code as far as its access goes. Without an access the person's own part is
   the API's to decide, as for a native window's detached dispatcher; the bounds still apply.
   What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a run that stopped at
   a call, decided by a person, through the Ask bar or the API's `resolve`, never by an agent.
@@ -91,7 +91,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
   (`doc/field:item`) carrying the verbs whose target is their type, and every resource offers
   `open`, a view action search hits invoke.
 - **Search.** All `Text` fields are searchable until a package says otherwise; the window keeps a
-  catalogue as the record moves and publishes short fields (never prose) to the persistent index.
+  catalogue as the document moves and publishes short fields (never prose) to the persistent index.
   Opening a hit shows the app and pushes (`open(r)`) the window of the deepest resource on the way
   to it whose type has a default view: a note's editor, a conversation's thread; a message opens
   the conversation that holds it. A split that collapses to navigate (`split(collapse: .navigate)`)
@@ -107,7 +107,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - One `surface.toml` for the host's app id, generated from the loaded packages' metadata: the
   `tl.host` kind, one `tl.<app>.<Type>` per declared type (verbs: the actions whose first
   parameter is that type, plus `edit-text` and `edit-flag`), and one `tl.<app>` per package for
-  its record-less actions. Verb ids are the declarations' ids; labels are their names.
+  its document-less actions. Verb ids are the declarations' ids; labels are their names.
 - `run-block` is declared Undoable (the strictest class a block may have short of Outside); the
   runtime's authority narrows it per invocation. `read-values`, `read-for-program` and
   `catalogue` are Read, and `resolve` is destructive.
@@ -117,14 +117,14 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **Package name.** The app crate is `tilolang-app` (binary `tilolang`, app id `so.tilo.lang`): the
   compiler crate owns the name `tilolang`.
 - **No UI graph.** The view tree is rendered straight onto the shared layout primitives and the
-  toolkit's controls by a keyed reconciler (`tilo_ui_host::reconcile`); the UI graph's `Column`/`Row`/gap
+  toolkit's controls by a keyed reconciler (`tilo_app_window::reconcile`); the UI graph's `Column`/`Row`/gap
   nodes cannot express `grid`, `split`, `page` or `layers`. A node with the same key and kind keeps
   its widget (focus, scroll position, text state); text, input and checkbox values live in shared
   state, so a changed value rebuilds nothing.
 - **A window in two halves over component patches.** The app instance
   (`tilolang_tilo::instance`) runs the views without the toolkit and sends their trees and
-  patches over the patch protocol (`tilo_render_protocol::patch`); the UI host half
-  (`tilo_ui_host::AppWindow`) builds the widgets. The instance diffs the trees it sent rather
+  patches over the patch protocol (`tilo_render_protocol::patch`); the app window half
+  (`tilo_app_window::AppWindow`) builds the widgets. The instance diffs the trees it sent rather
   than forwarding the runtime's patches: the window's copy stays exact whatever the runtime
   renders off a patch (a content list's rows), and a change costs only the nodes that differ.
   Today both halves run in the app's process over an in-process transport.
@@ -163,7 +163,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
   loaded package of the same app (`Runtime::reload_package`). Each new build is loaded the same
   way and the open app is opened again; the workspace keeps its state.
 - **A plain toolkit window.** `run` opens `ui::App::from_factory` with a `Workbench` root, not
-  the launcher: no runtime attachment, workspace, record store or identity, so a development run
+  the launcher: no runtime attachment, workspace, document store or identity, so a development run
   cannot reach the person's session. Each replica holds its own `AutoCommit` and commits through
   an API in `dev.rs` that builds and applies the published action as the action api does.
 - **Peers in one window.** The toolkit runs one window per event loop, so `--peers N` shows N

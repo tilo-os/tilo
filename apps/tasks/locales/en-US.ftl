@@ -31,7 +31,7 @@ tasks-row-complete = Complete
 tasks-row-reopen = Reopen
 tasks-status-with-progress = { $status }, { $closed } of { $total }
 tasks-progress = { $closed } of { $total } sub-issues closed
-tasks-lane-heading = { $status } { $count }
+tasks-list-heading = { $status } { $count }
 
 tasks-field-title = Title
 tasks-field-status = Status
@@ -96,8 +96,8 @@ tasks-thread-empty-message = Write a message to start the conversation.
 tasks-thread-draft = Message
 tasks-thread-placeholder = Write a message
 tasks-thread-send = Send
-# The same button while a run of the task reads the thread: the message goes
-# to that run, which takes it in at its next step.
+# The same button while an agent session of the task reads the thread: the
+# message goes to that session, which takes it in at its next step.
 tasks-message-to-run = To the agent
 tasks-message-read-by-run = Read by the agent
 tasks-message-from-run = From the agent
@@ -124,8 +124,9 @@ tasks-set-place = Said where the material of { $item } is kept
 tasks-wait = Let { $item } wait
 tasks-resume = Let { $item } go on
 tasks-set-budget = Set the budget of { $item }
-tasks-run-began = Began working on { $item }
-tasks-run-ended = Ended a run on { $item }
+tasks-set-pieces-at-once = Said how many pieces of { $item } are in work at once
+tasks-session-began = Began working on { $item }
+tasks-session-ended = Ended a session on { $item }
 tasks-stop = Stopped { $item }
 
 ## What the app is called in a window and in the launcher
@@ -160,6 +161,7 @@ tasks-issues-set-place = Set where its material is kept
 tasks-issues-wait = Let issue wait
 tasks-issues-resume = Let issue go on
 tasks-issues-set-budget = Set issue budget
-tasks-issues-run-began = Begin a run
-tasks-issues-run-ended = End a run
+tasks-issues-set-pieces-at-once = Work pieces at once
+tasks-issues-session-began = Begin a session
+tasks-issues-session-ended = End a session
 tasks-issues-stop = Stop issue

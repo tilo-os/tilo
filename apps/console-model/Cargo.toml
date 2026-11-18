@@ -6,7 +6,7 @@ publish = false
 license.workspace = true
 description = "Console's record: which agent runs it shows, its verb and its effects"
 
-# The record Console draws, as the app reads it and changes it. It has no window and no surface
+# The resource Console draws, as the app reads it and changes it. It has no window and no surface
 # of its own; the app draws it.
 #
 # It depends on the resource layer and the action API, never the toolkit.

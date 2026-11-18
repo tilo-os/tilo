@@ -18,7 +18,7 @@ use std::{
     fs,
     sync::{Arc, atomic::AtomicBool},
 };
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 use zeroize::Zeroizing;
 
 #[path = "output/candidate.rs"]
@@ -389,7 +389,7 @@ pub fn original_pipeline_with_receiver(
     let root = namespace.join("var/lib/tilo-imager/home-capture");
     fs::create_dir_all(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let (witness, caller, mounted_witness) = if let Some(subjects) = &mut mounted_source {
+    let (proof, caller, mounted_proof) = if let Some(subjects) = &mut mounted_source {
         let request = namespace.join("mounted-request");
         fs::create_dir(&request).unwrap();
         own_source(&request);
@@ -424,14 +424,14 @@ pub fn original_pipeline_with_receiver(
                 sidecar.as_ref(),
             )
             .unwrap();
-        let witness = registered.witness().unwrap();
+        let proof = registered.proof().unwrap();
         let caller = registered.original_caller().clone();
         drop(store);
         channel.stream().write_all(&[7]).unwrap();
         assert!(child.0.wait().unwrap().success());
         drop(channel);
         drop(child);
-        (witness, caller, None)
+        (proof, caller, None)
     };
 
     let scratch = tempfile::Builder::new()
@@ -503,11 +503,11 @@ pub fn original_pipeline_with_receiver(
                         reservation,
                     )
                     .unwrap()
-                    .with_source_witness(witness)
+                    .with_source_proof(proof)
                     .unwrap(),
                 ),
             ));
-        assert!(mounted_witness.is_none());
+        assert!(mounted_proof.is_none());
     } else {
         manifest.units.plan_home(PortableHomePlan {
             schema: 1,
@@ -523,10 +523,10 @@ pub fn original_pipeline_with_receiver(
             reservation,
         )
         .unwrap()
-        .with_source_witness(witness)
+        .with_source_proof(proof)
         .unwrap();
-        if let Some(mounted) = mounted_witness {
-            offline = offline.with_mounted_witness(mounted).unwrap();
+        if let Some(mounted) = mounted_proof {
+            offline = offline.with_mounted_proof(mounted).unwrap();
         }
         manifest
             .units

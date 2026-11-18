@@ -5,7 +5,7 @@
 //! and receipt are decided before this module sees it, the same for a
 //! person, a script and an agent. Then, instead of handing it to the app at
 //! once, the API asks the device's route
-//! ([`HostServices::action_offload`](crate::services::HostServices)) where it
+//! ([`ProcessServices::action_offload`](crate::services::ProcessServices)) where it
 //! should run. When another device ran it, the API answers the invocation
 //! with that output, as the app would have. Otherwise — for whatever reason
 //! the route gives — the app gets the invocation as usual and its own

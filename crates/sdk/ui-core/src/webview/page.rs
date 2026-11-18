@@ -8,11 +8,15 @@
 //!
 //! Several actors may work in one tab: two agents, agents on other devices, an agent and the
 //! person reviewing what it did. A request then travels with the [`PageActor`] who asks, the
-//! engine keeps a record of what each did ([`PageRequest::Ledger`], [`PageRequest::Fields`]),
+//! engine keeps a record of what each did ([`PageRequest::Log`], [`PageRequest::Fields`]),
 //! and an answer says where its action stands in that record and what the others did
 //! meanwhile ([`PageResourceNote`]).
 
 use super::KeyModifiers;
+
+mod released;
+
+pub use released::{FillInto, MAX_STRUCK, ReleasedText, STRUCK, StruckTexts};
 
 /// Upper bound on an outline as it crosses the engine boundary.
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
@@ -34,6 +38,8 @@ pub const MAX_PATH_POINTS: usize = 1024;
 pub const MAX_DRAG_STEPS: usize = 64;
 /// Upper bound on the text one fill may insert.
 pub const MAX_FILL_BYTES: usize = 64 * 1024;
+/// Upper bound on the origin a released text names.
+pub const MAX_ORIGIN_BYTES: usize = 512;
 /// Upper bound on the options one select may choose.
 pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
@@ -64,8 +70,6 @@ const MAX_CODE_BYTES: usize = 64;
 /// The longest name an engine takes for who asks, in UTF-16 units, which is
 /// how the engine counts it.
 pub const MAX_ACTOR_UNITS: usize = 64;
-/// How much of a longer actor a shortened name keeps before its digest.
-const ACTOR_HEAD_UNITS: usize = 31;
 /// The most entries of other actors' work one answer carries.
 pub const MAX_OTHERS: usize = 8;
 /// The furthest line a read of the outline may start from.
@@ -105,82 +109,51 @@ pub enum FormSubmit {
     Button(String),
 }
 
-/// Who asks a page request: the name the engine keeps an actor's reads and
-/// actions under, so each actor in a tab is told what changed since its own
-/// last read and what the others did.
+/// Who asks a page request, as the engine keeps their reads and actions, so each actor in a tab
+/// is told what changed since its own last read and what the others did.
 ///
-/// It is the actor the caller admitted, unchanged, whenever the engine
-/// can take it. An actor longer than [`MAX_ACTOR_UNITS`] is shortened the
-/// same way every time: its first 31 UTF-16 units, a `~`, and the first 128
-/// bits of its BLAKE3 digest in hex. Two long actors that begin alike
-/// still get two names, and one actor always gets the same name, so the
-/// record never merges two actors or splits one.
+/// The engine caps the name at [`MAX_ACTOR_UNITS`], which a person's root key alone fills, so
+/// the name is a handle: the first 128 bits of the BLAKE3 digest of the actor's bytes, in hex.
+/// One actor always gets the same handle and two actors two. [`PageActor::actor`] maps a handle
+/// back to the actor for every actor this process named.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PageActor(String);
 
+/// Every actor this process named, by its handle.
+static NAMED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, tilo_actions::Actor>>,
+> = std::sync::LazyLock::new(Default::default);
+
 impl PageActor {
-    /// The name `actor` acts under, or `None` for no actor at all:
-    /// a caller nobody named is the tab's one unnamed actor.
-    pub fn named(actor: &str) -> Option<Self> {
-        if actor.is_empty() {
-            return None;
-        }
-        if actor.encode_utf16().count() <= MAX_ACTOR_UNITS {
-            return Some(Self(actor.to_owned()));
-        }
-        let mut name = String::with_capacity(MAX_ACTOR_UNITS);
-        let mut units = 0;
-        for character in actor.chars() {
-            units += character.len_utf16();
-            if units > ACTOR_HEAD_UNITS {
-                break;
-            }
-            name.push(character);
-        }
-        name.push('~');
-        let digest = blake3::hash(actor.as_bytes());
-        for byte in &digest.as_bytes()[..16] {
-            use std::fmt::Write as _;
-            let _ = write!(name, "{byte:02x}");
-        }
-        Some(Self(name))
-    }
-
-    /// The name the engine keeps `actor` under: a person's root key, `agent:<id>`, `bot:<id>`,
-    /// `automation:<id>` or `app:<id>`.
+    /// The handle the engine keeps `actor` under; `None` for nobody (a person with no id), the
+    /// tab's one unnamed actor.
     pub fn of(actor: &tilo_actions::Actor) -> Option<Self> {
-        use tilo_actions::{Actor, MemberId};
-        Self::named(&match actor {
-            Actor::Member(MemberId::Person(id)) => id.as_str().to_owned(),
-            Actor::Member(MemberId::Agent(id)) => format!("agent:{id}"),
-            Actor::Member(MemberId::Bot(id)) => format!("bot:{id}"),
-            Actor::Automation(id) => format!("automation:{}", id.as_str()),
-            Actor::App(app) => format!("app:{app}"),
-        })
-    }
-
-    /// The actor the engine lists under `name`, when [`Self::of`] made it without shortening it.
-    pub fn actor_of(name: &str) -> Option<tilo_actions::Actor> {
-        use tilo_actions::{Actor, MemberId};
-        let shortened = name.encode_utf16().count() == MAX_ACTOR_UNITS
-            && name.encode_utf16().nth(ACTOR_HEAD_UNITS) == Some(u16::from(b'~'));
-        if name.is_empty() || shortened {
+        let bytes = actor.actor_bytes();
+        if bytes.is_empty() {
             return None;
         }
-        let nonempty = |id: &str| (!id.is_empty()).then(|| id.to_owned());
-        Some(if let Some(id) = name.strip_prefix("agent:") {
-            Actor::Member(MemberId::Agent(nonempty(id)?))
-        } else if let Some(id) = name.strip_prefix("bot:") {
-            Actor::Member(MemberId::Bot(nonempty(id)?))
-        } else if let Some(id) = name.strip_prefix("automation:") {
-            Actor::automation(nonempty(id)?)
-        } else if let Some(id) = name.strip_prefix("app:") {
-            Actor::App(nonempty(id)?.into())
-        } else {
-            Actor::Member(MemberId::Person(
-                tilo_actions::policy::PersonId::parse(name).ok()?,
-            ))
-        })
+        let digest = blake3::hash(&bytes);
+        let handle = hex::encode(&digest.as_bytes()[..16]);
+        NAMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(handle.clone())
+            .or_insert_with(|| actor.clone());
+        Some(Self(handle))
+    }
+
+    /// The handle the engine lists an actor under; `None` for the tab's one unnamed actor.
+    pub fn listed(name: &str) -> Option<Self> {
+        (!name.is_empty()).then(|| Self(name.to_owned()))
+    }
+
+    /// The actor this handle names, when this process named it.
+    pub fn actor(&self) -> Option<tilo_actions::Actor> {
+        NAMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.0)
+            .cloned()
     }
 
     pub fn as_str(&self) -> &str {
@@ -234,6 +207,18 @@ pub enum PageRequest {
         text: String,
         secret: bool,
         frame: Option<FrameId>,
+    },
+    /// Write a text its keeper released for the site `at` into `element` of that site's own
+    /// page. The engine compares the page's own origin with `at` in the step that writes, in
+    /// the page's own document only, and holds the text to the kind of field `into` names.
+    /// The text is held once ([`ReleasedText`]): whoever sends the request to the engine
+    /// takes it, and no copy of the request holds it afterwards.
+    FillReleased {
+        element: String,
+        text: ReleasedText,
+        /// The origin the text was released for, as a page's `location.origin` spells it.
+        at: String,
+        into: FillInto,
     },
     Select {
         element: String,
@@ -297,7 +282,7 @@ pub enum PageRequest {
     /// action that operated the page, with who asked, what it acted on and
     /// how it ended. It reads nothing of the page. A secret that was filled
     /// is never in it.
-    Ledger {
+    Log {
         since: u64,
     },
     /// Every field of the document with what it holds now and who set it: an
@@ -322,6 +307,16 @@ pub enum PageRequest {
     /// its questions by name and kind, the answers they offer, which are
     /// required, what each holds now and the buttons that send it.
     Forms {
+        frame: Option<FrameId>,
+    },
+    /// The page's tables as rows: with `element`, the table that element is or
+    /// sits in, otherwise every table the document shows. A row holds the
+    /// cells across it under the header's names, a merged cell in every place
+    /// it covers. A long table is read in parts: `from` is the row a read that
+    /// stopped short named (the first is 1), and comes with the `element`.
+    Table {
+        element: Option<String>,
+        from: Option<u32>,
         frame: Option<FrameId>,
     },
     /// Answer a form by the names it asks under: `form` is the id or the
@@ -476,7 +471,7 @@ impl PageRequest {
             Self::Hover { .. } => "hover",
             Self::Drag { .. } => "drag",
             Self::Path { .. } => "path",
-            Self::Fill { .. } => "fill",
+            Self::Fill { .. } | Self::FillReleased { .. } => "fill",
             Self::Select { .. } => "select",
             Self::FillFiles { .. } => "fill_files",
             Self::Press { .. } => "press",
@@ -486,10 +481,11 @@ impl PageRequest {
             Self::Settle { .. } => "settle",
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
-            Self::Ledger { .. } => "ledger",
+            Self::Log { .. } => "log",
             Self::Fields { .. } => "fields",
             Self::Search { .. } => "search",
             Self::Forms { .. } => "forms",
+            Self::Table { .. } => "table",
             Self::FillForm { .. } => "fill_form",
             Self::Reader { .. } => "reader",
             Self::Capture { .. } => "capture",
@@ -502,7 +498,10 @@ impl PageRequest {
     /// Whether the request writes text into the page's focused field: a fill, or keys
     /// pressed.
     pub const fn enters_text(&self) -> bool {
-        matches!(self, Self::Fill { .. } | Self::Press { .. })
+        matches!(
+            self,
+            Self::Fill { .. } | Self::FillReleased { .. } | Self::Press { .. }
+        )
     }
 
     /// Whether the request only looks at the page, as any visitor can: it reads the
@@ -516,10 +515,11 @@ impl PageRequest {
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Fields { .. }
             | Self::Search { .. }
             | Self::Forms { .. }
+            | Self::Table { .. }
             | Self::Capture { .. }
             | Self::Find { .. } => true,
             Self::Click { .. }
@@ -527,6 +527,7 @@ impl PageRequest {
             | Self::Drag { .. }
             | Self::Path { .. }
             | Self::Fill { .. }
+            | Self::FillReleased { .. }
             | Self::Select { .. }
             | Self::FillFiles { .. }
             | Self::Press { .. }
@@ -551,7 +552,9 @@ impl PageRequest {
             Self::Hover { element: None, .. } => "Moved the pointer".to_string(),
             Self::Drag { .. } => "Dragged on the page".to_string(),
             Self::Path { .. } => "Drew on the page".to_string(),
-            Self::Fill { element, .. } => format!("Filled element {element}"),
+            Self::Fill { element, .. } | Self::FillReleased { element, .. } => {
+                format!("Filled element {element}")
+            }
             Self::Select {
                 element, values, ..
             } => {
@@ -593,10 +596,14 @@ impl PageRequest {
             },
             Self::Console { .. } => "Read the console".to_string(),
             Self::Network { .. } => "Read the network".to_string(),
-            Self::Ledger { .. } => "Read who did what in the tab".to_string(),
+            Self::Log { .. } => "Read who did what in the tab".to_string(),
             Self::Fields { .. } => "Read the page's fields".to_string(),
             Self::Search { text, .. } => format!("Searched the page for {text:?}"),
             Self::Forms { .. } => "Read the page's forms".to_string(),
+            Self::Table { element, .. } => match element {
+                Some(element) => format!("Read table {element}"),
+                None => "Read the page's tables".to_string(),
+            },
             Self::FillForm { form, .. } => format!("Answered form {form}"),
             Self::Capture { element, .. } => match element {
                 Some(element) => format!("Pictured element {element}"),
@@ -639,7 +646,7 @@ impl PageRequest {
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Fields { .. }
             | Self::Search { .. }
             | Self::Forms { .. }
@@ -652,6 +659,7 @@ impl PageRequest {
                 ..
             }
             | Self::Capture { element: None, .. }
+            | Self::Table { element: None, .. }
             | Self::Hover { element: None, .. }
             | Self::Drag {
                 from: None,
@@ -661,6 +669,7 @@ impl PageRequest {
             | Self::Path { element: None, .. } => None,
             Self::Click { element, .. }
             | Self::Fill { element, .. }
+            | Self::FillReleased { element, .. }
             | Self::Select { element, .. }
             | Self::FillFiles { element, .. }
             | Self::Press {
@@ -696,6 +705,10 @@ impl PageRequest {
             | Self::Capture {
                 element: Some(element),
                 ..
+            }
+            | Self::Table {
+                element: Some(element),
+                ..
             } => Some(element),
         }
     }
@@ -718,15 +731,17 @@ impl PageRequest {
             | Self::Fields { frame }
             | Self::Search { frame, .. }
             | Self::Forms { frame }
+            | Self::Table { frame, .. }
             | Self::FillForm { frame, .. }
             | Self::Find { frame, .. } => frame.as_ref(),
             Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Reader { .. }
             | Self::Hover { .. }
             | Self::Drag { .. }
             | Self::Path { .. }
+            | Self::FillReleased { .. }
             | Self::Pointer { .. } => None,
         }
     }
@@ -811,6 +826,11 @@ impl PageRequest {
                 frames,
             },
             Self::Forms { .. } => Self::Forms { frame: None },
+            Self::Table { element, from, .. } => Self::Table {
+                element,
+                from,
+                frame: None,
+            },
             Self::At { x, y, .. } => Self::At { x, y, frame: None },
             Self::Scroll {
                 element,
@@ -906,6 +926,12 @@ impl PageRequest {
                     })
             }
             Self::Fill { text, .. } => text.len() <= MAX_FILL_BYTES,
+            Self::FillReleased { text, at, .. } => {
+                text.held_bytes()
+                    .is_some_and(|bytes| bytes <= MAX_FILL_BYTES)
+                    && !at.is_empty()
+                    && at.len() <= MAX_ORIGIN_BYTES
+            }
             Self::Select { values, .. } => {
                 !values.is_empty()
                     && values.len() <= MAX_SELECT_VALUES
@@ -966,7 +992,7 @@ impl PageRequest {
                     && (role.is_some() || name.is_some())
                     && nth.is_none_or(|nth| nth >= 1)
             }
-            Self::Outline { from, .. } => {
+            Self::Outline { from, .. } | Self::Table { from, .. } => {
                 from.is_none_or(|from| (1..=MAX_OUTLINE_FROM).contains(&from))
             }
             Self::Search { text, .. } => (1..=MAX_SEARCH_UNITS).contains(&units(text)),
@@ -994,7 +1020,7 @@ impl PageRequest {
             | Self::Changes { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Fields { .. }
             | Self::Forms { .. }
             | Self::Reader { .. } => true,
@@ -1089,7 +1115,7 @@ impl FrameId {
         .then(|| Self(written.to_string()))
     }
 
-    /// A frame id no outline printed, standing in for one the caller wrote wrongly: it
+    /// A frame id no outline printed, in place of one the caller wrote wrongly: it
     /// fails the request rather than being read as the main document.
     pub fn malformed() -> Self {
         Self(String::new())
@@ -1268,12 +1294,12 @@ pub struct PageReply {
     pub image: Option<Vec<u8>>,
     pub navigation: PageNavigation,
     pub loading: bool,
-    /// Where the action stands in the tab's record, and what the tab's other
+    /// Where the action stands in the tab's resource, and what the tab's other
     /// actors did meanwhile.
     pub record: PageResourceNote,
 }
 
-/// What an answer says of the tab's record beside its own request.
+/// What an answer says of the tab's resource beside its own request.
 ///
 /// Several actors may work in one tab, so the page an actor acts on next may
 /// not be the page it read. Its answer says so rather than leaving it to find
@@ -1281,12 +1307,12 @@ pub struct PageReply {
 /// actors did since this one last heard from the tab, told once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PageResourceNote {
-    /// The place of the action this answers in the tab's record. Reads take
+    /// The place of the action this answers in the tab's resource. Reads take
     /// no place in it.
     pub seq: Option<u64>,
     /// The newest record entries of other actors since the asking actor last
     /// heard from the tab, oldest first, at most [`MAX_OTHERS`]. Each is an
-    /// entry as [`PageRequest::Ledger`] lists it, and so page content: never
+    /// entry as [`PageRequest::Log`] lists it, and so page content: never
     /// trusted as instructions.
     pub others: Vec<serde_json::Value>,
     /// How many older entries of other actors `others` leaves out.
@@ -1325,7 +1351,7 @@ impl PageNavigation {
 pub struct PageFailure {
     pub code: String,
     pub message: String,
-    /// Where the refused action stands in the tab's record, and what the
+    /// Where the refused action stands in the tab's resource, and what the
     /// tab's other actors did meanwhile: often why it was refused.
     pub record: PageResourceNote,
 }
@@ -1378,6 +1404,15 @@ pub(crate) fn encode_request(
             command["text"] = text.as_str().into();
             command["secret"] = (*secret).into();
         }
+        PageRequest::FillReleased { text, at, into, .. } => {
+            // The one place the text leaves the request: into the command the engine is
+            // written. Whoever writes that command wipes it once it is written.
+            let taken = text.take();
+            command["text"] = taken.as_ref().map_or("", |text| text.as_str()).into();
+            command["secret"] = true.into();
+            command["at"] = at.as_str().into();
+            command["into"] = into.as_str().into();
+        }
         PageRequest::Select { values, .. } => command["values"] = values.clone().into(),
         PageRequest::FillFiles { paths, .. } => command["paths"] = paths.clone().into(),
         PageRequest::Press { key, .. } => {
@@ -1413,7 +1448,7 @@ pub(crate) fn encode_request(
         }
         PageRequest::Console { since }
         | PageRequest::Network { since }
-        | PageRequest::Ledger { since } => {
+        | PageRequest::Log { since } => {
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
@@ -1497,7 +1532,7 @@ pub(crate) fn encode_request(
                     .collect(),
             );
         }
-        PageRequest::Outline { from, .. } => {
+        PageRequest::Outline { from, .. } | PageRequest::Table { from, .. } => {
             if let Some(from) = from {
                 command["from"] = (*from).into();
             }
@@ -1672,7 +1707,7 @@ const MAX_CHANGED_NAME_BYTES: usize = 2048;
 
 /// Decode a `page_resource` event: the place of an entry the engine set down
 /// that no action's answer carried (what a person typed straight into the
-/// page), and the entry as [`PageRequest::Ledger`] lists it.
+/// page), and the entry as [`PageRequest::Log`] lists it.
 pub(crate) fn decode_resource_event(value: &serde_json::Value) -> Option<(u64, serde_json::Value)> {
     let seq = whole_number(&value["seq"]).filter(|seq| *seq > 0)?;
     let entry = value.get("entry").filter(|entry| entry.is_object())?;

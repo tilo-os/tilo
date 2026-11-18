@@ -12,7 +12,7 @@ pub mod transport;
 #[cfg(feature = "grayjay-sync")]
 pub use lifecycle::state_from_model as lifecycle_state;
 #[cfg(feature = "grayjay-sync")]
-pub use lifecycle::{DeviceSync, PairedDevices, PeerRecord, SyncStatus, SyncView};
+pub use lifecycle::{DeviceSync, PairedDevices, PeerEntry, SyncStatus, SyncView};
 
 #[cfg(not(feature = "grayjay-sync"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,12 +27,12 @@ pub struct SyncView {
     pub status: SyncStatus,
     pub summary: String,
     pub device_public_key: Option<String>,
-    pub peers: Vec<PeerRecord>,
+    pub peers: Vec<PeerEntry>,
 }
 
 #[cfg(not(feature = "grayjay-sync"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerRecord {
+pub struct PeerEntry {
     pub id: String,
     pub name: String,
     pub pending_approval: bool,
@@ -42,7 +42,7 @@ pub struct PeerRecord {
 }
 
 #[cfg(not(feature = "grayjay-sync"))]
-impl PeerRecord {
+impl PeerEntry {
     pub fn is_active(&self) -> bool {
         self.revoked_at.is_none()
     }

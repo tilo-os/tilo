@@ -30,7 +30,7 @@ const WORKSPACE: workspace::Layout = workspace::Layout {
     person: workspace::Person::Delegated,
     root,
 };
-const BASELINE: delayed_filter::Custody = delayed_filter::Custody {
+const BASELINE: delayed_filter::Ownership = delayed_filter::Ownership {
     label: "Original",
     memfd: c"tilo-original-baseline",
     root,
@@ -238,7 +238,7 @@ impl Bootstrap {
         if let Some(workspace) = self
             .workspace
             .lock()
-            .map_err(|_| refused("Worker custody lock failed"))?
+            .map_err(|_| refused("Worker ownership lock failed"))?
             .as_ref()
         {
             workspace.check()?;
@@ -275,7 +275,7 @@ impl Bootstrap {
             .unwrap_or_default();
         if retained != self.facts.roots {
             return Err(refused(
-                "Original root custody differs from bootstrap facts",
+                "Original root ownership differs from bootstrap facts",
             ));
         }
         if self.facts.baseline_filter.is_some() {
@@ -290,7 +290,7 @@ impl Bootstrap {
         let roots = self
             .roots
             .as_ref()
-            .ok_or_else(|| refused("Original root custody is absent"))?
+            .ok_or_else(|| refused("Original root ownership is absent"))?
             .prepare_launch()?;
         let filter = delayed_filter::Filter::capture(BASELINE, baseline)?;
         let mut facts = self.facts.clone();
@@ -331,7 +331,7 @@ impl Bootstrap {
         let mut held = self
             .workspace
             .lock()
-            .map_err(|_| refused("Worker custody lock failed"))?;
+            .map_err(|_| refused("Worker ownership lock failed"))?;
         if held.is_some() {
             return Err(refused("Worker workspace was already prepared"));
         }
@@ -361,9 +361,9 @@ impl Bootstrap {
     pub(super) fn splice(&self, argv: &mut Vec<String>) -> io::Result<()> {
         root()?;
         // Preserve numeric source credentials in the ORIGINAL user namespace.
-        crate::owned_service::splice_custody(
+        crate::owned_service::splice_ownership(
             argv,
-            &crate::owned_service::CustodySplice {
+            &crate::owned_service::OwnershipSplice {
                 token_flag: "--original-source-fd",
                 token_fd: BOOTSTRAP_FD,
                 // Signed root shim only, cleared with all capabilities before worker.
@@ -425,7 +425,7 @@ fn check_token(token: &File) -> io::Result<()> {
         || seals & SEALS != SEALS
     {
         return Err(refused(
-            "Original-source token is not immutable root custody",
+            "Original-source token is not immutable root ownership",
         ));
     }
     Ok(())

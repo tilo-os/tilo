@@ -40,7 +40,7 @@ invoke = { resource = "word-processor.document", action = "append-paragraph", ar
 invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "What to change: the tool shed needs a second lock, and the compost bays should be turned every two weeks rather than monthly." } }
 
 [[situation.steps]]
-invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Next spring we plan to add two raised beds for members who cannot kneel, and a small seed library by the gate." } }
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Next spring we plan to add two raised beds for members who cannot kneel, and a small seed library by the check." } }
 
 [[situation.steps]]
 invoke = { resource = "word-processor.document", action = "outline" }
@@ -59,7 +59,7 @@ invoke = { resource = "word-processor.document", action = "append-paragraph", ar
 invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "1. Heating: the boiler service is booked for 3 November; radiators will be bled the same day." } }
 
 [[situation.steps]]
-invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "2. Bicycles: a second rack goes in by the side gate before winter." } }
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "2. Bicycles: a second rack goes in by the side check before winter." } }
 
 [[situation.steps]]
 invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "3. Next meeting: second Tuesday of December." } }

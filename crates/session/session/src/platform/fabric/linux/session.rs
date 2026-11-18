@@ -107,7 +107,7 @@ pub(crate) struct SessionFabric {
     /// Where this device's fabric is kept for its next run, if anywhere.
     kept: Option<std::path::PathBuf>,
     /// The endpoints heard on this device's local network, of which the person's devices are
-    /// reachable without a relay.
+    /// reachable without a server.
     lan: tilo_endpoint_reachability::Nearby,
 }
 
@@ -243,7 +243,7 @@ impl SessionFabric {
                 }
             }
             // What the person's devices carry for each other beyond the fabric state this session
-            // keeps — records — belongs to their own planes; this session routes none of it and
+            // keeps — records — belongs to their own peer networks; this session routes none of it and
             // drops it rather than half-handling it.
             PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::DocumentContentWant { .. }

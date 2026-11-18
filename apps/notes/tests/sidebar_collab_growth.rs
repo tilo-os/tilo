@@ -34,7 +34,7 @@ fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
 #[test]
 fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     let mut state = ui::State::new();
-    notes::read::initialize(&mut state.doc);
+    notes::read::initialize_part(&mut state.doc);
     crate::component_support::upsert_page(
         &mut state.doc,
         &PageMeta {

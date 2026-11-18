@@ -1,7 +1,7 @@
 //! Fresh creation under retained privacy profiles; no administrative authority.
 #![expect(
     clippy::result_large_err,
-    reason = "custody travels inline in the error: bounded operations request no heap allocation"
+    reason = "ownership travels inline in the error: bounded operations request no heap allocation"
 )]
 #[cfg(target_os = "macos")]
 use super::AdmissionError;
@@ -30,7 +30,7 @@ impl OwnerOnlyProvisioning {
     /// # Errors
     ///
     /// Returns a [`FreshChildError`] whose state says whether a child was
-    /// created; created custody is retained for retry.
+    /// created; created ownership is retained for retry.
     pub fn create_child(&self, name: &OsStr) -> Result<FreshPrivateChild, FreshChildError> {
         create_child(&self.directory, name, ParentProfile::OrdinaryAdmitted)
     }
@@ -44,13 +44,13 @@ impl BoundedOwnerDirectory {
     /// # Errors
     ///
     /// Returns a [`FreshChildError`] for an invalid name, a parent that fails
-    /// validation, or a failed creation; created custody is retained for retry.
+    /// validation, or a failed creation; created ownership is retained for retry.
     pub fn create_fresh_child(&self, name: &OsStr) -> Result<FreshPrivateChild, FreshChildError> {
         name_check(name)
             .and_then(|()| self.validate())
             .map_err(|source| FreshChildError {
                 source,
-                custody: None,
+                ownership: None,
             })?;
         create_child(&self.directory, name, ParentProfile::Bounded)
     }
@@ -85,9 +85,9 @@ fn create_child(
     })()
     .map_err(|source| FreshChildError {
         source,
-        custody: None,
+        ownership: None,
     })?;
-    let mut custody = FreshPrivateChild {
+    let mut ownership = FreshPrivateChild {
         parent,
         parent_profile,
         child: None,
@@ -97,39 +97,39 @@ fn create_child(
         submitted: false,
     };
     // `name_check` bounds the name by the buffer; refuse rather than panic.
-    let Some(slot) = custody.name.get_mut(..custody.length) else {
+    let Some(slot) = ownership.name.get_mut(..ownership.length) else {
         return Err(FreshChildError {
             source: io::ErrorKind::InvalidInput.into(),
-            custody: None,
+            ownership: None,
         });
     };
     slot.copy_from_slice(name.as_bytes());
     let result = (|| {
-        custody.parent_profile.validate(&custody.parent)?;
-        custody.submitted = true;
-        if let Err(error) = custody.parent.inner.mkdir_fresh_private(name) {
+        ownership.parent_profile.validate(&ownership.parent)?;
+        ownership.submitted = true;
+        if let Err(error) = ownership.parent.inner.mkdir_fresh_private(name) {
             if error.kind() == io::ErrorKind::AlreadyExists {
-                custody.submitted = false;
+                ownership.submitted = false;
             }
             return Err(error);
         }
         #[cfg(test)]
         checkpoint(FreshCheckpoint::AfterMkdir)?;
-        custody.created = true;
-        custody.child = Some(StorageDirectory {
-            inner: custody.parent.inner.open_directory(name)?,
+        ownership.created = true;
+        ownership.child = Some(StorageDirectory {
+            inner: ownership.parent.inner.open_directory(name)?,
         });
         Ok(())
     })();
     match result {
-        Ok(()) => Ok(custody),
+        Ok(()) => Ok(ownership),
         Err(source) => Err(FreshChildError {
             source,
-            custody: Some(custody),
+            ownership: Some(ownership),
         }),
     }
 }
-/// Move-only custody obtainable only after this API's exclusive mkdir succeeds.
+/// Move-only ownership obtainable only after this API's exclusive mkdir succeeds.
 /// No raw File/StorageDirectory adoption or automatic name removal exists.
 pub struct FreshPrivateChild {
     parent: StorageDirectory,
@@ -148,31 +148,31 @@ pub enum FreshChildState {
 }
 pub struct FreshChildError {
     source: io::Error,
-    custody: Option<FreshPrivateChild>,
+    ownership: Option<FreshPrivateChild>,
 }
 impl FreshChildError {
     pub fn io_error(&self) -> &io::Error {
         &self.source
     }
     pub fn state(&self) -> FreshChildState {
-        if self.custody.as_ref().is_some_and(|c| c.created) {
+        if self.ownership.as_ref().is_some_and(|c| c.created) {
             FreshChildState::CreatedUncommitted
-        } else if self.custody.as_ref().is_some_and(|c| c.submitted) {
+        } else if self.ownership.as_ref().is_some_and(|c| c.submitted) {
             FreshChildState::CreationUnknown
         } else {
             FreshChildState::NotCreated
         }
     }
-    /// Retry normalization and commit of retained created custody.
+    /// Retry normalization and commit of retained created ownership.
     pub fn retry_normalize_and_commit(mut self) -> Result<BoundedOwnerDirectory, Self> {
         if self
-            .custody
+            .ownership
             .as_ref()
             .is_some_and(|c| c.created && c.child.is_some())
         {
-            // The predicate above proves the same existing custody is present.
-            if let Some(custody) = self.custody.take() {
-                return custody.normalize_and_commit();
+            // The predicate above proves the same existing ownership is present.
+            if let Some(ownership) = self.ownership.take() {
+                return ownership.normalize_and_commit();
             }
         }
         Err(self)
@@ -190,7 +190,7 @@ impl FreshPrivateChild {
     /// Normalize only this newly-created, still-empty child: a non-inheriting
     /// ACL on macOS, private mode with preserved POSIX ACLs on Linux. Sync child
     /// and original parent and verify the exact name before returning. Failure
-    /// retains native custody; dropping it leaves an explicitly incomplete child.
+    /// retains native ownership; dropping it leaves an explicitly incomplete child.
     pub fn normalize_and_commit(mut self) -> Result<BoundedOwnerDirectory, FreshChildError> {
         let result = self.normalize_inner();
         match result {
@@ -198,12 +198,12 @@ impl FreshPrivateChild {
                 Some(directory) => Ok(BoundedOwnerDirectory { directory }),
                 None => Err(FreshChildError {
                     source: io::ErrorKind::InvalidData.into(),
-                    custody: Some(self),
+                    ownership: Some(self),
                 }),
             },
             Err(source) => Err(FreshChildError {
                 source,
-                custody: Some(self),
+                ownership: Some(self),
             }),
         }
     }

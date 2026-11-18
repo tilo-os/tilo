@@ -5,11 +5,11 @@
 //! the receipt of every effect an app's action had, is committed to the
 //! owner before anyone else hears of it: the owner is the canonical copy of
 //! the workspace on this device, and what it committed it publishes to the
-//! workspace's other devices as its outgoing custody. The questions only the
+//! workspace's other devices as its outgoing ownership. The questions only the
 //! session that holds the owner can answer — which workspaces it commits,
-//! where the owner is, whether this device still holds custody of a
+//! where the owner is, whether this device still owns a
 //! workspace, and how a commit reaches the workspace's peers — are its
-//! [`OwnerCustody`].
+//! [`OwnerService`].
 
 use std::sync::Arc;
 
@@ -18,26 +18,26 @@ use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, LocalDocumentFuture, OwnerCommitRequest, OwnerCommitService,
 };
 
-pub use tilo_broker_core::custody::OwnerCustody;
+pub use tilo_broker_core::owner_service::OwnerService;
 
-/// The broker's owner commits, through `custody`.
+/// The broker's owner commits, through `ownership`.
 #[derive(Clone)]
 pub struct NativeOwnerCommits {
-    custody: Arc<dyn OwnerCustody>,
+    ownership: Arc<dyn OwnerService>,
     writes: OwnerWrites,
     /// What hears of a record committed here: search reads it again.
     changes: Option<Arc<dyn crate::services::DocumentIndexChanges>>,
 }
 
 impl NativeOwnerCommits {
-    /// Commits into the owner `custody` names.
+    /// Commits into the owner `ownership` names.
     #[must_use]
     pub fn new(
-        custody: Arc<dyn OwnerCustody>,
+        ownership: Arc<dyn OwnerService>,
         changes: Option<Arc<dyn crate::services::DocumentIndexChanges>>,
     ) -> Self {
         Self {
-            custody,
+            ownership,
             writes: OwnerWrites::default(),
             changes,
         }
@@ -73,16 +73,16 @@ impl OwnerWrites {
 
 impl OwnerCommitService for NativeOwnerCommits {
     fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|id| self.custody.commits_documents(id))
+        WorkspaceId::parse(workspace).is_some_and(|id| self.ownership.commits_documents(id))
     }
     /// A held workspace's effect receipts are this device's own to record in
     /// it, whichever model its records follow.
     fn records_effects(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace)
-            .is_some_and(|workspace| self.custody.projects_workspace(workspace))
+            .is_some_and(|workspace| self.ownership.projects_workspace(workspace))
     }
     fn health(&self) -> Result<(), String> {
-        self.custody
+        self.ownership
             .opened_owner("native durable owner unavailable")?
             .health()
     }
@@ -101,18 +101,18 @@ impl OwnerCommitService for NativeOwnerCommits {
                 )));
             }
         }
-        let custody = Arc::clone(&self.custody);
+        let ownership = Arc::clone(&self.ownership);
         let writes = self.writes.clone();
         Box::pin(writes.run(move || {
-            let owner = custody
+            let owner = ownership
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let id = WorkspaceId::parse(&request.workspace).ok_or("invalid native workspace")?;
             // A receipt is this device's own, recorded in its person's slice
             // of the workspace and published as its own change.
-            custody.check_custody(&owner, id)?;
+            ownership.check_ownership(&owner, id)?;
             let receipt = owner.commit_effect_receipt(&request, tilo_clock::wall())?;
-            custody.schedule_publication(id);
+            ownership.schedule_publication(id);
             Ok(receipt)
         }))
     }
@@ -127,30 +127,36 @@ impl OwnerCommitService for NativeOwnerCommits {
         request: OwnerCommitRequest,
         _resource_type: Option<String>,
     ) -> LocalDocumentFuture {
-        let custody = Arc::clone(&self.custody);
+        let ownership = Arc::clone(&self.ownership);
         let writes = self.writes.clone();
         let changes = self.changes.clone();
         Box::pin(writes.run(move || {
-            let owner = custody
+            let owner = ownership
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let id = WorkspaceId::parse(&request.workspace).ok_or("invalid native workspace")?;
-            let signer = custody.signer(&owner, id)?;
-            // The commit runs whole on this blocking thread, waiting here for the custody's
+            let signer = ownership.signer(&owner, id)?;
+            // The commit runs whole on this blocking thread, waiting here for the ownership's
             // signatures.
             let (committed, receipt) = tokio::runtime::Handle::current().block_on(
                 owner.commit_local_document(request, signer.as_ref(), tilo_clock::wall()),
             )?;
             // What search holds of the record is read again from what it now
             // holds.
-            if let (Some(changes), CommitOperation::Document { app, record, .. }) =
-                (&changes, &committed.operation)
+            if let (
+                Some(changes),
+                CommitOperation::Document {
+                    app,
+                    document: record,
+                    ..
+                },
+            ) = (&changes, &committed.operation)
             {
                 changes.changed(&committed.workspace, app, record);
             }
             // What the owner committed leaves for the workspace's peers from
-            // its custody, the one copy every write goes through.
-            custody.schedule_publication(id);
+            // its ownership, the one copy every write goes through.
+            ownership.schedule_publication(id);
             Ok((committed, receipt))
         }))
     }

@@ -53,7 +53,7 @@ pub fn files_dirty() -> bool {
 /// The latest change OPFS refused.
 #[wasm_bindgen]
 pub async fn flush_files() -> Result<(), JsValue> {
-    // A file may publish a credential reference. Custody must commit first,
+    // A file may publish a credential reference. Ownership must commit first,
     // and a failed secret write must prevent the dependent file flush.
     tilo_secrets::web::flush()
         .await

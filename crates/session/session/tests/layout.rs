@@ -15,6 +15,7 @@
 )]
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -39,8 +40,8 @@ const RENAMED: &str = "Sketches";
 
 /// A device in a test's home: where it keeps its state, and the salt it numbers what it
 /// makes in.
-struct Device {
-    state: PathBuf,
+pub(crate) struct Device {
+    pub(crate) state: PathBuf,
     salt: u16,
 }
 
@@ -67,7 +68,10 @@ impl Device {
     /// wait here covers it: a test that reads the view starts the device first
     /// ([`Self::in_home`]) and saves the layout in the session after, where the keys are held
     /// from the start.
-    fn with_layout(home: &mut tilo_test_env::TestHome, tree: &Layout) -> (Self, Vec<WorkspaceId>) {
+    pub(crate) fn with_layout(
+        home: &mut tilo_test_env::TestHome,
+        tree: &Layout,
+    ) -> (Self, Vec<WorkspaceId>) {
         let state = crate::common::device_in(home);
         let (salt, workspace_ids) = save_layout(&state, tree);
         (Self { state, salt }, workspace_ids)
@@ -279,6 +283,17 @@ fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
     })
 }
 
+/// [`session_keeping`] as the machine's own desktop is started: it asks whether its wrapper restarts it
+/// in place, and ends its apps only when the login does.
+fn session_restarted(state: &Path) -> Session {
+    crate::common::headless(Options {
+        collab: false,
+        state: Some(state.to_path_buf()),
+        teardown: Box::new(tilo_session::restart::teardown),
+        ..Options::default()
+    })
+}
+
 /// The apps this session starts, on its own display.
 fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps> {
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
@@ -287,13 +302,13 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps
 }
 
 /// Run frames until `done` holds.
-fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
+pub(crate) fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
     crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Every tab of the layout, with the group it sits in: what a second window or a second tab of a
 /// restored one would change.
-fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
+pub(crate) fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -305,7 +320,7 @@ fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
 }
 
 /// What the tab `id` holds.
-fn tile_of(session: &Session, id: u64) -> Option<TileContent> {
+pub(crate) fn tile_of(session: &Session, id: u64) -> Option<TileContent> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -488,6 +503,161 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
     });
     assert_eq!(name, RENAMED, "the strip as it was renamed");
     assert_eq!(width, 480, "at the width it was left");
+}
+
+/// A window the person sends to a workspace they are not looking at is in that workspace after a
+/// restart: the workspace it left and the one it went to are both written, though the person never
+/// went there.
+#[test]
+fn a_window_moved_to_a_workspace_behind_comes_back_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
+    let mail = device.id(200);
+
+    let mut session = session_keeping(&device.state, None);
+    laid_out(&mut session);
+    session
+        .handle()
+        .choose_window_menu(
+            mail,
+            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
+            None,
+        )
+        .expect("the person moves the window");
+    until(
+        &mut session,
+        "the window is in the workspace behind",
+        |session| workspace_of(session, mail) == Some(workspace_ids[1]),
+    );
+    assert_eq!(
+        session.handle().read(|tree| tree.active),
+        workspace_ids[0],
+        "the person stays where they are"
+    );
+    // A look writes what moved, and the session ends as a restart ends it.
+    session.step(Duration::from_millis(1)).expect("step");
+    drop(session);
+
+    let mut next = session_keeping(&device.state, None);
+    until(&mut next, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    assert_eq!(
+        workspace_of(&next, mail),
+        Some(workspace_ids[1]),
+        "the window is in the workspace the person sent it to"
+    );
+    assert_eq!(
+        tile_of(&next, mail),
+        Some(TileContent::LocalApp {
+            app_id: "so.tilo.mail".into(),
+            label: "Mail".into(),
+            note: String::new(),
+        }),
+        "as the window it was"
+    );
+}
+
+/// Set in the process a scene has: the signal a wrapper sends a desktop ends every later
+/// layout write in the process that sees it, so a scene that must see one has a process of its
+/// own.
+const SIGNALLED_SCENE: &str = "TILO_TEST_SIGNALLED_RESTART";
+
+/// A window moved in the instant before the wrapper signals an in-place restart is in the
+/// workspace the person sent it to when the next desktop opens: the signal does not end the save.
+#[test]
+fn a_window_moved_just_before_the_restart_signal_comes_back_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
+    let mail = device.id(200);
+    // The desktop that sees the signal has a process of its own; this one opens the desktop
+    // that follows, which a signal has to reach no more than the one before it.
+    let scene = std::process::Command::new(std::env::current_exe().expect("this test program"))
+        .args(["--exact", "layout::signalled_restart_scene", "--nocapture"])
+        .env(SIGNALLED_SCENE, "1")
+        .env("TILO_TEST_SCENE_STATE", &device.state)
+        .env("TILO_TEST_SCENE_WORKSPACE", workspace_ids[1].to_string())
+        .env("TILO_TEST_SCENE_TAB", mail.to_string())
+        .output()
+        .expect("the scene starts");
+    assert!(
+        scene.status.success(),
+        "the scene failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&scene.stdout),
+        String::from_utf8_lossy(&scene.stderr)
+    );
+
+    let mut next = session_keeping(&device.state, None);
+    until(&mut next, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    assert_eq!(
+        workspace_of(&next, mail),
+        Some(workspace_ids[1]),
+        "the window moved in the instant before the signal is where the person sent it"
+    );
+}
+
+/// Not a test: the desktop [`a_window_moved_just_before_the_restart_signal_comes_back_there`]
+/// ends with the wrapper's signal, which would end every later write in this process too.
+#[test]
+fn signalled_restart_scene() {
+    if std::env::var_os(SIGNALLED_SCENE).is_none() {
+        return;
+    }
+    let state =
+        PathBuf::from(std::env::var_os("TILO_TEST_SCENE_STATE").expect("the scene's state"));
+    let workspace: WorkspaceId = std::env::var("TILO_TEST_SCENE_WORKSPACE")
+        .expect("the scene's workspace")
+        .parse()
+        .expect("a workspace id");
+    let mail: u64 = std::env::var("TILO_TEST_SCENE_TAB")
+        .expect("the scene's window")
+        .parse()
+        .expect("a tab id");
+    let mut session = session_restarted(&state);
+    laid_out(&mut session);
+    session
+        .handle()
+        .choose_window_menu(mail, &format!("{MOVE_TO_WORKSPACE}:{workspace}"), None)
+        .expect("the person moves the window");
+    until(
+        &mut session,
+        "the window is in the workspace behind",
+        |session| workspace_of(session, mail) == Some(workspace),
+    );
+    let private = signalled_restart_directory();
+    // The wrapper named its private directory in the environment: this process sets it for
+    // its one scene.
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set(
+        "TILO_SESSION_LOGOUT_REQUEST",
+        private.path().join("logout-request"),
+    );
+    // The wrapper's signal, in the instant no look follows.
+    tilo_session::termination::install(tilo_service::LoopWake::default().handle())
+        .expect("a signal ends this desktop");
+    // SAFETY: the handler is installed and only stores a flag.
+    unsafe { libc::raise(libc::SIGTERM) };
+    assert!(
+        tilo_session::termination::asked(),
+        "the signal reached the desktop"
+    );
+    drop(session);
+    drop(private);
+}
+
+/// The login's own directory with the wrapper's restart marker in it, as it is before an
+/// in-place restart. The `TempDir` is held for as long as the marker matters.
+fn signalled_restart_directory() -> tempfile::TempDir {
+    let private = tempfile::tempdir().expect("the login's directory");
+    fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700)).expect("private");
+    let marker = private.path().join("restart-request");
+    fs::write(&marker, b"restart\n").expect("the wrapper's marker");
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).expect("private");
+    private
 }
 
 #[test]
@@ -878,7 +1048,7 @@ fn two_workspaces() -> Layout {
 }
 
 /// The workspace the tab `id` stands in.
-fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceId> {
+pub(crate) fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceId> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()

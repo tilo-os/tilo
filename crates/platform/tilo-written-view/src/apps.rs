@@ -1,7 +1,7 @@
 //! The workspace's apps as a written view names them.
 //!
 //! Every app ships its published surface (`app_fleet::surface`). Read as a package for readings
-//! ([`catalogue::published_record`]) it gives a view the app's types, its actions, and the record
+//! ([`catalogue::published_document`]) it gives a view the app's types, its actions, and the record
 //! the app keeps for the workspace as a root (`tasks.tracker`). A view names an app by the last
 //! part of its id, as every written view does.
 //!
@@ -50,7 +50,7 @@ struct Verb {
 impl App {
     /// The app `id` that people call `title`, from its surface file.
     pub(crate) fn of(id: &str, title: &str, surface: &str) -> Result<Self, String> {
-        let meta = catalogue::published_record(id, title, surface)?;
+        let meta = catalogue::published_document(id, title, surface)?;
         let verbs = catalogue::parse_surfaces(surface)?
             .into_iter()
             .flat_map(|surface| surface.verbs)
@@ -243,15 +243,19 @@ fn fleet() -> Rc<[Rc<App>]> {
         .into()
 }
 
-/// The apps the view `source` names, each once: an app is named by its short name before a dot
-/// (`tasks.`), wherever in the definition that stands. Naming more than the view reads only loads
-/// a package it does not use; naming less is not possible, since a view reaches an app in no
-/// other way.
-pub(crate) fn named(source: &str) -> Vec<Rc<App>> {
+/// The apps the view `source` names and its writer listed in `listed`, each once: an app is named
+/// by its short name before a dot (`tasks.`), wherever in the definition that stands. Naming more
+/// than the view reads only loads a package it does not use; naming less is not possible, since a
+/// view reaches an app in no other way. An app the definition names that is not listed is not
+/// given to the view: the definition then names something unknown, and says so where it stands.
+pub(crate) fn named(source: &str, listed: &[String]) -> Vec<Rc<App>> {
     let named = dotted(source);
     APPS.with(|apps| {
         let mut out: Vec<Rc<App>> = Vec::new();
         for (name, _) in &named {
+            if !listed.iter().any(|listed| listed == name) {
+                continue;
+            }
             let found = apps.iter().find(|app| app.alias == *name);
             if let Some(app) = found
                 && !out.iter().any(|held| Rc::ptr_eq(held, app))

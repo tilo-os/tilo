@@ -203,9 +203,9 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
 
     // Ctrl+O opens the host's file chooser; its pick becomes the buffer.
     let (_chosen_directory, chosen) = file("chosen.bin", &[1, 2, 3]);
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick(PortalOutcome::Opened(chosen.clone().into()));
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.harness()
             .perform_named("hex_view", &A11yAction::Focus)
             .unwrap();
@@ -228,8 +228,8 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
 fn saving_a_new_buffer_asks_where_and_then_writes_back_there() {
     let directory = tempfile::tempdir().unwrap();
     let chosen = directory.path().join("made.bin");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = TestApp::<HexEditorShell>::new().unwrap();
     app.harness().relayout();
     let new_file = app.harness().a11y_node_named("New empty file").unwrap();
@@ -523,9 +523,9 @@ fn a_guests_open_file_asks_no_workspace_consent() {
     app.harness().relayout();
     app.set_role(ui::permissions::Role::Editor);
     let (_chosen_directory, chosen) = file("guest.bin", &[7, 8]);
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick(PortalOutcome::Opened(chosen.into()));
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.harness()
             .perform_named("hex.open", &A11yAction::Activate)
             .unwrap();

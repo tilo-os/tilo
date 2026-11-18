@@ -160,7 +160,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_store_layout;
 
-        phase system_store_overrides_are_gated;
+        phase system_store_overrides_are_guarded;
         {
             {
                 for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
@@ -175,9 +175,9 @@ mod tests {
                         "{name}"
                     );
                 }
-                let gated = dev_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
+                let guarded = dev_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
                 assert_eq!(
-                    system_data_dir_from(gated, false),
+                    system_data_dir_from(guarded, false),
                     Some(PathBuf::from(SYSTEM_DATA_DIR)),
                     "a release build reads the image's store whatever the environment says",
                 );

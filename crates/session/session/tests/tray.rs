@@ -154,7 +154,7 @@ fn until<T>(session: &mut Session, what: &str, mut asked: impl FnMut(&Session) -
 /// The resource published for the tray menu entry labelled `label` .
 fn entry_resource(resources: &[ResourceSpec], label: &str) -> Option<String> {
     resources.iter().find_map(|resource| {
-        if resource.kind == tilo_tray_host::service::ENTRY_KIND && resource.label == label {
+        if resource.kind == tilo_tray::service::ENTRY_KIND && resource.label == label {
             Some(resource.id.as_str().to_owned())
         } else {
             entry_resource(&resource.children, label)
@@ -219,8 +219,8 @@ fn register_item(desktop: &DesktopServices, bus: &PrivateBus, calls: &Calls) -> 
             .expect("the application's connection");
         let watcher = zbus::Proxy::new(
             &app,
-            tilo_tray_host::WATCHER_BUS_NAME,
-            tilo_tray_host::WATCHER_PATH,
+            tilo_tray::WATCHER_BUS_NAME,
+            tilo_tray::WATCHER_PATH,
             "org.kde.StatusNotifierWatcher",
         )
         .await

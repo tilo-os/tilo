@@ -3838,7 +3838,7 @@ impl Music {
         }
     }
 
-    /// Ingest a fresh multi-type search response for `query`: record covers,
+    /// Ingest a fresh multi-type search response for `query`: resource covers,
     /// make tracks playable, and stash the bundle the platform search reads.
     fn ingest_search_results(&mut self, query: &str, bundle: SearchBundle) {
         if self.live_search_pending.as_deref() == Some(query) {

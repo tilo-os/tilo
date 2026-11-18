@@ -16,8 +16,8 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             f.write_page(f.child, source.as_bytes());
             let checkout = notebook(&f);
             let block = f
-                .records
-                .read(&checkout.id, |doc| {
+                .store
+                .read(&f.part(), |doc| {
                     read::page_block_snapshots(doc, f.child)[0].0.clone()
                 })
                 .unwrap();
@@ -33,11 +33,11 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             live.relayout();
             close_driver(&mut live);
             drop(live);
-            f.records.try_flush().unwrap();
+            f.store.try_flush().unwrap();
             let f = f.reopen();
             let mut reopened = driver(&f, 82, &checkout);
-            f.records
-                .read(&checkout.id, |doc| {
+            f.store
+                .read(&f.part(), |doc| {
                     assert_eq!(
                         read::page_block_snapshots(doc, f.child),
                         vec![(block.clone(), "Alpha\nBeta".into())]

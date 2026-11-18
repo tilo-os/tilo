@@ -9,7 +9,7 @@ impl FrameHarness {
     /// replaced; the next frame rebuilds.
     pub(super) fn discard_layout_tree(&mut self) {
         self.serviced_layout = None;
-        self.history_standing.set(None);
+        self.history_inputs.set(None);
         self.bindings.clear();
         self.node_map.clear();
         self.layout_maps.clear();

@@ -1,4 +1,4 @@
-//! A scroll view settling on the detents its content offers: a board's lanes,
+//! A scroll view settling on the detents its content offers: a board's lists,
 //! one at a time, on a pane too narrow to show two side by side.
 #![allow(
     clippy::unwrap_used,
@@ -18,14 +18,14 @@ use automerge::AutoCommit;
 use winit::event::{MouseScrollDelta, TouchPhase};
 use winit::keyboard::NamedKey;
 
-fn lanes(count: usize) -> Board {
+fn lists(count: usize) -> Board {
     let mut board = Board::new();
     for index in 0..count {
-        let key = format!("lane-{index}");
+        let key = format!("list-{index}");
         let header: Element = Box::new(Text::new(&key));
         let header = Some(header);
         let card: Element = Box::new(Container::new().with_size(160.0, 40.0));
-        board = board.lane(
+        board = board.list(
             key.clone(),
             header,
             vec![(format!("{key}-card"), card)],
@@ -52,9 +52,9 @@ fn board_on_a_pane(board: Board, pane: u32) -> Framed<Scrollable> {
     )
 }
 
-fn lane_pitch() -> f32 {
+fn list_pitch() -> f32 {
     let theme = Theme::dark();
-    Board::lane_width(&theme, 390.0) + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
+    Board::list_width(&theme, 390.0) + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
 }
 
 /// Move the content by `dx` over `steps` samples `16 ms` apart, as a finger or
@@ -98,37 +98,37 @@ fn run_out(view: &mut Framed<Scrollable>, from: Instant) -> f32 {
 }
 
 tilo_test_env::scenario! {
-    /// Lane snapping of a board that scrolls sideways.
+    /// List snapping of a board that scrolls sideways.
     /// Each phase was a test of its own and builds its own fixture.
-    fn a_board_snaps_to_its_lanes;
+    fn a_board_snaps_to_its_lists;
 
-    phase a_compact_board_offers_a_detent_per_lane;
-    // The detents a phone-width board offers the view showing it: one per lane,
-    // a lane and its gap apart, the first at the start of the content.
+    phase a_compact_board_offers_a_detent_per_list;
+    // The detents a phone-width board offers the view showing it: one per list,
+    // a list and its gap apart, the first at the start of the content.
     {
-        let view = board_on_a_pane(lanes(3), 390);
+        let view = board_on_a_pane(lists(3), 390);
         let detents = &view.snap_x;
-        assert_eq!(detents.len(), 3, "one per lane: {detents:?}");
+        assert_eq!(detents.len(), 3, "one per list: {detents:?}");
         assert!(
             detents[0].abs() < 0.5,
-            "the first lane is the start of the content: {detents:?}"
+            "the first list is the start of the content: {detents:?}"
         );
-        let pitch = lane_pitch();
+        let pitch = list_pitch();
         assert!(
             (detents[1] - detents[0] - pitch).abs() < 0.5,
-            "the second lane stands a lane and a gap on: {detents:?}"
+            "the second list stands a list and a gap on: {detents:?}"
         );
         assert!(
             detents[2] > detents[1] && detents[2] <= detents[1] + pitch + 0.5,
-            "the last lane's detent comes after the second: {detents:?}"
+            "the last list's detent comes after the second: {detents:?}"
         );
     }
 
-    phase a_fling_settles_on_the_next_lane;
-    // A fling that is still moving settles a lane on, not halfway between two:
+    phase a_fling_settles_on_the_next_list;
+    // A fling that is still moving settles a list on, not halfway between two:
     // the view carries the gesture's speed into the settle.
     {
-        let mut view = board_on_a_pane(lanes(3), 390);
+        let mut view = board_on_a_pane(lists(3), 390);
         let at = crate::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let_go(&mut view, released);
@@ -136,59 +136,59 @@ tilo_test_env::scenario! {
         let next = view.snap_x[1];
         assert!(
             (f64::from(rest) - f64::from(next)).abs() < 0.5,
-            "the fling settled on the next lane's edge {next}: {rest}"
+            "the fling settled on the next list's edge {next}: {rest}"
         );
     }
 
-    phase a_drag_that_comes_to_rest_returns_to_its_lane;
-    // A drag that comes to rest before it is let go returns to the lane it was
-    // thrown from: it never left that lane far enough to cross into the next.
+    phase a_drag_that_comes_to_rest_returns_to_its_list;
+    // A drag that comes to rest before it is let go returns to the list it was
+    // thrown from: it never left that list far enough to cross into the next.
     {
-        let mut view = board_on_a_pane(lanes(3), 390);
+        let mut view = board_on_a_pane(lists(3), 390);
         let at = crate::time::now();
-        let lane = view.snap_x[1];
+        let list = view.snap_x[1];
         with_monotonic_time(at, || {
-            view.move_by(lane, 0.0);
+            view.move_by(list, 0.0);
         });
         let settled = at + Duration::from_millis(500);
         let released = drag(&mut view, settled, 90.0, 4);
         let_go(&mut view, released + Duration::from_millis(300));
         let rest = run_out(&mut view, released + Duration::from_millis(300));
         assert!(
-            (f64::from(rest) - f64::from(lane)).abs() < 0.5,
-            "the drag came back to the lane it was in {lane}: {rest}"
+            (f64::from(rest) - f64::from(list)).abs() < 0.5,
+            "the drag came back to the list it was in {list}: {rest}"
         );
     }
 
     phase a_release_still_moving_settles_ahead_never_back;
-    // The same drag let go while still moving settles on the lane ahead: the
+    // The same drag let go while still moving settles on the list ahead: the
     // detents behind the way the hand went are never where it comes to rest.
     {
-        let mut view = board_on_a_pane(lanes(3), 390);
+        let mut view = board_on_a_pane(lists(3), 390);
         let at = crate::time::now();
-        let lane = view.snap_x[1];
+        let list = view.snap_x[1];
         with_monotonic_time(at, || {
-            view.move_by(lane, 0.0);
+            view.move_by(list, 0.0);
         });
         let released = drag(&mut view, at + Duration::from_millis(500), 90.0, 4);
         let_go(&mut view, released);
         let rest = run_out(&mut view, released);
-        let ahead = *view.snap_x.last().expect("the last lane");
+        let ahead = *view.snap_x.last().expect("the last list");
         assert!(
             (f64::from(rest) - f64::from(ahead)).abs() < 0.5,
             "the release settled ahead on {ahead}, not back: {rest}"
         );
         assert!(
-            rest > lane,
-            "the content went on, never back: {rest} from {lane}"
+            rest > list,
+            "the content went on, never back: {rest} from {list}"
         );
     }
 
-    phase a_key_walks_the_lanes_one_at_a_time;
-    // A key walks the lanes one at a time: it moves the view a line, and the
-    // view lands on the next lane rather than a line further on.
+    phase a_key_walks_the_lists_one_at_a_time;
+    // A key walks the lists one at a time: it moves the view a line, and the
+    // view lands on the next list rather than a line further on.
     {
-        let mut view = board_on_a_pane(lanes(3), 390);
+        let mut view = board_on_a_pane(lists(3), 390);
         let at = crate::time::now();
         view.set_focus(true);
         let next = view.snap_x[1];
@@ -204,15 +204,15 @@ tilo_test_env::scenario! {
         let rest = run_out(&mut view, at);
         assert!(
             (f64::from(rest) - f64::from(next)).abs() < 0.5,
-            "the key landed on the next lane's edge {next}: {rest}"
+            "the key landed on the next list's edge {next}: {rest}"
         );
     }
 
-    phase under_reduced_motion_a_release_lands_on_the_lane_at_once;
-    // Under reduced motion a release lands on the lane at once: no animation
+    phase under_reduced_motion_a_release_lands_on_the_list_at_once;
+    // Under reduced motion a release lands on the list at once: no animation
     // runs, and the view asks for no frame to run one.
     {
-        let mut view = board_on_a_pane(lanes(3), 390);
+        let mut view = board_on_a_pane(lists(3), 390);
         view.motion = EffectiveMotion::new(Motion::default(), true);
         let at = crate::time::now();
         let released = drag(&mut view, at, 90.0, 4);
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
         let next = view.snap_x[1];
         assert!(
             (view.offset_x() - next).abs() < 0.5,
-            "the release landed on the next lane's edge {next}: {}",
+            "the release landed on the next list's edge {next}: {}",
             view.offset_x()
         );
         assert!(
@@ -229,14 +229,14 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_board_wide_enough_for_its_lanes_scrolls_freely;
-    // A board wide enough to show its lanes side by side offers no detents: the content stays
+    phase a_board_wide_enough_for_its_lists_scrolls_freely;
+    // A board wide enough to show its lists side by side offers no detents: the content stays
     // where the hand left it, and a fling coasts on from there, as a free scroll does.
     {
-        let mut view = board_on_a_pane(lanes(6), 1280);
+        let mut view = board_on_a_pane(lists(6), 1280);
         assert!(
             view.snap_x.is_empty(),
-            "a pane showing its lanes side by side offers none: {:?}",
+            "a pane showing its lists side by side offers none: {:?}",
             view.snap_x
         );
         assert!(!view.snaps(), "and so it does not snap");
@@ -249,12 +249,12 @@ tilo_test_env::scenario! {
             (rest - 90.0).abs() < 0.5,
             "the content stays where the hand left it: {rest}"
         );
-        let pitch = f64::from(lane_pitch());
+        let pitch = f64::from(list_pitch());
         assert!(
             [1.0, 2.0, 3.0]
                 .iter()
-                .all(|lanes| (f64::from(rest) - pitch * lanes).abs() > 2.0),
-            "no lane edge pulled it: {rest}"
+                .all(|lists| (f64::from(rest) - pitch * lists).abs() > 2.0),
+            "no list edge pulled it: {rest}"
         );
         let released = drag(&mut view, paused + Duration::from_millis(500), 90.0, 4);
         let_go(&mut view, released);

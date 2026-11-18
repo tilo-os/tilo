@@ -793,7 +793,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 /// An agent acts for one person, inside a turn that person's message caused
 /// ([`crate::turn::authority`]): it never holds more than that person's role,
 /// and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the
-/// relay governing a workspace, every member admitting its ops, the desktop
+/// server governing a workspace, every member admitting its ops, the desktop
 /// broker hosting a workspace itself — asks [`role`](agent_policy::role) rather
 /// than deciding on its own. A workspace's governor admits only its own
 /// person's agents.
@@ -807,7 +807,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 ///    needs a new agent key.
 ///
 /// A member still admits an agent's ops by its delegation's workspaces and
-/// expiry only: the app scope of its record is enforced by the turn's action API.
+/// expiry only: the app scope of its resource is enforced by the turn's action API.
 pub mod agent_policy {
     use crate::Role;
 
@@ -829,15 +829,15 @@ pub mod agent_policy {
 }
 
 /// The authority an agent's turn carries in `workspace`: the preset of
-/// [`agent_policy::ROLE_CAP`], narrowed by the bound the agent's record keeps
+/// [`agent_policy::ROLE_CAP`], narrowed by the bound the agent's resource keeps
 /// (`bound`; empty follows the default, which is the cap's own). The agent acts
 /// with its person's grants bounded by them, so it changes what its person may
-/// change, never more than the cap allows, never more than its record bounds it
+/// change, never more than the cap allows, never more than its resource bounds it
 /// to, and never the workspace's governance.
 ///
 /// This is the only place an agent's authority is made: an action API or a receiver
 /// hands it the person whose message caused the turn, and the bound it holds
-/// for the agent's record ([`crate::turn::authority`]).
+/// for the agent's resource ([`crate::turn::authority`]).
 #[must_use]
 pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());
@@ -850,7 +850,7 @@ pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) 
         &Lifetime::UntilRevoked,
     );
     grants.extend(bound.iter().enumerate().map(|(index, rule)| Grant {
-        id: GrantId(format!("{prefix}:bound:{index}")),
+        id: GrantId(format!("{}{index}", bound_prefix(agent))),
         grantee: grantee.clone(),
         node: rule.node.clone(),
         kinds: rule.kinds,
@@ -861,6 +861,17 @@ pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) 
     grants
 }
 
+/// Where the ids of the grants [`agent_grants`] makes of `agent`'s bound begin.
+fn bound_prefix(agent: &str) -> String {
+    format!("turn:agent:{agent}:bound:")
+}
+
+/// Whether `grant` is one of the rules of `agent`'s bound, as [`agent_grants`] carries it.
+#[must_use]
+pub fn is_agent_bound(grant: &Grant, agent: &str) -> bool {
+    grant.id.0.starts_with(&bound_prefix(agent))
+}
+
 /// The app a person's desktop session publishes its own functions as (the
 /// shell's actions: windows, workspaces, its settings), on their device.
 pub const SESSION_APP: &str = "shell";
@@ -869,8 +880,8 @@ pub const SESSION_APP: &str = "shell";
 /// settings, which is a panel of the session's rather than an app of its own.
 pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
 
-/// The app a workspace's files are the record of: the tree every device
-/// holding the workspace mounts or mirrors, published as this app's record.
+/// The app a workspace's files are the resource of: the tree every device
+/// holding the workspace mounts or mirrors, published as this app's resource.
 pub use tilo_app_id::apps::FILE_EXPLORER as FILES_APP;
 
 /// The kind the session publishes its own resources under: the compositor's

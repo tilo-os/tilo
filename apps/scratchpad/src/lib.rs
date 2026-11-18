@@ -17,7 +17,7 @@ pub struct Note {
 }
 
 impl Note {
-    /// What the record holds: the note's text.
+    /// What the resource holds: the note's text.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

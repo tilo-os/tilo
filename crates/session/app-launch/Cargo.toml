@@ -12,9 +12,9 @@ description = "Starting an application from the desktop: the launch vocabulary, 
 # and hands over what this crate plans and spawns.
 
 [features]
-# The seam a session's tests report an ending through, for the apps it did
+# The boundary a session's tests report an ending through, for the apps it did
 # not start itself.
-test-support = []
+test-support = ["tilo-app-keeper/test-support"]
 
 [dependencies]
 # The machine's own applications: their entries, entry kinds and launch plans.
@@ -97,6 +97,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The desktop a kept app's keeper is attached to in its tests.
 tilo-compositor = { path = "../compositor" }
+# A keeper of an older build, in the tests of what a session does with one.
+tilo-app-keeper = { path = "../app-keeper", features = ["test-support"] }
 
 [lints]
 workspace = true

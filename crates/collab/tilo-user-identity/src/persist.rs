@@ -76,11 +76,11 @@ fn protect_secret_process() -> io::Result<()> {
     Ok(())
 }
 
-/// Apply canonical process protection before held-file private custody reads.
+/// Apply canonical process protection before held-file private ownership reads.
 ///
 /// # Errors
 /// Returns the native failure when dump/ptrace protection cannot be established.
-pub fn protect_private_custody() -> io::Result<()> {
+pub fn protect_private_ownership() -> io::Result<()> {
     protect_secret_process()
 }
 
@@ -237,12 +237,12 @@ pub struct IdentityPaths {
     /// `<root>/device/cert.bin`
     pub device_cert: std::path::PathBuf,
     /// Where the device key itself is kept.
-    pub device_key_custody: DeviceKeyCustody,
+    pub device_key_ownership: DeviceKeyOwnership,
 }
 
 /// Where a layout keeps this device's private key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DeviceKeyCustody {
+pub enum DeviceKeyOwnership {
     /// A group-private file at [`IdentityPaths::device_privkey`]: the Tilo OS
     /// layout, where the root filesystem daemon and the session share it.
     #[default]
@@ -268,14 +268,14 @@ impl IdentityPaths {
             user_privkey: root.join("user-identity/privkey.bin"),
             device_privkey: root.join("device-private/keypair.bin"),
             device_cert: root.join("device/cert.bin"),
-            device_key_custody: DeviceKeyCustody::File,
+            device_key_ownership: DeviceKeyOwnership::File,
         }
     }
 
-    /// This layout with its device key kept in `custody`.
+    /// This layout with its device key kept in `ownership`.
     #[must_use]
-    pub fn with_device_key_custody(mut self, custody: DeviceKeyCustody) -> Self {
-        self.device_key_custody = custody;
+    pub fn with_device_key_ownership(mut self, ownership: DeviceKeyOwnership) -> Self {
+        self.device_key_ownership = ownership;
         self
     }
 
@@ -295,7 +295,7 @@ impl IdentityPaths {
         if let Some(parent) = self
             .device_privkey
             .parent()
-            .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
+            .filter(|_| self.device_key_ownership == DeviceKeyOwnership::File)
         {
             #[cfg(windows)]
             tilo_files::native::private::directory(parent)?;
@@ -473,7 +473,7 @@ pub enum RevocationsError {
 }
 
 /// Where this device keeps the revocations it verified: beside the person's
-/// public key, where the filesystem daemon, the relay and every other reader
+/// public key, where the filesystem daemon, the server and every other reader
 /// of the identity root find them.
 #[must_use]
 pub fn revocations_path(paths: &IdentityPaths) -> std::path::PathBuf {
@@ -868,10 +868,10 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
 /// refuses or fails to answer, is an error: a missing device key is never
 /// replaced here.
 pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError> {
-    match paths.device_key_custody {
-        DeviceKeyCustody::File => read_device_key(&paths.device_privkey),
+    match paths.device_key_ownership {
+        DeviceKeyOwnership::File => read_device_key(&paths.device_privkey),
         #[cfg(target_os = "macos")]
-        DeviceKeyCustody::Keychain => crate::keychain::load(paths)?.ok_or_else(|| {
+        DeviceKeyOwnership::Keychain => crate::keychain::load(paths)?.ok_or_else(|| {
             PersistError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
                 "the login Keychain holds no Tilo device key",
@@ -930,7 +930,7 @@ pub fn load_or_create_device_key(
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
     protect_secret_process()?;
     #[cfg(target_os = "macos")]
-    if paths.device_key_custody == DeviceKeyCustody::Keychain {
+    if paths.device_key_ownership == DeviceKeyOwnership::Keychain {
         return crate::keychain::load_or_create(paths);
     }
     let path = paths.device_privkey.as_path();
@@ -1188,7 +1188,7 @@ pub fn adopt_device_key(
     seed: &[u8; 32],
 ) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
-    if paths.device_key_custody != DeviceKeyCustody::File {
+    if paths.device_key_ownership != DeviceKeyOwnership::File {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::Unsupported,
             "only a device key file adopts an earlier subsystem key",

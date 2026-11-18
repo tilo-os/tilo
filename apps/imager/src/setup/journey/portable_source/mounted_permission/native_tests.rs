@@ -34,7 +34,7 @@ impl Drop for Binding {
         assert_eq!(
             unsafe { libc::umount2(self.0.as_ptr(), 0) },
             0,
-            "close actual permission custody before normal unmount"
+            "close actual permission ownership before normal unmount"
         );
     }
 }
@@ -42,7 +42,7 @@ struct Picker {
     path: PathBuf,
     answer: bool,
 }
-impl ui::host::FilePicker for Picker {
+impl ui::process::FilePicker for Picker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
         assert!(request.is_directory());
         let (tx, rx) = mpsc::channel();
@@ -67,7 +67,7 @@ impl ui::host::FilePicker for Picker {
     }
 }
 struct WaitingPicker(Mutex<Option<ui::PortalChannel>>);
-impl ui::host::FilePicker for WaitingPicker {
+impl ui::process::FilePicker for WaitingPicker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
         assert!(request.is_directory());
         self.0.lock().unwrap().take().unwrap()
@@ -88,7 +88,7 @@ struct RetiringPicker {
     retiring: mpsc::Sender<()>,
     release: Mutex<mpsc::Receiver<()>>,
 }
-impl ui::host::FilePicker for RetiringPicker {
+impl ui::process::FilePicker for RetiringPicker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
         self.picker.pick(request)
     }
@@ -128,11 +128,11 @@ fn wait(controller: &mut Controller) -> Result<Option<Reviewed>, ReviewFailure> 
     }
 }
 fn request(controller: &mut Controller, id: &str, path: &Path, answer: bool) {
-    let services = ui::host::HostServices::null().with_files(Arc::new(Picker {
+    let services = ui::process::ProcessServices::null().with_files(Arc::new(Picker {
         path: path.into(),
         answer,
     }));
-    let _scope = ui::host::enter(&services);
+    let _scope = ui::process::enter(&services);
     controller
         .request(
             id.into(),
@@ -290,9 +290,9 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             })
             .unwrap();
         let (answer_tx, answer_rx) = mpsc::channel();
-        let services = ui::host::HostServices::null()
+        let services = ui::process::ProcessServices::null()
             .with_files(Arc::new(WaitingPicker(Mutex::new(Some(answer_rx)))));
-        let scope = ui::host::enter(&services);
+        let scope = ui::process::enter(&services);
         app.effect(&InstallerPreviewEffect::GrantMountedHomeLocation {
             location: actual_id,
         })
@@ -377,7 +377,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
     let (retiring_tx, retiring_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     {
-        let services = ui::host::HostServices::null().with_files(Arc::new(RetiringPicker {
+        let services = ui::process::ProcessServices::null().with_files(Arc::new(RetiringPicker {
             picker: Picker {
                 path: mounted.clone(),
                 answer: true,
@@ -385,7 +385,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             retiring: retiring_tx,
             release: Mutex::new(release_rx),
         }));
-        let _scope = ui::host::enter(&services);
+        let _scope = ui::process::enter(&services);
         controller
             .request(
                 id.clone(),

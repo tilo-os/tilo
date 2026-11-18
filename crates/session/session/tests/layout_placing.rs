@@ -61,7 +61,7 @@ fn mailbox() -> ResourceSpec {
         .with_view(ResourceViewSpec::new("reader", "Reader", "open-reader"))
 }
 
-/// The app and its mailbox, published on the session's plane; it records every action it is asked
+/// The app and its mailbox, published on the session's app wire; it records every action it is asked
 /// to run, so a test can say showing ran none.
 struct Mailbox {
     app: String,
@@ -122,7 +122,7 @@ fn session() -> Session {
     crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
 }
 
-/// The person at this device, as the session's own seat reads it: the identity it holds names them.
+/// The person at this device, as the session's own identity reads it: the identity it holds names them.
 fn person() -> String {
     tilo_session::identity::own_person(&options())
 }
@@ -144,7 +144,7 @@ fn placed(session: &mut Session, key: u64) -> layout::PlaceReading {
     crate::common::wait_for(
         session,
         "the place's record to reach the workspace",
-        |session| place_of(session, key).filter(|place| !place.record.is_empty()),
+        |session| place_of(session, key).filter(|place| !place.resource.is_empty()),
     )
 }
 
@@ -183,7 +183,7 @@ fn front_row(session: &Session) -> u64 {
     workspace.strips.first().expect("a row").id.0
 }
 
-/// An app with a mailbox is published on the session's plane.
+/// An app with a mailbox is published on the session's app wire.
 fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<String>>>) {
     let app = "so.tilo.lang.mail".to_owned();
     let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -239,7 +239,7 @@ fn a_resource_a_view_and_a_point_make_an_layout_entry() {
         .expect("the layout action runs");
     let entry = placed(&mut session, place);
     assert_eq!(
-        entry.record, "tl:so.tilo.lang.mail:inbox",
+        entry.resource, "tl:so.tilo.lang.mail:inbox",
         "it names the resource"
     );
     assert_eq!(entry.shown_as, "reader", "it names the view");
@@ -419,12 +419,12 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         layout(session)
             .places
             .iter()
-            .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+            .any(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
     });
     let placed = layout(&session)
         .places
         .into_iter()
-        .find(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+        .find(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
         .expect("the found resource is on the canvas");
     assert_eq!(placed.shown_as, "inbox", "its primary published view");
     assert_eq!(placed.shows, app, "shows follows from the resource's app");
@@ -527,12 +527,12 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
         layout(session)
             .places
             .iter()
-            .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+            .any(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
     });
     let entry = layout(&session)
         .places
         .into_iter()
-        .find(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+        .find(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
         .expect("the found resource stands");
     assert_eq!(entry.shows, app, "shows follows from the resource's app");
     // The workspace holds the row the place stands in: the one made for it.
@@ -617,7 +617,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
 
 // (7) The system's `open` places a resource with its default view beside where it was asked
 // (`docs/designs/app-language/one-app-model.md` §3, "`open(r)` places r with its default view,
-// beside where it was asked, for every app"). A resource standing already comes forward instead of
+// beside where it was asked, for every app"). A resource already open comes forward instead of
 // a second place being made.
 #[test]
 fn the_system_open_brings_what_is_placed_forward() {
@@ -652,7 +652,7 @@ fn the_system_open_brings_what_is_placed_forward() {
         )
         .expect("the anchor is placed");
     let anchored = placed(&mut session, place);
-    assert_eq!(anchored.record, "tl:so.tilo.lang.mail:inbox");
+    assert_eq!(anchored.resource, "tl:so.tilo.lang.mail:inbox");
 
     session
         .invoke(
@@ -667,7 +667,7 @@ fn the_system_open_brings_what_is_placed_forward() {
     let held: Vec<_> = layout(&session)
         .places
         .into_iter()
-        .filter(|held| held.record == "tl:so.tilo.lang.mail:inbox")
+        .filter(|held| held.resource == "tl:so.tilo.lang.mail:inbox")
         .collect();
     assert_eq!(held.len(), 1, "one place of the resource: {held:?}");
     assert_eq!(held[0].key, place.to_string(), "the place it already had");
@@ -708,7 +708,7 @@ fn the_system_open_stands_a_new_place() {
             layout(session)
                 .places
                 .into_iter()
-                .find(|held| held.record == "tl:so.tilo.lang.mail:inbox")
+                .find(|held| held.resource == "tl:so.tilo.lang.mail:inbox")
         },
     );
     assert_eq!(entry.shows, app, "it shows the app the resource is of");
@@ -784,7 +784,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
         layout(session)
             .places
             .iter()
-            .any(|held| held.record == "tl:test.anchor:conversation")
+            .any(|held| held.resource == "tl:test.anchor:conversation")
     });
     for opened in [
         "tl:test.anchor:tasks",
@@ -796,7 +796,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             layout(session)
                 .places
                 .iter()
-                .any(|held| held.record == opened)
+                .any(|held| held.resource == opened)
         });
     }
     // Every place's canvas rectangle, as the layout holds it.
@@ -806,7 +806,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
         .filter_map(|held| {
             let strip = strip_of(&session, number(&held.strip))?;
             Some((
-                held.record.clone(),
+                held.resource.clone(),
                 strip.canvas_x,
                 strip.canvas_y,
                 strip.canvas_width,
@@ -848,11 +848,11 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
 
 // (8) The live run's failure: an agent asked to show the person their mails stood one Mail place of
 // the mailbox (the `Inbox` tab) and a second of a thread in it (the `sam@rivera.example` tab), so
-// the person had two windows of one mailbox. Opening a resource of a root already standing — the
+// the person had two windows of one mailbox. Opening a resource of a root already open — the
 // root itself, or a view inside it — brings what stands forward, as activating what is shown does
 // (`shell.md` §3): one mailbox is open, whether opened by its root or by a message in it.
 #[test]
-fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_second() {
+fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second() {
     // The app: a mailbox root and a thread inside it, as an app publishes its record.
     struct Mail;
     impl Published for Mail {
@@ -921,7 +921,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
         layout(session)
             .places
             .into_iter()
-            .filter(|held| held.record.starts_with(prefix))
+            .filter(|held| held.resource.starts_with(prefix))
             .count()
     };
 

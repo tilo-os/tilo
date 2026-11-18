@@ -80,7 +80,7 @@ text it wrote itself.
 - `#[model(readonly)]` publishes the field for reading but offers no field edit;
   only verbs change it.
 - `#[model(unit)]` stores the field as its own storage unit (for a
-  `Collection`, each item is one), so the relay can enforce who may write it
+  `Collection`, each item is one), so the server can enforce who may write it
   without reading content ([permissions.md](permissions.md) §5). A comment
   thread inside a document is a unit; the document body is another.
 - `#[model(whole)]` reads all of a value that is otherwise read as views ask
@@ -95,12 +95,12 @@ text it wrote itself.
   `fn(&Self) -> Result<(), Refusal>`. It runs after every change that touched a
   value of that type, from any path: a field edit, a verb, a group, an agent's
   `apply`. A refused check refuses the whole change. One place covers every way
-  in. A field edit reads the record again to check it, so a record holding a
+  in. A field edit reads the resource again to check it, so a resource holding a
   lot (a sheet's cells) says what its check reads:
   `#[model(check = Sheet::valid, check_reads = "name color charts")]`, and
   `check_items = "sheets"` for a collection whose items it only counts. An edit
-  inside none of them (typing into a cell) does not re-read the record; a verb
-  still checks the record it changed. A field left out that the check does
+  inside none of them (typing into a cell) does not re-read the resource; a verb
+  still checks the resource it changed. A field left out that the check does
   read goes unchecked on field edits.
 
 ### Paths
@@ -154,7 +154,7 @@ dispatcher.submit(Snippets::paths().snippets.item(&id).favorite.set(true));
 A field edit is a value of `Edit<R>`: a path plus an operation. It is part of
 the resource's action type, so it replays, syncs, undoes and is named in
 history like any action. It applies at its path: the framework does not read
-the whole record to change one field. `#[model(readonly)]` fields offer none;
+the whole resource to change one field. `#[model(readonly)]` fields offer none;
 `check` runs after every one.
 
 Consecutive edits of one path by one actor within one gesture (typing a word,
@@ -196,7 +196,7 @@ impl Snippets {
   parameter name does not equal the field name, `#[action(item = field)]` names
   it; anything else is a compile error.
 - The verb's parameters are a generated struct in a module named after the
-  record (`snippets::NewSnippet { title, folder }`) with a JSON schema derived
+  resource (`snippets::NewSnippet { title, folder }`) with a JSON schema derived
   from the parameter types themselves.
   Agents, the palette and forms (§3.3) all use it.
 - A parameter that names an existing resource (a note, a file, an issue) is a
@@ -211,7 +211,7 @@ impl Snippets {
   first missing argument, a picked one on its picker. Tasks' "Link a note"
   is one: its button opens straight on the notes of the workspace, and
   picking one runs the issue's `link-note`.
-- Verbs run against the record the framework reads for them, and write back as
+- Verbs run against the resource the framework reads for them, and write back as
   a diff. A verb that only touches one item is an item method: it takes the
   item instead of `&mut self` and reads and writes only that item.
 
@@ -222,14 +222,14 @@ impl Snippets {
   ```
 
   It is published with the item's id as its first parameter (`snippet`), and
-  on each item. A record with an invariant of its own (`#[model(check)]` on
-  the record) or a `queue` hook is still read whole for it.
+  on each item. A resource with an invariant of its own (`#[model(check)]` on
+  the resource) or a `queue` hook is still read whole for it.
 - `destructive` marks a deletion or overwrite; it does not change the kind.
   An undoable one (the document alone, or a compensated outside change) runs
   at once and offers Undo; only one Undo cannot take back asks people first.
-- `by_app` marks a verb that is the app's own bookkeeping of a record, such
-  as what its engine listed. Only the app's code applies it, to a record it
-  holds (`PersonRecord::invoke`, `invoke_as`), authored by whoever the app
+- `by_app` marks a verb that is the app's own bookkeeping of a resource, such
+  as what its engine listed. Only the app's code applies it, to a resource it
+  holds (`PersonResource::invoke`, `invoke_as`), authored by whoever the app
   names. It is declared to no caller: it is not published and not in the
   app's surface, nothing builds it by its id, and the generic `apply`,
   `group` and every action API that decodes an action refuse it. `housekeeping`
@@ -239,23 +239,23 @@ The resource attribute covers what used to need a hand-written `Resource`:
 `initialize` (deterministic genesis), `seed` (first content, by the creator,
 nobody's undo step), `available` (state-dependent availability of verbs),
 `children` (derived child resources, §2.5), `search` and `scopes`,
-`read_content`, `read = false` (the record answers no read on purpose),
-`facts` (a compact summary to check the record against a request, published as
+`read_content`, `read = false` (the resource answers no read on purpose),
+`facts` (a compact summary to check the resource against a request, published as
 the `facts` view), `views`.
 
-Every record declares its read. The framework publishes the `read` view on a
+Every resource declares its read. The framework publishes the `read` view on a
 resource whose declaration names `read_content` (or `read_content_in_doc`, for
 a read that looks at the document too), and that read is what a caller with no
 window open gets — an agent's `tilo_read <path>`, a script, the SDK's
-`Document.load()` — under the caller's ordinary read permission. A record whose
+`Document.load()` — under the caller's ordinary read permission. A resource whose
 fields are all it holds answers with `tilo_resource::read::fields(self, item)`,
-which is its own model's JSON; a record that reads more than its fields (a
+which is its own model's JSON; a resource that reads more than its fields (a
 notebook's pages, a sheet's cells, a form's values) says so in a read of its
-own. Without one a caller is told the record offers no read at all, so
-`tools/policy/check_app_record_reads.py` fails on a record that names none. A
-record whose content must not reach anyone holding its path declares
+own. Without one a caller is told the resource offers no read at all, so
+`tools/policy/check_app_resource_reads.py` fails on a resource that names none. A
+resource whose content must not reach anyone holding its path declares
 `read = false` in its `#[resource(...)]` declaration, with the reason in its
-doc comment; the check fails on a record that answers no read without
+doc comment; the check fails on a resource that answers no read without
 declaring it.
 
 ### 2.3 How the kind is derived
@@ -313,16 +313,16 @@ cx.outbox(Files::paths().ops, move |_, op| op.device == me, |id, op, cx| Ok(Effe
 - The settle edit is content from outside and forgetting is housekeeping: neither is
   anyone's undo step, so an undo never sends a mail twice. Both are recorded in history
   (`$state`, `$reason`).
-- `#[action(undo = path)]` names the verb that compensates an Outside verb, from the record
+- `#[action(undo = path)]` names the verb that compensates an Outside verb, from the resource
   before and after it and the ids it minted. Undo applies that verb (which reads at that
   time how the entry settled), redo runs the original verb again. Without `undo`, undo
   reverts the document, which forgets an entry nobody carried out yet.
 - `#[action(item = ops)]` on a verb whose first parameter is an `Id` names an outbox entry;
   such a verb is not offered on collection items.
 - `#[resource(queue = path)]`, `fn queue(&mut self, before: &Self, cx: &mut ActionCx)`, runs after
-  every verb and field edit of the record and may push to its outboxes: an edited event of a
+  every verb and field edit of the resource and may push to its outboxes: an edited event of a
   remote calendar queues its upload, a changed flag its IMAP command. Every action of such a
-  record is Outside, and undo applies the field edits that restore the record (or the verb's
+  resource is Outside, and undo applies the field edits that restore the resource (or the verb's
   declared `undo`) through `apply`, so the hook queues the compensation.
 - `cx.outbox_awaited(..)` runs an entry an invocation on this device queued under that
   invocation, which completes once the entry settled.
@@ -335,7 +335,7 @@ with progress and cancellation, and a job changes the document only through
 the resource's actions.
 
 An effect composes with other apps through their published actions, never
-through glue of its own: `cx.call(Call::on(app, record, &reference, action).with(args), then)`
+through glue of its own: `cx.call(Call::on(app, resource, &reference, action).with(args), then)`
 invokes the action on the resource a `ResourceRef` names (one a person picked,
 a link holds, or an earlier call answered) and runs `then` with its output.
 The call continues the effect's invocation, so the host decides it as the
@@ -352,7 +352,7 @@ through `create-page`, and the tracker links what it answered through `link`.
 ### 2.5 Child and derived resources
 
 A field whose type is itself a resource model (a `RichText` body, a nested
-record) is a child resource: its edits are field edits under the parent's path,
+resource) is a child resource: its edits are field edits under the parent's path,
 published on the child, permissioned and undone like the parent's. No parent
 action wraps child edits by hand.
 
@@ -366,7 +366,7 @@ A derived row is reached by id through `child = path`, which builds that one
 row the same way (`fn(&Self, &str) -> Option<ResourceSpec>`): it answers for an
 address the shorthand page of `children` leaves out, and `None` for one the
 state no longer holds. A row whose address is its whole identity, not a name
-among the record's, is published with `Derived::addressed`
+among the resource's, is published with `Derived::addressed`
 (`music.album:<id>`), the form a search hit or an agent names it by. What the
 rows are and which addresses one takes is `children`'s and `child`'s to
 agree on, in one place per resource.
@@ -374,20 +374,20 @@ agree on, in one place per resource.
 ### 2.6 Child records
 
 A child that can need its own permissions, sharing or history (a chat's
-channel, a category) is a record of its own, not a field: `Children` in the
+channel, a category) is a resource of its own, not a field: `Children` in the
 parent lists each one by id, in order, with its kind, the sibling it is
 grouped under and whether it is in the workspace's trash
-(`tilo_resource::children`). Its record is `DocumentId::child` of the parent,
+(`tilo_resource::children`). Its resource is `DocumentId::child` of the parent,
 under an id minted once that never changes, so moving it moves only its
 reference and every reference to it keeps working.
 
-A type names where it is listed (`impl ChildRecord for Channel`), the app
+A type names where it is listed (`impl ChildResource for Channel`), the app
 declares it (`records.children::<Channel>()`) and reads it from a view
 (`cx.children::<Channel>()`). The framework holds every listed child,
 publishes the container beside the app's resource (each child with its own
-actions, carried out on its record) and gives every container the same
+actions, carried out on its resource) and gives every container the same
 lifecycle, which the app does not write: `create` with the child's first
-fields, `delete` to the trash (record and id kept), `restore`, and `move` to
+fields, `delete` to the trash (resource and id kept), `restore`, and `move` to
 another group or place. All of it is checked against the workspace's roles and
 recorded in history like the app's own actions.
 
@@ -424,15 +424,15 @@ A hand-written surface (`ResourceSurface`) submits the same typed values through
 its dispatcher: `Edit<R>` from paths, verb values from `ActionRef`s. No app
 writes an `ActionAddress`, an action id string or an argument map.
 
-A view edits another record than its app's own the same way. The app's
-record of a kind beside the one shown (`cx.person::<P>()`, kept with its other
-records in the workspace it is open in, one per member, of a kind the app's
+A view edits another resource than its app's own the same way. The app's
+resource of a kind beside the one shown (`cx.person::<P>()`, kept with its other
+resources in the workspace it is open in, one per member, of a kind the app's
 manifest declares each member's own (`[resources] own`), which only that
 member's devices read or change) and a settings section that is a model
 (`#[derive(Model)]` with an empty `#[resource]`, read with `cx.settings::<T>()`)
-are records of their own: `cx.record(&record, |cx| ..)` builds a part of the
+are resources of their own: `cx.record(&resource, |cx| ..)` builds a part of the
 view over it, whose controls bind its paths and verbs, and a surface submits
-through `cx.record_dispatcher(&record)`.
+through `cx.record_dispatcher(&resource)`.
 
 ```rust
 let display = cx.settings::<Display>();
@@ -441,11 +441,11 @@ cx.record(&display, |cx| Box::new(cx.checkbox("High contrast", Display::paths().
 
 Each is published beside the app's resource (`person:<kind>`, `settings:<kind>`)
 with its field edits and verbs, so the palette and agents edit it by path too.
-`person:<kind>` names that record and is not a person's id: a person is their
-bare root key (`PersonId`), and no record stores `person:<root>`.
+`person:<kind>` names that resource and is not a person's id: a person is their
+bare root key (`PersonId`), and no resource stores `person:<root>`.
 Only its person changes it (or software acting for them), whatever their role
 in the workspace; its `check` holds on every way in; each change is recorded in the
-record's history (the record's own history and undo, the settings
+resource's history (the resource's own history and undo, the settings
 document's log of what changed which setting and who).
 
 ### 3.2 Reactivity
@@ -487,7 +487,7 @@ the same way, invoking a published action instead of naming an item; it is
 found beside the app's items, in the same list, with the row the service gives
 it. An app writes no provider of its own for either.
 
-A record the person may not read is found nothing of: the source answers no
+A resource the person may not read is found nothing of: the source answers no
 hits, as the app shows none.
 
 ### 3.5 Opening a reference
@@ -495,8 +495,8 @@ hits, as the app shows none.
 A reference to what another app keeps (a `tilo_reference::ResourceRef`
 beside the app and record that keep it) opens with one action: the
 resource's `open` in that app, `ResourceRef::open_target`, an application
-target naming the workspace, the app and the record. The host delivers it
-to the window showing that record or launches the app on it, and admits it
+target naming the workspace, the app and the resource. The host delivers it
+to the window showing that resource or launches the app on it, and admits it
 as the person who asked, under their grants, as it admits any action; an app
 showing a reference needs no `[actions] invoke` of its own, since opening
 grants nothing. `ViewCx::reference` shows a reference as a chip that does
@@ -558,7 +558,8 @@ back-reference, UUIDs and gestures as 22 digits, numbers six bits a byte. It
 stays UTF-8, decodes to exactly the entry that was written, and writing that
 again gives the same bytes, so a device replaying the action writes the same
 change. A keystroke that continues its gesture writes only what differs
-(`tilo.cont/1 <gesture> <path> <payload>`); readers fold it into the
+(`tilo.cont/3 <gesture> <claim> <kept> <tail> <middle>`): the gesture, what
+the change claims and the bytes its payload changed; readers fold it into the
 gesture's first entry.
 
 ### 5.2 Sentences are rendered by the reader
@@ -594,28 +595,28 @@ actions that queued an outside consequence undo through their inverse action.
   verbs, their parameters, its field schema and its kinds to `surface.toml` in
   the app crate (ids, footprints, paths, layouts and types, one line per
   field; labels and descriptions stay in the code), and marks which of those
-  records are the person's own (`person`), declared with the app
-  (`ResourceApp::PERSON_RECORDS`) rather than with the window showing them;
+  resources are the person's own (`person`), declared with the app
+  (`ResourceApp::PERSON_RESOURCES`) rather than with the window showing them;
   `tilo-app check` and CI fail when code and file disagree. A
   rename is allowed and shows up in review. The packaged surface is also what
   a receiver without the app decides its changes against, the person's
-  records among them.
+  resources among them.
 - **Storage changes are migrations.** `#[resource(version = N, migrate = path)]`
   declares the current schema version; `migrate` converts a document from any
   older version, reading old shapes with the model helpers. It runs once, as a
-  housekeeping action with an actor and seed derived from the record and the
+  housekeeping action with an actor and seed derived from the resource and the
   versions, so two devices migrating concurrently produce the same change.
   `tilo-app check` fails when the schema in `surface.toml` changed
   incompatibly without a version bump.
-- **An unreadable item is quarantined; only an unreadable record fails.** One
+- **An unreadable item is quarantined; only an unreadable resource fails.** One
   item of a `Collection` that does not read as its type (a required field
   absent, a value of another shape) never makes the whole app unopenable: it
   is left out of the collection, which reads and shows the rest, and
   `Collection::quarantined()` lists it with why. It stays in the document as
   it is, through every write, until it is repaired: pushing a whole item under
   its id stores every field, `Collection::discard` (or the remove-item edit)
-  deletes it, and a migration may rewrite it. A record that does not read
-  outside its collections (a field of the record itself, a newer storage
+  deletes it, and a migration may rewrite it. A resource that does not read
+  outside its collections (a field of the resource itself, a newer storage
   version) shows an error state in the view and its actions report why they
   are unavailable; stale state is never shown as current. Code that reads the
   document itself takes a failed read as no answer, never as an empty record:
@@ -656,7 +657,7 @@ and `tools/policy/check_app_resource_action_contract.py` refuses each one in
 every source file of an app crate (`src`, `tests`, `examples`, `benches`) and
 of an example: there is no ceiling to raise. What to write instead:
 
-- **A resource** is a `#[derive(Model)]` record with `#[resource]`; a layout
+- **A resource** is a `#[derive(Model)]` resource with `#[resource]`; a layout
   the storage table does not cover is a `Model` written by hand in the SDK
   (`RichText`, `Grid`), never an app's `impl Resource`.
 - **An action an app addresses** is named through its typed reference:

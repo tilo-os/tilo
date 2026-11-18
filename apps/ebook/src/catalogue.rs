@@ -55,7 +55,7 @@ impl SettingsSchema for CatalogueCopies {
     }
 }
 
-/// The section as a record the person edits by path.
+/// The section as a resource the person edits by path.
 #[tilo_resource::resource(kind = "settings.books-catalogues")]
 impl CatalogueCopies {}
 

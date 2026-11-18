@@ -29,9 +29,12 @@ impl StatePeer {
         Self::with_roster(workspace, owner_device, roster, revocations, now)
     }
 
-    /// A replica of a workspace joined through `admitter`, a device of the workspace's
-    /// owner, which must be valid at `now`, and
-    /// the workspace's `roster` as its governance admitted it. A roster
+    /// A replica of a workspace joined through `admitter`, a key holder of
+    /// the workspace, which must be valid at `now`, and
+    /// the workspace's `roster` as its governance admitted it. The admitter
+    /// is the replica's origin, and the person of its owner only until the
+    /// workspace's governance arrives and names the owner the replica holds
+    /// to ([`Self::from_join`]). A roster
     /// certificate is the workspace's evidence, checked by its signature alone:
     /// a guest certified for an hour stays in the roster after its hour, as
     /// on the host, and its expiry is checked whenever it is used. Building

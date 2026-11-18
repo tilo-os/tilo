@@ -264,7 +264,7 @@ tilo_test_env::scenario! {
             ("app", "payroll", false),
             ("app", "notes", true),
             ("other.app", "payroll", true),
-            ("finance", "ledger", false),
+            ("finance", "log", false),
             ("finance", "summary", true),
         ] {
             assert_eq!(

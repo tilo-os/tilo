@@ -65,9 +65,9 @@ tilo_test_env::scenario! {
         let browser = Browser::new(false);
         let mut accounts = Accounts::default();
         accounts.opener = browser.clone();
-        accounts.actions = AccountActions::default().with_custodian(
-            account_custody::Custodian::for_root(None)
-                .with_client_table(account_custody::ClientTable::parse("").unwrap()),
+        accounts.actions = AccountActions::default().with_credential_store(
+            account_credentials::CredentialStore::for_root(None)
+                .with_client_table(account_credentials::ClientTable::parse("").unwrap()),
         );
         accounts.update_sources(roots, inventory).unwrap();
         fn find<'a>(root: &'a dyn ui::widget::Widget, id: &str) -> Option<&'a dyn ui::widget::Widget> {
@@ -205,9 +205,9 @@ tilo_test_env::scenario! {
             let browser = Browser::new(false);
             let mut accounts = Accounts::default();
             accounts.opener = browser.clone();
-            accounts.actions = AccountActions::default().with_custodian(
-                account_custody::Custodian::for_root(None).with_client_table(
-                    account_custody::ClientTable::parse(
+            accounts.actions = AccountActions::default().with_credential_store(
+                account_credentials::CredentialStore::for_root(None).with_client_table(
+                    account_credentials::ClientTable::parse(
                         r#"
 [spotify]
 client_id = "tilo-test-registered-client"
@@ -264,9 +264,9 @@ music_streaming = ["streaming", "user-read-private"]
             assert!(
                 matches!(&accounts.step, Step::SpotifyPurpose(Some(selected)) if selected.id == candidate.id)
             );
-            accounts.actions = AccountActions::default().with_custodian(
-                account_custody::Custodian::for_root(None)
-                    .with_client_table(account_custody::ClientTable::parse("").unwrap()),
+            accounts.actions = AccountActions::default().with_credential_store(
+                account_credentials::CredentialStore::for_root(None)
+                    .with_client_table(account_credentials::ClientTable::parse("").unwrap()),
             );
             assert_eq!(
                 accounts.apply(AccountRequest::Provider("spotify-streaming".into())),
@@ -415,7 +415,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     assert_eq!(transported.len(), 1);
     assert!(transported.get(&unselected_stage).is_none());
     assert_eq!(
-        account_custody::password_credential(
+        account_credentials::password_credential(
             &SecretVault::open_in(&portable_target)
                 .get(&imported[0])
                 .unwrap()
@@ -464,13 +464,15 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     assert!(store.get(&other).is_some());
     let vault = accounts::SecretVault::open_in(&root);
     assert_eq!(
-        account_custody::password_credential(&vault.get(&other).unwrap()).to_string(),
+        account_credentials::password_credential(&vault.get(&other).unwrap()).to_string(),
         "other-app-password"
     );
     let entry = store.all().iter().find(|entry| entry.id != other).unwrap();
     assert_eq!(
-        account_custody::password_credential(&SecretVault::open_in(&root).get(&entry.id).unwrap())
-            .to_string(),
+        account_credentials::password_credential(
+            &SecretVault::open_in(&root).get(&entry.id).unwrap()
+        )
+        .to_string(),
         "fixture-app-password"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -546,7 +548,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
             installer
                 .apply(
                     super::super::InstallerPreviewEffect::CreatePreparedIdentity {
-                        private_custody: AbsolutePath::new(artifacts.join("media-identity"))
+                        private_ownership: AbsolutePath::new(artifacts.join("media-identity"))
                             .unwrap(),
                         avatar_color: "143c64".into(),
                     },
@@ -635,13 +637,15 @@ fn oauth_accounts(
     let browser = Browser::new(follow);
     let mut accounts = Accounts::default();
     accounts.opener = browser.clone();
-    accounts.actions = AccountActions::default().with_custodian(
-        account_custody::Custodian::for_root(Some(temp.path().join("injected-fixture-root")))
-            .with_provider(
-                account_custody::OAuthCloud::GoogleDrive,
-                server.provider(),
-                "tilo-client",
-            ),
+    accounts.actions = AccountActions::default().with_credential_store(
+        account_credentials::CredentialStore::for_root(Some(
+            temp.path().join("injected-fixture-root"),
+        ))
+        .with_provider(
+            account_credentials::OAuthCloud::GoogleDrive,
+            server.provider(),
+            "tilo-client",
+        ),
     );
     (temp, server, accounts, browser)
 }
@@ -866,7 +870,7 @@ tilo_test_env::scenario! {
             assert_eq!(account.config["username"], "ada");
             assert_eq!(account.config["server_url"], endpoint);
             assert_eq!(
-                account_custody::password_credential(
+                account_credentials::password_credential(
                     &SecretVault::open_in(&prepared.config_root())
                         .get(&id)
                         .unwrap()
@@ -940,7 +944,7 @@ tilo_test_env::scenario! {
         assert_eq!(account.config["app_password"].as_bool(), Some(true));
         assert_eq!(account.config["username"], "ada");
         assert_eq!(
-            account_custody::password_credential(
+            account_credentials::password_credential(
                 &SecretVault::open_in(&handle.config_root())
                     .get(&id)
                     .unwrap()
@@ -1099,14 +1103,16 @@ struct InstallerICloud {
     release: Mutex<Option<mpsc::Receiver<()>>>,
     revoked: Mutex<Option<mpsc::Sender<()>>>,
 }
-impl account_custody::icloud::ICloudAuth for InstallerICloud {
+impl account_credentials::icloud::ICloudAuth for InstallerICloud {
     fn sign_in(
         &self,
         apple_id: &str,
         password: &str,
-    ) -> Result<account_custody::icloud::ICloudSignIn, account_custody::icloud::ICloudAuthError>
-    {
-        use account_custody::icloud::*;
+    ) -> Result<
+        account_credentials::icloud::ICloudSignIn,
+        account_credentials::icloud::ICloudAuthError,
+    > {
+        use account_credentials::icloud::*;
         self.calls.lock().unwrap().push("sign-in");
         if apple_id != "ada@icloud.test" || password != "private-apple-password" {
             return Err(ICloudAuthError::InvalidCredentials);
@@ -1117,11 +1123,13 @@ impl account_custody::icloud::ICloudAuth for InstallerICloud {
     }
     fn verify_code(
         &self,
-        challenge: &account_custody::icloud::ICloudChallenge,
+        challenge: &account_credentials::icloud::ICloudChallenge,
         code: &str,
-    ) -> Result<account_custody::icloud::ICloudSessionState, account_custody::icloud::ICloudAuthError>
-    {
-        use account_custody::icloud::*;
+    ) -> Result<
+        account_credentials::icloud::ICloudSessionState,
+        account_credentials::icloud::ICloudAuthError,
+    > {
+        use account_credentials::icloud::*;
         self.calls.lock().unwrap().push("verify");
         assert_eq!(challenge.0.as_str(), "private-challenge");
         if code != "123456" {
@@ -1141,23 +1149,23 @@ impl account_custody::icloud::ICloudAuth for InstallerICloud {
     }
     fn resume(
         &self,
-        session: &account_custody::icloud::ICloudSessionState,
+        session: &account_credentials::icloud::ICloudSessionState,
     ) -> Result<
         (
-            account_custody::icloud::ICloudSessionState,
-            account_custody::icloud::ICloudHeaders,
+            account_credentials::icloud::ICloudSessionState,
+            account_credentials::icloud::ICloudHeaders,
         ),
-        account_custody::icloud::ICloudAuthError,
+        account_credentials::icloud::ICloudAuthError,
     > {
         Ok((
             session.clone(),
-            account_custody::icloud::ICloudHeaders {
+            account_credentials::icloud::ICloudHeaders {
                 headers: Vec::new(),
                 expires_unix: None,
             },
         ))
     }
-    fn sign_out(&self, _: &account_custody::icloud::ICloudSessionState) {
+    fn sign_out(&self, _: &account_credentials::icloud::ICloudSessionState) {
         self.calls.lock().unwrap().push("sign-out");
         let revoked = self.revoked.lock().unwrap().take();
         if let Some(revoked) = revoked {
@@ -1167,8 +1175,9 @@ impl account_custody::icloud::ICloudAuth for InstallerICloud {
 }
 fn icloud_accounts(auth: Arc<InstallerICloud>) -> Accounts {
     let mut accounts = Accounts::default();
-    accounts.actions = AccountActions::default()
-        .with_custodian(account_custody::Custodian::for_root(None).with_icloud(auth));
+    accounts.actions = AccountActions::default().with_credential_store(
+        account_credentials::CredentialStore::for_root(None).with_icloud(auth),
+    );
     accounts
 }
 fn submit_icloud_details(accounts: &mut Accounts) {
@@ -1266,22 +1275,22 @@ tilo_test_env::scenario! {
         let source = temp.path().join("source");
         let target = temp.path().join("target");
         let auth = Arc::new(InstallerICloud::default());
-        let source_connector = Connector::with_custodian(
+        let source_connector = Connector::with_credential_store(
             source.clone(),
-            account_custody::Custodian::for_root(Some(source.clone())).with_icloud(auth.clone()),
+            account_credentials::CredentialStore::for_root(Some(source.clone())).with_icloud(auth.clone()),
         );
         let id = source_connector
             .finish_icloud(
                 "ada@icloud.test",
-                account_custody::icloud::ICloudSessionState(zeroize::Zeroizing::new(
+                account_credentials::icloud::ICloudSessionState(zeroize::Zeroizing::new(
                     "source-session-trust".into(),
                 )),
             )
             .unwrap();
         let bytes = std::fs::read(accounts::store_path_in(&source)).unwrap();
-        let target_connector = Connector::with_custodian(
+        let target_connector = Connector::with_credential_store(
             target.clone(),
-            account_custody::Custodian::for_root(Some(target.clone())).with_icloud(auth.clone()),
+            account_credentials::CredentialStore::for_root(Some(target.clone())).with_icloud(auth.clone()),
         );
         let copied_id = target_connector.import_tilo(&source, &id).unwrap();
         target_connector.forget_prepared(&copied_id).unwrap();
@@ -1438,12 +1447,12 @@ tilo_test_env::scenario! {
         settle(&mut accounts);
         assert!(matches!(accounts.step, Step::Done(_)));
         let prepared = accounts.prepared_handle().unwrap();
-        let token = account_custody::Custodian::for_root(Some(prepared.config_root()))
+        let token = account_credentials::CredentialStore::for_root(Some(prepared.config_root()))
             .oauth_access_token(
                 &source.id,
-                account_custody::OAuthUse::new(
-                    account_custody::OAuthIssuer::Spotify,
-                    account_custody::Capability::Music,
+                account_credentials::OAuthUse::new(
+                    account_credentials::OAuthIssuer::Spotify,
+                    account_credentials::Capability::Music,
                 ),
                 false,
             )
@@ -1468,7 +1477,7 @@ tilo_test_env::scenario! {
         assert!(!accounts.projection().to_string().contains(token.as_str()));
     }
 
-    phase selected_tilo_metadata_change_and_unavailable_custody_never_claim_connection;
+    phase selected_tilo_metadata_change_and_unavailable_ownership_never_claim_connection;
     {
         for change_metadata in [false, true] {
             let source = tilo_source(change_metadata);
@@ -1565,7 +1574,7 @@ fn dropbox_paste() -> DropboxPaste {
         )
     });
     let api = storage.url();
-    let registration = account_custody::Registration {
+    let registration = account_credentials::Registration {
         client_id: "tilo-dropbox-fixture".into(),
         client_secret: None,
         redirect_ports: tilo_oauth::RedirectPorts::Registered(vec![
@@ -1574,14 +1583,14 @@ fn dropbox_paste() -> DropboxPaste {
         redirect: tilo_oauth::Redirect::default(),
         paste_code_fallback: true,
     };
-    let custodian = account_custody::Custodian::for_root(None)
+    let credential_store = account_credentials::CredentialStore::for_root(None)
         .with_provider(
-            account_custody::OAuthCloud::Dropbox,
+            account_credentials::OAuthCloud::Dropbox,
             issuer.provider(),
             registration,
         )
         .with_storage_config(
-            account_custody::OAuthCloud::Dropbox,
+            account_credentials::OAuthCloud::Dropbox,
             serde_json::json!({
                 "root":"", "upload_chunk":4194304,
                 "endpoints":{"api":api,"content":api,"notify":api}
@@ -1590,7 +1599,7 @@ fn dropbox_paste() -> DropboxPaste {
     let browser = Browser::new(false);
     let mut accounts = Accounts::default();
     accounts.opener = browser.clone();
-    accounts.actions = AccountActions::default().with_custodian(custodian);
+    accounts.actions = AccountActions::default().with_credential_store(credential_store);
     DropboxPaste {
         _busy: busy,
         issuer,
@@ -1733,10 +1742,10 @@ fn tilo_source(with_grant: bool) -> TiloSource {
     store.upsert(foreign);
     store.save_in(&source).unwrap();
     if with_grant {
-        account_custody::Custodian::for_root(Some(source))
+        account_credentials::CredentialStore::for_root(Some(source))
             .seal_oauth(
                 &id,
-                &account_custody::TokenSet {
+                &account_credentials::TokenSet {
                     access_token: "private-source-spotify-access".into(),
                     refresh_token: "private-source-refresh".into(),
                     expires_in: 3600,
@@ -1795,7 +1804,7 @@ fn saved_tilo_source_redirects_cannot_escape_the_consented_config_root() {
 #[cfg(target_os = "linux")]
 #[test]
 fn encrypted_account_checkpoint_survives_drop_and_restores_exact_grants_and_removal_provenance() {
-    use account_custody::{Capability, Custodian, OAuthIssuer, OAuthUse};
+    use account_credentials::{Capability, CredentialStore, OAuthIssuer, OAuthUse};
     let temp = tempfile::tempdir().unwrap();
     let checkpoint_root = temp.path().join("accounts");
     super::super::personal::ensure_private_tree(&checkpoint_root).unwrap();
@@ -1861,7 +1870,7 @@ fn encrypted_account_checkpoint_survives_drop_and_restores_exact_grants_and_remo
     assert!(after.prepared[1].revoke_on_remove);
     let restored = after.prepared_handle().unwrap();
     assert_eq!(
-        account_custody::password_credential(
+        account_credentials::password_credential(
             &SecretVault::open_in(&restored.config_root())
                 .get(&copied_id)
                 .unwrap()
@@ -1869,7 +1878,7 @@ fn encrypted_account_checkpoint_survives_drop_and_restores_exact_grants_and_remo
         .to_string(),
         "original-private-app-password"
     );
-    let access = Custodian::for_root(Some(restored.config_root()))
+    let access = CredentialStore::for_root(Some(restored.config_root()))
         .oauth_access_token(
             &oauth_id,
             OAuthUse::new(OAuthIssuer::Spotify, Capability::Music),
@@ -1917,7 +1926,7 @@ struct CheckpointFixture {
 #[cfg(target_os = "linux")]
 fn checkpoint_grants(root: &Path) -> CheckpointFixture {
     let dav_server = super::dav_readiness::test_server();
-    use account_custody::{Custodian, TokenSet};
+    use account_credentials::{CredentialStore, TokenSet};
     let source = root.join("source");
     let copied = Connector::new(source.clone())
         .connect_webdav(
@@ -1941,7 +1950,7 @@ fn checkpoint_grants(root: &Path) -> CheckpointFixture {
     account.config = serde_json::json!({"provider":"spotify"});
     store.upsert(account);
     store.save_in(&config).unwrap();
-    Custodian::for_root(Some(config))
+    CredentialStore::for_root(Some(config))
         .seal_oauth(
             &oauth_id,
             &TokenSet {
@@ -2117,7 +2126,7 @@ tilo_test_env::scenario! {
         let browser = Browser::new(true);
         let mut accounts = Accounts::default();
         accounts.opener = browser.clone();
-        let table = account_custody::ClientTable::parse(
+        let table = account_credentials::ClientTable::parse(
             r#"
 [spotify]
 client_id = "tilo-client"
@@ -2127,10 +2136,10 @@ music = ["user-read-private", "user-library-read"]
         )
         .unwrap();
         accounts.actions = AccountActions::default()
-            .with_custodian(
-                account_custody::Custodian::for_root(Some(temp.path().join("fixture-root")))
+            .with_credential_store(
+                account_credentials::CredentialStore::for_root(Some(temp.path().join("fixture-root")))
                     .with_client_table(table)
-                    .with_issuer_endpoints(account_custody::OAuthIssuer::Spotify, issuer.provider()),
+                    .with_issuer_endpoints(account_credentials::OAuthIssuer::Spotify, issuer.provider()),
             )
             .with_spotify_api(endpoint);
         accounts.apply(AccountRequest::AddAccount).unwrap();
@@ -2195,7 +2204,7 @@ music = ["user-read-private", "user-library-read"]
         let browser = Browser::new(false);
         let mut accounts = Accounts::default();
         accounts.opener = browser.clone();
-        let mut table = account_custody::ClientTable::parse(
+        let mut table = account_credentials::ClientTable::parse(
             r#"
 [spotify]
 client_id = "tilo-test-registered-client"
@@ -2208,7 +2217,7 @@ music_streaming = ["streaming", "user-read-private"]
         let complete_table = table.clone();
         table.spotify.scopes.music_streaming.clear();
         accounts.actions = AccountActions::default()
-            .with_custodian(account_custody::Custodian::for_root(None).with_client_table(table));
+            .with_credential_store(account_credentials::CredentialStore::for_root(None).with_client_table(table));
         accounts.apply(AccountRequest::AddAccount).unwrap();
         let view = accounts.view(Rc::new(|_| {}), None);
         assert!(account_widget(&view, "installer.account.provider.spotify").is_some());
@@ -2224,8 +2233,8 @@ music_streaming = ["streaming", "user-read-private"]
             accounts.apply(AccountRequest::Provider("spotify-streaming".into())),
             Err("installer-accounts-unavailable")
         );
-        accounts.actions = AccountActions::default().with_custodian(
-            account_custody::Custodian::for_root(None).with_client_table(complete_table),
+        accounts.actions = AccountActions::default().with_credential_store(
+            account_credentials::CredentialStore::for_root(None).with_client_table(complete_table),
         );
         accounts
             .apply(AccountRequest::Provider("spotify-streaming".into()))
@@ -2319,7 +2328,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
             &pending.identity_directory(),
             "Chosen person",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap(),
     );
@@ -2472,9 +2481,9 @@ tilo_test_env::scenario! {
         let browser = Browser::new(false);
         let mut accounts = Accounts::default();
         accounts.opener = browser.clone();
-        accounts.actions = AccountActions::default().with_custodian(
-            account_custody::Custodian::for_root(None).with_provider(
-                account_custody::OAuthCloud::GoogleDrive,
+        accounts.actions = AccountActions::default().with_credential_store(
+            account_credentials::CredentialStore::for_root(None).with_provider(
+                account_credentials::OAuthCloud::GoogleDrive,
                 issuer.provider(),
                 "new-tilo-client",
             ),
@@ -2652,7 +2661,7 @@ tilo_test_env::scenario! {
                 .any(|account| account.config["server_url"] == "https://team.example.test/dav")
         );
         assert_eq!(
-            account_custody::password_credential(
+            account_credentials::password_credential(
                 &SecretVault::open_in(&staged.config_root())
                     .get(&accounts::AccountId::new(&fixture.canonical_id))
                     .unwrap()
@@ -2810,15 +2819,15 @@ fn unavailable_saved_rclone_cloud_grants_offer_explicit_reconnect_without_openin
     let browser = Browser::new(false);
     for candidate in &inventory.candidates {
         let cloud = match candidate.provider {
-            Provider::Google => account_custody::OAuthCloud::GoogleDrive,
-            Provider::Microsoft => account_custody::OAuthCloud::OneDrive,
-            Provider::Dropbox => account_custody::OAuthCloud::Dropbox,
+            Provider::Google => account_credentials::OAuthCloud::GoogleDrive,
+            Provider::Microsoft => account_credentials::OAuthCloud::OneDrive,
+            Provider::Dropbox => account_credentials::OAuthCloud::Dropbox,
             _ => panic!("unexpected candidate"),
         };
         let mut accounts = Accounts::default();
         accounts.opener = browser.clone();
-        accounts.actions = AccountActions::default().with_custodian(
-            account_custody::Custodian::for_root(None).with_provider(
+        accounts.actions = AccountActions::default().with_credential_store(
+            account_credentials::CredentialStore::for_root(None).with_provider(
                 cloud,
                 issuer.provider(),
                 "new-tilo-client",

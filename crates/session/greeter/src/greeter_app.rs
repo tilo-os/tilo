@@ -593,10 +593,10 @@ impl ClockFace {
         Self::of(&ui::clock::local_now())
     }
 
-    fn of(now: &chrono::DateTime<chrono::Local>) -> Self {
+    fn of(now: &jiff::Zoned) -> Self {
         Self {
             time: ui::clock::time_of_day(now),
-            date: ui::format::day_heading(now.date_naive(), false),
+            date: ui::format::day_heading(now.date(), false),
         }
     }
 }
@@ -604,12 +604,10 @@ impl ClockFace {
 /// The instant the minute shown at `wall` (read at the monotonic `now`)
 /// ends. Fixed once read: a deadline that moves with the clock is never
 /// due, and a host that serves due deadlines never redraws for it.
-fn minute_ends(wall: &chrono::DateTime<chrono::Local>, now: Instant) -> Instant {
-    use chrono::Timelike;
-    // A leap second reads as a nanosecond count past one second.
-    let into = Duration::from_secs(u64::from(wall.second())).saturating_add(Duration::from_nanos(
-        u64::from(wall.nanosecond().min(999_999_999)),
-    ));
+fn minute_ends(wall: &jiff::Zoned, now: Instant) -> Instant {
+    let into = Duration::from_secs(u64::from(wall.second().unsigned_abs())).saturating_add(
+        Duration::from_nanos(u64::from(wall.subsec_nanosecond().unsigned_abs())),
+    );
     now.checked_add(Duration::from_secs(60).saturating_sub(into))
         .unwrap_or(now)
 }
@@ -1024,7 +1022,7 @@ impl GreeterApp {
 
     /// Follow the kiosk's outputs: the sign-in card goes on the primary
     /// output and the backdrop on each, instead of centring the card in a
-    /// window that spans the seam (or a gap) between displays.
+    /// window that spans the boundary (or a gap) between displays.
     #[must_use]
     pub fn with_displays(mut self, displays: crate::output_scale::Displays) -> Self {
         self.displays = Some(displays);
@@ -1982,7 +1980,7 @@ impl GreeterApp {
         ];
         // Explicit host diagnostics must survive greetd's clean session
         // environment. Forward fixed booleans only; never forward scenarios,
-        // input gates, arbitrary environment or caller-supplied session argv.
+        // input checks, arbitrary environment or caller-supplied session argv.
         let flags = diagnostics.unwrap_or_else(|| {
             SESSION_DIAGNOSTICS.map(|(_, name)| std::env::var(name).is_ok_and(|value| value == "1"))
         });

@@ -4,7 +4,7 @@
 //! and the actions it publishes); the host only lays it out, hands it the
 //! region's input and draws it where it sits.
 
-use crate::host_core::HostCore as _;
+use crate::app_core::AppCore as _;
 use std::cell::{Cell, RefCell};
 
 use super::{
@@ -87,7 +87,7 @@ pub struct EmbeddedApp {
     /// The app has not run since `deadline` was asked for.
     deadline_known: Cell<bool>,
     /// The app ran since its host last found it with no intent for the host
-    /// ([`AppWidget::take_host_intent`]): only an app that runs raises one.
+    /// ([`AppWidget::take_process_intent`]): only an app that runs raises one.
     intents_owed: Cell<bool>,
     /// Tells this app's damage hints from every other source's.
     source: u64,
@@ -1110,7 +1110,7 @@ impl AppWidget for EmbeddedApp {
     }
     /// Its host asks on every pump; the app is reached only when it ran
     /// since it last had none, and only taking one runs it.
-    fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+    fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         if !self.intents_owed.get() {
             return None;
         }
@@ -1119,7 +1119,7 @@ impl AppWidget for EmbeddedApp {
             .root_widget
             .as_any_mut()
             .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
-            .and_then(AppWidget::take_host_intent);
+            .and_then(AppWidget::take_process_intent);
         if intent.is_some() {
             self.runs();
             self.app.mark_semantic_tree_stale();
@@ -1680,7 +1680,7 @@ mod saving_resource_wake_tests {
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};
     use crate::application_test_support::{
-        ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
+        ProbeHarness, runner_inputs, runner_permissions, runner_probe_definition,
     };
     use crate::resource::ResourceSaveStatus;
 
@@ -1730,7 +1730,7 @@ mod saving_resource_wake_tests {
         // would land it on its own after its debounce: on a loaded machine
         // that falls inside the pumps below that check a save still under
         // way. The store writes only when the test flushes it.
-        let host = ProbeHost::holding_writes();
+        let host = ProbeHarness::holding_writes();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare_with_permissions(
@@ -1931,7 +1931,7 @@ mod wake_deadline_tests {
             // Its host asks for its intents on every pump: an app that did not
             // run since it had none is not reached, so nothing it holds moved.
             for _ in 0..10 {
-                assert!(AppWidget::take_host_intent(&mut tile).is_none());
+                assert!(AppWidget::take_process_intent(&mut tile).is_none());
                 assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
             }
             assert_eq!(asks.get(), settled, "asking for intents ran the app");

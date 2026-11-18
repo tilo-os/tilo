@@ -39,7 +39,7 @@ impl PreparedMedia {
         let mut generation = self
             .transfer_generation
             .lock()
-            .map_err(|_| io::Error::other("Staging generation custody unavailable"))?;
+            .map_err(|_| io::Error::other("Staging generation ownership unavailable"))?;
         let (expected, _) = source.original_inventory_selection()?;
         if let Some(copy) = self.manifest.units.original_copy() {
             if copy.source() != &expected || copy.reservation() != reservation {
@@ -124,7 +124,7 @@ impl PreparedMedia {
         let mut generation = self
             .transfer_generation
             .lock()
-            .map_err(|_| io::Error::other("Staging generation custody unavailable"))?;
+            .map_err(|_| io::Error::other("Staging generation ownership unavailable"))?;
         if let Some(prepared) = &*generation {
             prepared
                 .manifest

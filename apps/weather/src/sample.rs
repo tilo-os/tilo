@@ -1,5 +1,5 @@
 //! The bundled sample places and their forecasts: a capture stages these through
-//! the record's actions, so a screenshot has a populated window without a
+//! the resource's actions, so a screenshot has a populated window without a
 //! network. A live window never shows them. Everything is stored in metric.
 
 use crate::model::{
@@ -388,7 +388,7 @@ mod tests {
             // San Francisco now_hour = 14.
             assert_eq!(
                 snap.hourly[0].hour_label(),
-                ui::format::time(&chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap())
+                ui::format::time(jiff::civil::Time::new(14, 0, 0, 0).unwrap())
             );
         }
         {

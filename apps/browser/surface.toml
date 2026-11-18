@@ -226,7 +226,7 @@ fields = [
 
 [[resources]]
 kind = "browser.page-record"
-label = "Page record"
+label = "Page resource"
 version = 1
 fields = [
   { path = "actions", type = { map = { named = "PageAction" } }, readonly = true },
@@ -245,7 +245,7 @@ name = "PageAction"
 fields = [
   { name = "seq", type = "int" },
   { name = "time_ms", type = "int" },
-  { name = "actor", type = "text" },
+  { name = "actor", type = { option = "actor" } },
   { name = "device", type = "text" },
   { name = "device_name", type = "text" },
   { name = "device_unknown", type = "bool" },

@@ -26,7 +26,7 @@ pub use uri::open_uri_scoped;
 #[cfg(any(test, feature = "test-support"))]
 pub use uri::{ScopedUriFixture, scoped_uri_fixture};
 
-pub trait EffectGate: Send + 'static {
+pub trait EffectCheck: Send + 'static {
     fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String>;
 }
 
@@ -416,7 +416,7 @@ impl PickRequest {
         crate::current_picker().pick(self)
     }
 
-    pub fn send_scoped(self, scope: impl EffectGate) -> PortalChannel {
+    pub fn send_scoped(self, scope: impl EffectCheck) -> PortalChannel {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(backend) = scoped_picker_fixture_backend() {
             return scoped_pick_worker(scope, move || backend(self));
@@ -640,7 +640,7 @@ pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -
 }
 
 fn scoped_pick_worker(
-    scope: impl EffectGate,
+    scope: impl EffectCheck,
     pick: impl FnOnce() -> PortalOutcome + Send + 'static,
 ) -> PortalChannel {
     let (sender, receiver) = std::sync::mpsc::channel();

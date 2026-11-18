@@ -1,7 +1,7 @@
 //! Holding an enrolled workspace's link for as long as the workspace is held:
 //! dialling its holders, every one alike, until one answers, keeping the link
 //! with that one for as long as it lasts, renewing this device's membership
-//! once custody renewed its certificate, and dialling again after each loss,
+//! once ownership renewed its certificate, and dialling again after each loss,
 //! starting with the holder it last reached.
 use super::{Connect, Linked, Reach, Scope};
 use crate::join::TransportHint;
@@ -14,7 +14,7 @@ use std::{
     },
     time::Duration,
 };
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tokio::sync::Notify;
 
 /// The first pause before dialling again; each failure doubles it.
@@ -88,10 +88,10 @@ enum Outcome {
 }
 
 /// Hold `connect`'s workspace's link for `holder`, as `identity`, until the
-/// workspace is no longer held here. Without custody there is nothing to dial.
+/// workspace is no longer held here. Without ownership there is nothing to dial.
 pub async fn hold(
     connect: Connect,
-    identity: Option<HostIdentity>,
+    identity: Option<DeviceIdentity>,
     holder: &dyn Holder,
     link: &Link,
 ) {
@@ -139,7 +139,7 @@ async fn once(
     connect: &Connect,
     holder: &dyn Holder,
     link: &Link,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     last: &mut Option<[u8; 32]>,
 ) -> Outcome {
     let Ok((hint, cert, _)) = connect.material(identity) else {
@@ -187,7 +187,7 @@ async fn once(
     *last = Some(via.host.device_public_key);
     // The workspace's security may have moved on while dialling (another
     // member joined): the link is still this device's as long as its
-    // enrollment and certificate are, and its standing checks out now.
+    // enrollment and certificate are, and its access checks out now.
     let Some(continuity) =
         connect
             .material(identity)
@@ -204,13 +204,13 @@ async fn once(
     Outcome::Again
 }
 
-/// Custody no longer matches the workspace's record: once it renewed the
+/// Ownership no longer matches the workspace's record: once it renewed the
 /// certificate, this device proves its membership with the renewal.
 async fn renew(
     connect: &Connect,
     holder: &dyn Holder,
     link: &Link,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
 ) -> Outcome {
     if !matches!(connect.renewal(identity), Ok(Some(_))) {
         return Outcome::Failed;

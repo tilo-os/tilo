@@ -1,4 +1,4 @@
-//! Admission of protected account custody by the selected image and actual
+//! Admission of protected account credentials by the selected image and actual
 //! installed consumers. A staged importer never certifies its own target.
 #[cfg(target_os = "linux")]
 mod candidate;
@@ -292,7 +292,7 @@ pub fn receiving_candidate(
     }
 }
 
-/// Authenticate the actual installed consumer proof before target custody writes.
+/// Authenticate the actual installed consumer proof before target ownership writes.
 /// The check re-executes the installed probes and compares the image receipt.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {

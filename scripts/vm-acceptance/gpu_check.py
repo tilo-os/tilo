@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Judge which GPU an installed image's app windows render on, for gates outside run.py.
+"""Judge which GPU an installed image's app windows render on, for checks outside run.py.
 
     ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \\
         | python3 scripts/vm-acceptance/gpu_check.py

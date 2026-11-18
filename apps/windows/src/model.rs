@@ -4,6 +4,7 @@ use ui::tilo_resource::{self, Model};
 
 /// How an application is run.
 #[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Route {
     Wine,
     Proton,
@@ -126,6 +127,10 @@ pub struct WindowsApp {
 impl WindowsApp {
     pub fn uses_override(&self) -> bool {
         self.route != self.recommended_route
+    }
+    /// Its program is open in a private capsule, which the manager can end.
+    pub fn stop_available(&self) -> bool {
+        self.status == AppStatus::Running && self.route != Route::Vm
     }
 }
 

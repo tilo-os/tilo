@@ -1,5 +1,5 @@
 //! Early host compatibility uses the canonical native setup surface, without
-//! installation custody.
+//! installation ownership.
 
 use super::{Destination, InstallerPreview, Page};
 use crate::setup::view::{FullOsCheck, SetupApp};
@@ -79,7 +79,7 @@ mod tests {
         phase full_os_check_is_deferred_before_identity_and_not_used_for_another_computer;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(crate::setup::internal_install_flow::RUNTIME_GATE_VAR, "1");
+            env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
             let mut preview = InstallerPreview {
                 live: true,
                 linux: true,
@@ -117,7 +117,7 @@ mod tests {
         phase full_os_check_is_skipped_when_this_build_offers_only_a_usb_installer;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(crate::setup::internal_install_flow::RUNTIME_GATE_VAR, "0");
+            env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
             let mut preview = InstallerPreview {
                 live: true,
                 linux: true,
@@ -137,7 +137,7 @@ mod tests {
         phase full_os_check_is_not_repeated_for_facts_this_host_already_reported;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(crate::setup::internal_install_flow::RUNTIME_GATE_VAR, "1");
+            env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
             let mut preview = InstallerPreview {
                 live: true,
                 linux: true,

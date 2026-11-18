@@ -1395,9 +1395,9 @@ fn summarize(host: &Host, t: &Types, acct: &Acct, threads: &BTreeSet<String>) ->
 /// Seconds since the epoch of an ISO time `YYYY-MM-DDTHH:MM:SSZ`; 0 for anything else, which
 /// is said: the record holds a time the origin did not write.
 fn seconds_of(iso: &str) -> u64 {
-    match chrono::DateTime::parse_from_rfc3339(iso) {
+    match iso.parse::<jiff::Timestamp>() {
         // Before the epoch is the epoch.
-        Ok(at) => u64::try_from(at.timestamp()).unwrap_or(0),
+        Ok(at) => u64::try_from(at.as_second()).unwrap_or(0),
         Err(error) => {
             tracing::warn!(iso, %error, "a message's received time is not a time");
             0

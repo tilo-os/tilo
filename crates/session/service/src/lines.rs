@@ -9,7 +9,7 @@
 //! service does before it writes it.
 //!
 //! This is the one protocol a service process speaks to the session until
-//! the app-host wire carries invocations and readings for every process;
+//! the package-service wire carries invocations and readings for every process;
 //! then [`Remote`] and [`serve`] move onto it and these lines go. Services
 //! use this module rather than growing protocols of their own.
 

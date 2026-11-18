@@ -3,7 +3,7 @@
 // and the page copies a prompt. What the prompt tells an agent to run runs
 // here, headless, as an agent would run it: `tilo login <code>` with the
 // `tilo` command this commit builds (the installer's download is the release
-// pipeline's to prove, not this gate's). The tab must follow each step and
+// pipeline's to prove, not this check's). The tab must follow each step and
 // end in the person's own workspace, with the agent there and what it does
 // shown beside its name.
 //
@@ -18,7 +18,7 @@
 // real agent. The stack is plain HTTP on this machine, so the command needs
 // no test certificate to reach it.
 //
-// usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
+// usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR
 //
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
@@ -29,14 +29,14 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded} from './waits.mjs';
 
-const [site, relay, tiloBin, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !out) {
-  console.error('usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
+const [site, server, tiloBin, out] = process.argv.slice(2);
+if (!site || !server || !tiloBin || !out) {
+  console.error('usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
 const mark = clock();
-const report = {site, relay, at: new Date().toISOString(), steps: []};
+const report = {site, server, at: new Date().toISOString(), steps: []};
 const tabs = [];
 const browsers = [];
 // The stack is plain http on this machine, so no certificate stands in the
@@ -85,7 +85,7 @@ const finish = async (code, message) => {
     // member of: which way it took in on its next load.
     report[`${name}People`] = await read(tab, `JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`);
     // Whose channels the page holds keys for: a page without its workspace's
-    // keys joins no live plane, so it hears nobody and nobody hears it.
+    // keys joins no live session, so it hears nobody and nobody hears it.
     report[`${name}Channels`] = await read(tab, `globalThis.tiloChannels?.() ?? ''`);
     // The windows the page's shell holds and which one is in view: a window
     // the workspace's layout holds but the page does not show is said here.
@@ -290,28 +290,28 @@ const commandOf = prompt => {
 // reads as one run-together line.
 const followSteps = async (tab, done) => {
   await tab.evaluate(`(() => {
-    const seen = globalThis.__gateSteps ??= [];
+    const seen = globalThis.__checkSteps ??= [];
     const read = () => {
       for (const item of document.querySelectorAll('#first-run-steps li')) {
         const line = item.textContent.trim();
         if (line && !seen.includes(line)) seen.push(line);
       }
     };
-    globalThis.__gateStepsWatch ??= new MutationObserver(read);
-    globalThis.__gateStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
+    globalThis.__checkStepsWatch ??= new MutationObserver(read);
+    globalThis.__checkStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
     read();
   })()`).catch(error => fail(`the tab's steps could not be followed: ${error.message}`));
   // The watch above keeps every line the list held; the wait ends when the
   // screen says it is done, or a step's worth of steps has gone by.
   await tab.waitFor(`!!(${done})`, {timeout: stepLimit(4)}).catch(() => {});
-  return tab.evaluate('globalThis.__gateSteps ?? []').catch(() => []);
+  return tab.evaluate('globalThis.__checkSteps ?? []').catch(() => []);
 };
 // The person the page is, by their root, and the workspace in front.
-// The person is who the page keeps its memberships as, on the relay's host.
+// The person is who the page keeps its memberships as, on the server's host.
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try {
     const all = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}');
-    return all[${JSON.stringify(new URL(relay).origin)}]?.userPublicKey ?? null;
+    return all[${JSON.stringify(new URL(server).origin)}]?.userPublicKey ?? null;
   } catch { return null; } })(),
   title: document.title,
   workspace: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.workspace ?? null; } catch { return null; } })(),
@@ -405,21 +405,25 @@ mark('the agent logged in and the tab is in the person\'s own workspace');
 // once restarted, and what it does shows beside its name: one tool call, said
 // as the workspace says it ("Looking at the apps" for a look at its apps).
 // Who is here is live presence alone: the agent's own, on the workspace's
-// live plane.
+// live session.
 const doing = 'Looking at the apps';
 // The agent's MCP server stays up as a restarted agent keeps it, while the
 // tab is looked at; its answers are kept for the report.
-const server = spawn(tiloBin, ['mcp'], {env, stdio: ['pipe', 'pipe', 'pipe']});
+const mcp = spawn(tiloBin, ['mcp'], {env, stdio: ['pipe', 'pipe', 'pipe']});
 let answers = '';
-server.stdout.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
-server.stderr.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
+mcp.stdout.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
+mcp.stderr.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
 for (const line of [
-  {jsonrpc: '2.0', id: 1, method: 'initialize', params: {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'gate', version: '1'}}},
+  {jsonrpc: '2.0', id: 1, method: 'initialize', params: {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check', version: '1'}}},
   {jsonrpc: '2.0', method: 'notifications/initialized'},
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
-]) server.stdin.write(`${JSON.stringify(line)}\n`);
+]) mcp.stdin.write(`${JSON.stringify(line)}\n`);
 const beside = `(() => { const row = (globalThis.tiloMount?.people?.() ?? []).find(person => person.agent && /Claude Code/.test(person.label ?? '')); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
-await until(first, beside, `Claude Code present, with "${doing}" beside its name`, stepLimit(3));
+// Its MCP server's own answers, on a failure: whether the tool call was
+// answered tells a slow presence from a call that never ran.
+if (!await first.waitFor(beside, {timeout: stepLimit(3)}).catch(() => false)) {
+  await fail(`Claude Code present, with "${doing}" beside its name never happened; its MCP server said: ${answers.slice(-1500) || 'nothing'}; the page: ${(await pageText(first)).slice(0, 400)}`);
+}
 report.mcp = answers.slice(0, 2000);
 const signedUp = await person(first);
 mark('the agent is present beside its name');
@@ -453,21 +457,22 @@ const call = async (name, args) => {
     sleep(stepLimit(4)).then(() => ({error: {message: 'no answer'}})),
   ]);
   const said = (answer.result?.content ?? []).map(block => block.text).join('\n') || JSON.stringify(answer);
-  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400)});
+  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400), link: (said.match(/link: \S+/) ?? [null])[0], notShown: (said.match(/not shown on the person's layout: .*/) ?? [null])[0]});
   if (answer.error || answer.result?.isError) await fail(`the second agent's ${name} ${JSON.stringify(args)} failed: ${said}`);
   return said;
 };
-await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'gate-second', version: '1'}});
+await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check-second', version: '1'}});
 otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})}\n`);
 const noteTitle = 'Hello from the second agent';
 await call('tilo_do', {path: 'notes#open'});
 await call('tilo_do', {path: 'notes#new-note', args: {title: noteTitle}});
-// The first agent still acts after the second did.
+// The first agent still acts after the second did: it lists the notes, the
+// second agent's among them.
 const firstAnswer = new Promise(resolve => {
   let seen = '';
-  server.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
+  mcp.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
 });
-server.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes'}}})}\n`);
+mcp.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes/notes.pages'}}})}\n`);
 const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
 report.firstAfterSecond = firstSaid.slice(-600);
 if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
@@ -489,8 +494,14 @@ const openedWindow = app => `(() => {
   if (state?.state === 'could-not-open') return 'could not open: ' + (state.reason ?? '');
   return state && (state.state === 'landed' || state.state === 'drawn') ? state.state : '';
 })()`;
-const opened = await until(first, openedWindow('so.tilo.notes'),
-  'the person\'s tab showing the Notes window the second agent opened', stepLimit(3));
+// On a failure, what the page held: its windows' states and the apps its
+// navigation names, which tells a window never placed from one never landed.
+const windowsHeld = `JSON.stringify({
+  windows: globalThis.tiloMount?.state?.()?.windows ?? null,
+  entries: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => ({app: entry.app, tab: entry.route?.tab})),
+})`;
+const opened = await first.waitFor(openedWindow('so.tilo.notes'), {timeout: stepLimit(3)}).catch(() => '')
+  || await fail(`the person's tab showing the Notes window the second agent opened never happened: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the second agent was answered: ${JSON.stringify(report.secondAgent ?? []).slice(0, 1500)}`);
 if (opened.startsWith('could not open')) await fail(`the Notes window the second agent opened ${opened}`);
 const windowText = `(() => {
   const out = [];
@@ -520,7 +531,7 @@ if (how !== 'presented') {
 }
 await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
   'Claude Code present in the workspace after a reload', stepLimit(2));
-server.stdin.end();
+mcp.stdin.end();
 const after = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');
 report.reloaded = after;
@@ -548,8 +559,16 @@ if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${again}`)
 const approved = await tilo(['login', signIn.code, '--site', signIn.site ?? site]);
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
-await until(second, `document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount`,
-  'the returning tab signed in', stepLimit(4));
+// The person asked their agent to sign them in on this tab, so the tab asks
+// them nothing about whose device it becomes: that card, which warns of a
+// link someone else made, is for a link handed to a device.
+const signedInOrAsked = await until(second, `(() => {
+    if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
+    return document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount;
+  })()`, 'the returning tab signed in', stepLimit(4));
+if (signedInOrAsked === 'asked') {
+  await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
+}
 const back = await person(second);
 report.returned = back;
 if (!signedUp.user || back.user !== signedUp.user) {

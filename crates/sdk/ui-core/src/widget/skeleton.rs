@@ -116,7 +116,7 @@ impl SkeletonFace {
         }
     }
 
-    /// Paint the skeleton in `rect`, `caption` (where the content comes from) standing in a
+    /// Paint the skeleton in `rect`, `caption` (where the content comes from) in a
     /// place the shape keeps for it: a row's last line, a text's first, inside a card's art.
     pub fn paint_naming(&self, ctx: &mut PaintCtx<'_>, rect: Rect, caption: Option<&str>) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {

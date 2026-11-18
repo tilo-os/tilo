@@ -141,7 +141,7 @@ fn now_ms() -> i64 {
 }
 
 fn today_ymd() -> String {
-    ui::clock::today().format("%Y-%m-%d").to_string()
+    ui::clock::today().to_string()
 }
 
 pub(crate) fn ymd_from_unix_ms(ms: i64) -> String {
@@ -385,7 +385,7 @@ pub struct PdfApp {
     has_document: bool,
     record_source: Option<crate::markup::PinnedSource>,
     reopen_requested: bool,
-    /// Where the record's pinned source is being fetched from, and the arrivals count
+    /// Where the resource's pinned source is being fetched from, and the arrivals count
     /// last checked; looked for again when that moves, never on a timer.
     source_wait: Option<(tilo_content::ContentState, u64)>,
     staged_opening: bool,
@@ -448,7 +448,7 @@ pub struct PdfApp {
     sig_strokes: Vec<Vec<(f64, f64)>>,
     sig_stroke: Option<Vec<(f64, f64)>>,
     /// The person's own signature record: it follows them to their other devices and
-    /// never reaches a member. Absent where the host keeps no person records.
+    /// never reaches a member. Absent where the host keeps no person resources.
     signature: Option<ui::framework::PersonResource<crate::signature::SignatureProfile>>,
     signature_revision: Option<u64>,
     sig_pad_rect: Rect,
@@ -3431,7 +3431,7 @@ impl PdfApp {
     /// Submit a replacement to the PDF owner: filesystem reads and `PDFium`
     /// parsing never run in `sync()` or an input handler. On success the
     /// view resets to page one at fit-page and the reader switches to that
-    /// document's own markup record; on failure the empty state surfaces
+    /// document's own markup resource; on failure the empty state surfaces
     /// the reason.
     fn queue_worker_open(&mut self, path: &std::path::Path) {
         let Some(handle) = self.raster_handle.as_ref() else {
@@ -4910,7 +4910,7 @@ impl PdfApp {
     /// # Errors
     /// Returns why the effect cannot run now.
     /// Open the PDF at `path`, or the one the person chooses, in this
-    /// window: on its own markup record, which the host shows in place of
+    /// window: on its own markup resource, which the host shows in place of
     /// this one, answered once it does or why it could not. Where files
     /// have no paths the chosen bytes open here, in a window that marks up
     /// nothing yet.
@@ -4960,17 +4960,21 @@ impl PdfApp {
         Err(error)
     }
 
-    fn reading_document(&self) -> Result<(String, tilo_pdf::Document), String> {
+    /// The PDF `pinned` names (the one the resource pins, read from the
+    /// document), or else the file this window opened, as the engine reads it:
+    /// never what the view shows of it.
+    pub(crate) fn reading_document(
+        &self,
+        pinned: Option<&crate::markup::PinnedSource>,
+    ) -> Result<(String, tilo_pdf::Document), String> {
         let engine = tilo_pdf::Engine::portable();
-        let pinned = self
-            .record_source
-            .as_ref()
-            .and_then(|source| Some((source, source.bytes(&self.content)?)));
+        let source = pinned;
+        let pinned = source.and_then(|source| Some((source, source.bytes(&self.content)?)));
         let (file, document) = match (pinned, self.source_path.as_deref()) {
             (Some((source, bytes)), _) => (source.name.clone(), engine.open_bytes(&bytes)),
             (None, Some(path)) => (path.display().to_string(), engine.open_path(path)),
             (None, None) => {
-                return Err(match &self.record_source {
+                return Err(match source {
                     Some(source) => format!("{} is not on this device yet", source.name),
                     None => content_import::NO_PDF.to_owned(),
                 });
@@ -4982,10 +4986,11 @@ impl PdfApp {
 
     pub(crate) fn read_text(
         &self,
+        pinned: Option<&crate::markup::PinnedSource>,
         from_page: Option<usize>,
         to_page: Option<usize>,
     ) -> Result<serde_json::Value, String> {
-        let (file, document) = self.reading_document()?;
+        let (file, document) = self.reading_document(pinned)?;
         let count = document.page_count();
         let first = from_page.unwrap_or(1).max(1);
         if first > count {
@@ -5028,6 +5033,7 @@ impl PdfApp {
 
     pub(crate) fn look_page(
         &self,
+        pinned: Option<&crate::markup::PinnedSource>,
         page: usize,
         size: Option<u32>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
@@ -5035,7 +5041,7 @@ impl PdfApp {
         if !(64..=1536).contains(&size) {
             return Err("size must be within 64..=1536".into());
         }
-        let (_, document) = self.reading_document()?;
+        let (_, document) = self.reading_document(pinned)?;
         let count = document.page_count();
         if page == 0 || page > count {
             return Err(format!("the PDF has {count} pages"));
@@ -5189,7 +5195,7 @@ impl ui::widget::Findable for PdfApp {
 #[cfg(test)]
 mod empty_state_tests;
 #[cfg(test)]
-mod records_tests;
+mod resources_tests;
 
 #[cfg(test)]
 mod adopt_tests;

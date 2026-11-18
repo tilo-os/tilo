@@ -237,7 +237,7 @@ fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Part {
     Body(Column),
-    /// The overview's rail, standing in for the overview where the list
+    /// The overview's rail, in place of the overview where the list
     /// does not fit.
     Rail,
     /// A column's title (and count) in the header row.
@@ -2275,7 +2275,7 @@ impl NavShell {
 
     /// The screen a new window opens on, from [`opening_pane`](layout::opening_pane): the first
     /// list of items — the overview where there is one, the content's own list where it is one (a
-    /// mail window on the inbox, a Files window on the folder) or the empty state standing in for
+    /// mail window on the inbox, a Files window on the folder) or the empty state in place of
     /// it — else the sidebar (Settings' list).
     fn opening_pane(&self, stack: &[NavPane]) -> NavPane {
         stack
@@ -2781,6 +2781,29 @@ impl Widget for NavShell {
         if g.inspector == InspectorPlacement::Docked {
             cx.surface(g.inspector_column, "inspector");
         }
+        // The hairlines it paints under each header row and beside the overview.
+        for column in [Column::Overview, Column::Content, Column::Inspector] {
+            let header = g.header(column);
+            if header == Rect::ZERO || g.floating(column) {
+                continue;
+            }
+            let rule =
+                crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row).rule;
+            if let Some(rule) = crate::surface::separator_rect(rule.x0, rule.x1, rule.y0, 0.0) {
+                cx.surface(rule, "border");
+            }
+        }
+        let lead = if g.overview_column.width() > 0.0 {
+            g.overview_column
+        } else {
+            g.rail
+        };
+        if g.side_by_side && lead.width() > 0.0 && g.content_column.width() > 0.0 {
+            cx.surface(
+                Rect::new(lead.x1 - 1.0, g.content_column.y0, lead.x1, lead.y1),
+                "border",
+            );
+        }
         cx.children();
     }
 
@@ -3242,10 +3265,10 @@ impl Widget for NavShell {
         Some(crate::widget::LayoutInfo::Shell(
             crate::widget::ShellLayout {
                 sidebar: match self.geometry.sidebar {
-                    SidebarPlacement::None => crate::widget::SidebarStanding::None,
-                    SidebarPlacement::Docked => crate::widget::SidebarStanding::Docked,
-                    SidebarPlacement::Drawer => crate::widget::SidebarStanding::Over,
-                    SidebarPlacement::Screen => crate::widget::SidebarStanding::Alone,
+                    SidebarPlacement::None => crate::widget::SidebarPosition::None,
+                    SidebarPlacement::Docked => crate::widget::SidebarPosition::Docked,
+                    SidebarPlacement::Drawer => crate::widget::SidebarPosition::Over,
+                    SidebarPlacement::Screen => crate::widget::SidebarPosition::Alone,
                 },
                 beside: crate::widget::arrange::WidthClass::of(beside_rem),
                 needs: inputs.content_beside_sidebar_class(),
@@ -3621,7 +3644,7 @@ fn same_words(a: &str, b: &str) -> bool {
 }
 
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a
-/// pushed-away screen) still belong to the window: custody, invocations and availability reach
+/// pushed-away screen) still belong to the window: ownership, invocations and availability reach
 /// every part the shell owns.
 impl crate::resources::PublishesResources for NavShell {}
 
@@ -3631,13 +3654,13 @@ impl crate::widget::controls::ActionControls for NavShell {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         crate::widget::controls::children_action_control_bindings(self)
     }
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         self.for_each_owned_mut(|child| {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         });
     }
 

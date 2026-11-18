@@ -51,7 +51,7 @@ impl LargeDirectoryProvider {
             .replace_all_resources((0..records).map(|index| {
                 let resource = format!("test.item:{index}");
                 let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
-                crate::search::SearchRecord::new(
+                crate::search::SearchItem::new(
                     resource,
                     crate::search::SearchResult::for_action(
                         "Large directory",
@@ -456,7 +456,7 @@ impl crate::widget::ResourceOperations for CounterCard {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let (request, scope) = op.with_custody();
+        let (request, scope) = op.with_ownership();
         if scope.is_none()
             && let Some(started) = crate::widget::start_in_children(
                 self,
@@ -1357,10 +1357,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 #[test]
 fn local_control_results_stay_local_and_report_refusal_or_success() {
     {
-        use crate::application_test_support::ProbeHost;
+        use crate::application_test_support::ProbeHarness;
         use crate::widget::{Column, TileHost};
         for closed in [false, true] {
-            let owner = ProbeHost::new();
+            let owner = ProbeHarness::new();
             let (component, sibling_seen) =
                 crate::widget::control_result_probe::component(&owner, 11, false);
             let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
@@ -1383,9 +1383,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
     }
 
     {
-        use crate::application_test_support::ProbeHost;
+        use crate::application_test_support::ProbeHarness;
         use crate::widget::{Column, TileHost};
-        let owner = ProbeHost::new();
+        let owner = ProbeHarness::new();
         let (first, first_seen) = crate::widget::control_result_probe::component(&owner, 11, false);
         let (second, second_seen) =
             crate::widget::control_result_probe::component(&owner, 12, false);
@@ -1402,9 +1402,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
     }
 
     {
-        use crate::application_test_support::{ProbeHost, runner_inputs};
+        use crate::application_test_support::{ProbeHarness, runner_inputs};
         for accepted in [false, true] {
-            let owner = ProbeHost::new();
+            let owner = ProbeHarness::new();
             let (component, observed) =
                 crate::widget::control_result_probe::component(&owner, 11, accepted);
             let binding = component.callback_binding();

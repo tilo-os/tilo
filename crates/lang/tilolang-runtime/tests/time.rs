@@ -385,7 +385,7 @@ action fine(b: Board) uses time {
             monday.bare("parts"),
             ["a thursday", "b 29 10 2026", "c 2026-10-26", "d 2026-10-26"]
         );
-        // A region whose week starts on Sunday reads the same day as standing in the week that
+        // A region whose week starts on Sunday reads the same day as in the week that
         // began the Sunday before it.
         let sunday = Sheet::at(NOW, 0, None, 6);
         assert_eq!(

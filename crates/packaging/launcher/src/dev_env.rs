@@ -10,7 +10,7 @@
 pub const TRUSTED_PUBLISHERS_FILE_ENV: &str =
     package_store::size_limit::DEVELOPER_PUBLISHERS_FILE_ENV;
 /// `off` downgrades a host-scoped network grant to unrestricted egress.
-pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
+pub const EGRESS_PROXY_ENV: &str = "TILO_LAUNCHER_EGRESS_PROXY";
 /// Names the `xdg-dbus-proxy` binary that filters an app's session bus.
 pub const DBUS_PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 
@@ -27,7 +27,7 @@ pub const DEV_OVERRIDE_VARS: &[&str] = &[
     crate::seccomp::JIT_POLICY_PATH_ENV,
     crate::seccomp::WEB_ENGINE_POLICY_PATH_ENV,
     crate::hardening::POLICY_PATH_ENV,
-    NET_GATE_ENV,
+    EGRESS_PROXY_ENV,
     DBUS_PROXY_BIN_ENV,
     LIVE_MODULES_ENV,
 ];

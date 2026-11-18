@@ -1,4 +1,4 @@
-//! The slides app on the framework: the [`Deck`] record, its editor, and
+//! The slides app on the framework: the [`Deck`] resource, its editor, and
 //! what opening a presentation file does.
 
 #[cfg(feature = "samples")]
@@ -59,7 +59,7 @@ impl ResourceApp for SlidesShell {
             .map(|path| DocumentId::derived("slides", &DocumentId::identify_file(path)))
     }
 
-    /// The deck a file opens as is the file's when the record is new; a deck
+    /// The deck a file opens as is the file's when the resource is new; a deck
     /// opened before keeps the edits made to it since.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Deck>> {
         let Some(file) = input.file().filter(|_| created) else {

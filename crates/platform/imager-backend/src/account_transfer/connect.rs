@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use account_custody::{Authorization, Custodian, CustodyError, OAuthCloud};
+use account_credentials::{Authorization, CredentialError, CredentialStore, OAuthCloud};
 use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
 use zeroize::Zeroizing;
 
@@ -18,7 +18,7 @@ enum ImportPurpose {
 #[derive(Clone)]
 pub struct Connector {
     pub(super) root: PathBuf,
-    pub(super) custodian: Custodian,
+    pub(super) credential_store: CredentialStore,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) spotify_api: Option<String>,
     #[cfg(all(test, target_os = "linux"))]
@@ -27,10 +27,10 @@ pub struct Connector {
 
 impl Connector {
     pub fn new(root: PathBuf) -> Self {
-        let custodian = Custodian::for_root(Some(root.clone())).with_apple_icloud();
+        let credential_store = CredentialStore::for_root(Some(root.clone())).with_apple_icloud();
         Self {
             root,
-            custodian,
+            credential_store,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
             #[cfg(all(test, target_os = "linux"))]
@@ -38,10 +38,10 @@ impl Connector {
         }
     }
 
-    pub fn with_custodian(root: PathBuf, custodian: Custodian) -> Self {
+    pub fn with_credential_store(root: PathBuf, credential_store: CredentialStore) -> Self {
         Self {
             root,
-            custodian,
+            credential_store,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
             #[cfg(all(test, target_os = "linux"))]
@@ -50,7 +50,7 @@ impl Connector {
     }
 
     pub fn cloud_available(&self, cloud: OAuthCloud) -> bool {
-        self.custodian.is_configured(cloud.oauth_use())
+        self.credential_store.is_configured(cloud.oauth_use())
     }
 
     /// Only after explicit connection consent. The caller opens the URL through the shared host URI
@@ -60,20 +60,20 @@ impl Connector {
         cloud: OAuthCloud,
         identity: Option<&str>,
     ) -> Result<Authorization, ConnectionError> {
-        self.custodian
+        self.credential_store
             .begin_sign_in(cloud, identity)
-            .map_err(custody_error)
+            .map_err(credential_error)
     }
 
     /// Runs on a worker after the person approves the browser sign-in; PKCE, state validation and
-    /// grant custody are the platform's existing ones.
+    /// grant ownership are the platform's existing ones.
     pub fn finish_oauth(
         &self,
         cloud: OAuthCloud,
         label: &str,
         authorization: Authorization,
     ) -> Result<AccountId, ConnectionError> {
-        let tokens = Custodian::finish_sign_in(authorization).map_err(custody_error)?;
+        let tokens = CredentialStore::finish_sign_in(authorization).map_err(credential_error)?;
         self.persist_cloud_tokens(cloud, label, tokens)
     }
 
@@ -84,8 +84,8 @@ impl Connector {
         authorization: Authorization,
         code: Zeroizing<String>,
     ) -> Result<AccountId, ConnectionError> {
-        let tokens =
-            Custodian::finish_sign_in_with_code(authorization, &code).map_err(custody_error)?;
+        let tokens = CredentialStore::finish_sign_in_with_code(authorization, &code)
+            .map_err(credential_error)?;
         self.persist_cloud_tokens(cloud, label, tokens)
     }
 
@@ -93,31 +93,31 @@ impl Connector {
         &self,
         cloud: OAuthCloud,
         label: &str,
-        tokens: account_custody::TokenSet,
+        tokens: account_credentials::TokenSet,
     ) -> Result<AccountId, ConnectionError> {
         let mount = self
-            .custodian
+            .credential_store
             .resolve_storage(cloud, &tokens)
-            .map_err(custody_error)?;
+            .map_err(credential_error)?;
         let mut account = Account::new(
             AccountId::new(uuid::Uuid::new_v4().to_string()),
             cloud.type_id(),
         );
         account.display_name = label.chars().take(256).collect();
         account.config = serde_json::json!({"provider": cloud.type_id(), accounts::cloud_types::MOUNT_CONFIG_KEY: mount});
-        self.persist(account, account_custody::oauth_secret(&tokens))
+        self.persist(account, account_credentials::oauth_secret(&tokens))
     }
 
     /// Uses the exact grant slot Tilo Music consumes; streaming stays a separate consent.
     pub fn begin_spotify(&self) -> Result<Authorization, ConnectionError> {
-        use account_custody::{Capability, OAuthIssuer, OAuthUse};
-        self.custodian
+        use account_credentials::{Capability, OAuthIssuer, OAuthUse};
+        self.credential_store
             .begin_sign_in_for_scopes(
                 OAuthUse::new(OAuthIssuer::Spotify, Capability::Music),
                 &["user-read-private", "user-library-read"],
                 None,
             )
-            .map_err(custody_error)
+            .map_err(credential_error)
     }
 
     pub fn finish_spotify(
@@ -128,7 +128,8 @@ impl Connector {
         if load_store(&self.root)?.get(&id).is_some() {
             return Err(ConnectionError::AlreadyPresent);
         }
-        let mut tokens = Custodian::finish_sign_in(authorization).map_err(custody_error)?;
+        let mut tokens =
+            CredentialStore::finish_sign_in(authorization).map_err(credential_error)?;
         if tokens.scope.is_none() {
             tokens.scope = Some("user-read-private user-library-read".into());
         }
@@ -137,14 +138,14 @@ impl Connector {
 
     /// Separate playback consent for the same slot.
     pub fn begin_spotify_streaming(&self) -> Result<Authorization, ConnectionError> {
-        use account_custody::{Capability, OAuthIssuer, OAuthUse};
-        self.custodian
+        use account_credentials::{Capability, OAuthIssuer, OAuthUse};
+        self.credential_store
             .begin_sign_in_for_scopes(
                 OAuthUse::new(OAuthIssuer::Spotify, Capability::MusicStreaming),
                 &["streaming", "user-read-private"],
                 None,
             )
-            .map_err(custody_error)
+            .map_err(credential_error)
     }
 
     pub fn finish_spotify_streaming(
@@ -155,7 +156,8 @@ impl Connector {
         if load_store(&self.root)?.get(&id).is_some() {
             return Err(ConnectionError::AlreadyPresent);
         }
-        let mut tokens = Custodian::finish_sign_in(authorization).map_err(custody_error)?;
+        let mut tokens =
+            CredentialStore::finish_sign_in(authorization).map_err(credential_error)?;
         if tokens.scope.is_none() {
             tokens.scope = Some("streaming user-read-private".into());
         }
@@ -173,35 +175,39 @@ impl Connector {
 
     /// Password, challenge and code stay private on the worker and never enter the install profile.
     pub fn icloud_available(&self) -> bool {
-        self.custodian.icloud().is_available()
+        self.credential_store.icloud().is_available()
     }
 
-    pub fn icloud_sign_out(&self, session: &account_custody::icloud::ICloudSessionState) {
-        self.custodian.icloud().sign_out(session);
+    pub fn icloud_sign_out(&self, session: &account_credentials::icloud::ICloudSessionState) {
+        self.credential_store.icloud().sign_out(session);
     }
 
     pub fn icloud_sign_in(
         &self,
         apple_id: &str,
         password: Zeroizing<String>,
-    ) -> Result<account_custody::icloud::ICloudSignIn, account_custody::icloud::ICloudAuthError>
-    {
-        self.custodian.icloud().sign_in(apple_id, &password)
+    ) -> Result<
+        account_credentials::icloud::ICloudSignIn,
+        account_credentials::icloud::ICloudAuthError,
+    > {
+        self.credential_store.icloud().sign_in(apple_id, &password)
     }
 
     pub fn icloud_verify(
         &self,
-        challenge: &account_custody::icloud::ICloudChallenge,
+        challenge: &account_credentials::icloud::ICloudChallenge,
         code: Zeroizing<String>,
-    ) -> Result<account_custody::icloud::ICloudSessionState, account_custody::icloud::ICloudAuthError>
-    {
-        self.custodian.icloud().verify_code(challenge, &code)
+    ) -> Result<
+        account_credentials::icloud::ICloudSessionState,
+        account_credentials::icloud::ICloudAuthError,
+    > {
+        self.credential_store.icloud().verify_code(challenge, &code)
     }
 
     pub fn finish_icloud(
         &self,
         apple_id: &str,
-        session: account_custody::icloud::ICloudSessionState,
+        session: account_credentials::icloud::ICloudSessionState,
     ) -> Result<AccountId, ConnectionError> {
         if apple_id.trim().is_empty() || apple_id.len() > 256 {
             return Err(ConnectionError::InvalidConfiguration);
@@ -213,12 +219,15 @@ impl Connector {
         account.display_name = apple_id.to_string();
         let mut config = serde_json::Map::new();
         config.insert("identity".into(), apple_id.into());
-        let mount = self.custodian.icloud().storage_config();
+        let mount = self.credential_store.icloud().storage_config();
         if !mount.is_null() {
             config.insert(accounts::cloud_types::MOUNT_CONFIG_KEY.into(), mount);
         }
         account.config = serde_json::Value::Object(config);
-        self.persist(account, account_custody::icloud_secret(apple_id, &session))
+        self.persist(
+            account,
+            account_credentials::icloud_secret(apple_id, &session),
+        )
     }
 
     /// The person's ordinary password never enters the installer; this is the device's revocable app
@@ -226,7 +235,7 @@ impl Connector {
     pub fn finish_nextcloud(
         &self,
         label: &str,
-        login: account_custody::nextcloud::NextcloudLogin,
+        login: account_credentials::nextcloud::NextcloudLogin,
     ) -> Result<AccountId, ConnectionError> {
         self.password_account(
             accounts::cloud_types::NEXTCLOUD,
@@ -243,7 +252,7 @@ impl Connector {
     pub fn connect_nextcloud_app_password(
         &self,
         label: &str,
-        login: account_custody::nextcloud::NextcloudLogin,
+        login: account_credentials::nextcloud::NextcloudLogin,
     ) -> Result<AccountId, ConnectionError> {
         self.password_account(
             accounts::cloud_types::NEXTCLOUD,
@@ -296,7 +305,7 @@ impl Connector {
         {
             return Err(ConnectionError::InvalidConfiguration);
         }
-        let server = account_custody::nextcloud::server_url(server)
+        let server = account_credentials::nextcloud::server_url(server)
             .map_err(|_| ConnectionError::InvalidConfiguration)?
             .to_string();
         let imported = id.is_some();
@@ -310,18 +319,18 @@ impl Connector {
         }
         if imported {
             let secret = Secret::password(password.to_string());
-            let copied = account_custody::copied_secret(&account, &secret);
+            let copied = account_credentials::copied_secret(&account, &secret);
             self.persist_import(account, copied)
         } else {
             // Preserve offline copied grants: only an explicit new connection promises this endpoint
-            // is ready before target custody is published.
+            // is ready before target ownership is published.
             let _ = load_store(&self.root)?;
             super::dav_readiness::verify(&account, username, &password)?;
             self.persist(account, Secret::password(password.to_string()))
         }
     }
 
-    /// Revoking a grant is best effort through existing custody.
+    /// Revoking a grant is best effort through existing ownership.
     pub fn disconnect(&self, id: &AccountId) -> Result<(), ConnectionError> {
         self.remove_prepared(id, true)
     }
@@ -341,7 +350,7 @@ impl Connector {
         }
         let secret = vault.get(id).map(PrivateSecret);
         if revoke && let (Some(account), Some(secret)) = (&account, &secret) {
-            self.custodian.revoke(account, &secret.0);
+            self.credential_store.revoke(account, &secret.0);
         }
         // A retry can see the vault save of an earlier attempt whose metadata save failed; finish
         // removing it.
@@ -442,7 +451,7 @@ impl Connector {
             }
         }
         let expected = match purpose {
-            ImportPurpose::CopySource => account_custody::copied_secret(&account, &secret.0),
+            ImportPurpose::CopySource => account_credentials::copied_secret(&account, &secret.0),
             ImportPurpose::PreparedHandoff => secret.0.clone(),
         };
         self.persist_import(account, expected)
@@ -539,15 +548,15 @@ impl Connector {
     }
 }
 
-pub(super) fn custody_error(error: CustodyError) -> ConnectionError {
+pub(super) fn credential_error(error: CredentialError) -> ConnectionError {
     match error {
-        CustodyError::NotConfigured { .. } => ConnectionError::SignInUnavailable,
-        CustodyError::Storage(_) => ConnectionError::StorageUnavailable,
+        CredentialError::NotConfigured { .. } => ConnectionError::SignInUnavailable,
+        CredentialError::Storage(_) => ConnectionError::StorageUnavailable,
         _ => ConnectionError::SignInFailed,
     }
 }
 
-// Rclone's obscure format: random 16-byte IV, AES-256 CTR, raw base64. Obfuscation, not custody;
+// Rclone's obscure format: random 16-byte IV, AES-256 CTR, raw base64. Obfuscation, not ownership;
 // reseal immediately.
 fn reveal_rclone(encoded: &str) -> Result<Zeroizing<String>, ConnectionError> {
     if encoded.len() > 16 * 1024 {

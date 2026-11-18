@@ -150,7 +150,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let error = Selection::discover(home.path(), &[])
             .err()
-            .expect("unsupported source custody must fail");
+            .expect("unsupported source ownership must fail");
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 }

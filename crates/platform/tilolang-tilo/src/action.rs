@@ -19,7 +19,7 @@ use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Segment, Slot};
 use std::collections::BTreeMap;
 
 use crate::chunk::{ChunkNo, Chunks, FIRST};
-use crate::record::DynRecord;
+use crate::resource::DynResource;
 use tilolang_runtime::ids::{Actor, AppId};
 use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 use tilolang_runtime::store::VersionKind;
@@ -35,7 +35,7 @@ pub const MIGRATED_KEY: &str = "$migrated";
 pub const TRIGGERS_KEY: &str = "$triggers";
 
 /// The key of the map in the workspace record that holds every tilolang resource.
-pub const RECORDS_KEY: &str = "tl";
+pub const RESOURCES_KEY: &str = "tl";
 
 /// The facet naming the authorship chain of a change, so history can say "you, via Alex's
 /// view" (authority.md).
@@ -165,14 +165,14 @@ impl Authorship {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum DynEdit {
-    /// A new resource: `record` is its JSON form ([`DynRecord::to_json`]), `$type` included.
+    /// A new resource: `resource` is its JSON form ([`DynResource::to_json`]), `$type` included.
     Create { id: String, record: Json },
-    /// A field edit below the resource `id`. The edit's path starts at a field of the record,
+    /// A field edit below the resource `id`. The edit's path starts at a field of the resource,
     /// or at `Item(item)` for an item of it stored by its id ([`crate::items`]); an item of a
-    /// record written before items were flat is reached by the path it is nested at.
-    Edit { id: String, edit: Edit<DynRecord> },
-    /// A new item `item` of the resource `id`, stored by its id: `record` is its JSON form
-    /// ([`DynRecord::to_json`]), `at` its placement as the item's `$at` holds it
+    /// resource written before items were flat is reached by the path it is nested at.
+    Edit { id: String, edit: Edit<DynResource> },
+    /// A new item `item` of the resource `id`, stored by its id: `resource` is its JSON form
+    /// ([`DynResource::to_json`]), `at` its placement as the item's `$at` holds it
     /// ([`tilolang_runtime::place::Placement`]).
     Insert {
         id: String,
@@ -181,7 +181,7 @@ pub enum DynEdit {
         at: String,
     },
     /// Write the placement `at` of the item `item` of the resource `id`: moved (from wherever it
-    /// was, keeping its id), or removed with everything in it. An item of a record written before
+    /// was, keeping its id), or removed with everything in it. An item of a resource written before
     /// items were flat is found at `nested`, and its map made (of the type `ty`) when it was
     /// stored as its order key alone. `holders` are the resources whose collections it left or
     /// joined, for history.
@@ -210,9 +210,9 @@ pub enum DynEdit {
         last: String,
         len: u64,
     },
-    /// An edit of the chunk `chunk` of the record: the items of a collection that run holds.
+    /// An edit of the chunk `chunk` of the resource: the items of a collection that run holds.
     Chunk { chunk: ChunkNo, edit: Box<DynEdit> },
-    /// Queue an outside effect on the resource `id`. The entry waits in the record, under the
+    /// Queue an outside effect on the resource `id`. The entry waits in the resource, under the
     /// key `entry`, for the device `owner` to carry it out. Queued again under the same key it is
     /// the same entry, so what is approved twice (on two devices, or twice on one) is queued once.
     OutboxPush {
@@ -245,7 +245,7 @@ pub enum DynEdit {
         detail: String,
     },
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
-    /// records, which an action's follow-up changes write beside the package's resources.
+    /// resources, which an action's follow-up changes write beside the package's resources.
     In { app: String, edit: Box<DynEdit> },
     /// Record that the migration `migration` (its action id) ran on the resource `id`, in the
     /// same change as what it did, so it runs once on each resource an earlier version wrote.
@@ -269,7 +269,7 @@ impl DynEdit {
         }
     }
 
-    /// `edit` addressed to `chunk`, unless that is where the record's manifest already places
+    /// `edit` addressed to `chunk`, unless that is where the document's manifest already places
     /// the edit's resource: a write that would go there anyway names no chunk.
     #[must_use]
     pub fn routed_at(chunks: &crate::chunk::Chunks, edit: Self, chunk: ChunkNo) -> Self {
@@ -280,7 +280,7 @@ impl DynEdit {
         }
     }
 
-    /// The same edit, addressed to the chunk `chunk` of the record.
+    /// The same edit, addressed to the chunk `chunk` of the document.
     #[must_use]
     pub fn in_chunk(self, chunk: ChunkNo) -> Self {
         Self::Chunk {
@@ -290,8 +290,8 @@ impl DynEdit {
     }
 
     /// The chunk this edit is addressed to, when it names one: the manifest of a run is written
-    /// in the record itself ([`FIRST`]), and an edit that names no chunk is written where the
-    /// record's manifest places its resource.
+    /// in the document itself ([`FIRST`]), and an edit that names no chunk is written where the
+    /// document's manifest places its resource.
     #[must_use]
     pub fn chunk(&self) -> Option<ChunkNo> {
         match self {
@@ -331,7 +331,7 @@ impl DynEdit {
         }
     }
 
-    /// Whether the edit queues an outside effect, rather than only changing the record.
+    /// Whether the edit queues an outside effect, rather than only changing the document.
     #[must_use]
     pub fn reaches_outside(&self) -> bool {
         match self {
@@ -414,15 +414,15 @@ impl DynAction {
 
     /// The schemas of the package version that wrote this action, installed while it applies:
     /// its types resolve by that version. `None` for an action with no module recorded (a
-    /// record's creation, an action a test built): it resolves through whatever table the
+    /// document's creation, an action a test built): it resolves through whatever table the
     /// caller installed — the store's, which holds its own package versions.
     fn package_schemas(&self) -> Option<crate::schema::Current> {
         crate::schema::for_module(&self.app, &self.authorship.module).map(|package| package.enter())
     }
 
     /// What this action is, by what it writes: one that queues an outside effect reaches outside
-    /// the record, as the package action that planned it is declared to; every other one is an
-    /// undoable change of the record. What a workspace's grants must allow to commit it.
+    /// the document, as the package action that planned it is declared to; every other one is an
+    /// undoable change of the document. What a workspace's grants must allow to commit it.
     #[must_use]
     pub fn need(&self) -> tilo_actions::ActionNeed {
         tilo_actions::ActionNeed::of(if self.edits.iter().any(DynEdit::reaches_outside) {
@@ -706,15 +706,15 @@ pub fn apply_edits(
     }
     let mut cx = ActionCx::for_write(doc, seed);
     // The workspace's `tl` map is made by the first write: a replica that made one of its own
-    // before it met the others has its records in that one, which this folds in before writing.
-    let records = crate::containers::single(doc, &ROOT, RECORDS_KEY)?;
+    // before it met the others has its documents in that one, which this folds in before writing.
+    let records = crate::containers::single(doc, &ROOT, RESOURCES_KEY)?;
     for edit in edits {
         apply_one(doc, &records, app, edit, &mut cx)?;
     }
     Ok(())
 }
 
-/// The records map `edit` writes in: where its resource was stored, under the app's id or under
+/// The documents map `edit` writes in: where its resource was stored, under the app's id or under
 /// an id the app had before (`previously:`); what is new goes under the app's id.
 ///
 /// The app's maps a replica made before it met the others are folded into the ones the document
@@ -748,8 +748,8 @@ fn target_map(
     }
 }
 
-/// Fold the copies of the record map `id` (in the app's records map `app`) and of the maps it
-/// keeps beside its fields into the ones it keeps, before anything is written to it: a record
+/// Fold the copies of the document map `id` (in the app's documents map `app`) and of the maps it
+/// keeps beside its fields into the ones it keeps, before anything is written to it: a document
 /// made before it made them with it, or made at once by two replicas that had not met, may hold
 /// two of each ([`crate::containers`]).
 fn fold_containers(doc: &mut Doc, app: &automerge::ObjId, id: &str) -> Result<(), ActionError> {
@@ -775,7 +775,7 @@ fn apply_one(
     if let DynEdit::Chunk { edit, .. } = edit {
         return apply_one(doc, records, app, edit, cx);
     }
-    // The manifest of a run is written in the record itself, where the chunk it names is held.
+    // The manifest of a run is written in the resource itself, where the chunk it names is held.
     if let DynEdit::RunChunk {
         holder,
         field,
@@ -790,7 +790,7 @@ fn apply_one(
     fold_containers(doc, &app, edit.resource())?;
     match edit {
         DynEdit::Create { id, record } => {
-            let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
+            let record = DynResource::from_json(record).map_err(|error| refused(&error))?;
             store_flat(doc, &app, id, record)?;
         }
         DynEdit::Edit { id, edit } => {
@@ -802,7 +802,7 @@ fn apply_one(
                 Some((Segment::Item(item), rest)) => (flat_item(doc, &obj, item.as_str())?, rest),
                 _ => (obj, edit.path()),
             };
-            DynRecord::edit_fields(doc, &obj, path, edit.op(), cx)
+            DynResource::edit_fields(doc, &obj, path, edit.op(), cx)
                 .map_err(|error| refused(&error))?;
         }
         DynEdit::Insert {
@@ -868,8 +868,8 @@ fn apply_one(
     Ok(())
 }
 
-/// Insert the item `item` of the resource `id`, holding `record`, placed at `at`: the map of the
-/// record and of the item is made in the chunk the edit is applied to, which holds the run the
+/// Insert the item `item` of the resource `id`, holding `resource`, placed at `at`: the map of the
+/// resource and of the item is made in the chunk the edit is applied to, which holds the run the
 /// item joins.
 fn insert_item(
     doc: &mut Doc,
@@ -882,7 +882,7 @@ fn insert_item(
     let obj = crate::containers::single(doc, app, id)?;
     let items = crate::containers::single(doc, &obj, ITEMS_KEY)?;
     let mut taken = Taken::new();
-    let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
+    let record = DynResource::from_json(record).map_err(|error| refused(&error))?;
     let record = take_items(record, Some(item), &mut taken);
     record
         .store(doc, Slot::Key(&items, item))
@@ -893,7 +893,7 @@ fn insert_item(
 }
 
 /// Take the item `item` out of the resource `id`, with everything it holds: the other chunk of
-/// the record holds the copy it replaces, when it moved there.
+/// the resource holds the copy it replaces, when it moved there.
 fn remove_item(
     doc: &mut Doc,
     app: &automerge::ObjId,
@@ -914,7 +914,7 @@ fn remove_item(
     Ok(())
 }
 
-/// Record in the resource `id` (in the app's records map `app`) that the migration `migration`
+/// Document in the resource `id` (in the app's documents map `app`) that the migration `migration`
 /// ran on it.
 fn mark_migrated(
     doc: &mut Doc,
@@ -945,7 +945,7 @@ pub fn migrated(doc: &Doc, obj: &automerge::ObjId, migration: &str) -> bool {
         .any(|done| doc.get(done, migration).ok().flatten().is_some())
 }
 
-/// Record for the resource `id`, in the same change as what the trigger did, what the trigger
+/// Document for the resource `id`, in the same change as what the trigger did, what the trigger
 /// `key` last did for it (`value`: the period it ran in, or the instant it fired at).
 fn mark_trigger(
     doc: &mut Doc,
@@ -972,7 +972,7 @@ fn mark_trigger(
 /// What the trigger `key` last did for the resource at the map `obj`, as it recorded it.
 #[must_use]
 pub fn triggered(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<String> {
-    // The copy the record keeps answers first, then those it replaced: what the trigger last
+    // The copy the resource keeps answers first, then those it replaced: what the trigger last
     // did is in one of them, wherever the replicas that ran it were.
     crate::containers::maps(doc, obj, TRIGGERS_KEY)
         .iter()
@@ -986,12 +986,12 @@ pub fn triggered(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<String>
         })
 }
 
-/// The items of each collection of a record being stored, in order, by the item holding the
-/// collection (`None`: the record) and its field.
-type Taken = BTreeMap<(Option<String>, String), Vec<(String, DynRecord)>>;
+/// The items of each collection of a resource being stored, in order, by the item holding the
+/// collection (`None`: the resource) and its field.
+type Taken = BTreeMap<(Option<String>, String), Vec<(String, DynResource)>>;
 
-/// `record` without the items of its collections, which go into `out`, theirs with them.
-fn take_items(mut record: DynRecord, holder: Option<&str>, out: &mut Taken) -> DynRecord {
+/// `resource` without the items of its collections, which go into `out`, theirs with them.
+fn take_items(mut record: DynResource, holder: Option<&str>, out: &mut Taken) -> DynResource {
     let fields: Vec<String> = record
         .schema()
         .fields
@@ -1000,7 +1000,7 @@ fn take_items(mut record: DynRecord, holder: Option<&str>, out: &mut Taken) -> D
         .map(|f| f.id.clone())
         .collect();
     for field in fields {
-        let Some(crate::record::DynValue::Collection(items)) = record.get_mut(&field) else {
+        let Some(crate::resource::DynValue::Collection(items)) = record.get_mut(&field) else {
             continue;
         };
         let items = std::mem::take(items);
@@ -1014,24 +1014,24 @@ fn take_items(mut record: DynRecord, holder: Option<&str>, out: &mut Taken) -> D
     record
 }
 
-/// The order keys of `count` items placed in a collection in order, as a record created with
+/// The order keys of `count` items placed in a collection in order, as a resource created with
 /// them places them.
 #[must_use]
 pub fn keys_in_order(count: usize) -> Vec<String> {
     tilo_resource::order::sequence(None, None, count)
 }
 
-/// Store `record` as the resource `id` of the app map `app`, every item of its collections (and
+/// Store `document` as the resource `id` of the app map `app`, every item of its collections (and
 /// of theirs) stored by its id beside it and placed where it is ([`crate::items`]).
 ///
-/// The record is made with the maps it keeps its items and its outside effects in
-/// ([`crate::containers`]): a record made on two replicas at once, or one whose first item two
+/// The document is made with the maps it keeps its items and its outside effects in
+/// ([`crate::containers`]): a document made on two replicas at once, or one whose first item two
 /// replicas add before they meet, holds one map of them, not one each.
 fn store_flat(
     doc: &mut Doc,
     app: &automerge::ObjId,
     id: &str,
-    record: DynRecord,
+    record: DynResource,
 ) -> Result<(), ActionError> {
     let mut taken = Taken::new();
     let record = take_items(record, None, &mut taken);
@@ -1046,8 +1046,8 @@ fn store_flat(
     store_taken(doc, &items, taken)
 }
 
-/// Store the items `taken` of a record by their ids, each placed in order in the collection it
-/// was taken from, in the record's map of its items `items`.
+/// Store the items `taken` of a resource by their ids, each placed in order in the collection it
+/// was taken from, in the resource's map of its items `items`.
 fn store_taken(doc: &mut Doc, items: &automerge::ObjId, taken: Taken) -> Result<(), ActionError> {
     if taken.is_empty() {
         return Ok(());
@@ -1075,7 +1075,7 @@ fn store_taken(doc: &mut Doc, items: &automerge::ObjId, taken: Taken) -> Result<
     Ok(())
 }
 
-/// The map of the item `item` of the record map `record`, stored by its id.
+/// The map of the item `item` of the document map `document`, stored by its id.
 fn flat_item(
     doc: &Doc,
     record: &automerge::ObjId,
@@ -1091,8 +1091,8 @@ fn flat_item(
         .unwrap_or_else(|| Err(ActionError::Refused(format!("there is no item `{item}`"))))
 }
 
-/// The map of an item of a record written before items were flat, nested at `nesting` below
-/// the record map `record`: made (of the type `ty`) for an item stored as its order key alone.
+/// The map of an item of a document written before items were flat, nested at `nesting` below
+/// the document map `document`: made (of the type `ty`) for an item stored as its order key alone.
 fn nested_item(
     doc: &mut Doc,
     record: &automerge::ObjId,
@@ -1129,7 +1129,7 @@ fn nested_item(
     Ok(obj)
 }
 
-/// The resource whose collection the place `place` of an item of the record `doc` names.
+/// The resource whose collection the place `place` of an item of the document `doc` names.
 fn holder_of(doc: &str, place: &tilolang_runtime::place::Place) -> String {
     match &place.parent {
         Some(parent) => format!("{doc}/{parent}"),
@@ -1137,9 +1137,9 @@ fn holder_of(doc: &str, place: &tilolang_runtime::place::Place) -> String {
     }
 }
 
-/// The item `edit` adds to a collection by its id, and its record: `None` when the edit adds
+/// The item `edit` adds to a collection by its id, and its document: `None` when the edit adds
 /// none.
-fn item_added(edit: &Edit<DynRecord>) -> Option<(String, &Json)> {
+fn item_added(edit: &Edit<DynResource>) -> Option<(String, &Json)> {
     match edit.op() {
         tilo_resource::EditOp::InsertItem {
             id: Some(item),
@@ -1156,7 +1156,7 @@ fn item_added(edit: &Edit<DynRecord>) -> Option<(String, &Json)> {
 }
 
 /// The resource holding the collection `edit`'s path names, and that collection's field.
-fn collection_of(id: &str, edit: &Edit<DynRecord>) -> (String, Option<String>) {
+fn collection_of(id: &str, edit: &Edit<DynResource>) -> (String, Option<String>) {
     let mut holder = id.to_owned();
     let mut field = None;
     for segment in edit.path() {
@@ -1180,7 +1180,7 @@ const VALUE_KEY: &str = "v";
 /// The key of the map of outside effects waiting on a resource.
 pub const OUTBOX_KEY: &str = "$outbox";
 
-/// An outside effect queued on a resource, as the record holds it.
+/// An outside effect queued on a resource, as the resource holds it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredEntry {
     /// The key it is queued under.
@@ -1301,8 +1301,8 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
     let Some(obj) = crate::reads::resource_obj(doc, app, id) else {
         return Vec::new();
     };
-    // Every copy of the map the record keeps its outbox in, oldest first: an entry queued
-    // before two replicas met sits in the copy the record does not keep.
+    // Every copy of the map the document keeps its outbox in, oldest first: an entry queued
+    // before two replicas met sits in the copy the document does not keep.
     let mut queued: BTreeMap<String, automerge::ObjId> = BTreeMap::new();
     for outbox in crate::containers::maps(doc, &obj, OUTBOX_KEY) {
         for entry in doc.keys(&outbox) {
@@ -1380,7 +1380,7 @@ pub fn edit_seed(index: usize) -> [u8; 8] {
     u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes()
 }
 
-/// The resource an action writes first, as the record read before the action wrote it: its
+/// The resource an action writes first, as the document read before the action wrote it: its
 /// published id, its type, and its title ([`DynAction::target`]).
 pub type Target = (String, &'static crate::schema::TypeSchema, Option<String>);
 
@@ -1408,7 +1408,7 @@ impl Action for DynAction {
 
 impl DynAction {
     /// What the action did, as history names it, with `read` reading the target of an edit of a
-    /// resource the record held before the action ([`read_target`]).
+    /// resource the document held before the action ([`read_target`]).
     #[must_use]
     pub fn described_with(&self, read: impl FnOnce(&DynEdit) -> Option<Target>) -> Described {
         let _package = self.package_schemas();
@@ -1425,7 +1425,7 @@ impl DynAction {
         );
         let described = Described::new(Did::verb(key, args));
         // History names the resource as it reads, by its title and never by its id: the item
-        // the action wrote (a note of the notebook), else the record; one without a title yet
+        // the action wrote (a note of the notebook), else the document; one without a title yet
         // by what its type says it is called then ("Created Notebook", "Pin: Untitled").
         let Some((at, schema, title)) = self.target(read) else {
             return described;
@@ -1433,9 +1433,9 @@ impl DynAction {
         described.on(at, title.unwrap_or_else(|| schema.untitled()))
     }
 
-    /// The resource this action writes first: its published id (an item of a record by its
+    /// The resource this action writes first: its published id (an item of a document by its
     /// path), its type, and its title, the first text among its own fields. A resource the
-    /// action creates is read from the record it creates; any other `read` reads.
+    /// action creates is read from the document it creates; any other `read` reads.
     fn target(&self, read: impl FnOnce(&DynEdit) -> Option<Target>) -> Option<Target> {
         // What it describes is what it wrote of a resource, not the run entry it records first.
         let edit = self
@@ -1598,18 +1598,18 @@ fn map_in(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::Obj
     }
 }
 
-/// The records maps of `app` in `doc` that anything was written to: under its id, then under
-/// each id it was published as before (`previously:`), whose records are its own, and under
+/// The documents maps of `app` in `doc` that anything was written to: under its id, then under
+/// each id it was published as before (`previously:`), whose documents are its own, and under
 /// every copy of them a replica made before it met the others ([`crate::containers`]).
 #[must_use]
-pub fn app_records(doc: &Doc, app: &str) -> Vec<automerge::ObjId> {
+pub fn app_documents(doc: &Doc, app: &str) -> Vec<automerge::ObjId> {
     crate::schema::stored_under(app)
         .iter()
-        .flat_map(|key| crate::containers::reach(doc, &ROOT, &[RECORDS_KEY, key]))
+        .flat_map(|key| crate::containers::reach(doc, &ROOT, &[RESOURCES_KEY, key]))
         .collect()
 }
 
-/// The records map of `app` (in `records`, the workspace's `tl` map) that holds the resource `id`:
+/// The documents map of `app` (in `documents`, the workspace's `tl` map) that holds the resource `id`:
 /// its own, or that of an id it was published as before. Every copy of an app's map is folded
 /// into the one the document keeps before this is asked ([`target_map`]), so the one the
 /// document keeps is the one that holds it.
@@ -1626,16 +1626,16 @@ fn stored_map(
 }
 
 /// Read the resource `id` of `app` from the store's `chunks`: its fields in the chunk the
-/// record's manifest places it in, and its items in the chunks their runs are in.
-pub fn read_resource(chunks: &Chunks, app: &str, id: &str) -> Result<DynRecord, ModelError> {
-    DynRecord::read_whole(chunks, app, id)
+/// document's manifest places it in, and its items in the chunks their runs are in.
+pub fn read_resource(chunks: &Chunks, app: &str, id: &str) -> Result<DynResource, ModelError> {
+    DynResource::read_whole(chunks, app, id)
 }
 
 /// The ids of every resource of `app` in `doc`, those under its earlier ids included, in key
 /// order.
 #[must_use]
 pub fn resource_ids(doc: &Doc, app: &str) -> Vec<String> {
-    let mut ids: Vec<String> = app_records(doc, app)
+    let mut ids: Vec<String> = app_documents(doc, app)
         .iter()
         .flat_map(|records| doc.keys(records).collect::<Vec<_>>())
         .collect();
@@ -1649,11 +1649,11 @@ mod outbox_tests {
     use super::*;
     use tilo_automerge::ApplyIncoming as _;
 
-    /// A record of `app` holding the resource `id` with an outbox of `entries` (key, payload).
+    /// A document of `app` holding the resource `id` with an outbox of `entries` (key, payload).
     fn holding(app: &str, id: &str, entries: &[(&str, &str)]) -> Doc {
         let mut doc = Doc::new();
         let records = doc
-            .put_object(&ROOT, RECORDS_KEY, ObjType::Map)
+            .put_object(&ROOT, RESOURCES_KEY, ObjType::Map)
             .expect("records");
         let held = doc.put_object(&records, app, ObjType::Map).expect("app");
         let resource = doc.put_object(&held, id, ObjType::Map).expect("resource");
@@ -1671,7 +1671,7 @@ mod outbox_tests {
     }
 
     /// How many outboxes the resource `id` of `app` queues its entries in hold entries: one once
-    /// the record has folded the copies a replica made into the one it keeps.
+    /// the document has folded the copies a replica made into the one it keeps.
     fn outboxes(doc: &Doc, app: &str, id: &str) -> usize {
         let obj = crate::reads::resource_obj(doc, app, id).expect("the resource");
         crate::containers::maps(doc, &obj, OUTBOX_KEY)
@@ -1695,7 +1695,7 @@ mod outbox_tests {
         fn an_outbox_merges_and_keeps_what_does_not_read;
 
         phase an_outbox_each_replica_queued_before_they_met_is_one_outbox_after_a_write;
-        // A record of `app` holding the resource `id` with no outbox: what an earlier version of the
+        // A document of `app` holding the resource `id` with no outbox: what an earlier version of the
         // platform left, and what two replicas that queued the first effect on it each made one for.
         {
             let mut ada = holding("app", "r", &[]);
@@ -1721,7 +1721,7 @@ mod outbox_tests {
                 .collect();
             assert_eq!(queued, ["1", "2"], "both queued entries read");
 
-            // The next write folds the two into the one the record keeps, and nothing queued is lost.
+            // The next write folds the two into the one the document keeps, and nothing queued is lost.
             apply_edits(&mut ada, "app", &[push("3")], b"ada").expect("ada queues again");
             ada.commit();
             assert_eq!(outboxes(&ada, "app", "r"), 1, "one outbox after the write");

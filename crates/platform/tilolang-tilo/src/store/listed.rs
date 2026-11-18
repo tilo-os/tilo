@@ -27,7 +27,7 @@ pub(super) struct ListedOnce {
 
 impl ListedOnce {
     /// Whether a change of `key` may change this listing: its collection, the resource holding
-    /// it as a whole, or, for a filtered or sorted listing, the field of an item of its record
+    /// it as a whole, or, for a filtered or sorted listing, the field of an item of its document
     /// that the filter or order reads (any item: one in another collection may move into this
     /// one). An item's other fields leave which items it lists, and their order, as they were.
     pub(super) fn reached_by(&self, key: &FieldKey) -> bool {
@@ -35,7 +35,7 @@ impl ListedOnce {
             || (self.reads_item(key) && (self.pred.is_some() || self.order.is_some()))
     }
 
-    /// Whether `key` is a field of an item of the record this listing lists that its filter or
+    /// Whether `key` is a field of an item of the document this listing lists that its filter or
     /// its order reads.
     fn reads_item(&self, key: &FieldKey) -> bool {
         let item = key.resource.contains('/') && key.doc() == doc_of(&self.resource);

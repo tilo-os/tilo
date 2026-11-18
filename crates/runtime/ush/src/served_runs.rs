@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use legacy_agent_protocol::served::{self, FromRun, ToRun};
 use legacy_agent_protocol::{recv, send};
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use ush_shell::io::{PipeWriter, pipe};
 use ush_shell::{Input, Output, Program, Stdio};
 use ush_tilo::Programs as _;

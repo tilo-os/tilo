@@ -15,7 +15,7 @@
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
-    ActionAddress, ActionHostError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
+    ActionAddress, ActionCallError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
     ReceiptStatus, enrol, record_provider, start,
 };
 use std::time::{Duration, Instant};
@@ -54,7 +54,7 @@ fn words(index: usize) -> String {
         "sheets",
         "music",
         "photos",
-        "relay",
+        "server",
         "entry",
         "browser",
         "terminal",
@@ -108,7 +108,7 @@ async fn post(
         let again = matches!(
             &receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&receipt.status, ReceiptStatus::Failed { error } if error.retryable);
         assert!(
@@ -152,7 +152,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let guest_device = enrol(&guest, "pace-guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Paced workspace").await.unwrap();
     // The workspace's chat, as an operator seeds it when the workspace is made
     // (`--seed-app so.tilo.chat`): its record with the channels every chat
@@ -217,7 +217,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
             ui::tilo_resource::Id::from_raw(format!("m{index}")),
             // Short: one publication carries the part, and the host reads
             // every message of it all the same.
-            chat::record::Message::new(
+            chat::chat::Message::new(
                 channel.id.clone().into(),
                 ui::tilo_resource::MemberId::person("ada"),
                 i64::try_from(index).unwrap_or(i64::MAX),

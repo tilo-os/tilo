@@ -27,8 +27,32 @@ public protocol AssistantSource: Sendable {
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
 
+    /// Answer what Tilo asked before pairing (`Session.asked`): go on, or stop. Only the
+    /// person's own press calls this; nothing answers for them.
+    func answerPairing(goOn: Bool) async
+
     /// Forget this device's place in the person's Tilo.
     func signOut() async
+
+    // MARK: The first run
+
+    /// What stands between the person and their assistant's first answer. A source finds the
+    /// person's assistant by itself when the device gets in, and makes it where they keep none.
+    func setup() -> AsyncStream<Setup>
+
+    /// Find the person's assistant once more, and make it where they keep none: what the
+    /// source does by itself, for the person to ask again after it did not go through.
+    func makeAssistant() async throws
+
+    /// Link a provider with the key the person typed into the protected field, and answer the
+    /// models that can be chosen then. The key goes to the person's vault and nowhere else: not
+    /// into the conversation, not to a model, not into a log.
+    func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice]
+
+    /// The providers a key can be typed for: the ones the person linked, each said to be so,
+    /// and the ones they can link beside them. It is what the provider step offers a person
+    /// who comes back to it for another key or another provider.
+    func providers() async throws -> [ProviderChoice]
 
     // MARK: A conversation
 
@@ -38,8 +62,15 @@ public protocol AssistantSource: Sendable {
     /// Older pieces than the oldest the caller holds, oldest first. Empty at the beginning.
     func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item]
 
+    /// The replies of a task that its line counts and the conversation does not show, oldest
+    /// first: what stands under the line once the person opens "2 replies". Empty when there
+    /// are none to show.
+    func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item]
+
     /// Send what the person wrote, with what they attached.
     func send(_ draft: Draft, to chat: Chat) async throws
+    /// Stop the answer that is being written in a conversation. Nothing happens where none is.
+    func stopAnswering(in chat: Chat) async throws
 
     /// Give one of a question's answers. An event's card is answered the same way.
     func answer(_ question: Question.ID, with choice: Choice.ID) async throws
@@ -60,6 +91,12 @@ public protocol AssistantSource: Sendable {
 
     /// The person will not sign in to this service now.
     func decline(_ offer: ConnectionOffer.ID) async throws
+
+    /// The person signed in on the page `authenticate` answered, and their browser came back
+    /// to this address. The source finishes the sign-in with it. The address opens the sign-in
+    /// once: it goes to the person's Tilo and nowhere else, not into the conversation, not to
+    /// a model, not into a log.
+    func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async throws
 
     /// A file that came with a message, as a file on this device.
     func file(of attachment: Attachment.ID) async throws -> URL
@@ -105,15 +142,57 @@ public protocol AssistantSource: Sendable {
     /// Take back something it has learned.
     func forget(_ learned: Supervision.Learned.ID) async throws
 
+    // MARK: Being told
+
+    /// The person saw this piece on this device: they opened it from its notification, or it
+    /// arrived in the conversation they were looking at. A source whose Tilo told the person of
+    /// it says so there, so that they are told of it nowhere else.
+    func seen(_ item: Item.ID, in chat: Chat) async
+
+    /// What the person was told while no device of theirs was looking, once their Tilo has
+    /// counted that stretch. Nil while they were not away, or while nothing is known of it.
+    func sinceLeft() -> AsyncStream<SinceLeft?>
+
+    /// The person pressed one of the things offered with a piece (`Item.offers`) where they
+    /// were told of it. The source does what the offer names, as the person on this device.
+    func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws
+
     // MARK: Being told while the app does not run
 
     /// An address Apple's service gave this device. The person's host sends to it when the app
     /// does not run: a notification, the start of a live activity, or news for one that runs.
     func register(_ address: PushAddress) async
+
+    /// The person's Tilo is to send to this device no more: it forgets the address it was handed.
+    func unregister() async
 }
 
 extension AssistantSource {
     public func register(_ address: PushAddress) async {}
+    public func unregister() async {}
+
+    /// A source that keeps no replies apart from the conversation has none to show.
+    public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
+    public func stopAnswering(in chat: Chat) async throws {}
+    public func seen(_ item: Item.ID, in chat: Chat) async {}
+    public func sinceLeft() -> AsyncStream<SinceLeft?> { AsyncStream { $0.yield(nil) } }
+    /// A source that answers no page for a sign-in has none to finish.
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async throws {
+        throw SourceProblem.refused("No sign-in was begun here")
+    }
+    public func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws {
+        throw SourceProblem.refused("Nothing is offered with this here")
+    }
+
+    // A source with no first run of its own asks nothing before it pairs, has nothing in the
+    // way of an answer and links no provider.
+    public func answerPairing(goOn: Bool) async {}
+    public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
+    public func makeAssistant() async throws {}
+    public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
+        throw SourceProblem.refused("No provider can be linked here")
+    }
+    public func providers() async throws -> [ProviderChoice] { [] }
 }
 
 /// How a conversation changed.
@@ -202,10 +281,20 @@ public struct Secret: Sendable, CustomStringConvertible, CustomDebugStringConver
 public struct PushAddress: Equatable, Sendable {
     public var use: Use
     public var token: Data
+    /// Which of Apple's two services gave the address.
+    public var service: Service
+    /// The app the address reaches: its bundle identifier.
+    public var app: String
 
-    public init(use: Use, token: Data) {
+    public init(use: Use, token: Data, service: Service = .production, app: String = "") {
         self.use = use
         self.token = token
+        self.service = service
+        self.app = app
+    }
+
+    public enum Service: String, Equatable, Sendable {
+        case development, production
     }
 
     public enum Use: Equatable, Sendable {

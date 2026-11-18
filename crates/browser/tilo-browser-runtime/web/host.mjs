@@ -100,7 +100,7 @@ const durableHost=createDurableHost({runtime,acquireStorage});
 // Application data kept out of the module (the Typst editor's fonts), fetched when an app asks.
 const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** Open a profile's durable storage for state kept outside any mount (the
- * relay peer). Shares the lease with mounts of the same profile/device;
+ * server peer). Shares the lease with mounts of the same profile/device;
  * `flush()` resolves when writes are durable; call `release()` once. */
 /** The certified peer's code — its crypto, transport and the workspaces'
  * replication — is a module of its own in the desktop bundle (`lazy_exports!`
@@ -942,10 +942,10 @@ export async function mountDesktop(target,options={}) {
       // stats}`), or null for a mount with no layer.
       live:()=>{const layer=liveLayer();return layer?{state:layer.state,publisher:layer.publisherId,members:layer.members(),stats:layer.stats?.()}:null;},
       // What the workspace's call says of itself here: its phase, whether this
-      // page's microphone runs, and what left and arrived over the plane
+      // page's microphone runs, and what left and arrived over the live session
       // (`{phase, captureActive, counters}`) — for tests and tools reading
       // that a call's audio went both ways, or null for a page with no call
-      // lane.
+      // media queue.
       call:()=>options.peer?.voice?.call.stats()??null,
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
       setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},

@@ -1,11 +1,12 @@
 //! What the window and tests build to change the notebook, and what the
 //! notebook's notes say in the editor's terms.
 //!
-//! Every change is the [`Notebook`]'s action: a field edit at a path (a
-//! body's rich-text op, a tag on a note, a tag's name, a note added under an
-//! id the window chose) or one of its verbs. The builders here name the
-//! common ones so the window, the scenarios and the tests say the same
-//! thing the same way.
+//! A note's change is an action of the part keeping it ([`PagePart`]): a
+//! field edit at a path (a body's rich-text op, a tag on a note) or one of
+//! its verbs, carried out through the chain of parts, which sends it to the
+//! part holding the note. A tag's is the [`Notebook`]'s. The builders here
+//! name the common ones so the window, the scenarios and the tests say the
+//! same thing the same way.
 
 use std::collections::HashMap;
 
@@ -19,10 +20,14 @@ use ui::widget::{BlockContent, BlockKind};
 
 use crate::model::{PageId, PageMeta, TagId};
 use crate::notebook::{self, Notebook, NotebookAction, Page, Tag, page_id};
+use crate::part::{PagePart, PagePartAction, page_part};
 
-/// The notebook's action: a field edit or a verb, stamped with when it was
-/// authored.
-pub type Action = <Notebook as Resource>::Action;
+/// A note's action: a field edit or a verb of the part keeping it, stamped
+/// with when it was authored.
+pub type Action = <PagePart as Resource>::Action;
+
+/// The notebook's own action: a tag's.
+pub type TagAction = <Notebook as Resource>::Action;
 
 /// The notes of `pages` whose title holds `title`, ignoring case, titles that
 /// are exactly it first: `{pages: [{page, title, resource}]}`.
@@ -100,24 +105,35 @@ pub(crate) fn notebook_markdown(workspace: &crate::Workspace) -> String {
     sections.join("\n")
 }
 
+/// Lends the document of part `index` of the notes to the reader it is given.
+pub(crate) type LendPart = dyn Fn(u64, &mut dyn FnMut(&automerge::AutoCommit));
+
 /// The blocks whose text holds `text`, ignoring case, in `page` or every
-/// note: `{matches: [{page, title, block, text}]}`, with each block's id as
-/// the note's read shows it.
+/// note `workspace` shows: `{matches: [{page, title, block, text}]}`, with
+/// each block's id as the note's read shows it. `read` lends the document of
+/// the part a note is kept in.
 pub(crate) fn find_text(
-    doc: &automerge::AutoCommit,
+    workspace: &crate::Workspace,
+    read: &LendPart,
     text: &str,
     page: Option<PageId>,
 ) -> Result<serde_json::Value, String> {
-    // A notebook that does not read is not one without matches.
-    let pages = crate::read::project(doc)?.data.pages;
+    let pages = &workspace.data.pages;
     let mut matches = Vec::new();
     for meta in pages
         .iter()
         .filter(|meta| page.is_none_or(|page| page == meta.id))
     {
-        let body = crate::notebook::body_object(doc, meta.id)
-            .ok_or_else(|| "the note has no body".to_owned())?;
-        let found = tilo_document::block_actions::find_under(doc, &body, text, false)?;
+        let part = workspace
+            .part_of(meta.id)
+            .ok_or_else(|| "the note has no part".to_owned())?;
+        let mut found = Err("the note's part is not held here".to_owned());
+        read(part, &mut |doc| {
+            found = crate::part::body_object(doc, meta.id)
+                .ok_or_else(|| "the note has no body".to_owned())
+                .and_then(|body| tilo_document::block_actions::find_under(doc, &body, text, false));
+        });
+        let found = found?;
         let hits = found.get("matches").and_then(serde_json::Value::as_array);
         for hit in hits.into_iter().flatten() {
             matches.push(serde_json::json!({
@@ -134,16 +150,17 @@ pub(crate) fn find_text(
     Ok(serde_json::json!({ "matches": matches }))
 }
 
-/// The resource a note is published as: its item of the notebook.
+/// The resource a note is published as: its item of the part keeping it,
+/// under the chain of parts.
 #[must_use]
 pub fn page_resource_id(page: PageId) -> String {
-    items::item_resource_id::<Notebook>("pages", &page_id(page))
+    items::item_resource_id::<PagePart>("pages", &page_id(page))
 }
 
 /// The note a published resource id names.
 #[must_use]
 pub fn page_of_resource(id: &str) -> Option<PageId> {
-    match items::item_of_resource::<Notebook>(id) {
+    match items::item_of_resource::<PagePart>(id) {
         Some(("pages", item)) => notebook::page_of(&item),
         _ => None,
     }
@@ -171,18 +188,39 @@ pub fn tag_resource_id(tag: TagId) -> String {
     items::item_resource_id::<Notebook>("tags", &page_id(tag))
 }
 
-fn stamped(operation: NotebookAction) -> Action {
+fn stamped(operation: PagePartAction) -> Action {
     Stamped {
         operation,
         now_ms: 0,
     }
 }
 
-fn edit(edit: ui::tilo_resource::Edit<Notebook>) -> Action {
-    stamped(NotebookAction::FieldEdit(edit))
+fn edit(edit: ui::tilo_resource::Edit<PagePart>) -> Action {
+    stamped(PagePartAction::FieldEdit(edit))
 }
 
-/// The wire form of `action`, for applying it to a document directly.
+fn tag_edit(edit: ui::tilo_resource::Edit<Notebook>) -> TagAction {
+    Stamped {
+        operation: NotebookAction::FieldEdit(edit),
+        now_ms: 0,
+    }
+}
+
+/// The wire form of `action`, for applying it to a part's document directly.
+///
+/// # Panics
+/// Never: a note's action is plain data that always serializes.
+#[allow(
+    clippy::expect_used,
+    reason = "a note's actions serialize with serde_json over owned plain data"
+)]
+#[must_use]
+pub fn encode(action: &Action) -> EncodedAction {
+    ui::tilo_resource::encode::<PagePart>(action).expect("a note's action serializes")
+}
+
+/// The wire form of the tag action `action`, for applying it to the
+/// notebook's document directly.
 ///
 /// # Panics
 /// Never: a notebook action is plain data that always serializes.
@@ -191,7 +229,7 @@ fn edit(edit: ui::tilo_resource::Edit<Notebook>) -> Action {
     reason = "the notebook's actions serialize with serde_json over owned plain data"
 )]
 #[must_use]
-pub fn encode(action: &Action) -> EncodedAction {
+pub fn encode_tag(action: &TagAction) -> EncodedAction {
     ui::tilo_resource::encode::<Notebook>(action).expect("a notebook action serializes")
 }
 
@@ -199,11 +237,12 @@ pub fn encode(action: &Action) -> EncodedAction {
 /// window's New, which knows the id it opens next.
 #[must_use]
 pub fn create_page_action(id: PageId, parent: Option<PageId>, title: &str) -> Action {
-    edit(Notebook::paths().pages.insert_as(
-        &page_id(id),
-        usize::MAX,
-        &Page::titled(title, parent.map(page_id)),
-    ))
+    stamped(PagePartAction::NewNote(page_part::NewNote {
+        title: title.to_owned(),
+        parent: parent.map(page_id),
+        note: Some(page_id(id)),
+        rank: None,
+    }))
 }
 
 /// One rich-text op on `page`'s body.
@@ -217,7 +256,7 @@ pub fn create_page_action(id: PageId, parent: Option<PageId>, title: &str) -> Ac
 #[must_use]
 pub fn edit_body_action(page: PageId, op: impl std::borrow::Borrow<RichTextAction>) -> Action {
     edit(
-        Notebook::paths()
+        PagePart::paths()
             .pages
             .item(&page_id(page))
             .body
@@ -245,7 +284,7 @@ pub fn write_body_action(page: PageId, blocks: &[BlockContent]) -> Action {
 /// Rename note `page`; links to it read the new title.
 #[must_use]
 pub fn rename_page_action(page: PageId, title: &str) -> Action {
-    stamped(NotebookAction::Rename(notebook::notebook::Rename {
+    stamped(PagePartAction::Rename(page_part::Rename {
         page: page_id(page),
         title: title.to_owned(),
     }))
@@ -254,7 +293,7 @@ pub fn rename_page_action(page: PageId, title: &str) -> Action {
 /// Delete note `page` and every note under it.
 #[must_use]
 pub fn delete_page_action(page: PageId) -> Action {
-    stamped(NotebookAction::Delete(notebook::notebook::Delete {
+    stamped(PagePartAction::Delete(page_part::Delete {
         page: page_id(page),
     }))
 }
@@ -262,18 +301,20 @@ pub fn delete_page_action(page: PageId) -> Action {
 /// Put note `page` under `parent`, before `before` (last when none).
 #[must_use]
 pub fn move_page_action(page: PageId, parent: Option<PageId>, before: Option<PageId>) -> Action {
-    stamped(NotebookAction::MoveNote(notebook::notebook::MoveNote {
+    stamped(PagePartAction::MoveNote(page_part::MoveNote {
         page: page_id(page),
         parent: parent.map(page_id),
         before: before.map(page_id),
+        place: None,
     }))
 }
 
 /// Copy note `page` and every note under it, right after it.
 #[must_use]
 pub fn duplicate_action(page: PageId) -> Action {
-    stamped(NotebookAction::Duplicate(notebook::notebook::Duplicate {
+    stamped(PagePartAction::Duplicate(page_part::Duplicate {
         page: page_id(page),
+        copies: None,
     }))
 }
 
@@ -281,7 +322,7 @@ pub fn duplicate_action(page: PageId) -> Action {
 /// note `page`, described by `alt`.
 #[must_use]
 pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Action {
-    stamped(NotebookAction::PlaceImage(notebook::notebook::PlaceImage {
+    stamped(PagePartAction::PlaceImage(page_part::PlaceImage {
         page: page_id(page),
         bytes: Bytes::to_keep(bytes),
         alt: alt.map(str::to_owned),
@@ -291,32 +332,29 @@ pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Ac
 /// Keep the picture `bytes` with the notebook, for a body to show.
 #[must_use]
 pub fn keep_image_action(bytes: Vec<u8>) -> Action {
-    stamped(NotebookAction::KeepImage(notebook::notebook::KeepImage {
+    stamped(PagePartAction::KeepImage(page_part::KeepImage {
         bytes: Bytes::to_keep(bytes),
     }))
 }
 
-/// Keep the picture `bytes` with the notebook and show it in note `page` by
-/// `show`, the edit of its body naming it: one change, one undo step.
+/// Keep the picture `bytes` with note `page` and show it there by `show`,
+/// the edit of its body naming it: one change, one undo step.
 ///
-/// # Panics
-/// Never: the actions are plain data that always serialize.
-#[allow(
-    clippy::expect_used,
-    reason = "the notebook's actions serialize with serde_json over owned plain data"
-)]
-#[must_use]
+/// # Errors
+/// Why the window's content store would not keep the picture.
 pub fn show_image(
     page: PageId,
-    bytes: Vec<u8>,
+    bytes: &[u8],
     show: impl std::borrow::Borrow<RichTextAction>,
-) -> ui::tilo_resource::Invoke<Notebook> {
-    let keep = keep_image_action(bytes);
-    ui::tilo_resource::Invoke::group([
-        ui::tilo_resource::Invoke::apply(&keep).expect("a notebook action serializes"),
-        ui::tilo_resource::Invoke::apply(&edit_body_action(page, show))
-            .expect("a notebook action serializes"),
-    ])
+) -> Result<Action, String> {
+    let store = ui::tilo_resource::content::current()
+        .ok_or("this window keeps no content to keep a picture in")?;
+    let picture = Bytes::keep(&store, bytes).map_err(|error| error.to_string())?;
+    Ok(stamped(PagePartAction::ShowImage(page_part::ShowImage {
+        page: page_id(page),
+        bytes: picture,
+        edit: show.borrow().clone(),
+    })))
 }
 
 /// Import `markdown` as a new top-level note titled `title` (kept under
@@ -328,22 +366,21 @@ pub fn import_markdown_action(
     markdown: &str,
     images: Vec<Vec<u8>>,
 ) -> Action {
-    stamped(NotebookAction::ImportMarkdown(
-        notebook::notebook::ImportMarkdown {
-            title: title.to_owned(),
-            markdown: markdown.to_owned(),
-            images: images.into_iter().map(Bytes::to_keep).collect(),
-            note: note.map(page_id),
-            path: None,
-            origin: None,
-        },
-    ))
+    stamped(PagePartAction::ImportMarkdown(page_part::ImportMarkdown {
+        title: title.to_owned(),
+        markdown: markdown.to_owned(),
+        images: images.into_iter().map(Bytes::to_keep).collect(),
+        note: note.map(page_id),
+        path: None,
+        origin: None,
+        reads: None,
+    }))
 }
 
 /// Add tag `id` named `name`.
 #[must_use]
-pub fn new_tag_action(id: TagId, name: &str) -> Action {
-    edit(Notebook::paths().tags.insert_as(
+pub fn new_tag_action(id: TagId, name: &str) -> TagAction {
+    tag_edit(Notebook::paths().tags.insert_as(
         &page_id(id),
         usize::MAX,
         &Tag {
@@ -352,18 +389,19 @@ pub fn new_tag_action(id: TagId, name: &str) -> Action {
     ))
 }
 
-/// Delete tag `id` and take it off every note.
+/// Delete tag `id`; the notes carrying it no longer show it.
 #[must_use]
-pub fn delete_tag_action(id: TagId) -> Action {
-    stamped(NotebookAction::DeleteTag(notebook::notebook::DeleteTag {
-        tag: page_id(id),
-    }))
+pub fn delete_tag_action(id: TagId) -> TagAction {
+    Stamped {
+        operation: NotebookAction::DeleteTag(notebook::notebook::DeleteTag { tag: page_id(id) }),
+        now_ms: 0,
+    }
 }
 
 /// Give note `page` tag `tag`, or take it off.
 #[must_use]
 pub fn set_tag_assignment_action(page: PageId, tag: TagId, assigned: bool) -> Action {
-    let tags = Notebook::paths().pages.item(&page_id(page)).tags;
+    let tags = PagePart::paths().pages.item(&page_id(page)).tags;
     edit(if assigned {
         tags.insert(&page_id(tag))
     } else {
@@ -558,27 +596,4 @@ pub fn page_markdown(workspace: &crate::Workspace, page: PageId) -> String {
         })
         .collect::<Vec<_>>();
     crate::markdown::serialize(&crate::markdown::blocks_to_specs(&blocks))
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_notebook_that_does_not_read_is_not_searched_as_an_empty_one() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::read::initialize(&mut doc);
-        assert!(super::find_text(&doc, "anything", None).is_ok());
-
-        ui::tilo_resource::write_key(
-            &mut doc,
-            &automerge::ROOT,
-            "pages",
-            &ui::tilo_resource::Atom("not a collection of notes".into()),
-        )
-        .expect("the field is written");
-        assert!(crate::read::validate(&doc).is_err());
-        assert!(
-            super::find_text(&doc, "anything", None).is_err(),
-            "the search says it could not look, not that nothing matched"
-        );
-    }
 }

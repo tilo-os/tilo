@@ -153,7 +153,6 @@ chat-quote-earlier = A message above
 chat-conversation-read-only = You can read this conversation but not write in it.
 chat-direct-unavailable = You can't reach that conversation yet: this device is still loading the workspace.
 chat-person-unknown = There's nobody in this workspace to message.
-chat-agent-author = { $name } (agent)
 chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
 
@@ -187,7 +186,6 @@ chat-person-relative-name = { $name } ({ $tag })
 
 ## History: what each change did, by verb and by field
 chat-begin-chat = Started the chat
-chat-introduce = Introduced themselves as { $name }
 chat-create-category = Created the category { $name }
 chat-create-channel = Created the channel #{ $name }
 chat-create-channel-with-id = Created the channel #{ $name }
@@ -231,11 +229,6 @@ chat-chat-channels = { $op ->
     [insert] Added a channel
     [remove] Removed a channel
    *[other] Reordered the channels
-}
-chat-chat-people = { $op ->
-    [insert] Added a person
-    [remove] Removed a person
-   *[other] Changed the people
 }
 chat-chat-feedback = { $op ->
     [insert] Added a feedback report
@@ -424,7 +417,7 @@ chat-effects-open-category = Open category
 chat-effects-toggle-category = Fold category
 chat-effects-reveal-message = Reveal message
 chat-effects-reveal-message-range = Reveal messages
-chat-effects-open-person = Open person
+chat-effects-show-view = Show view
 chat-effects-open-agent = Open agent conversation
 chat-effects-open-direct-conversation = Open direct conversation
 chat-effects-send-direct-message = Send direct message
@@ -453,7 +446,7 @@ chat-effects-select-input = Select microphone
 
 ## What the app is called in a window and in the launcher
 chat-app-title = Chat
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 chat-drafts = Chat drafts
 chat-workspace = Chat
 chat-drafts-start-draft = Start a draft
@@ -477,10 +470,27 @@ chat-messages-withdraw-question = Withdraw a question
 chat-messages-settle-question = Say what came of an answer
 chat-messages-ask-agent = Ask an agent
 chat-messages-stop-agent = Stop an agent’s work
+chat-messages-post-view = Post a view
+chat-messages-answer-with-view = Answer with a view
+chat-messages-rewrite-view = Write a view again
 # What started a turn nobody typed, named where an author’s name would stand.
 chat-cause-reminder = Reminder: { $label }
 chat-cause-event = Event: { $label }
 chat-cause-news = News: { $label }
+chat-view-attached = A view is attached
+chat-view-attached-of = A view of { $apps } is attached
+chat-view-alone = View
+chat-view-waiting = This message is not on this device yet
+chat-view-gone = This message carries no view
+chat-view-arriving = Loading the view
+chat-view-unavailable = A view cannot be shown here
+chat-view-unbound = This view says you wrote it. Tilo cannot yet be sure who wrote a message, so it is not shown here
+chat-view-refused = You may not read { $apps } here, so the view shows nothing of it
+chat-view-unread = { $apps } could not be read here
+chat-view-asks = { $who } wrote this view. It asks to do this in { $app }
+chat-view-asks-given = { $name }: { $value }
+chat-view-allow = Allow once
+chat-view-dismiss = Dismiss
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = On “{ $resource }”
@@ -491,6 +501,9 @@ chat-question-always = Always allow for this event
 chat-question-deny = Don’t allow
 chat-question-allowed = allowed once
 chat-question-always-allowed = always allowed for this event
+chat-question-with-item = From your vault: { $item }
+chat-question-always-item = Always allow with this item here
+chat-question-always-item-allowed = always allowed with this item here
 chat-question-denied = not allowed
 chat-question-you-answered = You answered: { $answer }
 chat-question-answered = { $name } answered: { $answer }
@@ -506,7 +519,6 @@ chat-question-withdrawn-why = No longer asked: { $why }
 chat-messages-record-work = Record agent work
 chat-messages-carry-counts = Carry the counts of the parts before
 chat-messages-stream-output = Record an answer as it arrives
-chat-workspace-introduce = Introduce yourself
 chat-workspace-create-category = New category
 chat-workspace-create-channel = New channel
 chat-workspace-create-channel-with-id = New channel with an id

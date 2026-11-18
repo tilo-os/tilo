@@ -144,8 +144,8 @@ impl GamepadSources for Fake {
     }
 }
 
-/// The panel's app for this package's tests: the surface probe the session package ships, standing
-/// in for a view that draws the panel and staying up while the session keeps it. The environment it
+/// The panel's app for this package's tests: the surface probe the session package ships,
+/// in place of a view that draws the panel and stays up while the session keeps it. The environment it
 /// reads is held by the test for as long as its app may be started.
 fn panel() -> (SurfaceSpec, ScopedEnv) {
     let mut environment = ScopedEnv::new();

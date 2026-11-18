@@ -267,7 +267,7 @@ mod tests {
             assert_eq!(preferences.get().mode_of(Category::Filler), SkipMode::Skip);
         }
 
-        phase what_was_watched_is_kept_in_a_record_of_its_own_not_the_library;
+        phase what_was_watched_is_kept_in_a_resource_of_its_own_not_the_library;
         {
             use crate::history::WatchHistory;
             let person = "ad".repeat(32);

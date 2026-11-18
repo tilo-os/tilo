@@ -1,6 +1,6 @@
 //! Bounded current privacy profiles for supported macOS and Linux filesystems: not root
 //! or lease authority, and no proof of the original host resource funding. The caller
-//! keeps original root, child-name and writer-lease custody, and this does not defeat a
+//! keeps original root, child-name and writer-lease ownership, and this does not defeat a
 //! hostile same-principal actor. Linux supports the ext2/3/4 family, btrfs, XFS and
 //! tmpfs POSIX ACL profiles, with `OverlayFS` excluded; tmpfs privacy is not reboot
 //! evidence. Syscall buffers are fixed stack arrays.
@@ -128,7 +128,7 @@ impl BoundedOwnerDirectory {
         Self::open_child(&self.directory, name)
     }
 
-    /// The parent is borrowed, not qualified by this operation; the caller keeps its root custody.
+    /// The parent is borrowed, not qualified by this operation; the caller keeps its root ownership.
     pub fn open_child(parent: &StorageDirectory, name: &OsStr) -> Result<Self, ChildOpenError> {
         name_check(name).map_err(ChildOpenError::Open)?;
         let inner = parent

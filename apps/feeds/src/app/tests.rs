@@ -186,7 +186,7 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     assert_eq!(
         doc.get_heads(),
         created,
-        "the untouched live record has no app writes"
+        "the untouched live resource has no app writes"
     );
 
     // The demo opens a rich article and seeds its first document.
@@ -1023,9 +1023,9 @@ fn opml_portal_import_reports_honestly() {
     let work = ui::background::Pumped::new();
     let _work = work.background().enter();
     let import_with = |a: &FeedsApp, outcome: PortalOutcome| {
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(outcome);
-        ui::host::scoped(&services, || a.core_mut().request_import());
+        ui::process::scoped(&services, || a.core_mut().request_import());
         work.run_pending();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
@@ -1468,7 +1468,7 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
         Filter::Folder(folder),
         "the new folder is shown once the library holds it"
     );
-    // The managed record owns Undo; a detached view has no writer history.
+    // The managed resource owns Undo; a detached view has no writer history.
     let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
     let versions_before = host.versions().len();
     host.with_widget(|app: &mut FeedsApp| {
@@ -1496,7 +1496,7 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
         versions_before + 1,
         "the dialog submits one canonical action"
     );
-    assert!(host.undo(), "the record owns the undo step");
+    assert!(host.undo(), "the resource owns the undo step");
     assert!(host.state().folders.is_empty());
 }
 
@@ -1674,7 +1674,10 @@ fn a_failed_subscription_says_so_in_its_own_row_until_it_refreshes() {
 
     let marked = feed_row(&a.core(), &failing);
     assert_eq!(
-        marked.status.as_ref().map(|status| status.row_status()),
+        marked
+            .status
+            .as_ref()
+            .map(ui::widget::NavItemStatus::row_status),
         Some(ui::widget::RowStatus::Error),
         "the subscription that failed is marked"
     );

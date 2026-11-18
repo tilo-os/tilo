@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
 
     phase prepared_media_unlock_is_private_review_and_skip_preserves_medium;
     {
-        use account_custody::hints::{
+        use account_credentials::hints::{
             AccountHint, Provider,
             media::{BLOCK_BYTES, Prepared},
         };
@@ -203,7 +203,7 @@ tilo_test_env::scenario! {
             provider: Provider::Nextcloud,
             email: "local-only@example.org".into(),
             server: "https://private-cloud.example.org".into(),
-            sources: account_custody::hints::HintSources::default(),
+            sources: account_credentials::hints::HintSources::default(),
         };
         let prepared = Prepared::seal(
             b"prepared-password",

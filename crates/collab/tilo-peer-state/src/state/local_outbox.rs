@@ -1,4 +1,4 @@
-//! Local immutable publication custody: the signed frames this device still
+//! Local immutable publication ownership: the signed frames this device still
 //! owes the workspace, and when the workspace has retired them.
 //! Nothing here admits remote historical wire data or commits an owner's storage.
 use super::{
@@ -128,7 +128,7 @@ impl StatePeer {
     }
 }
 impl PeerOutbox<'_> {
-    /// Historical exact custody only. This never grants current send/sign permission.
+    /// Historical exact ownership only. This never grants current send/sign permission.
     pub fn lookup_retained_local_document(
         self,
         message: &NeighbourMsg,
@@ -206,7 +206,7 @@ impl PeerOutbox<'_> {
     }
 
     /// Draft the renewals of `originals`, sealed writes of `selected` still in
-    /// custody, for `selected` to sign and [`PeerOutboxMut::admit_sealed_renewal`]
+    /// ownership, for `selected` to sign and [`PeerOutboxMut::admit_sealed_renewal`]
     /// to admit: each one due expired before the governor's watermark retired
     /// it. `reseal` is the channel's key holder: it returns the payload to
     /// carry under the channel's current epoch, or refuses. A renewal keeps

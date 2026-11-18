@@ -23,7 +23,7 @@ pub enum SaveStatus {
     Saving,
     /// The last write failed; sticky until a write succeeds.
     Failed,
-    /// The record exists only in this session and has no durable writer.
+    /// The resource exists only in this session and has no durable writer.
     SessionOnly,
 }
 
@@ -240,14 +240,14 @@ mod tests {
             let mut bar = StatusModel::new();
             bar.set_state(StatusBarState {
                 save_status: SaveStatus::Failed,
-                save_problem: Some("record persistence unavailable".into()),
+                save_problem: Some("resource persistence unavailable".into()),
                 page_count: 1,
                 ..Default::default()
             });
             assert!(bar.needs_attention());
             assert!(
                 bar.bubble_text()
-                    .starts_with("Save failed: record persistence unavailable."),
+                    .starts_with("Save failed: resource persistence unavailable."),
                 "{}",
                 bar.bubble_text()
             );

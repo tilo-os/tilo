@@ -360,8 +360,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "open-file")
             .unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         recorder.respond_to_pick(ui::portal::PortalOutcome::Failed(
             "Fixture file access denied".into(),
         ));
@@ -438,8 +438,8 @@ mod tests {
         }
 
         {
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
             let home_focus = app.harness().focus_order();
@@ -523,8 +523,8 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             let before = doc.get_heads();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             recorder.respond_to_pick(if cancelled {
                 ui::portal::PortalOutcome::Cancelled
             } else {
@@ -1194,8 +1194,8 @@ mod tests {
             assert_eq!(action.kind, tilo_actions::OperationKind::Effect);
             assert_eq!(action.locus, tilo_actions::ExecutionLocus::ClientLocal);
             assert!(action.params().is_empty());
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
             let encoded = action.build_json(&serde_json::Map::new()).unwrap();
             let payload = encoded.payload;
@@ -1331,8 +1331,8 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
             let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::OpenFile);
             assert!(matches!(

@@ -9,7 +9,7 @@ use super::{
     invocation_journal, person_id_for_root,
 };
 use tilo_action_policy::MemberId;
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
 
 #[cfg(test)]
@@ -32,21 +32,21 @@ pub(super) struct AdmittedHostAction {
     key: Option<InvocationKey>,
 }
 
-fn unavailable(reason: impl Into<String>) -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unavailable(reason: impl Into<String>) -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: reason.into(),
     }
 }
 
 impl AppBrokerState {
-    /// Preserve original caller custody and UUID, and durably sign admission
+    /// Preserve original caller ownership and UUID, and durably sign admission
     /// before allowing a host service's first side effect.
     pub(super) fn admit_host_action(
         &self,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
         admission: HostActionAdmission<'_>,
-    ) -> Result<AdmittedHostAction, ActionHostError> {
+    ) -> Result<AdmittedHostAction, ActionCallError> {
         self.admit_host_action_with_start(caller, origin, admission, None)
     }
 
@@ -58,7 +58,7 @@ impl AppBrokerState {
         origin: Option<&InvocationCaller>,
         admission: HostActionAdmission<'_>,
         start: Option<serde_json::Value>,
-    ) -> Result<AdmittedHostAction, ActionHostError> {
+    ) -> Result<AdmittedHostAction, ActionCallError> {
         let HostActionAdmission {
             workspace,
             descriptor,
@@ -79,7 +79,7 @@ impl AppBrokerState {
                 run_ended = caller.execution_id().is_some() && !caller.execution_is_live(),
                 "an action of the person's own was refused at its admission"
             );
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         if self.durable_owner_required || self.publisher.requires_owner_for(workspace) {
             self.owner_health().map_err(unavailable)?;
@@ -100,7 +100,7 @@ impl AppBrokerState {
         origin: Option<&InvocationCaller>,
         workspace: &str,
         invocation: InvocationId,
-    ) -> Result<InvocationOwner, ActionHostError> {
+    ) -> Result<InvocationOwner, ActionCallError> {
         let actor = BrokerActor::for_caller(caller);
         let owner = match origin {
             Some(InvocationCaller::Certified {
@@ -111,7 +111,7 @@ impl AppBrokerState {
                 let current = self.current_action_caller(original).map_err(unavailable)?;
                 let expected = current.broker_actor();
                 if original.workspace != workspace || expected.member() != actor.member() {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 // Revalidation checks the full certificate, not an actor supplied
                 // by the transport or an actor reconstructed from a display name.
@@ -153,7 +153,7 @@ impl AppBrokerState {
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
                     if route.cluster_id != workspace || expected.member() != actor.member() {
-                        return Err(ActionHostError::NotPermitted);
+                        return Err(ActionCallError::NotPermitted);
                     }
                     return Ok(InvocationOwner::Local {
                         actor: actor.member().clone(),
@@ -178,7 +178,7 @@ impl AppBrokerState {
                     });
                 }
                 if route.cluster_id != workspace || expected != *actor.member() {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 InvocationOwner::AuthenticatedLocal {
                     root: certificate.user_public_key,
@@ -206,7 +206,7 @@ impl AppBrokerState {
                         caller = %actor.member(),
                         "an action of the person's own was refused: its admission names another device"
                     );
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 InvocationOwner::AuthenticatedLocal {
                     root: certificate.user_public_key,
@@ -215,10 +215,10 @@ impl AppBrokerState {
                 }
             }
             None => {
-                // A transport key is not retained certificate custody. Do not
+                // A transport key is not retained certificate ownership. Do not
                 // silently downgrade a certified caller to actor-only ownership.
                 // A host with a device or native certificates serves everyone
-                // through retained custody, so a caller that arrives with no
+                // through retained ownership, so a caller that arrives with no
                 // original admission is refused rather than downgraded.
                 if self.services.local_person.is_some()
                     || self.services.native_certificates.is_some()
@@ -243,7 +243,7 @@ impl AppBrokerState {
         owner: InvocationOwner,
         admission: HostActionAdmission<'_>,
         start: Option<serde_json::Value>,
-    ) -> Result<AdmittedHostAction, ActionHostError> {
+    ) -> Result<AdmittedHostAction, ActionCallError> {
         let HostActionAdmission {
             workspace,
             app_id,
@@ -314,7 +314,7 @@ impl AppBrokerState {
                 .admit_with_evidence(key.clone(), intent, id, evidence)
                 .map_err(unavailable)?;
             if !fresh {
-                return Err(ActionHostError::Refused {
+                return Err(ActionCallError::Refused {
                     reason: "invocation already admitted".into(),
                 });
             }
@@ -348,7 +348,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: &InvocationCaller,
         request: &InvokeRequest,
-    ) -> Result<Option<tilo_actions::remote::InvocationReceipt>, ActionHostError> {
+    ) -> Result<Option<tilo_actions::remote::InvocationReceipt>, ActionCallError> {
         // Application providers cannot admit host-service records. Do not take
         // the durable admission lock for their UI-side replay probe: another
         // application's signer may be stalled while this request enqueues.
@@ -372,9 +372,9 @@ impl AppBrokerState {
                 run_ended = caller.execution_id().is_some() && !caller.execution_is_live(),
                 "an action of the person's own was refused before its admission was read"
             );
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
-        // Legacy app-local custody cannot have admitted a signed host action.
+        // Legacy app-local ownership cannot have admitted a signed host action.
         // Leave its ordinary application dispatch path unchanged.
         if matches!(origin, InvocationCaller::Local { admitted, .. } if admitted.certificate.is_none())
         {
@@ -384,7 +384,7 @@ impl AppBrokerState {
             tracing::warn!(
                 "an action of the person's own was refused: the caller names no workspace"
             );
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         };
         let owner = self.host_action_owner(caller, Some(origin), workspace, request.invocation)?;
         let record = {
@@ -412,7 +412,7 @@ impl AppBrokerState {
         let intent =
             serde_json::to_value(request).map_err(|error| unavailable(error.to_string()))?;
         if !record.admitted_request_is(&intent) {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "invocation identity reused with different intent".into(),
             });
         }
@@ -440,13 +440,13 @@ impl AppBrokerState {
             self.policy_now_ns().map_err(unavailable)? / 1_000_000_000,
         )
         .map_err(unavailable)?;
-        let mut ledger = self
+        let mut log = self
             .remote_invocations
             .lock()
-            .map_err(|_| unavailable("invocation ledger unavailable"))?;
-        ledger.reserve(caller, &Self::invocation_identity(request))?;
-        ledger.complete(&request.invocation, record.wire_id);
-        drop(ledger);
+            .map_err(|_| unavailable("invocation log unavailable"))?;
+        log.reserve(caller, &Self::invocation_identity(request))?;
+        log.complete(&request.invocation, record.wire_id);
+        drop(log);
         self.record_completion(record.wire_id, record.key.owner, record.update.clone());
         Ok(Some(
             tilo_actions::remote::InvocationState::new(request.invocation, record.update).receipt(),
@@ -457,7 +457,7 @@ impl AppBrokerState {
         &self,
         workspace: &str,
         origin: &InvocationCaller,
-    ) -> Result<BrokerActor, ActionHostError> {
+    ) -> Result<BrokerActor, ActionCallError> {
         Ok(match origin {
             InvocationCaller::Certified {
                 caller: original,
@@ -501,7 +501,7 @@ impl AppBrokerState {
         &self,
         admitted: &AdmittedHostAction,
         update: InvocationUpdate,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.complete_host_action_outcome(admitted, update, false)
     }
 
@@ -510,7 +510,7 @@ impl AppBrokerState {
         &self,
         admitted: &AdmittedHostAction,
         update: InvocationUpdate,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.complete_host_action_outcome(admitted, update, true)
     }
 
@@ -519,7 +519,7 @@ impl AppBrokerState {
         admitted: &AdmittedHostAction,
         update: InvocationUpdate,
         uncertain: bool,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let _admission = self
             .admission_lock
             .lock()
@@ -528,7 +528,7 @@ impl AppBrokerState {
             || update.invocation() != admitted.invocation
             || !update.is_terminal()
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         // Host services have no cooperative cancellation protocol. Their
         // Accepted observation is not a cancellable application dispatch.

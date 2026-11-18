@@ -21,7 +21,7 @@ pub enum Pred<F> {
     Or(Vec<Self>),
     Cmp(CmpOp, Operand<F>, Operand<F>),
     Has(F, Lit),
-    /// The field (an identifier, or a set of them) holds one that matches the pattern, `*` standing
+    /// The field (an identifier, or a set of them) holds one that matches the pattern, `*`
     /// for any text (see [`crate::identifier::matches`]).
     Like(F, String),
     /// The field holds text a person searched for by a word of it: a case-insensitive match

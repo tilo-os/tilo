@@ -18,7 +18,7 @@
 //! ([`message_id`]), so a starter that asks again (a run taken again after a
 //! restart) finds its message and starts nothing. The answer is the reply
 //! Chat derives from that message and the agent
-//! ([`crate::record::reply_id_at`]), so whoever started a turn can name its
+//! ([`crate::chat::reply_id_at`]), so whoever started a turn can name its
 //! answer before either exists, and reads there how it ended.
 //!
 //! A message with a cause shows as what it is ([`line`]): a reminder or an
@@ -186,7 +186,7 @@ impl Cause {
 /// The id of the message that asks for `person` under the starter's `key`:
 /// the same on every replica and for every time it is asked, so one key is
 /// one message, and its starter can name the message, and with
-/// [`crate::record::reply_id_at`] its answer, before either exists. Two
+/// [`crate::chat::reply_id_at`] its answer, before either exists. Two
 /// FNV-1a passes give 128 bits.
 #[must_use]
 pub fn message_id(person: &MemberId, key: &str) -> Id {
@@ -221,7 +221,7 @@ pub fn takes(
     person: &MemberId,
     asker: &MemberId,
 ) -> Result<(), Refusal> {
-    let named = crate::record::Chat::direct_members(channel);
+    let named = crate::chat::Chat::direct_members(channel);
     let members = named.as_deref().unwrap_or(members);
     if !members.contains(person) {
         return Err(Refusal::new(

@@ -1,5 +1,5 @@
 //! Remote: SSH terminals, VNC/RDP desktops and Tilo-to-Tilo relay sessions. The saved
-//! connections are the [`model::Remote`] record, so a machine list edited on one device
+//! connections are the [`model::Remote`] resource, so a machine list edited on one device
 //! converges everywhere; the screen, the draft and the live session are per-peer state. A
 //! Tilo device is a connection kind of its own, served by the session broker's
 //! authenticated route to that exact device.

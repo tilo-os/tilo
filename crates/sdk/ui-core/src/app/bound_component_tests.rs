@@ -1,6 +1,7 @@
 use super::*;
 use crate::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 use crate::widget::{AppModel, ModelPath};
@@ -22,7 +23,7 @@ thread_local! {
 }
 
 fn collaboration_probe_factory(
-    mut context: HostContext,
+    mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -57,7 +58,7 @@ impl PagedProbe {
             let resource = format!("bound:paged:{id}");
             catalog
                 .upsert_resource(
-                    crate::search::SearchRecord::new(
+                    crate::search::SearchItem::new(
                         &resource,
                         crate::search::SearchResult::for_action(
                             format!("Paged kind {id}"),
@@ -628,7 +629,7 @@ impl AppWidget for Probe {
 }
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -636,14 +637,14 @@ fn factory(
 }
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn strict_factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     build_probe(context, &target, true)
 }
 fn build_probe(
-    mut context: HostContext,
+    mut context: ProcessContext,
     target: &LaunchTarget,
     strict: bool,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -693,9 +694,9 @@ fn bound_components_keep_child_binding() {
             opens_before_resource: false,
             create: factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "D".into(),
@@ -927,9 +928,9 @@ impl ActionFixture {
             } else {
                 LaunchTarget::New
             };
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 &definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records: records.clone(),
                     views: views.clone(),
                     device_id: "D".into(),
@@ -976,7 +977,7 @@ impl ActionFixture {
         fixture.app.collaboration.manager =
             super::semantic_tree_app_tests::admitted_delivery_manager();
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::PrimaryRouteWitness {
+            Some(crate::collaboration::AcceptedRoute {
                 route: fixture.bindings[0].broker_route().unwrap(),
                 epoch: uuid::Uuid::new_v4(),
             });
@@ -1508,7 +1509,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     );
     let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
     let reads = Arc::new(AtomicUsize::new(0));
-    let read: tilo_host::action_authority::AuthoritySource = {
+    let read: tilo_process_services::action_authority::AuthoritySource = {
         let (held, reads) = (held.clone(), reads.clone());
         Arc::new(move || {
             reads.fetch_add(1, Ordering::SeqCst);
@@ -1518,7 +1519,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     let (watch, changed) = crate::application::manual_authority_watch();
     let mut fixture = ActionFixture::new();
     fixture.permissions.set(
-        crate::application::follow_host_authority(
+        crate::application::follow_process_authority(
             crate::permissions::PermissionContext::member_of(
                 WORKSPACE,
                 &crate::permissions::MemberId::person("fixture-user"),
@@ -1570,7 +1571,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
 }
 
 #[test]
-fn compound_bound_effects_preserve_typing_custody_and_redo() {
+fn compound_bound_effects_preserve_typing_ownership_and_redo() {
     {
         for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
             COMPOUND_MODE.set(mode);
@@ -2196,10 +2197,10 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one controlled lifetime traces publication through refusal and delivery; one broker-route refusal test exercises every invalid witness against the same fixture"
+    reason = "one controlled lifetime traces publication through refusal and delivery; one broker-route refusal test exercises every invalid observation against the same fixture"
 )]
 #[test]
-fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
+fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
     {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
@@ -2207,7 +2208,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         let evidence = serde_json::json!({"token": "controlled-confirmation"});
         let mut requests = Vec::new();
-        // This seam captures submission only; no broker acceptance is simulated.
+        // This boundary captures submission only; no broker acceptance is simulated.
         fixture
             .app
             .invoke_bound_target_with_broker(
@@ -2428,13 +2429,19 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         wrong_workspace.route.cluster_id = uuid::Uuid::nil();
         let mut wrong_resource = matching.clone();
         wrong_resource.route.document = Some("different-record".into());
-        for witness in [
+        for observation in [
             Some(wrong_app),
             Some(wrong_workspace),
             Some(wrong_resource),
             None,
         ] {
-            assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
+            assert_bound_broker_route_refused(
+                &mut fixture,
+                &target,
+                &alias,
+                &revision,
+                observation,
+            );
         }
         let mut replacement = matching;
         replacement.epoch = uuid::Uuid::new_v4();
@@ -2454,9 +2461,9 @@ fn assert_bound_broker_route_refused(
     target: &crate::bound_dispatch::BoundActionTarget,
     alias: &str,
     revision: &str,
-    witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    observation: Option<crate::collaboration::AcceptedRoute>,
 ) {
-    fixture.app.actions.bound_broker_route_for_test = witness;
+    fixture.app.actions.bound_broker_route_for_test = observation;
     let resources = fixture.app.publication_resources();
     assert!(resources.iter().all(|resource| {
         !resource
@@ -2525,7 +2532,7 @@ fn assert_bound_broker_route_refused(
 
 #[test]
 fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(collaboration_probe_factory);
     let target = LaunchTarget::New;
     let context = host
@@ -2578,7 +2585,7 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
 }
 
 fn behaviour_probe_factory(
-    context: HostContext,
+    context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
@@ -2593,7 +2600,7 @@ fn behaviour_probe_factory(
 }
 
 fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
     let context = host
@@ -2660,7 +2667,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_hosted_components_search_request_becomes_a_host_intent;
+    phase a_hosted_components_search_request_becomes_a_process_intent;
     // Inside the Tilo shell the app's window does not present search: a
     // component's request to open it is handed to the host as an intent, and
     // the host's tile drains it.
@@ -2717,9 +2724,9 @@ tilo_test_env::scenario! {
             opens: &[],
             create: factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),
@@ -2738,13 +2745,13 @@ tilo_test_env::scenario! {
             .unwrap();
         let binding = component.callback_binding();
         let mut tile = TileHost::from_component(component);
-        assert!(tile.take_host_intent().is_none());
+        assert!(tile.take_process_intent().is_none());
         binding.request_search(request.clone());
         assert_eq!(
-            tile.take_host_intent(),
-            Some(crate::widget::AppHostIntent::OpenSearch(request))
+            tile.take_process_intent(),
+            Some(crate::widget::AppProcessIntent::OpenSearch(request))
         );
-        assert!(tile.take_host_intent().is_none(), "the request drains once");
+        assert!(tile.take_process_intent().is_none(), "the request drains once");
     }
 
     phase the_hosting_window_takes_the_components_behaviour;
@@ -3256,3 +3263,99 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
 
 #[path = "bound_policy_clock_tests.rs"]
 mod policy_clock;
+
+thread_local! {
+    static HEARD_ELSEWHERE: RefCell<Vec<crate::component_lifecycle::Heard>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The view of an app whose connection lives in its own process.
+struct HearsElsewhereProbe {
+    rect: KurboRect,
+}
+
+impl Widget for HearsElsewhereProbe {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        crate::widget::TaffyTreeExt::fill_leaf(taffy, nodes, self)
+    }
+    crate::rect_geometry!();
+    fn name(&self) -> &'static str {
+        "HearsElsewhere"
+    }
+    crate::provides!(dyn crate::component_lifecycle::HearsElsewhere);
+}
+
+impl crate::component_lifecycle::HearsElsewhere for HearsElsewhereProbe {
+    fn take_heard(&mut self) -> Vec<crate::component_lifecycle::Heard> {
+        HEARD_ELSEWHERE.with_borrow_mut(std::mem::take)
+    }
+}
+
+impl AppWidget for HearsElsewhereProbe {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Elsewhere"
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("E")
+    }
+}
+
+/// A step of an agent's action the app's connection heard elsewhere reaches the window's
+/// presence through the component the window binds.
+#[test]
+fn a_step_heard_elsewhere_reaches_the_window_through_its_bound_component() {
+    let probe = crate::application_test_support::ProbeHarness::new();
+    let definition = crate::application_test_support::definition(|mut context, _, _| {
+        context
+            .initialize_new_resource(|_| Ok(()))
+            .map_err(crate::launch::LaunchError::Record)?;
+        let root = Box::new(HearsElsewhereProbe {
+            rect: KurboRect::ZERO,
+        });
+        Ok(AppComponent::new(
+            context,
+            root,
+            tilo_actions::ActionRegistry::new(),
+        ))
+    });
+    let permissions = crate::application_test_support::runner_permissions();
+    let context = probe
+        .prepare_with_permissions(&definition, 97, &LaunchTarget::New, permissions)
+        .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let mut app =
+        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    let step: tilo_actions::SemanticInteraction = serde_json::from_value(serde_json::json!({
+        "version": tilo_actions::INTERACTION_VERSION,
+        "invocation": tilo_actions::InvocationId::new(),
+        "sequence": 1,
+        "actor": tilo_actions::Acting::agent("helper"),
+        "phase": tilo_actions::InteractionPhase::Applying,
+        "action": {"id": "new_task", "label": "New task"},
+        "resource": {"id": "tl:tasks:root", "kind": "tl.tasks.Tasks", "label": "Tasks"},
+        "anchor": tilo_actions::InteractionAnchor::Resource,
+    }))
+    .unwrap();
+    let heard = crate::component_lifecycle::Heard::Interaction(step.clone());
+    HEARD_ELSEWHERE.with_borrow_mut(|queued| queued.push(heard));
+    assert!(
+        app.pump_collab_presence(),
+        "what was heard changes the window"
+    );
+    let shown = app
+        .presence_ctx
+        .agent_marker_interactions(crate::time::now());
+    assert_eq!(
+        shown.first().map(|shown| shown.invocation),
+        Some(step.invocation)
+    );
+}

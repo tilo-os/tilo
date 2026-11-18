@@ -1,6 +1,6 @@
 use super::{
-    AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, HostServices,
-    InvocationJournal, InvocationKey, PeerPublisher, VerifiedActionCaller, person_id_for_root,
+    AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, InvocationJournal,
+    InvocationKey, PeerPublisher, ProcessServices, VerifiedActionCaller, person_id_for_root,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use std::{
@@ -113,7 +113,7 @@ fn fixture() -> Fixture {
         Some(membership.authority()),
         None,
         Some(&config),
-        HostServices::default(),
+        ProcessServices::default(),
     );
     let presentation = runtime_collab::CertifiedJoinIdentity {
         workspace_id: workspace_id.into(),
@@ -256,7 +256,7 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn prepared_effect_native_recovery_rechecks_authority_and_failed_custody() {
+async fn prepared_effect_native_recovery_rechecks_authority_and_failed_ownership() {
     for scenario in ["before", "after", "refused"] {
         let f = fixture();
         let record = prepare(&f);

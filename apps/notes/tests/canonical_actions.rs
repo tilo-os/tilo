@@ -4,6 +4,10 @@ use notes::{actions, read};
 use tilo_actions::Action as _;
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one round trip, checked step by step"
+)]
 fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
     // Catches metadata-only/Markdown copies, lost native marks, wrong link remaps,
     // reused identifiers and nondeterministic replay.
@@ -11,13 +15,20 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
-        let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-        let action = actions::duplicate_action(f.root);
+        let tags = f.store.read(&checkout.id, Clone::clone).unwrap();
+        let doc = f.store.read(&f.part(), Clone::clone).unwrap();
+        // What is copied is read where the copy is made, then carried in it.
+        let action = notes::read::prepared(
+            &doc,
+            &notes::Notebook::default(),
+            &actions::duplicate_action(f.root),
+        )
+        .unwrap();
         let encoded = actions::encode(&action);
         let mut a = doc.clone();
         let mut b = doc.clone();
         let mut registry = tilo_actions::ActionRegistry::new();
-        <notes::Notebook as ui::tilo_resource::Resource>::register(&mut registry);
+        <notes::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
         let dispatched = tilo_actions::dispatch(
             &mut a,
             &action,
@@ -27,7 +38,7 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
         .unwrap();
         tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same copy");
-        let projected = notes::read::project(&a).unwrap();
+        let projected = notes::read::project_in(&tags, &a).unwrap();
         assert_eq!(projected.pages().len(), 5);
         let roots = projected
             .children_of(None)
@@ -72,15 +83,19 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
     eprintln!("phase duplicating_twice_makes_distinct_owned_subtrees");
     {
         let f = NotebookFixture::rich();
-        let checkout = notebook(&f);
-        let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        notebook(&f);
+        let mut doc = f.store.read(&f.part(), Clone::clone).unwrap();
         let before = read::list_pages(&doc)
             .into_iter()
             .map(|page| page.id)
             .collect::<std::collections::BTreeSet<_>>();
         for _ in 0..2 {
-            let action = actions::duplicate_action(f.root);
-            tilo_actions::apply_local(&mut doc, &action, actions::encode(&action)).unwrap();
+            notes::read::apply_in_part(
+                &mut doc,
+                &notes::Notebook::default(),
+                &actions::duplicate_action(f.root),
+            )
+            .unwrap();
         }
         let after = read::list_pages(&doc)
             .into_iter()
@@ -97,8 +112,8 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
     eprintln!("phase duplicating_a_missing_note_is_refused_before_writes");
     {
         let f = NotebookFixture::rich();
-        let checkout = notebook(&f);
-        let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        notebook(&f);
+        let mut doc = f.store.read(&f.part(), Clone::clone).unwrap();
         let before = (doc.base_heads(), doc.pending_ops());
         assert!(
             actions::duplicate_action(uuid::Uuid::new_v4())
@@ -155,14 +170,14 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         let mut a = component_driver(component);
         new_note(&mut a, 11, "Rich");
         let page = f
-            .records
-            .read(&checkout.id, |doc| read::list_pages(doc)[0].id)
+            .store
+            .read(&f.part(), |doc| read::list_pages(doc)[0].id)
             .unwrap();
         a.perform_named("block_editor", &ui::a11y::Action::Focus)
             .unwrap();
         a.type_text("abcd");
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert_eq!(read::page_block_snapshots(doc, page)[0].1, "abcd");
             })
             .unwrap();
@@ -178,8 +193,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             before + 2,
             "the typed word closes, then the format"
         );
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert_eq!(
                     read::page_block_marks(doc, page)[0].1,
                     vec![actions::InlineMarkSpan {
@@ -197,8 +212,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         let before = revision(&f, &checkout);
         a.key("Enter");
         assert_eq!(revision(&f, &checkout), before + 1);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 notes::read::validate(doc).unwrap();
                 assert_eq!(
                     read::page_block_snapshots(doc, page)
@@ -220,7 +235,7 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
                 }
             })
             .unwrap();
-        f.records
+        f.store
             .with_history(&checkout.id, |doc, history| {
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(
@@ -257,8 +272,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         move_pointer(&mut a, to);
         mouse(&mut a, MouseButton::Left, ElementState::Released);
         assert_eq!(revision(&f, &checkout), 1);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 let workspace = notes::read::project(doc).unwrap();
                 assert_eq!(workspace.get(f.empty).unwrap().parent, Some(f.root));
                 assert_eq!(
@@ -274,8 +289,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         context_menu_select(&mut a, f.root, "Duplicate");
         assert_eq!(revision(&f, &checkout), 2);
         let copied_root = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 let workspace = notes::read::project(doc).unwrap();
                 assert_eq!(workspace.pages().len(), 6);
                 let copy = workspace
@@ -289,8 +304,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             })
             .unwrap();
         let (block, index) = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 let index = read::page_blocks(doc, f.child)
                     .iter()
                     .position(|block| block.kind.stored() == "checklist:0:0")
@@ -310,8 +325,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         );
         a.click_at(rect.x0 - 12.0, rect.center().y);
         assert_eq!(revision(&f, &checkout), 3);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert_eq!(
                     read::page_blocks(doc, f.child)[index].kind.stored(),
                     "checklist:0:1"
@@ -323,8 +338,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         // Undo takes a deleted page back, so nobody is asked.
         assert!(a.asking().is_none(), "nothing asks first");
         assert_eq!(revision(&f, &checkout), 4);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 let workspace = notes::read::project(doc).unwrap();
                 assert_eq!(workspace.pages().len(), 3);
                 assert!(workspace.get(copied_root).is_none());
@@ -337,9 +352,14 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
     eprintln!("phase tree_move_is_atomic_exact_and_replayable_without_touching_rich_content");
     {
         let f = NotebookFixture::rich();
-        let checkout = notebook(&f);
-        let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-        let action = actions::move_page_action(f.child, Some(f.empty), None);
+        notebook(&f);
+        let doc = f.store.read(&f.part(), Clone::clone).unwrap();
+        let action = notes::read::prepared(
+            &doc,
+            &notes::Notebook::default(),
+            &actions::move_page_action(f.child, Some(f.empty), None),
+        )
+        .unwrap();
         let mut a = doc.clone();
         let mut b = doc.clone();
         let dispatched = tilo_actions::dispatch(
@@ -350,7 +370,7 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         )
         .unwrap();
         let mut registry = tilo_actions::ActionRegistry::new();
-        <notes::Notebook as ui::tilo_resource::Resource>::register(&mut registry);
+        <notes::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
         tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         notes::read::validate(&a).unwrap();
@@ -371,8 +391,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             assert_eq!(read::page_body(&a, page), read::page_body(&doc, page));
         }
         assert_eq!(
-            read::list_tag_assignments(&a),
-            read::list_tag_assignments(&doc)
+            read::list_tag_assignments(&read::project(&a).unwrap()),
+            read::list_tag_assignments(&read::project(&doc).unwrap())
         );
         for (invalid, action) in [
             (
@@ -415,8 +435,8 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
         let mut a = component_driver(component);
         new_note(&mut a, 11, "Empty again");
         let page = f
-            .records
-            .read(&checkout.id, |doc| read::list_pages(doc)[0].id)
+            .store
+            .read(&f.part(), |doc| read::list_pages(doc)[0].id)
             .unwrap();
         a.perform_named("block_editor", &ui::a11y::Action::Focus)
             .unwrap();
@@ -425,8 +445,8 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
         a.key("z");
         a.set_modifiers(&[]);
 
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert!(
                     read::page_block_snapshots(doc, page)
                         .iter()
@@ -446,8 +466,8 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
         let mut a = component_driver(component);
         new_note(&mut a, 11, "Peer page");
         let page = f
-            .records
-            .read(&checkout.id, |doc| read::list_pages(doc)[0].id)
+            .store
+            .read(&f.part(), |doc| read::list_pages(doc)[0].id)
             .unwrap();
         a.perform_named("block_editor", &ui::a11y::Action::Focus)
             .unwrap();
@@ -457,8 +477,8 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
         a.set_modifiers(&["ctrl".into()]);
         a.key("z");
         a.set_modifiers(&[]);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert!(
                     read::page_block_snapshots(doc, page)
                         .iter()
@@ -475,7 +495,7 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
-        let before = f.records.read(&checkout.id, content).unwrap();
+        let before = f.store.read(&f.part(), content).unwrap();
         let mut a = driver(&f, 11, &checkout);
         invoke_with(
             &mut a,
@@ -484,7 +504,7 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
             "rename",
             serde_json::json!({ "title": "first user edit" }),
         );
-        f.records
+        f.store
             .with_history(&checkout.id, |doc, history| {
                 assert_eq!(history.revision(), 1);
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
@@ -537,8 +557,8 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
                 .at_unix_time(100),
         );
         let before = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         assert!(
             app.invoke_semantic_action(&stale, "rename", Some("denied"))
@@ -549,7 +569,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             b.invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: 12,
-                    address: notes::Notebook::RENAME.on(actions::page_resource_id(f.child))
+                    address: notes::PagePart::RENAME.on(actions::page_resource_id(f.child))
                 },
                 serde_json::json!({"title":"denied"}).as_object().unwrap()
             )
@@ -559,15 +579,15 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             b.invoke_bound_action_confirmed(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: 12,
-                    address: notes::Notebook::DELETE.on(actions::page_resource_id(f.child))
+                    address: notes::PagePart::DELETE.on(actions::page_resource_id(f.child))
                 },
                 &serde_json::Map::new()
             )
             .is_err()
         );
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            f.store
+                .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap(),
             before
         );
@@ -587,11 +607,11 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         let mut a = driver(&f, 11, &checkout);
         let mut b = driver(&f, 12, &checkout);
         let before = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         open_note(&mut a, 11, f.child, None);
-        f.records
+        f.store
             .read_history(&checkout.id, |doc, history| {
                 assert_eq!(
                     history.revision(),
@@ -602,27 +622,27 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             })
             .unwrap();
         let child_marks = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_marks(doc, f.child))
+            .store
+            .read(&f.part(), |doc| read::page_block_marks(doc, f.child))
             .unwrap();
         open_tag(&mut a, 11, f.tag);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| read::page_block_marks(doc, f.child))
+            f.store
+                .read(&f.part(), |doc| read::page_block_marks(doc, f.child))
                 .unwrap(),
             child_marks
         );
         assert_eq!(revision(&f, &checkout), 0);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            f.store
+                .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap(),
             before
         );
         invoke_confirmed(&mut b, 12, &actions::page_resource_id(f.child), "delete");
         let denied = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: notes::Notebook::RENAME.on(actions::page_resource_id(f.child)),
+            address: notes::PagePart::RENAME.on(actions::page_resource_id(f.child)),
         };
         assert!(
             a.invoke_bound_action(
@@ -633,8 +653,8 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         );
         a.relayout();
         assert!(
-            f.records
-                .read(&checkout.id, |doc| read::list_pages(doc)
+            f.store
+                .read(&f.part(), |doc| read::list_pages(doc)
                     .iter()
                     .all(|p| p.id != f.child))
                 .unwrap()
@@ -642,7 +662,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         close_driver(&mut a);
         let stale = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: notes::Notebook::RENAME.on(actions::page_resource_id(f.root)),
+            address: notes::PagePart::RENAME.on(actions::page_resource_id(f.root)),
         };
         let mut reopened = driver(&f, 11, &checkout);
         assert!(
@@ -668,8 +688,8 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             "rename",
             serde_json::json!({ "title": "New A" }),
         );
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 let workspace = notes::read::project(doc).unwrap();
                 assert_eq!(workspace.get(f.root).unwrap().title, "B survives");
                 assert_eq!(workspace.get(f.empty).unwrap().title, "New A");
@@ -709,22 +729,22 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         let checkout = notebook(&f);
         let mut a = BoundNotes::new(component(&f, 11, existing(&checkout)));
         let original = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 read::page_block_snapshots(doc, f.root)[0].1.clone()
             })
             .unwrap();
         a.pending_edit(|doc| prepend(doc, f.root, "A pending "))
             .unwrap();
         let before = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         assert!(before.1 > 0);
         let prepared = component(&f, 12, existing(&checkout));
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            f.store
+                .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap(),
             before,
             "factory mount"
@@ -738,11 +758,10 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         }
         assert_eq!(revision(&f, &checkout), 0);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.root)
-                    [0]
-                .1
-                .clone())
+            f.store
+                .read(&f.part(), |doc| read::page_block_snapshots(doc, f.root)[0]
+                    .1
+                    .clone())
                 .unwrap(),
             format!("A pending {original}")
         );
@@ -756,7 +775,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             "rename",
             serde_json::json!({ "title": "B action" }),
         );
-        f.records
+        f.store
             .with_history(&checkout.id, |doc, history| {
                 let pending = history.next_undo_in(doc, &f.author, 11).unwrap();
                 assert_eq!(pending.instance_id, Some(11));
@@ -801,8 +820,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 .unwrap();
         new_note(&mut b, 12, "Last page");
         let page = f
-            .records
-            .read(&checkout.id, |doc| read::list_pages(doc)[0].id)
+            .store
+            .read(&f.part(), |doc| read::list_pages(doc)[0].id)
             .unwrap();
         b.perform_named("block_editor", &ui::a11y::Action::Focus)
             .unwrap();
@@ -810,8 +829,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         b.key("Enter");
         b.type_text("b");
         let blocks = f
-            .records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, page))
+            .store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, page))
             .unwrap();
         let mut a = BoundNotes::new(crate::component_support::component(
             &f,
@@ -819,22 +838,22 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             existing(&checkout),
         ));
         let queued_before = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         let queued_revision = revision(&f, &checkout);
         a.queue_block_move(&blocks[1].0);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            f.store
+                .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap(),
             queued_before
         );
         assert_eq!(revision(&f, &checkout), queued_revision);
         invoke_confirmed(&mut b, 12, &actions::page_resource_id(page), "delete");
         let deleted = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         let deleted_revision = revision(&f, &checkout);
         // FrameHarness construction syncs the existing A widget; it does not replace NotesApp.
@@ -854,8 +873,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             assert!(panel.semantics.as_ref().unwrap().value.is_none());
             assert!(inspected_widget(&snapshot.root, "note_title").is_none());
             assert!(inspected_widget(&snapshot.root, "block_editor").is_none());
-            f.records
-                .read(&checkout.id, |doc| {
+            f.store
+                .read(&f.part(), |doc| {
                     assert!(notes::read::project(doc).unwrap().pages().is_empty());
                     assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
                 })
@@ -966,8 +985,8 @@ fn assert_empty_retypes_once(
     driver.relayout();
     let placeholder = placeholder_key(driver);
     let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .store
+        .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
         .unwrap();
     let revision_before = revision(f, checkout);
     for _ in 0..3 {
@@ -979,8 +998,8 @@ fn assert_empty_retypes_once(
         );
     }
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        f.store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap(),
         before
     );
@@ -989,8 +1008,8 @@ fn assert_empty_retypes_once(
         .perform_named("block_editor", &ui::a11y::Action::Focus)
         .unwrap();
     driver.type_text("é");
-    f.records
-        .read(&checkout.id, |doc| {
+    f.store
+        .read(&f.part(), |doc| {
             notes::read::validate(doc).unwrap();
             let blocks = read::page_block_snapshots(doc, page);
             assert_eq!(
@@ -1021,9 +1040,9 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
     invoke_with(
         &mut b,
         12,
-        NOTEBOOK,
+        notes::part::chain_resource(),
         "field-edit",
-        serde_json::json!({ "edit": notes::Notebook::paths()
+        serde_json::json!({ "edit": notes::PagePart::paths()
             .pages
             .item(&notes::notebook::page_id(f.child))
             .tags
@@ -1053,7 +1072,7 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
         serde_json::json!({ "name": "Fresh" }),
     );
     let fresh = f
-        .records
+        .store
         .read(&checkout.id, |doc| {
             read::list_tags(doc)
                 .into_iter()
@@ -1076,8 +1095,8 @@ fn assert_open_tag_view(
     title: &str,
 ) {
     let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .store
+        .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
         .unwrap();
     let history = revision(f, checkout);
     // Invoke directly before relayout; the public bound front actions must resolve current data.
@@ -1093,8 +1112,8 @@ fn assert_open_tag_view(
     a.expect(&ui::headless::SemanticExpectation::named("note_title").value(title))
         .unwrap();
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        f.store
+            .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap(),
         before
     );
@@ -1105,18 +1124,18 @@ fn assert_open_tag_view(
 fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
-    let before = f.records.read(&checkout.id, content).unwrap();
+    let before = f.store.read(&f.part(), content).unwrap();
     let bodies = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             [f.root, f.child, f.empty].map(|page| read::page_stored_blocks(doc, page))
         })
         .unwrap();
     let mut a = driver(&f, 11, &checkout);
     invoke(&mut a, 11, actions::page_resource_id(f.child), "outdent");
     assert_eq!(revision(&f, &checkout), 1);
-    f.records
-        .read(&checkout.id, |doc| {
+    f.store
+        .read(&f.part(), |doc| {
             assert_eq!(
                 read::list_pages(doc)
                     .iter()
@@ -1131,7 +1150,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
             );
         })
         .unwrap();
-    f.records
+    f.store
         .with_history(&checkout.id, |doc, history| {
             history.undo_in(doc, &f.author, 11, None, None).unwrap();
             assert_eq!(content(doc), before);
@@ -1147,16 +1166,14 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         a.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 11,
-                address: notes::Notebook::OUTDENT.on(actions::page_resource_id(f.child)),
+                address: notes::PagePart::OUTDENT.on(actions::page_resource_id(f.child)),
             },
             &serde_json::Map::new()
         )
         .is_err()
     );
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| { content(doc) })
-            .unwrap(),
+        f.store.read(&f.part(), |doc| { content(doc) }).unwrap(),
         before
     );
     close_driver(&mut a);
@@ -1175,12 +1192,14 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
         .as_object()
         .unwrap()
         .clone();
-    let create =
-        app.invoke_bound_action(&address(notes::Notebook::NEW_NOTE.on(NOTEBOOK)), &arguments);
+    let create = app.invoke_bound_action(
+        &address(notes::PagePart::NEW_NOTE.on(notes::part::chain_resource())),
+        &arguments,
+    );
     assert!(create.is_ok(), "normal declared creation: {create:?}");
     let page = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             read::list_pages(doc)
                 .into_iter()
                 .find(|page| page.title == "Immediate canonical open")
@@ -1192,8 +1211,8 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
     // Open must validate against canonical state, including the newly committed note.
     let created_revision = revision(&f, &checkout);
     let rich = f
-        .records
-        .read(&checkout.id, |doc| read::page_stored_blocks(doc, f.child))
+        .store
+        .read(&f.part(), |doc| read::page_stored_blocks(doc, f.child))
         .unwrap();
     let opened = app.invoke_bound_action(
         &address(notes::NotesEffect::OPEN_NOTE.on(NOTEBOOK)),
@@ -1231,8 +1250,8 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
         "Open is a local view operation"
     );
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::page_stored_blocks(doc, f.child))
+        f.store
+            .read(&f.part(), |doc| read::page_stored_blocks(doc, f.child))
             .unwrap(),
         rich
     );

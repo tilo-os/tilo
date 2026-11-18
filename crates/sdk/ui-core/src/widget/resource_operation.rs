@@ -186,7 +186,7 @@ impl std::fmt::Debug for ResourceOperation<'_> {
 }
 
 impl<'a> ResourceOperation<'a> {
-    /// An operation the host admitted without hosted custody: local input,
+    /// An operation the host admitted without hosted ownership: local input,
     /// the palette, or a directed invocation already admitted by the broker.
     pub fn local(
         invocation: tilo_actions::InvocationId,
@@ -206,7 +206,7 @@ impl<'a> ResourceOperation<'a> {
         }
     }
 
-    /// A required operation bound to its original caller's custody.
+    /// A required operation bound to its original caller's ownership.
     pub fn scoped(
         scope: &'a ResourceInvocationScope,
         kind: tilo_actions::OperationKind,
@@ -246,14 +246,14 @@ impl<'a> ResourceOperation<'a> {
         self.scope.is_some()
     }
 
-    /// The operation for a handler that carries no original-caller custody.
+    /// The operation for a handler that carries no original-caller ownership.
     /// `None` for a required operation: such a handler must decline it.
     pub fn unscoped(&self) -> Option<OperationRequest<'a>> {
         self.scope.is_none().then_some(self.request)
     }
 
-    /// The operation for a custody-aware handler.
-    pub fn with_custody(&self) -> (OperationRequest<'a>, Option<&'a ResourceInvocationScope>) {
+    /// The operation for an ownership-aware handler.
+    pub fn with_ownership(&self) -> (OperationRequest<'a>, Option<&'a ResourceInvocationScope>) {
         (self.request, self.scope)
     }
 

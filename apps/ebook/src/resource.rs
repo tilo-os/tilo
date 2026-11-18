@@ -1,4 +1,4 @@
-//! Books' library: the record every device of a reader shares, its verbs,
+//! Books' library: the resource every device of a reader shares, its verbs,
 //! the places derived from it, and the app.
 //!
 //! The shelf, where the reader is in each book, the reading settings, the
@@ -121,12 +121,12 @@ pub struct HiPiece {
 }
 
 impl Ebook {
-    /// What the record holds: the shelf, where the reader is in each book, the reading
+    /// What the resource holds: the shelf, where the reader is in each book, the reading
     /// settings, the fonts and colour schemes, and every mark made in them.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,
@@ -709,7 +709,7 @@ impl Ebook {
     /// the text of the books they belong to, which the library does not hold.
     #[allow(
         clippy::unused_self,
-        reason = "the library's search hook reads the record; the reader's search covers it"
+        reason = "the library's search hook reads the resource; the reader's search covers it"
     )]
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
         Vec::new()
@@ -1039,8 +1039,8 @@ impl ResourceApp for EbookShell {
 
     /// Whether this device keeps the book catalogues: a setting of the
     /// device's, published so search and agents reach it.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.settings::<crate::catalogue::CatalogueCopies>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.settings::<crate::catalogue::CatalogueCopies>();
     }
 
     fn view(cx: &mut ViewCx<Ebook>) -> Element {

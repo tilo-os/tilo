@@ -9,10 +9,19 @@
 //! the workspace keeps it, named by the node's hash: a whole file, or the
 //! manifest of the chunks a large one was split into.
 
+use std::collections::BTreeMap;
+
+use fs_protocol::files::TreeChunk;
 use fuser::FileType;
 use iroh_blobs::Hash;
 
 use crate::namespace::{Namespace, ROOT_INO, hash_from_hex};
+
+mod by_path;
+
+pub use by_path::{
+    Changed, FileAt, MOST_COPIED, MOST_LISTED, Page, Row, Touched, Trashed, Written,
+};
 
 /// A file put into the tree: the changes that put it there, and where in the
 /// tree it now is.
@@ -43,6 +52,12 @@ fn hash_of(hex: &str) -> Option<Hash> {
 }
 
 impl Namespace {
+    /// Where each document of the tree is before a change: what
+    /// [`Self::document_writes`] answers the change against.
+    pub(crate) fn before_change(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
+        self.record_heads()
+    }
+
     /// Put the file `name`, whose content the workspace keeps under `hash`,
     /// into the folder `to` of the tree — `""` for its root — making the
     /// folders on the way that are not there yet.
@@ -65,7 +80,7 @@ impl Namespace {
             return Err(refused(format!("{name:?} is no file's name")));
         }
         let hash = hash_of(hash).ok_or_else(|| refused("the content's hash is not one"))?;
-        let before = self.record_heads();
+        let before = self.before_change();
         let mut parent = ROOT_INO;
         for folder in to.split('/').filter(|folder| !folder.is_empty()) {
             if !plain(folder) {

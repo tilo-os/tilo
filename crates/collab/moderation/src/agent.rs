@@ -17,7 +17,7 @@ use tilo_action_policy::{Change, MemberId};
 
 use crate::activity::{Activity, burst};
 use crate::judge::{Case, Earlier, Judge, JudgeError, Reported, Verdict};
-use crate::record::{Decision, Moderation, Outcome, Reverted, Ruling, moderation};
+use crate::model::{Decision, Moderation, Outcome, Reverted, Ruling, moderation};
 
 /// How far back the agent looks at a reported person's actions.
 pub const LOOKBACK_MS: i64 = 30 * 60 * 1000;
@@ -282,7 +282,7 @@ impl<J: Judge> ModerationAgent<J> {
                 &reverted.app,
                 &reverted.record,
                 "undo",
-                serde_json::json!({ "run": reverted.run }),
+                serde_json::json!({ "invocation": reverted.run }),
                 &format!("{}:restore", reverted.run),
             ) {
                 failures.push(format!("{}/{}: {why}", reverted.app, reverted.record));

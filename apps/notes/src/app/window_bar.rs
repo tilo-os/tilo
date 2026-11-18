@@ -26,7 +26,7 @@ impl NotesApp {
 
     /// The slots for the note shown (`title`, and the anchor `open` shows it
     /// at; `None`: no note is open).
-    fn window_toolbar(note: Option<(&str, String)>, sidebar_open: bool) -> WindowToolbar {
+    fn window_toolbar(note: Option<&(String, String)>, sidebar_open: bool) -> WindowToolbar {
         // The note's actions are declared for a note only: a menu that acts
         // on nothing has no place in the bar's own. They are rows of the
         // window's one "More" menu, so a note shows one "…" and not two.
@@ -37,9 +37,9 @@ impl NotesApp {
             // One name everywhere: an unnamed note's window reads as its heading.
             location: note.map(|(title, anchor)| ToolbarLocation {
                 label: crate::metadata::note_title(title),
-                anchor: Some(anchor),
+                anchor: Some(anchor.clone()),
                 // Unsaved work is marked by the window's framework, from the
-                // record's save.
+                // resource's save.
                 ..ToolbarLocation::default()
             }),
             actions: note_actions.into_iter().flatten().collect(),
@@ -56,7 +56,7 @@ impl NotesApp {
         let adds = self.may_add_notes();
         // New note heads the page tree it adds to, pressing the notebook's own
         // action: the notebook's actions arrive after the shell is built.
-        let tree_new_note = adds && self.notebook_actions.is_some();
+        let tree_new_note = adds && self.notes.is_some();
         let mut changed = false;
         if hosted != self.header_in_bar || tree_new_note != self.tree_offers_new_note {
             self.header_in_bar = hosted;
@@ -64,7 +64,7 @@ impl NotesApp {
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
             // New note is the page tree's, hosted or not.
             let tree_actions = if adds {
-                Self::page_tree_header_actions(self.notebook_actions.as_ref())
+                Self::page_tree_header_actions(self.notes.as_ref().map(|notes| &notes.actions))
             } else {
                 Vec::new()
             };
@@ -99,11 +99,7 @@ impl NotesApp {
             open,
         );
         if self.declared_bar.as_ref() != Some(&key) {
-            let note = key
-                .1
-                .as_ref()
-                .map(|(title, anchor)| (title.as_str(), anchor.clone()));
-            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open)));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(key.1.as_ref(), open)));
             self.declared_bar = Some(key);
         }
         for event in ui::window_toolbar::take_events() {
@@ -256,11 +252,12 @@ mod tests {
     #[test]
     fn a_note_nobody_named_names_its_window_as_its_heading_does() {
         ui::i18n::I18nManager::init("en-US");
-        let bar = NotesApp::window_toolbar(Some((" ", "note".to_owned())), false);
+        let bar = NotesApp::window_toolbar(Some(&(" ".to_owned(), "note".to_owned())), false);
         let location = bar.location.expect("an open note is where the window is");
         assert_eq!(location.label, CATALOG.t("notes-title-placeholder"));
-        let named = NotesApp::window_toolbar(Some(("Friday plan", "note".to_owned())), false);
-        assert_eq!(named.location.expect("an open note").label, "Friday plan");
+        let named =
+            NotesApp::window_toolbar(Some(&("Friday".to_owned(), "note".to_owned())), false);
+        assert_eq!(named.location.expect("an open note").label, "Friday");
     }
 
     /// New note stands in the page tree's header whether or not the desktop's bar hosts the

@@ -36,7 +36,7 @@ impl BrowserWidget {
                 let decoded = crate::continuity::ImportBundle::decode(&bundle)
                     .map_err(|_| "Invalid personal bookmark import")?;
                 if decoded.chunks.iter().any(|chunk| !chunk.history.is_empty()) {
-                    return Err("History belongs to its own private record".into());
+                    return Err("History belongs to its own private resource".into());
                 }
                 record
                     .invoke(&PersonalBookmarks::IMPORT_BOOKMARKS.with(bundle))

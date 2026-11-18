@@ -26,7 +26,7 @@
 use std::time::Duration;
 
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 use crate::common::{CANVAS, PERSON, layout, on_screen, private_home, show_preset, until};
 
@@ -39,7 +39,7 @@ fn session(root: &std::path::Path) -> Session {
         collab: false,
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.join("plane.sock")),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         ..Options::default()
     });
@@ -220,14 +220,14 @@ fn placed_as_agent(
     crate::common::wait_for(session, format!("{record} placed"), |session| {
         crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == record)
+            .find(|place| place.resource == record)
     })
 }
 
 /// An agent's `place` that names no point but something to stand beside stands what it shows in
 /// the free space to that place's right, at its line — an agent's turn names the conversation it
 /// was asked in, so what it places stands next to that conversation (`shell.md` §8.1). Placing it
-/// again brings the place showing it forward rather than standing a second one.
+/// again brings the place showing it forward rather than opening a second one.
 #[test]
 fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let _settled = ui::motion::testing::settled();
@@ -255,10 +255,10 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let notes = crate::common::wait_for(&mut session, "the notes placed", |session| {
         crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == notes_id)
+            .find(|place| place.resource == notes_id)
     });
     // The place answers what it showed by the title it stands by, so the agent's step line names
-    // it beside what the place declares it did ("Showed on the canvas: Notes").
+    // it beside what the place declares it did ("Showed: Notes").
     let ui::host_operation::ResourceOperationStart::Completed(output) = answered else {
         panic!("a place completes at once: {answered:?}");
     };
@@ -295,7 +295,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     session.step(Duration::from_millis(1)).expect("a frame");
     let shown = crate::common::places(&session)
         .into_iter()
-        .filter(|place| place.record == notes_id)
+        .filter(|place| place.resource == notes_id)
         .count();
     assert_eq!(shown, 1, "one place shows it");
 }
@@ -378,7 +378,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let moved = crate::common::wait_for(&mut session, "the note moved", |session| {
         let place = crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == notes_id)?;
+            .find(|place| place.resource == notes_id)?;
         let (x, y, _) = canvas_point(session, &place);
         (x < 6000).then_some((x, y))
     });
@@ -404,7 +404,7 @@ fn wide_session(root: &std::path::Path) -> Session {
             collab: false,
             services: crate::common::seeded_apps(),
             questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             ..Options::default()
         },
@@ -418,7 +418,7 @@ fn wide_session(root: &std::path::Path) -> Session {
 
 /// How the place [`a_place_moved_to_a_point_is_drawn_there`] moves came to stand on the canvas.
 #[derive(Clone, Copy, Debug)]
-enum Standing {
+enum PlaceOrigin {
     /// The notes' root, placed at a point by an agent's `place`.
     PlacedRecord,
     /// The Notes app's window, opened beside another app's as `session.open_app` opens them.
@@ -428,7 +428,7 @@ enum Standing {
 /// Move the place `key` to `(1600, 0)` with its own `position`, as the agent, and wait until it is
 /// drawn there: its frame as far right of where it was drawn as 1600 is of the strip's point
 /// before, and at the canvas' top. `row` is how the place came to stand, which every failure names.
-fn moved_and_drawn(session: &mut Session, key: &str, row: Standing) {
+fn moved_and_drawn(session: &mut Session, key: &str, row: PlaceOrigin) {
     let (name, title) = crate::common::wait_for(
         session,
         format_args!("{row:?}: the place's name"),
@@ -500,16 +500,16 @@ fn moved_and_drawn(session: &mut Session, key: &str, row: Standing) {
 #[test]
 fn a_place_moved_to_a_point_is_drawn_there() {
     let _settled = ui::motion::testing::settled();
-    for row in [Standing::PlacedRecord, Standing::AppWindow] {
+    for row in [PlaceOrigin::PlacedRecord, PlaceOrigin::AppWindow] {
         let root = private_home();
         let mut session = wide_session(root.path());
-        let standing = crate::common::places(&session);
+        let origin = crate::common::places(&session);
         assert!(
-            standing.is_empty(),
-            "{row:?}: nothing stands on the canvas the row starts on: {standing:?}"
+            origin.is_empty(),
+            "{row:?}: nothing stands on the canvas the row starts on: {origin:?}"
         );
         let key = match row {
-            Standing::PlacedRecord => {
+            PlaceOrigin::PlacedRecord => {
                 let notes_root = root_of(&session, "so.tilo.lang.notes");
                 placed_as_agent(
                     &mut session,
@@ -518,7 +518,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
                 )
                 .key
             }
-            Standing::AppWindow => {
+            PlaceOrigin::AppWindow => {
                 for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
                     session
                         .invoke(

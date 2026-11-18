@@ -12,7 +12,7 @@ use tilo_action_broker::services::{
     LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
 };
 use tilo_desktop_model::{IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId};
-use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_identity::broker::WorkspaceMembership;
 
 /// The desktop session's workspace file. Read, never written, here: its
 /// native authority fields belong to that host.

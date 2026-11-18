@@ -106,7 +106,7 @@ opens, the page's own sections stand under a rule that says where the writing th
 a surface whose corners round — a card, a notice — keeps a gutter from the edge of the
 column or window it stands in, where an edge would cut its shape, and the gap of a sibling from what
 stands over and under it, so a list under a notice is not read as a row of it. It reads that an item
-stands once: a list folds the branch of a row standing open into its item, since the document under
+stands once: a list folds the branch of a row access open into its item, since the document under
 that row lists it, so no step of a task is read both there and again as a row of the list.
 
 It reads a panel or a popover that says what it is for and shows nothing under it: one whose title

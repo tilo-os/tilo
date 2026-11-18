@@ -98,6 +98,8 @@ pub struct State {
     /// The app-facing window-icon manager, whose sizes the desktop asked for.
     pub(crate) icons: Option<smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager>,
     pub(crate) icon_sizes: Vec<i32>,
+    /// The app's colour management, kept across desktops.
+    pub(crate) color: crate::color::Color,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -106,6 +108,9 @@ pub struct State {
     pub(crate) buffers: Buffers,
     pub(crate) seat: SeatMirror,
     pub(crate) data_device: DataDevice,
+    pub(crate) xdnd: crate::xdnd::Xdnd,
+    /// The X11 server's windows, and which of its toplevels shows each.
+    pub(crate) x11_windows: Vec<crate::x11_windows::X11Window>,
     pub(crate) primary: PrimarySelection,
     pub(crate) text_input: TextInput,
     pub(crate) pointer_constraints: PointerConstraints,
@@ -167,12 +172,15 @@ impl State {
             dialog: None,
             icons: None,
             icon_sizes: Vec::new(),
+            color: crate::color::Color::default(),
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
             buffers: Buffers::default(),
             seat,
             data_device: DataDevice::new(dh),
+            xdnd: crate::xdnd::Xdnd::default(),
+            x11_windows: Vec::new(),
             primary: PrimarySelection::new(dh),
             text_input: TextInput::new(dh),
             pointer_constraints: PointerConstraints::new(dh),
@@ -328,8 +336,9 @@ impl DmabufHandler for State {
         _global: &DmabufGlobal,
     ) -> Option<DmabufFeedback> {
         // The request itself is the moment to ask the desktop too, when the surface is
-        // already shown; a surface shown earlier asked when it was made.
-        self.request_surface_feedback(&surface.id());
+        // already shown; a surface shown later asks when it is made there. smithay holds the
+        // surface's state while it asks this, so nothing here may take it again.
+        self.ask_surface_feedback(&surface.id());
         self.surface_feedback
             .get(&surface.id())
             .and_then(|entry| entry.built.clone())

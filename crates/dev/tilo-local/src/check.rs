@@ -6,7 +6,7 @@
 //! machine has them, mounted over their fixed paths (`/run/dbus/system_bus_socket`,
 //! `/run/systemd/private`, `/run/user/UID/bus`) for the session's processes alone. Any connection
 //! to a trap fails the check. The desktop's window opens on a throwaway headless Tilo session
-//! standing in for the host desktop, so the windowed session is checked without a display.
+//! in place of the host desktop, so the windowed session is checked without a display.
 
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
@@ -171,7 +171,7 @@ fn lavapipe() -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-/// A throwaway headless Tilo session standing in for the desktop a developer runs `cargo desktop`
+/// A throwaway headless Tilo session in place of the desktop a developer runs `cargo desktop`
 /// on: its Wayland socket is where the nested window opens.
 struct HostDesktop {
     child: Child,

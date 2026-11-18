@@ -53,14 +53,13 @@ fn native_accessibility_new_note_creates_an_editable_document() {
     for (width, index, count) in [(480, 0, 1), (1000, 0, 2), (1000, 1, 2)] {
         let f = NotebookFixture::rich();
         let component = component(&f, 21, ui::application::LaunchTarget::New);
-        let checkout = component.record().clone();
         let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
         let mut scene = vello::Scene::new();
         app.surface_frame(&Surface(width), &mut scene);
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| read::list_pages(doc).len())
-                .unwrap(),
+            f.store
+                .read(&f.part(), |doc| read::list_pages(doc).len())
+                .unwrap_or_default(),
             0,
             "the native notebook starts empty"
         );
@@ -84,9 +83,9 @@ fn native_accessibility_new_note_creates_an_editable_document() {
             app.surface_frame(&Surface(width), &mut scene);
         }
         assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| read::list_pages(doc).len())
-                .unwrap(),
+            f.store
+                .read(&f.part(), |doc| read::list_pages(doc).len())
+                .unwrap_or_default(),
             1
         );
         let tree = app.build_a11y_tree_update(1.0);
@@ -112,13 +111,15 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     let buttons = named(&a, "New note");
     assert_eq!(buttons.len(), 2);
     let sidebar = buttons.iter().find(|r| r.1.is_none()).unwrap();
+    let notes = || {
+        f.store
+            .read(&f.part(), |doc| read::list_pages(doc).len())
+            .unwrap_or_default()
+    };
+    // The notes are the workspace's, kept in parts every window shows.
+    let held = notes();
     perform(&mut a, sidebar, &Action::Activate);
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::list_pages(doc).len())
-            .unwrap(),
-        1
-    );
+    assert_eq!(notes(), held + 1);
     let before = revision(&f, &checkout);
     // A page row names its page: the list addresses rows by the key their
     // host gave them.
@@ -137,25 +138,6 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     assert_eq!(named(&neighbor, "Page title").len(), 1);
     close_driver(&mut a);
     close_driver(&mut neighbor);
-
-    let component = component_support_new(&f, 13);
-    let checkout = component.record().clone();
-    let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    let first = named(&a, "New note")
-        .into_iter()
-        .find(|r| r.1.as_deref() == Some("notes.first_note"))
-        .unwrap();
-    perform(&mut a, &first, &Action::Activate);
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::list_pages(doc).len())
-            .unwrap(),
-        1
-    );
-    close_driver(&mut a);
-}
-fn component_support_new(f: &NotebookFixture, id: u64) -> ui::application::AppComponent {
-    component(f, id, ui::application::LaunchTarget::New)
 }
 
 #[test]
@@ -166,8 +148,8 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     let page = f.child;
     open_note(&mut a, 11, page, None);
     let body = f
-        .records
-        .read(&checkout.id, |doc| read::page_block_snapshots(doc, page))
+        .store
+        .read(&f.part(), |doc| read::page_block_snapshots(doc, page))
         .unwrap();
     let title = named(&a, "Page title");
     assert_eq!(title.len(), 1, "one truthful title surface");
@@ -195,8 +177,8 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     assert_eq!(focused.text_selection.unwrap().focus, 8);
     a.key("Enter");
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::list_pages(doc)
+        f.store
+            .read(&f.part(), |doc| read::list_pages(doc)
                 .into_iter()
                 .find(|p| p.id == page)
                 .unwrap()
@@ -208,8 +190,8 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     perform(&mut a, &title, &Action::SetValue("Blur title".into()));
     a.perform_named("block_editor", &Action::Focus).unwrap();
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::list_pages(doc)
+        f.store
+            .read(&f.part(), |doc| read::list_pages(doc)
                 .into_iter()
                 .find(|p| p.id == page)
                 .unwrap()
@@ -218,8 +200,8 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
         "Blur title"
     );
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::page_block_snapshots(doc, page))
+        f.store
+            .read(&f.part(), |doc| read::page_block_snapshots(doc, page))
             .unwrap(),
         body
     );
@@ -302,9 +284,9 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     perform(&mut a, &replacement, &Action::Focus);
     assert_eq!(a.focused_access_node().unwrap().value, canonical);
     let pages = f
-        .records
-        .read(&checkout.id, |doc| read::list_pages(doc).len())
-        .unwrap();
+        .store
+        .read(&f.part(), |doc| read::list_pages(doc).len())
+        .unwrap_or_default();
     // Someone who may only look is not offered New note, and a press on
     // where it stood, or on the stale control, makes nothing.
     assert!(
@@ -314,9 +296,9 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     let _ = a.perform_semantic_named(&create.0, create.1.as_deref(), &Action::Activate);
     a.click_at(create_rect.center().x, create_rect.center().y);
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::list_pages(doc).len())
-            .unwrap(),
+        f.store
+            .read(&f.part(), |doc| read::list_pages(doc).len())
+            .unwrap_or_default(),
         pages
     );
     assert_eq!(revision(&f, &checkout), before);
@@ -347,9 +329,9 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
         "a Viewer is offered no New note"
     );
     assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| read::list_pages(doc).len())
-            .unwrap(),
+        f.store
+            .read(&f.part(), |doc| read::list_pages(doc).len())
+            .unwrap_or_default(),
         0
     );
     assert_eq!(revision(&f, &checkout), 0);

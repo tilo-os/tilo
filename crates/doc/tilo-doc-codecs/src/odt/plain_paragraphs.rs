@@ -11,7 +11,7 @@ use tilo_doc::snapshot::BlockView;
 /// Import the paragraphs of `xml` — only those inside `within` elements when given. Each
 /// becomes a block made by `insert_block` (given the previous block); its text is appended
 /// through `splice` (block, offset, text). Any other empty element inside a paragraph is
-/// offered to `inline` (name, block, offset), which may return text standing for it.
+/// offered to `inline` (name, block, offset), which may return text in its place.
 pub(super) fn import(
     xml: &str,
     within: Option<&[u8]>,

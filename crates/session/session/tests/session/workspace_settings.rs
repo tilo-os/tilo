@@ -394,63 +394,50 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     );
 }
 
-/// Have `app` hold a capability here, so the workspace shows it and the sheet offers it.
-fn app_here(session: &Session, app: &str) {
-    let mut tree = session.handle().read(Clone::clone);
-    let workspace = tree.active_workspace_mut().expect("a workspace in front");
-    workspace.grant_app(
-        "ada",
-        app,
-        &tilo_desktop_model::Capability::Camera {
-            scope: tilo_desktop_model::GRANT_SESSION,
-        },
-    );
-    session.handle().replace_tree(tree);
+/// The answer the review shows for changes in `app`, by its place among Allow, Ask first and Deny,
+/// and whether the agent's bound sets the app's answers.
+fn changes_answer(session: &Session, app: &str) -> (usize, bool) {
+    let row = listed_app(session, &format!("app:{app}"));
+    let line = row
+        .kinds
+        .iter()
+        .find(|line| line.kind == "change")
+        .expect("the app's line for changes");
+    (line.answer, row.customised)
 }
 
-/// The agent's answer for one kind of action at one app, as the domain reads the workspace.
-fn answer(
-    session: &Session,
-    agent: &str,
-    app: &str,
-    kind: tilo_action_policy::ActionKind,
-) -> tilo_desktop::workspace_settings::agent_access::AnswerCell {
-    session.handle().read(|tree| {
-        let workspace = tree.active_workspace().expect("a workspace");
-        let admission = tilo_action_policy::roles::agent_grants(
-            &workspace.policy.workspace,
-            agent,
-            PERSON,
-            &[],
-        );
-        tilo_desktop::workspace_settings::agent_access::answer_at(
-            workspace,
-            agent,
-            &admission,
-            &tilo_action_policy::agent_answers::AnswerScope::app(app),
-            kind,
+/// The bound the workspace's list of its agents keeps for `agent`.
+fn bound_of(session: &Session, agent: &str) -> Vec<tilo_app::tilo_workspace_agent::Bound> {
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace")
+            .id()
+            .to_string()
+    });
+    let stored = session
+        .stored_record(
+            tilo_app::tilo_workspace_agent::OWNER,
+            &workspace,
+            &collab_types::workspace_document_id(tilo_app::tilo_workspace_agent::KIND),
         )
-    })
+        .expect("the list is kept here");
+    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
+    let doc = automerge::AutoCommit::load_with_options(&stored, options).expect("the list");
+    tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::read(&doc)
+        .expect("the list reads")
+        .state()
+        .agents
+        .iter()
+        .find(|held| held.id.0 == agent)
+        .expect("the list names the agent")
+        .bound
+        .clone()
 }
 
 /// Let the session answer an ask the sheet made, and the sheet settle.
 fn settle(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
     session.step(Duration::from_millis(1)).unwrap();
     app.settle();
-}
-
-/// Its keeper dresses it from its row: the palette opens under it, and the colour picked is the one
-/// its devices draw it in.
-fn recolour(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
-    press(app, "ws-agents-palette-helper");
-    settle(session, app);
-    activate(app, "Green");
-    settle(session, app);
-    assert_eq!(
-        listed_agent(session, "helper").colour,
-        4,
-        "the keeper's colour lands in the record"
-    );
 }
 
 /// This device's Settings offer one model the agents may plan with.
@@ -480,14 +467,14 @@ fn settings_offer_a_model() {
 /// chooses its model and takes the agent out of the workspace.
 #[test]
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
-    use tilo_action_policy::ActionKind;
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
+    // Nothing of Notes is open or held here: an installed app is answered for before an agent
+    // ever reaches for it.
     own_workspace(&session, &[]);
-    app_here(&session, "so.tilo.notes");
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     session.step(Duration::from_millis(1)).unwrap();
     let mut app = sheet(&session);
@@ -501,7 +488,6 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     app.effect(&WorkspaceSettingsEffect::AddAgent {
         name: "helper".to_owned(),
         model: String::new(),
-        colour: "violet".to_owned(),
     })
     .expect("the person makes an agent");
     settle(&mut session, &mut app);
@@ -515,12 +501,6 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the row says who keeps it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    assert!(
-        row.mine,
-        "the person here keeps it, so its colour is theirs"
-    );
-    assert_eq!(row.colour, 9, "it is drawn in the violet its maker picked");
-    recolour(&mut session, &mut app);
     press(&mut app, "ws-agents-review-helper");
     settle(&mut session, &mut app);
     let review = shown_review(&session);
@@ -529,16 +509,24 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
             .apps
             .iter()
             .any(|row| row.scope == "app:so.tilo.notes"),
-        "the review lists the app: {review:?}"
+        "the review lists the installed app though no window of it is open: {review:?}"
     );
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);
-    let setting = answer(&session, "helper", "so.tilo.notes", ActionKind::Undoable);
-    assert!(setting.explicit, "the person's answer is the agent's own");
-    assert_eq!(setting.answer, tilo_action_policy::Answer::Ask);
+    assert_eq!(
+        changes_answer(&session, "so.tilo.notes"),
+        (1, true),
+        "the review shows the person's answer, and that it was set here"
+    );
+    let bound = bound_of(&session, "helper");
+    assert_eq!(
+        bound.len(),
+        1,
+        "the answer is a rule of the agent's bound: {bound:?}"
+    );
     assert!(
-        listed_app(&session, "app:so.tilo.notes").customised,
-        "the review says the app was customised"
+        bound[0].node.ends_with("/app:so.tilo.notes") && bound[0].answer == "ask",
+        "{bound:?}"
     );
 
     // The model it plans with is the keeper's to choose, from this device's Settings, and the
@@ -560,12 +548,14 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
 
     activate(&mut app, "Use defaults");
     settle(&mut session, &mut app);
-    let back = answer(&session, "helper", "so.tilo.notes", ActionKind::Undoable);
-    assert!(!back.explicit, "the app follows the admission again");
     assert_eq!(
-        back.answer,
-        tilo_action_policy::Answer::Allow,
-        "the turn's cap admits changes in the app"
+        changes_answer(&session, "so.tilo.notes"),
+        (0, false),
+        "the app follows the admission again, whose cap admits changes in it"
+    );
+    assert!(
+        bound_of(&session, "helper").is_empty(),
+        "the bound is the default again"
     );
 
     activate(&mut app, "Remove");
@@ -790,7 +780,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         )
         .expect("confirm");
 
-    // The tab shows the emoji, and Chat's record holds it: the store commits what a window changed
+    // The tab shows the emoji, and Chat's emoji document holds it: the store commits what a window changed
     // after a debounce, so what the device holds is read again until the emoji is in it.
     pump(&mut session, &mut [], |_, _| {
         app.settle();
@@ -1055,21 +1045,6 @@ fn workspace_settings_makes_the_workspaces_agents() {
         "the row says who keeps it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    assert!(
-        row.mine,
-        "the person here keeps it, so its colour is theirs"
-    );
-    // Its keeper dresses it from its row: the palette opens under it.
-    press(&mut app, "ws-agents-palette-analyst");
-    settle(&mut session, &mut app);
-    capture(&mut app, "workspace-settings-agents-palette");
-    activate(&mut app, "Green");
-    settle(&mut session, &mut app);
-    assert_eq!(
-        listed_agent(&session, "analyst").colour,
-        4,
-        "the keeper's colour lands in the record"
-    );
     // Its keeper chooses the model it plans with, and the row says which.
     press(&mut app, "ws-agents-review-analyst");
     settle(&mut session, &mut app);
@@ -1218,10 +1193,10 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     );
 }
 
-/// An agent the workspace admitted before Chat kept records of them is made
-/// one of the record when the tab opens it: under the id its grants carry,
-/// numbered around the names the workspace uses, and kept by whoever
-/// admitted it.
+/// An agent the person here admitted to the workspace before Chat kept agents of its own is
+/// listed in its place when they open the tab: under the id its grants carry, numbered around the
+/// names the workspace uses. Whoever admits an agent keeps it and pays for its work, so another
+/// member's admission is left for that member's own device.
 #[test]
 fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let _settled = ui::motion::testing::settled();
@@ -1230,18 +1205,21 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
     let workspace = front_workspace(&session);
-    // The admission as workspaces stored it before records: a grant naming the agent, held by the
-    // workspace, given by the person who admitted it.
+    // The admissions as workspaces stored them before Chat kept agents of its own: grants naming
+    // each agent, held by the workspace, given by the person who admitted it. One is the person's
+    // here; ada's is hers to give an agent of its own.
     let mut tree = session.handle().read(Clone::clone);
     let front = tree.active_workspace_mut().expect("a workspace in front");
-    front.policy.grants.push(tilo_action_policy::Grant::new(
-        "agent-member:helper:observer",
-        tilo_action_policy::Grantee::agent("helper"),
-        front.node(),
-        tilo_action_policy::KindSet::READ,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person("ada".to_owned()),
-    ));
+    for (agent, admitted_by) in [("helper", PERSON), ("analyst", "ada")] {
+        front.policy.grants.push(tilo_action_policy::Grant::new(
+            format!("agent-member:{agent}:observer"),
+            tilo_action_policy::Grantee::agent(agent),
+            front.node(),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(admitted_by.to_owned()),
+        ));
+    }
     session.handle().replace_tree(tree);
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     session.step(Duration::from_millis(1)).unwrap();
@@ -1261,10 +1239,15 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
                 .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)
         })
     });
+    let held = held.expect("Chat's agents in the workspace");
+    assert_eq!(
+        held.len(),
+        1,
+        "only the person's own admission is given an agent here: {held:?}"
+    );
     assert!(
-        held.as_deref().is_some_and(|agents| agents
-            .iter()
-            .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)),
-        "Chat's record names the admitted agent, under its id and numbered around the names here: {held:?}"
+        held.iter()
+            .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active),
+        "Chat names the admitted agent, under its id and numbered around the names here: {held:?}"
     );
 }

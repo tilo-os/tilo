@@ -287,6 +287,29 @@ impl DocumentMutation {
         }
     }
 
+    /// The mutation a complete transfer of `kind` carries. `body` is the data of its segments
+    /// joined in order: the bytes [`transfer_digest`] is over, which are the mutation's own
+    /// ([`Self::encode_frames`]), so a reader that joins segments itself reads them with this,
+    /// as the payload of [`DocumentReassembler`] reads through [`Self::decode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentMutationError::TooLarge`] above [`MAX_DOCUMENT_TRANSFER_BYTES`].
+    pub fn of_transfer(
+        kind: DocumentMutationKind,
+        body: &[u8],
+    ) -> Result<Self, DocumentMutationError> {
+        let mutation = Self::of_wire_body(kind.tag(), body)?;
+        let actual = mutation.data().len();
+        if actual > MAX_DOCUMENT_TRANSFER_BYTES {
+            return Err(DocumentMutationError::TooLarge {
+                actual,
+                max: MAX_DOCUMENT_TRANSFER_BYTES,
+            });
+        }
+        Ok(mutation)
+    }
+
     /// Encode this mutation as the signed payloads that carry it: one frame
     /// when it fits in [`DOCUMENT_SEGMENT_BYTES`], otherwise one frame per
     /// segment. Each returned payload must be signed as its own envelope and
@@ -310,6 +333,7 @@ impl DocumentMutation {
             return self.encode().map(|frame| vec![frame]);
         }
         let kind = self.kind();
+        let data = self.data();
         let digest = transfer_digest(kind, data);
         let total_len = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let segment_len_u32 = u32::try_from(segment_len).unwrap_or(u32::MAX);
@@ -783,7 +807,10 @@ mod tests {
                     DocumentMutation::Incremental(data)
                 };
                 let frames = mutation.encode_frames().unwrap();
-                assert_eq!(frames.len(), len.div_ceil(DOCUMENT_SEGMENT_BYTES));
+                assert_eq!(
+                    frames.len(),
+                    mutation.data().len().div_ceil(DOCUMENT_SEGMENT_BYTES)
+                );
                 assert!(
                     frames
                         .iter()
@@ -852,6 +879,46 @@ mod tests {
                 Err(ReassemblyError::Inconsistent)
             );
             assert_eq!(reassembler.pending_transfers(), 0);
+        }
+
+        phase segments_joined_by_their_reader_read_as_the_reassembler_reads_them;
+        {
+            for mutation in [
+                DocumentMutation::Incremental(bytes(2 * MIB + 5, 11)),
+                DocumentMutation::Snapshot(bytes(2 * MIB + 5, 12)),
+            ] {
+                let frames = mutation.encode_frames().unwrap();
+                let parts = segments(&frames);
+                assert!(parts.len() > 1, "the mutation travels in segments");
+                let (kind, digest) = (parts[0].kind, parts[0].digest);
+                let joined: Vec<u8> = parts.into_iter().flat_map(|part| part.data).collect();
+                assert_eq!(transfer_digest(kind, &joined), digest);
+                assert!(
+                    DocumentMutation::of_transfer(kind, &joined).as_ref() == Ok(&mutation),
+                    "the joined segments read as the mutation that was sent"
+                );
+                let reassembled = reassemble(
+                    &mut DocumentReassembler::default(),
+                    ArtifactId::new(),
+                    &frames,
+                );
+                assert!(
+                    reassembled.as_ref() == Some(&mutation),
+                    "and so does what the reassembler hands on"
+                );
+            }
+        }
+
+        phase joined_changes_read_as_the_bytes_their_writer_joined;
+        {
+            assert_eq!(
+                DocumentMutation::of_transfer(DocumentMutationKind::Incremental, &[0xff; 64]),
+                Ok(DocumentMutation::Incremental(vec![0xff; 64]))
+            );
+            assert_eq!(
+                DocumentMutation::of_transfer(DocumentMutationKind::Snapshot, &[0xff; 64]),
+                Ok(DocumentMutation::Snapshot(vec![0xff; 64]))
+            );
         }
     }
 

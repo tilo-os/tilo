@@ -82,7 +82,7 @@ export const hostUnreachable = error => (error?.name === 'HostAdmissionError' &&
 
 /**
  * The host did not answer the page before it got in (a host restarting
- * starts its relay and entry a moment apart): which try this was, counted
+ * starts its server and entry a moment apart): which try this was, counted
  * across the page's reloads (`attempt`, 0 for the first failure), and since
  * when it fails (`since`), for the reconnect screen's backoff. Counts it.
  */
@@ -103,6 +103,13 @@ export function retryUnreachable({storage = globalThis.sessionStorage, now = Dat
 export function reachedHost({storage = globalThis.sessionStorage} = {}) {
   try { storage?.removeItem(UNREACHED); } catch { /* Nothing kept. */ }
 }
+
+/** Whether `error` says this browser was removed from its person's devices
+ * (`device-revoked`): its server's own word at the session's handshake, which
+ * a session that stopped for it before the page got in (`whenReady` in
+ * peer.mjs) and an entry that met it (`entryAnswered`) carry as their code.
+ * Nothing joins such a browser again: the person is told (`refusalText`). */
+export const deviceRemoved = error => error?.code === 'device-revoked';
 
 /** What the person is told when the host's refusal `code` cannot be undone
  * here, about the workspace `name` (or `null`). */

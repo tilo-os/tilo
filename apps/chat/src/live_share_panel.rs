@@ -9,9 +9,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use crate::app::{ChatApp, Hit};
+use crate::chat::ShareAccess;
 use crate::live_share::access_label;
 use crate::paint::{line_in, line_of, push_clip};
-use crate::record::ShareAccess;
 
 impl ChatApp {
     #[allow(

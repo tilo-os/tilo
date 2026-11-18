@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
             ) -> Result<String, String> {
                 self.0
                     .lock()
-                    .map_err(|_| "fixture record unavailable".to_owned())?
+                    .map_err(|_| "fixture resource unavailable".to_owned())?
                     .push((account.clone(), secret.clone()));
                 Ok("fixture accepted".into())
             }

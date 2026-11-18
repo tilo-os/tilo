@@ -1,5 +1,5 @@
 //! The bridge live against a real Discord server: a workspace on an in-process
-//! relay with Chat and the guild record, the bridge bot installed from its
+//! server with Chat and the guild resource, the bridge bot installed from its
 //! program file, and this binary started again as the `discord-worker`
 //! under the connector host. Ada's side is scripted through her own Chat
 //! changes; the Discord side through a webhook of its own, so what it posts
@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The workspace is linked to the server as a hosted workspace links it
-//! (`tilo_relay::workspace_bots::discord`), and the worker runs with the settings
+//! (`tilo_server::workspace_bots::discord`), and the worker runs with the settings
 //! that link gives it.
 //!
 //! The token file has a `DISCORD_TOKEN=` line; the token goes to the worker
@@ -37,18 +37,18 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ::discord::record::{Guild, MappedKind, Ownership};
+use ::discord::guild::{Guild, MappedKind, Ownership};
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_net::Method;
-use tilo_relay::workspace_bots::discord::{self, DiscordLink};
-use tilo_relay::workspace_bots::installed::{self, BotRunner};
-use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::workspace_bots::workspace_resource;
-use tilo_relay::workspaces::Workspaces;
+use tilo_server::workspace_bots::discord::{self, DiscordLink};
+use tilo_server::workspace_bots::installed::{self, BotRunner};
+use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
+use tilo_server::workspace_bots::workspace_resource;
+use tilo_server::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Resource as _};
@@ -213,7 +213,7 @@ impl Rest {
     }
 }
 
-/// The workspace, as the governor's copy holds its records.
+/// The workspace, as the governor's copy holds its resources.
 struct Workspace {
     workspaces: Workspaces,
     id: String,
@@ -318,7 +318,7 @@ impl Workspace {
         .await
     }
 
-    async fn message(&self, text: &str) -> Option<(String, chat::record::Message)> {
+    async fn message(&self, text: &str) -> Option<(String, chat::chat::Message)> {
         chat::messages::read_part(&self.part().await)
             .messages
             .iter()
@@ -431,13 +431,13 @@ async fn live(token: String, guild_id: String) -> usize {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let _ = AppCatalogue::native();
-    tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
-    let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-        tilo_relay::RelayConfig {
-            state_root: scratch.path().join("relay"),
+    tilo_server::surfaces::decide_receipt(&scratch.path().join("server").join("surfaces"));
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig {
+            state_root: scratch.path().join("server"),
             ..Default::default()
         },
-        tilo_relay::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),
             device_cert: cert.clone(),
@@ -447,7 +447,7 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .await
     .unwrap();
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = Workspace {
         id: workspaces.create(&server_name).await.unwrap().workspace,
         workspaces,
@@ -470,14 +470,6 @@ async fn live(token: String, guild_id: String) -> usize {
     discord::connect(&workspace.workspaces, &workspace.id, &cert, &bridged)
         .await
         .unwrap();
-    workspace
-        .chat_as({
-            let ada = workspace.ada.clone();
-            move |doc| {
-                chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())
-            }
-        })
-        .await;
 
     let secrets = ui::secrets::SecretStore::memory(APP);
     secrets
@@ -637,7 +629,7 @@ async fn live(token: String, guild_id: String) -> usize {
     workspace
         .act(
             &workspace.owner,
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
                 name: "made-in-tilo".parse().unwrap(),
                 category: None,
                 kind: None,
@@ -950,6 +942,6 @@ async fn live(token: String, guild_id: String) -> usize {
 
     rest.call(Method::DELETE, &format!("/webhooks/{hook_id}"), None)
         .await;
-    drop(relay);
+    drop(server);
     report.failed
 }

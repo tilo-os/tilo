@@ -1,4 +1,4 @@
-//! Linux custody and bounded acknowledgement worker.
+//! Linux ownership and bounded acknowledgement worker.
 use super::{Completion, Failure, Snapshot};
 pub use runtime_portal::editor::Socket;
 use runtime_portal::editor::{self, Request, Status};

@@ -1,5 +1,5 @@
 // A profile's durable storage, shared by everything on the page that keeps
-// state in it: mounted applications, the relay peer, settings. One namespace
+// state in it: mounted applications, the server peer, settings. One namespace
 // (profile/device) holds one writer lease (Web Lock + IndexedDB, see
 // storage.mjs) and one Rust store for as long as anyone has it open.
 //
@@ -40,7 +40,7 @@ export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotas
       publish({persistence:'pending',pendingWrites:writes.length,error:null});
       try{
         // Write hooks and pagehide also reach this path without host.persist().
-        // A document must never become durable before its credential custody.
+        // A document must never become durable before its credential device key.
         if(runtime.flush_files)await runtime.flush_files();
         await lease.commit(writes);
       }
@@ -68,7 +68,7 @@ export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotas
       }),
       subscribe(listener){listeners.add(listener);return ()=>listeners.delete(listener);},
       /** Drop one reference. The last flushes and gives up the lease; if that
-       * flush fails the namespace keeps custody and release may be retried. */
+       * flush fails the namespace keeps device key and release may be retried. */
       async release(){
         if(closing)return closing;
         if(--refs>0)return;

@@ -11,7 +11,7 @@
 //! - every post the host told its author was durable is in the chat;
 //! - members post on, the host folds again, and a newcomer reads the chat whole.
 //!
-//! A start once carried every write the workspace's link kept and the relay's history no longer
+//! A start once carried every write the workspace's link kept and the server's history no longer
 //! held back into that history, the writes a fold had replaced among them: they landed after the
 //! fold, and a page that opened the chat took them in first and then refused the fold as covering
 //! writes it did not hold, so the chat never read for it.
@@ -43,7 +43,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -169,7 +169,7 @@ async fn history(
 ) -> String {
     let mut out = String::from("retained:");
     for retained in host
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace_id)
         .await
@@ -205,7 +205,7 @@ async fn history(
     }
     out.push_str("\ngovernor:");
     if let Ok(Some(held)) = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .document_history(workspace, &route.app_id, &route.document)
@@ -232,7 +232,7 @@ async fn covered_twice(
     let mut writes = Vec::new();
     let mut floors = std::collections::HashMap::<[u8; 32], u64>::new();
     for retained in host
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace_id)
         .await
@@ -268,7 +268,7 @@ async fn covered_twice(
 
 /// The host's records that do not read whole, with why.
 async fn unread(host: &TestHost, workspace: &str) -> Vec<((String, String), String)> {
-    host.relay
+    host.server
         .workspaces()
         .unwrap()
         .whole_documents(workspace, None)
@@ -279,7 +279,7 @@ async fn unread(host: &TestHost, workspace: &str) -> Vec<((String, String), Stri
 
 /// Wait until the host's compactor ran `rounds` more rounds, or a while passed.
 async fn folds(host: &TestHost, since: u64, rounds: u64, within: Duration) {
-    let compactor = host.relay.compactor();
+    let compactor = host.server.compactor();
     let deadline = Instant::now() + within;
     while compactor.rounds() < since + rounds && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -344,15 +344,15 @@ async fn round(seed: u64) {
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -367,7 +367,7 @@ async fn round(seed: u64) {
         ..chat.clone()
     };
     let page_host = |host: &TestHost| {
-        let address = host.relay.node_addr();
+        let address = host.server.node_addr();
         let relay_url = address.relay_urls().next().cloned();
         Host::through(iroh::EndpointAddr::new(address.id), relay_url)
     };
@@ -400,7 +400,7 @@ async fn round(seed: u64) {
     // drawn at random: after some acknowledged posts, with a few more on their way.
     let before_stop = 60 + draw.below(40) as usize;
     let in_flight = draw.below(6) as usize;
-    let rounds_before = host.relay.compactor().rounds();
+    let rounds_before = host.server.compactor().rounds();
     for n in 0..before_stop + in_flight {
         let by = draw.below(members.len() as u64) as usize;
         let is_part = draw.below(4) != 0;
@@ -414,7 +414,7 @@ async fn round(seed: u64) {
         // Now and then the chat goes quiet long enough for the host to fold it, and posting goes
         // on after the fold.
         if draw.below(24) == 0 {
-            let rounds = host.relay.compactor().rounds();
+            let rounds = host.server.compactor().rounds();
             folds(&host, rounds, 1, Duration::from_secs(4)).await;
         }
     }
@@ -431,7 +431,7 @@ async fn round(seed: u64) {
     let killed = draw.below(2) == 0;
     eprintln!(
         "CHAT-RESTART seed={seed} posts={before_stop} in_flight={in_flight} killed={killed} folds={} after {:?}",
-        host.relay.compactor().rounds(),
+        host.server.compactor().rounds(),
         began.elapsed()
     );
     for member in &members {
@@ -441,7 +441,7 @@ async fn round(seed: u64) {
         drop(host);
     } else {
         drop(host.web);
-        host.relay.shutdown().await;
+        host.server.shutdown().await;
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -505,7 +505,7 @@ async fn round(seed: u64) {
         )
         .await;
     }
-    let rounds_after = host.relay.compactor().rounds();
+    let rounds_after = host.server.compactor().rounds();
     for n in 0..48 {
         let by = draw.below(members.len() as u64) as usize;
         let is_part = draw.below(4) != 0;

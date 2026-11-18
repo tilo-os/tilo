@@ -112,8 +112,8 @@ pub fn query_value(text: &str) -> String {
 pub const LINK_TTL_MS: i64 = 10 * 60 * 1000;
 
 /// The proof of a link token: SHA-256 (lower-case hex) of the token. Who holds the token
-/// hands its proof to `complete-link`, which the record checks against the offer's
-/// [`link_check`]; the token itself never reaches a record or the event log.
+/// hands its proof to `complete-link`, which the resource checks against the offer's
+/// [`link_check`]; the token itself never reaches a resource or the event log.
 #[must_use]
 pub fn link_proof(token: &str) -> String {
     sha256_hex(token.trim().as_bytes())

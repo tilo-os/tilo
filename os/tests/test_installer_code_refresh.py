@@ -1,4 +1,4 @@
-"""Bounded real transport + fail-closed VM/physical gates; no VM or disk mutation."""
+"""Bounded real transport + fail-closed VM/physical checks; no VM or disk mutation."""
 import base64
 import hashlib
 import importlib.util
@@ -271,7 +271,7 @@ class Bootstrap(unittest.TestCase):
                        'files':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}}
             (root/'receipt.json').write_text(json.dumps(receipt))
             destination = root/'original-proof'; destination.write_bytes(b'original')
-            daemon = SimpleNamespace(gate=lambda:None, BASE=root/'runtime')
+            daemon = SimpleNamespace(check=lambda:None, BASE=root/'runtime')
             original_stat = Path.stat
             def root_owned(path, *args, **kwargs):
                 fields = list(original_stat(path, *args, **kwargs)); fields[4] = 0

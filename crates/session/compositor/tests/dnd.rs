@@ -1,4 +1,4 @@
-//! Drag-and-drop between real Wayland clients and hosted surface apps on a
+//! Drag-and-drop between real Wayland clients and surface apps on a
 //! headless compositor: files travel as `text/uri-list`, byte for byte,
 //! dragged with the pointer or a finger; a drag's icon is drawn under it.
 
@@ -32,7 +32,7 @@ const FILES: &[u8] = b"file:///home/someone/a%20b.txt\r\nfile:///home/someone/c.
 
 fn setup(log: &Rc<RefCell<DropLog>>) -> (Compositor, TestClient) {
     let mut compositor = headless(Box::new(StackPolicy));
-    compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(log)))));
+    compositor.add_surface(Rc::new(RefCell::new(DropZone::new(Rc::clone(log)))));
     let client = TestClient::connect(&mut compositor);
     let mut client = map(
         client,
@@ -47,7 +47,7 @@ fn setup(log: &Rc<RefCell<DropLog>>) -> (Compositor, TestClient) {
 }
 
 #[test]
-fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
+fn files_dragged_out_of_a_window_drop_on_a_surface() {
     let log = Rc::new(RefCell::new(DropLog::default()));
     let (mut compositor, mut client) = setup(&log);
 
@@ -127,7 +127,7 @@ fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
 }
 
 #[test]
-fn files_dragged_out_of_a_hosted_surface_drop_on_a_window() {
+fn files_dragged_out_of_a_surface_drop_on_a_window() {
     let log = Rc::new(RefCell::new(DropLog::default()));
     let (mut compositor, mut client) = setup(&log);
 
@@ -162,7 +162,7 @@ fn files_dragged_out_of_a_hosted_surface_drop_on_a_window() {
         "{:?}",
         client.seen.offered
     );
-    assert_eq!(log.borrow().left, 1, "the drag left the hosted surface");
+    assert_eq!(log.borrow().left, 1, "the drag left the surface");
 
     input(
         &mut compositor,
@@ -196,10 +196,10 @@ fn files_dragged_out_of_a_hosted_surface_drop_on_a_window() {
 /// A file manager that starts a drag while the window under the pointer still has no data device
 /// (it binds one when its toolkit is ready) gets the offer on the next move, not never.
 #[test]
-fn a_drag_from_a_hosted_surface_offers_itself_to_a_window_that_binds_its_data_device_mid_drag() {
+fn a_drag_from_a_surface_offers_itself_to_a_window_that_binds_its_data_device_mid_drag() {
     let log = Rc::new(RefCell::new(DropLog::default()));
     let mut compositor = headless(Box::new(StackPolicy));
-    compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(&log)))));
+    compositor.add_surface(Rc::new(RefCell::new(DropZone::new(Rc::clone(&log)))));
     let mut client = map(
         TestClient::connect(&mut compositor),
         &mut compositor,
@@ -456,7 +456,7 @@ fn a_drag_shows_its_icon_under_the_pointer_until_it_drops() {
 }
 
 #[test]
-fn files_dragged_out_of_a_window_with_a_finger_drop_on_a_hosted_surface() {
+fn files_dragged_out_of_a_window_with_a_finger_drop_on_a_surface() {
     let log = Rc::new(RefCell::new(DropLog::default()));
     let (mut compositor, mut client) = setup(&log);
     pump(&mut compositor, &mut client, |_, client| {
@@ -502,7 +502,7 @@ fn files_dragged_out_of_a_window_with_a_finger_drop_on_a_hosted_surface() {
 }
 
 #[test]
-fn a_hosted_surface_drags_files_with_the_finger_holding_it() {
+fn a_surface_surface_drags_files_with_the_finger_holding_it() {
     let log = Rc::new(RefCell::new(DropLog::default()));
     let (mut compositor, mut client) = setup(&log);
     input(

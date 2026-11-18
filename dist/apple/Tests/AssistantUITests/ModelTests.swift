@@ -78,6 +78,128 @@ final class ModelTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(model.conversation(.main).items.first { $0.id == "maya" }).waits)
     }
 
+    func testAPieceItsServerLaterCallsAReminderIsToldThenAndNotAgain() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        var told: [Item.ID] = []
+        var settled: [Item.ID] = []
+        model.told = { item, _ in told.append(item.id) }
+        model.settled = { item, _ in settled.append(item.id) }
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        // The assistant's answer arrives as plain words: it is handed on, and nothing is to tell of it.
+        var stretch = Item(id: "stretch", at: Date(), .message(Message(.assistant, "Time to stretch.")))
+        source.post(stretch)
+        try await until { told == ["stretch"] }
+        XCTAssertNil(NoticePlan.notice(for: stretch, in: .main))
+        // A moment later the person's Tilo says it is their reminder: now it is told.
+        stretch.content = .reminder("Time to stretch.")
+        source.change(stretch)
+        try await until { told == ["stretch", "stretch"] }
+        XCTAssertEqual(NoticePlan.notice(for: stretch, in: .main)?.kind, .reminder)
+        XCTAssertEqual(settled, [])
+        // What changes on it afterwards without making another kind of thing of it is not told again.
+        stretch.isImportant = true
+        source.change(stretch)
+        try await until { settled == ["stretch"] }
+        XCTAssertEqual(told, ["stretch", "stretch"])
+    }
+
+    func testWhatDidNotNotifyIsListedOnceWhatInsistsIsToldAgainAndNewOffersAreBroughtWithoutTelling() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        var told: [Item.ID] = []
+        var settled: [Item.ID] = []
+        var offered: [Item.ID] = []
+        model.told = { item, _ in told.append(item.id) }
+        model.settled = { item, _ in settled.append(item.id) }
+        model.offered = { item, _ in offered.append(item.id) }
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        // A report arrives as plain words; a moment later the person's Tilo says why it did not notify.
+        var report = Item(id: "sorted", at: Date(), .report("Nine mails sorted."))
+        source.post(report)
+        try await until { told == ["sorted"] }
+        XCTAssertNil(NoticePlan.notice(for: report, in: .main))
+        report.keptQuiet = Quiet.line(about: "", code: "no-rule")
+        source.change(report)
+        try await until { told == ["sorted", "sorted"] }
+        XCTAssertEqual(NoticePlan.notice(for: report, in: .main)?.interrupts, false)
+        // The person makes it insist, so it is to reach them after all: now it is told to them.
+        report.keptQuiet = nil
+        report.isImportant = true
+        source.change(report)
+        try await until { told == ["sorted", "sorted", "sorted"] }
+
+        // A reminder that insists is told again each time it is raised, and for nothing else.
+        var reminder = Drawing.reminder
+        source.post(reminder)
+        try await until { told.count == 4 }
+        reminder.raised = 1
+        source.change(reminder)
+        try await until { told.count == 5 }
+        reminder.isImportant = true
+        source.change(reminder)
+        try await until { settled == ["remind-jonas"] }
+        // Once the person saw it, the count is gone, and nothing is told for that.
+        reminder.raised = 0
+        source.change(reminder)
+        try await until { settled == ["remind-jonas", "remind-jonas"] }
+        XCTAssertEqual(told.count, 5)
+
+        // What is offered with a question that was told already is brought to its notice, and not told again.
+        var asked = try XCTUnwrap(model.conversation(.main).items.first { $0.id == "maya" })
+        asked.offers = [Offer(id: "send", title: "Send it", isMain: true)]
+        source.change(asked)
+        try await until { offered == ["maya"] }
+        XCTAssertEqual(told.count, 5)
+        // The press goes to the source as the person's own, and what is not offered is refused there.
+        model.press("send", of: "maya", in: .main)
+        try await until { source.pressed == [MemorySource.Press(offer: "send", item: "maya", chat: .main)] }
+        XCTAssertNil(model.problem)
+        model.press("gone", of: "maya", in: .main)
+        try await until { model.problem == "This is no longer offered." }
+        // Answered, it offers nothing more: that settles it, and nothing is brought.
+        asked.offers = []
+        if case .question(var question) = asked.content {
+            question.answer = "send"
+            asked.content = .question(question)
+        }
+        source.change(asked)
+        try await until { settled.last == "maya" }
+        XCTAssertEqual(offered, ["maya"])
+    }
+
+    func testWhatCameWhileThePersonWasAwayIsHeldAndFollowsItsSource() async throws {
+        var content = Drawing.content()
+        content.sinceLeft = Drawing.sinceLeft
+        let source = MemorySource(content, now: { Drawing.now })
+        let primed = AssistantModel(source: source)
+        await primed.prime()
+        XCTAssertEqual(primed.sinceLeft, Drawing.sinceLeft)
+        let model = AssistantModel(source: source)
+        XCTAssertNil(model.sinceLeft)
+        model.start()
+        try await until { model.sinceLeft == Drawing.sinceLeft }
+        source.setSinceLeft(nil)
+        try await until { model.sinceLeft == nil }
+        // A source that keeps no such count says nothing of it.
+        let plain = AssistantModel(source: Drawing.source())
+        await plain.prime()
+        XCTAssertNil(plain.sinceLeft)
+    }
+
+    func testTheModelStepNamesAProviderOnlyWhereThatSaysSomething() {
+        let one = [ModelChoice(id: "a/large", name: "Large", provider: "Anthropic"), ModelChoice(id: "a/small", name: "Small", provider: "Anthropic")]
+        let two = one + [ModelChoice(id: "o/large", name: "Large", provider: "OpenRouter")]
+        XCTAssertEqual(ModelCard.note(chosen: nil, among: one), "Anthropic")
+        XCTAssertEqual(ModelCard.note(chosen: nil, among: two), "", "of two providers the box names neither before a model is chosen")
+        XCTAssertEqual(ModelCard.note(chosen: two[2], among: two), "OpenRouter")
+        XCTAssertEqual(ModelCard.note(chosen: two[0], among: two), "Anthropic")
+        XCTAssertEqual(ModelCard.providers(of: two), ["Anthropic", "OpenRouter"])
+        XCTAssertEqual(ModelCard.note(chosen: nil, among: []), "")
+    }
+
     func testASecretIsHandedOnAndHeldNowhere() async throws {
         var content = Drawing.content()
         content.main = Drawing.secretPiece
@@ -87,7 +209,7 @@ final class ModelTests: XCTestCase {
         try await until { model.conversation(.main).isLoaded }
         let kept = await model.keep(Secret("correct horse battery staple"), for: "linkedin")
         XCTAssertTrue(kept)
-        try await until { model.conversation(.main).items.first?.content.secret?.standing == .kept }
+        try await until { model.conversation(.main).items.first?.content.secret?.state == .kept }
         var held = ""
         dump(model.conversations, to: &held)
         dump(model.drafts, to: &held)
@@ -96,6 +218,35 @@ final class ModelTests: XCTestCase {
         let again = await model.keep(Secret("another"), for: "linkedin")
         XCTAssertFalse(again)
         XCTAssertNotNil(model.problem)
+    }
+
+    func testATasksRepliesOpenUnderItsLineAndArePutAwayAgain() async throws {
+        let model = AssistantModel(source: Drawing.source())
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        XCTAssertTrue(model.openReplies.isEmpty)
+        model.toggleReplies(of: "maya", under: "maya", in: .main)
+        try await until { model.openReplies["maya"] != nil }
+        XCTAssertEqual(model.openReplies["maya"], Drawing.mayaReplies)
+        XCTAssertEqual(model.conversation(.main).items, Drawing.mainChat, "the replies are no pieces of the conversation")
+        model.toggleReplies(of: "maya", under: "maya", in: .main)
+        XCTAssertNil(model.openReplies["maya"], "the same press puts them away, at once")
+        // A task with none to show opens on nothing, and says so by holding none.
+        model.toggleReplies(of: "morning-rundown", under: "rundown-1", in: .main)
+        try await until { model.openReplies["rundown-1"] != nil }
+        XCTAssertEqual(model.openReplies["rundown-1"], [])
+    }
+
+    func testRepliesThatCannotBeFetchedOpenNothingAndSayWhy() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        source.set(.unreachable)
+        model.toggleReplies(of: "maya", under: "maya", in: .main)
+        try await until { model.problem != nil }
+        XCTAssertEqual(model.problem, AssistantWords.unreachable.said)
+        XCTAssertNil(model.openReplies["maya"])
     }
 
     func testWordsWithNoLinkInThemPairNothing() async {
@@ -144,6 +295,71 @@ final class ModelTests: XCTestCase {
         model.begin("Something else: ")
         XCTAssertEqual(model.drafts[.main]?.text, "Morning rundown: ")
     }
+
+    func testAMessageNoTurnTakesUpInTimeGetsOneQuietLineWhichGoesWhenTheTurnBegins() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.takeUpPatience = .milliseconds(150)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        model.drafts[.main] = Draft(text: "Are you there?")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 1 }
+        XCTAssertFalse(model.isNotTakenUp(.main), "the line stood before any time had passed")
+        try await until { model.isNotTakenUp(.main) }
+        XCTAssertEqual(AssistantWords.notTakenUp.said, "Tilo has not taken this up yet.")
+        // The turn begins: the line goes, and does not come back while or after the answer is written.
+        source.setAnswering(true)
+        try await until { !model.isNotTakenUp(.main) }
+        source.post(Item(id: "there", at: Date(), .message(Message(.assistant, "I am."))))
+        source.setAnswering(false)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(model.isNotTakenUp(.main))
+    }
+
+    func testAMessageATurnTakesUpInTimeGetsNoLineAndNeitherDoesOneThatIsAnsweredAtOnce() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.takeUpPatience = .milliseconds(200)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        // A turn takes her message up before the time is over, and is still at work when it is.
+        model.drafts[.main] = Draft(text: "One.")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 1 }
+        source.setAnswering(true)
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertFalse(model.isNotTakenUp(.main), "a message a turn is at work on was said not to be taken up")
+        // The turn ends without a word of its own: nothing is said of the message then either.
+        source.setAnswering(false)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(model.isNotTakenUp(.main))
+        // An answer that comes whole, with no word that it was being written, is the turn as well.
+        model.drafts[.main] = Draft(text: "Two.")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
+        source.post(Item(id: "two", at: Date(), .message(Message(.assistant, "Two it is."))))
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertFalse(model.isNotTakenUp(.main))
+    }
+
+    func testWhatSheWritesAgainBeginsTheWaitAnewAndTheLineStandsUnderHerNewestMessage() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.takeUpPatience = .milliseconds(300)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        model.drafts[.main] = Draft(text: "One.")
+        model.send(in: .main)
+        try await until { model.isNotTakenUp(.main) }
+        // She writes again: the line goes with the wait for the message before, and comes again after its time.
+        model.drafts[.main] = Draft(text: "Two.")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
+        XCTAssertFalse(model.isNotTakenUp(.main))
+        try await until { model.isNotTakenUp(.main) }
+    }
 }
 
 /// The drawing's signs and colours, as the views are given them.
@@ -187,6 +403,14 @@ final class LookTests: XCTestCase {
         }
         XCTAssertNil(Teller.chat("elsewhere"))
         XCTAssertNil(Teller.chat(nil))
+    }
+
+    func testAPiecesNoticeIsKeptUnderTheNameAPushGivesItWhereItHasOne() {
+        var item = Item(id: .init("m-1"), at: Date(timeIntervalSince1970: 0), .reminder("Stretch"))
+        XCTAssertEqual(Teller.request(item), "assistant-m-1")
+        // Told of while the app is closed, the push and the app's own notice are one notice.
+        item.toldAs = "rf-qsLfA_59buuS5z2pKfA"
+        XCTAssertEqual(Teller.request(item), "rf-qsLfA_59buuS5z2pKfA")
     }
 
     func testALiveActivitysPressLeadsToWhatItWasAbout() throws {

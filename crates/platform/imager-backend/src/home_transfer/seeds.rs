@@ -66,7 +66,7 @@ impl Authority {
             .iter()
             .find(|item| Path::new(&item.path) == path)
     }
-    /// Rebind a retained witness to the freshly read installed authority.
+    /// Rebind a retained proof to the freshly read installed authority.
     pub fn verify(&self, digest: &str, generated: &Generated) -> io::Result<()> {
         if self.digest != digest || !self.proof.files.contains(generated) {
             return Err(changed(
@@ -96,16 +96,16 @@ pub fn relative(value: &str) -> io::Result<&Path> {
 }
 
 /// Durable recovery binding for one displaced firstboot default.
-/// The serializable witness must be reauthenticated before any target write.
+/// The serializable proof must be reauthenticated before any target write.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Witness {
+pub struct RecoveryBinding {
     pub proof_sha256: String,
     pub generated: Generated,
     pub target: super::protocol::Fact,
 }
 
-impl Witness {
+impl RecoveryBinding {
     /// # Errors
     /// Refuses records not bound to the requested relative adoption path.
     pub fn validate(&self, path: &Path) -> io::Result<()> {
@@ -114,7 +114,7 @@ impl Witness {
             || self.target.mode > 0o777
         {
             return Err(changed(
-                "Firstboot seed witness does not bind the adoption path",
+                "Firstboot seed proof does not bind the adoption path",
             ));
         }
         Ok(())

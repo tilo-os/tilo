@@ -1,4 +1,4 @@
-//! The project explorer: the toolkit's list, its rows standing as a tree, over
+//! The project explorer: the toolkit's list, its rows shown as a tree, over
 //! a snapshot of the [`Project`], in the shell's sidebar column.
 
 use std::cell::RefCell;
@@ -190,10 +190,7 @@ impl FedExplorer {
             }
             self.view.update_model(|current| *current = model(rows));
         }
-        match shown.current {
-            Some(id) => self.view.selection_mut().select_only(id),
-            None => self.view.selection_mut().clear(),
-        }
+        self.view.select_only(shown.current);
         true
     }
 }

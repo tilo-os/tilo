@@ -3,7 +3,7 @@
     reason = "every test here keeps its fixture and guards alive through its assertions"
 )]
 use super::*;
-use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
+use crate::services::{ProcessServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
 use crate::test_support::WorkspaceId;
 use std::sync::Mutex;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
@@ -20,7 +20,7 @@ pub(super) fn at_effect_barrier() {
 }
 
 tilo_test_env::scenario! {
-    fn registered_services_and_library_recheck_after_custody;
+    fn registered_services_and_library_recheck_after_ownership;
 
     phase registered_services_recheck_original_certificate_after_signed_admission;
     {
@@ -29,7 +29,7 @@ tilo_test_env::scenario! {
             let governance = Arc::new(Governance::default());
             let keyboard = Arc::new(Keyboard::default());
             let library = Arc::new(Library::default());
-            let services = HostServices {
+            let services = ProcessServices {
                 workspace_governance: Some(governance.clone()),
                 keyboard_shortcuts: Some(keyboard.clone()),
                 shortcut_library: Some(library.clone()),
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase library_replans_after_custody_instead_of_applying_a_stale_delete;
+    phase library_replans_after_ownership_instead_of_applying_a_stale_delete;
     {
         let directory = tempfile::tempdir().unwrap();
         let (_, _, mut workspace, caller, mut request) = fixture(directory.path());
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
         let library = Arc::new(Library::default());
         let (state, _) = AppBrokerState::test_state(
             Some(tree.authority()),
-            HostServices {
+            ProcessServices {
                 shortcut_library: Some(library.clone()),
                 ..Default::default()
             },
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
                 tree.workspaces.push(workspace.clone());
                 let (state, _) = AppBrokerState::test_state(
                     Some(tree.shared().authority()),
-                    HostServices {
+                    ProcessServices {
                         keyboard_shortcuts: Some(keys.clone()),
                         shortcut_library: Some(library.clone()),
                         ..Default::default()
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn keyboard_rechecks_live_policy_and_execution_after_custody() {
+fn keyboard_rechecks_live_policy_and_execution_after_ownership() {
     for change in ["policy", "execution", "workspace"] {
         let directory = tempfile::tempdir().unwrap();
         let (_, _, workspace, caller, mut request) = fixture(directory.path());
@@ -231,7 +231,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
         let keyboard = Arc::new(Keyboard::default());
         let (state, _) = AppBrokerState::test_state(
             Some(tree.authority()),
-            HostServices {
+            ProcessServices {
                 keyboard_shortcuts: Some(keyboard.clone()),
                 ..Default::default()
             },
@@ -313,7 +313,7 @@ tilo_test_env::scenario! {
     phase lost_governance_answer_has_signed_uncertain_terminal;
     {
         use super::super::host_steps::signed_test_support::Fixture;
-        let f = Fixture::new_certified(HostServices {
+        let f = Fixture::new_certified(ProcessServices {
             workspace_governance: Some(Arc::new(LostGovernance)),
             ..Default::default()
         });
@@ -428,7 +428,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase registered_governance_does_not_upgrade_a_transport_label_into_custody;
+    phase registered_governance_does_not_upgrade_a_transport_label_into_ownership;
     {
         let root = tempfile::tempdir().unwrap();
         let (state, service, workspace, _, request) = fixture(root.path());
@@ -508,7 +508,7 @@ fn fixture(
     tree.workspaces.push(workspace.clone());
     let (state, _) = AppBrokerState::test_state(
         Some(tree.shared().authority()),
-        HostServices {
+        ProcessServices {
             workspace_governance: Some(service.clone()),
             ..Default::default()
         },

@@ -9,7 +9,7 @@ import {mountChat} from './mount-chat.mjs';
 const web = new URL('../../../../browser/tilo-browser-runtime/web/', import.meta.url);
 // A small runtime substitute supplies the typed Settings projection. Storage,
 // namespace selection and account discovery are the production browser modules;
-// device custody is stopped below before the fixture can connect to a relay.
+// device key is stopped below before the fixture can connect to a server.
 const host = `
 import {createInlineStorage} from '/storage-inline.mjs';
 const storage = createInlineStorage();
@@ -32,12 +32,12 @@ test('mounted fixture seeds both accounts in the entry page’s current namespac
       if (path === '/') return response.end('<!doctype html><div id="surface"></div>');
       response.setHeader('content-type', 'text/javascript');
       if (path === '/host.mjs') return response.end(host);
-      // Stop after real fixture seeding and selection, before connecting a relay.
-      if (path === '/device-custody.mjs') return response.end(`
-        export {idbStorage} from '/real-device-custody.mjs';
-        export async function openDeviceCustody() { throw Error('account-selection-verified'); }
+      // Stop after real fixture seeding and selection, before connecting a server.
+      if (path === '/device-key.mjs') return response.end(`
+        export {idbStorage, rememberBrowserDevice} from '/real-device-key.mjs';
+        export async function openDeviceKey() { throw Error('account-selection-verified'); }
       `);
-      const module = path === '/real-device-custody.mjs' ? 'device-custody.mjs' : path.slice(1);
+      const module = path === '/real-device-key.mjs' ? 'device-key.mjs' : path.slice(1);
       if (!/^[a-z0-9-]+\.mjs$/.test(module)) throw Error('invalid module path');
       response.end(await readFile(new URL(module, web)));
     } catch (error) {

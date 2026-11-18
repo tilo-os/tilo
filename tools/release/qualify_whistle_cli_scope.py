@@ -60,15 +60,15 @@ def admitted_scope():
     return cg
 
 
-def verified_runtime(root, ledger):
-    cli = next(row for row in ledger['runtime']['artifacts']
+def verified_runtime(root, log):
+    cli = next(row for row in log['runtime']['artifacts']
                if row['file'] == 'linux-x86_64/needle')
-    model = ledger['model']['artifact']
+    model = log['model']['artifact']
     files = {
         'needle': (cli['bytes'], cli['sha256']),
         'whistle.cact': (model['bytes'], model['sha256']),
-        'model-LICENSE': (11358, ledger['model']['license_sha256']),
-        'runtime-LICENSE': (11358, ledger['runtime']['license_sha256']),
+        'model-LICENSE': (11358, log['model']['license_sha256']),
+        'runtime-LICENSE': (11358, log['runtime']['license_sha256']),
     }
     for name, (size, sha) in files.items():
         path = root / name
@@ -114,8 +114,8 @@ def main():
         parser.error('unprivileged public review only')
     cg = admitted_scope()
     root = args.runtime_dir.resolve(strict=True)
-    ledger_path = PROJECT / 'docs/architecture/dictation-whistle-review.json'
-    receipts = verified_runtime(root, json.loads(ledger_path.read_text()))
+    log_path = PROJECT / 'docs/architecture/dictation-whistle-review.json'
+    receipts = verified_runtime(root, json.loads(log_path.read_text()))
     fixture, language, sha, pcm_sha, seconds = verified_fixture(args.manifest, args.case)
     events = lambda: dict((line.split()[0], int(line.split()[1]))
                           for line in (cg / 'memory.events').read_text().splitlines())
@@ -141,7 +141,7 @@ def main():
                   scope_events_after=after, scope_peak_bytes=int((cg / 'memory.peak').read_text()),
                   transport='offline CLI chunks; not source-paced microphone latency',
                   scope_script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                  ledger_sha256=hashlib.sha256(ledger_path.read_bytes()).hexdigest())
+                  log_sha256=hashlib.sha256(log_path.read_bytes()).hexdigest())
     print('WHISTLE_CLI_SCOPE_RESULT ' + json.dumps(result), flush=True)
     if result['exit'] or result['guarded'] or any(before[key] != after[key]
                                                 for key in ['high', 'max', 'oom', 'oom_kill']):

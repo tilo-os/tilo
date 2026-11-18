@@ -9,6 +9,13 @@
 # a staged update into the next boot, so a server follows its channel without
 # anyone logging in to it, and a generation that fails its own health check is
 # the boot loader's to take back, not this unit's.
+#
+# A paired server also waits its turn among its person's servers: the server
+# daemon restarts it only while it holds the update lease of the person's admin
+# workspace, after it handed its work to the other holders (`tilo-server-admin
+# rollout prepare`), and lets the lease go once this machine runs the update
+# and passed its health verdict (`rollout booted`). A generation the boot loader
+# took back keeps the lease, so the person's other servers never start it.
 set -uo pipefail
 
 log()  { printf 'tilo-server-update-apply: %s\n' "$*"; }
@@ -17,14 +24,19 @@ BOOTC="${TILO_SERVER_UPDATE_BOOTC:-/usr/bin/bootc}"
 FIELD="${TILO_SERVER_UPDATE_FIELD:-/usr/bin/tilo-image-trust}"
 WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
 HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
+ADMIN="${TILO_SERVER_UPDATE_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
+CERT="${TILO_SERVER_UPDATE_CERT:-/var/lib/tilo/device/cert.bin}"
+ROLLBACK="${TILO_SERVER_UPDATE_ROLLBACK:-/usr/libexec/tilo/tilo-rollback}"
+ROLLBACK_COMMON="${TILO_SERVER_UPDATE_ROLLBACK_COMMON:-/usr/libexec/tilo-rollback-common}"
+UPDATES="${TILO_SERVER_UPDATE_UPDATES:-/usr/libexec/tilo-update-channel}"
+FLOOR_AUTHORITY="${TILO_SERVER_UPDATE_FLOOR_AUTHORITY:-/usr/share/tilo/tpm2-pcr-signing.public.pem}"
+APPROVALS="${TILO_SERVER_UPDATE_APPROVALS:-/var/lib/tilo/rollback/approvals}"
 
-# No staged deployment: nothing to boot into.
-staged="$("$BOOTC" status --format json 2>/dev/null | "$FIELD" bootc-status-field staged-image 2>/dev/null)" \
-  || true
-if [ -z "$staged" ]; then
-  log 'no staged deployment; nothing to apply'
-  exit 0
-fi
+status="$("$BOOTC" status --format json 2>/dev/null)" || true
+field() { "$FIELD" bootc-status-field "$1" <<<"$status" 2>/dev/null || true; }
+staged="$(field staged-image)"
+paired=no
+[ -e "$CERT" ] && paired=yes
 
 # The running generation's verdict. A boot the boot loader counts keeps
 # tilo-boot-health, and only an active unit means the boot was judged good and
@@ -42,7 +54,52 @@ if [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-44
   exit 0
 fi
 
+# This boot is judged good: an update this server restarted into under the
+# lease is done, and the next server may take its turn.
+if [ "$paired" = yes ]; then
+  booted="$(field booted-digest)"
+  [ -z "$booted" ] || log "$("$ADMIN" rollout booted "$booted")"
+fi
+
+# Its rollback floor may move past older generations now, which takes an
+# approval signed by the person's floor key: the daemon asks the person's other
+# devices in their admin workspace, and keeps what they signed where
+# `tilo-rollback confirm` looks. A machine nobody answers keeps its floor and
+# unlocks as before (docs/security/rollback.md).
+if [ "$paired" = yes ] && [ -n "${booted:-}" ] && [ -x "$ROLLBACK" ] && [ -r "$ROLLBACK_COMMON" ]; then
+  # Read in a subshell: the helpers bring a log() of their own.
+  # shellcheck source=/dev/null
+  dev="$(. "$ROLLBACK_COMMON"; rollback_luks_device)"
+  # shellcheck source=/dev/null
+  generation="$(. "$ROLLBACK_COMMON"; rollback_running_generation)"
+  if [ -n "$dev" ] && [ -n "$generation" ]; then
+    request="$(mktemp)"
+    if "$ROLLBACK" floor-request --device "$dev" --out "$request" >/dev/null 2>&1; then
+      said="$("$ADMIN" rollout floor "$generation" "$booted" "$("$UPDATES" current)" \
+        --authority "$FLOOR_AUTHORITY" --request "$request" --approvals "$APPROVALS")"
+      code=$?
+      log "$said"
+      # Spend them now rather than at the next boot's confirmation.
+      [ "$code" -ne 0 ] || systemctl start --no-block tilo-rollback-confirm.service
+    fi
+    rm -f "$request"
+  fi
+fi
+
+# No staged deployment: nothing to boot into.
+if [ -z "$staged" ]; then
+  log 'no staged deployment; nothing to apply'
+  exit 0
+fi
+
 "$WINDOW" || exit 0
+
+if [ "$paired" = yes ]; then
+  said="$("$ADMIN" rollout prepare "$(field staged-digest)")"
+  code=$?
+  log "$said"
+  [ "$code" -eq 0 ] || exit 0
+fi
 
 log "booting into the staged $staged"
 systemctl reboot

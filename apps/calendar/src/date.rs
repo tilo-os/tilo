@@ -1,74 +1,64 @@
-//! Date arithmetic helpers built on `chrono`.
+//! Date arithmetic helpers.
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
+use jiff::civil::{Date, DateTime};
 
-pub fn month_grid(anchor: NaiveDate) -> Vec<NaiveDate> {
-    // Day 1 is valid in every month, so `with_day(1)` never actually
-    // returns `None` for a valid `anchor`; the fallback is unreachable.
-    let first = anchor.with_day(1).unwrap_or(anchor);
+pub fn month_grid(anchor: Date) -> Vec<Date> {
+    let first = anchor.first_of_month();
     let start = week_start(first);
-    (0..42).map(|i| start + Duration::days(i)).collect()
+    (0..42).map(|i| start + jiff::Span::new().days(i)).collect()
 }
 
-pub fn week_start(date: NaiveDate) -> NaiveDate {
+pub fn week_start(date: Date) -> Date {
     week_start_from(date, ui::format::first_weekday())
 }
 
-pub fn week_start_from(date: NaiveDate, first: chrono::Weekday) -> NaiveDate {
-    let into_week = (date.weekday().num_days_from_monday() + 7 - first.num_days_from_monday()) % 7;
-    date - Duration::days(i64::from(into_week))
+pub fn week_start_from(date: Date, first: jiff::civil::Weekday) -> Date {
+    let into_week = i64::from(date.weekday().since(first));
+    date - jiff::Span::new().days(into_week)
 }
 
-pub fn week_days(date: NaiveDate) -> Vec<NaiveDate> {
+pub fn week_days(date: Date) -> Vec<Date> {
     let s = week_start(date);
-    (0..7).map(|i| s + Duration::days(i)).collect()
+    (0..7).map(|i| s + jiff::Span::new().days(i)).collect()
 }
 
-pub fn days_in_month(y: i32, m: u32) -> u32 {
-    ui::date::days_in_month(i64::from(y), m)
+pub fn add_months(date: Date, delta: i32) -> Date {
+    // A day past the end of the target month lands on its last day; a shift
+    // past the range of dates keeps `date`.
+    date.checked_add(jiff::Span::new().months(delta))
+        .unwrap_or(date)
 }
 
-pub fn add_months(date: NaiveDate, delta: i32) -> NaiveDate {
-    let total = (date.year() * 12 + date.month() as i32 - 1) + delta;
-    let y = total.div_euclid(12);
-    let m = (total.rem_euclid(12) + 1) as u32;
-    let day = date.day().min(days_in_month(y, m));
-    // `y` can only fall outside chrono's representable range for an
-    // extreme `delta`; real callers only ever shift by a handful of
-    // months. Keep `date` unchanged rather than panic in that case.
-    NaiveDate::from_ymd_opt(y, m, day).unwrap_or(date)
-}
-
-pub fn month_title(anchor: NaiveDate) -> String {
+pub fn month_title(anchor: Date) -> String {
     ui::format::month_heading(anchor)
 }
 
-pub(crate) fn weekday_short(date: NaiveDate) -> String {
+pub(crate) fn weekday_short(date: Date) -> String {
     ui::format::weekday_short(date.weekday())
 }
 
-pub fn fmt_time(dt: &NaiveDateTime) -> String {
+pub fn fmt_time(dt: DateTime) -> String {
     ui::clock::time_of_day(dt)
 }
 
-pub fn fmt_day_long(date: NaiveDate) -> String {
+pub fn fmt_day_long(date: Date) -> String {
     ui::format::day_heading_short(date)
 }
 
-pub fn fmt_day_short(date: NaiveDate) -> String {
+pub fn fmt_day_short(date: Date) -> String {
     ui::format::month_day(date)
 }
 
-pub fn week_range_long(start: NaiveDate, end: NaiveDate) -> String {
+pub fn week_range_long(start: Date, end: Date) -> String {
     ui::format::range(&fmt_day_long(start), &fmt_day_long(end))
 }
 
-pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
+pub fn week_range_short(start: Date, end: Date) -> String {
     ui::format::day_range(start, end)
 }
 
-pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
-    let d = (due - today).num_days();
+pub fn relative_label(due: Date, today: Date) -> String {
+    let d = i64::from(due.since(today).map_or(0, |span| span.get_days()));
     if let Some(near) = ui::format::near_day(d) {
         return near;
     }
@@ -83,8 +73,8 @@ pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
 mod tests {
     use super::*;
 
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    fn d(y: i16, m: i8, day: i8) -> Date {
+        Date::new(y, m, day).unwrap()
     }
 
     tilo_test_env::scenario! {
@@ -96,7 +86,7 @@ mod tests {
             let g = month_grid(d(2026, 6, 15));
             assert_eq!(g.len(), 42);
             assert_eq!(g[0], d(2026, 6, 1));
-            assert_eq!(g[0].weekday(), chrono::Weekday::Mon);
+            assert_eq!(g[0].weekday(), jiff::civil::Weekday::Monday);
 
             let g = month_grid(d(2026, 7, 10));
             assert_eq!(g[0], d(2026, 6, 29));
@@ -115,17 +105,14 @@ mod tests {
             assert_eq!(w[6], d(2026, 6, 21));
 
             assert_eq!(
-                week_start_from(d(2026, 6, 17), chrono::Weekday::Sun),
+                week_start_from(d(2026, 6, 17), jiff::civil::Weekday::Sunday),
                 d(2026, 6, 14)
             );
             assert_eq!(
-                week_start_from(d(2026, 6, 14), chrono::Weekday::Sun),
+                week_start_from(d(2026, 6, 14), jiff::civil::Weekday::Sunday),
                 d(2026, 6, 14)
             );
 
-            assert_eq!(days_in_month(2024, 2), 29);
-            assert_eq!(days_in_month(2026, 2), 28);
-            assert_eq!(days_in_month(2026, 4), 30);
         }
     }
 }

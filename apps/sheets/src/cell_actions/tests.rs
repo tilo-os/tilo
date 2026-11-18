@@ -35,13 +35,9 @@ fn sheet(book: &Replica<Workbook>) -> Id {
 }
 
 fn snapshot(book: &Replica<Workbook>) -> SheetSnapshot {
-    book.state()
-        .unwrap()
-        .sheets
-        .values()
-        .next()
-        .unwrap()
-        .snapshot()
+    let state = book.state().unwrap();
+    let first = state.sheet_id(0).unwrap();
+    state.snapshot_of(first).unwrap()
 }
 
 fn read_back(book: &Replica<Workbook>, range: Option<&str>) -> serde_json::Value {
@@ -50,8 +46,12 @@ fn read_back(book: &Replica<Workbook>, range: Option<&str>) -> serde_json::Value
 
 fn write(book: &mut Replica<Workbook>, cells: Vec<CellWrite>) {
     let sheet = sheet(book);
-    book.apply(Workbook::WRITE_CELLS.with(verbs::WriteCells { sheet, cells }))
-        .unwrap();
+    book.apply(Workbook::WRITE_CELLS.with(verbs::WriteCells {
+        sheet,
+        cells,
+        seen: None,
+    }))
+    .unwrap();
 }
 
 fn format(
@@ -363,6 +363,7 @@ fn set_cells(book: &Replica<Workbook>, start: &str, rows: serde_json::Value) -> 
         sheet: sheet(book),
         start: start.into(),
         rows,
+        seen: None,
     })
 }
 
@@ -374,10 +375,12 @@ tilo_test_env::scenario! {
         let mut book = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);
         let invoke = set_cells(&book, "A4", json!([["Total", "=SUM(B2:B3)"]]));
         let set = answer(&mut book, "set-cells", invoke);
+        let seen = book.state().unwrap().seen();
         assert_eq!(
             set,
             json!({"sheet": "Data", "item": sheet(&book).as_str(), "range": "A4:B4",
-                "rows": [["Total", 210.0]], "formulas": {"B4": "=SUM(B2:B3)"}, "bold": []})
+                "rows": [["Total", 210.0]], "formulas": {"B4": "=SUM(B2:B3)"}, "bold": [],
+                "seen": seen})
         );
         let invoke = Workbook::FORMAT_CELLS.with(verbs::FormatCells {
             sheet: sheet(&book),
@@ -462,8 +465,7 @@ tilo_test_env::scenario! {
             (
                 Workbook::WRITE_CELLS.with(verbs::WriteCells {
                     sheet: sheet.clone(),
-                    cells: vec![cell("nowhere", "x")],
-                }),
+                    cells: vec![cell("nowhere", "x")], seen: None, }),
                 "not a cell",
             ),
             (

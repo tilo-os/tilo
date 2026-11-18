@@ -11,7 +11,7 @@ use std::{thread, time::Duration};
 use zeroize::Zeroizing;
 
 /// The authenticated read helper keeps observing peer and cancel retirement while its worker
-/// retains raw, media and source custody through final cleanup.
+/// retains raw, media and source ownership through final cleanup.
 pub fn complete_pending_boot(
     target: &TargetDrive,
     raw: &File,

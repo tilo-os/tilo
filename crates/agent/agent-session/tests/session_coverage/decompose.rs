@@ -10,10 +10,10 @@
 use std::time::Duration;
 
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::agents::TaskState;
+use tilo_server_protocol::agents::TaskState;
 
 use super::{
-    CHAT, RelayWorkspace, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
+    CHAT, SHEETS, ServerWorkspace, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
     message_text, offered, offered_on, plan_call, post_in_chat, posts, wait_for,
 };
 use crate::common::pdf;
@@ -73,8 +73,8 @@ async fn coordinated(
     sent: &std::sync::mpsc::Receiver<String>,
     apps: &[&str],
     request: &str,
-) -> (RelayWorkspace, DocumentRoute, String, String) {
-    let mut workspace = Box::pin(RelayWorkspace::granting(url, apps)).await;
+) -> (ServerWorkspace, DocumentRoute, String, String) {
+    let mut workspace = Box::pin(ServerWorkspace::granting(url, apps)).await;
     workspace.ana.0.decompose(true);
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     let task = workspace.ana.1.message(request).unwrap();
@@ -578,7 +578,7 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
 /// say "cannot" twice (the second time after being asked to try): what the
 /// coordinator's failure turn is told.
 async fn item_1_fails(
-    workspace: &mut RelayWorkspace,
+    workspace: &mut ServerWorkspace,
     sent: &std::sync::mpsc::Receiver<String>,
     answer: &std::sync::mpsc::Sender<serde_json::Value>,
 ) -> String {
@@ -963,7 +963,7 @@ async fn an_item_s_agent_imports_a_pdf_the_workspace_keeps_and_reads_it() {
         .put(&pdf(&["Payslip September net pay 2140.55"]))
         .unwrap();
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::granting_with(
+    let mut workspace = Box::pin(ServerWorkspace::granting_with(
         &url,
         &[CHAT, WRITER, PDF],
         content,
@@ -1040,7 +1040,7 @@ async fn an_item_s_agent_imports_a_pdf_the_workspace_keeps_and_reads_it() {
 /// with nothing more to do if it is first asked to check what its steps
 /// wrote.
 async fn past_check(
-    workspace: &mut RelayWorkspace,
+    workspace: &mut ServerWorkspace,
     sent: &std::sync::mpsc::Receiver<String>,
     answer: &std::sync::mpsc::Sender<serde_json::Value>,
     what: &str,
@@ -1082,7 +1082,7 @@ async fn a_coordinated_task_plans_its_items_with_the_item_model() {
     };
     let planner = tilo_agent_session::ModelPlanner::new(endpoint(&own_url, "canned-coordinator"))
         .with_item_model(endpoint(&item_url, "canned-items"));
-    let mut workspace = Box::pin(RelayWorkspace::planned_by(
+    let mut workspace = Box::pin(ServerWorkspace::planned_by(
         Box::new(planner),
         &[CHAT],
         tilo_content::ContentStore::memory(),

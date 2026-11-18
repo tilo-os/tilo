@@ -19,7 +19,7 @@ pub use collaboration::history_source::authors::{
 /// row with the struck-through summary, suppresses the `[Revert]` chip,
 /// and exposes the redactor + reason on hover.
 ///
-/// Source: the broker's `RedactionRecord` (`crates/session/session/src/plane.rs`).
+/// Source: the broker's `RedactionRecord` (`crates/session/session/src/app_wire.rs`).
 /// The producer projects the redactor's identity to a short display
 /// string; the widget never sees the ciphertext or pubkey.
 #[derive(Clone, Debug, PartialEq)]
@@ -528,7 +528,7 @@ mod tests {
             }
 
             fn redacted_entry_is_non_revertible_regardless_of_entry_kind() {
-                // The widget gates the [Revert] chip on `EntryKind::is_revertible`
+                // The widget checks the [Revert] chip on `EntryKind::is_revertible`
                 // AND `entry.redaction.is_none()`; a Splice that has since been
                 // redacted MUST NOT show the chip.
                 let mut e = entry(EntryKind::Text, "Alice", 0);

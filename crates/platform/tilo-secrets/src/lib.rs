@@ -183,7 +183,7 @@ impl SecretStore {
         }
     }
 
-    /// Start an immutable write, returning its key only after durable custody. `None` means
+    /// Start an immutable write, returning its key only after durable ownership. `None` means
     /// pending: retry the same namespace and bytes on a later turn.
     pub fn seal_blocking(
         &self,
@@ -200,7 +200,7 @@ impl SecretStore {
         Ok(Some(key.to_owned()))
     }
 
-    /// Whether page custody has asynchronous operations awaiting a retry; native and
+    /// Whether page ownership has asynchronous operations awaiting a retry; native and
     /// host-injected synchronous stores never stage operations here.
     pub fn pending() -> bool {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

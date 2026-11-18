@@ -1,4 +1,4 @@
-//! `Place`: a resource's view standing on a canvas as content, not in a window (canvas.md §2).
+//! `Place`: a resource's view on a canvas as content, not in a window (canvas.md §2).
 //!
 //! A place is its view on the window surface's own ground — rounded, with the surface's soft
 //! edge and shadow — and nothing else: no title bar, no border of a window. Its handle (what it
@@ -30,7 +30,7 @@ use crate::widget::{
     Spacer, Text, Widget,
 };
 
-/// A resource's view standing on a canvas: the view on the window surface, with a handle shown
+/// A resource's view on a canvas: the view on the window surface, with a handle shown
 /// over its corner on hover and focus that names it, holds its controls and moves it.
 #[derive(Component, Default)]
 #[component(name = "Place", role = "Group", label = "name")]
@@ -215,6 +215,13 @@ impl Decorator for PlaceGround {
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                 .with_optional_name(self.name.clone()),
         )
+    }
+
+    /// Its view, on the window surface it is painted on.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.column.html(cx);
+        let theme = cx.theme();
+        SurfaceLevel::Window.compose(theme, self.column.get_rect(), cx.node());
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {

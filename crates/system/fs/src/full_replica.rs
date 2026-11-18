@@ -43,9 +43,9 @@ pub struct HomePeerBundle {
     pub members: Vec<String>,
     /// Shell and relay workspace shards backed by this filesystem workspace: a
     /// desktop may attach one tree to several collaboration workspaces, so this
-    /// mapping is authoritative for relay binding.
+    /// mapping is authoritative for server binding.
     #[serde(default)]
-    pub relay_workspace_ids: Vec<collab_types::WorkspaceId>,
+    pub server_workspace_ids: Vec<collab_types::WorkspaceId>,
 }
 
 /// The one configuration file installed on a home peer: Tilo has one global Files
@@ -473,7 +473,7 @@ mod tests {
             );
         }
 
-        phase replica_topology_and_relay_ids_are_validated;
+        phase replica_topology_and_server_ids_are_validated;
         {
             {
                 let mut ready = FullReplicaStatus::syncing();
@@ -505,7 +505,7 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     members: Vec::new(),
-                    relay_workspace_ids: vec![
+                    server_workspace_ids: vec![
                         collab_types::WorkspaceId::from_u128(7),
                         collab_types::WorkspaceId::from_u128(8),
                     ],
@@ -531,13 +531,13 @@ mod tests {
                         capability_json: "[]".into(),
                         authority: None,
                         members: Vec::new(),
-                        relay_workspace_ids: vec![high],
+                        server_workspace_ids: vec![high],
                     }],
                 };
                 let text = toml::to_string(&bundle).unwrap();
-                assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
+                assert!(text.contains(&format!("server_workspace_ids = [\"{high}\"]")));
                 assert_eq!(
-                    toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
+                    toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].server_workspace_ids,
                     vec![high]
                 );
             }
@@ -611,7 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn ready_endpoint_serves_blob_after_owner_is_offline() {
-        let owner_endpoint = test_relay::direct_endpoint().await;
+        let owner_endpoint = test_server::direct_endpoint().await;
         let owner_store = ContentStore::memory();
         let bytes = b"home peer survives owner shutdown";
         let hash = owner_store.write_content(bytes).await.unwrap().unwrap();
@@ -644,7 +644,7 @@ mod tests {
         owner_router.shutdown().await.unwrap();
         owner_endpoint.close().await;
 
-        let reader_endpoint = test_relay::direct_endpoint().await;
+        let reader_endpoint = test_server::direct_endpoint().await;
         let reader_store = Arc::new(ContentStore::memory());
         let reader = Hydrator::new(reader_endpoint.clone(), reader_store);
         reader.add_peer(discovered.filesystem_endpoints[0].clone());
@@ -657,7 +657,7 @@ mod tests {
     }
 
     async fn owner_manifest_source(bytes: &[u8]) -> (Endpoint, Router, Hash, Hash) {
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         let store = ContentStore::memory();
         let chunk = store.ingest(bytes.to_vec()).await.unwrap();
         let manifest = store
@@ -768,7 +768,7 @@ mod tests {
             .spawn();
         owner_router.shutdown().await.unwrap();
         owner_endpoint.close().await;
-        let reader_endpoint = test_relay::direct_endpoint().await;
+        let reader_endpoint = test_server::direct_endpoint().await;
         let reader = Hydrator::new(reader_endpoint.clone(), Arc::new(ContentStore::memory()));
         assert_eq!(
             reader
@@ -820,7 +820,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn batched_gc_yields_for_namespace_mutations() {
-        let endpoint = test_relay::direct_endpoint().await;
+        let endpoint = test_server::direct_endpoint().await;
         let store = Arc::new(ContentStore::memory());
         for index in 0..MAX_GC_BATCH_BLOBS {
             store.ingest(format!("obsolete-{index}")).await.unwrap();

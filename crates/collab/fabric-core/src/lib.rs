@@ -1,5 +1,5 @@
 //! Who a device is ([`DeviceId`]), the revision a fact carries ([`FabricStamp`]) and the fresh ids
-//! that name one exchange: pure wire types, read alike by the desktop's peer lane and by a page.
+//! that name one exchange: pure wire types, read alike by the desktop's peer connection and by a page.
 
 use getrandom::SysRng;
 use getrandom::rand_core::{Rng as _, UnwrapErr};

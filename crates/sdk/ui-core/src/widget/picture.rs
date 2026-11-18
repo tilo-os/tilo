@@ -533,12 +533,12 @@ fn paint_scroll_direction(
         None,
         &crate::surface::edge_outline(window, radius),
     );
-    let lane = window.x1 - unit * 1.6;
+    let edge_x = window.x1 - unit * 1.6;
     paint_motion(
         scene,
         transform,
-        Point::new(lane, block.center().y),
-        Point::new(lane, block.center().y + shift * 1.3),
+        Point::new(edge_x, block.center().y),
+        Point::new(edge_x, block.center().y + shift * 1.3),
         stroke,
         theme,
     );

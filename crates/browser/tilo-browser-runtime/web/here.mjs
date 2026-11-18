@@ -32,7 +32,7 @@ export function createHere({runtime, mountId, active, layer, peer, photos = null
   let timer;
   let saidNote = null; // the live note last logged, so a change is said once
 
-  /** Why this page shows no live presence (a plane that could not be
+  /** Why this page shows no live presence (a live session that could not be
    * reached), said once here as it changes: a
    * page that retries quietly reads as an empty workspace. The page itself
    * shows it in the members' place. */

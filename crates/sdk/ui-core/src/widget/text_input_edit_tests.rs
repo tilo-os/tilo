@@ -636,8 +636,8 @@ tilo_test_env::scenario! {
 #[test]
 fn a_secret_never_reaches_the_clipboard() {
     let _settled = crate::motion::testing::settled();
-    let services = crate::host::HostServices::null();
-    let _host = crate::host::enter(&services);
+    let services = crate::process::ProcessServices::null();
+    let _host = crate::process::enter(&services);
     let clipboard = || crate::text_selection::clipboard_paste();
 
     for revealed in [false, true] {

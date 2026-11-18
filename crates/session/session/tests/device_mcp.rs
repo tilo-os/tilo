@@ -33,12 +33,12 @@ use serde_json::{Value, json};
 use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_mcp::devices::{ALPN, NotOpened, agent_id, open};
+use tilo_mcp::devices::{ALPN, NotOpened, open};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
@@ -53,8 +53,8 @@ const RUN: &str = "visa-run-1";
 const RUN_TITLE: &str = "Visa agent";
 /// A later run of the same agent, which the person takes back.
 const LATER_RUN: &str = "visa-run-2";
-/// What the shell calls the first connection of the agent its device runs.
-const SHOWN: &str = "Claude Code #1";
+/// What the shell calls the agent its device runs: the workspace's name for its member.
+const SHOWN: &str = "Claude Code";
 
 /// A device key `n` certified by `root` , called `label` .
 fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
@@ -161,7 +161,7 @@ impl ThisBox {
         let session = crate::common::headless(Options {
             questions: Some(questions.clone()),
             collab: false,
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            app_socket: AppSocket::At(root.path().join("app_wire.sock")),
             mcp_server: Some(socket.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this
@@ -412,10 +412,10 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     b.pump(|b| b.questions.pending().len() == 1);
     let (who, what) = b.asked();
     assert_eq!(who, "Claude Code, from your device Studio laptop");
-    // Each connection the person admits is an agent of its own: the device's agent, first of it.
-    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
+    // Every connection of the client is the workspace's one agent member for it, named as the
+    // workspace names that member.
     // The shell keeps no name for a workspace nobody named: the question says the word for one.
-    assert_eq!(what, format!("Work in “Workspace” as the agent {named}"));
+    assert_eq!(what, "Work in “Workspace” as the agent Claude Code");
 
     // Nobody is at this box: nothing is answered, and nothing is admitted.
     b.idle(200);
@@ -592,13 +592,13 @@ impl ThisComputer {
         let state = tempfile::tempdir().expect("a state directory");
         home.env()
             .set("TILO_IDENTITY_ROOT", &system)
-            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let paths = IdentityPaths::under(&system);
         let identity_dir = home.config().join("tilo/identity");
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &identity_dir,
             &paths,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("this computer has an identity of its own");
         let key = persist::load_device_key(&paths).expect("this device's key");
@@ -657,7 +657,7 @@ fn workspace_held_here(
         owner
             .receive(
                 id,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 SystemTime::now(),
             )
@@ -727,7 +727,7 @@ fn run_of_retitle(session: &mut Session, book: &str, title: &str) -> (String, St
             .unwrap_or_else(|| panic!("the retitle to {title} is a run's step: {step}"))
             .to_owned()
     };
-    (named("group"), named("title"))
+    (named("title"), named("group"))
 }
 
 /// A grant for an agent the person's root certified: reaching all their workspaces, ending in an
@@ -867,7 +867,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         collab: true,
         state: Some(computer.state.path().to_path_buf()),
         questions: Some(questions.clone()),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         services: vec![Box::new(notebook)],
         ..Options::default()
@@ -1085,7 +1085,7 @@ impl ShellWithNotes {
         let person = hex::encode(computer.cert.user_public_key);
         let root = private_home();
         let questions = Questions::new();
-        let plane = root.path().join("plane.sock");
+        let app_wire = root.path().join("app_wire.sock");
         let socket = root.path().join("agent.sock");
         // Notes speaks from this test's own process, so the launch the session would have recorded
         // for it names that process.
@@ -1096,7 +1096,7 @@ impl ShellWithNotes {
             collab: true,
             state: Some(computer.state.path().to_path_buf()),
             questions: Some(questions.clone()),
-            action_plane: ActionPlane::At(plane.clone()),
+            app_socket: AppSocket::At(app_wire.clone()),
             mcp_server: Some(socket.clone()),
             launches,
             // The person's settings, as the session serves them: what they set this computer's
@@ -1121,7 +1121,9 @@ impl ShellWithNotes {
                 computer.key.clone(),
                 computer.cert.clone(),
             );
-            std::thread::spawn(move || notes(&plane, &workspace, (&key, &cert), &published, &took));
+            std::thread::spawn(move || {
+                notes(&app_wire, &workspace, (&key, &cert), &published, &took);
+            });
         }
         crate::common::wait_for(&mut session, "Notes publishes its notebook", |_| {
             ready.try_recv().ok()
@@ -1226,7 +1228,7 @@ fn a_step_of(taken: &runtime_collab::Invocation, session: &str) -> bool {
 /// one action that reaches outside it (`open`), say so on `published`, then take each invocation
 /// the session hands it and hand it on to `took`.
 fn notes(
-    plane: &std::path::Path,
+    app_wire: &std::path::Path,
     workspace: &str,
     (key, cert): (&SigningKey, &DeviceCert),
     published: &mpsc::Sender<()>,
@@ -1238,7 +1240,7 @@ fn notes(
         .build()
         .expect("a runtime for the app");
     runtime.block_on(async {
-        let mut stream = UnixStream::connect(plane).expect("the plane's socket");
+        let mut stream = UnixStream::connect(app_wire).expect("the app wire's socket");
         launcher::services::write_collab_handoff(&mut stream, NOTES_APP, workspace)
             .expect("the launcher names the app on the connection");
         stream

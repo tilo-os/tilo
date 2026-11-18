@@ -1,0 +1,478 @@
+//! What a chain needs of its parts' resource, as one table of functions per
+//! resource: the only code a chain compiles for each part type. The parts'
+//! states, the app's resource and the actions reach these functions as `dyn
+//! Any`, and each reads them back as the resource's own types.
+
+use std::any::Any;
+use std::rc::Rc;
+
+use std::collections::HashSet;
+
+use tilo_actions::{ActionError, ActionInvoker, ActionNeed, EncodedAction};
+use tilo_resource::{Reader, Resource};
+use ui_core::automerge::AutoCommit;
+use ui_core::resource::{DocumentId, ResourceStore};
+
+use super::super::history::PartEdit;
+use super::super::live::Live;
+use super::Chained;
+use super::listing::Filter;
+
+/// The parts a typed function reads: `Vec<(u64, Rc<P::State>)>`, oldest first.
+pub(super) type TypedParts = Box<dyn Any>;
+
+/// A part's state, read as its resource's `State`.
+type State = Rc<dyn Any>;
+
+/// An action of the parts' resource.
+type Action = Box<dyn Any>;
+
+/// Where an action happens, and the part it changes.
+type Route = (Option<String>, Result<u64, String>);
+
+type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
+type Prepare = fn(&dyn Any, &dyn Any, &dyn Any, &ActionInvoker) -> Result<Action, String>;
+type RouteOf = fn(&dyn Any, &dyn Any, &dyn Any) -> Route;
+type Written =
+    for<'a> fn(&'a dyn Any) -> Result<(&'a dyn tilo_actions::Action, EncodedAction), ActionError>;
+type Group = fn(Vec<Action>) -> Result<(Box<dyn tilo_actions::Action>, EncodedAction), ActionError>;
+type Carry = fn(u64, &dyn Any) -> Option<Result<Action, String>>;
+
+type Answer = fn(&AutoCommit, &str, &[ui_core::automerge::Patch]) -> Option<serde_json::Value>;
+type Spread = fn(&dyn Any, u64, &dyn Any) -> Vec<(u64, Action)>;
+type Shares = Result<Option<Vec<(u64, Action)>>, String>;
+type Content = fn(&dyn Any, &AutoCommit, Option<&str>) -> Result<serde_json::Value, String>;
+
+/// An action as it was invoked or read back: one of the parts' resource, or
+/// several invoked as one.
+pub(super) enum Decoded {
+    One(Action),
+    Group(Vec<Action>),
+}
+
+/// What [`super::ChainCore`] and [`super::ChainState`] need of the parts'
+/// resource.
+pub(super) struct PartType {
+    pub(super) kind: &'static str,
+    pub(super) label: &'static str,
+    pub(super) held_whole: bool,
+    /// The fields a row of the listing carries when its caller names none.
+    pub(super) listed: &'static [&'static str],
+    pub(super) table: Option<&'static tilo_resource::table::ModelTable>,
+    pub(super) initialize: fn(&mut AutoCommit) -> Result<(), String>,
+    /// Read the part a document holds, brought up to the resource's storage
+    /// version first.
+    pub(super) read: ReadPart,
+    /// The state `doc` holds, read as a part.
+    pub(super) state: fn(&AutoCommit) -> Option<State>,
+    /// View state of the parts held: a `LocalState<Parts<P>>`.
+    pub(super) new_view: fn() -> Box<dyn Any>,
+    /// Set what [`Self::new_view`] made to the parts [`Self::typed`] read.
+    pub(super) set_view: fn(&dyn Any, TypedParts),
+    pub(super) typed: fn(&[(u64, State)]) -> TypedParts,
+    /// A copy of `action` read against the app's resource and the parts held
+    /// ([`Chained::prepare`]).
+    pub(super) prepare: Prepare,
+    /// Where in the app's resource a prepared action happens
+    /// ([`Chained::place`]), and the part it changes ([`Chained::part_for`]).
+    pub(super) route: RouteOf,
+    /// What an action is for the grants deciding it.
+    pub(super) need: fn(&dyn Any) -> Option<ActionNeed>,
+    pub(super) verb: fn(&dyn Any) -> Option<String>,
+    /// Whether an action is a step someone takes, which Undo may take back.
+    pub(super) is_step: fn(&dyn Any) -> bool,
+    /// Whether the verb is declared to answer nothing.
+    pub(super) answers_nothing: fn(&str) -> bool,
+    /// What a verb written into a document answers its caller with
+    /// ([`tilo_resource::Resource::answer`]).
+    pub(super) answer: Answer,
+    /// The share of an action each part carries out ([`Chained::split`]).
+    pub(super) split: fn(&dyn Any, &dyn Any) -> Shares,
+    /// Further actions an action written into a part means for other parts
+    /// ([`Chained::spread`]).
+    pub(super) spread: Spread,
+    /// The items the chain does not show ([`Chained::hidden`]).
+    pub(super) hidden: fn(&dyn Any) -> HashSet<String>,
+    /// What a read of an item answers, from a part's state and document.
+    pub(super) content: Content,
+    /// The same, from a past version of a part's document.
+    pub(super) content_at: fn(&AutoCommit, Option<&str>) -> Result<serde_json::Value, String>,
+    /// An action as it is applied and recorded.
+    pub(super) written: Written,
+    /// Prepared actions applied as one, as it is applied and recorded.
+    pub(super) group: Group,
+    /// What a part started after the part numbered first, whose state is
+    /// second, carries of it ([`Chained::carry`]).
+    pub(super) carry: Carry,
+    /// An action the API delivered; refused when the app alone invokes it.
+    pub(super) decode: fn(&EncodedAction) -> Result<Decoded, String>,
+    /// An action as the list of waiting actions keeps it, and back.
+    pub(super) from_json: fn(serde_json::Value) -> Result<Action, serde_json::Error>,
+    pub(super) to_json: fn(&dyn Any) -> Result<Vec<u8>, ActionError>,
+    pub(super) clone: fn(&dyn Any) -> Action,
+    /// A history verb on a part, as the part's history applies it.
+    pub(super) history: fn(&PartEdit) -> Box<dyn tilo_actions::Action>,
+    /// What a part's state publishes, under the chain's address.
+    pub(super) publish: fn(&str, &dyn Any) -> tilo_actions::ResourceSpec,
+    /// [`Chained::places`] published, from the app's resource and the parts.
+    pub(super) places: fn(&dyn Any, &dyn Any) -> Vec<tilo_actions::ResourceSpec>,
+    pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
+    pub(super) search_over: fn(&dyn Any, &dyn Any) -> Vec<tilo_resource::SearchEntry>,
+    pub(super) prepare_read: fn(&mut Filter, &dyn Any, &dyn Any) -> Result<(), String>,
+}
+
+/// The table of `P`, one for the whole program.
+pub(super) struct Of<P>(std::marker::PhantomData<P>);
+
+impl<P: Chained> Of<P> {
+    pub(super) const PART: PartType = PartType {
+        kind: P::KIND,
+        label: P::LABEL,
+        held_whole: P::HELD_WHOLE,
+        listed: P::LISTED,
+        table: P::RESOURCE_TABLE,
+        initialize: initialize::<P>,
+        read: read_part::<P>,
+        state: state::<P>,
+        new_view: new_view::<P>,
+        set_view: set_view::<P>,
+        typed: typed::<P>,
+        prepare: prepare::<P>,
+        route: route::<P>,
+        need: need::<P>,
+        verb: verb::<P>,
+        is_step: is_step::<P>,
+        answers_nothing: answers_nothing::<P>,
+        answer: P::answer,
+        split: split::<P>,
+        spread: spread::<P>,
+        hidden: hidden::<P>,
+        content: content::<P>,
+        content_at: content_at::<P>,
+        written: written::<P>,
+        group: group::<P>,
+        carry: carry::<P>,
+        decode: decode::<P>,
+        from_json: from_json::<P>,
+        to_json: to_json::<P>,
+        clone: clone::<P>,
+        history: history::<P>,
+        publish: publish::<P>,
+        places: places::<P>,
+        search: search::<P>,
+        search_over: search_over::<P>,
+        prepare_read: prepare_read::<P>,
+    };
+}
+
+/// A part held, followed as its document changes.
+pub(super) trait HeldPart {
+    fn sync(&self, doc: &tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>;
+    fn take_change(&self);
+    fn state(&self) -> Rc<dyn Any>;
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<R: Resource> HeldPart for Live<R> {
+    fn sync(&self, doc: &tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError> {
+        Live::sync(self, doc)
+    }
+
+    fn take_change(&self) {
+        let _ = Live::take_change(self);
+    }
+
+    fn state(&self) -> Rc<dyn Any> {
+        self.get()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// `part` as a part of a chain of `P`.
+pub(super) fn live_of<P: Chained>(part: &dyn HeldPart) -> Option<&Live<P>> {
+    part.as_any().downcast_ref::<Live<P>>()
+}
+
+/// Why a value handed to a part type's function is not of that type: a
+/// chain's state mixed up with another's.
+fn mismatch<P: Chained>() -> String {
+    format!("not of a chain of {}", P::LABEL)
+}
+
+fn action_of<P: Chained>(action: &dyn Any) -> Result<&P::Action, String> {
+    action.downcast_ref().ok_or_else(mismatch::<P>)
+}
+
+fn base_of<P: Chained>(base: &dyn Any) -> Result<&<P::Base as Resource>::State, String> {
+    base.downcast_ref().ok_or_else(mismatch::<P>)
+}
+
+fn parts_of<P: Chained>(parts: &dyn Any) -> &[(u64, Rc<P::State>)] {
+    parts
+        .downcast_ref::<Vec<(u64, Rc<P::State>)>>()
+        .map_or(&[], Vec::as_slice)
+}
+
+fn initialize<P: Chained>(doc: &mut AutoCommit) -> Result<(), String> {
+    P::initialize(doc).map_err(|error| error.to_string())
+}
+
+/// Part `part` of a chain of `P`, read from `store`. An older part is
+/// brought up to the part's storage version before it is read, as the
+/// app's resource is when it opens: once, as the same housekeeping change on
+/// every device.
+fn read_part<P: Chained>(
+    store: &ResourceStore,
+    part: &DocumentId,
+) -> Result<Box<dyn HeldPart>, String> {
+    let older = store
+        .read(part, tilo_resource::evolution::needs_migrate::<P>)
+        .ok_or("the part is not open here")?;
+    if older {
+        // Not while a frame reads the store: the part is held at the
+        // next refresh, as a part this device asked for is.
+        if !store.takes_writes() {
+            return Err("the part is migrated once the store takes writes".into());
+        }
+        store.migrate(part, |doc| {
+            tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+        })?;
+    }
+    let reader = store
+        .read(part, Reader::<P>::read)
+        .ok_or("the part is not open here")?
+        .map_err(|error| error.to_string())?;
+    Ok(Box::new(Live::new(reader)))
+}
+
+fn state<P: Chained>(doc: &AutoCommit) -> Option<Rc<dyn Any>> {
+    match Reader::<P>::read(doc) {
+        Ok(reader) => Some(Rc::clone(reader.state()) as Rc<dyn Any>),
+        Err(error) => {
+            tracing::warn!(kind = P::KIND, %error, "chain part unreadable");
+            None
+        }
+    }
+}
+
+fn new_view<P: Chained>() -> Box<dyn Any> {
+    Box::new(ui_core::LocalState::<super::Parts<P>>::new(Rc::default()))
+}
+
+fn set_view<P: Chained>(view: &dyn Any, parts: TypedParts) {
+    if let (Some(view), Ok(parts)) = (
+        view.downcast_ref::<ui_core::LocalState<super::Parts<P>>>(),
+        parts.downcast::<Vec<(u64, Rc<P::State>)>>(),
+    ) {
+        view.set((*parts).into());
+    }
+}
+
+fn typed<P: Chained>(parts: &[(u64, Rc<dyn Any>)]) -> TypedParts {
+    let parts: Vec<(u64, Rc<P::State>)> = parts
+        .iter()
+        .filter_map(|(index, state)| Some((*index, Rc::clone(state).downcast().ok()?)))
+        .collect();
+    Box::new(parts)
+}
+
+fn prepare<P: Chained>(
+    action: &dyn Any,
+    base: &dyn Any,
+    parts: &dyn Any,
+    invoker: &ActionInvoker,
+) -> Result<Box<dyn Any>, String> {
+    let mut action = action_of::<P>(action)?.clone();
+    P::prepare(
+        &mut action,
+        base_of::<P>(base)?,
+        parts_of::<P>(parts),
+        invoker,
+    )?;
+    Ok(Box::new(action))
+}
+
+fn route<P: Chained>(
+    action: &dyn Any,
+    base: &dyn Any,
+    parts: &dyn Any,
+) -> (Option<String>, Result<u64, String>) {
+    let action = match action_of::<P>(action) {
+        Ok(action) => action,
+        Err(error) => return (None, Err(error)),
+    };
+    let place = base_of::<P>(base)
+        .ok()
+        .and_then(|base| P::place(action, base));
+    (place, P::part_for(action, parts_of::<P>(parts)))
+}
+
+fn need<P: Chained>(action: &dyn Any) -> Option<ActionNeed> {
+    Some(tilo_resource::need_of::<P>(action.downcast_ref()?))
+}
+
+fn verb<P: Chained>(action: &dyn Any) -> Option<String> {
+    super::super::workspace::verb_of::<P>(action.downcast_ref()?)
+}
+
+fn is_step<P: Chained>(action: &dyn Any) -> bool {
+    action
+        .downcast_ref::<P::Action>()
+        .is_some_and(|action| tilo_actions::Action::change_kind(action).is_step())
+}
+
+fn answers_nothing<P: Chained>(verb: &str) -> bool {
+    P::declarations()
+        .iter()
+        .any(|decl| decl.id == verb && decl.result.is_none())
+}
+
+fn split<P: Chained>(action: &dyn Any, parts: &dyn Any) -> Shares {
+    let shares = P::split(action_of::<P>(action)?, parts_of::<P>(parts))?;
+    Ok(shares.map(|shares| {
+        shares
+            .into_iter()
+            .map(|(index, share)| (index, Box::new(share) as Action))
+            .collect()
+    }))
+}
+
+fn spread<P: Chained>(action: &dyn Any, index: u64, parts: &dyn Any) -> Vec<(u64, Action)> {
+    let Ok(action) = action_of::<P>(action) else {
+        return Vec::new();
+    };
+    P::spread(action, index, parts_of::<P>(parts))
+        .into_iter()
+        .map(|(part, further)| (part, Box::new(further) as Action))
+        .collect()
+}
+
+fn hidden<P: Chained>(parts: &dyn Any) -> HashSet<String> {
+    P::hidden(parts_of::<P>(parts))
+}
+
+fn content<P: Chained>(
+    state: &dyn Any,
+    doc: &AutoCommit,
+    item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let state = state.downcast_ref().ok_or_else(mismatch::<P>)?;
+    tilo_resource::read::content::<P>(state, doc, item)
+}
+
+fn content_at<P: Chained>(
+    doc: &AutoCommit,
+    item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let past = P::read(doc).map_err(|error| error.to_string())?;
+    tilo_resource::read::content::<P>(&past, doc, item)
+}
+
+fn written<P: Chained>(
+    action: &dyn Any,
+) -> Result<(&dyn tilo_actions::Action, EncodedAction), ActionError> {
+    let action = action_of::<P>(action).map_err(ActionError::Refused)?;
+    Ok((action, tilo_resource::encode::<P>(action)?))
+}
+
+fn group<P: Chained>(
+    actions: Vec<Box<dyn Any>>,
+) -> Result<(Box<dyn tilo_actions::Action>, EncodedAction), ActionError> {
+    let actions = actions
+        .into_iter()
+        .map(|action| action.downcast::<P::Action>().map(|action| *action))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ActionError::Refused(mismatch::<P>()))?;
+    let group = tilo_resource::group::ActionGroup { actions };
+    let encoded = EncodedAction::encode(tilo_resource::group::group_type::<P>(), &group)?;
+    Ok((Box::new(group), encoded))
+}
+
+fn carry<P: Chained>(previous: u64, part: &dyn Any) -> Option<Result<Box<dyn Any>, String>> {
+    let carried = P::carry(previous, part.downcast_ref()?)?;
+    Some(
+        carried
+            .build(tilo_resource::origin_now_ms())
+            .map(|action| Box::new(action) as Box<dyn Any>),
+    )
+}
+
+fn decode<P: Chained>(action: &EncodedAction) -> Result<Decoded, String> {
+    if action.type_id == tilo_resource::group::group_type::<P>() {
+        // As every group's payload is read: one written with what its
+        // members share once reads as the list of them.
+        let group: tilo_resource::group::ActionGroup<P::Action> =
+            tilo_actions::decode_payload(&action.type_id, &action.payload)
+                .map_err(|error| error.to_string())?;
+        let mut members = Vec::with_capacity(group.actions.len());
+        for member in group.actions {
+            super::super::resources::not_by_app::<P>(&member)?;
+            members.push(Box::new(member) as Box<dyn Any>);
+        }
+        return Ok(Decoded::Group(members));
+    }
+    if action.type_id != P::ACTION_TYPE {
+        return Err(format!("{} take no `{}` action", P::LABEL, action.type_id));
+    }
+    let action: P::Action =
+        tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+    super::super::resources::not_by_app::<P>(&action)?;
+    Ok(Decoded::One(Box::new(action)))
+}
+
+fn from_json<P: Chained>(action: serde_json::Value) -> Result<Box<dyn Any>, serde_json::Error> {
+    let action: P::Action = serde::Deserialize::deserialize(action)?;
+    Ok(Box::new(action))
+}
+
+fn to_json<P: Chained>(action: &dyn Any) -> Result<Vec<u8>, ActionError> {
+    let action = action_of::<P>(action).map_err(ActionError::Refused)?;
+    serde_json::to_vec(action).map_err(ActionError::Encode)
+}
+
+fn clone<P: Chained>(action: &dyn Any) -> Box<dyn Any> {
+    match action.downcast_ref::<P::Action>() {
+        Some(action) => Box::new(action.clone()),
+        None => Box::new(()),
+    }
+}
+
+fn history<P: Chained>(edit: &PartEdit) -> Box<dyn tilo_actions::Action> {
+    Box::new(super::super::history::part_action::<P>(edit))
+}
+
+fn publish<P: Chained>(id: &str, state: &dyn Any) -> tilo_actions::ResourceSpec {
+    match state.downcast_ref::<P::State>() {
+        Some(state) => tilo_resource::publish::<P>(id, P::LABEL, state),
+        None => tilo_actions::ResourceSpec::new(id, P::KIND, P::LABEL),
+    }
+}
+
+fn places<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_actions::ResourceSpec> {
+    let Ok(base) = base_of::<P>(base) else {
+        return Vec::new();
+    };
+    tilo_resource::derived::published::<P>(P::places(base, parts_of::<P>(parts))).to_resources()
+}
+
+fn search<P: Chained>(state: &dyn Any) -> Vec<tilo_resource::SearchEntry> {
+    state.downcast_ref().map(P::search).unwrap_or_default()
+}
+
+fn search_over<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_resource::SearchEntry> {
+    let Ok(base) = base_of::<P>(base) else {
+        return Vec::new();
+    };
+    P::search_over(base, parts_of::<P>(parts))
+}
+
+fn prepare_read<P: Chained>(
+    filter: &mut Filter,
+    base: &dyn Any,
+    parts: &dyn Any,
+) -> Result<(), String> {
+    P::prepare_read(filter, base_of::<P>(base)?, parts_of::<P>(parts))
+}

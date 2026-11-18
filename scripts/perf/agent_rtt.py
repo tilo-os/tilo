@@ -5,7 +5,7 @@ An agent drives Tilo through typed actions: it lists them, reads the state
 and invokes one by address. This times those calls on the path an agent
 uses, from the client's side of the socket: the request is written, the
 compositor's event loop parses it, resolves the address through the same
-capability gate as the palette, runs the action and writes the answer, and
+capability check as the palette, runs the action and writes the answer, and
 the clock stops when the whole answer line has arrived. Parsing the answer
 in Python is not counted.
 
@@ -39,7 +39,7 @@ ops to the device admin) or let it start a headless compositor through
 `real_apps.ScriptedSession` (`--spawn SHELL`). A spawned compositor is a
 release build only with `--features dev-overrides`, which
 serves the test-control socket; that socket runs the same dispatch and
-capability gate as the admin socket, without the admin socket's per-connection
+capability check as the admin socket, without the admin socket's per-connection
 peer check. It starts on a shell: a first pass mints the throwaway identity a
 development login opens its shell with, so the no-op is the shell's own action
 and not setup's. The compositor, its profile and its socket are removed on
@@ -189,18 +189,18 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
     latencies: list[float] = []
     errors: list[str] = []
     lock = threading.Lock()
-    start_gate = threading.Barrier(clients + 1)
+    start_hold = threading.Barrier(clients + 1)
 
     def client() -> None:
         try:
             conn = Connection(socket_path)
         except OSError as error:
             errors.append(f"connect: {error}")
-            start_gate.abort()
+            start_hold.abort()
             return
         own: list[tuple[float, float]] = []
         try:
-            start_gate.wait()
+            start_hold.wait()
             begin = start_ns[0]
             end = begin + seconds * 1_000_000_000
             while True:
@@ -225,7 +225,7 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
         thread.start()
     try:
         start_ns[0] = time.perf_counter_ns()
-        start_gate.wait()
+        start_hold.wait()
     except threading.BrokenBarrierError:
         pass
     for thread in threads:

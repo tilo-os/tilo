@@ -1,0 +1,31 @@
+# What each app below grew by since its budget, measured by t's
+# app-sizes-x86_64 at the commits named, after the cuts this change lands with:
+# the chain's waiting writes and history edits decoded outside the part
+# type's code, a group's parts sorted, a document's migration and the copies of
+# a resource, a window's file and an edit made by one function for every app.
+reason = "Feeds and Contacts keep their items in chains of parts, Chat gained questions that wait, secret questions and work in a shared window, and the agent's turns carry its instruction and the conversation's summary; each amount is the app's overage at run r3ac9a7d790 plus the ratchet's 1 % headroom, rounded up to 64 KiB, after the cuts landed with this raise. The aarch64 run prints its own numbers."
+run = "r3ac9a7d790"
+
+# Contacts keeps its contacts in a chain of parts beside the book
+# (953e0439baa), the same second resource type, ContactPart. 1,929,728 bytes
+# before, 2,270,720 after (runs r62e3522bf1, r4766d85d43), 2,007,552 now.
+[apps."so.tilo.contacts"]
+x86_64 = 65536
+
+# Chat works in a shared window where the conversation shows it and asks
+# questions that wait (134c7754a31, fa92625a8f7: 4,376,576 to 4,523,520
+# bytes, runs r32fb406ca9, r589d1a8a27), and asks for a secret typed into a
+# protected field and kept in the person's vault (1bf11e3e5ee: 4,572,672,
+# run rf6e52a8c4b). This change's cuts took 79,360 bytes off; what landed
+# since (agents starting sub-agents, 70e04742b00) brings it to 4,562,944.
+[apps."so.tilo.chat"]
+x86_64 = 131072
+
+# The agent's turn carries its agent's instruction and keeps the
+# conversation's summary (4adaff16c29), showing on the canvas is a tool of
+# its own (e6ffaafb1fd), and the first turn says how a day is written:
+# 1,379,840 bytes (134c7754a31~1, run r32fb406ca9) to 1,423,872 (4e025301e7a,
+# run r62e3522bf1), named code +58 KB, of it tilo_agent +30 KB, std +9 KB and
+# chrono +5 KB.
+[apps."so.tilo.agent"]
+x86_64 = 65536

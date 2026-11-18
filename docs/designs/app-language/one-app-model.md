@@ -36,7 +36,7 @@ Mail's root.
 | Today (Rust) | One model |
 |---|---|
 | `ResourceApp::view(cx) -> Element`: one imperative widget tree for the whole app, in its own window | `#[view] fn page(c: &Channel, cx: &mut ViewCx) -> Node`. Many named views per type, and `#[view(default)]` for the one a place shows unasked. |
-| Widgets built and laid out in the app process, then drawn as scenes | A view returns described components (`ui::component` builders over the same catalogue tilolang's `ui.X` checks against). The app sends them as component patches (`tilo-render-protocol` `patch`), exactly as a tilolang app does. The UI host draws them in whatever place shows the resource. |
+| Widgets built and laid out in the app process, then drawn as scenes | A view returns described components (`ui::component` builders over the same catalogue tilolang's `ui.X` checks against). The app sends them as component patches (`tilo-render-protocol` `patch`), exactly as a tilolang app does. The app window draws them in whatever place shows the resource. |
 | Bindings and events wired to the app's widgets | The same binding and event protocol tilolang views use (`patch`: bindings, events, focus). An event fires an action of the type, or sets a view's state. |
 
 So the shell places a Rust app's view exactly as it places a tilolang view: by resource and view
@@ -56,16 +56,16 @@ drawing goes through `ui.Drawing` (components.md §4.1).
 | Deep links and open-at-resource handled inside the app | `open(r)` places `r` with its default view, beside where it was asked, for every app. |
 
 **Who the system is, per platform.** On Tilo, the shell draws windows and places, and the
-session's document host keeps the records. On another platform (macOS, Windows, the web), the
+session's document host keeps the resources. On another platform (macOS, Windows, the web), the
 same runtime is compiled into the app: it opens the platform's window, draws the same chrome
 the shell would draw (each view's bar with the resource's actions, and navigation between
-resources), and hosts the records itself. The app's code is the same on both. It never draws
+resources), and hosts the resources itself. The app's code is the same on both. It never draws
 chrome and never opens a window.
 
 ## 4. Storage, actions, identity, permissions
 
 As apps.md §8 decided:
-- A Rust app's model and actions run as an instance kind of the workspace's tilolang host.
+- A Rust app's model and actions run as an instance kind of the workspace's tilolang process.
 - Its views are a client of the one launcher-made connection, and hold no identity, keys or transport.
 - Permission checks leave the app.
 
@@ -75,17 +75,17 @@ This design adds nothing there.
 
 What a Rust app's runner needs of storage is two things: **the state of its
 resources**, as its model types read them, and **a way to submit actions** on
-them, with the arguments a control supplies. Both are the record the host
+them, with the arguments a control supplies. Both are the resource the host
 opened for the window (`TypedRoot::sync` reads it, `Edits::apply` changes it),
-for every launch: a window keeps its own record today, whichever host started
+for every launch: a window keeps its own document today, whichever host started
 it.
 
 **Where an app's model will run.** Not in the session beside the window, and
 not on a second code path in the app: the model and verbs run as an instance
 kind of the per-workspace host, and every window of the app, the person's and
 an agent's alike, reaches that instance the way a window reaches any other
-host. Until that instance kind exists, the window's own record is the only
-path, and there is no launch an app can be told to take that keeps no record
+host. Until that instance kind exists, the window's own document is the only
+path, and there is no launch an app can be told to take that keeps no resource
 of its own.
 
 ## 5. What a Rust developer writes

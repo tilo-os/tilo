@@ -1442,9 +1442,9 @@ impl BlockEditor {
         self
     }
 
-    /// The handle gutter of a block document: the lane its drag handles hang in, outside the text
+    /// The handle gutter of a block document: the gutter its drag handles hang in, outside the text
     /// column, as wide as a handle and the gap to the text. Zero when the editor shows no handles.
-    /// A page that holds the editor keeps its one content gutter outside this lane: it places the
+    /// A page that holds the editor keeps its one content gutter outside this gutter: it places the
     /// editor's rect on its gutter and lines its title and metadata up with the text
     /// ([`Self::text_inset`] in from the rect), so a hovered handle stands a full gutter clear of
     /// the sidebar or window edge.
@@ -4751,7 +4751,7 @@ impl BlockEditor {
         {
             // Conversion or a concurrent edit can split an authored fence.
             // Address the visible fragment without rewriting collaborative
-            // identities during projection. Both boundaries are witnessed so
+            // identities during projection. Both boundaries are observed so
             // an old Copy button cannot silently expand after Undo or a merge.
             return Some(format!(
                 "notes.code-copy:fragment:{group}:{}:{}",
@@ -5013,7 +5013,7 @@ pub enum CursorPlacement {
 /// Markdown heading prefix at the start of `text`: `(level, prefix_byte_len)`.
 ///
 /// Shared by `from_markdown`, live `#` to `######` promotion, and the typed-prefix
-/// gate that only fires when the caret sits exactly on that prefix.
+/// check that only fires when the caret sits exactly on that prefix.
 fn heading_markdown_prefix(text: &str) -> Option<(u8, usize)> {
     let hashes = text.bytes().take_while(|byte| *byte == b'#').count();
     let level = u8::try_from(hashes)
@@ -11308,7 +11308,7 @@ impl BlockEditor {
             b.line.set_focus(true);
             // Only the previously focused line saw CursorMoved. Forward the
             // current pointer before the new line handles this same press;
-            // otherwise its hover gate rejects it or uses a stale position.
+            // otherwise its hover check rejects it or uses a stale position.
             b.line
                 .inner_mut()
                 .update_pointer_position(self.last_mouse_pos);

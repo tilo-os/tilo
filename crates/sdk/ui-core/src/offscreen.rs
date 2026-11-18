@@ -476,8 +476,8 @@ pub fn provide_page_gpu(gpu: Option<SharedGpu>) {
 }
 
 /// Handles to the process-wide shared wgpu device every [`OffscreenRenderer`] draws through: an app
-/// doing its own headless GPU work (the video editor's compositor) borrows these rather than standing
-/// up a second `wgpu::Instance`, which is why the shared context exists.
+/// doing its own headless GPU work (the video editor's compositor) borrows these rather than starting
+/// a second `wgpu::Instance`, which is why the shared context exists.
 #[derive(Clone)]
 pub struct SharedGpu {
     pub device: wgpu::Device,

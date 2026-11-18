@@ -109,7 +109,7 @@ impl RiskLevel {
 /// [`ActionContract::tags`] entry of an action any member of a workspace may ask
 /// the workspace's host to run for themselves on a record of the workspace (linking
 /// their own account elsewhere). The host runs it as that member, under
-/// their own standing, so the action's API and its own checks decide what
+/// their own access, so the action's API and its own checks decide what
 /// it may do; its answer goes back to the asking device alone.
 pub const MEMBER_OWN_TAG: &str = "host:member-own";
 
@@ -682,7 +682,7 @@ pub const MAX_OFFLOAD_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 /// content (files the invoker can read), its outputs are content, and the
 /// outputs are a function of the inputs alone, byte for byte, whichever
 /// device computes them. That is what lets the system run it on the
-/// invoker's best-placed device — placed by the workspace's relay, run as
+/// invoker's best-placed device — placed by the workspace's server, run as
 /// the signed package's catalogue entrypoint under that device's launcher
 /// sandbox — and hand back exactly what a local run returns. When no device
 /// is better placed, or the offload fails for any reason other than the
@@ -1046,7 +1046,7 @@ impl ActionContract {
     /// The confirmation a caller that cannot classify arguments must assume:
     /// the declared policy, or [`ConfirmationPolicy::Confirm`] for an action
     /// whose risk depends on its arguments. A trust boundary that only sees
-    /// this inert contract (the session broker) gates on it; the publishing
+    /// this inert contract (the session broker) waits for it; the publishing
     /// host, which can classify, asks
     /// [`ActionSpec::confirmation_for_json`](crate::ActionSpec::confirmation_for_json).
     pub fn advertised_confirmation(&self) -> ConfirmationPolicy {

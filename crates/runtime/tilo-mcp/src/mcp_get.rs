@@ -3,9 +3,9 @@
 //! intent and references; bytes come back the way they went in, in bounded
 //! pieces the agent asks for again at the offset the last piece ended at.
 use base64::Engine as _;
-use tilo_actions::remote::{ActionHostError, CONTENT_GETS_UNAVAILABLE, ContentGets};
+use tilo_actions::remote::{ActionCallError, CONTENT_GETS_UNAVAILABLE, ContentGets};
 
-use super::{ActionHost, Deserialize, McpServer, Surface, Value, json, parse};
+use super::{ActionProvider, Deserialize, McpServer, Surface, Value, json, parse};
 
 /// The get tool's name.
 const GET: &str = "tilo_get";
@@ -48,16 +48,16 @@ struct GetArgs {
 }
 
 /// A host's refusal in its own words.
-fn refusal(error: ActionHostError) -> String {
+fn refusal(error: ActionCallError) -> String {
     match error {
-        ActionHostError::Refused { reason }
-        | ActionHostError::InvalidRequest { reason }
-        | ActionHostError::Unavailable { reason } => reason,
+        ActionCallError::Refused { reason }
+        | ActionCallError::InvalidRequest { reason }
+        | ActionCallError::Unavailable { reason } => reason,
         other => other.to_string(),
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Answer the get tool, as this session's surface answers: the object as
     /// its text and, once the caller asked for typed answers (or reads the
     /// classic surface, which always carries them), as its value.

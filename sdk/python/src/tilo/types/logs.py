@@ -25,7 +25,7 @@ __all__ = [
     "ClearFiltersArgs",
 ]
 
-Priority = Literal["Emerg", "Alert", "Crit", "Err", "Warning", "Notice", "Info", "Debug"]
+Priority = Literal["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"]
 
 ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 })
@@ -33,7 +33,7 @@ ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 
 class Journal(Resource):
     """System journal — `logs.journal`."""
-    __surface__ = "so.tilo.logs@4d97454d27277b41"
+    __surface__ = "so.tilo.logs@2428af2372c28388"
     severity: Priority
     unit: str
     boot: str

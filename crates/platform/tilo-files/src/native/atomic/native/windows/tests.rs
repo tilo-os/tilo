@@ -108,11 +108,7 @@ fn private_file_denies_a_distinct_native_principal() {
             File::open(&path).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
-        std::fs::write(
-            path.with_file_name("principal-witness"),
-            principal.sid_text(),
-        )
-        .unwrap();
+        std::fs::write(path.with_file_name("principal-proof"), principal.sid_text()).unwrap();
         return;
     }
     let runner = std::env::var_os("TILO_ATOMIC_PRIVATE_SECOND_USER_RUNNER")
@@ -137,7 +133,7 @@ fn private_file_denies_a_distinct_native_principal() {
         status.success(),
         "distinct-principal access qualification failed: {status}"
     );
-    let observed = std::fs::read_to_string(root.path().join("principal-witness"))
+    let observed = std::fs::read_to_string(root.path().join("principal-proof"))
         .expect("runner must execute and observe the distinct-principal access check");
     assert!(observed.starts_with("S-1-"));
     assert_ne!(observed, acl::Principal::current().unwrap().sid_text());

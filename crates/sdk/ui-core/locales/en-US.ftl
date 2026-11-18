@@ -111,7 +111,7 @@ history-mode-confirm = Allow
 history-mode-cancel = Cancel
 history-mode-type-to-confirm = Type “{ $phrase }” to confirm
 history-mode-owner-gone = This document is no longer open here
-history-mode-custody-lost = History couldn't bring back what this action needed
+history-mode-ownership-lost = History couldn't bring back what this action needed
 history-mode-control-owner-closed = The app that asked for this has closed
 history-mode-loading-media = Loading historical media
 history-media-too-many = This version has too many pictures to show
@@ -587,9 +587,7 @@ relative-compact-years = { $count }y
 
 # A software member in history, presence and activity rows.
 history-invocation-step-separator = {", "}
-member-agent = { $name } · Agent
 member-shortcut = { $name } · Shortcut
-member-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
 member-numbered = { $name } ({ $number })
@@ -840,6 +838,8 @@ author-persona-suffix = { $name }, via { $service }
 history-writer-agent = External agent
 history-writer-app = App
 history-writer-program = Program
+history-acted-for = For { $person }
+history-acted-for-you = For you
 author-spoken-writer = { $person }, with { $writer }
 author-spoken-device = { $who }, on { $device }
 
@@ -1232,6 +1232,7 @@ attention-defer = Put aside for now
 attention-deferred = { $count } put aside
 attention-pill = { $count } waiting
 action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
+action-own-route-not-open = This action was not carried out because this window has not finished connecting to its workspace. Try again in a moment.
 
 # One-shot action proposals: one model call's answer, before it is written.
 proposal-model-on-device = { $model }, running on this device

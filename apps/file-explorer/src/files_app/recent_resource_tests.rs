@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
             "shared bookmarks and file operations stay unchanged"
         );
         assert_eq!(
-            app.person::<crate::recent::RecentRecord>()
+            app.person::<crate::recent::RecentResource>()
                 .unwrap()
                 .with(|recent| recent.on("test-device"))
                 .items()
@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
             );
         }
         assert_eq!(
-            app.person::<crate::recent::RecentRecord>()
+            app.person::<crate::recent::RecentResource>()
                 .unwrap()
                 .with(|recent| recent.on("test-device"))
                 .items()

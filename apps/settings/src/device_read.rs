@@ -408,12 +408,12 @@ mod tests {
         phase taking_a_running_read_waits_for_it;
         {
             let read = DeviceRead::default();
-            let (release, gate) = std::sync::mpsc::channel::<()>();
+            let (release, check) = std::sync::mpsc::channel::<()>();
             assert!(read.start(move || {
-                let _ = gate.recv();
+                let _ = check.recv();
                 7
             }));
-            assert!(!read.is_finished(), "the read is held at its gate");
+            assert!(!read.is_finished(), "the read is held at its check");
             release.send(()).unwrap();
             assert_eq!(read.take(), Some(7));
             assert!(read.is_finished(), "nothing is left on its way");

@@ -3,8 +3,10 @@ use super::App;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct LocalActionCheckpoint {
-    #[serde(default)]
-    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    /// Kept under the name a checkpoint has always given it; one that names it as the code
+    /// does reads too.
+    #[serde(default, rename = "custody", alias = "ownership")]
+    pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub report: runtime_collab::LocalDocumentActionReport,
     #[serde(with = "checkpoint_row")]
     pub directory_row: Option<runtime_collab::ActionDirectoryRow>,
@@ -83,7 +85,7 @@ impl App {
             receipt
         };
         let checkpoint = LocalActionCheckpoint {
-            custody: capture.custody.clone(),
+            ownership: capture.ownership.clone(),
             report,
             directory_row,
         };
@@ -95,7 +97,7 @@ impl App {
                 .chain(&capture.mutation_hashes)
                 .copied()
                 .collect(),
-            intent: if checkpoint.directory_row.is_some() || checkpoint.custody.is_some() {
+            intent: if checkpoint.directory_row.is_some() || checkpoint.ownership.is_some() {
                 serde_json::to_vec(&checkpoint)
             } else {
                 // Preserve the original intent bytes of older checkpoints.
@@ -148,8 +150,8 @@ impl App {
             .local_action_checkpoint_entries(route)?
             .into_iter()
             .filter(|(checkpoint, receipt)| {
-                checkpoint.custody.is_some()
-                    && checkpoint.custody == self.collaboration.manager.connection_snapshot(route)
+                checkpoint.ownership.is_some()
+                    && checkpoint.ownership == self.collaboration.manager.connection_snapshot(route)
                     && receipt.as_deref() != Some("{\"local_capture_rejected\":true}")
             })
             .map(|(checkpoint, receipt)| (checkpoint.report, receipt))
@@ -196,19 +198,19 @@ impl App {
                 let checkpoint: LocalActionCheckpoint = serde_json::from_slice(&entry.intent)
                     .or_else(|_| {
                         serde_json::from_slice(&entry.intent).map(|report| LocalActionCheckpoint {
-                            custody: None,
+                            ownership: None,
                             report,
                             directory_row: None,
                         })
                     })
                     .map_err(|e| e.to_string())?;
-                if let Some(custody) = &checkpoint.custody {
-                    if !custody.valid()
-                        || custody.app_id != route.app_id
-                        || custody.workspace != route.cluster_id.to_string()
-                        || custody.document != route.document.as_deref().unwrap_or("")
+                if let Some(ownership) = &checkpoint.ownership {
+                    if !ownership.valid()
+                        || ownership.app_id != route.app_id
+                        || ownership.workspace != route.cluster_id.to_string()
+                        || ownership.document != route.document.as_deref().unwrap_or("")
                     {
-                        return Err("private action checkpoint custody mismatch".into());
+                        return Err("private action checkpoint ownership mismatch".into());
                     }
                 }
                 let report = &checkpoint.report;

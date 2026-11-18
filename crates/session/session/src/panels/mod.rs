@@ -8,14 +8,14 @@ use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::OutputInfo;
-use tilo_session_core::surface::HostKey;
-use tilo_session_core::surface::{HostLayer, Scroll, SurfaceHost};
+use tilo_session_core::surface::SurfaceKey;
+use tilo_session_core::surface::{Scroll, ShellSurface, SurfaceLayer};
 
 use tilo_desktop::overlays::Overlays;
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_session_core::surfaces::Published;
 
-use crate::platform::surfaces::{AppHost, Placement};
+use crate::platform::surfaces::{AppProcess, Placement};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Point, Rect};
 
@@ -45,9 +45,9 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
 /// the session read it from the shell each pass ([`Overlays`] holds it for every surface it places
 /// there), else the first.
 fn in_use(
-    outputs: &[tilo_session_core::surface::HostedOutput],
+    outputs: &[tilo_session_core::surface::SurfaceOutput],
     overlays: &Overlays,
-) -> Option<tilo_session_core::surface::HostedOutput> {
+) -> Option<tilo_session_core::surface::SurfaceOutput> {
     let focused = overlays.focused_display();
     focused
         .and_then(|focused| {
@@ -131,7 +131,7 @@ fn until(hold: ui::time::Duration) -> ui::time::Instant {
 /// The notification banners over the display in use, under the bar: the stack pins itself into its
 /// top-right corner, clear of the windows' bars.
 pub(crate) struct Banners {
-    host: AppHost,
+    host: AppProcess,
     link: tilo_notification_banners::Link,
     /// The shell whose windows the stack keeps clear of.
     shell: tilo_desktop_surface::DesktopHandle,
@@ -140,7 +140,7 @@ pub(crate) struct Banners {
     overlays: Overlays,
     /// The outputs the compositor last said it has: the stack stands on the display in use, the
     /// others repeat what is about the whole machine.
-    outputs: Vec<tilo_session_core::surface::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::SurfaceOutput>,
     /// The rect the stack covers, which the floating layer keeps clear of while a banner shows.
     stack: Reserved,
 }
@@ -155,7 +155,7 @@ impl Banners {
         stack: Reserved,
     ) -> Self {
         Self {
-            host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
+            host: AppProcess::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
             link,
             shell,
             overlays,
@@ -270,12 +270,12 @@ impl Published for Banners {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 }
 
-impl SurfaceHost for Banners {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Banners {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         self.host.layers()
     }
 
@@ -304,10 +304,10 @@ impl SurfaceHost for Banners {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(&self.host)
+        ShellSurface::wants_keyboard(&self.host)
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.host.key(key);
     }
 
@@ -338,7 +338,7 @@ impl SurfaceHost for Banners {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         outputs.clone_into(&mut self.outputs);
         self.place();
     }
@@ -356,7 +356,7 @@ fn docked_id(group: u64) -> String {
 /// dragged loose, clear of the bar, the banners and the readout. The session says what to show and
 /// carries out what the person did; the layer draws it.
 pub(crate) struct ActivityLayer {
-    host: AppHost,
+    host: AppProcess,
     link: tilo_activities::Link,
     /// The session's reading of every app's activity, and its rules about what shows.
     reader: Rc<crate::chrome::Activities>,
@@ -368,7 +368,7 @@ pub(crate) struct ActivityLayer {
     /// stand on.
     overlays: Overlays,
     /// The outputs the compositor last said it has.
-    outputs: Vec<tilo_session_core::surface::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::SurfaceOutput>,
     /// What the cards keep clear of: the banners' stack, the readout's band, and the field the
     /// person types into.
     banners: Reserved,
@@ -394,7 +394,7 @@ impl ActivityLayer {
         scale: f64,
     ) -> Self {
         Self {
-            host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Activities"),
+            host: AppProcess::new(app, placement(0, 0, 1, 1, scale)).named("Activities"),
             link,
             reader,
             cards,
@@ -440,8 +440,8 @@ impl ActivityLayer {
             banners: self.banners.now(),
             readout: self.readout.now().map(local),
             // A field inside a card is the card's own: the card is what the person types in. A
-            // docked window's field is its own wherever it stands in the window's lane, folded to
-            // its header or open; the strip keeps the windows it shows clear of that lane.
+            // docked window's field is its own wherever it stands in the window's area, folded to
+            // its header or open; the strip keeps the windows it shows clear of that area.
             caret: self
                 .typing
                 .borrow()
@@ -587,12 +587,12 @@ impl Published for ActivityLayer {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 }
 
-impl SurfaceHost for ActivityLayer {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for ActivityLayer {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         self.host.layers()
     }
 
@@ -630,10 +630,10 @@ impl SurfaceHost for ActivityLayer {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(&self.host)
+        ShellSurface::wants_keyboard(&self.host)
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.host.key(key);
     }
 
@@ -664,7 +664,7 @@ impl SurfaceHost for ActivityLayer {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         outputs.clone_into(&mut self.outputs);
         self.place();
     }
@@ -715,7 +715,7 @@ impl ReadoutPlace {
 /// The hardware keys' readout, on the display whose key changed it: it never takes the pointer or
 /// the keyboard, and shows over the lock too.
 pub(crate) struct Readout {
-    host: crate::platform::surfaces::WidgetHost,
+    host: crate::platform::surfaces::WidgetSurface,
     /// Where each display stands and where the person types.
     places: ReadoutPlaces,
     /// The display the readout up now answers for, by connector.
@@ -727,7 +727,7 @@ pub(crate) struct Readout {
 impl Readout {
     pub(crate) fn new(scale: f64, places: ReadoutPlaces, band: Reserved) -> Self {
         Self {
-            host: crate::platform::surfaces::WidgetHost::new(
+            host: crate::platform::surfaces::WidgetSurface::new(
                 Box::new(tilo_desktop::osd::OsdSlab::new()),
                 Placement {
                     origin: (0, 0),
@@ -832,12 +832,12 @@ impl Published for Readout {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 }
 
-impl SurfaceHost for Readout {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Readout {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         self.host.layers()
     }
 
@@ -873,7 +873,7 @@ impl SurfaceHost for Readout {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, _outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, _outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         // Where the displays stand comes with the session's own reading of them (connectors, not
         // just rectangles): the readout stands on the display it answers for again.
         let display = self.display.clone();

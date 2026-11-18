@@ -240,9 +240,9 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_api() {
 }
 
 #[test]
-fn search_hits_open_the_channel_message_and_person_they_name() {
+fn search_hits_open_the_channel_message_and_category_they_name() {
     let mut app = TestApp::<ChatShell>::capture(None).unwrap();
-    // The record's entries, and the messages the parts it holds offer.
+    // The resource's entries, and the messages the parts it holds offer.
     let mut entries = Chat::search(&app.state());
     let held = crate::testing::mounted_messages(&mut app);
     entries.extend(held.parts().iter().flat_map(|(_, part)| part.search()));
@@ -269,14 +269,6 @@ fn search_hits_open_the_channel_message_and_person_they_name() {
         .unwrap();
     app.settle();
     assert_eq!(app.chat().active_channel, "c_ideas");
-    let milo = anchor("Milo Park", "people");
-    app.call("open", serde_json::json!({ "anchor": milo }))
-        .unwrap();
-    app.settle();
-    assert_eq!(
-        app.chat().revealed_person,
-        Some(ui::tilo_resource::MemberId::person("u_milo"))
-    );
 }
 
 #[test]
@@ -480,11 +472,10 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else;
+    phase a_new_workspace_resource_opens_with_chat_and_voice_and_nothing_else;
     {
         let app = TestApp::<ChatShell>::new().unwrap();
         let state = app.state();
-        assert_eq!(state.people.len(), 1, "only its creator");
         assert_eq!(
             state
                 .channel_rows()
@@ -757,7 +748,7 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     assert!(draft.contains("Enter sends"), "{draft:?}");
 }
 
-/// What one person types is theirs: it is in their own record on each of
+/// What one person types is theirs: it is in their own document on each of
 /// their devices, and never in another person's composer or in the workspace.
 #[test]
 fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
@@ -801,10 +792,10 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
             .save()
             .windows(b"hello from Ada".len())
             .any(|w| w == b"hello from Ada"),
-        "the workspace's record carries none of it"
+        "the workspace's document carries none of it"
     );
 
-    // Ada's phone has it, once her own record reaches it.
+    // Ada's phone has it, once her own document reaches it.
     let adas = laptop.person::<crate::drafts::ChatDrafts>().unwrap();
     let on_phone = phone.person::<crate::drafts::ChatDrafts>().unwrap();
     on_phone
@@ -955,7 +946,7 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
 }
 
 tilo_test_env::scenario! {
-    /// What reaches a mounted chat through its actions and its record.
+    /// What reaches a mounted chat through its actions and its resource.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
     fn calls_files_versions_history_and_other_replicas_reach_the_window_through_its_api;
@@ -1044,7 +1035,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             sentences,
             // What it did to the messages is in the history of the part that
-            // holds them; the record's history has the rest.
+            // holds them; the resource's history has the rest.
             [
                 "Set the topic of #chat to Daily notes",
                 "Created the category Offsite",
@@ -1180,19 +1171,18 @@ fn a_narrow_window_opens_on_the_conversation() {
 }
 
 /// The conversation with an agent that a send opened is found by the agent's name: the window
-/// publishes it, named by what the workspace's record of its agents calls them — the same name
-/// its sidebar shows — and not by anything of its routing id. The record keeps no row of the
+/// publishes it, named by what the workspace's member list calls them — the same name its
+/// sidebar shows — and not by anything of its routing id. The resource keeps no row of the
 /// conversation, so only the window's listing has it.
 #[test]
-fn search_finds_an_agents_conversation_by_the_name_its_record_keeps() {
+fn search_finds_an_agents_conversation_by_its_member_name() {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
     let mut app = crate::ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
-    app.workspace_agent_names
-        .insert("notes".to_owned(), "Notes".to_owned());
+    crate::testing::agent_member(&mut app, "notes", "Notes");
     app.reload(&doc);
-    let conversation = crate::record::Chat::direct_id([
+    let conversation = crate::chat::Chat::direct_id([
         MemberId::person(crate::model::ME),
         MemberId::agent("notes"),
     ]);
@@ -1225,7 +1215,7 @@ fn search_finds_an_agents_conversation_by_the_name_its_record_keeps() {
             .search()
             .iter()
             .any(|entry| entry.title == "Notes"),
-        "the record keeps no row of a conversation a send opened"
+        "the resource keeps no row of a conversation a send opened"
     );
 }
 

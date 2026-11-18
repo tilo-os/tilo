@@ -1,7 +1,7 @@
 //! Another device's window, drawn in this page's desktop from its pictures.
 //!
 //! A device hosting a window shares it with the workspace as video: one tilo-video/1 object per
-//! picture on the window's track of its live plane (`window/<tab>/high`), `tab` being the tab the
+//! picture on the window's track of its live session (`window/<tab>/high`), `tab` being the tab the
 //! window stands in on every device of the workspace. This page decodes what that track brings
 //! with the browser's own decoder (`WebCodecs`, `tilo_media`'s page decoder) and draws the newest
 //! picture in the window's tile, whole and keeping its shape, the same way the native shell places
@@ -9,7 +9,7 @@
 //! cannot see the picture finds the tile by the window's title.
 //!
 //! A picture continues the ones before it: an object that does not follow the last one decoded
-//! waits for the next keyframe, which the plane hands a reader that joins and the publisher sends
+//! waits for the next keyframe, which the live session hands a reader that joins and the publisher sends
 //! at every group.
 
 use std::cell::RefCell;
@@ -76,7 +76,7 @@ pub(crate) struct Window {
     image: Option<ImageData>,
     /// Why this page cannot show the window's pictures.
     failed: Option<String>,
-    /// Where the window's input goes: the device hosting it, in the workspace its plane is of.
+    /// Where the window's input goes: the device hosting it, in the workspace its live session is of.
     host: Option<(WorkspaceId, [u8; 32])>,
     /// The person's input on the window since the host was last sent it, each a postcard-encoded
     /// [`neighbour_wire::input::InputEvent`].
@@ -188,7 +188,7 @@ thread_local! {
 }
 
 /// Take one object of the pictures of window `tab`, which `from` publishes on `workspace_id`'s
-/// plane for the page's peer `id`: the mounts drawing that workspace show what it changed.
+/// live session for the page's peer `id`: the mounts drawing that workspace show what it changed.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, from: [u8; 32], tab: u64, body: &[u8]) {
     let window = WINDOWS.with_borrow_mut(|windows| {

@@ -1,4 +1,4 @@
-//! Closed commands on the existing authenticated root receive gate. No stdin,
+//! Closed commands on the existing authenticated root receive check. No stdin,
 //! public socket, UI-only action or caller-provided grant enters this controller.
 use super::{AuthenticatedCopyReceive, receiver::InstalledCopyReceiveSession};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub enum CopyEvent {
         operation: String,
         install_items: usize,
         collisions: usize,
-        inactive_custody: usize,
+        inactive_ownership: usize,
         runtime_sockets: u64,
         recovered: bool,
     },
@@ -42,7 +42,7 @@ pub enum CopyEvent {
         cancelled: bool,
         installed: usize,
         collisions: usize,
-        inactive_custody: usize,
+        inactive_ownership: usize,
         failures: usize,
         verified: bool,
     },
@@ -75,15 +75,15 @@ fn prepare(session: &mut InstalledCopyReceiveSession) -> io::Result<()> {
             operation: operation(session),
             install_items: preview.install_items,
             collisions: preview.collisions,
-            inactive_custody: preview.inactive_custody,
+            inactive_ownership: preview.inactive_ownership,
             runtime_sockets: preview.runtime_sockets,
             recovered: preview.recovered,
         })?;
     }
     Ok(())
 }
-/// The parent's real gate mints the grant and links its EOF/owner fence to
-/// `cancel`. Unresolved promotion custody keeps this exact child alive.
+/// The parent's real check mints the grant and links its EOF/owner fence to
+/// `cancel`. Unresolved promotion ownership keeps this exact child alive.
 pub(super) fn run(grant: AuthenticatedCopyReceive, cancel: Arc<AtomicBool>) -> io::Result<()> {
     let mut session = InstalledCopyReceiveSession::review(grant, cancel)?;
     let result = run_current(&mut session);
@@ -116,7 +116,7 @@ fn run_current(session: &mut InstalledCopyReceiveSession) -> io::Result<()> {
                     cancelled: report.cancelled,
                     installed: report.installed,
                     collisions: report.collisions,
-                    inactive_custody: report.inactive_custody,
+                    inactive_ownership: report.inactive_ownership,
                     failures: report.failures,
                     verified: report.verified,
                 })?,

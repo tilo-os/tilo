@@ -1,12 +1,12 @@
 //! A host's frames and a window's, until the host owes nothing: the loop a session runs for a
 //! window, without its wait.
 //!
-//! A host says what it owes ([`TilolangHost::owes_work`]): an instance opening, a change being
+//! A host says what it owes ([`TilolangProcess::owes_work`]): an instance opening, a change being
 //! applied, a window with a frame coming. A frame taken while it owes any of them shows what the
 //! workspace held before it, so a test settles and never takes a quiet moment for a settled host:
 //! under load the quiet moment comes before the work.
 
-use tilolang_host::TilolangHost;
+use tilolang_process::TilolangProcess;
 use ui::headless::FrameHarness;
 
 /// The longest a host may take to be done with what it owes before the test says so: a failure,
@@ -43,7 +43,7 @@ pub fn framed(window: &mut FrameHarness) -> bool {
 
 /// The host's frames and the window's, until it owes nothing and the window has drawn what it was
 /// sent.
-pub fn settle(host: &mut TilolangHost, woken: &Woken, draw: impl FnMut() -> bool) {
+pub fn settle(host: &mut TilolangProcess, woken: &Woken, draw: impl FnMut() -> bool) {
     until(host, woken, draw, "the window settles", |_| Some(()));
 }
 
@@ -60,11 +60,11 @@ pub fn settle(host: &mut TilolangHost, woken: &Woken, draw: impl FnMut() -> bool
 /// # Panics
 /// What was waited for did not happen within [`LIMIT`]: the host still owes work.
 pub fn until<T>(
-    host: &mut TilolangHost,
+    host: &mut TilolangProcess,
     woken: &Woken,
     mut draw: impl FnMut() -> bool,
     waited: &str,
-    mut done: impl FnMut(&mut TilolangHost) -> Option<T>,
+    mut done: impl FnMut(&mut TilolangProcess) -> Option<T>,
 ) -> T {
     let began = std::time::Instant::now();
     // The turns in a row the host had nothing to do: a window that was just drawn may have sent

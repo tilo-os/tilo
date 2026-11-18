@@ -75,7 +75,7 @@ impl Layout for PageLayout {
             size: Size {
                 width: taffy::style_helpers::percent(1.0_f32),
                 // A page that fills is as tall as the pane it is in: what it holds stands on
-                // the pane's floor and scrolls inside itself (a board's lanes), instead of the
+                // the pane's floor and scrolls inside itself (a board's lists), instead of the
                 // page growing past the pane with what it holds.
                 height: if self.fill {
                     taffy::style_helpers::percent(1.0_f32)
@@ -123,7 +123,7 @@ impl Arranged<PageLayout> {
     }
 
     /// `page(fill)`: the height the page is given, for a canvas that fills its pane (a board's
-    /// lanes, a map, a media page) instead of growing with what it holds. A page that fills its
+    /// lists, a map, a media page) instead of growing with what it holds. A page that fills its
     /// pane is a surface: it also takes the pane's whole width, and what it holds keeps its own
     /// gutter at the sides.
     #[must_use]

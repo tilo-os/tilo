@@ -47,7 +47,7 @@ pub struct Config {
     pub sandbox_dir: PathBuf,
     /// Open mounts, so a restarted service can tidy up after its
     /// predecessor.
-    pub ledger: PathBuf,
+    pub log: PathBuf,
     pub self_exe: PathBuf,
     pub ntfs_3g: PathBuf,
     pub ntfs_3g_probe: PathBuf,
@@ -66,7 +66,7 @@ impl Default for Config {
             boot_disks: PathBuf::from("/run/tilo-ntfs-mount/boot-disks.json"),
             media_root: PathBuf::from("/run/media"),
             sandbox_dir: PathBuf::from("/run/tilo-ntfs-mount/sandbox"),
-            ledger: PathBuf::from("/run/tilo-ntfs-mount/mounts"),
+            log: PathBuf::from("/run/tilo-ntfs-mount/mounts"),
             self_exe: PathBuf::from("/usr/libexec/tilo-ntfs-mount"),
             ntfs_3g: PathBuf::from("/usr/bin/ntfs-3g"),
             ntfs_3g_probe: PathBuf::from("/usr/bin/ntfs-3g.probe"),
@@ -233,13 +233,13 @@ impl LinuxBackend {
             })
             .map(|name| boot::physical_disks(&config.sys_root, &name))
             .unwrap_or_default();
-        if let Ok(ledger) = fs::read_to_string(&config.ledger) {
-            for path in ledger.lines().map(Path::new) {
+        if let Ok(log) = fs::read_to_string(&config.log) {
+            for path in log.lines().map(Path::new) {
                 let _ = umount(path, true);
                 let _ = fs::remove_dir(path);
             }
         }
-        let _ = fs::remove_file(&config.ledger);
+        let _ = fs::remove_file(&config.log);
         Self {
             config,
             install_disks,
@@ -250,8 +250,8 @@ impl LinuxBackend {
         &self.config
     }
 
-    fn ledger(&self, path: &Path, add: bool) {
-        let mut paths: Vec<String> = fs::read_to_string(&self.config.ledger)
+    fn log(&self, path: &Path, add: bool) {
+        let mut paths: Vec<String> = fs::read_to_string(&self.config.log)
             .map(|text| text.lines().map(str::to_owned).collect())
             .unwrap_or_default();
         let entry = path.to_string_lossy().into_owned();
@@ -259,7 +259,7 @@ impl LinuxBackend {
         if add {
             paths.push(entry);
         }
-        let _ = fs::write(&self.config.ledger, paths.join("\n"));
+        let _ = fs::write(&self.config.log, paths.join("\n"));
     }
 
     fn candidate(&self, name: &str, boot_disks: &BootDisks) -> Option<Candidate> {
@@ -590,7 +590,7 @@ impl Backend for LinuxBackend {
         };
         match mounted {
             Ok(handle) => {
-                self.ledger(&target, true);
+                self.log(&target, true);
                 Ok((target, handle))
             }
             Err(reason) => {
@@ -621,7 +621,7 @@ impl Backend for LinuxBackend {
             }
         }
         let _ = fs::remove_dir(path);
-        self.ledger(path, false);
+        self.log(path, false);
         Ok(())
     }
 

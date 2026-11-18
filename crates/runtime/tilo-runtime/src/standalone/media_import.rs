@@ -67,7 +67,7 @@ struct Authority {
 }
 
 fn owner_revision(
-    membership: &impl tilo_identity_host::broker::WorkspaceMembership,
+    membership: &impl tilo_identity::broker::WorkspaceMembership,
     workspace: &str,
     account: &str,
 ) -> anyhow::Result<String> {
@@ -77,7 +77,7 @@ fn owner_revision(
     membership.with_workspace(&id, &mut |current| {
         if current.owner().map(String::as_str) == Some(account) {
             // Only structural ownership authorizes this action. Task progress,
-            // receipts, layout and delegated grants cannot revoke owner custody.
+            // receipts, layout and delegated grants cannot revoke owner ownership.
             revision = serde_json::to_vec(&(&current.id(), current.owner()))
                 .ok()
                 .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
@@ -104,7 +104,7 @@ impl LegacyImportAuthority for Authority {
         );
         anyhow::ensure!(
             request == &self.request && approval == &self.approval,
-            "legacy import custody changed"
+            "legacy import ownership changed"
         );
         anyhow::ensure!(
             owner_revision(
@@ -116,9 +116,9 @@ impl LegacyImportAuthority for Authority {
         );
         // Reads current enrollment and fleet revocations, not startup's snapshot.
         let (_, cert) =
-            tilo_identity_host::broker::trusted_current_device(&request.destination_workspace)?;
+            tilo_identity::broker::trusted_current_device(&request.destination_workspace)?;
         let selected =
-            tilo_identity_host::registry::identity_for_workspace(&request.destination_workspace)?
+            tilo_identity::registry::identity_for_workspace(&request.destination_workspace)?
                 .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
         anyhow::ensure!(
             cert.device_public_key == self.device && selected.person_id() == approval.account,
@@ -253,7 +253,7 @@ impl MediaImport {
             "legacy import destination is not this runtime's owned workspace"
         );
         let revision = owner_revision(self.workspace.as_ref(), invocation.workspace, account)?;
-        let (_, cert) = tilo_identity_host::broker::trusted_current_device(invocation.workspace)?;
+        let (_, cert) = tilo_identity::broker::trusted_current_device(invocation.workspace)?;
         let approval = LegacyImportApproval {
             account: account.into(),
             device: hex::encode(cert.device_public_key),

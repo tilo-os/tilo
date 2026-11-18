@@ -9,7 +9,7 @@ use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 
 /// This device's own workspace host, running in this process: a workspace placed on
 /// this device is linked through it, as an endpoint cannot dial itself.
@@ -53,19 +53,19 @@ impl Linked {
     ///
     /// The connection ends badly, or either device is no longer in the
     /// workspace's roster.
-    pub async fn run(self) -> Result<(), tilo_relay_protocol::refusal::Refusal> {
+    pub async fn run(self) -> Result<(), tilo_server_protocol::refusal::Refusal> {
         match self.host {
             Host::Dialled(dialed) => dialed.run(&self.link).await,
             Host::Paired(host) => DirectSync::pair(&self.link, &host)
                 .await
-                .map_err(tilo_relay_protocol::refusal::Refusal::Other),
+                .map_err(tilo_server_protocol::refusal::Refusal::Other),
         }
     }
 }
 
 impl Reach {
     /// Link `connect`'s workspace to its host at `via` as the device `signer`
-    /// is the custody of: in process when `via` is this device's own host,
+    /// is the ownership of: in process when `via` is this device's own host,
     /// and over [`DIRECT_ALPN`](crate::direct::DIRECT_ALPN) otherwise.
     ///
     /// # Errors
@@ -98,7 +98,7 @@ impl Reach {
                 host: Host::Paired(host),
             });
         }
-        // The relay answers on a service key of its own, which the hint's signature binds to the
+        // The server answers on a service key of its own, which the hint's signature binds to the
         // host device: the link's history is that device's.
         let host = payload.device_certificate.device_public_key;
         let dialed = tokio::time::timeout(
@@ -127,10 +127,14 @@ impl Reach {
     }
 
     /// Prove this device's membership of `connect`'s workspace with the renewal
-    /// of the certificate its record holds, when custody holds one
+    /// of the certificate its record holds, when ownership holds one
     /// ([`crate::owner::enroll::renew_membership`]). Answers whether it
     /// renewed.
-    pub async fn renew(&self, connect: &Connect, identity: &HostIdentity) -> Result<bool, String> {
+    pub async fn renew(
+        &self,
+        connect: &Connect,
+        identity: &DeviceIdentity,
+    ) -> Result<bool, String> {
         let workspace = connect.workspace();
         let own = identity.device_cert.device_public_key;
         let hosted_here = connect.owner().with_current(workspace, |view| {

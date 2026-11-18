@@ -268,7 +268,7 @@ impl<R: Resource> ResourceEnv<R> {
     /// actions as the window's person.
     fn chain_of<P: super::Chained>(
         &self,
-        state: Rc<super::chain::ChainState<P>>,
+        state: Rc<super::chain::ChainState>,
     ) -> Option<super::Chain<P>> {
         let me = self.dispatch.me()?.clone();
         // A role that may only view the workspace views the parts too; a
@@ -425,7 +425,7 @@ impl<R: Resource> ResourceEnv<R> {
     }
 
     /// The service of type `T` the host that mounts the app in its own
-    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
+    /// process lent it ([`ProcessContext::lend`](ui_core::application::ProcessContext::lend)),
     /// taken once: the shell's connection to the session's process
     /// supervisor for a terminal it hosts. `None` in the app's own process,
     /// and for a past version or a capture, which start nothing.
@@ -550,6 +550,13 @@ impl<R: Resource> ResourceEnv<R> {
     /// workspace's emoji, which are Chat's. Changes to it are decided by the
     /// workspace's grants on `owner`'s resource. `None` where the host keeps no
     /// such records (a view of a past version) or it cannot be opened.
+    ///
+    /// `None` too while the workspace has not delivered it to this device. A part of the
+    /// view ([`ViewCx::switch`](super::ViewCx::switch)) that asks for it then is built
+    /// again, it alone, once it is here: a view reads it where it shows it, and need not
+    /// ask twice. A view's root is not built again, so what outlives one answer (an effect,
+    /// a widget of the app's own) asks through [`Self::resource_opener`], which answers
+    /// with the document once it is here.
     pub fn shared_workspace<P: Resource>(
         &self,
         owner: &'static str,
@@ -574,9 +581,9 @@ impl<R: Resource> ResourceEnv<R> {
 
     /// Opens the record `id` of `P` that `owner` keeps, later, from a widget that outlives this
     /// view: a page's Files window opens each chunk of the workspace's tree as the tree lists it
-    /// ([`RecordOpener::open`](super::RecordOpener::open)).
-    pub fn record_opener<P: Resource>(&self, owner: &'static str) -> super::RecordOpener<P> {
-        super::RecordOpener::new(Rc::clone(&self.storage), owner)
+    /// ([`ResourceOpener::open`](super::ResourceOpener::open)).
+    pub fn resource_opener<P: Resource>(&self, owner: &'static str) -> super::ResourceOpener<P> {
+        super::ResourceOpener::new(Rc::clone(&self.storage), owner)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their
@@ -629,10 +636,40 @@ impl<R: Resource> ResourceEnv<R> {
             .outbox(self.alive.clone(), outbox, owns, run, false)
     }
 
+    /// Carry out the outside work the parts of `chain` owe, on this device
+    /// when it owns it: what a mail server or a calendar has not been told
+    /// of the items a chain keeps, derived from each part as it is.
+    ///
+    /// `owed` reads one part's work, each job under the item it names; it is
+    /// read again only for a part that changed, so a change costs what its
+    /// part holds, never the whole chain. `owns` says which jobs are this
+    /// device's (it holds the account), and `work` carries one out as
+    /// [`Self::outbox`] carries out an entry. Nothing is written for a job:
+    /// the app confirms what the outside now holds with an action on the
+    /// part holding the item, after which the part owes it no more. A job is
+    /// carried out once while it is owed; one that failed for now (`Err`) is
+    /// tried again once the chain moved on or the returned [`Projection`] is
+    /// told the outside changed.
+    pub fn owed<P, J>(
+        &self,
+        chain: &super::Chain<P>,
+        owed: impl Fn(&P::State) -> Vec<(tilo_resource::Id, J)> + 'static,
+        owns: impl Fn(&J) -> bool + 'static,
+        work: impl FnMut(&tilo_resource::Id, J, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: 'static,
+        P: super::Chained,
+        J: serde::Serialize + Clone + 'static,
+    {
+        self.effects
+            .owed(self.alive.clone(), chain.clone(), owed, owns, work)
+    }
+
     /// [`Self::outbox`], where an entry is the outside half of the action
     /// that queued it: one an admitted invocation on this device queues runs
     /// at once under that invocation — `cx.invocation()` names it, and its
-    /// custody authorises what the handler does for it (a native host that
+    /// ownership authorises what the handler does for it (a native host that
     /// acts only on behalf of an invocation) — and the invocation completes
     /// only once its entries settled, failing with a failed one. Entries
     /// queued elsewhere, replayed or still pending after a restart run as

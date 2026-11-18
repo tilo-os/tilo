@@ -15,6 +15,7 @@ use ui::widget::Element;
 use super::{MailApp, Mailroom};
 use crate::actions::{MailCheck, MailEffect, Outgoing, ServerUpdate};
 use crate::i18n::CATALOG;
+use crate::part::MessagePart;
 use crate::resource::Mail;
 use crate::state::MailState;
 
@@ -47,6 +48,40 @@ fn carry_checks(cx: &ViewCx<Mail>, window: &mut MailApp) {
     // A live window that reaches no server itself asks those that do.
     let asks = cx.mode().is_live() && !window.state().reaches_servers();
     window.state().checks.asks = asks;
+}
+
+/// What the messages' servers are owed is read off the parts the messages
+/// are kept in, and carried out by a window that reaches the account's
+/// server; each confirmation lands in the part holding its message.
+fn carry_owed(cx: &ViewCx<Mail>, window: &MailApp) {
+    let Some(chain) = cx.chain::<MessagePart>() else {
+        return;
+    };
+    window.shared.borrow_mut().chain = Some(chain.clone());
+    let outbox = window.server_outbox();
+    let reaches = reaches(window);
+    cx.owed(
+        &chain,
+        crate::part::owed,
+        move |update: &ServerUpdate| reaches(update.account()),
+        move |_, update: ServerUpdate, cx| {
+            let reply = cx.reply();
+            outbox.borrow_mut().push(
+                update,
+                Box::new(move |result| {
+                    reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+                }),
+            );
+            Ok(Effected::Pending)
+        },
+    );
+}
+
+/// Whether this window reaches the server of an account now: it talks to
+/// mail servers, and this device holds the account.
+fn reaches(window: &MailApp) -> impl Fn(&str) -> bool + 'static {
+    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
+    move |account| carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), account)
 }
 
 fn holds_account(state: &MailState, address: &str) -> bool {
@@ -104,13 +139,12 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         },
     );
     window.follow_projection(projection);
+    carry_owed(cx, &window);
     let outbox = window.server_outbox();
-    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
+    let reaches = reaches(&window);
     let delivery = cx.outbox(
         Mail::paths().outbox,
-        move |_, outgoing: &Outgoing| {
-            carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), &outgoing.account)
-        },
+        move |_, outgoing: &Outgoing| reaches(&outgoing.account),
         move |_, outgoing: Outgoing, cx| {
             let reply = cx.reply();
             outbox.borrow_mut().deliver(
@@ -192,26 +226,27 @@ fn draft_row(mail: &Mail, id: &str) -> Option<ui::framework::LiveRow> {
 }
 
 fn answer_effect(
-    room: &Rc<RefCell<Mailroom>>,
+    mailroom: &Rc<RefCell<Mailroom>>,
     effect: MailEffect,
     cx: &mut EffectCx<Mail>,
 ) -> EffectAnswer {
-    if let Some(answer) = crate::held::effect(&effect, &cx.live().get()) {
+    let messages = mailroom.borrow().shared.borrow().messages();
+    if let Some(answer) = crate::held::effect(&effect, &cx.live().get(), &messages) {
         return answer;
     }
     // Messages are read, searched and answered from what this device keeps
-    // of its servers and what the record holds, whatever a window shows.
+    // of its servers and what the resource holds, whatever a window shows.
     match &effect {
         MailEffect::SearchMessages { .. } => {
             let query = crate::search::MessageQuery::of(&effect)?;
-            let mail = cx.live().get();
-            return Ok(Effected::value(room.borrow().search_synced(&mail, &query)));
+            return Ok(Effected::value(
+                mailroom.borrow().search_synced(&messages, &query),
+            ));
         }
         MailEffect::ReadMessage { message } => {
-            let mail = cx.live().get();
-            let found = room
+            let found = mailroom
                 .borrow()
-                .synced_message(&mail, message)
+                .synced_message(&messages, message)
                 .ok_or_else(|| no_such_message(message))?;
             return Ok(Effected::value(super::message_read(&found)));
         }
@@ -222,7 +257,7 @@ fn answer_effect(
             notes,
         } => {
             return draft_reply(
-                room,
+                mailroom,
                 message,
                 body,
                 all.unwrap_or(false),
@@ -231,22 +266,24 @@ fn answer_effect(
             );
         }
         MailEffect::Content { message, index } => {
-            let mail = cx.live().get();
-            return room.borrow().attachment_content(&mail, message, *index);
+            return mailroom
+                .borrow()
+                .attachment_content(&messages, message, *index);
         }
         MailEffect::OpenAttachment {
             message,
             index,
             group,
         } => {
-            let mail = cx.live().get();
-            let handed = room.borrow().attachment_content(&mail, message, *index)?;
+            let handed = mailroom
+                .borrow()
+                .attachment_content(&messages, message, *index)?;
             return open_on_desktop(handed, group.as_deref(), cx);
         }
         _ => {}
     }
     if let MailEffect::Save { message, index } = &effect {
-        let (name, bytes) = room
+        let (name, bytes) = mailroom
             .borrow()
             .attachment_to_save(message, *index)
             .map_err(|cause| cause.message())?;
@@ -258,23 +295,23 @@ fn answer_effect(
         let request = PickRequest::save(&title, &accept, &name)
             .thread_name("mail-portal-save-attachment")
             .filter(FileFilter::all_files());
-        let room = Rc::clone(room);
+        let mailroom = Rc::clone(mailroom);
         return Ok(cx.save_file(request, bytes, move |(), saved, _| {
-            Ok(room
+            Ok(mailroom
                 .borrow_mut()
                 .finish_attachment_save(saved, &name, resource))
         }));
     }
-    let mut room = room.borrow_mut();
+    let mut mailroom = mailroom.borrow_mut();
     if matches!(effect, MailEffect::PrepareContactDraft { .. }) {
-        room.has_contact_draft_conflict = cx.live().get().has_draft();
+        mailroom.has_contact_draft_conflict = cx.live().get().has_draft();
     }
     let invocation = cx.invocation().unwrap_or_default();
-    let answer = room.begin_effect(invocation, effect)?;
+    let answer = mailroom.begin_effect(invocation, effect)?;
     if matches!(answer, Effected::Pending) {
-        room.await_effect(invocation, cx.reply());
+        mailroom.await_effect(invocation, cx.reply());
     }
-    room.dirty = true;
+    mailroom.dirty = true;
     Ok(answer)
 }
 
@@ -317,21 +354,21 @@ fn no_such_message(message: &str) -> String {
 }
 
 fn draft_reply(
-    room: &Rc<RefCell<Mailroom>>,
+    mailroom: &Rc<RefCell<Mailroom>>,
     message: &str,
     body: &str,
     all: bool,
     notes: Option<&str>,
     cx: &EffectCx<Mail>,
 ) -> EffectAnswer {
-    let mail = cx.live().get();
-    let room = room.borrow();
-    let answered = room
-        .synced_message(&mail, message)
+    let mailroom = mailroom.borrow();
+    let messages = mailroom.shared.borrow().messages();
+    let answered = mailroom
+        .synced_message(&messages, message)
         .ok_or_else(|| no_such_message(message))?;
     let mut drafted = crate::held::Drafted::reply(&answered, body, all, &answered.account);
     notes.unwrap_or("").clone_into(&mut drafted.notes);
-    drafted.sender = room.sender_for(&answered.account);
+    drafted.sender = mailroom.sender_for(&answered.account);
     let id = uuid::Uuid::new_v4().to_string();
     let create = crate::resource::mailbox::CreateDraft {
         id: id.clone(),
@@ -347,8 +384,8 @@ fn draft_reply(
         notes: Some(drafted.notes),
     };
     // What the verb would refuse is refused here, so the answer never
-    // claims a draft the record did not take.
-    let mut probe = (*mail).clone();
+    // claims a draft the resource did not take.
+    let mut probe = (*cx.live().get()).clone();
     probe
         .create_draft(
             create.id.clone(),
@@ -370,7 +407,11 @@ impl Mailroom {
         self.engine.is_some()
     }
 
-    pub(crate) fn synced_message(&self, mail: &Mail, item: &str) -> Option<crate::model::Message> {
+    pub(crate) fn synced_message(
+        &self,
+        mail: &MessagePart,
+        item: &str,
+    ) -> Option<crate::model::Message> {
         if let Some(held) = mail.held_shown(item) {
             return Some(held);
         }
@@ -383,7 +424,7 @@ impl Mailroom {
 
     pub(crate) fn search_synced(
         &self,
-        mail: &Mail,
+        mail: &MessagePart,
         query: &crate::search::MessageQuery,
     ) -> serde_json::Value {
         let shared = self.shared.borrow();
@@ -420,7 +461,7 @@ impl Mailroom {
 
     pub(crate) fn attachment_content(
         &self,
-        mail: &Mail,
+        mail: &MessagePart,
         message: &str,
         index: usize,
     ) -> EffectAnswer {

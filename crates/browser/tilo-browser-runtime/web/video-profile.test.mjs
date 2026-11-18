@@ -40,6 +40,6 @@ test('a layer keeps its source shape within its box, and a screen has no middle 
   assert.throws(() => videoTrack('screen', 'mid'));
 });
 
-test('pictures travel the local media lane in base64', () => {
+test('pictures travel the local media queue in base64', () => {
   assert.equal(base64Of(Uint8Array.of(1, 0, 1, 1, 0xff, 0x80)), 'AQABAf+A');
 });

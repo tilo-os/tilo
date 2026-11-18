@@ -179,7 +179,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     store.upsert(original.clone());
     root.save_store(&store).unwrap();
     let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
-    // A headless host does not take in the device's file; seed its record instead.
+    // A headless host does not take in the device's file; seed its resource instead.
     let person = app
         .shared_person::<accounts::person::PersonAccounts>()
         .unwrap();
@@ -204,7 +204,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
             .store()
             .len(),
         2,
-        "personal account record includes the import"
+        "personal account resource includes the import"
     );
     assert_eq!(stored.len(), 2);
     assert_eq!(stored.get(&original.id), Some(&original));
@@ -229,7 +229,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
             .store()
             .len(),
         2,
-        "reopened personal record retains the import"
+        "reopened personal resource retains the import"
     );
     assert_eq!(root.store().get(&pending.id), Some(pending));
     assert!(

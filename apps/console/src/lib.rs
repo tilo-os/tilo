@@ -8,9 +8,9 @@ mod agent_card;
 mod agents;
 mod client;
 mod connect;
+mod console;
 mod effects;
 pub mod locales;
-mod record;
 #[cfg(feature = "samples")]
 mod sample;
 mod usage;
@@ -27,8 +27,8 @@ use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, NavItem, NavSection};
 
+pub use console::Console;
 pub use effects::ConsoleEffect;
-pub use record::Console;
 
 /// What the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -170,9 +170,9 @@ impl Reads {
 
 /// A server the app reads and asks through: the workspaces' history or the MCP server.
 #[derive(Clone)]
-pub(crate) struct Records(ResourceEnv<Console>);
+pub(crate) struct Resources(ResourceEnv<Console>);
 
-impl Records {
+impl Resources {
     pub(crate) fn of(cx: &ViewCx<Console>) -> Self {
         Self(ResourceEnv::clone(cx))
     }
@@ -308,7 +308,7 @@ impl ResourceApp for App {
             let stage = nav.clone();
             cx.on_stage(move |scenario| sample::stage(scenario, &stage));
         }
-        let records = Records::of(cx);
+        let records = Resources::of(cx);
         let reads = Reads {
             sessions: records.follow_history(wire::SESSIONS, &agents::query()),
             server: records.follow_server(),

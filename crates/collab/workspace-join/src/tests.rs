@@ -174,13 +174,31 @@ fn an_invitation_names_its_inviter_under_the_issuer_signature() {
             .contains("signature")
     );
 
-    for name in ["", " Ada", &"x".repeat(81)] {
+    for name in [" Ada", &"x".repeat(81), "\t"] {
         let inviter = Inviter {
             user_public_key: [0; 32],
             name: name.into(),
         };
         assert!(issue_invitation_from(grant.clone(), inviter, &device).is_err());
     }
+
+    // A person whose name the workspace knows none of is named by their key
+    // alone: the invitation carries no name rather than one made of it.
+    let signed = issue_invitation_from(
+        grant,
+        Inviter {
+            user_public_key: [0; 32],
+            name: String::new(),
+        },
+        &device,
+    )
+    .unwrap();
+    let verified = decode_and_verify_invitation(&signed, None, &RevocationList::new(), 2).unwrap();
+    let unnamed = verified
+        .inviter()
+        .expect("a key names who asked, with no name");
+    assert_eq!(unnamed.user_public_key, [0; 32]);
+    assert_eq!(unnamed.name, "");
 }
 
 /// A member's device, an invitee's device and a grant one issues, for the

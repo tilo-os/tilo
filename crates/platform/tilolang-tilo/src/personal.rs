@@ -2,11 +2,11 @@
 //! have seen.
 //!
 //! The runtime holds those slots while a window is open ([`tilolang_runtime::view_state`]); this
-//! resource is the record they are kept in, so what a person picked is still theirs after a
-//! restart and reaches their other devices. It is the workspace's record of the kind
-//! `tilolang.personal` ([`tilolang::PERSONAL_RECORD_KIND`]), kept by the language's host app
-//! ([`OWNER`]) and opened by every tilolang app's window: one record per workspace, synced to
-//! every member like any record and decided by the workspace's grants like any record's changes.
+//! resource is the document they are kept in, so what a person picked is still theirs after a
+//! restart and reaches their other devices. It is the workspace's document of the kind
+//! `tilolang.personal` ([`tilolang::PERSONAL_RESOURCE_TYPE`]), kept by the language's host app
+//! ([`OWNER`]) and opened by every tilolang app's window: one document per workspace, synced to
+//! every member like any document and decided by the workspace's grants like any document's changes.
 //!
 //! Each person's entries are theirs, under `$personal/<person>`:
 //!
@@ -16,7 +16,7 @@
 //! $personal/<person>/runs/<run>                            a run they reviewed
 //! ```
 //!
-//! A record kept while a view's state was still split into two kinds holds each value one map
+//! A document kept while a view's state was still split into two kinds holds each value one map
 //! deeper, under `<window>/<window|lens>/<state>`; it reads as the same state, and the place
 //! this build keeps wins where it holds one ([`Keep::View`]).
 //!
@@ -38,12 +38,12 @@ use tilolang_runtime::seen::SeenMark;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::view_state::StateKey;
 
-/// The record kind of the workspace's record of each person's own state. The spelling is what
-/// records on disk carry, so it stays.
-pub const KIND: &str = tilolang::PERSONAL_RECORD_KIND;
+/// The document kind of the workspace's document of each person's own state. The spelling is what
+/// documents on disk carry, so it stays.
+pub const KIND: &str = tilolang::PERSONAL_RESOURCE_TYPE;
 
-/// The app that keeps the record: the tilolang host's own, since the state is of the windows it
-/// runs rather than of one package, and every package of a workspace shares the one record.
+/// The app that keeps the document: the tilolang host's own, since the state is of the windows it
+/// runs rather than of one package, and every package of a workspace shares the one document.
 pub const OWNER: &str = tilolang::HOST_APP;
 
 /// The verb keeping one slot of view state.
@@ -53,9 +53,9 @@ pub const SEEN: &str = "seen";
 /// The verb keeping the runs a person reviewed.
 pub const RUNS: &str = "seen-runs";
 /// The verb a delivered reminder was kept by. Retired with the reminder scheduler: a reminder is
-/// now an effect an app schedules through `uses`, so the record no longer keeps deliveries.
+/// now an effect an app schedules through `uses`, so the document no longer keeps deliveries.
 pub const REMINDED: &str = "reminded";
-/// Where the record keeps its own state, apart from anything else it holds.
+/// Where the document keeps its own state, apart from anything else it holds.
 const PERSONAL: &str = "$personal";
 const VIEWS: &str = "views";
 const SEEN_MARKS: &str = "seen";
@@ -70,7 +70,7 @@ pub fn in_window(tab: u64, view: &str) -> String {
     format!("{tab}/{view}")
 }
 
-/// The view whose state the record keeps under `kept` for the window of the tab `tab`, as
+/// The view whose state the document keeps under `kept` for the window of the tab `tab`, as
 /// [`in_window`] writes it; `None` for another window's.
 #[must_use]
 pub fn of_window(tab: u64, kept: &str) -> Option<&str> {
@@ -83,13 +83,13 @@ pub fn actor(id: &str) -> Actor {
     Actor::Member(MemberId::person(id))
 }
 
-/// The person `who` is, when they are one: whose own state the record keeps.
+/// The person `who` is, when they are one: whose own state the document keeps.
 #[must_use]
 pub fn person_of(who: &Actor) -> Option<&str> {
     who.member_id()?.person_id()
 }
 
-/// One slot of the person's view state, as the runtime keys it and as their record keeps it.
+/// One slot of the person's view state, as the runtime keys it and as their document keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
     /// Whose state it is.
@@ -130,7 +130,7 @@ pub struct Reviewed {
     pub run: String,
 }
 
-/// What the workspace's record of each person's own state holds: the window and lens state they
+/// What the workspace's document of each person's own state holds: the window and lens state they
 /// set, what they have seen, and the runs they reviewed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonalState {
@@ -176,7 +176,7 @@ impl PersonalState {
     }
 }
 
-/// The workspace's record of each person's own state of an app's windows, as the framework
+/// The workspace's document of each person's own state of an app's windows, as the framework
 /// keeps it.
 pub struct Personal;
 
@@ -232,7 +232,7 @@ fn declaration(verb: &'static str, label: &'static str) -> ActionDecl<Personal> 
 /// The parameter the one change of a verb is bound to.
 const KEEP: &str = "keep";
 
-/// One piece of a person's own state of the workspace, as a change to the record keeps it.
+/// One piece of a person's own state of the workspace, as a change to the document keeps it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "keep", rename_all = "kebab-case")]
 pub enum Keep {
@@ -385,13 +385,13 @@ impl Action for Keep {
     }
 }
 
-/// The maps a record kept a window's state in while a view's state was still split into two
+/// The maps a document kept a window's state in while a view's state was still split into two
 /// kinds: how its window showed the resource, and where its person was in it. The names are
-/// what those records carry, so they stay.
+/// what those documents carry, so they stay.
 const SPLIT: [&str; 2] = ["window", "lens"];
 
 /// The map under `key` of `parent`, made when absent; the copies of it a replica made before it
-/// met the others are folded into the one the record keeps ([`crate::containers`]).
+/// met the others are folded into the one the document keeps ([`crate::containers`]).
 fn ensure_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
     crate::containers::single(doc, parent, key)
 }
@@ -402,7 +402,7 @@ fn map_at(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
         Ok(Some((automerge::Value::Object(ObjType::Map), id))) => Some(id),
         Ok(_) => None,
         Err(error) => {
-            tracing::warn!(%error, "personal: a map the record keeps does not read");
+            tracing::warn!(%error, "personal: a map the document keeps does not read");
             None
         }
     }
@@ -432,8 +432,8 @@ fn view_slot(text: &str) -> Option<Value> {
         .ok()
 }
 
-/// The maps `parent` holds at `key`, the one the record keeps first: a replica that kept a map
-/// of its own before it met the others wrote into a copy the record does not keep, and what it
+/// The maps `parent` holds at `key`, the one the document keeps first: a replica that kept a map
+/// of its own before it met the others wrote into a copy the document does not keep, and what it
 /// wrote is the person's all the same ([`crate::containers`]).
 fn kept_first(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
     let mut held = crate::containers::maps(doc, parent, key);
@@ -441,7 +441,7 @@ fn kept_first(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
     held
 }
 
-/// The people the record holds any state of, each with a copy of their map, the one the record
+/// The people the document holds any state of, each with a copy of their map, the one the document
 /// keeps first: a person's map is made twice when two devices of theirs wrote it at once.
 fn people(doc: &Doc) -> Vec<(String, ObjId)> {
     let mut people = Vec::new();
@@ -458,7 +458,7 @@ fn people(doc: &Doc) -> Vec<(String, ObjId)> {
 }
 
 /// The states a window keeps in `place`: the place this build keeps them at, then the two maps
-/// a record kept before it did, each state once and the newer place first.
+/// a document kept before it did, each state once and the newer place first.
 fn place_states(doc: &Doc, place: &ObjId) -> Vec<(String, Value)> {
     let mut found = Vec::new();
     let collect = |slots_of: &ObjId, found: &mut Vec<(String, Value)>| {
@@ -481,7 +481,7 @@ fn place_states(doc: &Doc, place: &ObjId) -> Vec<(String, Value)> {
     found
 }
 
-/// Every slot of view state the record keeps, of everyone, each state once. Every copy of a
+/// Every slot of view state the document keeps, of everyone, each state once. Every copy of a
 /// person's map is read, so a state a replica set before it met the others is theirs, until the
 /// next write keeps it.
 fn slots(doc: &Doc) -> Vec<Slot> {
@@ -511,7 +511,7 @@ fn slots(doc: &Doc) -> Vec<Slot> {
     found
 }
 
-/// The seen marks the record keeps, of everyone, per resource.
+/// The seen marks the document keeps, of everyone, per resource.
 fn marks(doc: &Doc) -> Result<Vec<Seen>, ModelError> {
     let mut marks: Vec<Seen> = Vec::new();
     for (person, held) in people(doc) {
@@ -566,7 +566,7 @@ mod tests {
     use super::*;
     use tilo_actions::ActionContext;
 
-    /// `keep` applied as `actor`'s change: as the record's own window applies it.
+    /// `keep` applied as `actor`'s change: as the document's own window applies it.
     fn apply_as(doc: &mut Doc, actor: &str, keep: &Keep) -> Result<(), String> {
         let encoded = tilo_resource::encode::<Personal>(keep).map_err(|e| e.to_string())?;
         let context = ActionContext::for_resource(KIND, KIND, Personal::LABEL)
@@ -631,7 +631,7 @@ mod tests {
                     },
                 ),
             ]);
-            let state = Personal::read(&doc).expect("the record reads");
+            let state = Personal::read(&doc).expect("the document reads");
             let theirs = state.of("ada");
             assert_eq!(theirs.slots.len(), 2);
             assert_eq!(
@@ -649,12 +649,12 @@ mod tests {
             assert_eq!(theirs.runs[0].run, "run-7");
         }
 
-        phase state_a_record_kept_under_the_two_old_maps_still_reads;
+        phase state_a_document_kept_under_the_two_old_maps_still_reads;
         {
             let mut doc = Doc::new();
             kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
             kept_under_the_split(&mut doc, "ada", "tasks", "lens", "draft", "\"hi\"");
-            let state = Personal::read(&doc).expect("the record reads");
+            let state = Personal::read(&doc).expect("the document reads");
             let theirs = state.of("ada");
             assert_eq!(theirs.slots.len(), 2);
             let value = |name: &str| {
@@ -682,7 +682,7 @@ mod tests {
                 &view("ada", "tasks", "order", Json::from("created")),
             )
             .expect("the change applies");
-            let state = Personal::read(&doc).expect("the record reads");
+            let state = Personal::read(&doc).expect("the document reads");
             assert_eq!(state.slots.len(), 1, "one state, read once");
             assert_eq!(state.slots[0].value, Value::text("created"));
         }
@@ -693,14 +693,14 @@ mod tests {
                 ("ada", view("ada", "tasks", "place", Json::from("inbox"))),
                 ("ada", view("ada", "tasks", "place", Json::from("today"))),
             ]);
-            let state = Personal::read(&doc).expect("the record reads");
+            let state = Personal::read(&doc).expect("the document reads");
             assert_eq!(state.of("ada").slots.len(), 1);
             assert_eq!(state.of("ada").slots[0].value, Value::text("today"));
         }
 
-        phase a_record_that_kept_no_state_reads_as_none;
+        phase a_document_that_kept_no_state_reads_as_none;
         {
-            let state = Personal::read(&Doc::new()).expect("an empty record reads");
+            let state = Personal::read(&Doc::new()).expect("an empty document reads");
             assert!(state.is_empty(), "{state:?}");
         }
 
@@ -731,7 +731,7 @@ mod tests {
                 2,
                 "the devices made a map each"
             );
-            let state = Personal::read(&doc).expect("the record reads");
+            let state = Personal::read(&doc).expect("the document reads");
             let theirs = state.of("ada");
             let mut places: Vec<String> = theirs
                 .slots
@@ -763,14 +763,14 @@ mod tests {
                 1,
                 "her window's state is in one map from that change on"
             );
-            let state = Personal::read(&doc).expect("the record reads");
+            let state = Personal::read(&doc).expect("the document reads");
             assert_eq!(state.of("ada").slots.len(), 3);
             assert_eq!(state.of("ada").seen.len(), 1);
             assert_eq!(state.of("ada").runs.len(), 1);
         }
     }
 
-    /// The maps a record kept a window's state in before a view's state was one kind.
+    /// The maps a document kept a window's state in before a view's state was one kind.
     fn kept_under_the_split(
         doc: &mut Doc,
         person: &str,
@@ -796,8 +796,8 @@ mod tests {
                 ("ada", view("ada", "tasks", "place", Json::from("today"))),
                 ("bo", view("bo", "tasks", "place", Json::from("inbox"))),
             ]);
-            let state = Personal::read(&doc).expect("the record reads");
-            assert_eq!(state.slots.len(), 2, "one record holds both");
+            let state = Personal::read(&doc).expect("the document reads");
+            assert_eq!(state.slots.len(), 2, "one document holds both");
             assert_eq!(
                 state.of("ada").slots[0].value,
                 Value::text("today"),
@@ -818,7 +818,7 @@ mod tests {
             .expect_err("bo keeps no state of ada's");
             assert!(error.contains("their own state"), "{error}");
             assert!(
-                Personal::read(&doc).expect("the record reads").is_empty(),
+                Personal::read(&doc).expect("the document reads").is_empty(),
                 "nothing was kept"
             );
         }
@@ -907,7 +907,7 @@ mod tests {
                 },
             ),
         ]);
-        let state = Personal::read(&doc).expect("the record reads");
+        let state = Personal::read(&doc).expect("the document reads");
         let theirs = state.of("ada");
         assert!(theirs.seen.is_empty(), "{theirs:?}");
         assert_eq!(
@@ -920,7 +920,7 @@ mod tests {
     }
 
     /// How many of the maps `doc` holds at `key` of `parent` hold anything: a fold empties the
-    /// copies it folded and leaves them in place, so the record holds one map with entries in
+    /// copies it folded and leaves them in place, so the document holds one map with entries in
     /// it from that write on.
     fn holding(doc: &Doc, parent: &ObjId, key: &str) -> usize {
         crate::containers::maps(doc, parent, key)

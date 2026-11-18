@@ -1,4 +1,4 @@
-//! A stream's frames: the lane and source they belong to, the track they are
+//! A stream's frames: the kind of stream and the source they belong to, the track they are
 //! sealed under, sealing them, and opening what arrives.
 
 use collab_types::scope::Scope;
@@ -80,34 +80,34 @@ pub enum Refusal {
     Primitive,
 }
 
-/// What a plane seals and opens under.
+/// What a live session seals and opens under.
 ///
 /// A device that holds its scope's channel content keys seals every stream of
-/// every sender with them ([`PlaneKeys::Channel`]). A device that may not hold
+/// every sender with them ([`LiveKeys::Channel`]). A device that may not hold
 /// them — a hosted machine confined to its own record — is handed the media
-/// keys of exactly its own streams at one epoch ([`PlaneKeys::Sender`]): it
+/// keys of exactly its own streams at one epoch ([`LiveKeys::Sender`]): it
 /// seals what it was given, and it opens nobody's frames, its own included.
 #[derive(Clone)]
-pub enum PlaneKeys {
+pub enum LiveKeys {
     /// The scope's channel content keys.
     Channel(ContentKeys),
     /// One sender's media keys, for the streams it may publish.
     Sender(SenderMediaKeys),
 }
 
-impl From<ContentKeys> for PlaneKeys {
+impl From<ContentKeys> for LiveKeys {
     fn from(keys: ContentKeys) -> Self {
         Self::Channel(keys)
     }
 }
 
-impl From<SenderMediaKeys> for PlaneKeys {
+impl From<SenderMediaKeys> for LiveKeys {
     fn from(keys: SenderMediaKeys) -> Self {
         Self::Sender(keys)
     }
 }
 
-impl PlaneKeys {
+impl LiveKeys {
     /// The epoch these keys seal under.
     #[must_use]
     pub fn epoch(&self) -> u64 {
@@ -138,15 +138,15 @@ impl PlaneKeys {
     }
 }
 
-/// Which lane of a call a frame travels on.
+/// Which kind of stream of a call a frame travels on.
 ///
-/// Voice travels on the workspace's live plane, not on a lane; the place its
+/// Voice travels on the workspace's live session, not on a stream of a call; the place its
 /// variant held is kept so a hello written before still reads.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub enum Lane {
-    /// The lane voice was carried on, retired.
+pub enum StreamKind {
+    /// The stream voice was carried on, retired.
     RetiredAudio,
     /// Pictures, on unidirectional streams, one per source, layer and group
     /// of pictures.
@@ -192,20 +192,20 @@ impl Stream {
     pub const fn tag(self) -> [u8; MEDIA_STREAM_TAG_LEN] {
         const AUDIO: u8 = 0;
         const VIDEO: u8 = 1;
-        const PLANE: u8 = 2;
+        const LIVE_SESSION: u8 = 2;
         match self {
             Self::Microphone => [AUDIO, 0],
             Self::Camera => [VIDEO, 0],
             Self::Screen => [VIDEO, 1],
             Self::Presence => [AUDIO, 1],
-            Self::Window => [PLANE, 0],
-            Self::Page => [PLANE, 3],
-            Self::Input => [PLANE, 1],
-            Self::Activity => [PLANE, 2],
+            Self::Window => [LIVE_SESSION, 0],
+            Self::Page => [LIVE_SESSION, 3],
+            Self::Input => [LIVE_SESSION, 1],
+            Self::Activity => [LIVE_SESSION, 2],
         }
     }
 
-    /// The track a call lane seals this stream's frames as. The live plane
+    /// The track a call stream seals this stream's frames as. The live session
     /// names its tracks finer (one per window, camera layer and screen layer)
     /// and passes its own name to [`Sealer::new`].
     #[must_use]
@@ -251,7 +251,7 @@ impl Sealer {
     /// was handed — and [`Refusal::Primitive`] if the cipher cannot be built
     /// for the key.
     pub fn new(
-        keys: &PlaneKeys,
+        keys: &LiveKeys,
         sender: [u8; 32],
         stream: Stream,
         track: TrackName,
@@ -301,14 +301,14 @@ impl Sealer {
 /// What opens the frames a call receives: the keys frames are sealed under,
 /// and who may send.
 pub struct Opener {
-    keys: PlaneKeys,
+    keys: LiveKeys,
     roster: Roster,
 }
 
 impl Opener {
     /// Open frames under `keys`, from the devices `roster` names.
     #[must_use]
-    pub const fn new(keys: PlaneKeys, roster: Roster) -> Self {
+    pub const fn new(keys: LiveKeys, roster: Roster) -> Self {
         Self { keys, roster }
     }
 
@@ -348,7 +348,7 @@ impl Opener {
         let (seq, sealed) = rest.split_first_chunk::<4>().ok_or(Refusal::Truncated)?;
         let epoch = u64::from_le_bytes(*epoch);
         let seq = u32::from_le_bytes(*seq);
-        if matches!(&self.keys, PlaneKeys::Sender(_)) {
+        if matches!(&self.keys, LiveKeys::Sender(_)) {
             // A device handed only its own media keys holds nobody's: it
             // opens nothing, not even frames it sealed itself.
             return Err(Refusal::NoKey(epoch));
@@ -395,7 +395,7 @@ mod tests {
             .unwrap()
     }
 
-    fn sealer(keys: &PlaneKeys, track: &str) -> Sealer {
+    fn sealer(keys: &LiveKeys, track: &str) -> Sealer {
         let name = TrackName::new(&Scope::workspace(WORKSPACE), track);
         Sealer::new(keys, DEVICE, Stream::Presence, name).unwrap()
     }
@@ -416,7 +416,7 @@ mod tests {
         // nonce taken from the sequence would seal both under one keystream:
         // the XOR of the ciphertexts would be the XOR of the plaintexts.
         {
-            let keys = PlaneKeys::from(keys());
+            let keys = LiveKeys::from(keys());
             let first = sealer(&keys, "presence");
             let second = sealer(&keys, "presence");
             let other_track = sealer(&keys, "presence/2");
@@ -454,7 +454,7 @@ mod tests {
             let handed = channel
                 .sender_media_keys(epoch, DEVICE, &[Stream::Presence.tag(), Stream::Page.tag()])
                 .unwrap();
-            let keys = PlaneKeys::from(handed);
+            let keys = LiveKeys::from(handed);
             assert!(Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone()).is_ok());
             assert!(
                 Sealer::new(
@@ -482,7 +482,7 @@ mod tests {
                 .unwrap()
                 .seal(1, b"here")
                 .unwrap();
-            let member = Opener::new(PlaneKeys::from(channel), Roster::new([DEVICE]));
+            let member = Opener::new(LiveKeys::from(channel), Roster::new([DEVICE]));
             assert_eq!(
                 member
                     .open(DEVICE, Stream::Presence, &presence, &sealed)
@@ -500,7 +500,7 @@ mod tests {
 
         phase a_sealed_frame_opens_only_as_its_sender_stream_track_and_sequence;
         {
-            let keys = PlaneKeys::from(keys());
+            let keys = LiveKeys::from(keys());
             let scope = Scope::workspace(WORKSPACE);
             let name = TrackName::new(&scope, "presence");
             let frame = sealer(&keys, "presence").seal(7, b"here").unwrap();

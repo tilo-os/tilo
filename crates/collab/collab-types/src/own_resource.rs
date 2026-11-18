@@ -100,7 +100,7 @@ impl OwnResource {
 }
 
 /// The kinds `app`'s manifest declares each member keeps as their own
-/// (`[resources] own`, a tilolang package's `records: .own`): a built-in
+/// (`[resources] own`, a tilolang package's `resources: .own`): a built-in
 /// app's or package's as the build carries them, a package installed since as
 /// its surface marks them ([`crate::app_surface::own_resource_types`]).
 #[must_use]
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(
             OwnResource::recognise("so.tilo.shell", &package.document_id(), [3; 32]),
             Some(package),
-            "a built-in tilolang package declaring `records: .own` keeps its record kind as each member's own"
+            "a built-in tilolang package declaring `resources: .own` keeps its record kind as each member's own"
         );
     }
 }

@@ -46,11 +46,11 @@ fn durable_fixture(
     identity_env
         .set("XDG_CONFIG_HOME", root.join("config"))
         .set("TILO_IDENTITY_ROOT", root.join("identity"))
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &root.join("config/tilo/identity"),
         &tilo_user_identity::IdentityPaths::under(root.join("identity")),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
+        tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("provision the host admission and terminal receipt signer");
     let root_key = SigningKey::from_bytes(&[51; 32]);
@@ -141,7 +141,7 @@ fn effect(root: &std::path::Path) {
 }
 
 /// Status, retry and the effect barrier re-verify the caller's own
-/// custody. A delegated caller's recheck must pass while it stays the
+/// ownership. A delegated caller's recheck must pass while it stays the
 /// same person on the same device, and every other continuation — the
 /// person without that delegation, or another agent — must be refused
 /// by the same sites.
@@ -229,7 +229,7 @@ async fn a_delegated_callers_continuation_passes_reverification_and_others_do_no
                 assert_ne!(retried.key, started.key);
             }
             assert!(fixture.invocation_rx.try_recv().is_err());
-            // Retry: the same request under the agent's custody is the
+            // Retry: the same request under the agent's ownership is the
             // same admission, never a second delivery.
             let retry = fixture
                 .state
@@ -559,7 +559,7 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                 .complete_invocation(delivered_id, &terminal)
                 .await
                 .unwrap();
-            // Discard the original response and retry under freshly verified caller custody.
+            // Discard the original response and retry under freshly verified caller ownership.
             let duplicate = fixture
                 .state
                 .start_verified_invocation(&caller, &request, None)
@@ -859,7 +859,7 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let recording = Arc::new(Recording(Mutex::new(Vec::new())));
-            let services = HostServices {
+            let services = ProcessServices {
                 launcher: Some(recording.clone()),
                 ..Default::default()
             };
@@ -889,7 +889,7 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
                 vec![("so.tilo.notes".to_owned(), "workspace-7".to_owned())]
             );
             assert!(
-                invocation_delivery_notice(&HostServices::default(), "a".into(), "r".into())
+                invocation_delivery_notice(&ProcessServices::default(), "a".into(), "r".into())
                     .is_none(),
                 "a host without a launcher has no one to tell"
             );

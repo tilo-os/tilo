@@ -77,6 +77,7 @@ pub mod surface;
 pub mod units;
 pub mod validator;
 pub mod workspace_document;
+pub mod workspace_grant;
 pub mod workspace_id;
 
 /// The URI scheme that asks an app to open one of its own documents
@@ -91,16 +92,16 @@ pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 pub use artifact::ArtifactId;
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    Access, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, ResourceRef,
-    Scope, decide_app, decide_capability, host_covers, path_covers,
+    Access, CapDecision, CapOverride, DeviceCap, Effect, Expiry, FsAuthority, LaunchGrants,
+    ResourceRef, Scope, decide_app, decide_capability, host_covers, path_covers,
 };
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
     claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
 };
 pub use commit::{
-    COMMIT_RECORD_KIND, COMMIT_VERSION, COMMIT_VERSION_NAMED_ACTION, CommitAuthor, CommitError,
-    CommitGroup, CommitPart, MAX_COMMIT_BYTES, UnitMutation, WorkspaceCommit,
+    COMMIT_VERSION, CommitAuthor, CommitError, CommitGroup, CommitPart, MAX_COMMIT_BYTES,
+    UnitMutation, WorkspaceCommit,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SEGMENTED_COMPACTION_VERSION,

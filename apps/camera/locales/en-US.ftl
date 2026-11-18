@@ -1,6 +1,6 @@
 # Camera — source locale (en-US).
 
-## History: what each change to the camera's record did
+## History: what each change to the camera's resource did
 
 camera-register-capture = Took a photo or a video
 camera-record-scan = Scanned { $raw }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source this so the package gate receives the freshly observed host cohort.
+# Source this so the package check receives the freshly observed host cohort.
 [ "${1:-}" = --features ] && [ -n "${2:-}" ] \
     || { echo 'capture host build requires --features FEATURE' >&2; exit 1; }
 capture_host_feature="$2"
@@ -23,5 +23,5 @@ else
 fi
 # Pairing is native Linux only; all Linux host formats need the canonical helper.
 if [ "$(uname -s)" = Linux ]; then
-    "${CARGO:-cargo}" build --locked --release -p tilo-relay --bin tilo-enroll
+    "${CARGO:-cargo}" build --locked --release -p tilo-server --bin tilo-enroll
 fi

@@ -18,6 +18,8 @@ public enum PersonProvider: String, Sendable, CaseIterable {
     case asking = "tilo.asking"
     /// What the agents their host runs have learned about the person.
     case learned = "tilo.learned"
+    /// The services the person connected by their address, and signing in to one.
+    case connections = "tilo.connections"
 }
 
 /// What a person typed into a protected field, on its way to their host. It says nothing of
@@ -180,7 +182,7 @@ extension TiloEngine {
     /// The person's own workspace on this host, which the host makes the first time it is asked
     /// for, with this device in it: its route for `open(route:)`, and its name.
     public func ownWorkspace() async throws -> (route: String, name: String) {
-        let answer = try await ask("return globalThis.__tiloLive.own(given)", ["given": pass])
+        let answer = try await ask("return globalThis.__tiloLive.own(given)", patience: ownPatience, ["given": pass])
         guard let id = answer["id"]?.string, !id.isEmpty else { throw Problem.noAnswer }
         // A workspace of a named host is written `/@<host>/w/<id>`, the host as its origin names it.
         let host = answer["origin"]?.string.flatMap { URLComponents(string: $0) }.flatMap { parts -> String? in
@@ -194,7 +196,10 @@ extension TiloEngine {
 
     /// The providers the person linked and the model each kind of work runs on.
     public func modelProviders() async throws -> ModelProviders {
-        ModelProviders(try await ask(.models, "list", of: "models"))
+        let answer = try await ask(.models, "list", of: "models")
+        // An answer with no list in it says nothing of what the person linked: it is no answer.
+        guard answer["providers"]?.array != nil else { throw Problem.noAnswer }
+        return ModelProviders(answer)
     }
 
     /// Link a provider the host's catalogue knows (`anthropic`, `gemini`, `openai`, `openrouter`).
@@ -236,11 +241,24 @@ extension TiloEngine {
         return ModelProviders(try await ask(.models, "set-assignments", of: "models", arguments))
     }
 
+    // MARK: The person's events
+
+    /// Set up something that happens at a time, or when something else does: what its person
+    /// reads it by, what starts it (`once at 2026-11-17T11:32:00Z`, `every day at 09:00`, or a
+    /// change in the workspace), and what their assistant is told to do then.
+    @discardableResult
+    public func setUpEvent(name: String, when: String, instruction: String) async throws -> JSON {
+        try await ask(.events, "set-up", of: "events",
+                      ["name": .string(name), "when": .string(when), "instruction": .string(instruction)])
+    }
+
     // MARK: The person's vault
 
     /// What is safe to say of every item the vault keeps, oldest first.
     public func vaultItems() async throws -> [VaultItem] {
-        (try await ask(.vault, "list", of: "vault")["items"]?.array ?? []).compactMap(VaultItem.init)
+        // An answer with no list in it says nothing of what the vault keeps: it is no answer.
+        guard let items = try await ask(.vault, "list", of: "vault")["items"]?.array else { throw Problem.noAnswer }
+        return items.compactMap(VaultItem.init)
     }
 
     /// Keep what the person typed into a protected field in their vault on their host, and

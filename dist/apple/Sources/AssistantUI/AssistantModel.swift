@@ -18,6 +18,37 @@ public final class AssistantModel {
         case active, upNext, scheduled, resolved
     }
 
+    /// The provider step as a person comes back to it after the first start.
+    public struct KeyStep: Equatable, Sendable {
+        /// The providers it offers: the linked ones and the ones that can be linked.
+        public var providers: [ProviderChoice]
+        /// The one its protected field is for when it appears.
+        public var picked: ProviderChoice.ID
+    }
+
+    /// A way back to the provider step, as the assistant view's Model line offers it under the models.
+    public enum KeyWay: Equatable, Sendable, Identifiable {
+        /// Another key for a provider that is linked.
+        case anotherKey(ProviderChoice)
+        /// A provider that is not linked yet.
+        case anotherProvider
+
+        public var id: String {
+            switch self {
+            case .anotherKey(let provider): "key-\(provider.id.value)"
+            case .anotherProvider: "provider"
+            }
+        }
+
+        /// The line's words.
+        public var words: String {
+            switch self {
+            case .anotherKey(let provider): AssistantWords.anotherKey.said(["name": provider.name])
+            case .anotherProvider: AssistantWords.linkAnother.said
+            }
+        }
+    }
+
     @ObservationIgnored public let source: any AssistantSource
     /// Nil until the source has said where this device stands.
     public private(set) var session: Session?
@@ -28,6 +59,17 @@ public final class AssistantModel {
     public private(set) var supervision = Supervision()
     public private(set) var conversations: [Chat: Conversation] = [:]
     public private(set) var models: [ModelChoice] = []
+    /// The providers a key can be typed for, as the source listed them: linked, or to link.
+    public private(set) var providers: [ProviderChoice] = []
+    /// The provider step shown in the main chat again after the first start: the person asked
+    /// for it from the assistant view, for another key or another provider. Nil: not shown.
+    public private(set) var keyStep: KeyStep?
+    /// What stands between the person and their assistant's first answer.
+    public private(set) var setup = Setup.unknown
+    /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
+    public private(set) var pairingSaid: [String] = []
+    /// What the person was told while no device of theirs was looking. Nil: nothing to say of it.
+    public private(set) var sinceLeft: SinceLeft?
 
     public var place = Place.chat(.main)
     public var showsSidebar = true
@@ -45,11 +87,23 @@ public final class AssistantModel {
     public var shownItem: Item.ID?
     /// Counts up each time the message field should take the caret.
     public private(set) var fieldCalls = 0
+    /// The replies that stand open under a task's line, by the piece the line stands before.
+    public private(set) var openReplies: [Item.ID: [Item]] = [:]
+    /// The conversations in which a message the person sent from here was taken up by no turn
+    /// for `takeUpPatience`. A quiet line says so under the message, until a turn begins.
+    private var notTakenUp: Set<Chat> = []
+    /// How long a message the person sent may stand with no turn taking it up before the
+    /// conversation says so.
+    @ObservationIgnored var takeUpPatience: Duration = .seconds(45)
+    @ObservationIgnored private var takeUpWaits: [Chat: Task<Void, Never>] = [:]
 
     /// Called for each piece that arrives after the conversation was first read.
     @ObservationIgnored public var told: ((Item, Chat) -> Void)?
     /// Called for each piece that changed, so what was told about it can be taken back.
     @ObservationIgnored public var settled: ((Item, Chat) -> Void)?
+    /// Called for a piece that was told and now offers other things to press: what the system
+    /// still shows of it is brought up to date, and nothing is told again.
+    @ObservationIgnored public var offered: ((Item, Chat) -> Void)?
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var chats: [Chat: Task<Void, Never>] = [:]
 
@@ -67,7 +121,8 @@ public final class AssistantModel {
     /// Begin following the source. Calling it again changes nothing.
     public func start() {
         guard listeners.isEmpty else { return }
-        follow(source.session()) { $0.session = $1 }
+        follow(source.session()) { $0.take($1) }
+        follow(source.setup()) { $0.setup = $1 }
         follow(source.reach()) { $0.reach = $1 }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
@@ -76,6 +131,7 @@ public final class AssistantModel {
         follow(source.tasks()) { $0.tasks = $1 }
         follow(source.automations()) { $0.automations = $1 }
         follow(source.supervision()) { $0.supervision = $1 }
+        follow(source.sinceLeft()) { $0.sinceLeft = $1 }
         listen(.main)
     }
 
@@ -86,18 +142,31 @@ public final class AssistantModel {
             for await value in stream { return value }
             return nil
         }
-        session = await first(source.session())
+        if let stands = await first(source.session()) { take(stands) }
+        setup = await first(source.setup()) ?? .unknown
         reach = await first(source.reach()) ?? .reachable
         subAgents = await first(source.subAgents()) ?? []
         tasks = await first(source.tasks()) ?? []
         automations = await first(source.automations()) ?? []
         supervision = await first(source.supervision()) ?? Supervision()
+        sinceLeft = await first(source.sinceLeft()) ?? nil
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()
             conversation.apply(change)
             conversations[chat] = conversation
         }
+    }
+
+    /// Where the device stands now. Whose devices it would join and on which server is kept
+    /// from the moment Tilo asked until the device is in, or out again.
+    private func take(_ stands: Session) {
+        switch stands {
+        case .asked(let ask): pairingSaid = Array(ask.said.prefix(2))
+        case .signedOut, .signedIn: pairingSaid = []
+        case .pairing, .confirming: break
+        }
+        session = stands
     }
 
     private func follow<Value: Sendable>(_ stream: AsyncStream<Value>, _ take: @escaping (AssistantModel, Value) -> Void) {
@@ -123,14 +192,51 @@ public final class AssistantModel {
     private func take(_ change: ConversationChange, in chat: Chat) {
         var conversation = conversations[chat] ?? Conversation()
         let known = conversation.isLoaded
+        let before = conversation.items
         conversation.apply(change)
         conversations[chat] = conversation
+        // A turn that begins, or anything that comes after the person's message, ends the wait for one.
+        switch change {
+        case .answering(true): turnBegan(in: chat)
+        case .added(let new) where !new.allSatisfy(AssistantModel.isOwnMessage): turnBegan(in: chat)
+        default: break
+        }
         guard known else { return }
         switch change {
         case .added(let new): for item in new { told?(item, chat) }
-        case .changed(let item): settled?(item, chat)
+        case .changed(let item):
+            // A piece that only now is a reminder, a brief or important was no news when its
+            // words arrived: the person's Tilo said what it is a moment later. It is told now.
+            // A piece that had something to tell before is settled: an answered question is
+            // not told again for the mark it carries.
+            // Why a piece did not notify is said the same way: listed once, when their Tilo says it.
+            let held = before.first { $0.id == item.id }
+            let was = held.flatMap { NoticePlan.notice(for: $0, in: chat)?.kind }
+            let now = NoticePlan.notice(for: item, in: chat)
+            if now != nil, was == nil || (was == .quiet && now?.interrupts == true) {
+                told?(item, chat)
+            } else if let held, now?.interrupts == true, item.raised > held.raised {
+                // Their Tilo raised it again because it insists and nobody saw it: it is told once more.
+                told?(item, chat)
+            } else if let held, now?.interrupts == true, item.waits || held.offers.isEmpty, item.offers != held.offers {
+                offered?(item, chat)
+            } else {
+                settled?(item, chat)
+            }
         default: break
         }
+    }
+
+    /// The person saw a piece on this device: they opened it from its notification, or it
+    /// arrived in the conversation they were looking at.
+    public func saw(_ item: Item.ID, in chat: Chat) {
+        let source = source
+        Task { await source.seen(item, in: chat) }
+    }
+
+    /// The person pressed one of the things offered with a piece, where they were told of it.
+    public func press(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) {
+        Task { await self.call { try await self.source.take(offer, of: item, in: chat) } }
     }
 
     public func conversation(_ chat: Chat) -> Conversation {
@@ -150,13 +256,13 @@ public final class AssistantModel {
         subAgents.first { $0.id == id }
     }
 
-    public func tasks(_ standing: AssistantTask.Standing) -> [AssistantTask] {
-        tasks.filter { $0.standing == standing }
+    public func tasks(_ state: AssistantTask.State) -> [AssistantTask] {
+        tasks.filter { $0.state == state }
     }
 
     /// How many things wait for the person: what is ready for review and what needs their input.
     public var waiting: Int {
-        tasks.filter { $0.standing == .readyForReview || $0.standing == .needsInput }.count
+        tasks.filter { $0.state == .readyForReview || $0.state == .needsInput }.count
     }
 
     public var showsPanel: Bool {
@@ -217,7 +323,65 @@ public final class AssistantModel {
             if !sent, self.drafts[chat] == nil { self.drafts[chat] = draft }
             // A file the person picked is held open for the app until it is sent.
             if sent { for file in draft.files { file.url.stopAccessingSecurityScopedResource() } }
+            if sent { self.awaitTurn(in: chat) }
         }
+    }
+
+    /// Whether a quiet line stands under the person's newest message in a conversation: they
+    /// sent it from here, no turn has taken it up for `takeUpPatience`, and none has since.
+    public func isNotTakenUp(_ chat: Chat) -> Bool {
+        notTakenUp.contains(chat) && waitsForTurn(chat)
+    }
+
+    private nonisolated static func isOwnMessage(_ item: Item) -> Bool {
+        if case .message(let message) = item.content { message.author == .person } else { false }
+    }
+
+    /// Whether the newest piece of a conversation is the person's own message, and nobody is
+    /// writing an answer.
+    private func waitsForTurn(_ chat: Chat) -> Bool {
+        let held = conversation(chat)
+        guard !held.isAnswering, let newest = held.items.last else { return false }
+        return AssistantModel.isOwnMessage(newest)
+    }
+
+    /// The person's message went out. Where no turn takes it up within `takeUpPatience`, the
+    /// conversation says so under it: they are not left with words that stand alone and no
+    /// word of why nothing answers.
+    private func awaitTurn(in chat: Chat) {
+        turnBegan(in: chat)
+        let patience = takeUpPatience
+        takeUpWaits[chat] = Task { [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled, let self else { return }
+            self.takeUpWaits[chat] = nil
+            if self.waitsForTurn(chat) { self.notTakenUp.insert(chat) }
+        }
+    }
+
+    /// A turn began, or the person wrote again: nothing is said of the message before.
+    private func turnBegan(in chat: Chat) {
+        takeUpWaits[chat]?.cancel()
+        takeUpWaits[chat] = nil
+        notTakenUp.remove(chat)
+    }
+
+    /// Open a task's replies under its line, or put them away again.
+    public func toggleReplies(of task: AssistantTask.ID, under line: Item.ID, in chat: Chat) {
+        if openReplies[line] != nil {
+            openReplies[line] = nil
+            return
+        }
+        Task {
+            var found: [Item] = []
+            guard await self.call({ found = try await self.source.replies(of: task, in: chat) }) else { return }
+            self.openReplies[line] = found
+        }
+    }
+
+    /// Stop the answer that is being written in a conversation.
+    public func stopAnswering(in chat: Chat) {
+        Task { await self.call { try await self.source.stopAnswering(in: chat) } }
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) {
@@ -242,6 +406,13 @@ public final class AssistantModel {
 
     public func decline(_ offer: ConnectionOffer.ID) {
         Task { await self.call { try await self.source.decline(offer) } }
+    }
+
+    /// The person signed in on the page `authenticate` answered, and their browser came back
+    /// to this address. Says whether Tilo took it.
+    @discardableResult
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async -> Bool {
+        await call { try await self.source.signedIn(offer, at: returned) }
     }
 
     public func file(of attachment: Attachment.ID) async -> URL? {
@@ -273,8 +444,41 @@ public final class AssistantModel {
     public func loadModels() {
         Task {
             var found: [ModelChoice] = []
-            if await self.call({ found = try await self.source.models() }) { self.models = found }
+            var listed: [ProviderChoice] = []
+            let read = await self.call {
+                found = try await self.source.models()
+                listed = try await self.source.providers()
+            }
+            guard read else { return }
+            self.models = found
+            self.providers = listed
         }
+    }
+
+    /// The ways back to the provider step: another key for each linked provider, and another
+    /// provider where one is left to link. None while no provider is linked: then the main
+    /// chat shows the step by itself.
+    public var keyWays: [KeyWay] {
+        let linked = providers.filter(\.isLinked)
+        guard !linked.isEmpty else { return [] }
+        return linked.map(KeyWay.anotherKey) + (providers.contains { !$0.isLinked } ? [.anotherProvider] : [])
+    }
+
+    /// Take a way back: the provider step stands in the main chat again, with the way's
+    /// provider picked. Its protected field is the one place of the app a key is typed into.
+    public func take(_ way: KeyWay) {
+        let picked: ProviderChoice.ID? = switch way {
+        case .anotherKey(let provider): providers.first { $0.id == provider.id }?.id
+        case .anotherProvider: providers.first { !$0.isLinked }?.id
+        }
+        guard let picked else { return }
+        keyStep = KeyStep(providers: providers, picked: picked)
+        open(.main)
+    }
+
+    /// Put the provider step away again: the person types no other key now.
+    public func putAwayKeyStep() {
+        keyStep = nil
     }
 
     /// Choose the model of the main chat: the one that answers there and the one that works there.
@@ -300,6 +504,29 @@ public final class AssistantModel {
         }
     }
 
+    /// The person's answer to what Tilo asked before pairing: go on, or stop. A button's press
+    /// calls this and nothing else does.
+    public func answerPairing(goOn: Bool) {
+        Task { await self.source.answerPairing(goOn: goOn) }
+    }
+
+    /// Find the person's assistant once more, and make it where they keep none.
+    public func makeAssistant() {
+        Task { await self.call { try await self.source.makeAssistant() } }
+    }
+
+    /// Hand the key typed in the protected field to the person's vault, for this provider.
+    /// Says whether it was taken; the models that can be chosen are held from then on.
+    public func link(_ provider: ProviderChoice.ID, key: Secret) async -> Bool {
+        var offered: [ModelChoice] = []
+        guard await call({ offered = try await self.source.link(provider, key: key) }) else { return false }
+        models = offered
+        // What is linked now is read anew, and a step the person came back to is done with.
+        if let listed = try? await source.providers() { providers = listed }
+        keyStep = nil
+        return true
+    }
+
     /// Pair this device with the link in what was scanned or pasted.
     public func pair(with words: String, scanned: Bool = false) {
         guard let link = PairingLink(in: words) else {
@@ -323,4 +550,7 @@ extension EnvironmentValues {
     /// The view that draws a live Tilo thing. Whoever implements `AssistantSource` supplies it;
     /// the frame draws an empty place where there is none.
     @Entry public var liveThingView: (@MainActor (LiveThing) -> AnyView)?
+    /// Whether what stands in a protected field is put out of sight: while the app is not in
+    /// front, when the system keeps a picture of its window.
+    @Entry public var coversSecrets = false
 }

@@ -434,7 +434,11 @@ pub enum ChromeEffect {
     /// Reopen what was closed last
     /// In the workspace shown, where it was, and focus it.
     #[effect(own_device)]
-    ReopenClosed,
+    ReopenClosed {
+        /// Only a window of this app; any window when absent.
+        #[param("Only a window of this app, its id or short name")]
+        app: Option<String>,
+    },
 
     /// Share a window
     /// With the people of its workspace, or stop sharing it.
@@ -800,8 +804,8 @@ impl From<ScrollAction> for ui::widget::PrimaryScrollAction {
 pub enum Admitted {
     Select(RouteIds),
     Close(RouteIds),
-    /// Reopen the newest close of the active workspace.
-    Reopen(WorkspaceId),
+    /// Reopen the newest close of the active workspace, of the app when one is named.
+    Reopen(WorkspaceId, Option<String>),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
     /// Cover the display with the window, or give it back.
@@ -1011,9 +1015,9 @@ fn admit_activity(
 /// The workspace whose closes a `reopen` undoes: the one the surface shows.
 /// The closes a workspace remembers belong to the device the person closed them on, so what can be
 /// reopened is read when the command applies; here the shown workspace is all there is to check.
-fn admit_reopen(tree: &Layout) -> Result<Admitted, String> {
+fn admit_reopen(tree: &Layout, app: Option<&String>) -> Result<Admitted, String> {
     tree.active_workspace()
-        .map(|workspace| Admitted::Reopen(workspace.id()))
+        .map(|workspace| Admitted::Reopen(workspace.id(), app.cloned()))
         .ok_or_else(|| "Workspace unavailable".into())
 }
 
@@ -1161,7 +1165,7 @@ fn admit_chrome(
             (None, Some(group)) => named(group_route(tree, group)?, name, tree),
             (None, None) => Err("Name a tab, a window, a strip or a workspace to rename".into()),
         },
-        ChromeEffect::ReopenClosed => admit_reopen(tree),
+        ChromeEffect::ReopenClosed { app } => admit_reopen(tree, app.as_ref()),
         ChromeEffect::ShareWindow { group, on } => {
             group_route(tree, group).map(|ids| Admitted::ShareWindow(ids, *on))
         }

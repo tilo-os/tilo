@@ -206,7 +206,7 @@ thread_local! {
 
 #[cfg(unix)]
 fn scroll_probe_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -225,11 +225,11 @@ fn scroll_probe_factory(
 #[cfg(unix)]
 fn bound_scroll_app(
     root: PublicationProbeRoot,
-) -> (App, crate::application_test_support::ProbeHost) {
+) -> (App, crate::application_test_support::ProbeHarness) {
     use crate::application_test_support::{
         APP, DEVICE, author, provenance, runner_inputs, runner_permissions,
     };
-    let mut host = crate::application_test_support::ProbeHost::new();
+    let mut host = crate::application_test_support::ProbeHarness::new();
     let workspace = "00000000-0000-0000-0000-000000000074";
     host.records = host.owners.open(APP, workspace).unwrap();
     host.views = Rc::new(
@@ -237,9 +237,9 @@ fn bound_scroll_app(
     );
     let definition = crate::application_test_support::definition(scroll_probe_factory);
     let target = crate::application::LaunchTarget::New;
-    let context = crate::application::HostContext::prepare(
+    let context = crate::application::ProcessContext::prepare(
         &definition,
-        crate::application::HostContextInputs {
+        crate::application::ProcessContextInputs {
             records: host.records.clone(),
             views: Rc::clone(&host.views),
             device_id: DEVICE.into(),
@@ -304,7 +304,7 @@ struct ViewScrollFixture {
     syncs: Rc<Cell<usize>>,
     declarations: Rc<Cell<usize>>,
     paragraphs: usize,
-    _host: Option<crate::application_test_support::ProbeHost>,
+    _host: Option<crate::application_test_support::ProbeHarness>,
 }
 
 impl ViewScrollFixture {

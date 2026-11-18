@@ -6,7 +6,7 @@
 //! reaction instead, floating up from the pointer ([`crate::motion::Float`]).
 //!
 //! This is the store a painter reads; transports fill it (the shell from
-//! the live presence plane) and decide who may say what. Timing is the
+//! the live presence track) and decide who may say what. Timing is the
 //! receiver's own clock, so a sender's skewed clock cannot keep a message up.
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ use crate::tokens::EffectiveMotion;
 /// How long a sent message stays beside the pointer before it is gone.
 pub const CURSOR_CHAT_LINGER: Duration = Duration::from_secs(5);
 
-/// Longest message, in characters (the live plane's own bound).
+/// Longest message, in characters (the live session's own bound).
 pub const CURSOR_CHAT_MAX_CHARS: usize = 120;
 
 /// How long a still pointer keeps its name beside it. The pointer itself

@@ -1,20 +1,23 @@
-//! `share-link` on a record this host runs headless: the link minted from
-//! the resource's views as the caller may read them, under the web entry
-//! the host announces.
+//! `share-link` on a document this server keeps headless: the link minted
+//! from the resource's views as the caller may read them, under the web entry
+//! the server announces; and the link a change answers with it.
 
-use tilo_actions::remote::{ActionHostError, Caller, CatalogueQuery};
-use tilo_actions::{ActionFailure, ActionOutput};
+use tilo_actions::remote::{ActionCallError, Caller, CatalogueQuery};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+use tilo_actions::{ActionAddress, ActionFailure, ActionOutput, InvocationId};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
+use ui::tilo_resource::share::SHARE_LINK;
 
+use super::resource_of;
 use super::{Outcome, Worker, WorkspaceState, record_provider};
 
 impl Worker {
-    /// `share-link` on a record this host runs headless. An app's root mints
-    /// it where the app runs; here no root runs, so the host mints the same
+    /// `share-link` on a document this server keeps headless. An app's root
+    /// mints it where the app is open; here no root is, so the server mints the same
     /// link from the resource's views as `caller` (a person: an agent asks as
     /// the person it acts for) may read them now (the governed lookup a link's
-    /// page makes too), under the web entry the host announces.
+    /// page makes too), under the web entry the server announces.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -120,8 +123,65 @@ impl Worker {
 }
 
 impl Worker {
+    /// The link that opens what `request`, which answered `output`, made or
+    /// changed, for a person to review it: the own `share-link` of the first
+    /// resource it names that offers one, else its document's. Minted here as
+    /// `share-link` mints it, so the caller is answered it with the change
+    /// and asks nothing more. `None` for a read, and for an action on no
+    /// document.
+    pub(super) fn changed_link(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        output: &ActionOutput,
+    ) -> Option<String> {
+        let workspace = self
+            .workspaces
+            .get(&workspace_id)?
+            .cluster_id(workspace_id)?;
+        let route = resource_of(&request.target.provider, &workspace)?;
+        let holder = self.holder_of(&route);
+        let target = self.with_document_resource(&request.target, &route.app_id);
+        let kind = self
+            .app_at(&holder)?
+            .descriptor(&target.address)?
+            .contract
+            .kind;
+        if kind == tilo_actions::ActionKind::Read {
+            return None;
+        }
+        let own = output
+            .resources
+            .iter()
+            .find(|resource| {
+                !resource.is_empty()
+                    && self.publishes(&holder, &ActionAddress::new(resource.as_str(), SHARE_LINK))
+            })
+            .cloned();
+        // The document's own link, named by its root, when no resource it names offers one.
+        own.into_iter().chain([String::new()]).find_map(|resource| {
+            let asked = InvokeRequest {
+                invocation: InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: request.target.provider.clone(),
+                    address: ActionAddress::new(resource, SHARE_LINK),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            let (minted, _) = self.perform(workspace_id, caller, &asked).ok()?;
+            minted.value?.get("url")?.as_str().map(str::to_owned)
+        })
+    }
+
     /// The views `wanted` offers `caller`, and where the record opens, from
-    /// the record this host holds mounted, brought up to date for the action
+    /// the document this server holds mounted, brought up to date for the action
     /// asking: no copy of the record is read and decoded afresh, which costs
     /// more the more it holds. `None` when the record is not held here as
     /// itself (a part of a chain, opened with the record it is beside).
@@ -131,12 +191,12 @@ impl Worker {
         caller: &Caller,
         route: &DocumentRoute,
         wanted: &tilo_actions::remote::ViewResourceQuery,
-    ) -> Option<Result<FoundViews, ActionHostError>> {
+    ) -> Option<Result<FoundViews, ActionCallError>> {
         if self.holder_of(route) != *route {
             return None;
         }
         let mounted = self.mounted.get(route)?;
-        let refuse = || ActionHostError::UnknownAction;
+        let refuse = || ActionCallError::UnknownAction;
         let link = self.shared.link.get()?;
         let Some(policy) = link.view_read_policy(workspace, caller, &route.app_id, &route.document)
         else {
@@ -145,7 +205,7 @@ impl Worker {
         let views = match mounted.app.resource_views(wanted, &policy) {
             Ok(views) => views,
             Err(error) => {
-                return Some(Err(ActionHostError::Unavailable {
+                return Some(Err(ActionCallError::Unavailable {
                     reason: error.to_string(),
                 }));
             }
@@ -179,7 +239,7 @@ impl Worker {
         if offered.is_some_and(|descriptor| descriptor.address == target.address) {
             Ok(who.person_caller)
         } else {
-            Err(Outcome::Rejected(ActionHostError::UnknownAction))
+            Err(Outcome::Rejected(ActionCallError::UnknownAction))
         }
     }
 
@@ -205,7 +265,7 @@ impl Worker {
                 retryable: false,
             })
         };
-        let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let refused = || Outcome::Rejected(ActionCallError::UnknownAction);
         let link = self.shared.link.get().ok_or_else(refused)?;
         let policy = link
             .view_read_policy(workspace_id, caller, &route.app_id, &route.document)

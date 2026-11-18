@@ -68,7 +68,7 @@ impl ChatApp {
     /// a channel's, not a direct conversation's, once one is in view, and
     /// only while earlier parts may hold its messages.
     pub(crate) fn reads_back(&self) -> bool {
-        // A window still choosing its channel (its record not read yet)
+        // A window still choosing its channel (its resource not read yet)
         // shows no timeline to read back from.
         self.direct_person().is_none()
             && self.channel(&self.active_channel).is_some()
@@ -90,11 +90,11 @@ impl ChatApp {
             != Some(0)
     }
 
-    /// Read the reader's marks and the "new messages" line, as the record
+    /// Read the reader's marks and the "new messages" line, as the resource
     /// and the parts are read.
     pub(crate) fn read_scrollback(
         &mut self,
-        chat: &crate::record::Chat,
+        chat: &crate::chat::Chat,
         held: &crate::messages::Messages,
     ) {
         let channel = self.active_channel.clone();
@@ -122,7 +122,7 @@ impl ChatApp {
 
     /// Open the part before the oldest held when the reader reached the top,
     /// a message is looked for or the reader's marks lie in parts not held.
-    /// Run where the workspace's records take writes (a settle pass).
+    /// Run where the workspace's documents take writes (a settle pass).
     pub(crate) fn settle_scrollback(&mut self) {
         let Some(pager) = &mut self.scrollback.pager else {
             return;

@@ -19,7 +19,7 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 `verify-runtime-bundle-closure.sh`) ship and verify those libraries like
 `DT_NEEDED` ones. A library of `[targets] needed_absent` in the runtime's
 `DT_NEEDED`, in what every app loads with it, or in what a built app of
-`apps_without_media` loads at exec fails the build gate; if the runtime starts
+`apps_without_media` loads at exec fails the build check; if the runtime starts
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
 provide one before the library loads.
 
@@ -45,13 +45,13 @@ run = 90210                  # the Release / apps run that measured the growth
 bytes = 4194304
 ```
 
-When the runtime shrinks, both gates print the lower budget to commit.
+When the runtime shrinks, both checks print the lower budget to commit.
 
 What the runtime may carry is a rule of its own. It holds the SDK and crates
 several apps share; never an engine only one or two apps use, an OS daemon or other OS-internal crate (the filesystem, the
-launcher, the app host, the install CLI, the peer transport) and nothing no
+launcher, the app process, the install CLI, the peer transport) and nothing no
 app reaches. An app that calls into such a crate links it itself and gets only
-the code it calls; the Store, for one, depends on `app-host` without its
+the code it calls; the Store, for one, depends on `package-service` without its
 default `service` feature, and Settings, Agent and Canvas depend on
 `tilo-model-gateway` without its: the daemon's provider clients, on-device
 model service and subject-model runtime (rten) stay in the gateway, and an
@@ -66,10 +66,10 @@ of its own: a crate under `crates/runtime/engines/<name>/` that is a Rust
 Editor; Spotify playback: `libtilo_spotify_engine.so` for Music; the wet-media
 simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
 YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
-Music and Tube; account custody with its OAuth client and cloud-storage
+Music and Tube; account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
-reaches custody: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
-Imager and the Spotify engine; the time-zone database, chrono-tz:
+reaches ownership: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
+Imager and the Spotify engine; the time-zone database, jiff-tzdb:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
 `libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
 PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
@@ -79,17 +79,17 @@ fuser: `libtilo_fuse_engine.so` for Imager's projection worker; the import
 from another browser's profile, browser-continuity's capture with the SQLite
 it reads Chromium's and Firefox's databases with:
 `libtilo_browser_import_engine.so` for Browser, with the
-website-session codec check; the app host's client, with
+website-session codec check; the app process's client, with
 its control wire, and the catalogue Store browses:
-`libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
+`libtilo_app_process_engine.so` for Store; Mail's message codecs and SMTP
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
 Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
 `libtilo_archive_engine.so` for Files; Settings itself, its library with
 every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
 catalogue, the accessibility settings, the PC keyboard outlines and the
-time-zone globe: `libtilo_settings_engine.so` for Settings, whose binary is
-one call into it; the spreadsheet formula engine, IronCalc:
+time-zone globe: `libtilo_settings_engine.so` for Settings and Model
+Providers, whose binaries are each one call into it; the spreadsheet formula engine, IronCalc:
 `libtilo_spreadsheet_engine.so` for Sheets; the keyless web search and page
 reader, tilo-web-search, and the agent's two tools over it,
 tilo-agent-web-tools: `libtilo_agent_web_engine.so` for Agent). It is
@@ -142,7 +142,7 @@ relies on:
   overlap another's that its app always loads with it chains on that one
   instead (`tilo-spotify-engine` takes rand 0.9 and sha1 0.10, which librespot
   shares with rustypipe, from the YouTube engine Music loads beside it, and
-  account custody, which Spotify's sign-in uses, from the accounts engine);
+  account credentials, which Spotify's sign-in uses, from the accounts engine);
 - the engine's crates go into the surface check's `ENGINES`. The
   workspace-hack listing one does not put it into the runtime: the hack's
   library names none of its dependencies, and rustc links only the crates a
@@ -151,7 +151,7 @@ relies on:
   russh, wasmi or the other crates only the hack lists). The check follows
   real dependencies and the features apps enable on them, which is how an
   engine's crate comes back (Calendar's `live` asking tilo-dav for the
-  account custody its sign-in reaches, for one).
+  account credentials its sign-in reaches, for one).
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
 beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
@@ -261,7 +261,7 @@ that no first frame touches.
 Apps get smaller too: an app that encodes a PNG or JPEG no longer
 instantiates the `image` crate's encoders in its own binary (`ui::png`,
 `ui::jpeg`, compiled once in the runtime; about 50 KB per app that encoded),
-and Imager loads account custody and the FUSE presentation from their
+and Imager loads account credentials and the FUSE presentation from their
 engines instead of carrying them.
 
 ## Reading what makes it large

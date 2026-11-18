@@ -208,7 +208,7 @@
  "tilo_ui::bound_dispatch": 227988,
  "tilo_ui::chrome": 18319,
  "tilo_ui::component_inputs": 12531,
- "tilo_ui::control_custody": 13056,
+ "tilo_ui::control_ownership": 13056,
  "tilo_ui::control_hints": 27019,
  "tilo_ui::floating_layer": 21999,
  "tilo_ui::font_catalog": 66903,

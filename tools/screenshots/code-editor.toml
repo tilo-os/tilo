@@ -21,7 +21,7 @@ name = "web-page"
 title = "A static web page and its stylesheet"
 
 [[situation.steps]]
-invoke = { resource = "code_editor.project", action = "new-file", args = { name = "index.html", text = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Kastanienallee Community Garden</title>\n  <link rel=\"stylesheet\" href=\"style.css\">\n</head>\n<body>\n  <header>\n    <h1>Kastanienallee Community Garden</h1>\n    <p>Thirty-two plots, one compost heap, and a seed library by the gate.</p>\n  </header>\n  <main>\n    <section id=\"visit\">\n      <h2>Visit</h2>\n      <p>Open every Tuesday from 17:00 and Saturdays from 10:00.</p>\n    </section>\n  </main>\n</body>\n</html>\n" } }
+invoke = { resource = "code_editor.project", action = "new-file", args = { name = "index.html", text = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Kastanienallee Community Garden</title>\n  <link rel=\"stylesheet\" href=\"style.css\">\n</head>\n<body>\n  <header>\n    <h1>Kastanienallee Community Garden</h1>\n    <p>Thirty-two plots, one compost heap, and a seed library by the check.</p>\n  </header>\n  <main>\n    <section id=\"visit\">\n      <h2>Visit</h2>\n      <p>Open every Tuesday from 17:00 and Saturdays from 10:00.</p>\n    </section>\n  </main>\n</body>\n</html>\n" } }
 
 [[situation.steps]]
 invoke = { resource = "code_editor.project", action = "new-file", args = { name = "style.css", text = "body {\n  font-family: system-ui, sans-serif;\n  margin: 0 auto;\n  max-width: 42rem;\n  line-height: 1.6;\n  color: #1d2a1f;\n}\n\nheader {\n  padding: 3rem 0 1rem;\n  border-bottom: 2px solid #8fb996;\n}\n\nh1 {\n  font-size: 2.2rem;\n  margin: 0;\n}\n" } }

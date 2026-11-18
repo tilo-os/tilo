@@ -38,7 +38,7 @@ pub const DEFAULT_NAME: &str = "Default";
 
 /// One environment, architecture-neutral: a node uses the images for its own
 /// architecture, so an environment made on an `x86_64` laptop opens on an
-/// `aarch64` relay.
+/// `aarch64` server.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Environment {
     pub name: String,

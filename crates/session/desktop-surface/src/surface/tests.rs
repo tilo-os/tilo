@@ -1464,7 +1464,7 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
         frame.relayout();
     }
 
-    // Windows and the seams between them cover the strip; canvas shows past the last window once
+    // Windows and the borders between them cover the strip; canvas shows past the last window once
     // the strip is panned to its end.
     let t = ui::time::now();
     for i in 0..40 {
@@ -2326,7 +2326,7 @@ fn a_windows_own_icon_is_on_its_tab() {
     assert_eq!(magenta(&frame), 0, "and gone when the window's icon is");
 }
 
-/// A two-finger sideways swipe as the gate's browser sends it: seven wheel
+/// A two-finger sideways swipe as the hold's browser sends it: seven wheel
 /// events, a trackpad's lead-in and tail, 96 px over the whole gesture.
 const BRIEF_SWIPE: [f64; 7] = [6.0, 12.0, 18.0, 24.0, 18.0, 12.0, 6.0];
 
@@ -2431,7 +2431,7 @@ fn a_sideways_swipe_pans_the_strip_with_the_fingers_and_rests_where_they_stopped
                 );
                 let offsets = swipe_the_strip(&mut frame, &handle, windows, steps, forward);
                 // Every event moves the strip by its own travel, the fingers'
-                // way: never against them, never standing still while they move.
+                // way: never against them, never still while they move.
                 let mut asked = start;
                 for (index, (&part, &offset)) in steps.iter().zip(offsets.iter()).enumerate() {
                     asked += swipe_travel(forward, part);

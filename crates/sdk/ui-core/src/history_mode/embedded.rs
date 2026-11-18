@@ -161,8 +161,8 @@ pub(crate) fn surfaces_at_rest(
         // A settled frame skips every surface's registration walk: a control
         // replaced since composes again, and an owner that retired cannot
         // read its frontier, which is asked below. A surface whose documents
-        // the witness follows need not read that frontier either.
-        needed = if settled && history.owners_followed_by_frame_witness() {
+        // the observation follows need not read that frontier either.
+        needed = if settled && history.owners_followed_by_frame_observation() {
             !history.sync_status_matches(None)
                 || history.refresh_without_owners(width).unwrap_or(false)
         } else if settled {
@@ -196,7 +196,7 @@ pub(crate) fn settled_checks_hold(
                 fallback_width
             };
             // Every surface's walk, including the ones a settled frame skips
-            // it for, and the frontier of each whose documents the witness
+            // it for, and the frontier of each whose documents the observation
             // does not follow.
             hold = history.validate_root(live).is_ok()
                 && (history.refresh_without_owners(width).is_some()
@@ -480,7 +480,7 @@ pub(crate) unsafe fn restore_focus(
 }
 
 /// The runner calls this after its remaining exit layout/draw/focus callbacks. Restoring one surface's
-/// focus must not end its custody halfway through the same return frame, or release any other surface's
+/// focus must not end its ownership halfway through the same return frame, or release any other surface's
 /// independent lease. A surface whose return has settled then opens the change a person chose in it;
 /// whether any did, so the runner syncs what that asked for.
 pub(crate) fn finish_returns(root: &mut dyn Widget) -> bool {

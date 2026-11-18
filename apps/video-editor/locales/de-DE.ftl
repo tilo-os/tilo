@@ -143,11 +143,11 @@ video-editor-remove-clip = { $ripple ->
 video-editor-add-marker = Eine Marke hinzugefügt
 video-editor-remove-marker = Eine Marke entfernt
 video-editor-add-track = Eine { $kind ->
-    [Audio] Ton-
+    [audio] Ton-
    *[other] Bild-
 }spur hinzugefügt
 video-editor-reset-mix = Pegel und Panorama einer Spur zurückgesetzt
-video-editor-trim-lanes = Den Pegel der Spuren gesenkt
+video-editor-trim-tracks = Den Pegel der Spuren gesenkt
 video-editor-delete-track = Eine Spur gelöscht
 video-editor-place-clip = Einen Clip auf die Zeitleiste gelegt
 video-editor-delete-media = Eine Quelle gelöscht
@@ -273,9 +273,9 @@ video-editor-picture-in-picture = Bild im Bild
 video-editor-side-by-side = Nebeneinander
 video-editor-crop = Zuschnitt
 video-editor-anchor = Bezugspunkt
-video-editor-lane-clip-only = Spur { $lane }, nur dieser Clip
-video-editor-lane-one-other = Spur { $lane }, mit 1 weiteren Clip
-video-editor-lane-other-clips = Spur { $lane }, mit { $count } weiteren Clips
+video-editor-track-clip-only = Spur { $track }, nur dieser Clip
+video-editor-track-one-other = Spur { $track }, mit 1 weiteren Clip
+video-editor-track-other-clips = Spur { $track }, mit { $count } weiteren Clips
 video-editor-key-colour = Schlüsselfarbe
 video-editor-words = Wörter
 video-editor-accept-cancel-keys = Strg+Eingabe übernimmt, Esc verwirft
@@ -379,7 +379,7 @@ video-editor-project-remove-marker = Marke entfernen
 video-editor-project-remove-marker-here = Marker „{ $name }“ entfernen
 video-editor-project-add-track = Spur hinzufügen
 video-editor-project-reset-mix = Spurabmischung zurücksetzen
-video-editor-project-trim-lanes = Spurenpegel senken
+video-editor-project-trim-tracks = Spurenpegel senken
 video-editor-project-delete-track = Spur löschen
 video-editor-project-place-clip = Clip platzieren
 video-editor-project-delete-media = Medium löschen
@@ -584,7 +584,7 @@ video-editor-menu-duplicate = Duplizieren
 video-editor-menu-split = Am Abspielkopf teilen
 video-editor-menu-ripple-delete = Lücke schließen
 
-## What a reader is told about a lane, a clip, a source and the selection
+## What a reader is told about a track, a clip, a source and the selection
 video-editor-a11y-clip-value = { $start } bis { $end }, { $length } lang, auf { $track }
 video-editor-a11y-bin-downloading = { $kind }, { $length }, noch nicht geladen
 video-editor-a11y-bin-kind-length = { $kind }, { $length }
@@ -599,7 +599,7 @@ video-editor-a11y-track-kind-audio = Audio
 video-editor-a11y-timeline-value = Abspielkopf bei { $playhead }, { $count } von { $total } Clips ausgewählt, Zeitleiste beginnt bei { $view }
 video-editor-a11y-geometry = Skalierung { $scale }×, Position { $x }, { $y }, Drehung { $rotation }°
 video-editor-a11y-animated = { $geometry }, animiert
-video-editor-a11y-no-lane = keine Spur
+video-editor-a11y-no-track = keine Spur
 video-editor-a11y-key-nothing = an, aber die Toleranz stanzt nichts aus
 video-editor-a11y-key-values = Toleranz { $tolerance } %, Weichheit { $softness } %, Spill { $spill } %
 video-editor-a11y-mask-values = { $shape } { $width } % × { $height } %, { $side }

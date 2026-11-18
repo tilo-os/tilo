@@ -8,6 +8,7 @@ use ui::widget::Tone;
 /// (`Debug`, level 7). Level numbers match RFC 5424 and the integer in the journal's
 /// `PRIORITY` field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, PartialOrd, Ord, serde::Serialize, Model)]
+#[serde(rename_all = "snake_case")]
 pub enum Priority {
     Emerg,
     Alert,
@@ -34,7 +35,7 @@ impl Priority {
 
     /// Map a journal `PRIORITY` integer to a [`Priority`]. Anything out of the 0..=7 range
     /// clamps to `Debug` (the most verbose bucket), which is the safe default for an
-    /// unknown record.
+    /// unknown resource.
     pub fn from_level(n: i64) -> Priority {
         match n {
             0 => Priority::Emerg,
@@ -102,7 +103,7 @@ impl Priority {
     }
 }
 
-/// One flattened journal record.
+/// One flattened journal resource.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LogEntry {
     pub realtime_us: u64,
@@ -123,7 +124,7 @@ impl LogEntry {
     pub fn list_time(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
         let now = ui::clock::local_now();
-        let now_us = u64::try_from(now.timestamp_micros()).unwrap_or(0);
+        let now_us = u64::try_from(now.timestamp().as_microsecond()).unwrap_or(0);
         let (ty, tmo, td, ..) = civil(local_us(now_us));
         let precise = ui::format::machine!(
             "a journal time to the millisecond, as journalctl writes it",
@@ -132,9 +133,10 @@ impl LogEntry {
         if (ty, tmo, td) == (y, mo, d) {
             return precise;
         }
-        match i32::try_from(y)
+        match i16::try_from(y)
             .ok()
-            .and_then(|year| ui::format::NaiveDate::from_ymd_opt(year, mo, d))
+            .zip(i8::try_from(mo).ok().zip(i8::try_from(d).ok()))
+            .and_then(|(year, (mo, d))| ui::format::Date::new(year, mo, d).ok())
         {
             Some(day) => format!("{} {precise}", ui::format::month_day(day)),
             None => precise,
@@ -169,7 +171,7 @@ impl LogEntry {
 /// `realtime_us` shifted into the local time zone, read through [`ui::clock`] so captures
 /// show the same wall clock on every run.
 fn local_us(realtime_us: u64) -> u64 {
-    let offset_s = i64::from(ui::clock::local_now().offset().local_minus_utc());
+    let offset_s = i64::from(ui::clock::local_now().offset().seconds());
     realtime_us.saturating_add_signed(offset_s.saturating_mul(1_000_000))
 }
 

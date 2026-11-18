@@ -391,13 +391,13 @@ impl HomeSource {
     #[cfg(feature = "capture-worker")]
     pub fn review_captured(
         pin: Arc<PinnedDirectory>,
-        custody: Option<&super::migration_review::CaptureCustody>,
+        ownership: Option<&super::migration_review::CaptureOwnership>,
         scratch: Arc<super::migration_review::InventoryScratch>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
         pin.validate()?;
         let inventory =
-            SourceInventory::capture_captured_home_with_scratch(&pin, custody, scratch, cancel)?;
+            SourceInventory::capture_captured_home_with_scratch(&pin, ownership, scratch, cancel)?;
         portable_transfer::validate_home_metadata(&pin, &inventory, cancel)?;
         if inventory.summary()?.special_files != 0 {
             return Err(changed(
@@ -680,7 +680,7 @@ impl HomeSource {
             .and_then(|bytes| bytes.checked_add(10 * 1024))
             .ok_or_else(|| changed("Archive estimate overflows"))
     }
-    /// A later setup-delivery failure renews the package without replacing custody or encrypting
+    /// A later setup-delivery failure renews the package without replacing ownership or encrypting
     /// another copy.
     pub fn validate_existing(
         &self,

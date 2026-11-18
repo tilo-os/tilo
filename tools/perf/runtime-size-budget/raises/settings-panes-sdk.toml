@@ -1,5 +1,0 @@
-reason = "Settings' panes are written against the app and resource SDK, whose growth is what this raise covers: tilo_app 0.58 to 1.38 MB, tilo_resource 0.67 to 1.16, settings_sections 0.66 to 1.03, provider_settings_ui, tilo_ui, and what they instantiate in core, alloc and serde_json, measured in docs/measurements/runtime-size.md. This change took the duplicated libraries out of the engine first: the account probe no longer carries the mail session a page's Mail runs on the machine that runs a person's workspace (mail-parser, mail-builder and lettre left with it), and the Power pane opens the session's battery resource by the name os-actions gives it, so the session's power service and its part of the zbus code left too. The amount is the measured remainder after those cuts plus the ratchet's 1 % headroom, rounded up to 64 KiB, from t's app-sizes-x86_64 run 1bcf1340bd."
-run = "r1bcf1340bd"
-
-[engines.x86_64]
-"libtilo_settings_engine.so" = 3473408

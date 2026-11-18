@@ -3,7 +3,7 @@
 //!
 //! The code is the short one the person's browser tab shows (`K7Q-MX2P`), in the prompt it copies
 //! for their agent. `tilo login` resolves it at the site's home host
-//! (`tilo_relay_protocol::login_code`) and tells that tab each step as it does it: it makes a
+//! (`tilo_server_protocol::login_code`) and tells that tab each step as it does it: it makes a
 //! device key here, asks the workspace's host to have the person's root (which only the tab holds)
 //! certify it, keeps the key and certificate in this account's state directory, adds Tilo's tools
 //! to the agent and enters the workspace the link names as the person. A tab with no identity yet
@@ -20,14 +20,14 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_relay_client::CertifyError;
-use tilo_relay_client::HttpClient;
-use tilo_relay_client::LinkError;
-use tilo_relay_client::https::{self, Origin};
-use tilo_relay_client::login::{PairingLink, SignIn, entry_at, sign_in};
-use tilo_relay_client::login_code;
-use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
-use tilo_relay_protocol::web::API_PREFIX;
+use tilo_server_client::CertifyError;
+use tilo_server_client::HttpClient;
+use tilo_server_client::LinkError;
+use tilo_server_client::https::{self, Origin};
+use tilo_server_client::login::{PairingLink, SignIn, entry_at, sign_in};
+use tilo_server_client::login_code;
+use tilo_server_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
+use tilo_server_protocol::web::API_PREFIX;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent, Tool};
@@ -285,12 +285,13 @@ fn link_said(error: &LinkError) -> String {
         }
         LinkError::Malformed(_) | LinkError::PeerVersion { .. } => TOO_OLD.to_owned(),
         LinkError::Sign(_) => LOGIN_DAMAGED.to_owned(),
+        LinkError::DeviceRevoked => LOGIN_ENDED.to_owned(),
     }
 }
 
 /// What a handshake this computer did not pass says.
-fn auth_said(error: &tilo_relay_protocol::auth::AuthError) -> String {
-    use tilo_relay_protocol::auth::AuthError;
+fn auth_said(error: &tilo_server_protocol::auth::AuthError) -> String {
+    use tilo_server_protocol::auth::AuthError;
     use tilo_user_identity::DeviceCertError;
     match error {
         AuthError::Cert(DeviceCertError::Expired) | AuthError::Revoked => LOGIN_ENDED.to_owned(),
@@ -376,7 +377,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     let host = info
         .address
         .as_ref()
-        .map(tilo_relay_client::Host::published)
+        .map(tilo_server_client::Host::published)
         .ok_or_else(|| anyhow!(UNREACHED))?;
     let (cert, host_cert) = device.certs()?;
     let signed = SignIn {
@@ -562,13 +563,14 @@ async fn claim(
 async fn workspace_name(host: &dyn HttpClient, workspace: &str) -> Option<String> {
     let path = format!(
         "{API_PREFIX}{}",
-        tilo_relay_protocol::directory::DIRECTORY_PATH
+        tilo_server_protocol::directory::DIRECTORY_PATH
     );
     let (status, body) = host.post(&path, Vec::new()).await.ok()?;
     if status != 200 {
         return None;
     }
-    let page: tilo_relay_protocol::directory::DirectoryPage = serde_json::from_slice(&body).ok()?;
+    let page: tilo_server_protocol::directory::DirectoryPage =
+        serde_json::from_slice(&body).ok()?;
     page.workspaces
         .into_iter()
         .find(|listed| listed.workspace.eq_ignore_ascii_case(workspace))
@@ -1063,7 +1065,7 @@ mod tests {
     }
 
     impl HttpClient for FakeHost {
-        fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::https::HttpFuture<'_> {
+        fn post(&self, path: &str, body: Vec<u8>) -> tilo_server_client::https::HttpFuture<'_> {
             let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             let route = path.strip_prefix(API_PREFIX).unwrap_or(path).to_owned();
             let (status, answer) = (self.answer)(&route, &body);
@@ -1124,7 +1126,7 @@ mod tests {
 
     #[test]
     fn a_failed_login_says_what_to_do_without_the_machinery() {
-        use tilo_relay_protocol::auth::AuthError;
+        use tilo_server_protocol::auth::AuthError;
         use tilo_user_identity::DeviceCertError;
         let said = certify_said(&CertifyError::Expired);
         assert!(said.contains("Keep the tab open"), "{said}");
@@ -1143,6 +1145,7 @@ mod tests {
             CertifyError::Transport(LinkError::PeerVersion { theirs: 99 }),
             CertifyError::Transport(LinkError::HostChanged),
             CertifyError::Transport(LinkError::Sign("connect error".into())),
+            CertifyError::Transport(LinkError::DeviceRevoked),
             CertifyError::Codec("bad frame".into()),
             CertifyError::Iroh("connect error".into()),
             CertifyError::Auth(AuthError::Revoked),

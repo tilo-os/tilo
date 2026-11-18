@@ -38,7 +38,7 @@ notes-page-tags = { $op ->
    *[other] Untagged { $item }
 }
 notes-tag-name = Renamed the tag { $old } to { $new }
-notes-notebook-pages = { $op ->
+notes-pages-pages = { $op ->
     [insert] Added a note
     [remove] Removed a note
    *[other] Moved a note
@@ -210,7 +210,6 @@ notes-effect-back = Back
 notes-effect-forward = Forward
 notes-effect-import-markdown-file = Import Markdown
 notes-effect-import-notion-export = Import Notion export
-notes-effect-import-markdown-content = Import Markdown content
 notes-effect-export-markdown = Export Markdown
 notes-effect-export-markdown-content = Export Markdown content
 notes-effect-insert-image = Insert image
@@ -220,27 +219,31 @@ notes-effect-open-resource = Open linked item
 notes-effect-open-note = Open note
 notes-effect-reveal-block-range = Reveal block range
 notes-effect-open-tag = Browse tagged notes
+notes-pages = Notes
+notes-pages-new-note = New note
+notes-pages-new-child = New note inside
+notes-pages-rename = Rename note
+notes-pages-relabel-links = Relabel links to a note
+notes-pages-delete = Delete note
+notes-pages-move-note = Move note
+notes-pages-move-up = Move note up
+notes-pages-move-down = Move note down
+notes-pages-indent = Indent note
+notes-pages-outdent = Outdent note
+notes-pages-duplicate = Duplicate note
+notes-pages-tag = Tag note
+notes-pages-keep-image = Keep image
+notes-pages-place-image = Place image
+notes-pages-show-image = Show image
+notes-pages-create-page = Create note from Markdown
+notes-pages-import-markdown = Import Markdown
+notes-pages-import-markdown-files = Import Markdown files
+notes-pages-import-notes = Import notes
+notes-pages-append-to-note = Append to note
+notes-pages-write-note = Write note
 notes-notebook = Notebook
-notes-notebook-new-note = New note
-notes-notebook-new-child = New note inside
-notes-notebook-rename = Rename note
-notes-notebook-delete = Delete note
-notes-notebook-move-note = Move note
-notes-notebook-move-up = Move note up
-notes-notebook-move-down = Move note down
-notes-notebook-indent = Indent note
-notes-notebook-outdent = Outdent note
-notes-notebook-duplicate = Duplicate note
 notes-notebook-new-tag = New tag
-notes-notebook-tag = Tag note
 notes-notebook-delete-tag = Delete tag
-notes-notebook-keep-image = Keep image
-notes-notebook-place-image = Place image
-notes-notebook-create-page = Create note from Markdown
-notes-notebook-import-markdown = Import Markdown
-notes-notebook-import-markdown-files = Import Markdown files
-notes-notebook-append-to-note = Append to note
-notes-notebook-write-note = Write note
 
 ## What the app is called in a window and in the launcher
 notes-app-title = Notes

@@ -76,6 +76,10 @@ enum Screens {
             $0.showsPanelInMain = true
         }
         await add("phone-sub-agent", Drawing.content(), path: [.chat(.subAgent("usage-drop"))]) { $0.open(.subAgent("usage-drop")) }
+        await add("phone-replies", Drawing.content()) { $0.toggleReplies(of: "maya", under: "maya", in: .main) }
+        var comparing = MemorySource.Content()
+        comparing.session = .confirming(code: "481 207")
+        await add("phone-compare-code", comparing)
         await add("phone-assistant-view", Drawing.content(), path: [.assistantView]) { $0.place = .assistantView }
         for (name, items, _) in pieces {
             await add("phone-\(name)", piece(items))
@@ -98,6 +102,8 @@ enum Screens {
         screens.append(Screen(name: "main-chat", size: window, view: rooted(await model(Drawing.content()), scheme) { MacWindow() }))
         let agent = await model(Drawing.content()) { $0.open(.subAgent("usage-drop")) }
         screens.append(Screen(name: "sub-agent", size: CGSize(width: 1280, height: 700), view: rooted(agent, scheme) { MacWindow() }))
+        let replies = await model(Drawing.content()) { $0.toggleReplies(of: "maya", under: "maya", in: .main) }
+        screens.append(Screen(name: "replies", size: window, view: rooted(replies, scheme) { MacWindow() }))
         let scheduled = await model(Drawing.content()) { $0.panelTab = .scheduled }
         screens.append(Screen(name: "scheduled-events", size: window, view: rooted(scheduled, scheme) { MacWindow() }))
         // The panel alone at the width the drawing gives it on its own board.
@@ -113,6 +119,8 @@ enum Screens {
                     .background(Token.content)
             }))
         }
+        // A message's view in its place, at the height the view asked for.
+        screens.append(await ViewPiece.screen(scheme))
         let typing = await model(piece([])) { $0.drafts[.main] = Draft(text: Drawing.typed) }
         screens.append(Screen(name: "piece-field", size: CGSize(width: 429, height: 170), view: rooted(typing, scheme) {
             VStack { Spacer(minLength: 0); Composer(chat: .main) }.background(Token.content)
@@ -120,9 +128,62 @@ enum Screens {
         var out = MemorySource.Content()
         out.session = .signedOut
         screens.append(Screen(name: "way-in", size: window, view: rooted(await model(out), scheme) { MacWindow() }))
+        // The first run: what Tilo asks before it pairs, and the provider step in the main chat.
+        var asked = MemorySource.Content()
+        asked.session = .asked(Drawing.pairingAsk)
+        screens.append(Screen(name: "way-in-asked", size: window, view: rooted(await model(asked), scheme) { MacWindow() }))
+        var first = empty
+        first.setup = .needsProvider(Drawing.providers)
+        screens.append(Screen(name: "first-run-provider", size: window, view: rooted(await model(first), scheme) { MacWindow() }))
+        // What Tilo asks before it pairs and the provider step at an iPhone's width, drawn by
+        // this Mac: the same views without the phone's own bars. And the step after a provider
+        // is linked, before its menu is opened: an open menu is the system's own and stands in
+        // no picture drawn off a screen.
+        let phone = CGSize(width: 393, height: 852)
+        screens.append(Screen(name: "way-in-asked-phone", size: phone, view: rooted(await model(asked), scheme) {
+            WayIn().background(Token.content)
+        }))
+        screens.append(Screen(name: "provider-step-phone", size: phone, view: rooted(await model(first), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
+        var choosing = empty
+        choosing.setup = .needsModel(Drawing.providers.flatMap { provider in
+            ["Large", "Small"].map { ModelChoice(id: .init("\(provider.id.value)/\($0.lowercased())"), name: $0, provider: provider.name) }
+        })
+        screens.append(Screen(name: "model-step", size: window, view: rooted(await model(choosing), scheme) { MacWindow() }))
+        screens.append(Screen(name: "model-step-phone", size: phone, view: rooted(await model(choosing), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
         screens.append(Screen(name: "empty", size: window, view: rooted(await model(empty), scheme) { MacWindow() }))
         screens.append(Screen(name: "lock-screen", size: CGSize(width: 300, height: 470), view: rooted(await model(empty), scheme) { LockScreenBoard() }))
         screens.append(Screen(name: "live-activities", size: CGSize(width: 393, height: 560), view: rooted(await model(empty), scheme) { LiveBoard() }))
+        // What the person's Tilo told them, as the app says it. What came while they were away
+        // stands in the main chat: at the Mac's size and at an iPhone's width. The notices with
+        // the buttons their Tilo offers and the lines for what did not notify: at the width of
+        // the drawing's phone, of an iPhone, and of a notice on a Mac.
+        var away = Drawing.content()
+        away.sinceLeft = Drawing.sinceLeft
+        screens.append(Screen(name: "since-you-left", size: window, view: rooted(await model(away), scheme) { MacWindow() }))
+        screens.append(Screen(name: "since-you-left-phone", size: phone, view: rooted(await model(away), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
+        for (name, width) in [("told-notices", 300), ("told-notices-phone", 393), ("told-notices-mac", 344)] {
+            screens.append(Screen(name: name, size: CGSize(width: CGFloat(width), height: 700), view: rooted(await model(empty), scheme) {
+                LockScreenBoard(clock: "10:14", told: Drawing.toldPieces, quiet: Drawing.toldQuiet)
+            }))
+        }
         return screens
     }
     #endif
@@ -139,8 +200,8 @@ struct LiveBoard: View {
                       points: ["Northwind led your seed with 1.2 million.", "Maya asked for the October numbers on Monday.",
                                "Last call was 3 October. You promised the hiring plan."],
                       until: Date().addingTimeInterval(14 * 60 + 30), isImportant: true),
-            LiveFacts(kind: .work, standing: .running, title: "Usage drop: investigate", detail: "Coder"),
-            LiveFacts(kind: .work, standing: .needsYou, title: "Find the Q3 board deck", detail: "Two versions exist. Which one?"),
+            LiveFacts(kind: .work, state: .running, title: "Usage drop: investigate", detail: "Coder"),
+            LiveFacts(kind: .work, state: .needsYou, title: "Find the Q3 board deck", detail: "Two versions exist. Which one?"),
         ]
         VStack(spacing: 10) {
             ForEach(Array(cards.enumerated()), id: \.offset) { _, facts in
@@ -157,15 +218,19 @@ struct LiveBoard: View {
 
 /// The drawing's lock screen, laid out from the very notices the app hands the system. The
 /// system draws the real ones its own way; this board says what they hold, in the drawing's
-/// arrangement, so the two can be held side by side.
+/// order, so the two can be held side by side.
 struct LockScreenBoard: View {
+    var clock = "9:14"
+    /// The pieces that are told, and the lines for what did not notify.
+    var told = [Drawing.mainChat[3], Drawing.reminder]
+    var quiet = [Drawing.mainChat[2]].compactMap { NoticePlan.notice(for: $0, in: .main)?.body }
+
     var body: some View {
-        let told = [Drawing.mainChat[3], Drawing.reminder].compactMap { item in
+        let told = told.compactMap { item in
             NoticePlan.notice(for: item, in: .main).map { (item, $0) }
         }
-        let quiet = NoticePlan.notice(for: Drawing.mainChat[2], in: .main)
         VStack(spacing: 10) {
-            Text("9:14").font(.tilo(44, .semibold)).monospacedDigit().padding(.top, 18).padding(.bottom, 8)
+            Text(clock).font(.tilo(44, .semibold)).monospacedDigit().padding(.top, 18).padding(.bottom, 8)
             ForEach(told, id: \.0.id) { item, notice in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
@@ -181,14 +246,22 @@ struct LockScreenBoard: View {
                             Text(subtitle).font(.tilo(12, .semibold)).foregroundStyle(Token.you)
                         }
                     }
-                    Text(notice.body).font(.body14).foregroundStyle(Token.ink)
-                    if let answer = notice.answer {
-                        HStack(spacing: 8) {
-                            Text(answer.title).font(.button13).foregroundStyle(Token.content)
+                    Text(notice.words).font(.body14).foregroundStyle(Token.ink).fixedSize(horizontal: false, vertical: true)
+                    // The buttons the system is handed: what the person's Tilo offers, or the
+                    // piece's own first answer, and Open.
+                    let buttons = notice.offers.isEmpty ? (notice.answer.map { [$0.title] } ?? []) : notice.offers.map(\.title)
+                    if !buttons.isEmpty {
+                        let offered = ForEach(Array(buttons.enumerated()), id: \.offset) { index, title in
+                            Text(title).font(.button13).foregroundStyle(index == 0 ? Token.content : Token.ink)
                                 .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(Token.ink, in: RoundedRectangle(cornerRadius: 8))
-                            Text(AssistantWords.open.said).font(.button13).foregroundStyle(Token.ink)
-                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(index == 0 ? Token.ink : Token.raised, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        let open = Text(AssistantWords.open.said).font(.button13).foregroundStyle(Token.ink)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                        // Side by side while they fit, as the system sets them; else one under the other.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) { offered; open }
+                            VStack(alignment: .leading, spacing: 6) { offered; open }
                         }
                         .padding(.top, 4)
                     }
@@ -197,8 +270,9 @@ struct LockScreenBoard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Token.content, in: RoundedRectangle(cornerRadius: 16))
             }
-            if let quiet {
-                Text(quiet.body).font(.small12).foregroundStyle(Token.ink3).multilineTextAlignment(.center)
+            ForEach(quiet, id: \.self) { line in
+                Text(line).font(.small12).foregroundStyle(Token.ink3).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }

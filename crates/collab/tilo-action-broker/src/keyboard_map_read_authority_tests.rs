@@ -1,4 +1,4 @@
-// Actual Settings worker, private inherited route and certified shell ActionHost.
+// Actual Settings worker, private inherited route and certified shell ActionProvider.
 // Capture only the production bridge's static direction label, never RPC payloads.
 struct KeyboardReadBridgeProbe(Arc<Mutex<Vec<String>>>);
 impl tracing::Subscriber for KeyboardReadBridgeProbe {
@@ -29,9 +29,9 @@ impl tracing::Subscriber for KeyboardReadBridgeProbe {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witness() {
+async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_approval() {
     use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
-    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use ui::portable_storage::{PortableStorage, StorageKey};
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
@@ -120,9 +120,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let permissions = ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
             );
-            let context = HostContext::prepare(
+            let context = ProcessContext::prepare(
                 definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records: records.clone(),
                     views,
                     device_id: "device".into(),
@@ -190,7 +190,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             .in_new_execution();
             let facade = broker.app_action_broker().unwrap();
             let host = facade
-                .certified_local_action_host(
+                .certified_local_action_provider(
                     &caller,
                     &presentation(&env.route.cluster_id, &env.cert, &env.key),
                 )
@@ -229,12 +229,12 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             foreign.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("unrelated-same-role-member"));
             assert!(
                 authorize(&foreign).is_err(),
-                "caller labels cannot replace broker custody"
+                "caller labels cannot replace broker ownership"
             );
             lease.check().unwrap();
             let (replacement, replacement_authorize) = broker
                 .connect_local_worker_with_authorizer(env.route.clone(), &env.cert).unwrap();
-            assert!(replacement_authorize(&delivered).is_err(), "same app/certificate/route on another private registration cannot borrow original custody");
+            assert!(replacement_authorize(&delivered).is_err(), "same app/certificate/route on another private registration cannot borrow original ownership");
             lease.check().unwrap();
             let output = loop {
                 scene.reset();

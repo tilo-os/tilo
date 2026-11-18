@@ -73,7 +73,7 @@ fn prose_book(chapters: usize, paragraphs: usize, words: usize) -> Book {
     crate::epub::parse_epub(&bytes, 0, "").expect("the generated book parses")
 }
 
-/// A record holding the reader's settings in `mode`.
+/// A resource holding the reader's settings in `mode`.
 fn resource_in(mode: ReadMode) -> ui::State {
     let mut state = ui::State::new();
     let mut doc = crate::resource::doc_with(&[], &[]);

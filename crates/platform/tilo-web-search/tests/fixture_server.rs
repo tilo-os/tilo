@@ -5,9 +5,15 @@
 //! plain words rather than cut.
 #![allow(clippy::unwrap_used, reason = "in a test these are assertions")]
 
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tilo_web_search::{FetchError, FetchLimits, FetchedBody, fetch, fetch_fixture};
+use tilo_web_search::fixtures::{FixtureServer, Route};
+use tilo_web_search::{
+    FetchError, FetchLimits, FetchedBody, Refusal, fetch, fetch_fixture, fetch_looking_up,
+};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n\x00\x01\x02trailer\n%%EOF\n";
@@ -139,4 +145,137 @@ async fn json_html_and_pdf_bodies_from_a_fixture_server() {
         fetch(&client, &format!("{base}/cv.pdf"), &limits()).await,
         Err(FetchError::Refused(_))
     ));
+}
+
+/// A resolver the test stands in for a name's own DNS: each lookup takes the
+/// next of `answers`, `None` for a lookup that fails, and the last of them
+/// from then on. It counts its lookups.
+fn stand_in(answers: Vec<Option<Vec<IpAddr>>>) -> (tilo_net::Lookup, Arc<AtomicUsize>) {
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let lookup: tilo_net::Lookup = Arc::new(move |_name: String| {
+        let at = counted.fetch_add(1, Ordering::SeqCst);
+        let answer = answers
+            .get(at.min(answers.len().saturating_sub(1)))
+            .cloned()
+            .flatten();
+        Box::pin(
+            async move { answer.ok_or_else(|| std::io::Error::other("the name does not resolve")) },
+        )
+    });
+    (lookup, asked)
+}
+
+/// A client that dials whatever `lookup` answers, as every client did
+/// before the fetch's own judged its lookup.
+fn unjudged(lookup: &tilo_net::Lookup) -> tilo_net::Client {
+    tilo_net::Client::builder()
+        .redirects(tilo_net::Redirects::None)
+        .lookup(Arc::clone(lookup))
+        .build()
+        .unwrap()
+}
+
+/// A page this machine keeps, and the address a name no resolver knows
+/// would reach it by.
+fn kept_here() -> (FixtureServer, String) {
+    let server = FixtureServer::serve(vec![Route::new(
+        "/kept",
+        "text/plain",
+        "this machine's own",
+    )]);
+    let port = url::Url::parse(&server.at("/kept"))
+        .unwrap()
+        .port()
+        .unwrap();
+    let named = format!("http://rebound.example.test:{port}/kept");
+    (server, named)
+}
+
+const HERE: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+/// An address on the public internet, which no test dials.
+const PUBLIC: IpAddr = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
+
+#[tokio::test]
+async fn a_name_answering_a_public_address_and_then_this_machine_is_not_fetched() {
+    let (server, named) = kept_here();
+    let rebinding = || stand_in(vec![Some(vec![PUBLIC]), Some(vec![HERE])]);
+
+    // As the fetch stood: the look before the request finds the name
+    // public, the client resolves it again unjudged, and what this machine
+    // keeps is read.
+    let (lookup, _) = rebinding();
+    let read = fetch_looking_up(&unjudged(&lookup), &named, &limits(), lookup)
+        .await
+        .unwrap();
+    assert_eq!(read.text(), Some("this machine's own"));
+    assert_eq!(server.requests().len(), 1);
+
+    // The fetch's own client judges the lookup its connection uses: the
+    // same two answers, and nothing is sent.
+    let (lookup, asked) = rebinding();
+    let client = tilo_web_search::client_looking_up(Arc::clone(&lookup)).unwrap();
+    let refused = fetch_looking_up(&client, &named, &limits(), lookup)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        FetchError::Refused(Refusal::Local("rebound.example.test".into()))
+    );
+    assert_eq!(server.requests().len(), 1, "nothing more was sent");
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        2,
+        "the look before the request and the connection's own lookup, and no third behind them"
+    );
+
+    // A name that answers a public address beside a local one is refused
+    // whole: the connection might take either.
+    let (lookup, _) = stand_in(vec![Some(vec![PUBLIC]), Some(vec![PUBLIC, HERE])]);
+    let client = tilo_web_search::client_looking_up(Arc::clone(&lookup)).unwrap();
+    let refused = fetch_looking_up(&client, &named, &limits(), lookup)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, FetchError::Refused(Refusal::Local(_))),
+        "{refused:?}"
+    );
+    assert_eq!(server.requests().len(), 1, "nothing more was sent");
+}
+
+#[tokio::test]
+async fn a_name_whose_first_lookup_fails_is_not_dialled_unjudged() {
+    let (server, named) = kept_here();
+    let failing_first = || stand_in(vec![None, Some(vec![HERE])]);
+
+    // As the fetch stood: a lookup that fails is no refusal, the client
+    // resolves the name itself, and what this machine keeps is read.
+    let (lookup, _) = failing_first();
+    let read = fetch_looking_up(&unjudged(&lookup), &named, &limits(), lookup)
+        .await
+        .unwrap();
+    assert_eq!(read.text(), Some("this machine's own"));
+    assert_eq!(server.requests().len(), 1);
+
+    // A lookup that fails is still no refusal, as a sandbox with no
+    // resolver needs it. What the connection then resolves is judged.
+    let (lookup, _) = failing_first();
+    let client = tilo_web_search::client_looking_up(Arc::clone(&lookup)).unwrap();
+    let refused = fetch_looking_up(&client, &named, &limits(), lookup)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        FetchError::Refused(Refusal::Local("rebound.example.test".into()))
+    );
+    assert_eq!(server.requests().len(), 1, "nothing more was sent");
+
+    // A name that never resolves is a fetch that failed, and no refusal.
+    let (lookup, _) = stand_in(vec![None]);
+    let client = tilo_web_search::client_looking_up(Arc::clone(&lookup)).unwrap();
+    let failed = fetch_looking_up(&client, &named, &limits(), lookup)
+        .await
+        .unwrap_err();
+    assert!(matches!(failed, FetchError::Network(_)), "{failed:?}");
+    assert_eq!(server.requests().len(), 1, "nothing more was sent");
 }

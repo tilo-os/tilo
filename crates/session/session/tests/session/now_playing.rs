@@ -454,7 +454,7 @@ pub(super) fn playing_song() -> serde_json::Value {
     })
 }
 
-/// The same player standing paused.
+/// The same player, paused.
 fn paused_song() -> serde_json::Value {
     let mut song = playing_song();
     song["players"][0]["playing"] = serde_json::json!(false);
@@ -489,7 +489,7 @@ fn panel_session(
             std::rc::Rc::clone(&asked),
             published.clone(),
         ))],
-        action_plane: tilo_session::ActionPlane::At(home.path().join("collab.sock")),
+        app_socket: tilo_session::AppSocket::At(home.path().join("collab.sock")),
         surfaces: vec![panel],
         collab: false,
         ..Options::default()
@@ -625,7 +625,7 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
         },
     );
 
-    // The panel arriving is not the panel standing: read the row only once
+    // The panel arriving is not the panel shown: read the row only once
     // the frame has come to rest, or a colour in flight is counted as drawn,
     // and read the panel's own box from the frame it came to rest at.
     settle(&mut session, 60);
@@ -843,7 +843,7 @@ fn the_lock_screen_shows_the_song_that_plays() {
     });
 }
 
-/// The same song standing paused: the middle control offers to play it.
+/// The same song, paused: the middle control offers to play it.
 #[test]
 fn the_lock_screen_shows_a_paused_song() {
     let _settled = ui::motion::testing::settled();

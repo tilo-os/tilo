@@ -22,7 +22,7 @@
 //!   truncated or malformed turns cannot dispatch tools;
 //! * an `invoke` the model marks `standalone` (independent of the steps
 //!   before it) is started without waiting for them to settle in their applications when
-//!   it acts on another record than every step still running
+//!   it acts on another resource than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
 //! * the turn's running steps are followed by asks their host holds until a
@@ -59,7 +59,9 @@ const MOST_STEPS_TOLD: usize = 64;
 
 mod pictures;
 use pictures::MOST_PICTURES;
+mod empty_finish;
 mod program_steps;
+use empty_finish::EmptyFinish;
 
 mod answer;
 mod compaction;
@@ -72,7 +74,7 @@ mod progress;
 /// also says how many turns are left and asks the model to act.
 const DISCOVERY_NUDGE: usize = 3;
 /// After an open, the most to wait for the opened application's operations
-/// to be published (its window starts and binds a new record). The wait
+/// to be published (its window starts and binds a new resource). The wait
 /// ends on the catalogue that carries them, at once when they already are.
 const OPEN_SETTLE: Duration = Duration::from_secs(8);
 /// Most newly available operations an open lists.
@@ -168,7 +170,7 @@ pub(super) struct ActiveTurn {
     ready: VecDeque<StreamedCall>,
     /// The turn's end, once it has one: the model's complete body, or the
     /// failure it ended in, split into the sentence a person reads and the
-    /// record kept for debugging.
+    /// resource kept for debugging.
     finished: Option<Result<String, Failure>>,
     presentation: agent_provider_config::protocol::StreamState,
     /// Completed calls seen (`tool_call` frames): calls below this index
@@ -328,15 +330,20 @@ fn is_output_limit(body: &str) -> bool {
 
 /// The day the person asks on, as the model reads it: a program reads no clock, so a request
 /// about "this week" or "overdue" is answered from this, never found out by reading change times.
-fn today_line(today: ui::format::NaiveDate) -> String {
-    let week = today.week(ui::format::Weekday::Mon);
-    let tomorrow = today.succ_opt().unwrap_or(today);
+fn today_line(today: ui::format::Date) -> String {
+    let monday = today
+        .checked_sub(ui::format::Span::new().days(today.weekday().to_monday_zero_offset()))
+        .unwrap_or(today);
+    let sunday = monday
+        .checked_add(ui::format::Span::new().days(6))
+        .unwrap_or(monday);
+    let tomorrow = today.tomorrow().unwrap_or(today);
     format!(
         "Today is {} where the person is ({today}); this week runs from Monday {} to Sunday {}. \
          A `Date` in a program is the day as written here: tomorrow is `{tomorrow}`.",
         ui::format::day_heading(today, true),
-        week.first_day(),
-        week.last_day()
+        monday,
+        sunday
     )
 }
 
@@ -354,9 +361,9 @@ fn input_tokens(body: &str) -> Option<u64> {
 /// E121), so a time of day the person names ("at 6pm") is theirs, in their zone, and is written
 /// shifted by its offset. Without this a model leaves the time out, writes it as UTC, or spends
 /// a turn on the compiler's refusal.
-fn clock_line(local: ui::format::NaiveDateTime, utc: ui::format::NaiveDateTime) -> String {
-    let offset = local - utc;
-    let minutes = offset.num_minutes();
+fn clock_line(local: ui::format::DateTime, utc: ui::format::DateTime) -> String {
+    let offset = local.duration_since(utc);
+    let minutes = offset.as_mins();
     let sign = if minutes < 0 { '-' } else { '+' };
     let zone = ui::format::machine!(
         "the offset a model shifts a time of day by, in ISO 8601's own form",
@@ -366,15 +373,19 @@ fn clock_line(local: ui::format::NaiveDateTime, utc: ui::format::NaiveDateTime) 
             minutes.abs() % 60
         )
     );
-    let six = local.date().and_hms_opt(18, 0, 0).unwrap_or(local) - offset;
+    let six = local
+        .date()
+        .at(18, 0, 0, 0)
+        .checked_sub(offset)
+        .unwrap_or(local);
     let now = ui::format::machine!(
         "the clock a model reads to write an instant, in 24-hour ISO 8601 form",
-        local.format("%H:%M").to_string()
+        local.strftime("%H:%M").to_string()
     );
     format!(
         "It is {now} there now ({zone}). A `Time` in a program is an instant in UTC with a `Z`: 6 \
          pm there today is `{}`. Keep every time they name.",
-        six.format("%Y-%m-%dT%H:%M:%SZ")
+        six.strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 }
 
@@ -426,6 +437,10 @@ pub(super) struct LoopState {
     done_apps: HashMap<String, usize>,
     /// Parts the model explained it cannot do.
     unable: Vec<String>,
+    /// Whether the person asked a question: its answer is the reply, never an operation.
+    question: bool,
+    /// What a finish that did nothing is held against ([`Self::hold_empty_finish`]).
+    empty_finish: EmptyFinish,
     /// Finishes refused for undone parts in this task.
     refusals: usize,
     /// Turns so far that only looked things up.
@@ -669,6 +684,8 @@ impl LoopState {
             parts: Vec::new(),
             done_apps: HashMap::new(),
             unable: Vec::new(),
+            question: false,
+            empty_finish: EmptyFinish::default(),
             refusals: 0,
             discovery_turns: 0,
             turn: 0,
@@ -772,7 +789,7 @@ impl LoopState {
     }
 
     /// Count a successful operation as done in its app: the app that published it, and the
-    /// tilolang app whose record it acted on. A tilolang app's record is published under the
+    /// tilolang app whose resource it acted on. A tilolang app's resource is published under the
     /// session that serves it (`tl:<app>:<record>`): a step on it is a step in that app, which
     /// is how the model names the part it does.
     fn did_in(&mut self, offer: &surface::Offer) {
@@ -789,9 +806,11 @@ impl LoopState {
     /// own operation would have. Without this a part done by a program stays undone, the
     /// finish is refused, and the model is pushed to open the app's window to satisfy it.
     ///
-    /// A program that changed nothing and answered — "summarise what changed in my notes" read
-    /// and printed — did the part in each app it read: a question is done by its answer, and its
-    /// finish was refused for want of a change nobody asked for.
+    /// A program that changed nothing did no part of a request to do something, whatever it
+    /// printed: "reply to Bo" is not answered by counting Mail's drafts and saying "checking what
+    /// happened in Mail", and counting it done there let the turn finish succeeded with the reply
+    /// never written. Only a request that is a question — "summarise what changed in my notes" —
+    /// is done by its answer, and then the program did the part in each app it read.
     pub(super) fn program_did(&mut self, step: &ui::tilo_reference::ProgramStep) {
         if step.outcome != ui::tilo_reference::StepOutcome::Done {
             return;
@@ -802,7 +821,10 @@ impl LoopState {
             .map(|change| change.resource.app.clone())
             .filter(|app| !app.is_empty())
             .collect();
-        if apps.is_empty() && step.answer.iter().any(|line| !line.trim().is_empty()) {
+        if apps.is_empty()
+            && self.question
+            && step.answer.iter().any(|line| !line.trim().is_empty())
+        {
             apps = self.programs.apps_named(&step.program);
         }
         apps.sort();
@@ -1204,8 +1226,11 @@ impl Session {
             operations: format!("Operations published right now:\n\n{summary}\n"),
             task: format!(
                 "{place}\n{} {}\n\nThe request:\n\n{request}",
-                today_line(now.date_naive()),
-                clock_line(now.naive_local(), now.naive_utc())
+                today_line(now.date()),
+                clock_line(
+                    now.datetime(),
+                    now.with_time_zone(ui::format::TimeZone::UTC).datetime()
+                )
             ),
         };
         let system = tools::system_for(run.agent_instruction.as_deref());
@@ -1244,6 +1269,8 @@ impl Session {
     fn note_implied_parts(run: &Asked, catalogue: &surface::Catalogue, state: &mut LoopState) {
         let request = run.request().to_lowercase();
         let question = asks_question(&request);
+        // A question is done by its answer; a request to do something only by doing it.
+        state.question = question;
         if !question
             && request.contains("chat")
             && asks_for_message(&request)
@@ -1292,8 +1319,8 @@ impl Session {
                 tools::MOST_SUMMARISED,
             );
         }
-        // The apps' own records are read and changed by programs, whose apps the first turn lists
-        // with their types and actions: the operations every open window and record publishes
+        // The apps' own documents are read and changed by programs, whose apps the first turn lists
+        // with their types and actions: the operations every open window and resource publishes
         // beside them (hundreds, under long ids) would only make the first answer slower to come,
         // and are a `list_operations` away for the request that needs one.
         if catalogue.offers.iter().any(|offer| {
@@ -1313,7 +1340,7 @@ impl Session {
 
     /// Stop the turn in flight, keeping what it streamed in the record: `said`
     /// is what a person reads, in their own terms, and `reason` — a timeout,
-    /// the task's time running out, a person's Stop — is kept in the record.
+    /// the task's time running out, a person's Stop — is kept in the resource.
     fn interrupt_turn(&mut self, reason: &str, said: &str, cancelled: bool) -> Failure {
         if let Some(turn) = &mut self.turn {
             use agent_provider_config::protocol::{ErrorKind, ModelError};
@@ -1328,7 +1355,7 @@ impl Session {
             turn.finished = Some(Err(Failure::spoken(said, reason)));
         }
         // The person reads what happened, in their terms; the reason the loop
-        // stopped the turn is the record kept beside it.
+        // stopped the turn is the resource kept beside it.
         let failure = Failure::spoken(said, reason);
         match self.turn.take() {
             Some(turn) => turn.retained_failure(&failure),
@@ -1336,7 +1363,7 @@ impl Session {
         }
     }
 
-    /// One model turn: stream it, validate its complete batch, execute and record
+    /// One model turn: stream it, validate its complete batch, execute and resource
     /// the results. `Some` ends the loop. A turn that ends early (cancelled,
     /// out of time, a broken model turn) asks the host to stop every
     /// independent invoke it left running.
@@ -1403,7 +1430,7 @@ impl Session {
             self.pump_turn_waiting(Duration::from_millis(50));
             self.absorb_catalogue_updates();
             if self.task_cancelled(run) {
-                // The person stopped it: the record needs no sentence beside
+                // The person stopped it: the resource needs no sentence beside
                 // the one their own Stop gave it.
                 let reason = self.interrupt_turn(
                     &crate::i18n::t("agent-cancel-thinking"),
@@ -1452,7 +1479,7 @@ impl Session {
                         // failure stays for a turn that cannot be answered,
                         // which the loop judges below. The person's sentence is
                         // the catalogue's, never the parser's own words ("invoke:
-                        // missing operation"): those are the record kept beside
+                        // missing operation"): those are the resource kept beside
                         // it, for whoever debugs the run.
                         Err(error) => {
                             let failure = Failure::unusable(&error).retained(
@@ -1467,6 +1494,7 @@ impl Session {
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 let handling = ui::time::now();
+                state.empty_finish.saw(&call.name);
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
                 stepping += handling.elapsed();
                 let cancelled = fold_settled(state, &mut results, &mut finish);
@@ -1545,7 +1573,7 @@ impl Session {
                     && state.malformed_turns < MOST_MALFORMED_TURNS
                 {
                     state.malformed_turns += 1;
-                    // What the model sent, as it sent it: the record of a refused call is the
+                    // What the model sent, as it sent it: the resource of a refused call is the
                     // call, not only the parser's reason.
                     let sent = conversation
                         .read_calls(raw)
@@ -1664,7 +1692,7 @@ impl Session {
             Err(error) => {
                 // A turn that called tools right after an answer was cut off
                 // is not that answer's continuation: the joined text is the
-                // record, and the run carries on with a fresh answer.
+                // resource, and the run carries on with a fresh answer.
                 conversation.continued();
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
@@ -1683,7 +1711,7 @@ impl Session {
                 }
                 // The person reads one clean sentence of what happened; the
                 // parser's own reason (a turn with neither a call nor a word,
-                // a call the loop cannot read) is the record kept beside it,
+                // a call the loop cannot read) is the resource kept beside it,
                 // never the reply's words.
                 return Ok(Some(LoopEnd::Failed(Failure::spoken(
                     &crate::i18n::t("agent-failure-invalid-response"),
@@ -1708,6 +1736,7 @@ impl Session {
                 name: call.name.clone(),
                 input: call.input.clone(),
             };
+            state.empty_finish.saw(&streamed.name);
             let handled = self.handle_call(run, state, &streamed, &mut failed)?;
             let cancelled = fold_settled(state, &mut results, &mut finish);
             if let Some(message) =
@@ -2027,6 +2056,38 @@ impl Session {
         })
     }
 
+    /// The turn's finish (`plan`): what it says of the request's parts is kept, and it ends the turn
+    /// unless it is held (a finish that did nothing, an answer view that is refused).
+    fn finish_call(
+        &mut self,
+        asked: &Asked,
+        state: &mut LoopState,
+        call: &StreamedCall,
+    ) -> Result<Handled> {
+        let mut input = call.input.clone();
+        self.name_part_applications(&mut input);
+        state.absorb_parts(&input);
+        let finish = tools::read_finish(&input);
+        // A reply cannot say a request to do something was done when nothing was:
+        // "remind me to call mum tomorrow at 6pm" answered "Done — a reminder is set"
+        // with no step taken, and the turn ended succeeded with no task made.
+        if let Some(held) = state.hold_empty_finish(
+            asked.request(),
+            finish
+                .reply
+                .as_deref()
+                .is_some_and(|reply| !reply.trim().is_empty()),
+        ) {
+            return Ok(Handled::Result(held));
+        }
+        if let Some(view) = &finish.view
+            && let Err(refused) = self.keep_view_answer(asked, state, view)?
+        {
+            return Ok(Handled::Result(refused));
+        }
+        Ok(Handled::Finish(finish))
+    }
+
     fn handle_call(
         &mut self,
         run: &Asked,
@@ -2042,18 +2103,7 @@ impl Session {
         // reads is listed, however many steps share a note.
         self.tell_step(run, state, call)?;
         match call.name.as_str() {
-            tools::PLAN => {
-                let mut input = call.input.clone();
-                self.name_part_applications(&mut input);
-                state.absorb_parts(&input);
-                let finish = tools::read_finish(&input);
-                if let Some(view) = &finish.view
-                    && let Err(refused) = self.keep_view_answer(run, state, view)?
-                {
-                    return Ok(Handled::Result(refused));
-                }
-                Ok(Handled::Finish(finish))
-            }
+            tools::PLAN => self.finish_call(run, state, call),
             crate::programs::TILO => {
                 // A program may be the request's first step: what a step says of the request (the
                 // separate things it asks for, how far it got, what cannot be done) rides on
@@ -2259,7 +2309,7 @@ impl Session {
     /// Run one of the agent's own web tools. The search or the read happens
     /// here, as this step of the run, and its answer is the call's result: the
     /// person was told what it is about as the step began, and the turn's
-    /// record keeps what it asked and what came of it beside every other step.
+    /// resource keeps what it asked and what came of it beside every other step.
     fn run_web(
         &mut self,
         run: &Asked,
@@ -2435,7 +2485,7 @@ impl Session {
         let view = offer.descriptor.kind == tilo_actions::OperationKind::View;
         let mut note = None;
         if let Some((app, opened_before)) = &opened {
-            let records = opened_records(outcome.output.value.as_ref(), app);
+            let records = opened_resources(outcome.output.value.as_ref(), app);
             let appeared = self.settle_opened(app, opened_before, &records, OPEN_SETTLE)?;
             let new_window = self
                 .app_windows(app)
@@ -2491,7 +2541,7 @@ impl Session {
     /// results.
     ///
     /// Only a plain invocation qualifies — a Task Center action or a native
-    /// task's child — on a record no running step acts on: an open, a view
+    /// task's child — on a resource no running step acts on: an open, a view
     /// change (both change what is published next) and a step taking the
     /// previous step's result all run in order.
     fn start_independent(
@@ -2668,7 +2718,7 @@ impl Session {
 
     /// The windows of `app` the task catalogue publishes operations for, as
     /// `(broker peer, record)`: each window is its own connection serving
-    /// its own record, so a second window is told apart from the first even
+    /// its own document, so a second window is told apart from the first even
     /// when it publishes the same resource ids.
     fn app_windows(&mut self, app: &str) -> HashSet<(u64, String)> {
         let peers: HashSet<u64> = self
@@ -2688,7 +2738,7 @@ impl Session {
 
     /// After an open of `app`, wait up to `wait` for the opened window's
     /// operations, ending on the catalogue that brings them: a window for
-    /// every record the open's result names (`records`), or else any window
+    /// every resource the open's result names (`records`), or else any window
     /// of `app` not in `before`. Returns at once when they are already
     /// published, as for an open that lands on a window already there.
     /// Whether they are.
@@ -2796,12 +2846,12 @@ impl Session {
     }
 }
 
-/// The records of `app` an open's result names as the windows it opened:
+/// The resources of `app` an open's result names as the windows it opened:
 /// the desktop's command receipt lists them under `opened`, each with its
 /// `app_id` and `document_id` (`tilo_desktop_model::commands::OpenedWindow`).
 /// Empty when the result names none — an owner that does not report its
 /// windows, or an open that is not the desktop's.
-fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
+fn opened_resources(value: Option<&Value>, app: &str) -> Vec<String> {
     value
         .and_then(|value| value.get("opened"))
         .and_then(Value::as_array)
@@ -2876,7 +2926,7 @@ mod today_tests {
     /// takes one ("remind me to call mum tomorrow").
     #[test]
     fn the_request_names_today_and_its_week() {
-        let friday = ui::format::NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
+        let friday = ui::format::Date::new(2026, 11, 13).unwrap();
         assert_eq!(
             super::today_line(friday),
             format!(
@@ -2910,12 +2960,9 @@ mod today_tests {
     /// an instant in UTC, shifted by the person's offset ("at 6pm" in UTC+01:00 is 17:00Z).
     #[test]
     fn the_request_names_the_time_and_how_a_moment_is_written() {
-        let day = ui::format::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        let day = ui::format::Date::new(2026, 11, 16).unwrap();
         assert_eq!(
-            super::clock_line(
-                day.and_hms_opt(22, 45, 0).unwrap(),
-                day.and_hms_opt(21, 45, 0).unwrap()
-            ),
+            super::clock_line(day.at(22, 45, 0, 0), day.at(21, 45, 0, 0)),
             "It is 22:45 there now (UTC+01:00). A `Time` in a program is an instant in UTC with \
              a `Z`: 6 pm there today is `2026-11-16T17:00:00Z`. Keep every time they name."
         );

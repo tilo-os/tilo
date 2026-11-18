@@ -11,8 +11,8 @@
 #
 # ## Authentication
 #
-# Every action below is gated on proving a LUKS passphrase for the root volume.
-# The gate uses `cryptsetup open --test-passphrase`, which only a key in the
+# Every action below depends on proving a LUKS passphrase for the root volume.
+# The check uses `cryptsetup open --test-passphrase`, which only a key in the
 # LUKS header satisfies. It is needed because the disk may already be open after
 # a passphrase, recovery key, or explicitly enrolled FIDO2 token was supplied;
 # LUKS header satisfies. An open disk does not show that the same person is still

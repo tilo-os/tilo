@@ -32,8 +32,8 @@ type Task {
     assignee: Option<Actor> = .none
     /// The project it belongs to; none while it waits in the inbox.
     project: Option<Project> = .none
-    /// The section of its project it is in, a lane of the project's board; none for the
-    /// project's first lane.
+    /// The section of its project it is in, a list of the project's board; none for the
+    /// project's first list.
     section: Option<Section> = .none
     priority: Priority = .none
 
@@ -63,11 +63,11 @@ type Project {
     name: Text
     /// What it is for, and anything worth remembering about it.
     notes: RichText
-    /// Whether its window shows its tasks as a board, a lane per section, or as a list.
+    /// Whether its window shows its tasks as a board, a list per section, or as a list.
     board: Bool = false
 }
 
-/// A section of a project: one lane of its board, such as "Doing".
+/// A section of a project: one list of its board, such as "Doing".
 type Section {
     name: Text
     /// The project it is a section of.
@@ -200,7 +200,7 @@ destructive action remove_project(tasks: Tasks, p: Project) (
     tasks.projects.remove(p)
 }
 
-/// Shows a project's tasks as a board, a lane per section, or as a list again.
+/// Shows a project's tasks as a board, a list per section, or as a list again.
 action show_board(p: Project, on: Bool = not p.board) (
     label: "Board",
     icon: .layout_grid,
@@ -219,7 +219,7 @@ action rename_section(s: Section, name: Text) {
     s.name = name
 }
 
-/// Deletes a section; its tasks go to the project's first lane.
+/// Deletes a section; its tasks go to the project's first list.
 destructive action remove_section(s: Section) (icon: .trash, label: "Delete section") {
     for t in tasks.items.filter(t -> t.section == s) {
         t.section = .none
@@ -227,12 +227,12 @@ destructive action remove_section(s: Section) (icon: .trash, label: "Delete sect
     tasks.sections.remove(s)
 }
 
-/// Adds a task at the end of a lane of a project's board.
+/// Adds a task at the end of a list of a project's board.
 action add_to(p: Project, s: Option<Section>) -> Task (icon: .plus, label: "New task") {
     tasks.items.insert(Task(title: "", project: p, section: s))
 }
 
-/// Puts a task into a lane of its project's board, `s` (none for the first lane), at the place
+/// Puts a task into a list of its project's board, `s` (none for the first list), at the place
 /// `at` among the tasks already there.
 action place(t: Task, s: Option<Section>, at: Int) {
     t.section = s
@@ -263,9 +263,9 @@ fn sections_of(p: Project) -> List<Section> {
     tasks.sections.filter(s -> s.project == p)
 }
 
-/// The open tasks of one lane of a project's board, in order: those of the section `s`, or of no
+/// The open tasks of one list of a project's board, in order: those of the section `s`, or of no
 /// section.
-fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
+fn list_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done)
 }
 
@@ -342,7 +342,7 @@ view home(t: Tasks) {
 }
 
 /// A project's window: its tasks, in order, with the entry that adds to it at their foot; or,
-/// shown as a board (its Board toggle), the same tasks as a lane per section.
+/// shown as a board (its Board toggle), the same tasks as a list per section.
 view project_page(p: Project) {
     state draft: Text
     if p.board {
@@ -385,16 +385,16 @@ view project_list(p: Project, draft: State<Text>) {
     }
 }
 
-/// A project's board: a lane per section, the first for the tasks in none, each open task a
-/// card. A card is dragged to another place in its lane or into another lane, or moved from
+/// A project's board: a list per section, the first for the tasks in none, each open task a
+/// card. A card is dragged to another place in its list or into another list, or moved from
 /// its menu, which also holds its actions, and opens in a window of its own.
 view project_board(p: Project) {
     let sections = sections_of(p)
     std.page(p, canvas: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
-                let loose = lane_of(p, .none)
-                ui.BoardLane(title: "No section", count: loose.len(), action: "New task") {
+                let loose = list_of(p, .none)
+                ui.BoardList(title: "No section", count: loose.len(), action: "New task") {
                     on act: add_to(p, .none)
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     for t in loose {
@@ -402,8 +402,8 @@ view project_board(p: Project) {
                     }
                 }
                 for s in sections {
-                    let cards = lane_of(p, .some(s))
-                    ui.BoardLane(s, title: s.name, count: cards.len(), action: "New task") {
+                    let cards = list_of(p, .some(s))
+                    ui.BoardList(s, title: s.name, count: cards.len(), action: "New task") {
                         on act: add_to(p, .some(s))
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         for t in cards {
@@ -417,7 +417,7 @@ view project_board(p: Project) {
 }
 
 /// A task on a board: its row. It opens in a window of its own, and its menu moves it to
-/// another lane or runs its actions.
+/// another list or runs its actions.
 view task_card(t: Task, sections: List<Section>) {
     ui.BoardCard(t) {
         on activate: open(t)
@@ -561,7 +561,7 @@ scenario "all done" {
     tasks.items.insert(Task(title: "Sun cream", done: true))
 }
 
-/// A move a week away, on its project's board: a lane per stage, the tasks in each.
+/// A move a week away, on its project's board: a list per stage, the tasks in each.
 scenario "a project board" -> Project {
     let flat = tasks.projects.insert(
         Project(name: "Move flat", notes: RichText("Keys on the 15th."), board: true),

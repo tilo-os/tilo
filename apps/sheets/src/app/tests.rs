@@ -51,11 +51,9 @@ pub(crate) fn doc_snapshot(
     idx: usize,
     _currency: Currency,
 ) -> crate::workbook::SheetSnapshot {
-    doc_workbook(doc)
-        .sheets
-        .values()
-        .nth(idx)
-        .map(crate::workbook::Sheet::snapshot)
+    let book = doc_workbook(doc);
+    book.sheet_id(idx)
+        .and_then(|id| book.snapshot_of(id))
         .unwrap_or_default()
 }
 
@@ -417,11 +415,10 @@ fn shown(app: &mut TestApp<crate::resource::SheetsShell>) -> (usize, String) {
 }
 
 fn raw_at(app: &TestApp<crate::resource::SheetsShell>, sheet: usize, addr: Addr) -> String {
-    app.state()
-        .sheets
-        .values()
-        .nth(sheet)
-        .map(crate::workbook::Sheet::snapshot)
+    let state = app.state();
+    state
+        .sheet_id(sheet)
+        .and_then(|id| state.snapshot_of(id))
         .and_then(|snapshot| snapshot.raw.get(&addr).cloned())
         .unwrap_or_default()
 }
@@ -580,8 +577,8 @@ fn every_format_exports_to_a_path_and_imports_back_once() {
 fn the_file_chooser_saves_exports_and_picks_imports() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Exported.csv");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = sample_app();
 
     recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
@@ -1228,7 +1225,7 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
     {
         let (mut app, mut doc) = seeded_app();
         app.begin_tab_rename(0);
-        for ch in ["L", "e", "d", "g", "e", "r"] {
+        for ch in ["L", "o", "g"] {
             assert!(feed(
                 &mut app,
                 &mut doc,
@@ -1242,7 +1239,7 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
             &named_event(winit::keyboard::NamedKey::Enter),
             Modifiers::default()
         ));
-        assert_eq!(doc_sheet_names(&doc)[0], "Ledger");
+        assert_eq!(doc_sheet_names(&doc)[0], "Log");
     }
 
     {
@@ -1611,7 +1608,7 @@ fn commands_open_the_hosts_search_and_go_to_cells() {
 
 fn asked_search(app: &mut SheetsApp) -> ui::search::SearchRequest {
     let invocation = ui::widget::controls::take_control_invocation(app)
-        .expect("the app asked the host to open search");
+        .expect("the app asked the process to open search");
     ui::search::SearchRequest::from_arguments(&invocation.arguments)
 }
 

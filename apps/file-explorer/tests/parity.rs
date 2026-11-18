@@ -6,17 +6,21 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use chrono::{Local, TimeZone};
 use file_explorer::model::{Entry, SortBy, SortOrder, format_path, sort_entries};
 use std::path::PathBuf;
 
-fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
+fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i16) -> Entry {
     Entry {
         name: name.into(),
         path: PathBuf::from(name),
         is_dir,
         size,
-        modified: Some(Local.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap()),
+        modified: Some(
+            jiff::civil::date(year, 1, 1)
+                .to_zoned(jiff::tz::TimeZone::system())
+                .unwrap()
+                .timestamp(),
+        ),
         mime: mime.into(),
         sync_state: None,
         content_hash: None,
@@ -354,9 +358,9 @@ fn view_mode_toggle_switches_between_list_and_grid() {
 }
 
 fn initial_path_prefers_workspace_then_user_home_then_cwd_then_root() {
-    use file_explorer::model::{initial_path, user_home, workspace_record_authority_roots};
+    use file_explorer::model::{initial_path, user_home, workspace_resource_authority_roots};
     let p = initial_path();
-    let workspace = workspace_record_authority_roots().into_iter().next();
+    let workspace = workspace_resource_authority_roots().into_iter().next();
     let home = user_home();
     let cwd = std::env::current_dir().ok();
 

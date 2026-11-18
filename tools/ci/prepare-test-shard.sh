@@ -82,10 +82,10 @@ if tests imager; then
     printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$env_file"
 fi
 
-# app-cli registry and app-host local trust integration tests execute the
+# app-cli registry and package-service local trust integration tests execute the
 # installer; it is deliberately not a Rust dependency, so an affected-only
 # Cargo invocation does not otherwise produce that binary.
-if tests app-cli app-host; then
+if tests app-cli package-service; then
     bash tools/ci/measure.sh "build tilo-install test fixture" -- \
         bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" -- \
         cargo build --locked -p install --bin tilo-install

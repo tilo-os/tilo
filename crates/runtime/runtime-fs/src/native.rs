@@ -1,5 +1,5 @@
 //! The descriptor-backed Unix provider macOS and Linux share: calls block, so
-//! they belong on bounded workers, never in paint or layout. The authority gate
+//! they belong on bounded workers, never in paint or layout. The authority check
 //! serializes calls with revocation and close, no ambient path is retained, and
 //! symlink resolution walks a bounded stack of already-authorized descriptors.
 
@@ -103,7 +103,7 @@ struct Session {
     lifetimes: Mutex<Vec<Lifetime>>,
     workers: Weak<crate::operations::WorkerQueue>,
     pub(super) mutation_active: AtomicBool,
-    removal: Mutex<Option<Arc<removal::RemovalCustody>>>,
+    removal: Mutex<Option<Arc<removal::RemovalOwnership>>>,
 }
 
 struct SessionCall<'a> {
@@ -1230,7 +1230,7 @@ fn open_pinned(
         #[cfg(target_os = "linux")]
         Err(rustix::io::Errno::ACCESS) => {
             // A readable parent can enumerate an unreadable child. Hold metadata
-            // custody only: O_PATH cannot read or write bytes. All editable opens
+            // ownership only: O_PATH cannot read or write bytes. All editable opens
             // still use explicit native parent rights and RDONLY/WRONLY/RDWR.
             validate()?;
             let mut metadata_flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
@@ -1728,7 +1728,7 @@ impl FsSession {
     }
     #[allow(
         clippy::too_many_lines,
-        reason = "bounded read-only directory, file and link verification share one confinement gate"
+        reason = "bounded read-only directory, file and link verification share one confinement check"
     )]
     fn hash_receipt_object(
         &self,

@@ -316,7 +316,7 @@ impl InvokeTarget {
     /// Where choosing `place` in `workspace` lands: the `open` of its resource on its record, told
     /// its anchor, as a search hit opens. A place naming no item opens the record as a whole.
     #[must_use]
-    pub fn place(workspace: impl Into<String>, place: &ui::mentions::Place) -> Self {
+    pub fn place(workspace: impl Into<String>, place: &tilo_service::notice::Place) -> Self {
         let open = if place.anchor.is_empty() {
             Self::action(&place.app, workspace, &place.resource, OPEN_ACTION)
         } else {

@@ -1,6 +1,6 @@
 //! The session's verbs, the places derived from it, and the app. Typing in the merged
 //! result is the field edit at its path; opening inputs and taking a side are verbs. A
-//! merge is recomputed inside a verb from the record's inputs, so every peer composes the
+//! merge is recomputed inside a verb from the resource's inputs, so every peer composes the
 //! same result.
 
 use crate::chrome::Chrome;
@@ -21,7 +21,7 @@ use crate::doc::{Comparison, HunkChoice, MergeInputs, Session};
 use crate::model::{BlockKind, MergeModel};
 
 impl Session {
-    /// What the record holds: the inputs compared, which side each change takes, and the
+    /// What the resource holds: the inputs compared, which side each change takes, and the
     /// merged result.
     pub fn read_document(
         &self,

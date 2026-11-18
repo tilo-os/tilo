@@ -66,7 +66,7 @@ pub enum StepState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StepRecord {
+pub struct StepEntry {
     pub step: Step,
     pub state: StepState,
     #[serde(default)]

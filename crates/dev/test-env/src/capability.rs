@@ -1,8 +1,8 @@
-//! Host capabilities a test may need, and lanes that must provide them. Some tests need something
+//! Host capabilities a test may need, and jobs that must provide them. Some tests need something
 //! only certain machines have (a Vulkan adapter, an audio endpoint, media codecs, `/dev/fuse`,
 //! fanotify permission, a filesystem with fs-verity): on a developer machine without it the test
-//! says so and passes, while on a CI lane set up to provide it a missing capability is a broken
-//! lane, and a skipped test must not look like a passing one.
+//! says so and passes, while on a CI job set up to provide it a missing capability is a broken
+//! job, and a skipped test must not look like a passing one.
 //! [`require_capability!`](crate::require_capability) does both: it skips with a message naming the
 //! capability, unless `TILO_REQUIRE_<CAP>=1` is set, in which case it fails the test instead.
 
@@ -28,6 +28,7 @@ pub enum Capability {
     Swtpm,
     KernelKeyring,
     NetworkTunnel,
+    XServer,
 }
 
 impl Capability {
@@ -47,6 +48,7 @@ impl Capability {
         Self::Swtpm,
         Self::KernelKeyring,
         Self::NetworkTunnel,
+        Self::XServer,
     ];
 
     #[must_use]
@@ -67,6 +69,7 @@ impl Capability {
             Self::Swtpm => "TILO_REQUIRE_SWTPM",
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
+            Self::XServer => "TILO_REQUIRE_XSERVER",
         }
     }
 
@@ -94,6 +97,7 @@ impl fmt::Display for Capability {
             Self::Swtpm => "an emulated TPM",
             Self::KernelKeyring => "the kernel keyring",
             Self::NetworkTunnel => "TUN devices with ip and nft",
+            Self::XServer => "an X server for Wayland (xwayland-satellite and Xwayland)",
         })
     }
 }
@@ -402,7 +406,7 @@ mod tests {
     }
 
     scenario! {
-        fn a_capability_gates_a_test_on_what_the_machine_has;
+        fn a_capability_checks_a_test_on_what_the_machine_has;
 
         phase an_available_capability_yields_the_probed_value;
         {
@@ -421,7 +425,7 @@ mod tests {
             assert_eq!(probe_gpu(None), None);
         }
 
-        phase a_boolean_probe_gates_without_a_value;
+        phase a_boolean_probe_checks_without_a_value;
         {
             let mut env = ScopedEnv::new();
             env.remove("TILO_REQUIRE_AUDIO");

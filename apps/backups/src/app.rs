@@ -8,7 +8,7 @@ use crate::model::PolicyField;
 use crate::model::{Catalog, Filter, RetentionPolicy};
 use crate::resource::{BackupLocation, Backups, DemoRepository};
 use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 use std::cell::{Cell, RefCell};
 
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
@@ -172,8 +172,8 @@ fn pick_folder(title: &str, accept: &str) -> Picked {
             ui::portal::PortalOutcome::Failed("The folder chooser closed unexpectedly".into())
         })
 }
-fn now() -> NaiveDateTime {
-    ui::clock::local_now().naive_local()
+fn now() -> DateTime {
+    ui::clock::local_now().datetime()
 }
 
 /// A verification under way, for a capture: the window's band says what it is doing, how
@@ -634,7 +634,7 @@ impl Store {
     }
 
     /// End `run` the way its result says: stopped by the person, failed with its reason, or
-    /// done. A stop is recorded in the ledger as something that happened, because the
+    /// done. A stop is recorded in the log as something that happened, because the
     /// person asked for it rather than it failing.
     fn end_job(
         kind: JobKind,
@@ -2110,7 +2110,7 @@ mod tests {
         );
     }
     #[test]
-    fn the_window_alone_writes_nothing_to_the_record() {
+    fn the_window_alone_writes_nothing_to_the_resource() {
         let app = frame(
             BackupsWindow::with_catalog(Catalog::empty()),
             1280.0,

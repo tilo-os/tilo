@@ -34,6 +34,68 @@ final class TellingTests: XCTestCase {
         XCTAssertEqual(NoticePlan.category(of: decision), "assistant.decision.Send it")
     }
 
+    func testWhyAThingDidNotNotifyIsSaidFromTheReasonItsServerGives() {
+        // A line of the person's rule waits on something that is otherwise now.
+        XCTAssertEqual(Quiet.line(about: "Dima's mail", code: "nothing-holds", fact: "raising", value: "no"),
+                       "Dima's mail did not notify you: not important while raising is no.")
+        // They have said nothing about what is important; and the thing has no words over it.
+        XCTAssertEqual(Quiet.line(about: "", code: "no-rule"), "This did not notify you: you have not said what is important to you.")
+        // Their own model decided by their rule: its line is said as it gave it.
+        XCTAssertEqual(Quiet.line(about: "The newsletter", code: "judged", words: "It is a newsletter."),
+                       "The newsletter did not notify you: It is a newsletter.")
+        // No model could be asked: it was not treated as important, and why is said after.
+        XCTAssertEqual(Quiet.line(about: " ", code: "unjudged", words: "No model is linked"),
+                       "This did not notify you: nobody could judge whether it is important. No model is linked.")
+        // A reason this app does not know, or one with nothing to say it with, is said plainly.
+        for code in ["a-later-code", "nothing-holds", "judged", ""] {
+            XCTAssertEqual(Quiet.line(about: "The note", code: code), "The note did not notify you: not important by what you said.", code)
+        }
+    }
+
+    func testWhatItsServerOffersStandsUnderTheNoticeTheExpectedOneFirst() throws {
+        var asked = Drawing.mainChat[3]
+        asked.offers = [Offer(id: "later", title: "Not now"), Offer(id: "send", title: "Send it", isMain: true),
+                        Offer(id: "show", title: "Show me the draft"), Offer(id: "more", title: "One more")]
+        let notice = try XCTUnwrap(NoticePlan.notice(for: asked, in: .main))
+        XCTAssertEqual(notice.offers.map(\.title), ["Send it", "Not now", "Show me the draft"], "the system shows a handful, and Open is one")
+        XCTAssertEqual(NoticePlan.category(of: notice), "assistant.decision.offers.send=Send it|later=Not now|show=Show me the draft")
+        XCTAssertNil(notice.offeredBy)
+        XCTAssertEqual(notice.words, notice.body)
+        // Without anything offered a question keeps its own first answer.
+        let plain = try XCTUnwrap(NoticePlan.notice(for: Drawing.mainChat[3], in: .main))
+        XCTAssertEqual(plain.offers, [])
+        XCTAssertEqual(NoticePlan.category(of: plain), "assistant.decision.Send it")
+
+        // What an agent offers with its own news names the agent with it.
+        var news = Item(id: "n", at: Drawing.now, .message(Message(.assistant, "The draft is ready.")), isImportant: true,
+                        offers: [Offer(id: "show-draft", title: "Show the draft", isMain: true, by: "Scout")])
+        let told = try XCTUnwrap(NoticePlan.notice(for: news, in: .main))
+        XCTAssertEqual(told.kind, .important)
+        XCTAssertEqual(told.offers.map(\.id), ["show-draft"])
+        XCTAssertEqual(told.words, "The draft is ready.\nScout offers this")
+        // What did not interrupt offers nothing to press.
+        news.isImportant = false
+        news.keptQuiet = Quiet.line(about: "", code: "no-rule")
+        let quiet = try XCTUnwrap(NoticePlan.notice(for: news, in: .main))
+        XCTAssertEqual(quiet.kind, .quiet)
+        XCTAssertEqual(quiet.offers, [])
+        XCTAssertEqual(quiet.words, "This did not notify you: you have not said what is important to you.")
+    }
+
+    func testWhatCameSinceThePersonLeftStandsBeforeTheFirstPieceThatCameAfter() {
+        var conversation = Conversation()
+        conversation.apply(.all(Drawing.mainChat))
+        XCTAssertEqual(conversation.first(since: Drawing.at(8, 5)), "dima")
+        XCTAssertEqual(conversation.first(since: Drawing.at(7, 0)), "rundown-1")
+        XCTAssertNil(conversation.first(since: Drawing.at(11, 0)), "nothing held came after: it stands at the foot")
+        // It stands before everything that belongs to that piece: here the mark of its time.
+        let rows = conversation.rows(in: .main, Drawing.wording)
+        XCTAssertEqual(rows.first { $0.item == "dima" }?.id, "mark-dima")
+        XCTAssertEqual(rows.filter { $0.item == "dima" }.map(\.id), ["mark-dima", "task-dima", "piece-dima"])
+        XCTAssertFalse(Drawing.sinceLeft.isEmpty)
+        XCTAssertTrue(SinceLeft(left: Drawing.now).isEmpty)
+    }
+
     func testAReminderAndABriefInterrupt() throws {
         let reminder = try XCTUnwrap(NoticePlan.notice(for: Drawing.reminder, in: .main))
         XCTAssertEqual(reminder.kind, .reminder)
@@ -77,7 +139,7 @@ final class TellingTests: XCTestCase {
         XCTAssertEqual(morning["reminder-remind-jonas"],
                        LiveFacts(kind: .reminder, title: "Remind: call Jonas", until: Drawing.at(10, 14)))
         let maya = try XCTUnwrap(morning["task-maya"])
-        XCTAssertEqual(maya.standing, .needsYou)
+        XCTAssertEqual(maya.state, .needsYou)
         XCTAssertFalse(LiveActivityPlan.mayBegin(maya), "work born needing the person is told by a notification")
         XCTAssertTrue(LiveActivityPlan.mayBegin(try XCTUnwrap(morning["reminder-remind-jonas"])))
 
@@ -104,14 +166,14 @@ final class TellingTests: XCTestCase {
         var agents = Drawing.subAgents
         agents[0].startedBy = .person
         let work = try XCTUnwrap(plan(at: Drawing.now, agents: agents)["sub-agent-usage-drop"])
-        XCTAssertEqual(work, LiveFacts(kind: .work, standing: .running, title: "Usage drop: investigate", detail: "Coder"))
+        XCTAssertEqual(work, LiveFacts(kind: .work, state: .running, title: "Usage drop: investigate", detail: "Coder"))
         XCTAssertTrue(LiveActivityPlan.mayBegin(work))
-        agents[0].standing = .done
+        agents[0].state = .done
         XCTAssertNil(plan(at: Drawing.now, agents: agents)["sub-agent-usage-drop"])
     }
 
     func testAnActivitysFactsCrossAsPlainData() throws {
-        let facts = LiveFacts(kind: .brief, standing: .needsYou, title: "Call", detail: "soon", points: ["a"],
+        let facts = LiveFacts(kind: .brief, state: .needsYou, title: "Call", detail: "soon", points: ["a"],
                               until: Drawing.at(10, 30), isImportant: true)
         let data = try JSONEncoder().encode(facts)
         XCTAssertEqual(try JSONDecoder().decode(LiveFacts.self, from: data), facts)

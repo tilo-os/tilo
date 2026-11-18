@@ -13,9 +13,9 @@ api-tester-workspace-collections = Changed the collections
 api-tester-workspace-environments = Changed the environments
 api-tester-workspace-active-environment = Changed which environment is active
 api-tester-workspace-request = Replaced the request in the builder
-api-tester-request-record-name = Renamed a request
-api-tester-request-record-auth = Changed the authentication of a request
-api-tester-request-record-method = Set the method to { $new ->
+api-tester-request-resource-name = Renamed a request
+api-tester-request-resource-auth = Changed the authentication of a request
+api-tester-request-resource-method = Set the method to { $new ->
     [get] GET
     [post] POST
     [put] PUT
@@ -25,18 +25,18 @@ api-tester-request-record-method = Set the method to { $new ->
     [options] OPTIONS
    *[other] { $new }
 }
-api-tester-request-record-url = Edited the URL of a request
-api-tester-request-record-params = Changed the query parameters of a request
-api-tester-request-record-headers = Changed the headers of a request
-api-tester-request-record-body-mode = Set the body to { $new ->
+api-tester-request-resource-url = Edited the URL of a request
+api-tester-request-resource-params = Changed the query parameters of a request
+api-tester-request-resource-headers = Changed the headers of a request
+api-tester-request-resource-body-mode = Set the body to { $new ->
     [none] none
     [json] JSON
     [form] a form
     [raw] raw text
    *[other] { $new }
 }
-api-tester-request-record-body = Edited the body of a request
-api-tester-request-record-form = Changed the form fields of a request
+api-tester-request-resource-body = Edited the body of a request
+api-tester-request-resource-form = Changed the form fields of a request
 api-tester-credentials-scheme = Set the authentication to { $new ->
     [none] none
     [bearer] a bearer token

@@ -26,7 +26,7 @@ fn invocation(value: &str) -> bool {
         && value != "00000000-0000-0000-0000-000000000000"
 }
 
-/// Inert correlation only; the broker must recover actual target custody.
+/// Inert correlation only; the broker must recover actual target ownership.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -63,7 +63,7 @@ pub const MAX_REPORT_BYTES: usize = 2048;
 /// Closed reasons for disabling informational observation, never execution outcomes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LaneRefusal {
+pub enum EndpointRefusal {
     InvalidReport,
     OversizedReport,
     UnknownPhase,
@@ -83,7 +83,7 @@ pub enum ReportObservation {
         total: Option<u64>,
     },
     Disabled {
-        reason: LaneRefusal,
+        reason: EndpointRefusal,
     },
 }
 
@@ -298,7 +298,7 @@ impl ApprovedCheckReportedProgressStream {
     /// Pull one bounded observation or the unchanged terminal receipt.
     pub async fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
         if self.terminal {
-            return Err(report_error("approved-check report lane is terminal"));
+            return Err(report_error("approved-check report endpoint is terminal"));
         }
         let progress = match &self.feed {
             Some(feed) => match feed.event().await {
@@ -308,7 +308,7 @@ impl ApprovedCheckReportedProgressStream {
                 ))),
                 Err(error) => Err(error),
             },
-            None => Err(report_error("approved-check report lane is closed")),
+            None => Err(report_error("approved-check report endpoint is closed")),
         };
         self.accept(progress)
     }
@@ -358,7 +358,9 @@ impl ApprovedCheckReportedProgressStream {
             ));
         }
         if self.disabled {
-            return Err(report_error("approved-check reporting lane is disabled"));
+            return Err(report_error(
+                "approved-check reporting endpoint is disabled",
+            ));
         }
         self.disabled = matches!(report.observation, ReportObservation::Disabled { .. });
         self.sequence = report.sequence;
@@ -449,7 +451,7 @@ mod tests {
             assert!(Report::decode(&vec![b' '; MAX_REPORT_BYTES + 1]).is_err());
             let disabled = Report {
                 observation: ReportObservation::Disabled {
-                    reason: LaneRefusal::Backpressure,
+                    reason: EndpointRefusal::Backpressure,
                 },
                 ..value
             };
@@ -555,7 +557,7 @@ mod tests {
     impl Frames {
         fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
             if self.stream.terminal {
-                return Err(report_error("approved-check report lane is terminal"));
+                return Err(report_error("approved-check report endpoint is terminal"));
             }
             let next = self
                 .frames
@@ -610,11 +612,11 @@ mod tests {
             );
         }
 
-        phase approved_check_disabled_report_lane_accepts_only_terminal_receipt;
+        phase approved_check_disabled_report_endpoint_accepts_only_terminal_receipt;
         {
             let disabled = Report {
                 observation: ReportObservation::Disabled {
-                    reason: LaneRefusal::InvalidReport,
+                    reason: EndpointRefusal::InvalidReport,
                 },
                 ..report(1)
             };
@@ -640,7 +642,7 @@ mod tests {
             ));
             assert!(
                 stream.read().is_err(),
-                "disabled observation lane cannot restart"
+                "disabled observation endpoint cannot restart"
             );
         }
 
@@ -657,7 +659,7 @@ mod tests {
             ] {
                 let mut stream = wire_reports(vec![frame]);
                 assert!(stream.read().is_err());
-                assert!(stream.read().is_err(), "refusal freezes lane");
+                assert!(stream.read().is_err(), "refusal freezes endpoint");
             }
             let mut stream = wire_reports(vec![
                 CheckProgress::Report(report(3).encode().unwrap()),

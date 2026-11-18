@@ -2,7 +2,7 @@
 //! and a recording launcher. Receipt signing uses an isolated identity store;
 //! no installed app or application process launch is involved.
 use super::*;
-use crate::standalone::RuntimeActionHost;
+use crate::standalone::RuntimeActionProvider;
 use serde_json::json;
 use tilo_action_broker::{
     certificate_authority::CertificateAuthority,
@@ -86,7 +86,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     }
     let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
-    let certificate = joined.custody.device_cert.clone();
+    let certificate = joined.identity.device_cert.clone();
     let actor =
         tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::new(placed, "Runtime APIs");
@@ -112,7 +112,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         services,
     );
     // This is the exact factory used by Standalone::mcp_session_factory.
-    let factory = RuntimeActionHost {
+    let factory = RuntimeActionProvider {
         broker,
         workspace: workspace_id.clone(),
         joined,
@@ -179,10 +179,10 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     );
 }
 
-/// A workspace the runtime no longer holds is a confirmed custody change: the
+/// A workspace the runtime no longer holds is a confirmed ownership change: the
 /// run ends for good, and the client is told that rather than to retry.
 #[tokio::test]
-async fn custody_the_runtime_no_longer_holds_ends_the_run() {
+async fn ownership_the_runtime_no_longer_holds_ends_the_run() {
     let workspace = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
     let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
@@ -196,8 +196,8 @@ async fn custody_the_runtime_no_longer_holds_ends_the_run() {
     assert_eq!(refusal, super::Refusal::Ended);
     assert!(!run.caller().execution_is_live());
     assert_eq!(
-        tilo_actions::remote::ActionHostError::from(refusal),
-        tilo_actions::remote::ActionHostError::NotPermitted,
+        tilo_actions::remote::ActionCallError::from(refusal),
+        tilo_actions::remote::ActionCallError::NotPermitted,
         "an ended run says so and is not retried"
     );
 }

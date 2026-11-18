@@ -1,9 +1,9 @@
-//! A document route has one invocation custodian, independent of window focus.
+//! A document route has one invocation owner, independent of window focus.
 //! Tokens are inert selection fences, never grants or caller-supplied authority.
 use std::collections::HashMap;
 
 use super::{ActionDirectoryRoot, AppBrokerState, CrdtRoute};
-use tilo_actions::remote::{ActionHostError, CanonicalActionRoute};
+use tilo_actions::remote::{ActionCallError, CanonicalActionRoute};
 
 pub(super) const PROVIDER_PREFIX: &str = "canonical:";
 
@@ -12,7 +12,7 @@ struct Publisher {
     route: CrdtRoute,
     registration: uuid::Uuid,
     worker: uuid::Uuid,
-    /// The route's custodian is the live worker whose directory was admitted
+    /// The route's owner is the live worker whose directory was admitted
     /// first, host-mounted or launched alike: once selected it stays until it
     /// is no longer live, then the next earliest takes over. Republishing
     /// keeps a worker's place; a new worker or route is admitted last.
@@ -51,8 +51,8 @@ impl CanonicalDirectories {
     }
 }
 
-fn unavailable() -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unavailable() -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: "the canonical application publisher changed or is unavailable".into(),
     }
 }
@@ -79,7 +79,7 @@ impl AppBrokerState {
             .get(peer, route)
             .and_then(|identity| identity.worker_registration.clone());
         // Ordinary browsing remains available to non-private publishers, but
-        // they cannot claim custody of a canonical invocation route.
+        // they cannot claim ownership of a canonical invocation route.
         let Some(worker) = worker else {
             return Ok(());
         };
@@ -163,14 +163,14 @@ impl AppBrokerState {
     pub(super) fn canonical_directory(
         &self,
         requested: &CanonicalActionRoute,
-    ) -> Result<Option<(ActionDirectoryRoot, String)>, ActionHostError> {
+    ) -> Result<Option<(ActionDirectoryRoot, String)>, ActionCallError> {
         super::validate_directory_identifier(
             &requested.app_id,
             "canonical app",
             super::DIRECTORY_MAX_IDENTIFIER_BYTES,
             true,
         )
-        .map_err(|_| ActionHostError::InvalidRequest {
+        .map_err(|_| ActionCallError::InvalidRequest {
             reason: "invalid canonical application route".into(),
         })?;
         super::validate_directory_identifier(
@@ -179,11 +179,11 @@ impl AppBrokerState {
             super::DIRECTORY_MAX_IDENTIFIER_BYTES,
             false,
         )
-        .map_err(|_| ActionHostError::InvalidRequest {
+        .map_err(|_| ActionCallError::InvalidRequest {
             reason: "invalid canonical record route".into(),
         })?;
         if uuid::Uuid::parse_str(&requested.workspace).is_err() {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: "invalid canonical workspace route".into(),
             });
         }
@@ -239,8 +239,8 @@ impl AppBrokerState {
     fn canonical_candidates(
         &self,
         route: &CrdtRoute,
-    ) -> Result<Vec<(u64, Publisher)>, ActionHostError> {
-        // Snapshot before checking actual worker custody. Authority services
+    ) -> Result<Vec<(u64, Publisher)>, ActionCallError> {
+        // Snapshot before checking actual worker ownership. Authority services
         // and stream registries must never be called while this mutex is held.
         let directories = self
             .canonical_directories
@@ -259,11 +259,11 @@ impl AppBrokerState {
     pub(super) fn canonical_token_directory(
         &self,
         token: &str,
-    ) -> Result<ActionDirectoryRoot, ActionHostError> {
+    ) -> Result<ActionDirectoryRoot, ActionCallError> {
         let uuid = token
             .strip_prefix(PROVIDER_PREFIX)
             .ok_or_else(unavailable)?;
-        let uuid = uuid::Uuid::parse_str(uuid).map_err(|error| ActionHostError::Unavailable {
+        let uuid = uuid::Uuid::parse_str(uuid).map_err(|error| ActionCallError::Unavailable {
             reason: format!("the canonical application provider token is malformed: {error}"),
         })?;
         let requested = self

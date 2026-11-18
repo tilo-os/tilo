@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn requested_accounts_without_custody_refuse_both_public_review_effects() {
+    fn requested_accounts_without_ownership_refuse_both_public_review_effects() {
         use super::super::{InstallerPreview, InstallerPreviewEffect};
 
         let temp = tempfile::tempdir().unwrap();
@@ -320,7 +320,7 @@ mod tests {
             },
             InstallerPreviewEffect::ReviewInstalledTransfer {
                 private_plans: AbsolutePath::new(&plans).unwrap(),
-                operation: "requested-account-custody".into(),
+                operation: "requested-account-credentials".into(),
                 destination: AbsolutePath::new(&target).unwrap(),
                 journals: AbsolutePath::new(&journals).unwrap(),
                 flatpak_inventory: None,

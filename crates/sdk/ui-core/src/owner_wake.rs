@@ -165,7 +165,7 @@ impl OwnerWakeRequest {
     pub const fn save_progress_only(&self) -> bool {
         self.save_progress_only
     }
-    /// Check current exact component/root/registry custody afresh. This is not a document loan, and
+    /// Check current exact component/root/registry ownership afresh. This is not a document loan, and
     /// cannot authorize any later opaque model callback.
     pub fn check_current(&self, component: &mut AppComponent) -> Result<(), BoundDispatchError> {
         let token = self
@@ -305,7 +305,7 @@ impl OwnerWakeQueue {
             request.save_progress_only,
         )
     }
-    /// Queue presence only, not current-owner custody or model purity.
+    /// Queue presence only, not current-owner ownership or model purity.
     pub fn has_pending(&self) -> bool {
         !self.pending.0.lock_recover().entries.is_empty()
     }
@@ -341,7 +341,7 @@ impl OwnerWakeQueue {
     }
 }
 
-/// A snapshot owns retry custody until each admitted callback completes.
+/// A snapshot owns retry ownership until each admitted callback completes.
 pub(crate) struct OwnerWakeBatch {
     queue: OwnerWakeQueue,
     requests: std::collections::VecDeque<OwnerWakeRequest>,

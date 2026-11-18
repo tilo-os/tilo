@@ -90,7 +90,7 @@ impl TryFrom<IncarnationWire> for Incarnation {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Custody {
+pub struct Ownership {
     pub host: Incarnation,
     pub namespace: Option<Namespace>,
     #[serde(default)]

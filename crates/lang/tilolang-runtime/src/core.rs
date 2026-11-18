@@ -94,6 +94,9 @@ pub trait ShownHost {
 /// The host's answer for the person's zone name, asked each time a rule is read.
 type NamedZone = Box<dyn Fn() -> Option<String>>;
 
+/// How a day or a time of day reads, as a plain function (`Runtime::set_shown_by`).
+pub type ShownBy = dyn Fn(&str, &str) -> String;
+
 pub struct Core {
     me: Weak<Core>,
     pub engine: Engine,
@@ -114,6 +117,9 @@ pub struct Core {
     /// How a day or a time of day reads in a sentence; its stored text until the host says
     /// (`Runtime::set_shown_host`).
     pub shown: RefCell<Option<Box<dyn ShownHost>>>,
+    /// [`Self::shown`] as a plain function, when a caller set one (`Runtime::set_shown_by`): a
+    /// day or a time of day in the person's formats, without a trait of this crate.
+    pub shown_by: RefCell<Option<Box<ShownBy>>>,
     /// The workspace's members, as the host last gave them (`workspace.members`).
     pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
@@ -293,6 +299,7 @@ impl Core {
             blobs: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
+            shown_by: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),

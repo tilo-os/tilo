@@ -47,7 +47,7 @@ WHY_FLAVOUR = ("the dev image accepts a fixed lock-screen password, opens a sess
                "runs sshd; if it is ever tagged, pushed or installed as the production image, every "
                "machine that updates from it inherits all three")
 WHY_INTEGRATION = ("tilo-ci holds unsigned OS images that skipped the release signing, attestation and "
-                   "generation gates; an installed system that admitted it could switch to one")
+                   "generation checks; an installed system that admitted it could switch to one")
 WHY_LEAK = ("production images are built from os/Containerfile* and must never contain dev-only "
             "components, dev features or dev-image files; each one weakens the shipped system")
 # Dev-image sources that only os/Containerfile.dev may use.

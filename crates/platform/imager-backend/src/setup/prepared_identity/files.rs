@@ -1,4 +1,4 @@
-//! Native selected-file and private-directory custody for installer preparation.
+//! Native selected-file and private-directory ownership for installer preparation.
 use crate::{migration::PinnedDirectory, migration_durability};
 use std::{io, path::Path, sync::Arc};
 
@@ -15,7 +15,7 @@ pub fn ensure_private_tree(path: &std::path::Path) -> std::io::Result<Arc<Pinned
             let parent = path.parent().ok_or(error)?;
             let parent = ensure_private_tree(parent)?;
             let child = match parent.create_child(path.file_name().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing custody name")
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing ownership name")
             })?) {
                 Ok(child) => child,
                 // Another worker of this installer (e.g. the startup draft

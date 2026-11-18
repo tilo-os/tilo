@@ -446,16 +446,16 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
 
 #[test]
 fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
-    use ui::collaboration::document_content::{ContentLane, DocumentContent};
+    use ui::collaboration::document_content::{ContentLink, DocumentContent};
 
     use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     books(&mut app).query = super::query_view::BookQuery::hermetic();
-    let lane = std::sync::Arc::new(ContentLane::default());
+    let link = std::sync::Arc::new(ContentLink::default());
     books(&mut app).content = Some(DocumentContent::store(
         tilo_content::ContentStore::memory(),
-        std::sync::Arc::clone(&lane),
+        std::sync::Arc::clone(&link),
     ));
     let bytes = crate::test_epub::long_classic(24, 6);
     let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
@@ -483,7 +483,7 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
         !found(&mut app, PASSAGE).contains(&anchor),
         "the index is not here yet"
     );
-    lane.arrive(tilo_content::hash_bytes(&segment), segment);
+    link.arrive(tilo_content::hash_bytes(&segment), segment);
     settle(&mut app);
     assert!(
         found(&mut app, PASSAGE).contains(&anchor),
@@ -499,7 +499,7 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
         None,
         "waiting is not a failure"
     );
-    lane.arrive(tilo_content::hash_bytes(&bytes), bytes);
+    link.arrive(tilo_content::hash_bytes(&bytes), bytes);
     settle(&mut app);
     let books = books(&mut app);
     assert_eq!(books.view, View::Reader, "it opens once its text is here");

@@ -1,4 +1,4 @@
-//! The seam between the app's controller and its views.
+//! The boundary between the app's controller and its views.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

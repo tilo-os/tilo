@@ -1,7 +1,7 @@
 //! `tilo-env-tools` — build tool images without a session.
 //!
 //! CI uses it to build the tool catalog for each env-runtime and to sign it
-//! for publication; a relay's compute worker uses it to build a member's tool
+//! for publication; a server's compute worker uses it to build a member's tool
 //! where their session runs.
 //! Output is one JSON document on stdout; progress and logs go to stderr.
 
@@ -38,16 +38,16 @@ struct RuntimeArgs {
     /// on a filesystem overlayfs accepts as an upper (ordinary disk).
     #[arg(long)]
     state: PathBuf,
-    /// What builds may reach: the runtime's repositories (`gated`, the
+    /// What builds may reach: the runtime's repositories (`guarded`, the
     /// default), nothing (`offline`), or this machine's whole network
     /// (`host`, for a CI builder without `/dev/net/tun`).
-    #[arg(long, value_enum, default_value_t = NetworkArg::Gated)]
+    #[arg(long, value_enum, default_value_t = NetworkArg::Guarded)]
     network: NetworkArg,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum NetworkArg {
-    Gated,
+    Guarded,
     Offline,
     Host,
 }
@@ -55,7 +55,7 @@ enum NetworkArg {
 impl From<NetworkArg> for NetworkChoice {
     fn from(arg: NetworkArg) -> Self {
         match arg {
-            NetworkArg::Gated => Self::Gated,
+            NetworkArg::Guarded => Self::Guarded,
             NetworkArg::Offline => Self::Offline,
             NetworkArg::Host => Self::Host,
         }
@@ -102,7 +102,7 @@ enum Command {
     },
     /// Build a tool for `publisher`, whose key is elsewhere: the image is
     /// written to `--out` with a placeholder signature for the key holder
-    /// to sign. What a relay's worker runs as a member, in their quota.
+    /// to sign. What a server's worker runs as a member, in their quota.
     BuildFor {
         /// The key holder's public key (hex).
         #[arg(long)]

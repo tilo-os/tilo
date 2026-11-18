@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_action_policy::{Standing, WorkspacePolicy};
+use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::{
     KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
@@ -305,7 +305,7 @@ impl Agents {
                     return Held::Unknown;
                 }
             }
-            let permissions = PermissionContext::from_standing(Standing::person(
+            let permissions = PermissionContext::from_access(MemberAccess::person(
                 policy.clone(),
                 person.to_owned(),
             ))
@@ -359,6 +359,7 @@ impl crate::Shared {
             workspaces
                 .into_iter()
                 .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
+                    members: self.member_names(&workspace, &listed),
                     workspace,
                     policy,
                 })
@@ -385,7 +386,30 @@ impl crate::Shared {
         }
     }
 
-    /// The person's agent member for the MCP client `client` in `workspace`, as the MCP server
+    /// What `workspace`'s member list calls its people and agents, as apps are told it: its people
+    /// as its governance names them, its agents as its record of them does (`listed`).
+    fn member_names(&self, workspace: &str, listed: &[Listed]) -> chat::projection::PeopleNames {
+        let people = self
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.people(workspace).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|member| (member.id, member.name));
+        let agents = listed
+            .iter()
+            .filter(|agent| agent.workspace == workspace)
+            .map(|agent| {
+                (
+                    ui::permissions::MemberId::agent(&agent.id),
+                    agent.name.clone(),
+                )
+            });
+        people.chain(agents).collect()
+    }
+
+    /// The person's agent member for the MCP client `client` in `workspace`, by id and by the name
+    /// the workspace calls it, as the MCP server
     /// admits a connection ([`crate::mcp_server::Members`]): the one the workspace's record of its
     /// agents lists, else a new one ([`crate::workspace_settings::Feeding::mcp_agent`]), listed
     /// for the broker as the record names it. The server tells the connection it may join on this
@@ -395,7 +419,11 @@ impl crate::Shared {
     /// # Errors
     /// The member could not be found or added: the client is refused here, told so, and not at its
     /// join.
-    pub(crate) fn mcp_member(&self, workspace: &str, client: &str) -> Result<String, String> {
+    pub(crate) fn mcp_member(
+        &self,
+        workspace: &str,
+        client: &str,
+    ) -> Result<(String, String), String> {
         let (agent, name) = self
             .workspace_settings_feed()
             .mcp_agent(workspace, client)?;
@@ -403,11 +431,11 @@ impl crate::Shared {
             workspace,
             tilo_broker_core::services::ListedAgent {
                 id: agent.clone(),
-                name,
+                name: name.clone(),
                 keeper: self.person.clone(),
             },
         );
-        Ok(agent)
+        Ok((agent, name))
     }
 }
 
@@ -484,7 +512,7 @@ mod tests {
 
         // Before any pass: what the MCP server answers is all the broker has when the
         // connection joins.
-        let member = session
+        let (member, name) = session
             .shared
             .mcp_member(STUDIO, "claude-code")
             .expect("the person's agent member for the client is added");
@@ -498,7 +526,7 @@ mod tests {
         // The same client again is the same member, found and still listed: no second one.
         assert_eq!(
             session.shared.mcp_member(STUDIO, "claude-code"),
-            Ok(member.clone())
+            Ok((member.clone(), name))
         );
         assert_eq!(
             roster.listed(STUDIO).len(),

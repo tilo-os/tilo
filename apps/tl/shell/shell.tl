@@ -70,7 +70,7 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                     dock_ground(s, .top)
                 }
             } else if s.dock_edge == .left {
-                // A dock standing up a leading or trailing edge hugs its own width: the layer
+                // A dock at a leading or trailing edge hugs its own width: the layer
                 // sits at that edge (`at: .leading`), centred up it, and a `fill` here would
                 // span the whole screen and centre the dock on it instead.
                 stack(at: .leading, align: .center) {
@@ -120,7 +120,7 @@ view frames(a: Layout) {
 
 /// Frameless
 ///
-/// The places at points, each drawn as its own view standing as content.
+/// The places at points, each drawn as its own view shown as content.
 view frameless(a: Layout) {
     style_shell(a, false) {
         canvas(a, "Frameless", false, false, fill)
@@ -152,7 +152,7 @@ view desktop(a: Layout) {
 }
 
 /// The style the person shows, as the session found it (`Viewing.style`, a package and a
-/// view): the strips when their record names none, so a shell that has never picked one opens.
+/// view): the strips when their document names none, so a shell that has never picked one opens.
 fn style_of(v: Viewing) -> Text {
     if v.style != "" { v.style } else { "so.tilo.shell:strips" }
 }

@@ -194,13 +194,13 @@ tilo_test_env::scenario! {
     }
 
     phase an_outcome_that_needs_nobody_is_recorded_not_shown;
-    // A recorded outcome is not attention: it is written to the ledger, does not count on the bar, and
+    // A recorded outcome is not attention: it is written to the log, does not count on the bar, and
     // does not expire.
     {
         let _serial = crate::jobs::test_lock();
         crate::jobs::clear();
         attention::clear();
-        attention::clear_ledger();
+        attention::clear_log();
         let recorded =
             attention::publish(Notice::did(owner(), "Moved 3 files to Trash").about("Trash"));
         assert!(matches!(recorded, attention::Published::Recorded(_)));
@@ -211,8 +211,8 @@ tilo_test_env::scenario! {
         assert_eq!(entries[0].what(), "Moved 3 files to Trash");
         assert_eq!(entries[0].owner().name, "Test");
         assert!(entries[0].matches("trash"), "the record is searchable");
-        assert!(attention::search_ledger("files").len() == 1);
-        assert!(attention::search_ledger("nothing at all").is_empty());
+        assert!(attention::search_log("files").len() == 1);
+        assert!(attention::search_log("nothing at all").is_empty());
     }
 
     phase a_row_always_names_the_app_that_asks;

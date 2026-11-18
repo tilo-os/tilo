@@ -47,9 +47,9 @@ def file_facts(path,limit=64*1024**2):
         return dict(sha256=digest.hexdigest(),bytes=count,mode=stat.S_IMODE(m.st_mode))
     finally:os.close(fd)
 
-def ledger(root):
+def manifest(root):
     command=subprocess.run(['git','ls-files','-z','--cached','--others','--exclude-standard'],cwd=root,check=True,stdout=subprocess.PIPE)
-    if len(command.stdout)>8*1024**2:raise ValueError('source path ledger exceeds bound')
+    if len(command.stdout)>8*1024**2:raise ValueError('source path manifest exceeds bound')
     names=sorted(set(os.fsdecode(name) for name in command.stdout.split(b'\0') if name))
     if len(names)>32768:raise ValueError('source input count exceeds bound')
     result={};total=0
@@ -64,7 +64,7 @@ def ledger(root):
             result[name]={'symlink':target}
         else:
             result[name]=file_facts(source);total+=result[name]['bytes']
-            if total>2*1024**3:raise ValueError('source ledger byte budget exceeded')
+            if total>2*1024**3:raise ValueError('source manifest byte budget exceeded')
     return result
 
 

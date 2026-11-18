@@ -15,7 +15,7 @@ TARGETS = (
 )
 HOST_ONLY = frozenset((
     "runtime-fs", "runtime-identity", "tilo-fs", "tilo-model-gateway",
-    "tilo-identity-host", "account-custody", "accounts", "local-model-service",
+    "tilo-identity", "account-credentials", "accounts", "local-model-service",
 ))
 
 

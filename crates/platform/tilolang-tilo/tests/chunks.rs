@@ -1,5 +1,5 @@
-//! A record split over chunks: the store holds each chunk as a document of its own, reads and
-//! writes every resource in the chunk the record's manifest places it in, and derives each index
+//! A resource split over chunks: the store holds each chunk as a document of its own, reads and
+//! writes every resource in the chunk the resource's manifest places it in, and derives each index
 //! row from the chunk that holds it.
 
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use tilolang_runtime::Actor;
 use tilolang_runtime::Value;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::place::{Place, Placement as Placed};
-use tilolang_runtime::store::NewRecord;
+use tilolang_runtime::store::NewResource;
 use tilolang_runtime::value::ResourceRef;
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
@@ -22,7 +22,7 @@ use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::items::{self, Items};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::reads;
-use tilolang_tilo::record::{DynRecord, DynValue};
+use tilolang_tilo::resource::{DynResource, DynValue};
 use tilolang_tilo::schema::{TypeSchema, lookup};
 
 use crate::fixtures::{Replica, TODO, field_id};
@@ -57,7 +57,7 @@ fn create(doc: &mut AutoCommit, family: &(Meta, String, String), id: &str, title
         edits: vec![
             DynEdit::Create {
                 id: id.to_owned(),
-                record: DynRecord::empty(lookup(list).unwrap()).unwrap().to_json(),
+                record: DynResource::empty(lookup(list).unwrap()).unwrap().to_json(),
             },
             DynEdit::Edit {
                 id: id.to_owned(),
@@ -89,7 +89,7 @@ fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
         .expect("the action applies");
 }
 
-/// The title the store reads of the record `id`.
+/// The title the store reads of the document `id`.
 fn title(host: &Host, id: &str, title_field: &str) -> String {
     match host.store().record(id).unwrap().get(title_field) {
         Some(DynValue::Text(text)) => text.clone(),
@@ -97,7 +97,7 @@ fn title(host: &Host, id: &str, title_field: &str) -> String {
     }
 }
 
-/// The workspace record: it holds `first` in chunk 0 and its manifest places `second`, made in
+/// The workspace document: it holds `first` in chunk 0 and its manifest places `second`, made in
 /// the chunk's own document, and `third`, made in the store later, in chunk 1; and the host over
 /// it, with chunk 1 sent to it.
 fn split() -> (Host, (Meta, String, String)) {
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
     )]
     fn a_resource_in_a_chunk_is_read_written_and_settled_there;
 
-    phase a_record_split_over_two_chunks_reads_writes_and_syncs_each_resource_through_its_chunk;
+    phase a_document_split_over_two_chunks_reads_writes_and_syncs_each_resource_through_its_chunk;
     {
         let (host, (_, list, title_field)) = split();
         let store = host.store();
@@ -147,13 +147,13 @@ tilo_test_env::scenario! {
             [0, 1]
         );
 
-        // Each index row names the chunk that holds its record.
+        // Each index row names the chunk that holds its resource.
         let docs = store.index_contents(APP).unwrap().docs;
         assert_eq!(docs.get("first"), Some(&(list.clone(), 0)));
         assert_eq!(docs.get("second"), Some(&(list.clone(), 1)));
 
-        // A record the manifest places in chunk 1 is made there, and read back from there.
-        let new = NewRecord {
+        // A resource the manifest places in chunk 1 is made there, and read back from there.
+        let new = NewResource {
             ty: list,
             app: tilolang_runtime::ids::AppId::from(APP),
             fields: Vec::new(),
@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
         let after = held(&host);
         assert_eq!(
             after[0], before[0],
-            "the record's own document took no write"
+            "the resource's own document took no write"
         );
         assert_eq!(after[1].0, 1);
         assert!(
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
         for id in ["third", "fourth"] {
             store
                 .create_with_id(
-                    &NewRecord {
+                    &NewResource {
                         ty: list.clone(),
                         app: tilolang_runtime::ids::AppId::from(APP),
                         fields: Vec::new(),
@@ -192,10 +192,10 @@ tilo_test_env::scenario! {
                 .unwrap();
         }
         let after = held(&host);
-        assert_eq!(after.len(), 2, "the record and the chunk above it");
+        assert_eq!(after.len(), 2, "the resource and the chunk above it");
         assert_eq!(
             after[0], before[0],
-            "counted per document: the record's chunk is unchanged"
+            "counted per document: the resource's chunk is unchanged"
         );
         assert!(
             after[1].2 >= before[1].2 + 2,
@@ -203,13 +203,13 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_insert_into_a_chunk_settles_when_the_record_takes_it_in;
-    // An insert the store plans for a chunk above the record's own leaves nothing open in that
-    // chunk once the record's change reaches it: it settles as one written into the record itself.
+    phase an_insert_into_a_chunk_settles_when_the_document_takes_it_in;
+    // An insert the store plans for a chunk above the resource's own leaves nothing open in that
+    // chunk once the resource's change reaches it: it settles as one written into the resource itself.
     {
         let (_store, mut docs, meta, root, ids) = board();
         let left_field = field_id(&meta, "Board", "left");
-        // A run above the record, so the store plans the card into chunk 1.
+        // A run above the resource, so the store plans the card into chunk 1.
         {
             let record = docs.doc(chunk::FIRST);
             chunk::run(record, &root, &left_field, 1, "", 0).unwrap();
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
             "chunk 1 holds the open write: {before:?} then {open:?}"
         );
 
-        // The API applies what the store queued to the record, and the record hands it over.
+        // The API applies what the store queued to the resource, and the resource hands it over.
         let committed = host.take_committed();
         assert_eq!(committed.len(), 1, "one action was queued");
         let action = committed.into_iter().next().unwrap().action;
@@ -255,11 +255,11 @@ tilo_test_env::scenario! {
         assert_eq!(
             settled.get(&1),
             Some(&(1, 0)),
-            "chunk 1 holds the record's change and nothing open: {before:?} then {settled:?}"
+            "chunk 1 holds the resource's change and nothing open: {before:?} then {settled:?}"
         );
         assert_eq!(
             settled[&0].1, 0,
-            "nothing stays open in the record: {settled:?}"
+            "nothing stays open in the resource: {settled:?}"
         );
         assert_eq!(left(&host, &root, &left_field), [card]);
     }
@@ -311,7 +311,7 @@ pub(crate) const BOARD_APP: &str = "so.tilo.board";
 /// chunk it is addressed to, as the API does, and commits each document its own change.
 ///
 /// It holds them as the API does ([`Chunks`]), so handing them to the store hands the same
-/// documents the record keeps: a fill writes one chunk per action and copies none of them.
+/// documents the resource keeps: a fill writes one chunk per action and copies none of them.
 #[derive(Clone)]
 pub(crate) struct Docs(Chunks);
 
@@ -325,7 +325,7 @@ impl Docs {
     }
 
     /// Apply `action` as its edits are written: an edit names its chunk, or goes where the
-    /// record routes it ([`Chunks::chunk_of`]).
+    /// document routes it ([`Chunks::chunk_of`]).
     pub(crate) fn apply(&mut self, action: &DynAction) {
         let mut edits: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
         for edit in &action.edits {
@@ -370,7 +370,7 @@ impl Docs {
         Self(forked)
     }
 
-    /// The documents as a set of chunks, to read a record's items across them.
+    /// The documents as a set of chunks, to read a document's items across them.
     pub(crate) fn chunks(&self) -> Chunks {
         self.0.clone()
     }
@@ -396,10 +396,10 @@ fn merge(into: &mut Docs, other: &Docs) {
     into.0.reread_placement();
 }
 
-/// The board of [`BOARD`], its root made in the record's own chunk, and the store over it.
+/// The board of [`BOARD`], its root made in the document's own chunk, and the store over it.
 pub(crate) fn board() -> (Host, Docs, Meta, String, String) {
     // Compiled once for its ids and metadata; the workspace itself is built document by
-    // document, so that a replica forking it starts from a root the record holds.
+    // document, so that a replica forking it starts from a root the resource holds.
     let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(BOARD, "")]);
     drop(replica);
     let package = packages[0].clone();
@@ -421,14 +421,14 @@ pub(crate) fn board() -> (Host, Docs, Meta, String, String) {
         authorship: Authorship::default(),
         edits: vec![DynEdit::Create {
             id: root.clone(),
-            record: DynRecord::empty(lookup(&ty).unwrap()).unwrap().to_json(),
+            record: DynResource::empty(lookup(&ty).unwrap()).unwrap().to_json(),
         }],
     };
     apply_recorded(&mut record, &action);
     record.commit();
     assert!(
         reads::resource_obj(&record, BOARD_APP, &root).is_some(),
-        "the record holds the root"
+        "the resource holds the root"
     );
     let host = Host::new(
         &record,
@@ -503,7 +503,7 @@ pub(crate) fn left(host: &Host, root: &str, field: &str) -> Vec<String> {
     }
 }
 
-/// How many items the chunk `number` holds of the record `root`.
+/// How many items the chunk `number` holds of the document `root`.
 pub(crate) fn held_in(chunks: &Chunks, number: ChunkNo, root: &str, schema: &TypeSchema) -> usize {
     let Some(doc) = chunks.mirror(number) else {
         return 0;
@@ -622,16 +622,19 @@ fn cards_past_two_full_runs_live_in_three_chunks_in_order_and_a_change_writes_on
     docs.sync(&host);
 
     let after = counts(&host);
-    assert_eq!(after[&0], before[&0], "the record's own chunk is untouched");
+    assert_eq!(
+        after[&0], before[&0],
+        "the document's own chunk is untouched"
+    );
     assert_eq!(after[&1], before[&1], "the first run's chunk is untouched");
     assert!(
         after[&2].0 + after[&2].1 > before[&2].0 + before[&2].1,
         "the last chunk holds the write: {before:?} then {after:?}"
     );
     let card_schema = lookup(&meta.types.iter().find(|t| t.name == "Card").unwrap().id).unwrap();
-    let card_record = copy_in(&docs.chunks(), 2, &root, card_schema, &inserted[cards - 1])
+    let card_document = copy_in(&docs.chunks(), 2, &root, card_schema, &inserted[cards - 1])
         .expect("the card is read in the last chunk");
-    assert_eq!(card_record.chunk, 2);
+    assert_eq!(card_document.chunk, 2);
 
     // What was written is the card's new text, read back through the store; the card before it
     // reads as it was made, and the changed card's row still names its chunk.
@@ -646,7 +649,7 @@ fn cards_past_two_full_runs_live_in_three_chunks_in_order_and_a_change_writes_on
     let text = field_id(&meta, "Card", "text");
     let read = |i: usize| {
         let at = ResourceRef::root(&root, id_of("Board")).item(&inserted[i], id_of("Card"));
-        host.store().record_at(&at).unwrap().get(&text).cloned()
+        host.store().document_at(&at).unwrap().get(&text).cloned()
     };
     assert_eq!(read(cards - 1), Some(DynValue::Text("changed".into())));
     assert_eq!(
@@ -671,7 +674,7 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
         field_id(&meta, "Board", "right"),
         field_id(&meta, "Board", "other"),
     );
-    // The two target collections have a run in a chunk each, above the record.
+    // The two target collections have a run in a chunk each, above the document.
     {
         let record = docs.doc(chunk::FIRST);
         chunk::run(record, &root, &right, 1, "", 0).unwrap();
@@ -723,7 +726,7 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
         assert_eq!(
             chunks,
             [0, chunk],
-            "{name}: out of the record, into the run's chunk"
+            "{name}: out of the document, into the run's chunk"
         );
         docs.apply(&action);
         docs.sync(&host.host);
@@ -741,10 +744,10 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
     );
     assert!(
         copy_in(&chunks, 0, &root, schema, &card).is_none(),
-        "the record's chunk holds no copy"
+        "the document's chunk holds no copy"
     );
 
-    // The copy whose placing change is later in the record's order is the one read; the other is
+    // The copy whose placing change is later in the document's order is the one read; the other is
     // not in any collection.
     let written = |found: &items::Found| found.held.as_ref().map(|held| held.written.clone());
     let winner = if written(&moved) > written(&kept) {
@@ -798,7 +801,7 @@ fn fill_bulk(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> 
                 DynEdit::Insert {
                     id: root.to_owned(),
                     item: id.clone(),
-                    record: DynRecord::empty(schema).unwrap().to_json(),
+                    record: DynResource::empty(schema).unwrap().to_json(),
                     at: Placed::At {
                         place: Place {
                             parent: None,
@@ -830,7 +833,7 @@ fn fill_bulk(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> 
 }
 
 /// The chunk a collection's first run is in, and of the cards the store reads before the chunk
-/// above it arrives: the record's own.
+/// above it arrives: the resource's own.
 fn first_run() -> usize {
     usize::try_from(chunk::ITEMS).unwrap()
 }
@@ -849,16 +852,16 @@ fn cards_in(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
 fn a_chunk_this_device_lacks_is_waited_for_and_read_when_it_arrives() {
     let (earlier, mut docs, meta, root, ids) = board();
     drop(earlier);
-    // A run full in the record's own chunk and two cards past it: the chunk above is the one
+    // A run full in the document's own chunk and two cards past it: the chunk above is the one
     // this device lacks.
     let per_run = first_run();
     let cards = fill_bulk(&mut docs, &meta, &root, per_run + 2);
     assert!(
         cards.len() > per_run,
-        "the cards fill the record's own run and one above it"
+        "the cards fill the document's own run and one above it"
     );
 
-    // This replica holds the record alone: the chunk the rest of the cards are in has not
+    // This replica holds the document alone: the chunk the rest of the cards are in has not
     // reached this device.
     let record = docs.doc(chunk::FIRST).clone();
     let host = Host::open(
@@ -919,7 +922,7 @@ fn a_chunk_this_device_lacks_is_waited_for_and_read_when_it_arrives() {
     let record = docs.doc(chunk::FIRST).clone();
     host.sync_from(&record);
     let text_field = field_id(&meta, "Card", "text");
-    let text = |host: &Host| match host.store().record_at(&at).unwrap().get(&text_field) {
+    let text = |host: &Host| match host.store().document_at(&at).unwrap().get(&text_field) {
         Some(DynValue::Text(text)) => text.clone(),
         other => panic!("no text: {other:?}"),
     };
@@ -1078,8 +1081,8 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
         4_000,
         samples,
     );
-    // The documents an insert writes are the chunk its card lands in, and the record, whose
-    // manifest names the run it went into: one document while a board fits the record's own
+    // The documents an insert writes are the chunk its card lands in, and the document, whose
+    // manifest names the run it went into: one document while a board fits the document's own
     // chunk, two once its cards live in a chunk above it. The shape, not work that grows.
     let count = |costs: &[(&'static str, u64)], name: &str| {
         costs
@@ -1091,7 +1094,7 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
     assert_eq!(
         count(&large, "syncs"),
         2,
-        "the card's chunk and the record at 4000"
+        "the card's chunk and the document at 4000"
     );
     // A card's change reached the board's package, so it writes that package's index: a store
     // that writes every loaded package's index for every change would pay a commit of nothing
@@ -1099,7 +1102,7 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
     assert_eq!(count(&small, "index writes"), 1, "one index per card");
     assert_eq!(count(&large, "index writes"), 1, "one index per card");
     // A change by an actor that sorts before others renumbers the objects those others made in
-    // each document it reaches: a handful the record's own writer made, never one per card.
+    // each document it reaches: a handful the document's own writer made, never one per card.
     assert!(
         count(&large, "renumbered objects") <= 2 * count(&small, "renumbered objects").max(8),
         "an insert renumbers objects that grow with the board: {small:?} against {large:?}"
@@ -1115,11 +1118,11 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
 
-/// A window whose record the framework keeps as one document — no chunk above the record's own is
+/// A window whose document the framework keeps as one document — no chunk above the document's own is
 /// held apart — keeps a card added past a full run: the API writes it into that document, and the
 /// board reads it there, in its place after the others, in the window and once opened again.
 #[test]
-fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
+fn a_card_added_past_a_full_run_of_a_document_kept_as_one_document_is_kept() {
     let (earlier, mut docs, meta, root, ids) = board();
     drop(earlier);
     let mut cards = fill_bulk(&mut docs, &meta, &root, first_run());
@@ -1167,6 +1170,6 @@ fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
     assert_eq!(
         cards_in(&open(&record), &meta, &root),
         cards,
-        "and so does a window opened on the record again"
+        "and so does a window opened on the document again"
     );
 }

@@ -20,7 +20,7 @@ use crate::{
 
 /// Where a device key stands with a user identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeviceStanding {
+pub enum DeviceCertification {
     /// The user root certified the key, the certificate is valid now, and
     /// the key was never revoked.
     Certified,
@@ -67,7 +67,7 @@ impl CertifiedFleet {
     }
 
     /// Add a certificate the user root signed. Its validity window is
-    /// checked when a key's standing is asked, not here.
+    /// checked when a key's certification is asked, not here.
     ///
     /// # Errors
     ///
@@ -99,22 +99,22 @@ impl CertifiedFleet {
     }
 
     /// Where `device_public_key` stands with this user at `now_ns`.
-    pub fn standing(&self, device_public_key: &[u8; 32], now_ns: u64) -> DeviceStanding {
+    pub fn certification(&self, device_public_key: &[u8; 32], now_ns: u64) -> DeviceCertification {
         if let Some(entry) = self
             .revocations
             .iter()
             .find(|entry| &entry.revoked_device_public_key == device_public_key)
         {
-            return DeviceStanding::Revoked(entry.reason);
+            return DeviceCertification::Revoked(entry.reason);
         }
         let certified = self.certificates.iter().any(|cert| {
             &cert.device_public_key == device_public_key
                 && verify_device_cert_at(cert, now_ns).is_ok()
         });
         if certified {
-            DeviceStanding::Certified
+            DeviceCertification::Certified
         } else {
-            DeviceStanding::Uncertified
+            DeviceCertification::Uncertified
         }
     }
 }
@@ -147,7 +147,7 @@ mod tests {
     /// A key stands for the user only through a valid certificate of theirs
     /// and only until they revoke it; another user's papers are refused.
     #[test]
-    fn standing_follows_the_certificate_chain() {
+    fn certification_follows_the_certificate_chain() {
         let (root, user) = UserIdentity::generate("Ada", 1);
         let (other_root, _) = UserIdentity::generate("Bob", 1);
         let laptop = [1; 32];
@@ -169,13 +169,31 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(fleet.standing(&laptop, 500), DeviceStanding::Certified);
-        assert_eq!(fleet.standing(&host, 500), DeviceStanding::Certified);
-        assert_eq!(fleet.standing(&phone, 500), DeviceStanding::Certified);
+        assert_eq!(
+            fleet.certification(&laptop, 500),
+            DeviceCertification::Certified
+        );
+        assert_eq!(
+            fleet.certification(&host, 500),
+            DeviceCertification::Certified
+        );
+        assert_eq!(
+            fleet.certification(&phone, 500),
+            DeviceCertification::Certified
+        );
         // Expired, not yet issued, never certified.
-        assert_eq!(fleet.standing(&phone, 1_000), DeviceStanding::Uncertified);
-        assert_eq!(fleet.standing(&laptop, 50), DeviceStanding::Uncertified);
-        assert_eq!(fleet.standing(&[9; 32], 500), DeviceStanding::Uncertified);
+        assert_eq!(
+            fleet.certification(&phone, 1_000),
+            DeviceCertification::Uncertified
+        );
+        assert_eq!(
+            fleet.certification(&laptop, 50),
+            DeviceCertification::Uncertified
+        );
+        assert_eq!(
+            fleet.certification(&[9; 32], 500),
+            DeviceCertification::Uncertified
+        );
 
         // Another person's certificate, even for a key this fleet knows.
         assert_eq!(
@@ -193,7 +211,10 @@ mod tests {
             fleet.certify(forged),
             Err(FleetError::Certificate(_))
         ));
-        assert_eq!(fleet.standing(&[6; 32], 500), DeviceStanding::Uncertified);
+        assert_eq!(
+            fleet.certification(&[6; 32], 500),
+            DeviceCertification::Uncertified
+        );
 
         let mut entry = RevocationEntry {
             user_public_key: user.public_key,
@@ -205,10 +226,13 @@ mod tests {
         sign_revocation_entry(&mut entry, &root).unwrap();
         fleet.revoke(entry).unwrap();
         assert_eq!(
-            fleet.standing(&host, 500),
-            DeviceStanding::Revoked(RevocationReason::Retired)
+            fleet.certification(&host, 500),
+            DeviceCertification::Revoked(RevocationReason::Retired)
         );
-        assert_eq!(fleet.standing(&laptop, 500), DeviceStanding::Certified);
+        assert_eq!(
+            fleet.certification(&laptop, 500),
+            DeviceCertification::Certified
+        );
 
         // Only the fleet's own root can revoke its devices.
         let mut entry = RevocationEntry {
@@ -220,6 +244,9 @@ mod tests {
         };
         sign_revocation_entry(&mut entry, &other_root).unwrap();
         assert_eq!(fleet.revoke(entry), Err(FleetError::OtherIdentity));
-        assert_eq!(fleet.standing(&laptop, 500), DeviceStanding::Certified);
+        assert_eq!(
+            fleet.certification(&laptop, 500),
+            DeviceCertification::Certified
+        );
     }
 }

@@ -56,6 +56,154 @@ final class SourceTests: XCTestCase {
         XCTAssertNil(facts?.model, "there is no model before the person links a provider")
     }
 
+    func testAPairingShowsItsCodeToCompareBeforeTheDeviceIsIn() async throws {
+        var content = MemorySource.Content()
+        content.pairsAs = Drawing.person
+        content.pairingCode = "481 207"
+        let source = MemorySource(content)
+        let link = try XCTUnwrap(PairingLink(in: "https://tilo.example/pair#abc"))
+        async let seen = take(4, of: source.session())
+        try await Task.sleep(for: .milliseconds(50))
+        try await source.pair(with: link)
+        let states = await seen
+        XCTAssertEqual(states, [.signedOut, .pairing, .confirming(code: "481 207"), .signedIn(Drawing.person)])
+        // A pairing that shows no code goes on as before.
+        var plain = MemorySource.Content()
+        plain.pairsAs = Drawing.person
+        let quiet = MemorySource(plain)
+        async let before = take(3, of: quiet.session())
+        try await Task.sleep(for: .milliseconds(50))
+        try await quiet.pair(with: link)
+        let old = await before
+        XCTAssertEqual(old, [.signedOut, .pairing, .signedIn(Drawing.person)])
+    }
+
+    func testAPairingThatAsksFirstGoesOnOnlyWhenThePersonAnswers() async throws {
+        var content = MemorySource.Content()
+        content.pairsAs = Drawing.person
+        content.pairingAsk = Drawing.pairingAsk
+        let link = try XCTUnwrap(PairingLink(in: "https://tilo.example/pair#abc"))
+        let source = MemorySource(content)
+        async let seen = take(4, of: source.session())
+        try await Task.sleep(for: .milliseconds(50))
+        try await source.pair(with: link)
+        // The link alone lets nobody in: the question stands until it is answered.
+        try await Task.sleep(for: .milliseconds(50))
+        await source.answerPairing(goOn: true)
+        let stood = await seen
+        XCTAssertEqual(stood, [.signedOut, .asked(Drawing.pairingAsk), .pairing, .signedIn(Drawing.person)])
+        // Stopping leaves the device out.
+        let other = MemorySource(content)
+        async let stopped = take(3, of: other.session())
+        try await Task.sleep(for: .milliseconds(50))
+        try await other.pair(with: link)
+        await other.answerPairing(goOn: false)
+        let out = await stopped
+        XCTAssertEqual(out, [.signedOut, .asked(Drawing.pairingAsk), .signedOut])
+    }
+
+    func testAProviderIsLinkedWithAKeyThatGoesNowhereElseAndAModelOfItIsChosen() async throws {
+        var content = MemorySource.Content()
+        content.session = .signedIn(Drawing.person)
+        content.setup = .needsProvider(Drawing.providers)
+        content.offered = Drawing.models
+        let source = MemorySource(content)
+        await refused({ _ = try await source.link("anthropic", key: Secret("")) }, .refused("Nothing was typed."))
+        await refused({ _ = try await source.link("nobody", key: Secret("made-up")) }, .refused("This provider cannot be linked."))
+        let offered = try await source.link("anthropic", key: Secret("made-up-key"))
+        XCTAssertEqual(offered, Drawing.models)
+        XCTAssertEqual(source.key(for: "anthropic")?.handOver(), "made-up-key")
+        let needs = await take(1, of: source.setup())
+        XCTAssertEqual(needs, [.needsModel(Drawing.models)])
+        try await source.choose(Drawing.models[0].id, for: .request)
+        let ready = await take(1, of: source.setup())
+        XCTAssertEqual(ready, [.ready])
+        let facts = await take(1, of: source.supervision())
+        XCTAssertEqual(facts.first?.model, Drawing.models[0].name)
+        // A source with no first run of its own has nothing in the way.
+        struct Plain: AssistantSource {
+            func session() -> AsyncStream<Session> { AsyncStream { $0.finish() } }
+            func reach() -> AsyncStream<Reach> { AsyncStream { $0.finish() } }
+            func pair(with link: PairingLink) async throws {}
+            func signOut() async {}
+            func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> { AsyncStream { $0.finish() } }
+            func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] { [] }
+            func send(_ draft: Draft, to chat: Chat) async throws {}
+            func answer(_ question: Question.ID, with choice: Choice.ID) async throws {}
+            func keep(_ secret: Secret, for request: SecretRequest.ID) async throws {}
+            func fetchSecret(for request: SecretRequest.ID) async throws {}
+            func decline(_ request: SecretRequest.ID) async throws {}
+            func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? { nil }
+            func decline(_ offer: ConnectionOffer.ID) async throws {}
+            func file(of attachment: Attachment.ID) async throws -> URL { URL(fileURLWithPath: "/") }
+            func subAgents() -> AsyncStream<[SubAgent]> { AsyncStream { $0.finish() } }
+            func startSubAgent(job: String) async throws {}
+            func stop(_ subAgent: SubAgent.ID) async throws {}
+            func tasks() -> AsyncStream<[AssistantTask]> { AsyncStream { $0.finish() } }
+            func addTask(_ title: String) async throws {}
+            func automations() -> AsyncStream<[Automation]> { AsyncStream { $0.finish() } }
+            func setOn(_ on: Bool, for automation: Automation.ID) async throws {}
+            func supervision() -> AsyncStream<Supervision> { AsyncStream { $0.finish() } }
+            func setAssistantOn(_ on: Bool) async throws {}
+            func models() async throws -> [ModelChoice] { [] }
+            func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {}
+            func forget(_ learned: Supervision.Learned.ID) async throws {}
+        }
+        let plain = await take(1, of: Plain().setup())
+        XCTAssertEqual(plain, [.ready])
+        await refused({ _ = try await Plain().link("anthropic", key: Secret("made-up")) }, .refused("No provider can be linked here"))
+    }
+
+    func testATasksRepliesAreHandedOverWhenAskedFor() async throws {
+        let source = Drawing.source()
+        let replies = try await source.replies(of: "maya", in: .main)
+        XCTAssertEqual(replies, Drawing.mayaReplies)
+        XCTAssertEqual(replies.count, 2, "as many as the task's line counts")
+        guard case .replies(let counted)? = Drawing.mainChat.first(where: { $0.id == "maya" })?.task?.state else { return XCTFail() }
+        XCTAssertEqual(counted, replies.count)
+        // They are no part of the conversation, and a task without any has none.
+        XCTAssertFalse(source.items().contains { item in replies.contains { $0.id == item.id } })
+        let none = try await source.replies(of: "morning-rundown", in: .main)
+        XCTAssertEqual(none, [])
+        // Nobody signed in, nothing handed over.
+        await refused({ _ = try await MemorySource().replies(of: "maya", in: .main) }, .signedOut)
+    }
+
+    /// A source written before replies were asked for still answers: it has none to show.
+    func testASourceThatKeepsNoRepliesHasNoneToShow() async throws {
+        struct Plain: AssistantSource {
+            let inner = MemorySource()
+            func session() -> AsyncStream<Session> { inner.session() }
+            func reach() -> AsyncStream<Reach> { inner.reach() }
+            func pair(with link: PairingLink) async throws {}
+            func signOut() async {}
+            func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> { inner.conversation(chat) }
+            func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] { [] }
+            func send(_ draft: Draft, to chat: Chat) async throws {}
+            func answer(_ question: Question.ID, with choice: Choice.ID) async throws {}
+            func keep(_ secret: Secret, for request: SecretRequest.ID) async throws {}
+            func fetchSecret(for request: SecretRequest.ID) async throws {}
+            func decline(_ request: SecretRequest.ID) async throws {}
+            func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? { nil }
+            func decline(_ offer: ConnectionOffer.ID) async throws {}
+            func file(of attachment: Attachment.ID) async throws -> URL { throw SourceProblem.unreachable }
+            func subAgents() -> AsyncStream<[SubAgent]> { inner.subAgents() }
+            func startSubAgent(job: String) async throws {}
+            func stop(_ subAgent: SubAgent.ID) async throws {}
+            func tasks() -> AsyncStream<[AssistantTask]> { inner.tasks() }
+            func addTask(_ title: String) async throws {}
+            func automations() -> AsyncStream<[Automation]> { inner.automations() }
+            func setOn(_ on: Bool, for automation: Automation.ID) async throws {}
+            func supervision() -> AsyncStream<Supervision> { inner.supervision() }
+            func setAssistantOn(_ on: Bool) async throws {}
+            func models() async throws -> [ModelChoice] { [] }
+            func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {}
+            func forget(_ learned: Supervision.Learned.ID) async throws {}
+        }
+        let replies = try await Plain().replies(of: "maya", in: .main)
+        XCTAssertEqual(replies, [])
+    }
+
     func testNothingIsTakenBeforeSomeoneIsSignedIn() async {
         let source = MemorySource()
         await refused({ try await source.send(Draft(text: "hello"), to: .main) }, .signedOut)
@@ -155,7 +303,7 @@ final class SourceTests: XCTestCase {
         XCTAssertEqual(source.kept(for: "linkedin")?.handOver(), typed)
         // The conversation knows that it was kept, and holds no letter of it.
         let items = source.items()
-        XCTAssertEqual(items.first?.content.secret?.standing, .kept)
+        XCTAssertEqual(items.first?.content.secret?.state, .kept)
         var written = ""
         dump(items, to: &written)
         XCTAssertFalse(written.contains("correct"))
@@ -172,13 +320,13 @@ final class SourceTests: XCTestCase {
         let source = MemorySource(content)
         await refused { try await source.keep(Secret(""), for: "linkedin") }
         XCTAssertNil(source.kept(for: "linkedin"))
-        XCTAssertEqual(source.items()[0].content.secret?.standing, .waiting)
+        XCTAssertEqual(source.items()[0].content.secret?.state, .waiting)
         try await source.fetchSecret(for: "linkedin")
-        XCTAssertEqual(source.items()[0].content.secret?.standing, .kept)
+        XCTAssertEqual(source.items()[0].content.secret?.state, .kept)
         XCTAssertNil(source.kept(for: "linkedin"), "what the manager holds is fetched when needed, not kept here")
         await refused { try await source.fetchSecret(for: "no-manager") }
         try await source.decline(SecretRequest.ID("third"))
-        XCTAssertEqual(source.items()[2].content.secret?.standing, .declined)
+        XCTAssertEqual(source.items()[2].content.secret?.state, .declined)
     }
 
     func testAServiceIsSignedInToOrLeft() async throws {
@@ -187,11 +335,11 @@ final class SourceTests: XCTestCase {
         let source = MemorySource(content)
         let page = try await source.authenticate("linear")
         XCTAssertNil(page)
-        XCTAssertEqual(source.items()[1].content.connection?.standing, .connected)
+        XCTAssertEqual(source.items()[1].content.connection?.state, .connected)
         await refused { try await source.decline(ConnectionOffer.ID("linear")) }
         let other = MemorySource(content)
         try await other.decline(ConnectionOffer.ID("linear"))
-        XCTAssertEqual(other.items()[1].content.connection?.standing, .declined)
+        XCTAssertEqual(other.items()[1].content.connection?.state, .declined)
     }
 
     func testAnEventsCardIsAnsweredAsAQuestion() async throws {
@@ -213,7 +361,7 @@ final class SourceTests: XCTestCase {
         let made = agents[0]
         XCTAssertEqual(made.title, "Compare the two decks")
         XCTAssertEqual(made.startedBy, .person)
-        XCTAssertEqual(made.standing, .working)
+        XCTAssertEqual(made.state, .working)
         XCTAssertEqual(made.role, "", "the main agent picks the role, not the person")
         guard case .all(let pieces) = await first(source.conversation(.subAgent(made.id))),
               case .message(let job) = pieces.first?.content
@@ -229,7 +377,7 @@ final class SourceTests: XCTestCase {
 
         try await source.stop(made.id)
         let after = try await now(source.subAgents())
-        XCTAssertEqual(after[0].standing, .stopped)
+        XCTAssertEqual(after[0].state, .stopped)
         XCTAssertEqual(after[0].finished, Drawing.now)
         await refused { try await source.stop(made.id) }
         await refused { try await source.stop("data-room") }
@@ -238,7 +386,7 @@ final class SourceTests: XCTestCase {
 
     func testThePanelsGroupsAreTheDrawings() async throws {
         let tasks = try await now(Drawing.source().tasks())
-        func titles(_ standing: AssistantTask.Standing) -> [String] { tasks.filter { $0.standing == standing }.map(\.title) }
+        func titles(_ state: AssistantTask.State) -> [String] { tasks.filter { $0.state == state }.map(\.title) }
         XCTAssertEqual(titles(.readyForReview), ["Reply to Maya at Northwind", "Board deck for Friday: first draft"])
         XCTAssertEqual(titles(.needsInput), ["Find the Q3 board deck"])
         XCTAssertEqual(titles(.inProgress), ["Find out why usage dropped", "Shortlist the YC batch for the thesis"])
@@ -253,7 +401,7 @@ final class SourceTests: XCTestCase {
         try await source.addTask(" Finish the report ")
         let tasks = try await now(source.tasks())
         XCTAssertEqual(tasks.last?.title, "Finish the report")
-        XCTAssertEqual(tasks.last?.standing, .upNext)
+        XCTAssertEqual(tasks.last?.state, .upNext)
 
         try await source.setOn(false, for: "investor-writes")
         var automations = try await now(source.automations())

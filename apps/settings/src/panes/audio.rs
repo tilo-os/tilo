@@ -2272,7 +2272,7 @@ mod tests {
     }
 
     struct StalledSound {
-        gate: Arc<crate::stall::Stall>,
+        check: Arc<crate::stall::Stall>,
         published: Mutex<Option<Result<String, String>>>,
     }
 
@@ -2288,7 +2288,7 @@ mod tests {
             _: &str,
             _: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<(), String> {
-            if self.gate.wait() {
+            if self.check.wait() {
                 Ok(())
             } else {
                 Err("the session never answered".into())
@@ -2299,12 +2299,12 @@ mod tests {
     #[test]
     fn a_stalled_session_never_holds_the_window() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let gate = crate::stall::Stall::new();
+        let check = crate::stall::Stall::new();
         {
-            let stalled = Arc::clone(&gate);
+            let stalled = Arc::clone(&check);
             change_model(&mut app, move |model| {
                 model.sounds = Some(Arc::new(StalledSound {
-                    gate: stalled,
+                    check: stalled,
                     published: Mutex::new(None),
                 }));
                 model.volume = 0.65;
@@ -2318,7 +2318,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("the click");
+        check.assert_held("the click");
         let shows_set_level = |app: &mut App| {
             app.with_widget::<crate::window::Inspected, _>(|settings| {
                 (area(settings).unwrap().model().borrow().volume - 0.3).abs() < 0.01
@@ -2330,7 +2330,7 @@ mod tests {
             "the level is not shown as set before the session took it"
         );
 
-        gate.release();
+        check.release();
         let deadline = tilo_test_env::hang_deadline();
         while !shows_set_level(&mut app) {
             assert!(

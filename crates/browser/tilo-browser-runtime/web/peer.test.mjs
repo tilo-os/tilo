@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
 import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST, staleSiteHost} from './site-host.mjs';
 import {failureCause} from './failure-screen.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -48,13 +49,13 @@ function fakeRuntime({phase = 'ready'} = {}) {
   let peer;
   const runtime = runtimeFake({
     async hostInfo(post) { calls.hostPost = post; return JSON.stringify({address: HOST_ADDRESS, hostCert: {}}); },
-    async certifyDevice(user, label, invite, custody, onPairingCode) {
-      calls.certify.push({user, label, invite, custody});
+    async certifyDevice(user, label, invite, deviceKey, onPairingCode) {
+      calls.certify.push({user, label, invite, deviceKey});
       onPairingCode('123456');
       return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
     },
-    async certifyWithRoot(post, root, custody, label) {
-      calls.certify.push({post, root, custody, label});
+    async certifyWithRoot(post, root, deviceKey, label) {
+      calls.certify.push({post, root, deviceKey, label});
       return JSON.stringify({cert: {device: calls.certify.length, expires_at_ns: calls.expiresAtNs ?? (Date.now() + 30 * 86_400_000) * 1e6}, hostCert: {host: true}});
     },
     async inspectInvitation(post, invitation) {
@@ -80,7 +81,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
      * when it held one (as text, so its nanoseconds stay exact), else a guest
      * certificate of the root's, and the entry the session asks for as it
      * opens, carrying the invitation. */
-    async invitationEntry(hostCert, invitation, custody, root, options) {
+    async invitationEntry(hostCert, invitation, deviceKey, root, options) {
       const asked = JSON.parse(options);
       calls.accepted = {hostCert, invitation: [...invitation], root, ...asked};
       const cert = asked.held ? memberText(asked.held, 'cert') : JSON.stringify({guest: true, device_public_key: Array(32).fill(0xdd)});
@@ -89,7 +90,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
     },
     /** The shared entry through an entry: the certificate the root makes now, as text, and the
      * entry the session asks for as it opens. */
-    async entryRequest(hostCert, workspace, custody, root, options) {
+    async entryRequest(hostCert, workspace, deviceKey, root, options) {
       calls.entryRequest = {hostCert, workspace, root, ...JSON.parse(options)};
       return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}],"through":"Entry"}}`;
     },
@@ -100,12 +101,12 @@ function fakeRuntime({phase = 'ready'} = {}) {
     },
     presenceColor: id => `#${String(id).padEnd(6, '0').slice(0, 6).replace(/[^0-9a-f]/g, '0')}`,
     WasmPeer: {
-      start(config, custody, namespace, record, save, channelVault) {
+      start(config, signer, namespace, record, save, channelVault) {
         const listeners = [];
         const durable = [];
         const liveEvents = [];
         peer = {
-          config: JSON.parse(config), configText: config, custody, namespace, record, save, channelVault, disposed: false, reconnects: 0, retries: 0,
+          config: JSON.parse(config), configText: config, signer, namespace, record, save, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -166,10 +167,10 @@ function fakeRuntime({phase = 'ready'} = {}) {
   return runtime;
 }
 
-const custody = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32), sign: async () => new Uint8Array(64)};
+const deviceKey = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32), sign: async () => new Uint8Array(64)};
 const options = (runtime, store, extra = {}) => ({
   origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', workspace: WORKSPACE,
-  custody, store, runtime, fetch: async () => { throw new Error('no network in tests'); }, ...extra,
+  deviceKey, store, runtime, fetch: async () => { throw new Error('no network in tests'); }, ...extra,
 });
 
 /** What the workspace's members said, as the session hands it to the page. */
@@ -276,7 +277,7 @@ test('a guest certificate from an invitation reaches the session byte for byte',
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
-    runtime, custody, store: memoryStore(), storage: null,
+    runtime, deviceKey, store: memoryStore(), storage: null,
     fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
@@ -292,7 +293,7 @@ test('an entry is entered on the session itself: its first connect asks, and the
   const progress = [];
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
-    displayName: 'Ana', runtime, custody, store: memoryStore(), storage: null, onProgress: event => progress.push(event),
+    displayName: 'Ana', runtime, deviceKey, store: memoryStore(), storage: null, onProgress: event => progress.push(event),
     fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.equal(asked, 1, 'the host is asked who it is once, and nothing else over HTTPS');
@@ -308,7 +309,7 @@ test('an entry is entered on the session itself: its first connect asks, and the
 test('an entry that refuses on the session says so in its own code, and a workspace refusal is a refused join', async () => {
   for (const [entry, check] of [
     [{outcome: 'refused', code: 'full', message: 'come back later', retryAfterSecs: 30},
-      error => error.name === 'HostRefusal' && error.code === 'full' && error.retryAfter === 30],
+      error => error.name === 'DeviceRefusal' && error.code === 'full' && error.retryAfter === 30],
     [{outcome: 'refused', code: 'not-admitted', message: 'key known under another certificate'},
       error => error.name === 'AdmissionError' && error.code === 'refused' && error.message === REFUSED_JOIN],
   ]) {
@@ -317,7 +318,7 @@ test('an entry that refuses on the session says so in its own code, and a worksp
     const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
     await assert.rejects(joinWorkspace({
       origin: 'https://host.example:8443', entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
-      runtime, custody, store: memoryStore(), storage: null,
+      runtime, deviceKey, store: memoryStore(), storage: null,
       fetch: async () => { throw new Error('no network in tests'); },
     }), check);
     assert.ok(runtime.peer.disposed, 'a refused session is let go');
@@ -332,7 +333,7 @@ test('a session after an entry dials the host the entry asked, without asking it
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
-    runtime, custody, store: memoryStore(), storage: null,
+    runtime, deviceKey, store: memoryStore(), storage: null,
     fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.equal(asked, 1, 'the host is asked who it is once, by the entry');
@@ -353,7 +354,7 @@ const certifiedBySite = runtime => {
 const refusalOptions = (runtime, extra = {}) => ({
   origin: 'https://host.example:8443', entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`,
   identity: {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)},
-  displayName: 'Ana', runtime, custody, store: memoryStore(), storage: null,
+  displayName: 'Ana', runtime, deviceKey, store: memoryStore(), storage: null,
   fetch: async () => { throw new Error('no network in tests'); }, ...extra,
 });
 
@@ -411,7 +412,7 @@ test('a site that names its host as it was before it was set up again stops the 
   await assert.rejects(entering, failed => failed.name === 'AdmissionError' && failed.code === 'stale-entry'
     && failed.message === STALE_SITE_HOST);
   assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
-  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-relay page-host https://host.example:8443')), said.join('\n'));
+  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-server page-host https://host.example:8443')), said.join('\n'));
   assert.ok(runtime.peer.disposed, 'the session is let go');
   assert.ok(reported.some(failure => failure.message.includes('TILO_WEB_HOME_HOST_INFO')),
     'the entry hears what to set');
@@ -470,6 +471,25 @@ test('a host that refuses the connection is said at once, not after a timeout, a
   runtime.peer.transport = 'offline';
   runtime.peer.emit('incomplete');
   assert.equal(peer.getSnapshot().phase, 'incomplete', 'a dropped connection of a session that was in is no unreachable host');
+  await peer.dispose();
+});
+
+test('a session its server stops because this browser was removed says so at once, by its code, and never as a server that is away', async () => {
+  const runtime = fakeRuntime({phase: 'authenticating'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const began = Date.now();
+  const ready = peer.whenReady({timeoutMs: HANG_BOUND_MS, capMs: HANG_BOUND_MS});
+  // The server refused the session's first hello and said why (the handshake's own refusal):
+  // the session stops there, failed, and was at no moment offline.
+  runtime.peer.transport = 'failed';
+  Object.assign(runtime.peer, {error: 'This device was removed from your devices.', errorCode: 'device-revoked'});
+  runtime.peer.emit('failed');
+  const error = await ready.then(() => assert.fail('let in'), failed => failed);
+  assert.ok(Date.now() - began < 1000, 'known in well under the wait');
+  assert.equal(error.code, 'device-revoked');
+  assert.ok(deviceRemoved(error), 'the page tells the person, and waits for nothing');
+  assert.notEqual(failureCause(error), 'unreachable', error.message);
+  assert.deepEqual([peer.getSnapshot().phase, peer.getSnapshot().errorCode], ['failed', 'device-revoked'], 'the session keeps its own code');
   await peer.dispose();
 });
 
@@ -675,7 +695,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   const kept = JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)});
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
   runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 3)});
-  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, profile,
+  const common = {origin: 'https://host.example:8443', identity, runtime, deviceKey, desktop, namespaces, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
 
   // Reconnecting with the kept state is refused, and nothing moves.
@@ -724,13 +744,13 @@ test('a device the workspace let go asks to join again under the certificate it 
   const profile = 'tilo-identity:ee@host.example:8443';
   const identity = person();
   const host = hostCertOf(1, 2);
-  const certificate = {user_public_key: Array(32).fill(0xee), device_public_key: Array.from(custody.publicKey), issued_at_ns: 5};
+  const certificate = {user_public_key: Array(32).fill(0xee), device_public_key: Array.from(deviceKey.publicKey), issued_at_ns: 5};
   // Nanoseconds past what a JavaScript number holds exactly: only the kept
   // text itself still matches the certificate's signature.
   const kept = JSON.stringify({cert: certificate, hostCert: host}).replace('"issued_at_ns":5', '"issued_at_ns":1792040183583123457');
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
   runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: host});
-  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, profile,
+  const common = {origin: 'https://host.example:8443', identity, runtime, deviceKey, desktop, namespaces, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
   const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
   assert.equal(runtime.calls.accepted.held, kept, 'asked with the certificate the device holds');
@@ -749,7 +769,7 @@ test('a peer with a store of its own never moves it: a host set up again is refu
   await store.put('peer-record', 'outbox for the previous host');
   runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 3)});
   await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity: person(),
-    admissionToken: 'one-time-token', runtime, custody, store, storage: null,
+    admissionToken: 'one-time-token', runtime, deviceKey, store, storage: null,
     fetch: async () => { throw new Error('no network in tests'); }}), {code: 'host-changed'});
   assert.equal(runtime.calls.started.length, 0, 'the kept record was never handed to a session');
   assert.deepEqual(JSON.parse(store.rows.get('certificate')).hostCert, hostCertOf(1, 2), 'nor its certificate replaced');
@@ -781,9 +801,9 @@ test('a sealed seed is unsealed straight into the runtime', async () => {
   const runtime = fakeRuntime();
   const seed = new Uint8Array(32).fill(7);
   const sealed = {kind: 'sealed-seed', unseal: async () => ({seed})};
-  const peer = await connect(options(runtime, memoryStore(), {custody: sealed}));
-  assert.equal(runtime.calls.certify[0].custody.seed, seed);
-  assert.equal(runtime.peer.custody.seed, seed);
+  const peer = await connect(options(runtime, memoryStore(), {deviceKey: sealed}));
+  assert.equal(runtime.calls.certify[0].deviceKey.seed, seed);
+  assert.equal(runtime.peer.signer.seed, seed);
   await peer.dispose();
 });
 
@@ -1215,7 +1235,7 @@ test('an invitation is accepted as the root-certified device, through the shared
   const progress = [];
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Bob',
-    runtime, custody, store, storage: null, onProgress: event => progress.push(event.phase),
+    runtime, deviceKey, store, storage: null, onProgress: event => progress.push(event.phase),
     fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.deepEqual(progress, ['asking', 'admitted']);
@@ -1231,22 +1251,22 @@ test('an invitation is accepted as the root-certified device, through the shared
   await peer.dispose();
 });
 test('a device key opened for a peer is let go when it is disposed, aborted or fails to connect', async () => {
-  const custody = () => ({closed: 0, close() { this.closed += 1; }});
-  const disposed = custody();
+  const deviceKey = () => ({closed: 0, close() { this.closed += 1; }});
+  const disposed = deviceKey();
   let inner = 0;
-  const peer = await withCustody(disposed, async () => ({dispose: async () => { inner += 1; }}));
+  const peer = await withDeviceKey(disposed, async () => ({dispose: async () => { inner += 1; }}));
   assert.equal(disposed.closed, 0);
   await peer.dispose();
   assert.equal(inner, 1);
   assert.equal(disposed.closed, 1);
 
-  const failed = custody();
-  await assert.rejects(withCustody(failed, async () => { throw new Error('host unreachable'); }), /host unreachable/);
+  const failed = deviceKey();
+  await assert.rejects(withDeviceKey(failed, async () => { throw new Error('host unreachable'); }), /host unreachable/);
   assert.equal(failed.closed, 1);
 
-  const aborted = custody();
+  const aborted = deviceKey();
   const controller = new AbortController();
-  await withCustody(aborted, async () => ({dispose: async () => {}}), controller.signal);
+  await withDeviceKey(aborted, async () => ({dispose: async () => {}}), controller.signal);
   controller.abort();
   assert.equal(aborted.closed, 1);
 });
@@ -1257,7 +1277,7 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
   const progress = [];
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Cy',
-    admissionToken: 'one-time-token', runtime, custody, store: memoryStore(), storage: null,
+    admissionToken: 'one-time-token', runtime, deviceKey, store: memoryStore(), storage: null,
     onProgress: event => progress.push(event.phase),
     fetch: async () => { throw new Error('no network in tests'); },
   });
@@ -1278,7 +1298,7 @@ test('an invitation the host will not honour is refused in plain words, and so i
   const refusing = fakeRuntime();
   refusing.calls.entry = {outcome: 'refused', code: 'not-admitted', message: 'this invitation is bound to another person'};
   await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
-    admissionToken: 'another-persons-token', runtime: refusing, custody, store: memoryStore(), storage: null,
+    admissionToken: 'another-persons-token', runtime: refusing, deviceKey, store: memoryStore(), storage: null,
     fetch: async () => { throw new Error('no network in tests'); }}),
   {name: 'AdmissionError', code: 'refused', message: REFUSED_JOIN});
 });
@@ -1383,14 +1403,14 @@ for (const attachSignal of [false, true]) test(`leaving a page joins peer storag
   runtime.profile_value = (profile, device, key) => values.get(`${profile}/${device}/${key}`);
   runtime.set_profile_value = (profile, device, key, bytes) => values.set(`${profile}/${device}/${key}`, bytes);
   let release, begun, reentered, releases = 0;
-  const gate = new Promise(resolve => {release = resolve;});
+  const hold = new Promise(resolve => {release = resolve;});
   const started = new Promise(resolve => {begun = resolve;});
   const controller = new AbortController();
   const desktop = {
     async openProfileStorage() {
       return {
         async flush() {},
-        async release() { releases++; begun(); reentered = peer.dispose(); await gate; },
+        async release() { releases++; begun(); reentered = peer.dispose(); await hold; },
       };
     },
   };
@@ -1450,4 +1470,70 @@ test('a device shows the name the host gave it, not the one it asked for', async
   const peer = await connect(options(runtime, memoryStore()));
   assert.equal(peer.member.label, 'Browser on Cloud 2');
   await peer.dispose();
+});
+
+test('the feed of changes leaves the page\'s ask as names with nothing a change says, and the wait for a write ends by itself', async () => {
+  const runtime = certifiedBySite(fakeRuntime());
+  runtime.hostInfo = async () => siteNamed();
+  const peer = await connect(options(runtime, memoryStore(), {voice: false, live: false}));
+  const sent = [];
+  const answers = [];
+  runtime.peer.actionMessage = async (workspace, person, message) => {
+    sent.push({workspace, person, asked: JSON.parse(message)});
+    return JSON.stringify(answers.shift());
+  };
+  // With no cursor nothing that happened yet is news: the answer is where to read on from.
+  answers.push({ChangesResponse: {correlation: 1, result: {Ok: {changes: [], cursor: 'c-1'}}}});
+  assert.deepEqual(await peer.actions.changes(), {changed: [], cursor: 'c-1'});
+  assert.equal(sent[0].workspace, WORKSPACE);
+  assert.equal(sent[0].person, 'bb'.repeat(32));
+  assert.deepEqual(Object.keys(sent[0].asked), ['ChangesRequest']);
+  assert.equal('after' in sent[0].asked.ChangesRequest, false);
+  // The server tells this person each change with what it says. Only the names go on, a document once.
+  const change = (app, of, sentence) => ({app, record: of,
+    entry: {change: 'ab12', sentence, time_ms: 1, actor: 'person', by: 'Ada', title: 'The quiet plan', invocation: 'inv-9'}});
+  answers.push({ChangesResponse: {correlation: 2, result: {Ok: {cursor: 'c-2', changes: [
+    change('so.tilo.tasks', 'part-1', 'Ada renamed the task to "Buy the company"'),
+    change('so.tilo.tasks', 'part-1', 'Ada closed the task'),
+    change('so.tilo.notes', '', 'Bo wrote a paragraph'),
+  ]}}}});
+  const told = await peer.actions.changes('c-1');
+  assert.deepEqual(told, {changed: [{app: 'so.tilo.tasks', document: 'part-1'}, {app: 'so.tilo.notes', document: ''}], cursor: 'c-2'});
+  assert.equal(sent[1].asked.ChangesRequest.after, 'c-1');
+  for (const kept of ['Buy the company', 'closed', 'paragraph', 'Ada', 'quiet', 'inv-9', 'ab12']) {
+    assert.equal(JSON.stringify(told).includes(kept), false, `nothing of ${kept}`);
+  }
+  // A server that says nothing is said so.
+  answers.push({});
+  await assert.rejects(peer.actions.changes('c-2'), {code: 'unavailable'});
+
+  // The wait for the server's word of a write ends by itself, never sooner, and is let go of when released.
+  const asked = [];
+  // A server that never answers: the wait ends at its own time.
+  runtime.peer.writeLanded = workspace => { asked.push(workspace); return new Promise(() => {}); };
+  let began = Date.now();
+  assert.equal(await peer.actions.landed(60).woke, false);
+  assert.ok(Date.now() - began >= 50, `held ${Date.now() - began} ms`);
+  assert.deepEqual(asked, [WORKSPACE]);
+  // A server that cannot tell, and a session that says early that nothing landed: the wait costs
+  // its whole time all the same, so nobody asks in a circle.
+  for (const answer of [async () => { throw new Error('this provider cannot tell'); }, async () => false]) {
+    runtime.peer.writeLanded = answer;
+    began = Date.now();
+    assert.equal(await peer.actions.landed(60).woke, false);
+    assert.ok(Date.now() - began >= 50, `held ${Date.now() - began} ms`);
+  }
+  // A write landed: said at once.
+  runtime.peer.writeLanded = async () => true;
+  const heard = peer.actions.landed(60_000);
+  assert.equal(await heard.woke, true);
+  heard.release();
+  // Released: the wait is over now, and the session is told so, which lets go of its own.
+  let over = false;
+  runtime.peer.writeLanded = (workspace, until) => until.then(() => { over = true; return false; });
+  const held = peer.actions.landed(60_000);
+  await Promise.resolve();
+  held.release();
+  assert.equal(await held.woke, false);
+  assert.equal(over, true);
 });

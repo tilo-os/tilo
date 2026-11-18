@@ -138,7 +138,7 @@ fn valid_ref(media_ref: &str) -> bool {
 }
 
 impl Library {
-    /// What the record holds: the playlists, the annotations and where playback stands for
+    /// What the resource holds: the playlists, the annotations and where playback stands for
     /// everyone watching together.
     pub fn read_document(
         &self,

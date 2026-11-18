@@ -1,4 +1,4 @@
-//! Commit custody for an existing Unix file/name; deliberately not publication.
+//! Commit ownership for an existing Unix file/name; deliberately not publication.
 use crate::native::atomic::{FileIdentity, Privacy, StorageDirectory, native};
 use std::{
     error::Error,
@@ -8,7 +8,7 @@ use std::{
     io,
 };
 
-struct Custody {
+struct Ownership {
     parent: native::Directory,
     file: File,
     name: OsString,
@@ -20,7 +20,7 @@ struct Custody {
 pub struct ExistingCommitError {
     source: io::Error,
     changed: bool,
-    custody: Option<Custody>,
+    ownership: Option<Ownership>,
 }
 impl ExistingCommitError {
     pub fn source_changed(&self) -> bool {
@@ -34,10 +34,10 @@ impl ExistingCommitError {
     }
     /// Revalidates and repeats the data and name barriers using retained authority only.
     pub fn retry_commit(mut self) -> Result<(), Self> {
-        let Some(custody) = &self.custody else {
+        let Some(ownership) = &self.ownership else {
             return Err(self);
         };
-        match custody.commit() {
+        match ownership.commit() {
             Ok(()) => Ok(()),
             Err((source, changed)) => {
                 self.source = source;
@@ -52,7 +52,7 @@ impl fmt::Debug for ExistingCommitError {
         f.debug_struct("ExistingCommitError")
             .field("source", &self.source)
             .field("source_changed", &self.changed)
-            .field("retained", &self.custody.is_some())
+            .field("retained", &self.ownership.is_some())
             .finish()
     }
 }
@@ -87,7 +87,7 @@ fn unchanged(
         ))
     }
 }
-impl Custody {
+impl Ownership {
     fn validate(&self) -> Result<(), (io::Error, bool)> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if matches!(self.privacy, native::FilePolicy::BoundedOwner) {
@@ -145,7 +145,7 @@ pub(crate) fn commit_policy(
         }
         let parent = parent.inner.try_clone()?;
         let file = parent.open_writable_policy(name, privacy, false, false)?;
-        Ok::<_, io::Error>(Custody {
+        Ok::<_, io::Error>(Ownership {
             parent,
             file,
             name: name.to_owned(),
@@ -153,20 +153,20 @@ pub(crate) fn commit_policy(
             privacy,
         })
     })();
-    let custody = prepared.map_err(|source| {
+    let ownership = prepared.map_err(|source| {
         let (source, changed) = observed(source);
         ExistingCommitError {
             source,
             changed,
-            custody: None,
+            ownership: None,
         }
     })?;
-    custody
+    ownership
         .commit()
         .map_err(|(source, changed)| ExistingCommitError {
             source,
             changed,
-            custody: Some(custody),
+            ownership: Some(ownership),
         })
 }
 #[cfg_attr(

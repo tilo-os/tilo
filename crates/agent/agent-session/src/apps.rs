@@ -23,8 +23,8 @@
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
-use tilo_relay_protocol::live::LiveAnchor;
-use tilo_relay_protocol::live::presence_anchors;
+use tilo_server_protocol::live::LiveAnchor;
+use tilo_server_protocol::live::presence_anchors;
 use ui::application::ApplicationDefinition;
 use ui::collaboration::PresencePayload;
 use ui::framework::{AttachedView, ResourceSelection};
@@ -222,28 +222,35 @@ pub enum ReplicaActor {
     /// The host's own device acting for its user (workspace actions): the
     /// record's owner, as a browser tab of the owner is.
     Owner,
-    /// A delegated agent, at the cap its record bounds it to.
-    Agent,
-    /// An installed bot: its installer's standing bounded by the bot's
+    /// A delegated agent, at the cap its delegation bounds it to, for
+    /// `person` under `name`. The replica's member is the agent, so what it
+    /// writes is the agent's; the person is whose access bounds it.
+    Agent {
+        /// The person the agent acts for.
+        person: MemberId,
+        /// What its person calls it, as its delegation says.
+        name: String,
+    },
+    /// An installed bot: its installer's access bounded by the bot's
     /// grants, built by the host from the workspace's policy before each run.
     Bot {
         /// The installation the bot runs as.
         installation: String,
         /// The person who installed it, whom its invocations are for.
         installer: String,
-        /// The installer's standing bounded by the bot's grants.
-        standing: policy::Standing,
+        /// The installer's access bounded by the bot's grants.
+        access: policy::MemberAccess,
     },
     /// A person whose action the host runs for them, or an agent acting for
-    /// them: their own current standing and the workspace's sandbox, as the
+    /// them: their own current access and the workspace's sandbox, as the
     /// workspace's policy gave them to the host, bounded as the host reads
     /// the caller ([`tilo_actions::remote::Caller::invoker`]: an agent's by
     /// the editor preset at most). An agent is offered only what reaches
     /// agents, and is who the changes it makes are by, for the person.
     Member {
-        /// The person's current standing in the workspace, bounded by
+        /// The person's current member access in the workspace, bounded by
         /// whoever acts for them.
-        standing: policy::Standing,
+        access: policy::MemberAccess,
         /// The workspace's sandbox capabilities.
         sandbox: Vec<collab_types::caps::CapOverride>,
         /// When the policy was read, for grant expiry.
@@ -475,15 +482,26 @@ impl Replica {
         let for_agent = matches!(actor, ReplicaActor::Member { agent: Some(_), .. });
         let runs_effects = !matches!(actor, ReplicaActor::Bot { .. });
         let automated =
-            for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
-        let runs_views = matches!(actor, ReplicaActor::Agent | ReplicaActor::Member { .. });
-        let (invoker, permissions) = replica_standing(actor, workspace, member);
-        let creator = invoker
-            .acting
-            .by
-            .member_id()
-            .cloned()
-            .unwrap_or_else(|| member.clone());
+            for_agent || matches!(actor, ReplicaActor::Agent { .. } | ReplicaActor::Bot { .. });
+        let runs_views = matches!(
+            actor,
+            ReplicaActor::Agent { .. } | ReplicaActor::Member { .. }
+        );
+        // What an agent's replica seeds belongs to the person it acts for: the
+        // change is the agent's, the document the person's.
+        let acted_for = match &actor {
+            ReplicaActor::Agent { person, .. } => Some(person.clone()),
+            _ => None,
+        };
+        let (invoker, permissions) = replica_access(actor, workspace, member);
+        let creator = acted_for.unwrap_or_else(|| {
+            invoker
+                .acting
+                .by
+                .member_id()
+                .cloned()
+                .unwrap_or_else(|| member.clone())
+        });
         let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
@@ -539,7 +557,7 @@ impl Replica {
         &self.view.checkout().id
     }
 
-    /// Where the member's last operation left it, as the live plane's
+    /// Where the member's last operation left it, as the live session's
     /// selection anchors every member's window resolves against the
     /// record's own items: the paragraph it wrote and the caret at its end,
     /// the item it acted on. `None` before any operation, or for one that
@@ -675,21 +693,45 @@ impl Replica {
     /// least the window's offset) and those from the `offset`th on, at most
     /// `take`, on a host that `can_render` or not.
     #[must_use]
+    pub fn survey_page(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (bool, (usize, usize)),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        // A lookup (one action by its address, a resource by its name) is
+        // answered from the view as it stands: an action just done leaves
+        // the view to lay out its change when it is read, and what the
+        // lookup names is there already unless only that frame would add
+        // it. A listing reads the view laid out.
+        if (query.target.is_some() || query.resource_name.is_some()) && !self.view.laid_out() {
+            let without_layout =
+                self.survey_page_of(&self.view.published_without_layout(), true, query, window);
+            if without_layout.0 > 0 {
+                return without_layout;
+            }
+        }
+        self.survey_page_of(&self.view.published(), false, query, window)
+    }
+
+    /// [`Self::survey_page`] of `resources`, the tree the view publishes:
+    /// `without_layout` when the view has not laid out what changed, which then
+    /// reads past the published pages only the items a name finds.
     #[expect(
         clippy::too_many_lines,
         reason = "one walk of a level: the tree as published, then the items it \
                   leaves past its page, stopped where the page ends"
     )]
-    pub fn survey_page(
+    fn survey_page_of(
         &self,
+        resources: &[tilo_actions::ResourceSpec],
+        without_layout: bool,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
         // The tree the view publishes, and only the items past its pages the
         // page reaches: a record holding thousands of notes costs a page its
         // rows, not its notes.
-        let resources = self.view.published();
-        let mut in_chains = chain_resources(&resources);
+        let mut in_chains = chain_resources(resources);
         let mut walk = SurveyWalk {
             query,
             can_render,
@@ -726,7 +768,7 @@ impl Replica {
                 },
             ))
         };
-        let mut complete = tilo_actions::api::survey_placed_each(&resources, &mut |placed| {
+        let mut complete = tilo_actions::api::survey_placed_each(resources, &mut |placed| {
             visit(placed, &mut walk, &in_chains)
         });
         // The items past the published pages, built only as far as the page
@@ -769,7 +811,7 @@ impl Replica {
                     }
                 }
             }
-            let past_len = if query.resource_name.is_some() {
+            let past_len = if query.resource_name.is_some() || without_layout {
                 0
             } else {
                 self.view.past_page_len()
@@ -801,7 +843,7 @@ impl Replica {
         }
         if complete && walk.total < walk.end {
             let mut containers = Vec::new();
-            self.survey_containers(&resources, None, &walk.offering, &mut containers);
+            self.survey_containers(resources, None, &walk.offering, &mut containers);
             if let Some(root) = &past_root {
                 for child in &past_built {
                     containers_into(child, root, &walk.offering, self.app_id(), &mut containers);
@@ -917,8 +959,11 @@ impl Replica {
             // A chain the app keeps beside the record publishes its parts'
             // document actions routed to the part they change: document
             // operations all the same.
+            // So does what the app keeps for its whole workspace, carried out on that
+            // document ([`Self::kept_for_workspace`]).
             tilo_actions::OperationKind::Effect
-                if in_chains.contains(descriptor.address.resource.as_str()) =>
+                if in_chains.contains(descriptor.address.resource.as_str())
+                    || self.kept_for_workspace(descriptor) =>
             {
                 true
             }
@@ -927,8 +972,26 @@ impl Replica {
                     || (self.offers_reads() && descriptor.contract.kind == policy::ActionKind::Read)
                     || (self.runs_effects && offered_to_agents(descriptor))
             }
-            tilo_actions::OperationKind::View => self.runs_views && offered_to_agents(descriptor),
+            // The read of what the app keeps for its whole workspace moves no window: the
+            // server's own person, who has no window of it there either, is offered it too.
+            tilo_actions::OperationKind::View => {
+                (self.runs_views || self.kept_for_workspace(descriptor))
+                    && offered_to_agents(descriptor)
+            }
         }
+    }
+
+    /// Whether `descriptor` is of what the app keeps for its whole workspace beside this
+    /// document ([`collab_types::WORKSPACE_DOCUMENTS`]: Chat's of the workspace's agents and
+    /// emoji): that document's own resource, which its kind names, or an item of it.
+    fn kept_for_workspace(&self, descriptor: &ActionDescriptor) -> bool {
+        let resource = descriptor.address.resource.as_str();
+        collab_types::WORKSPACE_DOCUMENTS.iter().any(|kept| {
+            kept.app == self.app_id
+                && resource
+                    .strip_prefix(kept.kind)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
     }
 
     /// For an agent or the host acting for its person, whether the
@@ -951,7 +1014,9 @@ impl Replica {
             return Ok(false);
         };
         if descriptor.kind == tilo_actions::OperationKind::Document
-            || (descriptor.kind == tilo_actions::OperationKind::View && !self.runs_views)
+            || (descriptor.kind == tilo_actions::OperationKind::View
+                && !self.runs_views
+                && !self.kept_for_workspace(&descriptor))
         {
             return Ok(false);
         }
@@ -968,7 +1033,10 @@ impl Replica {
             return Ok(false);
         }
         if !descriptor.contract.reaches_agents()
-            || !self.offers(&descriptor, &chain_resources(&self.view.published()))
+            || !self.offers(
+                &descriptor,
+                &chain_resources(&self.view.published_without_layout()),
+            )
         {
             return Err(not_offered(&descriptor));
         }
@@ -994,19 +1062,18 @@ impl Replica {
         kind: &str,
         permissions: &PermissionContext,
     ) -> Vec<ActionDescriptor> {
-        self.read(|doc| {
-            discover_views(
-                self.kind,
-                self.app_id,
-                doc,
-                &tilo_actions::remote::ViewResourceQuery {
-                    id: id.to_owned(),
-                    kind: kind.to_owned(),
-                },
-                permissions,
-            )
-        })
-        .unwrap_or_default()
+        let wanted = tilo_actions::remote::ViewResourceQuery {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+        };
+        // An item of a chain the app keeps beside its record (an issue in
+        // one of the tracker's parts) is in no record's document alone: the
+        // view publishes it, with the view its opener shows.
+        if let Some(published) = published_resource(&self.view.published(), id) {
+            return views_of(published, self.app_id, &wanted, permissions);
+        }
+        self.read(|doc| discover_views(self.kind, self.app_id, doc, &wanted, permissions))
+            .unwrap_or_default()
     }
 
     /// Perform one published operation through the view, the API a
@@ -1132,7 +1199,7 @@ impl Replica {
         self.view.take_changes().map_err(AppError::Merge)
     }
 
-    /// A member's standing read again at a later time, the standing and
+    /// A member's access read again at a later time, the access and
     /// sandbox unchanged: what was granted until a time is held to the new
     /// one, and nothing of the record is opened again for it, which costs
     /// more the more it holds.
@@ -1142,18 +1209,16 @@ impl Replica {
     /// [`AppError::Launch`] for any actor but a member.
     pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
         let ReplicaActor::Member {
-            standing,
+            access,
             sandbox,
             unix_time,
             ..
         } = actor
         else {
-            return Err(AppError::Launch(
-                "only a member's standing is renewed".into(),
-            ));
+            return Err(AppError::Launch("only a member's access is renewed".into()));
         };
         self.view
-            .set_permissions(member_permissions(standing, sandbox, unix_time));
+            .set_permissions(member_permissions(access, sandbox, unix_time));
         Ok(())
     }
 
@@ -1464,6 +1529,31 @@ fn discover_views(
             Err(_) => return Vec::new(),
         },
     };
+    views_of(published, app_id, wanted, permissions)
+}
+
+/// The resource `id` among `resources` and their children, as published.
+fn published_resource(
+    resources: &[tilo_actions::ResourceSpec],
+    id: &str,
+) -> Option<tilo_actions::ResourceSpec> {
+    resources.iter().find_map(|resource| {
+        if resource.id.as_str() == id {
+            Some(resource.clone())
+        } else {
+            published_resource(&resource.children, id)
+        }
+    })
+}
+
+/// The views `wanted` offers in `published`, a resource of `app_id`, that
+/// `permissions` let the caller open.
+fn views_of(
+    published: tilo_actions::ResourceSpec,
+    app_id: &str,
+    wanted: &tilo_actions::remote::ViewResourceQuery,
+    permissions: &PermissionContext,
+) -> Vec<ActionDescriptor> {
     let Some(permitted) = permissions.permitted_resource(app_id, published) else {
         return Vec::new();
     };
@@ -1490,49 +1580,52 @@ fn discover_views(
 
 /// Who a replica acts as and what it may do in `workspace`: an agent with the
 /// operator preset under its person, an owner, a bot acting for whoever
-/// installed it, or a member with their standing.
-fn replica_standing(
+/// installed it, or a member with their access.
+fn replica_access(
     actor: ReplicaActor,
     workspace: &str,
     member: &MemberId,
 ) -> (tilo_actions::ActionInvoker, PermissionContext) {
     let mut invoker = tilo_actions::ActionInvoker::member(member.clone());
     let permissions = match actor {
-        ReplicaActor::Agent => {
+        ReplicaActor::Agent { person, name } => {
             let id = member.id();
-            let permissions = PermissionContext::member_of(workspace, member, Role::Editor);
+            // The agent is who the changes are by, for the person it acts for, under the name its
+            // delegation gives it.
+            invoker = tilo_actions::ActionInvoker::agent(id)
+                .acting_for(person.id().to_owned())
+                .named(Some(name).filter(|name| !name.trim().is_empty()));
+            let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
             let acting =
-                policy::Acting::agent(id).acting_for(policy::Acting::member(member.clone()));
-            let granted = policy::roles::agent_grants(workspace, id, id, &[]);
+                policy::Acting::agent(id).acting_for(policy::Acting::member(person.clone()));
+            let granted = policy::roles::agent_grants(workspace, id, person.id(), &[]);
             match permissions
-                .standing()
+                .access()
                 .clone()
                 .as_acting(acting)
-                .map(|standing| standing.granted(granted))
+                .map(|access| access.granted(granted))
             {
-                Some(standing) => permissions.with_standing(standing),
+                Some(access) => permissions.with_access(access),
                 None => permissions.read_only(),
             }
         }
         ReplicaActor::Owner => PermissionContext::member_of(workspace, member, Role::Owner),
         ReplicaActor::Bot {
-            installer,
-            standing,
-            ..
+            installer, access, ..
         } => {
             invoker = invoker.acting_for(installer);
-            PermissionContext::from_standing(standing)
+            PermissionContext::from_access(access)
         }
         ReplicaActor::Member {
-            standing,
+            access,
             sandbox,
             unix_time,
             agent,
             agent_name,
             agent_session,
         } => {
-            let person = standing.person_id().unwrap_or_default().to_owned();
-            let permissions = member_permissions(standing, sandbox, unix_time);
+            let person = access.person_id().unwrap_or_default().to_owned();
+            let permissions = member_permissions(access, sandbox, unix_time);
             if let Some(agent) = agent {
                 // Named as the host admitted it (`Caller::acting`), so
                 // History reads the agent, for the person.
@@ -1549,16 +1642,16 @@ fn replica_standing(
     (invoker, permissions)
 }
 
-/// A member's permissions on `standing`: the host bounded the standing as it
+/// A member's permissions on `access`: the host bounded the member access as it
 /// reads the caller (`Caller::invoker`), and puts an ask to the person on
 /// their own devices when their agent acts.
 fn member_permissions(
-    standing: policy::Standing,
+    access: policy::MemberAccess,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 ) -> PermissionContext {
-    let person = standing.person_id().unwrap_or_default().to_owned();
-    PermissionContext::new(ui::permissions::Acting::person(person), sandbox, standing)
+    let person = access.person_id().unwrap_or_default().to_owned();
+    PermissionContext::new(ui::permissions::Acting::person(person), sandbox, access)
         .at_unix_time(unix_time)
         .reaching_person()
 }

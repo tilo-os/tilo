@@ -619,13 +619,13 @@ mod tests {
         {
             let walk = walk(
                 "   3: statx\n   4: std::sys::fs::unix::try_statx\n   5: std::fs::metadata::<&std::path::Path>\n\
-             \x20  6: <tilo_identity_host::registry::DirStamp>::of\n\
-             \x20            at ./crates/runtime/tilo-identity-host/src/registry.rs:234:20\n\
+             \x20  6: <tilo_identity::registry::DirStamp>::of\n\
+             \x20            at ./crates/runtime/tilo-identity/src/registry.rs:234:20\n\
              \x20  7: <tilo_session::network::Network>::kick_periodic_sync\n\
              \x20  8: <tilo_session::network::Network>::frame_tick\n\
              \x20  9: tilo_session::Session::run\n  10: tilo_session::run\n  11: main",
             );
-            assert_eq!(walk.site(), "<tilo_identity_host::registry::DirStamp>::of");
+            assert_eq!(walk.site(), "<tilo_identity::registry::DirStamp>::of");
             assert_eq!(
                 walk.handler(),
                 "<tilo_session::network::Network>::frame_tick"

@@ -1,4 +1,4 @@
-//! Local inventory/output custody on the canonical installed Store filesystem.
+//! Local inventory/output ownership on the canonical installed Store filesystem.
 //! No launch, adoption, completion, medium or automatic deletion authority.
 use super::{
     inventory_scratch::InventoryScratch,
@@ -71,7 +71,7 @@ impl InstalledCopyScratch {
             source.clone(),
             cancel,
         )?;
-        // Full source geometry and canonical Store custody precede any mkdir.
+        // Full source geometry and canonical Store ownership precede any mkdir.
         physical.revalidate(cancel)?;
         store
             .lock()

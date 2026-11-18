@@ -930,11 +930,11 @@ tilo_test_env::scenario! {
             .entries(&mut doc);
         let author = &entries.last().unwrap().author;
         assert_eq!(author.name, "Scribe");
-        assert_eq!(crate::author_line(author), "Scribe for Ada");
-        // Its run, a task going by its own name, still reads as the agent's.
-        let mut run = author.clone();
-        run.task = Some("Scribe".into());
-        assert_eq!(crate::author_line(&run), "Scribe for Ada");
+        assert_eq!(crate::author_line(author), "Scribe");
+        // A task going by its own name still reads as the agent's.
+        let mut tasked = author.clone();
+        tasked.task = Some("Scribe".into());
+        assert_eq!(crate::author_line(&tasked), "Scribe");
         assert_eq!(author.relation, AuthorRelation::Software);
         assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
         assert_eq!(
@@ -949,13 +949,14 @@ tilo_test_env::scenario! {
                 folder: None,
             })
         );
-        // The person reading it sees it was done for them.
+        // The line names the agent alone; the hover says whom it worked for, and to that person
+        // that it was them.
+        assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("For Ada")));
         authors.set_reader(crate::permissions::MemberId::person(person));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
-        assert_eq!(
-            crate::author_line(&entries.last().unwrap().author),
-            "Scribe for you"
-        );
+        let author = &entries.last().unwrap().author;
+        assert_eq!(crate::author_line(author), "Scribe");
+        assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("For you")));
     }
 
     phase a_change_in_a_work_group_is_the_persons_with_the_agent_beside_them;
@@ -999,7 +1000,7 @@ tilo_test_env::scenario! {
 
     phase a_wire_author_reads_as_one_line;
     // An author as an app reads it over the wire words its row once: the
-    // agent's own name, whom it acted for, and the reader as themselves.
+    // agent by its own name, and the reader as themselves.
     {
                 use tilo_actions::remote::workspace_activity as wire;
         let agent = wire::Author {
@@ -1008,12 +1009,12 @@ tilo_test_env::scenario! {
             on_behalf_of: Some("ada".into()),
             ..wire::Author::default()
         };
-        assert_eq!(crate::wire_author_line(&agent), "claude for ada");
+        assert_eq!(crate::wire_author_line(&agent), "claude");
         let software = wire::Author {
             for_reader: true,
             ..agent
         };
-        assert_eq!(crate::wire_author_line(&software), "claude for you");
+        assert_eq!(crate::wire_author_line(&software), "claude");
         let reader = wire::Author {
             name: "Ada".into(),
             relation: wire::Relation::Reader,

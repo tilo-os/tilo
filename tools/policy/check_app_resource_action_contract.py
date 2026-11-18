@@ -160,7 +160,7 @@ NOT_CONTROL_CALLBACKS = {
     "this window shows, no edit",
     "on_opened": "reports the item a row opened into where it stands: what this window shows, "
     "kept where the person is and put back as the list's open prop, no edit",
-    "on_closed": "reports the row standing open closed: what this window shows, no edit",
+    "on_closed": "reports the row held open closed: what this window shows, no edit",
     "on_open_toggle": "folds or unfolds a disclosure: what this window shows, no edit",
     "on_header_click": "sorts a table by a column: what this window shows, no edit",
     "on_edit_requested": "turns a breadcrumb into its editable field: what this window shows",
@@ -507,9 +507,9 @@ PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
 # `Action::apply` writes that document. These count production code only (test
 # files and `#[cfg(test)]` items are exempt) and may only go down.
 MODEL_RATCHETS = {
-    "app_action_host": (
-        re.compile(r"\bActionHost\b"),
-        "app-owned ActionHost; submit edits through the framework Dispatcher",
+    "app_action_provider": (
+        re.compile(r"\bActionProvider\b"),
+        "app-owned ActionProvider; submit edits through the framework Dispatcher",
     ),
     "standalone_launch": (
         re.compile(
@@ -1148,7 +1148,7 @@ def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
     architecture, while ``LaunchSpec`` only supplies host inputs. Follow the
     definition's named create callback and require that the same registry
     passed to ``actions::register`` reaches ``AppComponent::new``. This keeps
-    test-only or disconnected registration helpers from satisfying the gate.
+    test-only or disconnected registration helpers from satisfying the check.
     """
     main = code_only(live_launch_registration_code(main_text))
     if not (
@@ -1929,17 +1929,17 @@ def audit(
     # this invariant spanning its focused implementation modules so moving
     # action/resource code out of app.rs cannot disable the audit.
     if root.resolve() == ROOT.resolve():
-        app_host_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
-        app_action_path = app_host_path.parent / "app" / "actions.rs"
-        app_host = code_only(app_host_path.read_text(encoding="utf-8"))
+        package_service_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
+        app_action_path = package_service_path.parent / "app" / "actions.rs"
+        package_service = code_only(package_service_path.read_text(encoding="utf-8"))
         if app_action_path.is_file():
-            app_host += "\n" + code_only(app_action_path.read_text(encoding="utf-8"))
+            package_service += "\n" + code_only(app_action_path.read_text(encoding="utf-8"))
         if not FRAMEWORK_RESOURCE_SEARCH_BUILD.search(
-            app_host
-        ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(app_host):
+            package_service
+        ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(package_service):
             violations.append(
                 Violation(
-                    app_host_path,
+                    package_service_path,
                     1,
                     "app host must install bounded canonical search for every live resource tree",
                 )
@@ -2133,7 +2133,7 @@ def audit(
             # A document ActionSpec is only valid at runtime when its decoder
             # is installed into the App's ActionRegistry. Looking for a
             # register function anywhere in the crate used to let test-only
-            # calls satisfy this gate while the production LaunchSpec silently
+            # calls satisfy this check while the production LaunchSpec silently
             # withdrew the complete resource catalogue as invalid.
             if (
                 ACTION_REGISTRY_DEFINITION.search(combined)

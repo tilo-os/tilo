@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             Some(Role::Editor)
         );
 
-        // Setting a role takes the standing back with the grant.
+        // Setting a role takes the access back with the grant.
         peer.governance_mut()
             .set_member_role(user, crate::join::Role::Editor, &host_key, now)
             .unwrap();

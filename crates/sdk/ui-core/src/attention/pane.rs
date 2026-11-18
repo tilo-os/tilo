@@ -262,7 +262,7 @@ pub fn apply(press: Press) -> Option<super::Acted> {
 
 /// The waiting stack as a widget: it keeps its rows, rebuilds them when the stack moves, and reports
 /// what was pressed through its [`Presses`].
-#[crate::component::not_a_component(system, "the attention ledger's pane (HIG 11)")]
+#[crate::component::not_a_component(system, "the attention log's pane (HIG 11)")]
 pub struct Stack {
     inner: Column,
     presses: Presses,

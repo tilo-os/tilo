@@ -1,10 +1,10 @@
 //! The Books widget: the library shelf and the paginated reader in one
 //! retained-mode widget, drawing straight into the Vello [`Scene`] with
-//! [`crate::paginate`] and [`crate::paint`]. `draw` records clickable `Hit`
+//! [`crate::paginate`] and [`crate::paint`]. `draw` resources clickable `Hit`
 //! regions and `handle_event` hit-tests them on the next click; a frame
 //! always precedes input, so regions are never stale.
 //!
-//! The library record ([`Ebook`]) holds the shelf, settings, progress and
+//! The library resource ([`Ebook`]) holds the shelf, settings, progress and
 //! annotations, changed through its field edits and verbs. Ephemeral widget
 //! caches (open book, page index, selection, layout cache) are per-peer view
 //! state kept out of the document, so readers browse independently.
@@ -172,7 +172,7 @@ impl ImportWorker {
                 // on this worker before its collaborative library row is
                 // written on the UI thread.  A peer therefore receives
                 // bytes and metadata as one logical import, never a
-                // dangling shared title/annotation record.
+                // dangling shared title/annotation resource.
                 let fetched = match &request.fetch {
                     Some(url) => crate::store::download(url, &request.path),
                     None => Ok(()),
@@ -815,7 +815,7 @@ pub struct BooksApp {
     /// indices following on from it.
     elsewhere: Arc<Vec<Arc<Book>>>,
     /// Where each book's `.epub` lives, keyed by content id. The durable
-    /// record is the library ([`Ebook`]); this is its cache.
+    /// resource is the library ([`Ebook`]); this is its cache.
     library_paths: HashMap<String, PathBuf>,
     /// Whether the persisted library has been hydrated from the document yet
     /// (loads on the first `sync`; shot/test builds pass one explicitly).
@@ -1505,7 +1505,7 @@ impl BooksApp {
         if self.record_stale.replace(false) {
             self.read_resource(doc);
         } else {
-            self.refresh_from_record();
+            self.refresh_from_resource();
         }
     }
 
@@ -1516,10 +1516,10 @@ impl BooksApp {
         if let Ok(record) = <Ebook as ui::tilo_resource::Resource>::read(doc) {
             self.record = Rc::new(record);
         }
-        self.refresh_from_record();
+        self.refresh_from_resource();
     }
 
-    fn refresh_from_record(&mut self) {
+    fn refresh_from_resource(&mut self) {
         let record = Rc::clone(&self.record);
         if record.settings != self.settings {
             self.settings = record.settings.clone();
@@ -1573,7 +1573,7 @@ impl BooksApp {
     /// Persist the live reading position for the open book (deduped so we don't
     /// churn the document when nothing moved).
     fn persist_progress(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if let Some(progress) = self.progress_to_record() {
+        if let Some(progress) = self.progress_to_resource() {
             self.edit(doc, progress);
         }
     }
@@ -1581,14 +1581,14 @@ impl BooksApp {
     /// Record where the reader is, from an effect that moved it: through the
     /// dispatcher, which the host applies like any invocation.
     fn record_progress(&mut self) {
-        if let Some(progress) = self.progress_to_record() {
+        if let Some(progress) = self.progress_to_resource() {
             self.dispatch.submit(progress);
         }
     }
 
     /// Recording where the reader is now, when it moved since it was last
     /// recorded.
-    fn progress_to_record(&mut self) -> Option<ui::tilo_resource::Invoke<Ebook>> {
+    fn progress_to_resource(&mut self) -> Option<ui::tilo_resource::Invoke<Ebook>> {
         if self.view != View::Reader {
             return None;
         }
@@ -1614,7 +1614,7 @@ impl BooksApp {
     }
 
     /// The first block on the page the reader is at: what the reading
-    /// position records. Until a pending move is laid out it is the start
+    /// position resources. Until a pending move is laid out it is the start
     /// of the chapter; the next frame records the block it lands on.
     fn reading_block(&self) -> usize {
         if let Some(block) = self.pending_jump_block {
@@ -3443,7 +3443,7 @@ impl BooksApp {
         self.record_stale.set(false);
         self.forget_left(&previous);
         self.adopt_shelf(&previous);
-        self.refresh_from_record();
+        self.refresh_from_resource();
     }
 
     /// Forget what this device kept for each book `previous` listed that
@@ -4290,7 +4290,7 @@ impl Continuable for BooksApp {
         self.page = 0;
         self.pending_jump_block = Some(block);
         // The accepted passage is explicit presentation. Ordinary sync must
-        // not replace it with the record's older saved reading progress.
+        // not replace it with the resource's older saved reading progress.
         self.adopt_position = false;
         self.retire_layout();
         self.dirty = true;
@@ -5150,7 +5150,7 @@ impl BooksApp {
             | BooksEffect::ReadBook { .. }
             | BooksEffect::ReadHighlight { .. }
             | BooksEffect::ReadAnnotation { .. } => {
-                return Err("a read answers from the library record, which the view has".into());
+                return Err("a read answers from the library resource, which the view has".into());
             }
         }
         self.record_progress();
@@ -6307,11 +6307,11 @@ fn paint_scroll_thumb(ctx: &mut PaintCtx<'_>, area: Rect, metrics: ScrollMetrics
     if !metrics.overflows() {
         return;
     }
-    // The bar sits in the lane a `Scrollable` keeps on its trailing edge.
+    // The bar sits in the bar_area a `Scrollable` keeps on its trailing edge.
     let gutter = f64::from(ctx.theme.tokens.metrics.scrollbar_gutter);
-    let lane = Rect::new(area.x1 - gutter, area.y0, area.x1, area.y1);
+    let bar_area = Rect::new(area.x1 - gutter, area.y0, area.x1, area.y1);
     let bar = Scrollbar::vertical();
-    let track = bar.track_in(lane, ctx.theme);
+    let track = bar.track_in(bar_area, ctx.theme);
     bar.draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
 }
 

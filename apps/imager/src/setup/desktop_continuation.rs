@@ -5,7 +5,7 @@ use super::controller::{FolderChoice, FolderDestination};
 use super::model::FolderMode;
 use imager_backend::migration::PinnedDirectory;
 use imager_backend::migration_durability::{self, Identity};
-use imager_backend::migration_store::{MigrationStore, NativePath, OperationRecord};
+use imager_backend::migration_store::{MigrationStore, NativePath, OperationEntry};
 use imager_backend::migration_worker::MigrationJob;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -271,7 +271,7 @@ impl Continuation {
     pub(super) fn unpublished_retry(
         &self,
         index: usize,
-        record: &OperationRecord,
+        record: &OperationEntry,
     ) -> Result<Option<MigrationJob>, String> {
         use imager_backend::migration_store::OperationState;
         if !matches!(
@@ -288,7 +288,7 @@ impl Continuation {
         self.constrain_job(index, fresh.start_job()?).map(Some)
     }
 
-    pub(super) fn can_replace_unpublished(record: &OperationRecord) -> Result<(), String> {
+    pub(super) fn can_replace_unpublished(record: &OperationEntry) -> Result<(), String> {
         use imager_backend::migration_store::OperationState;
         if !matches!(
             record.state(),
@@ -377,9 +377,9 @@ impl Continuation {
         &self,
         index: usize,
         store: &MigrationStore,
-        operations: &[OperationRecord],
+        operations: &[OperationEntry],
         identity_complete: bool,
-    ) -> Result<Option<OperationRecord>, String> {
+    ) -> Result<Option<OperationEntry>, String> {
         self.validate_endpoints(index, identity_complete)?;
         let id = self.operation_id(index);
         let f = self
@@ -405,7 +405,7 @@ impl Continuation {
         if std::fs::symlink_metadata(&destination).is_ok() {
             return Err("Destination collision: existing data was preserved.".into());
         }
-        Ok(Some(OperationRecord::new(&MigrationJob::fresh(
+        Ok(Some(OperationEntry::new(&MigrationJob::fresh(
             id.clone(),
             source,
             destination,
@@ -679,7 +679,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
-        fn a_continuation_record_is_private_and_gates_unsafe_copies;
+        fn a_continuation_record_is_private_and_checks_unsafe_copies;
 
         phase desktop_offer_shows_familiar_folders_at_first_login_and_keeps_an_open_review;
         {
@@ -789,7 +789,7 @@ mod tests {
             }
         }
 
-        phase continuation_retries_and_identity_gates_prevent_unsafe_copies;
+        phase continuation_retries_and_identity_checks_prevent_unsafe_copies;
         {
             {
                 let (_temp, store, choices) = fixture();
@@ -911,7 +911,7 @@ mod tests {
             use std::os::fd::AsRawFd;
             use std::os::unix::net::UnixListener;
             let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("gate");
+            let path = temp.path().join("check");
             let _server = UnixListener::bind(&path).unwrap();
             assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
             let mut held = Vec::new();

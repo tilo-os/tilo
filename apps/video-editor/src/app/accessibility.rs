@@ -4,7 +4,7 @@
 )]
 use super::*;
 
-/// The three toggles a lane carries, the name the router addresses each by and
+/// The three toggles a track carries, the name the router addresses each by and
 /// the catalogue message a reader hears for it. The written name is the router's
 /// alone, so a route survives the window's language.
 const TRACK_TOGGLES: [(&str, &str); 3] = [
@@ -421,7 +421,7 @@ impl VideoEditorApp {
         // Undo / redo, exported only when the strip actually drew them, and
         // reporting `disabled` exactly when the verb is unavailable. A
         // control that cannot act must not be focusable — undoing the last
-        // action empties the stack under the control you are standing on,
+        // action empties the stack under the control you are on,
         // and a focus ring left on a dead button is how that reads wrong.
         for (which, _) in self.history_buttons(&self.regions()) {
             let can = self.undo.status().can(which);
@@ -520,11 +520,11 @@ impl VideoEditorApp {
                         ),
                 );
             }
-            // The lane's fader, its pan and whether it has been caught
+            // The track's fader, its pan and whether it has been caught
             // clipping ride on the group's value. A meter is a picture, and a
             // picture is the one thing a reader cannot have — so everything
             // the bar says has to be said here too, in the place a reader is
-            // already standing when they ask about a track.
+            // already there when they ask about a track.
             tracks.push(
                 AccessNode::new(Role::Group)
                     .with_name(track.name.clone())
@@ -539,7 +539,7 @@ impl VideoEditorApp {
         }
         tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
-        // the mix's state before the lanes, which is the order the screen
+        // the mix's state before the tracks, which is the order the screen
         // puts it in — and when it has clipped, the node is a *button*,
         // because pressing it walks the playhead to the next place it did.
         if let Some(words) = self.mix_words() {
@@ -995,7 +995,7 @@ impl VideoEditorApp {
     }
 
     /// A fact about the section in its own right: keying a parameter from its default
-    /// leaves the constant at the aspect-fit, so a summary gated on the constants reported
+    /// leaves the constant at the aspect-fit, so a summary depending on the constants reported
     /// nothing about a clip whose picture crosses the frame.
     pub(super) fn transform_is_animated(clip: &Clip) -> bool {
         [
@@ -1107,17 +1107,17 @@ impl VideoEditorApp {
             (Section::Mix, Some(c)) => match self.project.track(c.track) {
                 Some(t) => {
                     let level = self.mix.track(t.id);
-                    let lane = format!("{} {}", t.gain_words(), t.pan_words());
+                    let track = format!("{} {}", t.gain_words(), t.pan_words());
                     if level.is_some_and(|l| l.clipped) {
                         crate::resource::CATALOG.t_args(
                             "video-editor-summary-clipping",
-                            &[("level", ui::i18n::ArgValue::Text(lane))],
+                            &[("level", ui::i18n::ArgValue::Text(track))],
                         )
                     } else {
-                        format!("{}, {lane}", t.name)
+                        format!("{}, {track}", t.name)
                     }
                 }
-                None => crate::resource::CATALOG.t("video-editor-a11y-no-lane"),
+                None => crate::resource::CATALOG.t("video-editor-a11y-no-track"),
             },
             (Section::Key, Some(c)) => Self::a11y_key_summary(c, at),
             (Section::Mask, Some(c)) => Self::a11y_mask_summary(c, at),
@@ -1148,7 +1148,7 @@ impl VideoEditorApp {
         }
     }
 
-    /// `export_status` was read only inside the `show_export` gate, so an assistive
+    /// `export_status` was read only inside the `show_export` check, so an assistive
     /// technology whose user had dismissed the dialog was told nothing about a render still
     /// going. This is the same live region whenever the dialog is not there to carry it, so
     /// a running export is announced exactly once and never zero times.
@@ -1328,7 +1328,7 @@ impl VideoEditorApp {
         self.clamp_pane_cursor();
     }
 
-    /// Gated on the host having given this widget the keyboard: a ring pointing at a control
+    /// Depends on the host having given this widget the keyboard: a ring pointing at a control
     /// the next key will not reach is the opposite of a focus indicator. The other panes keep
     /// their cursors so Tab returns to them, but they paint no ring.
     pub(super) fn shows_focus_cursor(&self, pane: Pane) -> bool {
@@ -1970,7 +1970,7 @@ impl VideoEditorApp {
         if f.is_media() {
             self.dispatch_selected_media();
         } else if f.is_track() {
-            // The lane fader writes the lane, exactly as the drag commits it.
+            // The track fader writes the track, exactly as the drag commits it.
             // Dispatching a clip write here would report success and change
             // nothing — a keyboard and a pointer must not disagree about what
             // they did.

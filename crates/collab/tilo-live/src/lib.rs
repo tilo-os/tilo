@@ -30,7 +30,7 @@ pub mod carrier;
 
 /// What a device presents to be admitted to a scope, over whichever carrier
 /// it dials.
-#[cfg(feature = "plane")]
+#[cfg(feature = "live_session")]
 pub mod grant;
 
 /// The carrier over a direct iroh connection: the one every device dials,
@@ -40,10 +40,15 @@ pub mod native;
 
 /// The client half of the carrier (present a grant, run `moq-lite`), which
 /// a page runs too: it needs no runtime of its own.
-#[cfg(feature = "plane")]
+#[cfg(feature = "live_session")]
 pub mod admit;
 
-#[cfg(feature = "plane")]
+/// The times a `moq-lite` driver is handed: read from one clock, and none
+/// earlier than the one before.
+#[cfg(feature = "live_session")]
+mod pace;
+
+#[cfg(feature = "live_session")]
 pub mod live;
 
 #[cfg(feature = "relay")]
@@ -57,34 +62,34 @@ mod authority;
 
 /// One device's sealed session in one scope, sealed under the scope's
 /// channel keys.
-#[cfg(feature = "plane")]
-pub mod plane;
+#[cfg(feature = "live_session")]
+pub mod live_session;
 
 /// The presence track: what a device says, and the board a reader keeps
 /// of everyone's last word.
-#[cfg(feature = "plane")]
+#[cfg(feature = "live_session")]
 pub mod presence;
 
-/// Where a plane's readers and origin drivers run: the device's own executor
+/// Where a live session's readers and origin drivers run: the device's own executor
 /// on a desktop, the page's queue in a browser.
-/// Work a plane or a relay started, aborted when the state that owns it is
+/// Work a live session or a relay started, aborted when the state that owns it is
 /// dropped, so no reader or pump outlives what it reads.
 ///
 /// The executor is the target's own: a device's ambient runtime, or the
 /// browser's queue in a page. Only the bound on what may be spawned differs —
 /// a device's work may move between threads, a page's may not — so the one
 /// call is spelled twice, and nothing above this asks which it runs on.
-#[cfg(feature = "plane")]
+#[cfg(feature = "live_session")]
 pub(crate) struct Task(Option<n0_future::task::JoinHandle<()>>);
 
-#[cfg(all(feature = "plane", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "live_session", not(target_arch = "wasm32")))]
 impl Task {
     pub(crate) fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
         Self(Some(n0_future::task::spawn(future)))
     }
 }
 
-#[cfg(all(feature = "plane", target_arch = "wasm32"))]
+#[cfg(all(feature = "live_session", target_arch = "wasm32"))]
 impl Task {
     pub(crate) fn spawn(future: impl std::future::Future<Output = ()> + 'static) -> Self {
         Self(Some(n0_future::task::spawn(future)))
@@ -110,7 +115,7 @@ impl Task {
     }
 }
 
-#[cfg(feature = "plane")]
+#[cfg(feature = "live_session")]
 impl Drop for Task {
     fn drop(&mut self) {
         if let Some(task) = self.0.take() {

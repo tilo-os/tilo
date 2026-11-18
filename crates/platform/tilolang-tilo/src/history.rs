@@ -1,12 +1,12 @@
-//! A workspace record's history, as every app's record has it (`collaboration::history_source`):
+//! A workspace document's history, as every app's document has it (`collaboration::history_source`):
 //! each change is a step of whoever made it, and Undo, Redo, History and the other history verbs
-//! ([`verbs`]) are applied to the record as steps of their own.
+//! ([`verbs`]) are applied to the document as steps of their own.
 //!
-//! What here is the record's, wherever the record is kept: an app's instance in a tilolang host
-//! (`instance::record`), and the session's own service over the workspace's records
-//! ([`crate::records_service`]) publish the same verbs on an app's resource ([`with_verbs`]) and
+//! What here is the document's, wherever the document is kept: an app's instance in a tilolang host
+//! (`instance::document`), and the session's own service over the workspace's documents
+//! ([`crate::resource_service`]) publish the same verbs on an app's resource ([`with_verbs`]) and
 //! apply them as the same recorded action ([`HostHistoryEdit`]), so a run is undone and listed
-//! the same way whether or not an app's process holds the record.
+//! the same way whether or not an app's process holds the document.
 
 use collaboration::history_source::authors::{
     HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, short_id, stable_hue,
@@ -17,7 +17,7 @@ use tilo_actions::{ActionContext, ActionRegistry, EncodedAction, ResourceSpec};
 
 use crate::action::{ACTION_TYPE, DynAction};
 
-/// `resource` (an app's own) with the history verbs of its record, those it does not offer
+/// `resource` (an app's own) with the history verbs of its document, those it does not offer
 /// itself.
 #[must_use]
 pub fn with_verbs(mut resource: ResourceSpec) -> ResourceSpec {
@@ -68,8 +68,8 @@ impl HistoryWords for HostWords {
     }
 }
 
-/// A history verb applied to a workspace record: the edit [`verbs`] applies, decoding the record's
-/// recorded actions with the workspace's registry ([`register`]) and speaking the record's words.
+/// A history verb applied to a workspace document: the edit [`verbs`] applies, decoding the document's
+/// recorded actions with the workspace's registry ([`register`]) and speaking the document's words.
 #[derive(Debug)]
 pub struct HostHistoryEdit {
     edit: HistoryEdit,
@@ -83,7 +83,7 @@ impl HostHistoryEdit {
         Self { edit, words }
     }
 
-    /// The recorded form of the verb: what the record's step carries, replayed by any replica.
+    /// The recorded form of the verb: what the document's step carries, replayed by any replica.
     ///
     /// # Errors
     /// The verb does not encode.
@@ -120,7 +120,7 @@ impl tilo_actions::Action for HostHistoryEdit {
     }
 }
 
-/// Register what a workspace record's changes record: the runtime's planned actions and the history
+/// Register what a workspace document's changes document: the runtime's planned actions and the history
 /// verbs.
 pub fn register(registry: &mut ActionRegistry) {
     registry.register::<DynAction>(ACTION_TYPE);

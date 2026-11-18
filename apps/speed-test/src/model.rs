@@ -157,7 +157,7 @@ fn finished(r: &crate::resource::Measurement) -> Finished {
 }
 
 impl Model {
-    /// Read-only projection of the canonical resource/runtime, never starts work or records
+    /// Read-only projection of the canonical resource/runtime, never starts work or resources
     /// a result.
     pub(crate) fn present(&mut self, projection: Projection<'_>) {
         let Projection {
@@ -368,7 +368,7 @@ mod tests {
                     "Cloudflare".to_owned(),
                     "test-device".to_owned(),
                 )))
-                .expect("the published record action succeeds");
+                .expect("the published resource action succeeds");
         }
         let state = replica.state().expect("canonical measurements");
         let history: Vec<_> = state.newest_first().cloned().collect();

@@ -31,15 +31,15 @@ NATIVE_TEST_FEATURES = {
     # the live installer's platform half.
     "imager-backend": ("installation", "destination"),
     "tilo-media": ("decode", "encode", "realtime", "voice", "test-support"),
-    # The fetch proxy a workspace host serves is a feature its relay enables;
+    # The fetch proxy a workspace host serves is a feature its server enables;
     # tilo-net's own tests of it (`proxy_host`) and the development program
     # build only with it. Its loopback tests of every backend (`desktop`) need
     # the other client features; the public-server ones (`live`) stay ignored.
     "tilo-net": ("proxy-dev-server", "json", "ws", "webtransport", "sockets"),
     # The listener browsers and the fetch proxy reach a host through, and their
-    # tests, are behind `web`, which every deployed relay enables. (`agents`
+    # tests, are behind `web`, which every deployed server enables. (`agents`
     # links every web app, so its tests run with the agent packages.)
-    "tilo-relay": ("web",),
+    "tilo-server": ("web",),
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
     "wire-frame": ("tokio", "postcard"),
@@ -54,7 +54,7 @@ NATIVE_TEST_FEATURES = {
     # (`FakeDocumentNet`) is a feature, so a package that wants only the
     # environment does not link a CRDT.
     "tilo-test-env": ("document",),
-    "app-host": ("test-support",),
+    "package-service": ("test-support",),
     "package-store": ("store",),
     "cloud-source": ("conformance",),
     "browser-continuity": ("native",),

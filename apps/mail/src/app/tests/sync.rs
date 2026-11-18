@@ -109,6 +109,9 @@ tilo_test_env::scenario! {
                 })
                 .unwrap();
             app.drain_engine(&mut ui::widget::Edits::lend(doc));
+            // What the fetch wrote into the parts lands after the frame, as
+            // the session applies it.
+            crate::resource::TestMail::messages(&app.shared.borrow());
             app.hydrate_domain_state(&mut ui::widget::Edits::lend(doc));
             posted
         };
@@ -433,7 +436,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase trusted_senders_are_a_record_both_ways;
+    phase trusted_senders_are_a_resource_both_ways;
     {
         use crate::trusted_senders::TrustedSenders;
 
@@ -455,7 +458,7 @@ tilo_test_env::scenario! {
         );
 
         // This window trusts one and stops trusting the other: both are the
-        // person's edits of the record.
+        // person's edits of the resource.
         {
             let mut shared = mail.shared.borrow_mut();
             shared.remote_senders.remove("lena@fischer.example");
@@ -474,7 +477,7 @@ tilo_test_env::scenario! {
 #[cfg(feature = "live")]
 #[test]
 fn already_open_mail_adopts_settings_google_consent_on_sync() {
-    use account_custody::{ClientTable, OAuthIssuer};
+    use account_credentials::{ClientTable, OAuthIssuer};
     use settings::accounts::{AccountKind, AccountRoot};
     use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
     use test_http::{Reply, Responder};
@@ -515,12 +518,12 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
-    let custody = root
-        .custodian()
+    let ownership = root
+        .credential_store()
         .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
         .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custody)
+        .with_credential_store(ownership)
         .with_browser_opener(std::sync::Arc::new(Browser));
     pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
     pane.command(AccountViewCommand::SubmitGoogleMail);
@@ -1254,7 +1257,7 @@ tilo_test_env::scenario! {
         app.shared
             .borrow_mut()
             .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
-        let [update] = TestMail::server_updates(&doc).try_into().unwrap();
+        let [update] = TestMail::owed(&app.shared.borrow()).try_into().unwrap();
 
         let outcome = push(&app, update.clone());
         app.flush_server_outbox();
@@ -1288,7 +1291,7 @@ tilo_test_env::scenario! {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
         assert_eq!(
-            TestMail::server_updates(&doc),
+            TestMail::owed(&app.shared.borrow()),
             std::slice::from_ref(&update),
             "still to tell"
         );
@@ -1305,7 +1308,7 @@ tilo_test_env::scenario! {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
         assert!(
-            TestMail::server_updates(&doc).is_empty(),
+            TestMail::owed(&app.shared.borrow()).is_empty(),
             "the server has it"
         );
 

@@ -85,7 +85,7 @@ impl Invoker for Sent {
 }
 
 /// A host running the caller's package, with the callee's package loaded as another app's
-/// (its module, its records elsewhere), and the callee's item reading `title`.
+/// (its module, its documents elsewhere), and the callee's item reading `title`.
 struct Workspace {
     host: Host,
     callee: ModuleHash,

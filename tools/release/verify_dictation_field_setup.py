@@ -13,7 +13,7 @@ TRUSTED_PROMPT = "tilo.shell.trusted-frame/dictation-microphone"
 
 
 def require(condition, message):
-    # These gates must also execute when Python is run with -O.
+    # These checks must also execute when Python is run with -O.
     if not condition:
         raise ValueError(message)
 

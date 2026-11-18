@@ -1,5 +1,5 @@
 //! Every change Notes makes is one its committed surface decides. A receiver
-//! (the signer, the broker, the relay) knows a change only by the kind and
+//! (the signer, the broker, the server) knows a change only by the kind and
 //! action it claims and the app's `surface.toml`; a kind missing there holds
 //! the change for good, and the identity service refuses to sign a held
 //! change, which shut the window's collaboration down on the first edit of
@@ -14,6 +14,12 @@ use ui::framework::testing::TestApp;
 
 const SURFACE: &[u8] = include_bytes!("../surface.toml");
 
+/// A member's replica of the part the notes are kept in.
+fn part(app: &TestApp<NotesShell>) -> automerge::AutoCommit {
+    app.peer_document_of(&notes::part::chain().part(0))
+        .expect("the part is held")
+}
+
 fn call(app: &mut TestApp<NotesShell>, resource: &str, action: &str, arguments: Value) -> Value {
     app.call_on(resource, action, arguments)
         .unwrap_or_else(|error| panic!("{action} on {resource} refused: {error:?}"))
@@ -21,23 +27,24 @@ fn call(app: &mut TestApp<NotesShell>, resource: &str, action: &str, arguments: 
 }
 
 /// The receipt the committed surface gives the newest change, with the
-/// storage units it wrote read from the record as it was before it, as a
-/// receiver holding the record reads them.
+/// storage units it wrote read from the resource as it was before it, as a
+/// receiver holding the resource reads them.
 fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
-    let mut doc = app.peer_document();
+    // The notes' changes are kept in the part holding them.
+    let mut doc = part(app);
     let change = doc
         .get_changes(&[])
         .last()
         .map(|change| (*change).clone())
         .expect("a change");
-    let before = doc.fork_at(change.deps()).expect("the record before it");
+    let before = doc.fork_at(change.deps()).expect("the resource before it");
     let hash = change.hash().0;
     let units = collab_types::units::units_by_change(before, std::slice::from_ref(&change))
         .and_then(|mut by| by.written.remove(&hash))
         .map_or_else(|| vec![Vec::new()], |written| written.units);
     let claim =
         ChangeClaim::of_change(hash, change.message(), units).expect("the change names its action");
-    // The harness runs the app under its own id; the record is that app's.
+    // The harness runs the app under its own id; the resource is that app's.
     let (app_id, kind) = claim
         .action
         .members()
@@ -47,7 +54,7 @@ fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
             ClaimedAction::Edit { kind, .. } => Some((String::new(), kind.clone())),
             _ => None,
         })
-        .expect("the change claims a kind");
+        .unwrap_or_else(|| (String::new(), "notes.pages".to_owned()));
     let file = SurfaceFile::parse(SURFACE).expect("the committed surface parses");
     let surface = file
         .resource(Some(&kind))
@@ -76,14 +83,14 @@ fn editing_a_notes_body_is_decided_by_the_committed_surface() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        "notes.notebook",
+        &notes::part::chain_resource(),
         "create-page",
         json!({ "title": "Links", "markdown": "[tilo OS](search for the tilo homepage)" }),
     );
     let page = created["resource"].as_str().expect("the page").to_owned();
     assert_eq!(receipt_of_newest(&app).1, Receipt::Admit);
 
-    let note = call(&mut app, "notes.notebook", "read", json!({ "item": page }));
+    let note = call(&mut app, &page, "read", json!({}));
     let body = note["body"].as_str().expect("the body resource").to_owned();
     let block = note["markdown"]
         .as_str()
@@ -99,14 +106,14 @@ fn editing_a_notes_body_is_decided_by_the_committed_surface() {
     );
     let (kind, receipt) = receipt_of_newest(&app);
     assert_eq!(
-        kind, "notes.notebook",
+        kind, "notes.pages",
         "a body edit is the notebook's field edit, decided by the notebook's surface"
     );
     assert_eq!(receipt, Receipt::Admit);
 }
 
 /// What the committed surface decides of every change made since `before`,
-/// with the kind each claims (the record's own when it names none).
+/// with the kind each claims (the resource's own when it names none).
 fn receipts_since(
     doc: &automerge::AutoCommit,
     before: &[automerge::ChangeHash],
@@ -117,7 +124,7 @@ fn receipts_since(
     changes
         .iter()
         .map(|change| {
-            let before = doc.fork_at(change.deps()).expect("the record before it");
+            let before = doc.fork_at(change.deps()).expect("the resource before it");
             let hash = change.hash().0;
             let units = collab_types::units::units_by_change(before, std::slice::from_ref(change))
                 .and_then(|mut by| by.written.remove(&hash))
@@ -136,7 +143,7 @@ fn receipts_since(
                     _ => None,
                 })
                 .filter(|kind| !kind.is_empty())
-                .unwrap_or_else(|| "notes.notebook".to_owned());
+                .unwrap_or_else(|| "notes.pages".to_owned());
             let Some(surface) = file.resource(Some(&kind)) else {
                 return (
                     kind.clone(),
@@ -173,14 +180,14 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
     f.write_page(f.child, b"Alpha");
     let checkout = notebook(&f);
     let block = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             notes::read::page_block_snapshots(doc, f.child)[0].0.clone()
         })
         .unwrap();
     let before = f
-        .records
-        .read(&checkout.id, |doc| doc.clone().get_heads())
+        .store
+        .read(&f.part(), |doc| doc.clone().get_heads())
         .unwrap();
     let mut live = driver(&f, 81, &checkout);
     open_note(&mut live, 81, f.child, Some(&block));
@@ -191,15 +198,15 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
     live.relayout();
     close_driver(&mut live);
     drop(live);
-    f.records.try_flush().unwrap();
+    f.store.try_flush().unwrap();
     let receipts = f
-        .records
-        .read(&checkout.id, |doc| receipts_since(doc, &before))
+        .store
+        .read(&f.part(), |doc| receipts_since(doc, &before))
         .unwrap();
-    assert!(!receipts.is_empty(), "typing changed the record");
+    assert!(!receipts.is_empty(), "typing changed the resource");
     for (kind, receipt) in receipts {
         assert_eq!(
-            kind, "notes.notebook",
+            kind, "notes.pages",
             "typed body edits claim the notebook's field edit"
         );
         assert_eq!(receipt, Ok(Receipt::Admit));
@@ -209,7 +216,7 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
 /// Renaming a note from its title applies the notebook's `rename` verb from
 /// the window, not through an invocation. The verb's claim must name Notes
 /// itself: a claim naming an app guessed from the action type
-/// (`org.tilo.Notes`) is one the record's app does not publish, and the
+/// (`org.tilo.Notes`) is one the resource's app does not publish, and the
 /// identity service refused it and turned the window's collaboration off.
 ///
 /// Each keystroke in the title is one rename, so the page tree, the window's
@@ -220,7 +227,7 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
 fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
     let (mut app, page) = crate::framework_support::with_note("Welcome", "Hello");
     app.harness().relayout_at((1200, 800)).unwrap();
-    let before = app.peer_document().get_heads();
+    let before = part(&app).get_heads();
     let title = app
         .surface_mut::<notes::NotesApp>()
         .main_title_center_for_test();
@@ -229,8 +236,7 @@ fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
     app.harness().click_at(title.x, title.y);
     app.harness().type_text("Road");
     app.harness().key("Enter");
-    let named = app
-        .read_document(notes::read::list_pages)
+    let named = crate::framework_support::notes_doc(&app, notes::read::list_pages)
         .into_iter()
         .find(|shown| shown.id == page)
         .map(|shown| shown.title);
@@ -239,7 +245,7 @@ fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
         Some("Road"),
         "what is typed in the title names the note"
     );
-    let mut doc = app.peer_document();
+    let mut doc = part(&app);
     let verbs: Vec<String> = doc
         .get_changes(&before)
         .iter()
@@ -262,7 +268,7 @@ fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
     // follow the note as it is named. Each is a report of one call of a
     // published action, so each needs its own receipt.
     assert_eq!(
-        verbs, ["so.tilo.notes/notes.notebook/rename"; 4],
+        verbs, ["so.tilo.notes/notes.pages/rename"; 4],
         "each title edit renamed the note as Notes' own verb"
     );
     let receipts = receipts_since(&doc, &before);

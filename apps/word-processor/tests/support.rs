@@ -46,7 +46,7 @@ pub fn save_as(app: &mut App, path: &Path) {
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &word_processor::effects::WordProcessorEffect::SAVE_AS.on("word-processor.document"),
+            &word_processor::effects::WordProcessorEffect::SAVE_TO.on("word-processor.document"),
             &arguments,
             true,
             None,

@@ -1,7 +1,7 @@
 //! Tilo's Wayland compositor.
 //!
 //! It shows buffers and routes input; it draws no interface of its own.
-//! Client surfaces and the layers of hosted surface apps ([`SurfaceHost`])
+//! Client surfaces and the layers of surface apps ([`ShellSurface`])
 //! are composited per output ([`render`]); where windows go and who has focus
 //! is a [`WindowPolicy`]'s decision; a [`Backend`] supplies outputs and
 //! input ([`backend::headless`]: offscreen composition with no display, for
@@ -77,8 +77,6 @@ mod uploads;
 mod window_frame;
 mod x11;
 mod x11_windows;
-mod xdnd;
-mod xdnd_bridge;
 mod xwayland;
 
 pub use seats::{Aim, Seat, WindowAim};
@@ -156,7 +154,7 @@ pub use typing::TypedMark;
 use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
-use tilo_session_core::surface::{HostDrag, LayerPose, SurfaceHost};
+use tilo_session_core::surface::{LayerPose, ShellSurface, SurfaceDrag};
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11::X11Displays;
@@ -338,7 +336,7 @@ impl BoundDisplay {
 
 /// A surface app's own display, listening for its clients: while it stands,
 /// connections from the app the session started — and from what that app
-/// runs — are trusted clients of this compositor, standing on the surface
+/// runs — are trusted clients of this compositor, on the surface
 /// app's output. Dropped, it stops listening and its socket goes.
 pub struct SurfaceDisplay {
     handle: LoopHandle<'static, LoopData>,
@@ -483,6 +481,21 @@ impl Compositor {
         })
     }
 
+    /// A headless compositor that offers its clients linear dma-bufs of the DRM fourcc `codes`
+    /// with default feedback, as a desktop on a GPU does, where the machine has none: the buffers
+    /// a test hands over are read on the CPU ([`Compositor::window_dmabuf_pixels`]). Every other
+    /// headless compositor keeps the renderer's own offer.
+    #[cfg(feature = "test-support")]
+    pub fn headless_with_linear_dmabufs(
+        policy: Box<dyn WindowPolicy>,
+        codes: &[u32],
+    ) -> Result<Self, Error> {
+        Self::new(policy, |_, state| {
+            state.enable_linear_dmabuf_for_tests(codes);
+            Ok(Box::new(HeadlessBackend::new(state)?))
+        })
+    }
+
     /// A compositor on a bare TTY (see [`backend::drm`]).
     pub fn drm(
         policy: Box<dyn WindowPolicy>,
@@ -595,7 +608,7 @@ impl Compositor {
     }
 
     /// Whether something an output shows changed since its last frame: a client's commit, a place
-    /// the policy moved a window to, a hosted surface's layer. The display builds that frame for its
+    /// the policy moved a window to, a surface's layer. The display builds that frame for its
     /// next blank, so an output owes a change for up to a refresh after it arrived, and a client
     /// that drew it waits on this turn until it is drawn.
     pub fn owes_frame(&self) -> bool {
@@ -626,7 +639,7 @@ impl Compositor {
 
     /// Answer the clients until it is time to build the frame a display owes: what arrives while
     /// it waits joins that frame instead of each arrival taking a turn of its own. `arrived` runs
-    /// after each wait, for what a host serves at once rather than after the frame: input a tool
+    /// after each wait, for what a surface serves at once rather than after the frame: input a tool
     /// hands the shell, which joins the frame as a device's own input does, or an app someone is
     /// waiting on, whose start then runs beside that frame.
     ///
@@ -678,9 +691,9 @@ impl Compositor {
             .chain(
                 self.data
                     .state
-                    .hosts
+                    .surfaces
                     .iter()
-                    .filter_map(|host| host.next_deadline()),
+                    .filter_map(|surface| surface.next_deadline()),
             )
             .chain(self.keys.next_deadline())
             .chain(self.data.state.app_liveness_deadline())
@@ -716,13 +729,13 @@ impl Compositor {
         Ok(())
     }
 
-    /// Host a surface app above the windows (and above earlier hosts), or under them when it says
-    /// so ([`SurfaceHost::below_windows`]). The host drives the surface the caller still holds: what
+    /// Host a surface app above the windows (and above earlier surfaces), or under them when it says
+    /// so ([`ShellSurface::below_windows`]). The shell drives the surface the caller still holds: what
     /// it publishes and what it shows are read from the same instance.
-    pub fn add_host(&mut self, host: Rc<RefCell<dyn SurfaceHost>>) {
-        let outputs = self.data.state.hosted_outputs();
-        host.borrow_mut().outputs_changed(&outputs);
-        self.data.state.hosts.push(Box::new(host));
+    pub fn add_surface(&mut self, surface: Rc<RefCell<dyn ShellSurface>>) {
+        let outputs = self.data.state.surface_outputs();
+        surface.borrow_mut().outputs_changed(&outputs);
+        self.data.state.surfaces.push(Box::new(surface));
         self.data.state.mark_redraw_all();
     }
 
@@ -824,8 +837,8 @@ impl Compositor {
     /// Whether a surface of the session's own takes the keyboard now: a palette, the overview or
     /// the shortcut guide, which see keys before any client does.
     #[must_use]
-    pub fn host_takes_keys(&self) -> bool {
-        self.data.state.host_holds_keys()
+    pub fn surface_takes_keys(&self) -> bool {
+        self.data.state.surface_holds_keys()
     }
 
     /// Whether a fullscreen window is up: it owns its display, and with it the controller in the
@@ -874,7 +887,7 @@ impl Compositor {
     }
 
     /// Accept the clients of the surface app `owner` on `bound`, trusted as
-    /// the app the session started and standing on `output` when it is
+    /// the app the session started and on `output` when it is
     /// named. Every connection must come from that process or one it starts:
     /// a socket another program of this login finds is of no use to it.
     ///
@@ -954,11 +967,16 @@ impl Compositor {
             timeout
         };
         let started = Instant::now();
-        // A held key's next repeat for a hosted surface wakes the loop.
-        let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
-            let held = due.saturating_duration_since(std::time::Instant::now());
-            Some(timeout.map_or(held, |timeout| timeout.min(held)))
-        });
+        // A held key's next repeat for a surface wakes the loop.
+        let timeout = self
+            .data
+            .state
+            .surface_keys
+            .next_due()
+            .map_or(timeout, |due| {
+                let held = due.saturating_duration_since(std::time::Instant::now());
+                Some(timeout.map_or(held, |timeout| timeout.min(held)))
+            });
         if let Some(turns) = &self.turns {
             turns.parking();
         }
@@ -1165,7 +1183,7 @@ impl Compositor {
     }
 
     /// Whether the focused field has committed the caret the keys it received left: a surface a
-    /// key opens at the caret waits for it rather than standing where the caret was before the
+    /// key opens at the caret waits for it rather than where the caret was before the
     /// field's last redraw.
     pub fn caret_settled(&mut self) -> bool {
         self.data.state.caret_settled()
@@ -1226,9 +1244,9 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
-    /// How held keys repeat, for clients (the seat's repeat info) and hosted surfaces alike.
+    /// How held keys repeat, for clients (the seat's repeat info) and surfaces alike.
     pub fn set_key_repeat(&mut self, repeat: KeyRepeat) {
-        self.data.state.host_keys.repeat = repeat;
+        self.data.state.surface_keys.repeat = repeat;
         if let Some(keyboard) = self.data.state.seat.get_keyboard() {
             let delay = i32::try_from(repeat.delay.as_millis()).unwrap_or(i32::MAX);
             keyboard.change_repeat_info(i32::try_from(repeat.rate).unwrap_or(i32::MAX), delay);
@@ -1546,35 +1564,35 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
-    /// Offer `offer` (bytes per format) as `selection` for a hosted surface app, as a client's copy
-    /// would; Wayland and X11 clients read it from the compositor. An empty offer drops a hosted
+    /// Offer `offer` (bytes per format) as `selection` for a surface app, as a client's copy
+    /// would; Wayland and X11 clients read it from the compositor. An empty offer drops a surface
     /// app's selection.
     pub fn set_selection(
         &mut self,
         selection: Selection,
         offer: Vec<(String, Vec<u8>)>,
     ) -> Result<(), Error> {
-        self.data.state.set_host_selection(selection, offer);
+        self.data.state.set_surface_selection(selection, offer);
         self.display.flush_clients()?;
         Ok(())
     }
 
-    /// Start dragging `offer` (bytes per format; files as `text/uri-list` ) out of the hosted
+    /// Start dragging `offer` (bytes per format; files as `text/uri-list` ) out of the surface
     /// surface app the pointer is pressed on, as a client's drag would: Wayland clients, X11
-    /// clients and hosted apps under the pointer are offered it until the button comes up, and the
-    /// app learns how it went ([`SurfaceHost::drag_ended`]). False when there is nothing to drag or
-    /// no hosted surface under the pointer.
+    /// clients and surface apps under the pointer are offered it until the button comes up, and the
+    /// app learns how it went ([`ShellSurface::drag_ended`]). False when there is nothing to drag or
+    /// no surface under the pointer.
     pub fn start_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
-        self.start_host_drag(HostDrag { offer, icon: None })
+        self.start_surface_drag(SurfaceDrag { offer, icon: None })
     }
 
     /// [`Compositor::start_drag`] with an icon under the pointer, or a drag that follows the finger
     /// holding the app when a touch holds it.
-    pub fn start_host_drag(&mut self, drag: HostDrag) -> Result<bool, Error> {
+    pub fn start_surface_drag(&mut self, drag: SurfaceDrag) -> Result<bool, Error> {
         let icon = drag
             .icon
             .map(|(frame, (x, y))| (frame, Point::from((x, y))));
-        let started = self.data.state.start_host_drag(drag.offer, icon);
+        let started = self.data.state.start_surface_drag(drag.offer, icon);
         self.display.flush_clients()?;
         Ok(started)
     }
@@ -1614,21 +1632,21 @@ impl Compositor {
         Ok(started)
     }
 
-    /// Start the drags hosted apps asked for while handling input ([`SurfaceHost::take_drag`]).
+    /// Start the drags surface apps asked for while handling input ([`ShellSurface::take_drag`]).
     fn start_asked_drags(&mut self) {
-        let asked: Vec<HostDrag> = self
+        let asked: Vec<SurfaceDrag> = self
             .data
             .state
-            .hosts
+            .surfaces
             .iter_mut()
-            .filter_map(|host| host.take_drag())
+            .filter_map(|surface| surface.take_drag())
             .collect();
         for drag in asked {
             let icon = drag
                 .icon
                 .map(|(frame, (x, y))| (frame, Point::from((x, y))));
-            if !self.data.state.start_host_drag(drag.offer, icon) {
-                tracing::debug!("a hosted app's drag could not start");
+            if !self.data.state.start_surface_drag(drag.offer, icon) {
+                tracing::debug!("a surface app's drag could not start");
             }
         }
     }
@@ -2121,16 +2139,16 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         let mut drew = false;
-        // The hosted surfaces' own frames (their layout and scene) are this tick's
-        // `hosts_us`: the session's shell is drawn here, before the submit.
+        // The surfaces' own frames (their layout and scene) are this tick's
+        // `surfaces_us`: the session's shell is drawn here, before the submit.
         let hosting = Instant::now();
         // The displays hold each frame for this long: a surface whose content only moves draws one
         // frame per one of these, so what the person sees runs at the screens' rate rather than at
         // the loop's.
         let interval = self.data.state.frame_interval();
-        for host in &mut self.data.state.hosts {
-            host.set_frame_interval(interval);
-            drew |= host.prepare_frame();
+        for surface in &mut self.data.state.surfaces {
+            surface.set_frame_interval(interval);
+            drew |= surface.prepare_frame();
         }
         // A surface drawing the translucent material fills it with the opaque stand-in of what lies
         // below it, and gets the blurred pixels in place of them: the pass draws and blurs that
@@ -2138,26 +2156,26 @@ impl Compositor {
         // in this same turn. Presenting the stand-in would flash a flat card over the shell, which a
         // still shell would keep until the next input.
         for index in self.data.backend.serve_backdrops(&mut self.data.state) {
-            if let Some(host) = self.data.state.hosts.get_mut(index) {
-                drew |= host.prepare_frame();
+            if let Some(surface) = self.data.state.surfaces.get_mut(index) {
+                drew |= surface.prepare_frame();
             }
         }
-        self.recorder.add_hosts(hosting.elapsed());
+        self.recorder.add_surfaces(hosting.elapsed());
         if drew {
             self.data.state.mark_redraw_all();
         }
-        // A hosted surface that drew its layers and drew none this frame leaves what it drew
+        // A surface that drew its layers and drew none this frame leaves what it drew
         // behind it — a sheet whose card has gone, a panel taken down — and nothing else redraws
         // the screen it stood on: the display keeps its last frame, the card at whatever it had
-        // faded to, until the next thing that happens to damage it. What the hosts draw now is
+        // faded to, until the next thing that happens to damage it. What the surfaces draw now is
         // compared with the last frame, and a screen that lost a layer is drawn again.
         let layer_counts: Vec<(usize, usize)> = self
             .data
             .state
-            .hosts
+            .surfaces
             .iter()
             .enumerate()
-            .map(|(index, host)| (index, host.layers().len()))
+            .map(|(index, surface)| (index, surface.layers().len()))
             .filter(|(_, count)| *count > 0)
             .collect();
         if layer_counts != self.data.state.layer_counts {
@@ -2170,9 +2188,9 @@ impl Compositor {
         let covers: Vec<_> = self
             .data
             .state
-            .hosts
+            .surfaces
             .iter()
-            .flat_map(|host| host.drawn_over_windows())
+            .flat_map(|surface| surface.drawn_over_windows())
             .collect();
         if self.data.state.covers != covers {
             self.data.state.covers = covers;
@@ -2181,9 +2199,9 @@ impl Compositor {
         let over_window = self
             .data
             .state
-            .hosts
+            .surfaces
             .iter()
-            .find_map(|host| host.drawn_over_window());
+            .find_map(|surface| surface.drawn_over_window());
         if self.data.state.over_window != over_window {
             self.data.state.over_window = over_window;
             self.data.state.mark_redraw_all();
@@ -2284,6 +2302,16 @@ impl Compositor {
     /// The last frame drawn on the output named `name` .
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
+    }
+
+    /// What `name` shows with the pointer and every pen's cursor in front, read back: what the
+    /// display draws, where [`Compositor::screenshot`] leaves cursors out so a scene can be
+    /// compared on its own.
+    pub fn screenshot_with_cursor(&mut self, name: &str) -> Result<Screenshot, Error> {
+        Ok(self
+            .data
+            .backend
+            .screenshot_with_cursor(&mut self.data.state, name)?)
     }
 
     /// Route one input event from another device — a portal `RemoteDesktop` or `InputCapture`
@@ -2588,6 +2616,118 @@ impl Compositor {
             .collect()
     }
 
+    /// Set what the output `name` says it is, as a desktop whose display has a name of its own
+    /// does: what its clients read through `xdg-output`.
+    #[cfg(feature = "test-support")]
+    pub fn set_output_description(&mut self, name: &str, description: &str) -> Result<(), Error> {
+        Ok(self
+            .data
+            .backend
+            .set_output_description(name, description)?)
+    }
+
+    /// The current buffer of the window `id`, if it is a linear dma-buf, read on the CPU: its
+    /// width, height and RGBA pixels. `None` for a shared-memory buffer or a format this does not
+    /// read. Lets a test see what a client handed over on a machine with no GPU.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn window_dmabuf_pixels(&self, id: u64) -> Option<(i32, i32, Vec<u8>)> {
+        use smithay::backend::allocator::Buffer as _;
+        let (_, dmabuf) = self.window_dmabuf(id)?;
+        if dmabuf.num_planes() != 1 || dmabuf.has_modifier() {
+            return None;
+        }
+        let width = dmabuf.width();
+        let height = dmabuf.height();
+        let stride = usize::try_from(dmabuf.strides().next()?).ok()?;
+        let offset = u64::from(dmabuf.offsets().next()?);
+        let fd = dmabuf.handles().next()?;
+        let row = usize::try_from(width).ok()?.checked_mul(4)?;
+        let height = usize::try_from(height).ok()?;
+        if stride < row {
+            return None;
+        }
+        // A dma-buf is read by mapping it, never with read(2).
+        let length = usize::try_from(offset)
+            .ok()?
+            .checked_add(stride.checked_mul(height)?)?;
+        // SAFETY: a fresh read-only shared mapping of `length` bytes, unmapped below; nothing
+        // else in this process holds it.
+        let mapped = unsafe {
+            rustix::mm::mmap(
+                std::ptr::null_mut(),
+                length,
+                rustix::mm::ProtFlags::READ,
+                rustix::mm::MapFlags::SHARED,
+                fd,
+                0,
+            )
+        }
+        .ok()?;
+        // SAFETY: the mapping above is `length` readable bytes.
+        let all = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), length) };
+        let bytes = all.get(usize::try_from(offset).ok()?..).map(<[u8]>::to_vec);
+        // SAFETY: the mapping made above, no longer borrowed.
+        let _ = unsafe { rustix::mm::munmap(mapped, length) };
+        let bytes = bytes?;
+        let alpha = match dmabuf.format().code {
+            smithay::backend::allocator::Fourcc::Argb8888 => None,
+            smithay::backend::allocator::Fourcc::Xrgb8888 => Some(255),
+            _ => return None,
+        };
+        let mut rgba = Vec::with_capacity(row.checked_mul(height)?);
+        for line in 0..height {
+            let start = line.checked_mul(stride)?;
+            let line = bytes.get(start..start.checked_add(row)?)?;
+            for pixel in line.chunks_exact(4) {
+                let [blue, green, red, opacity] = <[u8; 4]>::try_from(pixel).ok()?;
+                rgba.push(red);
+                rgba.push(green);
+                rgba.push(blue);
+                rgba.push(alpha.unwrap_or(opacity));
+            }
+        }
+        Some((
+            i32::try_from(width).ok()?,
+            i32::try_from(height).ok()?,
+            rgba,
+        ))
+    }
+
+    /// The device and inode of the window's dma-buf. The same numbers on the client's and the
+    /// desktop's mean the keeper passed the buffer on instead of copying it.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn window_dmabuf_id(&self, id: u64) -> Option<(u64, u64)> {
+        let (_, dmabuf) = self.window_dmabuf(id)?;
+        let fd = dmabuf.handles().next()?;
+        let stat = rustix::fs::fstat(fd).ok()?;
+        Some((stat.st_dev, stat.st_ino))
+    }
+
+    /// The window `id`'s current buffer, if it is a dma-buf.
+    #[cfg(feature = "test-support")]
+    fn window_dmabuf(
+        &self,
+        id: u64,
+    ) -> Option<(
+        smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        smithay::backend::allocator::dmabuf::Dmabuf,
+    )> {
+        let surface =
+            smithay::wayland::seat::WaylandFocus::wl_surface(self.data.state.mapped_window(id)?)?
+                .into_owned();
+        // The buffer the renderer took from the last commit, the one on screen.
+        let buffer = smithay::wayland::compositor::with_states(&surface, |states| {
+            let data = states
+                .data_map
+                .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>()?;
+            data.lock().ok()?.buffer().map(|buffer| (**buffer).clone())
+        })?;
+        let dmabuf = smithay::wayland::dmabuf::get_dmabuf(&buffer).ok()?.clone();
+        Some((buffer, dmabuf))
+    }
+
     /// The colour the client of the window `id` says its content is in: the image description it
     /// attached through `wp_color_management_v1` , or `None` when it attached none. A share stream
     /// tags its frames with it.
@@ -2600,6 +2740,20 @@ impl Compositor {
         Option<neighbour_wire::hdr_metadata::Hdr10Metadata>,
     )> {
         self.data.state.window_color(id)
+    }
+
+    /// Advertise only those of the colour-management `features` (`wp_color_manager_v1.feature`
+    /// values) it supports to clients that bind it from now on, as a desktop on a less capable
+    /// display would.
+    #[cfg(feature = "test-support")]
+    pub fn limit_color_features(&mut self, features: &[u32]) {
+        self.data
+            .state
+            .protocols
+            .color_manager
+            .support
+            .features
+            .retain(|feature| features.contains(feature));
     }
 
     /// What the X11 window `id` says about its program: its process, class,

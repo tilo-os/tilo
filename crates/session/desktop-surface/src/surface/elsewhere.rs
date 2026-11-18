@@ -59,12 +59,12 @@ pub(super) fn title(app_id: &str, device: &str) -> String {
 
 /// Why the window is not here, as the sentence under the notice's title; nothing where nobody
 /// said.
-fn reason(device: &str, standing: &Elsewhere) -> String {
+fn reason(device: &str, elsewhere: &Elsewhere) -> String {
     let of_device = |named: &str, unnamed: &str| match device_name(device) {
         Some(device) => t_args(named, &[("device", device.into())]),
         None => t(unnamed),
     };
-    match standing {
+    match elsewhere {
         Elsewhere::Unread => String::new(),
         Elsewhere::NotShared => t("peer-window-not-shared"),
         Elsewhere::Awaited { waiting_for } if !waiting_for.trim().is_empty() => {
@@ -81,7 +81,7 @@ fn reason(device: &str, standing: &Elsewhere) -> String {
 /// What `tab` shows of a window that runs on another device while no share of it stands there:
 /// the toolkit's notice, saying where the window runs and why it is not here. `None` for a tab
 /// that holds no such window.
-pub(super) fn notice(tab: &Tab, standing: &Elsewhere) -> Option<TileContent> {
+pub(super) fn notice(tab: &Tab, elsewhere: &Elsewhere) -> Option<TileContent> {
     let ModelTile::HostedWindow {
         app_id, host_label, ..
     } = &tab.tile
@@ -90,6 +90,6 @@ pub(super) fn notice(tab: &Tab, standing: &Elsewhere) -> Option<TileContent> {
     };
     Some(TileContent::Notice {
         title: title(app_id, host_label),
-        detail: reason(host_label, standing),
+        detail: reason(host_label, elsewhere),
     })
 }

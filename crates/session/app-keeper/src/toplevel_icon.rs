@@ -3,6 +3,9 @@
 //!
 //! The pixels are the ones the app handed over; the desktop gets a shared-memory buffer of its own
 //! made from them, because the app may destroy its buffers the moment it set the icon.
+//!
+//! The X11 server's toplevels carry no icon of their own: theirs is the one their X11 window
+//! names (`_NET_WM_ICON`), which [`crate::x11_windows`] finds.
 
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::Arc;
@@ -29,7 +32,25 @@ pub(crate) struct UpIcon {
     icon: XdgToplevelIconV1,
     /// The pools and buffers the icon shows; destroyed after it.
     held: Vec<(c::wl_shm_pool::WlShmPool, c::wl_buffer::WlBuffer)>,
-    pub data: Option<Arc<ToplevelIconData>>,
+    pub data: Option<Icon>,
+}
+
+/// An icon a toplevel shows: the one its app set, or its X11 window's.
+#[derive(Clone)]
+pub(crate) enum Icon {
+    App(Arc<ToplevelIconData>),
+    X11(Arc<Vec<tilo_x11_transfer::windows::IconImage>>),
+}
+
+impl Icon {
+    /// Whether two held icons are the same picture, by the identity their holder gives one.
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::App(left), Self::App(right)) => Arc::ptr_eq(left, right),
+            (Self::X11(left), Self::X11(right)) => Arc::ptr_eq(left, right),
+            (Self::App(_), Self::X11(_)) | (Self::X11(_), Self::App(_)) => false,
+        }
+    }
 }
 
 impl UpIcon {
@@ -104,7 +125,11 @@ impl State {
         if !matches!(kept.role, Role::Toplevel(_)) {
             return;
         }
-        let wanted = kept.icon.clone();
+        let wanted = kept
+            .icon
+            .clone()
+            .map(Icon::App)
+            .or_else(|| kept.x11_icon.clone().map(Icon::X11));
         let Some(us) = kept.up.as_mut() else {
             return;
         };
@@ -131,16 +156,44 @@ impl State {
             return;
         };
         let icon = manager.create_icon(&qh, ());
-        if let Some(name) = wanted.icon_name() {
-            icon.set_name(name.to_owned());
-        }
         let mut held = Vec::new();
-        for source in wanted.buffers() {
-            let Some((pool, buffer)) = shm_buffer(&shm, source, &qh) else {
-                continue;
-            };
-            icon.add_buffer(&buffer, source.scale());
-            held.push((pool, buffer));
+        match &wanted {
+            Icon::App(data) => {
+                if let Some(name) = data.icon_name() {
+                    icon.set_name(name.to_owned());
+                }
+                for source in data.buffers() {
+                    let Some(made) = shm_buffer(
+                        &shm,
+                        source.pixels(),
+                        (source.width(), source.height(), source.stride()),
+                        u32::from(source.format()),
+                        &qh,
+                    ) else {
+                        continue;
+                    };
+                    icon.add_buffer(&made.1, source.scale());
+                    held.push(made);
+                }
+            }
+            Icon::X11(images) => {
+                for image in images.iter() {
+                    let Ok(side) = i32::try_from(image.size) else {
+                        continue;
+                    };
+                    let Some(made) = shm_buffer(
+                        &shm,
+                        &image.pixels,
+                        (side, side, side.saturating_mul(4)),
+                        c::wl_shm::Format::Argb8888.into(),
+                        &qh,
+                    ) else {
+                        continue;
+                    };
+                    icon.add_buffer(&made.1, 1);
+                    held.push(made);
+                }
+            }
         }
         manager.set_icon(&toplevel, Some(&icon));
         us.icon = Some(UpIcon {
@@ -151,37 +204,30 @@ impl State {
     }
 }
 
-/// Whether two held icons are the same picture, by the identity the surface's cache gives one.
-fn same(left: Option<&Arc<ToplevelIconData>>, right: Option<&Arc<ToplevelIconData>>) -> bool {
+fn same(left: Option<&Icon>, right: Option<&Icon>) -> bool {
     match (left, right) {
         (None, None) => true,
-        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        (Some(left), Some(right)) => left.same(right),
         (None, Some(_)) | (Some(_), None) => false,
     }
 }
 
-/// A shared-memory buffer on the desktop holding an icon's pixels.
+/// A shared-memory buffer on the desktop holding an icon's pixels, laid out as (width, height,
+/// stride) in the `wl_shm` format `format`.
 fn shm_buffer(
     shm: &c::wl_shm::WlShm,
-    source: &smithay::wayland::xdg_toplevel_icon::ToplevelIconBuffer,
+    pixels: &[u8],
+    (width, height, stride): (i32, i32, i32),
+    format: u32,
     qh: &QueueHandle<State>,
 ) -> Option<(c::wl_shm_pool::WlShmPool, c::wl_buffer::WlBuffer)> {
-    let pixels = source.pixels();
     let fd: OwnedFd = rustix::fs::memfd_create("icon", rustix::fs::MemfdFlags::CLOEXEC).ok()?;
     let mut file = std::fs::File::from(fd);
     std::io::Write::write_all(&mut file, pixels).ok()?;
     let size = i32::try_from(pixels.len()).ok()?;
     let pool = shm.create_pool(file.as_fd(), size, qh, ());
-    let format = c::wl_shm::Format::try_from(u32::from(source.format())).ok()?;
-    let buffer = pool.create_buffer(
-        0,
-        source.width(),
-        source.height(),
-        source.stride(),
-        format,
-        qh,
-        IconBuffer,
-    );
+    let format = c::wl_shm::Format::try_from(format).ok()?;
+    let buffer = pool.create_buffer(0, width, height, stride, format, qh, IconBuffer);
     Some((pool, buffer))
 }
 

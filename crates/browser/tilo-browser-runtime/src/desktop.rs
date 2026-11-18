@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::ActionHost as _;
+use tilo_actions::remote::ActionProvider as _;
 use tilo_app::linked_accounts::ActionAnswer;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
@@ -25,7 +25,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_session_client::remote::SessionActions;
 use tilo_session_core::layout::{LayoutDocument, Store};
 use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
@@ -90,15 +91,15 @@ pub(crate) fn may_open(
     permissions: &ui::permissions::PermissionContext,
     app: &str,
     existing: bool,
-) -> Result<(), tilo_actions::remote::ActionHostError> {
-    known_application(app).ok_or(tilo_actions::remote::ActionHostError::UnknownAction)?;
+) -> Result<(), tilo_actions::remote::ActionCallError> {
+    known_application(app).ok_or(tilo_actions::remote::ActionCallError::UnknownAction)?;
     let kind = if existing {
         ui::permissions::ActionKind::Read
     } else {
         ui::permissions::ActionKind::Undoable
     };
     if !permissions.check(&ui::permissions::PermissionScope::app(app, kind)) {
-        return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        return Err(tilo_actions::remote::ActionCallError::NotPermitted);
     }
     Ok(())
 }
@@ -158,8 +159,8 @@ pub(crate) struct Inputs {
 pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
 
 /// The roles a workspace answers a page's person holds, in the order
-/// [`Standing`] counts them.
-const STANDINGS: [tilo_action_policy::Role; 5] = [
+/// [`SharedRole`] counts them.
+const ROLES: [tilo_action_policy::Role; 5] = [
     tilo_action_policy::Role::Viewer,
     tilo_action_policy::Role::Commenter,
     tilo_action_policy::Role::Editor,
@@ -171,24 +172,24 @@ const STANDINGS: [tilo_action_policy::Role; 5] = [
 /// of their own, and in a workspace what the workspace last answered (not known
 /// until it has). Shared with the workspace's replication, which asks.
 #[derive(Clone, Debug)]
-pub(crate) struct Standing(Arc<std::sync::atomic::AtomicU8>);
+pub(crate) struct SharedRole(Arc<std::sync::atomic::AtomicU8>);
 
-impl Default for Standing {
+impl Default for SharedRole {
     /// A desktop of the person's own: theirs to arrange.
     fn default() -> Self {
-        let standing = Self::unknown();
-        standing.set(Some(tilo_action_policy::Role::Owner));
-        standing
+        let role = Self::unknown();
+        role.set(Some(tilo_action_policy::Role::Owner));
+        role
     }
 }
 
-impl Standing {
+impl SharedRole {
     /// A role not known yet.
     pub fn unknown() -> Self {
         Self(Arc::default())
     }
 
-    /// The role, as [`STANDINGS`] position plus one; 0 while not known.
+    /// The role, as [`ROLES`] position plus one; 0 while not known.
     pub fn code(&self) -> u8 {
         self.0.load(Ordering::Relaxed)
     }
@@ -196,26 +197,26 @@ impl Standing {
     pub fn role(&self) -> Option<tilo_action_policy::Role> {
         self.code()
             .checked_sub(1)
-            .and_then(|at| STANDINGS.get(usize::from(at)).copied())
+            .and_then(|at| ROLES.get(usize::from(at)).copied())
     }
 
     /// Hold `role` (`None`: not known); whether that changed it.
     pub fn set(&self, role: Option<tilo_action_policy::Role>) -> bool {
         let code = role
-            .and_then(|role| STANDINGS.iter().position(|held| *held == role))
+            .and_then(|role| ROLES.iter().position(|held| *held == role))
             .and_then(|at| u8::try_from(at).ok())
             .map_or(0, |at| at.saturating_add(1));
         self.0.swap(code, Ordering::Relaxed) != code
     }
 
-    /// The same standing as `other` from now on: one answer reaches both.
+    /// The same member access as `other` from now on: one answer reaches both.
     pub fn share(&mut self, other: &Self) {
         self.0 = Arc::clone(&other.0);
     }
 
     /// `person` as the desktop's policy asks about them.
-    pub fn of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::Standing<'a> {
-        tilo_desktop_model::commands::Standing {
+    pub fn of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::Requester<'a> {
+        tilo_desktop_model::commands::Requester {
             person,
             role: self.role(),
             members: None,
@@ -249,8 +250,8 @@ impl LateFeedback {
         if shared.feedback.borrow().is_some() {
             return Err("feedback is already installed".into());
         }
-        let custody = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
-        *shared.feedback.borrow_mut() = Some(custody);
+        let sender = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
+        *shared.feedback.borrow_mut() = Some(sender);
         // The model this page may use also looks over reports before they
         // are sent: its host's, or a provider the person set up here.
         // Without one, the model the workspace's host lends its reporters does,
@@ -319,8 +320,8 @@ impl Shared {
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
-    /// Trusted host custody, never configured from a launch URL or draft.
-    pub feedback: Rc<RefCell<Option<Box<dyn crate::feedback_code::Custody>>>>,
+    /// Trusted host ownership, never configured from a launch URL or draft.
+    pub feedback: Rc<RefCell<Option<Box<dyn crate::feedback_code::FeedbackSender>>>>,
     /// What installs feedback once the page holds a destination, when the
     /// desktop mounted before it did ([`Shared::adopt_feedback`]).
     late_feedback: Rc<RefCell<Option<LateFeedback>>>,
@@ -385,11 +386,11 @@ pub(crate) struct Shared {
     /// The role the workspace last answered this desktop's person holds, which
     /// the desktop's policy decides what to offer by
     /// ([`tilo_desktop_model::commands::policy`]).
-    pub standing: Standing,
+    pub role: SharedRole,
     /// Whether the workspace's host lets this page's person invite others
     /// here, as the host last answered: the bar keeps its invite button and
     /// the sheet offers making a link only where it does
-    /// ([`crate::replication`] asks it with the rest of their standing, as
+    /// ([`crate::replication`] asks it with the rest of their role, as
     /// the shell asks its own host).
     pub invitable: Arc<AtomicBool>,
     /// Whether the workspace lets this page's person make administrators,
@@ -426,8 +427,17 @@ pub(crate) struct Shared {
     /// The peer whose workspace this desktop shows, when it has one: what it asks its session for
     /// the pages of the windows other devices host.
     pub peer: Option<u32>,
-    /// The workspace it shows: whose plane those windows' pages travel.
+    /// The workspace it shows: whose live session those windows' pages travel.
     pub workspace: String,
+    /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
+    /// the workspace like a person is, so a page names it to its windows whether or not a
+    /// device of its works here now. `None` until the workspace delivers the document: the
+    /// page asks again each frame (`Mount::place_agents`).
+    pub agents: Option<
+        tilo_app::framework::WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>,
+    >,
+    /// The owners the workspace's documents open through, by the app that keeps each.
+    pub owners: Option<ResourceOwners>,
 }
 
 impl Shared {
@@ -438,14 +448,14 @@ impl Shared {
 
     /// `person` as the desktop's policy asks about them here, among the
     /// workspace's `members` (borrowed from [`Self::members`]).
-    pub fn standing_of<'a>(
+    pub fn requester_of<'a>(
         &self,
         person: &'a str,
         members: Option<&'a std::collections::BTreeSet<String>>,
-    ) -> tilo_desktop_model::commands::Standing<'a> {
-        tilo_desktop_model::commands::Standing {
+    ) -> tilo_desktop_model::commands::Requester<'a> {
+        tilo_desktop_model::commands::Requester {
             members,
-            ..self.standing.of(person)
+            ..self.role.of(person)
         }
     }
 
@@ -694,7 +704,7 @@ impl Shared {
             return HashMap::new();
         }
         let members = self.members.borrow();
-        let standing = self.standing_of(me, members.as_ref());
+        let requester = self.requester_of(me, members.as_ref());
         let authors = self.authors.borrow();
         tree.workspaces
             .iter()
@@ -703,7 +713,7 @@ impl Shared {
             .flat_map(|g| &g.tabs)
             .filter(|tab| {
                 tilo_desktop_model::commands::policy::may_rearrange_window(
-                    &standing, &authors, tab.id,
+                    &requester, &authors, tab.id,
                 )
                 .is_err()
             })
@@ -1048,7 +1058,7 @@ impl Tiles {
         (instance, embedded): (TabId, bool),
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
-        let inputs = HostContextInputs {
+        let inputs = ProcessContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
             device_id: self.inputs.device.clone(),
@@ -1058,8 +1068,8 @@ impl Tiles {
             action_context: tilo_actions::ActionContext::default(),
         };
         let mut context = match named_new {
-            Some(id) => HostContext::prepare_new_resource(definition, inputs, id),
-            None => HostContext::prepare(definition, inputs, &target),
+            Some(id) => ProcessContext::prepare_new_resource(definition, inputs, id),
+            None => ProcessContext::prepare(definition, inputs, &target),
         }
         .map_err(Unbuilt::of)?;
         context.provide_models(self.inputs.models.clone());
@@ -1254,7 +1264,7 @@ impl Tiles {
         if self.shared.resource_actions.peer.is_none() {
             return Ok(());
         }
-        let notice = match self.shared.standing.role() {
+        let notice = match self.shared.role.role() {
             Some(role) if role.includes(tilo_action_policy::Role::Editor) => return Ok(()),
             None => format!("Opening {}…", tab.title),
             Some(_) => format!(
@@ -1917,15 +1927,24 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
     let mut shared = Shared {
         resource_actions,
         requests,
+        owners: Some(inputs.owners.clone()),
         peer: inputs.peer,
         workspace: inputs.workspace.clone(),
         ..Shared::default()
     };
     if inputs.peer.is_some() {
         // In a workspace, the person holds what the workspace answers, once it has.
-        shared.standing = Standing::unknown();
+        shared.role = SharedRole::unknown();
     }
     shared.linked = linked_accounts(&shared, notify);
+    if inputs.peer.is_some() {
+        shared.agents = crate::page_agents::open(
+            &inputs.owners,
+            &shared.stores,
+            &inputs.workspace,
+            inputs.author.clone(),
+        );
+    }
     shared
 }
 

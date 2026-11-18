@@ -1,4 +1,4 @@
-//! An enrollment whose proof carries a certificate custody has replaced
+//! An enrollment whose proof carries a certificate ownership has replaced
 //! since (renewed when it was due or ran out, or issued again when the
 //! person restored their identity) presents the new one: the host ends up
 //! holding the certificate the device presents from now on, not the one it
@@ -6,7 +6,7 @@
 
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the relay serves the whole test"
+    reason = "the server serves the whole test"
 )]
 #![allow(
     clippy::unwrap_used,
@@ -21,11 +21,11 @@ use tilo_peer_state::join::WorkspaceId;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::join::{self, Role};
-use tilo_relay::workspace_join::WorkspaceJoinClient;
-use tilo_relay::workspaces::IssueInvitationRequest;
-use tilo_relay::{Relay, RelayConfig};
+use tilo_server::workspace_join::WorkspaceJoinClient;
+use tilo_server::workspaces::IssueInvitationRequest;
+use tilo_server::{Server, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const SECOND: u64 = 1_000_000_000;
@@ -51,15 +51,15 @@ fn certificate(
     cert
 }
 
-fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity::kept(cert.clone(), key.clone())
+fn ownership(cert: &DeviceCert, key: &SigningKey) -> DeviceIdentity {
+    DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
-/// A workspace on a relay with an invitation for Bob, which Bob's device proved
+/// A workspace on a server with an invitation for Bob, which Bob's device proved
 /// with `held` and the host admitted, but whose answer it never took in:
 /// the proof stays retained, to be sent again.
 struct Admitted {
-    relay: Relay,
+    server: Server,
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
     workspace: String,
@@ -85,12 +85,12 @@ impl Admitted {
         // The host reaches no packet relay: the link it hands out then names the addresses it
         // has here, which the device dials directly. A host with a public relay names only that
         // relay, which this test's device would reach over the internet or not at all.
-        let relay = Relay::start_with_relay_mode(
-            RelayConfig {
+        let server = Server::start_with_relay_mode(
+            ServerConfig {
                 state_root: state.path().to_path_buf(),
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             },
-            tilo_relay::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),
                 device_cert: host.clone(),
@@ -100,7 +100,7 @@ impl Admitted {
         )
         .await
         .unwrap();
-        let workspaces = relay.workspaces().unwrap();
+        let workspaces = server.workspaces().unwrap();
         let workspace = workspaces.create("Design review").await.unwrap();
         workspaces
             .enter(&workspace.workspace, &laptop)
@@ -129,7 +129,7 @@ impl Admitted {
         let client = WorkspaceJoinClient::new(endpoint(&device_key).await);
         let unanswered = tilo_peer_state::owner::enroll::prepare_and_complete(
             client.clone(),
-            custody(&held, &device_key),
+            ownership(&held, &device_key),
             workspace.workspace_id,
             None,
             invitation.clone(),
@@ -139,7 +139,7 @@ impl Admitted {
         .unwrap();
         assert_eq!(unanswered.bootstrap().device_cert, held);
         Self {
-            relay,
+            server,
             _state: state,
             _directory: directory,
             workspace: workspace.workspace,
@@ -155,7 +155,7 @@ impl Admitted {
     /// longer replays its answer: the device takes the workspace in through the
     /// membership exchange.
     async fn moves_on(&self) {
-        self.relay
+        self.server
             .workspaces()
             .unwrap()
             .rename(&self.workspace, "Lounge")
@@ -163,13 +163,13 @@ impl Admitted {
             .unwrap();
     }
 
-    /// Send the retained proof again with `custody`'s certificate, and take
+    /// Send the retained proof again with `ownership`'s certificate, and take
     /// the workspace in: the host must answer for `current` in place of
     /// `replaced`, and the device be the member it admitted.
     async fn retry(&self, current: &DeviceCert, replaced: &DeviceCert) {
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.client.clone(),
-            custody(current, &self.device_key),
+            ownership(current, &self.device_key),
             self.workspace_id,
             None,
             self.invitation.clone(),
@@ -180,7 +180,7 @@ impl Admitted {
         assert_eq!(
             &enrollment.bootstrap().device_cert,
             current,
-            "the host answers for the certificate custody holds now"
+            "the host answers for the certificate ownership holds now"
         );
         assert!(
             enrollment.bootstrap().certified_roster.contains(current)
@@ -223,7 +223,7 @@ async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewa
     })
     .await;
     let due = due.unwrap();
-    // Its custody renews the certificate before it tries again.
+    // Its ownership renews the certificate before it tries again.
     let bob = SigningKey::from_bytes(&[2; 32]);
     let renewed = certificate(
         &bob,
@@ -297,7 +297,7 @@ async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::te
 }
 
 /// The person restored their identity while a join was in flight: the
-/// device keeps its key and its root, and custody holds a certificate
+/// device keeps its key and its root, and ownership holds a certificate
 /// issued again for it, which never expires like the one before. The
 /// retained proof is still this device's, and is answered for the new
 /// certificate. The laptop's Lounge (2026-10-23): admitted days before,

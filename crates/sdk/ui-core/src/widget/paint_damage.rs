@@ -355,13 +355,21 @@ impl PaintParts {
         key: impl Into<Cow<'static, str>>,
         draw: impl FnOnce(&mut Scene) -> (Rect, R),
     ) -> R {
-        self.outside |= scene.encoding().draw_tags.len() != self.drawn;
-        let mut part = take_scene();
+        let mut part = self.start_part(scene);
         let (bounds, result) = draw(&mut part);
+        self.end_part(scene, key.into(), bounds, part);
+        result
+    }
+
+    fn start_part(&mut self, scene: &Scene) -> Scene {
+        self.outside |= scene.encoding().draw_tags.len() != self.drawn;
+        take_scene()
+    }
+
+    fn end_part(&mut self, scene: &mut Scene, key: Cow<'static, str>, bounds: Rect, part: Scene) {
         scene.append(&part, None);
         self.drawn = scene.encoding().draw_tags.len();
         self.parts.push(PaintPart::placed_at(key, bounds, part));
-        result
     }
 
     /// The frame drawn, with the `geometry`, `transform` and `theme` it was

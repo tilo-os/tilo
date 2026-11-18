@@ -49,18 +49,18 @@ use tilo_action_broker::{
     collab_core::BrokerChannels,
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{HostServices, LauncherServices, LegacyWorkspaceProjection, WorkspaceAuthority},
+    services::{LauncherServices, LegacyWorkspaceProjection, ProcessServices, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::{
+use tilo_identity::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
-use tilo_peer_state::actions::ActionPlane;
+use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 use workspace::{ProfileGrants, ProfileWorkspace};
@@ -75,7 +75,7 @@ const HOST_STORE: &str = "workspace-host";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
-    // Retired before broker fields: retained original custody cannot survive
+    // Retired before broker fields: retained original ownership cannot survive
     // replacement of the runtime that supplied its policy time.
     policy_origin: tilo_action_broker::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
@@ -189,7 +189,7 @@ impl Standalone {
         // The joined workspaces' files, once the broker that carries their
         // records runs: where a member taking a workspace's work runs it.
         let replica_slot = files::ReplicaSlot::default();
-        let take_work = take_work_plane(root, &joined, take_work, &replica_slot, stage)?;
+        let take_work = take_work_action_service(root, &joined, take_work, &replica_slot, stage)?;
         stage("opening the person's store to their other devices");
         let personal = serve_personally(PersonalServing {
             root,
@@ -291,12 +291,12 @@ fn open_profile_workspace(
     stage: &mut dyn FnMut(&str),
 ) -> io::Result<(
     ProfileWorkspace,
-    tilo_identity_host::registry::IdentityProfile,
+    tilo_identity::registry::IdentityProfile,
     String,
 )> {
     stage("loading the workspace");
     let workspace = ProfileWorkspace::open(root)?;
-    let identity = tilo_identity_host::registry::identity_for_workspace(&workspace.workspace())?
+    let identity = tilo_identity::registry::identity_for_workspace(&workspace.workspace())?
         .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
     let actor = identity.person_id();
     stage("saving the workspace");
@@ -304,34 +304,34 @@ fn open_profile_workspace(
     Ok((workspace, identity, actor))
 }
 
-/// The relay whose work this profile takes, when it is a member: what the
+/// The server whose work this profile takes, when it is a member: what the
 /// environment names, read before anything of the profile is opened, so a
 /// broken configuration is no profile's. An admission profile is a session
 /// of an existing owner, never a member.
-fn taking_work(serving: Serving) -> io::Result<Option<take_work::Relay>> {
+fn taking_work(serving: Serving) -> io::Result<Option<take_work::Server>> {
     match serving {
-        Serving::Profile | Serving::Dev => take_work::Relay::from_env(),
+        Serving::Profile | Serving::Dev => take_work::Server::from_env(),
         Serving::Admission { .. } => Ok(None),
     }
     .map_err(io::Error::other)
 }
 
-/// The device plane this profile answers its relay's work on, when it takes
+/// The device action service this profile answers its server's work on, when it takes
 /// work: served on the endpoint its other devices reach it at.
-fn take_work_plane(
+fn take_work_action_service(
     root: &Path,
     joined: &Arc<Joined>,
-    relay: Option<take_work::Relay>,
+    server: Option<take_work::Server>,
     replicas: &files::ReplicaSlot,
     stage: &mut dyn FnMut(&str),
-) -> io::Result<Option<ActionPlane>> {
-    let Some(relay) = relay else {
+) -> io::Result<Option<ActionService>> {
+    let Some(server) = server else {
         return Ok(None);
     };
     stage("taking the work of the workspaces relayed here");
     // Browser environments start on the hosted-VM service this host's
     // environment names, when it runs one.
-    take_work::plane(root, joined, relay, Some(Arc::clone(replicas)), None).map(Some)
+    take_work::action_service(root, joined, server, Some(Arc::clone(replicas)), None).map(Some)
 }
 
 /// What the broker's services are opened from: this profile's workspace, apps
@@ -377,19 +377,25 @@ fn start_broker(
 fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_action_broker::policy_clock::PolicyTime,
-) -> io::Result<HostServices> {
+) -> io::Result<ProcessServices> {
     let document_content = joined::document_content(parts.joined, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
     // other devices of the invoking workspace answer an offer round over the
     // endpoint this profile syncs on, and the content an offloaded run reads
     // and answers with is the content this broker routes.
-    let action_offload = parts
-        .joined
-        .offer_plane()
-        .and_then(|(plane, endpoint, runtime)| {
-            crate::offload::offer_route(plane, endpoint, runtime, Arc::clone(&document_content))
-        });
-    Ok(HostServices {
+    let action_offload =
+        parts
+            .joined
+            .offer_action_service()
+            .and_then(|(action_service, endpoint, runtime)| {
+                crate::offload::offer_route(
+                    action_service,
+                    endpoint,
+                    runtime,
+                    Arc::clone(&document_content),
+                )
+            });
+    Ok(ProcessServices {
         native_certificates: Some(Arc::new(Certificates {
             workspace: parts.workspace_id.to_owned(),
             device: parts.device,
@@ -412,7 +418,7 @@ fn broker_services(
         group_keys: Some(parts.keys.clone()),
         action_offload,
         personal: Some(parts.personal),
-        ..HostServices::default()
+        ..ProcessServices::default()
     })
 }
 
@@ -428,7 +434,7 @@ fn execution_policy_clock() -> io::Result<(
 }
 
 impl RuntimeServices for Standalone {
-    type ActionHost = RuntimeActionHost;
+    type ActionProvider = RuntimeActionProvider;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
         Self::start(root, stage, Serving::Profile)
@@ -464,7 +470,7 @@ impl RuntimeServices for Standalone {
         &self.actor
     }
 
-    fn action_host(&self) -> io::Result<RuntimeActionHost> {
+    fn action_provider(&self) -> io::Result<RuntimeActionProvider> {
         let broker = self
             .broker
             .app_action_broker()
@@ -473,18 +479,18 @@ impl RuntimeServices for Standalone {
             .joined
             .admit_mcp_execution(&self.workspace, &self.actor)
             .map_err(io::Error::other)?;
-        let host = broker
-            .certified_local_action_host(admission.caller(), admission.presentation())
+        let provider = broker
+            .certified_local_action_provider(admission.caller(), admission.presentation())
             .map_err(io::Error::other)?;
         admission.check(&self.joined).map_err(io::Error::other)?;
-        Ok(RuntimeActionHost {
+        Ok(RuntimeActionProvider {
             broker,
             workspace: self.workspace.clone(),
             joined: Arc::clone(&self.joined),
             apps: Some(self.apps.clone()),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
-                host,
+                provider,
                 admission,
                 agent: None,
                 projection: Some(Caller::local_person(&self.actor).in_workspace(&self.workspace)),
@@ -495,10 +501,10 @@ impl RuntimeServices for Standalone {
     fn mcp_session_factory(
         &self,
         requested: &str,
-    ) -> io::Result<tilo_mcp::SessionFactory<RuntimeActionHost>> {
+    ) -> io::Result<tilo_mcp::SessionFactory<RuntimeActionProvider>> {
         let workspace = self.mcp_workspace(Some(requested))?;
         let actor = self.actor.clone();
-        let host = self.action_host()?;
+        let host = self.action_provider()?;
         Ok(host.session_factory(
             workspace,
             actor,
@@ -552,10 +558,10 @@ impl RuntimeServices for Standalone {
     }
 }
 
-/// The broker's action links as one more local caller, standing for no app
+/// The broker's action links as one more local caller, for no app
 /// connection. Its callers act from this foreign device.
 #[derive(Clone)]
-pub struct RuntimeActionHost {
+pub struct RuntimeActionProvider {
     broker: AppActionBroker,
     workspace: String,
     joined: Arc<Joined>,
@@ -563,14 +569,14 @@ pub struct RuntimeActionHost {
     /// before it opens. `None` for a host that serves only the person's
     /// other devices.
     apps: Option<Arc<apps::Apps>>,
-    // Retains original custody for both owner/search and MCP callers. An
-    // owner projection is not a native seat and never acquires seat authority.
+    // Retains original ownership for both owner/search and MCP callers. An
+    // owner projection is not the local person and never acquires the local person's authority.
     session: Option<Arc<AdmittedRuntimeSession>>,
 }
 
 struct AdmittedRuntimeSession {
     policy_time: tilo_action_broker::policy_clock::PolicyTime,
-    host: Arc<dyn ActionHost + Send + Sync>,
+    provider: Arc<dyn ActionProvider + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
     /// The agent the person's device handed this run to.
     agent: Option<String>,
@@ -630,17 +636,17 @@ impl AdmittedRuntimeSession {
         self: &Arc<Self>,
         joined: Arc<Joined>,
         caller: Caller,
-        answer: Pending<Result<T, ActionHostError>>,
-    ) -> Pending<Result<T, ActionHostError>> {
+        answer: Pending<Result<T, ActionCallError>>,
+    ) -> Pending<Result<T, ActionCallError>> {
         let session = Arc::clone(self);
         let (complete, pending) = tilo_actions::remote::pending();
         answer.then(move |result| {
             let result = session
                 .check(&caller, &joined)
-                .map_err(ActionHostError::from)
+                .map_err(ActionCallError::from)
                 .and_then(|()| {
                     result.unwrap_or_else(|| {
-                        Err(ActionHostError::Unavailable {
+                        Err(ActionCallError::Unavailable {
                             reason: "action links closed".into(),
                         })
                     })
@@ -651,21 +657,21 @@ impl AdmittedRuntimeSession {
     }
 }
 
-impl RuntimeActionHost {
+impl RuntimeActionProvider {
     fn session_factory(
         self,
         workspace: String,
         actor: String,
         policy_time: tilo_action_broker::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
-        let host = self;
+        let provider = self;
         Arc::new(move || {
             // The MCP client is an agent the person's device hands this
             // session to; the admission stays the person's. Its name is part
             // of the durable owner, so people are shown a short label for it
             // instead of the whole run id.
             let (session_host, caller, agent) =
-                host.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
+                provider.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
             let label = tilo_mcp::agent_label(&agent);
             Ok(tilo_mcp::McpServer::admitted(session_host, caller)?
                 .with_agent_session(agent, label))
@@ -673,7 +679,7 @@ impl RuntimeActionHost {
     }
 
     /// A run of an agent the person's device hands it, in `workspace`, as
-    /// `actor`: the host its calls go through, the caller its admission is,
+    /// `actor`: the provider its calls go through, the caller its admission is,
     /// and the agent `agent` names for that caller.
     fn agent_session(
         &self,
@@ -690,7 +696,7 @@ impl RuntimeActionHost {
         let agent = agent(&caller);
         let qualified = self
             .broker
-            .certified_local_agent_host(&caller, admission.presentation(), &agent)
+            .certified_local_agent_provider(&caller, admission.presentation(), &agent)
             .map_err(io::Error::other)?;
         admission.check(&self.joined).map_err(io::Error::other)?;
         let run = Self {
@@ -700,7 +706,7 @@ impl RuntimeActionHost {
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
-                host: qualified,
+                provider: qualified,
                 admission,
                 agent: Some(agent.clone()),
                 projection: None,
@@ -724,7 +730,7 @@ impl RuntimeActionHost {
 }
 
 // These existing alias forms may eventually dispatch into a published app.
-// Keep original certified custody through the broker's deferred launch path.
+// Keep original certified ownership through the broker's deferred launch path.
 fn certified_provider(provider: &str) -> bool {
     provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
@@ -735,7 +741,7 @@ fn on_this_device(caller: &Caller) -> Caller {
     caller.clone().from_foreign_device(true)
 }
 
-impl ActionHost for RuntimeActionHost {
+impl ActionProvider for RuntimeActionProvider {
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         tilo_actions::remote::Pending::ready(
             self.apps
@@ -765,13 +771,13 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
-            // identity-store resolution. Opening a result uses retained custody.
+            // identity-store resolution. Opening a result uses retained ownership.
             if session.projection.as_ref() == Some(caller) {
                 if !self.admitted(caller) {
-                    return Pending::ready(Err(ActionHostError::NotPermitted));
+                    return Pending::ready(Err(ActionCallError::NotPermitted));
                 }
                 return self
                     .broker
@@ -786,15 +792,15 @@ impl ActionHost for RuntimeActionHost {
                 .as_ref()
                 .is_some_and(|provider| certified_provider(provider))
             {
-                return session.host.query(caller, query);
+                return session.provider.query(caller, query);
             }
             // Existing general catalogue/builtin APIs retain the exact
-            // authenticated run. They make no SDK original-custody claim.
+            // authenticated run. They make no SDK original-ownership claim.
             let answer = self.broker.state().action_query(&session.acting(), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         self.broker
             .state()
@@ -805,7 +811,7 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
@@ -813,15 +819,15 @@ impl ActionHost for RuntimeActionHost {
             if let Err(refusal) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.host.invoke(session.admission.caller(), request);
+            return session.provider.invoke(session.admission.caller(), request);
         }
-        Pending::ready(Err(ActionHostError::NotPermitted))
+        Pending::ready(Err(ActionCallError::NotPermitted))
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.observe(session.admission.caller(), id);
+            return session.provider.observe(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -837,7 +843,7 @@ impl ActionHost for RuntimeActionHost {
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.here(session.admission.caller());
+            return session.provider.here(session.admission.caller());
         }
         if !self.admitted(caller) {
             return None;
@@ -851,14 +857,14 @@ impl ActionHost for RuntimeActionHost {
     fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.joined).ok()?;
-        session.host.session_state(session.admission.caller())
+        session.provider.session_state(session.admission.caller())
     }
 
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.joined).ok()?;
         session
-            .host
+            .provider
             .session_state_changed(session.admission.caller())
     }
 
@@ -872,7 +878,7 @@ impl ActionHost for RuntimeActionHost {
     ) -> Option<Pending<()>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.changed(session.admission.caller(), scope);
+            return session.provider.changed(session.admission.caller(), scope);
         }
         if !self.admitted(caller) {
             return None;
@@ -885,7 +891,7 @@ impl ActionHost for RuntimeActionHost {
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.next_change(session.admission.caller(), id);
+            return session.provider.next_change(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -903,32 +909,34 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
         let Some(session) = &self.session else {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
         if session.agent.is_none() {
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
         if let Err(refusal) = session.check(caller, &self.joined) {
             return Pending::ready(Err(refusal.into()));
         }
-        session.host.confirm(session.admission.caller(), request)
+        session
+            .provider
+            .confirm(session.admission.caller(), request)
     }
 
     fn cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.host.cancel(session.admission.caller(), id);
+            return session.provider.cancel(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
-            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
         }
         self.broker
             .state()
@@ -947,11 +955,11 @@ struct Certificates {
 }
 
 impl Certificates {
-    fn check_registered_custody(&self, workspace: uuid::Uuid) -> Result<(), String> {
+    fn check_registered_ownership(&self, workspace: uuid::Uuid) -> Result<(), String> {
         let joined = self
             .joined
             .upgrade()
-            .ok_or("runtime custody owner unavailable")?;
+            .ok_or("runtime ownership owner unavailable")?;
         let workspace =
             WorkspaceId::parse(&workspace.to_string()).ok_or("invalid exact workspace")?;
         joined.recheck_mcp_executions(workspace)
@@ -976,11 +984,11 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
             return Err("original runtime policy origin changed".into());
         }
         let now = time.now_ns().map_err(|error| error.to_string())?;
-        self.check_registered_custody(workspace)?;
+        self.check_registered_ownership(workspace)?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|error| error.to_string())?;
         // This store check is conservative: known revocations are refused even
         // before their effective instant. It never extends a credential lease.
-        tilo_identity_host::certificates::authorize(&workspace.to_string(), cert)
+        tilo_identity::certificates::authorize(&workspace.to_string(), cert)
     }
 
     fn authorize(
@@ -988,7 +996,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
         workspace: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        tilo_identity_host::certificates::authorize(&workspace.to_string(), cert)
+        tilo_identity::certificates::authorize(&workspace.to_string(), cert)
     }
     fn authorize_join(
         &self,
@@ -1000,8 +1008,8 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
             .now_ns()
             .map_err(|error| error.to_string())?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|error| error.to_string())?;
-        self.check_registered_custody(workspace)?;
-        tilo_identity_host::certificates::authorize_join(&workspace.to_string(), cert)
+        self.check_registered_ownership(workspace)?;
+        tilo_identity::certificates::authorize_join(&workspace.to_string(), cert)
     }
     fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
         uuid::Uuid::parse_str(&self.workspace) == Ok(workspace)
@@ -1030,18 +1038,18 @@ fn serve_device_grants(root: &Path, apps: &apps::Apps) {
 /// in, the identity this device acts as, and the workspace this runtime runs.
 struct PersonalServing<'a> {
     root: &'a Path,
-    identity: &'a tilo_identity_host::registry::IdentityProfile,
+    identity: &'a tilo_identity::registry::IdentityProfile,
     /// The workspace this runtime runs, by its id.
     workspace_id: &'a str,
     joined: &'a Joined,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-    /// The device plane this profile answers its relay's work on, when it
+    /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
-    take_work: Option<ActionPlane>,
+    take_work: Option<ActionService>,
     /// The workspace host this device runs, when it governs the profile's
     /// workspace: the person's keys open their sessions with it here.
-    host: Option<&'a tilo_workspace_host::host::WorkspaceHost>,
+    host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
 }
 
 /// The person's own store, and what serves it to their other devices.
@@ -1056,7 +1064,7 @@ struct PersonalParts {
 /// Open the person's own store on the identity this device acts as, and serve
 /// it to their other devices from the endpoint this runtime runs: the store,
 /// the workspaces this device keeps and, for a member that takes work, its
-/// device plane answer on one router, so neither protocol is answered by a
+/// device action service answer on one router, so neither protocol is answered by a
 /// router the other one dropped.
 ///
 /// # Errors
@@ -1074,7 +1082,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         take_work,
         host,
     } = serving;
-    let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace_id)?;
+    let (key, device) = tilo_identity::broker::trusted_current_device(workspace_id)?;
     let state = root.join("state");
     let sync = PersonalSync::new(
         tilo_action_broker::personal::open(
@@ -1092,16 +1100,16 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         let mut router = iroh::protocol::Router::builder(joined.endpoint())
             .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
         // The workspace host answers the person's keys as every host does.
-        // A member that takes its relay's work answers the device plane with
-        // that work's plane instead, registered after it.
+        // A member that takes its server's work answers the device action service with
+        // that work's action service instead, registered after it.
         for (alpn, handler) in host
-            .map(tilo_workspace_host::host::WorkspaceHost::protocols)
+            .map(tilo_workspace_service::service::WorkspaceService::protocols)
             .unwrap_or_default()
         {
             router = router.accept(alpn, handler);
         }
-        if let Some(plane) = take_work {
-            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, plane);
+        if let Some(action_service) = take_work {
+            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, action_service);
         }
         router.spawn()
     };
@@ -1150,8 +1158,8 @@ fn channels(root: &Path) -> BrokerChannels {
 /// start; answers its device key.
 fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
     let identity_dir = runtime_identity::identity_dir_from_env()?;
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    tilo_identity::provisioning::ensure_foreign_collaboration_identity(
         &identity_dir,
         &paths,
         storage,
@@ -1174,13 +1182,13 @@ fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 
     }
     stage("verifying the existing collaboration identity");
     let identity_dir = runtime_identity::identity_dir_from_env()?;
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    tilo_identity_host::provisioning::verify_collaboration_identity(
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    tilo_identity::provisioning::verify_collaboration_identity(
         &identity_dir,
         &paths,
         tilo_clock::unix_now_ns(),
     )?;
-    if !tilo_identity_host::provisioning::active_identity_owns_device(&identity_dir, &paths)? {
+    if !tilo_identity::provisioning::active_identity_owns_device(&identity_dir, &paths)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "native admission identity does not own this device",
@@ -1322,27 +1330,27 @@ fn place_own_workspace(
     keys: &tilo_action_broker::workspace_keys::KeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<(
-    Arc<tilo_workspace_host::host::WorkspaceHost>,
+    Arc<tilo_workspace_service::service::WorkspaceService>,
     Arc<crate::key_sessions::KeySessions>,
 )> {
     let workspace_id = workspace.workspace();
-    let (key, cert) = tilo_identity_host::broker::trusted_current_device(&workspace_id)?;
+    let (key, cert) = tilo_identity::broker::trusted_current_device(&workspace_id)?;
     let workspace_id = WorkspaceId::parse(&workspace_id)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     let key_sessions = crate::key_sessions::KeySessions::new();
     let host = Arc::new(
         tilo_rt::app()
             .handle()
-            .block_on(tilo_workspace_host::host::WorkspaceHost::open(
-                tilo_workspace_host::host::HostConfig {
+            .block_on(tilo_workspace_service::service::WorkspaceService::open(
+                tilo_workspace_service::service::ServiceConfig {
                     apps: Some(Arc::clone(&key_sessions)
-                        as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
-                    ..tilo_workspace_host::host::HostConfig::new(
+                        as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+                    ..tilo_workspace_service::service::ServiceConfig::new(
                         profile.join(HOST_STORE),
-                        tilo_relay_protocol::WorkSetting::none(),
+                        tilo_server_protocol::WorkSetting::none(),
                     )
                 },
-                tilo_workspace_host::host::HostIdentity {
+                tilo_workspace_service::service::ServiceIdentity {
                     user_public_key: cert.user_public_key,
                     device_signing_key: key,
                     device_cert: cert,
@@ -1391,7 +1399,7 @@ fn serve_key_sessions(
     key_sessions.serve(
         Arc::new(PersonalDevices::new(personal.clone())),
         Arc::new(host_runs::HostRuns {
-            host: RuntimeActionHost {
+            provider: RuntimeActionProvider {
                 broker,
                 workspace: workspace.to_owned(),
                 joined: Arc::clone(joined),
@@ -1407,7 +1415,7 @@ fn serve_key_sessions(
 }
 
 /// The joined workspaces and this device's channel keys for them, under the
-/// device's trusted custody. `workspace` is the profile's own, which it governs
+/// device's trusted ownership. `workspace` is the profile's own, which it governs
 /// unless the desktop session does. `listen` is the UDP port the endpoint
 /// binds when a relay must reach it, and the machine's own choice otherwise.
 fn joined_workspaces_and_keys(
@@ -1417,12 +1425,12 @@ fn joined_workspaces_and_keys(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<(Arc<Joined>, workspace_keys::KeyService)> {
-    let custody = tilo_identity_host::broker::trusted_current_device(workspace)?;
+    let ownership = tilo_identity::broker::trusted_current_device(workspace)?;
     let channels = Arc::clone(&broker.0);
     let joined = joined_workspaces(
         profile,
         (workspace, governs),
-        custody.clone(),
+        ownership.clone(),
         broker,
         listen,
     )?;
@@ -1431,7 +1439,7 @@ fn joined_workspaces_and_keys(
         WorkspaceId::parse(workspace)
             .ok_or_else(|| io::Error::other("invalid runtime workspace"))?,
         storage,
-        custody.0,
+        ownership.0,
         Arc::clone(&joined),
         channels,
     )?;
@@ -1449,11 +1457,11 @@ fn joined_workspaces(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<Arc<Joined>> {
-    let custody = tilo_identity_host::custody::HostIdentity::held(
+    let ownership = tilo_identity::identity_store::DeviceIdentity::held(
         cert,
         key.clone(),
-        std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(
-            tilo_identity_host::provisioning::collaboration_identity_paths(),
+        std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(
+            tilo_identity::provisioning::collaboration_identity_paths(),
         )),
     );
     let endpoint = listen_endpoint(&key, listen)?;
@@ -1461,7 +1469,7 @@ fn joined_workspaces(
     if !governs {
         refused.extend(WorkspaceId::parse(workspace));
     }
-    Joined::open(profile, custody, endpoint, refused, broker)
+    Joined::open(profile, ownership, endpoint, refused, broker)
 }
 
 /// This device's endpoint, keyed by its device key: bound to `listen` on
@@ -1483,7 +1491,7 @@ fn listen_endpoint(
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
     }
     if let Some(port) = listen {
-        // Every interface, on the port a relay reaches this member at: IPv4,
+        // Every interface, on the port a server reaches this member at: IPv4,
         // and IPv6 where the machine has it.
         builder = builder
             .clear_ip_transports()
@@ -1511,15 +1519,15 @@ fn listen_endpoint(
 fn identity_service(
     socket: PathBuf,
     workspaces: Arc<dyn WorkspaceMembership>,
-    keys: Arc<dyn tilo_identity_host::broker::GroupKeySource>,
+    keys: Arc<dyn tilo_identity::broker::GroupKeySource>,
     apps: &Arc<apps::Apps>,
     dev: bool,
-) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
+) -> io::Result<tilo_identity::broker::IdentityBrokerHandle> {
     let person = AttachedSurfaces {
         apps: Arc::clone(apps),
         dev,
     };
-    tilo_identity_host::broker::spawn(socket, workspaces, keys, Arc::new(person))
+    tilo_identity::broker::spawn(socket, workspaces, keys, Arc::new(person))
 }
 
 /// The person-record kinds of the surfaces this runtime holds. Started with
@@ -1533,7 +1541,7 @@ struct AttachedSurfaces {
     dev: bool,
 }
 
-impl tilo_identity_host::broker::PersonResourceTypes for AttachedSurfaces {
+impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
         ui::app_surface::person_resource_types(app_id)
     }

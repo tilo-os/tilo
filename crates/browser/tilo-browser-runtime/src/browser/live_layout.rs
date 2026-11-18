@@ -1,13 +1,13 @@
 //! Where this person's windows are, for the workspace's presence: the windows of
 //! the strip shown, as the desktop surface laid them out, each named by its
 //! app and the short digest of its record only
-//! ([`tilo_relay_protocol::live::LiveLayout`], placed by
+//! ([`tilo_server_protocol::live::LiveLayout`], placed by
 //! [`tilo_session::sync::layout::placed`], the rule every host places by). Others draw a mini view of this screen from what they
 //! hold themselves; a window on something not shared with them tells them
 //! only its app.
 
 use tilo_desktop_model::TabId;
-use tilo_relay_protocol::live::LiveResource;
+use tilo_server_protocol::live::LiveResource;
 use ui::kurbo::Rect;
 
 use super::Mount;

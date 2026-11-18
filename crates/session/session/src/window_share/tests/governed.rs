@@ -51,10 +51,10 @@ fn engine_of(
     listed: Option<WorkspaceId>,
 ) -> Engine {
     Engine::open(
-        tilo_network_actor::HostIdentity::kept(cert.clone(), key.clone()),
+        tilo_network_actor::DeviceIdentity::kept(cert.clone(), key.clone()),
         Some(state),
         listed,
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("the device's engine opens")
 }
@@ -80,9 +80,9 @@ fn workspace_on_the_shell(state: &Path) -> WorkspaceId {
 }
 
 /// The session of the device whose key is `key`, keeping its shell and its workspaces under
-/// `state`: the device the identity this process reads names, on a plane the test carries.
+/// `state`: the device the identity this process reads names, on a live session the test carries.
 fn session_of(key: &SigningKey, label: &str, state: &Path) -> Member {
-    let (sync, said) = Client::planeless(
+    let (sync, said) = Client::without_network(
         iroh::SecretKey::from_bytes(&key.to_bytes()).public(),
         OwnPresence {
             label: label.to_owned(),
@@ -252,7 +252,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
                     .owner()
                     .receive(
                         workspace_id,
-                        TransportOrigin::RetainedRelayDelta(first.device_public_key),
+                        TransportOrigin::RetainedServerDelta(first.device_public_key),
                         postcard::from_bytes(bytes).expect("a workspace change"),
                         now,
                     )
@@ -311,7 +311,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         "and its own shell reads it from there"
     );
 
-    // What the second device wrote into the workspace's governance waits in its custody for the
+    // What the second device wrote into the workspace's governance waits in its ownership for the
     // workspace's host: what its link to that host sends. The governance alone is carried here;
     // the shell's records are another matter.
     let now = tilo_clock::wall();
@@ -323,7 +323,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
                 .map(|entry| entry.bytes().to_vec())
                 .collect::<Vec<_>>())
         })
-        .expect("the second device's custody of the workspace")
+        .expect("the second device's ownership of the workspace")
         .iter()
         .map(|bytes| postcard::from_bytes(bytes).expect("a frame of the workspace"))
         .filter(|frame| matches!(frame, NeighbourMsg::SyncResp { .. }))
@@ -376,7 +376,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
             .owner()
             .receive(
                 workspace_id,
-                TransportOrigin::RelayDelta(second.device_public_key),
+                TransportOrigin::ServerDelta(second.device_public_key),
                 frame,
                 now,
             )
@@ -474,7 +474,7 @@ fn governance_handed(
 /// device's own engine hands it to the devices linked to it, as it hands them the share's end.
 /// The person's other device admits what it was handed, and its shell then names the share and
 /// asks the hosting device for the window, with nobody naming the window there; once it admitted
-/// the share's end it asks for nothing. Kept in its custody for a host to take, the share of a
+/// the share's end it asks for nothing. Kept in its ownership for a host to take, the share of a
 /// window on the machine hosting the workspace reached no other machine.
 #[test]
 fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its_governance() {
@@ -520,7 +520,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
                     .owner()
                     .receive(
                         workspace_id,
-                        TransportOrigin::RetainedRelayDelta(first.device_public_key),
+                        TransportOrigin::RetainedServerDelta(first.device_public_key),
                         postcard::from_bytes(bytes).expect("a workspace change"),
                         now,
                     )
@@ -660,7 +660,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
                 .owner()
                 .receive(
                     workspace_id,
-                    TransportOrigin::RelayDelta(first.device_public_key),
+                    TransportOrigin::ServerDelta(first.device_public_key),
                     frame,
                     now,
                 )

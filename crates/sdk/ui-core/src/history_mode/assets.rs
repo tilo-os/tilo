@@ -12,7 +12,7 @@ pub struct HistoricalAssetRequest {
     pub resource: HistoryResource,
     pub snapshot: HistorySnapshot,
 }
-/// Host-registered resolver. The framework checks response custody and byte integrity; it cannot infer
+/// Host-registered resolver. The framework checks response ownership and byte integrity; it cannot infer
 /// a domain's media schema. A missing recorded hash must remain unavailable.
 pub trait HistoricalAssetSource {
     fn request(&self, request: HistoricalAssetRequest, response: HistoricalAssetResponse);

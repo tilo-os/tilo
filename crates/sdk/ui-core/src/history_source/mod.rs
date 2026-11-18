@@ -46,16 +46,15 @@ mod log;
 pub mod narrative;
 /// Taking back a run of changes, below the toolkit.
 pub use collaboration::history_source::revert;
-pub mod invocation_undo;
 pub mod invocations;
 pub mod schema_ops;
 pub mod sentence;
 pub(crate) use authors::workspace_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, MemberNames, RosterAgent, UNKNOWN_AUTHOR_NAME, WriterPlace,
-    actor_handle, actor_label, agent_display_label, app_name, app_words, author_coloured,
-    author_for_identity, local_identity_author, name_words, note_mount_actor, note_resource_mount,
-    set_installed_apps, set_workspace_agents, short_id, stable_hue,
+    actor_handle, actor_label, app_name, app_words, author_coloured, author_for_identity,
+    local_identity_author, name_words, note_mount_actor, note_resource_mount, set_installed_apps,
+    set_workspace_agents, short_id, stable_hue,
 };
 /// What changed in a workspace's records, as a host's replica took it in.
 pub use collaboration::history_source::feed;
@@ -76,10 +75,6 @@ pub use groups::{
     GENERATED_BY, GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges,
     move_named_boundary, name_is_generated, name_range, name_range_by, read_named_ranges,
     split_named_range,
-};
-pub use invocation_undo::{
-    InvocationUndoReport, StepOutcome, StepState, refuse_invocation, undo_invocation, undo_step,
-    unreachable_steps,
 };
 pub use invocations::{
     AgentSession, INVOCATIONS_KEY, InvocationStep, forget_invocation, invocation_starting_at,

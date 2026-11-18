@@ -1,4 +1,4 @@
-//! Root-controller selected medium custody. No formatting or mount adoption.
+//! Root-controller selected medium ownership. No formatting or mount adoption.
 mod boot;
 use super::*;
 use crate::setup::migration::PinnedDirectory;
@@ -147,12 +147,12 @@ fn unique_mount(number: &str, id: u64) -> io::Result<()> {
 }
 #[derive(serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Witness {
+struct Proof {
     schema: u32,
     binding: MediaPartitionBinding,
     filesystem_uuid: String,
 }
-fn witness(
+fn proof(
     pin: &Arc<PinnedDirectory>,
     binding: &MediaPartitionBinding,
     uuid: &str,
@@ -168,24 +168,24 @@ fn witness(
     storage.validate_privacy(Privacy::OwnerOnly)?;
     let file = storage.open_read(OsStr::new("filesystem-owner.json"), Privacy::OwnerOnly)?;
     if file.metadata()?.len() > 4096 {
-        return Err(refused("Original output filesystem witness exceeds bounds"));
+        return Err(refused("Original output filesystem proof exceeds bounds"));
     }
     let mut bytes = Vec::new();
     file.take(4097).read_to_end(&mut bytes)?;
-    let actual: Witness = serde_json::from_slice(&bytes)
-        .map_err(|_| refused("Original output filesystem witness invalid"))?;
+    let actual: Proof = serde_json::from_slice(&bytes)
+        .map_err(|_| refused("Original output filesystem proof invalid"))?;
     if actual
-        != (Witness {
+        != (Proof {
             schema: 1,
             binding: binding.clone(),
             filesystem_uuid: uuid.into(),
         })
     {
-        return Err(refused("Original output filesystem witness differs"));
+        return Err(refused("Original output filesystem proof differs"));
     }
     Ok(private)
 }
-pub(in crate::setup::home_capture) fn review_filesystem_witness(
+pub(in crate::setup::home_capture) fn review_filesystem_proof(
     private: &Arc<PinnedDirectory>,
     binding: &MediaPartitionBinding,
 ) -> io::Result<[u8; 16]> {
@@ -196,20 +196,20 @@ pub(in crate::setup::home_capture) fn review_filesystem_witness(
     storage.validate_privacy(Privacy::OwnerOnly)?;
     let file = storage.open_read(OsStr::new("filesystem-owner.json"), Privacy::OwnerOnly)?;
     if file.metadata()?.len() > 4096 {
-        return Err(refused("Filesystem witness exceeds bounds"));
+        return Err(refused("Filesystem proof exceeds bounds"));
     }
     let mut bytes = Vec::new();
     file.take(4097).read_to_end(&mut bytes)?;
     if bytes.len() > 4096 {
-        return Err(refused("Filesystem witness exceeds bounds"));
+        return Err(refused("Filesystem proof exceeds bounds"));
     }
-    let actual: Witness =
-        serde_json::from_slice(&bytes).map_err(|_| refused("Filesystem witness invalid"))?;
+    let actual: Proof =
+        serde_json::from_slice(&bytes).map_err(|_| refused("Filesystem proof invalid"))?;
     if actual.schema != 1 || &actual.binding != binding {
-        return Err(refused("Filesystem witness differs"));
+        return Err(refused("Filesystem proof differs"));
     }
     let uuid = uuid::Uuid::parse_str(&actual.filesystem_uuid)
-        .map_err(|_| refused("Filesystem witness UUID invalid"))?;
+        .map_err(|_| refused("Filesystem proof UUID invalid"))?;
     private.validate_destination()?;
     Ok(*uuid.as_bytes())
 }
@@ -265,7 +265,7 @@ impl NativeMediumOutput {
         // are checked independently below.
         let partition = daemon
             .open_read_only(&before.name)
-            .map_err(|_| refused("Original output partition custody refused"))?;
+            .map_err(|_| refused("Original output partition ownership refused"))?;
         if super::number(&partition)? != before.number {
             return Err(refused("Original output partition descriptor differs"));
         }
@@ -304,7 +304,7 @@ impl NativeMediumOutput {
         if fs.f_flag & safety != safety || fs.f_flag & libc::ST_RDONLY != 0 {
             return Err(refused("Original output mount flags differ"));
         }
-        let private = witness(&root, plan.media(), &before.uuid)?;
+        let private = proof(&root, plan.media(), &before.uuid)?;
         let store_pin = match crate::setup::nofollow::metadata_nofollow(
             &private.file,
             Path::new("original-output"),
@@ -372,14 +372,14 @@ impl NativeMediumOutput {
         medium.check()?;
         Ok((medium, store))
     }
-    fn check_mount_custody(&self) -> io::Result<()> {
+    fn check_mount_ownership(&self) -> io::Result<()> {
         self.read.check_output_medium_for_cleanup(&self.disk)?;
         if selected(&inventory()?, &self.disk, &self.media)? != self.selected {
-            return Err(refused("Original output mount custody changed"));
+            return Err(refused("Original output mount ownership changed"));
         }
         self.root.validate_destination()?;
         self.private.validate_destination()?;
-        witness(&self.root, &self.media, &self.selected.uuid)?;
+        proof(&self.root, &self.media, &self.selected.uuid)?;
         if mount_id(&self.root.file)? != self.binding.mount_id
             || mount_id(&self.output)? != self.binding.mount_id
         {
@@ -388,7 +388,7 @@ impl NativeMediumOutput {
         unique_mount(&self.selected.number, self.binding.mount_id)
     }
     fn output_directory(&self) -> io::Result<Arc<PinnedDirectory>> {
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         let metadata = crate::setup::nofollow::metadata_nofollow(
             &self.private.file,
             Path::new("original-output"),
@@ -409,7 +409,7 @@ impl NativeMediumOutput {
             return Err(refused("Verified original output directory differs"));
         }
         pin.validate_destination()?;
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         Ok(pin)
     }
     fn completed_directory(
@@ -502,9 +502,9 @@ impl NativeMediumOutput {
         if !exit.matches(key, work, super::super::runtime::PACKAGE) {
             return Err(refused("Original output namespace shutdown is unconfirmed"));
         }
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         let owned = Arc::try_unwrap(self)
-            .map_err(|_| refused("Original output still has live custody leases"))?;
+            .map_err(|_| refused("Original output still has live ownership leases"))?;
         let Self {
             daemon,
             selected,
@@ -536,7 +536,7 @@ impl ServiceAuthority for NativeMediumOutput {
             return Err(io::ErrorKind::Interrupted.into());
         }
         self.read.revalidate(&AtomicBool::new(false))?;
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         if let Some(scratch) = self
             .inventory_scratch
             .lock()
@@ -550,7 +550,7 @@ impl ServiceAuthority for NativeMediumOutput {
 }
 impl OwnedMediumOutput for NativeMediumOutput {
     fn inventory_scratch(&self) -> io::Result<(File, u64)> {
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         let mut held = self
             .inventory_scratch
             .lock()
@@ -569,7 +569,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
             .as_ref()
             .ok_or_else(|| refused("Original inventory storage missing"))?
             .files()?;
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         Ok(result)
     }
     fn admit_application_output(&self, proof: &OriginalApplicationsOutput) -> io::Result<()> {
@@ -579,7 +579,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
         // The same approved source and projection admission as both supervised namespaces; never
         // launch or substitute ambient OSTree or GPG tools.
         proof.verify_signed_capsule()?;
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         proof.validate_for(&self.read, &cancel)
     }
     fn completed_directory_paired(
@@ -601,7 +601,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
     }
     fn committed_selection_directory(&self) -> io::Result<Arc<PinnedDirectory>> {
         self.check()?;
-        let actual = witness(&self.root, &self.media, &self.selected.uuid)?;
+        let actual = proof(&self.root, &self.media, &self.selected.uuid)?;
         let before = self.private.file.metadata()?;
         let after = actual.file.metadata()?;
         if (before.dev(), before.ino()) != (after.dev(), after.ino())
@@ -665,7 +665,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
             return Err(io::Error::last_os_error());
         }
         self.output.sync_all()?;
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         let metadata = crate::setup::nofollow::metadata_nofollow(
             &self.private.file,
             Path::new("original-output"),
@@ -691,7 +691,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
             // bytes before its own receipt and never decrypts here.
             grant.publish_applications_expectation(applications, &cancel)?;
         }
-        self.check_mount_custody()
+        self.check_mount_ownership()
     }
     fn publish_verified_applications_receipt(
         &self,
@@ -726,7 +726,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
             return Err(io::Error::last_os_error());
         }
         self.output.sync_all()?;
-        self.check_mount_custody()?;
+        self.check_mount_ownership()?;
         let metadata = crate::setup::nofollow::metadata_nofollow(
             &self.private.file,
             Path::new("original-output"),
@@ -747,7 +747,7 @@ impl OwnedMediumOutput for NativeMediumOutput {
         }
         let grant = crate::setup::portable_home_media::MediaGrant::from_reviewed_pin(pin)?;
         grant.publish_applications_expectation(expected, &cancel)?;
-        self.check_mount_custody()
+        self.check_mount_ownership()
     }
     fn completed_applications_directory(
         &self,

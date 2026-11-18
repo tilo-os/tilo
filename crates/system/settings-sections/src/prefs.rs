@@ -212,16 +212,16 @@ pub struct InputPrefs {
     /// Swap the primary and secondary buttons.
     pub left_handed: bool,
     /// Whether the pointer speeds up with faster movement (`adaptive`) or
-    /// moves the same distance at any speed (`flat`); capability-gated by
+    /// moves the same distance at any speed (`flat`); capability-guarded by
     /// libinput.
     #[model(choices = ["adaptive", "flat"])]
     pub accel_profile: String,
     /// Three- and four-finger gestures switch workspaces and show the
     /// overview.
     pub touchpad_gestures: bool,
-    /// Which button a clickpad press means; capability-gated by libinput.
+    /// Which button a clickpad press means; capability-guarded by libinput.
     pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
-    /// Two-finger or edge scrolling; capability-gated by libinput.
+    /// Two-finger or edge scrolling; capability-guarded by libinput.
     pub touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod,
     /// Scroll-distance multiplier for wheels and touchpads.
     #[model(range = settings_store::hardware::SCROLL_SPEED_MIN..=settings_store::hardware::SCROLL_SPEED_MAX)]
@@ -299,7 +299,7 @@ pub struct InputDevicePrefs {
     /// the same key, so both stay in agreement.
     pub touchpad_enabled: bool,
     /// Switch touchpads off while an external mouse is connected;
-    /// capability-gated by libinput.
+    /// capability-guarded by libinput.
     pub touchpad_disabled_on_external_mouse: bool,
     /// Explicit physical model; no hardware detection is implied.
     #[model(readonly)]
@@ -1828,7 +1828,7 @@ pub struct NotificationPrefs {
     /// for shoulder-surfing privacy).
     #[serde(default = "default_true")]
     pub show_previews: bool,
-    /// Play a sound when a notification arrives (gated by Do Not Disturb).
+    /// Play a sound when a notification arrives (guarded by Do Not Disturb).
     #[serde(default = "default_true")]
     pub play_sounds: bool,
     /// Mirror notifications onto the lock screen. Off by default — the lock

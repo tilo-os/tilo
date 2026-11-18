@@ -26,7 +26,7 @@ use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
@@ -44,9 +44,9 @@ use tilo_peer_state::{KeptDocument, Member};
 use tilo_user_identity::RevocationList;
 use tilo_workspace_keys::{KeyAccess, KeyProvider};
 
-use crate::custody::Custody;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::identity;
+use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
@@ -200,15 +200,15 @@ impl Admission {
 pub struct Engine {
     owner: NativeWorkspaceOwner,
     shown: Arc<Shown>,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     /// Where the workspaces' channels find this device's keys, once the channel service is running:
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
     keys: KeyProvider,
-    /// How this host proves this device still has custody of a workspace before it commits there.
-    custody: Arc<dyn crate::custody::Custody>,
-    /// The workspace transport of this session's collaboration plane, once it runs: a record the
-    /// workspace's hosts send only once asked is asked for here, and the plane is gone while this
+    /// How this host proves this device still owns a workspace before it commits there.
+    ownership: Arc<dyn crate::membership_check::MembershipCheck>,
+    /// The workspace transport of this session's peer network, once it runs: a record the
+    /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
     link: std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>,
     /// The layout's workspaces this device could not found here: founding one is asked for again only
@@ -238,6 +238,23 @@ pub struct Engine {
     /// What this device last named its workspaces' hosts as: the address it wrote, and which
     /// workspaces it wrote it to ([`Self::name_own_hosts`]).
     named_hosts: std::sync::Mutex<NamedHosts>,
+}
+
+/// One holder of a workspace, as a member's device reads it off the holder's
+/// own signed address ([`Engine::holders`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holder {
+    /// Its device key, hex.
+    pub device: String,
+    /// What it calls itself: its server's name from its person's admin
+    /// workspace, or its site's name; its device's label when it names none.
+    pub label: String,
+    /// Whether it holds the workspace's keys: it reads the workspace. A store
+    /// holds its ciphertext and reads none of it.
+    pub reads: bool,
+    /// Whether the machine under it is rented from a cloud provider, whose
+    /// operator can read what it holds.
+    pub cloud: bool,
 }
 
 /// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
@@ -287,7 +304,7 @@ type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
 
 /// The writes this device made that its replica has not taken in yet, by record, as document
 /// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
-/// in custody. The session that writes them keeps them here, and its readers read them over the
+/// held. The session that writes them keeps them here, and its readers read them over the
 /// replica ([`Engine::read_resource`]); nobody else sees them until they land.
 #[derive(Clone, Default)]
 pub struct HeldWrites(Arc<std::sync::Mutex<BTreeMap<DocumentRoute, Vec<Vec<u8>>>>>);
@@ -413,8 +430,8 @@ impl Engine {
     pub fn holding(
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
-        identity: HostIdentity,
-        custody: Arc<dyn Custody>,
+        identity: DeviceIdentity,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Self {
         let keys = KeyProvider::default();
         let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
@@ -427,7 +444,7 @@ impl Engine {
             shown,
             identity,
             keys,
-            custody,
+            ownership,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -449,10 +466,10 @@ impl Engine {
     /// The record holds no valid state, or the file cannot be written.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        custody: Arc<dyn Custody>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = owner_path(state)?;
@@ -460,7 +477,7 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(owner.clone(), shown, identity, custody);
+        let mut engine = Self::holding(owner.clone(), shown, identity, ownership);
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
         engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
@@ -478,7 +495,7 @@ impl Engine {
                     )
                     .with_channel_history(Arc::new(move |workspace| {
                         keys.get()
-                            .map(|channels| channels.standing_governance(workspace))
+                            .map(|channels| channels.current_governance(workspace))
                             .unwrap_or_default()
                     })),
                 )
@@ -497,11 +514,11 @@ impl Engine {
     pub fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        custody: Arc<dyn Custody>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let identity = identity::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
-        Self::open(identity, state, workspaces, custody)
+        Self::open(identity, state, workspaces, ownership)
     }
 
     /// The workspace ids this device holds.
@@ -1022,7 +1039,7 @@ impl Engine {
 
     /// Ask `workspace`'s hosts for `app`'s `record`
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
-    /// then on. Asked once per record while the plane runs; `false` when there is no plane to ask
+    /// then on. Asked once per record while the peer network runs; `false` when there is no peer network to ask
     /// on, so nothing was asked.
     pub fn open_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -1031,7 +1048,7 @@ impl Engine {
         let Some(link) = self.link.lock_recover().clone() else {
             return false;
         };
-        let own = tilo_relay_protocol::OwnedChannel::recognise(
+        let own = tilo_server_protocol::OwnedChannel::recognise(
             app,
             record,
             self.identity.device_cert.user_public_key,
@@ -1052,7 +1069,7 @@ impl Engine {
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> Option<tilo_relay_protocol::DocumentAnswer> {
+    ) -> Option<tilo_server_protocol::DocumentAnswer> {
         let workspace = WorkspaceId::parse(workspace)?;
         let channel = neighbour_wire::app_document_channel(app, record);
         self.link
@@ -1061,13 +1078,13 @@ impl Engine {
             .resource_answer(workspace, &channel)
     }
 
-    /// What ticks whenever a host answered for a record this device opened; `None` with no plane.
+    /// What ticks whenever a host answered for a record this device opened; `None` with no peer network.
     #[must_use]
     pub fn record_answers(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         self.link.lock_recover().as_ref().map(|link| link.answers())
     }
 
-    /// What ticks whenever a host finished its replay; `None` with no plane.
+    /// What ticks whenever a host finished its replay; `None` with no peer network.
     #[must_use]
     pub fn replays(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         self.link.lock_recover().as_ref().map(|link| link.replays())
@@ -1083,7 +1100,7 @@ impl Engine {
     }
 
     /// Whether this device can ask its workspaces' hosts for what they retain: a session whose
-    /// collaboration plane is not running reads only what it holds.
+    /// peer network is not running reads only what it holds.
     #[must_use]
     pub fn reaches_host(&self) -> bool {
         self.link.lock_recover().is_some()
@@ -1097,10 +1114,10 @@ impl Engine {
     }
 
     /// Whether `certificate`'s holder reads `app`'s `record` in `workspace` here now: the workspace
-    /// is held with this device's custody of it, its people certify the caller, and the caller's
+    /// is held with this device's ownership of it, its people certify the caller, and the caller's
     /// device is one the workspace's policy lets read the record.
     /// # Errors
-    /// The workspace is not held here, this device has no custody of it, or the caller may not
+    /// The workspace is not held here, this device has no ownership of it, or the caller may not
     /// read the record now.
     pub fn authorizes_read(
         &self,
@@ -1109,9 +1126,9 @@ impl Engine {
         app: &str,
         record: &str,
     ) -> Result<(), String> {
-        use tilo_broker_core::custody::OwnerCustody as _;
+        use tilo_broker_core::owner_service::OwnerService as _;
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        self.check_custody(&self.owner, workspace)?;
+        self.check_ownership(&self.owner, workspace)?;
         let reader = self.identity.device_cert.device_public_key;
         self.owner.with_current(workspace, |view| {
             let certified = view.peer().certificates().iter().any(|held| {
@@ -1180,7 +1197,7 @@ impl Engine {
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> Result<tilo_peer_state::owner::AppWrite, String> {
-        use tilo_broker_core::custody::OwnerCustody as _;
+        use tilo_broker_core::owner_service::OwnerService as _;
         let device = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
@@ -1227,7 +1244,7 @@ impl Engine {
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: app.to_owned(),
-                    record: record.to_owned(),
+                    document: record.to_owned(),
                     envelope: Box::new(op),
                     own: view.peer().own_write(app, record, &device),
                 },
@@ -1401,7 +1418,7 @@ impl Engine {
     /// The invitations into `workspace` this device's person issued that are still
     /// redeemable: a link is answered by the device that signed it.
     /// # Errors
-    /// The workspace is not held here, or its join ledger cannot be read now.
+    /// The workspace is not held here, or its join log cannot be read now.
     #[cfg(target_os = "linux")]
     pub fn invitations(
         &self,
@@ -1690,7 +1707,7 @@ impl Engine {
         &self.owner
     }
 
-    /// What this device answers for the workspaces it holds, beside the planes its endpoint already
+    /// What this device answers for the workspaces it holds, beside the peer networks its endpoint already
     /// serves: the direct link their other devices sync on, and catch up from the frames this one
     /// kept.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1720,7 +1737,7 @@ impl Engine {
     }
 
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
-    /// live plane is dialled at.
+    /// live session is dialled at.
     #[cfg(target_os = "linux")]
     pub fn workspace_host(
         &self,
@@ -1739,27 +1756,66 @@ impl Engine {
             .ok()
     }
 
-    /// Where the hosts of the workspaces this device holds are reached, by workspace id, postcard
-    /// encoded: what the person's other devices need to enter a workspace listed here at the device
-    /// that hosts it.
+    /// The holders of `workspace`, each as its own signed address names it:
+    /// what a member reads of who keeps their workspace and which of them can
+    /// read it. Empty while this device holds no governance for the workspace.
+    pub fn holders(&self, workspace: &str) -> Vec<Holder> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        let Ok(hints) = self.owner.with_current(workspace, |view| {
+            Ok(view.peer().governance().keeping_devices())
+        }) else {
+            return Vec::new();
+        };
+        let mut holders: Vec<Holder> = hints
+            .into_iter()
+            .filter_map(|hint| {
+                let payload = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(&hint).ok()?;
+                let label = payload.label.trim();
+                Some(Holder {
+                    device: hex::encode(hint.host.device_public_key),
+                    label: if label.is_empty() {
+                        hint.host.device_label
+                    } else {
+                        label.to_owned()
+                    },
+                    reads: payload.holds_keys,
+                    cloud: payload.cloud,
+                })
+            })
+            .collect();
+        holders.sort_by(|a, b| a.label.cmp(&b.label));
+        holders
+    }
+
+    /// Where the holders of the workspaces this device holds are reached, one entry per holder, by
+    /// workspace id, postcard encoded: what the person's other devices need to enter a workspace
+    /// listed here at any of the devices that keep it.
     pub fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
         self.owner
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| {
+            .flat_map(|workspace| {
                 // The hint itself, as the device that reads it decodes it: not the answer
                 // whether this device has one, whose tag would lead the bytes.
-                let hint = self
+                let hints = self
                     .owner
-                    .with_current(workspace, |view| view.transport_hint().cloned())
-                    .ok()?;
-                let bytes = postcard::to_stdvec(&hint).ok()?;
-                Some((workspace.to_string(), bytes))
+                    .with_current(workspace, |view| Ok(view.keeping_devices()))
+                    .unwrap_or_default();
+                let named = workspace.to_string();
+                hints
+                    .into_iter()
+                    .filter_map(move |hint| {
+                        let bytes = postcard::to_stdvec(&hint).ok()?;
+                        Some((named.clone(), bytes))
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
 
-    /// Where a read asks the workspaces' hosts for a record they send only once asked: the plane
+    /// Where a read asks the workspaces' hosts for a record they send only once asked: the peer network
     /// this session's channels travel on.
     pub fn attach_link(&self, link: Arc<workspace_keys::KeyLink>) {
         // The devices that take part in a workspace through this one hear its channels' governance
@@ -1779,7 +1835,7 @@ impl Engine {
     }
 
     /// Where this device's channels hear its workspaces' governance and tell which devices each
-    /// admits: the plane's side of them, `None` when this session runs no channel service.
+    /// admits: the peer network's side of them, `None` when this session runs no channel service.
     pub fn link(&self) -> Option<Arc<workspace_keys::KeyLink>> {
         self.link.lock_recover().clone()
     }
@@ -1803,7 +1859,7 @@ impl Engine {
 
     /// This device's collaboration identity: the key its endpoint and its channels sign with, and
     /// the certificate that says whose it is.
-    pub fn identity(&self) -> &HostIdentity {
+    pub fn identity(&self) -> &DeviceIdentity {
         &self.identity
     }
 
@@ -1827,6 +1883,8 @@ impl Engine {
             version: 1,
             holds_keys: true,
             runs_work: false,
+            label: String::new(),
+            cloud: false,
             workspace_id,
             endpoint_addr: endpoint.clone(),
             user_public_key: identity.device_cert.user_public_key,
@@ -1907,7 +1965,7 @@ impl Engine {
 
     /// Name where this device's own host of each workspace it hosts is reached at `endpoint`:
     /// where members and anyone a link reaches dial it. A record that says nothing gets the
-    /// address, and one naming another relay gets it again ([`NativeWorkspaceOwner::name_host`]),
+    /// address, and one naming another server gets it again ([`NativeWorkspaceOwner::name_host`]),
     /// so what a workspace says keeps up with the relays this device answers through.
     #[cfg(target_os = "linux")]
     pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
@@ -1983,9 +2041,9 @@ impl Engine {
 }
 
 /// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
-/// canonical copy of every workspace it holds, and what it commits leaves on the plane's session
+/// canonical copy of every workspace it holds, and what it commits leaves on the peer network's session
 /// with the workspace's host.
-impl tilo_broker_core::custody::OwnerCustody for Engine {
+impl tilo_broker_core::owner_service::OwnerService for Engine {
     /// A held workspace whose host takes part in no channels: its records are documents the owner
     /// commits, never sealed channels.
     fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
@@ -2011,12 +2069,12 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         Ok(self.owner.clone())
     }
 
-    fn check_custody(
+    fn check_ownership(
         &self,
         owner: &NativeWorkspaceOwner,
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
-        self.custody.check(owner, workspace_id, &self.identity)
+        self.ownership.check(owner, workspace_id, &self.identity)
     }
 
     fn signer(
@@ -2024,15 +2082,15 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         owner: &NativeWorkspaceOwner,
         workspace_id: WorkspaceId,
     ) -> Result<Arc<dyn collab_types::signer::DeviceSigner>, String> {
-        self.check_custody(owner, workspace_id)?;
+        self.check_ownership(owner, workspace_id)?;
         Ok(Arc::clone(&self.identity.signer))
     }
 
-    /// Send the owner's outgoing custody of `workspace` to its peers soon: what was just committed
+    /// Send the owner's outgoing ownership of `workspace` to its peers soon: what was just committed
     /// leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace_id: WorkspaceId) {
         if let Some(link) = self.link() {
-            link.publish_custody(workspace_id);
+            link.publish_ownership(workspace_id);
         }
     }
 }
@@ -2138,12 +2196,12 @@ mod tests {
 
     /// A device of a person, certified for their root, with `capabilities`,
     /// and the person's root key.
-    fn identity(capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+    fn identity(capabilities: DeviceCapabilities) -> (DeviceIdentity, [u8; 32]) {
         device_of(tilo_test_env::node_key(), capabilities)
     }
 
     /// The person's device whose key is `device`.
-    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (DeviceIdentity, [u8; 32]) {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&device);
         let root = person.verifying_key().to_bytes();
@@ -2158,32 +2216,32 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        let identity = HostIdentity::kept(cert, device);
+        let identity = DeviceIdentity::kept(cert, device);
         (identity, root)
     }
 
-    /// A host whose own proof of custody this device's engine asks: these tests read what it asks
-    /// with, not the proof a desktop makes over the plane.
+    /// A host whose own proof of ownership this device's engine asks: these tests read what it asks
+    /// with, not the proof a desktop makes over the peer network.
     struct Kept;
 
-    impl Custody for Kept {
+    impl MembershipCheck for Kept {
         fn check(
             &self,
             _owner: &NativeWorkspaceOwner,
             _workspace: WorkspaceId,
-            _identity: &HostIdentity,
+            _identity: &DeviceIdentity,
         ) -> Result<(), String> {
             Ok(())
         }
     }
 
     /// This device's engine, kept in `state` .
-    fn engine(state: &Path, identity: HostIdentity) -> Engine {
+    fn engine(state: &Path, identity: DeviceIdentity) -> Engine {
         Engine::open(identity, Some(state), Vec::new(), Arc::new(Kept)).expect("an engine")
     }
 
     /// Where a layout's own host is reached: its device's endpoint.
-    fn endpoint(identity: &HostIdentity) -> iroh_base::EndpointAddr {
+    fn endpoint(identity: &DeviceIdentity) -> iroh_base::EndpointAddr {
         iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
                 .expect("a device endpoint"),
@@ -2227,7 +2285,7 @@ mod tests {
 
         phase a_workspace_this_device_hosts_names_its_own_host_and_commits_here;
         {
-            use tilo_broker_core::custody::OwnerCustody as _;
+            use tilo_broker_core::owner_service::OwnerService as _;
 
             let state = tempfile::tempdir().expect("a state directory");
             let (identity, _) = identity(DeviceCapabilities::member());
@@ -2246,7 +2304,7 @@ mod tests {
                 "the host it names is this device, whose host is in this process"
             );
             engine
-                .check_custody(&engine.owner, workspace)
+                .check_ownership(&engine.owner, workspace)
                 .expect("its own member acts there, its host being in this process");
         }
 
@@ -2274,7 +2332,7 @@ mod tests {
 
         phase a_workspace_this_device_hosts_without_an_address_commits_here;
         {
-            use tilo_broker_core::custody::OwnerCustody as _;
+            use tilo_broker_core::owner_service::OwnerService as _;
 
             let state = tempfile::tempdir().expect("a state directory");
             let (identity, _) = identity(DeviceCapabilities::member());
@@ -2294,7 +2352,7 @@ mod tests {
                 "its record names no host to reach until this device has one"
             );
             engine
-                .check_custody(&engine.owner, workspace)
+                .check_ownership(&engine.owner, workspace)
                 .expect("its own member acts there, its host being in this process");
         }
 
@@ -2380,7 +2438,7 @@ mod tests {
                 "the address it named is the one it keeps"
             );
             // The record says something else now, as a net report of the address beside the same
-            // relay would have it: one more pass at the same address writes nothing, and the pass
+            // server would have it: one more pass at the same address writes nothing, and the pass
             // after an address that moved names it again.
             let elsewhere = iroh_base::EndpointAddr::new(device)
                 .with_relay_url("https://relay.example.com/".parse().expect("a relay"));

@@ -5,9 +5,9 @@
 #
 # Stops the portal, deletes its state (applications and uploads) and the whole
 # ~/Documents/Trial folder (Sources, Out, Submission and anything the last
-# participant left there), writes the source documents again and starts the
+# tester left there), writes the source documents again and starts the
 # portal. It does not touch the desktop itself: close the last attempt's
-# windows and revoke its agent before the next participant starts.
+# windows and revoke its agent before the next tester starts.
 set -euo pipefail
 
 unit=tilo-trial-portal.service

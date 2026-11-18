@@ -639,9 +639,9 @@ mesh-checking = Prüfung…
 mesh-name = Name
 mesh-availability = Verfügbarkeit
 mesh-files-stay-desc = Widerrufen stoppt, dass dieser Server neue Änderungen empfängt. Stelle sicher, dass ein anderes Gerät Dateien hat, deren einzige vollständige Kopie hier liegt.
-mesh-svc-relay = Kollaborations- und Chat-Relais
-mesh-svc-relay-desc = Arbeitsbereichs-Updates und Nachrichten zwischen Geräten weiterleiten
-mesh-svc-remote = Fernsteuerungs-Relais
+mesh-svc-server = Kollaborations- und Chat-Server
+mesh-svc-server-desc = Arbeitsbereichs-Updates und Nachrichten zwischen Geräten weiterleiten
+mesh-svc-remote = Fernsteuerungs-Server
 mesh-svc-remote-desc = Fernsteuerungssitzungen bei Bedarf über dieses Gerät verbinden
 mesh-svc-apps = App-Backends bereitstellen
 mesh-svc-apps-desc = Kompatible App-Dienste von diesem Gerät ausführen
@@ -2819,6 +2819,7 @@ settings-access-approve = Annehmen
 settings-access-decline = Ablehnen
 settings-access-asking-code = Zeigt den Code { $code }
 settings-access-asking-via = Angefragt über { $device }
+settings-access-answer-yourself = Nur du selbst kannst ein Gerät hereinlassen. Vergleiche den Code, den es zeigt, und nimm es selbst an.
 
 ## Fenster- und Barrierefreiheits-Texte
 settings-a11y-apple-password = Apple-ID-Passwort

@@ -1,5 +1,5 @@
 //! Triggers (`tilolang_tilo::triggers`): an action a package declares runs by itself, every so
-//! often or at the time a record's field names, for each of its records of a type, and exactly
+//! often or at the time a document's field names, for each of its documents of a type, and exactly
 //! once across the workspace's devices.
 
 use std::cell::RefCell;
@@ -115,11 +115,11 @@ fn type_id(replica: &Replica, ty: &str) -> String {
         .unwrap()
 }
 
-/// The value of the counter field `field` on the type `ty` of the record `doc`.
+/// The value of the counter field `field` on the type `ty` of the document `doc`.
 fn counted(replica: &Replica, doc: &str, ty: &str, field: &str) -> i64 {
     let id = crate::fixtures::field_id(&meta(replica), ty, field);
     match replica.host.store().record(doc).unwrap().get(&id) {
-        Some(tilolang_tilo::record::DynValue::Counter(counter)) => counter.get(),
+        Some(tilolang_tilo::resource::DynValue::Counter(counter)) => counter.get(),
         other => panic!("not a counter: {other:?}"),
     }
 }
@@ -153,7 +153,7 @@ fn workspace() -> (Replica, String, String) {
 /// The id of the reminder root, made if it is not there.
 fn reminder_root(replica: &Replica) -> String {
     let ty = type_id(replica, "Reminder");
-    replica.host.root_record(APP, &ty).unwrap().doc
+    replica.host.root_resource(APP, &ty).unwrap().doc
 }
 
 /// The id of a rack holding `n` bells, its `first` bell due at `now` and every other an hour or
@@ -162,7 +162,7 @@ fn rack(replica: &mut Replica, n: usize, first: usize, now: i64) -> String {
     use serde_json::json;
     use tilo_resource::{Collection, Id, Model as _};
     use tilolang_tilo::action::{DynAction, DynEdit};
-    use tilolang_tilo::record::DynRecord;
+    use tilolang_tilo::resource::DynResource;
 
     let meta = meta(replica);
     let rack_ty = meta.types.iter().find(|t| t.name == "Rack").unwrap();
@@ -170,7 +170,7 @@ fn rack(replica: &mut Replica, n: usize, first: usize, now: i64) -> String {
     let schema = tilolang_tilo::schema::lookup(&bell_ty.id).unwrap();
     let mut bells = Collection::default();
     for i in 0..n {
-        let mut bell = DynRecord::empty(schema).unwrap();
+        let mut bell = DynResource::empty(schema).unwrap();
         let at = if i == first {
             now
         } else {
@@ -178,15 +178,16 @@ fn rack(replica: &mut Replica, n: usize, first: usize, now: i64) -> String {
             now.saturating_add(3600)
                 .saturating_add(i64::try_from(i).unwrap_or(i64::MAX).saturating_mul(60))
         };
-        if let Some(tilolang_tilo::record::DynValue::Register(slot)) =
+        if let Some(tilolang_tilo::resource::DynValue::Register(slot)) =
             bell.get_mut(&crate::fixtures::field_id(&meta, "Bell", "at"))
         {
             *slot = json!({ "some": tilolang_tilo::host::iso_utc(at.cast_unsigned()) });
         }
         bells.push(Id::from_raw(format!("bell-{i:05}")), bell);
     }
-    let mut record = DynRecord::empty(tilolang_tilo::schema::lookup(&rack_ty.id).unwrap()).unwrap();
-    if let Some(tilolang_tilo::record::DynValue::Collection(slot)) =
+    let mut record =
+        DynResource::empty(tilolang_tilo::schema::lookup(&rack_ty.id).unwrap()).unwrap();
+    if let Some(tilolang_tilo::resource::DynValue::Collection(slot)) =
         record.get_mut(&crate::fixtures::field_id(&meta, "Rack", "bells"))
     {
         *slot = bells;
@@ -264,7 +265,7 @@ tilo_test_env::scenario! {
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 2);
     }
 
-    phase a_trigger_at_a_records_time_fires_and_rearms_when_it_changes;
+    phase a_trigger_at_a_documents_time_fires_and_rearms_when_it_changes;
     {
         let (mut ada, _, reminder) = workspace();
         let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
@@ -385,10 +386,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase frames_over_a_record_that_did_not_move_take_nothing_in;
+    phase frames_over_a_document_that_did_not_move_take_nothing_in;
     {
-        // The origin's store holds the trigger's change, which the record it is handed lacks:
-        // a frame over that record still has nothing to take in.
+        // The origin's store holds the trigger's change, which the document it is handed lacks:
+        // a frame over that document still has nothing to take in.
         let (mut window, doc) = window("2026-10-27T12:00:00Z", true);
         window.sync(Some(&doc));
         let host = window.host().expect("the window opened");
@@ -449,7 +450,7 @@ fn a_large_collection_is_read_at_its_next_instant_not_whole() {
     assert_eq!((first, second), (1, 0), "and no other");
     assert!(
         entries <= small_entries && entries < 64,
-        "reading {entries} record entries, against {small_entries} of twenty"
+        "reading {entries} document entries, against {small_entries} of twenty"
     );
     assert_eq!(
         (evaluated, small_evaluated),
@@ -499,7 +500,7 @@ fn an_action_reads_the_end_and_count_of_a_large_collection_not_its_items() {
     );
     assert!(
         entries <= small_entries,
-        "reading {entries} record entries, against {small_entries} of twenty"
+        "reading {entries} document entries, against {small_entries} of twenty"
     );
     assert!(
         pages <= small_pages + 1,
@@ -540,7 +541,7 @@ impl NameHost for Alone {
     }
 }
 
-/// A window of the app on a record of its own: no broker, so nothing of it is sent anywhere.
+/// A window of the app on a document of its own: no broker, so nothing of it is sent anywhere.
 fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
     let doc = AutoCommit::new();
     let (app_end, _window) = pair();
@@ -554,7 +555,7 @@ fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
             mode: Mode::Live,
             device: None,
             index_dir: None,
-            record_loader: None,
+            document_loader: None,
             root: RootView::default(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
         },

@@ -117,7 +117,7 @@ impl Signatures {
 pub(crate) const UNSIGNED: &str = "the device signer signs this change outside the owner's turn";
 
 /// Run `turn`, a change of this device that signs as it goes, with `signer`, this device's
-/// custody of its key: a run that asks for a signature `signer` has not given yet commits
+/// ownership of its key: a run that asks for a signature `signer` has not given yet commits
 /// nothing ([`Signatures::settled`]), `signer` signs what it asked for outside the owner's
 /// turn, and the turn runs again, until one run signed everything it wrote. A run sees what
 /// the runs before it saw, or asks again for what changed. A turn whose drafts differ on every
@@ -255,15 +255,15 @@ impl NativeWorkspaceOwner {
     }
 
     /// Commit the writes `prepare` drafts from `workspace` as it stands, in order, in one signed
-    /// turn of `signer`, this device's custody of its key: what `prepare` drafted unsigned, and a
+    /// turn of `signer`, this device's ownership of its key: what `prepare` drafted unsigned, and a
     /// write a local writer of this device signed before whose sequence a later write took, is
-    /// signed between the turn's runs ([`crate::StatePeer::sequenced_local_document`]). Custody
+    /// signed between the turn's runs ([`crate::StatePeer::sequenced_local_document`]). Ownership
     /// takes every one of them, however many wait for the workspace's host already.
     ///
     /// A sealed history is never too long for a write of the device holding its keys: one that
     /// used most of its bound is compacted first ([`Self::compact_outgoing`]), and one the writes
     /// would overflow is compacted then ([`Self::compact_document`]), the writes committed after
-    /// the compaction, which custody sends before them.
+    /// the compaction, which ownership sends before them.
     ///
     /// # Errors
     /// [`WriteRefusal::HistoryFull`] when a record's history has no room even compacted,
@@ -295,7 +295,7 @@ impl NativeWorkspaceOwner {
         // A full record takes no write of anyone's until it is compacted, so it is compacted
         // now even while a compaction that failed before waits out its passes: those are only
         // counted while a history is due, and a history a write overflows before it is due
-        // (one large write) would wait for them for good, its writes and every write custody
+        // (one large write) would wait for them for good, its writes and every write ownership
         // holds behind them with it.
         let compacted = self
             .compact_document(workspace, (&full.0, &full.1), signer, now)
@@ -330,7 +330,7 @@ impl NativeWorkspaceOwner {
             .ok_or_else(|| WriteRefusal::Refused("native document write committed nothing".into()))
     }
 
-    /// Commit one write this device signed before the owner's turn, with its outgoing custody.
+    /// Commit one write this device signed before the owner's turn, with its outgoing ownership.
     ///
     /// # Sequence contract
     /// The envelope is signed before the owner's turn, so its sequence must come from
@@ -355,7 +355,7 @@ impl NativeWorkspaceOwner {
     }
 
     /// Admit and durably commit writes of this device to `workspace`, in order and in the owner's
-    /// turn with their outgoing custody: one durable publication for all of them. A write the
+    /// turn with their outgoing ownership: one durable publication for all of them. A write the
     /// record holds already is an exact retry, answered as it was taken. A write whose sequence an
     /// earlier write took is numbered past it, and one whose signature does not hold is signed by
     /// `signed`; a run that asked it for a signature commits nothing ([`Signatures::settled`]).
@@ -390,7 +390,7 @@ impl NativeWorkspaceOwner {
                 let outgoing = publication::prepare(&request)?;
                 let CommitOperation::Document {
                     app,
-                    record,
+                    document: record,
                     envelope,
                     ..
                 } = &request.operation
@@ -407,7 +407,7 @@ impl NativeWorkspaceOwner {
                         && !publication::retry_covered(live, stored, &outgoing)?
                     {
                         return Err(
-                            "exact local admission has no retained publication custody".into()
+                            "exact local admission has no retained publication ownership".into(),
                         );
                     }
                     taken.push(request);
@@ -513,7 +513,7 @@ fn numbered(
         let mut request = kept.clone();
         let CommitOperation::Document {
             app,
-            record,
+            document: record,
             envelope,
             ..
         } = &mut request.operation

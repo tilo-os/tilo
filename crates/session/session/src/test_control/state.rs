@@ -8,14 +8,14 @@ use std::hash::Hash as _;
 use serde_json::{Value as Json, json};
 use tilo_desktop_model::Layout;
 
-use super::{Context, Gate, Part, Scope, Session};
+use super::{Audience, Context, Part, Scope, Session};
 
-/// What a socket at `gate` may see of the state `dump`: a development socket sees the session as
+/// What a socket at `who` may see of the state `dump`: a development socket sees the session as
 /// it is, and the owner's API sees it too — except while the screen is locked, where it learns
 /// that it is and nothing of what the lock covers: no windows, no workspaces, no titles or the
 /// text in them.
-pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
-    if gate == Gate::Dev || !locked_in(&dump) {
+pub(super) fn owner_shown(who: Audience, dump: Json) -> Json {
+    if who == Audience::Dev || !locked_in(&dump) {
         return dump;
     }
     let mut dump = dump;
@@ -27,6 +27,8 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
     // Who is here is session state like the rest: a locked session names nobody.
     state.insert("peers".into(), Json::Null);
     state.insert("sharing".into(), Json::Null);
+    // What people and apps told the person is theirs: a locked session says none of it.
+    state.insert("notifications".into(), Json::Null);
     if let Some(open) = state
         .get_mut("chrome")
         .and_then(|chrome| chrome.get_mut("overlays"))
@@ -43,8 +45,8 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
 /// nothing of the session while the screen is locked.
 pub(super) fn shown(ctx: &Context, dump: Json) -> Json {
     match &ctx.scope {
-        None => owner_shown(ctx.gate, dump),
-        Some(scope) => owner_shown(ctx.gate, only_workspace(dump, scope)),
+        None => owner_shown(ctx.who, dump),
+        Some(scope) => owner_shown(ctx.who, only_workspace(dump, scope)),
     }
 }
 
@@ -72,6 +74,8 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
     }
     // The window shares are the session's, of every workspace it holds: an app reads none of them.
     state.insert("sharing".into(), Json::Null);
+    // What the person was told is the person's: an app reads none of it.
+    state.insert("notifications".into(), Json::Null);
     dump
 }
 
@@ -101,8 +105,8 @@ fn locked_in(dump: &Json) -> bool {
 /// resource reads it: `sharing` (each shared window and who views it), `starting` (a share that
 /// waits, and for what), `watching` (the windows of other devices this one asks for, and of which
 /// device), `received` (the streams that reached it, and whether their tab pictures them) and
-/// `live` (each workspace's live plane, which the pictures travel: open, or what it waits for and
-/// which device it waits to reach). A window shared or watched under a plane that is not open
+/// `live` (each workspace's live session, which the pictures travel: open, or what it waits for and
+/// which device it waits to reach). A window shared or watched under a live session that is not open
 /// says what it waits for on its own row. A tool driving two sessions reads on each end how far a
 /// share came. The identifier a window is
 /// captured under is left out: it is the compositor's, for the clients it trusts.
@@ -122,8 +126,9 @@ fn shares_shown(session: &Session<'_>) -> Json {
 }
 
 /// The session as it is now: its tree without its history, the workspaces this computer holds, what
-/// stands over it, whether the screen is locked and what the session shares of its windows — the
-/// shape the tools that drive a desktop read, and the line a `watch` streams as it changes.
+/// stands over it, whether the screen is locked, what the session shares of its windows and what it
+/// was told — the shape the tools that drive a desktop read, and the line a `watch` streams as it
+/// changes.
 pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
     let held: BTreeSet<String> = session
         .engine
@@ -205,6 +210,9 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         },
         "peers": presence(session),
         "sharing": shares_shown(session),
+        // What the person was told: the banners up and what the centre keeps, so a tool driving a
+        // session reads a notice as the person does, and chooses it by the id it is shown under.
+        "notifications": notices_shown(session),
         // The person's keyboard and pointer across their devices: where the pointer is here, the
         // device it drives, and what the devices driving this one sent.
         "shared_input": session.shared_input.map_or_else(
@@ -222,8 +230,8 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
 /// host's name as its person gave it, whether this computer is the host, and whether it still
 /// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
 /// workspace, and nothing of a locked session but through a development socket.
-pub(super) fn workspace_hosts(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
-    let rows: Vec<Json> = if ctx.gate != Gate::Dev && session.locked {
+pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
+    let rows: Vec<Json> = if ctx.who != Audience::Dev && session.locked {
         Vec::new()
     } else {
         tree.workspaces
@@ -248,9 +256,39 @@ pub(super) fn workspace_hosts(tree: &Layout, session: &Session<'_>, ctx: &Contex
     json!({"answer": {"workspaces": rows}})
 }
 
+/// What the person was told, as the banners and the centre show it: oldest first, one row per
+/// notification, each with the words it says, the app it came from, the actions it offers and
+/// whether the person has seen it. The id is the one [the notifications' own `act` and `open-notice`
+/// verbs](crate::notifications::RESOURCE) take, so a tool chooses a notice as the person does.
+fn notices_shown(session: &Session<'_>) -> Json {
+    let desktop = &session.notifications;
+    let log = desktop.log();
+    Json::Array(
+        log.history()
+            .iter()
+            .chain(log.active())
+            .map(|notification| {
+                json!({
+                    "id": notification.id,
+                    "app": notification.app_name,
+                    "app_id": notification.app_id,
+                    "title": notification.title,
+                    "body": notification.body,
+                    "actions": notification
+                        .actions
+                        .iter()
+                        .map(|(key, label)| json!({"key": key, "label": label}))
+                        .collect::<Vec<Json>>(),
+                    "unread": desktop.is_unread(notification.id),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Who is here, as every surface here draws them: this device's own row, and each workspace this
-/// session takes part in with everyone present in it, as the collaboration plane says. `Null` when
-/// this session takes part in no plane.
+/// session takes part in with everyone present in it, as the peer network says. `Null` when
+/// this session takes part in no live session.
 fn presence(session: &Session<'_>) -> Json {
     let Some(sync) = session.sync else {
         return Json::Null;

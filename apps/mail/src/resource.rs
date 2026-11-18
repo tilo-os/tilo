@@ -1,11 +1,11 @@
 //! Mail's mailbox: what the reader's devices share of their mail, its verbs, the places
 //! derived from it, and the app.
 //!
-//! The mail itself stays with the engine and the server; the mailbox holds what the reader did
-//! with each message, what its server holds of that, the folders the reader made, the draft
-//! being written and the messages sent and not yet delivered. Where a message's flags or folder
-//! differ from what its server holds, the mailbox queues telling the server, whoever made the
-//! change; the device with the account does it and records what the server confirmed.
+//! The mail itself stays with the engine and the server. What the reader did with each
+//! message, and what its server holds of that, is kept in parts beside the mailbox
+//! ([`crate::part`]), so a change costs one part however much mail there is. The mailbox
+//! itself holds what does not grow with the mail: the folders the reader made, the drafts
+//! being written, the messages sent and not yet delivered, and the checks for new mail.
 
 use tilo_document::{RichText, RichTextAction};
 #[cfg(feature = "samples")]
@@ -18,8 +18,8 @@ use ui::tilo_resource::{
 use ui::widget::Element;
 
 use crate::actions::{
-    DraftData, IngestBaseline, MailCheck, MailEffect, MailTarget, Outgoing, ServerUpdate,
-    bounded_text, valid_calendar_invitation,
+    DraftData, MailCheck, MailEffect, MailTarget, Outgoing, ServerUpdate, bounded_text,
+    valid_calendar_invitation,
 };
 use crate::app::MailApp;
 use crate::model::{Draft, DraftAttachment, DraftSender, Folder};
@@ -27,15 +27,16 @@ use crate::model::{Draft, DraftAttachment, DraftSender, Folder};
 use crate::sample::MailFixture;
 
 /// The most messages one verb acts on at once.
-pub(crate) const MAX_MESSAGES_PER_ACTION: usize = 256;
-const MAX_MESSAGE_ID_CHARS: usize = 128;
+pub(crate) const MAX_MESSAGES_PER_ACTION: usize = 1024;
+pub(crate) const MAX_MESSAGE_ID_CHARS: usize = 128;
 const MAX_LABEL_CHARS: usize = 128;
 const MAX_FOLDER_NAME_CHARS: usize = 96;
 pub(crate) const MAX_DRAFT_ADDRESS_CHARS: usize = 8 * 1024;
 pub(crate) const MAX_DRAFT_SUBJECT_CHARS: usize = 998;
 pub(crate) const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
 
-/// How many settled server updates and sent messages the mailbox keeps.
+/// How many settled server updates, sent messages and deleted copies of
+/// drafts the mailbox keeps.
 const SETTLED_KEPT: usize = 64;
 
 /// How many settled checks for new mail the mailbox keeps: enough for a
@@ -46,11 +47,9 @@ const CHECKS_KEPT: usize = 8;
 /// the window's loaded rows.
 pub(crate) const OPEN_MESSAGE_LIMIT: usize = 100;
 
-/// What the reader's devices share of their mail.
+/// What the reader's devices share of their mail, beside its messages.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Mail {
-    /// What the mailbox knows of each message, under its id.
-    pub messages: Collection<MessageState>,
     /// The folders the reader made, under their ids.
     pub folders: Collection<LocalFolder>,
     /// The draft Mail's composer has always written: the draft `draft` of
@@ -61,16 +60,29 @@ pub struct Mail {
     pub drafts: Collection<DraftState>,
     /// Messages sent and waiting for a device that holds their account.
     pub outbox: Outbox<Outgoing>,
-    /// What servers still have to be told: flags, moves and deletes the
-    /// reader made that a message's server does not hold yet.
+    /// What servers still have to be told of the drafts: each draft's copy
+    /// in its server's Drafts, and the copies no longer needed deleted.
     pub server: Outbox<ServerUpdate>,
     /// Checks for new mail asked by a window that reaches no mail server,
     /// waiting for a device that holds their account.
     pub checks: Outbox<MailCheck>,
-    /// Messages the workspace holds whole, under the ids their state is kept
-    /// under in `messages`: mail delivered without a server
-    /// ([`crate::held`]).
-    pub held: Collection<crate::held::HeldMessage>,
+    /// Copies servers keep of drafts that are no longer needed (sent,
+    /// discarded, or written again under another `Message-ID`), under the id
+    /// they are fetched as: each is deleted from its server, and a late
+    /// fetch of it never brings it back.
+    #[model(readonly)]
+    pub retired: Collection<RetiredCopy>,
+}
+
+/// A copy of a draft its server no longer needs to keep.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct RetiredCopy {
+    /// The account whose server keeps it
+    pub account: String,
+    /// Its `Message-ID`, which finds it there
+    pub locator: String,
+    /// Deleted there for good
+    pub removed: bool,
 }
 
 /// What the reader did with one message, and what its server holds.
@@ -323,127 +335,24 @@ impl DraftState {
     answer = crate::held::answer,
 )]
 impl Mail {
-    /// Mark messages read
-    ///
-    /// Marks messages read or unread together.
-    #[action(housekeeping)]
-    pub fn mark_read(
-        &mut self,
-        #[param("Ids of the messages")] messages: Vec<String>,
-        #[param("Read, or unread")] read: bool,
-    ) -> Result<(), Refusal> {
-        for id in self.present(&messages)? {
-            if let Some(message) = self.messages.get_mut(&id) {
-                message.read = read;
-            }
-        }
-        Ok(())
-    }
-
-    /// Archive messages
-    ///
-    /// Moves messages to the Archive together.
-    #[action(label = "mail-folder-archive")]
-    pub fn archive(
-        &mut self,
-        #[param("Ids of the messages")] messages: Vec<String>,
-    ) -> Result<(), Refusal> {
-        self.move_to(&messages, Folder::Archive)
-    }
-
-    /// Move messages to Trash
-    ///
-    /// Moves messages to the Trash together, from where they can still be
-    /// brought back.
-    #[action]
-    pub fn trash(
-        &mut self,
-        #[param("Ids of the messages")] messages: Vec<String>,
-    ) -> Result<(), Refusal> {
-        self.move_to(&messages, Folder::Trash)
-    }
-
-    /// Move messages
-    ///
-    /// Moves messages to one folder together.
-    #[action]
-    pub fn move_messages(
-        &mut self,
-        #[param("Ids of the messages")] messages: Vec<String>,
-        #[param("The folder")] to: Folder,
-    ) -> Result<(), Refusal> {
-        self.move_to(&messages, to)
-    }
-
-    /// Delete permanently
-    ///
-    /// Deletes messages already in the Trash for good: all of them, or none
-    /// when one is no longer there.
-    #[action(destructive, label = "mail-delete-permanently")]
-    pub fn purge(
-        &mut self,
-        #[param("Ids of the messages, every one in the Trash")] messages: Vec<String>,
-    ) -> Result<(), Refusal> {
-        let ids = self.present(&messages)?;
-        if ids.iter().any(|id| {
-            self.messages
-                .get(id)
-                .is_none_or(|message| message.folder != Folder::Trash)
-        }) {
-            return Err(Refusal::new(
-                "every message must still be present in Trash before permanent deletion",
-            ));
-        }
-        for id in ids {
-            if let Some(message) = self.messages.get_mut(&id) {
-                message.purged = true;
-            }
-        }
-        Ok(())
-    }
-
-    /// Messages fetched or found: each joins the mailbox with the flags its
-    /// source reports, and a fetched one records what its server holds. What
-    /// the mailbox already says wins, except where the server changed since
-    /// it last reported (another mail client read the message).
-    #[action(external)]
-    pub fn ingest(
-        &mut self,
-        #[param("The messages, with what their source reports")] messages: Vec<IngestBaseline>,
-    ) {
-        for baseline in messages {
-            self.ingest_one(&baseline);
-        }
-    }
-
-    /// A mail server confirmed it holds what `update` asked of it.
+    /// A mail server confirmed it holds what `update` asked of a draft's
+    /// copy.
     #[action(external)]
     pub fn server_applied(&mut self, #[param("What the server was told")] update: ServerUpdate) {
-        if let ServerUpdate::SaveDraft {
-            id,
-            account,
-            locator,
-            written,
-            ..
-        } = update
-        {
-            self.draft_copied(&id, account, locator, written);
-            return;
-        }
-        let Some(message) = self.messages.get_mut(&Id::from_raw(update.id())) else {
-            return;
-        };
-        let Some(server) = message.server.as_mut() else {
-            return;
-        };
         match update {
-            ServerUpdate::Flags { read, starred, .. } => {
-                server.read = read;
-                server.starred = starred;
+            ServerUpdate::SaveDraft {
+                id,
+                account,
+                locator,
+                written,
+                ..
+            } => self.draft_copied(&id, account, locator, written),
+            ServerUpdate::Remove { id, .. } => {
+                if let Some(copy) = self.retired.get_mut(&Id::from_raw(id)) {
+                    copy.removed = true;
+                }
             }
-            ServerUpdate::Move { to, .. } => server.folder = to,
-            ServerUpdate::Remove { .. } => server.removed = true,
-            ServerUpdate::SaveDraft { .. } => {}
+            ServerUpdate::Flags { .. } | ServerUpdate::Move { .. } => {}
         }
     }
 
@@ -656,21 +565,6 @@ impl Mail {
         }
         checks.prune(CHECKS_KEPT);
         Ok(())
-    }
-
-    /// Deliver message
-    ///
-    /// Puts an incoming message in the mailbox itself, in a folder, as mail
-    /// fetched from a server would arrive: for a scenario, an event a workspace
-    /// hands on, or a worker with no account. A reply joins the
-    /// conversation it answers. Nothing is sent. Answers its id.
-    #[action(answers, local, audience = "agents")]
-    pub fn deliver_message(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param(flatten)] message: crate::held::Delivery,
-    ) -> Result<(), Refusal> {
-        self.deliver(cx, &message).map(drop)
     }
 
     /// Draft message
@@ -891,33 +785,41 @@ impl Mail {
     /// as every permanent deletion is.
     fn retire_copy(&mut self, copy: DraftCopy) {
         let key = Id::from_raw(crate::transport::stable_message_id(&copy.locator).to_string());
-        let server = ServerCopy {
-            account: copy.account,
-            locator: copy.locator,
-            read: true,
-            starred: false,
-            folder: Folder::Drafts,
-            removed: false,
-        };
-        match self.messages.get_mut(&key) {
-            Some(message) => {
-                message.purged = true;
-                if message.server.is_none() {
-                    message.server = Some(server);
-                }
-            }
-            None => {
-                self.messages.push(
-                    key,
-                    MessageState {
-                        read: true,
-                        folder: Folder::Drafts,
-                        server: Some(server),
-                        purged: true,
-                        ..MessageState::default()
-                    },
-                );
-            }
+        if self.retired.contains(&key) {
+            return;
+        }
+        self.retired.push(
+            key,
+            RetiredCopy {
+                account: copy.account,
+                locator: copy.locator,
+                removed: false,
+            },
+        );
+    }
+
+    /// The ids, as fetched messages, of the copies of drafts servers were
+    /// told to delete.
+    pub(crate) fn retired_copy_ids(&self) -> std::collections::HashSet<String> {
+        self.retired
+            .iter()
+            .map(|(id, _)| id.as_str().to_owned())
+            .collect()
+    }
+
+    /// Forget the oldest deleted copies beyond [`SETTLED_KEPT`].
+    fn prune_retired(&mut self) {
+        let removed: Vec<Id> = self
+            .retired
+            .iter()
+            .filter(|(_, copy)| copy.removed)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in removed
+            .iter()
+            .take(removed.len().saturating_sub(SETTLED_KEPT))
+        {
+            self.retired.remove(id);
         }
     }
 
@@ -977,128 +879,11 @@ impl Mail {
 }
 
 impl Mail {
-    /// The ids of `messages` the mailbox holds and has not deleted for
-    /// good, at most [`MAX_MESSAGES_PER_ACTION`] of them; refused when none
-    /// is.
-    fn present(&self, messages: &[String]) -> Result<Vec<Id>, Refusal> {
-        let mut ids: Vec<Id> = Vec::new();
-        for id in messages {
-            let id = id.trim();
-            if id.is_empty() || id.chars().count() > MAX_MESSAGE_ID_CHARS {
-                continue;
-            }
-            let id = Id::from_raw(id);
-            if ids.len() < MAX_MESSAGES_PER_ACTION
-                && !ids.contains(&id)
-                && self
-                    .messages
-                    .get(&id)
-                    .is_some_and(|message| !message.purged)
-            {
-                ids.push(id);
-            }
-        }
-        if ids.is_empty() {
-            Err(Refusal::new("none of these messages is in the mailbox"))
-        } else {
-            Ok(ids)
-        }
-    }
-
-    fn move_to(&mut self, messages: &[String], folder: Folder) -> Result<(), Refusal> {
-        for id in self.present(messages)? {
-            if let Some(message) = self.messages.get_mut(&id) {
-                message.folder = folder;
-            }
-        }
-        Ok(())
-    }
-
-    fn ingest_one(&mut self, baseline: &IngestBaseline) {
-        if baseline.id.is_empty() || baseline.id.chars().count() > MAX_MESSAGE_ID_CHARS {
-            return;
-        }
-        let folder = baseline.folder.as_deref().and_then(Folder::from_key);
-        let server = match (&baseline.account, &baseline.locator) {
-            (Some(account), Some(locator)) => Some((account.clone(), locator.clone())),
-            _ => None,
-        };
-        let key = Id::from_raw(baseline.id.clone());
-        let Some(message) = self.messages.get_mut(&key) else {
-            let state = MessageState {
-                read: baseline.read.unwrap_or(false),
-                starred: baseline.starred.unwrap_or(false),
-                folder: folder.unwrap_or_default(),
-                labels: Set::new(),
-                server: server.map(|(account, locator)| ServerCopy {
-                    account,
-                    locator,
-                    read: baseline.read.unwrap_or(false),
-                    starred: baseline.starred.unwrap_or(false),
-                    folder: folder.unwrap_or_default(),
-                    removed: false,
-                }),
-                purged: false,
-                label: baseline.label.clone().unwrap_or_default(),
-            };
-            self.messages.push(key, state);
-            return;
-        };
-        if message.purged {
-            return;
-        }
-        if let Some(label) = baseline
-            .label
-            .as_ref()
-            .filter(|label| **label != message.label)
-        {
-            message.label.clone_from(label);
-        }
-        let Some((account, locator)) = server else {
-            return;
-        };
-        let Some(known) = message.server.as_mut() else {
-            message.server = Some(ServerCopy {
-                account,
-                locator,
-                read: baseline.read.unwrap_or(message.read),
-                starred: baseline.starred.unwrap_or(message.starred),
-                folder: folder.unwrap_or(message.folder),
-                removed: false,
-            });
-            return;
-        };
-        known.account = account;
-        known.locator = locator;
-        if let Some(read) = baseline.read.filter(|read| *read != known.read) {
-            known.read = read;
-            message.read = read;
-        }
-        if let Some(starred) = baseline.starred.filter(|starred| *starred != known.starred) {
-            known.starred = starred;
-            message.starred = starred;
-        }
-        if let Some(folder) = folder.filter(|folder| *folder != known.folder) {
-            known.folder = folder;
-            message.folder = folder;
-        }
-    }
-
-    /// What the mailbox holds of the message `id`, unless it was deleted
-    /// for good.
-    pub fn message(&self, id: &str) -> Option<&MessageState> {
-        self.messages
-            .get(&Id::from_raw(id))
-            .filter(|message| !message.purged)
-    }
-
-    /// What every fetched message's server still has to be told: the
-    /// mailbox's flags, folder and permanent deletions where the server
-    /// differs, in the order a server applies them (flags in the folder the
-    /// message is in, then the move).
-    /// After every change, whoever made it: queue telling each message's
+    /// After every change, whoever made it: queue telling each draft's
     /// server what it does not hold yet, and forget what it no longer has
-    /// to be told (an undo that took the change back first).
+    /// to be told (an undo that took the change back first). What servers
+    /// are owed of the messages is read off their parts
+    /// ([`crate::part::owed`]).
     fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
         let wanted = self.server_updates();
         let stale: Vec<Id> = self
@@ -1117,8 +902,11 @@ impl Mail {
         }
         self.server.prune(SETTLED_KEPT);
         self.outbox.prune(SETTLED_KEPT);
+        self.prune_retired();
     }
 
+    /// What the drafts' servers still have to be told: each draft's copy as
+    /// it is written now, and the deletion of copies no longer needed.
     pub fn server_updates(&self) -> Vec<ServerUpdate> {
         let mut updates = Vec::new();
         // Each draft with an account is kept in its server's Drafts too, as
@@ -1143,83 +931,16 @@ impl Mail {
                 in_reply_to: draft.in_reply_to.clone(),
             });
         }
-        for (id, message) in self.messages.iter() {
-            let Some(server) = &message.server else {
-                continue;
-            };
-            let (id, account, locator) = (
-                id.as_str().to_owned(),
-                server.account.clone(),
-                server.locator.clone(),
-            );
-            if message.purged {
-                if !server.removed {
-                    updates.push(ServerUpdate::Remove {
-                        id,
-                        account,
-                        locator,
-                        folder: server.folder,
-                    });
-                }
-                continue;
-            }
-            if message.read != server.read || message.starred != server.starred {
-                updates.push(ServerUpdate::Flags {
-                    id: id.clone(),
-                    account: account.clone(),
-                    locator: locator.clone(),
-                    folder: server.folder,
-                    read: message.read,
-                    starred: message.starred,
-                });
-            }
-            if message.folder != server.folder {
-                updates.push(ServerUpdate::Move {
-                    id,
-                    account,
-                    locator,
-                    from: server.folder,
-                    to: message.folder,
-                });
-            }
+        // Each copy no longer needed is deleted from its server.
+        for (id, copy) in self.retired.iter().filter(|(_, copy)| !copy.removed) {
+            updates.push(ServerUpdate::Remove {
+                id: id.as_str().to_owned(),
+                account: copy.account.clone(),
+                locator: copy.locator.clone(),
+                folder: Folder::Drafts,
+            });
         }
         updates
-    }
-
-    /// Show the reader's flags, folders and labels on the loaded mail, and
-    /// drop what was deleted for good. The mail's content is the engine's;
-    /// what the reader did with it is the mailbox's.
-    /// Whether the record knows message `id`.
-    pub(crate) fn knows(&self, id: &str) -> bool {
-        self.messages.get(&Id::from_raw(id.to_owned())).is_some()
-    }
-
-    pub fn apply_flags(&self, mailbox: &mut crate::model::Mailbox) {
-        let ids: Vec<_> = mailbox.messages.keys().copied().collect();
-        for id in ids {
-            let Some(state) = self.messages.get(&Id::from_raw(id.to_string())) else {
-                continue;
-            };
-            if state.purged {
-                mailbox.purge(id);
-                continue;
-            }
-            let labels: Vec<String> = state.labels.iter().cloned().collect();
-            let changed = mailbox.get(id).is_some_and(|message| {
-                message.read != state.read
-                    || message.starred != state.starred
-                    || message.folder != state.folder
-                    || message.labels != labels
-            });
-            // Only a message that differs is changed, so an unchanged
-            // mailbox keeps its revision and what is derived from it.
-            if changed && let Some(message) = mailbox.get_mut(id) {
-                message.read = state.read;
-                message.starred = state.starred;
-                message.folder = state.folder;
-                message.labels = labels;
-            }
-        }
     }
 
     /// Messages sent and not delivered, with the reason its server refused
@@ -1272,12 +993,10 @@ impl Mail {
         crate::search::folder_entries(&self.custom_folders())
     }
 
-    /// Each folder as a place, the messages in it (as many as the mailbox
-    /// publishes) beneath it; the draft beneath Drafts.
+    /// Each folder as a place, the drafts beneath Drafts. The messages are
+    /// published by their parts ([`crate::part::places`]).
     fn places(&self) -> Vec<Derived<Self>> {
-        let mut remaining = OPEN_MESSAGE_LIMIT;
         let mut places = Vec::new();
-        let copies = self.draft_copy_ids();
         for folder in Folder::ALL {
             let mut place = Derived::new(crate::i18n::t(folder.message()))
                 .of_kind("folder")
@@ -1290,24 +1009,6 @@ impl Mail {
                     place = place.with_child(Self::draft_place(&id, draft));
                 }
             }
-            for (id, message) in self
-                .messages
-                .iter()
-                .filter(|(id, message)| {
-                    !message.purged
-                        && message.folder == folder
-                        && !copies.iter().any(|copy| copy == id.as_str())
-                })
-                .take(remaining)
-            {
-                let label = if message.label.is_empty() {
-                    id.as_str()
-                } else {
-                    message.label.as_str()
-                };
-                place = place.with_child(Self::message_place(id.as_str(), label, message));
-                remaining = remaining.saturating_sub(1);
-            }
             places.push(place);
         }
         for (id, folder) in self.folders.iter() {
@@ -1318,58 +1019,6 @@ impl Mail {
             );
         }
         places
-    }
-
-    /// The message `id` as a place: opening, previewing and answering it,
-    /// marking it read, archiving or deleting it.
-    pub(crate) fn message_place(id: &str, label: &str, message: &MessageState) -> Derived<Self> {
-        let ids = vec![id.to_owned()];
-        let mut place = Derived::new(label)
-            .of_kind("message")
-            .identified(message_place_id(id))
-            .with_effect(&MailEffect::Open {
-                target: MailTarget::Message(id.to_owned()),
-            })
-            .with_effect(&MailEffect::Inspect {
-                message: id.to_owned(),
-            })
-            .with_effect(&MailEffect::ReadMessage {
-                message: id.to_owned(),
-            })
-            .with_effect(&MailEffect::Reply {
-                message: id.to_owned(),
-            })
-            .with_effect(&MailEffect::ReplyAll {
-                message: id.to_owned(),
-            })
-            .with_effect(&MailEffect::Forward {
-                message: id.to_owned(),
-            })
-            .with_effect(&MailEffect::LoadRemoteContent {
-                message: id.to_owned(),
-            })
-            .with_effect(&MailEffect::AlwaysLoadRemoteContent {
-                message: id.to_owned(),
-            })
-            .with_effect_asking(
-                &MailEffect::OpenLink {
-                    message: id.to_owned(),
-                    url: String::new(),
-                },
-                &["url"],
-            )
-            .with(
-                Self::MARK_READ
-                    .bind(mailbox::MarkRead::paths().messages, ids.clone())
-                    .and(mailbox::MarkRead::paths().read, !message.read),
-            )
-            .with(Self::ARCHIVE.bind(mailbox::Archive::paths().messages, ids.clone()));
-        place = if message.folder == Folder::Trash {
-            place.with(Self::PURGE.bind(mailbox::Purge::paths().messages, ids))
-        } else {
-            place.with(Self::TRASH.bind(mailbox::Trash::paths().messages, ids))
-        };
-        place
     }
 }
 
@@ -1511,24 +1160,89 @@ impl TestMail {
         *doc = mail.doc().clone();
     }
 
-    pub(crate) fn get_read(doc: &tilo_resource::Doc, id: &str) -> Option<bool> {
-        Self::mail(doc).message(id).map(|message| message.read)
+    /// Apply what the window asked of the mailbox's parts, as the session does
+    /// after the frame (a destructive verb as once the person agreed), and
+    /// answer every message the parts hold.
+    pub(crate) fn messages(st: &crate::state::MailState) -> std::rc::Rc<crate::part::MessagePart> {
+        if let Some(chain) = &st.chain {
+            for action in chain
+                .dispatcher()
+                .take_asked()
+                .expect("what was asked builds")
+            {
+                chain.apply(&action).expect("a change to the parts applies");
+            }
+        }
+        st.messages()
     }
 
-    pub(crate) fn get_starred(doc: &tilo_resource::Doc, id: &str) -> Option<bool> {
-        Self::mail(doc).message(id).map(|message| message.starred)
+    pub(crate) fn get_read(st: &crate::state::MailState, id: &str) -> Option<bool> {
+        Self::messages(st).message(id).map(|message| message.read)
     }
 
-    pub(crate) fn get_folder_for(doc: &tilo_resource::Doc, id: &str) -> Option<Folder> {
-        Self::mail(doc).message(id).map(|message| message.folder)
+    pub(crate) fn get_starred(st: &crate::state::MailState, id: &str) -> Option<bool> {
+        Self::messages(st)
+            .message(id)
+            .map(|message| message.starred)
     }
 
-    pub(crate) fn is_present_message(doc: &tilo_resource::Doc, id: &str) -> bool {
-        Self::mail(doc).message(id).is_some()
+    pub(crate) fn get_folder_for(st: &crate::state::MailState, id: &str) -> Option<Folder> {
+        Self::messages(st).message(id).map(|message| message.folder)
     }
 
-    pub(crate) fn server_updates(doc: &tilo_resource::Doc) -> Vec<ServerUpdate> {
-        Self::mail(doc).server_updates()
+    pub(crate) fn is_present_message(st: &crate::state::MailState, id: &str) -> bool {
+        Self::messages(st).message(id).is_some()
+    }
+
+    /// Every message a test window's parts hold, as one.
+    pub(crate) fn held_by(
+        app: &ui::framework::testing::TestApp<MailShell>,
+    ) -> crate::part::MessagePart {
+        crate::part::MessagePart::of(&app.chain_parts::<crate::part::MessagePart>())
+    }
+
+    /// The messages as a test window publishes them, beside the mailbox.
+    pub(crate) fn messages_resource(
+        app: &mut ui::framework::testing::TestApp<MailShell>,
+    ) -> tilo_actions::ResourceSpec {
+        fn find(resources: &[tilo_actions::ResourceSpec]) -> Option<&tilo_actions::ResourceSpec> {
+            resources.iter().find_map(|resource| {
+                if resource.kind == <crate::part::MessagePart as tilo_resource::Resource>::KIND {
+                    Some(resource)
+                } else {
+                    find(&resource.children)
+                }
+            })
+        }
+        let resources = app.harness().resources();
+        find(&resources)
+            .cloned()
+            .expect("the messages are published beside the mailbox")
+    }
+
+    /// What a test window's parts owe the messages' servers.
+    pub(crate) fn owed_by(app: &ui::framework::testing::TestApp<MailShell>) -> Vec<ServerUpdate> {
+        app.chain_parts::<crate::part::MessagePart>()
+            .iter()
+            .flat_map(|(_, part)| crate::part::owed(part))
+            .map(|(_, update)| update)
+            .collect()
+    }
+
+    /// What the messages' servers are owed, read off the parts.
+    pub(crate) fn owed(st: &crate::state::MailState) -> Vec<ServerUpdate> {
+        Self::messages(st);
+        st.chain
+            .as_ref()
+            .map(|chain| {
+                chain
+                    .parts()
+                    .iter()
+                    .flat_map(|(_, part)| crate::part::owed(part))
+                    .map(|(_, update)| update)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn load_draft(doc: &tilo_resource::Doc) -> Draft {
@@ -1539,8 +1253,8 @@ impl TestMail {
         Self::mail(doc).outgoing()
     }
 
-    pub(crate) fn apply_flags(doc: &tilo_resource::Doc, mailbox: &mut crate::model::Mailbox) {
-        Self::mail(doc).apply_flags(mailbox);
+    pub(crate) fn apply_flags(st: &crate::state::MailState, mailbox: &mut crate::model::Mailbox) {
+        Self::messages(st).apply_flags(mailbox);
     }
 
     pub(crate) fn draft_body(doc: &tilo_resource::Doc) -> Option<ui::automerge::ObjId> {
@@ -1581,26 +1295,6 @@ impl TestMail {
         Self::change(
             doc,
             tilo_resource::Invoke::from(Mail::paths().outbox.settle(&Id::from_raw(id), settled)),
-        );
-    }
-
-    pub(crate) fn set_folder_for(doc: &mut tilo_resource::Doc, id: &str, folder: Folder) {
-        Self::change(
-            doc,
-            Mail::INGEST.with(mailbox::Ingest {
-                messages: vec![IngestBaseline::register_only(id)],
-            }),
-        );
-        Self::change(
-            doc,
-            tilo_resource::Invoke::edit(
-                &Mail::paths()
-                    .messages
-                    .item(&Id::from_raw(id))
-                    .folder
-                    .set(folder),
-            )
-            .expect("a folder edit"),
         );
     }
 }
@@ -1721,6 +1415,11 @@ impl ResourceApp for MailShell {
 
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
+    }
+
+    /// The messages, kept in parts beside the person's mailbox.
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<crate::part::MessagePart>();
     }
 
     /// Only a live window reaches mail servers and the account store; History
@@ -2018,12 +1717,12 @@ mod tests {
                 panic!("the draft shows in Drafts, once");
             };
             assert_eq!(app.state().draft.shown_as, Some(first.to_string()));
-            let messages = app.state().messages.len();
+            let messages = TestMail::held_by(&app).messages.len();
             for _ in 0..2 {
                 app = app.reopen().unwrap();
                 app.settle();
                 assert_eq!(shown(&mut app), [first]);
-                assert_eq!(app.state().messages.len(), messages);
+                assert_eq!(TestMail::held_by(&app).messages.len(), messages);
             }
         }
     }
@@ -2123,22 +1822,23 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             let state = read_mail(&doc).expect("a mailbox");
+            let held = TestMail::messages(&app.shared.borrow());
             assert!(
-                !state.messages.is_empty(),
-                "sample sync ingests message flags into the mailbox"
+                !held.messages.is_empty(),
+                "sample sync ingests message flags into the mailbox's parts"
             );
-            let published = ui::tilo_resource::publish::<Mail>("mail.mailbox", "Mail", &state);
-            assert_eq!(published.kind, "mail.mailbox");
-            let inbox = published
-                .children
-                .iter()
-                .find(|child| child.id.as_str() == folder_resource("inbox"))
-                .expect("the inbox place on the published mailbox");
-            let message = inbox
-                .children
-                .iter()
-                .find(|child| child.kind == "mail.mailbox.message")
-                .expect("a message place under its folder");
+            let parts = app
+                .shared
+                .borrow()
+                .chain
+                .as_ref()
+                .expect("the window keeps its messages in parts")
+                .parts();
+            let message = crate::part::places(&state, &parts)
+                .into_iter()
+                .next()
+                .expect("a message place beside the mailbox")
+                .publish();
             for id in ["mark-read", "archive", "trash"] {
                 assert!(
                     message
@@ -2279,11 +1979,10 @@ mod tests {
             {
                 ui::i18n::I18nManager::init("en-US");
                 let mut app = TestApp::<MailShell>::capture(Some("bulk_purge_confirmation")).unwrap();
-                let trashed = app
-                    .state()
+                let trashed = crate::resource::TestMail::held_by(&app)
                     .messages
-                    .values()
-                    .filter(|message| !message.purged && message.folder == Folder::Trash)
+                    .iter()
+                    .filter(|(_, message)| !message.purged && message.folder == Folder::Trash)
                     .count();
                 let sample_trash = crate::sample::sample_mailbox()
                     .messages
@@ -2302,10 +2001,10 @@ mod tests {
                 ui::i18n::I18nManager::init("en-US");
                 let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
                 let starred = |app: &TestApp<MailShell>| {
-                    app.state()
+                    crate::resource::TestMail::held_by(app)
                         .messages
-                        .values()
-                        .filter(|message| message.starred)
+                        .iter()
+                        .filter(|(_, message)| message.starred)
                         .count()
                 };
                 let before = starred(&app);
@@ -2322,13 +2021,12 @@ mod tests {
             phase every_api_reaches_the_server_through_the_document;
             {
                 use crate::actions::{IngestBaseline, ServerUpdate};
-                use crate::resource::{Mail, TestMail, mailbox};
+                use crate::part::{MessagePart, message_part};
                 use ui::tilo_resource::Id;
 
                 ui::i18n::I18nManager::init("en-US");
                 let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
-                let id = app
-                    .state()
+                let id = crate::resource::TestMail::held_by(&app)
                     .messages
                     .iter()
                     .find(|(_, message)| {
@@ -2345,36 +2043,45 @@ mod tests {
                     locator: Some("launch@example.test".into()),
                     label: None,
                 };
-                app.invoke(Mail::INGEST.with(mailbox::Ingest {
+                app.chain_invoke(&MessagePart::INGEST.with(message_part::Ingest {
                     messages: vec![fetched],
                 }))
                 .unwrap();
-                assert!(app.state().server_updates().is_empty());
+                assert!(crate::resource::TestMail::owed_by(&app).is_empty());
 
-                app.invoke(
-                    ui::tilo_resource::Invoke::edit(
-                        &Mail::paths()
+                // Through the window's API, as an agent or the palette stars it.
+                let messages = crate::resource::TestMail::messages_resource(&mut app);
+                app.call_on(
+                    messages.id.as_str(),
+                    "field-edit",
+                    serde_json::json!({ "edit": MessagePart::star(&id, true) }),
+                )
+                .unwrap();
+                app.settle();
+                assert!(matches!(
+                    crate::resource::TestMail::owed_by(&app).as_slice(),
+                    [ServerUpdate::Flags { starred: true, .. }]
+                ));
+                assert!(app.undo());
+                assert!(
+                    crate::resource::TestMail::owed_by(&app).is_empty(),
+                    "undone before the server heard of it"
+                );
+
+                // Another member's change reaches the server the same way.
+                app.chain_invoke(
+                    &ui::tilo_resource::Invoke::edit(
+                        &MessagePart::paths()
                             .messages
-                            .item(&Id::from_raw(id.clone()))
-                            .starred
-                            .set(true),
+                            .item(&Id::from_raw(id))
+                            .folder
+                            .set(Folder::Archive),
                     )
                     .unwrap(),
                 )
                 .unwrap();
                 assert!(matches!(
-                    app.state().server_updates().as_slice(),
-                    [ServerUpdate::Flags { starred: true, .. }]
-                ));
-                assert!(app.undo());
-                assert!(
-                    app.state().server_updates().is_empty(),
-                    "undone before the server heard of it"
-                );
-
-                app.merge_peer_edit(|doc| TestMail::set_folder_for(doc, &id, Folder::Archive));
-                assert!(matches!(
-                    app.state().server_updates().as_slice(),
+                    crate::resource::TestMail::owed_by(&app).as_slice(),
                     [ServerUpdate::Move {
                         to: Folder::Archive,
                         ..
@@ -2654,16 +2361,16 @@ mod reach_tests {
 
 #[cfg(test)]
 mod own_resource_tests {
-    /// A window naming no record opens the person's own mailbox, never the
+    /// A window naming no resource opens the person's own mailbox, never the
     /// workspace's: a reader of the workspace keeps their own mail like
     /// anyone else, and no other member reads it.
     #[test]
-    fn mail_opens_the_persons_own_record() {
+    fn mail_opens_the_persons_own_resource() {
         let definition = ui::framework::definition::<super::MailShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
         let own = definition
             .member_resource_of(&person)
-            .expect("each member keeps their own Mail record");
+            .expect("each member keeps their own Mail resource");
         assert_eq!(
             own.id,
             ui::resource::DocumentId::of_member(person.id(), "mail.mailbox").unwrap()

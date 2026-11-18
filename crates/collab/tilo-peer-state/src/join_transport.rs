@@ -1,7 +1,7 @@
 //! The owner-neutral iroh transport for the shared workspace join contract.
 //! The client half reaches a governor over its iroh endpoint. The server half,
 //! [`WorkspaceJoinProtocol`], is how every governor answers on its iroh
-//! endpoint: a relay for the workspaces it governs and a device for its own.
+//! endpoint: a server for the workspaces it governs and a device for its own.
 //! The messages are `tilo_workspace_join`'s and the decisions are
 //! [`crate::join_answer`]'s, so a device answers and asks with what it already
 //! holds.

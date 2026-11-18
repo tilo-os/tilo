@@ -4,7 +4,7 @@
 //! screen reader activating its button, or an agent or script through the
 //! row's action all end in [`BrowserWidget::answer_sign_in`]. So the rules
 //! of a secret this window sends hold for each of them alike: the password
-//! is remembered by its digest and never written to the tab's record, and a
+//! is remembered by its digest and never written to the tab's resource, and a
 //! window that sent credentials holds a sign-in from then on, so reading its
 //! page takes the authority to operate it.
 

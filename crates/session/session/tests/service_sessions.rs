@@ -1,4 +1,4 @@
-//! The person's account custody, as the session serves it to the apps that ask: Browser lists,
+//! The person's account credentials, as the session serves it to the apps that ask: Browser lists,
 //! resolves and forgets the website sessions the person selected, Settings seals an account's
 //! secret, and Mail is released the one it keeps. Every call goes through the action API the
 //! shipped app already speaks, on a connection admitted as that app in its workspace, and nothing
@@ -24,11 +24,11 @@ use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
+use tilo_session::{AppSocket, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 use crate::common::held::{WORKSPACE, actor, presentation};
@@ -42,7 +42,7 @@ const MAIL: &str = "so.tilo.mail";
 /// Browser's record in the workspace: the route its app connection joins.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bf";
 /// The secret the person's email account is sealed with.
-const PASSWORD: &str = "an app password only custody is released";
+const PASSWORD: &str = "an app password only ownership is released";
 /// What the selected website session's cookie holds.
 const MARKER: &str = "private-session-marker";
 /// The person's email account, as their accounts record keys it.
@@ -81,7 +81,7 @@ struct Fixture {
     _home: tempfile::TempDir,
 }
 
-/// The person's account vault under this host's one custody: the keyring where it answers,
+/// The person's account vault under this host's one ownership: the keyring where it answers,
 /// otherwise an owner-only key file beside the ciphertext.
 fn person_vault(root: &Path) -> accounts::AccountCredentials {
     accounts::AccountCredentials::open_in(root)
@@ -92,7 +92,7 @@ fn person_vault(root: &Path) -> accounts::AccountCredentials {
 /// keeps the vault key in an owner-only file beside the ciphertext.
 ///
 /// A keyring that answers is the file-backed secret store
-/// [`tilo_secrets::SECRETS_DIR_ENV`] names standing in for the Secret
+/// [`tilo_secrets::SECRETS_DIR_ENV`] names in place of the Secret
 /// Service. Either way the session bus is one no Secret Service listens on,
 /// so on the second the host has no keyring whichever machine runs this.
 fn fixture(keyring: Keyring) -> Fixture {
@@ -115,7 +115,7 @@ fn fixture(keyring: Keyring) -> Fixture {
     }
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
@@ -127,8 +127,8 @@ fn fixture(keyring: Keyring) -> Fixture {
     // The person's other device, enrolled as a pairing enrolls one.
     let now = tilo_clock::unix_now_ns();
     let fleet =
-        tilo_identity_host::device_fleet::DeviceFleetStore::from_env().expect("the device fleet");
-    let profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
+        tilo_identity::device_fleet::DeviceFleetStore::from_env().expect("the device fleet");
+    let profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let token = fleet
@@ -235,7 +235,7 @@ fn hold_workspace(state: &Path, keys: &Keys) {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 std::time::SystemTime::now(),
             )
@@ -255,13 +255,13 @@ fn shell(keys: &Keys) -> Layout {
     }
 }
 
-/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// A directory for the app wire's socket that only this user reaches: the broker refuses to serve one
 /// anybody else could open.
 fn private_socket() -> (tempfile::TempDir, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
+    let root = tempfile::tempdir().expect("a directory to serve the app wire in");
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
+        .expect("the app wire's directory is this user's");
     let socket = root.path().join("collab.sock");
     (root, socket)
 }
@@ -276,7 +276,7 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
     let mut session = crate::common::headless(Options {
         collab: false,
         wake: LoopWake::default(),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: "Ada".to_owned(),
         launches,
         state: Some(fixture.state.clone()),
@@ -297,9 +297,10 @@ fn channel(app: &str) -> String {
     tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
 }
 
-/// A connection to the session's plane as `app` in the workspace, as the launcher hands an app one.
+/// A connection to the session's app wire as `app` in the workspace, as the launcher hands an app one.
 fn connect(socket: &Path, app: &str) -> CollabClient {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
     launcher::services::write_collab_handoff(&mut stream, app, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
@@ -329,7 +330,7 @@ fn config_root() -> PathBuf {
 }
 
 /// A person's selected website session, sealed in `root` as selection leaves it: its account entry,
-/// and its cookies in custody under the person's key.
+/// and its cookies held under the person's key.
 fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(root).expect("the person's accounts directory");
@@ -359,7 +360,7 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     let id = AccountId::from(session.session_id.clone());
     let mut account = accounts::Account::new(
         id.clone(),
-        account_custody::service_sessions::SERVICE_SESSION_TYPE,
+        account_credentials::service_sessions::SERVICE_SESSION_TYPE,
     );
     account.config = serde_json::json!({"service": "slack", "setup_binding": "prepared-operation"});
     let mut store = AccountStore::load_in(root);
@@ -368,7 +369,7 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     let mut vault = SecretVault::open_person(Some(root));
     vault.put(
         &id,
-        &account_custody::service_sessions::service_session_secret(&session)
+        &account_credentials::service_sessions::service_session_secret(&session)
             .expect("the selected session is sealable"),
     );
     vault.try_save().expect("the person's vault");
@@ -429,11 +430,11 @@ fn browser_lists_resolves_and_forgets_the_selection_where_a_key_file_holds_the_v
     browser_lists_resolves_and_forgets(Keyring::Missing);
 }
 
-/// Which custody the person's vault reports on a host of this kind.
-fn custody_on(keyring: Keyring) -> accounts::SecretCustody {
+/// Which ownership the person's vault reports on a host of this kind.
+fn backend_on(keyring: Keyring) -> accounts::VaultBackend {
     match keyring {
-        Keyring::Answers => accounts::SecretCustody::System,
-        Keyring::Missing => accounts::SecretCustody::LocalFile,
+        Keyring::Answers => accounts::VaultBackend::System,
+        Keyring::Missing => accounts::VaultBackend::LocalFile,
     }
 }
 
@@ -441,9 +442,9 @@ fn browser_lists_resolves_and_forgets(keyring: Keyring) {
     let fixture = fixture(keyring);
     let root = config_root();
     assert_eq!(
-        SecretVault::open_person(Some(&root)).custody(),
-        custody_on(keyring),
-        "the person's vault is keyed by this host's one custody"
+        SecretVault::open_person(Some(&root)).backend(),
+        backend_on(keyring),
+        "the person's vault is keyed by this host's one ownership"
     );
     let selected = select_in(&root, fixture.keys.root);
     assert_eq!(
@@ -474,7 +475,7 @@ fn browser_lists_resolves_and_forgets(keyring: Keyring) {
     );
     let Ok(Reply::Resolved { session: resolved }) = &replies[1] else {
         panic!(
-            "and resolved to the cookies custody keeps for it: {:?}",
+            "and resolved to the cookies ownership keeps for it: {:?}",
             replies[1]
         );
     };
@@ -556,7 +557,7 @@ fn the_persons_other_device_reads_and_forgets_the_selection() {
     );
     assert!(
         matches!(&replies[2], Ok(Reply::List { sessions }) if sessions.is_empty()),
-        "the person's custody is theirs, whichever of their devices asks: {:?}",
+        "the person's ownership is theirs, whichever of their devices asks: {:?}",
         replies[2]
     );
 }
@@ -609,8 +610,8 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
         let _ = person_vault(&root);
     }
     assert_eq!(
-        SecretVault::open_person(Some(&root)).custody(),
-        custody_on(Keyring::Missing),
+        SecretVault::open_person(Some(&root)).backend(),
+        backend_on(Keyring::Missing),
         "with no keyring, an owner-only key beside the vault keeps it"
     );
     let (_root, socket) = private_socket();
@@ -631,7 +632,7 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
     let store = AccountStore::load_in(&root);
     let credentials = person_vault(&root);
     assert_eq!(
-        accounts::custody::release(&store, &credentials, MAIL, ACCOUNT)
+        accounts::secret_release::release(&store, &credentials, MAIL, ACCOUNT)
             .expect("Mail keeps email accounts")
             .as_str(),
         PASSWORD,
@@ -639,41 +640,63 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
     );
     for app in [BROWSER, "so.tilo.notes", "so.tilo.calendar"] {
         assert!(
-            accounts::custody::release(&store, &credentials, app, ACCOUNT).is_err(),
+            accounts::secret_release::release(&store, &credentials, app, ACCOUNT).is_err(),
             "{app} is not released the account's secret"
         );
     }
     assert!(
-        accounts::custody::release(&store, &credentials, SETTINGS, ACCOUNT).is_err(),
+        accounts::secret_release::release(&store, &credentials, SETTINGS, ACCOUNT).is_err(),
         "Settings is the keeper of accounts, and never reads a secret back"
     );
 }
 
 /// Mail's own call on a connection admitted as Mail: the account secret it keeps.
-fn mail_app(
+fn app_asks(
     socket: &Path,
-    device: &ed25519_dalek::SigningKey,
-    cert: &DeviceCert,
-    seen: &std::sync::mpsc::Sender<Result<Reply, String>>,
+    app: &str,
+    commands: Vec<Command>,
+    keys: &Keys,
+    seen: &std::sync::mpsc::Sender<Vec<Result<Reply, String>>>,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime for the app");
     runtime.block_on(async {
-        let client = connect(socket, MAIL);
+        let client = connect(socket, app);
         let handle = client
-            .join_channel(&channel(MAIL), &presentation(device, cert))
+            .join_channel(&channel(app), &presentation(&keys.device, &keys.cert))
             .await
             .expect("the app the session launched joins its workspace's channel");
-        let released = handle
-            .browser_service_session_command(&Command::ReleaseAccountSecret {
-                account: ACCOUNT.to_owned(),
-            })
-            .await
-            .map_err(|error| error.to_string());
-        let _ = seen.send(released);
+        let mut replies = Vec::new();
+        for command in commands {
+            replies.push(
+                handle
+                    .browser_service_session_command(&command)
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        let _ = seen.send(replies);
     });
+}
+
+/// What `app` is answered for each of `commands`, in order, by the session that serves
+/// `fixture`'s person, on a connection admitted as `app`.
+fn asked_of_the_session(
+    fixture: &Fixture,
+    app: &'static str,
+    commands: Vec<Command>,
+) -> Vec<Result<Reply, String>> {
+    let (_root, socket) = private_socket();
+    let mut session = session(&socket, fixture, app);
+
+    let (seen, received) = std::sync::mpsc::channel();
+    let keys = fixture.keys.clone();
+    let asking = std::thread::spawn(move || app_asks(&socket, app, commands, &keys, &seen));
+    let replies = until_the_app_is_done(&mut session, &received);
+    asking.join().expect("the app's thread");
+    replies
 }
 
 #[test]
@@ -692,25 +715,81 @@ fn mail_is_released_the_account_secret_it_keeps() {
         ));
         store.save_in(&root).expect("the person's accounts");
         let mut credentials = person_vault(&root);
-        accounts::custody::seal(&mut credentials, SETTINGS, ACCOUNT, PASSWORD)
+        accounts::secret_release::seal(&mut credentials, SETTINGS, ACCOUNT, PASSWORD)
             .expect("Settings seals the account's secret");
     }
     assert_eq!(
-        SecretVault::open_person(Some(&root)).custody(),
-        custody_on(Keyring::Answers),
+        SecretVault::open_person(Some(&root)).backend(),
+        backend_on(Keyring::Answers),
         "the keyring keeps the person's vault key, not a file beside it"
     );
-    let (_root, socket) = private_socket();
-    let mut session = session(&socket, &fixture, MAIL);
-
-    let (seen, received) = std::sync::mpsc::channel();
-    let Keys { device, cert, .. } = fixture.keys;
-    let app = std::thread::spawn(move || mail_app(&socket, &device, &cert, &seen));
-    let released = until_the_app_is_done(&mut session, &received);
-    app.join().expect("the app's thread");
+    let released = asked_of_the_session(
+        &fixture,
+        MAIL,
+        vec![Command::ReleaseAccountSecret {
+            account: ACCOUNT.to_owned(),
+        }],
+    )
+    .remove(0);
     let Ok(Reply::AccountSecret { account, password }) = &released else {
         panic!("Mail is released the account's secret: {released:?}");
     };
     assert_eq!(account, ACCOUNT);
     assert_eq!(password.as_str(), PASSWORD);
+}
+
+/// A vault item's reference, made up.
+const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+
+/// What an app asks about vault items: whether its session has any used for a page, and the
+/// text of one for the page action `fill`.
+fn item_asks(fill: tilo_actions::InvocationId) -> Vec<Command> {
+    vec![
+        Command::LendsItems {},
+        Command::UseItem {
+            invocation: fill,
+            item: ITEM.to_owned(),
+            origin: "https://login.example.test".to_owned(),
+        },
+    ]
+}
+
+/// A person's own session keeps no vault a page is filled from: Browser is told so when it
+/// asks whether items are lent, and an ask for one is refused with its reason.
+#[test]
+fn a_persons_own_session_has_no_vault_item_used_for_a_page_and_says_why() {
+    let fill = tilo_actions::InvocationId::new();
+    let replies = asked_of_the_session(&fixture(Keyring::Answers), BROWSER, item_asks(fill));
+    assert!(
+        matches!(&replies[0], Ok(Reply::ItemsLent { lent: false })),
+        "{:?}",
+        replies[0]
+    );
+    assert!(
+        matches!(
+            &replies[1],
+            Ok(Reply::ItemRefused { invocation, reason })
+                if *invocation == fill && reason.contains("holds no Browser of that workspace")
+        ),
+        "{:?}",
+        replies[1]
+    );
+}
+
+/// Only Browser asks about vault items: another app's question is refused, and its ask for
+/// an item's text is answered with that reason.
+#[test]
+fn an_app_that_is_not_browser_is_told_that_only_browser_has_a_page_filled() {
+    let fill = tilo_actions::InvocationId::new();
+    let replies = asked_of_the_session(&fixture(Keyring::Answers), MAIL, item_asks(fill));
+    assert!(replies[0].is_err(), "{:?}", replies[0]);
+    assert!(
+        matches!(
+            &replies[1],
+            Ok(Reply::ItemRefused { invocation, reason })
+                if *invocation == fill && reason.contains("Only Browser")
+        ),
+        "{:?}",
+        replies[1]
+    );
 }

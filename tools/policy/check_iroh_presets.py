@@ -4,12 +4,12 @@
 ``presets::N0`` is iroh's "everything at number 0's": its public relays and a
 DNS directory that signs this device's key in on the spot and republishes it
 every five minutes, whatever the endpoint is doing. What Tilo decided instead: keep
-the relays and the directory, and gate what is published — by the same
+the relays and the directory, and check what is published — by the same
 condition that holds the relays back — in
 ``crates/system/endpoint-reachability/src/directory.rs``.
 
 A durable endpoint that binds ``presets::N0`` therefore quietly restores the
-ungated behaviour. This check refuses it in production code and points at the
+unguarded behaviour. This check refuses it in production code and points at the
 preset's replacement. Two kinds of endpoint are exempt, because they are not
 a device's identity:
 
@@ -17,10 +17,10 @@ a device's identity:
   used and dropped, and never outlives the test that binds it. Nothing to
   list: the test attribute is what exempts it.
 * A process that is not a desktop. ``EXEMPT`` names each file and why:
-  ``tilo-relay``'s diagnostic subcommands and its daemon, the initrd's
+  ``tilo-server``'s diagnostic subcommands and its daemon, the initrd's
   sibling unlock. Each lives as
   long as the command that started it, dials an address it was handed, or is
-  the relay devices are meant to find. They are listed so that a device
+  the server devices are meant to find. They are listed so that a device
   endpoint added beside one has to be argued for rather than absorbed.
 """
 
@@ -45,11 +45,11 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 # handed; the session's and the filesystem's endpoints are not here.
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
-    # The relay's own diagnostic probes.
-    "crates/hosting/tilo-relay/src/files_probe.rs": "relay diagnostic probe",
-    "crates/hosting/tilo-relay/src/admin.rs": "relay admin client",
+    # The server's own diagnostic probes.
+    "crates/server/tilo-server/src/files_probe.rs": "server diagnostic probe",
+    "crates/server/tilo-server/src/admin.rs": "server admin client",
     # `tilo app push`: one command dialing the workspace host its link names.
-    "crates/hosting/tilo-relay-session/src/workspaces/govern.rs": "workspace governance client of one command",
+    "crates/server/tilo-server-session/src/workspaces/govern.rs": "workspace governance client of one command",
     # A client of the device administrator, which chooses its own relays.
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
@@ -57,8 +57,8 @@ EXEMPT = {
     "crates/system/tilo-sibling-unlock/src/exchange.rs": "initrd unlock exchange",
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
-    # The relay daemon's own endpoint, which is what devices dial.
-    "crates/hosting/tilo-relay/src/daemon.rs": "relay daemon",
+    # The server daemon's own endpoint, which is what devices dial.
+    "crates/server/tilo-server/src/daemon.rs": "server daemon",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

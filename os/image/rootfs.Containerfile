@@ -116,8 +116,8 @@ RUN case "${TILO_GENERATION}" in \
 ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,target=/run/tilo-collaborative-files-image-contract.sh,ro \
-    for f in /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin /usr/libexec/tilo/tilo-enroll \
-        /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate \
+    for f in /usr/libexec/tilo/tilo-server /usr/libexec/tilo/tilo-server-admin /usr/libexec/tilo/tilo-enroll \
+        /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-server-firstboot /usr/libexec/tilo-server-state-migrate \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
         /usr/bin/tilo-session /usr/bin/fs /usr/libexec/tilo/tilo-greeter \
         /usr/libexec/tilo/tilo-installer /usr/libexec/tilo/tilo-launcher /usr/libexec/tilo/tilo-runtime-bundle \
@@ -197,7 +197,7 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
 # wine-common's helper scripts need a Perl interpreter, and Fedora's Perl
 # core pulls in HTTP::Tiny's HTTPS backend (IO::Socket::SSL over the
 # Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
-# that backend the same way; the forbidden-package gate below enforces it.
+# that backend the same way; the forbidden-package check below enforces it.
 # Delete these loadable surfaces before the composefs root is sealed.
 # Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles

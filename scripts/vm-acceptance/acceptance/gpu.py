@@ -8,7 +8,7 @@ present: ...`. `tilo system health --gpu --json` says whether the machine has a 
 render node with a GPU behind it at all ("no-gpu"; a virtio GPU without 3D acceleration has a
 render node but no GPU) and whether the session uses it ("ok" or "degraded").
 
-Plain functions over text, so the VM check (R05) and the installed-image gate in CI
+Plain functions over text, so the VM check (R05) and the installed-image check in CI
 (gpu_check.py) judge alike.
 """
 

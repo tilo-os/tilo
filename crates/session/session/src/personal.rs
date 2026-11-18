@@ -2,7 +2,7 @@
 //! The store holds what this session's apps record in the person's own scope — `(app, personal)`
 //! records, routed on the cluster their identity root derives — so a record written here reaches
 //! their other devices and one written there reaches this session's apps. The broker keeps each
-//! write in it as well as in the desktop (`HostServices::personal`), and this session answers the
+//! write in it as well as in the desktop (`ProcessServices::personal`), and this session answers the
 //! store's link on the endpoint it already runs, beside the workspaces' traffic: its protocols are
 //! fixed when it binds, so the link is handed over with the other protocols the endpoint serves
 //! ([`crate::sync::Client::start`]).
@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use tilo_action_broker::collab_broker::FanoutState;
 use tilo_action_broker::personal::{self, Links, Person};
 use tilo_broker_core::collab_core::BrokerChannels;
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 
 use crate::options::Options;
@@ -40,7 +40,7 @@ impl Personal {
     /// This session keeps no state, or the store kept there is not this
     /// device's to open: it cannot be read, or the device's certificate is
     /// not one the person's root signed that still holds.
-    pub(crate) fn open(options: &Options, identity: &HostIdentity) -> Result<Self, String> {
+    pub(crate) fn open(options: &Options, identity: &DeviceIdentity) -> Result<Self, String> {
         let Some(state) = options.state.as_deref() else {
             return Err("this session keeps no state to keep the person's records in".into());
         };
@@ -70,7 +70,7 @@ impl Personal {
     /// Take the store to the person's other devices from `endpoint` : dial the ones this device has
     /// no link to, hand what they write to this session's apps through `channels` and `fanout` ,
     /// and keep the store beside this session's state as it changes.
-    /// `dials` opens the other lane to the same devices: the session between two of the person's
+    /// `dials` opens the other connection to the same devices: the session between two of the person's
     /// sessions is where they tell each other what they hold — their workspaces and their hosts — so
     /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
     /// The session must answer [`Self::protocol`] on `endpoint` for as long as the links: it is what
@@ -107,7 +107,7 @@ impl Personal {
 }
 
 /// Dial each of the person's devices the store holds as a sibling, from the ones the fleet named at
-/// start and again whenever the store changes: what it holds is the fleet's, and the plane keeps
+/// start and again whenever the store changes: what it holds is the fleet's, and the peer network keeps
 /// dialling the ones that are down.
 async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u8; 32]>) {
     let mut changes = sync.changes();
@@ -174,7 +174,7 @@ mod tests {
     }
 
     /// The person's other devices are dialled as this session's siblings from the devices their
-    /// store holds, at the relay the person's settings name, and this device is not dialled at all:
+    /// store holds, at the server the person's settings name, and this device is not dialled at all:
     /// that session is where the two sessions tell each other the workspaces they hold, so one adopts
     /// what the other keeps.
     #[test]
@@ -204,7 +204,7 @@ mod tests {
         let mut dialled = Vec::new();
         while let Ok(command) = commands.try_recv() {
             match command {
-                crate::sync::HostCmd::Plane(Cmd::ConnectDevice(addr)) => {
+                crate::sync::HostCmd::Network(Cmd::ConnectDevice(addr)) => {
                     dialled.push(*addr.id.as_bytes());
                     assert_eq!(addr.relay_urls().collect::<Vec<_>>(), vec![&relay_url()]);
                 }

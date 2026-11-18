@@ -30,7 +30,7 @@ pub(crate) fn mount_setup(
     crate::setup::lend(waiter.clone(), person);
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
-        compositor.add_host(setup.clone());
+        compositor.add_surface(setup.clone());
         surfaces.add(Rc::clone(&setup) as tilo_session_core::surfaces::Shared);
         setup
     })
@@ -89,7 +89,7 @@ pub(crate) fn mount_controls(
     (band, places): (Reserved, &ReadoutPlaces),
 ) -> Controls {
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(places), band)));
-    compositor.add_host(readout.clone());
+    compositor.add_surface(readout.clone());
     let shared: tilo_session_core::surfaces::Shared = readout.clone();
     surfaces.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -102,7 +102,7 @@ pub(crate) fn mount_controls(
     // The press that falls outside a surface the session placed closes it,
     // which only the input path knows the place of.
     crate::press_outside::mount(compositor, &overlays);
-    compositor.add_host(Rc::new(RefCell::new(NativeKeys::new(
+    compositor.add_surface(Rc::new(RefCell::new(NativeKeys::new(
         SessionKeys::new(
             shortcuts,
             Presses {
@@ -159,7 +159,7 @@ pub(crate) fn mount_activities(
                 (shell.clone(), overlays.clone()),
                 options.scale,
             )));
-            compositor.add_host(surface.clone());
+            compositor.add_surface(surface.clone());
             surfaces.add(surface);
             Some(link)
         }

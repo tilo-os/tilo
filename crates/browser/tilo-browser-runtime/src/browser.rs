@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Function, Reflect};
-use ui::application::{ComponentRunnerInputs, HostContext};
+use ui::application::{ComponentRunnerInputs, ProcessContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, SharedPermissions};
 use ui::resource::{DocumentCheckout, ResourceStore};
@@ -287,7 +287,7 @@ impl Config {
 
     /// Lend Model Providers the administration; any other application
     /// gets none.
-    fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
+    fn lend_provider_admin(&self, context: &mut ProcessContext) -> Result<(), JsValue> {
         crate::host_services::provide_provider_admin(context, self.provider_admin()?);
         Ok(())
     }
@@ -458,13 +458,13 @@ pub(crate) struct Mount {
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
     /// content-only changes are throttled, focus and structure changes go out
     /// at once.
-    semantics: RefCell<crate::semantics_status::SemanticsGate>,
+    semantics: RefCell<crate::semantics_status::SemanticsPublisher>,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
     /// How far following an agent brought the view inside its window.
     followed_view: ui::headless::FollowedView,
-    media: ui::headless::host_media::MediaLane,
+    media: ui::headless::host_media::MediaQueue,
     store: Rc<durable_store::MemoryStore>,
     /// Every package record owner the mount opened, flushed together.
     stores: Rc<RefCell<Vec<ResourceStore>>>,
@@ -485,6 +485,12 @@ pub(crate) struct Mount {
     /// This mount's id, to wake it when a silent member's pointer leaves.
     id: u64,
     desktop: Option<Desktop>,
+    /// What answers this mount's window, which shows one app alone, when it reads another app's
+    /// document ([`Mount::answer_reads_alone`]). The peer's code makes it when the window first
+    /// reads one and keeps its type to itself: the start module only drops it, so nothing of
+    /// the answering is linked into what a page loads first. `None` until then, and always for
+    /// the desktop, which answers its windows itself.
+    reads: Option<Box<dyn std::any::Any>>,
     gpu: Option<Gpu>,
     pending: bool,
     /// Wakes the mounted app's component sent the loop, not yet taken up:
@@ -639,6 +645,18 @@ pub(crate) struct Desktop {
     pub(crate) carrying: carry_out::Carrying,
 }
 
+impl Mount {
+    /// The size the one app this mount shows asks for, in CSS pixels, when it says one
+    /// (`Widget::preferred_window_size`); `None` for a desktop, whose windows size themselves.
+    fn content_size(&self) -> Option<serde_json::Value> {
+        if self.desktop.is_some() {
+            return None;
+        }
+        ui::widget::preferred_window_size(self.frame.root_widget())
+            .map(|(width, height)| serde_json::json!({"width": width, "height": height}))
+    }
+}
+
 impl Desktop {
     /// Who the windows ask the session as: this page's person, in its workspace.
     fn caller(&self) -> tilo_actions::remote::Caller {
@@ -693,7 +711,7 @@ impl Desktop {
     /// Ask the session to run `action` as this person, and draw the frame that shows what it did.
     /// A refused action is the session's to report.
     fn invoke_as_person(&self, action: &tilo_desktop_search::InvokeTarget) {
-        use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
+        use tilo_actions::remote::{ActionProvider as _, InvokeArgument, InvokeRequest};
         let argument = if action.arguments.is_empty() {
             InvokeArgument::None
         } else {
@@ -875,7 +893,7 @@ impl Desktop {
         let opens = !in_workspace
             || self
                 .shared
-                .standing
+                .role
                 .role()
                 .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
         let opened = self.handle.set_opens(opens);
@@ -1143,7 +1161,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
 
 fn admit_runtime() -> Result<(), JsValue> {
     SERVICING
-        .with(crate::mount_service_custody::reject_reentry)
+        .with(crate::mount_service_lease::reject_reentry)
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
 
@@ -1184,7 +1202,7 @@ fn with_mount_quietly<R>(
     }
     SERVICING.with(|servicing| {
         MOUNTS.with(|mounts| {
-            let mut lease = crate::mount_service_custody::Lease::take(mounts, servicing, id)
+            let mut lease = crate::mount_service_lease::Lease::take(mounts, servicing, id)
                 .map_err(|_| error("the runtime is busy (an owned mount callback)"))?
                 .ok_or_else(|| error("closed mount"))?;
             let mount = lease.mount().map_err(|_| error("closed mount"))?;
@@ -1198,7 +1216,7 @@ fn with_mount_quietly<R>(
 fn defer_event(event: DeferredEvent) -> Option<DeferredEvent> {
     SERVICING.with(|servicing| {
         DEFERRED_EVENTS
-            .with(|events| crate::mount_service_custody::admit_or_defer(servicing, events, event))
+            .with(|events| crate::mount_service_lease::admit_or_defer(servicing, events, event))
     })
 }
 #[derive(Clone)]
@@ -1287,7 +1305,7 @@ pub async fn load_application(app: String) -> bool {
 pub fn close(id: u64) -> Result<JsValue, JsValue> {
     admit_runtime()?;
     SERVICING.with(|servicing| MOUNTS.with(|mounts| {
-        let mut lease = crate::mount_service_custody::Lease::take(mounts, servicing, id)
+        let mut lease = crate::mount_service_lease::Lease::take(mounts, servicing, id)
             .map_err(|_| error("the runtime is busy (an owned mount callback)"))?;
         REQUESTS.with_borrow_mut(|r| r.remove(&id));
         DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
@@ -1392,7 +1410,7 @@ struct Presentation {
 enum Root {
     Component(Box<ui::application::AppComponent>),
     Desktop(Box<crate::shell::BrowserShell>),
-    /// A window standing in for its application until the record it opens
+    /// A window in place of its application until the record it opens
     /// arrives: the place it reserves, showing its arrival.
     Arriving(Box<dyn ui::widget::Widget>),
 }
@@ -1418,14 +1436,14 @@ fn mount_search(
     let woken = Arc::clone(woken);
     let host = config.peer.and_then(|peer| {
         let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
-        let search = tilo_actions::remote::ActionHost::resource_search(
+        let search = tilo_actions::remote::ActionProvider::resource_search(
             &crate::peer_sync::actions_of(peer, workspace)?,
         )?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             woken.store(true, std::sync::atomic::Ordering::Release);
             let _ = shell.send_event(id);
         });
-        Some(crate::page_search::WorkspaceHost {
+        Some(crate::page_search::KeepingDevice {
             search,
             workspace: config.workspace.clone(),
             wake,
@@ -1464,7 +1482,7 @@ fn files_of_the_workspace(
         true,
     );
     // The files' bytes are the tree record's content: read through that record's
-    // lane, so a file whose bytes are not here yet is asked of the workspace and
+    // media queue, so a file whose bytes are not here yet is asked of the workspace and
     // its words are read when it arrives. A plain store would answer what the
     // page happens to keep and never ask, so search would know each file's name
     // and nothing it says.
@@ -1477,9 +1495,9 @@ fn files_of_the_workspace(
             );
             // Bytes that arrive ask for the pass that reads their words, so
             // the palette finds what a file says without a keystroke to wake it.
-            ui::collaboration::document_content::ContentLane::of(&route)
+            ui::collaboration::document_content::ContentLink::of(&route)
                 .attach(ui::WakeHandle::new());
-            ui::collaboration::document_content::ContentLane::resource_store(&route)
+            ui::collaboration::document_content::ContentLink::resource_store(&route)
         }
         Err(_) => content.clone(),
     };
@@ -1705,7 +1723,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
     // In a workspace, the page's apps may only read until the workspace says what
-    // its person may do there (`Joined::follow_standing`): a change they make
+    // its person may do there (`Joined::follow_access`): a change they make
     // before that the workspace may refuse, and a write queued under a role the
     // page only assumed would be refused at the API once the workspace's answer
     // arrives, over the window, though the person never asked for it.
@@ -1736,6 +1754,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         )?,
         None => present_desktop(id, &config, dyn_store, permissions.clone())?,
     };
+    let mut media = ui::headless::host_media::MediaQueue::default();
+    // A page that shows one app alone and joined no workspace holds no other app's document
+    // and reaches nobody who does: its window hears so as it asks to read one.
+    if desktop.is_none() && config.peer.is_none() {
+        media.refuse_resource_reads();
+    }
     let window = Arc::new(
         event_loop
             .create_window(
@@ -1828,7 +1852,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         // A window opens another app by asking the session, as on a native
         // desktop; this page's desktop is that session.
         frame.set_session_api(
-            ui::RemoteActions::with_host(desktop.session.clone(), desktop.caller()),
+            ui::RemoteActions::with_provider(desktop.session.clone(), desktop.caller()),
             Some(desktop.workspace.clone()),
         );
     }
@@ -1877,13 +1901,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS);
     let mount = Mount {
         metrics: RefCell::default(),
-        semantics: RefCell::new(crate::semantics_status::SemanticsGate::new(
+        semantics: RefCell::new(crate::semantics_status::SemanticsPublisher::new(
             ui::time::Duration::from_millis(window_ms),
         )),
         window: Arc::clone(&window),
         canvas,
         frame,
-        media: ui::headless::host_media::MediaLane::default(),
+        media,
         store,
         stores,
         checkout,
@@ -1893,6 +1917,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         presence: presence::Presence::default(),
         id,
         desktop,
+        reads: None,
         gpu: None,
         pending: true,
         component_wakes,
@@ -2538,27 +2563,14 @@ impl Mount {
             }
             reasons
         });
-        if self
-            .desktop
-            .as_ref()
-            .is_some_and(Desktop::open_requested_apps)
-        {
-            self.pending = true;
-        }
         // Host wakes are consumed only after acquiring a surface. A skipped
         // acquisition must retain them for the next redraw.
-        let desktop_woken = self.desktop.as_ref().is_some_and(|desktop| {
-            desktop
-                .shared
-                .woken
-                .load(std::sync::atomic::Ordering::Acquire)
-        });
+        self.pending |= Self::desktop_wants_frame(self.desktop.as_ref());
         if let Some(peer) = self.peer {
             crate::replicated::follow_answers(peer);
         }
-        self.pending |= desktop_woken
-            || self.replica_changed.get()
-            || self.theme_seen != crate::page_theme::generation();
+        self.pending |=
+            self.replica_changed.get() || self.theme_seen != crate::page_theme::generation();
         let frame = self.frame.frame_schedule();
         let due = frame
             .next_wake_deadline
@@ -2620,8 +2632,8 @@ impl Mount {
         // [`crate::frame_pacing::LOST_AFTER`]. A slow GPU is not a lost one:
         // the device's own `lost` and errors say that, below.
         if matches!(
-            pacing::gate(&mut gpu.pacing, &mut self.held, &self.window),
-            pacing::Gate::Hold
+            pacing::check(&mut gpu.pacing, &mut self.held, &self.window),
+            pacing::FrameDecision::Hold
         ) {
             return Ok(());
         }
@@ -2709,38 +2721,8 @@ impl Mount {
             self.window.request_redraw();
             return Ok(());
         };
-        let held = self.desktop.as_ref().is_some_and(|desktop| {
-            desktop
-                .handle
-                .set_viewport_width(f64::from(viewport.logical_size().0));
-            desktop.announce_agents_finished();
-            desktop.offer_uploads(false);
-            desktop.follow_notice_choices();
-            desktop.tell_mentions();
-            desktop.serve_activity();
-            let named = desktop.project_governance(self.peer);
-            desktop.follow_search();
-            let holders = desktop.refresh_holders(self.peer.is_some());
-            named || holders
-        });
-        // Desktop commands and peer changes need an update even when the
-        // harness itself is idle. Let a scheduled poll consume them first:
-        // eagerly relayouting here and then polling animated widgets runs
-        // the same frame pipeline twice before one presentation.
-        let mut host_changed = held;
-        if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
-            let wakers = desktop.shared.take_wakers();
-            if let Some(reasons) = &mut reasons {
-                if wakers.is_empty() {
-                    reasons.push("desktop wake".into());
-                }
-                reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
-            }
-            if desktop.shared.take_arrived() {
-                desktop.shared.retry_waiting(&desktop.handle);
-            }
-            host_changed = true;
-        }
+        let mut host_changed =
+            self.follow_desktop(f64::from(viewport.logical_size().0), reasons.as_mut());
         // The person's settings or their browser's preferences changed
         // what the theme is: every window draws in the new one.
         if self.theme_seen != crate::page_theme::generation() {
@@ -3115,7 +3097,7 @@ impl Mount {
             PresencePayload::Selection { start, end } => (start, end),
             _ => return None,
         };
-        let (anchor, head) = tilo_relay_protocol::live::presence_anchors(&key, start, end)?;
+        let (anchor, head) = tilo_server_protocol::live::presence_anchors(&key, start, end)?;
         Some(
             serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
         )
@@ -3240,7 +3222,7 @@ impl Mount {
 
     /// Whether a frame's tree stays unbuilt: only a frame that laid nothing
     /// out (while no held tree is due) or moved laid-out content (while
-    /// the gate defers it, or the frame replayed windows its tree would
+    /// the check defers it, or the frame replayed windows its tree would
     /// need drawn again) may leave it.
     fn tree_unbuilt(&self, change: FrameChange, ime: Option<&ui::ime::ImeWindowState>) -> bool {
         if change == FrameChange::Other || self.error.is_some() {
@@ -3276,7 +3258,7 @@ impl Mount {
             self.metric_end("tree_held:replayed", self.metric_start());
             true
         } else {
-            self.metric_end("tree_built:gate", self.metric_start());
+            self.metric_end("tree_built:check", self.metric_start());
             false
         }
     }
@@ -3312,9 +3294,9 @@ impl Mount {
     /// Publish the status of a frame. `change` says what the frame changed
     /// ([`Self::draw`]); `presented`, that it is the frame just drawn, whose
     /// tree is built in a task after it
-    /// ([`crate::semantics_status::SemanticsGate::after_frame`]). The tree of a frame that laid
+    /// ([`crate::semantics_status::SemanticsPublisher::after_frame`]). The tree of a frame that laid
     /// nothing out is not built: it is the last one. Nor is that of a frame
-    /// that only moved laid-out content, a content-only change: the gate's
+    /// that only moved laid-out content, a content-only change: the check's
     /// deadline delivers it as it then is. Neither changes the focus
     /// presence or the place in the workspace either.
     fn publish_frame(&mut self, id: u64, change: FrameChange, presented: bool) {
@@ -3404,6 +3386,9 @@ impl Mount {
             "dpr": applied.dpr,
             "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
             "rootRect": root_rect,
+            // The size what a mount of one app asks for, where its app says one (a
+            // message's view shown alone): whoever holds the mount gives it that much.
+            "content": self.content_size(),
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             // The page titles its tab after it: the workspace in front on the
@@ -3440,8 +3425,8 @@ impl Mount {
             // Splice the already serialized tree or patch into the status
             // object instead of parsing it back into a value and
             // serializing twice.
-            let gate = self.semantics.borrow();
-            if let Ok(members) = std::str::from_utf8(gate.text()) {
+            let check = self.semantics.borrow();
+            if let Ok(members) = std::str::from_utf8(check.text()) {
                 text.pop();
                 text.push(',');
                 text.push_str(members);
@@ -3465,6 +3450,7 @@ mod carry_out;
 use app_window::AppPage;
 use app_window::present_component;
 mod desktop_exports;
+mod desktop_frame;
 mod dom;
 mod prepare;
 pub(crate) use dom::draw_dom_frame;

@@ -920,8 +920,9 @@ fn paper_showing(
     probes: &[tilo_cpu_raster::Region],
 ) -> (usize, usize) {
     let canvas = app.canvas_rect;
-    let lane = 16.0;
-    let view = vello::kurbo::Rect::new(canvas.x0, canvas.y0, canvas.x1 - lane, canvas.y1 - lane);
+    let gutter = 16.0;
+    let view =
+        vello::kurbo::Rect::new(canvas.x0, canvas.y0, canvas.x1 - gutter, canvas.y1 - gutter);
     let size = vello::kurbo::Size::new(app.pw(), app.ph()) * app.zoom();
     let (mut paper, mut sampled) = (0, 0);
     let cards: Vec<vello::kurbo::Rect> = app

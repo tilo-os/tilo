@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Grant, GrantId, Grantee, Standing, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Grant, GrantId, Grantee, MemberAccess, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -48,10 +48,18 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
+mod copies;
+mod device_rows;
+pub use copies::{
+    COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, HELD_COPIES_KEY, HeldCopy, HolderCopy,
+    Missing, Shortfall,
+};
 mod leases;
-pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked};
+pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked, vm_lease, vm_rank};
 mod bot_schedules;
 pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
+mod done;
+pub use done::{DONE_KEY, Done, mail_send_lease};
 #[cfg(test)]
 mod bot_schedules_tests;
 #[cfg(test)]
@@ -77,9 +85,9 @@ mod media_governance;
 mod native_publication;
 mod publication;
 mod workspace_grants;
-pub use workspace_grants::{WORKSPACE_GRANTS_KEY, WorkspaceGrant, workspace_grants_of};
-mod workspace_hosts;
-pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
+pub use workspace_grants::workspace_grants_of;
+mod keeping_devices;
+pub use keeping_devices::{WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_devices_of};
 mod personal;
 pub(crate) mod seed;
 mod workspace_name;
@@ -117,11 +125,11 @@ mod sealing;
 fn err(error: impl ToString) -> String {
     error.to_string()
 }
-/// The person a member's standing is for.
-pub(crate) fn person_of(standing: &Standing) -> Result<&str, String> {
-    standing
+/// The person a member's access is for.
+pub(crate) fn person_of(access: &MemberAccess) -> Result<&str, String> {
+    access
         .person_id()
-        .ok_or_else(|| "the standing is for no person".to_owned())
+        .ok_or_else(|| "the access is for no person".to_owned())
 }
 pub(crate) fn now_ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
@@ -202,8 +210,8 @@ pub struct ReceiveOutcome {
 /// adapter's actual pinned owner/session/cursor proof, not an inert event tag.
 #[derive(Clone, Copy, Debug)]
 pub enum TransportOrigin {
-    RelayDelta([u8; 32]),
-    RetainedRelayDelta([u8; 32]),
+    ServerDelta([u8; 32]),
+    RetainedServerDelta([u8; 32]),
     RetainedNativePublication { publisher: [u8; 32] },
     UntrustedPresence([u8; 32]),
 }
@@ -489,7 +497,7 @@ pub use governed_rows::RowError;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
 #[cfg(test)]
 pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
-pub(crate) use invitation_ledger::LedgerReceipt;
+pub(crate) use invitation_receipts::StoredReceipt;
 
 /// The map at `key` of a governed workspace document.
 fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
@@ -518,6 +526,9 @@ mod administrators_tests;
 #[path = "state/admitting_tests.rs"]
 mod admitting_tests;
 #[cfg(test)]
+#[path = "state/compaction_behind_tests.rs"]
+mod compaction_behind_tests;
+#[cfg(test)]
 #[path = "state/durable_tests.rs"]
 mod durable_tests;
 #[cfg(test)]
@@ -527,7 +538,7 @@ mod governed_rows;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]
 mod held_queue_tests;
-pub(crate) mod invitation_ledger;
+pub(crate) mod invitation_receipts;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
@@ -535,6 +546,9 @@ mod joined_tests;
 #[path = "state/member_list_tests.rs"]
 mod member_list_tests;
 mod rebase;
+#[cfg(test)]
+#[path = "state/removal_tests.rs"]
+mod removal_tests;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]
 mod roster_beside_governance_tests;

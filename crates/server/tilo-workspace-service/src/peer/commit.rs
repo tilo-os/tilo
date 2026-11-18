@@ -1,0 +1,429 @@
+//! `Commit`: a delta whose author waits for its host order, and the commit
+//! log.
+
+use super::{
+    AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
+    desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_document,
+    unix_now_ns, unpublished,
+};
+use crate::workspace_access::WorkspaceOperation;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::refusal::Refusal;
+
+/// Whether `ws` keeps no more of `peer`'s writes: it is a person's own
+/// workspace and keeps as much as they may
+/// ([`crate::workspaces::Workspaces::storage_refusal`]). The server's own user
+/// is never refused: the host's own writes keep the workspace whole.
+pub(super) async fn over_storage(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    ws: &SharedWorkspace,
+) -> bool {
+    if peer.user_public_key == *session.own_user_public_key {
+        return false;
+    }
+    let runtime = ws.lock().await;
+    let Some(authority) = runtime.workspace_authority.as_ref() else {
+        return false;
+    };
+    let Some(workspaces) = authority.workspaces() else {
+        return false;
+    };
+    let workspace = authority.workspace().to_owned();
+    drop(runtime);
+    // Measuring walks the workspace's files.
+    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace).is_some())
+        .await
+        .unwrap_or(false)
+}
+
+/// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
+/// waits until the host persisted it), then tell the author its host order.
+/// A commit the host cannot admit is refused to the author without closing
+/// the session. A resent commit the host already admitted is answered with
+/// its original order from the workspace's commit log and neither
+/// persisted nor fanned out again.
+pub(super) async fn handle_commit(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[WorkspaceId],
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let admission = admit_commit(peer, session, subscribed, env).await?;
+    match admission {
+        CommitAdmission::Answered(reply) => Ok(reply),
+        CommitAdmission::Admitted(admitted) => admitted.finish(session).await.map(Some),
+    }
+}
+
+/// Handle `commits`, a run of `Commit`s the author sent back to back: admit
+/// every one before waiting for the first, so the workspace's owner finds
+/// them queued together and makes them durable under shared barriers
+/// (`crate::persistence::Group`), then answer each in the order sent. A
+/// copy of a commit in the same run must wait for the first to be recorded,
+/// so a run never holds two with the same operation id
+/// ([`commit_run_key`]).
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the admitted commits move into the answering loop one by one; the lint does not see the move"
+)]
+pub(super) async fn handle_commit_run(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[WorkspaceId],
+    commits: Vec<Envelope>,
+) -> Result<Vec<Option<Envelope>>, PeerError> {
+    let mut admitted = Vec::with_capacity(commits.len());
+    for env in commits {
+        admitted.push(admit_commit(peer, session, subscribed, env).await?);
+    }
+    let mut replies = Vec::with_capacity(admitted.len());
+    for admission in admitted {
+        replies.push(match admission {
+            CommitAdmission::Answered(reply) => reply,
+            CommitAdmission::Admitted(admitted) => Some(admitted.finish(session).await?),
+        });
+    }
+    Ok(replies)
+}
+
+/// What keys a commit within a run: its author and operation id.
+pub(super) const fn commit_run_key(env: &Envelope) -> Option<([u8; 32], [u8; 16])> {
+    match env {
+        Envelope::Commit {
+            author_device_public_key,
+            op,
+            ..
+        } => Some((*author_device_public_key, *op)),
+        _ => None,
+    }
+}
+
+/// A `Commit` after its admission.
+enum CommitAdmission {
+    /// Answered without persisting: refused, or resent and found in the
+    /// log.
+    Answered(Option<Envelope>),
+    /// Queued with the workspace's owner.
+    Admitted(Box<AdmittedCommit>),
+}
+
+/// A commit queued with its workspace's owner, not yet durable.
+struct AdmittedCommit {
+    ws: SharedWorkspace,
+    workspace_id: WorkspaceId,
+    op: [u8; 16],
+    author: [u8; 32],
+    digest: [u8; 32],
+    authored: Envelope,
+    admitted: super::admission::AdmittedState,
+    observed: Option<crate::compaction::Observed>,
+    admitting: Option<crate::compaction::Admitting>,
+    /// Held until the commit is recorded: a copy of it (a resend after a
+    /// reconnect) waits for this one, then is answered from the log.
+    claim: crate::workspace::CommitClaim,
+    committing: Option<std::time::Instant>,
+}
+
+/// Why `delta` is not `peer`'s to commit ([`commit_refusal`]), or, a write of a member's own
+/// record, not theirs: a host this workspace is attached to carries its members' own records as
+/// they wrote them, and anyone else writes only their own.
+async fn own_commit_refusal(
+    ws: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    author: [u8; 32],
+    delta: &Envelope,
+) -> Option<Refusal> {
+    if let Some(refusal) = commit_refusal(ws, author, delta).await {
+        return Some(refusal);
+    }
+    let Envelope::Delta { delta: bytes, .. } = delta else {
+        return None;
+    };
+    if author != peer.device_public_key {
+        return None;
+    }
+    let store = ws.lock().await.store.clone();
+    crate::surfaces::own_refusal(&store, &peer.user_public_key, bytes)
+}
+
+/// Check, claim and queue `env`, a `Commit`, without waiting for it to be
+/// durable.
+async fn admit_commit(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[WorkspaceId],
+    env: Envelope,
+) -> Result<CommitAdmission, PeerError> {
+    let Envelope::Commit {
+        workspace_id,
+        op,
+        author_device_public_key,
+        authored_at_ns,
+        delta,
+    } = env
+    else {
+        return Err(PeerError::Protocol(
+            "handle_commit called with a non-Commit envelope".into(),
+        ));
+    };
+    let refused = |refusal: Refusal| {
+        Ok(CommitAdmission::Answered(Some(Envelope::CommitRefused {
+            workspace_id,
+            op,
+            refusal,
+        })))
+    };
+    // Not subscribed or not open here yet: it goes through once ready.
+    let open = session.workspaces.lock().await.get(&workspace_id).cloned();
+    let Some(ws) = open.filter(|_| subscribed.contains(&workspace_id)) else {
+        return refused(Refusal::NotReady);
+    };
+    // A commit carries its session's own device's change: a host this
+    // workspace is attached to carries its members' instead.
+    if author_device_public_key != peer.device_public_key
+        && !ws.lock().await.attached(&peer.device_public_key)
+    {
+        return refused(Refusal::Invalid(
+            "author does not match authenticated device".into(),
+        ));
+    }
+    if over_storage(peer, session, &ws).await {
+        return refused(Refusal::Full);
+    }
+    let channel = crate::peer::admission::channel_of(&delta);
+    let Some(source) =
+        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish, channel).await?
+    else {
+        return refused(unpublished());
+    };
+    let digest = *blake3::hash(&delta).as_bytes();
+    let claiming = crate::timing::start();
+    let claim = match claim(&ws, author_device_public_key, op).await {
+        Ok(claim) => claim,
+        Err(admitted) => {
+            return Ok(CommitAdmission::Answered(Some(resent_commit(
+                workspace_id,
+                admitted,
+                digest,
+            ))));
+        }
+    };
+    crate::timing::event("commit.claim_wait", claiming, 0);
+    let committing = crate::timing::start();
+    let observed = session
+        .compactor
+        .and_then(|compactor| compactor.observe(&delta));
+    let admitting = session
+        .compactor
+        .zip(observed)
+        .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
+    let delta = Envelope::Delta {
+        workspace_id,
+        author_device_public_key,
+        authored_at_ns,
+        delta,
+        signature: [0; 64],
+    };
+    if let Some(refusal) = own_commit_refusal(&ws, peer, author_device_public_key, &delta).await {
+        return refused(refusal);
+    }
+    let authored = delta.clone();
+    let admitted = Box::pin(enqueue_state_inner(
+        &ws,
+        delta,
+        Some(source),
+        session.metrics.clone(),
+        false,
+        false,
+    ))
+    .await?;
+    Ok(CommitAdmission::Admitted(Box::new(AdmittedCommit {
+        ws,
+        workspace_id,
+        op,
+        author: author_device_public_key,
+        digest,
+        authored,
+        admitted,
+        observed,
+        admitting,
+        claim,
+        committing,
+    })))
+}
+
+impl AdmittedCommit {
+    /// Wait for the commit to be durable and published, record it, and
+    /// answer its author with its host order.
+    async fn finish(self: Box<Self>, session: &SessionCtx<'_>) -> Result<Envelope, PeerError> {
+        let Self {
+            ws,
+            workspace_id,
+            op,
+            author,
+            digest,
+            authored,
+            admitted,
+            observed,
+            admitting,
+            claim,
+            committing,
+        } = *self;
+        // What an author is told is committed never depends on work that can
+        // still fail: wait for the change to be durable and published.
+        crate::persistence::receipt(admitted.completion).await?;
+        crate::timing::event("commit.durable", committing, 0);
+        tell_governor(&ws, &authored).await;
+        let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
+        if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
+            compactor.note(&ws, workspace_id, observed);
+        }
+        drop(admitting);
+        // The author holds what it committed; a resume never replays it to it.
+        if let Some(position) = resume_document(session, workspace_id, [&authored]) {
+            let _ = session.outbound.try_send(position);
+        }
+        let seq = remember_commit(
+            &ws,
+            crate::store::CommitEntry {
+                author,
+                op,
+                seq: durable,
+                digest,
+            },
+        )
+        .await?;
+        drop(claim);
+        Ok(Envelope::Committed {
+            workspace_id,
+            op,
+            seq,
+        })
+    }
+}
+
+/// Why the workspace refuses `delta`, a page's commit, if it does: decided as a
+/// session's delta is ([`super::handle_delta`]), by what the change says it
+/// does against its author's grants, then, for the workspace's shared desktop,
+/// by what it does to what others made, then by what the workspace's own copy
+/// of the record takes in.
+async fn commit_refusal(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    delta: &Envelope,
+) -> Option<Refusal> {
+    let Envelope::Delta { delta: bytes, .. } = delta else {
+        return None;
+    };
+    let (device_access, payloads) =
+        crate::workspace::access_deciding(ws, author, |device_access, payloads| {
+            crate::surfaces::refusal(payloads, bytes, device_access).is_some()
+        })
+        .await;
+    if let Some(refusal) = crate::surfaces::refusal(&*payloads, bytes, device_access.as_deref()) {
+        tracing::warn!(%refusal, device = %hex::encode(author), "refused a document change");
+        file_refusal_of(ws, delta, &refusal.to_string()).await;
+        return Some(refusal);
+    }
+    if let Some(refusal) = desktop_refusal(ws, author, delta).await {
+        return Some(refusal);
+    }
+    if let Some(refusal) = crate::surfaces::role_refusal(bytes, device_access.as_deref(), author) {
+        tracing::warn!(%refusal, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+        file_refusal_of(ws, delta, &refusal.to_string()).await;
+        return Some(refusal);
+    }
+    super::governor_refusal(ws, author, delta).await
+}
+
+/// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a
+/// governor follows the workspace. It follows every change the server keeps, a
+/// committed one as one sent alone (`handle_delta`): a page writes its
+/// records as commits.
+async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
+    let Envelope::Delta {
+        author_device_public_key,
+        ..
+    } = delta
+    else {
+        return;
+    };
+    let tap = ws.lock().await.governor_tap.clone();
+    if let Some((tap, body)) = tap.zip(governor_notice(delta)) {
+        super::state::tell_governor(ws, &tap, *author_device_public_key, body).await;
+    }
+}
+
+/// Claim `author`'s commit `op` for admission in `ws`
+/// ([`crate::workspace::WorkspaceRuntime::claim_commit`]), first waiting for
+/// a copy of it already being admitted. `Err` with its record when the
+/// log holds it.
+async fn claim(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    op: [u8; 16],
+) -> Result<crate::workspace::CommitClaim, crate::store::CommitEntry> {
+    loop {
+        let runtime = ws.lock().await;
+        let claimed = runtime
+            .admitted_commit(&author, &op)
+            .map_or_else(|| Ok(runtime.claim_commit(author, op)), Err);
+        drop(runtime);
+        let copy = match claimed {
+            Err(admitted) => return Err(admitted),
+            Ok(Ok(claim)) => return Ok(claim),
+            Ok(Err(copy)) => copy,
+        };
+        drop(copy.lock().await);
+    }
+}
+
+/// The answer to a resent commit the log already holds: its original
+/// host order, or a refusal when the same operation id carries other content.
+fn resent_commit(
+    workspace_id: WorkspaceId,
+    admitted: crate::store::CommitEntry,
+    digest: [u8; 32],
+) -> Envelope {
+    if admitted.digest != digest {
+        return Envelope::CommitRefused {
+            workspace_id,
+            op: admitted.op,
+            refusal: Refusal::Conflict,
+        };
+    }
+    tracing::debug!(
+        workspace_id = %workspace_id,
+        seq = admitted.seq,
+        "resent commit answered from the log"
+    );
+    Envelope::Committed {
+        workspace_id,
+        op: admitted.op,
+        seq: admitted.seq,
+    }
+}
+
+/// Record an admitted commit in the workspace's commit log and return the
+/// host order it is acknowledged at: the durable sequence it was published
+/// in (`record.seq`), or the next one when persistence assigned none. Every
+/// member then receives commits in the order their authors were told.
+async fn remember_commit(
+    ws: &SharedWorkspace,
+    mut record: crate::store::CommitEntry,
+) -> Result<u64, PeerError> {
+    let queue = ws.lock().await.commit_log_queue.clone();
+    let _writing = queue.lock().await;
+    let (log, store) = {
+        let mut runtime = ws.lock().await;
+        if record.seq == 0 {
+            record.seq = runtime.next_seq(unix_now_ns());
+        }
+        (runtime.remember_commit(record), runtime.store.clone())
+    };
+    tokio::task::spawn_blocking(move || log.persist(&store))
+        .await
+        .map_err(|_| PeerError::Io(std::io::Error::other("commit log write panicked")))?;
+    Ok(record.seq)
+}

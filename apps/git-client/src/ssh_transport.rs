@@ -16,7 +16,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Called only by the shared transport registration gate, before network use.
+/// Called only by the shared transport launch hold, before network use.
 pub(super) fn register() -> Result<(), git2::Error> {
     for scheme in ["ssh", "git+ssh", "ssh+git"] {
         // SAFETY: transport::with_context serializes registration before it
@@ -208,7 +208,7 @@ impl client::Handler for HostVerifier {
     ) -> Result<bool, Self::Error> {
         let key = key.public_key();
         // russh's checker supports hashed entries but does not process marker
-        // records. Honor explicit key revocation before accepting a plain entry.
+        // resources. Honor explicit key revocation before accepting a plain entry.
         let entries = std::fs::read_to_string(&self.known_hosts)
             .context("cannot read ~/.ssh/known_hosts; trust the server explicitly first")?;
         for line in entries.lines() {

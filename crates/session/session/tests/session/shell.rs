@@ -255,12 +255,12 @@ fn capture_parity_frames() {
 
     // The lock screen over the shell.
     {
-        let plane = super::lock::private_home();
+        let app_wire = super::lock::private_home();
         let mut session = crate::common::headless(Options {
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             collab: false,
-            action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
+            app_socket: tilo_session::AppSocket::At(app_wire.path().join("actions.sock")),
             surfaces: vec![super::lock::lock_screen()],
             ..Options::default()
         });
@@ -832,7 +832,7 @@ fn shell_motion_frames_match_the_old_shells_films() {
 }
 
 /// The overview shows the windows' own pixels where its cards rest, drawn by the compositor, rather
-/// than a mark standing in for them.
+/// than a mark in place of them.
 #[test]
 fn the_overview_pictures_the_shells_windows() {
     let _settled = ui::motion::testing::settled();

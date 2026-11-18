@@ -20,14 +20,15 @@ use tilo_action_policy::{Acting, Actor};
 /// Ordinary application-authored commit messages remain untouched.
 pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/3 ";
 
-/// Prefix of a change message that continues its writer's open gesture
-/// (the next keystroke of a word): `tilo.cont/1 <gesture> <path> <payload>`.
-/// It is the gesture's first entry again but for the action's payload, so
-/// it carries only the gesture (simple hex), the edit's path (`body`,
-/// `rows/r1/title`; `-` for none) and the action's JSON payload, whose type
-/// is the first entry's. Readers fold it into that entry
-/// ([`ActionContext::continued`]).
-pub const CONTINUATION_PREFIX: &str = "tilo.cont/1 ";
+/// Prefix of a change message that continues its writer's last whole entry
+/// (the next keystroke of a word, or the first of the next word):
+/// `tilo.cont/3 <gesture> <claim> <kept> <tail> <middle>`. It is that entry
+/// again but for its gesture and the action's payload, so it carries only
+/// the gesture (its [`crate::compact`] form), what the change claims to be
+/// ([`ContinuedAction`]) and how its payload differs from that entry's: that
+/// payload's first `kept` and last `tail` bytes around `middle`. Readers
+/// fold it into that entry ([`ActionContext::continued`]).
+pub const CONTINUATION_PREFIX: &str = "tilo.cont/3 ";
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
@@ -454,7 +455,7 @@ impl ActionContext {
     /// Read an entry from a change message. Unknown and malformed messages
     /// are ordinary app commits, never an error that hides their history. A
     /// continuation is no entry on its own: read it with
-    /// [`continued`](Self::continued) from its gesture's first entry.
+    /// [`continued`](Self::continued) from its writer's last whole entry.
     pub fn from_change_message(message: &str) -> Option<Self> {
         serde_json::from_value::<wire::Entry>(entry_value(message)?)
             .ok()
@@ -475,9 +476,9 @@ impl ActionContext {
     }
 
     /// This entry, written as the continuation of `first` (its writer's
-    /// previous entry): when it is the same step of the same gesture,
-    /// differing only in its action's payload. `None` when it has to be
-    /// written whole.
+    /// last whole entry): when it is in a gesture and differs from `first`
+    /// only in its gesture and its action's payload. `None` when it has to
+    /// be written whole.
     #[must_use]
     pub fn continuation_of(&self, first: &Self) -> Option<String> {
         let gesture = self.gesture?;
@@ -485,67 +486,235 @@ impl ActionContext {
         let earlier = first.action.as_ref()?;
         let bare = |entry: &Self| Self {
             action: None,
+            gesture: None,
             ..entry.clone()
         };
-        if first.gesture != Some(gesture)
-            || self.compensation.is_some()
+        if self.compensation.is_some()
             || first.compensation.is_some()
             || action.type_id != earlier.type_id
             || bare(self) != bare(first)
         {
             return None;
         }
-        let payload = std::str::from_utf8(&action.payload).ok()?;
-        let path = match &self.what {
-            Some(Did::Edit(edit)) if !edit.path.is_empty() => edit
-                .path
-                .iter()
-                .map(|step| match step {
-                    PathStep::Field(name) | PathStep::Item(name) | PathStep::Key(name) => {
-                        name.clone()
-                    }
-                    PathStep::Cell(row, column) => format!("{row}:{column}"),
-                })
-                .collect::<Vec<_>>()
-                .join("/"),
-            _ => "-".to_owned(),
-        };
-        if path.contains(' ') {
-            return None;
-        }
+        let claim = ContinuedAction::token(self)?;
+        let now = std::str::from_utf8(&action.payload).ok()?;
+        let then = std::str::from_utf8(&earlier.payload).ok()?;
+        let kept = now
+            .char_indices()
+            .zip(then.chars())
+            .find(|((_, now), then)| now != then)
+            .map_or_else(|| now.len().min(then.len()), |((at, _), _)| at);
+        let (now_rest, then_rest) = (now.get(kept..)?, then.get(kept..)?);
+        let tail: usize = now_rest
+            .chars()
+            .rev()
+            .zip(then_rest.chars().rev())
+            .take_while(|(now, then)| now == then)
+            .map(|(now, _)| now.len_utf8())
+            .sum();
+        let middle = now_rest.get(..now_rest.len().checked_sub(tail)?)?;
         Some(format!(
-            "{CONTINUATION_PREFIX}{} {path} {payload}",
-            gesture.0.simple()
+            "{CONTINUATION_PREFIX}{} {claim} {kept} {tail} {middle}",
+            gesture_token(gesture)
         ))
     }
 
+    /// The gesture a continuation `message` continues.
     #[must_use]
     pub fn continued_gesture(message: &str) -> Option<crate::ActionId> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
-        let gesture = rest.split(' ').next()?;
-        uuid::Uuid::try_parse(gesture).ok().map(crate::ActionId)
+        gesture_of(rest.split(' ').next()?)
     }
 
-    /// The entry a continuation `message` stands for, from its gesture's
-    /// first entry `first`.
+    /// The entry a continuation `message` stands for, from its writer's last
+    /// whole entry `first`.
     #[must_use]
     pub fn continued(message: &str, first: &Self) -> Option<Self> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
         let mut parts = rest.splitn(3, ' ');
-        let gesture = uuid::Uuid::try_parse(parts.next()?).ok()?;
-        let _path = parts.next()?;
-        let payload = parts.next()?;
-        if first.gesture.map(|first| first.0) != Some(gesture) {
-            return None;
-        }
+        let gesture = gesture_of(parts.next()?)?;
+        let _claim = parts.next()?;
+        let mut diff = parts.next()?.splitn(3, ' ');
+        let kept = diff.next()?.parse::<usize>().ok()?;
+        let tail = diff.next()?.parse::<usize>().ok()?;
+        let earlier = first.action.as_ref()?;
+        let then = std::str::from_utf8(&earlier.payload).ok()?;
+        let payload = [
+            then.get(..kept)?,
+            diff.next()?,
+            then.get(then.len().checked_sub(tail)?..)?,
+        ]
+        .concat();
         Some(Self {
             action: Some(crate::EncodedAction {
-                type_id: first.action.as_ref()?.type_id.clone(),
-                payload: payload.as_bytes().to_vec(),
+                type_id: earlier.type_id.clone(),
+                payload: payload.into_bytes(),
             }),
+            gesture: Some(gesture),
             ..first.clone()
         })
     }
+}
+
+/// What a continuation says its change is, in the terms a change's claim is
+/// written in, as the entry it continues says it: an edit of a resource kind
+/// at a path (the whole resource for an empty one), or one of its verbs on an
+/// item. A continuation writes it as one token: `e:<kind>:<step>/…` or
+/// `v:<app>/<kind>/<action>[:<item>]`, a step being `f<field>`, `i<id>`,
+/// `k<key>` or `c<row>:<column>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContinuedAction {
+    Edit {
+        kind: String,
+        path: Vec<PathStep>,
+    },
+    Verb {
+        action: crate::ActionKey,
+        item: Option<String>,
+    },
+}
+
+impl ContinuedAction {
+    /// The claim a continuation of `entry` writes; `None` for one whose names
+    /// hold a byte the token reserves, which writes the entry whole instead.
+    fn token(entry: &ActionContext) -> Option<String> {
+        let edit = |path: &[PathStep]| Self::Edit {
+            kind: entry
+                .resource
+                .as_ref()
+                .map_or_else(String::new, |resource| resource.kind.clone()),
+            path: path.to_vec(),
+        };
+        let action = match &entry.what {
+            Some(Did::Verb(verb)) => Self::Verb {
+                action: verb.action.clone(),
+                item: entry.item.as_ref().map(|item| item.id.clone()),
+            },
+            Some(Did::Edit(changed)) => edit(&changed.path),
+            None => edit(&[]),
+            Some(_) => return None,
+        };
+        action.write()
+    }
+
+    /// The claim a continuation `message` writes.
+    #[must_use]
+    pub fn of_message(message: &str) -> Option<Self> {
+        let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
+        Self::parse(rest.split(' ').nth(1)?)
+    }
+
+    /// The token this claim writes, read back by [`Self::parse`].
+    fn write(&self) -> Option<String> {
+        /// A name as the token carries it; the separators end it.
+        fn name(text: &str) -> Option<&str> {
+            (!text.contains([' ', ':', '/'])).then_some(text)
+        }
+        fn write_step(token: &mut String, at: usize, step: &PathStep) -> Option<()> {
+            if at > 0 {
+                token.push('/');
+            }
+            let (tag, text) = match step {
+                PathStep::Field(field) => ('f', name(field)?),
+                PathStep::Item(id) => ('i', name(id)?),
+                PathStep::Key(key) => ('k', name(key)?),
+                PathStep::Cell(row, column) => {
+                    token.push('c');
+                    token.push_str(name(row)?);
+                    token.push(':');
+                    token.push_str(name(column)?);
+                    return Some(());
+                }
+            };
+            token.push(tag);
+            token.push_str(text);
+            Some(())
+        }
+        let mut token = String::new();
+        match self {
+            Self::Edit { kind, path } => {
+                token.push_str("e:");
+                token.push_str(name(kind)?);
+                token.push(':');
+                for (at, step) in path.iter().enumerate() {
+                    write_step(&mut token, at, step)?;
+                }
+            }
+            Self::Verb { action, item } => {
+                token.push_str("v:");
+                for part in [&action.app, &action.kind, &action.action] {
+                    token.push_str(name(part)?);
+                    token.push('/');
+                }
+                token.pop();
+                if let Some(item) = item {
+                    token.push(':');
+                    token.push_str(name(item)?);
+                }
+            }
+        }
+        Some(token)
+    }
+
+    /// The claim a continuation's token writes.
+    fn parse(token: &str) -> Option<Self> {
+        fn read_step(step: &str) -> Option<PathStep> {
+            let (tag, rest) = step.split_at_checked(1)?;
+            Some(match tag {
+                "f" => PathStep::Field(rest.to_owned()),
+                "i" => PathStep::Item(rest.to_owned()),
+                "k" => PathStep::Key(rest.to_owned()),
+                "c" => {
+                    let (row, column) = rest.split_once(':')?;
+                    PathStep::Cell(row.to_owned(), column.to_owned())
+                }
+                _ => return None,
+            })
+        }
+        let (tag, rest) = token.split_once(':')?;
+        Some(match tag {
+            "e" => {
+                let (kind, path) = rest.split_once(':')?;
+                let path = if path.is_empty() {
+                    Vec::new()
+                } else {
+                    path.split('/').map(read_step).collect::<Option<Vec<_>>>()?
+                };
+                Self::Edit {
+                    kind: kind.to_owned(),
+                    path,
+                }
+            }
+            "v" => {
+                let (app, rest) = rest.split_once('/')?;
+                let (kind, rest) = rest.split_once('/')?;
+                let (action, item) = match rest.split_once(':') {
+                    Some((action, item)) => (action, Some(item.to_owned())),
+                    None => (rest, None),
+                };
+                Self::Verb {
+                    action: crate::ActionKey::new(app, kind, action),
+                    item,
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// The gesture `gesture` as a continuation writes it: its [`crate::compact`]
+/// form.
+fn gesture_token(gesture: crate::ActionId) -> String {
+    crate::compact::encode(&serde_json::Value::String(
+        gesture.0.hyphenated().to_string(),
+    ))
+}
+
+/// The gesture a continuation's token writes.
+fn gesture_of(token: &str) -> Option<crate::ActionId> {
+    let text = crate::compact::decode(token)?;
+    let text = serde_json::from_str::<String>(&text).ok()?;
+    uuid::Uuid::try_parse(&text).ok().map(crate::ActionId)
 }
 
 /// A change message's entry as a JSON value. Entries are read through a value,
@@ -1376,6 +1545,17 @@ pub struct Cause {
 /// and undoes whole.
 pub const AGENT_SESSION_GROUP: &str = "agent-session";
 
+/// The group kind of one command line a shell ran: every file action it and
+/// the commands it dispatched carried out, undone as one.
+pub const COMMAND_GROUP: &str = "command";
+
+/// Whether a group of this kind names a session that undo can name: an agent's
+/// connection, or one command line of a shell.
+#[must_use]
+pub fn names_a_session(kind: &str) -> bool {
+    kind == AGENT_SESSION_GROUP || kind == COMMAND_GROUP
+}
+
 /// The unit of work an action belongs to: an issue, a task, an agent run.
 /// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1966,5 +2146,44 @@ mod tests {
                 Some("issue:42")
             );
         }
+    }
+
+    #[test]
+    fn a_keystroke_continues_its_writers_last_entry_with_its_gesture_bytes_and_claim() {
+        let typed = |letter: &str, gesture: u128| ActionContext {
+            action: Some(crate::EncodedAction {
+                type_id: "notes.notebook".into(),
+                payload: format!(
+                    r#"{{"SpliceText":{{"at":12,"ins":{letter}}},"path":[{{"item":"8dc4"}}]}}"#
+                )
+                .into_bytes(),
+            }),
+            ..ActionContext::default()
+                .with_described(starred())
+                .in_gesture(Some(crate::ActionId(uuid::Uuid::from_u128(gesture))))
+        };
+        // The next word's first letter starts its own gesture.
+        let (first, next) = (typed(r#""n""#, 7), typed(r#""é \"q\"""#, 8));
+        let message = next.continuation_of(&first).unwrap();
+        assert_eq!(
+            message,
+            r#"tilo.cont/3 U8000000000000000000000 e::fsnippets/is1/ffavorite 30 28 é \"q\""#
+        );
+        assert_eq!(
+            ContinuedAction::of_message(&message),
+            Some(ContinuedAction::Edit {
+                kind: String::new(),
+                path: vec![
+                    PathStep::Field("snippets".into()),
+                    PathStep::Item("s1".into()),
+                    PathStep::Field("favorite".into()),
+                ],
+            })
+        );
+        assert_eq!(
+            ActionContext::continued(&message, &first),
+            Some(next),
+            "read back byte for byte"
+        );
     }
 }

@@ -45,6 +45,7 @@
 
 mod activation;
 mod child;
+mod color;
 mod control;
 mod cursor_shape;
 mod data_device;
@@ -54,12 +55,14 @@ mod dmabuf;
 mod fractional;
 mod idle_inhibit;
 mod keyboard_shortcuts_inhibit;
+pub mod output;
 mod outputs;
 mod pings;
 mod pointer_constraints;
 mod pointer_gestures;
 mod presentation;
 mod primary_selection;
+pub mod registry;
 mod relative_pointer;
 mod seat;
 mod state;
@@ -70,6 +73,9 @@ mod toplevel_icon;
 mod upstream;
 mod viewporter;
 pub mod wire;
+mod x11;
+mod x11_windows;
+mod xdnd;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -119,10 +125,17 @@ pub struct Options {
     pub app_id_prefix: Option<String>,
     /// The app's command; none starts nothing (an app connects to the socket itself).
     pub command: Vec<OsString>,
+    /// Serve the app an X11 display of its own (`x11`), its server a client of the keeper.
+    pub x11: bool,
     /// [`GRACE`], shorter in a test.
     pub grace: Duration,
     /// [`DESKTOP_GONE`], shorter in a test.
     pub desktop_gone: Duration,
+    /// Test only: once this file exists the keeper speaks as one of an older build, at version 0;
+    /// it holds its app for a session at another version unless the file says `closes`, as a
+    /// keeper from before that rule does.
+    #[cfg(feature = "test-support")]
+    pub aged_by: Option<PathBuf>,
 }
 
 impl Options {
@@ -133,9 +146,52 @@ impl Options {
             launch: launch.into(),
             app_id_prefix: None,
             command: Vec::new(),
+            x11: false,
             grace: GRACE,
             desktop_gone: DESKTOP_GONE,
+            #[cfg(feature = "test-support")]
+            aged_by: None,
         }
+    }
+
+    /// The options a command line names, past the program's own name:
+    /// `--dir <private dir> --launch <name> [--app-id-prefix <prefix>] -- <command...>`.
+    ///
+    /// # Errors
+    /// An argument the keeper does not take, a missing directory or launch, or no command.
+    pub fn from_args(args: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
+        let mut args = args.into_iter();
+        let mut dir = None;
+        let mut launch = None;
+        let mut prefix = None;
+        let mut x11 = false;
+        let mut command: Vec<OsString> = Vec::new();
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--dir") => dir = args.next(),
+                Some("--launch") => launch = args.next().and_then(|value| value.into_string().ok()),
+                Some("--app-id-prefix") => {
+                    prefix = args.next().and_then(|value| value.into_string().ok());
+                }
+                Some("--x11") => x11 = true,
+                Some("--") => command.extend(args.by_ref()),
+                _ => return Err(format!("unexpected argument {}", arg.to_string_lossy())),
+            }
+        }
+        let (Some(dir), Some(launch)) = (dir, launch) else {
+            return Err(
+                "usage: tilo-app-keeper --dir <private dir> --launch <name> [--app-id-prefix <prefix>] [--x11] -- <command...>"
+                    .to_owned(),
+            );
+        };
+        if command.is_empty() {
+            return Err("no command after --".to_owned());
+        }
+        let mut options = Self::new(dir, launch);
+        options.app_id_prefix = prefix;
+        options.command = command;
+        options.x11 = x11;
+        Ok(options)
     }
 }
 
@@ -159,6 +215,10 @@ struct Data {
     created: Instant,
     app: Option<child::App>,
     app_token: Option<RegistrationToken>,
+    /// The launch's X11 display, when it serves one.
+    x11: Option<x11::XDisplay>,
+    /// The keeper was asked for an X11 display and has none: the app gets no `DISPLAY`.
+    x11_missing: bool,
     ended: Option<End>,
     ended_at: Option<Instant>,
     /// Since when the running app has had no desktop, and whether it was asked to end for it.
@@ -196,15 +256,24 @@ impl Keeper {
         insert(&handle, wayland, |listener, data: &mut Data| {
             data.accept_app(listener);
         })?;
-        let control = listen(&options.dir.join("control"))?;
-        std::fs::set_permissions(
-            options.dir.join("control"),
-            std::fs::Permissions::from_mode(0o600),
-        )?;
+        // Bound and made private under another name, then named `control`: a session that sees
+        // `control` appear finds it listening.
+        let binding = options.dir.join(".control");
+        let control = listen(&binding)?;
+        std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&binding, options.dir.join("control"))?;
         insert(&handle, control, |listener, data: &mut Data| {
             data.accept_session(listener);
         })?;
-        Ok(Self {
+        let x11 = if options.x11 {
+            x11::XDisplay::bind(&options.dir)
+                .inspect_err(|error| tracing::warn!(%error, "no X11 display: no X11 programs"))
+                .ok()
+        } else {
+            None
+        };
+        let x11_missing = options.x11 && x11.is_none();
+        let mut keeper = Self {
             event_loop,
             data: Data {
                 state,
@@ -220,13 +289,17 @@ impl Keeper {
                 created: Instant::now(),
                 app: None,
                 app_token: None,
+                x11,
+                x11_missing,
                 ended: None,
                 ended_at: None,
                 desktop_lost: None,
                 delivered: false,
                 finished: false,
             },
-        })
+        };
+        x11::watch(&mut keeper.data);
+        Ok(keeper)
     }
 
     /// Run until the app ended and that was heard (or nobody came to hear it).
@@ -266,6 +339,12 @@ impl Keeper {
     #[must_use]
     pub fn socket(&self) -> &Path {
         &self.data.socket
+    }
+
+    /// `N` of the X11 display `:N` the app is given, when it is given one.
+    #[must_use]
+    pub fn x11_display(&self) -> Option<u32> {
+        self.data.x11.as_ref().map(x11::XDisplay::number)
     }
 
     /// The app ended and that was heard, or nobody came to hear it in time.
@@ -341,14 +420,20 @@ fn insert_for<F: std::os::fd::AsFd + 'static>(
 }
 
 impl Data {
-    fn accept_app(&self, listener: &UnixListener) {
+    fn accept_app(&mut self, listener: &UnixListener) {
         while let Some(stream) = accept(listener) {
-            if let Err(error) = self
+            let server = self.x11.as_ref().and_then(x11::XDisplay::server_pid);
+            let from_server = server.is_some_and(|server| {
+                control::peer_pid(&stream).is_ok_and(|pid| u32::try_from(pid).ok() == Some(server))
+            });
+            match self
                 .display
                 .handle()
                 .insert_client(stream, Arc::new(ClientState::default()))
             {
-                tracing::warn!(%error, "an app connection could not be taken");
+                Ok(client) if from_server => self.state.xdnd.server_connected(client.id()),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "an app connection could not be taken"),
             }
         }
     }
@@ -418,7 +503,7 @@ impl Data {
 
     /// Send `message` to the session `id` without waiting: whether it reached the socket whole.
     /// What does not fit waits for room; a session gone or too far behind is closed.
-    fn send(&mut self, id: u64, message: &FromKeeper) -> bool {
+    fn send<T: serde::Serialize>(&mut self, id: u64, message: &T) -> bool {
         let Some((conn, _)) = self.conns.get_mut(&id) else {
             return false;
         };
@@ -478,32 +563,35 @@ impl Data {
     }
 
     fn session_message(&mut self, id: u64, frame: &[u8]) {
+        let (speaks, holds) = self.speaks();
         let Some((conn, _)) = self.conns.get_mut(&id) else {
             return;
         };
+        // A session at another version was answered once: nothing more it says is read.
+        if conn.holds {
+            return;
+        }
         if !conn.greeted {
-            if wire::hello_version(frame) == Some(INTERFACE_VERSION) {
+            if wire::hello_version(frame) == Some(speaks) {
                 conn.greeted = true;
-                self.send(
-                    id,
-                    &FromKeeper::Hello {
-                        version: INTERFACE_VERSION,
-                    },
-                );
+                self.send(id, &FromKeeper::Hello { version: speaks });
                 if let Some(end) = self.ended
                     && self.send(id, &FromKeeper::Ended { end })
                 {
                     self.delivered = true;
                 }
             } else {
-                tracing::warn!("a session spoke another version of the control interface");
-                self.send(
-                    id,
-                    &FromKeeper::VersionMismatch {
-                        version: INTERFACE_VERSION,
-                    },
+                tracing::warn!(
+                    "a session spoke another version of the control interface; holding the app for it"
                 );
-                self.close_session(id);
+                self.send(id, &FromKeeper::VersionMismatch { version: speaks });
+                if holds && self.send(id, &wire::HOLDING) {
+                    if let Some((conn, _)) = self.conns.get_mut(&id) {
+                        conn.holds = true;
+                    }
+                } else {
+                    self.close_session(id);
+                }
             }
             return;
         }
@@ -543,6 +631,26 @@ impl Data {
                 }
             }
         }
+    }
+
+    /// The version this keeper speaks, and whether it holds its app for a session at another.
+    #[cfg(not(feature = "test-support"))]
+    #[expect(clippy::unused_self, reason = "the test build reads its options")]
+    const fn speaks(&self) -> (u32, bool) {
+        (INTERFACE_VERSION, true)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn speaks(&self) -> (u32, bool) {
+        match self.options.aged_by.as_ref().map(std::fs::read_to_string) {
+            Some(Ok(said)) => (0, said.trim() != "closes"),
+            _ => (INTERFACE_VERSION, true),
+        }
+    }
+
+    /// Whether a session that cannot show the app is connected and holds it.
+    fn held(&self) -> bool {
+        self.conns.values().any(|(conn, _)| conn.holds)
     }
 
     fn describe(&self) -> Description {
@@ -658,6 +766,8 @@ impl Data {
         if self.state.up.take().is_some() {
             self.desktop_lost = Some((Instant::now(), None));
             self.state.hold_all();
+            self.state.hold_color();
+            self.state.hold_xdnd();
             self.state.hold_data_device();
             self.state.hold_primary_selection();
             self.state.hold_pointer_constraints();
@@ -719,8 +829,15 @@ impl Data {
     }
 
     /// A running app whose desktop stayed away for [`Options::desktop_gone`] is asked to end
-    /// (SIGTERM to its process group), and made to after [`Options::grace`] more.
+    /// (SIGTERM to its process group), and made to after [`Options::grace`] more. A session that
+    /// cannot show it holds it: the time counts from when the last such session went.
     fn end_without_desktop(&mut self) {
+        if self.held() {
+            if let Some((lost, None)) = &mut self.desktop_lost {
+                *lost = Instant::now();
+            }
+            return;
+        }
         let (Some(app), None, Some((lost, asked))) =
             (&self.app, self.ended, &mut self.desktop_lost)
         else {
@@ -744,6 +861,7 @@ impl Data {
 
     fn wake_in(&self) -> Option<Duration> {
         let gone = match (&self.app, self.ended, self.desktop_lost) {
+            (Some(_), None, Some((_, None))) if self.held() => None,
             (Some(_), None, Some((lost, None))) => {
                 Some(self.options.desktop_gone.saturating_sub(lost.elapsed()))
             }
@@ -767,14 +885,22 @@ impl Data {
     }
 
     fn start_app(&mut self) {
-        let app = match child::App::spawn(&self.options.command, &self.socket) {
-            Ok(app) => app,
-            Err(error) => {
-                tracing::warn!(%error, "the app could not be started");
-                self.app_ended(End::Exited { code: 127 });
-                return;
+        let x11 = match (&self.x11, self.x11_missing) {
+            (Some(display), _) => {
+                child::X11::Display(display.number(), display.authority().to_path_buf())
             }
+            (None, true) => child::X11::Missing,
+            (None, false) => child::X11::Unchanged,
         };
+        let app =
+            match child::App::spawn(&self.options.command, &self.socket, x11, &self.options.dir) {
+                Ok(app) => app,
+                Err(error) => {
+                    tracing::warn!(%error, "the app could not be started");
+                    self.app_ended(End::Exited { code: 127 });
+                    return;
+                }
+            };
         match app
             .pidfd
             .try_clone()
@@ -782,6 +908,11 @@ impl Data {
         {
             Ok(token) => self.app_token = Some(token),
             Err(error) => tracing::warn!(%error, "the app's end cannot be watched"),
+        }
+        if let Some(started_at) = app.started_at
+            && let Err(error) = write_app(&self.options.dir, app.pid, started_at)
+        {
+            tracing::warn!(%error, "the app's process could not be recorded");
         }
         self.app = Some(app);
     }
@@ -807,6 +938,16 @@ impl Data {
         }
         self.state.outbox.push(FromKeeper::Ended { end });
     }
+}
+
+/// Write the app's process to `<dir>/app` ([`wire::AppProcess`]), whole or not at all.
+fn write_app(dir: &Path, pid: u32, started_at: u64) -> io::Result<()> {
+    let partial = dir.join(".app.partial");
+    std::fs::write(
+        &partial,
+        serde_json::to_vec(&wire::AppProcess { pid, started_at })?,
+    )?;
+    std::fs::rename(partial, dir.join("app"))
 }
 
 fn write_ended(dir: &Path, end: End) -> io::Result<()> {

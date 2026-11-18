@@ -37,7 +37,7 @@ impl TabBar {
             .with_text_role(TextRole::Body)
             .clears_on_blank()
             // The pill is the field's chrome: its text starts exactly where the title's did, and
-            // the pill is sized by the name rather than a field standing inside it.
+            // the pill is sized by the name rather than a field inside it.
             .with_plain_field()
             .with_accessible_name(name)
             .with_id("tab-rename");

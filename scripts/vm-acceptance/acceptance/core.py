@@ -26,7 +26,7 @@ AREAS = {
     "agents-e2e": "Coding agents in two workspaces, end to end (e2e-agents)",
     "ws-branch-e2e": "A workspace set up once and branched, end to end (e2e-ws-branch)",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
-    "secrets": "Security and identity: secret custody",
+    "secrets": "Security and identity: secret storage",
 }
 
 
@@ -55,7 +55,7 @@ class ExpectedFailure(CheckFailed):
 
 class BudgetExceeded(CheckFailed):
     """The subject worked, and a measurement of it went over its budget: time, CPU, frames,
-    memory. A run that gates on budgets (`--budgets gate`, the default) fails it like any
+    memory. A run that waits for budgets (`--budgets check`, the default) fails it like any
     other failure; one that reports them (`--budgets report`) records it as `over-budget`,
     which does not fail the run. Release candidates are verified on t's shared, GPU-less
     workers, whose timings say more about the worker than about the commit: there the
@@ -405,7 +405,7 @@ DISMISS_ESCAPES = 4
 
 
 def open_surfaces(state: dict) -> list[str]:
-    """Every surface the state dump shows standing over the windows, by name.
+    """Every surface the state dump shows over the windows, by name.
 
     Each of these takes the keyboard from the window behind it, so one left open by a
     check receives the next check's typing: run 89618's A01 typed its Terminal command

@@ -31,8 +31,8 @@ pub struct TextInputProps {
     /// It is where the person types next (an entry a command just opened): it takes the
     /// keyboard as soon as it is in the window, once.
     pub autofocus: bool,
-    /// Someone else changed the text and the person has not seen it yet: the field takes their
-    /// colour. The host sets it, from what the field is bound to (task-legibility §3).
+    /// Someone else changed the text and the person has not seen it yet: hovering the field says
+    /// who. The app's runtime sets it, from what the field is bound to (task-legibility §3).
     pub changed_by: Option<Person>,
     /// What the text was before that change, said when the field is hovered.
     pub previous: Option<String>,
@@ -61,7 +61,7 @@ pub struct TextInputProps {
     /// (a caret on the canvas).
     #[component(event)]
     pub cancel: Event,
-    /// A caret standing on a surface rather than a field in a form: no well and no fill, only
+    /// A caret on a surface rather than a field in a form: no well and no fill, only
     /// as wide as what it holds, growing as the words are typed. The canvas's caret.
     pub caret: bool,
 }
@@ -87,6 +87,14 @@ impl Default for TextInputProps {
             caret: false,
         }
     }
+}
+
+/// The field of the item a bound value edits, as an action's text anchor names it: the field
+/// by its declared id, in the item it belongs to ([`TextInput::set_edits`]).
+fn written_at(value: &Bound<String>) -> Option<(String, String)> {
+    let address = tilo_actions::ActionAddress::parse(value.identity.as_deref()?)?;
+    let item = tilo_actions::logical_resource_id(&address.resource).into_owned();
+    Some((address.action, item))
 }
 
 /// What a field changed by someone else says on hover: who changed it, and what it held.
@@ -146,7 +154,7 @@ impl Described for TextInput {
             .with_change(change)
             .disabled(!enabled)
             .with_read_only(read_only);
-        input.change_before = previous;
+        input.set_edits(written_at(&value));
         if let Some(text) = text {
             input = input
                 .with_plain_chrome()
@@ -205,11 +213,11 @@ impl Described for TextInput {
             self.follow(&value.state);
         }
         self.path.clone_from(&value.path);
+        self.set_edits(written_at(&value));
         self.change = changed_by.map(|by| {
             let note = change_note(&by, previous.as_deref());
             (by, note)
         });
-        self.change_before = previous;
         let edits = value.clone();
         self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
         let placeholder = placeholder.unwrap_or_default();

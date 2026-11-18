@@ -23,7 +23,7 @@ crate-type = ["dylib"]
 # filesystem, the sandbox launcher, the app host, the install CLI), light
 # crates only one app uses, and engines a few apps use, which have their own
 # library under crates/runtime/engines/ (Typst, Spotify playback, Canvas's
-# painting engines, the YouTube client of Music and Tube, account custody,
+# painting engines, the YouTube client of Music and Tube, account credentials,
 # IMAP and WebDAV for Mail, Settings and Calendar, the time-zone database for
 # Calendar and Clocks, the contact directory for Contacts, Mail and Messages,
 # the PDF engine for PDF Viewer, Files and Print Centre, the FUSE
@@ -63,7 +63,7 @@ os-actions = { path = "../../system/os-actions" }
 runtime-identity = { path = "../runtime-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-fs = { package = "tilo-fs-client", path = "../tilo-fs-client" }
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 accounts = { path = "../../system/accounts" }
 agent-provider-config = { path = "../../agent/provider-config" }
@@ -88,7 +88,7 @@ tilo-rich-text = { path = "../../sdk/tilo-rich-text" }
 vte = "0.15.0"
 # Document codecs (Notes, Files, Mail, the office apps, ...). Apps choose the
 # codec features; the union is built here once. The WebDAV client is not here:
-# its calendar sign-in reaches account custody, so Calendar and Settings load
+# its calendar sign-in reaches account credentials, so Calendar and Settings load
 # it from the accounts engine.
 tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
 # Without PDF pages: those come from the PDF engine (crates/runtime/engines/pdf),

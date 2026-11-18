@@ -3,7 +3,7 @@
 //! workspace's shared layout, said to be its run's, which a person entering
 //! the workspace finds open. What it only reads opens nothing.
 use super::api::{ISSUER, Mcp, upload};
-use super::api_on_relay::{accept_invitation, api_on_relay, approved_key};
+use super::api_on_server::{accept_invitation, api_on_server, approved_key};
 use super::hosted_documents::{WRITER, application_pdf};
 use super::*;
 use serde_json::json;
@@ -45,11 +45,11 @@ fn windows_of(desktop: &SharedDesktop, app: &str) -> Vec<u64> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_an_agent_changes_through_the_api_opens_on_the_workspaces_layout() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page_device = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page_device, "Visa backend").await;
+    let key = approved_key(&on_server, &ada, &page_device, "Visa backend").await;
     let mut backend = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -79,9 +79,9 @@ async fn what_an_agent_changes_through_the_api_opens_on_the_workspaces_layout() 
     // leaves, and no page is open while the agent works.
     {
         let mut ada_page = super::resource_support::open_admitted_peer(
-            &on_relay.hosted,
+            &on_server.hosted,
             &page_device,
-            &on_relay.host,
+            &on_server.host,
             &workspace,
         )
         .await;
@@ -143,11 +143,11 @@ async fn what_an_agent_changes_through_the_api_opens_on_the_workspaces_layout() 
         .unwrap_or_else(|| panic!("an invitation's link: {invited}"))
         .to_owned();
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa Ortiz", 1);
-    let (rosa_page, _) = accept_invitation(&on_relay, &link, &rosa, "Rosa Ortiz").await;
+    let (rosa_page, _) = accept_invitation(&on_server, &link, &rosa, "Rosa Ortiz").await;
     let mut page = super::resource_support::open_admitted_peer(
-        &on_relay.hosted,
+        &on_server.hosted,
         &rosa_page,
-        &on_relay.host,
+        &on_server.host,
         &workspace,
     )
     .await;

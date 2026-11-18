@@ -1,4 +1,4 @@
-//! The mounted file's history: custody of the open file, and the immutable
+//! The mounted file's history: ownership of the open file, and the immutable
 //! versions agents sign.
 use fs_protocol::files::{
     CHECKED_HISTORY_RESTORE_XATTR, CHECKED_HISTORY_RESULT_XATTR_PREFIX,
@@ -493,7 +493,7 @@ mod tests {
                 .unwrap();
                 assert_eq!(
                     actual, request,
-                    "exact retry keeps the original ID, frontier, record and selected version"
+                    "exact retry keeps the original ID, frontier, resource and selected version"
                 );
                 assert_eq!(
                     transport.result(uuid::Uuid::from_u128(7)),

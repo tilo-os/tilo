@@ -35,7 +35,7 @@
 //! A second argument `open` measures only the open, for profiling it. Each
 //! size's open also prints a `FRAMEWORK-OPEN` line, which
 //! `tools/perf/adapters.py framework-open` turns into the
-//! `render.framework_open.*` KPIs of the scheduled performance lane:
+//! `render.framework_open.*` KPIs of the scheduled performance job:
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \

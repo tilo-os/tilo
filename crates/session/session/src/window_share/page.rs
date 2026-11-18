@@ -2,7 +2,7 @@
 //!
 //! A window whose app draws its page travels as that page ([`crate::page_track`]): its host
 //! announces a stream whose codec is the display list, and the page's objects come over the
-//! workspace's live plane on a track of their own. The plane opens what it carried and hands each
+//! workspace's live session on a track of their own. The live session opens what it carried and hands each
 //! object over whole, its header on it; the tile takes the payload, as the publisher's engine
 //! encoded it.
 //!
@@ -17,20 +17,20 @@ use std::time::{Duration, Instant};
 
 use iroh::EndpointId;
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::{DesktopHandle, Standing};
+use tilo_desktop_surface::{DesktopHandle, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
 
 use super::WindowShares;
 
-/// How long a page this device asked the plane for may take to arrive before the reading says the
+/// How long a page this device asked the live session for may take to arrive before the reading says the
 /// device that runs its window sent none: what that device gives its app to hand the page over
 /// ([`crate::page_track::HAND_OVER_BOUND`]), and five seconds for the ask and the page to cross
-/// the plane, so this side never says it before the other one can.
+/// the live session, so this side never says it before the other one can.
 pub(super) const ARRIVAL_BOUND: Duration =
     crate::page_track::HAND_OVER_BOUND.saturating_add(Duration::from_secs(5));
 
-/// How this device stands with a window's page it asks the plane for and holds nothing of.
+/// How this device stands with a window's page it asks the live session for and holds nothing of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Awaited {
     /// It asks for none, or its tile holds the page.
@@ -44,7 +44,7 @@ pub(super) enum Awaited {
 }
 
 impl WindowShares {
-    /// One object of the page of the window `tab` the device `from` shares, as the plane opened
+    /// One object of the page of the window `tab` the device `from` shares, as the live session opened
     /// it: its payload goes to the tile that draws that window.
     pub(super) fn page_heard(
         &self,
@@ -61,7 +61,7 @@ impl WindowShares {
             return;
         };
         let Ok(object) = tilo_failure::ignored!(
-            "the plane opened only what its relay validated as a page object",
+            "the live session opened only what its relay validated as a page object",
             PageObject::decode(body)
         ) else {
             return;
@@ -81,7 +81,7 @@ impl WindowShares {
             let pictured = stream.shown
                 && shell
                     .peer_stream_read(*peer, *surface)
-                    .is_some_and(|tile| tile.standing == Standing::Pictured);
+                    .is_some_and(|tile| tile.state == StreamState::Pictured);
             changed |= pictured != stream.pictured;
             stream.pictured = pictured;
         }
@@ -101,7 +101,7 @@ impl WindowShares {
         }
     }
 
-    /// Note which pages this device asks the plane for and holds nothing of for longer than a
+    /// Note which pages this device asks the live session for and holds nothing of for longer than a
     /// page takes to come ([`ARRIVAL_BOUND`]), so the reading says which side such a window waits
     /// on: this device asked, and the one that runs the window sent no page.
     pub(super) fn follow_overdue(&mut self, now: Instant) {

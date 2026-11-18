@@ -28,7 +28,7 @@ pub struct Queue(Rc<RefCell<Pending>>);
 
 #[derive(Clone)]
 struct Active {
-    custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     queue: Queue,
     revision: String,
     /// The input's surface moved under it: its actions get their revision once a surface they can be
@@ -42,7 +42,7 @@ struct Active {
 /// directory snapshot that supplied `revision`.
 #[derive(Clone)]
 pub(crate) struct InputRoute {
-    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub owner: Option<uuid::Uuid>,
     pub queue: Queue,
     /// Empty when no published surface could be pinned for this input.
@@ -101,7 +101,7 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
     if routes.is_empty() {
         ACTIVE.with(|active| {
             *active.borrow_mut() = Some(Active {
-                custody: None,
+                ownership: None,
                 queue: Queue::new(),
                 revision: String::new(),
                 revision_pending: false,
@@ -146,7 +146,7 @@ impl Queue {
     pub fn enter(&self, revision: String) -> Scope {
         let previous = ACTIVE.with(|active| {
             active.replace(Some(Active {
-                custody: None,
+                ownership: None,
                 queue: self.clone(),
                 revision,
                 revision_pending: false,
@@ -193,7 +193,7 @@ impl Queue {
             .map(ChangeHash)
             .collect();
         let bytes = report_budget(
-            capture.custody.as_ref(),
+            capture.ownership.as_ref(),
             &capture.revision,
             capture.published.as_ref(),
             &capture.encoded,
@@ -279,13 +279,13 @@ pub(crate) fn reserve(
         return Ok(None);
     }
     let active = ACTIVE.with(|active| active.borrow().clone()).or_else(|| {
-        let owner = crate::bound_dispatch::executing_host_scope();
+        let owner = crate::bound_dispatch::executing_scope();
         INPUT_ROUTES.with_borrow(|routes| {
             routes
                 .iter()
                 .find(|route| route.owner == owner)
                 .map(|route| Active {
-                    custody: route.custody.clone(),
+                    ownership: route.ownership.clone(),
                     queue: route.queue.clone(),
                     revision: route.revision.clone(),
                     revision_pending: route.revision.is_empty() && route.revision_pending,
@@ -325,7 +325,7 @@ pub(crate) fn reserve(
         invocation.resource.clone_from(alias);
     }
     let estimate = report_budget(
-        active.custody.as_ref(),
+        active.ownership.as_ref(),
         &active.revision,
         published.as_ref(),
         encoded,
@@ -406,7 +406,7 @@ impl Reservation {
         mutation_hashes.compact_sort();
         mutation_hashes.dedup();
         let mut action = CapturedAction {
-            custody: self.active.custody.clone(),
+            ownership: self.active.ownership.clone(),
             invocation: uuid::Uuid::nil(),
             capture_id: uuid::Uuid::new_v4(),
             revision: self.active.revision.clone(),
@@ -469,7 +469,7 @@ impl Drop for Lease {
 // the transport encoder so changes to that envelope cannot silently underbudget.
 #[derive(serde::Serialize)]
 struct BudgetReport<'a> {
-    custody: Option<&'a runtime_collab::committed_document::ConnectionSnapshot>,
+    ownership: Option<&'a runtime_collab::committed_document::ConnectionSnapshot>,
     version: u8,
     invocation: uuid::Uuid,
     capture_id: uuid::Uuid,
@@ -544,7 +544,7 @@ impl std::io::Write for ReportCounter {
 }
 
 fn report_budget(
-    custody: Option<&runtime_collab::committed_document::ConnectionSnapshot>,
+    ownership: Option<&runtime_collab::committed_document::ConnectionSnapshot>,
     revision: &str,
     published: Option<&PublishedInvocation>,
     encoded: &EncodedAction,
@@ -575,7 +575,7 @@ fn report_budget(
     serde_json::to_writer(
         &mut counter,
         &BudgetReport {
-            custody,
+            ownership,
             version: 1,
             // UUIDs have fixed wire width; budgeting must not request randomness.
             invocation: uuid::Uuid::from_u128(1),

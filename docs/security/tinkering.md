@@ -115,7 +115,7 @@ From `/docs/dsh/`:
 
 - **"Even root inside is not host root" is not a Sinty quote.** The phrase does not appear in any source. The nearest is a code comment: *"every id unprivileged, the user namespace unchanged: uid 0 in the guest is still a non-privileged real uid, so the host stays non-rootable."* What guest-uid-0 is actually *for*, per the code, is mundane and practical: unmodified `apt`/`dpkg` superuser checks pass, and rootless copy-up chowns work.
 
-- **`dsh` is off by default**, gated by a three-tier policy (`/usr/lib/ush/dsh-policy` in the signed rootfs > `/etc/ush/dsh-policy` > a user opt-in marker). The shipped image sets `optin`. None of this is documented; `/docs/dsh/` implies you just type `dsh`.
+- **`dsh` is off by default**, guarded by a three-tier policy (`/usr/lib/ush/dsh-policy` in the signed rootfs > `/etc/ush/dsh-policy` > a user opt-in marker). The shipped image sets `optin`. None of this is documented; `/docs/dsh/` implies you just type `dsh`.
 
 - **`scan`, `guard` and `quarantine` need `singd`, which is not open source** and whose repository does not exist publicly. The docs document those commands as though they work.
 
@@ -211,7 +211,7 @@ Read from the tree; build on these rather than duplicating them.
 
   **The baseline filter denies `mount`, `unshare`, `setns`, `pivot_root`, `chroot`.** A layer session cannot use it unchanged. `[sandbox].seccomp` is already a *named* profile string, so the extension point is a second profile beside `compile_baseline()`, not a relaxation of the default.
 
-- **`netgate.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property that it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
+- **`egress_proxy.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property that it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
 
 - **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Actor`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `crates/session/session/src/` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `crates/session/session/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/tilo/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
 
@@ -554,7 +554,7 @@ Reuse:
 - `landlock_shim`'s `__sandbox-exec` re-exec, to apply Landlock with
   sandbox-side paths. The host-side/sandbox-side path distinction is the
   number-one correctness trap in that code.
-- `netgate` verbatim for a layer's egress: the same per-host SOCKS5 broker, so a
+- `egress_proxy` verbatim for a layer's egress: the same per-host SOCKS5 broker, so a
   layer's network is filtered by the same mechanism an app's is, with the same
   no-privilege property.
 - `collab-types::caps` as the lease vocabulary. `Expiry` already *is* lease
@@ -620,7 +620,7 @@ at any point:**
   namespace-confined but carry **no seccomp filter and no Landlock ruleset** —
   they are strictly weaker than the design describes. `compile_tinker()` does not
   exist.
-- `netgate` integration; a layer's network is currently all-or-nothing.
+- `egress_proxy` integration; a layer's network is currently all-or-nothing.
 - `tinker adopt` — emitting a reproducible recipe (or a sysext, or a `.tapp`)
   from a layer. This is the loop-closer that nix has and containers do not, and
   it is unbuilt.

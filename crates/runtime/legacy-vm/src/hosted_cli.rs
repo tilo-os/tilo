@@ -22,7 +22,7 @@ usage: tilo-legacy hosted <command>
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--memory-reserve-mib MIB]
         [--memory-headroom-mib MIB] [--status-listen ADDR]
-        [--relay-endpoint ADDR:PORT]
+        [--move-listen SOCKET] [--server-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -49,19 +49,22 @@ usage: tilo-legacy hosted <command>
                          back before any wake is refused.
                          --status-listen answers Status alone over TCP, for a
                          placer.
-                         --relay-endpoint serves the workspaces' Browser in
+                         --move-listen accepts what another machine sends over
+                         SOCKET: a VM that moves to this machine, or a replica copy
+                         of one it is kept for. Same user only.
+                         --server-endpoint serves the workspaces' Browser in
                          their VMs: ADDR:PORT is where the browser session in a
-                         VM reaches the relay, the one address besides the
-                         internet a VM may reach: the relay's public address,
-                         or its cluster address when the relay is not
+                         VM reaches the server, the one address besides the
+                         internet a VM may reach: the server's public address,
+                         or its cluster address when the server is not
                          reachable from outside, or a loopback address when
-                         the relay runs on the host itself.
+                         the server runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
-  place --listen ADDR --record FILE
+  place --listen ADDR
         (--statefulset NAMESPACE/NAME --status-port PORT --max N
          | --hosts NAME=ADDR[,NAME=ADDR])
-                         say which host runs each workspace's VM (the one holding
-                         it, else the first with room), and start hosts, the
+                         say which host takes a workspace's VM nobody keeps
+                         (the first with room), and start hosts, the
                          StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
                          them: past three quarters, or for any VM waiting.
                          --hosts names a stack's hosts and where each answers
@@ -88,6 +91,16 @@ usage: tilo-legacy hosted <command>
   delete --run DIR WORKSPACE ENVIRONMENT
                          stop the workspace's VM and remove its disk and
                          snapshot; it no longer counts toward the account's VMs
+  drain                  take no more VMs and suspend every awake one onto the
+                         state directory, for a rolling update; the cloud's
+                         eviction notice does the same
+  move-vm WORKSPACE ENVIRONMENT --to SOCKET
+                         move the workspace's VM to the machine serving SOCKET: it is
+                         suspended, its disk and snapshot streamed there, and that
+                         machine forgets it once this one has all of it
+  replicate WORKSPACE ENVIRONMENT --to SOCKET
+                         copy the workspace's VM to the replica machine serving SOCKET,
+                         only the blocks that changed since its last copy
   browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
                [--material JSON]
                          open or attach the browser session in a workspace's
@@ -204,6 +217,8 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             ask(&flags, &request)
         }
         "branch" | "delete" => branch_or_delete(command, &Flags::parse(rest, &[])?),
+        "drain" => ask(&Flags::parse(rest, &[])?, &Request::Drain),
+        "move-vm" | "replicate" => move_or_replicate(command, &Flags::parse(rest, &[])?),
         "suspend" | "stop" => {
             let flags = Flags::parse(rest, &[])?;
             let [workspace, environment] = flags.rest.as_slice() else {
@@ -250,6 +265,29 @@ fn branch_or_delete(command: &str, flags: &Flags) -> Result<ExitCode, String> {
         Request::Delete {
             workspace: workspace.clone(),
             environment: environment.clone(),
+        }
+    };
+    ask(flags, &request)
+}
+
+/// Move a workspace's VM to another machine, or copy it to a replica machine.
+fn move_or_replicate(command: &str, flags: &Flags) -> Result<ExitCode, String> {
+    let [workspace, environment] = flags.rest.as_slice() else {
+        return Err(format!("{command}: WORKSPACE ENVIRONMENT\n{USAGE}"));
+    };
+    let to = flags.path("--to")?;
+    let (workspace, environment) = (workspace.clone(), environment.clone());
+    let request = if command == "move-vm" {
+        Request::MoveVm {
+            workspace,
+            environment,
+            to,
+        }
+    } else {
+        Request::ReplicateVm {
+            workspace,
+            environment,
+            to,
         }
     };
     ask(flags, &request)
@@ -308,10 +346,10 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
             jail,
-            // The browser session in a VM joins its workspace through the relay, inside the host's
+            // The browser session in a VM joins its workspace through the server, inside the host's
             // network: the one address besides the internet a VM may reach.
-            relay: flags
-                .get("--relay-endpoint")
+            server: flags
+                .get("--server-endpoint")
                 .map(legacy_vm::hosted::network::Endpoint::parse)
                 .transpose()?,
             // New VMs are clones of a template of their size, kept beside them: only a jailed VM
@@ -341,6 +379,11 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         budget.expected_mib(),
     );
     let service = Arc::new(service);
+    if let Some(socket) = flags.get("--move-listen") {
+        service
+            .serve_moves(std::path::Path::new(socket))
+            .map_err(|e| format!("--move-listen {socket}: {e}"))?;
+    }
     if let Some(address) = flags.get("--status-listen") {
         let listener = std::net::TcpListener::bind(address)
             .map_err(|e| format!("--status-listen {address}: {e}"))?;
@@ -498,13 +541,7 @@ fn place(flags: &Flags) -> Result<ExitCode, String> {
                 .join(", ")
         },
     );
-    let placer = Arc::new(Placer::new(
-        &flags.path("--record")?,
-        max,
-        scale,
-        Box::new(read_load),
-        system_clock(),
-    )?);
+    let placer = Arc::new(Placer::new(max, scale, Box::new(read_load), system_clock()));
     let address = flags.need("--listen")?;
     let listener =
         std::net::TcpListener::bind(address).map_err(|e| format!("--listen {address}: {e}"))?;
@@ -709,6 +746,10 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
         }
         Reply::Placed { host } => {
             println!("{host}");
+            Ok(ExitCode::SUCCESS)
+        }
+        Reply::Moved { vm, bytes } => {
+            println!("{vm}: {bytes} bytes moved");
             Ok(ExitCode::SUCCESS)
         }
         Reply::Refused(refusal) => Err(refusal.message),

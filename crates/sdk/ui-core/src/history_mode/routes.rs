@@ -1,7 +1,7 @@
 //! Exact installed document routing. No transport, signing or action log lives here.
 use super::HistoryOwner;
 use crate::{
-    collaboration::{PrimaryRouteWitness, RouteSpec},
+    collaboration::{AcceptedRoute, RouteSpec},
     widget::Widget,
 };
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
@@ -247,14 +247,14 @@ struct TreeRecord {
 
 #[derive(Default)]
 pub(crate) struct OwnerDocumentRoutes {
-    pub(crate) witness: Option<PrimaryRouteWitness>,
+    pub(crate) observation: Option<AcceptedRoute>,
     pub(crate) owners: Vec<OwnerRoute>,
     pub(crate) primary: PendingRemote,
     pub(crate) primary_generation: u64,
     pub(crate) status: Option<String>,
-    /// Whether the primary route was given the window's document whole since it opened on this witness:
+    /// Whether the primary route was given the window's document whole since it opened on this observation:
     /// a route's first publication is the document whole, and only the changes made after it go out one
-    /// by one ([`Self::observe_witness`] starts a new route over).
+    /// by one ([`Self::observe_observation`] starts a new route over).
     pub(crate) primary_whole: bool,
     /// Why local changes on the primary or workspace-index route are not reaching peers.
     pub(crate) outbound: Option<String>,
@@ -340,7 +340,7 @@ impl OwnerDocumentRoutes {
     pub(crate) fn reconcile(
         &mut self,
         root: &dyn Widget,
-        witness: Option<PrimaryRouteWitness>,
+        observation: Option<AcceptedRoute>,
         generation: u64,
         outer: &AutoCommit,
     ) -> Vec<RouteJoin> {
@@ -362,7 +362,7 @@ impl OwnerDocumentRoutes {
                 collect(child, owners);
             }
         }
-        if !self.observe_witness(witness, generation) {
+        if !self.observe_observation(observation, generation) {
             return vec![];
         }
         let mut current = vec![];
@@ -374,9 +374,9 @@ impl OwnerDocumentRoutes {
         self.install(current, outer)
     }
 
-    /// Follow the primary route `witness` (of `generation`): another one starts every route over.
-    fn observe_witness(&mut self, witness: Option<PrimaryRouteWitness>, generation: u64) -> bool {
-        if self.witness != witness || self.primary_generation != generation {
+    /// Follow the primary route `observation` (of `generation`): another one starts every route over.
+    fn observe_observation(&mut self, observation: Option<AcceptedRoute>, generation: u64) -> bool {
+        if self.observation != observation || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
             {
                 self.status = Some(crate::i18n::I18nManager::lookup_plain(
@@ -387,10 +387,10 @@ impl OwnerDocumentRoutes {
             self.retired.clear();
             self.primary = PendingRemote::default();
             self.primary_whole = false;
-            self.witness = witness;
+            self.observation = observation;
             self.primary_generation = generation;
         }
-        self.witness.is_some()
+        self.observation.is_some()
     }
 
     /// Hold the routes of the `current` owners (each with whether it answers snapshot requests), giving

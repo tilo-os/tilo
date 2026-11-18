@@ -1,7 +1,7 @@
 //! The operations a planning model is shown with its request
 //! ([`catalogue_summary`]): enough to plan the common ones without a
 //! discovery round trip, each application with its share of the cap, and —
-//! for a planner whose records keep publishing resources as a task runs
+//! for a planner whose resources keep publishing resources as a task runs
 //! ([`catalogue_summary_with`]) — look-alike resources in one line and the
 //! resources the request names listed whatever the cap.
 

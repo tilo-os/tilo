@@ -137,7 +137,7 @@ pub(crate) struct Walk<'a> {
     /// Whether the nodes here are a row of a `list` that stands a divider where its unseen part
     /// starts (`unseen_from:`), which already says of a row there that it is new.
     pub says_new: bool,
-    /// Whether the nodes here are a row standing open into its item where it stands: a view the
+    /// Whether the nodes here are a row held open into its item where it stands: a view the
     /// row calls runs as the open row's, so the slot holding the item's document is built in it
     /// (`row_open`), and in no closed row.
     pub open: bool,
@@ -236,7 +236,7 @@ pub(crate) struct Scoped<'p, 'b> {
     /// Whether the tree rendered is a row of a `list` that stands a divider where its unseen
     /// part starts (`unseen_from:`) (see [`Walk::says_new`]).
     pub says_new: bool,
-    /// Whether the tree rendered is a row of a `list` standing open into its item where it
+    /// Whether the tree rendered is a row of a `list` held open into its item where it
     /// stands (see [`Walk::open`]).
     pub open: bool,
     pub boundaries: Option<&'b mut dyn Boundaries>,

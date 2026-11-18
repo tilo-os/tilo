@@ -82,7 +82,7 @@ class LocalAppTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'executable permission'):
             apps.executable(self.binary)
 
-    def test_source_revision_and_tracked_changes_are_gates(self):
+    def test_source_revision_and_tracked_changes_are_checks(self):
         revision = 'a' * 40
         with patch.object(apps, 'run', return_value='b' * 40):
             with self.assertRaisesRegex(ValueError, 'revision changed'):

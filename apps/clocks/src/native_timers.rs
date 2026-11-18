@@ -3,7 +3,6 @@
 //! (`ui::notify::Feature::Schedule`).
 use crate::Clocks;
 use crate::schedule::Delivery;
-use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use ui::notify::{Notification, Notifier, Scheduled};
 use ui::time::SystemTime;
@@ -21,7 +20,7 @@ pub(crate) trait Scheduler {
         activation: &str,
         alarm: &crate::Alarm,
         end: SystemTime,
-        last_rung: Option<chrono::NaiveDate>,
+        last_rung: Option<jiff::civil::Date>,
     ) -> Result<(), String>;
 }
 
@@ -32,7 +31,7 @@ impl Scheduler for dyn Notifier {
         activation: &str,
         alarm: &crate::Alarm,
         end: SystemTime,
-        last_rung: Option<chrono::NaiveDate>,
+        last_rung: Option<jiff::civil::Date>,
     ) -> Result<(), String> {
         let notification = Notification::new(id, "Alarm", &alarm.label).with_activation(activation);
         Notifier::schedule_alarm(
@@ -64,9 +63,9 @@ impl Scheduler for dyn Notifier {
     }
 }
 
-/// `at` on the platform clock (which has no chrono conversion on the web).
-fn system_time(at: DateTime<Utc>) -> SystemTime {
-    let millis = u64::try_from(at.timestamp_millis()).unwrap_or(0);
+/// `at` on the platform clock, whose type on the web is not std's.
+fn system_time(at: jiff::Timestamp) -> SystemTime {
+    let millis = u64::try_from(at.as_millisecond()).unwrap_or(0);
     SystemTime::UNIX_EPOCH
         .checked_add(std::time::Duration::from_millis(millis))
         .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -83,12 +82,12 @@ pub(crate) fn alarm_activation(record: Option<&ui::resource::DocumentId>, alarm:
     )
 }
 
-pub(crate) fn activation_record(uri: &str) -> Option<ui::resource::DocumentId> {
+pub(crate) fn activation_resource(uri: &str) -> Option<ui::resource::DocumentId> {
     let path = uri.strip_prefix("tilo-clocks:record/")?;
     let record = path
         .split_once("/alarm/")
         .map_or(path, |(record, _)| record);
-    activation_record_id(record)
+    activation_resource_id(record)
 }
 
 pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
@@ -96,12 +95,12 @@ pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
         let (record, alarm) = uri
             .strip_prefix("tilo-clocks:record/")?
             .split_once("/alarm/")?;
-        activation_record_id(record)?;
+        activation_resource_id(record)?;
         Some(alarm)
     })
 }
 
-fn activation_record_id(record: &str) -> Option<ui::resource::DocumentId> {
+fn activation_resource_id(record: &str) -> Option<ui::resource::DocumentId> {
     let primary = ui::resource::DocumentId::package_primary();
     if record == primary.as_str() {
         return Some(primary);
@@ -121,7 +120,7 @@ pub(crate) fn reconcile(
     clocks: &Clocks,
     delivery: &mut Delivery,
     host: &(impl Scheduler + ?Sized),
-    now: DateTime<Utc>,
+    now: jiff::Timestamp,
     mut persist: impl FnMut(&Delivery) -> Result<(), String>,
 ) -> Result<(), String> {
     delivery
@@ -172,7 +171,7 @@ pub(crate) fn reconcile(
             Ok(()) => {
                 delivery
                     .native_scheduled
-                    .insert(id.as_str().to_owned(), end.timestamp_millis());
+                    .insert(id.as_str().to_owned(), end.as_millisecond());
                 retained.insert(timer_id(id.as_str()));
             }
             Err(error) => {
@@ -245,7 +244,7 @@ fn reconcile_alarms(
     clocks: &Clocks,
     delivery: &mut Delivery,
     host: &(impl Scheduler + ?Sized),
-    now: DateTime<Utc>,
+    now: jiff::Timestamp,
 ) -> Result<(), String> {
     let wanted = clocks
         .alarms
@@ -278,10 +277,10 @@ fn reconcile_alarms(
         let Some(&deadline) = wanted.get(id.as_str()) else {
             continue;
         };
-        if deadline <= now.timestamp_millis() {
+        if deadline <= now.as_millisecond() {
             continue;
         }
-        let Some(at) = DateTime::<Utc>::from_timestamp_millis(deadline) else {
+        let Some(at) = jiff::Timestamp::from_millisecond(deadline).ok() else {
             continue;
         };
         let last_rung = delivery
@@ -347,7 +346,7 @@ mod tests {
     struct TestScheduler {
         pending: RefCell<BTreeMap<String, SystemTime>>,
         fail_cancel: Cell<bool>,
-        alarm_last_rung: RefCell<BTreeMap<String, Option<chrono::NaiveDate>>>,
+        alarm_last_rung: RefCell<BTreeMap<String, Option<jiff::civil::Date>>>,
     }
     impl Scheduler for TestScheduler {
         fn pending(&self) -> Result<Vec<Scheduled>, String> {
@@ -374,7 +373,7 @@ mod tests {
             _: &str,
             _: &crate::Alarm,
             end: SystemTime,
-            last_rung: Option<chrono::NaiveDate>,
+            last_rung: Option<jiff::civil::Date>,
         ) -> Result<(), String> {
             self.alarm_last_rung
                 .borrow_mut()
@@ -395,7 +394,7 @@ mod tests {
             crate::Timer {
                 label: label.into(),
                 duration_ms: 3_600_000,
-                ends_at_ms: Some(Utc::now().timestamp_millis() + 3_600_000),
+                ends_at_ms: Some(jiff::Timestamp::now().as_millisecond() + 3_600_000),
                 paused_remaining_ms: None,
             },
         );
@@ -412,23 +411,23 @@ mod tests {
 
         phase real_alarm_handoff_transmits_the_full_resource_identity;
         {
-            let now = chrono::Local::now();
-            let due = now + chrono::Duration::minutes(5);
+            let now = jiff::Zoned::now();
+            let due = &now + jiff::SignedDuration::from_mins(5);
             let mut clocks = Clocks::default();
             clocks.alarms.insert(
                 0,
                 Id::from_raw("complete-alarm-resource-identity"),
                 crate::Alarm {
                     label: "Requested".into(),
-                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    hour: u8::try_from(due.hour()).unwrap(),
+                    minute: u8::try_from(due.minute()).unwrap(),
                     enabled: true,
-                    enabled_at_ms: now.timestamp_millis(),
+                    enabled_at_ms: now.timestamp().as_millisecond(),
                     ..crate::Alarm::default()
                 },
             );
             let mut delivery = Delivery::default();
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now);
             let captured = CapturedAlarm::default();
             let host: &dyn Notifier = &captured;
             let record = ui::resource::DocumentId::minted();
@@ -437,7 +436,7 @@ mod tests {
                 &clocks,
                 &mut delivery,
                 host,
-                now.with_timezone(&Utc),
+                now.timestamp(),
                 |_| Ok(()),
             )
             .unwrap();
@@ -453,23 +452,23 @@ mod tests {
 
         phase enabled_alarm_is_handed_to_scheduler_before_app_closes;
         {
-            let now = chrono::Local::now();
-            let due = now + chrono::Duration::minutes(2);
+            let now = jiff::Zoned::now();
+            let due = &now + jiff::SignedDuration::from_mins(2);
             let mut clocks = Clocks::default();
             clocks.alarms.push(
                 Id::from_raw("closed-app-alarm"),
                 crate::Alarm {
                     label: "Wake up".into(),
-                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    hour: u8::try_from(due.hour()).unwrap(),
+                    minute: u8::try_from(due.minute()).unwrap(),
                     repeat: 0,
                     enabled: true,
-                    enabled_at_ms: now.timestamp_millis(),
+                    enabled_at_ms: now.timestamp().as_millisecond(),
                 },
             );
             let mut delivery = Delivery::default();
             assert!(
-                crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
+                crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now)
                     .due
                     .is_empty()
             );
@@ -480,7 +479,7 @@ mod tests {
                 &clocks,
                 &mut delivery,
                 &host,
-                now.with_timezone(&Utc),
+                now.timestamp(),
                 |d| {
                     *stored.borrow_mut() = d.clone();
                     Ok(())
@@ -503,23 +502,23 @@ mod tests {
 
         phase disabling_alarm_retries_failed_cancellation_after_restart;
         {
-            let now = chrono::Local::now();
-            let due = now + chrono::Duration::minutes(2);
+            let now = jiff::Zoned::now();
+            let due = &now + jiff::SignedDuration::from_mins(2);
             let id = Id::from_raw("cancel-alarm");
             let mut clocks = Clocks::default();
             clocks.alarms.push(
                 id.clone(),
                 crate::Alarm {
                     label: "Wake up".into(),
-                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    hour: u8::try_from(due.hour()).unwrap(),
+                    minute: u8::try_from(due.minute()).unwrap(),
                     repeat: 0,
                     enabled: true,
-                    enabled_at_ms: now.timestamp_millis(),
+                    enabled_at_ms: now.timestamp().as_millisecond(),
                 },
             );
             let mut delivery = Delivery::default();
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now);
             let stored = RefCell::new(Delivery::default());
             let persist = |d: &Delivery| {
                 *stored.borrow_mut() = d.clone();
@@ -531,7 +530,7 @@ mod tests {
                 &clocks,
                 &mut delivery,
                 &host,
-                now.with_timezone(&Utc),
+                now.timestamp(),
                 persist,
             )
             .unwrap();
@@ -543,7 +542,7 @@ mod tests {
                     &clocks,
                     &mut delivery,
                     &host,
-                    now.with_timezone(&Utc),
+                    now.timestamp(),
                     persist
                 )
                 .is_err()
@@ -557,7 +556,7 @@ mod tests {
                 &clocks,
                 &mut restarted,
                 &host,
-                now.with_timezone(&Utc),
+                now.timestamp(),
                 persist,
             )
             .unwrap();
@@ -568,40 +567,40 @@ mod tests {
 
         phase reopening_completed_one_shot_preserves_host_snooze_until_edit;
         {
-            let now = chrono::Local::now();
-            let due = now + chrono::Duration::minutes(2);
+            let now = jiff::Zoned::now();
+            let due = &now + jiff::SignedDuration::from_mins(2);
             let id = Id::from_raw("completed-one-shot");
             let mut clocks = Clocks::default();
             clocks.alarms.push(
                 id.clone(),
                 crate::Alarm {
                     label: "Fixture".into(),
-                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    hour: u8::try_from(due.hour()).unwrap(),
+                    minute: u8::try_from(due.minute()).unwrap(),
                     repeat: 0,
                     enabled: true,
-                    enabled_at_ms: now.timestamp_millis(),
+                    enabled_at_ms: now.timestamp().as_millisecond(),
                 },
             );
             let mut delivery = Delivery::default();
             let host = TestScheduler::default();
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now);
             reconcile(
                 None,
                 &clocks,
                 &mut delivery,
                 &host,
-                now.with_timezone(&Utc),
+                now.timestamp(),
                 |_| Ok(()),
             )
             .unwrap();
             let deadline = delivery.alarms[id.as_str()].next_due_ms.unwrap();
-            let ring = DateTime::<Utc>::from_timestamp_millis(deadline).unwrap();
+            let ring = jiff::Timestamp::from_millisecond(deadline).unwrap();
             let tick = crate::schedule::tick(
                 &clocks,
                 &mut delivery,
                 ring,
-                ring.with_timezone(&chrono::Local),
+                &ring.to_zoned(jiff::tz::TimeZone::system()),
             );
             assert_eq!(tick.finished_alarms, vec![id.clone()]);
             assert!(matches!(
@@ -618,7 +617,7 @@ mod tests {
                 &clocks,
                 &mut restarted,
                 ring,
-                ring.with_timezone(&chrono::Local),
+                &ring.to_zoned(jiff::tz::TimeZone::system()),
             );
             reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
             assert!(
@@ -639,7 +638,7 @@ mod tests {
 
         phase reenabled_alarm_hands_off_the_previously_delivered_date;
         {
-            let now = chrono::Local::now();
+            let now = jiff::Zoned::now();
             let id = Id::from_raw("rearmed-alarm");
             let mut clocks = Clocks::default();
             clocks.alarms.push(
@@ -650,39 +649,39 @@ mod tests {
                     minute: 0,
                     repeat: 0,
                     enabled: true,
-                    enabled_at_ms: now.timestamp_millis(),
+                    enabled_at_ms: now.timestamp().as_millisecond(),
                 },
             );
             let mut delivery = Delivery::default();
             delivery.alarms.insert(
                 id.as_str().to_owned(),
                 crate::schedule::ArmedAlarm {
-                    last_rung: Some(now.date_naive()),
+                    last_rung: Some(now.date()),
                     ..Default::default()
                 },
             );
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now);
             let host = TestScheduler::default();
             reconcile(
                 None,
                 &clocks,
                 &mut delivery,
                 &host,
-                now.with_timezone(&Utc),
+                now.timestamp(),
                 |_| Ok(()),
             )
             .unwrap();
             assert_eq!(
                 host.alarm_last_rung.borrow().get(&alarm_id(id.as_str())),
-                Some(&Some(now.date_naive())),
+                Some(&Some(now.date())),
                 "the host must exclude the app's consumed local date"
             );
         }
 
         phase service_history_restores_occurrences_without_rearming_delivered_alarms;
         {
-            let now = chrono::Local::now();
-            let yesterday = now - chrono::Duration::days(1);
+            let now = jiff::Zoned::now();
+            let yesterday = &now - jiff::Span::new().days(1);
             let mut clocks = Clocks::default();
             let id = Id::from_raw("restore-alarm");
             clocks.alarms.push(
@@ -706,11 +705,11 @@ mod tests {
                 },
                 enabled_at_ms: 1,
                 next_at: None,
-                last_at: Some(system_time(yesterday.with_timezone(&Utc))),
-                last_rung: Some(yesterday.date_naive()),
+                last_at: Some(system_time(yesterday.timestamp())),
+                last_rung: Some(yesterday.date()),
             };
             restore_alarms(&clocks, &mut delivery, &[state.clone()]);
-            let due = crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            let due = crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now);
             assert!(matches!(
                 due.due.as_slice(),
                 [crate::DueEvent::Alarm {
@@ -720,24 +719,24 @@ mod tests {
             ));
             assert_eq!(due.finished_alarms, vec![id.clone()]);
             assert!(
-                crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
+                crate::schedule::tick(&clocks, &mut delivery, now.timestamp(), &now)
                     .due
                     .is_empty()
             );
             // A timezone-adjusted future occurrence is restored exactly, rather
             // than cancelling it because the app retained the old UTC deadline.
-            let future = now.with_timezone(&Utc) + chrono::Duration::hours(4);
+            let future = now.timestamp() + jiff::SignedDuration::from_hours(4);
             state.next_at = Some(system_time(future));
             state.last_at = None;
             state.last_rung = None;
             restore_alarms(&clocks, &mut delivery, &[state]);
             assert_eq!(
                 delivery.alarms.get(id.as_str()).unwrap().next_due_ms,
-                Some(future.timestamp_millis())
+                Some(future.as_millisecond())
             );
             assert_eq!(
                 delivery.native_alarms_scheduled.get(id.as_str()),
-                Some(&future.timestamp_millis())
+                Some(&future.as_millisecond())
             );
         }
 
@@ -749,7 +748,7 @@ mod tests {
                 host.schedule(
                     &foreign_id,
                     "Other profile",
-                    system_time(Utc::now() + chrono::Duration::hours(1)),
+                    system_time(jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)),
                 )
                 .unwrap();
                 reconcile(
@@ -757,7 +756,7 @@ mod tests {
                     &Clocks::default(),
                     &mut Delivery::default(),
                     &host,
-                    Utc::now(),
+                    jiff::Timestamp::now(),
                     |_| Ok(()),
                 )
                 .unwrap();
@@ -777,7 +776,7 @@ mod tests {
                 let mut first = running("Owned timer");
                 let owned_id = first_id(&first);
                 let mut delivery = Delivery::default();
-                reconcile(None, &first, &mut delivery, &host, Utc::now(), store).unwrap();
+                reconcile(None, &first, &mut delivery, &host, jiff::Timestamp::now(), store).unwrap();
                 assert_eq!(
                     stored.borrow().native_scheduled.len(),
                     1,
@@ -790,7 +789,7 @@ mod tests {
                     &second,
                     &mut Delivery::default(),
                     &host,
-                    Utc::now(),
+                    jiff::Timestamp::now(),
                     |_| Ok(()),
                 )
                 .unwrap();
@@ -803,7 +802,7 @@ mod tests {
                 first.timers = Collection::default();
                 host.fail_cancel.set(true);
                 assert!(
-                    reconcile(None, &first, &mut delivery, &host, Utc::now(), store).is_err(),
+                    reconcile(None, &first, &mut delivery, &host, jiff::Timestamp::now(), store).is_err(),
                     "case deleted-timer: failed cancellation is reported"
                 );
                 let mut restarted = stored.borrow().clone();
@@ -812,7 +811,7 @@ mod tests {
                     "case deleted-timer: ownership retained for retry"
                 );
                 host.fail_cancel.set(false);
-                reconcile(None, &first, &mut restarted, &host, Utc::now(), store).unwrap();
+                reconcile(None, &first, &mut restarted, &host, jiff::Timestamp::now(), store).unwrap();
                 assert_eq!(
                     host.pending.borrow().len(),
                     1,
@@ -833,7 +832,7 @@ mod tests {
                 let clocks = running("Owned timer");
                 let mut delivery = Delivery::default();
                 assert!(
-                    reconcile(None, &clocks, &mut delivery, &host, Utc::now(), |_| Err(
+                    reconcile(None, &clocks, &mut delivery, &host, jiff::Timestamp::now(), |_| Err(
                         "storage unavailable".into()
                     ))
                     .is_err(),
@@ -856,14 +855,14 @@ mod tests {
                 delivery.native_owners.insert(id.clone());
                 host.pending.borrow_mut().insert(
                     timer_id(&id),
-                    system_time(Utc::now() - chrono::Duration::minutes(1)),
+                    system_time(jiff::Timestamp::now() - jiff::SignedDuration::from_mins(1)),
                 );
                 reconcile(
                     None,
                     &Clocks::default(),
                     &mut delivery,
                     &host,
-                    Utc::now(),
+                    jiff::Timestamp::now(),
                     |_| Ok(()),
                 )
                 .unwrap();
@@ -881,7 +880,7 @@ mod tests {
                     &Clocks::default(),
                     &mut delivery,
                     &host,
-                    Utc::now(),
+                    jiff::Timestamp::now(),
                     |_| Ok(()),
                 )
                 .unwrap();

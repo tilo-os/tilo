@@ -71,7 +71,7 @@
 //! [`SetPreference`] for its host to submit
 //! ([`OskWidget::take_preference_edits`]).
 //!
-//! ## Seams
+//! ## Boundaries
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
 //!   [`crate::swipe::GeometricSwipeModel`]; a future FUTO/ExecuTorch
@@ -189,7 +189,7 @@ pub struct OskWidget {
     key_size: KeyboardSize,
     /// Whether the keyboard may adapt rankings and tap targets to this
     /// person's typing. What it learns is theirs alone: their host keeps it
-    /// in the person's own record ([`crate::learned`]).
+    /// in the person's own document ([`crate::learned`]).
     personalization_enabled: bool,
 
     // --- frame caches (populated in apply_layout) ---
@@ -213,7 +213,7 @@ pub struct OskWidget {
     pressed_sugg: Option<usize>,
 
     // --- swipe / prediction ---
-    /// Decoder behind the [`SwipeModel`] seam (geometric today; FUTO later).
+    /// Decoder behind the [`SwipeModel`] boundary (geometric today; FUTO later).
     swipe_model: Box<dyn SwipeModel>,
     predictor: Predictor,
     personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
@@ -2762,7 +2762,7 @@ impl Widget for OskWidget {
                 let p = ctx.logical(position);
                 self.pointer = Some(p);
                 if let Some(path) = self.gesture_path.as_mut() {
-                    // Only record once the pointer has moved a touch, to keep
+                    // Only resource once the pointer has moved a touch, to keep
                     // the path tight.
                     if path.last().is_none_or(|&l| l.distance(p) > 1.0) {
                         if path.len() < MAX_GESTURE_POINTS {

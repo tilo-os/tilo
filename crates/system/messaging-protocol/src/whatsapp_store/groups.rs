@@ -1,4 +1,4 @@
-//! Group reviews, one-shot writes and private text share original SDK custody.
+//! Group reviews, one-shot writes and private text share original SDK ownership.
 use super::{Change, Deserialize, EncryptedBackend, Result, Serialize, key, unavailable};
 use zeroize::Zeroize;
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,12 +81,12 @@ impl EncryptedBackend {
             if disk.get::<Operation>(&slot)?.is_some() {
                 return Ok(false);
             }
-            let witness = key("tilo-group-review", &[&review]);
-            let reviewed = disk.get::<Review>(&witness)?.ok_or_else(unavailable)?;
+            let proof = key("tilo-group-review", &[&review]);
+            let reviewed = disk.get::<Review>(&proof)?.ok_or_else(unavailable)?;
             if reviewed.group != op.group || reviewed.expires <= disk.now() {
                 return Err(unavailable());
             }
-            disk.commit(vec![Change::put(slot, &op)?, Change::delete(witness)])?;
+            disk.commit(vec![Change::put(slot, &op)?, Change::delete(proof)])?;
             Ok(true)
         })
         .await

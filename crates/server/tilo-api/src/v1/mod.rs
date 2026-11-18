@@ -1,0 +1,1956 @@
+//! The API, `/v1`: JSON over HTTP, resource-oriented, as
+//! `docs/developers/api.md` describes it.
+//!
+//! Every route is a call of the key's agent session ([`Session::call`]): the same tool
+//! calls an agent makes over MCP, answered typed. There is no second
+//! implementation underneath, only the mapping of routes to calls and of
+//! typed answers to HTTP:
+//!
+//! - [`operations`]: every operation, the one table routing
+//!   ([`routing`]) and the `OpenAPI` description ([`openapi`]) both read;
+//! - [`answers`]: the types every answer goes out through, which the
+//!   description's schemas are made from;
+//! - [`errors`]: the one refusal shape, and its statuses;
+//! - [`idempotency`]: retried mutating calls answer what the first did;
+//! - [`events`] and [`webhooks`]: what happens, as a stream and posted.
+
+pub mod answers;
+pub mod errors;
+pub mod events;
+pub mod idempotency;
+pub mod names;
+pub mod openapi;
+pub mod operations;
+pub mod routing;
+pub mod webhooks;
+
+use crate::session::{Call, Session};
+use crate::store::Grant;
+use crate::{Body, Reply, Server, now_ms};
+use answers::typed;
+use errors::ApiError;
+use hyper::body::{Bytes, Frame};
+use hyper::{HeaderMap, Method, StatusCode, header};
+use idempotency::{Begun, Stored};
+use operations::Operation;
+use routing::{Params, Unmatched};
+use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// The API's major version, which every answer names.
+pub const API_VERSION: &str = "1";
+/// The header every answer names the API's version in.
+pub const VERSION_HEADER: &str = "tilo-api-version";
+/// The header naming the invocation a call is a step of, and its title.
+pub const INVOCATION_HEADER: &str = "tilo-invocation";
+pub const INVOCATION_TITLE_HEADER: &str = "tilo-invocation-title";
+/// The header a call made through generated types names their surface in.
+pub const SURFACE_HEADER: &str = "tilo-surface";
+/// How long an action is waited for when the caller does not say.
+const DEFAULT_WAIT_SECONDS: u64 = 10;
+/// The longest any call is held.
+const MAX_WAIT_SECONDS: u64 = 60;
+/// How many resources of one export are read at once. Bigger than this only
+/// moves the wait to the workspace that answers the reads.
+const EXPORT_READS_AT_ONCE: usize = 8;
+/// How many exports one server runs at once; the rest wait their turn.
+const EXPORTS_AT_ONCE: usize = 8;
+
+/// What the API keeps besides the server's store.
+pub struct State {
+    pub(crate) remembered: idempotency::Remembered,
+    pub(crate) deliveries: webhooks::Deliveries,
+    /// Each app's surface version per workspace, as last read.
+    surfaces: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// How many exports run at once; a burst waits its turn here instead of
+    /// taking the server's other calls down with it.
+    exports: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            remembered: idempotency::Remembered::default(),
+            deliveries: webhooks::Deliveries::default(),
+            surfaces: std::sync::Mutex::default(),
+            exports: Arc::new(tokio::sync::Semaphore::new(EXPORTS_AT_ONCE)),
+        }
+    }
+}
+
+/// Whether `path` is the API's.
+#[must_use]
+pub fn serves(path: &str) -> bool {
+    path == "/v1" || path.starts_with("/v1/")
+}
+
+/// Whether `method` on `path` uploads a file, which may be larger than other
+/// bodies.
+#[must_use]
+pub fn uploads(method: &Method, path: &str) -> bool {
+    routing::find(method, path)
+        .is_ok_and(|(operation, _)| operation.body == operations::Body::Bytes)
+}
+
+/// The version of a surface: `<app>@<the first 16 hex of its SHA-256>`.
+#[must_use]
+pub fn surface_version(app: &str, surface: &str) -> String {
+    let digest = hex::encode(Sha256::digest(surface.as_bytes()));
+    format!("{app}@{}", digest.get(..16).unwrap_or(&digest))
+}
+
+/// One request to the API.
+pub struct Request<'a> {
+    pub method: &'a Method,
+    pub path: &'a str,
+    pub query: &'a str,
+    pub headers: &'a HeaderMap,
+    pub body: &'a [u8],
+}
+
+/// What a handler answers.
+enum Answer {
+    Json {
+        status: StatusCode,
+        body: Value,
+        location: Option<String>,
+    },
+    /// A body written as it is made, a piece at a time: server-sent events,
+    /// or a JSON document whose arrays are filled as their members are read.
+    Stream {
+        content_type: &'static str,
+        body: Body,
+    },
+    /// A file's bytes as they come: a piece fetched is a piece sent, so a
+    /// file of hundreds of megabytes costs the server no more memory than
+    /// one of its pieces.
+    File { content_type: String, body: Body },
+    /// Part of a file's bytes, from `range.0` to `range.1`, answered `206`.
+    Partial {
+        content_type: String,
+        range: (u64, Option<u64>),
+        size: u64,
+        body: Body,
+    },
+}
+
+impl Answer {
+    const fn ok(body: Value) -> Self {
+        Self::Json {
+            status: StatusCode::OK,
+            body,
+            location: None,
+        }
+    }
+    const fn created(body: Value) -> Self {
+        Self::Json {
+            status: StatusCode::CREATED,
+            body,
+            location: None,
+        }
+    }
+}
+
+/// Answer `request`, one of the API's.
+pub async fn respond(server: &Arc<Server>, request: &Request<'_>) -> Reply {
+    let mut reply = match routing::find(request.method, request.path) {
+        Ok((operation, params)) => answer(server, operation, params, request).await,
+        Err(Unmatched::NotFound) => refusal(
+            &ApiError::new("not_found", "the API has no such route")
+                .next("https://tilo.sh/docs/rest-api lists every route and what it takes"),
+        ),
+        Err(Unmatched::Method(allowed)) => {
+            let mut reply = refusal(&ApiError::new(
+                "method_not_allowed",
+                format!("this route takes {}", allowed.join(", ")),
+            ));
+            if let Ok(value) = header::HeaderValue::from_str(&allowed.join(", ")) {
+                reply.headers_mut().insert(header::ALLOW, value);
+            }
+            reply
+        }
+    };
+    reply.headers_mut().insert(
+        VERSION_HEADER,
+        header::HeaderValue::from_static(API_VERSION),
+    );
+    reply
+}
+
+async fn answer(
+    server: &Arc<Server>,
+    operation: &'static Operation,
+    params: Params,
+    request: &Request<'_>,
+) -> Reply {
+    if operation.id == "getApi" {
+        return reply(Ok(get_api(server, request.headers)));
+    }
+    let grant = match server.grant_of(request.headers) {
+        Ok(grant) => grant,
+        Err(denied) => return *denied,
+    };
+    let caller = match Caller::new(server, grant, params, request).await {
+        Ok(caller) => caller,
+        Err(refused) => return refusal(&refused),
+    };
+    if !operation.mutating {
+        // A caller's answer is a large future: on the heap, not in the frames of
+        // the request that awaits it.
+        return reply(Box::pin(caller.handle(operation)).await);
+    }
+    let Some(key) = request
+        .headers
+        .get(idempotency::HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return reply(Box::pin(caller.handle(operation)).await);
+    };
+    if !idempotency::valid(key) {
+        return refusal(&ApiError::invalid(
+            "an Idempotency-Key is 1 to 255 printable characters",
+        ));
+    }
+    let holder = caller.grant.id.clone();
+    let digest = idempotency::request_digest(request.method.as_str(), request.path, request.body);
+    match server.v1.remembered.begin(&holder, key, digest) {
+        Begun::Replay(stored) => {
+            let mut replayed = json_reply(
+                StatusCode::from_u16(stored.status).unwrap_or(StatusCode::OK),
+                &stored.body,
+                stored.location.as_deref(),
+            );
+            replayed.headers_mut().insert(
+                "idempotent-replayed",
+                header::HeaderValue::from_static("true"),
+            );
+            replayed
+        }
+        // The caller gave up waiting on the first and asked again: it is busy, not refused, and
+        // the same call answers the first's answer once it lands.
+        Begun::Running => refusal(
+            &ApiError::new(
+                "unavailable",
+                "a request with this Idempotency-Key is still running: ask again with the same key",
+            )
+            .retry_after_ms(RUNNING_RETRY_MS),
+        ),
+        Begun::Conflict(why) => refusal(&ApiError::new("idempotency_conflict", why)),
+        Begun::Fresh => {
+            let running = idempotency::Running::new(&server.v1.remembered, &holder, key);
+            let answered = caller.with_idempotency(key).handle(operation).await;
+            // A pending answer is asked about again by a retry, and a refusal
+            // the host may not repeat (busy, unreachable) is not kept. Nor is
+            // a branch that did not take everything: the same call makes it
+            // once what it lacked is there.
+            let kept = match &answered {
+                Ok(Answer::Json {
+                    status,
+                    body,
+                    location,
+                }) if *status != StatusCode::ACCEPTED => Some(Stored {
+                    status: status.as_u16(),
+                    body: body.clone(),
+                    location: location.clone(),
+                }),
+                Err(refused)
+                    if !matches!(
+                        refused.status,
+                        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+                    ) && refused.body.code != crate::account::BRANCH_INCOMPLETE =>
+                {
+                    Some(Stored {
+                        status: refused.status.as_u16(),
+                        body: refused.json(),
+                        location: None,
+                    })
+                }
+                _ => None,
+            };
+            running.finish(kept);
+            reply(answered)
+        }
+    }
+}
+
+/// `GET /v1`: needs no key; with one, says what it reaches.
+fn get_api(server: &Arc<Server>, headers: &HeaderMap) -> Answer {
+    let key = crate::bearer(headers)
+        .and_then(|token| server.store.access(token, now_ms()).ok())
+        .map(|grant| crate::account::grant_row(&grant));
+    let info = with(
+        json!({
+            "api_version": API_VERSION,
+            "server": format!("tilo-api {}", env!("CARGO_PKG_VERSION")),
+        }),
+        "key",
+        key,
+    );
+    Answer::ok(typed::<answers::ApiInfo>(info).unwrap_or_default())
+}
+
+/// The key holder a request acts as, and what it asked.
+struct Caller<'a> {
+    server: &'a Arc<Server>,
+    grant: Grant,
+    session: Arc<Session>,
+    params: Params,
+    query: HashMap<String, String>,
+    headers: &'a HeaderMap,
+    body: &'a [u8],
+    /// The invocation group the call is a step of, as its headers name it.
+    group: Option<Value>,
+    /// The invocation an idempotent action runs as.
+    invocation: Option<String>,
+}
+
+impl<'a> Caller<'a> {
+    async fn new(
+        server: &'a Arc<Server>,
+        grant: Grant,
+        params: Params,
+        request: &Request<'a>,
+    ) -> Result<Self, ApiError> {
+        let workspace = params.get("workspace");
+        if !workspace.is_empty() {
+            if !crate::oauth::scope_reaches(&grant.scope, Some(workspace)) {
+                return Err(ApiError::new(
+                    "beyond_scope",
+                    "this key does not reach that workspace",
+                )
+                .next("GET /v1/workspaces names the workspaces it reaches"));
+            }
+            if uuid::Uuid::parse_str(workspace).is_err() {
+                return Err(ApiError::new("not_found", "no such workspace")
+                    .next("GET /v1/workspaces names them by id"));
+            }
+        }
+        let session = server.api_session(&grant).await?;
+        let header = |name: &str| {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        let group = header(INVOCATION_HEADER)
+            .map(|id| json!({"id": id, "title": header(INVOCATION_TITLE_HEADER).unwrap_or(id)}));
+        Ok(Self {
+            server,
+            grant,
+            session,
+            params,
+            query: url::form_urlencoded::parse(request.query.as_bytes())
+                .into_owned()
+                .collect(),
+            headers: request.headers,
+            body: request.body,
+            group,
+            invocation: None,
+        })
+    }
+
+    fn with_idempotency(mut self, key: &str) -> Self {
+        self.invocation = Some(idempotency::invocation(&self.grant.id, key).to_string());
+        self
+    }
+
+    fn workspace(&self) -> String {
+        self.params.get("workspace").to_owned()
+    }
+
+    fn query(&self, name: &str) -> Option<&str> {
+        self.query
+            .get(name)
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+    }
+
+    fn json_body<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
+        let body = if self.body.is_empty() {
+            b"{}" as &[u8]
+        } else {
+            self.body
+        };
+        serde_json::from_slice(body)
+            .map_err(|error| ApiError::new("invalid_arguments", format!("the body: {error}")))
+    }
+
+    /// `tool` with `arguments`, in the route's workspace (`None` for the
+    /// account): its typed answer, a refusal when it says it failed.
+    async fn call(&self, tool: &'static str, arguments: Value) -> Result<Value, ApiError> {
+        self.call_said(tool, arguments)
+            .await
+            .map(|(typed, _)| typed)
+    }
+
+    /// [`Self::call`], with what the tool said in words beside its typed
+    /// answer: the lines a listing or a read puts on a person's screen.
+    async fn call_said(
+        &self,
+        tool: &'static str,
+        arguments: Value,
+    ) -> Result<(Value, Option<String>), ApiError> {
+        let workspace = Some(self.workspace()).filter(|workspace| !workspace.is_empty());
+        call_in(
+            &self.session,
+            workspace,
+            self.group.clone(),
+            tool,
+            arguments,
+        )
+        .await
+    }
+
+    /// An account action: its `result`.
+    async fn account(&self, path: &str, args: Value) -> Result<Value, ApiError> {
+        let answer = self
+            .session
+            .call(Call {
+                workspace: None,
+                tool: "tilo_do",
+                arguments: json!({"path": path, "args": args}),
+                group: self.group.clone(),
+            })
+            .await?;
+        let typed = typed_answer(&answer)?;
+        match typed.get("status").and_then(Value::as_str) {
+            Some("failed") => Err(ApiError::of_answer(typed.get("error"), None)),
+            _ => Ok(typed.get("result").cloned().unwrap_or_default()),
+        }
+    }
+
+    async fn handle(self, operation: &Operation) -> Result<Answer, ApiError> {
+        match operation.id {
+            "getAccount" | "listWorkspaces" | "createWorkspace" | "deleteWorkspace"
+            | "listKeys" | "mintKey" | "revokeKey" => self.account_operation(operation.id).await,
+            "branchWorkspace" => self.branch_workspace().await,
+            "setUnattended" => self.set_unattended().await,
+            "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
+                self.resource_operation(operation.id).await
+            }
+            "runAction" | "listInvocations" | "getInvocation" | "cancelInvocation"
+            | "undoInvocation" | "invocationOutput" => {
+                self.invocation_operation(operation.id).await
+            }
+            "listWebhooks" | "createWebhook" | "deleteWebhook" => {
+                self.webhook_operation(operation.id)
+            }
+            other => self.workspace_operation(other).await,
+        }
+    }
+
+    /// The account: its workspaces and keys.
+    async fn account_operation(&self, id: &str) -> Result<Answer, ApiError> {
+        match id {
+            "getAccount" => {
+                let read = self
+                    .call("tilo_read", json!({"path": "account/usage"}))
+                    .await?;
+                let usage = read.get("fields").cloned().unwrap_or(read);
+                shaped::<answers::Account>(usage).map(Answer::ok)
+            }
+            "listWorkspaces" => {
+                // The person's list, as the key reaches it: one workspace for a
+                // key for one, every one wherever it is hosted for the rest;
+                // with `label.<name>=<value>`, those labelled so.
+                let labels: tilo_server_session::workspaces::WorkspaceLabels = self
+                    .query
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        let label = name.strip_prefix(LABEL_QUERY)?.strip_prefix('[')?;
+                        Some((label.strip_suffix(']')?.to_owned(), value.clone()))
+                    })
+                    .collect();
+                tilo_server_session::workspaces::check_labels(&labels)
+                    .map_err(|why| ApiError::new("invalid_arguments", why))?;
+                let mut listed = self
+                    .session
+                    .workspaces(&labels)
+                    .await
+                    .map_err(ApiError::from)?;
+                listed.retain(|workspace| crate::account::labelled(workspace, &labels));
+                shaped::<answers::WorkspaceList>(json!({"workspaces": listed})).map(Answer::ok)
+            }
+            "createWorkspace" => {
+                let new: answers::NewWorkspace = self.json_body()?;
+                // A retry asks the host for the workspace the first try made.
+                let args = with(
+                    json!({"name": new.name, "labels": new.labels}),
+                    "id",
+                    self.invocation.as_ref(),
+                );
+                let made = self.account("account/workspaces#create", args).await?;
+                shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
+                    .map(Answer::created)
+            }
+            "deleteWorkspace" => {
+                let args = json!({"workspace": self.workspace()});
+                let deleted = self.account("account/workspaces#delete", args).await?;
+                shaped::<answers::DeletedWorkspace>(deleted).map(Answer::ok)
+            }
+            "listKeys" => {
+                let listed = self.account("account/keys#list", json!({})).await?;
+                shaped::<answers::KeyList>(listed).map(Answer::ok)
+            }
+            "mintKey" => {
+                let new: answers::NewKey = self.json_body()?;
+                let args = serde_json::to_value(new).unwrap_or_default();
+                let minted = self.account("account/keys#mint", args).await?;
+                shaped::<answers::MintedKey>(minted).map(Answer::created)
+            }
+            _ => {
+                let args = json!({"grant": self.params.get("grant")});
+                let revoked = self.account("account/keys#revoke", args).await?;
+                shaped::<answers::RevokedKey>(revoked).map(Answer::ok)
+            }
+        }
+    }
+
+    /// Branch the route's workspace, one of the person's own: the branch, made
+    /// under the request's own id when it has an `Idempotency-Key`, so a retry
+    /// answers the same branch and copies nothing twice.
+    async fn branch_workspace(&self) -> Result<Answer, ApiError> {
+        let new: answers::NewBranch = self.json_body()?;
+        let args = with(
+            json!({"workspace": self.workspace(), "name": new.name, "labels": new.labels}),
+            "id",
+            self.invocation.as_ref(),
+        );
+        let made = self.account("account/workspaces#branch", args).await?;
+        shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
+            .map(Answer::created)
+    }
+
+    /// Turn running commands unattended in the route's workspace on or off:
+    /// done at once when off, or answered `202` while the person is asked,
+    /// followed at the invocation it names like an action's.
+    async fn set_unattended(&self) -> Result<Answer, ApiError> {
+        let change: answers::UnattendedChange = self.json_body()?;
+        let call = with(
+            json!({"path": "workspace/unattended#set", "args": {"on": change.on}}),
+            "invocation_id",
+            self.invocation.as_ref(),
+        );
+        action_answer(self.call("tilo_do", call).await?, &self.workspace())
+    }
+
+    /// Reading the workspace: listings, resources, search and links.
+    async fn resource_operation(&self, id: &str) -> Result<Answer, ApiError> {
+        match id {
+            "listResources" => {
+                let limit = self
+                    .query("limit")
+                    .map(|limit| {
+                        limit
+                            .parse::<u64>()
+                            .map_err(|_| ApiError::new("invalid_arguments", "`limit` is a number"))
+                    })
+                    .transpose()?;
+                let mut args = json!({});
+                for name in ["path", "cursor", "kind"] {
+                    args = with(args, name, self.query(name));
+                }
+                let (listed, said) = self
+                    .call_said("tilo_ls", with(args, "limit", limit))
+                    .await?;
+                shaped::<answers::Listing>(with(listed, "text", said)).map(Answer::ok)
+            }
+            "readResource" => {
+                self.check_surface(&self.workspace()).await?;
+                let args = with(
+                    json!({"path": self.params.get("path")}),
+                    "cursor",
+                    self.query("cursor"),
+                );
+                let (read, said) = self.call_said("tilo_read", args).await?;
+                let version = read
+                    .get("app")
+                    .and_then(Value::as_str)
+                    .zip(read.get("surface").and_then(Value::as_str))
+                    .map(|(app, surface)| surface_version(app, surface));
+                shaped::<answers::Resource>(with(
+                    with(read, "surface_version", version),
+                    "text",
+                    said,
+                ))
+                .map(Answer::ok)
+            }
+            "viewResource" => {
+                let path = self
+                    .query("path")
+                    .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
+                let picture = self
+                    .query("picture")
+                    .is_some_and(|picture| matches!(picture, "1" | "true" | "on" | "yes"));
+                let scale = self
+                    .query("scale")
+                    .and_then(|scale| scale.parse::<f64>().ok());
+                let args = with(
+                    with(json!({"path": path}), "picture", Some(picture)),
+                    "scale",
+                    scale,
+                );
+                shaped::<answers::View>(self.call("tilo_view", args).await?).map(Answer::ok)
+            }
+            "search" => {
+                let query = self
+                    .query("q")
+                    .ok_or_else(|| ApiError::new("invalid_arguments", "`q` is required"))?;
+                let limit = self
+                    .query("limit")
+                    .and_then(|limit| limit.parse::<u64>().ok());
+                let args = with(json!({"query": query}), "app", self.query("app"));
+                let found = self.call("tilo_find", with(args, "limit", limit)).await?;
+                // A search that matched nothing says so in words: it ran, and its answer is
+                // no hits. A device that keeps no search refuses in words of its own, which stay.
+                if searched_nothing(&found) {
+                    return Ok(Answer::ok(json!({"hits": [], "query": query})));
+                }
+                shaped::<answers::SearchHits>(found).map(Answer::ok)
+            }
+            _ => {
+                let path = self
+                    .query("path")
+                    .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
+                let args = with(json!({"path": path}), "mode", self.query("mode"));
+                shaped::<answers::Link>(self.call("tilo_link", args).await?).map(Answer::ok)
+            }
+        }
+    }
+
+    /// Actions, and following, stopping and undoing their invocations.
+    async fn invocation_operation(&self, id: &str) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        let invocation = self.params.get("invocation");
+        match id {
+            "runAction" => self.run_action().await,
+            "listInvocations" => self.list_invocations().await,
+            "getInvocation" => self.get_invocation().await,
+            "cancelInvocation" => {
+                let args = json!({"invocation_id": invocation, "cancel": true});
+                action_answer(self.call("tilo_status", args).await?, &ws)
+            }
+            // Exactly what the invocation changed, in every record, as the host takes one back.
+            "undoInvocation" => {
+                let args = json!({"invocation_id": invocation, "undo": true});
+                action_answer(self.call("tilo_status", args).await?, &ws)
+            }
+            _ => Ok(Answer::Stream {
+                content_type: "text/event-stream",
+                body: events::stream(
+                    events::Watch::new(Arc::clone(&self.session), ws, None, None),
+                    Some(invocation.to_owned()),
+                ),
+            }),
+        }
+    }
+
+    /// Everything the workspace holds, read by walking it from its apps as
+    /// an agent would: each listing page by page, each resource read whole.
+    /// A resource that does not read is named with why, and the walk goes on.
+    ///
+    /// The document is written as the walk finds it, so the server holds no
+    /// more than the reads in flight, however much a workspace holds. Some
+    /// exports run side by side; the rest wait their turn.
+    async fn export(&self) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        let workspace = self
+            .session
+            .workspace(&ws)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::new("not_found", "no such workspace"))?;
+        let workspace = parsed::<answers::Workspace>(
+            serde_json::to_value(&workspace)
+                .map_err(|error| ApiError::new("unavailable", error.to_string()))?,
+        )?;
+        let running = Arc::clone(&self.server.v1.exports)
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::new("unavailable", "the server is stopping"))?;
+        let source = SessionExport {
+            session: Arc::clone(&self.session),
+            workspace: Some(ws).filter(|ws| !ws.is_empty()),
+            group: self.group.clone(),
+        };
+        Ok(Answer::Stream {
+            content_type: "application/json",
+            body: export_body(source, workspace, crate::now_ms(), running),
+        })
+    }
+
+    /// The workspace's people, programs, files and events.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match over the workspace's operations, each a few lines"
+    )]
+    async fn workspace_operation(&self, id: &str) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        match id {
+            "exportWorkspace" => self.export().await,
+            "listMembers" => {
+                let listed = self
+                    .call("tilo_do", json!({"path": "workspace/members#list"}))
+                    .await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "addMember" => {
+                let new: answers::NewMember = self.json_body()?;
+                let added = json!({"path": "workspace/members#add", "args": new});
+                let listed = self.call("tilo_do", added).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "listWaitList" => {
+                let listed = self
+                    .call("tilo_do", json!({"path": "workspace/members#wait-list"}))
+                    .await?;
+                shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "unlistWaiting" => {
+                let entry = self.params.get("entry").to_owned();
+                let unlisted =
+                    json!({"path": "workspace/members#unlist", "args": {"entry": entry}});
+                let listed = self.call("tilo_do", unlisted).await?;
+                shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "listHosts" => {
+                let listed = self
+                    .call("tilo_do", json!({"path": "workspace/hosts#list"}))
+                    .await?;
+                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "addHost" => {
+                let new: answers::NewHost = self.json_body()?;
+                let added = json!({"path": "workspace/hosts#add", "args": new});
+                let listed = self.call("tilo_do", added).await?;
+                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "removeHost" => {
+                let host = self.params.get("host").to_owned();
+                let removed = json!({"path": "workspace/hosts#remove", "args": {"host": host}});
+                let listed = self.call("tilo_do", removed).await?;
+                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "invitePerson" => {
+                let new: answers::NewInvitation = self.json_body()?;
+                let invite = json!({"path": "workspace/members#invite", "args": new});
+                let invited = self.call("tilo_do", invite).await?;
+                shaped::<answers::Invitation>(invited.get("result").cloned().unwrap_or_default())
+                    .map(Answer::created)
+            }
+            "namePerson" => {
+                let new: answers::NewName = self.json_body()?;
+                let named = json!({"path": "workspace/members#name", "args": new});
+                let listed = self.call("tilo_do", named).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "runProgram" => {
+                let program: answers::Program = self.json_body()?;
+                let arguments = json!({
+                    "program": program.program,
+                    "confirm": program.confirm.unwrap_or(false),
+                });
+                let (answer, session) = self
+                    .session
+                    .run_program(
+                        &ws,
+                        program.session.as_deref(),
+                        arguments,
+                        self.group.clone(),
+                    )
+                    .await?;
+                let mut typed = typed_answer(&answer)?;
+                if let Some(fields) = typed.as_object_mut() {
+                    // A program refused before it ran says why in the words a person reads.
+                    if !fields.contains_key("text")
+                        && let Some(why) = fields
+                            .get("error")
+                            .and_then(|error| error.get("message"))
+                            .cloned()
+                    {
+                        fields.insert("text".into(), why);
+                    }
+                    fields.insert("session".into(), json!(session));
+                }
+                shaped::<answers::ProgramAnswer>(typed).map(Answer::ok)
+            }
+            "upload" => {
+                let content = crate::content::put(&self.session, &ws, self.body)
+                    .await
+                    .map_err(|why| {
+                        ApiError::new("unavailable", why).next("upload the file again")
+                    })?;
+                Ok(Answer::created(
+                    json!({"content": content, "size": self.body.len()}),
+                ))
+            }
+            "openUpload" => {
+                let id = self.params.get("upload").to_owned();
+                if !crate::content::valid_id(&id) {
+                    return Err(ApiError::new(
+                        "invalid_request",
+                        "an upload's id is 8 to 128 letters, digits, `-` or `_`",
+                    )
+                    .next(
+                        "name it after something only this upload's caller knows, such as a UUID",
+                    ));
+                }
+                let new: answers::NewUpload = self.json_body()?;
+                let (placement, opened) = self
+                    .server
+                    .uploads
+                    .open(&self.session, &self.grant.id, &ws, &id, new.size)
+                    .await?;
+                Ok(if opened {
+                    Answer::created(placement)
+                } else {
+                    Answer::ok(placement)
+                })
+            }
+            "uploadStatus" => {
+                let id = self.params.get("upload").to_owned();
+                Ok(Answer::ok(self.server.uploads.status(
+                    &self.grant.id,
+                    &ws,
+                    &id,
+                )?))
+            }
+            "uploadPiece" => {
+                let id = self.params.get("upload").to_owned();
+                let at = self.query("offset").and_then(|at| at.trim().parse().ok());
+                let body = self.body;
+                match self
+                    .server
+                    .uploads
+                    .append(&self.session, &self.grant.id, &ws, &id, at, body)
+                    .await?
+                {
+                    crate::content::Sent::More(placement) => Ok(Answer::ok(placement)),
+                    crate::content::Sent::Done(done) => Ok(Answer::created(done)),
+                }
+            }
+            "abandonUpload" => {
+                let id = self.params.get("upload").to_owned();
+                Ok(Answer::ok(self.server.uploads.abandon(
+                    &self.grant.id,
+                    &ws,
+                    &id,
+                )?))
+            }
+            "getContent" => self.content().await,
+            "events" => {
+                let from = self
+                    .headers
+                    .get("last-event-id")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let path = self.query("path").map(str::to_owned);
+                Ok(Answer::Stream {
+                    content_type: "text/event-stream",
+                    body: events::stream(
+                        events::Watch::new(Arc::clone(&self.session), ws, path, from),
+                        None,
+                    ),
+                })
+            }
+            other => Err(ApiError::new("not_found", format!("{other} is not served"))),
+        }
+    }
+
+    /// The key's webhooks in the workspace.
+    fn webhook_operation(&self, id: &str) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        match id {
+            "listWebhooks" => {
+                let hooks: Vec<Value> = self
+                    .server
+                    .store
+                    .webhooks(Some((&self.grant.id, &ws)))
+                    .into_iter()
+                    .map(|hook| webhook_row(&hook, false))
+                    .collect();
+                Ok(Answer::ok(json!({"webhooks": hooks})))
+            }
+            "createWebhook" => self.create_webhook(),
+            _ => {
+                let id = self.params.get("webhook");
+                let removed = self
+                    .server
+                    .store
+                    .remove_webhook(&self.grant.id, &ws, id)
+                    .map_err(|_| {
+                        ApiError::new("unavailable", "the webhook could not be removed")
+                    })?;
+                if !removed {
+                    return Err(ApiError::new(
+                        "not_found",
+                        "no such webhook of this key here",
+                    ));
+                }
+                self.server.v1.deliveries.stop(id);
+                Ok(Answer::ok(json!({"deleted": id})))
+            }
+        }
+    }
+
+    async fn run_action(&self) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        let path = format!("{}#{}", self.params.get("path"), self.params.get("action"));
+        self.check_surface(&ws).await?;
+        let args: Value = if self.body.is_empty() {
+            json!({})
+        } else {
+            serde_json::from_slice(self.body).map_err(|error| {
+                ApiError::new("invalid_arguments", format!("the arguments: {error}"))
+            })?
+        };
+        if !args.is_object() {
+            return Err(ApiError::new(
+                "invalid_arguments",
+                "the arguments are a JSON object, `{}` for none",
+            ));
+        }
+        let call = with(
+            json!({"path": path, "args": args, "wait_ms": self.wait_ms(DEFAULT_WAIT_SECONDS)}),
+            "invocation_id",
+            self.invocation.as_ref(),
+        );
+        let answered = self.call("tilo_do", call).await?;
+        action_answer(answered, &ws)
+    }
+
+    /// A page of the workspace's invocations, newest first: what `tilo_ls
+    /// workspace/invocations` answers.
+    async fn list_invocations(&self) -> Result<Answer, ApiError> {
+        let limit = self
+            .query("limit")
+            .map(|limit| {
+                limit
+                    .parse::<u64>()
+                    .map_err(|_| ApiError::new("invalid_arguments", "`limit` is a number"))
+            })
+            .transpose()?;
+        let args = with(
+            json!({"path": crate::session::invocations::ROOT}),
+            "cursor",
+            self.query("cursor"),
+        );
+        let (listed, said) = self
+            .call_said("tilo_ls", with(args, "limit", limit))
+            .await?;
+        shaped::<answers::InvocationList>(with(listed, "text", said)).map(Answer::ok)
+    }
+
+    async fn get_invocation(&self) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        let asked = json!({"invocation_id": self.params.get("invocation")});
+        let now = std::time::Instant::now();
+        let until = now
+            .checked_add(std::time::Duration::from_millis(self.wait_ms(0)))
+            .unwrap_or(now);
+        let mut pause = std::time::Duration::from_millis(200);
+        loop {
+            let status = self.call("tilo_status", asked.clone()).await?;
+            let pending = status.get("status").and_then(Value::as_str) == Some("pending");
+            let next = std::time::Instant::now().checked_add(pause);
+            if !pending || next.is_none_or(|next| next > until) {
+                return action_answer(status, &ws);
+            }
+            tokio::time::sleep(pause).await;
+            pause = pause
+                .saturating_mul(2)
+                .min(std::time::Duration::from_secs(1));
+        }
+    }
+
+    /// How long the caller asks to be held: `Prefer: wait=<seconds>` or
+    /// `?wait=`, else `default` seconds, never past [`MAX_WAIT_SECONDS`].
+    fn wait_ms(&self, default: u64) -> u64 {
+        let preferred = self
+            .headers
+            .get_all("prefer")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .find_map(|part| part.trim().strip_prefix("wait="))
+            .or_else(|| self.query("wait"))
+            .and_then(|seconds| seconds.trim().parse::<u64>().ok());
+        preferred
+            .unwrap_or(default)
+            .min(MAX_WAIT_SECONDS)
+            .saturating_mul(1000)
+    }
+
+    /// Refuse a call made through generated types for another surface of
+    /// the app than the workspace publishes: `Tilo-Surface` names the app's id
+    /// and the digest of the surface the types were made from.
+    async fn check_surface(&self, workspace: &str) -> Result<(), ApiError> {
+        let Some(sent) = self
+            .headers
+            .get(SURFACE_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+        else {
+            return Ok(());
+        };
+        if !sent.contains('@') {
+            return Err(ApiError::invalid("Tilo-Surface is <app>@<digest>"));
+        }
+        // The app is the path's first part, as the workspace names it.
+        let app = self
+            .params
+            .get("path")
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let id = (workspace.to_owned(), app.clone());
+        let known = crate::lock(&self.server.v1.surfaces).get(&id).cloned();
+        if known.as_deref() == Some(sent) {
+            return Ok(());
+        }
+        let read = self.call("tilo_read", json!({"path": app})).await?;
+        let (Some(id_of_app), Some(surface)) = (
+            read.get("app").and_then(Value::as_str),
+            read.get("surface").and_then(Value::as_str),
+        ) else {
+            // The types name a surface, and the workspace publishes none for
+            // the app they act on: what they were written for is nowhere to
+            // check this call against, so it is refused rather than run.
+            return Err(ApiError::new(
+                "surface_changed",
+                format!(
+                    "these types were made for {sent}, and the workspace's {app} publishes no surface: it is not installed there, or has not published yet"
+                ),
+            )
+            .next(format!(
+                "install and start {app} there, or write the types for this workspace: tilo sdk gen -w {workspace}"
+            )));
+        };
+        let published = surface_version(id_of_app, surface);
+        crate::lock(&self.server.v1.surfaces).insert(id, published.clone());
+        if published == sent {
+            return Ok(());
+        }
+        Err(ApiError::new(
+            "surface_changed",
+            format!("these types were made for {sent}; the workspace's app publishes {published}"),
+        )
+        .next(format!(
+            "write the types again: tilo sdk gen -w {workspace}"
+        )))
+    }
+
+    /// The bytes of `content`, sent as each piece of them arrives: a file of
+    /// any size streams through without being held whole. `Range:
+    /// bytes=<from>-<to?>` asks for part of it, which a caller downloading a
+    /// large file does a piece at a time.
+    async fn content(&self) -> Result<Answer, ApiError> {
+        let content = self.params.get("content").to_owned();
+        if content.trim().is_empty() {
+            return Err(ApiError::new("not_found", "no content is named"));
+        }
+        let asked = self
+            .headers
+            .get(hyper::header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(range_of);
+        let from = asked.map_or(0, |(from, _)| from);
+        // The first piece is asked for now: content the workspace no longer
+        // holds is refused as every other route refuses it, never answered
+        // as a file of no bytes.
+        let (size, first) = self.first_piece(&content, from).await?;
+        let sent = first.len() as u64;
+        let (sender, pieces) = tokio::sync::mpsc::channel::<Bytes>(4);
+        if !first.is_empty() {
+            let _ = sender.try_send(Bytes::from(first));
+        }
+        if from.saturating_add(sent) < size {
+            let session = Arc::clone(&self.session);
+            let workspace = self.workspace();
+            tokio::spawn(stream_content(
+                session,
+                workspace,
+                content.clone(),
+                from.saturating_add(sent),
+                asked.and_then(|(_, until)| until),
+                sender,
+            ));
+        }
+        let stream = futures_util::stream::unfold(pieces, |mut pieces| async move {
+            let piece = pieces.recv().await?;
+            Some((
+                Ok::<_, std::convert::Infallible>(Frame::data(piece)),
+                pieces,
+            ))
+        });
+        let body = http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(stream));
+        match asked {
+            None => Ok(Answer::File {
+                content_type: "application/octet-stream".to_owned(),
+                body,
+            }),
+            Some((_, until)) => Ok(Answer::Partial {
+                content_type: "application/octet-stream".to_owned(),
+                range: (from, Some(until.unwrap_or_else(|| size.saturating_sub(1)))),
+                size,
+                body,
+            }),
+        }
+    }
+
+    /// The length of `content` and its bytes from `offset`: the first piece
+    /// of a download, asked before any of it is answered.
+    async fn first_piece(&self, content: &str, offset: u64) -> Result<(u64, Vec<u8>), ApiError> {
+        use base64::Engine as _;
+        let piece = self
+            .call("tilo_get", json!({"content": content, "offset": offset}))
+            .await?;
+        let bytes = piece
+            .get("bytes")
+            .and_then(Value::as_str)
+            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+            .ok_or_else(|| ApiError::malformed("a file", "no bytes"))?;
+        let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
+        Ok((size, bytes))
+    }
+
+    fn create_webhook(&self) -> Result<Answer, ApiError> {
+        let new: answers::NewWebhook = self.json_body()?;
+        if !webhooks::deliverable(&new.url) {
+            return Err(ApiError::new(
+                "invalid_arguments",
+                "a webhook posts to an https URL (or plain http to this machine)",
+            ));
+        }
+        let kinds = ["change", "invocation", "presence"];
+        if let Some(unknown) = new
+            .events
+            .iter()
+            .find(|kind| !kinds.contains(&kind.as_str()))
+        {
+            return Err(ApiError::new(
+                "invalid_arguments",
+                format!("{unknown} is no kind of event: change, invocation or presence"),
+            ));
+        }
+        let (Ok(id), Ok(secret)) = (crate::store::secret(12), crate::store::secret(32)) else {
+            return Err(ApiError::new("unavailable", "no randomness is available"));
+        };
+        let hook = crate::store::Webhook {
+            id: format!("wh_{id}"),
+            grant: self.grant.id.clone(),
+            workspace: self.workspace(),
+            url: new.url,
+            events: new.events,
+            path: new.path,
+            secret,
+            cursor: None,
+        };
+        self.server
+            .store
+            .add_webhook(hook.clone())
+            .map_err(|_| ApiError::new("unavailable", "the webhook could not be kept"))?;
+        let row = webhook_row(&hook, true);
+        webhooks::Deliveries::start(self.server, hook);
+        Ok(Answer::created(row))
+    }
+}
+
+/// `tool` with `arguments` in `workspace` (`None` for the account), in the
+/// invocation group `group`: its typed answer and what it said in words, a
+/// refusal when it says it failed.
+async fn call_in(
+    session: &Session,
+    workspace: Option<String>,
+    group: Option<Value>,
+    tool: &'static str,
+    arguments: Value,
+) -> Result<(Value, Option<String>), ApiError> {
+    let answer = session
+        .call(Call {
+            workspace,
+            tool,
+            arguments,
+            group,
+        })
+        .await?;
+    let typed = typed_answer(&answer)?;
+    if typed.get("status").and_then(Value::as_str) == Some("failed") {
+        return Err(ApiError::of_answer(typed.get("error"), typed.get("action")));
+    }
+    // A tool that answers typed says that answer as its text too, as JSON:
+    // carried as the text it would be the whole answer a second time, which
+    // made a page of a tracker's issues twice its size. Only words are text.
+    let said = answer
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .filter(|text| serde_json::from_str::<Value>(text).ok().as_ref() != Some(&typed))
+        .map(str::to_owned);
+    Ok((typed, said))
+}
+
+/// Where an export reads: a key's session ([`SessionExport`]), or a test's
+/// own workspace.
+trait ExportSource: Send + Sync {
+    /// One page of the listing at `path` (`None` for the apps).
+    fn list(
+        &self,
+        path: Option<String>,
+        cursor: Option<String>,
+    ) -> impl Future<Output = Result<answers::Listing, ApiError>> + Send;
+
+    /// One page of the resource at `path`.
+    fn read(
+        &self,
+        path: String,
+        cursor: Option<String>,
+    ) -> impl Future<Output = Result<answers::Resource, ApiError>> + Send;
+
+    /// `path` read with every page of what it holds.
+    fn read_whole(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<answers::Resource, ApiError>> + Send {
+        async move {
+            let mut whole: Option<answers::Resource> = None;
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = self.read(path.to_owned(), cursor.clone()).await?;
+                let next = page.cursor.clone();
+                match &mut whole {
+                    None => whole = Some(page),
+                    Some(whole) => whole.children.extend(page.children),
+                }
+                match next {
+                    Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                    _ => break,
+                }
+            }
+            let mut whole = whole.ok_or_else(|| ApiError::new("not_found", "nothing to read"))?;
+            whole.cursor = None;
+            Ok(whole)
+        }
+    }
+}
+
+/// An export's reads: `tilo_ls` and `tilo_read` calls of one key's session
+/// in one workspace.
+struct SessionExport {
+    session: Arc<Session>,
+    workspace: Option<String>,
+    group: Option<Value>,
+}
+
+impl ExportSource for SessionExport {
+    async fn list(
+        &self,
+        path: Option<String>,
+        cursor: Option<String>,
+    ) -> Result<answers::Listing, ApiError> {
+        let args = with(
+            with(json!({}), "path", path.as_ref()),
+            "cursor",
+            cursor.as_ref(),
+        );
+        // A listing that answers why it has nothing (an app installed
+        // but not running holds nothing to list) is named like a
+        // resource that does not read, and the walk goes on.
+        call_in(
+            &self.session,
+            self.workspace.clone(),
+            self.group.clone(),
+            "tilo_ls",
+            args,
+        )
+        .await
+        .and_then(|(typed, _)| parsed::<answers::Listing>(typed))
+    }
+
+    async fn read(
+        &self,
+        path: String,
+        cursor: Option<String>,
+    ) -> Result<answers::Resource, ApiError> {
+        let args = with(json!({"path": path}), "cursor", cursor.as_ref());
+        let (typed, _) = call_in(
+            &self.session,
+            self.workspace.clone(),
+            self.group.clone(),
+            "tilo_read",
+            args,
+        )
+        .await?;
+        parsed::<answers::Resource>(typed)
+    }
+}
+
+/// The export's body: `workspace`'s document, each resource written as the
+/// walk reads it. `permit` is held until the last byte is written, so a
+/// burst of exports queues instead of running the server out of workspace.
+fn export_body<S: ExportSource + 'static>(
+    source: S,
+    workspace: answers::Workspace,
+    exported_at_ms: u64,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Body {
+    let (sender, chunks) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(async move {
+        let _running = permit;
+        write_export(&source, &workspace, exported_at_ms, sender).await;
+    });
+    chunked_body(chunks)
+}
+
+/// Write the export's document into `sender` as the walk finds it: the
+/// workspace and when, then each resource in the order a walk finds it,
+/// then what did not read. Stops when the reader is gone.
+async fn write_export<S: ExportSource>(
+    source: &S,
+    workspace: &answers::Workspace,
+    exported_at_ms: u64,
+    sender: tokio::sync::mpsc::Sender<Bytes>,
+) {
+    use futures_util::StreamExt as _;
+
+    let open = format!(
+        "{{\"workspace\":{},\"exported_at_ms\":{exported_at_ms},\"resources\":[",
+        json_of(workspace),
+    );
+    if sender.send(open.into()).await.is_err() {
+        return;
+    }
+    let mut first = true;
+    let mut unread = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut pending: std::collections::VecDeque<Option<String>> =
+        std::collections::VecDeque::from([None]);
+    while let Some(path) = pending.pop_front() {
+        let mut cursor: Option<String> = None;
+        loop {
+            let listing = match source.list(path.clone(), cursor.clone()).await {
+                Ok(listing) => listing,
+                Err(refused) => {
+                    unread.push(answers::Unread {
+                        path: path.clone().unwrap_or_default(),
+                        error: refused.body.message.clone(),
+                    });
+                    break;
+                }
+            };
+            // The page's rows are read side by side, and written in the
+            // order the listing names them, so a workspace's export reads
+            // the same however fast each resource answers.
+            let fresh = listing
+                .rows
+                .into_iter()
+                .filter(|row| seen.insert(row.path.clone()));
+            let mut reads = futures_util::stream::iter(fresh)
+                .map(|row| async move {
+                    let read = source.read_whole(&row.path).await;
+                    (row, read)
+                })
+                .buffered(EXPORT_READS_AT_ONCE);
+            while let Some((row, read)) = reads.next().await {
+                match read {
+                    Ok(resource) => {
+                        let mut piece = String::new();
+                        if !first {
+                            piece.push(',');
+                        }
+                        first = false;
+                        piece.push_str(&json_of(&resource));
+                        if sender.send(piece.into()).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(refused) => unread.push(answers::Unread {
+                        path: row.path.clone(),
+                        error: refused.body.message.clone(),
+                    }),
+                }
+                if row.has_children {
+                    pending.push_back(Some(row.path));
+                }
+            }
+            match listing.next_cursor {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => break,
+            }
+        }
+    }
+    let rest = format!("],\"unread\":{}}}", json_of(&unread));
+    let _ = sender.send(rest.into()).await;
+}
+
+/// `chunks` as a body, each frame sent as it comes.
+fn chunked_body(chunks: tokio::sync::mpsc::Receiver<Bytes>) -> Body {
+    let frames = futures_util::stream::unfold(chunks, |mut chunks| async move {
+        chunks.recv().await.map(|bytes| {
+            (
+                Ok::<_, std::convert::Infallible>(Frame::data(bytes)),
+                chunks,
+            )
+        })
+    });
+    http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(frames))
+}
+
+/// `value` as the JSON text the export's document carries for it.
+fn json_of<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|why| {
+        tracing::error!(%why, "an export's answer is not JSON");
+        "null".to_owned()
+    })
+}
+
+fn webhook_row(hook: &crate::store::Webhook, with_secret: bool) -> Value {
+    let row = with(
+        json!({"id": hook.id, "url": hook.url, "events": hook.events}),
+        "path",
+        hook.path.as_ref(),
+    );
+    with(row, "secret", with_secret.then_some(&hook.secret))
+}
+
+/// `object` with `name` set to `value` when there is one.
+/// The query parameter a listing of workspaces is filtered by, one per
+/// label, as `OpenAPI`'s deep objects are written: `label[customer_id]=cus_8121`.
+pub const LABEL_QUERY: &str = "label";
+
+fn with(mut object: Value, name: &str, value: Option<impl serde::Serialize>) -> Value {
+    if let (Some(fields), Some(value)) = (object.as_object_mut(), value) {
+        fields.insert(name.to_owned(), json!(value));
+    }
+    object
+}
+
+/// A tool's typed answer (`structuredContent`), or its refusal when it gave
+/// none.
+fn typed_answer(answer: &Value) -> Result<Value, ApiError> {
+    if let Some(typed) = answer.get("structuredContent") {
+        return Ok(typed.clone());
+    }
+    let text = answer
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if answer.get("isError").and_then(Value::as_bool) == Some(true) {
+        return Err(ApiError::new("failed", text));
+    }
+    serde_json::from_str(text).map_err(|_| ApiError::malformed("an answer", text))
+}
+
+/// `value` as a `T`, or the refusal saying what the workspace answered
+/// instead: its words, when it said why in words ([`said_instead`]).
+fn parsed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
+    let said = said_instead(&value);
+    serde_json::from_value(value).map_err(|why| match said {
+        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
+        None => ApiError::malformed(std::any::type_name::<T>(), &why.to_string()),
+    })
+}
+
+/// `value` as `T`, or the refusal that it was not.
+///
+/// A tool that had nothing of the kind to answer says why in words
+/// (`{"status": .., "text": ..}`, such as a listing of an app the workspace
+/// does not hold open): that is what the caller is told, not the shape.
+fn shaped<T: serde::de::DeserializeOwned + serde::Serialize>(
+    value: Value,
+) -> Result<Value, ApiError> {
+    let said = said_instead(&value);
+    typed::<T>(value).map_err(|why| match said {
+        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
+        None => ApiError::malformed(std::any::type_name::<T>(), &why),
+    })
+}
+
+/// What a tool said in words in place of a typed answer, and whether it said
+/// it as a failure.
+fn said_instead(value: &Value) -> Option<(bool, String)> {
+    let fields = value.as_object()?;
+    if fields.len() != 2 {
+        return None;
+    }
+    let status = fields.get("status")?.as_str()?;
+    let text = fields.get("text")?.as_str()?;
+    Some((status == "failed", text.to_owned()))
+}
+
+/// Whether a search found nothing: it answered in words, and not as a failure. A device that
+/// keeps no search refuses as one, which is no answer of an empty page.
+fn searched_nothing(found: &Value) -> bool {
+    matches!(said_instead(found), Some((false, _)))
+}
+
+/// An action's answer as the API names it: `200` done, `202` pending with
+/// where to follow it, a refusal when it failed.
+/// Send `content`'s bytes into `pieces` as the workspace answers them, one
+/// piece after another, until every byte is sent. A refusal ends the stream
+/// with what is left unsent: a download that stops early is one the caller
+/// sees, never a short file answered as a whole one.
+async fn stream_content(
+    session: Arc<Session>,
+    workspace: String,
+    content: String,
+    from: u64,
+    until: Option<u64>,
+    pieces: tokio::sync::mpsc::Sender<Bytes>,
+) {
+    use base64::Engine as _;
+    let mut offset = from;
+    loop {
+        let answer = session
+            .call(Call {
+                workspace: Some(workspace.clone()).filter(|workspace| !workspace.is_empty()),
+                tool: "tilo_get",
+                arguments: json!({"content": content, "offset": offset}),
+                group: None,
+            })
+            .await;
+        let piece = match answer {
+            Ok(answer) => match typed_answer(&answer) {
+                Ok(piece) => piece,
+                Err(error) => {
+                    tracing::warn!(why = %error.body.message, code = %error.body.code, %content, offset, "a file answered nothing typed");
+                    return;
+                }
+            },
+            Err(error) => {
+                tracing::warn!(why = %error.message, code = error.code, %content, offset, "a file stopped part way");
+                return;
+            }
+        };
+        let decoded = piece
+            .get("bytes")
+            .and_then(Value::as_str)
+            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+            .unwrap_or_default();
+        let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
+        if decoded.is_empty() {
+            if offset < size {
+                tracing::warn!(%content, offset, size, "the workspace answered no bytes before its end");
+            }
+            return;
+        }
+        offset = offset.saturating_add(decoded.len() as u64);
+        if pieces.send(Bytes::from(decoded)).await.is_err() {
+            // The caller stopped reading.
+            return;
+        }
+        if offset >= size || until.is_some_and(|end| offset >= end) {
+            return;
+        }
+    }
+}
+
+/// `Range: bytes=<from>-<to>` as the two ends a reader wants, the second one
+/// inclusive like HTTP's; `None` for a range this server does not answer.
+fn range_of(value: &str) -> Option<(u64, Option<u64>)> {
+    let range = value.trim().strip_prefix("bytes=")?;
+    let (from, to) = range.split_once('-')?;
+    let from: u64 = from.trim().parse().ok()?;
+    let to = to.trim();
+    if to.is_empty() {
+        return Some((from, None));
+    }
+    let to: u64 = to.parse().ok()?;
+    (to >= from).then_some((from, Some(to)))
+}
+
+fn action_answer(mut answer: Value, workspace: &str) -> Result<Answer, ApiError> {
+    if let Some(fields) = answer.as_object_mut()
+        && let Some(invocation) = fields.remove("invocation_id")
+    {
+        fields.insert("invocation".into(), invocation);
+    }
+    let pending = answer.get("status").and_then(Value::as_str) == Some("pending");
+    let invocation = answer
+        .get("invocation")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let body = shaped::<answers::ActionAnswer>(answer)?;
+    if pending {
+        return Ok(Answer::Json {
+            status: StatusCode::ACCEPTED,
+            body,
+            location: invocation
+                .map(|invocation| format!("/v1/workspaces/{workspace}/invocations/{invocation}")),
+        });
+    }
+    Ok(Answer::ok(body))
+}
+
+fn reply(answered: Result<Answer, ApiError>) -> Reply {
+    match answered {
+        Ok(Answer::Json {
+            status,
+            body,
+            location,
+        }) => json_reply(status, &body, location.as_deref()),
+        Ok(Answer::Stream { content_type, body }) => {
+            let mut reply = hyper::Response::new(body);
+            let headers = reply.headers_mut();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static(content_type),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+            reply
+        }
+        Ok(Answer::File { content_type, body }) => {
+            let mut reply = hyper::Response::new(body);
+            if let Ok(value) = header::HeaderValue::from_str(&content_type) {
+                reply.headers_mut().insert(header::CONTENT_TYPE, value);
+            }
+            reply
+        }
+        Ok(Answer::Partial {
+            content_type,
+            range,
+            size,
+            body,
+        }) => {
+            let mut reply = hyper::Response::new(body);
+            *reply.status_mut() = StatusCode::PARTIAL_CONTENT;
+            let headers = reply.headers_mut();
+            if let Ok(value) = header::HeaderValue::from_str(&content_type) {
+                headers.insert(header::CONTENT_TYPE, value);
+            }
+            if let Ok(value) = header::HeaderValue::from_str(&format!(
+                "bytes {}-{}/{size}",
+                range.0,
+                range.1.unwrap_or(range.0),
+            )) {
+                headers.insert(header::CONTENT_RANGE, value);
+            }
+            reply
+        }
+        Err(refused) => refusal(&refused),
+    }
+}
+
+fn json_reply(status: StatusCode, body: &Value, location: Option<&str>) -> Reply {
+    let mut reply = crate::json_reply(status, body);
+    if let Some(location) =
+        location.and_then(|location| header::HeaderValue::from_str(location).ok())
+    {
+        reply.headers_mut().insert(header::LOCATION, location);
+    }
+    reply
+}
+
+/// How long a retry that came while its first request still ran waits before asking again.
+const RUNNING_RETRY_MS: u64 = 500;
+
+pub(crate) fn refusal(refused: &ApiError) -> Reply {
+    let mut reply = crate::json_reply(refused.status, &refused.json());
+    if let Some(wait) = refused.body.retry_after_ms
+        && let Ok(value) = header::HeaderValue::from_str(&wait.div_ceil(1000).to_string())
+    {
+        reply.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    reply
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    use http_body_util::BodyExt as _;
+    use serde_json::Map;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// A workspace a test scripts: the rows each listing answers, what each
+    /// read answers, and which of them refuse.
+    #[derive(Default)]
+    struct Fake {
+        listings: HashMap<Option<String>, Vec<answers::Row>>,
+        refusals: HashMap<String, String>,
+        unlistable: HashSet<String>,
+        /// Reads that wait for [`Self::check`], so a test can see what was
+        /// written before the walk ended.
+        held: HashSet<String>,
+        check: Option<Arc<tokio::sync::Semaphore>>,
+        /// How long every read takes, so a page's reads overlap.
+        delay: Duration,
+        in_flight: Arc<AtomicUsize>,
+        most_in_flight: Arc<AtomicUsize>,
+    }
+
+    impl ExportSource for Fake {
+        async fn list(
+            &self,
+            path: Option<String>,
+            _cursor: Option<String>,
+        ) -> Result<answers::Listing, ApiError> {
+            if let Some(name) = path
+                .as_ref()
+                .filter(|name| self.unlistable.contains(name.as_str()))
+            {
+                return Err(ApiError::new("failed", format!("{name} holds nothing")));
+            }
+            Ok(answers::Listing {
+                path: path.clone().unwrap_or_else(|| "apps".to_owned()),
+                kind: None,
+                rows: self.listings.get(&path).cloned().unwrap_or_default(),
+                actions: Vec::new(),
+                kinds: std::collections::BTreeMap::new(),
+                next_cursor: None,
+                text: None,
+            })
+        }
+
+        async fn read(
+            &self,
+            path: String,
+            _cursor: Option<String>,
+        ) -> Result<answers::Resource, ApiError> {
+            let running = self
+                .in_flight
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1);
+            self.most_in_flight.fetch_max(running, Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            if self.held.contains(&path)
+                && let Some(check) = &self.check
+            {
+                let _ = check.acquire().await;
+            }
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            if let Some(why) = self.refusals.get(&path) {
+                return Err(ApiError::new("failed", why.clone()));
+            }
+            Ok(resource(&path))
+        }
+    }
+
+    fn row(path: &str, has_children: bool) -> answers::Row {
+        answers::Row {
+            path: path.to_owned(),
+            name: path.to_owned(),
+            label: path.to_owned(),
+            kind: "page".to_owned(),
+            has_children,
+            actions: Vec::new(),
+            state: None,
+        }
+    }
+
+    fn resource(path: &str) -> answers::Resource {
+        answers::Resource {
+            path: path.to_owned(),
+            kind: Some("page".to_owned()),
+            fields: Map::new(),
+            children: Vec::new(),
+            cursor: None,
+            app: None,
+            surface: None,
+            surface_version: None,
+            text: None,
+        }
+    }
+
+    fn workspace() -> answers::Workspace {
+        answers::Workspace {
+            id: "ws".to_owned(),
+            name: "Workspace".to_owned(),
+            host: None,
+            role: Some("owner".to_owned()),
+            labels: std::collections::BTreeMap::new(),
+            unattended: false,
+        }
+    }
+
+    /// A permit as the server hands one out, held for the export's life.
+    async fn permit() -> tokio::sync::OwnedSemaphorePermit {
+        let exports = Arc::new(tokio::sync::Semaphore::new(1));
+        exports.acquire_owned().await.unwrap()
+    }
+
+    /// `source`'s export as a client reads it: the body, whole, as the
+    /// document it describes.
+    async fn exported(source: Fake) -> answers::WorkspaceExport {
+        let body = export_body(source, workspace(), 7, permit().await);
+        let bytes = body.collect().await.unwrap().to_bytes();
+        parse(&bytes)
+    }
+
+    fn parse(bytes: &[u8]) -> answers::WorkspaceExport {
+        serde_json::from_slice(bytes)
+            .unwrap_or_else(|why| panic!("{why}: {}", String::from_utf8_lossy(bytes)))
+    }
+
+    fn paths(export: &answers::WorkspaceExport) -> Vec<&str> {
+        export
+            .resources
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect()
+    }
+
+    /// A workspace with several resources and child listings exports them in
+    /// the order a walk finds them: a page's rows, then what those hold.
+    #[tokio::test]
+    async fn an_export_walks_child_listings_in_order() {
+        let mut fake = Fake::default();
+        fake.listings
+            .insert(None, vec![row("notes", true), row("files", true)]);
+        fake.listings.insert(
+            Some("notes".to_owned()),
+            vec![row("notes/a", false), row("notes/b", false)],
+        );
+        fake.listings
+            .insert(Some("files".to_owned()), vec![row("files/x", false)]);
+        let export = exported(fake).await;
+        assert_eq!(export.workspace.id, "ws");
+        assert_eq!(export.exported_at_ms, 7);
+        assert_eq!(
+            paths(&export),
+            ["notes", "files", "notes/a", "notes/b", "files/x"]
+        );
+        assert!(export.unread.is_empty(), "{:?}", export.unread);
+    }
+
+    /// A page's resources are read side by side, within the bound, and
+    /// written in the order the listing names them.
+    #[tokio::test]
+    async fn an_export_reads_a_page_side_by_side_and_writes_it_in_order() {
+        let named: Vec<String> = (0..20).map(|at| format!("notes/{at:02}")).collect();
+        let mut fake = Fake::default();
+        fake.listings.insert(
+            None,
+            named
+                .iter()
+                .map(|path| row(path, false))
+                .collect::<Vec<_>>(),
+        );
+        fake.delay = Duration::from_millis(20);
+        let most = Arc::clone(&fake.most_in_flight);
+        let export = exported(fake).await;
+        assert_eq!(
+            paths(&export),
+            named.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        let most = most.load(Ordering::SeqCst);
+        assert!(most > 1, "the page was read one after another: {most}");
+        assert!(
+            most <= EXPORT_READS_AT_ONCE,
+            "{most} reads ran at once, more than {EXPORT_READS_AT_ONCE}"
+        );
+    }
+
+    /// A resource or a listing that does not read is named with why, and the
+    /// walk goes on with the rest.
+    #[tokio::test]
+    async fn an_export_names_what_does_not_read_and_walks_on() {
+        let mut fake = Fake::default();
+        fake.listings.insert(
+            None,
+            vec![row("notes", true), row("bad", false), row("files", true)],
+        );
+        fake.listings
+            .insert(Some("notes".to_owned()), vec![row("notes/a", false)]);
+        fake.listings
+            .insert(Some("files".to_owned()), vec![row("files/x", false)]);
+        fake.unlistable.insert("notes".to_owned());
+        fake.refusals
+            .insert("bad".to_owned(), "bad is a page of nothing".to_owned());
+        let export = exported(fake).await;
+        assert_eq!(paths(&export), ["notes", "files", "files/x"]);
+        let unread: Vec<(&str, &str)> = export
+            .unread
+            .iter()
+            .map(|unread| (unread.path.as_str(), unread.error.as_str()))
+            .collect();
+        assert_eq!(
+            unread,
+            [
+                ("bad", "bad is a page of nothing"),
+                ("notes", "notes holds nothing")
+            ]
+        );
+    }
+
+    /// The document is written as it is read: a resource is sent before the
+    /// walk has read the one after it. The chunks read as one document.
+    #[tokio::test]
+    async fn an_export_sends_what_it_read_before_the_walk_ends() {
+        let check = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut fake = Fake::default();
+        fake.listings
+            .insert(None, vec![row("early", false), row("late", false)]);
+        fake.held.insert("late".to_owned());
+        fake.check = Some(Arc::clone(&check));
+        let mut body = export_body(fake, workspace(), 7, permit().await);
+        let mut text = String::new();
+        while !text.contains("\"early\"") {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Some(data) = frame.data_ref() {
+                text.push_str(&String::from_utf8_lossy(data));
+            }
+        }
+        assert!(!text.contains("\"late\""), "{text}");
+        check.add_permits(1);
+        let rest = body.collect().await.unwrap().to_bytes();
+        text.push_str(&String::from_utf8_lossy(&rest));
+        let export = parse(text.as_bytes());
+        assert_eq!(paths(&export), ["early", "late"]);
+    }
+}
+
+#[cfg(test)]
+mod shaped_tests {
+    use super::*;
+
+    /// A listing of something the workspace does not hold open is told as
+    /// what the host said of it, not as an answer of the wrong shape.
+    #[test]
+    fn a_tool_that_said_why_in_words_is_told_in_its_words() {
+        let note = json!({"status": "ok", "text": "browser is not open in this workspace"});
+        let error = shaped::<answers::Listing>(note).expect_err("a note is no listing");
+        let said = serde_json::to_value(&*error.body).expect("an error body");
+        assert_eq!(said["code"], "not_found", "{said}");
+        assert_eq!(
+            said["message"], "browser is not open in this workspace",
+            "{said}"
+        );
+        let wrong = shaped::<answers::Listing>(json!({"rows": 3})).expect_err("not a listing");
+        let said = serde_json::to_value(&*wrong.body).expect("an error body");
+        assert_eq!(said["code"], "unavailable", "{said}");
+    }
+
+    /// A search that matched nothing answers the hits it found, which are none; a device
+    /// that keeps no search is a refusal, not an empty page.
+    #[test]
+    fn a_search_that_matched_nothing_answers_no_hits() {
+        let nothing =
+            json!({"status": "ok", "text": "nothing matches passport in what you may read here"});
+        assert!(searched_nothing(&nothing));
+        let no_search = json!({"status": "failed", "text": "keeps no search of its workspace"});
+        assert!(!searched_nothing(&no_search));
+        assert!(!searched_nothing(&json!({"hits": [], "query": "passport"})));
+        let empty = json!({"hits": [], "query": "passport"});
+        let hits: answers::SearchHits = serde_json::from_value(empty).expect("an empty page");
+        assert!(hits.hits.is_empty() && hits.query == "passport");
+    }
+}

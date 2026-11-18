@@ -5,7 +5,7 @@
 //! Terminal sessions. A member device with the take-work appetite does
 //! instead: it holds the workspace and its files, and runs a session's
 //! command line there, a Linux program in the workspace's own VM when it
-//! needs one. The host asks it over the device plane, as the device it is,
+//! needs one. The host asks it over the device action service, as the device it is,
 //! the way any device of a workspace asks another:
 //!
 //! - [`target`] names the run, an action of the workspace's environment
@@ -28,7 +28,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
-use super::host_account::Refusal;
+use super::server_account::Refusal;
 use crate::api::ActionAddress;
 
 /// The provider the taking member answers runs under.

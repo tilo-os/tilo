@@ -1,6 +1,6 @@
 //! The inspector as a reader meets it: a folded section still says what is
 //! in it, the controls drawn above the first section are stops too, and the
-//! mix controls name the lane they act on.
+//! mix controls name the track they act on.
 
 use crate::hosted_editor as hosted;
 
@@ -137,7 +137,7 @@ fn the_controls_drawn_above_the_first_section_are_stops_before_it() {
 }
 
 #[test]
-fn a_lane_reset_appears_once_the_mix_is_moved_and_puts_it_back() {
+fn a_track_reset_appears_once_the_mix_is_moved_and_puts_it_back() {
     let mut app = open(&sample_project());
     select_on(&mut app, "VO_Take3.wav", "A1");
     let reset = "Reset A1 to 0.0 dB, centre";
@@ -148,7 +148,7 @@ fn a_lane_reset_appears_once_the_mix_is_moved_and_puts_it_back() {
 
     hosted::act(&mut app, "Gain", &Action::Increment).unwrap();
     hosted::act(&mut app, "Pan", &Action::Decrement).unwrap();
-    let lane = |app: &mut Editor| {
+    let track = |app: &mut Editor| {
         let project = app.state();
         project
             .tracks
@@ -158,15 +158,15 @@ fn a_lane_reset_appears_once_the_mix_is_moved_and_puts_it_back() {
             .clone()
     };
     assert!(
-        lane(&mut app).mix_is_set(),
-        "the lane's mix reached the document"
+        track(&mut app).mix_is_set(),
+        "the track's mix reached the document"
     );
-    assert!(value(&mut app, "A1").contains(&lane(&mut app).gain_words()));
+    assert!(value(&mut app, "A1").contains(&track(&mut app).gain_words()));
 
-    let node = named(&mut app, reset).expect("the reset names its lane");
+    let node = named(&mut app, reset).expect("the reset names its track");
     assert_eq!(node.role(), Role::Button);
     press(&mut app, reset);
-    assert!(!lane(&mut app).mix_is_set(), "unity and centre again");
+    assert!(!track(&mut app).mix_is_set(), "unity and centre again");
     assert!(named(&mut app, reset).is_none());
 }
 

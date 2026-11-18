@@ -8,7 +8,7 @@
 //!
 //! `tilo-ush sh` (the guest's `ush-sh`) is this shell: `-c SCRIPT`, a script file, or
 //! interactive on its terminal, marking each run for Terminal when the session's key is in
-//! [`crate::runs::KEY_ENV`].
+//! [`crate::command_marks::KEY_ENV`].
 
 use std::io::{self, IsTerminal as _, Read, Write};
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -685,8 +685,8 @@ pub fn main(args: &[String]) -> i32 {
     };
     let mut shell = Shell::new(Arc::clone(&host), std::env::vars(), cwd, io);
     let runs_key = shell
-        .take_var(crate::runs::KEY_ENV)
-        .filter(|k| crate::runs::valid_key(k));
+        .take_var(crate::command_marks::KEY_ENV)
+        .filter(|k| crate::command_marks::valid_key(k));
     let _ = shell.take_var("TILO_USH_BROKER");
     shell.set_var("SHELL", &guest_shell_path().to_string_lossy());
     if let Some(script) = script {

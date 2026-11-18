@@ -415,7 +415,7 @@ pub const MLS_ACCESS_VERSION: u16 = 1;
 /// Any key holder admits the device once the workspace's access policy (workspace
 /// membership through the person's certified device set, or a live service
 /// grant) names this device key. The signature binds the key
-/// package to the device, so a relay that stores or forwards the request
+/// package to the device, so a server that stores or forwards the request
 /// cannot substitute its own package.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

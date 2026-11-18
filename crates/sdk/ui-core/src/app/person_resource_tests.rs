@@ -103,7 +103,7 @@ fn app_holding(record: &StoredResource) -> App {
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
     // The app shows a record of a shared workspace; the record kept beside it
     // is not in it.
-    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
         route: crate::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "shown"),
         epoch: uuid::Uuid::new_v4(),
     });

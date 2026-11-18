@@ -28,11 +28,12 @@ pub const TAPP_FORMAT_VERSION: u32 = registry_types::PACKAGE_FORMAT_VERSION;
 /// the packages already published, and a reader keeps installing every
 /// format it can verify.
 ///
-/// Format 2 changed only the registry catalogue; the archive, the signed
-/// root and the chunk list are byte for byte format 1's, so one reader
-/// reads both. A format that changes one of those layouts needs its reader
-/// here before anything ships at it.
-pub const READABLE_FORMATS: [u32; 2] = [1, TAPP_FORMAT_VERSION];
+/// Format 2 changed only the registry catalogue; format 3 only drops the
+/// retired `[sandbox.fs]` manifest block. The archive, the signed root and
+/// the chunk list are byte for byte format 1's, so one reader reads them
+/// all. A format that changes one of those layouts needs its reader here
+/// before anything ships at it.
+pub const READABLE_FORMATS: [u32; 3] = [1, 2, TAPP_FORMAT_VERSION];
 
 /// What a package at `format`, which this build does not read, means for
 /// the person holding it, and what to do.

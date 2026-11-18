@@ -1,5 +1,5 @@
 //! Governed agent membership through the ordinary durable invocation surface.
-//! Public arguments select only a closed command; caller custody and signing
+//! Public arguments select only a closed command; caller ownership and signing
 //! authority remain host-owned.
 use super::published_service::{ServiceOutcome, refused};
 use super::{
@@ -56,13 +56,6 @@ impl AppBrokerState {
     ) -> Result<super::StagedJob, String> {
         command.validate()?;
         let (resource, action, argument) = match command {
-            WorkspaceMembershipCommand::RetiredAddAgent { .. }
-            | WorkspaceMembershipCommand::RetiredRemoveAgent { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_AGENT_MEMBERSHIP.into());
-            }
-            WorkspaceMembershipCommand::RetiredGrantAppAuthorship { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_APP_AUTHORSHIP.into());
-            }
             WorkspaceMembershipCommand::Grant { grant } => {
                 let argument = format!(
                     "{}{}",
@@ -78,10 +71,6 @@ impl AppBrokerState {
                     serde_json::json!({ "grant": grant })
                 );
                 (WORKSPACE.into(), "revoke", Some(argument))
-            }
-            WorkspaceMembershipCommand::RetiredGrantForTask { .. }
-            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_TASK_GRANTS.into());
             }
             WorkspaceMembershipCommand::InstallBot(_)
             | WorkspaceMembershipCommand::RenewBot(_)
@@ -114,6 +103,9 @@ impl AppBrokerState {
             WorkspaceMembershipCommand::Share { .. }
             | WorkspaceMembershipCommand::Unshare { .. } => {
                 return Err("a share is its sharer's own, made at their device".into());
+            }
+            WorkspaceMembershipCommand::Lease { .. } => {
+                return Err("a lease is claimed by the device that does the work".into());
             }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
@@ -224,8 +216,8 @@ impl AppBrokerState {
         original_request: &tilo_actions::remote::InvokeRequest,
         request: &tilo_actions::remote::InvokeRequest,
         argument: Option<&str>,
-    ) -> Result<super::action_host::Started, tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::ActionHostError;
+    ) -> Result<super::action_provider::Started, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::ActionCallError;
         let address = &request.target.address;
         let Some(workspace) = address
             .resource
@@ -235,24 +227,24 @@ impl AppBrokerState {
             ))
             .filter(|workspace| !workspace.is_empty())
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         let Some((surface, action)) =
             self.governance_surface(workspace, &address.resource, &address.action)
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         let Some((committed, actor, now)) =
             self.decide_for(caller, workspace, |committed, actor, now| {
                 (committed.clone(), actor.clone(), now)
             })
         else {
-            return Err(ActionHostError::UnknownAction);
+            return Err(ActionCallError::UnknownAction);
         };
         // A workspace's people change at its own host person's device, never
         // by an agent acting for them.
         if actor.direct_person().is_none() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let need = action.contract.need();
         let node = tilo_action_policy::roles::governance_action(workspace, &address.action);
@@ -260,7 +252,7 @@ impl AppBrokerState {
             .answer_in(&committed, &node, need.kind, now)
             .admits(actor.direct())
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let token = self.confirmation_token(
             surface.peer_id,
@@ -269,7 +261,7 @@ impl AppBrokerState {
             argument,
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.member(), workspace, original_request),
+            &self.approval_binding(actor.member(), workspace, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             surface.peer_id,
@@ -287,8 +279,8 @@ impl AppBrokerState {
             },
             origin.cloned(),
         )
-        .map(super::action_host::Started::Staged)
-        .map_err(super::action_host::refusal)
+        .map(super::action_provider::Started::Staged)
+        .map_err(super::action_provider::refusal)
     }
 
     /// The published surface of `workspace`'s governance offering `action` on
@@ -354,7 +346,7 @@ impl AppBrokerState {
         if let Ok(mut waiting) = self.membership_surface_waiters.lock() {
             waiting.push((workspace.to_owned(), told));
         }
-        tilo_identity_host::policy_change::announce();
+        tilo_identity::policy_change::announce();
         published
     }
 
@@ -550,7 +542,7 @@ impl AppBrokerState {
         let original = pending
             .original
             .as_ref()
-            .ok_or("membership original custody unavailable")?;
+            .ok_or("membership original ownership unavailable")?;
         let caller = original.owner_person_certificate(self, workspace, envelope)?;
         let command = membership_command(envelope)?;
         let request = OwnerCommitRequest {
@@ -1061,7 +1053,7 @@ fn membership_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::{HostServices, WorkspaceMemberships};
+    use crate::services::{ProcessServices, WorkspaceMemberships};
 
     struct DiscoveryMemberships;
 
@@ -1079,7 +1071,7 @@ mod tests {
         }
     }
 
-    /// A service standing in for a workspace this device has just made: held,
+    /// A service in place of a workspace this device has just made: held,
     /// and published once its replica is projected, which `projected` says.
     struct ProjectedLaterMemberships {
         workspace: String,
@@ -1166,7 +1158,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1222,7 +1214,7 @@ mod tests {
                 });
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(service.clone()),
                         ..Default::default()
                     },
@@ -1262,7 +1254,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1641,7 +1633,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1696,7 +1688,7 @@ mod tests {
                 let tree = tree.shared();
                 let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    HostServices {
+                    ProcessServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
                     },
@@ -1727,7 +1719,7 @@ mod tests {
                     assert!(
                         matches!(
                             state.start_governance_action(&caller, None, &request, &request, None),
-                            Err(tilo_actions::remote::ActionHostError::UnknownAction)
+                            Err(tilo_actions::remote::ActionCallError::UnknownAction)
                         ),
                         "{action} on {resource} is not one of the people's changes"
                     );

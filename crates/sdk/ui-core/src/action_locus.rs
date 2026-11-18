@@ -23,12 +23,18 @@ pub(crate) fn draw_action_presence(
     now: crate::time::Instant,
 ) -> Vec<PaintedActionMarker> {
     let mut painted = Vec::new();
-    let mut resolved = presence.take_shown();
+    let mut resolved = Vec::new();
+    let occupied = occupied(tree, viewport);
     for interaction in presence.visible_interactions(now) {
+        // Words written under an item that no view here shows in place (a comment added to an
+        // issue, seen in the list) stand on the item's row.
+        let under = crate::presence::written_under(&interaction.anchor)
+            .filter(|_| !presence.placed(interaction.invocation));
         let Some(bounds) = text_loci
             .iter()
             .find(|(invocation, _)| *invocation == interaction.invocation)
             .map(|(_, rect)| *rect)
+            .or_else(|| under.and_then(|item| item_bounds(tree, &[item.to_owned()])))
             .or_else(|| interaction_bounds(tree, bindings, &interaction))
         else {
             continue;
@@ -64,17 +70,16 @@ pub(crate) fn draw_action_presence(
             f64::from(paint.theme.tokens.radii.detail),
             fill,
         );
-        let ink = ink_around(tree, bounds, viewport);
         let place = crate::presence::MarkerPlace {
             locus: bounds,
             control,
-            ink: ink.clone(),
+            ink: occupied.clone(),
         };
         let marker =
             presence.draw_agent_action_marker(paint, &interaction, &place, viewport, surface, now);
         if marker.is_none() {
             let label = presence.interaction_status_label(&interaction);
-            presence.draw_action_label_within(paint, &user, &label, bounds, viewport, &ink);
+            presence.draw_action_label_within(paint, &user, &label, bounds, viewport, &occupied);
         }
         if let Some(marker) = marker
             && user.is_agent()
@@ -98,7 +103,7 @@ pub(crate) fn draw_action_presence(
         paint.text,
         paint.theme,
         now,
-        (&resolved, &occupied(tree, viewport)),
+        (&resolved, &occupied),
     );
     for interaction in presence.visible_interactions(now) {
         presence.note_drawn(interaction.invocation, now);
@@ -106,36 +111,9 @@ pub(crate) fn draw_action_presence(
     painted
 }
 
-/// The text a marker's tag must leave readable: each worded line-sized node
-/// the frame shows within `viewport`, the control the marker rests on among
-/// them — its words stay readable too.
-fn ink_around(
-    tree: &crate::a11y_tree::SemanticTree,
-    locus: vello::kurbo::Rect,
-    viewport: vello::kurbo::Rect,
-) -> Vec<vello::kurbo::Rect> {
-    let line = locus.height().max(24.0);
-    tree.iter()
-        .filter(|node| {
-            node.name
-                .as_deref()
-                .is_some_and(|name| !name.trim().is_empty())
-                || node
-                    .value
-                    .as_deref()
-                    .is_some_and(|value| !value.trim().is_empty())
-        })
-        .filter_map(|node| node.bounds)
-        .map(|bounds| bounds.intersect(viewport))
-        .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
-        // A worded box no taller than a row is a line of words: a list or a
-        // window that names itself is no line its tag must leave.
-        .filter(|bounds| bounds.height() <= line * 2.0)
-        .collect()
-}
-
-/// What a card standing over the frame would hide: each line of words and each control it shows
-/// within `viewport`. A box taller than a few lines (a list, a pane, the window) is room, not ink.
+/// What a card over the frame, or a marker's tag, would hide: each line of words and each control
+/// it shows within `viewport`. A box taller than a few lines (a list, a pane, the window) is where
+/// a tag may go, not ink.
 fn occupied(
     tree: &crate::a11y_tree::SemanticTree,
     viewport: vello::kurbo::Rect,

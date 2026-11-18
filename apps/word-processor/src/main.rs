@@ -1,8 +1,8 @@
 //! `word-processor` — the runnable word-processor app: the framework app over
-//! a rich-text record.
+//! a rich-text resource.
 //!
 //! Usage:
-//!   word-processor [FILE]                         open FILE's own record (imported the first time)
+//!   word-processor [FILE]                         open FILE's own document (imported the first time)
 //!   word-processor --shots OUT [--scenario NAME]  render one headless frame to OUT.png
 //!
 //! Collaboration: launched from the shell, the compositor's broker is

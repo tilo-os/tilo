@@ -565,7 +565,7 @@ browser-history-paused-hint = Pages in this window are not saved to browsing his
 browser-service-sign-in-hint = Sign in to finish connecting this account.
 
 ## A window without the person's accounts
-browser-no-account-custody = This window browses without your sign-ins. Open the page in a Browser window of your own to use your accounts there
+browser-no-account-credentials = This window browses without your sign-ins. Open the page in a Browser window of your own to use your accounts there
 
 ## Actions
 
@@ -622,6 +622,7 @@ browser-effect-drag-page = Drag element
 browser-effect-pointer-path = Draw pointer path
 browser-effect-fill-page = Fill field
 browser-effect-fill-page-secret = Fill password field
+browser-effect-fill-page-item = Fill field from vault
 browser-effect-select-page = Choose options
 browser-effect-fill-page-files = Choose files to upload
 browser-effect-press-page = Press key
@@ -638,6 +639,7 @@ browser-effect-show-personal-bookmark-folder = Open bookmark folder
 browser-effect-read-page-record = Who did what on the page
 browser-effect-read-page-fields = Page fields and who set them
 browser-effect-read-page-forms = Page forms and what they ask
+browser-effect-read-page-table = Page tables as rows
 browser-effect-find-page-text = Find words on the page
 browser-effect-fill-page-form = Answer page form
 browser-effect-answer-form = Answer a form of the page
@@ -668,7 +670,7 @@ browser-application-forget-form = Forget a remembered form
 browser-application-forget-site-forms = Forget a site’s remembered forms
 browser-application-forget-all-forms = Forget all remembered forms
 browser-application-forget-this-site-forms = Forget this site’s remembered forms
-browser-page-record = Page record
+browser-page-record = Page resource
 browser-page-record-set-down = Set down a page action
 
 ## What the app is called in a window and in the launcher

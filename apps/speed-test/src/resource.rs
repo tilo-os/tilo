@@ -34,7 +34,7 @@ pub struct Measurement {
 }
 
 impl SpeedTest {
-    /// What the record holds: every measurement taken, oldest first.
+    /// What the resource holds: every measurement taken, oldest first.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

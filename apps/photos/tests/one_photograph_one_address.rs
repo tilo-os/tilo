@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         assert!(
             mine.path.ends_with("harbour.png") && !theirs.path.ends_with("harbour.png"),
             "the fixture gave both sessions the same file name, so it is not \
-             standing in for two"
+             access in for two"
         );
         assert_eq!(
             mine.published_id(),

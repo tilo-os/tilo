@@ -6,7 +6,7 @@ use crate::setup::{
     prepared_setup::{ACCOUNTS_FILE, IDENTITY_FILE, LIMITS, Manifest},
 };
 use std::{fs, os::unix::fs::PermissionsExt};
-use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_identity::provisioning::IdentityStorage;
 const PASSWORD: &[u8] = b"several unrelated installation words";
 fn fixture(root: &Path) -> (PathBuf, [u8; 32], accounts::AccountId, PathBuf) {
     let dav_server = crate::setup::account_transfer::dav_readiness::test_server();

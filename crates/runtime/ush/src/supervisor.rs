@@ -41,7 +41,7 @@ pub struct SessionOptions {
     pub term: String,
     pub host_root: PathBuf,
     pub verbose: bool,
-    pub runs: Option<String>,
+    pub marks_key: Option<String>,
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
     pub terminal: Option<Arc<OwnedFd>>,
     pub mcp_server: Option<PathBuf>,
@@ -59,9 +59,9 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
-            runs: std::env::var(crate::runs::KEY_ENV)
+            marks_key: std::env::var(crate::command_marks::KEY_ENV)
                 .ok()
-                .filter(|key| crate::runs::valid_key(key)),
+                .filter(|key| crate::command_marks::valid_key(key)),
             editor: None,
             terminal: None,
             mcp_server: None,
@@ -465,7 +465,7 @@ pub enum ServeRequest {
         #[serde(default)]
         requested_by: crate::host::RequestedBy,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        runs: Option<String>,
+        commands: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
         /// Explicit opt-in: before a session's lease closes, tell the app on
@@ -549,7 +549,7 @@ pub enum ServeResponse {
         session: String,
         environment: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        runs: bool,
+        commands: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
     },
@@ -579,7 +579,7 @@ pub enum ServeResponse {
 }
 
 /// Decide one request: the environment record it names (`None` for the
-/// default). Pure, so the gate can be tested without a pty.
+/// default). Pure, so the check can be tested without a pty.
 pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
     let ServeRequest::OpenSession { target, .. } = req else {
         return Err("not a session request".into());
@@ -587,7 +587,7 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
     match target {
         Target::Host => Err(
             "not available as an environment: the host target (your own login shell) \
-             is decided by the host gate"
+             is decided by the host check"
                 .into(),
         ),
         Target::Environment { record: None, .. } => Ok(None),
@@ -794,7 +794,7 @@ fn serve_request(
         Ok(workspace) => store.for_workspace(&workspace),
         Err(reason) => {
             AuditLog::at(store.audit_dir()).append(
-                &crate::audit::AuditRecord::new("serve", "-", "workspace", false).because(&reason),
+                &crate::audit::AuditEntry::new("serve", "-", "workspace", false).because(&reason),
             );
             reply(writer, &ServeResponse::Denied { reason }, None)?;
             return Ok(Served::Refused);
@@ -833,7 +833,7 @@ fn serve_request(
         Ok(e) => e,
         Err(reason) => {
             AuditLog::at(store.audit_dir()).append(
-                &crate::audit::AuditRecord::new("serve", "-", "open-session", false)
+                &crate::audit::AuditEntry::new("serve", "-", "open-session", false)
                     .because(&reason),
             );
             reply(writer, &ServeResponse::Denied { reason }, None)?;
@@ -895,7 +895,7 @@ fn open_environment(
         rows,
         term,
         command,
-        runs,
+        commands,
         editor_protocol,
         end_report,
         ..
@@ -903,7 +903,8 @@ fn open_environment(
     else {
         return Ok(Served::Done);
     };
-    let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
+    let commands =
+        commands.filter(|key| command.is_empty() && crate::command_marks::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
     let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
         Some(runtime_portal::editor::Socket::pair()?)
@@ -912,7 +913,7 @@ fn open_environment(
     };
 
     let id = uuid::Uuid::new_v4().simple().to_string();
-    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditEntry::new(
         &id,
         &record,
         "open-session",
@@ -924,7 +925,7 @@ fn open_environment(
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
-        runs: runs.as_deref(),
+        commands: commands.as_deref(),
         editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
@@ -944,7 +945,7 @@ fn open_environment(
         &ServeResponse::Session {
             session: id,
             environment: record,
-            runs: runs.is_some(),
+            commands: commands.is_some(),
             editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
         },
         master,
@@ -1012,7 +1013,7 @@ fn hand_off_session(
     // close audited rather than left running unseen.
     let undelivered = |error: anyhow::Error| {
         AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new(&id, &record, close_event, true)
+            &crate::audit::AuditEntry::new(&id, &record, close_event, true)
                 .because("terminal gone before the session was handed over"),
         );
         error
@@ -1039,7 +1040,7 @@ fn hand_off_session(
         });
         let termination = finish_session(transport.stream, child.transfer()?, watch);
         AuditLog::at(audit_dir).append(
-            &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
+            &crate::audit::AuditEntry::new(&id, &record, close_event, true).because(termination),
         );
         return Ok(());
     }
@@ -1065,7 +1066,7 @@ fn hand_off_session(
     std::thread::spawn(move || {
         let termination = finish_session(&supervisor_lease, child, watch);
         AuditLog::at(audit_dir).append(
-            &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
+            &crate::audit::AuditEntry::new(&id, &record, close_event, true).because(termination),
         );
         active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     });
@@ -1087,7 +1088,7 @@ fn refused_unbuildable(
     };
     tracing::warn!(record = %record, %reason, "ush: the environment cannot be built");
     AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new("serve", record, "open-session", false).because(&reason),
+        &crate::audit::AuditEntry::new("serve", record, "open-session", false).because(&reason),
     );
     reply(writer, &refusal, None)?;
     Ok(true)
@@ -1163,7 +1164,7 @@ fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> 
     };
     let branched = crate::branch::branch_environments(store, &store.for_workspace(&into));
     AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new("serve", "-", "branch-workspace", branched.is_ok())
+        &crate::audit::AuditEntry::new("serve", "-", "branch-workspace", branched.is_ok())
             .because(format!("{} into {into}", store.workspace_id().as_str())),
     );
     match branched {
@@ -1255,7 +1256,7 @@ fn serve_host(
         term,
         command,
         requested_by,
-        runs,
+        commands,
         ..
     } = req
     else {
@@ -1268,8 +1269,7 @@ fn serve_host(
     {
         let reason = denied.reason();
         AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new("serve", "host", "open-session", false)
-                .because(&reason),
+            &crate::audit::AuditEntry::new("serve", "host", "open-session", false).because(&reason),
         );
         let response = if denied == crate::host::HostDenied::NotAllowed {
             ServeResponse::HostNotAllowed { reason }
@@ -1294,16 +1294,16 @@ fn serve_host(
     };
     let (master, slave) = open_pty(cols, rows)?;
     let id = uuid::Uuid::new_v4().simple().to_string();
-    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditEntry::new(
         &id,
         "host",
         "open-session",
         true,
     ));
-    let interactive_bash = command.is_empty() && crate::runs::is_bash(&account.shell);
-    let key = runs
+    let interactive_bash = command.is_empty() && crate::command_marks::is_bash(&account.shell);
+    let key = commands
         .as_deref()
-        .filter(|key| interactive_bash && crate::runs::valid_key(key));
+        .filter(|key| interactive_bash && crate::command_marks::valid_key(key));
     let rc = interactive_bash
         .then(|| {
             let rc = store.session_dir(&id).join("shell.bash");
@@ -1312,9 +1312,9 @@ fn serve_host(
             Some(rc)
         })
         .flatten();
-    let runs = key.filter(|_| rc.is_some());
+    let commands = key.filter(|_| rc.is_some());
     let child = spawn_on_pty(
-        crate::host::host_command(&account, term, command, rc.as_deref(), runs),
+        crate::host::host_command(&account, term, command, rc.as_deref(), commands),
         &slave,
     )?;
     drop(slave);
@@ -1326,7 +1326,7 @@ fn serve_host(
         &ServeResponse::Session {
             session: id,
             environment: "host".into(),
-            runs: runs.is_some(),
+            commands: commands.is_some(),
             editor_protocol: None,
         },
         master,
@@ -1398,7 +1398,7 @@ fn finish_session(
     match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
-            // How it ended — a relay bridge's status, a local guest's setup
+            // How it ended — a server bridge's status, a local guest's setup
             // report: a terminal that asked reads it before the lease closes,
             // and tells a shell that exited from a connection that was lost
             // or a guest that never started.
@@ -1501,7 +1501,7 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
-    runs: Option<&'a str>,
+    commands: Option<&'a str>,
     editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
@@ -1563,9 +1563,9 @@ fn spawn_attached(
         launch.store.workspace_id().as_str(),
     );
     cmd.env("TERM", launch.term);
-    match launch.runs {
-        Some(key) => cmd.env(crate::runs::KEY_ENV, key),
-        None => cmd.env_remove(crate::runs::KEY_ENV),
+    match launch.commands {
+        Some(key) => cmd.env(crate::command_marks::KEY_ENV, key),
+        None => cmd.env_remove(crate::command_marks::KEY_ENV),
     };
     let (read, write) = diagnostics_pipe()?;
     let child = spawn_on_pty_with(cmd, slave, Some(write))?;
@@ -1808,7 +1808,7 @@ mod tests {
                     &ServeResponse::Session {
                         session: "exact".into(),
                         environment: "default".into(),
-                        runs: false,
+                        commands: false,
                         editor_protocol: None,
                     },
                     master,
@@ -1875,7 +1875,7 @@ mod tests {
                     &ServeResponse::Session {
                         session: id.clone(),
                         environment: environment.into(),
-                        runs: false,
+                        commands: false,
                         editor_protocol: None,
                     },
                     master,
@@ -2039,7 +2039,7 @@ mod tests {
                 &ServeResponse::Session {
                     session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     environment: "default".into(),
-                    runs: false,
+                    commands: false,
                     editor_protocol: None,
                 },
                 Some(master.as_fd()),
@@ -2127,12 +2127,12 @@ mod tests {
             let reply = ServeResponse::Session {
                 session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 environment: "default".into(),
-                runs: true,
+                commands: true,
                 editor_protocol: None,
             };
             assert_eq!(
                 serde_json::to_string(&reply).unwrap(),
-                "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
+                "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"commands\":true}"
             );
         }
 
@@ -2310,7 +2310,7 @@ mod tests {
             term: None,
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
-            runs: None,
+            commands: None,
             editor_protocol: None,
             end_report: false,
         }

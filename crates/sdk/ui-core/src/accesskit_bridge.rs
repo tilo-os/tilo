@@ -1067,7 +1067,7 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if access.state.context_menu && !access.state.disabled {
         ak.add_action(AkAction::ShowContextMenu);
     }
-    // Click is gated on the roles that can actually be operated. Offering it
+    // Click depends on the roles that can actually be operated. Offering it
     // on every node — which this used to do — makes an AT read "clickable" on
     // a plain label. `ListItem` is in the list because a synthetic segmented
     // control's segments are list items, and without it an AT could see them

@@ -87,11 +87,11 @@ fn a_kept_writer_sleeps_between_commits_and_leaves_with_its_index() {
     // Wait for the writer's own set of threads to stand still, not just for the ones that exist
     // to be asleep: a thread a merge is still starting has not yet finished with its first
     // wakeup, and reading it as one that woke under a busy machine is no defect of the writer.
-    let mut standing = writers_at_rest();
+    let mut last = writers_at_rest();
     let before = tilo_test_env::wait_for("the writer's threads to stand still", || {
         let now = writers_at_rest()?;
-        let still = standing.as_ref() == Some(&now);
-        standing = Some(now.clone());
+        let still = last.as_ref() == Some(&now);
+        last = Some(now.clone());
         still.then_some(now)
     });
     assert!(

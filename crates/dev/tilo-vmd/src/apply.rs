@@ -10,7 +10,7 @@ use tilo_vm_protocol::{
     OutputSpec, Policy, Scope,
 };
 
-use crate::accounts::{AccountRecord, DeviceSession, Generation, Login};
+use crate::accounts::{AccountEntry, DeviceSession, Generation, Login};
 use crate::error::DaemonError;
 use crate::input::Geometry;
 
@@ -64,7 +64,7 @@ impl Session {
     }
 }
 
-impl AccountRecord {
+impl AccountEntry {
     /// The session this account's layers reach; `None` for the `vm` account.
     pub fn session(&self) -> Option<Session> {
         let user = self.user()?;
@@ -344,7 +344,7 @@ pub fn parity_problem(process: &SessionProcess, expected_domain: &str) -> Option
 /// # Errors
 /// [`DaemonError::ScopeMismatch`].
 pub fn check_scope(
-    record: &AccountRecord,
+    record: &AccountEntry,
     component: &str,
     info: &ComponentInfo,
 ) -> Result<(), DaemonError> {
@@ -420,7 +420,7 @@ impl Restarts {
 
 /// What moving from `from` to `to` requires, and which units the change restarts.
 pub fn policy(
-    record: &AccountRecord,
+    record: &AccountEntry,
     from: &Generation,
     to: &Generation,
 ) -> Result<(Policy, Restarts), DaemonError> {
@@ -468,7 +468,7 @@ pub fn layers_dropin(account: &str, generation: u64, layers: &[PathBuf]) -> Stri
 /// Seat selection for the session unit; `None` leaves the template's headless default in place.
 /// `pam_systemd` takes the seat from `XDG_SEAT`, and seat0 additionally needs VT 1, which greetd
 /// gives up for the claim.
-pub fn seat_dropin(record: &AccountRecord) -> Option<String> {
+pub fn seat_dropin(record: &AccountEntry) -> Option<String> {
     let header = format!(
         "# Written by tilo-vmd: account {}. Do not edit.\n",
         record.name
@@ -498,7 +498,7 @@ const DEVICE_FIRST_USE_ENVIRONMENT: &str = "Environment=TILO_TEST_CONTROL_FIRST_
 /// account was just made or is brought back at boot.
 pub fn identity_environment(
     apply: &mut dyn Apply,
-    record: &AccountRecord,
+    record: &AccountEntry,
     session: &Session,
 ) -> Result<String, DaemonError> {
     if !session.stand_in {
@@ -550,7 +550,7 @@ pub enum SessionChange {
 /// Bring an account's system state in line with `generation`.
 pub fn activate(
     apply: &mut dyn Apply,
-    record: &mut AccountRecord,
+    record: &mut AccountEntry,
     generation: &Generation,
     layers: &[PathBuf],
     policy: Policy,
@@ -824,7 +824,7 @@ pub fn layered_units(session: &Session, uid: u32) -> Vec<String> {
 /// `Restart=` never fires.
 pub fn deactivate(
     apply: &mut dyn Apply,
-    record: &AccountRecord,
+    record: &AccountEntry,
 ) -> Result<Vec<Action>, DaemonError> {
     let mut actions = Vec::new();
     let Some(Session {
@@ -1375,8 +1375,8 @@ mod tests {
     use super::*;
     use crate::accounts::Entry;
 
-    fn record(name: &str, kind: AccountKind) -> AccountRecord {
-        AccountRecord {
+    fn record(name: &str, kind: AccountKind) -> AccountEntry {
+        AccountEntry {
             name: name.into(),
             kind,
             owner: Owner::default(),
@@ -1665,6 +1665,28 @@ mod tests {
                 policy(&user, &shell, &Generation::default()).unwrap().0,
                 Policy::SessionRestart
             );
+
+            // A session component names no unit of its own (the compositor
+            // starts app-keeper and most of the session helpers): swapping it
+            // still restarts the session, because the running compositor is
+            // what started the old binary.
+            let keeper_before = generation(4, &[("app-keeper", "k1", Scope::Session, &[])]);
+            let keeper_after = generation(
+                5,
+                &[
+                    ("app-keeper", "k2", Scope::Session, &[]),
+                    (
+                        "launcher",
+                        "l1",
+                        Scope::Session,
+                        &["tilo-runtime-resident.service"],
+                    ),
+                ],
+            );
+            let (p, restarts) = policy(&user, &keeper_before, &keeper_after).unwrap();
+            assert_eq!(p, Policy::SessionRestart);
+            assert!(restarts.sessions);
+            assert_eq!(restarts.units, ["tilo-runtime-resident.service"]);
 
             let vm = record("vm", AccountKind::Vm);
             let fs1 = generation(1, &[("fs", "f1", Scope::Vm, &["fs.service"])]);

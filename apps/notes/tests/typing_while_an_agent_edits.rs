@@ -42,12 +42,12 @@ fn click_into_body(app: &mut TestApp<NotesShell>) {
 fn agents_note(title: &str, markdown: Option<&str>) -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    let kind = <notes::Notebook as ui::tilo_resource::Resource>::KIND;
+    let kind = notes::part::chain_resource();
     let mut args = serde_json::json!({ "title": title });
     if let Some(markdown) = markdown {
         args["markdown"] = markdown.into();
     }
-    app.call_by(agent(), kind, "create-page", args).unwrap();
+    app.call_by(agent(), &kind, "create-page", args).unwrap();
     let page = note_titled(&app, title);
     open(&mut app, page);
     let _ = app.harness().poll_frame();
@@ -56,7 +56,7 @@ fn agents_note(title: &str, markdown: Option<&str>) -> (TestApp<NotesShell>, Pag
 
 /// A paragraph the agent adds to `page` on its replica, merged as its change arrives.
 fn agent_appends(app: &mut TestApp<NotesShell>, page: PageId, paragraph: &str) {
-    app.merge_peer_edit(|doc| {
+    crate::framework_support::part_edit(app, page, |doc| {
         crate::component_support::edit_page_body(
             doc,
             page,
@@ -113,7 +113,7 @@ fn letters_typed_while_the_agent_writes_into_the_same_line_all_land() {
     for (index, letter) in TYPED.chars().enumerate() {
         app.harness().key(&letter.to_string());
         if index % 4 == 1 {
-            app.merge_peer_edit(|doc| {
+            crate::framework_support::part_edit(&mut app, page, |doc| {
                 crate::component_support::edit_page_body(
                     doc,
                     page,

@@ -17,7 +17,7 @@ that (HIG section 4):
 - chain: more than one " · " in a message; a row says one thing, at most a
   name and its value;
 - glyph: a separator glyph joining facts ("·", "•", "|", "—", "–" or " / "
-  between values) or a unicode symbol standing in for an icon (an arrow, a
+  between values) or a unicode symbol access in for an icon (an arrow, a
   check mark, a cross, a dot, a star). Separate facts are separate
   components: a secondary line, `ui::widget::Facts`, a property list, key
   hints with drawn keycaps; icons come from `ui::icons`
@@ -210,7 +210,7 @@ BASELINE = HERE / "copy_language_baseline"
 
 SOURCE_LOCALE = "en-US"
 
-# A separator glyph standing between two values, and unicode symbols used as
+# A separator glyph between two values, and unicode symbols used as
 # icons. The same sets as tools/policy/check_primitives.py.
 GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|\s[·•]\s*$")
 GLYPH_ICON = re.compile("[←→↑↓↖↗↘↙↔↕⇐⇒⇑⇓✓✔✗✘✕✖●○◉◎★☆▶◀▲▼▸◂▴▾►◄⬤⏵⏴⏶⏷]")

@@ -2,7 +2,7 @@
 //! keeper's own), and every buffer is made again on the desktop from the same descriptors.
 //! While no desktop is attached the last feedback stands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::fd::OwnedFd;
 
 use smithay::backend::allocator::{Format, Fourcc, Modifier};
@@ -78,8 +78,8 @@ fn read_table(fd: &OwnedFd, size: u32) -> Option<Vec<Format>> {
     )
 }
 
-/// The feedback `parts` describe, once every tranche arrived.
-fn build_feedback(parts: &FeedbackParts) -> Option<DmabufFeedback> {
+/// The feedback `parts` describe, once every tranche arrived, and every format it names.
+fn build_feedback(parts: &FeedbackParts) -> Option<(DmabufFeedback, HashSet<Format>)> {
     let (Some((fd, size)), Some(main_device)) = (&parts.table, parts.main_device) else {
         return None;
     };
@@ -91,6 +91,7 @@ fn build_feedback(parts: &FeedbackParts) -> Option<DmabufFeedback> {
             .filter_map(|index| table.get(usize::from(*index)).copied())
             .collect()
     };
+    let named = parts.tranches.iter().flat_map(&formats_of).collect();
     let mut tranches = parts.tranches.iter();
     let first = tranches.next()?;
     let mut builder = DmabufFeedbackBuilder::new(main_device, formats_of(first));
@@ -101,7 +102,7 @@ fn build_feedback(parts: &FeedbackParts) -> Option<DmabufFeedback> {
             formats_of(tranche),
         );
     }
-    builder.build().ok()
+    Some((builder.build().ok()?, named))
 }
 
 impl State {
@@ -163,7 +164,7 @@ impl State {
             }
             Event::Done => {
                 let parts = std::mem::take(&mut entry.parts);
-                let Some(feedback) = build_feedback(&parts) else {
+                let Some((feedback, _)) = build_feedback(&parts) else {
                     tracing::warn!("the desktop's per-surface dma-buf feedback could not be read");
                     return;
                 };
@@ -186,10 +187,13 @@ impl State {
     /// Offer the app what the desktop offers: the dma-buf global the first time, its default
     /// feedback replaced afterwards.
     fn offer_feedback(&mut self, parts: &FeedbackParts) {
-        let Some(feedback) = build_feedback(parts) else {
+        let Some((feedback, formats)) = build_feedback(parts) else {
             tracing::warn!("the desktop's dma-buf feedback could not be offered");
             return;
         };
+        if let Some(up) = self.up.as_mut() {
+            up.dmabuf_formats = Some(formats);
+        }
         let dh = self.dh.clone();
         let global = match self.dmabuf_global.take() {
             Some(global) => {

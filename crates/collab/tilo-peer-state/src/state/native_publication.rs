@@ -63,7 +63,7 @@ impl NativePublicationCut {
         if self.candidate.core.pending.len() > 64 {
             return Err("native cut pending queue exceeds entry limit".into());
         }
-        // Preserve unresolved relay work that existed before this cut. No new
+        // Preserve unresolved server work that existed before this cut. No new
         // native item may lose publisher provenance in the frozen v4/v5 queue.
         let mut matched = [false; 64];
         for pending in &self.candidate.core.pending {
@@ -149,8 +149,8 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<([u8; 32], bool), AdmissionError> {
         match origin {
-            TransportOrigin::RelayDelta(source) => Ok((source, false)),
-            TransportOrigin::RetainedRelayDelta(source) => Ok((source, true)),
+            TransportOrigin::ServerDelta(source) => Ok((source, false)),
+            TransportOrigin::RetainedServerDelta(source) => Ok((source, true)),
             TransportOrigin::RetainedNativePublication { publisher } => {
                 // The authenticated adapter supplies the admitted canonical
                 // governor, NOT the separate TLS/delivery-session host. A tag or
@@ -172,7 +172,7 @@ impl StatePeer {
                     message,
                     NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
                 ) {
-                    return Err("state requires relay-authenticated Delta carrier".into());
+                    return Err("state requires server-authenticated Delta carrier".into());
                 }
                 Ok((source, false))
             }

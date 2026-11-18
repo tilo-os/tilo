@@ -1,7 +1,7 @@
 //! What each change of a signed document op says it is.
 //!
 //! A receiver decides a change before merging it:
-//! the relay checks, without app code and without reading content, that the
+//! the server checks, without app code and without reading content, that the
 //! action a change claims is granted to its author and that the change
 //! writes only the storage units that action may write; a device that has
 //! the app replays the action and checks that it produces exactly the change.
@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 pub use tilo_actions::FrameworkChange;
+use tilo_actions::context::ContinuedAction;
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
 
 /// A storage unit, as the path from the record's root to the unit's root
@@ -139,64 +140,13 @@ impl ClaimedAction {
         })
     }
 
-    /// What a continuation message (`tilo.cont/1 <gesture> <path>
-    /// <payload>`, the next keystroke of a gesture) does, read from its
-    /// action's payload: a field edit at the payload's path, or the verb the
-    /// payload names, of the record's own kind and app.
+    /// What a continuation message (the next keystroke of a gesture) says
+    /// its change is: what the entry it continues claims.
     #[must_use]
     pub fn of_continuation(message: &str) -> Option<Self> {
-        let rest = message.strip_prefix(tilo_actions::context::CONTINUATION_PREFIX)?;
-        let mut parts = rest.splitn(3, ' ');
-        let _gesture = parts.next()?;
-        let path = parts.next()?;
-        let payload: serde_json::Value = serde_json::from_str(parts.next()?).ok()?;
-        // An action that is not a record's operation: the message's path
-        // says where it edits, or it edits the whole record.
-        let Some(action) = payload
-            .get("op")
-            .and_then(|operation| operation.get("action"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            return Some(Self::Edit {
-                kind: String::new(),
-                path: if path == "-" {
-                    Vec::new()
-                } else {
-                    path.split('/')
-                        .map(|key| PathStep::Field(key.to_owned()))
-                        .collect()
-                },
-            });
-        };
-        let operation = payload.get("op")?;
-        if action != "field-edit" {
-            return Some(Self::Verb {
-                action: ActionKey::new("", "", action),
-                item: None,
-            });
-        }
-        let path = operation
-            .get("args")?
-            .get("path")?
-            .as_array()?
-            .iter()
-            .map(|step| {
-                let (kind, value) = step.as_object()?.iter().next()?;
-                Some(match (kind.as_str(), value) {
-                    ("field", serde_json::Value::String(key)) => PathStep::Field(key.clone()),
-                    ("item", serde_json::Value::String(id)) => PathStep::Item(id.clone()),
-                    ("key", serde_json::Value::String(key)) => PathStep::Key(key.clone()),
-                    ("cell", cell) => PathStep::Cell(
-                        cell.get("row")?.as_str()?.to_owned(),
-                        cell.get("column")?.as_str()?.to_owned(),
-                    ),
-                    _ => return None,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(Self::Edit {
-            kind: String::new(),
-            path,
+        Some(match ContinuedAction::of_message(message)? {
+            ContinuedAction::Edit { kind, path } => Self::Edit { kind, path },
+            ContinuedAction::Verb { action, item } => Self::Verb { action, item },
         })
     }
 
@@ -345,7 +295,7 @@ pub fn mutation_claims(
 }
 
 /// Committing changes that name what they do, where no app's executor makes
-/// them: a test standing in for an app, writing a record directly.
+/// them: a test in place of an app, writing a record directly.
 pub trait CommitNamed {
     /// Commit the pending operations as a field edit of `field` on a record
     /// of kind `kind`.
@@ -695,48 +645,27 @@ mod tests {
             );
         }
 
-        phase a_continuation_claims_from_its_payload;
-        // A continuation claims what its payload does: the field edit at its
-        // path, or the verb it names, of the record's own app and kind.
+        phase a_continuation_claims_what_its_gestures_first_entry_claims;
         {
-            let edit = r#"tilo.cont/1 0123456789abcdef0123456789abcdef rows/r1/title {"op":{"action":"field-edit","args":{"op":"splice","path":[{"field":"rows"},{"item":"r1"},{"field":"title"}]}},"at":5}"#;
-            assert_eq!(
-                ChangeClaim::of_change([1; 32], Some(edit), Vec::new())
-                    .unwrap()
-                    .action,
-                ClaimedAction::Edit {
-                    kind: String::new(),
-                    path: vec![
-                        PathStep::Field("rows".into()),
-                        PathStep::Item("r1".into()),
-                        PathStep::Field("title".into()),
-                    ],
-                }
-            );
-            let verb = r#"tilo.cont/1 0123456789abcdef0123456789abcdef - {"op":{"action":"type-text","args":{}},"at":5}"#;
-            assert_eq!(
-                ChangeClaim::of_change([1; 32], Some(verb), Vec::new())
-                    .unwrap()
-                    .action,
-                ClaimedAction::Verb {
-                    action: ActionKey::new("", "", "type-text"),
-                    item: None,
-                }
-            );
-            assert_eq!(
-                ChangeClaim::of_change([1; 32], Some("tilo.cont/1 g - not json"), Vec::new()),
-                Err(ClaimError::Unnamed)
-            );
-            // An action of no record: where the message says it edits.
-            assert_eq!(
-                ChangeClaim::of_change([1; 32], Some(r#"tilo.cont/1 g body "a""#), Vec::new())
-                    .unwrap()
-                    .action,
-                ClaimedAction::Edit {
-                    kind: String::new(),
-                    path: vec![PathStep::Field("body".into())],
-                }
-            );
+            let claim = |message: &str| {
+                ChangeClaim::of_change([1; 32], Some(message), Vec::new()).map(|claim| claim.action)
+            };
+            let gesture = tilo_actions::ActionId(uuid::Uuid::from_u128(7));
+            let typed = |what: Option<Did>, payload: &str| ActionContext {
+                what,
+                action: Some(tilo_actions::EncodedAction {
+                    type_id: "sheets.type".into(),
+                    payload: payload.as_bytes().to_vec(),
+                }),
+                ..ActionContext::for_resource("r1", "sheets.workbook", "Plan").in_gesture(Some(gesture))
+            };
+            let verb = ActionKey::new("sheets", "sheets.workbook", "type-text");
+            for what in [None, Some(Did::Verb(tilo_actions::VerbCall::new(verb, [])))] {
+                let first = typed(what.clone(), r#""a""#);
+                let next = typed(what, r#""ab""#).continuation_of(&first).unwrap();
+                assert_eq!(claim(&next), claim(&first.change_message().unwrap()), "{next}");
+            }
+            assert_eq!(claim("tilo.cont/3 g nonsense 0 1 x"), Err(ClaimError::Unnamed));
         }
     }
 

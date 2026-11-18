@@ -547,7 +547,7 @@ impl Shared {
                         "" => asked,
                         named => named,
                     };
-                    let made = feed.make_agent(Some(workspace), name, "", None)?;
+                    let made = feed.make_agent(Some(workspace), name, "")?;
                     resolved.push(Recipient::found(RecipientKind::Agent, made, name));
                 }
                 RecipientKind::Agent

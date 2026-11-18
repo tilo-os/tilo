@@ -112,7 +112,7 @@ fn shape<'v>(value: &'v Value, keys: &[&str], protocols: &[(&str, i64)]) -> io::
     Ok(value)
 }
 
-/// `root` and `owner` are test seams only; the installed entry points always use
+/// `root` and `owner` are test hooks only; the installed entry points always use
 /// [`Store::installed`].
 pub struct Store {
     root: PathBuf,
@@ -424,7 +424,7 @@ fn native_proof(native: &Value, capability: &Value, facts: &AppsArtifacts) -> io
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear contract: each step gates the next"
+    reason = "one linear contract: each step checks the next"
 )]
 pub fn applications(store: &Store, check: bool, runner: &mut Runner<'_>) -> io::Result<Value> {
     let before = apps_artifacts(store)?;

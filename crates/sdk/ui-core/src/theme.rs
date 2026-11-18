@@ -407,7 +407,7 @@ pub fn drawn(mode: Option<&str>, host: Option<bool>) -> Drawn {
     }
 }
 
-/// `settings` with the host's light or dark standing in for an appearance the person left open —
+/// `settings` with the host's light or dark in place of an appearance the person left open —
 /// no mode, or Automatic — so the theme layers below draw what [`drawn`] says is drawn. A host
 /// naming no scheme leaves the document as it is, so Automatic keeps its schedule and no mode is
 /// written on the person's behalf.
@@ -441,20 +441,20 @@ fn with_host_scheme(
 /// toolkit clock.
 #[must_use]
 pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
-    use chrono::{Datelike, Offset, Timelike};
-    // Through the epoch offset: chrono converts only std's clock type, which is not the
-    // toolkit clock in the browser.
-    let since_ms = crate::time::unix_now_ms();
-    let local = chrono::DateTime::from_timestamp(
-        i64::try_from(since_ms / 1000).unwrap_or(i64::MAX),
-        u32::try_from(since_ms % 1000).unwrap_or(0) * 1_000_000,
-    )
-    .unwrap_or_default()
-    .with_timezone(&chrono::Local);
+    // Through the epoch offset: std's clock type is not the toolkit clock in the browser.
+    let since_ms = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
+    let local = jiff::Timestamp::from_millisecond(since_ms)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system());
     settings_store::day_schedule::LocalMoment {
-        day_of_year: u16::try_from(local.ordinal()).unwrap_or(1),
-        minute_of_day: u16::try_from(local.hour() * 60 + local.minute()).unwrap_or(0),
-        utc_offset_minutes: local.offset().fix().local_minus_utc() / 60,
+        day_of_year: u16::try_from(local.day_of_year()).unwrap_or(1),
+        minute_of_day: u16::try_from(
+            i32::from(local.hour())
+                .saturating_mul(60)
+                .saturating_add(i32::from(local.minute())),
+        )
+        .unwrap_or(0),
+        utc_offset_minutes: local.offset().seconds().div_euclid(60),
     }
 }
 
@@ -586,7 +586,7 @@ impl Theme {
         }
     }
 
-    /// This theme as seen by a widget standing on `ground`: a region tier, a raised well,
+    /// This theme as seen by a widget on `ground`: a region tier, a raised well,
     /// a document's paper. `surfaces.raised` stays off the ground
     /// ([`crate::tokens::Colors::raised_on`]), so a control's face never sinks into a
     /// lighter panel.
@@ -714,11 +714,11 @@ impl Theme {
     }
 
     /// [`Theme::configured`] from an explicit settings document, with the host's own light or dark
-    /// ([`host_scheme`]) standing in for an appearance the person left open.
+    /// ([`host_scheme`]) in place of an appearance the person left open.
     pub fn configured_from(settings: &serde_json::Map<String, serde_json::Value>) -> Self {
         let text = serde_json::Value::Object(with_host_scheme(settings.clone(), host_scheme()))
             .to_string();
-        let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
+        let reduce_motion_override = crate::process::environment().accessibility.reduce_motion;
         Self::configured_from_text(&text, reduce_motion_override)
     }
 
@@ -749,7 +749,7 @@ impl Theme {
 
     /// The accessibility comforts the person chose in this process's settings document
     /// (the installed source, else the settings file), with what the launcher requested
-    /// ([`crate::host::environment()`]) on top: high contrast, text size, interface scale
+    /// ([`crate::process::environment()`]) on top: high contrast, text size, interface scale
     /// and reduced motion.
     #[must_use]
     pub fn configured_accessibility() -> crate::theme_layers::AccessibilityLayer {
@@ -761,7 +761,7 @@ impl Theme {
     #[must_use]
     pub fn configured_comforts() -> ConfiguredComforts {
         let document = serde_json::Value::Object(settings_store::load());
-        Self::comforts_in(&document, crate::host::environment().accessibility)
+        Self::comforts_in(&document, crate::process::environment().accessibility)
     }
 
     /// [`Self::configured_comforts`] of an explicit settings document and launch request.
@@ -772,7 +772,7 @@ impl Theme {
     #[must_use]
     pub fn comforts_in(
         document: &serde_json::Value,
-        requested: crate::host::AccessibilityInputs,
+        requested: crate::process::AccessibilityInputs,
     ) -> ConfiguredComforts {
         let stack = crate::theme_layers::ThemeLayerStack::from_settings_json(
             &document.to_string(),
@@ -2192,7 +2192,7 @@ mod configured_theme {
         // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`: the shell
         // re-reads its theme through this API on every settings change, so flipping the
         // switch must flip the chrome's motion.
-        if !crate::host::environment().accessibility.reduce_motion {
+        if !crate::process::environment().accessibility.reduce_motion {
             let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":true}}"#);
             assert!(Theme::configured_from(&settings).reduce_motion);
             let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":false}}"#);

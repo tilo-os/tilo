@@ -99,7 +99,7 @@ function runDeadline({timers, clock}) {
 
 const frame = n => ({timestamp: BigInt(n * 960), duration: 960, payload: Uint8Array.of(n)});
 
-test('a joined call publishes its microphone on the plane and plays what the call publishes there', async () => {
+test('a joined call publishes its microphone on the live session and plays what the call publishes there', async () => {
   const f = fixture();
   const states = [];
   f.call.subscribe(state => { if (states.at(-1) !== state.phase) states.push(state.phase); });
@@ -126,7 +126,7 @@ test('a joined call publishes its microphone on the plane and plays what the cal
   assert.deepEqual(states, ['joining', 'live']);
 });
 
-test('a frame a plane announces again plays once, and a stream that started over plays', async () => {
+test('a frame a live session announces again plays once, and a stream that started over plays', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();
@@ -137,13 +137,13 @@ test('a frame a plane announces again plays once, and a stream that started over
   for (const sequence of [5, 6, 7]) f.event(heard(sequence));
   assert.deepEqual(played(), [5, 6, 7]);
   f.event(heard(7));
-  assert.deepEqual(played(), [5, 6, 7], 'a plane joined again announces its stream\'s current object once more');
+  assert.deepEqual(played(), [5, 6, 7], 'a live session joined again announces its stream\'s current object once more');
   f.event(heard(0));
   f.event(heard(1));
   assert.deepEqual(played(), [5, 6, 7, 0, 1], 'a sender whose stream started over plays');
 });
 
-test('a deafened page hears nothing of what the plane publishes', async () => {
+test('a deafened page hears nothing of what the live session publishes', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();
@@ -174,7 +174,7 @@ test('muting stops the microphone; a call that may not publish mutes and says so
   assert.equal(f.call.state.canPublish, false);
 });
 
-test('a picture the plane delivers is admitted as it comes, with nothing polling for it', async () => {
+test('a picture the live session delivers is admitted as it comes, with nothing polling for it', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();
@@ -191,14 +191,14 @@ test('a picture the plane delivers is admitted as it comes, with nothing polling
   assert.equal(again.pictures.length, 0, 'each picture is taken once');
 });
 
-test('what the app shows is told to the plane, and a device starting to show a source is asked for a keyframe', async () => {
+test('what the app shows is told to the live session, and a device starting to show a source is asked for a keyframe', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
   f.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
-  assert.deepEqual(f.showing.at(-1), [{device: BOB, camera: ['mid'], screen: []}], 'the plane reads exactly those layers');
+  assert.deepEqual(f.showing.at(-1), [{device: BOB, camera: ['mid'], screen: []}], 'the live session reads exactly those layers');
   assert.deepEqual(f.keyframes, [[BOB, 'camera']], 'nothing before a keyframe decodes');
   f.event({kind: 'picture', from: BOB, source: 'camera', keyframe: true, object: '0500'});
   f.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
@@ -207,7 +207,7 @@ test('what the app shows is told to the plane, and a device starting to show a s
   assert.deepEqual(f.showing.at(-1), [], 'a device the app no longer draws is unread');
 });
 
-test('the plane\'s demand says which layers to encode, and which sources start over', async () => {
+test('the live session\'s demand says which layers to encode, and which sources start over', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();
@@ -365,7 +365,7 @@ test('a microphone that fails at start ends the participation instead of claimin
   assert.ok(f.sent.some(([what]) => what === 'leave'));
 });
 
-test('peer.voice takes the page\'s planes through the wasm peer and lists its calls', async () => {
+test('peer.voice takes the page\'s live sessions through the wasm peer and lists its calls', async () => {
   const played = [];
   const pictures = [];
   const showing = [];
@@ -403,7 +403,7 @@ test('peer.voice takes the page\'s planes through the wasm peer and lists its ca
   onPicture({source: 'camera', layer: 'mid', sequence: 1, keyframe: true, timestampUs: 0, width: 2, height: 2, payload: Uint8Array.of(7)});
   assert.deepEqual(pictures, [['the-workspace', [{source: 'camera', layer: 'mid', sequence: 1, keyframe: true, timestampUs: 0, width: 2, height: 2, payload: '07'}]]]);
   // The microphone's frames go out as the wasm peer's `callAudio`, and what
-  // the plane publishes for the call is played as its `heard` events arrive.
+  // the live session publishes for the call is played as its `heard` events arrive.
   await voice.call.setMuted(false);
   onFrame({timestamp: 960n, duration: 960, payload: Uint8Array.of(1)});
   assert.deepEqual(wasm.published, [['the-workspace', [{timestamp48k: 960, opus: '01'}]]]);

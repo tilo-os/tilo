@@ -390,14 +390,14 @@ def mcp(args) -> int:
     command = [str(RUNTIME_HOST), "--profile", str(session.profile), "--connect"]
     if args.no_usage:
         os.execve(str(RUNTIME_HOST), command, env)
-    return relay(command, env, usage_dir(session) / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl")
+    return server(command, env, usage_dir(session) / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl")
 
 
 def usage_dir(session: Session) -> pathlib.Path:
     return session.root / "logs" / "usage"
 
 
-def relay(command: list, env: dict, log_path: pathlib.Path) -> int:
+def server(command: list, env: dict, log_path: pathlib.Path) -> int:
     """The endpoint on stdio, unchanged, with one line per answered request
     appended to `log_path`: what the agent read and how long it waited."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -438,7 +438,7 @@ def relay(command: list, env: dict, log_path: pathlib.Path) -> int:
 
 def log_answer(log, line: bytes, asked: dict, lock: threading.Lock) -> None:
     """Log one answer before the client reads it: a client that stops
-    right after its last answer stops the relay too."""
+    right after its last answer stops the server too."""
     try:
         message = json.loads(line)
     except json.JSONDecodeError:

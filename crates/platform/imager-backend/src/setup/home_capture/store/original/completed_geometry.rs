@@ -1,5 +1,5 @@
 //! Physical completion companion for an actual installed original-copy owner.
-//! Original record, witness and inventory bytes remain the requested geometry.
+//! Original record, proof and inventory bytes remain the requested geometry.
 use crate::setup::{
     migration_handoff::{Plan, ResolvedSource},
     prepared_setup::{AuthenticatedInstalledOriginalCopy, PlannedBtrfsResize, RetainedHomePlan},

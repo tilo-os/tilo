@@ -17,10 +17,10 @@ use super::keys::{Keys, invoke_keys};
 use super::{DocumentRoute, Needs, Outcome, Worker, Workspace};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, InvokeRequest, application_provider, application_provider_resource,
+    ActionCallError, InvokeRequest, application_provider, application_provider_resource,
     provider_workspace,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
 
 /// The chain `record` is a part of, when it is a part of one.
@@ -191,6 +191,52 @@ impl Workspace {
 }
 
 impl Worker {
+    /// In a workspace that sends its documents only once they are opened,
+    /// ask it for the chains kept beside the document `needs` names: the head
+    /// of each chain of its app that the workspace lists a part of. An app
+    /// keeps its chains (Tasks' issues, Chat's messages) in parts beside its
+    /// own document, and the workspace sends a part only to a device that
+    /// asks for its chain's head, which it answers with the newest part: the
+    /// document is handed that ([`super::catch_up::hold_parts`]). Without it
+    /// a document mounted here held its chains empty, so an agent listed,
+    /// read and acted on no issue and no message of it. Whether an answer is
+    /// still owed.
+    pub(super) fn ask_chains(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
+        let (Needs::Read { app_id, .. } | Needs::Act { app_id, .. }) = needs else {
+            return false;
+        };
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return false;
+        };
+        if !workspace.when_opened {
+            return false;
+        }
+        let Some(cluster_id) = workspace.cluster_id(workspace_id) else {
+            return false;
+        };
+        let state = workspace.state();
+        let mut heads: Vec<DocumentRoute> = Vec::new();
+        for listed in self.documents(&state, &cluster_id) {
+            if listed.app_id != app_id {
+                continue;
+            }
+            let Some(chain) = chain_of(&listed.document) else {
+                continue;
+            };
+            let head = DocumentRoute {
+                document: chain.chain_head().as_str().to_owned(),
+                ..listed
+            };
+            if !heads.contains(&head) {
+                heads.push(head);
+            }
+        }
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return false;
+        };
+        workspace.ask_routes(workspace_id, heads)
+    }
+
     /// What running `request` waits for: the record it acts on
     /// ([`invoke_keys`]), and for an open of an app, the record the open
     /// shows, which the workspace may hold and send only when asked. That is
@@ -208,7 +254,7 @@ impl Worker {
         if puts_into_the_tree(request) {
             return Keys::Record {
                 app_id: tilo_fs::tree_document::FILES_APP.to_owned(),
-                record: tilo_fs::tree_document::record(),
+                record: tilo_fs::tree_document::document_id(),
                 act: false,
             };
         }
@@ -262,13 +308,13 @@ impl Worker {
         route: &DocumentRoute,
     ) -> Result<bool, Outcome> {
         let workspace = self.workspaces.get_mut(&workspace_id).ok_or_else(|| {
-            Outcome::Rejected(ActionHostError::Unavailable {
+            Outcome::Rejected(ActionCallError::Unavailable {
                 reason: "the workspace was not joined".into(),
             })
         })?;
         // Another person's own: the host never sends it here, so nothing waits for it.
         if workspace.not_yours.contains(route) {
-            return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
         // Held, or sent by the host under the route of what it names.
         if workspace.holds(route)
@@ -283,7 +329,7 @@ impl Worker {
         // Asked for now: the same call goes through once it arrived, which the caller waits for
         // as the workspace's state rather than a reason to read.
         if workspace.ask(workspace_id, needs) {
-            return Err(Outcome::Rejected(ActionHostError::NotReady));
+            return Err(Outcome::Rejected(ActionCallError::NotReady));
         }
         Ok(false)
     }
@@ -332,7 +378,7 @@ impl Worker {
         match held.document(route) {
             Ok(saved) => Ok(Some(saved)),
             Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
-            Err(why) => Err(Outcome::Rejected(ActionHostError::Unavailable {
+            Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
                 reason: why,
             })),
         }
@@ -343,8 +389,15 @@ impl Worker {
 /// tree ([`super::tree_put`]).
 fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     let target = &request.target;
-    provider_workspace(&target.provider).is_some()
-        && target.address.action == APPLICATION_OPEN_ACTION
+    if provider_workspace(&target.provider).is_none() {
+        return false;
+    }
+    // One of Files' verbs by a path in the workspace reads the tree and writes it, as a put
+    // does, and one of its reads by a path reads it.
+    if super::tree_put::acts_on_tree(target) {
+        return true;
+    }
+    target.address.action == APPLICATION_OPEN_ACTION
         && target
             .address
             .resource
@@ -360,7 +413,7 @@ mod tests {
     use crate::workspace_actions::{GaveUp, Needs, sealed_for};
     use std::collections::BTreeSet;
     use tilo_peer_state::document_frame::DocumentRoute;
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
 

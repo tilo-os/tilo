@@ -29,9 +29,9 @@ use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_network_actor::HostIdentity;
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_network_actor::DeviceIdentity;
 use tilo_service::{Answer, Question, Questions};
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::{DeviceId, FabricStamp};
@@ -76,13 +76,13 @@ fn person() -> Person {
         .set(FILE_SECRETS_ENV, "1");
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
+    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
         .expect("the identity registry")
         .load_reconciled_cached()
         .expect("the registry reads");
@@ -99,7 +99,7 @@ fn person() -> Person {
             now.saturating_add(3_600_000_000_000),
         )
         .expect("this device may enroll another of the person's");
-    let phone_key = test_relay::signing_key(0x52);
+    let phone_key = test_server::signing_key(0x52);
     let phone_cert = store
         .complete_enrollment(
             &profile.id,
@@ -198,7 +198,7 @@ impl Devices {
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
                     fabric: None,
-                    relays: test_relay::loopback(),
+                    relays: test_server::loopback(),
                     lan: None,
                 },
                 None,
@@ -213,7 +213,7 @@ impl Devices {
         let phone = Rc::new(
             Client::start(
                 Entry {
-                    identity: Some(HostIdentity::kept(
+                    identity: Some(DeviceIdentity::kept(
                         person.phone_cert.clone(),
                         person.phone_key.clone(),
                     )),
@@ -222,7 +222,7 @@ impl Devices {
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
                     fabric: None,
-                    relays: test_relay::loopback(),
+                    relays: test_server::loopback(),
                     lan: None,
                 },
                 None,
@@ -666,7 +666,7 @@ fn served<T: serde::de::DeserializeOwned>(
 
 /// The shell's fleet key: the sibling the boot is answered by.
 fn shell_key() -> [u8; 32] {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let key = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
     key.verifying_key().to_bytes()
 }

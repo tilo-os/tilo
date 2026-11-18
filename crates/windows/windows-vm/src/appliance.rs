@@ -203,7 +203,7 @@ where
     C: CapabilityBroker,
     L: RemoteAppLauncher,
 {
-    /// Returns the provisioned state which gates normal application launches.
+    /// Returns the provisioned state which checks normal application launches.
     ///
     /// This deliberately does not boot the guest or attach a viewer.  The
     /// Windows appliance is a fallback resource, so a manager refresh must
@@ -274,6 +274,7 @@ where
     /// It cannot silently normalize to the administrator recovery desktop.
     pub fn present_installation(
         &self,
+        workspace_id: &str,
         prepared: &PreparedInstallation,
     ) -> Result<RemoteAppProcess, LaunchError> {
         if prepared.presentation.presentation != crate::ApplicationPresentation::AppFocusedSpice
@@ -283,7 +284,11 @@ where
         }
         let lease_id = format!("install-{}", prepared.operation_id.as_str());
         self.launcher
-            .launch(&prepared.presentation, &BrokeredLaunch::deny_all(lease_id))
+            .launch(
+                workspace_id,
+                &prepared.presentation,
+                &BrokeredLaunch::deny_all(lease_id),
+            )
             .map_err(Into::into)
     }
 
@@ -343,6 +348,7 @@ where
 
     pub fn present_uninstallation(
         &self,
+        workspace_id: &str,
         prepared: &PreparedUninstallation,
     ) -> Result<RemoteAppProcess, LaunchError> {
         if prepared.presentation.presentation != crate::ApplicationPresentation::AppFocusedSpice
@@ -352,7 +358,11 @@ where
         }
         let lease_id = format!("uninstall-{}", prepared.operation_id.as_str());
         self.launcher
-            .launch(&prepared.presentation, &BrokeredLaunch::deny_all(lease_id))
+            .launch(
+                workspace_id,
+                &prepared.presentation,
+                &BrokeredLaunch::deny_all(lease_id),
+            )
             .map_err(Into::into)
     }
 
@@ -418,7 +428,9 @@ where
             if guest.remote_app_alias != application.remote_app_alias {
                 return Err(LaunchError::PublicationChanged);
             }
-            let process = self.launcher.launch(&guest, &brokered)?;
+            let process = self
+                .launcher
+                .launch(&request.workspace_id, &guest, &brokered)?;
             Ok(RunningRemoteApp {
                 application_id: request.application_id.clone(),
                 workspace_id: request.workspace_id.clone(),
@@ -713,6 +725,7 @@ mod tests {
     impl RemoteAppLauncher for Launcher {
         fn launch(
             &self,
+            _: &str,
             _: &GuestLaunch,
             _: &BrokeredLaunch,
         ) -> Result<RemoteAppProcess, RemoteAppError> {

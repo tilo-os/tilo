@@ -12,15 +12,15 @@ use launcher::capabilities::CapabilityPlan;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    AudioProxyLease, VmAvailability, VmDelegate, VmInstallCandidate, VmInstallation,
-    VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPresentation,
-    VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,
-    VmSharedSessionLeaseSummary,
+    AudioProxyLease, LaunchDisplay, LaunchDisplays, VmAvailability, VmDelegate, VmInstallCandidate,
+    VmInstallation, VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory,
+    VmPresentation, VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor,
+    VmSharedSessionGrantKind, VmSharedSessionLeaseSummary,
 };
 
 /// Authoritative host-side view of the one shared Windows user/session.
@@ -143,7 +143,7 @@ impl VmSharedSessionTracker {
     }
 }
 
-/// Capability broker decorator which records only resources the underlying
+/// Capability broker decorator which notes only resources the underlying
 /// canonical broker actually materialized. Revocation removes the summary
 /// before tearing down the resources, so UI state cannot linger after access.
 #[derive(Debug)]
@@ -263,8 +263,8 @@ impl VmPortalAuthority for PortalRailPortalAuthority {
 /// Live projection of canonical Tilo grants which have an exact RAIL
 /// transport and revocation boundary today.
 ///
-/// Clipboard is represented by the ordinary `Device("clipboard")` grant and
-/// microphone by `Device("microphone")`. Files are deliberately absent: a
+/// Clipboard is represented by the ordinary `Device(DeviceCap::Clipboard)` grant
+/// and microphone by `Device(DeviceCap::Microphone)`. Files are deliberately absent: a
 /// filesystem path is not an opaque portal document handle. `NetHost` values
 /// are preserved verbatim for the lease relay; this does not attach a NAT NIC
 /// or convert a filtered grant into unrestricted guest networking.
@@ -289,9 +289,7 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
         _workspace_id: &str,
         capabilities: &CapabilityPlan,
     ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError> {
-        let device_granted = |name: &str| {
-            self.native_rail && capabilities.devices.iter().any(|device| device == name)
-        };
+        let device_granted = |device| self.native_rail && capabilities.devices.contains(&device);
         Ok(windows_vm::VmLaunchGrants {
             network_hosts: if self.native_rail {
                 capabilities.net_hosts.clone()
@@ -299,129 +297,11 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
                 Vec::new()
             },
             network: self.native_rail && !capabilities.net_hosts.is_empty(),
-            clipboard: device_granted("clipboard"),
-            microphone: device_granted("microphone"),
+            clipboard: device_granted(collab_types::caps::DeviceCap::Clipboard),
+            microphone: device_granted(collab_types::caps::DeviceCap::Microphone),
             portal_documents: Vec::new(),
         })
     }
-}
-
-/// Materialises channel-only RAIL resources from the canonical projection.
-/// The microphone's actual private `PipeWire` source is created by
-/// [`AudioIsolatedRailLauncher`]; this lease controls whether that source and
-/// the `FreeRDP` redirectors exist and ensures the shared-session tracker sees
-/// only the materialised result.
-pub struct CanonicalRailCapabilityBroker {
-    next: AtomicU64,
-    /// Every launch receives a distinct host listener/token/policy. This
-    /// prevents the host relay from silently broadening its requested policy,
-    /// but does not make programs in the persistent shared Windows user
-    /// session mutually distrustful: active redirects are an effective union
-    /// within that guest session.
-    network_leases: Mutex<BTreeMap<String, windows_vm::GuestNetworkProxy>>,
-}
-
-impl Default for CanonicalRailCapabilityBroker {
-    fn default() -> Self {
-        Self {
-            next: AtomicU64::new(0),
-            network_leases: Mutex::new(BTreeMap::new()),
-        }
-    }
-}
-
-impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
-    fn materialize(
-        &self,
-        request: &windows_vm::LaunchRequest,
-    ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
-        if request.grants.network == request.grants.network_hosts.is_empty()
-            || !request.grants.portal_documents.is_empty()
-        {
-            return Err(windows_vm::LaunchError::CapabilityBroker(
-                "the Windows appliance received a grant without an exact live broker".to_string(),
-            ));
-        }
-        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        let lease_id = format!("rail-{}-{sequence}", std::process::id());
-        let (network_proxy, network_binding) = if request.grants.network {
-            let mut leases = self.network_leases.lock().map_err(|_| {
-                windows_vm::LaunchError::CapabilityBroker(
-                    "Windows network lease state is unavailable".to_string(),
-                )
-            })?;
-            let proxy = windows_vm::GuestNetworkProxy::start(&request.grants.network_hosts)
-                .map_err(|error| windows_vm::LaunchError::CapabilityBroker(error.to_string()))?;
-            let binding = proxy.binding().clone();
-            if leases.insert(lease_id.clone(), proxy).is_some() {
-                return Err(windows_vm::LaunchError::CapabilityBroker(
-                    "Windows network lease identifier was reused".to_string(),
-                ));
-            }
-            drop(leases);
-            (true, Some(binding))
-        } else {
-            (false, None)
-        };
-        Ok(windows_vm::BrokeredLaunch {
-            lease_id,
-            network: network_proxy,
-            network_binding,
-            clipboard: request.grants.clipboard,
-            microphone: request.grants.microphone,
-            shares: Vec::new(),
-        })
-    }
-
-    fn revoke(&self, lease_id: &str) {
-        if let Ok(mut leases) = self.network_leases.lock() {
-            // Dropping a lease proxy wakes the listener and terminates all
-            // established TCP tunnels belonging to this lease only.
-            leases.remove(lease_id);
-        }
-    }
-}
-
-/// Safe authority for the live app-focused SPICE presentation. `RemoteApp`
-/// still works with playback, but receives no files, clipboard, microphone,
-/// or egress. It remains the required authority until a probed local RAIL
-/// surface and canonical broker can carry and revoke those redirects.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DenyAllVmPortalAuthority;
-
-impl VmPortalAuthority for DenyAllVmPortalAuthority {
-    fn grants_for(
-        &self,
-        _app_id: &str,
-        _workspace_id: &str,
-        _capabilities: &CapabilityPlan,
-    ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError> {
-        Ok(windows_vm::VmLaunchGrants::default())
-    }
-}
-
-/// Lease broker for the live app-focused SPICE fallback. That presentation
-/// cannot carry RDP redirectors, so it materializes an explicit empty lease
-/// instead of pretending requested host resources reached Windows. A future
-/// RAIL-only broker must materialise and revoke canonical Tilo grants.
-#[derive(Debug, Default)]
-pub struct DenyAllVmCapabilityBroker {
-    next: AtomicU64,
-}
-
-impl windows_vm::CapabilityBroker for DenyAllVmCapabilityBroker {
-    fn materialize(
-        &self,
-        _request: &windows_vm::LaunchRequest,
-    ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
-        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        Ok(windows_vm::BrokeredLaunch::deny_all(format!(
-            "spice-{}-{sequence}",
-            std::process::id()
-        )))
-    }
-
-    fn revoke(&self, _lease_id: &str) {}
 }
 
 /// App-focused SPICE presentation constrained to a per-launch private audio
@@ -429,31 +309,108 @@ impl windows_vm::CapabilityBroker for DenyAllVmCapabilityBroker {
 /// clipboard, file shares, and egress remain unavailable until a probed local
 /// RAIL surface can carry grants from a canonical Tilo broker.
 pub struct AudioIsolatedSpiceLauncher<R> {
-    runner: R,
-    root: PathBuf,
-    next: AtomicU64,
-    uid: u32,
+    presenter: Presenter<R>,
 }
 
 /// Native RAIL presentation through Tilo's rootless Xwayland bridge and a
 /// private audio graph. Playback is always present; the proxy publishes a
 /// source only when the brokered shared-session lease includes microphone.
 pub struct AudioIsolatedRailLauncher<R> {
-    runner: R,
-    root: PathBuf,
-    next: AtomicU64,
-    uid: u32,
+    presenter: Presenter<R>,
+    binary: PathBuf,
 }
 
-impl<R> AudioIsolatedRailLauncher<R> {
-    #[must_use]
-    pub fn new(runner: R) -> Self {
-        let uid = rustix::process::geteuid().as_raw();
+/// The wrapper that presents a guest application through `FreeRDP` RAIL.
+pub const RAIL_PRESENTER: &str = "/usr/libexec/tilo-windows-rail";
+
+/// What both presentations share: the command runner, the displays each
+/// launch is given, and the private audio graph each launch gets beside it.
+struct Presenter<R> {
+    runner: R,
+    displays: Arc<dyn LaunchDisplays>,
+    /// Names each launch's audio directory apart from the other presentation's.
+    kind: &'static str,
+    next: AtomicU64,
+}
+
+impl<R: windows_vm::CommandRunner> Presenter<R> {
+    fn new(runner: R, displays: Arc<dyn LaunchDisplays>, kind: &'static str) -> Self {
         Self {
             runner,
-            root: PathBuf::from(format!("/run/user/{uid}/tilo-windows-vm")),
+            displays,
+            kind,
             next: AtomicU64::new(0),
-            uid,
+        }
+    }
+
+    /// Present `command` on the display of a launch into `workspace_id`, with
+    /// a private audio graph that carries a source only for `microphone`.
+    fn present(
+        &self,
+        workspace_id: &str,
+        microphone: bool,
+        command: windows_vm::CommandRequest,
+        failed: fn(Option<i32>, String) -> windows_vm::RemoteAppError,
+    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        let display = self
+            .displays
+            .display_for(workspace_id)
+            .map_err(|error| failed(None, error))?;
+        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
+        let lease = AudioProxyLease::start(
+            display.runtime_dir.join("tilo-windows-vm").join(format!(
+                "{}-{}-{sequence}",
+                self.kind,
+                std::process::id()
+            )),
+            display.uid,
+            microphone,
+        )
+        .map_err(|error| failed(None, format!("private audio setup failed: {error}")))?;
+        let native = lease.pipewire_socket();
+        let audio_runtime = native.parent().ok_or_else(|| {
+            failed(
+                None,
+                "private audio endpoint has no runtime directory".into(),
+            )
+        })?;
+        let command = on_display(command, &display, audio_runtime, &lease.pulse_socket());
+        let output = self.runner.run(&command)?;
+        if !output.success {
+            return Err(failed(
+                output.code,
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(windows_vm::RemoteAppProcess {
+            exit_code: output.code,
+        })
+    }
+}
+
+/// `command` shown on `display` (its own Wayland socket, whatever the
+/// session's process inherited) and heard through the private graph whose
+/// native socket is in `audio_runtime` and whose Pulse socket is `pulse`.
+fn on_display(
+    command: windows_vm::CommandRequest,
+    display: &LaunchDisplay,
+    audio_runtime: &Path,
+    pulse: &Path,
+) -> windows_vm::CommandRequest {
+    command
+        .env("WAYLAND_DISPLAY", &display.wayland_socket)
+        .env("XDG_RUNTIME_DIR", &display.runtime_dir)
+        .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
+        .env("PIPEWIRE_REMOTE", "pipewire-0")
+        .env("PULSE_SERVER", format!("unix:{}", pulse.display()))
+}
+
+impl<R: windows_vm::CommandRunner> AudioIsolatedRailLauncher<R> {
+    #[must_use]
+    pub fn new(runner: R, displays: Arc<dyn LaunchDisplays>) -> Self {
+        Self {
+            presenter: Presenter::new(runner, displays, "rail"),
+            binary: PathBuf::from(RAIL_PRESENTER),
         }
     }
 }
@@ -461,59 +418,27 @@ impl<R> AudioIsolatedRailLauncher<R> {
 impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedRailLauncher<R> {
     fn launch(
         &self,
+        workspace_id: &str,
         guest: &windows_vm::GuestLaunch,
         brokered: &windows_vm::BrokeredLaunch,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
-        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        let lease = AudioProxyLease::start(
-            self.root
-                .join(format!("rail-{}-{sequence}", std::process::id())),
-            self.uid,
+        let command = windows_vm::FreeRdpLauncher::new(())
+            .with_binary(&self.binary)
+            .command(guest, brokered)?;
+        self.presenter.present(
+            workspace_id,
             brokered.microphone,
+            command,
+            |code, stderr| windows_vm::RemoteAppError::FreeRdp { code, stderr },
         )
-        .map_err(|error| windows_vm::RemoteAppError::FreeRdp {
-            code: None,
-            stderr: format!("private audio setup failed: {error}"),
-        })?;
-        let audio_runtime = lease
-            .pipewire_socket()
-            .parent()
-            .ok_or_else(|| windows_vm::RemoteAppError::FreeRdp {
-                code: None,
-                stderr: "private audio endpoint has no runtime directory".to_string(),
-            })?
-            .to_path_buf();
-        let request = windows_vm::FreeRdpLauncher::new(())
-            .with_binary("/usr/libexec/tilo-windows-rail")
-            .command(guest, brokered)?
-            .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
-            .env("PIPEWIRE_REMOTE", "pipewire-0")
-            .env(
-                "PULSE_SERVER",
-                format!("unix:{}", lease.pulse_socket().display()),
-            );
-        let output = self.runner.run(&request)?;
-        if !output.success {
-            return Err(windows_vm::RemoteAppError::FreeRdp {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
-        }
-        Ok(windows_vm::RemoteAppProcess {
-            exit_code: output.code,
-        })
     }
 }
 
-impl<R> AudioIsolatedSpiceLauncher<R> {
+impl<R: windows_vm::CommandRunner> AudioIsolatedSpiceLauncher<R> {
     #[must_use]
-    pub fn new(runner: R) -> Self {
-        let uid = rustix::process::geteuid().as_raw();
+    pub fn new(runner: R, displays: Arc<dyn LaunchDisplays>) -> Self {
         Self {
-            runner,
-            root: PathBuf::from(format!("/run/user/{uid}/tilo-windows-vm")),
-            next: AtomicU64::new(0),
-            uid,
+            presenter: Presenter::new(runner, displays, "spice"),
         }
     }
 }
@@ -521,45 +446,15 @@ impl<R> AudioIsolatedSpiceLauncher<R> {
 impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedSpiceLauncher<R> {
     fn launch(
         &self,
+        workspace_id: &str,
         guest: &windows_vm::GuestLaunch,
         brokered: &windows_vm::BrokeredLaunch,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
-        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        let lease = AudioProxyLease::start(
-            self.root.join(format!("{}-{sequence}", std::process::id())),
-            self.uid,
-            false,
-        )
-        .map_err(|error| windows_vm::RemoteAppError::Spice {
-            code: None,
-            stderr: format!("private audio setup failed: {error}"),
-        })?;
-        let audio_runtime = lease
-            .pipewire_socket()
-            .parent()
-            .ok_or_else(|| windows_vm::RemoteAppError::Spice {
-                code: None,
-                stderr: "private audio endpoint has no runtime directory".to_string(),
-            })?
-            .to_path_buf();
-        let request = windows_vm::AppFocusedSpiceLauncher::new(())
-            .command(guest, brokered)?
-            .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
-            .env("PIPEWIRE_REMOTE", "pipewire-0")
-            .env(
-                "PULSE_SERVER",
-                format!("unix:{}", lease.pulse_socket().display()),
-            );
-        let output = self.runner.run(&request)?;
-        if !output.success {
-            return Err(windows_vm::RemoteAppError::Spice {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
-        }
-        Ok(windows_vm::RemoteAppProcess {
-            exit_code: output.code,
-        })
+        let command = windows_vm::AppFocusedSpiceLauncher::new(()).command(guest, brokered)?;
+        self.presenter
+            .present(workspace_id, false, command, |code, stderr| {
+                windows_vm::RemoteAppError::Spice { code, stderr }
+            })
     }
 }
 
@@ -578,7 +473,7 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
     /// verifies the guest's actual response before a viewer is started.
     presentation: windows_vm::ApplicationPresentation,
     shared_session: VmSharedSessionTracker,
-    launch_gate: Mutex<()>,
+    launch_lock: Mutex<()>,
     installer: Mutex<Option<ActiveVmInstallation>>,
     uninstaller: Mutex<Option<ActiveVmUninstallation>>,
 }
@@ -680,7 +575,7 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
             portal,
             presentation,
             shared_session,
-            launch_gate: Mutex::new(()),
+            launch_lock: Mutex::new(()),
             installer: Mutex::new(None),
             uninstaller: Mutex::new(None),
         }
@@ -765,9 +660,9 @@ where
         input: VmInstallerInput,
         source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         self.require_no_active_uninstallation()?;
@@ -785,7 +680,8 @@ where
         // This is intentionally blocking: setup is visible only through the
         // typed app-focused SPICE surface, never an invisible process or a
         // general Windows desktop.
-        self.appliance.present_installation(&prepared)?;
+        self.appliance
+            .present_installation(workspace_id, &prepared)?;
         let guest_status = self.appliance.installation_status(&operation)?;
         let catalog = self.appliance.catalog()?;
         let status = vm_installation_from_guest(&operation, &guest_status);
@@ -971,9 +867,9 @@ where
         // Serialise the start of uninstall with every launch/install check.
         // Once this transaction is recorded, those paths continue to reject
         // until guest status reaches a terminal state.
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         let uninstaller = self.uninstaller.lock().map_err(|_| {
@@ -1006,7 +902,8 @@ where
         let prepared = self.appliance.begin_uninstallation(&application.id)?;
         // The uninstaller, like setup, is exposed only as a guest-authenticated
         // app-focused SPICE surface with deny-all brokered capabilities.
-        self.appliance.present_uninstallation(&prepared)?;
+        self.appliance
+            .present_uninstallation(workspace_id, &prepared)?;
         let guest_status = self
             .appliance
             .uninstallation_status(&prepared.operation_id)?;
@@ -1030,9 +927,9 @@ where
         &self,
         request: VmRouteRequest<'_>,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         self.require_no_active_uninstallation()?;
@@ -1061,9 +958,9 @@ where
         source: File,
         access: windows_vm::PortalDocumentAccess,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         self.require_no_active_uninstallation()?;
@@ -1218,16 +1115,14 @@ fn validate_portal_projection(
     if grants.microphone
         && !capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone")
+            .contains(&collab_types::caps::DeviceCap::Microphone)
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("microphone"));
     }
     if grants.clipboard
         && !capabilities
             .devices
-            .iter()
-            .any(|device| device == "clipboard")
+            .contains(&collab_types::caps::DeviceCap::Clipboard)
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("clipboard"));
     }
@@ -1241,21 +1136,13 @@ mod tests {
     #[test]
     fn portal_projections_are_denied_by_default_and_exact_for_leases() {
         {
-            let grants = DenyAllVmPortalAuthority
-                .grants_for("app", "workspace", &CapabilityPlan::empty())
-                .unwrap();
-            assert!(!grants.network);
-            assert!(!grants.clipboard);
-            assert!(!grants.microphone);
-            assert!(grants.portal_documents.is_empty());
-        }
-        {
-            use windows_vm::CapabilityBroker as _;
-
             let authority =
                 CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::NativeRail);
             let capabilities = CapabilityPlan {
-                devices: vec!["clipboard".to_string(), "microphone".to_string()],
+                devices: vec![
+                    collab_types::caps::DeviceCap::Clipboard,
+                    collab_types::caps::DeviceCap::Microphone,
+                ],
                 allow_network: true,
                 net_hosts: vec!["example.test".to_string()],
                 ro_paths: vec!["/tmp/document".into()],
@@ -1268,39 +1155,6 @@ mod tests {
             assert!(grants.network);
             assert_eq!(grants.network_hosts, vec!["example.test"]);
             assert!(grants.portal_documents.is_empty());
-
-            // The actual host-only address belongs to libvirt, not a unit test
-            // process. Exercise the non-network portions here; GuestNetworkProxy
-            // has its own loopback listener tests and production fails closed if
-            // the dedicated address is not available.
-            let grants = windows_vm::VmLaunchGrants {
-                network: false,
-                network_hosts: Vec::new(),
-                ..grants
-            };
-            let lease = CanonicalRailCapabilityBroker::default()
-                .materialize(&windows_vm::LaunchRequest {
-                    workspace_id: "workspace".to_string(),
-                    application_id: "published.app".to_string(),
-                    grants,
-                })
-                .unwrap();
-            assert!(lease.clipboard && lease.microphone);
-            assert!(!lease.network && lease.shares.is_empty());
-        }
-        {
-            use windows_vm::CapabilityBroker as _;
-            let broker = DenyAllVmCapabilityBroker::default();
-            let lease = broker
-                .materialize(&windows_vm::LaunchRequest {
-                    workspace_id: "workspace".to_string(),
-                    application_id: "published.app".to_string(),
-                    grants: windows_vm::VmLaunchGrants::default(),
-                })
-                .unwrap();
-            lease.validate().unwrap();
-            assert!(!lease.network && !lease.clipboard && !lease.microphone);
-            assert!(lease.shares.is_empty());
         }
         {
             let result = validate_portal_projection(
@@ -1493,5 +1347,75 @@ mod tests {
             assert_eq!(failed.exit_code, Some(1));
             assert!(failed.detail.contains("retry"));
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use windows_vm::CommandRunner as _;
+
+    use super::*;
+
+    /// The rail wrapper is given the launch's display, not whatever display the session's own
+    /// process inherited: a stand-in for it reports the display it was started on.
+    #[test]
+    fn the_rail_presentation_shows_on_the_launch_display() {
+        let directory = tempfile::tempdir().unwrap();
+        let seen = directory.path().join("seen");
+        let stand_in = directory.path().join("tilo-windows-rail");
+        std::fs::write(
+            &stand_in,
+            format!(
+                "#!/bin/sh\nprintf '%s %s' \"$WAYLAND_DISPLAY\" \"$PULSE_SERVER\" > {}\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &stand_in,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let display = LaunchDisplay {
+            uid: 1000,
+            runtime_dir: directory.path().to_path_buf(),
+            wayland_socket: directory.path().join("wayland-5"),
+            render_node: PathBuf::from("/dev/dri/renderD128"),
+        };
+        let guest = windows_vm::GuestLaunch {
+            endpoint: windows_vm::RdpEndpoint {
+                address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
+                username: "tilo-remoteapp".to_string(),
+                certificate_sha256: "a".repeat(64),
+            },
+            password: windows_vm::Secret::new(b"one-time-password".to_vec()),
+            remote_app_alias: "tilo-word".to_string(),
+            launch_nonce: "nonce".to_string(),
+            presentation: windows_vm::ApplicationPresentation::NativeRail,
+        };
+        let command = windows_vm::FreeRdpLauncher::new(())
+            .with_binary(&stand_in)
+            .command(&guest, &windows_vm::BrokeredLaunch::deny_all("lease"))
+            .unwrap();
+        let command = on_display(
+            command,
+            &display,
+            &directory.path().join("audio"),
+            &directory.path().join("audio/pulse/native"),
+        );
+
+        let output = windows_vm::StdCommandRunner.run(&command).unwrap();
+
+        assert!(output.success);
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            format!(
+                "{} unix:{}",
+                display.wayland_socket.display(),
+                directory.path().join("audio/pulse/native").display()
+            )
+        );
     }
 }

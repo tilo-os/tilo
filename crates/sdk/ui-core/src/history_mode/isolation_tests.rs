@@ -377,7 +377,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     driver.click_named("history-open").unwrap();
     assert!(
         emitter.borrow_mut().take().is_none(),
-        "opening History moves the exact pre-entry queued intent into host custody"
+        "opening History moves the exact pre-entry queued intent into host ownership"
     );
     let retained = driver.pending_history_controls();
     assert_eq!(retained.len(), 1);

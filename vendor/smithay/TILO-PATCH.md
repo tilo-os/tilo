@@ -325,6 +325,26 @@ Remove these once upstream separates binding a display from spawning its
 server, with a backlog deep enough for the clients waiting on one, and ends
 its server when the Wayland connection does.
 
+## A display number is held by one process, and there are enough of them
+
+Every kept launch with X11 programs takes a display of its own next to the
+compositor's, all from one machine-wide set of numbers. The lock file decided
+who held a number, and a lock left by a killed process was removed by whoever
+found it: two processes finding it at once both removed it and both took the
+display, and the one that then failed to bind the abstract socket removed the
+other's lock and socket file as it gave up, leaving a display that no client
+reached through `/tmp/.X11-unix`. Upstream also stopped at display 32.
+
+- `src/xwayland/x11_sockets.rs`: on Linux a number is first taken by binding
+  its abstract socket, which is atomic between processes and freed by the
+  kernel with the last descriptor; `X11Lock` keeps a descriptor of it and
+  removes the files before letting go. The lock file is written whole under a
+  name of the process's own and linked into place, and a lock whose process is
+  gone is replaced in one rename. The search runs over every number whose TCP
+  port exists (`0..59536`) instead of `0..33`.
+
+Remove this once upstream reserves display numbers atomically.
+
 ## Shared memory in every 10-bit and half-float format
 
 `Xrgb2101010`, `Argb2101010`, `Xrgb16161616f` and `Argb16161616f` had no way
@@ -417,3 +437,53 @@ tag across a restart of the desktop. `src/wayland/xdg_toplevel_tag.rs` stores th
 its own field.
 
 Remove this once upstream stores the description apart.
+
+## A dma-buf plane that cannot be sized is refused
+
+`zwp_linux_buffer_params_v1` checked a plane's offset and stride against its size only when the
+descriptor could be sought; a pipe or a socket passed unchecked, and a software renderer (Mesa's
+on a machine with no GPU) crashed mapping it. Every dma-buf supports seeking to its end, so
+`src/wayland/dmabuf/mod.rs` now posts `out_of_bounds` for a plane that cannot be sized.
+
+Remove this once upstream refuses such planes.
+
+## A tablet tool reports its hardware identity whole
+
+`zwp_tablet_tool_v2.hardware_serial` and `hardware_id_wacom` carry a 64-bit value as two uint32
+words, `hi` and `lo`. `src/wayland/tablet_manager/tablet_tool.rs` sent bits 16-47 as `hi`, so
+every identity whose upper half is not zero reached a client truncated and a client that
+compares the value it read against the tool it knows saw a different pen.
+
+Remove this once upstream sends the high word from bit 32.
+## An output's description can be set
+
+`Output::new` derives the description clients read from `xdg-output` (make, model and name) and
+there was no setter. A desktop that knows a display by another name, and a proxy that repeats
+what that desktop said (the app keeper), could not pass it on. `src/output.rs`
+`Output::set_description`, with `src/wayland/output/mod.rs` and `src/wayland/output/xdg.rs`,
+changes it and tells every `wl_output` (version 4 up) and `xdg-output` (version 2 up) instance,
+`wl_output.done` last.
+
+Remove this once upstream lets a compositor name an output's description.
+## A drag does not keep the display alive
+
+`DnDGrab` held a strong `DisplayHandle`, and a compositor holds the grab from its seat, so a
+compositor dropped while a client's drag was open kept its display and every client socket
+alive. A desktop restarts in place by dropping the compositor, and the app keeper learns that its
+desktop went away from that socket closing, so nothing may outlive the drop.
+`src/wayland/selection/data_device/dnd_grab.rs` holds a `WeakHandle` and upgrades it while it
+sends.
+
+Remove this once upstream does not hold the display in a grab.
+## A client the compositor names may set a selection without focus
+
+`wl_data_device.set_selection` and the primary selection's are taken only from the client with
+keyboard focus (and the focus it just left). An app keeper re-asserts what its app owned on the
+desktop that went away as soon as the new desktop attaches, before any window of the app has the
+focus, so the compositor needs a way to name that client itself: `SelectionHandler::
+may_set_selection_without_focus(ty, client, serial)`, asked when the focus rule refuses, with the
+request's serial left to the compositor's meaning. Both `SetSelection` requests in
+`src/wayland/selection/data_device/device.rs` and `src/wayland/selection/primary_selection/
+device.rs` ask it. The compositor bounds the exception; the default refuses.
+
+Remove this once upstream offers a protocol by which a kept client may re-assert a selection.

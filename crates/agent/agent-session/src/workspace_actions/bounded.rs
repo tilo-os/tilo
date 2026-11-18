@@ -1,32 +1,32 @@
-//! Callers the host acts for within bounds: a person the workspace admits who
-//! is not the host's own, and an agent acting for any person, the host's own
-//! included (`tilo mcp` on a computer `tilo login` made a device of theirs).
+//! Callers this service acts for within bounds: a person the workspace admits
+//! who is not the one its device belongs to, and an agent acting for any person,
+//! that one included (`tilo mcp` on a computer `tilo login` made a device of theirs).
 //!
 //! Such a caller's record actions run in a confined replica of their own,
-//! opened as them ([`crate::ReplicaActor::Member`]): the person's standing as
+//! opened as them ([`crate::ReplicaActor::Member`]): the person's access as
 //! the workspace's policy gives it now and the sandbox its governance names,
-//! and for an agent that standing bounded as every agent's is. What that
+//! and for an agent that access bounded as every agent's is. What that
 //! replica surveys is the one answer to both what the caller's listing shows
 //! and what the host runs for them: an action it does not offer is refused,
-//! as not permitted when the record publishes it to someone else.
+//! as not permitted when the document publishes it to someone else.
 //!
 //! Nobody acting for a person confirms by their own word, and the host does
 //! not take a person's word from a device that may be their agent: where an
 //! action asks first, the host puts it to the person on their own devices
 //! ([`WorkspaceDocumentsLink::ask_person`]) and runs it on their answer, which
 //! it keeps as a token bound to that one invocation, its target and its
-//! arguments ([`Witnesses`]). A confirmation the host did not issue for the
+//! arguments ([`Approvals`]). A confirmation the host did not issue for the
 //! invocation is refused.
 //!
 //! Before what such an action changed is saved, the host reads the caller's
-//! standing again and checks every field the change writes against it
+//! permissions again and checks every field the change writes against them
 //! ([`refused_writes`]): a commenter's change outside comments and reactions,
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionHostError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
+    ActionCallError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
     HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
-    WorkspaceState, reads,
+    WorkspaceId, WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::api::ActionAddress;
@@ -34,18 +34,17 @@ use tilo_actions::remote::{
     ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::live::LiveAnchor;
+use tilo_server_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
 /// How long the person's answer to one invocation stays good for running it.
-const WITNESS_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const APPROVAL_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// How long a caller's replica is kept on the standing it was opened with
-/// before the host reads their standing again for it.
-const STANDING_FRESHNESS_SECS: u64 = 30;
+/// How long a caller's replica is kept on the member access it was opened with
+/// before the host reads their access again for it.
+const ACCESS_FRESHNESS_SECS: u64 = 30;
 
-/// Who a bounded caller is: the person whose standing bounds them, as that
+/// Who a bounded caller is: the person whose access bounds them, as that
 /// person's device is admitted, and the agent acting for them, if one is.
 #[derive(Clone)]
 pub(super) struct Bounded {
@@ -63,28 +62,32 @@ pub(super) struct Bounded {
     pub(super) agent_name: Option<String>,
 }
 
-/// The replica a bounded caller acts through, by the record it holds and who.
+/// The replica a bounded caller acts through, by the document it holds and who.
 pub(super) type BoundedKey = (
     DocumentRoute,
     ui::permissions::policy::PersonId,
     Option<String>,
 );
 
-/// A caller's replica of one record, and the standing it was opened with.
+/// A caller's replica of one document, and the permissions it was opened with.
 pub(super) struct BoundedReplica {
     pub(super) held: Mounted,
-    standing: policy::Standing,
+    access: policy::MemberAccess,
+    /// The grants its caller carried. An agent's turn and what is written for that agent outside
+    /// a turn are one person and one agent under different rules: each acts on a replica opened
+    /// under its own, never on the other's.
+    granted: Vec<policy::Grant>,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 }
 
 /// Callers' replicas whose last write is still on its way to be saved, by
-/// the caller and record they act through, with what hears whether it was
+/// the caller and document they act through, with what hears whether it was
 /// ([`SaveWatch`](super::publish::SaveWatch)).
 ///
 /// Such a replica is kept here rather than let go: the next action of the
 /// same caller reuses it once the host holds the write, instead of opening
-/// the record again over every change it holds. Nothing unsaved is ever
+/// the document again over every change it holds. Nothing unsaved is ever
 /// acted on: a write the host refused or never confirmed lets the replica
 /// go, to be opened again from what the workspace holds.
 pub(super) struct Parked<T> {
@@ -136,7 +139,7 @@ impl<T> Parked<T> {
 /// target with exactly these arguments ([`tilo_actions::remote::argument_digest`]),
 /// as the broker binds the answers it hands an agent.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct WitnessBinding {
+pub(super) struct ApprovalBinding {
     caller: Caller,
     workspace_id: WorkspaceId,
     invocation: InvocationId,
@@ -146,7 +149,7 @@ pub(super) struct WitnessBinding {
     argument_digest: [u8; 32],
 }
 
-impl WitnessBinding {
+impl ApprovalBinding {
     pub(super) fn of(workspace_id: WorkspaceId, caller: &Caller, request: &InvokeRequest) -> Self {
         Self {
             caller: caller.clone(),
@@ -164,11 +167,11 @@ impl WitnessBinding {
 
 /// The answers the host holds for invocations people allowed, by token.
 #[derive(Default)]
-pub(super) struct Witnesses(Mutex<HashMap<String, (WitnessBinding, Instant)>>);
+pub(super) struct Approvals(Mutex<HashMap<String, (ApprovalBinding, Instant)>>);
 
-impl Witnesses {
+impl Approvals {
     /// Keep the person's answer for `binding`, naming it by a new token.
-    pub(super) fn issue(&self, binding: WitnessBinding) -> Result<String, String> {
+    pub(super) fn issue(&self, binding: ApprovalBinding) -> Result<String, String> {
         let mut id = [0_u8; 32];
         getrandom::fill(&mut id).map_err(|error| error.to_string())?;
         let token = hex::encode(id);
@@ -177,7 +180,7 @@ impl Witnesses {
         held.retain(|_, (_, until)| *until > now);
         held.insert(
             token.clone(),
-            (binding, now.checked_add(WITNESS_LIFETIME).unwrap_or(now)),
+            (binding, now.checked_add(APPROVAL_LIFETIME).unwrap_or(now)),
         );
         drop(held);
         Ok(token)
@@ -185,7 +188,7 @@ impl Witnesses {
 
     /// Whether `token` names an answer the host issued for exactly
     /// `binding`, still good; it is spent either way it matches.
-    pub(super) fn take(&self, token: &str, binding: &WitnessBinding) -> bool {
+    pub(super) fn take(&self, token: &str, binding: &ApprovalBinding) -> bool {
         let mut held = self.0.lock_recover();
         let matches = held
             .get(token)
@@ -199,17 +202,17 @@ impl Witnesses {
 
 /// Whether `given` is the person's own answer to this invocation: a token the
 /// host issued for `binding`. Nothing else confirms for a bounded caller.
-pub(super) fn witnessed(
-    witnesses: &Witnesses,
+pub(super) fn approved(
+    approvals: &Approvals,
     given: Option<&Confirmation>,
-    binding: &WitnessBinding,
+    binding: &ApprovalBinding,
 ) -> bool {
-    matches!(given, Some(Confirmation::Witnessed(token)) if witnesses.take(token, binding))
+    matches!(given, Some(Confirmation::Approved(token)) if approvals.take(token, binding))
 }
 
 /// The refusal of a confirmation a bounded caller gave by its own word.
-pub(super) fn own_word_refused() -> ActionHostError {
-    ActionHostError::Refused {
+pub(super) fn own_word_refused() -> ActionCallError {
+    ActionCallError::Refused {
         reason: "only the person confirms this action, on their own device: invoke it without \
                  a confirmation and the host asks them"
             .into(),
@@ -217,11 +220,11 @@ pub(super) fn own_word_refused() -> ActionHostError {
 }
 
 /// The node below the workspace a change writing at `keys` (storage keys, top
-/// down) of a record of `app` acts at: its comments or reactions when it
+/// down) of a document of `app` acts at: its comments or reactions when it
 /// writes inside them, wherever a model keeps them; else the field the action
 /// that wrote it is declared below (`#[action(field = ...)]`: filing a report
 /// is a comment, whose app keeps it where its own footprint says), else the
-/// record.
+/// document.
 fn written_node(app: &str, keys: &[String], declared: Option<&str>) -> TreePath {
     let record = TreePath::root().app(app);
     let inside = |field: &str| keys.iter().any(|key| key == field);
@@ -243,7 +246,7 @@ fn key_of(prop: &automerge::Prop) -> String {
     }
 }
 
-/// The keys a change writes, as its record's replica reports them.
+/// The keys a change writes, as its document's replica reports them.
 pub(super) type WrittenKeys = Result<Vec<Vec<String>>, String>;
 
 /// The storage keys `mutation` writes at, each top down to what it put or
@@ -321,6 +324,8 @@ pub(super) struct About {
     /// The record's name in its app's index of the workspace, else what the
     /// app calls the resource the action is on.
     pub(super) record: String,
+    /// The document the action acts on.
+    pub(super) route: DocumentRoute,
 }
 
 /// The question the person is put about `request`, which `caller` asks the
@@ -361,44 +366,45 @@ pub(super) fn question(
     })
 }
 
-/// `who`'s standing as the host decides for them: the person's standing as
+/// `who`'s access as the host decides for them: the person's access as
 /// `policy` gives it now, held to the bounds the one reading of a caller
 /// gives ([`Caller::acting`]): for an agent, the grants the caller carries
-/// ([`Caller::granted`]) as the broker gives them. Refused when the policy is
+/// ([`Caller::granted`]) as the broker gives them, narrowed by the bound the
+/// workspace's list of its agents keeps for it. Refused when the policy is
 /// someone else's.
-pub(super) fn bounded_standing(
+pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<policy::Standing, ActionHostError> {
-    let granted = who.caller.granted(&policy.workspace);
+) -> Result<policy::MemberAccess, ActionCallError> {
+    let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
     policy
-        .standing
+        .access
         .clone()
         .as_acting(who.caller.acting().clone())
-        .map(|standing| standing.granted(granted))
-        .ok_or(ActionHostError::NotPermitted)
+        .map(|access| access.granted(granted))
+        .ok_or(ActionCallError::NotPermitted)
 }
 
-/// `who`'s permissions under `policy` ([`bounded_standing`]).
+/// `who`'s permissions under `policy` ([`bounded_access`]).
 pub(super) fn bounded_permissions(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<ui::permissions::PermissionContext, ActionHostError> {
+) -> Result<ui::permissions::PermissionContext, ActionCallError> {
     Ok(super::ViewReadPolicy {
-        standing: bounded_standing(policy, who)?,
+        access: bounded_access(policy, who)?,
         ..policy.clone()
     }
     .permissions())
 }
 
-/// The replica actor the host runs `who`'s actions as, on their standing
-/// under `policy` ([`bounded_standing`]).
+/// The replica actor the host runs `who`'s actions as, on their access
+/// under `policy` ([`bounded_access`]).
 pub(super) fn member_actor(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<crate::ReplicaActor, ActionHostError> {
+) -> Result<crate::ReplicaActor, ActionCallError> {
     Ok(crate::ReplicaActor::Member {
-        standing: bounded_standing(policy, who)?,
+        access: bounded_access(policy, who)?,
         sandbox: policy.sandbox.clone(),
         unix_time: policy.unix_time,
         agent: who.agent.clone(),
@@ -453,7 +459,7 @@ impl Worker {
         })
     }
 
-    /// The person's standing in the workspace `cluster` as its policy gives
+    /// The person's access in the workspace `cluster` as its policy gives
     /// it now, where they may read `record` (an app and its record) when one
     /// is named: refused for a person it does not admit (a removed member, a
     /// revoked device). The host's own person, in a workspace no governance
@@ -464,19 +470,19 @@ impl Worker {
         who: &Bounded,
         cluster: &str,
         record: Option<(&str, &str)>,
-    ) -> Result<super::ViewReadPolicy, ActionHostError> {
+    ) -> Result<super::ViewReadPolicy, ActionCallError> {
         let governed = self.shared.link.get().and_then(|link| match record {
             Some((app, record)) => {
                 link.view_read_policy(workspace_id, &who.person_caller, app, record)
             }
             None => link.workspace_policy(workspace_id, &who.person_caller),
         });
-        match governed {
+        let mut policy = match governed {
             Some(policy)
                 if policy.workspace == cluster
-                    && policy.standing.person_id().unwrap_or_default() == who.person.as_str() =>
+                    && policy.access.person_id().unwrap_or_default() == who.person.as_str() =>
             {
-                Ok(policy)
+                policy
             }
             None if who.person == self.member && !self.governed(workspace_id) => {
                 let owner = ui::permissions::PermissionContext::member_of(
@@ -484,15 +490,26 @@ impl Worker {
                     &ui::permissions::MemberId::person(who.person.clone()),
                     ui::permissions::Role::Owner,
                 );
-                Ok(super::ViewReadPolicy {
+                super::ViewReadPolicy {
                     workspace: cluster.to_owned(),
-                    standing: owner.standing().clone(),
+                    access: owner.access().clone(),
                     sandbox: Vec::new(),
                     unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
-                })
+                    agent_bound: Vec::new(),
+                }
             }
-            Some(_) | None => Err(ActionHostError::NotPermitted),
+            Some(_) | None => return Err(ActionCallError::NotPermitted),
+        };
+        // An agent a person's device handed its session to is held to the bound the workspace's
+        // list of its agents keeps for it: the own person's agents as much as anyone's, so what
+        // the person sets for it in the workspace holds on their own server too.
+        if who.agent.is_some()
+            && who.caller.is_session_delegated()
+            && let Some(link) = self.shared.link.get()
+        {
+            policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
         }
+        Ok(policy)
     }
 
     /// [`Self::policy_for`] the record at `route`.
@@ -501,7 +518,7 @@ impl Worker {
         workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
-    ) -> Result<super::ViewReadPolicy, ActionHostError> {
+    ) -> Result<super::ViewReadPolicy, ActionCallError> {
         let record = Some((route.app_id.as_str(), route.document.as_str()));
         self.policy_for(workspace_id, who, &route.cluster_id, record)
     }
@@ -516,16 +533,14 @@ impl Worker {
         caller: &Caller,
         kind: ActionKind,
     ) -> bool {
-        if super::acts_for(caller, &self.member) {
+        if self.serves_as_owner(caller) {
             return true;
         }
         let Some(who) = self.bounded(caller) else {
             return false;
         };
-        self.shared
-            .link
-            .get()
-            .and_then(|link| link.workspace_policy(workspace_id, &who.person_caller))
+        self.policy_for(workspace_id, &who, &workspace_id.to_string(), None)
+            .ok()
             .and_then(|policy| bounded_permissions(&policy, &who).ok())
             .is_some_and(|permissions| permissions.answer(&TreePath::root(), kind) == Answer::Allow)
     }
@@ -553,17 +568,43 @@ impl Worker {
                 .is_some_and(|link| link.admits(workspace_id, &who.person_caller))
     }
 
+    /// What `who` may do with the resource at `route`, as their listing's replica of it is
+    /// opened: the person's access as the workspace's policy gives it now, held to what bounds
+    /// an agent acting for them. `None` where the workspace does not let that person read it.
+    pub(super) fn permissions_at(
+        &self,
+        workspace_id: WorkspaceId,
+        who: &Bounded,
+        route: &DocumentRoute,
+    ) -> Option<ui::permissions::PermissionContext> {
+        let policy = self.policy_at(workspace_id, who, route).ok()?;
+        bounded_permissions(&policy, who).ok()
+    }
+
+    /// What `who` may do across the workspace `cluster`, with no one resource named
+    /// ([`Self::permissions_at`]): what its files are decided by. `None` for a person the
+    /// workspace does not admit.
+    pub(super) fn permissions_across(
+        &self,
+        workspace_id: WorkspaceId,
+        who: &Bounded,
+        cluster: &str,
+    ) -> Option<ui::permissions::PermissionContext> {
+        let policy = self.policy_for(workspace_id, who, cluster, None).ok()?;
+        bounded_permissions(&policy, who).ok()
+    }
+
     /// `who`'s replica of the record at `route` (a part: of the record it is
-    /// held beside), opened as them on their standing now, or the one held
-    /// for them while that standing is unchanged.
+    /// held beside), opened as them on their access now, or the one held
+    /// for them while that access is unchanged.
     pub(super) fn bounded_replica(
         &mut self,
         workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
-    ) -> Result<BoundedKey, ActionHostError> {
-        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    ) -> Result<BoundedKey, ActionCallError> {
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let policy = self.policy_at(workspace_id, who, route)?;
         // Where the host's own mount holds it, so a part is held beside the
         // same record for everyone. Why it does not mount is the caller's to
@@ -577,15 +618,17 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let same = self
-            .bounded
-            .get(&key)
-            .is_some_and(|held| held.standing == policy.standing && held.sandbox == policy.sandbox);
+        let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
+        let same = self.bounded.get(&key).is_some_and(|held| {
+            held.access == policy.access
+                && held.sandbox == policy.sandbox
+                && held.granted == granted
+        });
         let mut current = same
             && self.bounded.get(&key).is_some_and(|held| {
-                policy.unix_time.saturating_sub(held.unix_time) < STANDING_FRESHNESS_SECS
+                policy.unix_time.saturating_sub(held.unix_time) < ACCESS_FRESHNESS_SECS
             });
-        // The same standing read again later: the replica takes the new time
+        // The same access read again later: the replica takes the new time
         // in place rather than being opened again over the whole record.
         if same
             && !current
@@ -630,14 +673,19 @@ impl Worker {
                         merged: Some(heads),
                         parts: HashMap::new(),
                         foreign: std::collections::HashSet::new(),
+                        wanted_at: None,
                         used: clock,
                     },
-                    standing: policy.standing,
+                    access: policy.access,
+                    granted,
                     sandbox: policy.sandbox,
                     unix_time: policy.unix_time,
                 },
             );
         }
+        let untold =
+            super::catch_up::kept_untold(&holder, self.bounded.get(&key).map(|held| &held.held));
+        let kept = self.kept_held(untold);
         let held = self
             .bounded
             .get_mut(&key)
@@ -648,6 +696,7 @@ impl Worker {
         // merged before it acts, only the changes after the heads it holds.
         super::catch_up::catch_up(&holder, &mut held.held, state);
         super::catch_up::hold_parts(&holder, &mut held.held, state);
+        super::catch_up::tell_kept(&mut held.held, state, kept);
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held
@@ -670,7 +719,7 @@ impl Worker {
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
-    ) -> Result<Vec<tilo_actions::ActionDescriptor>, ActionHostError> {
+    ) -> Result<Vec<tilo_actions::ActionDescriptor>, ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded
@@ -689,7 +738,7 @@ impl Worker {
         (route, state): (&DocumentRoute, &WorkspaceState),
         query: &tilo_actions::remote::CatalogueQuery,
         window: (usize, usize),
-    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionHostError> {
+    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded
@@ -707,7 +756,7 @@ impl Worker {
         who: &Bounded,
         (route, state): (&DocumentRoute, &WorkspaceState),
         address: &ActionAddress,
-    ) -> Result<Option<tilo_actions::ActionDescriptor>, ActionHostError> {
+    ) -> Result<Option<tilo_actions::ActionDescriptor>, ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded
@@ -739,7 +788,7 @@ impl Worker {
             .and_then(|workspace| workspace.cluster_id(workspace_id))?;
         let question = question(caller, &workspace, request, about).ok()?;
         if self
-            .ledger()
+            .log()
             .entries
             .get_mut(&invocation)
             .is_none_or(|entry| std::mem::replace(&mut entry.asked, true))
@@ -752,7 +801,7 @@ impl Worker {
             .get()
             .and_then(|link| link.ask_person(workspace_id, &who.person_caller, question))
         else {
-            if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+            if let Some(entry) = self.log().entries.get_mut(&invocation) {
                 entry.asked = false;
             }
             return None;
@@ -761,7 +810,7 @@ impl Worker {
         let asking = Asking {
             workspace_id,
             invocation,
-            binding: WitnessBinding::of(workspace_id, caller, request),
+            binding: ApprovalBinding::of(workspace_id, caller, request),
         };
         asked.then(move |reply| shared.answered(asking, reply.as_ref()));
         Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
@@ -769,10 +818,10 @@ impl Worker {
 
     /// `invocation` waits for the person's answer, asked as `about` says.
     fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
-        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.about = Some(Box::new(about));
         }
-        Outcome::Rejected(ActionHostError::confirmation_required())
+        Outcome::Rejected(ActionCallError::confirmation_required())
     }
 
     /// What the person is asked about running `descriptor` with `arguments`
@@ -790,12 +839,13 @@ impl Worker {
                 .unwrap_or_else(|| descriptor.resource_label.clone()),
             descriptor: descriptor.clone(),
             arguments,
+            route: route.clone(),
         }
     }
 
     /// Run `request` on the record at `route` for `who`, in their replica:
     /// only what it offers them, confirmed only by the person's answer the
-    /// host holds for it, and saved only once their standing, read again,
+    /// host holds for it, and saved only once their access, read again,
     /// lets them write every field it changed. `published` is what the record
     /// publishes to its owner, which tells an action not offered to `who`
     /// from one that does not exist.
@@ -809,9 +859,10 @@ impl Worker {
         caller: &Caller,
         who: &Bounded,
         (request, route, state): (&InvokeRequest, &DocumentRoute, &WorkspaceState),
-        (target, arguments): (
+        (target, arguments, withheld): (
             &tilo_actions::remote::RemoteActionTarget,
             serde_json::Map<String, serde_json::Value>,
+            &super::direct::Kept,
         ),
     ) -> Result<
         (
@@ -832,7 +883,7 @@ impl Worker {
         let held = self
             .bounded
             .remove(&key)
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+            .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
         let app = &held.held.app;
         // What the caller's own view offers, asked for by address: the record
         // publishes to its owner what the caller may not run, which tells a
@@ -840,41 +891,38 @@ impl Worker {
         let Some(descriptor) = app.descriptor(&target.address) else {
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
-                    ActionHostError::NotPermitted
+                    ActionCallError::NotPermitted
                 } else {
-                    ActionHostError::UnknownAction
+                    ActionCallError::UnknownAction
                 },
             ));
         };
-        let arguments = descriptor.bind_prompt_text(arguments);
+        // What is said in a direct conversation the caller's person takes no part in is not
+        // there for an action they are offered either ([`super::direct`]).
+        let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
         let declared = descriptor.contract.need().field;
-        let witness = self
-            .ledger()
+        let approval = self
+            .log()
             .entries
             .get(&request.invocation)
-            .and_then(|entry| entry.witness.clone())
-            .map(Confirmation::Witnessed);
-        let given = witness.as_ref().or(request.confirmation.as_ref());
-        let binding = WitnessBinding::of(workspace_id, caller, request);
-        let confirmed = witnessed(&self.shared.witnesses, given, &binding);
+            .and_then(|entry| entry.approval.clone())
+            .map(Confirmation::Approved);
+        let given = approval.as_ref().or(request.confirmation.as_ref());
+        let binding = ApprovalBinding::of(workspace_id, caller, request);
+        let confirmed = approved(&self.shared.approvals, given, &binding);
         let context = super::caller_context(caller, request);
-        let output = match app.invoke_in(
-            context.as_ref(),
-            None,
-            &target.address,
-            &arguments,
-            confirmed,
-        ) {
-            Ok(output) => output,
-            Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
-                return Err(Outcome::Rejected(own_word_refused()));
-            }
-            Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
-                let about = self.about(workspace_id, route, &descriptor, arguments);
-                return Err(self.waits_for_person(request.invocation, about));
-            }
-            Err(error) => return Err(super::api_outcome(&error)),
-        };
+        let output =
+            match app.invoke_in(Some(&context), None, &target.address, &arguments, confirmed) {
+                Ok(output) => output,
+                Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
+                    return Err(Outcome::Rejected(own_word_refused()));
+                }
+                Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
+                    let about = self.about(workspace_id, route, &descriptor, arguments);
+                    return Err(self.waits_for_person(request.invocation, about));
+                }
+                Err(error) => return Err(super::api_outcome(&error)),
+            };
         let left_at = app.presence().map(placed);
         let holder = key.0.clone();
         let taken = super::take_all(app, &holder)
@@ -890,7 +938,7 @@ impl Worker {
     }
 
     /// Save what an action changed for `who`: every field of every change
-    /// checked against their standing read now, so that a member removed or
+    /// checked against their access read now, so that a member removed or
     /// narrowed since their replica opened writes nothing, and only then
     /// applied here and handed to the session: the action is done once the
     /// host holds it ([`Worker::saving`]).
@@ -931,7 +979,7 @@ impl Worker {
             if !refused.is_empty() {
                 tracing::info!(record = %changed.document, ?refused,
                     "workspace actions: a change writes what its author may not");
-                return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
             }
         }
         for (changed, mutation) in taken {
@@ -978,7 +1026,7 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
 pub(super) struct Asking {
     pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
-    pub(super) binding: WitnessBinding,
+    pub(super) binding: ApprovalBinding,
 }
 
 impl super::Shared {
@@ -988,7 +1036,7 @@ impl super::Shared {
     pub(super) fn answered(
         self: &Arc<Self>,
         asking: Asking,
-        reply: Option<&Result<ConfirmationReply, ActionHostError>>,
+        reply: Option<&Result<ConfirmationReply, ActionCallError>>,
     ) {
         let Asking {
             workspace_id,
@@ -1007,10 +1055,10 @@ impl super::Shared {
             },
         };
         let update = match reply {
-            Some(Ok(ConfirmationReply::AllowOnce)) => match self.witnesses.issue(binding) {
+            Some(Ok(ConfirmationReply::AllowOnce)) => match self.approvals.issue(binding) {
                 Ok(token) => {
-                    if let Some(entry) = self.ledger.lock_recover().entries.get_mut(&invocation) {
-                        entry.witness = Some(token);
+                    if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation) {
+                        entry.approval = Some(token);
                     }
                     let (done, _) = tilo_actions::remote::pending();
                     let job = super::Job::Invoke {
@@ -1033,7 +1081,7 @@ impl super::Shared {
             Some(Ok(ConfirmationReply::Deny)) => failed("the person did not allow it"),
             Some(Err(_)) | None => failed("the person did not answer in time"),
         };
-        if let Some(entry) = self.ledger.lock_recover().entries.get_mut(&invocation)
+        if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)
             && !entry.update.is_terminal()
         {
             entry.update = update;

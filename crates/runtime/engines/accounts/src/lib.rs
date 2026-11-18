@@ -1,4 +1,4 @@
-//! Online-account custody and the IMAP client, as its own library in the runtime
+//! Online-account credentials and the IMAP client, as its own library in the runtime
 //! bundle (`libtilo_accounts_engine.so`).
 //!
 //! Like `runtime-dylib` it re-exports what it provides, which records it
@@ -9,7 +9,7 @@
 extern crate runtime_dylib;
 
 #[cfg(feature = "thin")]
-pub use account_custody;
+pub use account_credentials;
 #[cfg(feature = "thin")]
 pub use async_imap;
 #[cfg(feature = "thin")]
@@ -25,7 +25,7 @@ pub use tilo_oauth;
 /// proves the library loads and runs against its runtime.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
-    use account_custody::{ClientTable, OAuthCloud, OAuthIssuer, OAuthUse};
+    use account_credentials::{ClientTable, OAuthCloud, OAuthIssuer, OAuthUse};
     use async_imap::imap_proto::{Capability, Response};
 
     // RFC 7636, appendix B.

@@ -12,8 +12,8 @@
 //!
 //! Apps build a [`portal::PickRequest`] or [`portal::LaunchRequest`] and `send`
 //! it, or call [`portal::open_uri`]; the outcome arrives over a channel the UI
-//! thread drains. [`FilePicker`] and [`UriOpener`] are the seams a host fills
-//! (`ui::host::HostServices` holds one of each per app), and [`system_picker`]
+//! thread drains. [`FilePicker`] and [`UriOpener`] are the boundaries a host fills
+//! (`ui::process::ProcessServices` holds one of each per app), and [`system_picker`]
 //! and [`system_opener`] are this target's backends. [`availability`] says which
 //! [`Feature`]s the target has.
 

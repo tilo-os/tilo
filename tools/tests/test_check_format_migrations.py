@@ -112,7 +112,7 @@ class FormatMigrationTests(unittest.TestCase):
 
     def test_a_loader_that_assumes_one_version_or_keeps_nothing_fails(self):
         # The first version's file brought up by number, a later one read as
-        # it is: what refused a relay's whole state.
+        # it is: what refused a server's whole state.
         first_only = declaration(1) + "fn open(b: Vec<u8>) { STATE.migrate(b, 1); }\n"
         found = self.loaded({"lib.rs": first_only})
         self.assertEqual(len(found), 2, found)

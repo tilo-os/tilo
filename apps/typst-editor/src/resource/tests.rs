@@ -36,7 +36,7 @@ fn only(app: &TestApp<TypstEditorShell>) -> TypstFile {
 }
 
 tilo_test_env::scenario! {
-    fn the_workspace_record_changes_and_converges;
+    fn the_workspace_resource_changes_and_converges;
 
     phase verbs_and_field_edits_change_one_file;
     {

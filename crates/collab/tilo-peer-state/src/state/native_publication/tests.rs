@@ -32,7 +32,7 @@ tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn native_publication_keeps_original_authors_and_rechecks_who_publishes;
 
-    phase native_publication_retained_bootstrap_preserves_relay_live_freshness_distinction;
+    phase native_publication_retained_bootstrap_preserves_server_live_freshness_distinction;
     {
         let (mut host, key, _, cert, now) = crate::admission_tests::seeded();
         let later = now + Duration::from_secs(301);
@@ -53,7 +53,7 @@ tilo_test_env::scenario! {
         let mut live_rejected_document = false;
         for message in messages {
             let result = live.receive_from(
-                TransportOrigin::RelayDelta(host.owner_certificates()[0].device_public_key),
+                TransportOrigin::ServerDelta(host.owner_certificates()[0].device_public_key),
                 message.clone(),
                 later,
             );
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
             receiver
                 .clone()
                 .receive_from_report(
-                    TransportOrigin::RelayDelta(receiver.owner_certificates()[0].device_public_key),
+                    TransportOrigin::ServerDelta(receiver.owner_certificates()[0].device_public_key),
                     message.clone(),
                     now
                 )
@@ -148,7 +148,7 @@ tilo_test_env::scenario! {
             };
             receiver
                 .receive_from(
-                    TransportOrigin::RelayDelta(sender),
+                    TransportOrigin::ServerDelta(sender),
                     NeighbourMsg::IdentityHello {
                         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(cert),
@@ -303,7 +303,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
         }
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(member_cert.device_public_key),
+                TransportOrigin::ServerDelta(member_cert.device_public_key),
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(member_cert.clone()),
@@ -316,7 +316,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
             .unwrap();
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(member_cert.device_public_key),
+                TransportOrigin::ServerDelta(member_cert.device_public_key),
                 predecessor,
                 now,
             )
@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
         assert!(cut.finish(expired).is_err());
     }
 
-    phase native_publication_streaming_cut_preserves_preexisting_relay_pending;
+    phase native_publication_streaming_cut_preserves_preexisting_server_pending;
     {
         let (mut author, _, member, cert, now) = crate::admission_tests::seeded();
         let mut receiver = author.clone();
@@ -466,7 +466,7 @@ tilo_test_env::scenario! {
             .unwrap();
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(cert.device_public_key),
+                TransportOrigin::ServerDelta(cert.device_public_key),
                 child,
                 now,
             )
@@ -524,6 +524,23 @@ tilo_test_env::scenario! {
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
             .unwrap();
+        // The governance that takes the member's device away, as a replica that
+        // had taken nothing of the child wrote it: its cut does not name the
+        // child ([`crate::removals`]).
+        let removal = {
+            let mut removing = receiver.clone();
+            assert!(
+                removing
+                    .governance_mut()
+                    .publish_governed_revocations(
+                        &[revocation(cert.device_public_key)],
+                        &governor,
+                        now
+                    )
+                    .unwrap()
+            );
+            removing.workspace_message()
+        };
         let cut = receiver
             .begin_native_publication_cut(publisher, now)
             .unwrap()
@@ -537,9 +554,13 @@ tilo_test_env::scenario! {
                 },
                 now,
             )
+            .unwrap()
+            // Known without its cut, the removal decides nothing of the child
+            // yet: its parent lands and the child stays held.
+            .push(parent, now)
             .unwrap();
         assert!(
-            cut.push(parent, now).is_err(),
+            cut.push(removal, now).is_err(),
             "a rejected native child disappeared from the supposedly complete cut"
         );
         assert!(

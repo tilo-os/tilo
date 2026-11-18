@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn actions_are_gated_by_role_and_confirmed_for_every_surface;
+    fn actions_are_guarded_by_role_and_confirmed_for_every_surface;
 
     phase a_viewer_cannot_edit;
     {
@@ -449,10 +449,10 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.set_role(tilo_app::permissions::Role::Viewer);
         let viewer = app.permissions();
-        let mut standing = viewer.standing().clone();
-        let workspace = TreePath::workspace(&standing.policy.workspace);
-        let person = Grantee::person(standing.person_id().unwrap_or_default());
-        std::sync::Arc::make_mut(&mut standing.policy)
+        let mut access = viewer.access().clone();
+        let workspace = TreePath::workspace(&access.policy.workspace);
+        let person = Grantee::person(access.person_id().unwrap_or_default());
+        std::sync::Arc::make_mut(&mut access.policy)
             .grants
             .extend([
                 Grant::new(
@@ -473,7 +473,7 @@ tilo_test_env::scenario! {
                 )
                 .with_lifetime(Lifetime::Once),
             ]);
-        let granted = viewer.with_standing(standing);
+        let granted = viewer.with_access(access);
 
         // Nothing here can revoke it: the grant given once is not relied on.
         app.set_permissions(granted.clone());

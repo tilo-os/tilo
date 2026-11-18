@@ -57,7 +57,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_find",
-            "Search the workspace by words, best first, as the palette does: `{query: \"my mails\"}`, optionally app: \"notes\". One line per hit: a path for tilo_ls and tilo_do, `path#action` for an action.",
+            "Search what you may read here, best first: `{query: \"jam\"}`, app: \"notes\". In query: in:here (this conversation), after:2026-11-10, before:…; no words needed then. Not the web or mail servers. Per hit: path, `path#action`, when said.",
             json!({"query":string,"app":string,"limit":integer}),
             json!(["query"]),
             read,
@@ -71,7 +71,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_watch",
-            "What changed since cursor: a resource's changes (`path`), runs starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
+            "What changed since cursor: a resource's changes (`path`), invocations starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
             json!({"cursor":string,"path":string,"wait_ms":integer}),
             json!([]),
             json!({"readOnlyHint":true,"openWorldHint":false}),

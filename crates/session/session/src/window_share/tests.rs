@@ -1,6 +1,6 @@
 //! Two sessions in one workspace: one shares a window of its shell, the other shows it and reaches
 //! into it, and the bar on the sharing device says so. The window's pictures travel the
-//! workspace's live plane, on an in-process relay both sessions' planes meet on; the state plane
+//! workspace's live session, on an in-process relay both sessions' live sessions meet on; the state protocol
 //! has no transport between them, so the test carries what one would have said to the other, to
 //! the members each control message was for.
 
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use key_group::{KeyGroup, MemberKey};
-use tilo_live::plane::{Join, Plane};
+use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::scope::Scope;
@@ -82,20 +82,20 @@ const APP: &str = "so.tilo.notes";
 const PHOTOS: &str = "so.tilo.photos";
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
-/// What the test's live planes run on: one runtime, one in-process relay and the workspace's keys,
-/// and the planes joined so far by device, for the whole test process.
-struct LivePlanes {
+/// What the test's live sessions run on: one runtime, one in-process relay and the workspace's keys,
+/// and the live sessions joined so far by device, for the whole test process.
+struct LiveSessions {
     runtime: tokio::runtime::Runtime,
     relay: Arc<Relay>,
     keys: key_group::ContentKeys,
-    joined: Mutex<Vec<([u8; 32], Arc<Plane>)>>,
+    joined: Mutex<Vec<([u8; 32], Arc<LiveSession>)>>,
 }
 
-/// The relay the test's planes meet on: in-process, with no one to admit, since a local plane is
+/// The relay the test's live sessions meet on: in-process, with no one to admit, since a local live session is
 /// its own relay's member.
-fn live_planes() -> &'static LivePlanes {
-    static PLANES: OnceLock<LivePlanes> = OnceLock::new();
-    PLANES.get_or_init(|| {
+fn live_sessions() -> &'static LiveSessions {
+    static LIVE_SESSIONS: OnceLock<LiveSessions> = OnceLock::new();
+    LIVE_SESSIONS.get_or_init(|| {
         struct Nobody;
         impl RelayAuthority for Nobody {
             fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
@@ -106,7 +106,7 @@ fn live_planes() -> &'static LivePlanes {
             .worker_threads(2)
             .enable_all()
             .build()
-            .expect("the live planes' runtime");
+            .expect("the live sessions' runtime");
         let relay = {
             let _entered = runtime.enter();
             Arc::new(Relay::new(Arc::new(Nobody)))
@@ -116,7 +116,7 @@ fn live_planes() -> &'static LivePlanes {
             .expect("the workspace's channel")
             .content_keys()
             .expect("the workspace's keys");
-        LivePlanes {
+        LiveSessions {
             runtime,
             relay,
             keys,
@@ -125,19 +125,19 @@ fn live_planes() -> &'static LivePlanes {
     })
 }
 
-/// `device` 's plane in the test workspace, with every plane joined before it hearing it, and it
+/// `device` 's live session in the test workspace, with every live session joined before it hearing it, and it
 /// hearing them.
-fn live_plane(device: EndpointId) -> BTreeMap<String, Arc<Plane>> {
-    let live = live_planes();
+fn live_session(device: EndpointId) -> BTreeMap<String, Arc<LiveSession>> {
+    let live = live_sessions();
     let _entered = live.runtime.enter();
-    let mut joined = live.joined.lock().expect("the joined planes");
+    let mut joined = live.joined.lock().expect("the joined live sessions");
     let devices: Vec<[u8; 32]> = joined
         .iter()
         .map(|(device, _)| *device)
         .chain([*device.as_bytes()])
         .collect();
-    let plane = Arc::new(
-        Plane::local(
+    let live_session = Arc::new(
+        LiveSession::local(
             &live.relay,
             &Join {
                 scope: Scope::workspace(WORKSPACE.to_owned()),
@@ -148,13 +148,13 @@ fn live_plane(device: EndpointId) -> BTreeMap<String, Arc<Plane>> {
                 presence: true,
             },
         )
-        .expect("a local plane"),
+        .expect("a local live session"),
     );
     for (_, other) in joined.iter() {
         other.set_roster(LiveRoster::new(devices.iter().copied()));
     }
-    joined.push((*device.as_bytes(), Arc::clone(&plane)));
-    BTreeMap::from([(WORKSPACE.to_owned(), plane)])
+    joined.push((*device.as_bytes(), Arc::clone(&live_session)));
+    BTreeMap::from([(WORKSPACE.to_owned(), live_session)])
 }
 
 fn device(seed: u8) -> EndpointId {
@@ -261,7 +261,7 @@ fn governed(mut shell: Layout, owner: &str, members: &[(String, Role)]) -> Layou
     shell
 }
 
-/// One device of the workspace: its session, its plane, and the messages its plane would have sent.
+/// One device of the workspace: its session, its live session, and the messages its live session would have sent.
 struct Member {
     session: Session,
     sync: Rc<Client>,
@@ -272,7 +272,7 @@ fn member(seed: u8, shell: Layout) -> Member {
     member_as(seed, shell, Options::default().salt, None)
 }
 
-/// One device of the workspace whose plane takes part as the person its certificate names: a member
+/// One device of the workspace whose live session takes part as the person its certificate names: a member
 /// whose messages the workspace's policy is asked about.
 fn member_of(seed: u8, shell: Layout) -> Member {
     member_as(seed, shell, Options::default().salt, Some(person(seed)))
@@ -285,7 +285,7 @@ fn member_minting_under(seed: u8, shell: Layout, salt: u16) -> Member {
 }
 
 /// One device of the workspace, taking part as `person` (their root key, hex) when it says one:
-/// what a session with a device identity is on this plane.
+/// what a session with a device identity is on this live session.
 fn member_as(seed: u8, shell: Layout, salt: u16, person: Option<String>) -> Member {
     member_on(
         seed,
@@ -304,7 +304,7 @@ fn member_on(
     person: Option<String>,
     outputs: &[OutputConfig],
 ) -> Member {
-    let (sync, said) = Client::planeless(
+    let (sync, said) = Client::without_network(
         device(seed),
         OwnPresence {
             label: format!("Device {seed:x}"),
@@ -312,9 +312,9 @@ fn member_on(
         },
         Vec::new(),
     );
-    let sync = sync.on_planes(
-        live_plane(device(seed)),
-        live_planes().runtime.handle().clone(),
+    let sync = sync.on_live_sessions(
+        live_session(device(seed)),
+        live_sessions().runtime.handle().clone(),
     );
     let sync = Rc::new(match person {
         Some(person) => sync.taking_part_as(&person),
@@ -341,7 +341,7 @@ fn member_on(
     }
 }
 
-/// `from` said `msg` on `to` 's plane in the workspace: what the plane carries between the two
+/// `from` said `msg` on `to` 's live session in the workspace: what the live session carries between the two
 /// devices.
 fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
     let ws = to
@@ -360,8 +360,8 @@ fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> Event {
     }
 }
 
-/// Hand what `from` would have sent on the state plane to `to`: a control message to the device it
-/// named, and nothing to anyone else. The window's pictures travel the live plane.
+/// Hand what `from` would have sent on the state protocol to `to`: a control message to the device it
+/// named, and nothing to anyone else. The window's pictures travel the live session.
 fn carry(from: &mut Member, to: &Member) {
     while let Ok(outgoing) = from.said.try_recv() {
         match outgoing {
@@ -374,7 +374,7 @@ fn carry(from: &mut Member, to: &Member) {
 }
 
 /// Step both sessions, and the client whose window `a` shares, until `done` holds of the two
-/// members and the client, carrying what the planes said.
+/// members and the client, carrying what the live sessions said.
 #[track_caller]
 fn until(
     a: &mut Member,
@@ -1161,7 +1161,7 @@ fn a_shared_window_reaches_the_member_showing_it() {
         Some(tab.to_string().as_str()),
         "which window: {reading}"
     );
-    // The workspace's live plane is open here and a member's shell asks it for the window: the
+    // The workspace's live session is open here and a member's shell asks it for the window: the
     // share waits for nothing, and says its pictures go out.
     assert_eq!(
         shared["waiting_for"].as_str(),
@@ -1173,11 +1173,11 @@ fn a_shared_window_reaches_the_member_showing_it() {
         Some(true),
         "the window is sent to the member showing it: {reading}"
     );
-    let plane = rows(&reading, "live")
+    let live_session = rows(&reading, "live")
         .iter()
-        .find(|plane| plane["workspace"].as_str() == Some(WORKSPACE))
-        .expect("the reading names the workspace's live plane");
-    assert_eq!(plane["state"].as_str(), Some("open"), "{reading}");
+        .find(|live_session| live_session["workspace"].as_str() == Some(WORKSPACE))
+        .expect("the reading names the workspace's live session");
+    assert_eq!(live_session["state"].as_str(), Some("open"), "{reading}");
     let watching = shared["viewers"].as_array().expect("who is watching");
     assert_eq!(watching.len(), 1, "one member watches it: {reading}");
     assert_eq!(
@@ -1240,8 +1240,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
         "the device sharing it"
     );
     assert_eq!(
-        read.standing,
-        tilo_desktop_surface::Standing::Pictured,
+        read.state,
+        tilo_desktop_surface::StreamState::Pictured,
         "the tile reads as a picture of the window"
     );
     let (width, height, bytes) = read.picture.expect("the picture the tile decoded");
@@ -1731,17 +1731,17 @@ fn viewing(host: &mut Member, window: &mut Option<TestClient>, viewer: &mut Memb
 
 /// A member the workspace's policy narrowed to reading is streamed the window it asks to view, and
 /// carries nothing that would change the workspace: the stream it starts and the input it sends are
-/// refused at the plane.
+/// refused at the live session.
 #[test]
 fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     tilo_window_share::flatpak_share::read_encoders();
-    let host_person = person(0x31);
+    let local_person = person(0x31);
     let viewer_person = person(0x32);
     let mut host = member_of(
         0x31,
         governed(
             own_shell(),
-            &host_person,
+            &local_person,
             &[(viewer_person.clone(), Role::Viewer)],
         ),
     );
@@ -1752,7 +1752,7 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
         0x32,
         governed(
             showing(host.sync.publisher(), APP, tab),
-            &host_person,
+            &local_person,
             &[(viewer_person, Role::Viewer)],
         ),
     );
@@ -1802,13 +1802,13 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
 #[test]
 fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     tilo_window_share::flatpak_share::read_encoders();
-    let host_person = person(0x41);
+    let local_person = person(0x41);
     let member_person = person(0x42);
     let mut host = member_of(
         0x41,
         governed(
             own_shell(),
-            &host_person,
+            &local_person,
             &[(member_person.clone(), Role::Editor)],
         ),
     );
@@ -1819,7 +1819,7 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
         0x42,
         governed(
             showing(host.sync.publisher(), APP, tab),
-            &host_person,
+            &local_person,
             &[(member_person, Role::Editor)],
         ),
     );
@@ -2392,13 +2392,13 @@ fn person(seed: u8) -> String {
     )
 }
 
-/// The device `seed` said who it is on `viewer` 's plane: the certificate a session says when it
+/// The device `seed` said who it is on `viewer` 's live session: the certificate a session says when it
 /// starts, which names the device it runs on.
 fn heard(viewer: &Member, seed: u8, label: &str) {
     heard_of(viewer, seed, seed, label);
 }
 
-/// The device `seed` said on `viewer` 's plane that it is a device of the person whose root key
+/// The device `seed` said on `viewer` 's live session that it is a device of the person whose root key
 /// `of` makes: two devices of one person say certificates the same root signed.
 fn heard_of(viewer: &Member, seed: u8, of: u8, label: &str) {
     let root = ed25519_dalek::SigningKey::from_bytes(&[of; 32]);
@@ -2450,8 +2450,8 @@ fn percentiles(samples: &mut [u64]) -> (f64, f64) {
 }
 
 /// How long a shared window's picture takes from its capture to a viewer's decoded picture, over
-/// the workspace's live plane: the window is captured, encoded as a share encodes it, sealed and
-/// sent on its track, opened by the viewer's plane and decoded by the tile that shows it, on a
+/// the workspace's live session: the window is captured, encoded as a share encodes it, sealed and
+/// sent on its track, opened by the viewer's live session and decoded by the tile that shows it, on a
 /// thread of its own as a viewer's shell is another device's. The object's header carries the
 /// capture time on the sender's clock, which is this process's here.
 #[test]
@@ -2465,9 +2465,9 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
     tilo_window_share::flatpak_share::read_encoders();
     let host = device(0x61);
     let viewer = device(0x62);
-    let sharing = Arc::clone(&live_plane(host)[WORKSPACE]);
-    let watching = Arc::clone(&live_plane(viewer)[WORKSPACE]);
-    let live = live_planes();
+    let sharing = Arc::clone(&live_session(host)[WORKSPACE]);
+    let watching = Arc::clone(&live_session(viewer)[WORKSPACE]);
+    let live = live_sessions();
     let _entered = live.runtime.enter();
     let share = SharedFlatpakSession::start(
         1,
@@ -2490,7 +2490,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
         "a new viewer starts at a keyframe"
     );
 
-    // The viewer: what its plane opened, and when each picture was decoded.
+    // The viewer: what its live session opened, and when each picture was decoded.
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let viewing = {
         let done = Arc::clone(&done);
@@ -2581,12 +2581,12 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
     let (heard_p50, heard_p95) = percentiles(&mut heard);
     let (p50, p95) = percentiles(&mut decoded);
     println!(
-        "a shared {w}x{h} window over the live plane, {} pictures: capture to encoded p50 {encoded_p50:.1} ms p95 {encoded_p95:.1} ms; to the viewer's plane p50 {heard_p50:.1} ms p95 {heard_p95:.1} ms; to decoded p50 {p50:.1} ms p95 {p95:.1} ms",
+        "a shared {w}x{h} window over the live session, {} pictures: capture to encoded p50 {encoded_p50:.1} ms p95 {encoded_p95:.1} ms; to the viewer's live session p50 {heard_p50:.1} ms p95 {heard_p95:.1} ms; to decoded p50 {p50:.1} ms p95 {p95:.1} ms",
         decoded.len()
     );
-    // What the plane adds besides the encode and the decode is small next to a frame.
+    // What the live session adds besides the encode and the decode is small next to a frame.
     assert!(
         heard_p50 - encoded_p50 < 16.7,
-        "the plane carries a picture within a frame: encoded p50 {encoded_p50:.1} ms, heard p50 {heard_p50:.1} ms"
+        "the live session carries a picture within a frame: encoded p50 {encoded_p50:.1} ms, heard p50 {heard_p50:.1} ms"
     );
 }

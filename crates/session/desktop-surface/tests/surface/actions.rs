@@ -113,7 +113,7 @@ fn serving_shell(
     let (session, openings) =
         tilo_desktop_surface::session::serve(workspace, std::sync::Arc::default());
     driver.set_session_api(
-        ui::RemoteActions::with_host(
+        ui::RemoteActions::with_provider(
             session,
             ui::tilo_actions::remote::Caller::local_person("tester").in_workspace(workspace),
         ),
@@ -156,7 +156,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
         .expect("the session takes the open");
     openings.open(
         &handle,
-        |_, _| Err(ui::tilo_actions::remote::ActionHostError::NotPermitted),
+        |_, _| Err(ui::tilo_actions::remote::ActionCallError::NotPermitted),
         |_, _| None,
     );
     driver.idle();
@@ -350,7 +350,7 @@ impl TileSource for RecordWindows {
 #[test]
 fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{
-        APPLICATION_OPEN_ACTION, ActionHost as _, Caller, InvokeRequest,
+        APPLICATION_OPEN_ACTION, ActionProvider as _, Caller, InvokeRequest,
         application_resource_target,
     };
     let mut minter = IdMinter::new(7);
@@ -414,7 +414,7 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
 #[test]
 fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{
-        ActionHost as _, Caller, InvokeRequest, application_resource_target,
+        ActionProvider as _, Caller, InvokeRequest, application_resource_target,
     };
     let mut minter = IdMinter::new(7);
     let chat = tab(&mut minter, "Chat");
@@ -506,7 +506,7 @@ impl TileSource for ContentWindows {
 /// content to open.
 #[test]
 fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
-    use ui::tilo_actions::remote::{ActionHost as _, ApplicationLaunch, Caller, InvokeRequest};
+    use ui::tilo_actions::remote::{ActionProvider as _, ApplicationLaunch, Caller, InvokeRequest};
     let mut minter = IdMinter::new(7);
     let camera = tab(&mut minter, "Camera");
     let tree = seed_tree(&mut minter, "Office", vec![camera]);
@@ -626,7 +626,7 @@ fn settings_link() -> ui::tilo_actions::remote::InvokeRequest {
 /// one that closed since the host looked, the link opens one.
 #[test]
 fn a_link_into_an_app_goes_to_the_window_that_already_shows_it() {
-    use ui::tilo_actions::remote::{ActionHost as _, Caller, OPEN_LINK_PARAM};
+    use ui::tilo_actions::remote::{ActionProvider as _, Caller, OPEN_LINK_PARAM};
     let caller = Caller::local_person("tester").in_workspace("workspace");
     let (mut driver, handle, session, openings, (mail, settings)) = mail_before_settings();
     let before = handle.snapshot("g", vec![]);
@@ -762,7 +762,7 @@ fn answered<T>(
 fn a_call_into_another_app_answers_with_what_the_action_did_there() {
     use ui::tilo_actions::ActionOutput;
     use ui::tilo_actions::remote::{
-        ActionHost as _, ActionHostError, Caller, InvokeRequest, ReceiptStatus,
+        ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus,
         application_resource_target,
     };
     let caller = Caller::local_person("tester").in_workspace("workspace");
@@ -813,10 +813,10 @@ fn a_call_into_another_app_answers_with_what_the_action_did_there() {
         .answer
         .as_ref()
         .unwrap()
-        .refused(ActionHostError::confirmation_required());
+        .refused(ActionCallError::confirmation_required());
     assert_eq!(
         answered(receipt).ok().flatten(),
-        Some(Err(ActionHostError::confirmation_required())),
+        Some(Err(ActionCallError::confirmation_required())),
         "its own refusal"
     );
 
@@ -854,12 +854,12 @@ fn a_call_into_another_app_answers_with_what_the_action_did_there() {
     let receipt = session.invoke(&caller, pin());
     assert!(openings.open(
         &handle,
-        |_, _| Err(ActionHostError::NotPermitted),
+        |_, _| Err(ActionCallError::NotPermitted),
         |_, _| None
     ));
     assert_eq!(
         answered(receipt).ok().flatten(),
-        Some(Err(ActionHostError::NotPermitted))
+        Some(Err(ActionCallError::NotPermitted))
     );
     assert!(openings.take_reveals().is_empty());
     assert!(opened.borrow().is_empty());
@@ -881,13 +881,13 @@ impl LinkHost {
     }
 }
 
-impl ui::tilo_actions::remote::ActionHost for LinkHost {
+impl ui::tilo_actions::remote::ActionProvider for LinkHost {
     fn query(
         &self,
         _: &ui::tilo_actions::remote::Caller,
         _: ui::tilo_actions::remote::CatalogueQuery,
     ) -> ui::tilo_actions::remote::Pending<
-        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionCallError>,
     > {
         ui::tilo_actions::remote::Pending::ready(Ok(
             ui::tilo_actions::remote::CataloguePage::default(),
@@ -901,7 +901,7 @@ impl ui::tilo_actions::remote::ActionHost for LinkHost {
     ) -> ui::tilo_actions::remote::Pending<
         Result<
             ui::tilo_actions::remote::InvocationReceipt,
-            ui::tilo_actions::remote::ActionHostError,
+            ui::tilo_actions::remote::ActionCallError,
         >,
     > {
         let invocation = request.invocation;
@@ -926,7 +926,7 @@ impl ui::tilo_actions::remote::ActionHost for LinkHost {
         &self,
         _: &ui::tilo_actions::remote::Caller,
         _: &ui::tilo_actions::InvocationId,
-    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
     {
         ui::tilo_actions::remote::Pending::ready(Ok(()))
     }
@@ -955,7 +955,7 @@ fn note_link() -> ui::tilo_actions::remote::InvokeRequest {
 /// and the desktop opens nothing for it.
 #[test]
 fn an_action_asked_of_a_record_is_run_by_the_workspace_s_host() {
-    use ui::tilo_actions::remote::{ActionHost as _, ActionHostError, Caller, ReceiptStatus};
+    use ui::tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, ReceiptStatus};
     let caller = Caller::local_person("tester").in_workspace("workspace");
     let (_driver, handle, session, openings, opened) = chat_shell();
     let host = std::sync::Arc::new(LinkHost::default());
@@ -984,7 +984,7 @@ fn an_action_asked_of_a_record_is_run_by_the_workspace_s_host() {
         answered(session.invoke(&Caller::local_person("eve"), note_link()))
             .ok()
             .flatten(),
-        Some(Err(ActionHostError::UnknownAction)),
+        Some(Err(ActionCallError::UnknownAction)),
         "nobody from outside the workspace asks its records anything"
     );
     assert_eq!(host.asked.lock().unwrap().len(), 1);
@@ -1000,7 +1000,7 @@ fn an_action_asked_of_a_record_is_run_by_the_workspace_s_host() {
 /// is opened to answer.
 #[test]
 fn an_action_asked_of_a_record_with_no_host_is_run_by_the_window_showing_it() {
-    use ui::tilo_actions::remote::{ActionHost as _, ActionHostError, Caller, ReceiptStatus};
+    use ui::tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, ReceiptStatus};
     let caller = Caller::local_person("tester").in_workspace("workspace");
     let (mut driver, handle, session, openings, opened) = chat_shell();
     let receipt = session.invoke(&caller, note_link());
@@ -1008,7 +1008,7 @@ fn an_action_asked_of_a_record_with_no_host_is_run_by_the_window_showing_it() {
     driver.relayout();
     assert_eq!(
         answered(receipt).ok().flatten(),
-        Some(Err(ActionHostError::Unavailable {
+        Some(Err(ActionCallError::Unavailable {
             reason: tilo_desktop_surface::session::NOT_OPEN_HERE.into(),
         }))
     );

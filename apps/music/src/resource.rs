@@ -14,7 +14,7 @@ use crate::model::{Album, CatalogueTrack, Library, Playlist};
 ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
 impl Library {
-    /// What the record holds: the catalogue, the playlists, the likes and the feedback.
+    /// What the resource holds: the catalogue, the playlists, the likes and the feedback.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

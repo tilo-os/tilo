@@ -2,7 +2,7 @@
 //! per window: the app's icon, the parts the app declares there ([`crate::window_toolbar`]), the
 //! window's search and History controls and its own controls.
 
-use crate::host_core::KeyHost as _;
+use crate::app_core::KeyCore as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -73,7 +73,7 @@ impl FrameHarness {
             .map(|window| crate::window_toolbar::enter(Some(window)))
     }
 
-    /// Take a window of this harness's own to host the app's bar in, standing as the thread's own while
+    /// Take a window of this harness's own to host the app's bar in, as the thread's own while
     /// the harness lives: the app declares its parts on it and asks it for what its bar does, so
     /// windows a process lays out beside each other keep their bars apart.
     pub(super) fn host_bar_window(&mut self) {
@@ -141,7 +141,7 @@ impl FrameHarness {
         !self.row_holds || crate::widget::merged_row_holds_search(f64::from(self.viewport.0))
     }
 
-    /// Whether the app's frame holds the window's bar in a header row of its own, rather than standing
+    /// Whether the app's frame holds the window's bar in a header row of its own, rather than
     /// under a bar of the window's.
     #[must_use]
     pub fn row_holds_bar(&self) -> bool {
@@ -183,7 +183,7 @@ impl FrameHarness {
     }
 
     /// What the window's header rows say, as the person reads them at the top of each column: the names
-    /// of the titles and controls standing in a column's header row, in the order the window lays them
+    /// of the titles and controls in a column's header row, in the order the window lays them
     /// out.
     #[must_use]
     pub fn header_row_names(&self) -> Vec<String> {
@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     /// A compact window's notice has a strip of its own under the bar's row: its whole text and its
-    /// actions as buttons that name themselves, the row standing as it does without a notice, and the
+    /// actions as buttons that name themselves, the row as it is without a notice, and the
     /// app's frame moved down by the strip until the notice goes, then back.
     #[test]
     fn a_compact_windows_notice_has_its_own_strip_and_a_wide_ones_stands_inline() {
@@ -1462,7 +1462,7 @@ mod tests {
 
     /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to Sun, Jul 5, 2026.
     fn week_across_a_month() -> crate::format::Period {
-        let day = |m, d| chrono::NaiveDate::from_ymd_opt(2026, m, d).unwrap_or_default();
+        let day = |m, d| jiff::civil::Date::new(2026, m, d).ok().unwrap_or_default();
         crate::format::Period::Days(day(6, 29), day(7, 5))
     }
 
@@ -2253,7 +2253,7 @@ mod tests {
                 .expect("tasks' window")
                 .take_events()
                 .is_empty(),
-            "the window standing beside it heard none of it"
+            "the window beside it heard none of it"
         );
         tasks.relayout();
         assert_eq!(

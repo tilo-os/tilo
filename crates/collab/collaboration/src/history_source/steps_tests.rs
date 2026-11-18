@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         assert!(!ids(&doc).contains(&"a4".to_owned()), "her own mark went");
     }
 
-    phase undoing_the_step_that_made_a_shared_container_leaves_the_container_standing;
+    phase undoing_the_step_that_made_a_shared_container_leaves_the_container_access;
     {
         let mut doc = AutoCommit::new();
         add(&mut doc, ALICE, "a1", "red");
@@ -504,8 +504,8 @@ tilo_test_env::scenario! {
         // changes that take back what they wrote, and an outside compensation
         // still pending.
         doc.set_actor(ActorId::from(BOB));
-        let ledger = doc.put_object(ROOT, "tilo:ledger", ObjType::Map).unwrap();
-        doc.put(&ledger, "entry", "kept").unwrap();
+        let log = doc.put_object(ROOT, "tilo:log", ObjType::Map).unwrap();
+        doc.put(&log, "entry", "kept").unwrap();
         doc.commit();
         doc.put(ROOT, "count", ScalarValue::counter(0)).unwrap();
         doc.commit();

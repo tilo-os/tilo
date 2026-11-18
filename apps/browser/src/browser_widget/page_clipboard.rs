@@ -31,7 +31,7 @@ impl PageClipboard {
     /// The page pastes or reads: ask for the system clipboard's text without waiting on it,
     /// and answer once it comes ([`Self::answer_ready`]).
     pub(super) fn read(&mut self, request_id: u32) {
-        let reply = ui::host::current()
+        let reply = ui::process::current()
             .clipboard
             .request_text(ClipboardTarget::Clipboard);
         self.reads.push((request_id, reply));
@@ -100,8 +100,8 @@ mod tests {
     #[test]
     fn what_a_page_copied_lands_on_the_system_clipboard_and_a_password_as_a_secret() {
         let clipboard = Arc::new(Recorded::default());
-        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::process::enter(&services);
         let engine = TestEngine::new();
         engine.push_event(WebViewEvent::ClipboardWrite {
             text: "https://example.test/share".into(),
@@ -137,8 +137,8 @@ mod tests {
     #[test]
     fn a_page_paste_is_answered_with_the_system_clipboard_once_it_comes() {
         let clipboard = Arc::new(Recorded::default());
-        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-        let _host = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::process::enter(&services);
         let engine = TestEngine::new();
         engine.push_event(WebViewEvent::ClipboardRead { request_id: 4 });
         let mut widget = super::super::BrowserWidget::with_engine(engine.clone(), true);

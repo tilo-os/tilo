@@ -1,19 +1,20 @@
-//! What a session's own surfaces — its panels, sheets and cards — are, on every host: where one
-//! stands, what it shows a host that draws it, and what reaches it as a person types and points.
+//! What a session's own surfaces — its panels, sheets and cards — are, on every shell: where one
+//! stands, what it shows the shell that draws it, and what reaches it as a person types and points.
 //!
-//! A host draws the surfaces and hands them their input; the roles above the seam only speak the
-//! vocabulary here, so the same role runs on the Linux desktop's compositor and on the page.
+//! The shell draws the surfaces and hands them their input; the roles above the boundary only speak
+//! the vocabulary here, so the same role runs on the Linux desktop's compositor and on the page.
 
-mod host;
+mod shell;
 
 pub use cursor_icon::CursorIcon;
-pub use host::{
-    CELL, Changed, FrameWatch, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
+pub use shell::{
+    CELL, Changed, FrameWatch, ShellSurface, SurfaceDrag, SurfaceFrame, SurfaceIme, SurfaceLayer,
+    SurfaceTextInput,
 };
 #[cfg(unix)]
-pub use host::{HostBuffer, HostBuffers};
+pub use shell::{SurfaceBuffer, SurfaceBuffers};
 
-/// The rectangle a layer is shown on, in the host's logical layout, and the
+/// The rectangle a layer is shown on, in the shell's logical layout, and the
 /// scale it is drawn at.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
@@ -136,8 +137,8 @@ impl WindowFrame {
         Self::corners(0.0)
     }
 
-    /// A window whose host paints it whole — its card, the lift under it and the edge around it, in
-    /// the host's own colours: the compositor only shapes its corners to the host's card and draws
+    /// A window whose shell paints it whole — its card, the lift under it and the edge around it, in
+    /// the shell's own colours: the compositor only shapes its corners to the shell's card and draws
     /// nothing around it. The shell's tiles are drawn this way.
     #[must_use]
     pub const fn corners(radius: f64) -> Self {
@@ -203,14 +204,14 @@ pub struct BackdropImage {
 /// travel together, so a surface placing itself on an output cannot take the rectangle without the
 /// scale it is to draw at — which would leave it stretched.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HostedOutput {
+pub struct SurfaceOutput {
     /// Its logical rectangle `(x, y, w, h)`.
     pub rect: (i32, i32, i32, i32),
     /// Physical pixels per logical pixel it draws at.
     pub scale: f64,
 }
 
-impl HostedOutput {
+impl SurfaceOutput {
     /// The scale of the output holding `point` in the logical layout, else of the first output
     /// there is (and 1 when there is none): the scale a surface covering that point draws at.
     #[must_use]
@@ -264,10 +265,10 @@ impl Scroll {
     }
 }
 
-/// A key as a surface receives it: the host's keymap already applied, so surfaces need no keyboard
+/// A key as a surface receives it: the shell's keymap already applied, so surfaces need no keyboard
 /// state of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostKey {
+pub struct SurfaceKey {
     /// The evdev code.
     pub keycode: u32,
     /// When the key changed at the device. What a surface shows is not the person's answer to a
@@ -292,7 +293,7 @@ pub struct HostKey {
     pub modifiers: KeyModifiers,
 }
 
-/// The modifiers held alongside a [`HostKey`].
+/// The modifiers held alongside a [`SurfaceKey`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools, reason = "one flag per modifier key")]
 pub struct KeyModifiers {

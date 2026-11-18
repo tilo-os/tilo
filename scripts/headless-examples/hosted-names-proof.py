@@ -29,7 +29,7 @@ from two_people import joined  # noqa: E402
 
 sys.path.insert(0, str(REPO / "tools"))
 from atspi_external_client import (  # noqa: E402
-    APP_TREE_NODE_LIMIT, ROOT_PATH, AtspiClient, GateError, bus_pids, command,
+    APP_TREE_NODE_LIMIT, ROOT_PATH, AtspiClient, CheckError, bus_pids, command,
 )
 
 CHAT = "so.tilo.lang.chat"
@@ -88,7 +88,7 @@ def chat_says(address: str, seen: dict) -> list[str]:
             if "tilolang-app" not in client.property(ROOT_PATH, "Name"):
                 continue
             tree = client.tree(APP_TREE_NODE_LIMIT)
-        except GateError:
+        except CheckError:
             # Not an exporting application, or a subtree replaced while it was walked: the next
             # read walks it again.
             continue

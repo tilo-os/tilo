@@ -428,7 +428,7 @@ fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
 }
 
 fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
-    crate::host::parse_posix_locale(locale)
+    crate::process::parse_posix_locale(locale)
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
@@ -1734,7 +1734,7 @@ mod tests {
             "the settings' language, not the machine's"
         );
         assert_eq!(I18nManager::lookup_plain("greeting"), "Hello");
-        let day = chrono::NaiveDate::from_ymd_opt(2025, 11, 5).unwrap();
+        let day = jiff::civil::Date::new(2025, 11, 5).unwrap();
         assert_eq!(
             crate::format::day_heading(day, false),
             "Wednesday, November 5"
@@ -1843,7 +1843,7 @@ mod tests {
 
         phase a_word_from_another_languages_catalogue_is_recorded;
         // A word a window shows from a catalogue in another language is recorded, so a check can hold a
-        // window to one language: a translation the app lacks (its source language standing in), or a
+        // window to one language: a translation the app lacks (its source language in its place), or a
         // catalogue of used package read in the wrong language.
         {
             let _restore = RestoreLookupState::capture();
@@ -2466,7 +2466,6 @@ mod tests {
         phase relative_times_follow_the_host_locale_and_its_plural_rules;
         {
             use crate::format::relative;
-            use crate::history_source::agent_display_label;
             use crate::time::{Duration, SystemTime};
             use crate::widget::format_relative_time;
             let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -2494,8 +2493,6 @@ mod tests {
                 assert_eq!(relative(8 * 86_400), "vor 1 Woche");
                 assert_eq!(relative(90 * 86_400), "vor 3 Monaten");
                 assert_eq!(relative(400 * 86_400), "vor 1 Jahr");
-
-                assert_eq!(agent_display_label("Scribe"), "Scribe · Agent");
             }
         }
 
@@ -2516,7 +2513,6 @@ mod tests {
                 "relative-ago-weeks",
                 "relative-ago-months",
                 "relative-ago-years",
-                "member-agent",
                 "member-shortcut",
             ] {
                 let mut args = FluentArgs::new();

@@ -75,20 +75,20 @@ params = [
 [[resources.types]]
 name = "Language"
 cases = [
-  { name = "PlainText" },
-  { name = "Shell" },
-  { name = "Rust" },
-  { name = "Sql" },
-  { name = "Git" },
-  { name = "Python" },
-  { name = "JavaScript" },
-  { name = "Json" },
-  { name = "Yaml" },
-  { name = "Markdown" },
-  { name = "Html" },
-  { name = "Css" },
-  { name = "Toml" },
-  { name = "Dockerfile" },
+  { name = "text" },
+  { name = "shell" },
+  { name = "rust" },
+  { name = "sql" },
+  { name = "git" },
+  { name = "python" },
+  { name = "javascript" },
+  { name = "json" },
+  { name = "yaml" },
+  { name = "markdown" },
+  { name = "html" },
+  { name = "css" },
+  { name = "toml" },
+  { name = "dockerfile" },
 ]
 
 [[resources.types]]

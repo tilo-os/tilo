@@ -19,19 +19,19 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod component_inputs;
-mod host;
 mod open_file;
 pub mod registry;
+mod runner;
 mod surface;
-pub use host::{ApplicationHost, NativeProcessHost, NativeProfile, PERSONAL_WORKSPACE};
-#[cfg(test)]
-pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
+pub use runner::{ApplicationOwner, NativeProcess, NativeProfile, PERSONAL_WORKSPACE};
+#[cfg(test)]
+pub(crate) use runner::{follow_process_authority, manual_authority_watch};
 pub use surface::prepare_private_surface;
 
 pub use collaboration::state::InstanceId;
 pub type ComponentFactory =
-    fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
+    fn(ProcessContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {
     /// The app's package id.
     pub app_id: Cow<'static, str>,
@@ -42,7 +42,7 @@ pub struct ApplicationDefinition {
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host hands it a file
-    /// ([`HostContext::take_open_file`]); [`ANY_MEDIA_TYPE`] for a component that opens every file (a
+    /// ([`ProcessContext::take_open_file`]); [`ANY_MEDIA_TYPE`] for a component that opens every file (a
     /// hex editor).
     pub opens: &'static [&'static str],
     /// The app keeps one record per workspace, the workspace (a conversation everyone in the workspace
@@ -55,7 +55,7 @@ pub struct ApplicationDefinition {
     pub member_resource: bool,
     /// The app's window shows before the workspace's record is read: a record this device has opens
     /// off the frame, and the component takes it in when it is decoded
-    /// ([`HostContext::resource_opening`]).
+    /// ([`ProcessContext::resource_opening`]).
     pub opens_before_resource: bool,
     pub create: ComponentFactory,
 }
@@ -93,9 +93,9 @@ pub enum RestoreInput {
     Local(SavedInstanceView),
 }
 
-/// Host-supplied storage, identity and authority for one instance, checked by [`HostContext::prepare`]
+/// Host-supplied storage, identity and authority for one instance, checked by [`ProcessContext::prepare`]
 /// before any factory runs.
-pub struct HostContextInputs {
+pub struct ProcessContextInputs {
     pub records: ResourceStore,
     pub views: Rc<InstanceViewStore>,
     pub device_id: String,
@@ -107,7 +107,7 @@ pub struct HostContextInputs {
 }
 
 /// Explicit identity, authority and storage.
-pub struct HostContext {
+pub struct ProcessContext {
     /// The app's package id, matching both its definition and its record namespace.
     app_id: String,
     instance_id: InstanceId,
@@ -118,7 +118,7 @@ pub struct HostContext {
     reservation: Option<ResourceReservation>,
     permissions: SharedPermissions,
     author: MemberId,
-    host_person: MemberId,
+    local_person: MemberId,
     action_context: tilo_actions::ActionContext,
     /// See [`Self::write_as_author`].
     writes_as_author: bool,
@@ -129,7 +129,7 @@ pub struct HostContext {
     search_requests: Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
-    services: crate::host::HostServices,
+    services: crate::process::ProcessServices,
     models: crate::models::Models,
     provider_admin: crate::models::ProviderAdministration,
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
@@ -241,7 +241,7 @@ impl ComponentRunnerInputs {
 
 /// Explicit host preparation completed before invoking the application factory.
 pub struct PreparedComponentInputs {
-    pub context: HostContext,
+    pub context: ProcessContext,
     pub target: LaunchTarget,
     pub restore: RestoreInput,
     pub runner_inputs: ComponentRunnerInputs,
@@ -358,7 +358,7 @@ impl PendingReplacement {
 /// authority and services as the record it shows, for another record.
 #[derive(Clone)]
 pub struct Reopener {
-    host_person: MemberId,
+    local_person: MemberId,
     records: ResourceStore,
     views: Rc<InstanceViewStore>,
     device_id: String,
@@ -367,7 +367,7 @@ pub struct Reopener {
     author: MemberId,
     action_context: tilo_actions::ActionContext,
     writes_as_author: bool,
-    services: crate::host::HostServices,
+    services: crate::process::ProcessServices,
     content: Option<tilo_content::ContentStore>,
     settings: crate::storage::SettingsDocument,
     person: Option<crate::resource::person::PersonResources>,
@@ -388,7 +388,7 @@ impl Reopener {
         &self,
         definition: &ApplicationDefinition,
         record: DocumentId,
-    ) -> Result<(HostContext, LaunchTarget), LaunchError> {
+    ) -> Result<(ProcessContext, LaunchTarget), LaunchError> {
         let checkout = DocumentCheckout::new(record.clone(), definition.resource_type.clone());
         let (target, new_resource) = match self.records.try_open_resource(&checkout) {
             Ok(_) => (
@@ -403,9 +403,9 @@ impl Reopener {
             }
             Err(error) => return Err(LaunchError::Record(error)),
         };
-        let mut context = HostContext::prepare_scoped(
+        let mut context = ProcessContext::prepare_scoped(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: self.records.clone(),
                 views: Rc::clone(&self.views),
                 device_id: self.device_id.clone(),
@@ -417,7 +417,7 @@ impl Reopener {
             &target,
             new_resource,
         )?;
-        context.host_person = self.host_person.clone();
+        context.local_person = self.local_person.clone();
         context.writes_as_author = self.writes_as_author;
         context.services = self.services.clone();
         context.content.clone_from(&self.content);
@@ -464,11 +464,11 @@ impl Reopener {
     }
 }
 
-impl HostContext {
+impl ProcessContext {
     /// What the component needs to open another record of its app in its window later ([`Reopener`]).
     pub fn reopener(&self) -> Reopener {
         Reopener {
-            host_person: self.host_person.clone(),
+            local_person: self.local_person.clone(),
             records: self.records.clone(),
             views: Rc::clone(&self.views),
             device_id: self.device_id.clone(),
@@ -509,7 +509,7 @@ impl HostContext {
     /// Reserve New or open Existing before the factory, using only supplied identities.
     pub fn prepare(
         definition: &ApplicationDefinition,
-        inputs: HostContextInputs,
+        inputs: ProcessContextInputs,
         target: &LaunchTarget,
     ) -> Result<Self, LaunchError> {
         Self::prepare_scoped(definition, inputs, target, None)
@@ -524,7 +524,7 @@ impl HostContext {
     /// Rejects foreign namespaces, denied authority and occupied identities.
     pub fn prepare_new_resource(
         definition: &ApplicationDefinition,
-        inputs: HostContextInputs,
+        inputs: ProcessContextInputs,
         document_id: DocumentId,
     ) -> Result<Self, LaunchError> {
         Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(document_id))
@@ -532,11 +532,11 @@ impl HostContext {
 
     fn prepare_scoped(
         definition: &ApplicationDefinition,
-        inputs: HostContextInputs,
+        inputs: ProcessContextInputs,
         target: &LaunchTarget,
         new_document_id: Option<DocumentId>,
     ) -> Result<Self, LaunchError> {
-        let HostContextInputs {
+        let ProcessContextInputs {
             records,
             views,
             device_id,
@@ -615,7 +615,7 @@ impl HostContext {
             record,
             reservation,
             permissions,
-            host_person: author.clone(),
+            local_person: author.clone(),
             author,
             action_context,
             writes_as_author: false,
@@ -624,9 +624,9 @@ impl HostContext {
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
             search_requests: Rc::default(),
-            control_domain: crate::control_custody::ControlDomain::new(),
+            control_domain: crate::control_domain::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
-            services: crate::host::current(),
+            services: crate::process::current(),
             models: crate::models::Models::default(),
             provider_admin: crate::models::ProviderAdministration::default(),
             retirement: None,
@@ -761,7 +761,7 @@ impl HostContext {
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
         self.control_domain
-            .set_owner(crate::control_custody::ControlOwner::Component(
+            .set_owner(crate::control_domain::ControlOwner::Component(
                 self.callback_binding(),
             ));
         self.control_domain.clone()
@@ -793,8 +793,8 @@ impl HostContext {
     }
     /// The immutable local person supplied at host preparation, not the author currently attributed to
     /// an action.
-    pub fn host_person(&self) -> &MemberId {
-        &self.host_person
+    pub fn local_person(&self) -> &MemberId {
+        &self.local_person
     }
     /// A snapshot of the member's permissions at this moment.
     pub fn permissions(&self) -> PermissionContext {
@@ -815,9 +815,9 @@ impl HostContext {
     pub fn wake_handle(&self) -> WakeHandle {
         self.wake_scope.handle()
     }
-    /// The host services this component was prepared under — the ones [`crate::host::current`] resolved
+    /// The host services this component was prepared under — the ones [`crate::process::current`] resolved
     /// when the host prepared it.
-    pub fn services(&self) -> &crate::host::HostServices {
+    pub fn services(&self) -> &crate::process::ProcessServices {
         &self.services
     }
     /// This app's secrets, in the store its host provides: the system's (the Secret Service, the
@@ -990,7 +990,7 @@ impl HostContext {
     }
 }
 
-impl Drop for HostContext {
+impl Drop for ProcessContext {
     fn drop(&mut self) {
         self.retire_semantic_mount();
         self.control_domain.close();
@@ -1050,7 +1050,7 @@ impl ApplicationDefinition {
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
     pub fn instantiate(
         &self,
-        context: HostContext,
+        context: ProcessContext,
         target: LaunchTarget,
         restore: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
@@ -1073,7 +1073,7 @@ impl ApplicationDefinition {
 
     fn instantiate_checked(
         &self,
-        context: HostContext,
+        context: ProcessContext,
         target: LaunchTarget,
         restore: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
@@ -1225,7 +1225,7 @@ pub struct AppComponent {
     host_owner_wakes: Option<crate::owner_wake::OwnerWakeRegistration>,
     pub(crate) behaviour: ComponentBehaviour,
     pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
-    context: HostContext,
+    context: ProcessContext,
     pub(crate) root: Option<Box<dyn AppWidget>>,
     registry: Option<tilo_actions::ActionRegistry>,
     local_view: View,
@@ -1277,7 +1277,7 @@ impl AppComponent {
     pub fn app_id(&self) -> &str {
         self.context.app_id()
     }
-    /// Whether the component was prepared as a private window ([`HostContext::provide_private`]).
+    /// Whether the component was prepared as a private window ([`ProcessContext::provide_private`]).
     pub fn is_private(&self) -> bool {
         self.context.is_private()
     }
@@ -1289,11 +1289,11 @@ impl AppComponent {
             .as_mut()
             .and_then(|retirement| retirement.take_app())
     }
-    /// Register presentation for this component's actual document custody. Every
+    /// Register presentation for this component's actual document ownership. Every
     /// domain scope reads that record; external scopes retain their stated reason.
     /// This metadata has no new authority and follows native/headless/tile mounts.
     /// # Errors
-    /// Refuses missing, stale or foreign document custody and invalid scope metadata.
+    /// Refuses missing, stale or foreign document ownership and invalid scope metadata.
     pub fn register_document_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
@@ -1384,7 +1384,7 @@ impl AppComponent {
         Ok(())
     }
 
-    /// Preserve every recovery owner while a runner still has custody of this component.
+    /// Preserve every recovery owner while a runner still owns this component.
     pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
         let binding = self.callback_binding();
         self.close();
@@ -1446,10 +1446,24 @@ impl AppComponent {
         }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
-                if root.take_save_retry()
-                    && let Err(error) = binding.records.try_flush_resource(&binding.checkout.id)
-                {
-                    tracing::warn!(%error, "retrying a failed record save");
+                // The parts of a chain the window keeps beside its record (a
+                // notebook's notes) are saved as the record is: one still
+                // being written, or failed, is the window's to say, and its
+                // retry retries them too.
+                let parts: Vec<_> = binding
+                    .records
+                    .open_resources()
+                    .into_iter()
+                    .filter(|held| held.id.chain_part().is_some())
+                    .collect();
+                if root.take_save_retry() {
+                    for id in std::iter::once(&binding.checkout.id)
+                        .chain(parts.iter().map(|part| &part.id))
+                    {
+                        if let Err(error) = binding.records.try_flush_resource(id) {
+                            tracing::warn!(%error, "retrying a failed record save");
+                        }
+                    }
                 }
                 let refusals = binding.records.take_refusals(&binding.checkout.id);
                 for refusal in &refusals {
@@ -1468,8 +1482,30 @@ impl AppComponent {
                 if status == crate::resource::ResourceSaveStatus::Saving {
                     binding
                         .records
-                        .wake_on_save_progress(&binding.checkout.id, wake);
+                        .wake_on_save_progress(&binding.checkout.id, std::sync::Arc::clone(&wake));
                     status = binding.records.save_status(&binding.checkout.id).ok()?;
+                }
+                for part in &parts {
+                    if matches!(status, crate::resource::ResourceSaveStatus::Failed(_)) {
+                        break;
+                    }
+                    match binding.records.save_status(&part.id) {
+                        Ok(failed @ crate::resource::ResourceSaveStatus::Failed(_)) => {
+                            status = failed
+                        }
+                        Ok(crate::resource::ResourceSaveStatus::Saving) => {
+                            binding
+                                .records
+                                .wake_on_save_progress(&part.id, std::sync::Arc::clone(&wake));
+                            if binding.records.save_status(&part.id).ok()
+                                == Some(crate::resource::ResourceSaveStatus::Saving)
+                                && status == crate::resource::ResourceSaveStatus::Saved
+                            {
+                                status = crate::resource::ResourceSaveStatus::Saving;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 root.resource_save_status(status.clone());
                 Some((status, !refusals.is_empty() || !said.is_empty()))
@@ -1522,7 +1558,7 @@ impl AppComponent {
     }
 
     pub fn new(
-        context: HostContext,
+        context: ProcessContext,
         mut root: Box<dyn AppWidget>,
         mut registry: tilo_actions::ActionRegistry,
     ) -> Self {
@@ -1530,10 +1566,10 @@ impl AppComponent {
             crate::semantic_document_read::retirement::MountConstructionRetirement::new(
                 context.retirement.as_ref(),
             );
-        crate::widget::controls::install_control_custody(
+        crate::widget::controls::attach_controls(
             root.as_mut(),
             &context.control_domain(),
-            crate::control_custody::CustodyAttachment::Initial,
+            crate::control_domain::DomainAttachment::Initial,
         );
         context.control_domain().finish_initial_installation();
         if let Some(content) = context.content() {
@@ -1610,7 +1646,7 @@ impl AppComponent {
             })
             .collect()
     }
-    /// [`Self::search_providers`] as the action directory's witness reads them: the same names,
+    /// [`Self::search_providers`] as the action directory's observation reads them: the same names,
     /// generations and domains under this component's lifetime, without minting a proxy or making the
     /// root's providers.
     pub(crate) fn search_provider_descriptors(
@@ -1633,7 +1669,7 @@ impl AppComponent {
         self.context.record()
     }
     /// The content store this component reads its record's content from: the host's store joined to the
-    /// lane this window keeps, so what the window asks for is its to ask.
+    /// content link this window keeps, so what the window asks for is its to ask.
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         self.context.content().cloned()
     }
@@ -1645,10 +1681,10 @@ impl AppComponent {
             return Err(LaunchError::BindingMismatch);
         }
         if let Some(root) = &mut self.root {
-            crate::widget::controls::install_control_custody(
+            crate::widget::controls::attach_controls(
                 root.as_mut(),
                 &self.context.control_domain(),
-                crate::control_custody::CustodyAttachment::Dynamic,
+                crate::control_domain::DomainAttachment::Dynamic,
             );
         }
         self.context
@@ -2343,7 +2379,7 @@ mod bound_lifetime_tests {
     }
     #[allow(clippy::needless_pass_by_value, reason = "component factory contract")]
     fn factory(
-        mut context: HostContext,
+        mut context: ProcessContext,
         target: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
@@ -2383,9 +2419,9 @@ mod bound_lifetime_tests {
             };
             let supplied = DocumentId::for_tab(55);
             let prepare = |target, supplied| {
-                HostContext::prepare_scoped(
+                ProcessContext::prepare_scoped(
                     &definition,
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records: records.clone(),
                         views: views.clone(),
                         device_id: "D".into(),
@@ -2433,9 +2469,9 @@ mod bound_lifetime_tests {
                 create: factory,
             };
             let prepare = |checkout| {
-                HostContext::prepare(
+                ProcessContext::prepare(
                     &definition,
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records: records.clone(),
                         views: views.clone(),
                         device_id: "D".into(),
@@ -2497,9 +2533,9 @@ mod bound_lifetime_tests {
                     create: factory,
                 };
                 let prepare = |target: &LaunchTarget| {
-                    HostContext::prepare(
+                    ProcessContext::prepare(
                         &definition,
-                        HostContextInputs {
+                        ProcessContextInputs {
                             records: records.clone(),
                             views: views.clone(),
                             device_id: "D".into(),
@@ -2587,9 +2623,9 @@ mod bound_lifetime_tests {
                     opens_before_resource: false,
                     create: factory,
                 };
-                let context = HostContext::prepare(
+                let context = ProcessContext::prepare(
                     &definition,
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records,
                         views,
                         device_id: "D".into(),
@@ -2662,9 +2698,9 @@ mod portable_tests {
             let views = Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap());
             let definition = probe::definition(probe::probe_factory);
             let prepare = |instance_id| {
-                HostContext::prepare(
+                ProcessContext::prepare(
                     &definition,
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records: records.clone(),
                         views: views.clone(),
                         device_id: probe::DEVICE.into(),
@@ -2715,7 +2751,7 @@ mod portable_tests {
             assert!(retained.is_available());
         }
 
-        phase trusted_host_person_survives_author_changes_and_reopening;
+        phase trusted_local_person_survives_author_changes_and_reopening;
         {
             let cache =
                 crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
@@ -2723,9 +2759,9 @@ mod portable_tests {
                 .open(probe::APP, probe::WORKSPACE)
                 .unwrap();
             let definition = probe::definition(probe::probe_factory);
-            let mut context = HostContext::prepare(
+            let mut context = ProcessContext::prepare(
                 &definition,
-                HostContextInputs {
+                ProcessContextInputs {
                     records,
                     views: Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap()),
                     device_id: probe::DEVICE.into(),
@@ -2738,15 +2774,15 @@ mod portable_tests {
             )
             .unwrap();
             context.author = MemberId::person("agent");
-            assert_eq!(context.host_person(), &probe::author());
-            assert_eq!(context.callback_binding().host_person, probe::author());
+            assert_eq!(context.local_person(), &probe::author());
+            assert_eq!(context.callback_binding().local_person, probe::author());
             let (reopened, _) = context
                 .reopener()
                 .prepare(&definition, DocumentId::minted())
                 .unwrap();
             assert_eq!(reopened.author(), &MemberId::person("agent"));
-            assert_eq!(reopened.host_person(), &probe::author());
-            assert_eq!(reopened.callback_binding().host_person, probe::author());
+            assert_eq!(reopened.local_person(), &probe::author());
+            assert_eq!(reopened.callback_binding().local_person, probe::author());
         }
 
         // The compositor runs apps on its frame loop: checkpointing and closing
@@ -2754,7 +2790,7 @@ mod portable_tests {
         // and the document and View still reach the disk.
         phase checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage;
         {
-            let host = probe::ProbeHost::new();
+            let host = probe::ProbeHarness::new();
             let root = host.root();
             let mut component =
                 probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -2768,7 +2804,7 @@ mod portable_tests {
                 drop(component);
                 checkout
             };
-            let probe::ProbeHost {
+            let probe::ProbeHarness {
                 owners,
                 records,
                 views,
@@ -2798,9 +2834,9 @@ mod portable_tests {
             let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::WORKSPACE).unwrap());
             let definition = probe::definition(probe::probe_factory);
             let prepare = |views, permissions| {
-                HostContext::prepare(
+                ProcessContext::prepare(
                     &definition,
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records: records.clone(),
                         views,
                         device_id: probe::DEVICE.into(),
@@ -2840,9 +2876,9 @@ mod portable_tests {
             let mut denied = probe::definition(probe::probe_factory);
             denied.required.push(probe::denied_scope());
             assert!(matches!(
-                HostContext::prepare(
+                ProcessContext::prepare(
                     &denied,
-                    HostContextInputs {
+                    ProcessContextInputs {
                         records,
                         views,
                         device_id: probe::DEVICE.into(),

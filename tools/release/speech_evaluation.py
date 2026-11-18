@@ -111,7 +111,7 @@ def freeze(manifest, root, destination):
              'license': manifest['license'], 'attribution': manifest['attribution'],
              'split_policy': 'archive indices 0..7 exposed; 8..10 reserved, never tune on holdout',
              'selection': 'fixed archive order, no model-error-based selection',
-             'holdout_status': 'reserved, not decoded by this tool; exposure requires an operator ledger',
+             'holdout_status': 'reserved, not decoded by this tool; exposure requires an operator log',
              'required_missing_coverage': REQUIRED_COVERAGE, 'cases': cases,
              'numeric_repair_text_only': [
                  {'language': 'en', 'raw': 'Take two, uh, no, three.', 'cleaned': 'Take three.'},

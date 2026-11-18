@@ -39,7 +39,7 @@ use tilo_session::platform::fabric::{
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
-use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeSeams};
+use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeIo};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -459,7 +459,7 @@ fn session_with(
             }),
             apps: Some(host),
             fabric: Some(fabric),
-            wake_seams: WakeSeams {
+            wake_io: WakeIo {
                 packets: packets.map(|packets| packets as Arc<dyn MagicPackets>),
                 interfaces: interfaces.map(|interfaces| interfaces as Arc<dyn WakeInterfaces>),
             },
@@ -581,7 +581,7 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
 }
 
 /// A device of the person's heard on this machine's local network says so on its row: the two reach
-/// each other there without a relay.
+/// each other there without a server.
 #[test]
 fn a_device_on_the_local_network_is_listed_as_nearby() {
     let _settled = ui::motion::testing::settled();

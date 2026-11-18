@@ -5,7 +5,7 @@
 //! The session bakes and signs the tilolang runtime bundle itself. This tool builds each package
 //! into a `.tapp` naming the session's exact Tilo runtime, installs it into each session's state,
 //! starts the sessions and opens the app through the session's own action
-//! (`applications <id>`), so the launcher starts it: its own id, window, custody, record and
+//! (`applications <id>`), so the launcher starts it: its own id, window, ownership, record and
 //! permissions, as on a real system.
 //!
 //! From then on it is `tilolang dev` over those sessions ([`crate::dev`]): every saved `.tl`

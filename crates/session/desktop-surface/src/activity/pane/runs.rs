@@ -133,8 +133,8 @@ impl WorkspaceActivityPane {
         wire::Sessions {
             sessions,
             total,
-            pending: self.feed_coverage.pending_tree,
             mutations: self.host.mutations_available(),
+            ..wire::Sessions::default()
         }
     }
 
@@ -174,7 +174,7 @@ impl WorkspaceActivityPane {
             };
             let summary = step.sentence();
             let undo = self.can_undo_agent_record(step).then(|| wire::Offer {
-                action: wire::DetailAction::UndoRecord,
+                action: wire::DetailAction::UndoEntry,
                 label: t("activity-detail-undo-step"),
             });
             actions.extend(self.segment_actions(&segment, workspace, Some(&summary), undo));
@@ -327,7 +327,7 @@ impl WorkspaceActivityPane {
         self.undo_blocked(std::slice::from_ref(&step))
             .is_none()
             .then(|| wire::Offer {
-                action: wire::DetailAction::UndoRecord,
+                action: wire::DetailAction::UndoEntry,
                 label: t("activity-detail-undo-step"),
             })
     }

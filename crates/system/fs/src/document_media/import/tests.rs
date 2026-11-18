@@ -143,7 +143,7 @@ async fn explicit_import_without_historical_provenance_is_new_durable_reachabili
 }
 
 #[tokio::test]
-async fn changed_custody_arguments_revocation_expiry_and_cross_host_permits_fail() {
+async fn changed_ownership_arguments_revocation_expiry_and_cross_host_permits_fail() {
     let source = DocumentMedia::new(Arc::new(ContentStore::memory()));
     let destination = DocumentMedia::new(Arc::new(ContentStore::memory()));
     let hash = source

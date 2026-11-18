@@ -1,4 +1,4 @@
-//! A value an [`ActionHost`](super::ActionHost) produces later.
+//! A value an [`ActionProvider`](super::ActionProvider) produces later.
 //!
 //! Some answers need the owner of an action — an application that must
 //! re-resolve a live directory row — and must not block the caller while it

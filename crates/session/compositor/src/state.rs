@@ -46,15 +46,14 @@ use smithay::wayland::xwayland_shell::XWaylandShellState;
 
 use crate::app_liveness;
 use crate::input::InputEvent;
-use crate::keys::HostKeys;
+use crate::keys::SurfaceKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
 use tilo_session_core::super_tap::{self, SuperTap};
 use tilo_session_core::surface::{
-    HostKey, HostedOutput, KeyClaim, KeyModifiers, Scroll, SurfaceHost,
+    KeyClaim, KeyModifiers, Scroll, ShellSurface, SurfaceKey, SurfaceOutput,
 };
 
 /// Per-client data every Wayland client carries.
-#[derive(Default)]
 pub struct ClientState {
     compositor: CompositorClientState,
     /// The session started this client and trusts it with privileged protocols (locking the
@@ -74,12 +73,57 @@ pub struct ClientState {
     /// The session handed this connection to the process in [`Self::pid`] itself: a socket pair
     /// names the session as its peer, so the pid it was handed to is the client's.
     handed: bool,
+    /// When the connection arrived: a keeper's claim on a selection counts from here.
+    attached: std::time::Instant,
+    /// Whether this connection has spent its one claim on each selection (see
+    /// [`crate::selection::Selection`]).
+    claimed: [std::sync::atomic::AtomicBool; 2],
+}
+
+impl Default for ClientState {
+    fn default() -> Self {
+        Self {
+            compositor: CompositorClientState::default(),
+            trusted: false,
+            pid: AtomicU32::new(0),
+            exited: Arc::default(),
+            output: None,
+            touch_bound: AtomicBool::new(false),
+            handed: false,
+            attached: std::time::Instant::now(),
+            claimed: [
+                std::sync::atomic::AtomicBool::new(false),
+                std::sync::atomic::AtomicBool::new(false),
+            ],
+        }
+    }
 }
 
 impl ClientState {
     /// Whether the client may use privileged protocols.
     pub(crate) const fn trusted(&self) -> bool {
         self.trusted
+    }
+
+    /// Whether the session handed this connection over itself.
+    pub(crate) const fn handed(&self) -> bool {
+        self.handed
+    }
+
+    /// When this connection arrived.
+    pub(crate) const fn attached(&self) -> std::time::Instant {
+        self.attached
+    }
+
+    /// Whether this connection has spent its one claim on `selection`, marking it spent.
+    pub(crate) fn spend_claim(&self, selection: crate::selection::Selection) -> bool {
+        let index = match selection {
+            crate::selection::Selection::Clipboard => 0,
+            crate::selection::Selection::Primary => 1,
+        };
+        self.claimed
+            .get(index)
+            .is_some_and(|claimed| claimed.swap(true, Ordering::Relaxed))
     }
 
     /// The output the session connected the client for, when it named one.
@@ -136,8 +180,8 @@ pub(crate) struct Closing {
 pub(crate) enum PointerTarget {
     /// A client surface (or nothing): the seat's own focus tracks which.
     Clients,
-    /// The hosted surface at this index of [`State::hosts`].
-    Host(usize),
+    /// The surface at this index of [`State::surfaces`].
+    Surface(usize),
 }
 
 /// A running Xwayland server: the window manager that makes its windows toplevels the desktop
@@ -160,7 +204,7 @@ impl X11Server {
     }
 }
 
-/// The compositor's state: protocol globals, windows, seat, policy and hosts.
+/// The compositor's state: protocol globals, windows, seat, policy and surfaces.
 #[allow(
     clippy::struct_field_names,
     reason = "smithay's handler traits name each protocol's state `*_state`"
@@ -187,11 +231,11 @@ pub struct State {
     /// The surfaces that place themselves on a layer of an output (`zwlr_layer_shell_v1`).
     pub(crate) layers: crate::layer::Layers,
     pub(crate) policy: Box<dyn WindowPolicy>,
-    pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
-    /// The buffers the hosted surfaces' frames are drawn from, by the frame they hold.
+    pub(crate) surfaces: Vec<Box<dyn ShellSurface>>,
+    /// The buffers the surfaces' frames are drawn from, by the frame they hold.
     pub(crate) uploads: crate::uploads::Uploads,
-    /// The outputs the hosted surfaces were last told of.
-    told_outputs: Vec<HostedOutput>,
+    /// The outputs the surfaces were last told of.
+    told_outputs: Vec<SurfaceOutput>,
     /// The connector the person made primary, as the configuration names it, whether or not it is
     /// lit right now.
     primary_output: Option<String>,
@@ -201,12 +245,12 @@ pub struct State {
     told_primary: Option<String>,
     pub(crate) pointer: Point<f64, Logical>,
     pub(crate) pointer_target: PointerTarget,
-    /// The hosted surface a press is held on, by its index in `hosts`: it keeps the pointer until
+    /// The surface a press is held on, by its index in `surfaces`: it keeps the pointer until
     /// the press ends, over windows too, as a client keeps the pointer it was pressed on.
-    pressed_host: Option<usize>,
+    pressed_surface: Option<usize>,
     /// The seats beside the person's: an agent's, a viewer's (§ seats).
     pub(crate) seats: crate::seats::Seats,
-    /// A seat's keys are the app-facing seat's for this delivery: no hosted surface takes them, and
+    /// A seat's keys are the app-facing seat's for this delivery: no surface takes them, and
     /// they reach the client the seat aims at.
     pub(crate) seat_keys_only: bool,
     pub(crate) protocols: crate::protocols::Protocols,
@@ -247,8 +291,8 @@ pub struct State {
     /// What the shell draws over one window itself, under the windows: the bar of a window covering
     /// its display, over its content. That window and the ones behind it are drawn around it.
     pub(crate) over_window: Option<(u64, (i32, i32, i32, i32))>,
-    /// How many layers each hosted surface drew in the last frame, by its index in `hosts`: what a
-    /// host drew and no longer draws is what the screen keeps until it is drawn again.
+    /// How many layers each surface drew in the last frame, by its index in `surfaces`: what a
+    /// surface drew and no longer draws is what the screen keeps until it is drawn again.
     pub(crate) layer_counts: Vec<(usize, usize)>,
     /// The shadows and edges drawn so far.
     pub(crate) frame_images: crate::window_frame::FrameImages,
@@ -267,8 +311,8 @@ pub struct State {
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
-    /// The keys hosted surfaces hold, and their repeat.
-    pub(crate) host_keys: HostKeys,
+    /// The keys surfaces hold, and their repeat.
+    pub(crate) surface_keys: SurfaceKeys,
     /// What a dead key's or the Compose key's sequence types; `None` when the session's locale has
     /// no compose table.
     pub(crate) compose: Option<crate::compose::Compose>,
@@ -399,7 +443,7 @@ impl State {
             popups: PopupManager::default(),
             layers: crate::layer::Layers::new(display),
             policy,
-            hosts: Vec::new(),
+            surfaces: Vec::new(),
             uploads: crate::uploads::Uploads::default(),
             told_outputs: Vec::new(),
             primary_output: None,
@@ -407,7 +451,7 @@ impl State {
             told_primary: None,
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
-            pressed_host: None,
+            pressed_surface: None,
             seats: crate::seats::Seats::default(),
             seat_keys_only: false,
             protocols,
@@ -445,7 +489,7 @@ impl State {
             remote_input: crate::remote_input::Firewall::default(),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
-            host_keys: HostKeys::default(),
+            surface_keys: SurfaceKeys::default(),
             compose: crate::compose::Compose::for_session_locale(),
             buttons_down: std::collections::BTreeSet::new(),
             typed_at: None,
@@ -542,22 +586,22 @@ impl State {
         self.mark_redraw_all();
     }
 
-    /// The hosted surface that has the pointer.
-    pub(crate) fn host_under_pointer(&self) -> Option<&dyn SurfaceHost> {
+    /// The surface that has the pointer.
+    pub(crate) fn surface_under_pointer(&self) -> Option<&dyn ShellSurface> {
         match self.pointer_target {
-            PointerTarget::Host(index) => self.hosts.get(index).map(AsRef::as_ref),
+            PointerTarget::Surface(index) => self.surfaces.get(index).map(AsRef::as_ref),
             PointerTarget::Clients => None,
         }
     }
 
-    /// The outputs as hosted surfaces are told them: each one's logical rectangle and the scale it
+    /// The outputs as surfaces are told them: each one's logical rectangle and the scale it
     /// draws at.
-    pub(crate) fn hosted_outputs(&self) -> Vec<HostedOutput> {
+    pub(crate) fn surface_outputs(&self) -> Vec<SurfaceOutput> {
         self.space
             .outputs()
             .filter_map(|output| {
                 let rect = self.space.output_geometry(output)?;
-                Some(HostedOutput {
+                Some(SurfaceOutput {
                     rect: (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h),
                     scale: output.current_scale().fractional_scale(),
                 })
@@ -565,7 +609,7 @@ impl State {
             .collect()
     }
 
-    /// Tell every hosted surface where the outputs are, and the policy which
+    /// Tell every surface where the outputs are, and the policy which
     /// monitors they hold and which of them is primary, when that changed
     /// since they were last told (an output came or went, changed mode,
     /// scale or place, or the person made another display primary).
@@ -584,7 +628,7 @@ impl State {
             self.told_monitors = monitors;
             self.told_primary = primary;
         }
-        let outputs = self.hosted_outputs();
+        let outputs = self.surface_outputs();
         if outputs == self.told_outputs {
             return;
         }
@@ -592,8 +636,8 @@ impl State {
         self.place_layers();
         // A lock screen up on a display takes the size that display has now.
         self.fit_lock_surfaces();
-        for host in &mut self.hosts {
-            host.outputs_changed(&outputs);
+        for surface in &mut self.surfaces {
+            surface.outputs_changed(&outputs);
         }
         self.told_outputs = outputs;
     }
@@ -880,26 +924,25 @@ impl State {
         None
     }
 
-    /// The hosted surface the pointer at `point` belongs to: one above the windows where it drew,
+    /// The surface the pointer at `point` belongs to: one above the windows where it drew,
     /// else, where no window is, one beneath them.
-    pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
+    pub(crate) fn shell_surface_under(&self, point: Point<f64, Logical>) -> Option<usize> {
         if self.locked() {
             // Only what stands over the lock shows, and it takes the pointer where it drew: the
             // session's own lock view, when the lock screen's app is not there to show the lock.
-            return self
-                .hosts
-                .iter()
-                .rposition(|host| host.above_lock() && host.accepts_pointer(point.x, point.y));
+            return self.surfaces.iter().rposition(|surface| {
+                surface.above_lock() && surface.accepts_pointer(point.x, point.y)
+            });
         }
         // A layer surface over the windows (quick settings, a panel's popover) is drawn over every
-        // hosted surface, so the pointer on it is its own, as on the shell under it.
+        // surface, so the pointer on it is its own, as on the shell under it.
         if self.layer_surface_under(point, true).is_some() {
             return None;
         }
-        // The last host draws on top, so it is asked first.
+        // The last surface draws on top, so it is asked first.
         let under = |below: bool| {
-            self.hosts.iter().rposition(|host| {
-                host.below_windows() == below && host.accepts_pointer(point.x, point.y)
+            self.surfaces.iter().rposition(|surface| {
+                surface.below_windows() == below && surface.accepts_pointer(point.x, point.y)
             })
         };
         under(false).or_else(|| {
@@ -910,7 +953,7 @@ impl State {
         })
     }
 
-    /// Route one input event to the hosted surface or client it belongs to.
+    /// Route one input event to the surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
         self.handle_input_at(event, tilo_clock::now());
     }
@@ -988,7 +1031,7 @@ impl State {
             }
         }
         // Pointing changes what shows: hover, a press, the pointer itself. A key does not: what
-        // takes it shows the answer (a client's commit, a hosted surface's frame, the focus or
+        // takes it shows the answer (a client's commit, a surface's frame, the focus or
         // the windows it moves), and a frame drawn for the key itself would hold that answer back
         // to the display's next refresh.
         if !matches!(event, InputEvent::Key { .. } | InputEvent::Switch { .. }) {
@@ -1035,7 +1078,7 @@ impl State {
         }
     }
 
-    /// Route a key: a press to the hosted surface that claims it, else to
+    /// Route a key: a press to the surface that claims it, else to
     /// the topmost one that wants the keyboard, else to the focused client;
     /// a release to where its press went ([`crate::keys`]). `at` is when the
     /// device says the key changed.
@@ -1085,7 +1128,7 @@ impl State {
                     .raw_latin_sym_or_raw_current_sym()
                     .unwrap_or(unmodified);
                 let text = pressed.then(|| state.typed(keysym, modifiers)).flatten();
-                let key = HostKey {
+                let key = SurfaceKey {
                     keycode,
                     at,
                     pressed,
@@ -1105,22 +1148,22 @@ impl State {
                             || !(modifiers.ctrl || modifiers.alt || modifiers.logo)),
                 );
                 if !pressed {
-                    if let Some(host) = state.host_keys.release(keycode) {
+                    if let Some(surface) = state.surface_keys.release(keycode) {
                         // A held modifier's release also reaches what else answers it: a surface
                         // that opened while it was down (a switcher), whose press went to the
                         // window it now stands over.
                         if crate::sticky_keys::is_modifier(keycode) {
-                            state.release_beside(&key, host);
+                            state.release_beside(&key, surface);
                         }
-                        return FilterResult::Intercept((host, key));
+                        return FilterResult::Intercept((surface, key));
                     }
                     // A key no surface took the press of, let go: a surface that takes it now (a
                     // shell's switcher, which opened after Alt went down) hears it, so a held
                     // modifier's release reaches what it opened. Otherwise it goes on to the client
                     // as any release does. A client holding the desktop's shortcuts had the press,
                     // so it has the release too.
-                    return match state.release_host(&key) {
-                        Some(host) => FilterResult::Intercept((host, key)),
+                    return match state.release_surface(&key) {
+                        Some(surface) => FilterResult::Intercept((surface, key)),
                         None => FilterResult::Forward,
                     };
                 }
@@ -1135,7 +1178,7 @@ impl State {
                 let inhibited = state.shortcut_inhibit.is_active();
                 let repeats = !handle.modified_sym().is_modifier_key();
                 let Some(index) =
-                    state.press_host(&key, locked, inhibited, repeats, Instant::now())
+                    state.press_surface(&key, locked, inhibited, repeats, Instant::now())
                 else {
                     return FilterResult::Forward;
                 };
@@ -1144,11 +1187,11 @@ impl State {
         );
         match routed {
             Some((index, key)) => {
-                if let Some(host) = self.hosts.get_mut(index) {
-                    host.key(&key);
+                if let Some(surface) = self.surfaces.get_mut(index) {
+                    surface.key(&key);
                 }
             }
-            // A press no hosted surface took reached the client that has the keyboard: its next
+            // A press no surface took reached the client that has the keyboard: its next
             // commit answers it.
             None => {
                 if pressed
@@ -1167,50 +1210,54 @@ impl State {
         }
     }
 
-    /// A released modifier reaches the hosted surfaces that answer it besides the one that had its
+    /// A released modifier reaches the surfaces that answer it besides the one that had its
     /// press: what opened while it was held hears it let go. A client holding the desktop's
     /// shortcuts has its releases too.
-    fn release_beside(&mut self, key: &HostKey, recorded: usize) {
+    fn release_beside(&mut self, key: &SurfaceKey, recorded: usize) {
         if self.seat_keys_only || self.shortcut_inhibit.is_active() {
             return;
         }
         let locked = self.locked();
         let composing = self.composing();
-        for index in (0..self.hosts.len()).rev() {
+        for index in (0..self.surfaces.len()).rev() {
             if index == recorded || composing == Some(index) {
                 continue;
             }
             let claim = self
-                .hosts
+                .surfaces
                 .get_mut(index)
-                .map_or(KeyClaim::Pass, |host| host.claim_key(key, locked, false));
+                .map_or(KeyClaim::Pass, |surface| {
+                    surface.claim_key(key, locked, false)
+                });
             if claim == KeyClaim::Pass {
                 continue;
             }
-            if let Some(host) = self.hosts.get_mut(index) {
-                host.key(key);
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.key(key);
             }
             return;
         }
     }
 
-    /// The hosted surface a released key belongs to: one that claims it, from the top of the stack
+    /// The surface a released key belongs to: one that claims it, from the top of the stack
     /// down. A held modifier's release reaches what it opened; a client holding the desktop's
     /// shortcuts has its releases too.
-    fn release_host(&mut self, key: &HostKey) -> Option<usize> {
+    fn release_surface(&mut self, key: &SurfaceKey) -> Option<usize> {
         if self.seat_keys_only || self.shortcut_inhibit.is_active() {
             return None;
         }
         let locked = self.locked();
         let composing = self.composing();
-        for index in (0..self.hosts.len()).rev() {
+        for index in (0..self.surfaces.len()).rev() {
             if composing == Some(index) {
                 continue;
             }
             let claim = self
-                .hosts
+                .surfaces
                 .get_mut(index)
-                .map_or(KeyClaim::Pass, |host| host.claim_key(key, locked, false));
+                .map_or(KeyClaim::Pass, |surface| {
+                    surface.claim_key(key, locked, false)
+                });
             if claim != KeyClaim::Pass {
                 return Some(index);
             }
@@ -1218,15 +1265,15 @@ impl State {
         None
     }
 
-    /// The hosted surface a pressed key belongs to, its press recorded: one that claims it, else
-    /// the topmost that wants the keyboard. While locked the lock client has it, and no hosted
+    /// The surface a pressed key belongs to, its press recorded: one that claims it, else
+    /// the topmost that wants the keyboard. While locked the lock client has it, and no surface
     /// surface takes one.
     /// The field an input method composes in takes no key itself: the method has the keyboard, and
     /// gives back what it leaves (see [`State::handle_ime_key`]). Every other surface still answers
     /// its chords.
-    fn press_host(
+    fn press_surface(
         &mut self,
-        key: &HostKey,
+        key: &SurfaceKey,
         locked: bool,
         inhibited: bool,
         repeats: bool,
@@ -1238,33 +1285,38 @@ impl State {
             return None;
         }
         let composing = self.composing();
-        for index in (0..self.hosts.len()).rev() {
+        for index in (0..self.surfaces.len()).rev() {
             if composing == Some(index) {
                 continue;
             }
-            let claim = self.hosts.get_mut(index).map_or(KeyClaim::Pass, |host| {
-                host.claim_key(key, locked, inhibited)
-            });
+            let claim = self
+                .surfaces
+                .get_mut(index)
+                .map_or(KeyClaim::Pass, |surface| {
+                    surface.claim_key(key, locked, inhibited)
+                });
             if claim != KeyClaim::Pass {
-                self.host_keys
+                self.surface_keys
                     .press(index, key, claim == KeyClaim::TakeRepeating, now);
                 return Some(index);
             }
         }
         let wanting = self
-            .hosts
+            .surfaces
             .iter()
             .enumerate()
             .rev()
-            .find(|(index, host)| {
-                (!locked || host.above_lock()) && Some(*index) != composing && host.wants_keyboard()
+            .find(|(index, surface)| {
+                (!locked || surface.above_lock())
+                    && Some(*index) != composing
+                    && surface.wants_keyboard()
             })
             .map(|(index, _)| index)?;
-        self.host_keys.press(wanting, key, repeats, now);
+        self.surface_keys.press(wanting, key, repeats, now);
         Some(wanting)
     }
 
-    /// What pressing the key with `keysym` types into a hosted surface's
+    /// What pressing the key with `keysym` types into a surface's
     /// field, the modifiers held being `modifiers`: the key's own character,
     /// or what the dead key or the Compose key before it finishes into.
     fn typed(&mut self, keysym: Keysym, modifiers: KeyModifiers) -> Option<String> {
@@ -1294,16 +1346,16 @@ impl State {
         self.typed_at.is_some_and(|at| at.elapsed() <= TYPING_PAUSE)
     }
 
-    /// Hand hosted surfaces the repeats of the keys they hold that are due.
+    /// Hand surfaces the repeats of the keys they hold that are due.
     pub(crate) fn repeat_keys(&mut self) {
-        for (index, key) in self.host_keys.due(Instant::now()) {
-            if let Some(host) = self.hosts.get_mut(index) {
-                host.key(&key);
+        for (index, key) in self.surface_keys.due(Instant::now()) {
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.key(&key);
             }
         }
     }
 
-    /// The modifiers the seat's keyboard holds now, as a hosted surface hears them.
+    /// The modifiers the seat's keyboard holds now, as a surface hears them.
     fn held_modifiers(&self) -> KeyModifiers {
         self.seat
             .get_keyboard()
@@ -1321,11 +1373,11 @@ impl State {
     }
 
     pub(crate) fn pointer_axis(&mut self, scroll: Scroll, time: u32) {
-        if let PointerTarget::Host(index) = self.pointer_target {
+        if let PointerTarget::Surface(index) = self.pointer_target {
             let held = self.held_modifiers();
-            if let Some(host) = self.hosts.get_mut(index) {
-                host.pointer_modifiers(held);
-                host.pointer_axis(scroll);
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.pointer_modifiers(held);
+                surface.pointer_axis(scroll);
             }
             return;
         }
@@ -1353,32 +1405,32 @@ impl State {
             return;
         }
         self.x11_drag_motion(location);
-        // A client's press keeps the pointer until it is released, over hosted surfaces too.
+        // A client's press keeps the pointer until it is released, over surfaces too.
         let grabbed = self
             .seat
             .get_pointer()
             .is_some_and(|pointer| pointer.is_grabbed());
-        let target = if let Some(index) = self.pressed_host {
-            PointerTarget::Host(index)
+        let target = if let Some(index) = self.pressed_surface {
+            PointerTarget::Surface(index)
         } else if grabbed {
             PointerTarget::Clients
         } else {
-            self.host_under(location)
-                .map_or(PointerTarget::Clients, PointerTarget::Host)
+            self.shell_surface_under(location)
+                .map_or(PointerTarget::Clients, PointerTarget::Surface)
         };
-        if let PointerTarget::Host(old) = self.pointer_target
+        if let PointerTarget::Surface(old) = self.pointer_target
             && target != self.pointer_target
-            && let Some(host) = self.hosts.get_mut(old)
+            && let Some(surface) = self.surfaces.get_mut(old)
         {
-            host.pointer_leave();
+            surface.pointer_leave();
         }
         self.pointer_target = target;
         let focus = match target {
-            PointerTarget::Host(index) => {
-                if let Some(host) = self.hosts.get_mut(index) {
-                    host.pointer_motion(location.x, location.y);
+            PointerTarget::Surface(index) => {
+                if let Some(surface) = self.surfaces.get_mut(index) {
+                    surface.pointer_motion(location.x, location.y);
                 }
-                // Clients lose the pointer while a hosted surface has it.
+                // Clients lose the pointer while a surface has it.
                 None
             }
             PointerTarget::Clients if self.locked() => self.lock_surface_under(location),
@@ -1410,12 +1462,12 @@ impl State {
         } else {
             self.buttons_down.remove(&button);
             if self.buttons_down.is_empty() {
-                self.pressed_host = None;
+                self.pressed_surface = None;
             }
             // Every surface hears the press end, before any of them acts on the button: a press and
             // what it is still doing are over together.
-            for host in &mut self.hosts {
-                host.press_ended(self.pointer.x, self.pointer.y);
+            for surface in &mut self.surfaces {
+                surface.press_ended(self.pointer.x, self.pointer.y);
             }
         }
         if self.drag_button(button, pressed, serial, time) {
@@ -1427,20 +1479,20 @@ impl State {
         if pressed {
             self.policy.pointer_pressed(self.pointer.x, self.pointer.y);
             let target = self.pointer_target;
-            for (index, host) in self.hosts.iter_mut().enumerate() {
-                if target != PointerTarget::Host(index) {
-                    host.pressed_elsewhere(self.pointer.x, self.pointer.y);
+            for (index, surface) in self.surfaces.iter_mut().enumerate() {
+                if target != PointerTarget::Surface(index) {
+                    surface.pressed_elsewhere(self.pointer.x, self.pointer.y);
                 }
             }
         }
-        if let PointerTarget::Host(index) = self.pointer_target {
+        if let PointerTarget::Surface(index) = self.pointer_target {
             if pressed {
-                self.pressed_host = Some(index);
+                self.pressed_surface = Some(index);
             }
             let held = self.held_modifiers();
-            if let Some(host) = self.hosts.get_mut(index) {
-                host.pointer_modifiers(held);
-                host.pointer_button(button, pressed);
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.pointer_modifiers(held);
+                surface.pointer_button(button, pressed);
             }
             return;
         }
@@ -1493,18 +1545,22 @@ impl State {
         {
             return;
         }
-        let Some(index) = self.hosts.iter().rposition(|host| host.below_windows()) else {
+        let Some(index) = self
+            .surfaces
+            .iter()
+            .rposition(|surface| surface.below_windows())
+        else {
             return;
         };
         let (x, y) = (self.pointer.x, self.pointer.y);
-        let Some(host) = self.hosts.get_mut(index) else {
+        let Some(surface) = self.surfaces.get_mut(index) else {
             return;
         };
-        host.pointer_motion(x, y);
-        if !host.carries_window_at(x, y) {
+        surface.pointer_motion(x, y);
+        if !surface.carries_window_at(x, y) {
             return;
         }
-        self.pointer_target = PointerTarget::Host(index);
+        self.pointer_target = PointerTarget::Surface(index);
         // The window's client loses the pointer while the desktop carries its window.
         if let Some(pointer) = self.seat.get_pointer() {
             pointer.motion(

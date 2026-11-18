@@ -39,7 +39,7 @@ pub fn run(subject: &Subject<'_>) {
     accepted_writes_become_durable(subject);
     leases_are_exclusive_until_dropped(subject);
     shared_leases_coexist_and_exclude_an_exclusive_owner(subject);
-    one_claimant_wins_custody(subject);
+    one_claimant_wins_ownership(subject);
     keys_never_alias(subject);
     views_round_trip(subject);
 }
@@ -198,7 +198,7 @@ fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
     }
 }
 
-fn one_claimant_wins_custody(subject: &Subject<'_>) {
+fn one_claimant_wins_ownership(subject: &Subject<'_>) {
     let store = subject.store;
     let package = format!("so.tilo.claim-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let key = StorageKey::document(package.clone(), "w1", "former");

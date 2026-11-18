@@ -20,10 +20,7 @@ impl ChatApp {
     /// about a third's name is a difference nobody can settle. So the workspace
     /// answers, and a peer only ever supplies its id.
     pub fn display_name(&self, id: &MemberId) -> String {
-        if let Some(name) = Some(id)
-            .filter(|member| !member.is_person())
-            .and_then(|member| self.known_agent_name(member.id()))
-        {
+        if let Some(name) = self.agent_name(id, None) {
             return name;
         }
         if self.is_me(id)
@@ -35,6 +32,16 @@ impl ChatApp {
             && !n.trim().is_empty()
         {
             let n = self.workspace_labels.label(id.id(), n);
+            return if self.is_me(id) {
+                n
+            } else {
+                crate::identity::shared_name_label(id, &n)
+            };
+        }
+        // An app's code answers where no window heard the member list: the members the device
+        // lends it answer in the same place.
+        if let Some(n) = ui::tilo_resource::members::name_of(id) {
+            let n = self.workspace_labels.label(id.id(), &n);
             return if self.is_me(id) {
                 n
             } else {
@@ -61,20 +68,14 @@ impl ChatApp {
         id.id().to_owned()
     }
 
-    /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
-    /// it, else the name its device announced while here, else the name it introduced itself by.
-    /// `None` for one the workspace names not.
+    /// What the workspace calls the agent `agent` (its bare id): the name its member list gives
+    /// it, else the name its rows here keep. `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
         let id = MemberId::agent(agent);
-        self.workspace_agent_names
-            .get(agent)
+        self.workspace_names
+            .get(&id)
+            .filter(|name| !name.trim().is_empty())
             .cloned()
-            .or_else(|| {
-                self.workspace_names
-                    .get(&id)
-                    .filter(|name| !name.trim().is_empty())
-                    .cloned()
-            })
             .or_else(|| {
                 self.users
                     .iter()
@@ -100,7 +101,7 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        if let Some(agent) = self.acting_name(id, None, None, crate::identity::RoleWord::InName) {
+        if let Some(agent) = self.agent_name(id, None) {
             return agent;
         }
         let named = self.display_name(id);
@@ -116,35 +117,21 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
-    /// What to call the agent or app `id`: the name it wrote under (`kept`), else the workspace's
-    /// name for it, with the person it acted for as `acting` kept it where it wrote, else as
-    /// presence says ("Helper for Ada"), after it left too. `None` for anyone else.
-    pub(crate) fn acting_name(
-        &self,
-        id: &MemberId,
-        acting: Option<&ui::tilo_resource::Acting>,
-        kept: Option<&str>,
-        word: crate::identity::RoleWord,
-    ) -> Option<String> {
-        let name = kept
+    /// What to call the agent or app `id`: what the workspace calls it, numbered while another
+    /// member goes by that name too, as every surface names it; else the name it wrote under
+    /// (`kept`), after it left. A person's line keeps the name it wrote under. `None` for anyone
+    /// else.
+    pub(crate) fn agent_name(&self, id: &MemberId, kept: Option<&str>) -> Option<String> {
+        let kept = kept
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .map(str::to_owned)
-            .or_else(|| {
-                Some(id)
-                    .filter(|member| !member.is_person())
-                    .and_then(|member| self.known_agent_name(member.id()))
-            })?;
-        let person = acting
-            .and_then(crate::identity::acted_for)
-            .or_else(|| self.agent_people.get(id));
-        Some(crate::identity::acting_label(
-            &name,
-            person,
-            word,
-            |person| self.user_name(person),
-            |person| self.is_me(person),
-        ))
+            .map(str::to_owned);
+        if id.is_person() {
+            return kept;
+        }
+        self.known_agent_name(id.id())
+            .map(|name| self.workspace_labels.label(id.id(), &name))
+            .or(kept)
     }
 
     /// How a narrow line names someone: their given name, so a line that
@@ -174,107 +161,63 @@ impl ChatApp {
         }
     }
 
-    /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
-    /// choice, else the one rule's), a person's the one the workspace announced for them, else
-    /// the one rule every surface draws a member by ([`ui::tokens::PresenceHue::of_member`]) —
-    /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
+    /// The presence hue `id` wears: the one the workspace announced for them, else the one rule
+    /// every surface draws a member by ([`ui::tokens::PresenceHue::of_member`]) — so a face, a
+    /// chip and a byline are one colour, here as in every app of the workspace, for an agent as
+    /// for a person.
     pub(crate) fn member_hue(&self, id: &MemberId) -> ui::tokens::PresenceHue {
-        Some(id)
-            .filter(|member| !member.is_person())
-            .and_then(|member| self.workspace_agent_colours.get(member.id()))
-            .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
-            .or_else(|| {
-                self.workspace_colors
-                    .get(id)
-                    .and_then(|(red, green, blue)| {
-                        ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
-                    })
+        self.workspace_colors
+            .get(id)
+            .and_then(|(red, green, blue)| {
+                ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
             })
             .unwrap_or_else(|| ui::tokens::PresenceHue::of_member(id))
     }
 
     /// The member's own colour, in the shared presence vocabulary: the workspace's assignment
-    /// when it made one for a person, otherwise [`Self::member_hue`] as the colour that hue
-    /// wears.
+    /// when it made one, otherwise [`Self::member_hue`] as the colour that hue wears.
     pub fn member_color(&self, id: &MemberId) -> (u8, u8, u8) {
-        let agent = Some(id)
-            .filter(|member| !member.is_person())
-            .is_some_and(|member| self.workspace_agent_colours.contains_key(member.id()));
         self.workspace_colors
             .get(id)
-            .filter(|_| !agent)
             .copied()
             .unwrap_or_else(|| ui::presence::identity_rgb(self.member_hue(id)))
     }
 
-    /// The chat's people as the composers' `@` lists offer them beside the
-    /// workspace's roster: someone who wrote here stays mentionable after they
-    /// left the workspace, and the workspace's own record of its agents is offered
-    /// too, so an agent is there to name whether or not a device of theirs is here.
+    /// Everyone the composers' `@` lists offer: the chat's people, so someone who wrote here
+    /// stays mentionable after they left, and every member the workspace names, its agents
+    /// among them.
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
-        let mut people: Vec<ui::widget::MentionCandidate> = self
-            .users
-            .iter()
-            .map(|user| ui::widget::MentionCandidate {
-                id: user.id.clone(),
-                name: self.display_name(&user.id),
-                hue: self.member_hue(&user.id),
-                is_self: self.is_me(&user.id),
-            })
-            .collect();
-        for (id, name) in &self.workspace_agent_names {
-            let id = MemberId::agent(id.clone());
-            if name.trim().is_empty() || people.iter().any(|listed| listed.id == id) {
-                continue;
-            }
-            people.push(ui::widget::MentionCandidate {
-                hue: self.member_hue(&id),
-                name: self.display_name(&id),
-                is_self: false,
-                id,
-            });
-        }
-        people
-    }
-
-    /// Everyone a message's `@name`s bind to when it is sent: the
-    /// document's own users, plus anyone the workspace is talking about who has
-    /// not yet written themselves into it, and the agents the workspace's record says it
-    /// has.
-    pub fn members(&self) -> Vec<crate::record::Person> {
-        let mut out: Vec<crate::record::Person> = self
-            .member_ids()
+        self.member_ids()
             .into_iter()
-            .map(|id| crate::record::Person {
-                name: self.display_name(&id),
-                ..crate::record::Person::unnamed(id)
+            .filter(|id| {
+                self.users.iter().any(|user| user.id == *id)
+                    || self
+                        .workspace_names
+                        .get(id)
+                        .is_some_and(|name| !name.trim().is_empty())
             })
-            .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
-    }
-
-    /// The workspace's agents as the `@` list offers them and a message binds their names by:
-    /// the ones its agents record keeps, under the names that record gives them.
-    pub(crate) fn agent_members(&self) -> Vec<crate::record::Person> {
-        self.workspace_agent_names
-            .keys()
-            .map(|id| {
-                let id = MemberId::agent(id.clone());
-                crate::record::Person {
-                    name: self.display_name(&id),
-                    ..crate::record::Person::unnamed(id)
-                }
+            .map(|id| ui::widget::MentionCandidate {
+                name: self.display_name(&id),
+                hue: self.member_hue(&id),
+                is_self: self.is_me(&id),
+                id,
             })
             .collect()
     }
 
-    /// The mentions `text` writes of the workspace's agents, by the one rule a name binds by
-    /// ([`crate::mention::resolve`]): a `@Name` typed by hand asks the agent it names, as it asks
-    /// a person. The chat's own record does not list the workspace's agents, so the window, which
-    /// reads their record, binds theirs where the message is written.
-    pub(crate) fn agent_mentions(&self, text: &str) -> Vec<crate::mention::Mention> {
-        crate::mention::resolve(text, &self.agent_members())
+    /// Everyone who can be mentioned, by name: the people of the conversations
+    /// shown, and every member the workspace lists.
+    pub fn members(&self) -> Vec<(MemberId, String)> {
+        let mut out: Vec<(MemberId, String)> = self
+            .member_ids()
+            .into_iter()
+            .map(|id| {
+                let name = self.display_name(&id);
+                (id, name)
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.cmp(&b.1));
+        out
     }
 
     /// [`Self::members`] without their names: who can be mentioned, each
@@ -285,12 +228,6 @@ impl ChatApp {
         for id in self.workspace_names.keys() {
             if !out.contains(id) {
                 out.push(id.clone());
-            }
-        }
-        for id in self.workspace_agent_names.keys() {
-            let id = MemberId::agent(id.clone());
-            if !out.contains(&id) {
-                out.push(id);
             }
         }
         out
@@ -351,10 +288,8 @@ impl ChatApp {
         rows
     }
 
-    /// Whether `person` is here now. The record keeps the status someone
-    /// introduced themselves with, and nobody writes "Offline" when a tab
-    /// closes, so a departed visitor would read "Online" forever. While
-    /// presence answers who is present, that answer decides: present people
+    /// Whether `person` is here now. While presence answers who is present,
+    /// that answer decides: present people
     /// keep the away or busy they set, everyone else is offline — including
     /// when the answer names nobody but this window's own person, which is
     /// how a workspace that everybody has left reads. A window whose host has no

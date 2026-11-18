@@ -121,7 +121,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use package_store::DeviceStanding;
+    use package_store::DeviceCertification;
     use tilo_user_identity::{DeviceCapabilities, RevocationReason, UserIdentity};
 
     fn cert(root: &ed25519_dalek::SigningKey, device: [u8; 32]) -> DeviceCert {
@@ -184,10 +184,16 @@ mod tests {
         let now = tilo_clock::unix_now_ns();
         let fleet = source.fleet().unwrap();
         for device in [[1; 32], [2; 32], [4; 32]] {
-            assert_eq!(fleet.standing(&device, now), DeviceStanding::Certified);
+            assert_eq!(
+                fleet.certification(&device, now),
+                DeviceCertification::Certified
+            );
         }
         for device in [[3; 32], [5; 32], [6; 32]] {
-            assert_eq!(fleet.standing(&device, now), DeviceStanding::Uncertified);
+            assert_eq!(
+                fleet.certification(&device, now),
+                DeviceCertification::Uncertified
+            );
         }
 
         let mut removal = RevocationEntry {
@@ -200,8 +206,8 @@ mod tests {
         tilo_user_identity::sign_revocation_entry(&mut removal, &root).unwrap();
         std::fs::write(&fleet_file, record(vec![removal]).to_string()).unwrap();
         assert_eq!(
-            source.fleet().unwrap().standing(&[2; 32], now),
-            DeviceStanding::Revoked(RevocationReason::Retired)
+            source.fleet().unwrap().certification(&[2; 32], now),
+            DeviceCertification::Revoked(RevocationReason::Retired)
         );
 
         // A fleet that cannot be read is not read as "nobody removed".

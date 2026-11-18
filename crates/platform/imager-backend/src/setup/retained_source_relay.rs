@@ -29,7 +29,7 @@ fn refused() -> io::Error {
     )
 }
 // Constructor private: neither RPC labels nor caller-selected callbacks can replace installed
-// custody. The lock serializes proof challenges and source calls, the connected server admits eight
+// ownership. The lock serializes proof challenges and source calls, the connected server admits eight
 // pending callbacks, and the certified Shell binding is never rewritten to the worker PID.
 struct RetainedProjectionConsumer {
     endpoint: Arc<TargetProjectionEndpoint>,
@@ -133,7 +133,7 @@ impl Source {
         }
     }
 }
-struct Custody {
+struct Ownership {
     input: Arc<InstalledRetainedLaunchInput>,
     cancel: Arc<AtomicBool>,
     revoked: AtomicBool,
@@ -164,7 +164,7 @@ impl ControllerCleanup {
         }
     }
 }
-impl Custody {
+impl Ownership {
     fn revoke(&self) {
         self.revoked.store(true, Ordering::Release);
         self.interrupt.revoke();
@@ -208,15 +208,15 @@ impl Custody {
         result
     }
 }
-struct Backend(Arc<Custody>);
+struct Backend(Arc<Ownership>);
 struct Handle {
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     id: u64,
     identity: Option<[u64; 2]>,
 }
 impl Drop for Handle {
     fn drop(&mut self) {
-        let _ = self.custody.call(|source| source.release(self.id));
+        let _ = self.ownership.call(|source| source.release(self.id));
     }
 }
 fn directory() -> Metadata {
@@ -237,7 +237,7 @@ impl WorkspaceBackend for Backend {
             return Ok(None);
         }
         Ok(Some(Arc::new(HomeDirectory {
-            custody: self.0.clone(),
+            ownership: self.0.clone(),
             id: ROOT_DIRECTORY,
         })))
     }
@@ -304,7 +304,7 @@ impl WorkspaceBackend for Backend {
             .call(|source| source.open(mode))
             .map_err(|e| e.to_string())?;
         Ok(Some(Arc::new(Handle {
-            custody: Arc::clone(&self.0),
+            ownership: Arc::clone(&self.0),
             id,
             identity: None,
         })))
@@ -313,13 +313,13 @@ impl WorkspaceBackend for Backend {
 impl WorkspaceFileBackend for Handle {
     fn live_scope(&self) -> Option<Result<(), String>> {
         Some(
-            self.custody
+            self.ownership
                 .call(|s| s.check_scope(self.id))
                 .map_err(|e| e.to_string()),
         )
     }
     fn native_identity(&self) -> Result<Option<[u64; 2]>, String> {
-        self.custody
+        self.ownership
             .call(|source| source.metadata_handle(self.id).map(|_| self.identity))
             .map_err(|e| e.to_string())
     }
@@ -327,7 +327,7 @@ impl WorkspaceFileBackend for Handle {
         if max_len > runtime_fs::MAX_READ_CHUNK {
             return Err("Read exceeds bound".into());
         }
-        self.custody
+        self.ownership
             .call(|source| source.read(self.id, offset, max_len))
             .map_err(|e| e.to_string())
     }
@@ -335,7 +335,7 @@ impl WorkspaceFileBackend for Handle {
         if bytes.len() > runtime_fs::MAX_WRITE_CHUNK as usize {
             return Err("Write exceeds bound".into());
         }
-        self.custody
+        self.ownership
             .call(|source| source.write(self.id, offset, bytes))
             .map_err(|e| e.to_string())
     }
@@ -343,17 +343,17 @@ impl WorkspaceFileBackend for Handle {
         if bytes.len() > runtime_fs::MAX_WRITE_CHUNK as usize {
             return Err("Append exceeds bound".into());
         }
-        self.custody
+        self.ownership
             .call(|source| source.append(self.id, bytes))
             .map_err(|e| e.to_string())
     }
     fn flush(&self) -> Result<(), String> {
-        self.custody
+        self.ownership
             .call(|source| source.flush(self.id))
             .map_err(|e| e.to_string())
     }
     fn metadata(&self) -> Result<Metadata, String> {
-        self.custody
+        self.ownership
             .call(|source| source.metadata_handle(self.id))
             .map_err(|e| e.to_string())
     }
@@ -362,7 +362,7 @@ impl WorkspaceFileBackend for Handle {
 /// Keep alongside the target namespace owner, then explicitly retire after observed target death;
 /// no wire or public constructor.
 pub struct RetainedSourceRelay {
-    custody: Option<Arc<Custody>>,
+    ownership: Option<Arc<Ownership>>,
     server: Option<ConnectedWorkspaceServer>,
     runtime: Option<tokio::runtime::Runtime>,
 }
@@ -392,7 +392,7 @@ impl RetainedSourceRelay {
         endpoint: Arc<TargetProjectionEndpoint>,
     ) -> io::Result<Self> {
         let consumer = Consumer::Projection(RetainedProjectionConsumer { endpoint });
-        let custody = Arc::new(Custody {
+        let ownership = Arc::new(Ownership {
             input,
             cancel,
             revoked: AtomicBool::new(false),
@@ -401,16 +401,16 @@ impl RetainedSourceRelay {
             consumer,
         });
         let mut relay = Self {
-            custody: Some(custody),
+            ownership: Some(ownership),
             server: None,
             runtime: None,
         };
         let result: io::Result<()> = (|| {
-            let custody = relay.custody.as_ref().ok_or_else(refused)?;
-            custody.current()?;
-            let Consumer::Projection(consumer) = &custody.consumer;
+            let ownership = relay.ownership.as_ref().ok_or_else(refused)?;
+            ownership.current()?;
+            let Consumer::Projection(consumer) = &ownership.consumer;
             let target = consumer.connect()?;
-            custody.call(|source| {
+            ownership.call(|source| {
                 if consumer.endpoint.projection_mode() != source.mode() {
                     return Err(refused());
                 }
@@ -432,7 +432,7 @@ impl RetainedSourceRelay {
             );
             relay.server = Some(workspace_server::serve_workspace_connected(
                 target,
-                Arc::new(Backend(Arc::clone(custody))),
+                Arc::new(Backend(Arc::clone(ownership))),
                 relay.runtime.as_ref().ok_or_else(refused)?.handle().clone(),
             )?);
             Ok(())
@@ -451,22 +451,22 @@ impl RetainedSourceRelay {
         self.stop()
     }
     fn stop(&mut self) -> io::Result<()> {
-        let Some(custody) = self.custody.clone() else {
+        let Some(ownership) = self.ownership.clone() else {
             return Ok(());
         };
-        self.custody.take();
-        custody.revoke();
+        self.ownership.take();
+        ownership.revoke();
         let server_result = self
             .server
             .take()
             .map_or(Ok(()), ConnectedWorkspaceServer::retire);
         drop(self.runtime.take());
-        let custody = Arc::try_unwrap(custody).map_err(|_| refused())?;
-        let (mut source, lock_result) = match custody.source.into_inner() {
+        let ownership = Arc::try_unwrap(ownership).map_err(|_| refused())?;
+        let (mut source, lock_result) = match ownership.source.into_inner() {
             Ok(source) => (source, Ok(())),
             Err(poisoned) => (poisoned.into_inner(), Err(refused())),
         };
-        drop(custody.interrupt);
+        drop(ownership.interrupt);
         let source_result = source.take().ok_or_else(refused)?.retire();
         server_result.and(lock_result).and(source_result)
     }
@@ -474,7 +474,7 @@ impl RetainedSourceRelay {
 impl Drop for RetainedSourceRelay {
     fn drop(&mut self) {
         if self.stop().is_err() {
-            std::mem::forget(self.custody.take());
+            std::mem::forget(self.ownership.take());
             std::mem::forget(self.server.take());
             std::mem::forget(self.runtime.take());
         }
@@ -482,25 +482,27 @@ impl Drop for RetainedSourceRelay {
 }
 
 struct HomeDirectory {
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     id: u64,
 }
 impl Drop for HomeDirectory {
     fn drop(&mut self) {
         if self.id != ROOT_DIRECTORY {
-            let _ = self.custody.call(|s| s.home()?.release_directory(self.id));
+            let _ = self
+                .ownership
+                .call(|s| s.home()?.release_directory(self.id));
         }
     }
 }
 impl WorkspaceDirectoryBackend for HomeDirectory {
     fn sync_directory(&self) -> Result<(), String> {
-        self.custody
+        self.ownership
             .call(|source| source.home()?.sync_directory(self.id))
             .map_err(|error| error.to_string())
     }
 
     fn statfs(&self) -> Result<runtime_fs::directory_backend::DirectoryFilesystemStats, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.statfs(self.id))
             .map_err(|e| e.to_string())
     }
@@ -509,31 +511,31 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
     ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspaceDirectoryCursorBackend>, String>
     {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.open_cursor(self.id))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(HomeCursor {
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
     fn check(&self) -> Result<(), String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.metadata(self.id).map(|_| ()))
             .map_err(|e| e.to_string())
     }
     fn metadata(&self) -> Result<DirectoryStat, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.metadata(self.id))
             .map_err(|e| e.to_string())
     }
     fn stat(&self, name: &EntryName) -> Result<Option<DirectoryStat>, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.stat(self.id, name))
             .map_err(|e| e.to_string())
     }
     fn readlink(&self, name: &EntryName, expected: [u64; 2]) -> Result<Vec<u8>, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.readlink(self.id, name, expected))
             .map_err(|e| e.to_string())
     }
@@ -543,26 +545,26 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
         expected: [u64; 2],
     ) -> Result<Arc<dyn WorkspaceMetadataBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.pin_metadata(self.id, name, expected))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(HomeMetadata {
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
     fn list(&self, cursor: u64) -> Result<DirectoryRows, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.list(self.id, cursor))
             .map_err(|e| e.to_string())
     }
     fn directory(&self, name: &EntryName) -> Result<Arc<dyn WorkspaceDirectoryBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.directory(self.id, name))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
@@ -573,34 +575,34 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
         expected: [u64; 2],
     ) -> Result<Arc<dyn WorkspaceFileBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.open_expected(self.id, name, mode, expected))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Handle {
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
             identity: Some(expected),
         }))
     }
     fn create_file(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.create_file(self.id, &name))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(HomeJob {
             cache: ControllerCache::default(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
     fn create_directory(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.create_directory(self.id, &name))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(HomeJob {
             cache: ControllerCache::default(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
@@ -609,7 +611,7 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
         &self,
         after: &[u8],
     ) -> Result<runtime_fs::directory_backend::RecoveryPage, String> {
-        self.custody
+        self.ownership
             .call(|source| source.home()?.recoveries(self.id, after))
             .map_err(|error| error.to_string())
     }
@@ -619,12 +621,12 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
         name: EntryName,
     ) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|source| source.home()?.restore_captured(self.id, recovery, &name))
             .map_err(|error| error.to_string())?;
         Ok(Arc::new(HomeJob {
             cache: ControllerCache::default(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
@@ -634,23 +636,23 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
         new: EntryName,
     ) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         let id = self
-            .custody
+            .ownership
             .call(|s| s.home()?.rename_no_replace(self.id, name, &new))
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(HomeJob {
             cache: ControllerCache::default(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             id,
         }))
     }
 }
 struct HomeCursor {
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     id: u64,
 }
 impl runtime_fs::directory_backend::WorkspaceDirectoryCursorBackend for HomeCursor {
     fn check(&self) -> Result<(), String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.metadata(ROOT_DIRECTORY).map(|_| ()))
             .map_err(|e| e.to_string())
     }
@@ -658,37 +660,37 @@ impl runtime_fs::directory_backend::WorkspaceDirectoryCursorBackend for HomeCurs
         &self,
         sequence: u64,
     ) -> Result<runtime_fs::directory_backend::DirectoryStreamPage, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.cursor_page(self.id, sequence))
             .map_err(|e| e.to_string())
     }
 }
 impl Drop for HomeCursor {
     fn drop(&mut self) {
-        let _ = self.custody.call(|s| s.home()?.release_cursor(self.id));
+        let _ = self.ownership.call(|s| s.home()?.release_cursor(self.id));
     }
 }
 struct HomeMetadata {
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     id: u64,
 }
 impl WorkspaceMetadataBackend for HomeMetadata {
     fn live_scope(&self) -> Option<Result<(), String>> {
         Some(
-            self.custody
+            self.ownership
                 .call(|s| s.home()?.check_pin(self.id))
                 .map_err(|e| e.to_string()),
         )
     }
     fn metadata(&self) -> Result<DirectoryStat, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.metadata_pin(self.id))
             .map_err(|e| e.to_string())
     }
 }
 impl Drop for HomeMetadata {
     fn drop(&mut self) {
-        let _ = self.custody.call(|s| s.home()?.release_pin(self.id));
+        let _ = self.ownership.call(|s| s.home()?.release_pin(self.id));
     }
 }
 /// Exact constructor-minted map alias release, with progress kept across an unknown barrier reply:
@@ -696,18 +698,18 @@ impl Drop for HomeMetadata {
 #[derive(Default)]
 struct ControllerCache(Mutex<u8>);
 impl ControllerCache {
-    fn retire(&self, custody: &Custody, release: ControllerRelease) -> Result<(), String> {
+    fn retire(&self, ownership: &Ownership, release: ControllerRelease) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "controller cache poisoned")?;
         if *state == 2 {
             return Ok(());
         }
         if *state == 0 {
-            custody
+            ownership
                 .cleanup(ControllerCleanup::Release(release))
                 .map_err(|error| error.to_string())?;
             *state = 1;
         }
-        custody
+        ownership
             .cleanup(ControllerCleanup::Barrier)
             .map_err(|error| error.to_string())?;
         *state = 2;
@@ -719,7 +721,7 @@ impl ControllerCache {
 }
 struct HomeJob {
     cache: ControllerCache,
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     id: u64,
 }
 impl Drop for HomeJob {
@@ -727,29 +729,29 @@ impl Drop for HomeJob {
         if !self.cache.open() {
             return;
         }
-        let _ = self.custody.call(|s| s.home()?.release_job(self.id));
+        let _ = self.ownership.call(|s| s.home()?.release_job(self.id));
     }
 }
 impl WorkspaceJobBackend for HomeJob {
     fn retire_controller_cache(&self) -> Result<(), String> {
         self.cache
-            .retire(&self.custody, ControllerRelease::Job(self.id))
+            .retire(&self.ownership, ControllerRelease::Job(self.id))
     }
 
     fn live_scope(&self) -> Option<Result<(), String>> {
         Some(
-            self.custody
+            self.ownership
                 .call(|s| s.home()?.check_job(self.id))
                 .map_err(|e| e.to_string()),
         )
     }
     fn poll(&self) -> Result<JobPoll, String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.poll(self.id))
             .map_err(|e| e.to_string())
     }
     fn cancel(&self) -> Result<(), String> {
-        self.custody
+        self.ownership
             .call(|s| s.home()?.cancel(self.id))
             .map_err(|e| e.to_string())
     }

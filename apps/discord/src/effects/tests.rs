@@ -4,7 +4,7 @@ use serde_json::json;
 use ui::framework::testing::TestApp;
 
 use super::*;
-use crate::record::guild;
+use crate::guild::guild;
 use crate::resource::Discord;
 
 fn connected() -> TestApp<Discord> {
@@ -47,7 +47,7 @@ fn connect_goes_to_the_page_the_host_offers_and_binds_the_state_to_the_person() 
     assert_eq!(connect.state_sha256, sha256_hex(state.as_bytes()));
     assert_ne!(
         connect.state_sha256, state,
-        "the record keeps only its hash"
+        "the resource keeps only its hash"
     );
 
     app.call_by(bot(), crate::KIND, "set-sign-in", json!({"page": ""}))
@@ -218,7 +218,7 @@ fn the_linking_actions_are_offered_to_every_member_through_the_host() {
             assert_eq!(
                 entry.address.resource,
                 crate::KIND,
-                "on the record's own resource"
+                "on the resource's own resource"
             );
             entry.address.action
         })

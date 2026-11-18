@@ -1,4 +1,4 @@
-//! Separately consented website sessions in canonical sealed account custody.
+//! Separately consented website sessions in canonical sealed account credentials.
 //! Captured session material is not provider authentication and never joins the public accounts projection.
 #[cfg(target_os = "linux")]
 pub mod source;
@@ -209,11 +209,12 @@ impl PreparedSessions {
             };
             let id = session.session_id.clone();
             let service = session.service;
-            let mut secret = account_custody::service_sessions::service_session_secret(&session)
-                .map_err(|_| invalid())?;
+            let mut secret =
+                account_credentials::service_sessions::service_session_secret(&session)
+                    .map_err(|_| invalid())?;
             let mut account = Account::new(
                 id.clone(),
-                account_custody::service_sessions::SERVICE_SESSION_TYPE,
+                account_credentials::service_sessions::SERVICE_SESSION_TYPE,
             );
             account.config =
                 serde_json::json!({"service":service.as_str(), "setup_binding":binding});
@@ -235,17 +236,18 @@ impl PreparedSessions {
         })
     }
     /// # Errors
-    /// Refuses invalid passwords/bindings or changed staging custody.
+    /// Refuses invalid passwords/bindings or changed staging ownership.
     pub fn seal(&self, password: &[u8]) -> io::Result<(PasswordSealedAccounts, Declaration)> {
         let ids: Vec<_> = self
             .selected
             .iter()
             .map(|v| AccountId::from(v.id.clone()))
             .collect();
-        let custodian = account_custody::Custodian::for_root(Some(self.stage.path().to_owned()));
+        let credential_store =
+            account_credentials::CredentialStore::for_root(Some(self.stage.path().to_owned()));
         let mut consumer_protocol = 1;
         for id in &ids {
-            let session = custodian
+            let session = credential_store
                 .service_session(id, self.identity, &self.binding)
                 .map_err(|_| invalid())?;
             consumer_protocol = consumer_protocol.max(session.schema);
@@ -291,7 +293,7 @@ pub fn validate_artifact(
 }
 /// Import a previously validated artifact into an explicitly granted private target config root.
 /// # Errors
-/// Refuses ciphertext, selection or custody conflicts; never overwrites unrelated accounts.
+/// Refuses ciphertext, selection or ownership conflicts; never overwrites unrelated accounts.
 pub fn import(
     artifact: &PasswordSealedAccounts,
     declaration: &Declaration,
@@ -340,10 +342,10 @@ fn import_checked_stage(
             &ids,
         )
         .map_err(|_| invalid())?;
-    let custodian = account_custody::Custodian::for_root(Some(target.to_owned()));
+    let credential_store = account_credentials::CredentialStore::for_root(Some(target.to_owned()));
     let mut consumer_protocol = 1;
     for selected in &declaration.sessions {
-        let session = custodian
+        let session = credential_store
             .service_session(&AccountId::from(selected.id.clone()), identity, binding)
             .map_err(|_| invalid())?;
         if session.service != selected.service {
@@ -367,7 +369,7 @@ fn private_stage() -> io::Result<tempfile::TempDir> {
     {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "Website session custody is unavailable on this platform",
+            "Website session ownership is unavailable on this platform",
         ))
     }
 }
@@ -533,13 +535,14 @@ mod tests {
                 & 0o777,
             0o700
         );
-        let session = account_custody::Custodian::for_root(Some(target.path().to_owned()))
-            .service_session(
-                &AccountId::from(declaration.sessions[0].id.clone()),
-                [7; 32],
-                "exact-operation",
-            )
-            .unwrap();
+        let session =
+            account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
+                .service_session(
+                    &AccountId::from(declaration.sessions[0].id.clone()),
+                    [7; 32],
+                    "exact-operation",
+                )
+                .unwrap();
         assert_eq!(session.cookies[0].value, "selected-secret-marker");
         assert_eq!(session.cookies[0].expires_unix_seconds, Some(2_000_000_123));
         assert_eq!(

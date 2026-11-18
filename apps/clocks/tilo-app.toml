@@ -15,7 +15,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["app-files", "notifications", "processes"]
+optional = ["app-files", "processes"]
 
 [resources]
 kinds = ["clocks.collection", "clocks.on-devices"]
@@ -35,12 +35,11 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.portals]
-notifications = "via-host"
 
 [sandbox.services]
 # The app's actions reach the shell over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
-collab = "optional@30"
+collab = "optional@31"
 
 [entrypoint]
 bin = "bin/clocks"

@@ -30,7 +30,7 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
         .unwrap();
     receiver
         .receive_from(
-            TransportOrigin::RelayDelta(cert.device_public_key),
+            TransportOrigin::ServerDelta(cert.device_public_key),
             descendant,
             now,
         )
@@ -64,7 +64,7 @@ tilo_test_env::scenario! {
             _ => panic!("unexpected fixture shape"),
         };
         restored
-            .receive_from(TransportOrigin::RelayDelta(source), predecessor, now)
+            .receive_from(TransportOrigin::ServerDelta(source), predecessor, now)
             .unwrap();
         assert_eq!(restored.pending_count(), 0);
         let doc = AutoCommit::load(&restored.document("test.app", "tab:1").unwrap()).unwrap();

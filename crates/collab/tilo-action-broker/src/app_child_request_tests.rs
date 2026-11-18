@@ -134,7 +134,7 @@ fn unconfirmed(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
         tilo_actions::remote::RemoteActionMessage::Receipt(
             tilo_actions::remote::InvocationReceipt {
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::ConfirmationRequired { .. },
+                    error: tilo_actions::remote::ActionCallError::ConfirmationRequired { .. },
                 },
                 ..
             }
@@ -237,7 +237,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             );
             assert!(notes.try_recv().is_err(), "one call, one delivery");
 
-            // Kept under the agent's own custody: the agent follows the
+            // Kept under the agent's own ownership: the agent follows the
             // child it asked for through its app, as its own invocation.
             let agent_caller = rig
                 .state
@@ -440,7 +440,7 @@ async fn a_persons_read_does_not_make_their_edit_unasked() {
 async fn native_person_rig(env: &Environment) -> Rig {
     Rig::with_services(
         env,
-        HostServices {
+        ProcessServices {
             local_person: Some(Arc::new(super::signed_worker::NativePerson(
                 env.authority.clone(),
             ))),
@@ -495,7 +495,7 @@ async fn a_persons_first_action_is_answered_once_the_identity_names_them() {
             let env = Environment::new();
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(Arriving {
                         host: env.authority.clone(),
                         named: std::sync::atomic::AtomicBool::new(false),
@@ -571,13 +571,12 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             let env = Environment::new();
             let mut services = env.membership.services();
             services.workspace_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
-            // The person's answers for one app's use of another app's actions.
-            services.app_consents = Some(Arc::new(crate::services::PersonalAppConsents {
-                source: Arc::new(settings_store::HostDocument::new(
-                    serde_json::Map::new(),
-                    |_| Ok(()),
-                )),
-            }));
+            // The person's settings, which keep their answers for one app's
+            // use of another app's actions.
+            services.settings = Some(Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::new(),
+                |_| Ok(()),
+            )));
             // The app declares that it takes other apps' actions.
             services.app_action_access =
                 Some(Arc::new(|_: &str| crate::app_actions::AppActionAccess {
@@ -647,7 +646,7 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             .await;
             assert!(admitted(&unasked), "{unasked:?}");
             notes.try_recv().expect("Notes makes another page");
-            assert!(sheets.try_recv().is_err(), "a standing grant asks nothing");
+            assert!(sheets.try_recv().is_err(), "a lasting grant asks nothing");
 
             // One action of the app asking two things at once: each is put
             // to the person in turn, neither refused for the other.

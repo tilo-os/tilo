@@ -157,8 +157,20 @@ fn a_breadcrumb_composes_as_a_path_with_the_current_page_marked() {
     assert_eq!(tagged(root, "nav").len(), 1, "a navigation: {root:?}");
     assert_eq!(tagged(root, "ol").len(), 1, "a list: {root:?}");
     let items = tagged(root, "li");
-    let labels: Vec<String> = items.iter().filter_map(|node| words(node)).collect();
+    let labels: Vec<String> = items
+        .iter()
+        .filter_map(|item| item.children.iter().find_map(words))
+        .collect();
     assert_eq!(labels, ["home", "docs", "readme.md"]);
+    let chevrons = items
+        .iter()
+        .filter(|item| {
+            item.children
+                .iter()
+                .any(|part| part.path.ends_with("#chevron"))
+        })
+        .count();
+    assert_eq!(chevrons, 2, "a chevron between each two places, as painted");
     assert_eq!(
         attribute(items[2], "aria-current"),
         Some("page"),
@@ -266,4 +278,104 @@ fn a_divider_is_a_rule_and_a_skeleton_has_nothing_to_read() {
     assert_eq!(rule.tag, Some("hr"), "a rule: {rule:?}");
     let composition = composed(Box::new(crate::widget::Skeleton::text(2)), (300, 40));
     assert_eq!(attribute(shown(&composition), "aria-hidden"), Some("true"));
+}
+
+/// A window's surface is its ground on a page, floating over what is under it; a raised one
+/// is a ground alone.
+#[test]
+fn a_surface_composes_as_its_ground_and_a_window_floats() {
+    use crate::widget::{Surface, SurfaceLevel};
+    let window = Surface::new(
+        SurfaceLevel::Window,
+        Box::new(crate::widget::Text::new("Inbox")),
+    );
+    let composition = composed(Box::new(window), (300, 200));
+    let surface = |root: &Composed| -> Composed {
+        nodes(root)
+            .into_iter()
+            .find(|node| node.widget == "Surface")
+            .cloned()
+            .expect("the surface's element")
+    };
+    let window = surface(&composition.root);
+    let ground = window.ground.as_ref().expect("the window's ground");
+    assert!(ground.fill.is_some() && ground.edge.is_some() && ground.radius > 0.0);
+    assert!(window.floats, "a window floats: {window:?}");
+    let raised = Surface::new(
+        SurfaceLevel::Raised,
+        Box::new(crate::widget::Text::new("Tag")),
+    );
+    let composition = composed(Box::new(raised), (300, 200));
+    let raised = surface(&composition.root);
+    assert!(raised.ground.is_some());
+    assert!(!raised.floats, "a raised surface casts no shadow");
+}
+
+/// A banner's buttons are on its page, inside it, as it places them.
+#[test]
+fn a_banner_composes_its_buttons_inside_it() {
+    let banner = crate::widget::Banner::warning("Sync paused")
+        .with_message("Files sync again when you are online.")
+        .with_action(crate::widget::Button::new("retry", "Retry"))
+        .arrives_in_place();
+    let composition = composed(Box::new(banner), (560, 200));
+    let all = nodes(&composition.root);
+    let banner = all
+        .iter()
+        .find(|node| node.widget == "Banner")
+        .unwrap_or_else(|| panic!("the banner's element: {:#?}", composition.root));
+    let button = nodes(banner)
+        .into_iter()
+        .find(|node| node.widget == "Button")
+        .unwrap_or_else(|| panic!("its button: {banner:#?}"));
+    let [bx, by, bw, bh] = banner.rect;
+    let [x, y, w, h] = button.rect;
+    assert!(w > 0.0 && h > 0.0, "the button has its size: {button:?}");
+    assert!(
+        x >= bx && y >= by && x + w <= bx + bw && y + h <= by + bh,
+        "the button is inside the banner: {:?} in {:?}",
+        button.rect,
+        banner.rect
+    );
+}
+
+/// What a card holds is composed in the colours its paint hands it on the card's ground: a
+/// button there stands apart from the card as it does on the canvas.
+#[test]
+fn a_button_on_a_card_wears_the_cards_on_ground_colours() {
+    let fill = |root: &Composed| -> Option<[u8; 4]> {
+        nodes(root)
+            .into_iter()
+            .find(|node| node.widget == "Button")
+            .and_then(|node| match &node.own {
+                Some(Own::Face(face)) => face.fill,
+                _ => None,
+            })
+    };
+    let alone = composed(
+        Box::new(crate::widget::Button::new("message", "Message")),
+        (300, 200),
+    );
+    let card = composed(
+        Box::new(crate::widget::Card::new(Box::new(
+            crate::widget::Button::new("message", "Message"),
+        ))),
+        (300, 200),
+    );
+    let card_ground = nodes(&card.root)
+        .into_iter()
+        .find(|node| node.widget == "Card")
+        .and_then(|node| node.ground.as_ref())
+        .and_then(|ground| ground.fill);
+    let on_card = fill(&card.root);
+    assert!(on_card.is_some(), "the button keeps its face on the card");
+    assert_ne!(
+        on_card, card_ground,
+        "the button stands apart from the card's ground"
+    );
+    assert_ne!(
+        on_card,
+        fill(&alone.root),
+        "on the card it takes the card's colours"
+    );
 }

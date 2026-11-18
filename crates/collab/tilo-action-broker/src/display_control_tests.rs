@@ -207,7 +207,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             });
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),
@@ -268,7 +268,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 appearance: None,
             };
             // The previous normal host api really admitted this action but
-            // supplied no original custody. The generic API still cannot
+            // supplied no original ownership. The generic API still cannot
             // borrow native-owner identity just from a local-person label.
             let mut generic = request.clone();
             generic.invocation = tilo_actions::InvocationId::new();
@@ -372,7 +372,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             });
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     settings: Some(Arc::new(settings_store::HostDocument::new(
                         serde_json::Map::default(),
                         |_| Ok(()),

@@ -37,7 +37,7 @@ impl Screen {
 }
 
 /// Whether Tilo is the whole system or a desktop on another Linux system.
-/// Both keep the same gates; the copy differs.
+/// Both keep the same checks; the copy differs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OnboardingContext {
     #[default]

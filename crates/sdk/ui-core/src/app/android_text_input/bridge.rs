@@ -1,4 +1,4 @@
-//! The JNI seam to `so.tilo.android.TiloTextInput`.
+//! The JNI boundary to `so.tilo.android.TiloTextInput`.
 //!
 //! The natives are registered from here rather than exported by name, so they
 //! resolve however NativeActivity loaded the library. They run on the Java

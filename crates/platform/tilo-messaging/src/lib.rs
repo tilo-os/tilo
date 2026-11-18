@@ -1,6 +1,6 @@
 //! Portable messaging account metadata supplied by the person-record host, read
 //! through `ViewCx::shared_person` under the host's owner and editor permissions.
-//! It exposes neither credential custody nor a transport connection: selecting an
+//! It exposes neither credential storage nor a transport connection: selecting an
 //! account does not authorize sending.
 //!
 //! Transport implementations stay behind the system messaging broker, which

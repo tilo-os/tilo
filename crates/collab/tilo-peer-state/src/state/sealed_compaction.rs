@@ -1,5 +1,5 @@
-//! A key holder compacts an encrypted record's sealed history; a replica
-//! without the channel key accepts a verified compaction in place of exactly
+//! A key holder compacts an encrypted document's sealed history; a replica
+//! without the document's key accepts a verified compaction in place of exactly
 //! the writes it covers, and never opens it.
 use super::{
     AutoCommit, DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication,
@@ -11,7 +11,7 @@ use collab_types::{
 };
 
 type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
-/// A key holder sealing a record's content under the channel's current epoch:
+/// A key holder sealing a document's content under its keys' current epoch:
 /// a compaction's snapshot with checkpoint retention, a write with delta retention.
 pub type SealCheckpoint<'a> =
     dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
@@ -36,7 +36,7 @@ impl<'peer> PeerPublication<'peer> {
     /// repairing the record carried what the change left out wrote into it.
     /// Nothing checks that `rebuilt` holds what the writes did: that is the
     /// repair's to answer for. `seal` seals the document's snapshot under the
-    /// channel's current epoch with [`ContentRetention::Checkpoint`] retention.
+    /// keys' current epoch with [`ContentRetention::Checkpoint`] retention.
     /// The compaction replaces exactly the writes it covers, and its admission
     /// applies the checks every keyless replica applies, so `author` must be a
     /// device the record admits as a writer of it (or the workspace's governor,
@@ -80,8 +80,8 @@ impl<'peer> PeerPublication<'peer> {
         )
     }
 
-    /// Draft the compaction of `history`, the record's history as its host holds it, under
-    /// `seq`, the place this device's custody keeps for it: as
+    /// Draft the compaction of `history`, the record's history as its server holds it, under
+    /// `seq`, the place this device's ownership keeps for it: as
     /// [`Self::draft_sealed_compaction`] drafts the history this replica holds.
     ///
     /// # Errors
@@ -150,10 +150,21 @@ impl<'peer> PeerPublication<'peer> {
         )
         .map_err(err)?;
         collab_types::verify_op(compaction).map_err(err)?;
-        self.peer
-            .authorize_document(compaction.author.as_bytes(), app, record, compaction, now)?
-            .ok_or("the compaction's app surface is not here")?;
-        Ok(())
+        match self.peer.authorize_document(
+            compaction.author.as_bytes(),
+            app,
+            record,
+            compaction,
+            now,
+        )? {
+            super::authority::Authorized::Admit { .. } => Ok(()),
+            super::authority::Authorized::Hold(crate::MissingPrerequisite::AppSurface) => {
+                Err("the compaction's app surface is not here".into())
+            }
+            super::authority::Authorized::Hold(waiting) => {
+                Err(format!("the compaction waits for {waiting}"))
+            }
+        }
     }
 
     fn document(
@@ -328,10 +339,10 @@ impl PeerPublicationMut<'_> {
 impl PeerPublicationMut<'_> {
     /// Take `compaction`, which the record's host holds first in its history, as this record's
     /// own history: the compaction, then every write here it does not cover, nor `folded`
-    /// picks (the writes an earlier compaction of the host's folded). A compaction of
-    /// this device's own that the host does not hold yet goes, and the writes after it stay.
+    /// picks (the writes an earlier compaction of the server's folded). A compaction of
+    /// this device's own that the server does not hold yet goes, and the writes after it stay.
     /// Its caller decides that the compaction holds everything the history it replaces does
-    /// (one of this device's own, drafted against what the host acknowledged, or a host's that
+    /// (one of this device's own, drafted against what the server acknowledged, or a server's that
     /// covers every write this record folded); it is checked as a write of its author first.
     ///
     /// # Errors
@@ -435,6 +446,162 @@ impl PeerPublicationMut<'_> {
             None => {}
         }
         core.exact_admissions.insert(&admission).map_err(err)
+    }
+}
+
+impl PeerPublicationMut<'_> {
+    /// Take `piece`, a compaction of `document` of `app` (or the last piece of one in several
+    /// ops) that this replica refuses because it does not hold exactly the writes the
+    /// compaction covers: a device that was away, or was ended before it had kept them, while
+    /// the history was compacted where the workspace keeps it. From then on those writes are
+    /// nowhere but inside the compaction, so a replica that went on refusing it could never
+    /// complete the document, and took in nothing written to it afterwards.
+    ///
+    /// A replica without the keys cannot tell such a compaction from one that leaves writes
+    /// out, and refuses both ([`supersede`]). A key holder can tell them apart: `open` opens the
+    /// compaction and every write this replica holds that it would replace (the writes it
+    /// covers, and a compaction held before it), and the compaction is taken only when it holds
+    /// every change of those writes. Nothing this replica holds is given up for it. The history
+    /// is then the compaction and the writes it does not cover, as a replica that took the
+    /// compaction first holds it. Answers the compaction taken; `None` while pieces of it are
+    /// still to come.
+    ///
+    /// # Errors
+    /// It is no compaction of this document its author may write, something does not open, or
+    /// the compaction lacks a change this replica holds: the replica is unchanged then.
+    pub fn take_compaction_behind(
+        self,
+        (app, document): (&str, &str),
+        piece: SignedOp,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        now: SystemTime,
+    ) -> Result<Option<SignedOp>, String> {
+        let mut candidate = self.peer.clone();
+        let compaction = if collab_types::is_compaction_piece(&piece) {
+            let Some(head) = candidate.gather_compaction_piece((app, document), piece)? else {
+                *self.peer = candidate;
+                return Ok(None);
+            };
+            head
+        } else {
+            piece
+        };
+        // Its author may write it now, or wrote it before their device was removed and the
+        // removal's cut keeps it: a removed device hands nothing over this way.
+        candidate
+            .publication()
+            .check_sealed_compaction((app, document), &compaction, now)?;
+        let wrapper = SealedCompaction::parse(&compaction).map_err(err)?;
+        if !numbered_under_its_folds(&compaction, &wrapper) {
+            return Err(
+                "sealed compaction is not numbered as the last write of its author it folds".into(),
+            );
+        }
+        let pieces: Vec<SignedOp> = std::iter::once(compaction.clone())
+            .chain(candidate.compaction_segments(
+                &Route {
+                    app: app.into(),
+                    record: document.into(),
+                },
+                &compaction,
+            )?)
+            .collect();
+        let replaced: Vec<SignedOp> = {
+            let history = &candidate.publication().document((app, document))?.sealed;
+            if history.is_empty() {
+                return Err("the history holds nothing a compaction could be behind".into());
+            }
+            if history
+                .iter()
+                .any(|write| write.signature == compaction.signature)
+            {
+                return Err("the history holds this compaction already".into());
+            }
+            history
+                .iter()
+                .filter(|write| write.kind == OpKind::Compaction || wrapper.covers(write))
+                .cloned()
+                .collect()
+        };
+        let epoch = compaction.encryption.map_or(0, |meta| meta.epoch);
+        if replaced
+            .iter()
+            .filter_map(|write| write.encryption)
+            .any(|meta| meta.epoch > epoch)
+        {
+            return Err("sealed compaction is sealed under a stale epoch".into());
+        }
+        holds_every_change(&pieces, &replaced, open)?;
+        candidate.publication_mut().take_sealed_compaction(
+            (app, document),
+            &compaction,
+            &|_| false,
+            now,
+        )?;
+        *self.peer = candidate;
+        Ok(Some(compaction))
+    }
+}
+
+/// Why a key holder refuses a compaction it is behind
+/// ([`PeerPublicationMut::take_compaction_behind`]): taking it would give up a change this
+/// replica holds.
+pub(crate) const LACKS_HELD_WRITES: &str =
+    "sealed compaction lacks changes of writes this replica holds";
+
+/// Check that `pieces`, a compaction and the segments it names, hold every change of `replaced`,
+/// the writes a replica holds that the compaction would take the place of: merged over what the
+/// compaction opens to, they change nothing.
+///
+/// # Errors
+/// Something does not open, or a change of `replaced` is not in the compaction.
+fn holds_every_change(
+    pieces: &[SignedOp],
+    replaced: &[SignedOp],
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let Some(DocumentMutation::Snapshot(snapshot)) = opened_whole(pieces, open)? else {
+        return Err("the sealed compaction does not open to a whole snapshot".into());
+    };
+    let mut folded = AutoCommit::new();
+    if holds_after(&mut folded, &DocumentMutation::Snapshot(snapshot))?.is_none() {
+        return Err("the sealed compaction's snapshot is not complete".into());
+    }
+    let mut transfers = crate::document_frame::Transfers::default();
+    let mut changes = Vec::new();
+    for write in replaced {
+        if let Some(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
+            transfers.take(*write.author.as_bytes(), &open(write)?)?
+        {
+            changes.extend_from_slice(&bytes);
+        }
+    }
+    if transfers.waits_for_changes() {
+        return Err("a segmented write of the sealed history is incomplete".into());
+    }
+    if !changes.is_empty()
+        && holds_after(&mut folded, &DocumentMutation::Incremental(changes))? != Some(false)
+    {
+        return Err(LACKS_HELD_WRITES.into());
+    }
+    Ok(())
+}
+
+/// Merge `mutation` into `merged` and answer whether that changed it: `None` when it builds on
+/// changes `merged` does not hold.
+fn holds_after(
+    merged: &mut AutoCommit,
+    mutation: &DocumentMutation,
+) -> Result<Option<bool>, String> {
+    match crate::document::merge_committed_with_status(merged, mutation) {
+        Ok(crate::document::MergeOutcome::Changed(changed)) => Ok(Some(changed)),
+        Ok(crate::document::MergeOutcome::MissingDependencies) => Ok(None),
+        Err(
+            crate::document::MergeError::Invalid(why) | crate::document::MergeError::Device(why),
+        ) => Err(why),
+        Err(crate::document::MergeError::Busy) => {
+            Err("the opened compaction has changes of its own open".into())
+        }
     }
 }
 
@@ -1107,7 +1274,7 @@ impl PeerPublicationMut<'_> {
     ) -> Result<NeighbourMsg, String> {
         let author = delegate.verifying_key().to_bytes();
         let parsed = collab_types::parse_changes(&changes).map_err(err)?;
-        let shows = self.peer.appearance_author(&author, now);
+        let shows = self.peer.appearance_author(&author, now, false);
         collab_types::check_appearances(&parsed, shows.as_ref())
             .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         self.peer

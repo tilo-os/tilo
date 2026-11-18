@@ -1,4 +1,4 @@
-// Opt-in acceptance of the real current-owner preparation path, on disposable custody.
+// Opt-in acceptance of the real current-owner preparation path, on disposable ownership.
 use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -10,7 +10,7 @@ fn private(path: &std::path::Path) {
 
 #[test]
 fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_original() {
-    // SAFETY: credential observation only. This opt-in test requires real root custody.
+    // SAFETY: credential observation only. This opt-in test requires real root ownership.
     assert_eq!(
         unsafe { libc::geteuid() },
         0,
@@ -58,7 +58,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     let record = identity.join("member.json");
     let original = runtime_identity::public_member_record("Ada", [1, 2, 3], public_key).unwrap();
     tilo_files::native::atomic::write_with_mode(&record, &original, 0o600).unwrap();
-    let mut fleet = tilo_identity_host::device_fleet::DeviceFleet::new(hex::encode(public_key));
+    let mut fleet = tilo_identity::device_fleet::DeviceFleet::new(hex::encode(public_key));
     fleet.certificates.push(cert);
     tilo_files::native::atomic::write_with_mode(
         &identity
@@ -69,7 +69,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     )
     .unwrap();
     runtime_identity::set_active_identity(&identity, "member").unwrap();
-    let registry_store = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
+    let registry_store = tilo_identity::registry::IdentityRegistryStore::at(&identity);
     let mut registry = registry_store.load().unwrap();
     registry.register_record(&record).unwrap();
     registry_store.save(&registry).unwrap();
@@ -242,6 +242,6 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     );
     assert!(
         prepared.desktop_manifest().is_err(),
-        "delivery retains original source custody"
+        "delivery retains original source ownership"
     );
 }

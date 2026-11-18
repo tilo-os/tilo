@@ -26,7 +26,7 @@
 //   9. an agent that runs `tilo login` the moment the prompt shows, before the
 //      Lounge let the tab in, is waited for, never refused, and gets in.
 //
-// usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
+// usage: node setup-resume.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR
 //
 // Saves a capture of each resumed state and a JSON report to OUT_DIR; exits
 // non-zero when any case lands on the wrong screen.
@@ -37,13 +37,13 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, shellMetrics, machine} from './waits.mjs';
 import {clock} from './timing.mjs';
 
-const [site, relay, tiloBin, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !out) {
-  console.error('usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
+const [site, server, tiloBin, out] = process.argv.slice(2);
+if (!site || !server || !tiloBin || !out) {
+  console.error('usage: node setup-resume.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
-const report = {site, relay, at: new Date().toISOString(), cases: []};
+const report = {site, server, at: new Date().toISOString(), cases: []};
 const failures = [];
 const open = [];
 // Each numbered case says how long it took as the next begins, the line

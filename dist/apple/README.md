@@ -73,7 +73,7 @@ bundle today. A bundle whose `Info.plist` has
 (`ShellSettings.swift`). The page it opens is the one-app page, which has no desktop. Beyond
 that the web view is held to it (`PageHost.swift`, `SitePolicy.isOwn`):
 
-- The way in may lead anywhere in the site, because that is how a person gets in: its door,
+- The way in may lead anywhere in the site, because that is how a person gets in: its entry page,
   an invitation, a pairing link made on a desktop.
 - Once the page says the person is in, an address of the site that is not the app's own page
   goes to the system's browser, like any address that is not Tilo's. That is where "Open in
@@ -119,25 +119,25 @@ browser key that WebKit wraps with a key from the app's keychain, so a person wh
 stays in for as long as the app keeps its signature and its data. Getting in is the site's own
 flow (an invitation, a pairing link, its sign-in); nothing hands a native identity to a page.
 
-**The way in, in the site's door.** While the site keeps a device out, its page shows a door:
+**The way in, on the site's entry page.** While the site keeps a device out, it shows its entry page:
 what the site says to someone it does not know, and what such a person can do. What only the
-system can do for them stands in that door, not beside the page: "Scan code" on a phone and
+system can do for them stands on that page, not beside the page: "Scan code" on a phone and
 "Paste link", for the code and the link that "Pair a new device" shows on a device where the
 person is signed in, with one sentence under them that says so. An invitation's link is
-pasted the same way. The door is the page's own markup, in one dark look and the system's
+pasted the same way. The entry page is the page's own markup, in one dark look and the system's
 type, and it scrolls; a native bar under it followed the system's appearance and looked like
-a strip stuck to a web page. So the script puts the two buttons into the door's own column,
-with the door's measures and colours (`Bridge.swift` says where in each of the page's doors,
+a strip stuck to a web page. So the script puts the two buttons into the entry page's own column,
+with the entry page's measures and colours (`Bridge.swift` says where on each of the entry pages,
 and why). A press comes back to the shell, which only then asks for the camera, or reads the
 clipboard. A link is taken out of whatever is written around it; a link into another site is
-refused in the door, under the buttons, with the name of the site the app opens. A link the
+refused on the entry page, under the buttons, with the name of the site the app opens. A link the
 site's own computer made under a name only it can use is read as the site's (see "One
-site"). The page says where it stands at the door on its root element (`data-entry`): the
+site"). The page writes where it stands on its root element (`data-entry`): the
 buttons go once it is in and while a device of the person's is being asked to approve this
 one, and a person who came in by a link is taken back to where the app starts.
 
 A link is also opened from the File menu on the Mac, by a long press on the phone's icon,
-which offers the scan too, or by sharing it to the app. A door that draws these options
+which offers the scan too, or by sharing it to the app. An entry page that draws these options
 itself marks its element `data-way-in` and asks the shell through `__tiloShell.wayIn`; the
 shell then adds nothing.
 
@@ -226,8 +226,8 @@ that shows Chat alone, which has no desktop and writes nothing into a workspace'
 page is the device: its key, its pairing, its connection, its records. The engine gives the app
 what a resource reads as (`read`), word that something changed (`changes`), and the typed
 actions with their answers (`invoke`), through the page's own mount: the entry its palette,
-agents and assistive technology use, under the person's own standing. It pairs from a link
-"Pair a new device" made (`pair`), and says where it stands (`standings`): the code to compare,
+agents and assistive technology use, under the person's own access. It pairs from a link
+"Pair a new device" made (`pair`), and says where it stands (`states`): the code to compare,
 in, or the site's own refusal. It hands the app no key. It opens its one site and nothing else,
 and hears only that site's page in the main frame.
 
@@ -285,18 +285,90 @@ What keeps it the app's alone:
 
 **The assistant's source** (`TiloSource`, `Sources/AssistantTilo`) is `AssistantSource` on all
 of this: the app as a device of its person. The conversation, a question that waits,
-sub-agents and what was learned are records Chat keeps, read through the page's mount at the
-page's word of a change. The models, the vault and the events are asked of the host when the
-device gets in and after a call of the app changed them, never on a clock. A secret goes to
-the vault, and the question is answered with the item's reference: the conversation holds
-nothing else of it. Where the page says which workspace is the person's own, the app goes
-there, because that is where the assistant lives. What Tilo cannot do from an app yet is
-refused with a sentence: tasks, files, pausing the assistant, a password manager, connections.
+sub-agents and what was learned are what Chat keeps, read through the page's mount at the
+page's word of a change. A page whose read of Chat's messages names a conversation and the
+fields it wants answers each conversation whole in one read; an older page is read message by
+message. Chat names who wrote a message by their kind (`{"person": …}`, `{"agent": …}`) and
+spells the conversation of a person and an agent from the two (`ChatMember`,
+`ChatConversation.direct`); a page from before that says bare ids, and both are read. While
+an agent is at work on a message of a conversation the source says so, and
+`stopAnswering(in:)` is Chat's own `stop-agent` on that message: the message field's button
+stops the answer while nothing is typed. The models, the vault and the events are asked of
+the person's server when the device gets in and after a call of the app changed them, never
+on a clock: `link(provider:key:model:)` carries a provider's key from the protected field to
+the server, and `setUpEvent` sets up what comes at a time. A secret goes to the vault, and
+the question is answered with the item's reference: the conversation holds nothing else of
+it. Where the page says which workspace is the person's own, the app goes there, because
+that is where the assistant lives. What Tilo cannot do from an app yet is refused with a
+sentence: tasks, files, pausing the assistant, a password manager.
 
-What it leans on, until Tilo's page offers each: the page's accessibility tree changing is the
-word that something changed, where the page has no `tiloChanges`; a second mount is made
-through the page's own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`; and the
-person's own providers are reached only on a page that hands a native host its device's entry.
+**A service by its address.** The person gives their assistant a service's address. Their
+server looks at it and asks them in their conversation whether to connect it: a question that
+keeps the service's card beside its words (`tilo.connections`, `propose`). The app draws that
+question as the card (`AssistantTilo/Connections.swift`). "Not now" is their no and
+"Authenticate" their yes, both Chat's own answer, and the yes is what adds the service on
+their server. Where the service wants a sign-in, the app begins it as the person on this
+device and opens the service's own page in the system's sign-in sheet
+(`ASWebAuthenticationSession`), which comes back to an address in a scheme of the app's own
+(`SignInReturn`). Nothing of a sign-in is typed into the app; what the sheet comes back with
+goes to the person's server as what a protected field holds, and to nobody else. The card
+keeps no state of its own: it stands by the question and by the person's connections as
+their server lists them, which the app asks on the way in, after its own calls, and once
+more when a card says their server added a service that the list as last read does not hold.
+The assistant view's "Connections" shows that same list, newest first: each service by its
+own name, when it was added and how many commands it offers, or that nobody is signed in to it.
+
+**Which agent is the assistant, and the first time.** When its device gets in, the app asks
+the workspace's server, as the person on this device, which agents the workspace keeps
+(`chat.agent`, through the device's entry: `TiloEngine.askAgents`). The assistant is the
+active agent the person keeps that no outside client connects as and that is nobody's
+sub-agent, the earliest made. Where the server answers that the person keeps none, the app
+makes one through that same resource, with Chat's own `create-agent` and then the action
+that has the server answer for it, as Tilo's own Assistant window does. Only the server's
+word makes one: a page that just got in may not hold the workspace's agents yet. On a page
+that hands an app no way to its server, the assistant is found in what the page's own window
+of Chat publishes, and nothing is made. No setting names an agent. What is in the way is
+said in the main chat (`AssistantSource.setup()`): that the assistant is being set up, or
+the server's own sentence where it refused, with Try again.
+
+**The provider step.** While no provider of the person's has a key, the main chat says so
+and offers the step: the person picks a provider and types a key of their own into the
+protected field, the one field of the app a secret is typed into (`ProtectedField`), and
+`link` carries it to their server, which keeps it in their vault. The models the server then
+lists are offered, and the one chosen answers and works in the main chat. The server offers
+no list of the providers it links by name yet, so the four names its `add-preset` knows are
+written in `TiloSource`.
+
+**The way back to the key.** Once a provider has its key the step is gone from the main chat,
+and the assistant view's Model line leads back to it: under the models its menu offers "Use
+another key for NAME" for each linked provider and "Link another provider" where one is left
+(`AssistantModel.keyWays`, from `AssistantSource.providers()`). Either shows the same step in
+the main chat again with that provider picked (`AssistantModel.keyStep`); the app grows no
+second field for a key. A key typed for a linked provider takes the place of the one their
+server keeps (`set-key`; the provider is not added again), the model step follows, and the
+model the person chose stands. Not now puts the step away.
+
+**What Tilo asks before it pairs.** Tilo's page asks "Add this device?" before it asks
+anyone to let the device in, and says whose devices it would join and which server adds it.
+The engine tells the app the page's own sentences and its own words for the two ways on
+(`TiloEngine.State.asking`), the way in shows them, and only the person's press goes on or
+stops, as a press of the page's own button (`answerPairing`). Nothing in the app answers for
+them; in the programs with no window, whoever drives them does.
+
+**The page's word of a change.** Tilo's page says `tiloChanges` at every frame it draws and
+at every word of its session, many times a second while nothing happens. The engine hands
+the word on only when what the page's device heard or holds moved (`tiloChannels`), looked
+at eight times a second at most; when the page's description of itself for assistive
+technology changed; and after a call of the app's own changed something.
+
+**The device's name.** The app names its device where its person lets it in and lists their
+devices ("Tilo Assistant on Ada's Mac"). The engine's script says it as
+`tiloNativeHost.name`, which the page's `deviceLabel` (`web/pairing.mjs`) reads before it
+falls back to the browser and the system.
+
+What it leans on, until Tilo's page offers each: a second mount is made through the page's
+own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`; and the person's own
+providers are reached only on a page that hands a native app its device's entry.
 
 `TiloLiveProbe` is the engine with no window, driven over its standard input: it pairs, prints
 Chat's messages as they arrive, sends through Chat's own send, and shows a document in a
@@ -340,10 +412,58 @@ the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Re
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
 sends. Attachments and dictation stand under the field, and dictation is the shell's.
 
+**A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
+message carries is content its workspace keeps and the message names (Chat's `attachments`):
+`ChatMessage.files` reads them, `TiloFiles` hands them to the views, and a file's tag says its
+name and its size (`Attachment.words`). The app keeps nothing of a file. Tilo's page hands a
+native app no way to be handed a file's content yet, so pressing a file says so in a
+sentence, and nothing is fetched.
+
+**A file is sent** through Tilo's page. The plus under the message field, or a file dropped on
+it, puts a file under the draft. Send puts each file into the person's workspace a piece at a
+time (`TiloEngine.putBegin`, `putAppend`, `putFinish` ask the page's `put`: 384 KiB a piece,
+read from the file as it goes, never whole in the app or in the page) and then sends ONE
+message with the words, which names every file as Chat does (`send` with `attached`: the name,
+what the workspace keeps the content under, the size). The page refuses a file larger than a
+message may carry by its size alone, before any of it crosses, and the app then says how large
+the file is and how large one may be. A file that is empty, cannot be read or did not go in
+whole sends nothing, and the draft stays in the field. The page of a site whose code is older
+hands no such way: the app says "A file cannot be sent from this app yet" and touches nothing
+of the file. `FileSendingTests` checks this against a page that speaks as Tilo's does, not
+against Tilo's own page and server.
+
 **A secret** is typed into the system's protected field. What is typed lives in that one view
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is
 never part of a message, a draft, a notification or a log, and a `Secret` prints nothing of
-itself.
+itself. The Mac's window is not one the system restores, so nothing of it is written down for
+its next start; on an iPhone the field is covered from the moment the app leaves the front,
+which is when the system keeps a picture of the window.
+
+**The way in.** Before a device is paired the window offers to scan a code or paste a link.
+While a device where the person is signed in asks about a code, the window shows that code
+large (`Session.confirming`), so the two are compared before anyone approves.
+
+**Read out.** The Mac's window is read in three named parts in the order a person reads it:
+the sidebar, the conversation with its field, the Tasks panel. Every control is named by
+what it does, the drawing's dots between facts are pauses and not words, the person's own
+words are read as theirs, a question that waits says that it waits, and the protected field
+is one. On an iPhone the same views say the same.
+
+**At the largest text sizes** on an iPhone the signs grow with the words, a row too narrow
+for two things side by side stacks them, names are read whole on as many lines as they
+take, the way in scrolls, and the message field keeps its height while the conversation
+gives way.
+
+**A task's replies.** A task's line counts the replies the conversation does not show.
+Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
+puts them away. On a narrow window what does not fit beside a task's title goes under the
+title, where its words begin, and the Important mark stays on the title's line while it fits.
+
+**The Mac app** is one AppKit window that holds these views, with the menus and the menu-bar
+item's menu made by hand (`MacApp`, in `AssistantUI`). SwiftUI makes a scene's menus and its
+menu-bar item only while the app runs on a screen; made by hand, each is a thing a test builds
+and drives with nothing on a screen. `Entry.main` in `AssistantMac` is all the program adds:
+it names the source.
 
 **Type and colour** are the drawing's: its colours as named tokens (`Token`), its measures
 (`Measure`), its lines 1.45 apart. The face is Tilo Sans, which is the drawing's Instrument
@@ -357,19 +477,86 @@ what did not interrupt is listed without a sound, with the assistant's reason. A
 first answer is the system's own button beside Open, and a secret is never asked for there.
 `LiveActivityPlan` says what earns a live activity on an iPhone: a reminder that comes once
 within the hour, a brief before something begins, and work the person waits on. The
-assistant's standing work earns none, because an activity that is always there says nothing.
+assistant's lasting work earns none, because an activity that is always there says nothing.
 The app tells both while it runs.
 
-**Told while the app is closed** takes what nothing here makes: an App ID for
-`so.tilo.assistant` with Push Notifications and a profile for it, `aps-environment` in
-`AssistantBundle/Phone.entitlements`, and a host that sends to the addresses the app hands it
-(`AssistantSource.register`: for notifications, for starting a live activity, and for each
-activity that runs). A live activity that the app starts and keeps current itself needs no
-capability.
+**What the person's server told them.** Whether something is a reminder, a brief or important
+is decided by the person's server, which writes each such thing into their log of what they
+were told (`tilo.telling`, `told`). `TiloSource` follows that log while the app is open: it
+reads it whole once, then asks for what is newer, and the server holds each ask until the log
+moves, so the app keeps no clock for it. An entry names the message its cause wrote (an event
+of the person's that came, a moment they asked to be told at); the assistant's answer to that
+message is the piece. The cause's own message, which is what the server told the assistant,
+is no piece: the answer stands under a line with the cause's name, and is a reminder or a
+brief, or carries the mark, as the entry says. A piece that becomes one of these after its
+words arrived is told then, once. What the person saw, opened from its notification or
+arriving in the conversation they look at, is acknowledged to their server, which then tells
+them of it nowhere else.
+
+What their server kept from notifying is listed with no sound and no banner, and its words
+say why, from the reason their server gives (`Quiet.line`): no rule of theirs, a line of
+their rule that waits on something, their own model's line, or that nobody could judge it.
+The buttons under a notice are the ones the entry offers (`Item.offers`), the expected one
+first, and a press invokes that action as the person and tells their server which one it
+was; an action of another app than Chat is not offered there, and neither is a permission
+that is to stay. A thing that insists is told again each time their server raises it, until
+the person saw it. What came while no device of theirs was looking (`since-you-left`) is one
+message at the top of the new stretch of the main chat: what waits, what was done without
+asking, what else came in.
+
+**Told while the app is closed** is off in a build until the build is told to include it:
+`TILO_APPLE_PUSH=1` in `build.sh`'s environment. Without that word a build is as it always
+was: it claims no push right, carries no notice extension, and is signed as before. With it,
+the app claims Apple's push right only where its provisioning profile grants it
+(`aps-environment` on the iPhone; `com.apple.developer.aps-environment` on the Mac, where
+the app then carries its profile, `TILO_APPLE_MAC_PROFILE`): a signature that claims what its
+profile does not grant is not installed on an iPhone and not started on a Mac. A build that
+was told to and whose profile grants none says `no push in this build` with the reason, and
+is as one that was not told. A build with push also carries the notice extension
+(`AssistantNotice`, `so.tilo.assistant.notice`; on the iPhone under a profile of its own,
+`TILO_APPLE_NOTICE_PROFILE`), shares one keychain group with it
+(`<team>.so.tilo.assistant.told`, after the app's own, which stays the first), says in its
+`Info.plist` which of Apple's two services reaches it (`TiloPush`), and on the iPhone may be
+woken by a push that shows nothing. What it takes at Apple, which nothing here makes: Push
+Notifications and Time Sensitive Notifications on the App ID `so.tilo.assistant`, an App ID
+`so.tilo.assistant.notice`, their profiles made again after that, and a key for Apple's push
+service, which the person's server holds and never the app. A Mac build with push names
+itself by its application identifier for the first time; whether it still reads what a build
+without one kept on that Mac is not shown.
+
+In a build with push the app asks Apple's service for an address once its person allowed
+notifications, at every launch, and hands it to the person's server
+(`AssistantSource.register`; `register` on `addresses` of `tilo.telling`) with a key of the
+device's own (`AssistantClosed`): a P-256 key their server seals what a push says for, and
+sixteen secret bytes it names a thing by, so that no word and no id of a thing can be read on
+the way. The key is made when the address is first handed over after a sign-in, kept in the
+group the app shares with the extension, and gone at sign-out, when their server is also told
+to forget the address; a key left behind is gone the moment a sign-in begins. A piece the
+person was told of carries the name a push gives it (`Item.toldAs`), and the app's own notice
+is kept under that name, so a push for the same thing takes its place and nothing is shown
+twice; a push that comes while the app is in front shows nothing, and one that says a thing
+waits no more takes its notice away. A build without push does none of this: it asks for no
+address, hands over nothing and keeps no key.
+
+The notice extension (`AssistantNotice`) is handed a push before the person sees it. Where the
+push carries a part sealed for this device and it opens with the key the app keeps, the notice
+says who told it, the server's words and the Important mark, under its kind's own category.
+Where a push carries no sealed part (a workspace whose words stay on its server), where it
+does not open, or where no key is kept, the notice is handed on as it came: the one plain line
+the bundle's sentences give it (`TOLD_WAITS`) stands. Not there: the buttons a thing offers
+are not put under a notice that came by push, because whether one may be pressed from under a
+notification is judged by what it would invoke, which no push carries; and a press on such a
+notice opens the app, not yet the thing itself. A live activity that the app starts and keeps
+current itself needs no capability.
 
 **Pictures.** `assistant-shots.sh DIR` draws every screen with nothing on screen, light and
 dark: the Mac's by this Mac, in a window that is never put on a screen, and the iPhone's in a
-simulator that shows no window. Asked for `told`, it also hands the system the drawing's
+simulator that shows no window. The Mac's picture tool is signed before it is started
+(`TILO_APPLE_SIGNING_IDENTITY`): nothing that nobody signed is started on a Mac that someone
+works on. The script's head names the simulator, the kind of iPhone and the text size it is
+set to, and its other ways: `said` writes down what every screen of the iPhone says of itself
+to someone who cannot see it, `secret` types into the protected field and looks at the window
+as the app leaves the front, `typing` takes the whole screen with the keyboard up. Asked for `told`, it also hands the system the drawing's
 notifications and live activities there, and writes down what the system then holds.
 
 ## Limits
@@ -394,6 +581,7 @@ dist/apple/build.sh shell simulator --live       # the iPhone app, asked in a si
 dist/apple/build.sh shell iphone --install       # build, sign, and put it on the one reachable iPhone
 dist/apple/build.sh assistant mac --check        # Tilo Assistant: build, sign, and ask it what it can tell
 dist/apple/build.sh assistant iphone --install   # its iPhone app with its widget extension
+TILO_APPLE_PUSH=1 dist/apple/build.sh assistant iphone  # the same, told while it is closed, where its profile grants push
 dist/apple/assistant-shots.sh DIR                # every screen of Tilo Assistant as a picture, nothing on screen
 open "target/apple.noindex/shell/mac/Tilo Shell.app"  # start the Mac app
 ```
@@ -409,9 +597,12 @@ written into the bundles, never into the sources. Without an identity the Mac ap
 nobody: it runs on the Mac that built it, a later build cannot read the keys it kept, and it
 has no share extension.
 
-The icon of both apps is one drawing, `Bundle/AppIcon.svg`: Tilo's mark. The repository keeps
-no pictures, so `build.sh` draws it at every size a bundle carries when the bundle is made:
-the Mac's icon, and the two files the iPhone's `Info.plist` names.
+Each app has one drawing for its icon, so the two are told apart at a glance: Tilo Shell's is
+`Bundle/AppIcon.svg`, Tilo's mark on its light ground; Tilo Assistant's is
+`AssistantBundle/AppIcon.svg`, a message on Tilo's blue with the mark's three parts as three
+dots. The repository keeps no pictures, so `build.sh` draws an app's drawing at every size a
+bundle carries when the bundle is made: the Mac's icon, and the two files the iPhone's
+`Info.plist` names.
 
 `--check` runs the app with nothing on screen and prints one line per fact: who signed it,
 whether it is sandboxed, whether the web view offers a secure context, WebGPU with an adapter,
@@ -494,11 +685,28 @@ and name each native part above.
 Checked with no window: the tests (the settings and what a build of one app is held to, the
 policy, the hand-over, the sentences against their catalogue and under both apps' names, the
 script against a page that speaks as Tilo's does, and the web view of a one-app build against
-pages that leave the app, and the way in against pages that stand at the door as Tilo's
+pages that leave the app, and the way in against pages that show the entry page as Tilo's
 do), the Mac apps' `--check` in their real signature and sandbox, and
 the iPhone apps' in a simulator.
 
-`DoorShots` in the tests takes pictures of a site's door as the apps show it, with nothing on
+What `build.sh` makes of Tilo Assistant with and without push is checked by `BuildTests`: the
+script's own functions make a bundle from stand-ins for the programs, with the signing
+command written down instead of carried out and a profile that is only the list a real one
+decodes to. A build that was not told to, one told to whose profile grants push, and one told
+to whose profile grants none: the rights its signature would claim, what the bundle says of
+itself, the files it carries, and what is signed in which order. Not checked by anything
+here: a build with push signed under a real profile, installed or started, and a push from
+Apple's service.
+
+`AssistantClosed` is checked by its own tests: what the device's key opens against the
+example message the standard for web push itself gives (RFC 8291, section 5), which nothing
+of Tilo made, and against messages the tests seal the way the person's server does; the name
+of a thing against names worked out outside the package; and that a key prints nothing of
+itself. `TiloSourceTests` hands the source a store that keeps the key in memory: no test
+touches a keychain, so the keychain store itself is checked by nothing here, and neither is
+anything the system does with a push.
+
+`EntryPageShots` in the tests takes pictures of a site's entry page as the apps show it, with nothing on
 screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).
 
 Not checked by anything here, because it needs a window or the system's own interface: how
@@ -509,10 +717,54 @@ nothing here makes. What is checked instead: that a build names its sites exactl
 profile grants it, what the system answers a page in a build that names none, and the page's
 sentence for it.
 
+Tilo Assistant's Mac app is driven by its tests while it runs (`Tests/AssistantUITests`;
+`Drive.swift` says how): the app as its program makes it, over a source that writes its calls
+down, in a window that is made and never ordered onto a screen, in a process that may never
+come to the front. Every key is a real key event: typing into the message field, Return and
+Shift Return, the menus' keys through the menus themselves, Return and Escape in a sheet. A
+SwiftUI control answers no mouse event in a window that is not on a screen, however it is
+handed one, so a control is pressed by its accessibility press, after the check that it is
+what stands at its own centre. Checked so: the field (formatting in place, what is sent, a
+pasted paragraph, a long text that scrolls inside it), the sidebar and a sub-agent's window,
+the two ways to start a sub-agent, the answers under a message, a task's replies, the panel's
+four parts and an event's switch, the assistant view, every line of the menus with its key,
+the menu-bar item's lines, where the window's three buttons stand, and that what is typed
+into the protected field reaches the source's `keep` and nothing else (no message, no draft,
+no log line, not the pasteboard, nothing the app keeps). Not checked by it, because only a
+window on a screen shows it: the pointer's own way into the views (hover, how a press looks,
+a drag), the two pop-up menus, the search popover, the file picker and dictation (each puts a
+window of the system's on the screen), whether the conversation keeps its end in view while
+the field under it grows, and the app's first start on a screen. What the Mac's window says
+of itself is read by the same tests (`SaidTests`), part by part.
+
+The iPhone's screens are drawn in a simulator that shows no window, at the default and at the
+largest text size, on a large and on the smallest phone, and read out there (`said`). Not
+shown by a simulator: a notification on the lock screen with its buttons, a live activity on
+the lock screen and in the island, and the picture the system itself keeps of the app as it
+leaves the front. Those take a phone in a hand.
+
 `TiloLive` is checked by its own tests, which run the engine against a page that speaks as
-Tilo's does: where the page stands, a change, reads, actions and their refusals, a second
-mount, and the frames of a page nobody sees. Against a real site `TiloLiveProbe` has paired
-from a link and got in. That it then prints Chat's messages as they arrive, sends, and shows a
-live document whose typed keys land in the record has been seen with a throwaway harness of
-the same technique, and not yet with `TiloLiveProbe` itself. Nothing of it has run in a
-simulator or on a phone.
+Tilo's does: where the page stands, a page that stopped or cannot draw, a change, reads,
+actions and their refusals, a second mount, the frames of a page nobody sees, and the person's
+own providers behind a device that answers carelessly (no key and no secret comes back, and a
+frame gets none of it). `AssistantTilo` is checked the same way, call by call of the frame's
+interface.
+
+Against a real site, with throwaway people and nothing on a screen, the real programs did
+this ten times of ten, on the page build `b341b6ba19b3be4cc4d7` (an older tree than this one).
+`TiloLiveProbe` paired from a link and came back as the same device; printed a message the same
+person typed elsewhere, told by the page and never asked for on a clock; sent through Chat's
+own send; and showed a live document that took an edit made elsewhere and typed keys that
+landed in the record. `AssistantMac --drive`, the app's own program with no window, signed in,
+filled its conversation, took a message typed elsewhere and sent one. No real program has yet
+used the person's own providers, answered a question that waits or kept a secret from the
+protected field: that tree has none of the three, and they wait for a site of this tree.
+
+In a simulator `TiloLivePhoneProbe`, an iPhone app with the engine unseen in its root view,
+paired as a new device with the code compared four times of four and kept its device's key,
+and came back as the same device with nobody asked three times of three; a device nobody
+paired was stopped while joining. No simulator offers a page a graphics adapter, so there the
+page is let in and never opens: reading, a change, sending and the live view have not run on
+an iPhone's system, and only a phone shows them. A simulator program needs a keychain group
+of its own for any of this (`build.sh` gives the apps theirs): without one a web view cannot
+keep the key that wraps a page's keys, and the page stops while joining.

@@ -266,6 +266,7 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Hosts => "the workspace's hosts",
         GovernanceRow::Log => "the workspace's operations",
         GovernanceRow::Sandbox => "the capabilities of its apps' sandboxes",
+        GovernanceRow::Removals => "the cuts of its devices' removals",
     }
 }
 
@@ -358,7 +359,7 @@ pub fn invitation_admission(
 
 /// The people the batch admits through invitations, each with the role
 /// their invitation gives and the device that redeemed it. Every receipt
-/// the batch adds to the workspace's ledger must be one: the invitation it
+/// the batch adds to the workspace's log must be one: the invitation it
 /// carries admits its joiner at the time the workspace records them joining
 /// ([`invitation_admits`]), the joiner's device row holds the receipt, and
 /// the workspace gives them its role. Every invitation part the batch adds
@@ -374,7 +375,7 @@ fn redemptions(
     written: &WorkspaceGovernance,
     now_ns: u64,
 ) -> Result<BTreeMap<String, (Role, String)>, MembershipRefusal> {
-    use crate::state::invitation_ledger::{part_in, part_key};
+    use crate::state::invitation_receipts::{part_in, part_key};
     let malformed = |error: String| MembershipRefusal::Malformed(error);
     let mut invited = BTreeMap::new();
     // The parts the batch adds, until a receipt it adds names them.
@@ -397,18 +398,18 @@ fn redemptions(
             if held_values.is_some_and(|held| held.contains(value)) {
                 continue;
             }
-            let ledgered = crate::state::LedgerReceipt::decode(value)
+            let logged = crate::state::StoredReceipt::decode(value)
                 .map_err(|error| malformed(error.to_string()))?;
-            let receipt = &ledgered.receipt;
+            let receipt = &logged.receipt;
             if *invite != hex::encode(receipt.invite_id) {
                 return Err(malformed("an invitation receipt under another key".into()));
             }
-            let signed = ledgered
+            let signed = logged
                 .invitation(|digest| part_in(&written.invitation_parts, digest))
                 .ok_or_else(|| {
                     malformed("an invitation receipt names no invitation it holds".into())
                 })?;
-            for digest in ledgered.shared() {
+            for digest in logged.shared() {
                 new_parts.remove(&part_key(digest));
             }
             let person = hex::encode(receipt.user_public_key);
@@ -621,7 +622,12 @@ fn sandbox(
                 "sandbox capability {id} ends with a session or a single use"
             )));
         }
-        if capability.granted_by != Some(tilo_action_policy::MemberId::person(actor.to_owned())) {
+        if capability
+            .granted_by
+            .as_ref()
+            .and_then(tilo_action_policy::MemberId::person_id)
+            != Some(actor)
+        {
             return Err(MembershipRefusal::Refused(format!(
                 "sandbox capability {id} is not recorded as the writer's"
             )));

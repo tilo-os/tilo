@@ -20,8 +20,8 @@ final class WordingTests: XCTestCase {
     }
 
     func testATasksLineSaysHowItStands() {
-        XCTAssertEqual(Drawing.mainChat.compactMap { $0.task.flatMap { wording.line($0.standing) } },
-                       ["scheduled, every day", "scheduled, every day", "done, by your standing instruction", "2 replies"])
+        XCTAssertEqual(Drawing.mainChat.compactMap { $0.task.flatMap { wording.line($0.state) } },
+                       ["scheduled, every day", "scheduled, every day", "done, by your lasting instruction", "2 replies"])
         XCTAssertEqual(wording.line(.replies(1)), "1 reply")
         XCTAssertNil(wording.line(.none))
     }
@@ -60,7 +60,8 @@ final class WordingTests: XCTestCase {
         typealias Line = Wording.Line
         XCTAssertEqual(wording.model(facts), Line(first: "Claude Opus 5.5",
                                                   second: "From your Tilo providers · sub-agents may use a smaller one"))
-        XCTAssertEqual(wording.tokens(facts.usage.tokensToday), "1.8M")
+        XCTAssertEqual(wording.messages(facts.usage), "42")
+        XCTAssertEqual(wording.tokens(facts.usage), "1.8M")
         XCTAssertEqual(wording.spent(facts.usage), Line(first: "3.12 $", second: "Of 10 $ a day"))
         XCTAssertEqual(wording.connections(facts), Line(first: "Linear · added 17 Nov · 23 commands",
                                                         second: "Affinity · added 12 Nov · 14 commands"))
@@ -73,14 +74,22 @@ final class WordingTests: XCTestCase {
                                                     second: "Dima at Mento is an investor · 46 more"))
         XCTAssertEqual(wording.places(facts), Line(first: "The cloud machine, always",
                                                    second: "This Mac, in ~/dev/tilo and ~/Documents/Fundraising"))
-        XCTAssertEqual(wording.workspaces(facts), Line(first: "Personal · Tilo team · Northwind data room",
-                                                       second: "It is yours in each. Nobody else can instruct it."))
+        // Of several workspaces the row promises nothing. Under the one the assistant works in, it says so.
+        XCTAssertEqual(wording.workspaces(facts), Line(first: "Personal · Tilo team · Northwind data room", second: nil))
+        var one = facts
+        one.workspaces = ["Personal"]
+        XCTAssertEqual(wording.workspaces(one), Line(first: "Personal", second: "Your assistant works in this workspace."))
+        one.workspaces = []
+        XCTAssertEqual(wording.workspaces(one), Line(first: "Nothing yet", second: nil))
     }
 
     func testAnAssistantThatHasNothingYetSaysSo() {
         let facts = Supervision()
         XCTAssertEqual(wording.model(facts).first, "No model yet")
         XCTAssertEqual(wording.spent(facts.usage), Wording.Line(first: "0 $", second: "Spent today"))
+        // What nobody counted is not said as nought.
+        XCTAssertEqual(wording.messages(facts.usage), "Not counted yet")
+        XCTAssertEqual(wording.tokens(facts.usage), "Not counted yet")
         for line in [wording.connections(facts), wording.logins(facts), wording.importance(facts),
                      wording.learned(facts), wording.places(facts), wording.workspaces(facts)] {
             XCTAssertEqual(line, Wording.Line(first: "Nothing yet", second: nil))

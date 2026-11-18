@@ -1,0 +1,805 @@
+//! `tilo-server-admin` — thin CLI to manage home peers and revocations and
+//! inspect the running daemon by reading its on-disk state.
+//!
+//! Mutations are durable file updates which a running daemon reloads.
+//! `status` combines configuration, workspace state, and the daemon's
+//! periodically persisted metrics snapshot.
+
+mod files_probe;
+mod files_setup;
+
+use std::path::PathBuf;
+
+use anyhow::Context;
+use clap::{Parser, Subcommand};
+
+use collab_types::WorkspaceId;
+use tilo_server::ServerConfig;
+
+const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/server.toml";
+
+#[derive(Parser)]
+#[command(
+    name = "tilo-server-admin",
+    version,
+    about = "Administer a tilo-server daemon"
+)]
+struct Cli {
+    /// Path to the server TOML config.
+    #[arg(long, global = true, default_value = DEFAULT_CONFIG_PATH)]
+    config: PathBuf,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Prepare an exact enrolled Files binding using existing identity and explicit filesystem permission.
+    FilesWorkspaceJoin {
+        #[command(flatten)]
+        options: files_setup::JoinOptions,
+    },
+    /// Explicitly prepare an empty primary Files namespace for the existing device; never recover or replace saved data.
+    FilesWorkspaceInitialize {
+        #[command(flatten)]
+        options: files_setup::InitializeOptions,
+    },
+    /// Validate existing primary Files state and its signed filesystem permission before service launch.
+    FilesWorkspaceCheck {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
+    /// Sign an existing Files authority revision through the existing protected person identity.
+    PublishAuthority {
+        #[arg(long)]
+        acl: PathBuf,
+    },
+    /// Query an already-enrolled home peer for public Files binding metadata, without updating local state.
+    HomePeerFilesStatus {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        workspace_id: WorkspaceId,
+        /// Inspect an existing legacy registry without migrating or copying it.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// Retry durable removals queued while a home peer was offline.
+    HomePeerRetryRemovals {
+        #[arg(long)]
+        identity_root: PathBuf,
+        /// Existing person record, opened through its ordinary secret provider.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
+    },
+    /// Read authenticated health from an enrolled home peer.
+    HomePeerStatus {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+    },
+    /// Rename an enrolled home peer after mutual authentication.
+    HomePeerRename {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        label: String,
+    },
+    /// Root-revoke and permanently stop an enrolled home peer.
+    HomePeerRemove {
+        #[arg(long)]
+        identity_root: PathBuf,
+        /// Existing person record, opened through its ordinary secret provider.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+    },
+    /// Print daemon status (config + on-disk state summary).
+    Status,
+    /// Ask the running daemon about an OS update, as the update service does.
+    /// Exits 0 when it may go ahead, 75 when it has to wait.
+    Rollout {
+        #[command(subcommand)]
+        ask: RolloutAsk,
+    },
+    /// Publish a `RevocationEntry` for a device pubkey (hex-encoded, 32 bytes).
+    ///
+    /// Requires access to the user root private key, so this
+    /// subcommand only runs on the user's primary device.
+    RevokeDevice {
+        /// Hex-encoded device pubkey to revoke.
+        device_pubkey_hex: String,
+        /// lost, stolen, retired, or compromised.
+        #[arg(long, default_value = "compromised")]
+        reason: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RolloutAsk {
+    /// Whether this machine may restart into the staged image TARGET now;
+    /// the daemon takes its person's update lease and drains before it says so.
+    Prepare { target: String },
+    /// This machine booted IMAGE and passed its health verdict; the update lease
+    /// goes to the person's next server.
+    Booted { image: String },
+    /// After a healthy boot of GENERATION (IMAGE, from UPDATES): ask the
+    /// person's other devices to approve this machine's rollback floor moving,
+    /// and keep the approvals they signed in APPROVALS. Exits 0 once some are
+    /// kept, 75 while none are.
+    Floor {
+        generation: u64,
+        image: String,
+        updates: String,
+        /// The public key (PEM) this machine's floor counter takes approvals from.
+        #[arg(long)]
+        authority: PathBuf,
+        /// What `tilo-rollback floor-request` stated.
+        #[arg(long)]
+        request: PathBuf,
+        /// Where `tilo-rollback confirm` finds approvals.
+        #[arg(long)]
+        approvals: PathBuf,
+    },
+}
+
+fn load(path: &std::path::Path) -> anyhow::Result<ServerConfig> {
+    if path.exists() {
+        Ok(ServerConfig::load(path).with_context(|| format!("load {}", path.display()))?)
+    } else {
+        Ok(ServerConfig::default())
+    }
+}
+
+fn device_key(value: &str) -> anyhow::Result<[u8; 32]> {
+    let bytes = hex::decode(value.trim()).with_context(|| "device pubkey must be hex")?;
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        anyhow::anyhow!("device pubkey must be 32 bytes; got {}", bytes.len())
+    })
+}
+
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    dispatch()
+}
+
+fn dispatch() -> anyhow::Result<std::process::ExitCode> {
+    let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Rollout { ask } => cmd_rollout(&cli.config, ask),
+        cmd => command(&cli.config, cmd).map(|()| std::process::ExitCode::SUCCESS),
+    }
+}
+
+/// Ask the daemon about an update and say what it answered: 0 to go ahead,
+/// 75 to wait.
+fn cmd_rollout(
+    config: &std::path::Path,
+    ask: RolloutAsk,
+) -> anyhow::Result<std::process::ExitCode> {
+    use tilo_server::rollout::{Answer, Request};
+    let cfg = load(config)?;
+    let mut keep = None;
+    let request = match ask {
+        RolloutAsk::Prepare { target } => Request::Prepare { target },
+        RolloutAsk::Booted { image } => Request::Booted { image },
+        RolloutAsk::Floor {
+            generation,
+            image,
+            updates,
+            authority,
+            request,
+            approvals,
+        } => {
+            let read = |path: &std::path::Path| {
+                std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
+            };
+            keep = Some(approvals);
+            Request::Floor(tilo_server::servers::floor::Asked {
+                generation,
+                image,
+                updates,
+                authority: read(&authority)?,
+                request: read(&request)?,
+            })
+        }
+    };
+    let answer = match tilo_server::rollout::ask(&cfg.state_root, &request) {
+        Ok(answer) => answer,
+        Err(why) => Answer::Wait { why },
+    };
+    let (said, code) = match &answer {
+        Answer::Restart => (
+            "restart: this server holds the update lease and has drained".to_owned(),
+            0,
+        ),
+        Answer::Wait { why } => (format!("wait: {why}"), 75),
+        Answer::Released => (
+            "released: the update booted healthy; the next server may update".to_owned(),
+            0,
+        ),
+        Answer::Halted { target, booted } => (
+            format!(
+                "halted: {target} did not boot (running {booted}); this server keeps the update lease so no other server starts it"
+            ),
+            0,
+        ),
+        Answer::Nothing => ("nothing: no update was under way".to_owned(), 0),
+        Answer::Floor { approvals, why } if approvals.is_empty() => (format!("floor: {why}"), 75),
+        Answer::Floor { approvals, .. } => {
+            let dir = keep.context("approvals answer only a floor request")?;
+            tilo_rollback::approval::store(&dir, approvals)?;
+            (
+                format!(
+                    "floor: kept {} approval(s) another of the person's devices signed",
+                    approvals.len()
+                ),
+                0,
+            )
+        }
+    };
+    println!("{said}");
+    Ok(std::process::ExitCode::from(code))
+}
+
+fn command(config: &std::path::Path, cmd: Cmd) -> anyhow::Result<()> {
+    match cmd {
+        Cmd::FilesWorkspaceJoin { options } => files_setup::join(&options),
+        Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
+        Cmd::FilesWorkspaceCheck {
+            identity_root,
+            cache_dir,
+        } => files_setup::check(&identity_root, &cache_dir),
+        Cmd::PublishAuthority { acl } => files_setup::publish(&acl),
+        Cmd::HomePeerFilesStatus {
+            identity_root,
+            device,
+            service,
+            workspace_id,
+            registry,
+        } => files_probe::run(
+            &identity_root,
+            &device,
+            &service,
+            workspace_id,
+            registry.as_deref(),
+        ),
+        Cmd::HomePeerRetryRemovals {
+            identity_root,
+            identity_dir,
+        } => retry_pending_removals(&identity_root, identity_dir.as_deref()),
+        Cmd::HomePeerStatus {
+            identity_root,
+            device,
+            service,
+        } => cmd_home_peer(&identity_root, &device, &service, None),
+        Cmd::HomePeerRename {
+            identity_root,
+            device,
+            service,
+            label,
+        } => cmd_home_peer(&identity_root, &device, &service, Some(label)),
+        Cmd::HomePeerRemove {
+            identity_root,
+            identity_dir,
+            device,
+            service,
+        } => cmd_home_peer_remove(&identity_root, identity_dir.as_deref(), &device, &service),
+        Cmd::Status => cmd_status(config),
+        Cmd::RevokeDevice {
+            device_pubkey_hex,
+            reason,
+        } => cmd_revoke_device(config, &device_pubkey_hex, &reason),
+        Cmd::Rollout { ask } => cmd_rollout(config, ask).map(drop),
+    }
+}
+
+fn remote_home_peer(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: &str,
+    request: tilo_server::transport::HomePeerManagementRequest,
+) -> anyhow::Result<tilo_server::transport::HomePeerManagementResponse> {
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)?;
+    let signing_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
+        .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
+    let expected_device = device_key(device)?;
+    let service = device_key(service)?;
+    let server_addr = registered_home_peer_addr(identity_root, device, service)?;
+    tilo_rt::block_on(async move {
+        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tilo_server::client::ServerClient::manage_home_peer(
+                &endpoint,
+                server_addr,
+                user,
+                expected_device,
+                cert,
+                signing_key,
+                tilo_user_identity::RevocationList::new(),
+                request,
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("home peer did not answer within 10 seconds"))??;
+        endpoint.close().await;
+        Ok(response)
+    })?
+}
+
+fn cmd_home_peer(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: &str,
+    rename: Option<String>,
+) -> anyhow::Result<()> {
+    let requested_label = rename.clone();
+    let request = rename.map_or(
+        tilo_server::transport::HomePeerManagementRequest::Status,
+        |label| tilo_server::transport::HomePeerManagementRequest::Rename { label },
+    );
+    let response = remote_home_peer(identity_root, device, service, request)?;
+    if let Some(label) = requested_label {
+        update_home_peer_registry(identity_root, device, Some(label))?;
+    }
+    refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)?;
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+fn registered_home_peer_addr(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: [u8; 32],
+) -> anyhow::Result<iroh_base::EndpointAddr> {
+    let service_id = iroh_base::PublicKey::from_bytes(&service)?;
+    let registration =
+        tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))?
+            .into_iter()
+            .find(|entry| {
+                entry.device_node_id == device && entry.server_node_id == hex::encode(service)
+            })
+            .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+    Ok(registration
+        .server_endpoint
+        .filter(|endpoint| endpoint.id == service_id && !endpoint.is_empty())
+        .unwrap_or_else(|| iroh_base::EndpointAddr::new(service_id)))
+}
+
+fn refresh_home_peer_endpoint(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: [u8; 32],
+    response: &tilo_server::transport::HomePeerManagementResponse,
+) -> anyhow::Result<()> {
+    let endpoint = &response.server_endpoint;
+    if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
+        anyhow::bail!("home peer returned an invalid server endpoint advertisement");
+    }
+    let mut registrations =
+        tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))?;
+    let registration = registrations
+        .iter_mut()
+        .find(|entry| {
+            entry.device_node_id == device && entry.server_node_id == hex::encode(service)
+        })
+        .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+    registration.server_endpoint = Some(endpoint.clone());
+    tilo_server::write_home_peers(
+        &tilo_server::home_peer_registry_path(identity_root),
+        &registrations,
+    )?;
+    Ok(())
+}
+
+fn sign_host_revocation(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+    target: [u8; 32],
+) -> anyhow::Result<tilo_user_identity::RevocationEntry> {
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let root = tilo_server::root_signer::load_root(identity_root, identity_dir)?;
+    let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)?;
+    if root.public_key() != user {
+        anyhow::bail!("active signing record belongs to another person");
+    }
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: user,
+        revoked_device_public_key: target,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, root.as_ref())
+        .context("sign the host's revocation")?;
+    tilo_user_identity::verify_revocation_entry(&revocation)?;
+    Ok(revocation)
+}
+
+fn cmd_home_peer_remove(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+    device: &str,
+    service: &str,
+) -> anyhow::Result<()> {
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let target = device_key(device)?;
+    let mut pending = load_pending_decommissions(identity_root)?;
+    let intent = if let Some(existing) = pending
+        .iter()
+        .find(|intent| intent.device == device)
+        .cloned()
+    {
+        existing
+    } else {
+        let revocation = sign_host_revocation(identity_root, identity_dir, target)?;
+        let intent = PendingDecommission {
+            device: device.to_string(),
+            service: service.to_string(),
+            revocation,
+        };
+        pending.push(intent.clone());
+        save_pending_decommissions(identity_root, &pending)?;
+        intent
+    };
+
+    // Local denial is durable first. The management dial deliberately uses
+    // an empty local server revocation view so this exact pinned certificate
+    // remains reachable only long enough to deliver its own decommission.
+    persist_canonical_revocation(&paths, &intent.revocation)?;
+    let mut fleet_revocations = tilo_server::store::load_revocations(identity_root)?;
+    fleet_revocations.retain(|entry| entry.revoked_device_public_key != target);
+    fleet_revocations.push(intent.revocation.clone());
+    tilo_server::store::save_revocations(identity_root, &fleet_revocations)?;
+    persist_fleet_revocation(identity_root, identity_dir, &intent.revocation)?;
+    if tilo_server::home_peer_registry_path(identity_root).exists() {
+        update_home_peer_registry(identity_root, device, None)?;
+    }
+
+    let remote = remote_home_peer(
+        identity_root,
+        &intent.device,
+        &intent.service,
+        tilo_server::transport::HomePeerManagementRequest::Decommission {
+            revocation: intent.revocation.clone(),
+        },
+    );
+    if remote
+        .as_ref()
+        .is_ok_and(|response| response.decommissioned)
+    {
+        pending.retain(|queued| queued.device != intent.device);
+        save_pending_decommissions(identity_root, &pending)?;
+    }
+    let response = remote.unwrap_or(tilo_server::transport::HomePeerManagementResponse {
+        device_public_key: target,
+        server_endpoint: iroh_base::EndpointAddr::new(iroh_base::PublicKey::from_bytes(
+            &device_key(&intent.service)?,
+        )?),
+        label: "Removed".into(),
+        files_ready: false,
+        services: tilo_server_protocol::ServiceCapabilities::default(),
+        decommissioned: false,
+    });
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PendingDecommission {
+    device: String,
+    service: String,
+    revocation: tilo_user_identity::RevocationEntry,
+}
+
+fn pending_decommissions_path(identity_root: &std::path::Path) -> PathBuf {
+    identity_root.join("pending-home-peer-decommissions.json")
+}
+
+fn load_pending_decommissions(
+    identity_root: &std::path::Path,
+) -> anyhow::Result<Vec<PendingDecommission>> {
+    match std::fs::read(pending_decommissions_path(identity_root)) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => Ok(serde_json::from_slice(&bytes)?),
+        Ok(_) => anyhow::bail!("pending home-peer removal list is too large"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save_pending_decommissions(
+    identity_root: &std::path::Path,
+    pending: &[PendingDecommission],
+) -> anyhow::Result<()> {
+    tilo_files::native::atomic::write_with_mode(
+        &pending_decommissions_path(identity_root),
+        &serde_json::to_vec_pretty(pending)?,
+        0o600,
+    )?;
+    Ok(())
+}
+
+fn retry_pending_removals(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let mut pending = load_pending_decommissions(identity_root)?;
+    for intent in pending.clone() {
+        let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+        let target = device_key(&intent.device)?;
+        persist_canonical_revocation(&paths, &intent.revocation)?;
+        let mut server_revocations = tilo_server::store::load_revocations(identity_root)?;
+        server_revocations.retain(|entry| entry.revoked_device_public_key != target);
+        server_revocations.push(intent.revocation.clone());
+        tilo_server::store::save_revocations(identity_root, &server_revocations)?;
+        persist_fleet_revocation(identity_root, identity_dir, &intent.revocation)?;
+        if tilo_server::home_peer_registry_path(identity_root).exists() {
+            update_home_peer_registry(identity_root, &intent.device, None)?;
+        }
+        if remote_home_peer(
+            identity_root,
+            &intent.device,
+            &intent.service,
+            tilo_server::transport::HomePeerManagementRequest::Decommission {
+                revocation: intent.revocation,
+            },
+        )
+        .is_ok_and(|response| response.decommissioned)
+        {
+            pending.retain(|queued| queued.device != intent.device);
+            save_pending_decommissions(identity_root, &pending)?;
+        }
+    }
+    println!("{}", pending.len());
+    Ok(())
+}
+
+fn persist_canonical_revocation(
+    paths: &tilo_user_identity::IdentityPaths,
+    revocation: &tilo_user_identity::RevocationEntry,
+) -> anyhow::Result<()> {
+    tilo_user_identity::append_revocation(paths, revocation)
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn persist_fleet_revocation(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+    revocation: &tilo_user_identity::RevocationEntry,
+) -> anyhow::Result<()> {
+    let directory = match identity_dir {
+        Some(directory) => directory.to_path_buf(),
+        None => tilo_paths::xdg::config_home()
+            .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?
+            .join("tilo/identities"),
+    };
+    let store = tilo_identity::device_fleet::DeviceFleetStore::at(
+        &directory,
+        tilo_user_identity::IdentityPaths::under(identity_root),
+    );
+    let identity_id = hex::encode(revocation.user_public_key);
+    if !store.fleet_file(&identity_id).exists() {
+        return Ok(());
+    }
+    store.record_revocation(&identity_id, revocation)?;
+    Ok(())
+}
+
+fn update_home_peer_registry(
+    identity_root: &std::path::Path,
+    device: &str,
+    new_label: Option<String>,
+) -> anyhow::Result<()> {
+    let mut registrations =
+        tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))?;
+    if let Some(label) = new_label {
+        let label = label.trim();
+        if !tilo_server::valid_home_peer_label(label) {
+            anyhow::bail!("home-peer name must be 1 to 80 bytes");
+        }
+        let registration = registrations
+            .iter_mut()
+            .find(|entry| entry.device_node_id == device)
+            .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+        registration.label = label.to_string();
+    } else {
+        registrations.retain(|entry| entry.device_node_id != device);
+    }
+    tilo_server::write_home_peers(
+        &tilo_server::home_peer_registry_path(identity_root),
+        &registrations,
+    )?;
+    Ok(())
+}
+
+fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
+    let cfg = load(config)?;
+    println!("tilo-server-admin {}", tilo_server::VERSION);
+    println!("config:    {}", config.display());
+    println!("state:     {}", cfg.state_root.display());
+    println!("identity:  {}", cfg.identity_root.display());
+    println!("iroh:      {}", cfg.iroh_listen);
+    let full_replica = std::fs::read(&cfg.full_replica_status)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|status| {
+            status
+                .get("full_content_replication")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                && status.get("state").and_then(serde_json::Value::as_str) == Some("ready")
+        });
+    println!("full_content_replication: {full_replica}");
+    let workspace_root = cfg.state_root.join("workspaces");
+    let mut durable: Vec<_> = std::fs::read_dir(&workspace_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            tilo_server_protocol::WorkspaceId::parse(&entry.file_name().to_string_lossy())
+        })
+        .collect();
+    durable.sort_unstable();
+    durable.dedup();
+    println!("durable workspace shards: {}", durable.len());
+    for workspace_id in durable {
+        let store = tilo_server::store::WorkspaceStore::open(&cfg.state_root, workspace_id, true)?;
+        let members = store.load_membership()?.len();
+        let retained = store.load_retained()?.len();
+        println!("  {workspace_id}\tmembers={members}\tretained={retained}");
+    }
+    if let Some(metrics) = tilo_server::store::load_metrics(&cfg.state_root)? {
+        println!("metrics:");
+        println!("  connections accepted: {}", metrics.conns_accepted);
+        println!("  connections authed:   {}", metrics.conns_authed);
+        println!("  auth rejected:        {}", metrics.auth_rejected);
+        println!("  deltas received:      {}", metrics.deltas_received);
+        println!("  deltas fanned out:    {}", metrics.deltas_fanned_out);
+        println!("  bytes queued:         {}", metrics.bytes_queued);
+        println!("  bytes sent:           {}", metrics.bytes_sent);
+        println!("  bytes sent live:      {}", metrics.bytes_sent_live);
+        for (workspace_id, egress) in &metrics.workspaces {
+            println!(
+                "  {workspace_id}\tbytes sent={}\tlive={}",
+                egress.bytes_sent, egress.bytes_sent_live
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_revoke_device(
+    config: &std::path::Path,
+    device_pubkey_hex: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let cfg = load(config)?;
+    let paths = tilo_user_identity::IdentityPaths::under(&cfg.identity_root);
+    if !paths.user_privkey.exists() {
+        anyhow::bail!(
+            "cannot revoke: no user root private key at {}. Run this from your primary device.",
+            paths.user_privkey.display()
+        );
+    }
+    let pk = device_key(device_pubkey_hex)?;
+    let reason = match reason {
+        "lost" => tilo_user_identity::RevocationReason::Lost,
+        "stolen" => tilo_user_identity::RevocationReason::Stolen,
+        "retired" => tilo_user_identity::RevocationReason::Retired,
+        "compromised" => tilo_user_identity::RevocationReason::Compromised,
+        _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
+    };
+    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
+    tilo_server::root_signer::revoke_device(&cfg.state_root, &root, pk, reason)?;
+    println!("revoked device {} ({reason:?})", hex::encode(pk));
+    println!("a running tilo-server disconnects the device within one second");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    tilo_test_env::scenario! {
+        fn host_record_revocations_are_signed_verified_and_kept_private;
+
+        phase host_record_retirement_signs_and_rejects_another_person;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let identities = temp.path().join("identities");
+            let identity_root = temp.path().join("tilo");
+            let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
+            tilo_identity::provisioning::ensure_collaboration_identity(
+                &identities,
+                &paths,
+                tilo_identity::provisioning::IdentityStorage::Files,
+            )
+            .unwrap();
+            assert!(!paths.user_privkey.exists());
+            let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
+            let revocation = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap();
+            tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
+            assert_eq!(revocation.user_public_key, user);
+            assert_eq!(revocation.revoked_device_public_key, [72; 32]);
+            persist_fleet_revocation(&identity_root, Some(&identities), &revocation).unwrap();
+            let fleet =
+                tilo_identity::device_fleet::DeviceFleetStore::at(&identities, paths.clone())
+                    .load(&hex::encode(user))
+                    .unwrap();
+            assert_eq!(fleet.revocations, vec![revocation]);
+            tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
+            let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
+            assert!(error.to_string().contains("another person"));
+            assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
+            assert!(!paths.user_privkey.exists());
+        }
+
+        phase canonical_revocation_aggregate_is_verified_deduplicated_and_private;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = tilo_user_identity::IdentityPaths::under(temp.path());
+            std::fs::create_dir_all(paths.user_pubkey.parent().unwrap()).unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+            let mut entry = tilo_user_identity::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: [72; 32],
+                revoked_at_ns: 1,
+                reason: tilo_user_identity::RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+            persist_canonical_revocation(&paths, &entry).unwrap();
+            let first = entry.clone();
+            entry.revoked_at_ns = 2;
+            tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+            persist_canonical_revocation(&paths, &entry).unwrap();
+
+            let path = tilo_user_identity::revocations_path(&paths);
+            let stored: Vec<tilo_user_identity::RevocationEntry> =
+                postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                stored,
+                vec![first],
+                "one entry per device, and the person's earliest word stands"
+            );
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+
+            let pending = PendingDecommission {
+                device: hex::encode(entry.revoked_device_public_key),
+                service: hex::encode([73; 32]),
+                revocation: entry.clone(),
+            };
+            save_pending_decommissions(temp.path(), std::slice::from_ref(&pending)).unwrap();
+            let after_restart = load_pending_decommissions(temp.path()).unwrap();
+            assert_eq!(after_restart.len(), 1);
+            assert_eq!(after_restart[0].device, pending.device);
+            assert_eq!(after_restart[0].revocation, entry);
+        }
+    }
+}

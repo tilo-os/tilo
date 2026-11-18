@@ -72,7 +72,7 @@ pub struct BrowserWindow {
     presented: Option<(u64, u64)>,
     /// Who opens the person's signed-in website accounts here.
     person: Option<[u8; 32]>,
-    /// Wakes the window when an account's custody answers.
+    /// Wakes the window when an account's ownership answers.
     waker: Option<ui::WakeHandle>,
     rect: Rect,
     dirty: bool,
@@ -161,7 +161,7 @@ impl BrowserWindow {
     }
 
     /// Open the person's signed-in website accounts as `person`, waking the window
-    /// through `waker` as their custody answers.
+    /// through `waker` as their ownership answers.
     pub(crate) fn attach_services(&mut self, person: Option<[u8; 32]>, waker: ui::WakeHandle) {
         self.person = person;
         self.waker = Some(waker);
@@ -210,15 +210,18 @@ impl BrowserWindow {
                 | BrowserEffect::OpenServiceSession { .. }
                 | BrowserEffect::RetryForgetServiceSession { .. }
                 | BrowserEffect::ForgetServiceSession { .. }
-        ) && !self.page.browsing_mode().holds_account_custody()
+        ) && !self.page.browsing_mode().holds_account_credentials()
         {
-            // The window's custody is fixed when it opens, so what it publishes its
+            // The window's ownership is fixed when it opens, so what it publishes its
             // page actions as stays true while it is open.
-            return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY));
+            return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_OWNERSHIP));
         }
         match &effect {
             BrowserEffect::ListServiceSessions => {
-                let waker = self.waker.clone().ok_or("Account custody is unavailable")?;
+                let waker = self
+                    .waker
+                    .clone()
+                    .ok_or("Account credentials is unavailable")?;
                 self.page.begin_service_list(cx.reply(), waker)?;
                 return Ok(Effected::Pending);
             }
@@ -852,7 +855,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
             .map(|payload| ui::application_view::ApplicationLocalView {
                 app_id: <crate::resource::BrowserShell as ui::framework::ResourceApp>::ID.into(),
                 version: SAVED_PAGE_VERSION,
-                payload: self.page.saved_with_page_record(payload),
+                payload: self.page.saved_with_page_resource(payload),
             }))
     }
 
@@ -866,7 +869,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
                 "the saved page cannot be shown".into(),
             ));
         }
-        self.page.restore_page_record(&local.payload);
+        self.page.restore_page_resource(&local.payload);
         self.focus_address = false;
         self.dirty = true;
         Ok(ui::application_view::ApplicationFocusRestore::Generic)
@@ -902,8 +905,8 @@ impl FloatingSurfaceProvider for BrowserWindow {
         FloatingSurfaceProvider::take_floating_surface_request(&mut *self.page)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        FloatingSurfaceProvider::take_capture_studio_request(&mut *self.page)
+    fn take_pip_area_request(&mut self) -> bool {
+        FloatingSurfaceProvider::take_pip_area_request(&mut *self.page)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
@@ -958,7 +961,7 @@ mod tests {
     use ui::framework::HostDelivery as _;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
-    /// A page engine that records commands and replays queued events and new tab
+    /// A page engine that resources commands and replays queued events and new tab
     /// intents.
     #[derive(Default)]
     struct PageEngine {

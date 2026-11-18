@@ -940,7 +940,7 @@ mod tests {
 
     use serde_json::json;
     use ui::tilo_actions::remote::{
-        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
+        ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
         InvocationReceipt, InvocationState, InvokeRequest, Pending as HostPending, ReceiptStatus,
         pending,
     };
@@ -1029,12 +1029,12 @@ mod tests {
         }
     }
 
-    impl ActionHost for Keeping {
+    impl ActionProvider for Keeping {
         fn query(
             &self,
             _: &Caller,
             _: CatalogueQuery,
-        ) -> HostPending<Result<CataloguePage, ActionHostError>> {
+        ) -> HostPending<Result<CataloguePage, ActionCallError>> {
             HostPending::ready(Ok(CataloguePage::default()))
         }
 
@@ -1042,7 +1042,7 @@ mod tests {
             &self,
             _: &Caller,
             request: InvokeRequest,
-        ) -> HostPending<Result<InvocationReceipt, ActionHostError>> {
+        ) -> HostPending<Result<InvocationReceipt, ActionCallError>> {
             self.asked.lock().unwrap().push(request.clone());
             let invocation = request.invocation;
             // The window's reading of the accounts: the whole listing now,
@@ -1099,7 +1099,7 @@ mod tests {
                 person_accounts::BEGIN_SEND => json!({ "send": "test-send" }),
                 person_accounts::SEND_PIECE => {
                     let InvokeArgument::Json(argument) = &request.argument else {
-                        return HostPending::ready(Err(ActionHostError::InvalidRequest {
+                        return HostPending::ready(Err(ActionCallError::InvalidRequest {
                             reason: "a piece is a map".into(),
                         }));
                     };
@@ -1138,7 +1138,7 @@ mod tests {
             &self,
             _: &Caller,
             id: &InvocationId,
-        ) -> HostPending<Result<(), ActionHostError>> {
+        ) -> HostPending<Result<(), ActionCallError>> {
             self.reading.lock().unwrap().update = Some(InvocationUpdate::Cancelled {
                 invocation: *id,
                 message: None,

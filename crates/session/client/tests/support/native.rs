@@ -13,15 +13,15 @@ use collab_types::{
 use key_group::{Access, GroupPeer, PeerEvent, VaultKey};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::daemon::Relay;
-use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server::daemon::Server;
+use tilo_server::{Inbound, ServerClient, ServerCoeditSession};
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::RevocationList;
 
 use crate::support::{Device, is_host};
 
 /// Publish `message` through the host the way a shell does.
-pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
+pub fn publish(session: &ServerCoeditSession, message: &NeighbourMsg) {
     let (channel, retention) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_allocvec(message).unwrap();
     match retention {
@@ -31,22 +31,22 @@ pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
     .unwrap();
 }
 
-/// `device`'s session with `workspace` on `relay`, announced with its
+/// `device`'s session with `workspace` on `server`, announced with its
 /// certificate as every device announces itself. `user` is the device's
 /// person.
 pub async fn connect(
-    relay: &Relay,
+    server: &Server,
     user: [u8; 32],
     device: &Device,
     workspace: WorkspaceId,
-) -> RelayCoeditSession {
+) -> ServerCoeditSession {
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .unwrap();
-    let client = RelayClient::connect(
+    let client = ServerClient::connect(
         endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         user,
         device.cert.clone(),
         device.key.clone(),
@@ -55,7 +55,8 @@ pub async fn connect(
     .await
     .unwrap();
     let session =
-        RelayCoeditSession::join(client, workspace, device.key.verifying_key().to_bytes()).unwrap();
+        ServerCoeditSession::join(client, workspace, device.key.verifying_key().to_bytes())
+            .unwrap();
     publish(
         &session,
         &NeighbourMsg::IdentityHello {
@@ -74,7 +75,7 @@ pub fn vault() -> VaultKey {
 pub struct NativeDevice {
     pub device: Device,
     pub peer: GroupPeer,
-    pub session: RelayCoeditSession,
+    pub session: ServerCoeditSession,
     workspace: WorkspaceId,
     delivery: u64,
     /// Other devices' writes, as they arrived.
@@ -83,10 +84,10 @@ pub struct NativeDevice {
 }
 
 impl NativeDevice {
-    /// `device` in `workspace` on `relay`, announced, its group's keys not
+    /// `device` in `workspace` on `server`, announced, its group's keys not
     /// asked for yet.
     pub async fn start(
-        relay: &Relay,
+        server: &Server,
         user: [u8; 32],
         device: Device,
         workspace: WorkspaceId,
@@ -99,7 +100,7 @@ impl NativeDevice {
             &vault(),
         )
         .unwrap();
-        let session = connect(relay, user, &device, workspace).await;
+        let session = connect(server, user, &device, workspace).await;
         Self {
             device,
             peer,

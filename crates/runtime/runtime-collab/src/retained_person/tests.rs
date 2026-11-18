@@ -530,7 +530,7 @@ fn genuinely_signed_future_and_invalid_interval_certificates_fail_both_time_chec
 }
 
 #[test]
-fn observed_installed_expiry_failure_retires_epoch_even_when_valid_custody_is_restored() {
+fn observed_installed_expiry_failure_retires_epoch_even_when_valid_ownership_is_restored() {
     let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
@@ -568,7 +568,7 @@ fn observed_installed_expiry_failure_retires_epoch_even_when_valid_custody_is_re
         epoch
             .revalidate(&fresh, &[21; 32], &fixture.peer, &trusted, &held)
             .is_err(),
-        "restoring valid root custody with a fresh valid proof cannot revive the observed failed epoch"
+        "restoring valid root ownership with a fresh valid proof cannot revive the observed failed epoch"
     );
     fixture.finish().expect("qualification child exits");
 }

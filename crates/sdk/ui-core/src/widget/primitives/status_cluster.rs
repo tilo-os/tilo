@@ -312,7 +312,7 @@ impl<'a> StatusClusterFace<'a> {
         layout
     }
 
-    /// Paint the cluster in `rect` (its width from [`Self::width`]) standing
+    /// Paint the cluster in `rect` (its width from [`Self::width`]) drawn
     /// on `ground`, and hand back where its parts landed.
     #[must_use]
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ground: Color) -> StatusClusterLayout {

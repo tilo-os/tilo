@@ -16,7 +16,7 @@ use crate::ids::AppId;
 use crate::meta::FieldKind;
 use crate::registry::TypeInfo;
 use crate::runtime::Runtime;
-use crate::store::{Applied, ChangeNote, FieldSpec, FieldValue, Mutation, NewRecord, Txn};
+use crate::store::{Applied, ChangeNote, FieldSpec, FieldValue, Mutation, NewResource, Txn};
 use crate::value::{ResourceRef, Value};
 
 /// One write of a batch.
@@ -252,7 +252,7 @@ impl Runtime {
                 fields,
             } => {
                 let info = self.type_of(&ty)?;
-                let new = NewRecord {
+                let new = NewResource {
                     ty: info.id.clone(),
                     app: AppId::default(),
                     fields: info.specs(),

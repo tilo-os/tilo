@@ -51,7 +51,7 @@ toml.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 bytes = { workspace = true, optional = true }
-# The content store. Only its portable content plane is used here; the
+# The content store. Only its portable content store is used here; the
 # filesystem daemon stays out of the dependency graph.
 tilo-fs = { version = "0.1.0", path = "../../system/fs", default-features = false, optional = true }
 iroh-blobs = { workspace = true, optional = true }

@@ -187,3 +187,27 @@ fn auxiliary_secret_frames_keep_the_conservative_native_lifetime_latch() {
         "auxiliary destruction is not acknowledged by this protocol; retain app-wide protection until teardown"
     );
 }
+
+/// A frame's carets and tags are the ones its widgets draw: one an earlier frame drew is gone, so
+/// an agent's next step where its old caret stood still wears its own tag.
+#[test]
+fn a_frame_keeps_no_caret_an_earlier_frame_drew() {
+    let mut app = drawn(TextInput::local());
+    let agent = crate::permissions::MemberId::agent("helper");
+    app.presence_ctx
+        .note_presence_mark(crate::presence::PresenceMark {
+            user: agent.clone(),
+            rect: KurboRect::new(10.0, 10.0, 12.0, 30.0),
+            selection: false,
+            saying: None,
+        });
+    draw_frame_content(&mut app, &mut Scene::new(), 600, 400, 1.0, None);
+    assert!(
+        app.presence_ctx
+            .presence_marks()
+            .iter()
+            .all(|mark| mark.user != agent),
+        "{:?}",
+        app.presence_ctx.presence_marks()
+    );
+}

@@ -73,7 +73,7 @@ if grep -Fq 'grep -qw tilo.install /proc/cmdline' "$tool" \
    && grep -Fq 'no EFI artifact still proves ownership by this Tilo root; root was not removed' "$tool"; then
   ok "removal is live-only, ownership-bound, alongside-only, confirmed, and dry-runnable"
 else
-  bad "removal safety gates are incomplete"
+  bad "removal safety checks are incomplete"
 fi
 
 if grep -Fq 'efi_artifact=' "$installer" \

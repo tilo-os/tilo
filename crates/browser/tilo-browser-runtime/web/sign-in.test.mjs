@@ -210,6 +210,7 @@ function page({
   search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, local = entered(),
   identity = {userPublicKey: ROOT, locked: false, sign: async () => new Uint8Array(64)},
   passkeys = true, signIn = async () => { throw Object.assign(new Error('no'), {code: 'passkey-cancelled'}); },
+  ownDeviceKeyStore = false,
 } = {}) {
   const store = {kept};
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
@@ -255,8 +256,9 @@ function page({
     local,
     identity,
     loadRuntime: async () => runtime,
-    openCustody: async request => {
-      posted.push({custody: request});
+    // Handed nothing, as sign-in.html hands it nothing, the page takes the store it is built with.
+    openDeviceKey: ownDeviceKeyStore ? undefined : async request => {
+      posted.push({deviceKey: request});
       return {kind: 'webcrypto-ed25519', close: async () => {}};
     },
   });
@@ -284,6 +286,12 @@ const link_ = (over) => link(over);
 const untilText = (expires, locale = undefined) =>
   new Date(expires).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'});
 
+test('the page starts when nothing hands it a device key store', async () => {
+  const {mounted, shown} = page({ownDeviceKeyStore: true});
+  await assert.doesNotReject(mounted);
+  assert.equal(shown().actions, 'offered');
+});
+
 test('allow signs what the link asked for and posts it to the service', async () => {
   const {elements, formed, posted, shown, mounted} = page({search: link_()});
   await mounted;
@@ -309,8 +317,8 @@ test('allow signs what the link asked for and posts it to the service', async ()
     serverKey: false,
     operateBrowserPages: false,
   });
-  const custody = posted.find(entry => entry.custody)?.custody;
-  assert.equal(custody.profile, `tilo-identity:${ROOT}@entry.example`);
+  const deviceKey = posted.find(entry => entry.deviceKey)?.deviceKey;
+  assert.equal(deviceKey.profile, `tilo-identity:${ROOT}@entry.example`);
 });
 
 test('a link that asks for no grant proves the person and posts no grant', async () => {

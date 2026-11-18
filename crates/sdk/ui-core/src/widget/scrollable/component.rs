@@ -13,7 +13,7 @@ pub struct ScrollProps {
     /// Open at the end of the content and stay there while it grows, unless the person scrolled
     /// away: a transcript, whose newest line is last.
     pub follow_end: bool,
-    /// Scroll sideways instead: a row wider than its column, such as a board's lanes.
+    /// Scroll sideways instead: a row wider than its column, such as a board's lists.
     pub across: bool,
     /// Scroll both ways, for a 2D surface wider and taller than its column (a board of strips);
     /// takes precedence over `across`.

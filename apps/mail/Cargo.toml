@@ -13,7 +13,7 @@ ignored = ["mail-samples"]
 
 # A page reads the mail its workspace holds and asks a capable device to
 # reach the servers (`src/peer.rs`): it compiles no IMAP/SMTP engine and no
-# account custody.
+# account credentials.
 [package.metadata.tilo]
 web-features = []
 
@@ -71,7 +71,7 @@ tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-# Account secrets custody releases are wiped from memory when dropped.
+# Account secrets ownership releases are wiped from memory when dropped.
 zeroize.workspace = true
 # A separate config directory keeps sample, shots, and test constructors away
 # from the user's account store.
@@ -91,11 +91,11 @@ markup5ever_rcdom = "0.39"
 # The base64 encodings XOAUTH2 and the sandboxed HTML data: URL use.
 base64.workspace = true
 # Tilo's one OAuth client registration per provider (with Gmail's and
-# Outlook's mail scopes) and the custody of Mail's grants: sign-in, sealing
-# and refresh. The custodian and its HTTPS client are compiled with `live`.
-account-custody = { path = "../../crates/system/account-custody", default-features = false }
+# Outlook's mail scopes) and the ownership of Mail's grants: sign-in, sealing
+# and refresh. The credential store and its HTTPS client are compiled with `live`.
+account-credentials = { path = "../../crates/system/account-credentials", default-features = false }
 
-# Live IMAP and SMTP for the account engine. These are optional and gated by
+# Live IMAP and SMTP for the account engine. These are optional and guarded by
 # `live`; the default build uses the offline backend.
 async-imap = { workspace = true, optional = true }
 lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
@@ -119,12 +119,12 @@ workspace-hack = { version = "0.1" }
 # runs, captures and tests only, never a release.
 samples = []
 thin = ["dep:runtime-dylib"]
-# Reach account custody with the IMAP client, and the contact directory,
+# Reach account credentials with the IMAP client, and the contact directory,
 # through their engine libraries in the runtime bundle
 # (libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
 # crates/runtime/engines/) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
-# (`tilo-app dev`) links account-custody, async-imap and
+# (`tilo-app dev`) links account-credentials, async-imap and
 # tilo-contact-directory statically, because an engine library links only
 # through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin", "tilo-mail-engine/thin"]
@@ -133,7 +133,7 @@ runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-e
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util", "mail-builder/gethostname"]
+live = ["account-credentials/store", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util", "mail-builder/gethostname"]
 
 # The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
 # what talks to mail servers through this engine. Never in a release.

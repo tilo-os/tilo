@@ -396,8 +396,8 @@ fn a_property_list_action_carries_its_press_across_a_rebuild() {
 #[test]
 fn a_property_value_copy_carries_its_press_across_a_rebuild() {
     use crate::widget::PropertyValue;
-    let services = crate::host::HostServices::null();
-    let _host = crate::host::enter(&services);
+    let services = crate::process::ProcessServices::null();
+    let _host = crate::process::enter(&services);
     // Each generation shows its own value; the copied one says which ran.
     let build: Build = |_, generation| {
         Box::new(

@@ -1,7 +1,7 @@
-//! Custody-backed calendar access. Refresh and discovery are blocking; run them off the
+//! Calendar access through the credential store. Refresh and discovery are blocking; run them off the
 //! async and UI threads. Credentials and unrestricted clients never leave here.
 
-use account_custody::{Custodian, OAuthIssuer, OAuthUse};
+use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
 use accounts::{AccountId, AccountStore, SecretVault, cloud_types};
 
 use crate::discovery::{self, CalendarCollection};
@@ -17,24 +17,24 @@ const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar";
 /// Read the password for the existing portable Nextcloud calendar projection,
 /// including protected copied grants. The caller must keep this value private.
 pub fn calendar_password(secret: &accounts::Secret) -> String {
-    account_custody::password_credential(secret).to_string()
+    account_credentials::password_credential(secret).to_string()
 }
 
 #[derive(Clone)]
 pub struct Service {
-    custodian: Custodian,
+    credential_store: CredentialStore,
     #[cfg(feature = "test-support")]
     fixture: Option<Url>,
 }
 
 impl Service {
     pub fn live() -> Self {
-        Self::new(Custodian::live())
+        Self::new(CredentialStore::live())
     }
 
-    pub fn new(custodian: Custodian) -> Self {
+    pub fn new(credential_store: CredentialStore) -> Self {
         Self {
-            custodian,
+            credential_store,
             #[cfg(feature = "test-support")]
             fixture: None,
         }
@@ -43,7 +43,10 @@ impl Service {
     /// Trust exactly one loopback origin as a Google fixture. This is explicit per
     /// service and does not permit a second loopback server or arbitrary URL.
     #[cfg(feature = "test-support")]
-    pub fn for_test_origin(custodian: Custodian, origin: &str) -> Result<Self, String> {
+    pub fn for_test_origin(
+        credential_store: CredentialStore,
+        origin: &str,
+    ) -> Result<Self, String> {
         let url = Url::parse(origin).map_err(|_| "invalid fixture origin")?;
         discovery::safe_url(&url, origin)?;
         let loopback = url.host_str().is_some_and(|host| {
@@ -57,7 +60,7 @@ impl Service {
             return Err("fixture must be a loopback origin".into());
         }
         Ok(Self {
-            custodian,
+            credential_store,
             fixture: Some(url),
         })
     }
@@ -81,9 +84,9 @@ impl Service {
             self.google_credential(id)?
         } else {
             self.require_type(id, cloud_types::NEXTCLOUD)?;
-            let vault = SecretVault::open_person(self.custodian.config_root());
+            let vault = SecretVault::open_person(self.credential_store.config_root());
             let secret = vault.get(id).ok_or("calendar credential is missing")?;
-            let password = account_custody::password_credential(&secret);
+            let password = account_credentials::password_credential(&secret);
             if password.is_empty() {
                 return Err("calendar credential is unavailable".into());
             }
@@ -97,7 +100,7 @@ impl Service {
         })
     }
 
-    /// Build an opaque origin-bound async client. An account ID selects Google custody;
+    /// Build an opaque origin-bound async client. An account ID selects Google ownership;
     /// without one, the supplied Basic password is used. Checks precede any refresh or
     /// credential use. Refresh is blocking.
     pub fn authorised(
@@ -141,7 +144,7 @@ impl Service {
     }
 
     fn require_type(&self, id: &AccountId, expected: &str) -> Result<(), String> {
-        let store = match self.custodian.config_root() {
+        let store = match self.credential_store.config_root() {
             Some(root) => AccountStore::load_in(root),
             None => AccountStore::load(),
         };
@@ -172,7 +175,7 @@ impl Service {
         self.require_type(id, cloud_types::GOOGLE_DRIVE)?;
         self.require_calendar_scope(id)?;
         let token = self
-            .custodian
+            .credential_store
             .oauth_access_token(id, OAuthUse::calendar(OAuthIssuer::Google), false)
             .map_err(|error| error.to_string())?;
         // A refresh response can narrow the grant. Never transmit that token.
@@ -182,7 +185,7 @@ impl Service {
 
     fn require_calendar_scope(&self, id: &AccountId) -> Result<(), String> {
         let scopes = self
-            .custodian
+            .credential_store
             .oauth_scopes(id)
             .map_err(|error| error.to_string())?;
         if !scopes.as_deref().is_some_and(|scopes| {
@@ -290,10 +293,31 @@ impl AuthorisedClient {
         url: &'a str,
         precondition: Precondition<'a>,
     ) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        self.delete_saying(url, &[], precondition)
+    }
+
+    /// [`net::DavClient::delete_saying`], for this account's server only.
+    pub fn delete_saying<'a>(
+        &'a self,
+        url: &'a str,
+        headers: &'a [(&'a str, &'a str)],
+        precondition: Precondition<'a>,
+    ) -> net::DavFuture<'a, Result<DavResponse, String>> {
         Box::pin(async move {
             let url = self.binding.check(url)?;
             self.client
-                .delete(url.as_str(), precondition)
+                .delete_saying(url.as_str(), headers, precondition)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// What the server holds at `url`, for this account's server only.
+    pub fn get<'a>(&'a self, url: &'a str) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        Box::pin(async move {
+            let url = self.binding.check(url)?;
+            self.client
+                .get(url.as_str())
                 .await
                 .map_err(|error| error.to_string())
         })

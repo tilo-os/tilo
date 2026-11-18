@@ -17,7 +17,7 @@ thread_local! {
 fn opened() -> (Window, stand_in::Shared) {
     let devices = stand_in::install();
     ui::attention::clear();
-    ui::attention::clear_ledger();
+    ui::attention::clear_log();
     let app = crate::surface::tests::live_with_studio();
     FOREIGN.with(|foreign| {
         *foreign.borrow_mut() = ui::attention::items()
@@ -49,7 +49,7 @@ fn until_waiting(app: &mut Window, what: &str) -> ui::attention::Item {
         }
         assert!(
             ui::time::now() < deadline,
-            "gave up waiting for {what}: on {:?}, ledger {:?}",
+            "gave up waiting for {what}: on {:?}, log {:?}",
             centre(app).borrow().page,
             ui::attention::entries()
                 .last()
@@ -254,7 +254,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_success_is_recorded_and_nobody_is_called;
-    // A success needs nobody: it is recorded in the ledger and no row waits.
+    // A success needs nobody: it is recorded in the log and no row waits.
     {
         let _serial = crate::surface::serial();
         let (mut app, devices) = opened();

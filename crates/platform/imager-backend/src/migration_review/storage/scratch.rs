@@ -1,4 +1,4 @@
-//! Explicit writable scratch custody. Filesystem magic alone does not prove physical backing: the
+//! Explicit writable scratch ownership. Filesystem magic alone does not prove physical backing: the
 //! admitting broker retains its independently granted storage lease, and no source path or TMPDIR
 //! selects this capability.
 use super::super::super::{
@@ -18,7 +18,7 @@ use std::{
     },
 };
 
-pub use super::super::InventoryScratchCustody;
+pub use super::super::InventoryScratchOwnership;
 
 pub struct InventoryScratch {
     directory: Arc<PinnedDirectory>,
@@ -28,7 +28,7 @@ pub struct InventoryScratch {
     restoration: Option<(u64, u64)>,
     charged: Mutex<u64>,
     retained: Mutex<u64>,
-    custody: Option<Arc<dyn InventoryScratchCustody>>,
+    ownership: Option<Arc<dyn InventoryScratchOwnership>>,
 }
 pub struct Allocation {
     pub file: File,
@@ -119,7 +119,7 @@ impl MetadataReservation {
             || fs_native::snapshot_lease::mount_id(file)? != scratch.mount
         {
             return Err(changed(
-                "Durable metadata is outside scratch filesystem custody",
+                "Durable metadata is outside scratch filesystem ownership",
             ));
         }
         if self.charge.bytes != 0 && !self.charge.existing {
@@ -195,7 +195,7 @@ impl InventoryScratch {
             || fs_native::snapshot_lease::mount_id(&destination.file)? != self.mount
         {
             return Err(changed(
-                "Adoption journal is outside scratch filesystem custody",
+                "Adoption journal is outside scratch filesystem ownership",
             ));
         }
         Ok(())
@@ -237,7 +237,7 @@ impl InventoryScratch {
             restoration: None,
             charged: Mutex::new(0),
             retained: Mutex::new(0),
-            custody: None,
+            ownership: None,
         });
         value.validate()?;
         value.require_free(allowance)?;
@@ -354,7 +354,7 @@ impl InventoryScratch {
         }
         Ok(())
     }
-    pub fn check_custody(&self) -> io::Result<()> {
+    pub fn check_ownership(&self) -> io::Result<()> {
         self.validate()
     }
     // Only after the authentic archive independently verified its restored bytes may receiver metadata
@@ -370,16 +370,16 @@ impl InventoryScratch {
         self.validate()?;
         self.require_free(0)
     }
-    pub fn review_with_custody(
+    pub fn review_with_ownership(
         directory: Arc<PinnedDirectory>,
         allowance: u64,
-        custody: Arc<dyn InventoryScratchCustody>,
+        ownership: Arc<dyn InventoryScratchOwnership>,
     ) -> io::Result<Arc<Self>> {
-        custody.check()?;
+        ownership.check()?;
         let mut value = Self::review(directory, allowance)?;
         Arc::get_mut(&mut value)
             .ok_or_else(|| changed("Inventory storage unexpectedly shared"))?
-            .custody = Some(custody);
+            .ownership = Some(ownership);
         value.validate()?;
         Ok(value)
     }
@@ -393,7 +393,7 @@ impl InventoryScratch {
         }
         Ok(())
     }
-    // Only existing canonical installer custody justifies this exception; `SourceInventory` owns
+    // Only existing canonical installer ownership justifies this exception; `SourceInventory` owns
     // its exact exclusion proof, not a path filter.
     pub(in crate::migration_review) fn validate_excluded_source(
         &self,
@@ -410,7 +410,7 @@ impl InventoryScratch {
             || !self.directory.contains_identity(&excluded.identity)
         {
             return Err(changed(
-                "Inventory scratch is outside approved installer custody",
+                "Inventory scratch is outside approved installer ownership",
             ));
         }
         Ok(())
@@ -425,8 +425,8 @@ impl InventoryScratch {
         Ok(())
     }
     fn validate(&self) -> io::Result<()> {
-        if let Some(custody) = &self.custody {
-            custody.check()?;
+        if let Some(ownership) = &self.ownership {
+            ownership.check()?;
         }
         self.directory.validate_destination()?;
         destination_security::check_private_file(&self.directory.file)?;
@@ -518,7 +518,7 @@ impl InventoryScratch {
             || facts.nlink() != 0
             || facts.dev() != cap_fs_ext::MetadataExt::dev(&self.directory.identity)
         {
-            return Err(changed("Inventory scratch file custody changed"));
+            return Err(changed("Inventory scratch file ownership changed"));
         }
         // Reserve real blocks before the run is written; a concurrent writer may exhaust free space,
         // and that failure never becomes a receipt.

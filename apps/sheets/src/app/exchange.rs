@@ -221,7 +221,7 @@ impl SheetsApp {
 
     /// Refuse a path before handing it to an interchange reader.  Archive
     /// formats can still expand internally, so the parsed-cell bound below is
-    /// the authoritative limit; this inexpensive first gate avoids allocating
+    /// the authoritative limit; this inexpensive first check avoids allocating
     /// an arbitrary local file just to discover it was never eligible.
     pub(super) fn check_import_file_size(path: &std::path::Path) -> Result<(), String> {
         let metadata = tilo_files::file_at(path)

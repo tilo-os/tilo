@@ -44,7 +44,7 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
     }
 }
 
-/// Board's and Views' hosts, Views' `answer`, and the tracker's step records.
+/// Board's and Views' hosts, Views' `answer`, and the tracker's step resources.
 pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     let source = || {
         vec![ActionParam::required(
@@ -177,7 +177,7 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
 tilo_test_env::scenario! {
     #[allow(
         clippy::too_many_lines,
-        reason = "one task end to end: its programs, their records, and the view it answers with"
+        reason = "one task end to end: its programs, their resources, and the view it answers with"
     )]
     fn a_task_works_in_programs_and_refuses_what_is_not_a_view;
 
@@ -245,7 +245,7 @@ tilo_test_env::scenario! {
                 ),
             ],
         );
-        f.session.run_task(&f.run).unwrap();
+        f.carried();
         let bodies = f.script.bodies.lock().unwrap();
         assert_eq!(
             bodies.len(),
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
         assert_eq!(steps.len(), 3, "{steps:?}");
         assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
         assert_eq!(steps[0]["resource"], "tilo.program");
-        // A previewed program names the record it read, and one that changed
+        // A previewed program names the resource it read, and one that changed
         // something names the action it ran.
         assert_eq!(steps[1]["outcome"], "applied", "{steps:?}");
         assert_eq!(steps[1]["resource"], format!("tl:{BOARD}:root/cards:c1"));
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
                 turn(&[finish("There are 42.", true)], 64),
             ],
         );
-        f.session.run_task(&f.run).unwrap();
+        f.carried();
         let bodies = f.script.bodies.lock().unwrap();
         let refused = said_last(&bodies[1]);
         assert!(refused.contains("is not a `view` declaration"), "{refused}");
@@ -430,7 +430,7 @@ fn a_program_that_asks_a_field_for_when_a_note_changed_is_taught_the_filter_and_
             ),
         ],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     let bodies = f.script.bodies.lock().unwrap();
     assert_eq!(
         bodies.len(),
@@ -514,7 +514,7 @@ fn a_part_done_by_a_program_lets_the_finish_through() {
             ),
         ],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     let bodies = f.script.bodies.lock().unwrap();
     assert_eq!(
         bodies.len(),
@@ -560,7 +560,7 @@ fn a_program_with_its_reply_finishes_in_one_call() {
             64,
         )],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
     assert_eq!(
         terminal(&f.sent.borrow()),
@@ -599,7 +599,7 @@ fn a_failed_program_keeps_its_reply_back() {
             turn(&[finish("Nothing is due today.", true)], 64),
         ],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     assert_eq!(f.script.bodies.lock().unwrap().len(), 2);
     assert_eq!(
         terminal(&f.sent.borrow()),
@@ -620,7 +620,7 @@ fn a_run_that_gets_no_further_is_told_to_finish_and_ends() {
         World::default(),
         (0..8).map(|_| looking()).collect(),
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     let bodies = f.script.bodies.lock().unwrap();
     assert_eq!(
         bodies.len(),
@@ -679,7 +679,7 @@ fn a_program_that_lists_the_parts_finishes_in_one_call() {
             64,
         )],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
     assert_eq!(
         terminal(&f.sent.borrow()),
@@ -716,7 +716,7 @@ fn a_change_without_its_reply_is_told_to_finish() {
             turn(&[finish("Made the note Groceries.", true)], 64),
         ],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     let read = {
         let bodies = f.script.bodies.lock().unwrap();
         assert_eq!(bodies.len(), 2);
@@ -756,12 +756,111 @@ fn a_question_answered_by_a_program_does_its_part() {
             64,
         )],
     );
-    f.session.run_task(&f.run).unwrap();
+    f.carried();
     assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
     assert_eq!(
         terminal(&f.sent.borrow()),
         TurnUpdate::Succeeded {
             message: "- Write the launch post\n- Fix the sync bug".into()
         }
+    );
+}
+
+/// A reply on a program that only reads does not answer a request to change something. The
+/// request "add a card saying Friday to the board" declares that card as its part; a program that
+/// counted the board's cards and said "Checking what is on the board." changed nothing there.
+/// The step was counted as doing the part — a program that changed nothing still credited every
+/// app it named — so the turn ended succeeded with that sentence while the card was never added,
+/// and the person read an answer to a request nobody carried out. A program that changed nothing
+/// does no part of a request to do something, and a reply that rides a step leaving a declared part
+/// undone does not end the turn: the model reads what is left and does it.
+#[test]
+fn a_reply_on_a_program_that_leaves_a_part_undone_does_not_end_the_turn() {
+    let read = serde_json::json!({
+        "text": "c1 \"Write the release notes\" column: c2",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
+    });
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("board.Card", read)],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "add a card saying Friday to the board",
+        world,
+        vec![
+            turn(
+                &[(
+                    crate::programs::TILO,
+                    serde_json::json!({
+                        "program": "for c in find(board.Card) { print(c.title) }",
+                        "parts": [{"part": "a card saying Friday", "app": BOARD}],
+                        "reply": "Checking what is on the board.",
+                    }),
+                )],
+                64,
+            ),
+            turn(&[finish("The board holds no such card.", false)], 64),
+        ],
+    );
+    f.carried();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "the read-only program's reply did not finish the turn; the model was read what is left"
+    );
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        second.contains("Not finished") && second.contains("a card saying Friday"),
+        "the model read that its part is not done: {second}"
+    );
+    // The person reads the model's own words, never "Checking what is on the board." while the
+    // card it said it would add was never added.
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Failed {
+            message: "The board holds no such card.".into()
+        }
+    );
+}
+
+/// A request to do something answered with a reply alone, no step taken ("Done — a reminder is
+/// set" while no task was made): the finish is held once and the model is told nothing was done,
+/// so it does it or says the request only needed words.
+#[test]
+fn a_finish_that_did_nothing_for_a_request_to_do_something_is_held() {
+    let mut f = fixture(
+        "remind me to call mum tomorrow at 6pm",
+        World::default(),
+        vec![
+            turn(&[finish("Done — a reminder to call mum is set.", true)], 64),
+            turn(&[finish("I could not set it.", false)], 64),
+        ],
+    );
+    f.carried();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "the empty finish did not end the turn");
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        second.contains("no step was taken"),
+        "the model read that nothing was done: {second}"
+    );
+}
+
+/// A greeting needs only words: its reply finishes in the one call.
+#[test]
+fn a_greeting_finishes_with_its_reply_in_one_call() {
+    let mut f = fixture(
+        "hi",
+        World::default(),
+        vec![turn(&[finish("Hi! What can I do for you?", true)], 64)],
+    );
+    f.carried();
+    assert_eq!(
+        f.script.bodies.lock().unwrap().len(),
+        1,
+        "one call for a greeting"
     );
 }

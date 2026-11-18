@@ -1,19 +1,19 @@
-//! A window's page on the workspace's live plane.
+//! A window's page on the workspace's live session.
 //!
 //! A web page is foreign content, so it is the one kind of window whose
 //! drawing leaves the device: an app that runs a page engine offers its
 //! window's page as a paint stream (`FloatingSurfaceClientMessage::PaintCapable`,
 //! `PaintStream`), and this publishes it as one `tilo_page/1` track per window
-//! on the workspace's live plane, where the members' sessions draw it.
+//! on the workspace's live session, where the members' sessions draw it.
 //!
 //! The track exists only while someone shows it: a member's shell asks the
-//! plane for `page/<tab>`, the plane tells this session
-//! ([`Plane::wanted_pages`]), and only then is the app asked for a whole frame
+//! live session for `page/<tab>`, the live session tells this session
+//! ([`LiveSession::wanted_pages`]), and only then is the app asked for a whole frame
 //! ([`FloatingSurfaceHostMessage::PaintKeyframe`]). When the last viewer stops,
 //! the app is told so (`PaintStop`) and nothing more is captured or sent. A
 //! viewer that joins late, or whose patches stopped applying, gets a whole
-//! frame first: the plane names the track in
-//! [`Plane::take_page_keyframes`].
+//! frame first: the live session names the track in
+//! [`LiveSession::take_page_keyframes`].
 //!
 //! An ask is not an answer. An app that was asked for a whole frame and handed none over within
 //! [`HAND_OVER_BOUND`] is asked again, every bound, and until a whole frame comes its window is
@@ -28,7 +28,7 @@
 //! shared with, whatever name its app's launch filed the offer under.
 //!
 //! A page is carried whole or not at all. Its app hands a payload over in as many parts as its
-//! connection needs, and the session joins them ([`crate::app_tabs`]); what the plane carries as
+//! connection needs, and the session joins them ([`crate::app_tabs`]); what the live session carries as
 //! one object ([`MAX_PAYLOAD`]) is the bound. A whole frame past it reaches nobody, and its
 //! window is among [`PageTracks::oversized`]: the reading says the page is too large to send,
 //! and the app is asked again every bound, since a page changes.
@@ -39,15 +39,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_desktop_model::TabId;
+use tilo_live::live_session::LiveSession;
 use tilo_live::page::PageObject;
-use tilo_live::plane::Plane;
 
-/// How many payloads one page may hold for a plane that has not taken them
+/// How many payloads one page may hold for a live session that has not taken them
 /// yet: past it the app is asked for a whole frame instead, which is smaller
 /// than the backlog it would have to keep in order.
 const MAX_QUEUED: usize = 64;
-/// Largest page payload the live plane carries as one object: what its profile refuses past,
-/// less what sealing adds, so that a payload this session takes is one its plane sends.
+/// Largest page payload the live session carries as one object: what its profile refuses past,
+/// less what sealing adds, so that a payload this session takes is one its live session sends.
 pub(crate) const MAX_PAYLOAD: usize =
     tilo_live::page::MAX_PAYLOAD_BYTES - tilo_live::frame::OVERHEAD;
 
@@ -89,7 +89,7 @@ enum Asked {
 /// One window whose app offers its page.
 #[derive(Default)]
 struct Offered {
-    /// The workspace whose plane carries the page: the one the window is shared with, and until
+    /// The workspace whose live session carries the page: the one the window is shared with, and until
     /// it is shared the one its app runs in.
     workspace: String,
     /// Whether the app was told someone shows the window.
@@ -97,7 +97,7 @@ struct Offered {
     /// Whether the app was asked for a whole frame that has not arrived yet:
     /// the changes before it would apply to a frame nobody holds.
     awaiting_whole: bool,
-    /// What the app sent and the plane has not taken yet, oldest first: each
+    /// What the app sent and the live session has not taken yet, oldest first: each
     /// payload with whether it is a whole frame.
     queue: VecDeque<(bool, Vec<u8>)>,
     /// The number of objects this window's page has published.
@@ -107,7 +107,7 @@ struct Offered {
     sent: bool,
     /// How the app stands with the whole frame it was asked for and has not handed over since.
     asked: Asked,
-    /// The size of the whole frame the app has and the plane carries no object for, until a
+    /// The size of the whole frame the app has and the live session carries no object for, until a
     /// whole frame it does carry comes.
     too_large: Option<usize>,
 }
@@ -116,7 +116,7 @@ impl Offered {
     /// What the app must be told now of a window a member's shell shows (`shown`) or not, whose
     /// viewers must start over at a whole frame (`start_over`: one joined, or lost the chain of
     /// changes). A window that waits for a whole frame is asked for it once, and again each time
-    /// [`HAND_OVER_BOUND`] passes without one: also a window that waits because the plane fell
+    /// [`HAND_OVER_BOUND`] passes without one: also a window that waits because the live session fell
     /// behind, which nobody else asks.
     fn follow(&mut self, shown: bool, start_over: bool, now_us: u64) -> Option<Watch> {
         if !shown {
@@ -197,8 +197,8 @@ impl PageTracks {
     /// package goes by, said it draws its windows' pages.
     pub(crate) fn draws_pages(&self, app: &str) -> bool {
         self.engines.iter().any(|said| {
-            tilo_desktop_policy::app_ids_match(app, said)
-                || tilo_desktop_policy::app_ids_match(said, app)
+            tilo_desktop_model::apps::app_ids_match(app, said)
+                || tilo_desktop_model::apps::app_ids_match(said, app)
         })
     }
 
@@ -224,7 +224,7 @@ impl PageTracks {
     }
 
     /// One payload the app handed over, as it encoded it. A payload nobody shows is dropped;
-    /// one larger than the plane carries is not sent, and said ([`Self::too_large`]).
+    /// one larger than the live session carries is not sent, and said ([`Self::too_large`]).
     pub(crate) fn received(&mut self, tab: TabId, whole: bool, payload: Vec<u8>) {
         if payload.len() > MAX_PAYLOAD {
             self.too_large(tab, whole, payload.len());
@@ -248,7 +248,7 @@ impl PageTracks {
             page.too_large = None;
         }
         if page.queue.len() >= MAX_QUEUED {
-            // The plane is behind: a whole frame is what catches it up, and the next pass asks
+            // The live session is behind: a whole frame is what catches it up, and the next pass asks
             // the app for it.
             page.queue.clear();
             page.awaiting_whole = true;
@@ -258,11 +258,11 @@ impl PageTracks {
         page.queue.push_back((whole, payload));
     }
 
-    /// The app of the window `tab` has a payload of `bytes` bytes, which the plane carries no
+    /// The app of the window `tab` has a payload of `bytes` bytes, which the live session carries no
     /// object for ([`MAX_PAYLOAD`]). Nothing the app sends after it applies to what the members
     /// showing the window hold, so they start over at a whole frame, which the app is asked
     /// for. A whole frame that large means the page as it stands reaches nobody: the window is
-    /// among [`Self::oversized`] until a whole frame the plane carries comes.
+    /// among [`Self::oversized`] until a whole frame the live session carries comes.
     pub(crate) fn too_large(&mut self, tab: TabId, whole: bool, bytes: usize) {
         let Some(page) = self.offered.get_mut(&tab) else {
             return;
@@ -296,32 +296,32 @@ impl PageTracks {
         }
     }
 
-    /// What the planes ask of the pages this session offers, and what the apps
+    /// What the live sessions ask of the pages this session offers, and what the apps
     /// sent: every window someone shows gets a keyframe asked of it, every
     /// window nobody shows any more is told to stop, and the payloads the
-    /// planes want are published. The asks go back to the apps; an app that
+    /// live sessions want are published. The asks go back to the apps; an app that
     /// answers none within [`HAND_OVER_BOUND`] is asked again. `now_us` is a
     /// clock in microseconds.
     ///
     /// `shared` are the windows this session shares as their page, each with the workspace it
-    /// is shared with. A plane takes any member's ask for any window's page track, so what a
+    /// is shared with. A live session takes any member's ask for any window's page track, so what a
     /// shell asks for is no word on whether it may have it: a window that is not shared is shown
     /// to nobody, whoever asks, and a shared one only to the workspace it is shared with. The
     /// share is also what names that workspace: the name an app's launch filed its offer under
     /// (none, for an app started in no workspace) decides nothing about where its page goes.
     pub(crate) fn step(
         &mut self,
-        planes: &BTreeMap<String, Arc<Plane>>,
+        live_sessions: &BTreeMap<String, Arc<LiveSession>>,
         shared: &BTreeMap<TabId, String>,
         now_us: u64,
     ) -> Vec<(TabId, Watch)> {
         let mut wanted: BTreeSet<(String, TabId)> = BTreeSet::new();
         let mut wholes: BTreeSet<(String, TabId)> = BTreeSet::new();
-        for (workspace, plane) in planes {
-            for tab in plane.wanted_pages() {
+        for (workspace, live_session) in live_sessions {
+            for tab in live_session.wanted_pages() {
                 wanted.insert((workspace.clone(), tab));
             }
-            for tab in plane.take_page_keyframes() {
+            for tab in live_session.take_page_keyframes() {
                 wholes.insert((workspace.clone(), tab));
             }
         }
@@ -348,7 +348,7 @@ impl PageTracks {
             if ask == Some(Watch::Stop) {
                 continue;
             }
-            let Some(plane) = planes.get(&page.workspace) else {
+            let Some(live_session) = live_sessions.get(&page.workspace) else {
                 page.queue.clear();
                 continue;
             };
@@ -359,7 +359,7 @@ impl PageTracks {
                     timestamp_us: now_us,
                     payload,
                 };
-                if plane.send_page(*tab, &object).is_ok() {
+                if live_session.send_page(*tab, &object).is_ok() {
                     page.sequence = page.sequence.wrapping_add(1);
                     page.sent |= object.whole;
                 }
@@ -402,7 +402,7 @@ impl PageTracks {
             .collect()
     }
 
-    /// The windows a member shows whose page, as it stands, is larger than the plane carries
+    /// The windows a member shows whose page, as it stands, is larger than the live session carries
     /// ([`MAX_PAYLOAD`]): its app has it, and nobody can be sent it.
     pub(crate) fn oversized(&self) -> Vec<TabId> {
         self.offered
@@ -467,7 +467,7 @@ mod tests {
             pages.received(7, true, vec![0, 1, 2]);
             pages.received(7, false, vec![1, 2, 3]);
             let page = pages.offered.get(&7).unwrap();
-            assert!(page.queue.is_empty(), "no plane asked for it");
+            assert!(page.queue.is_empty(), "no live session asked for it");
             assert!(!page.watched);
         }
 
@@ -515,7 +515,7 @@ mod tests {
             pages.received(7, false, vec![1]);
             let page = pages.offered.get_mut(&7).unwrap();
             assert!(page.queue.is_empty());
-            assert!(page.awaiting_whole, "a whole frame catches up the plane");
+            assert!(page.awaiting_whole, "a whole frame catches up the live session");
             assert_eq!(
                 page.follow(true, false, 5),
                 Some(Watch::Whole),
@@ -576,10 +576,10 @@ mod tests {
             assert!(pages.withheld().is_empty());
         }
 
-        phase a_whole_frame_larger_than_the_plane_carries_is_said_and_asked_for_again;
-        // A whole frame larger than the plane carries goes to nobody and is said to be too large,
+        phase a_whole_frame_larger_than_the_live_session_carries_is_said_and_asked_for_again;
+        // A whole frame larger than the live session carries goes to nobody and is said to be too large,
         // in other words than a page its app withholds; the app is asked again a bound later, and
-        // the whole frame the plane does carry ends it. A change too large only starts the viewers
+        // the whole frame the live session does carry ends it. A change too large only starts the viewers
         // over.
         {
             let mut pages = page("w1");
@@ -609,11 +609,11 @@ mod tests {
             // The same said by the first part of a payload, before the rest came.
             pages.too_large(7, true, 9 * 1024 * 1024);
             assert_eq!(pages.oversized(), [7]);
-            // The page became one the plane carries.
+            // The page became one the live session carries.
             pages.received(7, true, vec![0; MAX_PAYLOAD]);
             assert!(pages.oversized().is_empty());
             assert_eq!(pages.offered.get(&7).unwrap().queue.len(), 1);
-            // A change too large for the plane: the viewers start over at a whole frame.
+            // A change too large for the live session: the viewers start over at a whole frame.
             pages.received(7, false, vec![1; MAX_PAYLOAD + 1]);
             assert!(
                 pages.oversized().is_empty(),
@@ -665,20 +665,20 @@ mod tests {
     }
 }
 
-/// A window's page on the workspace's live plane, as a session runs it: what
+/// A window's page on the workspace's live session, as a session runs it: what
 /// the app's engine captured is republished object for object, a viewer draws
 /// the same frame the publisher held, and nothing is captured or sent while
 /// nobody shows the window.
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-mod over_the_plane {
+mod over_the_live_session {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use key_group::{KeyGroup, MemberKey};
     use tilo_live::live::Track;
-    use tilo_live::plane::{Join, Plane};
+    use tilo_live::live_session::{Join, LiveSession};
     use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
     use tilo_live::roster::Roster as LiveRoster;
     use tilo_live::scope::Scope;
@@ -695,8 +695,8 @@ mod over_the_plane {
     /// The engine's page: a snapshot with a header, a sidebar and a button.
     const TOP: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");
 
-    /// The relay the test's planes meet on: in-process, with no one to admit,
-    /// since a local plane is its own relay's member.
+    /// The relay the test's live sessions meet on: in-process, with no one to admit,
+    /// since a local live session is its own relay's member.
     fn relay() -> Arc<Relay> {
         struct Nobody;
         impl RelayAuthority for Nobody {
@@ -717,15 +717,15 @@ mod over_the_plane {
             .expect("the workspace's keys")
     }
 
-    /// `device`'s plane in the test workspace, hearing and heard by `devices`.
-    fn plane(
+    /// `device`'s live session in the test workspace, hearing and heard by `devices`.
+    fn live_session(
         relay: &Relay,
         device: [u8; 32],
         devices: &[[u8; 32]],
         keys: &key_group::ContentKeys,
-    ) -> Arc<Plane> {
+    ) -> Arc<LiveSession> {
         Arc::new(
-            Plane::local(
+            LiveSession::local(
                 relay,
                 &Join {
                     scope: Scope::workspace(WORKSPACE.to_owned()),
@@ -736,7 +736,7 @@ mod over_the_plane {
                     presence: true,
                 },
             )
-            .expect("a local plane"),
+            .expect("a local live session"),
         )
     }
 
@@ -761,9 +761,12 @@ mod over_the_plane {
 
     /// A shell asks for the page of a window nobody shared: its app is asked for nothing, and
     /// the window is shown to nobody.
-    fn unshared_is_shown_to_nobody(pages: &mut PageTracks, planes: &BTreeMap<String, Arc<Plane>>) {
+    fn unshared_is_shown_to_nobody(
+        pages: &mut PageTracks,
+        live_sessions: &BTreeMap<String, Arc<LiveSession>>,
+    ) {
         assert!(
-            pages.step(planes, &BTreeMap::new(), 0).is_empty(),
+            pages.step(live_sessions, &BTreeMap::new(), 0).is_empty(),
             "the page of a window nobody shared was asked of its app"
         );
         assert!(pages.viewed().is_empty());
@@ -775,10 +778,10 @@ mod over_the_plane {
         let (a, b) = ([0xA1; 32], [0xB2; 32]);
         let devices = [a, b];
         let keys = keys();
-        let publishing = plane(&relay, a, &devices, &keys);
-        let watching = plane(&relay, b, &devices, &keys);
-        let mut planes = BTreeMap::new();
-        planes.insert(WORKSPACE.to_owned(), Arc::clone(&publishing));
+        let publishing = live_session(&relay, a, &devices, &keys);
+        let watching = live_session(&relay, b, &devices, &keys);
+        let mut sessions = BTreeMap::new();
+        sessions.insert(WORKSPACE.to_owned(), Arc::clone(&publishing));
 
         // The app's engine captures its page as the paint stream it hands the
         // session.
@@ -795,7 +798,7 @@ mod over_the_plane {
         let shared = BTreeMap::from([(TAB, WORKSPACE.to_owned())]);
         // Nobody shows the window: the session asks the app for nothing, and
         // publishes nothing.
-        assert!(pages.step(&planes, &shared, 0).is_empty());
+        assert!(pages.step(&sessions, &shared, 0).is_empty());
         assert!(
             publishing
                 .send_page(
@@ -815,8 +818,8 @@ mod over_the_plane {
         wait_until("the window's page is asked for", || {
             publishing.wanted_pages() == [TAB]
         });
-        unshared_is_shown_to_nobody(&mut pages, &planes);
-        assert_eq!(pages.step(&planes, &shared, 0), [(TAB, Watch::Whole)]);
+        unshared_is_shown_to_nobody(&mut pages, &sessions);
+        assert_eq!(pages.step(&sessions, &shared, 0), [(TAB, Watch::Whole)]);
         assert!(
             pages.sent().is_empty(),
             "a page that is asked for and not handed over went to nobody"
@@ -831,7 +834,7 @@ mod over_the_plane {
             pages.received(TAB, whole, bytes);
         }
         assert!(
-            pages.step(&planes, &shared, 1_000).is_empty(),
+            pages.step(&sessions, &shared, 1_000).is_empty(),
             "the ask was answered"
         );
         assert_eq!(pages.sent(), [TAB], "its whole frame went out");
@@ -869,10 +872,10 @@ mod over_the_plane {
         wait_until("the page is no longer shown", || {
             publishing.wanted_pages().is_empty()
         });
-        assert_eq!(pages.step(&planes, &shared, 2_000), [(TAB, Watch::Stop)]);
+        assert_eq!(pages.step(&sessions, &shared, 2_000), [(TAB, Watch::Stop)]);
         assert!(pages.sent().is_empty(), "nobody shows the window any more");
         pages.received(TAB, false, vec![0]);
-        assert!(pages.step(&planes, &shared, 3_000).is_empty());
+        assert!(pages.step(&sessions, &shared, 3_000).is_empty());
         assert!(
             publishing
                 .send_page(
@@ -899,9 +902,9 @@ mod over_the_plane {
         let (a, b) = ([0xA3; 32], [0xB4; 32]);
         let devices = [a, b];
         let keys = keys();
-        let publishing = plane(&relay, a, &devices, &keys);
-        let watching = plane(&relay, b, &devices, &keys);
-        let planes = BTreeMap::from([(WORKSPACE.to_owned(), Arc::clone(&publishing))]);
+        let publishing = live_session(&relay, a, &devices, &keys);
+        let watching = live_session(&relay, b, &devices, &keys);
+        let live_sessions = BTreeMap::from([(WORKSPACE.to_owned(), Arc::clone(&publishing))]);
 
         let mut pages = PageTracks::default();
         pages.capable(TAB, "");
@@ -918,18 +921,21 @@ mod over_the_plane {
         // Shared with another workspace: nothing of the page is asked of its app for this one.
         let elsewhere = BTreeMap::from([(TAB, "another-workspace".to_owned())]);
         assert!(
-            pages.step(&planes, &elsewhere, 0).is_empty(),
+            pages.step(&live_sessions, &elsewhere, 0).is_empty(),
             "a page shared with another workspace was asked for in this one"
         );
         assert!(pages.viewed().is_empty());
 
         // Shared with the workspace the shell asks in: asked of its app, and published there.
         let shared = BTreeMap::from([(TAB, WORKSPACE.to_owned())]);
-        assert_eq!(pages.step(&planes, &shared, 0), [(TAB, Watch::Whole)]);
+        assert_eq!(
+            pages.step(&live_sessions, &shared, 0),
+            [(TAB, Watch::Whole)]
+        );
         assert!(pages.streamed(TAB, WORKSPACE));
         let whole = vec![7_u8; 16];
         pages.received(TAB, true, whole.clone());
-        assert!(pages.step(&planes, &shared, 1_000).is_empty());
+        assert!(pages.step(&live_sessions, &shared, 1_000).is_empty());
         assert_eq!(pages.sent(), [TAB], "its whole frame went out");
         let mut carried = None;
         wait_until("the page reaches the workspace it is shared with", || {
@@ -946,9 +952,12 @@ mod over_the_plane {
 
         // Shared with another workspace from here on: the app is told nobody here shows the
         // window, and nothing more of the page goes out in this workspace.
-        assert_eq!(pages.step(&planes, &elsewhere, 2_000), [(TAB, Watch::Stop)]);
+        assert_eq!(
+            pages.step(&live_sessions, &elsewhere, 2_000),
+            [(TAB, Watch::Stop)]
+        );
         pages.received(TAB, true, vec![8_u8; 16]);
-        assert!(pages.step(&planes, &elsewhere, 3_000).is_empty());
+        assert!(pages.step(&live_sessions, &elsewhere, 3_000).is_empty());
         assert!(pages.sent().is_empty());
     }
 }

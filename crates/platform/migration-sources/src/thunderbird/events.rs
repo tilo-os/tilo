@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 use pim_lines::{ContentLine, Unfolded, unescape_text};
 use serde_json::{Value, json};
 use tilo_recurrence::zone::canonical_zone;
@@ -94,7 +94,7 @@ struct Event {
 
 #[derive(Clone)]
 struct Time {
-    wall: NaiveDateTime,
+    wall: DateTime,
     all_day: bool,
     zone: Option<String>,
 }
@@ -129,13 +129,14 @@ impl Event {
         let mut start_wall = start.wall;
         let mut end_wall = end.map_or(start_wall, |end| end.wall);
         if start.all_day {
-            start_wall = start_wall.date().and_time(chrono::NaiveTime::MIN);
+            start_wall = start_wall.date().to_datetime(jiff::civil::Time::MIN);
             end_wall = match end {
                 Some(end) if end.wall > start_wall => {
-                    end.wall.date().and_time(chrono::NaiveTime::MIN)
+                    end.wall.date().to_datetime(jiff::civil::Time::MIN)
                 }
                 _ => start_wall
-                    .checked_add_signed(chrono::Duration::days(1))
+                    .checked_add(jiff::Span::new().days(1))
+                    .ok()
                     .unwrap_or(start_wall),
             };
         }
@@ -154,8 +155,8 @@ impl Event {
         let mut event = json!({
             "id": id,
             "title": self.title,
-            "start": start_wall.format(DT_FMT).to_string(),
-            "end": end_wall.format(DT_FMT).to_string(),
+            "start": start_wall.strftime(DT_FMT).to_string(),
+            "end": end_wall.strftime(DT_FMT).to_string(),
             "all_day": start.all_day,
             "location": self.location,
             "timezone": zone,
@@ -170,7 +171,7 @@ impl Event {
             if let Some(until) = rule.until() {
                 fields.insert(
                     "recurrence_until".into(),
-                    json!(until.format("%Y-%m-%d").to_string()),
+                    json!(until.strftime("%Y-%m-%d").to_string()),
                 );
             }
         }
@@ -200,17 +201,17 @@ fn time(line: &ContentLine) -> Option<Time> {
         || value.len() == 8;
     let utc = value.strip_suffix('Z');
     let value = utc.unwrap_or(value);
-    let wall = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S")
+    let wall = DateTime::strptime("%Y%m%dT%H%M%S", value)
         .ok()
         .or_else(|| {
-            chrono::NaiveDate::parse_from_str(value, "%Y%m%d")
+            jiff::civil::Date::strptime("%Y%m%d", value)
                 .ok()
-                .map(|date| date.and_time(chrono::NaiveTime::MIN))
+                .map(|date| date.to_datetime(jiff::civil::Time::MIN))
         })
         .or_else(|| {
-            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            jiff::civil::Date::strptime("%Y-%m-%d", value)
                 .ok()
-                .map(|date| date.and_time(chrono::NaiveTime::MIN))
+                .map(|date| date.to_datetime(jiff::civil::Time::MIN))
         })?;
     let zone = if utc.is_some() {
         Some("UTC".to_owned())

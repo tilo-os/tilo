@@ -9,8 +9,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::FrameHarness;
+use crate::app_core::AppCore as _;
 use crate::composition::{Composed, Composition, HtmlCx, css};
-use crate::host_core::HostCore as _;
 use crate::widget::Widget;
 
 /// Every widget of the retained tree by its address: the path semantic actions name it by, and the
@@ -19,7 +19,7 @@ fn index_widgets<'a>(
     widget: &'a dyn Widget,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
-    out: &mut HashMap<usize, (String, &'a dyn Widget)>,
+    out: &mut HashMap<usize, Vec<(String, &'a dyn Widget)>>,
 ) {
     let name = widget.name();
     let index = sibling_counts
@@ -38,7 +38,11 @@ fn index_widgets<'a>(
     for child in widget.children() {
         index_widgets(child, &path, &mut child_counts, out);
     }
-    out.entry(address(widget)).or_insert((path, widget));
+    // A widget whose first field is a child widget shares its address: the one that holds the
+    // other comes first.
+    out.entry(address(widget))
+        .or_default()
+        .insert(0, (path, widget));
 }
 
 fn address(widget: &dyn Widget) -> usize {
@@ -47,17 +51,46 @@ fn address(widget: &dyn Widget) -> usize {
 
 /// The layout tree, walked from its root, with the widget each node is.
 struct Walk<'a> {
-    widgets: HashMap<usize, (String, &'a dyn Widget)>,
+    /// The widgets at each address, the one holding the others first.
+    widgets: HashMap<usize, Vec<(String, &'a dyn Widget)>>,
     node_widgets: HashMap<NodeId, usize>,
     taffy: &'a TaffyTree<()>,
     theme: &'a crate::Theme,
     placed: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// The addresses of the widgets being composed, outermost first.
+    open: std::cell::RefCell<Vec<usize>>,
+    /// The theme each grounded widget being composed hands what it holds, innermost last: a
+    /// button on a card wears the card's on-ground colours, as its paint does.
+    grounds: std::cell::RefCell<Vec<std::rc::Rc<crate::Theme>>>,
 }
 
-impl Walk<'_> {
+impl<'a> Walk<'a> {
+    /// The widget a node at `address` is: the outermost of those there not already being
+    /// composed around it, so a banner's node is the banner and its body's node is the body.
+    fn widget_at(&self, address: usize) -> Option<&(String, &'a dyn Widget)> {
+        let open = self
+            .open
+            .borrow()
+            .iter()
+            .filter(|&&at| at == address)
+            .count();
+        self.widgets.get(&address).and_then(|all| all.get(open))
+    }
+
+    /// The innermost widget at `address`.
+    fn innermost(&self, address: usize) -> Option<&(String, &'a dyn Widget)> {
+        self.widgets.get(&address).and_then(|all| all.last())
+    }
+
     fn flows(&self, node: NodeId, origin: (f64, f64), children: &[Composed]) -> bool {
         let nodes = self.taffy.children(node).unwrap_or_default();
-        !children.is_empty()
+        // A page lays out a flex container's children the way the layout did; a grid's tracks
+        // are the layout's own, so its children stand at their rects.
+        let flex = self
+            .taffy
+            .style(node)
+            .is_ok_and(|style| style.display == taffy::Display::Flex);
+        flex && !children.is_empty()
             && nodes.iter().zip(children).all(|(&child, composed)| {
                 self.taffy
                     .style(child)
@@ -87,10 +120,8 @@ impl Walk<'_> {
         let size = layout.map_or((0.0, 0.0), |layout| {
             (f64::from(layout.size.width), f64::from(layout.size.height))
         });
-        let widget = self
-            .node_widgets
-            .get(&node)
-            .and_then(|address| self.widgets.get(address));
+        let at = self.node_widgets.get(&node).copied();
+        let widget = at.and_then(|at| self.widget_at(at));
         let css = self.taffy.style(node).ok().map(css);
         let children_nodes = self.taffy.children(node).unwrap_or_default();
         let Some((path, widget)) = widget else {
@@ -116,6 +147,7 @@ impl Walk<'_> {
                 scroll: None,
                 semantics: None,
                 ground: None,
+                floats: false,
                 attrs: Vec::new(),
                 own: None,
                 focusable: false,
@@ -135,6 +167,7 @@ impl Walk<'_> {
                 scroll: None,
                 semantics: None,
                 ground: None,
+                floats: false,
                 attrs: Vec::new(),
                 own: None,
                 focusable: false,
@@ -148,12 +181,22 @@ impl Walk<'_> {
             .accessibility()
             .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
         let base = (rect.x0, rect.y0);
-        let mut compose_children = || {
+        let theme = self.grounds.borrow().last().cloned();
+        let theme: &crate::Theme = theme.as_deref().unwrap_or(self.theme);
+        let mut compose_children = |ground: Option<[u8; 4]>| {
+            let on = ground.map(|[r, g, b, a]| {
+                std::rc::Rc::new(theme.on_ground(vello::peniko::Color::from_rgba8(r, g, b, a)))
+            });
+            let grounded = on.is_some();
+            self.grounds.borrow_mut().extend(on);
             let mut inner = 0;
             let children: Vec<Composed> = children_nodes
                 .iter()
                 .map(|&child| self.compose(child, base, &mut inner, path))
                 .collect();
+            if grounded {
+                self.grounds.borrow_mut().pop();
+            }
             let flows = self.flows(node, base, &children);
             (children, flows)
         };
@@ -177,6 +220,7 @@ impl Walk<'_> {
                 }),
                 semantics,
                 ground: None,
+                floats: false,
                 attrs: Vec::new(),
                 own: None,
                 focusable: widget.is_focusable(),
@@ -184,10 +228,14 @@ impl Walk<'_> {
                 surfaces: Vec::new(),
                 children: Vec::new(),
             },
-            theme: self.theme,
+            theme,
             compose_children: &mut compose_children,
         };
+        self.open.borrow_mut().extend(at);
         widget.html(&mut cx);
+        if at.is_some() {
+            self.open.borrow_mut().pop();
+        }
         cx.composed
     }
 }
@@ -213,6 +261,8 @@ impl FrameHarness {
             taffy: &self.taffy,
             theme: &self.theme,
             placed: std::cell::RefCell::default(),
+            open: std::cell::RefCell::default(),
+            grounds: std::cell::RefCell::default(),
         };
         let mut anonymous = 0;
         let root = if self.layout_built {
@@ -234,6 +284,7 @@ impl FrameHarness {
                 scroll: None,
                 semantics: None,
                 ground: None,
+                floats: false,
                 attrs: Vec::new(),
                 own: None,
                 focusable: false,
@@ -253,7 +304,7 @@ impl FrameHarness {
                     && self.taffy.parent(node).is_none()
                     && walk.node_widgets.get(&node).is_some_and(|address| {
                         !walk.placed.borrow().contains(address)
-                            && walk.widgets.get(address).is_some_and(|(_, widget)| {
+                            && walk.innermost(*address).is_some_and(|(_, widget)| {
                                 let rect = widget.get_rect();
                                 rect.width() > 0.0 && rect.height() > 0.0
                             })
@@ -272,7 +323,7 @@ impl FrameHarness {
         let focus = self.focused.and_then(|focused| {
             walk.node_widgets
                 .get(&focused)
-                .and_then(|address| walk.widgets.get(address))
+                .and_then(|address| walk.innermost(*address))
                 .map(|(path, _)| path.clone())
         });
         Composition {
@@ -291,10 +342,14 @@ impl FrameHarness {
         if path == super::part_row::WINDOW_PARTS {
             return self.paint_part_row(scale);
         }
-        let (widget_path, part) = match path.split_once('#') {
-            Some((widget, _)) => (widget, Some(self.composed_rect(path)?)),
-            None => (path, None),
-        };
+        let composed = self.composed_node(path)?;
+        let [x, y, width, height] = composed.rect;
+        let part = path
+            .contains('#')
+            .then(|| Rect::new(x, y, x + width, y + height));
+        // Words the page sets over the picture are left out of it.
+        let words_on_top = composed.children.iter().any(shows_words);
+        let widget_path = path.split_once('#').map_or(path, |(widget, _)| widget);
         let node = *self.named_target_nodes().get(widget_path)?;
         let text = &mut self.text;
         let theme = &self.theme;
@@ -310,9 +365,16 @@ impl FrameHarness {
                     let rect = part.unwrap_or_else(|| widget.get_rect());
                     let mut scene = Scene::new();
                     let transform = Affine::scale(scale) * Affine::translate((-rect.x0, -rect.y0));
-                    crate::widget::DrawChild::draw_child(
-                        widget, &mut scene, transform, text, theme, presence,
-                    );
+                    let mut paint = || {
+                        crate::widget::DrawChild::draw_child(
+                            widget, &mut scene, transform, text, theme, presence,
+                        );
+                    };
+                    if words_on_top {
+                        crate::text_render::without_words(paint);
+                    } else {
+                        paint();
+                    }
                     (scene, [rect.x0, rect.y0, rect.width(), rect.height()])
                 },
             )
@@ -320,18 +382,20 @@ impl FrameHarness {
         .ok()
     }
 
-    fn composed_rect(&self, path: &str) -> Option<Rect> {
-        fn find(node: &Composed, path: &str) -> Option<[f64; 4]> {
+    /// The composed widget or part at `path`.
+    fn composed_node(&self, path: &str) -> Option<Composed> {
+        fn find(node: Composed, path: &str) -> Option<Composed> {
             if node.path == path {
-                return Some(node.rect);
+                return Some(node);
             }
-            node.children.iter().find_map(|child| find(child, path))
+            node.children
+                .into_iter()
+                .find_map(|child| find(child, path))
         }
         let composition = self.composition();
-        let [x, y, width, height] = std::iter::once(&composition.root)
-            .chain(&composition.layers)
-            .find_map(|root| find(root, path))?;
-        Some(Rect::new(x, y, x + width, y + height))
+        std::iter::once(composition.root)
+            .chain(composition.layers)
+            .find_map(|root| find(root, path))
     }
 
     /// Scroll the widget at `path` to `offset` logical pixels, as a host whose own scroller the person
@@ -360,4 +424,19 @@ impl FrameHarness {
                 | crate::widget::scrollbar::PrimaryScrollResult::Unchanged(_))
         )
     }
+}
+
+/// Whether `node` or a part of it shows words of its own on a page.
+fn shows_words(node: &Composed) -> bool {
+    use crate::composition::Own;
+    matches!(
+        node.own,
+        Some(
+            Own::Text(_)
+                | Own::Field { .. }
+                | Own::Blocks { .. }
+                | Own::Face(_)
+                | Own::Control { .. }
+        )
+    ) || node.children.iter().any(shows_words)
 }

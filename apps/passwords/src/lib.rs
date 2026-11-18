@@ -1,8 +1,6 @@
 //! Passwords — the vault of this device's logins, keys and codes.
 
-use accounts::{
-    CredentialGrant, CredentialOwner, SecretCustody, SecretId, SecretItem, SecretStore,
-};
+use accounts::{CredentialGrant, CredentialOwner, SecretId, SecretItem, SecretStore, VaultBackend};
 use std::collections::HashMap;
 
 pub mod actions;
@@ -191,7 +189,7 @@ impl PasswordsModel {
     ///
     /// # Errors
     ///
-    /// Refuses missing original custody, stale proposals or retired admission.
+    /// Refuses missing original ownership, stale proposals or retired admission.
     pub fn decide_app_proposal(
         &self,
         id: &str,
@@ -222,9 +220,9 @@ impl PasswordsModel {
     /// Where the encryption key for this vault is currently held. A `LocalFile` result is
     /// still encrypted storage, but it is not a system keyring and the UI must not present
     /// it as one.
-    pub fn custody(&self) -> SecretCustody {
-        self.read(SecretStore::custody)
-            .unwrap_or_else(|_| SecretCustody::for_session())
+    pub fn backend(&self) -> VaultBackend {
+        self.read(SecretStore::backend)
+            .unwrap_or_else(|_| VaultBackend::for_session())
     }
     /// Revoke one exact app, account and origin relationship.
     ///

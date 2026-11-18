@@ -7,11 +7,10 @@
 //! no such process on any device: the host is where its sessions run. So a
 //! person's device (an agent on one of their computers among them) asking
 //! the host for a session's `run` has it run here, by the host's
-//! [`WorkspaceShell`], in that session's shell (an agent's invocation in a shell of
-//! its
+//! [`WorkspaceShell`], in that session's shell (an agent's command in a shell of its
 //! own, which keeps its directory between commands), and the host records the
-//! run on the session record through the record's own `record-command`, under
-//! the invocation's context: History keeps it as the agent's invocation, with its
+//! command on the session record through the record's own `record-command`, under
+//! the invocation's context: History keeps it as the agent's command, with its
 //! command, directory, exit status and output.
 //!
 //! Whoever the workspace lets run the session's commands has them run here:
@@ -25,7 +24,7 @@
 //!
 //! A command may run for minutes (a build in the workspace's VM), so it runs
 //! on a thread of its own: the invocation is answered accepted at once, and
-//! succeeds with the invocation once it ended and was recorded. Its answer is what
+//! succeeds with the command once it ended and was recorded. Its answer is what
 //! Terminal answers a `run` with, plus what an agent needs without a second
 //! call: the command line, the directory it ran in and what it printed.
 //!
@@ -33,7 +32,7 @@
 //! ([`Watching::seen`]), so an agent following a long build is not silent;
 //! and it can be stopped: a person's Ctrl+C in the session, or an agent's
 //! cancel of its invocation, ends the command in the host's shell
-//! ([`Watching::stop`]), records the invocation like any other, and settles the
+//! ([`Watching::stop`]), records the command like any other, and settles the
 //! invocation as cancelled.
 
 use std::sync::Arc;
@@ -43,7 +42,7 @@ use std::time::Instant;
 use serde_json::{Map, Value, json};
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::environment_commands::CommandOutput;
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{Caller, InvocationReceipt, InvocationState, InvokeRequest};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -51,7 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Job, Needs, Shared, Worker, caller_context, invoke_arguments, take_all};
 use crate::member::actions::resource_of;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Terminal's app id: its session records are what the host runs.
 pub use ui::apps::TERMINAL as TERMINAL_APP;
@@ -63,16 +62,16 @@ const STOP: &str = "stop";
 const RECORD_COMMAND: &str = "record-command";
 /// The longest command line a session runs, as Terminal takes it.
 const MAX_COMMAND_BYTES: usize = 4096;
-/// What an answer carries of an invocation's output at most: its end, where a
-/// build's errors and a test invocation's summary are.
+/// What an answer carries of a command's output at most: its end, where a
+/// build's errors and a test summary are.
 const ANSWERED_OUTPUT: usize = 32 * 1024;
 
-/// What the caller of an invocation sees of it while it runs, and how it stops it.
+/// What the caller of a command sees of it while it runs, and how it stops it.
 #[derive(Clone, Copy, Default)]
 pub struct Watching<'a> {
-    /// What an invocation printed so far, each time that grew.
+    /// What a command printed so far, each time that grew.
     pub seen: Option<&'a (dyn Fn(&CommandOutput) + Sync)>,
-    /// Whether the caller asked the invocation to stop.
+    /// Whether the caller asked the command to stop.
     pub stop: Option<&'a (dyn Fn() -> bool + Sync)>,
 }
 
@@ -95,7 +94,7 @@ pub trait WorkspaceShell: Send + Sync {
         watching: Watching<'_>,
     ) -> Result<ShellRan, String>;
 
-    /// Keep `output`, an invocation's output, where the workspace's devices fetch
+    /// Keep `output`, a command's output, where the workspace's devices fetch
     /// its content, answering the reference that opens it, or `None` when
     /// this host keeps none.
     fn keep(&self, workspace: &str, output: &[u8]) -> Option<String> {
@@ -113,7 +112,7 @@ pub struct ShellRan {
     pub output: Vec<u8>,
     pub truncated: bool,
     /// It was stopped before it ended: a person's Ctrl+C, or an agent's
-    /// cancel of the invocation it asked for.
+    /// cancel of the command it asked for.
     pub cancelled: bool,
     pub started_ms: i64,
     pub ended_ms: i64,
@@ -121,7 +120,7 @@ pub struct ShellRan {
     pub refusal: Option<Refusal>,
 }
 
-/// An invocation that ended, for the worker to record.
+/// A command that ended, for the worker to record.
 pub(super) struct Ended {
     pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
@@ -132,7 +131,7 @@ pub(super) struct Ended {
     pub(super) ran: Result<ShellRan, String>,
 }
 
-/// One invocation asked of the host's shell, ready to start on a thread of its own.
+/// One command asked of the host's shell, ready to start on a thread of its own.
 struct Started {
     shell: Arc<dyn WorkspaceShell>,
     jobs: super::Jobs,
@@ -141,14 +140,14 @@ struct Started {
     session: String,
     command: String,
     agent: bool,
-    /// What a cancel of the invocation, or a Ctrl+C in its session, sets.
+    /// What a cancel of the command, or a Ctrl+C in its session, sets.
     stop: Arc<AtomicBool>,
     ended: Ended,
 }
 
 impl Started {
     /// Run the command, showing the invocation what it prints as it prints
-    /// it, and hand the invocation to the worker to record once it ended.
+    /// it, and hand the command to the worker to record once it ended.
     fn spawn(self) -> std::io::Result<()> {
         let Self {
             shell,
@@ -166,8 +165,8 @@ impl Started {
         // answer is read: an agent following a long build sees the newest
         // output rather than silence.
         let printing = move |printed: &CommandOutput| {
-            let mut ledger = shared.ledger.lock_recover();
-            if let Some(entry) = ledger.entries.get_mut(&invocation) {
+            let mut log = shared.log.lock_recover();
+            if let Some(entry) = log.entries.get_mut(&invocation) {
                 let sequence = match &entry.update {
                     InvocationUpdate::Item { sequence, .. } => sequence.saturating_add(1),
                     _ => 0,
@@ -178,7 +177,7 @@ impl Started {
                     value: serde_json::to_value(printed).unwrap_or_default(),
                 };
             }
-            drop(ledger);
+            drop(log);
         };
         std::thread::Builder::new()
             .name("workspace-shell".into())
@@ -218,7 +217,7 @@ impl Worker {
             Some(InvocationReceipt {
                 invocation,
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::Refused { reason },
+                    error: tilo_actions::remote::ActionCallError::Refused { reason },
                 },
             })
         };
@@ -236,7 +235,7 @@ impl Worker {
             return refused("one command line, without control characters".into());
         }
         // The session is a record of this workspace: its keys are here to
-        // record the invocation once it ended.
+        // record the command once it ended.
         let state = match self.refresh(
             workspace_id,
             Needs::Act {
@@ -261,7 +260,7 @@ impl Worker {
         let session_of = caller.agent_session();
         let agent = session_of.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
-        // An agent's invocation has a shell of its own, wherever its invocations are
+        // An agent's command has a shell of its own, wherever its commands are
         // recorded: two agents in one workspace never share a directory
         // or variables. A person's commands share the session's shell.
         let session = session_of.map_or_else(
@@ -272,12 +271,12 @@ impl Worker {
         // runs in, stops.
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let mut ledger = self.ledger();
-            let Some(entry) = ledger.entries.get_mut(&invocation) else {
+            let mut log = self.log();
+            let Some(entry) = log.entries.get_mut(&invocation) else {
                 return refused("the invocation is not this host's".into());
             };
             entry.stop = Some(Arc::clone(&stop));
-            drop(ledger);
+            drop(log);
         }
         let spawned = Started {
             shell,
@@ -306,7 +305,7 @@ impl Worker {
 
     /// Whether `caller` may take the Terminal action `request` names on the
     /// session record at `route`, decided as every action the host runs for
-    /// someone within bounds is: the caller's standing bounded as
+    /// someone within bounds is: the caller's access bounded as
     /// [`Caller::invoker`] reads them, the shared admission, and an ask put to
     /// the person on their own devices. The host's own person and their
     /// agents may. A key reaching this workspace alone runs what would be
@@ -326,7 +325,7 @@ impl Worker {
         route: &DocumentRoute,
         state: &super::WorkspaceState,
     ) -> Result<(), InvocationReceipt> {
-        use tilo_actions::remote::{ActionHostError, Confirmation, ReceiptStatus};
+        use tilo_actions::remote::{ActionCallError, Confirmation, ReceiptStatus};
         if self.acts_for_owner(caller) {
             return Ok(());
         }
@@ -337,7 +336,7 @@ impl Worker {
         };
         let who = self
             .bounded(caller)
-            .ok_or_else(|| refused(ActionHostError::NotPermitted))?;
+            .ok_or_else(|| refused(ActionCallError::NotPermitted))?;
         let policy = self
             .policy_for(
                 workspace_id,
@@ -351,11 +350,11 @@ impl Worker {
             .reaching_person();
         let mounted = self
             .mount(route, state)
-            .map_err(|_| refused(ActionHostError::UnknownAction))?;
+            .map_err(|_| refused(ActionCallError::UnknownAction))?;
         let descriptor = super::live_actions(&mounted.app)
             .into_iter()
             .find(|descriptor| descriptor.address == request.target.address)
-            .ok_or_else(|| refused(ActionHostError::UnknownAction))?;
+            .ok_or_else(|| refused(ActionCallError::UnknownAction))?;
         let need = descriptor.contract.need();
         let node = tilo_actions::action_node(
             &ui::permissions::policy::TreePath::root(),
@@ -369,23 +368,23 @@ impl Worker {
             ui::permissions::policy::Invoked {
                 answer: permissions.answer(&node, need.kind),
                 attended: descriptor.contract.is_attended(),
-                record: None,
+                resource: None,
             },
             permissions.asker(),
         );
         match admitted {
-            Err(_) => Err(refused(ActionHostError::NotPermitted)),
+            Err(_) => Err(refused(ActionCallError::NotPermitted)),
             Ok(ui::permissions::policy::Admission::Runs) => Ok(()),
             Ok(ui::permissions::policy::Admission::AsksFirst) => {
-                let witness = self
-                    .ledger()
+                let approval = self
+                    .log()
                     .entries
                     .get(&invocation)
-                    .and_then(|entry| entry.witness.clone())
-                    .map(Confirmation::Witnessed);
-                let given = witness.as_ref().or(request.confirmation.as_ref());
-                let binding = super::bounded::WitnessBinding::of(workspace_id, caller, request);
-                if super::bounded::witnessed(&self.shared.witnesses, given, &binding) {
+                    .and_then(|entry| entry.approval.clone())
+                    .map(Confirmation::Approved);
+                let given = approval.as_ref().or(request.confirmation.as_ref());
+                let binding = super::bounded::ApprovalBinding::of(workspace_id, caller, request);
+                if super::bounded::approved(&self.shared.approvals, given, &binding) {
                     return Ok(());
                 }
                 // A key for this workspace alone, whose person let it run
@@ -406,12 +405,12 @@ impl Worker {
                 );
                 Err(self
                     .ask_person(workspace_id, caller, request, &about)
-                    .unwrap_or_else(|| refused(ActionHostError::confirmation_required())))
+                    .unwrap_or_else(|| refused(ActionCallError::confirmation_required())))
             }
         }
     }
 
-    /// A Terminal `run` request starts, or the invocations it stops, answered
+    /// A Terminal `run` request starts, or the commands it stops, answered
     /// here: `None` for any other request.
     pub(super) fn terminal(
         &mut self,
@@ -421,17 +420,17 @@ impl Worker {
     ) -> Option<InvocationReceipt> {
         let receipt = self
             .start_terminal_run(workspace_id, caller, request)
-            .or_else(|| self.stop_terminal_invocations(workspace_id, caller, request))?;
-        let mut ledger = self.ledger();
-        ledger.running.remove(&request.invocation);
+            .or_else(|| self.stop_terminal_commands(workspace_id, caller, request))?;
+        let mut log = self.log();
+        log.running.remove(&request.invocation);
         let refused = matches!(
             receipt.status,
             tilo_actions::remote::ReceiptStatus::Rejected { .. }
         );
         if refused {
-            ledger.forget(&request.invocation);
+            log.forget(&request.invocation);
         }
-        drop(ledger);
+        drop(log);
         if refused {
             self.voice(
                 workspace_id,
@@ -444,14 +443,14 @@ impl Worker {
     }
 
     /// Record `ended` on its session record and settle its invocation with
-    /// the invocation: cancelled, when it was stopped before it ended.
+    /// the command: cancelled, when it was stopped before it ended.
     pub(super) fn ran(&mut self, ended: &Ended) {
         let invocation = ended.invocation;
         let cancelled = ended.ran.as_ref().is_ok_and(|ran| ran.cancelled);
         let update = match self.record_ended(ended) {
             Ok(_) if cancelled => InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("the invocation was cancelled".into()),
+                message: Some("the command was cancelled".into()),
             },
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
             Err(error) => InvocationUpdate::Failed { invocation, error },
@@ -469,17 +468,17 @@ impl Worker {
             &ended.request,
             (&phase, None),
         );
-        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.update = update;
             entry.stop = None;
         }
     }
 
-    /// Stop the invocations this host has going in the session record `request`
+    /// Stop the commands this host has going in the session record `request`
     /// names, as a person's Ctrl+C there does: each ends in the shell that
-    /// starts it, records its invocation, and answers that it was cancelled; `None`
+    /// runs it, records it, and answers that it was cancelled; `None`
     /// for any other request.
-    pub(super) fn stop_terminal_invocations(
+    pub(super) fn stop_terminal_commands(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
@@ -510,7 +509,7 @@ impl Worker {
                 Err(error) => return refused(error),
             };
             let Some(workspace) = state.workspace.clone() else {
-                return refused(tilo_actions::remote::ActionHostError::UnknownAction);
+                return refused(tilo_actions::remote::ActionCallError::UnknownAction);
             };
             let route = DocumentRoute {
                 cluster_id: workspace,
@@ -523,10 +522,10 @@ impl Worker {
             }
         }
         let stopped = {
-            let ledger = self.ledger();
+            let log = self.log();
             let session = request.target.address.resource.clone();
             let mut stopped = 0_u32;
-            for entry in ledger.entries.values() {
+            for entry in log.entries.values() {
                 if entry.request.target.address.resource != session {
                     continue;
                 }
@@ -536,7 +535,7 @@ impl Worker {
                     stopped = stopped.saturating_add(1);
                 }
             }
-            drop(ledger);
+            drop(log);
             stopped
         };
         let output = ActionOutput {
@@ -544,7 +543,7 @@ impl Worker {
             resources: Vec::new(),
         };
         let update = InvocationUpdate::Succeeded { invocation, output };
-        self.ledger().answered(invocation, &update, None);
+        self.log().answered(invocation, &update, None);
         Some(InvocationState::new(invocation, update).receipt())
     }
 
@@ -561,7 +560,7 @@ impl Worker {
         };
         let ran = ended.ran.clone().map_err(failed)?;
         // The shell keeps the bytes where the workspace's devices fetch them;
-        // the invocation names the reference it answered, as the store that kept them
+        // the command names the reference it answered, as the store that kept them
         // sealed them, which every replica stores as it is.
         let output = (!ran.output.is_empty())
             .then(|| {
@@ -573,7 +572,7 @@ impl Worker {
             })
             .flatten()
             .map(|reference| ui::tilo_resource::Bytes::kept_as(&ran.output, &reference));
-        let invocation = uuid::Uuid::new_v4().simple().to_string();
+        let id = uuid::Uuid::new_v4().simple().to_string();
         let mut finished = Map::new();
         finished.insert("command".into(), json!(ran.command));
         finished.insert("cwd".into(), json!(ran.cwd));
@@ -588,7 +587,7 @@ impl Worker {
         finished.insert("tool".into(), json!(tool));
         finished.insert("undoable".into(), json!(false));
         finished.insert("items".into(), items);
-        finished.insert("invocation".into(), json!(invocation));
+        finished.insert("id".into(), json!(id));
         let state = self
             .refresh(
                 ended.workspace_id,
@@ -615,30 +614,30 @@ impl Worker {
             .app
             .invoke_with(
                 Some(&invoker),
-                context.as_ref(),
+                Some(&context),
                 &ActionAddress::new(&ended.request.target.address.resource, RECORD_COMMAND),
                 &finished,
                 true,
             )
-            .map_err(|error| failed(format!("the invocation was not recorded: {error}")))?;
+            .map_err(|error| failed(format!("the command was not recorded: {error}")))?;
         let taken = take_all(&mounted.app, &holder)
-            .map_err(|error| failed(format!("the invocation was not recorded: {error}")))?;
+            .map_err(|error| failed(format!("the command was not recorded: {error}")))?;
         self.commit_taken(ended.workspace_id, &ended.route, taken)
-            .map_err(|reason| failed(format!("the invocation was not recorded: {reason}")))?;
+            .map_err(|reason| failed(format!("the command was not recorded: {reason}")))?;
         Ok(ActionOutput {
-            value: Some(answer(&invocation, &ran)),
+            value: Some(answer(&id, &ran)),
             resources: Vec::new(),
         })
     }
 }
 
-/// What `run` answers: Terminal's answer (the invocation, its exit status, the
+/// What `run` answers: Terminal's answer (the command's id, its exit status, the
 /// host's refusal), with the command line, where it ran and the end of what
 /// it printed.
-fn answer(invocation: &str, ran: &ShellRan) -> Value {
+fn answer(id: &str, ran: &ShellRan) -> Value {
     let (output, cut) = tail(&ran.output, ANSWERED_OUTPUT);
     let mut answer = Map::new();
-    answer.insert("invocation".into(), json!(invocation));
+    answer.insert("id".into(), json!(id));
     answer.insert("exit".into(), json!(ran.exit));
     answer.insert("command".into(), json!(ran.command));
     answer.insert("cwd".into(), json!(ran.cwd));
@@ -671,7 +670,7 @@ fn tail(output: &[u8], max: usize) -> (String, bool) {
 }
 
 /// The tool a command line runs and what Terminal's parsers read in its
-/// output (a build's errors, a test invocation's failures), as a device records
+/// output (a build's errors, a test's failures), as a device records
 /// them.
 #[cfg(target_os = "linux")]
 fn parsed(command: &str, output: &[u8]) -> (String, Value) {
@@ -681,7 +680,7 @@ fn parsed(command: &str, output: &[u8]) -> (String, Value) {
     )
 }
 
-/// Without Terminal linked, an invocation is recorded without its parsed items.
+/// Without Terminal linked, a command is recorded without its parsed items.
 #[cfg(not(target_os = "linux"))]
 fn parsed(_command: &str, _output: &[u8]) -> (String, Value) {
     (String::new(), json!([]))
@@ -707,7 +706,7 @@ mod tests {
             exit: 126,
             output: b"ush: cargo: no card. Ask the person to add a card".to_vec(),
             refusal: Some(Refusal {
-                reason: tilo_actions::remote::host_account::Reason::NoPaymentMethod,
+                reason: tilo_actions::remote::server_account::Reason::NoPaymentMethod,
                 message: "no card".into(),
                 next: Vec::new(),
             }),

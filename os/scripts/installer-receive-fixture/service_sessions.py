@@ -1,4 +1,4 @@
-"""Observe actual selected custody -> default Browser -> private CEF restart.
+"""Observe actual selected ownership -> default Browser -> private CEF restart.
 
 Expected selections come from the independently authenticated prepared Manifest.
 They describe owned source material and grant no authority. This observer does
@@ -20,7 +20,7 @@ CHAT = {'slack': 'https://slack.com/app_redirect?team=T123&channel=C456',
 REPORT = {'service', 'session_id', 'status', 'authenticated', 'origin_storage_imported',
           'requires_reconnect', 'engine_shutdown_confirmed', 'destination_navigation_observed',
           'native_restart_readback_verified'}
-REVOCATION_REPORT = {'custody_revoked', 'custody_backend_needed', 'local_only'}
+REVOCATION_REPORT = {'ownership_revoked', 'ownership_backend_needed', 'local_only'}
 
 
 def require(value, reason):
@@ -77,21 +77,21 @@ def imported(report, selected):
 def revoked(report, selected):
     require(type(report) is dict and report.get('session_id') == selected['id'],
             'revocation report differs from selected native session')
-    for name in ('custody_revoked', 'custody_backend_needed', 'local_only',
+    for name in ('ownership_revoked', 'ownership_backend_needed', 'local_only',
                  'engine_shutdown_confirmed'):
         require(type(report.get(name)) is bool, 'revocation observation lacks native result')
     if report.get('status') != 'forgotten':
         require(report.get('status') in ('forgetting', 'forget-incomplete'),
-                'Browser did not perform genuine selected custody revocation')
+                'Browser did not perform genuine selected ownership revocation')
         return False
-    require(report['custody_revoked'] and report['engine_shutdown_confirmed']
-            and not report['custody_backend_needed'] and not report['local_only'],
-            'local profile cleanup alone cannot certify custody revocation')
+    require(report['ownership_revoked'] and report['engine_shutdown_confirmed']
+            and not report['ownership_backend_needed'] and not report['local_only'],
+            'local profile cleanup alone cannot certify ownership revocation')
     return True
 
 
 def verify(control, candidate, account, services, log, deadline, selected, subjects):
-    # Same actual NSS user/paths/session SecretService as the default cloud lane;
+    # Same actual NSS user/paths/session SecretService as the default cloud job;
     # no developer credentials or isolated alternative Browser session.
     user_environment(account)
     require(os.getuid() == account.pw_uid == 1000, 'actual receiving account required')
@@ -129,7 +129,7 @@ def verify(control, candidate, account, services, log, deadline, selected, subje
                 break
             _pause(services, deadline)
         require(observed is not None, 'actual CEF restart/readback/navigation did not complete')
-        # The explicit readonly witness is set only after NativeRestart reaps
+        # The explicit readonly proof is set only after NativeRestart reaps
         # the old CEF process and the replacement verify_only reply matches
         # the actual selected cookie/origin counts. Cached reuse cannot pass.
         processes = service_processes.observe(subjects, account, vault)

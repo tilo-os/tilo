@@ -205,6 +205,7 @@ impl Page {
         table: &'static tilo_resource::table::ModelTable,
         kind: &str,
         listing: &Listing,
+        hidden: &std::collections::HashSet<String>,
         skip: usize,
     ) -> Option<usize> {
         // What the part holds now, newest first: a cursor counted against
@@ -222,6 +223,12 @@ impl Page {
         let mut passed = skip.min(newest_first.len());
         for (field, id, label) in newest_first.iter().skip(passed) {
             let item = tilo_resource::items::item_resource_id_in(kind, field, id);
+            // An item the chain does not show is passed over, as one the
+            // read does not ask for.
+            if hidden.contains(&item) {
+                passed = passed.saturating_add(1);
+                continue;
+            }
             // An item is read only when the listing asks something of it.
             let values = if listing.wanted.is_empty() {
                 Vec::new()

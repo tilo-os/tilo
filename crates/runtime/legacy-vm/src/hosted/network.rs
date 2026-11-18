@@ -1,6 +1,6 @@
 //! A hosted VM's network: the public internet, nothing of the host's. Each VM gets
 //! a network namespace of its own bridged to `pasta`, a bridge filter that drops
-//! private, link-local, reserved and metadata destinations, the relay as its one
+//! private, link-local, reserved and metadata destinations, the server as its one
 //! other endpoint, and Firecracker's bandwidth limiters. Setting this up needs
 //! `CAP_NET_ADMIN` and `CAP_SYS_ADMIN`, so [`super::jail`] does it in the
 //! privileged helper before it starts the jailer.
@@ -15,7 +15,7 @@ pub const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
 pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
 /// Its resolver: `pasta`'s forwarder to the host's chosen resolver.
 pub const DNS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 3);
-/// Where the VM reaches the host's own loopback, when the relay is there (a local stack): `pasta`
+/// Where the VM reaches the host's own loopback, when the server is there (a local stack): `pasta`
 /// maps this address to it, and the filter allows it. A host neither binds nor routes it.
 pub const HOST_LOOPBACK: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 4);
 pub const PREFIX: u8 = 24;
@@ -62,7 +62,7 @@ pub fn blocked_networks(extra: &[(Ipv4Addr, u8)]) -> Vec<(Ipv4Addr, u8)> {
     all
 }
 
-/// The one destination a VM reaches besides the internet: the relay its browser session joins the
+/// The one destination a VM reaches besides the internet: the server its browser session joins the
 /// workspace through, as the host reaches it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Endpoint {
@@ -71,7 +71,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// `ADDR:PORT`, with the address written as four numbers: a host that names its relay
+    /// `ADDR:PORT`, with the address written as four numbers: a host that names its server
     /// resolves nothing.
     ///
     /// # Errors
@@ -89,7 +89,7 @@ impl Endpoint {
         Ok(Self { address, port })
     }
 
-    /// Where a VM reaches this endpoint: the same address, unless the relay is on the host's own
+    /// Where a VM reaches this endpoint: the same address, unless the server is on the host's own
     /// loopback (a local stack), where `pasta` maps [`HOST_LOOPBACK`] to it.
     #[must_use]
     pub fn guest(self) -> Self {
@@ -320,12 +320,12 @@ mod tests {
             "127.0.0.1:",
             ":7704",
             "127.0.0.1:0",
-            "relay:7704",
+            "server:7704",
             "fe80::1:7704",
         ] {
             assert!(Endpoint::parse(wrong).is_err(), "{wrong:?}");
         }
-        // `pasta` maps the host's loopback only for a relay that is on it.
+        // `pasta` maps the host's loopback only for a server that is on it.
         let after = |args: Vec<String>, flag: &str| {
             args.iter()
                 .position(|arg| arg == flag)
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(
             after(args, "--map-host-loopback").as_deref(),
             Some("10.0.2.4"),
-            "a local relay is reached at the mapped address"
+            "a local server is reached at the mapped address"
         );
         let cluster = Endpoint::parse("10.0.0.9:7704").unwrap();
         let args = pasta_args(42, "/j/pasta.pid", Ipv4Addr::new(1, 1, 1, 1), Some(cluster));
@@ -355,10 +355,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_vm_is_allowed_the_address_its_browser_session_dials_the_relay_at() {
-        let relay = Endpoint::parse("10.0.0.9:7704").unwrap();
-        let filter = guest_filter(&[], Some(relay));
-        assert_eq!(filter.endpoint, Some((relay.address, relay.port)));
+    fn a_vm_is_allowed_the_address_its_browser_session_dials_the_server_at() {
+        let server = Endpoint::parse("10.0.0.9:7704").unwrap();
+        let filter = guest_filter(&[], Some(server));
+        assert_eq!(filter.endpoint, Some((server.address, server.port)));
         let local = Endpoint::parse("127.0.0.1:7704").unwrap();
         assert_eq!(
             guest_filter(&[], Some(local)).endpoint,

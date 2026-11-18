@@ -6,7 +6,7 @@ use tilo_actions::{ActionAddress, ResourceSpec};
 use ui::icons::Icon;
 #[cfg(test)]
 use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor};
-use ui::search::{FieldWeight, SearchCatalog, SearchCatalogError, SearchRecord, SearchResult};
+use ui::search::{FieldWeight, SearchCatalog, SearchCatalogError, SearchItem, SearchResult};
 use ui::tilo_resource::SearchEntry;
 
 use crate::derived::{
@@ -504,7 +504,7 @@ impl LibraryIndex {
         before_publish();
         let mut state = self.state.write_recover();
         state.catalog.sync_resources(rows.iter().map(|(id, row)| {
-            SearchRecord::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
+            SearchItem::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
         }))?;
         state.rows = kinds;
         state.library = library;
@@ -520,7 +520,7 @@ impl LibraryIndex {
     #[cfg(test)]
     fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
         let mut state = self.state.write_recover();
-        state.catalog.replace_all_resources([SearchRecord::new(
+        state.catalog.replace_all_resources([SearchItem::new(
             "photos.photo:malformed",
             SearchResult::new(PHOTO_SEARCH_KIND, "Malformed", "legacy-action"),
         )
@@ -842,14 +842,14 @@ mod tests {
                 let before_generation = provider.generation();
                 let (resource, _) = target(&source(&doc).search("last-good")[0]);
                 let before = provider.resource(&resource).unwrap();
-                let before_records = provider.stats().records;
+                let before_resources = provider.stats().records;
 
                 assert_eq!(
                     provider.reject_malformed_snapshot_for_test(),
                     Err(SearchCatalogError::NonCanonicalResult)
                 );
                 assert_eq!(provider.generation(), before_generation);
-                assert_eq!(provider.stats().records, before_records);
+                assert_eq!(provider.stats().records, before_resources);
                 let after = provider.resource(&resource).unwrap();
                 assert_eq!(after.id, before.id);
                 assert_eq!(after.actions.len(), before.actions.len());
@@ -1058,7 +1058,7 @@ mod tests {
         }
 
         {
-            let mut expected_records = 0;
+            let mut expected_resources = 0;
             let mut built = PhotoLibrary::default();
             let (provider, hit) = assert_late_hit_reachable(
                 |corpus| {
@@ -1072,14 +1072,14 @@ mod tests {
                         };
                         library.add_photo(photo_of(&name, 1));
                     }
-                    expected_records = library.photos.len() + 4; // library + timeline + places + albums
+                    expected_resources = library.photos.len() + 4; // library + timeline + places + albums
                     built = library.clone();
                     source_of(&library)
                 },
                 3_000,
             );
             let index = LibraryIndex::new(&built).unwrap();
-            assert_eq!(index.stats().records, expected_records);
+            assert_eq!(index.stats().records, expected_resources);
             let page = provider.search_page(&SearchQuery::new("needle-夏"), None, 2, 1);
             assert_eq!(page.results, vec![hit.clone()]);
             assert!(page.inspected <= 2);

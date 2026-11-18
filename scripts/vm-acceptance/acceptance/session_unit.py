@@ -116,7 +116,7 @@ def dump_script(account: str) -> str:
         "echo '=== systemd on the unit'; journalctl -b -u $u --no-pager -o short-precise 2>/dev/null "
         f"| grep -av '{noise}' | tail -n 60 | cut -c1-600; "
         "echo '=== flight records'; ls -la \"$logs\" 2>&1; "
-        "grep -ah 'tilo-flight-record-v1' \"$logs/previous.log\" \"$logs/latest.log\" 2>/dev/null; "
+        "grep -ah 'tilo-flight-entry-v1' \"$logs/previous.log\" \"$logs/latest.log\" 2>/dev/null; "
         # Read before the next session starts, the run that ended is still latest.log.
         "for f in previous.log latest.log; do "
         "echo \"=== $f: panics, signals and errors\"; sed 's/\\x1b\\[[0-9;]*m//g' \"$logs/$f\" 2>/dev/null "

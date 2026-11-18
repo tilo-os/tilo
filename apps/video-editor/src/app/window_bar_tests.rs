@@ -11,7 +11,7 @@ use crate::app::VideoEditorApp;
 use crate::model::{Project, TrackKind};
 
 fn sample(w: f64) -> VideoEditorApp {
-    ui::host::install_default(ui::host::HostServices::recording().0);
+    ui::process::install_default(ui::process::ProcessServices::recording().0);
     let doc = crate::seed::sample_document();
     let mut app = VideoEditorApp::new();
     app.actions = Some(ui::framework::testing::dispatcher::<Project>(
@@ -30,7 +30,7 @@ fn bar_action(app: &VideoEditorApp, name: &str) -> ui::window_toolbar::ToolbarAc
 
 /// The editor on the sample project, opened as a person opens it.
 fn opened() -> TestApp<crate::VideoEditor> {
-    ui::host::install_default(ui::host::HostServices::recording().0);
+    ui::process::install_default(ui::process::ProcessServices::recording().0);
     let mut app = TestApp::<crate::VideoEditor>::new().expect("the editor opens");
     app.invoke_confirmed(
         ui::tilo_resource::Invoke::edit(&crate::resource::load_project(
@@ -202,7 +202,7 @@ fn the_editors_bar_actions_are_published_actions() {
     app.settle();
     assert!(
         app.state().clips.len() > before,
-        "the selected clip is cut in the record"
+        "the selected clip is cut in the resource"
     );
     assert!(app.undo(), "the split is one step");
     assert_eq!(app.state().clips.len(), before);
@@ -263,8 +263,8 @@ fn a_refused_imports_choose_media_opens_the_chooser() {
         std::fs::create_dir_all(&dir).unwrap();
         let bad = dir.join("not-a-video.mp4");
         std::fs::write(&bad, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = opened();
         app.harness().present_in_window_bar();
         app.surface_mut::<VideoEditorApp>()
@@ -438,8 +438,8 @@ fn the_empty_timelines_import_media_stands_in_for_a_hidden_media_pane() {
     assert!(!timeline_offers_a_button(&mut wide), "shown again, it goes");
 
     for (width, semantic) in [(1280, false), (1280, true), (420, false), (420, true)] {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let mut app = blank_at(width);
         if app
             .with_surface::<VideoEditorApp, _>(|editor| editor.media_pane_shown())
@@ -515,14 +515,14 @@ fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
             }
             let r = app.regions();
             assert!(!app.project.clips.is_empty(), "fixture: there are clips");
-            let px = app.time_to_x(app.playhead, &r.lanes);
+            let px = app.time_to_x(app.playhead, &r.tracks);
             let line = Rect::new(px - 1.0, r.ruler.y0, px + 1.0, app.playhead_bottom(&r));
-            let lanes = app.lane_rects(&r);
-            let last = lanes.last().map(|(_, _, lane)| *lane).expect("a track");
+            let tracks = app.track_rects(&r);
+            let last = tracks.last().map(|(_, _, track)| *track).expect("a track");
             assert!(
                 (line.y1 - last.y1).abs() < 1e-9 && line.y1 > r.ruler.y1,
                 "{width} px, {} tracks: the playhead ends at the last track: {line:?} vs {last:?}",
-                lanes.len()
+                tracks.len()
             );
             let buttons = app.add_track_buttons(&r);
             assert!(!buttons.is_empty(), "fixture: the add-track row is in view");
@@ -532,7 +532,7 @@ fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
                     line.intersect(row).area() <= 0.0,
                     "{width} px, {} tracks: the playhead {line:?} crosses the \
                      add-track row at {kind:?} {row:?}",
-                    lanes.len()
+                    tracks.len()
                 );
             }
         }
@@ -544,7 +544,7 @@ fn an_empty_timelines_playhead_stays_in_the_ruler() {
     for width in [420.0, 1280.0] {
         let mut app = sample(width);
         let r = app.regions();
-        let last_track = app.lane_rects(&r).last().map(|(_, _, lane)| lane.y1);
+        let last_track = app.track_rects(&r).last().map(|(_, _, track)| track.y1);
         assert_eq!(
             Some(app.playhead_bottom(&r)),
             last_track,

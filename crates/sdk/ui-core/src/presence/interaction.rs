@@ -10,6 +10,7 @@
 )]
 
 use super::PresenceCtx;
+use super::written::written_under;
 use crate::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::permissions::MemberId;
@@ -108,11 +109,14 @@ pub(super) struct InteractionPresenceEntry {
     first_received_at: Instant,
     /// Arrival of this phase.
     received_at: Instant,
-    /// The first frame that drew this phase: its dwell and the fade of what it wrote count from
-    /// there. A page drawing a frame every few seconds would otherwise let a write's mark come and
-    /// go between two frames, and its person would never see it. Until a frame draws it, it waits
-    /// whole, for at most [`ACTIVE_INTERACTION_EXPIRY`] after it arrived.
+    /// The first frame that drew this phase: its dwell counts from there. A page drawing a frame
+    /// every few seconds would otherwise let it come and go between two frames, and its person
+    /// would never see it. Until a frame draws it, it waits, for at most
+    /// [`ACTIVE_INTERACTION_EXPIRY`] after it arrived.
     drawn_at: std::cell::Cell<Option<Instant>>,
+    /// A widget drew its place ([`PresenceCtx::note_placed`]); a frame that keeps that drawing
+    /// (cached, or culled outside its damage) still shows it, so this holds across frames.
+    placed: std::cell::Cell<bool>,
     /// When its cursor last flashed for an arrival; `None` when a flash of
     /// the same agent just went off ([`AGENT_PULSE_QUIET`]).
     pulsed_at: Option<Instant>,
@@ -174,6 +178,7 @@ impl PresenceCtx {
             .retain(|_, entry| entry.interaction.actor.member_id() != Some(member));
         self.interaction_markers
             .remove(&tilo_actions::Actor::Member(member.clone()));
+        self.remove_written_by(member);
     }
 
     /// The colour an interaction by `acting` is drawn in: its member's, or for an automation the
@@ -227,6 +232,7 @@ impl PresenceCtx {
             let person = interaction.actor.acted_for_person().map(MemberId::person);
             self.set_acting_for(member.clone(), person);
         }
+        let placed = self.placed(interaction.invocation);
         let (first_received_at, superseded, pulsed) =
             match self.interactions.get(&interaction.invocation) {
                 // What a write put in a text is named once it applied: it shows then, as a write
@@ -257,6 +263,7 @@ impl PresenceCtx {
         // A phase within the flash its invocation set off carries that flash
         // on.
         let pulsed_at = self.pulse_of(&interaction, now).or(pulsed);
+        self.note_written(&interaction);
         self.interactions.insert(
             interaction.invocation,
             InteractionPresenceEntry {
@@ -264,6 +271,7 @@ impl PresenceCtx {
                 first_received_at,
                 received_at: now,
                 drawn_at: std::cell::Cell::new(None),
+                placed: std::cell::Cell::new(placed),
                 pulsed_at,
                 superseded,
             },
@@ -342,61 +350,23 @@ impl PresenceCtx {
         before != self.interactions.len()
     }
 
-    /// Current, non-expired interactions for a resource. App-native renderers
-    /// use this to project text ranges, cells, objects, rows, and timelines.
-    pub fn interactions_for_resource(
-        &self,
-        resource_id: &str,
-        now: Instant,
-    ) -> Vec<&SemanticInteraction> {
-        let mut entries = self
-            .interactions
-            .values()
-            .filter(|entry| entry.visible_at(now) && entry.interaction.resource.id == resource_id)
-            .collect::<Vec<_>>();
-        sort_entries(&mut entries);
-        entries
-            .into_iter()
-            .map(|entry| &entry.interaction)
-            .collect()
-    }
-
-    /// Say that this frame paints `invocation`'s exact place: the characters
-    /// a write landed in, or the row it names. The activity rail then leaves
-    /// the invocation out, so one action is not named twice on one frame.
-    pub fn note_shown(&self, invocation: InvocationId) {
-        if self.interactions.contains_key(&invocation) {
-            self.shown.borrow_mut().insert(invocation);
+    /// Say that a widget drew `invocation`'s exact place, the characters a write landed in: no
+    /// card names it from then on, however many later frames keep that drawing.
+    pub fn note_placed(&self, invocation: InvocationId) {
+        if let Some(entry) = self.interactions.get(&invocation) {
+            entry.placed.set(true);
         }
     }
 
-    /// What widgets reported shown since the last frame; taken by the pass
-    /// that would otherwise put them in the rail.
-    pub(crate) fn take_shown(&self) -> Vec<InvocationId> {
-        self.shown.borrow_mut().drain().collect()
+    /// Whether a widget drew `invocation`'s place ([`Self::note_placed`]).
+    pub(crate) fn placed(&self, invocation: InvocationId) -> bool {
+        self.interactions
+            .get(&invocation)
+            .is_some_and(|entry| entry.placed.get())
     }
 
-    /// How strongly an interaction still shows, from when its current phase
-    /// arrived: what the text it wrote fades by. `None` when it is no longer
-    /// shown, or its mark has faded out.
-    pub fn interaction_fade(&self, invocation: InvocationId, now: Instant) -> Option<f32> {
-        let entry = self.interactions.get(&invocation)?;
-        if !entry.visible_at(now) {
-            return None;
-        }
-        crate::motion::Trace::alpha(
-            now.saturating_duration_since(entry.drawn_at.get().unwrap_or(now)),
-        )
-    }
-
-    /// When a frame first drew `invocation`'s current phase: a person's edit after it, where it
-    /// wrote, puts its mark away.
-    pub fn interaction_drawn_at(&self, invocation: InvocationId) -> Option<Instant> {
-        self.interactions.get(&invocation)?.drawn_at.get()
-    }
-
-    /// A frame drew `invocation`'s current phase at `now`: its dwell, and the fade of what it
-    /// wrote, count from the first such frame.
+    /// A frame drew `invocation`'s current phase at `now`: its dwell counts from the first such
+    /// frame.
     pub fn note_drawn(&self, invocation: InvocationId, now: Instant) {
         if let Some(entry) = self.interactions.get(&invocation)
             && entry.drawn_at.get().is_none()
@@ -405,20 +375,12 @@ impl PresenceCtx {
         }
     }
 
-    /// Whether a write's mark stands on text at `now`: a widget draws it from its own content,
-    /// so a retained drawing of the widget is stale while the mark fades, and once it is gone.
-    pub fn shows_writes(&self, now: Instant) -> bool {
-        self.interactions
-            .values()
-            .any(|entry| entry.visible_at(now) && writes_text(&entry.interaction))
-    }
-
     /// All currently visible interactions in deterministic display order.
     /// The host uses this read-only view to resolve generic semantic-control
     /// anchors against the current accessibility tree before falling back to
     /// the activity rail.
     pub fn visible_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
-        self.visible_entries(now)
+        self.visible_entries_excluding(now, &[])
             .into_iter()
             .map(|entry| entry.interaction.clone())
             .collect()
@@ -472,7 +434,7 @@ impl PresenceCtx {
     }
 
     /// Earliest discrete wake at which visible semantic activity expires, its
-    /// cursor begins to move on it, or a write's mark steps down its fade: each
+    /// cursor begins to move on it, or a write's mark steps down its arrival: each
     /// one is a frame the host asks for, not only an instant to sleep to. A
     /// deadline pass on its own presents no presence-only change. Continuous
     /// motion is intentionally omitted: [`Self::interaction_animation_demand`]
@@ -482,6 +444,7 @@ impl PresenceCtx {
             .values()
             .flat_map(|entry| entry.next_wakes(now))
             .flatten()
+            .chain(self.written_next_wake(now))
             .map(|deadline| deadline.max(now))
             .min()
     }
@@ -556,6 +519,7 @@ impl PresenceCtx {
             } else {
                 visible_locus
             },
+            place,
             viewport,
         );
         let previous = self.interaction_markers.get(&actor);
@@ -619,17 +583,17 @@ impl PresenceCtx {
         let words = self.interaction_status_label(interaction);
         // A caret it writes with may wear its tag already (an agent writing in a document): the
         // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
-        // the agent ("Claude Code · Agent") where this one would say what it does; a second tag
+        // the agent ("Claude Code") where this one would say what it does; a second tag
         // beside it, or floating where the pointer is, says the same agent twice.
         // Its caret is where it acts then, so no pointer is drawn either: a pointer of its own
         // stood on the very words the caret had just written, or apart from them where it last
-        // pointed. A caret standing anywhere else (an agent writing in one field while it presses
+        // pointed. A caret anywhere else (an agent writing in one field while it presses
         // a control in another) is no mark on *this* place: the place it would press keeps its own
         // tag, or a bare outline is all a person sees of the step.
-        let worn = self
-            .presence_marks()
-            .iter()
-            .any(|mark| Some(&mark.user) == shown.as_ref() && intersects(mark.rect, visible_locus));
+        let worn = self.presence_marks().iter().any(|mark| {
+            Some(&mark.user) == shown.as_ref()
+                && super::caret_tag::overlaps(mark.rect, visible_locus)
+        });
         let bounds = if worn {
             Rect::from_origin_size(tip, (0.0, 0.0))
         } else {
@@ -639,7 +603,7 @@ impl PresenceCtx {
                 paint.text,
                 paint.theme,
                 (tip, viewport),
-                (visible_locus, &place.ink),
+                &place.ink,
                 &words,
                 actor_color,
             );
@@ -707,7 +671,8 @@ impl PresenceCtx {
         if matches!(
             interaction.anchor,
             tilo_actions::InteractionAnchor::ListItems { .. }
-        ) {
+        ) || written_under(&interaction.anchor).is_some()
+        {
             return self.interaction_status_label_written(interaction);
         }
         self.interaction_status_label_doing(interaction, &step_line(interaction))
@@ -809,18 +774,18 @@ impl PresenceCtx {
         }
         let columns = card_columns(viewport);
         let clear = |column: &&Vec<Rect>| {
-            column.iter().take(visible).all(|slot| {
+            column.iter().take(visible).all(|cell| {
                 occupied
                     .iter()
-                    .all(|taken| slot.intersect(*taken).is_zero_area())
+                    .all(|taken| cell.intersect(*taken).is_zero_area())
             })
         };
-        let Some(slots) = columns.iter().find(clear).or_else(|| columns.first()) else {
+        let Some(cells) = columns.iter().find(clear).or_else(|| columns.first()) else {
             return Vec::new();
         };
         let mut out = Vec::with_capacity(visible);
         for (index, entry) in entries.iter().copied().take(visible).enumerate() {
-            let Some(&rect) = slots.get(index) else {
+            let Some(&rect) = cells.get(index) else {
                 break;
             };
             out.push(InteractionCardPlacement {
@@ -855,8 +820,8 @@ impl PresenceCtx {
         }
     }
 
-    /// The work a card stands for: what is visible and not drawn in place,
-    /// leaving out a read, which changes nothing a person could look at (the
+    /// The work a card stands for: what is visible and not drawn in place
+    /// ([`Self::note_placed`], `excluded`), leaving out a read, which changes nothing a person could look at (the
     /// line beside the agent's face says what it reads).
     fn card_entries(
         &self,
@@ -865,14 +830,13 @@ impl PresenceCtx {
     ) -> Vec<&InteractionPresenceEntry> {
         let mut entries = self.visible_entries_excluding(now, excluded);
         entries.retain(|entry| {
-            tilo_actions::step::kind(entry.interaction.action.step, &entry.interaction.anchor)
-                != tilo_actions::StepKind::Read
+            !entry.placed.get()
+                && tilo_actions::step::kind(
+                    entry.interaction.action.step,
+                    &entry.interaction.anchor,
+                ) != tilo_actions::StepKind::Read
         });
         entries
-    }
-
-    fn visible_entries(&self, now: Instant) -> Vec<&InteractionPresenceEntry> {
-        self.visible_entries_excluding(now, &[])
     }
 
     fn newest_agent_entry(
@@ -1023,28 +987,17 @@ impl InteractionPresenceEntry {
     }
 
     /// The discrete wakes this entry asks a host for: when its cursor starts
-    /// moving on it, when its dwell ends, and, for the characters a write put
-    /// on text, each step of that mark's fade — the text it wrote dims in
-    /// steps, and a host that slept until the dwell ended would show it whole
-    /// and then gone.
-    fn next_wakes(&self, now: Instant) -> [Option<Instant>; 3] {
+    /// moving on it, and when its dwell ends.
+    fn next_wakes(&self, now: Instant) -> [Option<Instant>; 2] {
         // A cursor waiting for its rest on the last target to end moves on
         // then.
         let beginning =
             (now < self.first_received_at && !self.superseded).then_some(self.first_received_at);
         let expiry = self.expiry_deadline();
-        let ends = Some(expiry.checked_add(EXPIRY_EPSILON).unwrap_or(expiry));
-        [beginning, ends, self.fade_step(now)]
-    }
-
-    /// When this entry's mark on the text it wrote steps down its fade: none
-    /// while it has not been drawn, when a later action of its agent took its
-    /// place, or once the mark has gone.
-    fn fade_step(&self, now: Instant) -> Option<Instant> {
-        self.drawn_at
-            .get()
-            .filter(|_| !self.superseded && self.visible_at(now) && writes_text(&self.interaction))
-            .and_then(|drawn| crate::motion::Trace::next_step(drawn, now))
+        [
+            beginning,
+            Some(expiry.checked_add(EXPIRY_EPSILON).unwrap_or(expiry)),
+        ]
     }
 
     fn animating_at(&self, now: Instant, theme: &Theme) -> bool {
@@ -1104,21 +1057,38 @@ fn marker_entry_is_newer(
                 > current.interaction.invocation.0.as_bytes())
 }
 
-/// Where an agent's mark rests by `control`: level with it, just past its right edge, or its left
-/// one where the frame ends first, so the mark never covers the control's glyph. Only a control as
-/// wide as the frame takes the mark inside its right edge.
-fn beside(control: Rect, viewport: Rect) -> Point {
+/// Where an agent's mark rests by the `control` it would press in its place: level with it, just
+/// outside it on the side facing the nearer edge of its `place`, where a row's words never are (a
+/// leading checkbox's left, a trailing switch's right), else on the other side. A side whose mark
+/// would cover `ink` (a neighbouring button, a line of words), or that leaves the frame, is passed
+/// over. Only where neither side is clear does the mark take the first that fits the frame, or the
+/// control's inside right edge.
+fn beside(control: Rect, place: &MarkerPlace, viewport: Rect) -> Point {
     // The mark's ring and halo reach this far from its centre, and a gap keeps it off the outline.
     let radius = super::render::RING_R + 3.0;
     let reach = radius + 2.0;
-    let x = if control.x1 + reach + radius <= viewport.x1 {
-        control.x1 + reach
-    } else if control.x0 - reach - radius >= viewport.x0 {
-        control.x0 - reach
+    let (left, right) = (control.x0 - reach, control.x1 + reach);
+    let sides = if control.center().x < place.locus.center().x - f64::EPSILON {
+        [left, right]
     } else {
-        control.x1 - reach
+        [right, left]
     };
-    Point::new(x, control.center().y)
+    let y = control.center().y;
+    let framed = |x: f64| x - radius >= viewport.x0 && x + radius <= viewport.x1;
+    let clear = |x: f64| {
+        let ring = Rect::new(x - radius, y - radius, x + radius, y + radius);
+        // What holds the control (its row) is where it stands, not words beside it.
+        !place
+            .ink
+            .iter()
+            .any(|ink| !ink.contains_rect(control) && super::caret_tag::overlaps(*ink, ring))
+    };
+    let x = sides
+        .into_iter()
+        .find(|x| framed(*x) && clear(*x))
+        .or_else(|| sides.into_iter().find(|x| framed(*x)))
+        .unwrap_or(control.x1 - reach);
+    Point::new(x, y)
 }
 
 fn valid_marker_rect(rect: Rect) -> bool {
@@ -1131,11 +1101,6 @@ fn valid_marker_rect(rect: Rect) -> bool {
 
 fn point_in_rect(rect: Rect, point: Point) -> bool {
     point.x >= rect.x0 && point.x <= rect.x1 && point.y >= rect.y0 && point.y <= rect.y1
-}
-
-/// Whether two rects share any area: a caret standing on the place a marker rests.
-fn intersects(a: Rect, b: Rect) -> bool {
-    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
 fn viewport_diagonal(viewport: Rect) -> f64 {
@@ -1290,8 +1255,7 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
     // raw hex id is no name, so the card says what kind of member acts
     // instead.
     match (interaction.actor.member_id(), roster_name) {
-        (Some(member), Some(name)) if !member.is_person() => presence.kind_label(member, name),
-        (Some(_), Some(name)) => name.to_owned(),
+        (Some(member), Some(name)) => presence.member_label(member, name),
         (None, name) => crate::i18n::widget_format(
             "member-shortcut",
             &[("name", name.unwrap_or_default().into())],
@@ -1304,7 +1268,7 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
     use tilo_actions::{
@@ -1313,7 +1277,7 @@ mod tests {
     };
     use uuid::Uuid;
 
-    fn interaction(
+    pub(crate) fn interaction(
         invocation: u128,
         sequence: u64,
         phase: InteractionPhase,
@@ -1371,6 +1335,50 @@ mod tests {
         let mut action = interaction(invocation, 1, phase);
         action.resource.id = target.into();
         action
+    }
+
+    #[test]
+    fn an_agents_mark_rests_beside_what_it_would_press_never_on_words() {
+        let viewport = Rect::new(0.0, 0.0, 960.0, 600.0);
+        let ring = |tip: Point| {
+            let r = super::super::render::RING_R + 3.0;
+            Rect::new(tip.x - r, tip.y - r, tip.x + r, tip.y + r)
+        };
+        // A row: its checkbox leads, its words follow it.
+        let row = Rect::new(36.0, 80.0, 924.0, 116.0);
+        let checkbox = Rect::new(44.0, 90.0, 60.0, 106.0);
+        let words = Rect::new(72.0, 88.0, 240.0, 108.0);
+        let place = MarkerPlace {
+            locus: row,
+            control: checkbox,
+            ink: vec![row, checkbox],
+        };
+        let tip = beside(checkbox, &place, viewport);
+        assert!(
+            tip.x < checkbox.x0,
+            "it points at the checkbox from outside the row's words"
+        );
+        assert!(!super::super::caret_tag::overlaps(ring(tip), words));
+        // A field with a button beside it: the mark leaves the button's words alone.
+        let field = Rect::new(36.0, 24.0, 808.0, 56.0);
+        let button = Rect::new(817.0, 24.0, 924.0, 56.0);
+        let place = MarkerPlace {
+            locus: field,
+            control: field,
+            ink: vec![field, button],
+        };
+        let tip = beside(field, &place, viewport);
+        assert!(
+            !super::super::caret_tag::overlaps(ring(tip), button),
+            "{tip:?}"
+        );
+        // A lone button keeps its mark just past its right edge.
+        let place = MarkerPlace {
+            locus: button,
+            control: button,
+            ink: vec![button],
+        };
+        assert!(beside(button, &place, viewport).x > button.x1);
     }
 
     tilo_test_env::scenario! {
@@ -1876,26 +1884,29 @@ mod tests {
     #[test]
     fn a_place_a_widget_painted_leaves_the_rail() {
         let at = crate::time::now();
+        let cards = |presence: &PresenceCtx, now| {
+            presence
+                .interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), now)
+                .len()
+        };
         let mut presence = PresenceCtx::empty();
         let event = interaction(70, 1, InteractionPhase::Applying);
         presence.apply_interaction_at(event.clone(), at).unwrap();
         assert_eq!(
-            presence.visible_entries_excluding(at, &[]).len(),
+            cards(&presence, at),
             1,
-            "an unwritten place is named by the rail"
+            "an unwritten place is named by a card"
         );
-        presence.note_shown(event.invocation);
-        let shown = presence.take_shown();
-        assert_eq!(shown, vec![event.invocation]);
-        assert!(
-            presence.visible_entries_excluding(at, &shown).is_empty(),
-            "the characters are the mark; the rail leaves them out"
-        );
-        assert!(presence.take_shown().is_empty(), "shown is one frame's");
-        presence.note_shown(InvocationId(Uuid::from_u128(999)));
-        assert!(
-            presence.take_shown().is_empty(),
-            "an invocation this surface never saw cannot silence a rail entry"
+        presence.note_placed(event.invocation);
+        assert_eq!(cards(&presence, at), 0, "the characters are the mark");
+        // A later frame keeps the widget's drawing without drawing it again.
+        let later = at + Duration::from_millis(400);
+        let committed = interaction(70, 2, InteractionPhase::Committed);
+        presence.apply_interaction_at(committed, later).unwrap();
+        assert_eq!(
+            cards(&presence, later),
+            0,
+            "its next phase stands there too"
         );
     }
 
@@ -1923,105 +1934,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_write_marks_its_place_from_its_first_frame_and_fades;
-
-        phase a_write_counts_its_mark_from_the_first_frame_that_drew_it;
-        // On a page that draws a frame every few seconds, a write that arrived between two frames is
-        // still shown whole by the next, and fades over its own time from there: its mark counts from
-        // the first frame that drew it, not from its arrival. One no frame ever draws still goes.
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            let written = interaction(80, 1, InteractionPhase::Committed);
-            presence.apply_interaction_at(written.clone(), at).unwrap();
-            // The page draws its next frame long after the write's whole mark would have faded.
-            let drawn = at + TERMINAL_INTERACTION_DWELL + Duration::from_secs(2);
-            assert!(
-                presence.has_visible_interactions(drawn),
-                "not drawn yet: it waits"
-            );
-            assert_eq!(
-                presence.interaction_fade(written.invocation, drawn),
-                Some(1.0)
-            );
-            presence.note_drawn(written.invocation, drawn);
-            let later = drawn + Duration::from_millis(500);
-            let fade = presence.interaction_fade(written.invocation, later);
-            assert!(
-                fade.is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
-                "it fades from the frame that drew it: {fade:?}"
-            );
-            assert!(presence.has_visible_interactions(drawn + TERMINAL_INTERACTION_DWELL));
-            assert!(!presence.has_visible_interactions(
-                drawn + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
-            ));
-            // Drawn again, it keeps its first frame's count.
-            presence.note_drawn(written.invocation, later);
-            assert!(!presence.has_visible_interactions(
-                drawn + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
-            ));
-
-            let mut unseen = PresenceCtx::empty();
-            unseen.apply_interaction_at(written.clone(), at).unwrap();
-            assert!(unseen.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
-            assert!(
-                !unseen.has_visible_interactions(
-                    at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
-                )
-            );
-        }
-
-        phase a_text_write_asks_for_each_step_of_its_fade;
-        // The text a write put on a note dims in steps: a host that woke only when
-        // the dwell ended showed it whole and then gone, so the text mark asks for
-        // each step of its fade. A place that is not text has no mark to fade and
-        // asks for none.
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            let mut written = interaction(90, 1, InteractionPhase::Applying);
-            written.anchor = tilo_actions::InteractionAnchor::Text {
-                region: "body".into(),
-                ranges: vec![tilo_actions::InteractionTextRange {
-                    block: "b1".into(),
-                    start: 33,
-                    end: 66,
-                }],
-            };
-            presence.apply_interaction_at(written.clone(), at).unwrap();
-            presence.note_drawn(written.invocation, at);
-            // The mark dims in ten steps over its life.
-            let step = Duration::from_millis(250);
-            assert_eq!(
-                presence.interaction_next_wake_deadline(at),
-                Some(at + step),
-                "the frame that dims it once is asked for"
-            );
-            let later = at + step * 4;
-            assert_eq!(
-                presence.interaction_next_wake_deadline(later),
-                Some(at + step * 5),
-                "and each step after it"
-            );
-            assert!(
-                presence
-                    .interaction_fade(written.invocation, later)
-                    .is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
-                "the text is still dimming at that step"
-            );
-
-            // A row it names, not text it wrote: its dwell's end is the only wake
-            // there is.
-            let mut elsewhere = PresenceCtx::empty();
-            let listed = interaction(91, 1, InteractionPhase::Applying);
-            elsewhere.apply_interaction_at(listed.clone(), at).unwrap();
-            elsewhere.note_drawn(listed.invocation, at);
-            assert_eq!(
-                elsewhere.interaction_next_wake_deadline(later),
-                Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON),
-                "nothing fades, so nothing wakes before the dwell ends"
-            );
-        }
+        fn a_write_shows_where_it_landed;
 
         phase a_write_shows_when_it_arrives_not_when_the_cursor_finishes_resting;
         // The characters a write put in a text show when the phase arrives: the
@@ -2055,7 +1968,6 @@ mod tests {
                     .any(|shown| shown.invocation == write.invocation),
                 "the text it wrote is already there"
             );
-            assert_eq!(presence.interaction_fade(write.invocation, at), Some(1.0));
 
             // A place the cursor has to travel to still waits for the rest.
             let mut card = interaction(98, 1, InteractionPhase::Applying);
@@ -2095,9 +2007,9 @@ mod tests {
     tilo_test_env::scenario! {
         fn an_actor_and_its_work_are_named_and_coloured;
 
-        phase an_actor_is_named_with_the_person_it_acts_for;
-        // An agent or a Shortcut acting for a person is named with that person
-        // and gets the software mark and marker a person's activity never does.
+        phase an_actor_is_named_by_its_own_name_and_keeps_whom_it_acts_for;
+        // An agent or a Shortcut acting for a person is named by its own name, keeps whom it
+        // acts for, and gets the software mark and marker a person's activity never does.
         {
             let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
@@ -2107,7 +2019,7 @@ mod tests {
             agent.actor.acted_for = vec![tilo_actions::Acting::person("ada")];
             assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
             let claude = MemberId::agent("quill");
-            assert_eq!(presence.display_name(&claude), "Claude for Ada");
+            assert_eq!(presence.display_name(&claude), "Claude");
             assert_eq!(presence.acting_for(&claude), Some(&MemberId::person("ada")));
             assert!(!claude.is_person());
             assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
@@ -2161,7 +2073,7 @@ mod tests {
                 &mut text,
                 Affine::IDENTITY,
                 &claude,
-                "Claude Code · Agent",
+                "Claude Code",
                 super::super::LabeledCaret::new(Rect::new(200.0, 300.0, 202.0, 318.0)),
             );
             let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
@@ -2181,13 +2093,13 @@ mod tests {
                 .collect();
             assert_eq!(
                 tags,
-                vec!["Claude Code · Agent".to_owned()],
+                vec!["Claude Code".to_owned()],
                 "one tag, at its caret"
             );
         }
 
         phase a_tag_elsewhere_leaves_the_would_click_place_labelled;
-        // A tag of the agent's standing elsewhere — at the caret in the field it just wrote — says
+        // A tag of the agent's access elsewhere — at the caret in the field it just wrote — says
         // nothing about the control it would press next: that place keeps its own tag, or a person
         // seeing the step has only a thin outline to go by.
         {
@@ -2207,7 +2119,7 @@ mod tests {
                 &mut text,
                 Affine::IDENTITY,
                 &claude,
-                "Claude Code · Agent",
+                "Claude Code",
                 super::super::LabeledCaret::new(Rect::new(600.0, 80.0, 602.0, 98.0)),
             );
             let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
@@ -2344,7 +2256,7 @@ mod tests {
                 let mut presence = PresenceCtx::empty();
                 assert_eq!(actor_label(&presence, &agent), "Agent");
                 presence.names.insert(user.clone(), "Quill".into());
-                assert_eq!(actor_label(&presence, &agent), "Quill · Agent");
+                assert_eq!(actor_label(&presence, &agent), "Quill");
             }
             // A roster that knows a member only by its key hands that key
             // back as its name; the card names the kind of member instead.
@@ -2365,7 +2277,7 @@ mod tests {
                 presence.set_acting_for(agent.clone(), Some(user));
                 assert_eq!(
                     presence.display_name(&agent),
-                    "Claude · Agent",
+                    "Claude",
                     "an unnamed person it acts for is left out, not shown as a key"
                 );
             }
@@ -2378,7 +2290,7 @@ mod tests {
                 let applying = interaction(11, 1, InteractionPhase::Applying);
                 assert_eq!(
                     presence.interaction_announcement(&applying).as_deref(),
-                    Some("Quill · Agent, Applying: Rename on Draft.md")
+                    Some("Quill, Applying: Rename on Draft.md")
                 );
                 assert!(
                     presence
@@ -2474,162 +2386,4 @@ mod tests {
             );
         }
     }
-}
-
-impl PresenceCtx {
-    /// Draw each write that landed in `text`, the field `region` (any, where `None`) of the item
-    /// or block `block`, where it stands: its characters washed in the writer's colour, fading,
-    /// and its caret at their end wearing what it did ("Helper: renamed"). `place` gives, in the
-    /// caller's coordinates and measured with the renderer it is handed, the bands a byte range of
-    /// `text` covers and the caret at its end, where it wears one. A write drawn so leaves the activity rail; one the
-    /// person `edited` there at or after it was first drawn is put away. Returns who wrote what it
-    /// drew, whose own caret there needs no second tag.
-    pub fn draw_writes_in(
-        &self,
-        paint: &mut PaintCtx<'_>,
-        (region, block, text): (Option<&str>, &str, &str),
-        edited: Option<Instant>,
-        place: &mut dyn FnMut(
-            &mut TextRenderer,
-            &SemanticInteraction,
-            usize,
-            usize,
-        ) -> (Vec<Rect>, Option<super::LabeledCaret>),
-    ) -> Vec<MemberId> {
-        let now = crate::time::now();
-        let mut writers = Vec::new();
-        for interaction in self.visible_interactions(now) {
-            let Some((start, end)) = written_in(&interaction, region, block, text) else {
-                continue;
-            };
-            if let (Some(edited), Some(drawn)) =
-                (edited, self.interaction_drawn_at(interaction.invocation))
-                && edited >= drawn
-            {
-                self.note_shown(interaction.invocation);
-                continue;
-            }
-            // The text it wrote is its place, faded or not: no card stands for it elsewhere.
-            self.note_shown(interaction.invocation);
-            let Some(alpha) = self.interaction_fade(interaction.invocation, now) else {
-                continue;
-            };
-            let Some(user) = interaction
-                .actor
-                .members()
-                .first()
-                .map(|member| (*member).clone())
-            else {
-                continue;
-            };
-            let (bands, caret) = place(paint.text, &interaction, start, end);
-            let bands: Vec<(Rect, f32)> = bands
-                .into_iter()
-                .map(|band| (paint.transform.transform_rect_bbox(band), alpha))
-                .collect();
-            self.draw_peer_typing(paint.scene, paint.theme, &user, &bands);
-            self.note_drawn(interaction.invocation, now);
-            if let Some(caret) = caret {
-                let name = self.interaction_status_label_written(&interaction);
-                self.draw_action_caret_labeled_in(
-                    paint.scene,
-                    paint.theme,
-                    paint.text,
-                    paint.transform,
-                    &user,
-                    &name,
-                    caret,
-                );
-            }
-            writers.push(user);
-        }
-        writers
-    }
-}
-
-/// The characters an invocation writes into the text `text` of block `block` (in `region`, when
-/// one is named), as byte offsets in it: the `Text` range its anchor names there, counted in
-/// characters because a place counts them that way.
-pub(crate) fn written_in(
-    interaction: &SemanticInteraction,
-    region: Option<&str>,
-    block: &str,
-    text: &str,
-) -> Option<(usize, usize)> {
-    let tilo_actions::InteractionAnchor::Text {
-        region: written,
-        ranges,
-    } = &interaction.anchor
-    else {
-        return None;
-    };
-    if region.is_some_and(|region| region != written) {
-        return None;
-    }
-    // A caller may name a block by the start of its id, as the document resolves it: a write that
-    // landed named one block only.
-    let range = ranges.iter().find(|range| {
-        range.block == block || (!range.block.is_empty() && block.starts_with(&range.block))
-    })?;
-    let chars = text.chars().count();
-    let start = usize::try_from(range.start).ok()?.min(chars);
-    let end = usize::try_from(range.end).ok()?.min(chars).max(start);
-    let byte = |index: usize| {
-        text.char_indices()
-            .nth(index)
-            .map_or(text.len(), |(byte, _)| byte)
-    };
-    Some((byte(start), byte(end)))
-}
-
-/// The characters `changes`, one action's patches, wrote into a rich text, as the anchor an
-/// invocation names text by: each block it wrote into, the field holding the text being the
-/// region. Each block's range spans what it inserted there, counted in characters. `None` when it
-/// wrote into no block. A plain text field is left out: where its item sits is the record's own
-/// layout, and a write to one names its field and item in its arguments.
-pub(crate) fn written_by(changes: &[automerge::Patch]) -> Option<tilo_actions::InteractionAnchor> {
-    use automerge::Prop;
-    let mut region: Option<&str> = None;
-    let mut ranges: Vec<tilo_actions::InteractionTextRange> = Vec::new();
-    for patch in changes {
-        let automerge::PatchAction::SpliceText { index, value, .. } = &patch.action else {
-            continue;
-        };
-        let keys: Vec<&str> = patch
-            .path
-            .iter()
-            .map(|(_, prop)| match prop {
-                Prop::Map(key) => key.as_str(),
-                Prop::Seq(_) => "",
-            })
-            .collect();
-        // A block's text is `…/<field>/blocks/<block>/text`.
-        let (Some(blocks), [.., block, tilo_doc::schema::BLOCK_TEXT]) = (
-            keys.iter()
-                .position(|key| *key == tilo_doc::schema::KEY_BLOCKS),
-            keys.as_slice(),
-        ) else {
-            continue;
-        };
-        let (field, block) = (blocks.checked_sub(1).map_or("body", |at| keys[at]), *block);
-        // One region: the first the action wrote in.
-        if block.is_empty() || field.is_empty() || *region.get_or_insert(field) != field {
-            continue;
-        }
-        let (start, end) = (
-            *index as u64,
-            (*index + value.make_string().chars().count()) as u64,
-        );
-        if let Some(range) = ranges.iter_mut().find(|range| range.block == block) {
-            range.start = range.start.min(start);
-            range.end = range.end.max(end);
-        } else if ranges.len() < tilo_actions::MAX_ANCHOR_ITEMS {
-            let block = block.to_owned();
-            ranges.push(tilo_actions::InteractionTextRange { block, start, end });
-        }
-    }
-    Some(tilo_actions::InteractionAnchor::Text {
-        region: region?.to_owned(),
-        ranges,
-    })
 }

@@ -7,7 +7,9 @@
 # their placements back after a restart, and hears how its app ended. A
 # running keeper outlives the session build that started it, so a session
 # after an update meets keepers of an older build: a hello at another version
-# is answered with the keeper's and closed.
+# is answered with the keeper's, then "holding", and the connection holds the
+# app while it stays open. That handshake and the `app` file in the keeper's
+# directory are not versioned (wire.rs, "The part that never changes").
 name = "app-keeper"
 version = 1
 version_const = "crates/session/app-keeper/src/wire.rs:INTERFACE_VERSION"

@@ -289,7 +289,7 @@ fn the_shell_names_the_tabs_it_has_for_apps_with_their_apps() {
     // asked for, and that tab is the app's window on its way: the next
     // launch of the app goes there instead of starting a second process.
     assert!(
-        policy.hold("so.tilo.notes", None, false, false),
+        policy.hold("so.tilo.notes", None, (false, false), None),
         "a place beside the window the app has"
     );
     // The place shows a window that has not come, which never stops moving.
@@ -659,7 +659,7 @@ fn a_conversation_opens_beside_its_sender() {
     map(&mut driver, &mut policy, 1, "so.tilo.chat");
     let sender = window_tab(&policy, 1);
     assert!(
-        policy.hold("so.tilo.chat", None, false, true),
+        policy.hold("so.tilo.chat", None, (false, true), Some("dm")),
         "the shell takes the place beside the sender"
     );
     settle(&mut driver);
@@ -685,6 +685,8 @@ fn a_conversation_opens_beside_its_sender() {
         "the tab the window takes is the instance it is known by"
     );
     assert!(asked[0].beside, "a window of the app's own");
+    // Born showing the conversation, which every device's window of it opens on.
+    assert_eq!(policy.tab_showing("so.tilo.chat", "dm"), Some(tab));
     let groups = groups(&policy);
     let (sender_group, _, _) = groups
         .iter()
@@ -1164,4 +1166,43 @@ fn each_kept_window_takes_back_exactly_its_own_tab() {
         3,
         "a closed window is told nothing more"
     );
+}
+
+/// Only the windows that stand on a display are in view: a strip lays out every window on it, and
+/// the ones scrolled past stand off the display. What sets an app's tier (and its memory floor) is
+/// this, so an app whose windows are all scrolled away yields to the ones the person sees.
+#[test]
+fn the_windows_scrolled_off_the_display_are_not_in_view() {
+    let (mut driver, mut policy) = mount();
+    assert!(policy.set_displays(&[Output {
+        monitor: "only".into(),
+        rect: Rect::new(0.0, 0.0, WIDTH, 800.0),
+        primary: true,
+    }]));
+    for id in 1..=6 {
+        map(&mut driver, &mut policy, id, &format!("app-{id}"));
+    }
+    let layout = policy.placement();
+    let in_view = policy.in_view();
+    assert!(
+        in_view.contains(&6),
+        "the newest window is in view: {layout:?}"
+    );
+    let off: Vec<u64> = layout
+        .shown
+        .iter()
+        .filter(|(_, rect)| rect.x1 <= 0.0 || rect.x0 >= WIDTH)
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        !off.is_empty(),
+        "six windows do not fit one display: {layout:?}"
+    );
+    for id in &off {
+        assert!(
+            !in_view.contains(id),
+            "{id} stands off the display: {layout:?}"
+        );
+    }
+    assert_eq!(in_view.len() + off.len(), layout.shown.len(), "{layout:?}");
 }

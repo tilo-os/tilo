@@ -41,7 +41,7 @@ impl BrowserWidget {
 
     /// Answer the page's offer to download `id` as `invoker` (nobody: the person at the window):
     /// save it when `allow`, else discard it. The engine continues the transfer only when kept,
-    /// and of a download it held for the person its record says who answered.
+    /// and of a download it held for the person its resource says who answered.
     pub(super) fn answer_download(
         &mut self,
         id: &str,

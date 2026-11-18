@@ -64,7 +64,7 @@ final class PhoneProbe: ObservableObject {
     func run() {
         guard let engine, !started else { return }
         started = true
-        Task { for await standing in engine.standings() { await stood(standing) } }
+        Task { for await state in engine.states() { await stood(state) } }
         Task {
             for await _ in engine.changes() { await look(after: "the page's word") }
         }
@@ -92,27 +92,76 @@ final class PhoneProbe: ObservableObject {
         }
     }
 
-    private func stood(_ standing: TiloEngine.Standing) async {
+    private func stood(_ state: TiloEngine.State) async {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
-        switch standing {
+        switch state {
         case .away: break
-        case .arriving(let step): PhoneProbe.say(["standing": "arriving", "step": .string(step), "s": seconds])
+        case .arriving(let step):
+            // A page that stopped on its way in and is loaded once more says why it stopped.
+            var line: [String: JSON] = ["state": "arriving", "step": .string(step), "s": seconds]
+            if step == "load", let why = engine?.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
+            PhoneProbe.say(.object(line))
+            // Its page is still the one that stopped, for a moment: what that page says of itself.
+            if step == "load", engine?.lastStop != nil { await details() }
+        case .asking(let ask):
+            // The page asks before it pairs, and this probe has nobody to press: it says so and waits.
+            PhoneProbe.say(["asking": .string(ask.heading), "said": .array(ask.said.map(JSON.string)), "s": seconds])
         case .pairing(let code):
             keep(code, as: "code")
-            PhoneProbe.say(["standing": "pairing", "s": seconds])
+            PhoneProbe.say(["state": "pairing", "s": seconds])
         case .open(let route):
             keep(route, as: "route")
             let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
-            PhoneProbe.say(["standing": "open", "workspace": .string(workspace), "s": seconds])
+            PhoneProbe.say(["state": "open", "workspace": .string(workspace), "s": seconds])
             await look(after: "getting in")
-        case .refused(let why): PhoneProbe.say(["standing": "refused", "why": .string(why), "s": seconds])
-        case .failed(let why): PhoneProbe.say(["standing": "failed", "why": .string(why), "s": seconds])
+        case .refused(let why): PhoneProbe.say(["state": "refused", "why": .string(why), "s": seconds])
+        case .failed(let why):
+            PhoneProbe.say(["state": "failed", "why": .string(why), "s": seconds])
+            await details()
         }
+    }
+
+    /// What the page itself says where it could not go on: its own words and their details, and
+    /// whether a key that cannot be taken out can be kept in the page's storage (a web view
+    /// wraps such a key with one it keeps in the app's keychain group; a program with no such
+    /// group cannot keep any, and Tilo's page keeps its device's key that way).
+    private func details() async {
+        guard let engine else { return }
+        let asked = try? await engine.view.callAsyncJavaScript(#"""
+            const keyKept = await (async () => {
+              try {
+                const key = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt']);
+                const db = await new Promise((resolve, reject) => {
+                  const open = indexedDB.open('live-probe-key-check');
+                  open.onupgradeneeded = () => open.result.createObjectStore('keys');
+                  open.onsuccess = () => resolve(open.result);
+                  open.onerror = () => reject(open.error);
+                });
+                try {
+                  await new Promise((resolve, reject) => {
+                    const change = db.transaction('keys', 'readwrite');
+                    change.objectStore('keys').put(key, 'one');
+                    change.oncomplete = resolve;
+                    change.onerror = () => reject(change.error);
+                    change.onabort = () => reject(change.error);
+                  });
+                  return 'yes';
+                } finally {
+                  db.close();
+                  indexedDB.deleteDatabase('live-probe-key-check');
+                }
+              } catch (error) { return String(error?.name ?? error); }
+            })();
+            // No link, no code and no key is printed: long runs of hex are left out.
+            const text = (document.body?.innerText ?? '').replace(/\s+/g, ' ').replace(/[0-9a-f]{24,}/gi, '#').replace(/pair=\S+/g, 'pair=#').slice(0, 1500);
+            return JSON.stringify({text, entry: document.documentElement.dataset.entry ?? null, arrival: document.documentElement.dataset.arrival ?? null, secure: isSecureContext, keyKept, gpu: typeof navigator.gpu, transport: typeof WebTransport, locks: typeof navigator.locks, storage: typeof indexedDB});
+            """#, arguments: [:], in: nil, contentWorld: .page)
+        PhoneProbe.say(["page": (asked as? String).flatMap(JSON.init(text:)) ?? .null])
     }
 
     /// Read Chat's newest messages and print the ones not printed yet, as `TiloLiveProbe` does.
     private func look(after why: String) async {
-        guard let engine, case .open = engine.standing else { return }
+        guard let engine, case .open = engine.state else { return }
         guard !looking else { again = why; return }
         looking = true
         defer { looking = false }
@@ -125,7 +174,7 @@ final class PhoneProbe: ObservableObject {
                     guard let message = try await engine.chatMessage(item) else { continue }
                     known.append(item)
                     printed += 1
-                    PhoneProbe.say(["message": ["channel": .string(message.channel), "author": .string(String(message.author.prefix(6))),
+                    PhoneProbe.say(["message": ["channel": .string(message.conversation), "author": .string(String(message.author.id.prefix(6))),
                                                 "text": .string(message.text)],
                                     "after": .string(reason), "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
                 }

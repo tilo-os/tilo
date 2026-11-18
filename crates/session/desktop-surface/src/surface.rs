@@ -402,7 +402,7 @@ impl DesktopHandle {
         };
         if offered && action == REOPEN_CLOSED {
             // Undo after a close reopens as Shift+Super+T does, through the same command.
-            let _ = self.dispatch(ChromeEffect::ReopenClosed);
+            let _ = self.dispatch(ChromeEffect::ReopenClosed { app: None });
         }
         offered
     }
@@ -439,7 +439,7 @@ impl DesktopHandle {
     }
 
     /// The windows other devices host that this shell shows, with the device hosting each: the
-    /// windows whose page a host asks the plane for.
+    /// windows whose page a host asks the live session for.
     #[must_use]
     pub fn hosted_windows(&self) -> Vec<(TabId, String)> {
         self.read(|tree| {
@@ -658,6 +658,34 @@ impl DesktopHandle {
         shared.tree = tree;
         shared.replaced = true;
         shared.changed();
+    }
+
+    /// Report how tall the place `group` of the workspace `workspace` is drawn now: view state the
+    /// person's own canvas says of what it sees, kept on this shell's tree where the canvas reads
+    /// it on its next ordinary frame. It changes no window, strip or place, so it neither marks the
+    /// tree replaced (which would build every view again) nor counts a change of it: the canvas
+    /// that reported it goes on drawing, and a place's free area on the canvas is what the person
+    /// sees of it (`canvas.md` §1, §7). Whether it changed anything.
+    pub fn report_drawn(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        group: tilo_desktop_model::GroupId,
+        height: u32,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(held) = shared
+            .tree
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id() == workspace)
+        else {
+            return false;
+        };
+        if !held.layout.set_drawn_height(group, height) {
+            return false;
+        }
+        shared.wake.wake();
+        true
     }
 
     /// The workspace snapshot, excluding process-local stream proxies and device presentation.
@@ -996,14 +1024,14 @@ impl DesktopSurface {
             tiles,
             Rc::clone(&shared.borrow().peers),
         )) as Box<dyn TileSource>;
-        let mut surface = Self::standing(Rc::clone(&shared), tiles, &search);
+        let mut surface = Self::on_shared(Rc::clone(&shared), tiles, &search);
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
     }
 
-    /// The surface's own state, standing on the `shared` shell `new` made and drawing with `tiles` ,
+    /// The surface's own state, on the `shared` shell `new` made and drawing with `tiles` ,
     /// after its search `search` .
-    fn standing(
+    fn on_shared(
         shared: Rc<RefCell<Shared>>,
         tiles: Box<dyn TileSource>,
         search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
@@ -1307,7 +1335,7 @@ impl DesktopSurface {
             };
             // While cards stand in the column, a window the strip brings into view stands clear of
             // it where it fits.
-            let lane = self
+            let section = self
                 .shared
                 .borrow()
                 .dock
@@ -1315,7 +1343,7 @@ impl DesktopSurface {
                 .values()
                 .map(|card| card.size.0 + 2.0 * ui::floating_layer::EDGE_INSET)
                 .fold(0.0_f64, f64::max);
-            row.set_trailing_clear(lane);
+            row.set_trailing_clear(section);
             // A window the record put back in its strip after floating is the one the person just
             // snapped back: its strip brings it into view as it does a window that opens or takes
             // the focus, or the window lands where the pan left the strip rather than where it
@@ -1630,10 +1658,10 @@ impl DesktopSurface {
             let group_id = group.id;
             if let Some(host) = group.active_host_mut() {
                 for _ in 0..MAX_HOST_INTENTS {
-                    let Some(intent) = host.take_host_intent() else {
+                    let Some(intent) = host.take_process_intent() else {
                         break;
                     };
-                    if let ui::widget::AppHostIntent::OpenSearch(request) = intent {
+                    if let ui::widget::AppProcessIntent::OpenSearch(request) = intent {
                         search_in = Some((group_id, request));
                     }
                 }
@@ -1824,7 +1852,7 @@ impl DesktopSurface {
             }
             row.insert_group(built, index);
             // The window opens on the display the person works on, so it
-            // owns that display's lane before anything is shared: it is
+            // owns that display's section before anything is shared: it is
             // placed whole on screen beside the window it opened next to,
             // sharing the display with it if need be, as on the native
             // desktop — revealing it alone pans the window in use half off
@@ -2099,7 +2127,7 @@ impl Widget for DesktopSurface {
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         // The rows, each over the whole surface and drawing only in its
-        // displays' lanes, come first, then the views windows embed to work in,
+        // displays' sections, come first, then the views windows embed to work in,
         // then the arrival hints and the cards of apps that stopped answering.
         // Search, the notifications and the confirmations are drawn over the
         // windows, by the host above them, not in this tree.

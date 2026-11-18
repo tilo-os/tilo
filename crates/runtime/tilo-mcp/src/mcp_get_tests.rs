@@ -23,21 +23,21 @@ struct Store {
 #[derive(Clone, Default)]
 struct Shelf(Arc<Mutex<Store>>);
 
-impl ActionHost for Shelf {
+impl ActionProvider for Shelf {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn invoke(
         &self,
         _caller: &Caller,
         _request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(
@@ -52,8 +52,8 @@ impl ActionHost for Shelf {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
@@ -68,7 +68,7 @@ impl ActionHost for Shelf {
 }
 
 impl ContentPuts for Shelf {
-    fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
+    fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         Ok(Box::new(Put {
             store: Arc::clone(&self.0),
             size,
@@ -92,9 +92,9 @@ impl ContentPut for Put {
         self.bytes.len() as u64
     }
 
-    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
+    fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
         if offset != self.written() {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!("append at offset {}", self.written()),
             });
         }
@@ -102,7 +102,7 @@ impl ContentPut for Put {
         Ok(self.written())
     }
 
-    fn finish(self: Box<Self>) -> Result<String, ActionHostError> {
+    fn finish(self: Box<Self>) -> Result<String, ActionCallError> {
         let hash = blake3::hash(&self.bytes).to_hex().to_string();
         self.store
             .lock_recover()
@@ -119,21 +119,21 @@ impl ContentGets for Shelf {
         content: &str,
         offset: u64,
         length: u64,
-    ) -> Result<ContentPiece, ActionHostError> {
+    ) -> Result<ContentPiece, ActionCallError> {
         let hash =
-            tilo_actions::content_hash(content).ok_or_else(|| ActionHostError::InvalidRequest {
+            tilo_actions::content_hash(content).ok_or_else(|| ActionCallError::InvalidRequest {
                 reason: format!("{content} is not a tilo.content:<hash> reference"),
             })?;
         let store = self.0.lock_recover();
         let bytes = store
             .contents
             .get(hash)
-            .ok_or_else(|| ActionHostError::InvalidRequest {
+            .ok_or_else(|| ActionCallError::InvalidRequest {
                 reason: format!("this workspace's store holds no {content}"),
             })?;
         let size = bytes.len() as u64;
         if offset > size {
-            return Err(ActionHostError::InvalidRequest {
+            return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "the content is {size} bytes: an offset of {offset} is past its end"
                 ),

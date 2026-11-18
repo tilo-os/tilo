@@ -21,7 +21,7 @@
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 /// The channel the test places: the demo workspace's `#design-crit`, as Chat's demo publishes
 /// it.
@@ -36,7 +36,6 @@ const TYPED: &str = "looks good";
 /// A session with the shell as the whole screen and Chat's demo conversation published, its
 /// test hooks at `root`, the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
-    let program = std::env::current_exe().expect("this test's program");
     let mut services = crate::common::seeded_apps();
     services.push(Box::new(
         tilo_session::dev_rust_views::RustApps::new().unwrap(),
@@ -49,9 +48,8 @@ fn session(root: &std::path::Path) -> Session {
             collab: false,
             services,
             questions: Some(tilo_service::Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),
             ..Options::default()
         },
@@ -361,7 +359,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     });
     // Pressing send sends what was typed through Chat's own `send`: the channel's reading the
     // place draws then holds a message saying it, which is what the page shows again — the
-    // page's own message, not the draft still standing in the field.
+    // page's own message, not the draft still there in the field.
     let answer = crate::common::control(
         &mut session,
         &socket,

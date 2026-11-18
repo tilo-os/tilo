@@ -1,7 +1,7 @@
 //! An agent never confirms by its own word. Over the real session, a task
 //! step whose action asks a person first is put to the person through their
-//! own host (`ActionHost::confirm`) while the agent shows it is waiting; it
-//! runs only on the person's witnessed answer, and is refused when nobody
+//! own host (`ActionProvider::confirm`) while the agent shows it is waiting; it
+//! runs only on the person's approved answer, and is refused when nobody
 //! is there to ask or the person says no.
 
 #![allow(
@@ -20,16 +20,16 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_agent_session::{AgentControl, AgentIdentity, AgentMember, MemberConfig, ModelPlanner};
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 const EBOOK: &str = "so.tilo.ebook";
 
@@ -39,24 +39,24 @@ const EBOOK: &str = "so.tilo.ebook";
 struct PersonHost {
     asked: Mutex<Vec<(Caller, InvokeRequest)>>,
     answers:
-        Mutex<Vec<tilo_actions::remote::Completer<Result<ConfirmedInvocation, ActionHostError>>>>,
+        Mutex<Vec<tilo_actions::remote::Completer<Result<ConfirmedInvocation, ActionCallError>>>>,
 }
 
-impl ActionHost for PersonHost {
+impl ActionProvider for PersonHost {
     fn query(
         &self,
         _: &Caller,
         _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn invoke(
         &self,
         _: &Caller,
         _: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -67,15 +67,15 @@ impl ActionHost for PersonHost {
         &self,
         _: &Caller,
         _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 
     fn confirm(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         self.asked
             .lock()
             .unwrap()
@@ -87,7 +87,7 @@ impl ActionHost for PersonHost {
 }
 
 impl PersonHost {
-    fn answer(&self, answer: Result<Confirmation, ActionHostError>) {
+    fn answer(&self, answer: Result<Confirmation, ActionCallError>) {
         let completer = self.answers.lock().unwrap().remove(0);
         completer.complete(answer.map(ConfirmedInvocation::unchanged));
     }
@@ -121,7 +121,7 @@ fn shelve_then_remove() -> String {
     .to_string()
 }
 
-fn last_task(control: &AgentControl) -> tilo_relay_protocol::agents::AgentTask {
+fn last_task(control: &AgentControl) -> tilo_server_protocol::agents::AgentTask {
     control.info().tasks.last().cloned().unwrap()
 }
 
@@ -148,7 +148,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
     let agent_device = enrol(
         &root,
         "Agent: Careful",
@@ -158,7 +158,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "careful".into(),
         },
         "Careful agent",
@@ -171,7 +171,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -214,9 +214,9 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     );
 
     // 2. The person's host is asked, the agent shows it is waiting, and the
-    // step runs once the person's device witnessed it.
+    // step runs once the person's device approved it.
     let person = Arc::new(PersonHost::default());
-    control.set_witness(Some(person.clone()));
+    control.set_approver(Some(person.clone()));
     control.message(&shelve_then_remove()).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| !person.asked.lock().unwrap().is_empty());
@@ -243,7 +243,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         control.activity()
     );
     assert_eq!(last_task(&control).state, TaskState::Running);
-    person.answer(Ok(Confirmation::Witnessed("from Ada's device".into())));
+    person.answer(Ok(Confirmation::Approved("from Ada's device".into())));
     until_done(&mut agent, &control);
     let confirmed = last_task(&control);
     assert_eq!(confirmed.state, TaskState::Completed, "{confirmed:?}");
@@ -252,10 +252,10 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     control.message(&shelve_then_remove()).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| person.asked.lock().unwrap().len() == 2);
-    person.answer(Err(ActionHostError::NotPermitted));
+    person.answer(Err(ActionCallError::NotPermitted));
     until_done(&mut agent, &control);
     let declined = last_task(&control);
     assert_eq!(declined.state, TaskState::Failed, "{declined:?}");
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

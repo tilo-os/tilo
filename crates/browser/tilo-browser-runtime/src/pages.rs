@@ -1,7 +1,7 @@
 //! Another device's window page, drawn in this page's desktop.
 //!
 //! A window whose app runs a page engine hands its page over as a display
-//! list, and the workspace's live plane carries it as one track per window
+//! list, and the workspace's live session carries it as one track per window
 //! (`tilo-page/1`). This page draws the windows other devices host: it asks
 //! its host — the session this page's peer is with — for exactly the tracks of
 //! the windows on its shell ([`follow`]), and what those tracks bring rebuilds
@@ -20,7 +20,7 @@ use tilo_desktop_surface::page_code::{PAGE, PageHandle};
 use ui::widget::{TileContent, TileHost};
 
 use crate::peer_sync;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Payloads one page keeps while the page view's code is on its way: the
 /// first whole frame and what follows it, not a page's history.
@@ -59,7 +59,7 @@ impl Tile {
         self.page.clone()
     }
 
-    /// Take one object of the page as the plane hands it over: opened, with its header still on
+    /// Take one object of the page as the live session hands it over: opened, with its header still on
     /// it. The page view takes the payload, as the publisher's engine encoded it. Whether the
     /// frame the tile shows changed.
     fn take(&mut self, object: &[u8]) -> bool {
@@ -126,7 +126,7 @@ pub(crate) fn follow(id: u32, workspace: &str, shell: &DesktopHandle) -> bool {
     changed
 }
 
-/// Take one object of `from`'s page for window `tab`, in `workspace_id`'s plane: it rebuilds the
+/// Take one object of `from`'s page for window `tab`, in `workspace_id`'s live session: it rebuilds the
 /// frame the tile draws, and the mounts drawing that workspace lay out again.
 pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, tab: u64, body: &[u8]) {
     let changed = PAGES.with_borrow_mut(|pages| {

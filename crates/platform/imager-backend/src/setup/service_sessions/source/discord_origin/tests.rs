@@ -233,7 +233,7 @@ fn origin_only_session_seals_imports_raw_dom_value_without_a_cookie_store() {
         target.path(),
     )
     .unwrap();
-    let session = account_custody::Custodian::for_root(Some(target.path().to_owned()))
+    let session = account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
         .service_session(
             &accounts::AccountId::from(declaration.sessions[0].id.clone()),
             [7; 32],
@@ -341,7 +341,7 @@ fn explicitly_selected_discord_cookies_and_origin_share_one_sealed_session() {
         target.path(),
     )
     .unwrap();
-    let session = account_custody::Custodian::for_root(Some(target.path().to_owned()))
+    let session = account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
         .service_session(
             &accounts::AccountId::from(declaration.sessions[0].id.clone()),
             [7; 32],

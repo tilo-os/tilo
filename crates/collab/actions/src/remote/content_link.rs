@@ -2,7 +2,7 @@
 //! itself, over plain HTTPS, rather than through the page.
 //!
 //! A page asks for one over its session ([`super::RemoteActionMessage::ContentLinkRequest`])
-//! naming the files and the name they are saved under; the host answers with
+//! naming the files and the name they are saved under; the provider answers with
 //! a path on its own web origin, good for a few minutes, where it serves
 //! those bytes straight from its store. Two things need that:
 //!
@@ -17,11 +17,11 @@
 //! Several files, or a folder, are served as one zip of them.
 //!
 //! The link is a capability: whoever holds the address reads what it names
-//! until it expires. A host mints one only for a caller who may read the
+//! until it expires. A provider mints one only for a caller who may read the
 //! workspace, names only content of that workspace, and lets it go after
 //! [`CONTENT_LINK_TTL_SECS`].
 
-/// What a host that serves no content links answers.
+/// What a provider that serves no content links answers.
 pub const CONTENT_LINKS_UNAVAILABLE: &str = "links to content are not available here";
 
 /// How long a content link stays good, in seconds: long enough for a drag
@@ -58,7 +58,7 @@ pub struct ContentLinkAsk {
 }
 
 impl ContentLinkAsk {
-    /// Why this ask is not one a host mints a link for, if it is not.
+    /// Why this ask is not one a provider mints a link for, if it is not.
     ///
     /// # Errors
     ///
@@ -96,11 +96,11 @@ impl ContentLinkAsk {
     }
 }
 
-/// The link a host minted.
+/// The link a provider minted.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentLink {
-    /// Its path on the host's web origin (`/api/content/<token>/<name>`).
+    /// Its path on the provider's web origin (`/api/content/<token>/<name>`).
     pub path: String,
     /// How many seconds from the answer it stays good.
     pub expires_in_secs: u64,

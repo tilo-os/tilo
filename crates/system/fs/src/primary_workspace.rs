@@ -19,7 +19,7 @@ pub(super) struct PrimaryArgs {
     #[arg(long)]
     dry_run: bool,
     /// The production identity and Files permission check.
-    #[arg(long, default_value = "/usr/libexec/tilo/tilo-relay-admin")]
+    #[arg(long, default_value = "/usr/libexec/tilo/tilo-server-admin")]
     admin_binary: PathBuf,
 }
 
@@ -101,7 +101,7 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg(&mount)
         .arg("--acl")
         .arg(paths.config.join("fs-capabilities.json"))
-        .args(["--data-plane", "fuse", "--storage-sock"])
+        .args(["--backend", "fuse", "--storage-sock"])
         .arg(paths.storage.join("storage.sock"))
         .arg("--blob-sock")
         .arg(paths.runtime.join("fs-blobs.sock"))

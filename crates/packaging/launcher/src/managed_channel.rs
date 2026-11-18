@@ -1,5 +1,5 @@
 //! One-use kernel-authenticated startup for the enrolled collaboration descriptor.
-//! Supervisor custody is separate from the executing agent and its durable binding.
+//! Supervisor ownership is separate from the executing agent and its durable binding.
 pub use super::{AdmittedManagedConnection, ChannelProcessFacts, VerifiedManagedProcess};
 use super::{
     Arc, KernelProcess, ManagedBinding, Mutex, Path, ProcessIdentity, ProcessRecord,
@@ -178,7 +178,7 @@ pub struct ManagedConnectionCancellation(UnixStream);
 
 impl ManagedConnectionCancellation {
     /// Interrupt this connection only; the owning launcher must still stop its actual children and
-    /// retire canonical session custody.
+    /// retire canonical session ownership.
     pub fn cancel(&self) -> std::io::Result<()> {
         self.0.shutdown(std::net::Shutdown::Both)
     }

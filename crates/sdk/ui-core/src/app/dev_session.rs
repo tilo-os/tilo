@@ -48,7 +48,7 @@ impl App {
     }
 
     fn consume_dev_checkpoint(&mut self) -> Option<crate::view::View> {
-        let dir = crate::host::environment().dev_session.clone()?;
+        let dir = crate::process::environment().dev_session.clone()?;
         let path = dir.join(CHECKPOINT_FILE);
         if !path.is_file() {
             return None;
@@ -178,7 +178,7 @@ extern "C" fn request_dev_session_stop(signal: libc::c_int) {
     reason = "the signal pipe is read for the life of the process; a pool job would pin a worker on a blocking read"
 )]
 pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<UserEvent>) {
-    if crate::host::environment().dev_session.is_none()
+    if crate::process::environment().dev_session.is_none()
         || DEV_STOP_INSTALLED.swap(true, Ordering::Relaxed)
     {
         return;
@@ -273,7 +273,7 @@ pub(crate) fn reload_dev_locale_catalogs_from(dir: &std::path::Path) -> bool {
 
 #[cfg(feature = "native")]
 pub(crate) fn write_dev_checkpoint_now(app: &App) {
-    if let Some(dir) = crate::host::environment().dev_session.as_deref() {
+    if let Some(dir) = crate::process::environment().dev_session.as_deref() {
         write_dev_checkpoint(app, dir);
     }
 }

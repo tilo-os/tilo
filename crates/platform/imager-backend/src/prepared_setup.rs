@@ -1,4 +1,4 @@
-//! Prepared-setup protocol validation and native metadata custody.
+//! Prepared-setup protocol validation and native metadata ownership.
 //!
 //! These records and descriptor checks are not Home, original-source or
 //! application admission. Source authority remains with the sealed admissions.
@@ -12,5 +12,5 @@ pub mod capacity;
 pub mod installed_namespace;
 
 fn invalid() -> std::io::Error {
-    std::io::Error::other("Prepared setup custody is invalid or changed")
+    std::io::Error::other("Prepared setup ownership is invalid or changed")
 }

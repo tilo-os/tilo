@@ -1,4 +1,4 @@
-//! Native review, custody and revalidation are owned by the platform backend.
+//! Native review, ownership and revalidation are owned by the platform backend.
 pub use imager_backend::migration_review::*;
 
 #[cfg(target_os = "linux")]

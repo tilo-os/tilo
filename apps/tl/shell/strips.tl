@@ -17,17 +17,17 @@
 /// its own width names against the rest: a row of more windows than it holds gives each a
 /// narrower window rather than pushing one off the screen, so every window of the row stays on it,
 /// on a phone as on a laptop.
-/// The places of the strip `strip`, in the order the record keeps them.
+/// The places of the strip `strip`, in the order the document keeps them.
 fn places_of(a: Layout, strip: Text) -> List<LayoutPlace> {
     a.places.filter(p -> p.strip == strip)
 }
 
-/// The strips the row `row` holds, in the record's order.
+/// The strips the row `row` holds, in the document's order.
 fn strips_of(a: Layout, row: Text) -> List<LayoutStrip> {
     a.strips.filter(s -> s.row == row)
 }
 
-/// The rows of the workspace `workspace`, in the record's order.
+/// The rows of the workspace `workspace`, in the document's order.
 fn rows_of(a: Layout, workspace: Text) -> List<LayoutRow> {
     a.rows.filter(r -> r.workspace == workspace)
 }
@@ -38,7 +38,7 @@ fn strip_in_front(a: Layout, v: Viewing) -> Text {
     if v.focused != "" { v.focused } else { a.strips.last()?.key ?? "" }
 }
 
-/// The strips standing maximized: each shows alone, filling the shell, the others behind
+/// The strips maximized: each shows alone, filling the shell, the others behind
 /// it. Empty while none is.
 fn maximized_strips(a: Layout) -> List<LayoutStrip> {
     a.strips.filter(s -> s.maximized)
@@ -216,7 +216,7 @@ view row_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
 ///
 /// The style's own setting `strips_tabs` (`chrome.tl`) says whether a strip of several places
 /// shows its tab bar: off, the place in front fills the window alone and the others stay a tab
-/// of it in the record, reached by the window's menu, for a person who wants the room.
+/// of it in the document, reached by the window's menu, for a person who wants the room.
 ///
 /// While it shows them, a strip of several places has tabs a person rearranges: choosing one
 /// shows its place and brings the strip forward, a press on its close takes that place out of
@@ -224,7 +224,7 @@ view row_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
 /// the shell gives it a window of its own (or, when the shell is the traditional one, the window
 /// of the place it was let go under). Every one is an arranging action of the session's, so a
 /// press, a key and an agent make the same change, attributed and undoable. A window's bar
-/// likewise carries its place's record, so another window's bar takes it as a tab.
+/// likewise carries its place's document, so another window's bar takes it as a tab.
 view strip_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
     let in_front = s.key == strip_in_front(a, v)
     let placed = places_of(a, s.key)
@@ -236,7 +236,7 @@ view strip_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
             name: window_name(shown),
             focused: in_front,
             lists_actions: lists_the_shown(shown),
-            carries: window_record(shown),
+            carries: window_resource(shown),
             fill,
         ) {
             // The window fills the room the drop target around it is given: the target only
@@ -268,11 +268,11 @@ view strip_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
     }
 }
 
-/// The resource a window's bar carries when the person picks it up: the record its place in front
+/// The resource a window's bar carries when the person picks it up: the document its place in front
 /// shows, or empty when the place shows none (a window's well). A bar that carries nothing is not
 /// lifted, so a foreign window's bar is no drag at all.
-fn window_record(shown: Option<LayoutPlace>) -> Text {
-    if let p = shown { p.record } else { "" }
+fn window_resource(shown: Option<LayoutPlace>) -> Text {
+    if let p = shown { p.resource } else { "" }
 }
 
 /// Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags
@@ -280,7 +280,7 @@ fn window_record(shown: Option<LayoutPlace>) -> Text {
 /// tab" runs the same arranging action. The place lands after the strip's other tabs and
 /// comes to the front of them, so the window shows what was dropped on it. A place already in
 /// this strip is only brought to the front, so dropping a window on itself raises it rather than
-/// standing a second place. The strip comes forward with it.
+/// opening a second place. The strip comes forward with it.
 action tab_place_here(a: Layout, v: Viewing, s: LayoutStrip, target: host.Resource) (
     icon: .columns_2,
     label: "Tab it here",
@@ -300,7 +300,7 @@ action tab_place_here(a: Layout, v: Viewing, s: LayoutStrip, target: host.Resour
     }
 }
 
-/// The record key of the place a tab names: its resource id is `shell:place:<key>`, so the key is
+/// The document key of the place a tab names: its resource id is `shell:place:<key>`, so the key is
 /// the part after the last colon. What a tab's event carries, read back for the actions that move
 /// and split places by their key.
 fn place_key(place: session.Place) -> Text {
@@ -482,7 +482,7 @@ view window_controls(
 /// so the app's own header keeps its title and the shell's controls alone and every action
 /// stands once, in the one list the person reaches.
 fn lists_the_place(p: LayoutPlace) -> Bool {
-    if let r = placed_resource(p.record) { true } else { false }
+    if let r = placed_resource(p.resource) { true } else { false }
 }
 
 /// [`lists_the_place`] for a window that may show nothing: a strip holding no place lists none.
@@ -491,12 +491,12 @@ fn lists_the_shown(p: Option<LayoutPlace>) -> Bool {
 }
 
 /// The resource whose published actions the window's one menu lists, for the host to fill from
-/// the declarations: the record the place shows, and no resource where another bar already names
+/// the declarations: the document the place shows, and no resource where another bar already names
 /// it for the window in front (`listed`, the traditional desktop's `action_bar`). A place that
-/// shows no record this store holds (a foreign window) offers none, and its menu keeps the
+/// shows no document this store holds (a foreign window) offers none, and its menu keeps the
 /// shell's own commands alone.
 fn menu_resource(p: LayoutPlace, listed: Bool) -> Option<host.Resource> {
-    if not listed { placed_resource(p.record) }
+    if not listed { placed_resource(p.resource) }
 }
 
 /// A place's own controls: its window's menu, its pinned mark, its pin, and its close. Outside
@@ -556,7 +556,7 @@ view place_content(p: LayoutPlace) {
 view place_view(p: LayoutPlace) {
     if let q = query_of(p.key) {
         query_view(q, p)
-    } else if let r = placed_resource(p.record) {
+    } else if let r = placed_resource(p.resource) {
         if p.shown_as != "" or meta(r).opens {
             show(r, view: p.shown_as, fill)
         } else {

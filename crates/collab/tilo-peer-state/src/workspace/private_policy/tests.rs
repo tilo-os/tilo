@@ -42,7 +42,7 @@ fn fixture() -> crate::StatePeer {
         .map(|c| c.raw_bytes().to_vec())
         .collect();
     peer.receive_from(
-        crate::TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+        crate::TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
         crate::NeighbourMsg::SyncResp {
             workspace: peer.workspace_id().into(),
             changes,

@@ -1,4 +1,4 @@
-//! Code Editor on the framework: the [`Project`] record, its editor, and
+//! Code Editor on the framework: the [`Project`] resource, its editor, and
 //! what launching it on a folder or a file does.
 
 use std::path::PathBuf;
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(
             sample.app.record(),
             &DocumentId::derived("code-editor", &DocumentId::for_file(&root)),
-            "the folder names its record"
+            "the folder names its resource"
         );
 
         let plain = TestApp::<CodeEditorShell>::new().unwrap();

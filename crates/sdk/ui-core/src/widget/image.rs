@@ -604,6 +604,31 @@ impl Widget for Image {
             cx.element("img");
             cx.attr("src", src.to_owned());
             cx.attr("alt", alt.unwrap_or_default());
+            // Fitted and rounded as painted; a picture in an app's content letterboxes on a
+            // quiet tile.
+            cx.attr(
+                "data-fit",
+                match self.fit {
+                    ImageFit::Fill => "fill",
+                    ImageFit::Contain => "contain",
+                    ImageFit::Cover => "cover",
+                },
+            );
+            let theme = cx.theme();
+            let radius = if self.content_picture {
+                Some(theme.tokens.radii.item)
+            } else {
+                self.corner_radius
+            };
+            if let Some(radius) = radius {
+                let raised = theme.tokens.colors.surfaces.raised;
+                let tile = self.content_picture && self.fit == ImageFit::Contain;
+                cx.ground(crate::composition::Ground {
+                    fill: tile.then(|| crate::composition::rgba8(raised)),
+                    edge: tile.then(|| crate::composition::rgba8(crate::surface::edge_on(raised))),
+                    radius: f64::from(radius),
+                });
+            }
             return;
         }
         cx.element("span");

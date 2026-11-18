@@ -253,7 +253,7 @@ impl Link {
     }
 }
 
-/// The source a host lends the launcher it mounts ([`ui::application::HostContext::lend`]):
+/// The source a host lends the launcher it mounts ([`ui::application::ProcessContext::lend`]):
 /// the host keeps a clone of the link and answers its asks.
 #[derive(Clone)]
 pub struct LauncherService {

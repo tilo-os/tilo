@@ -1,6 +1,6 @@
-//! Kernel custody of the fixed ordinary launcher owned by the installed root helper.
+//! Kernel ownership of the fixed ordinary launcher owned by the installed root helper.
 //! This transports ownership only; registration, package/session policy and the inner
-//! ordinary namespace witness remain independent mandatory admissions.
+//! ordinary namespace proof remain independent mandatory admissions.
 use crate::{owned_service::ServiceCancellation, retained_view::ConsumerCommand};
 use runtime_portal::{fd_transport, process_binding::ExecutingPeer};
 use sha2::{Digest, Sha256};
@@ -240,7 +240,7 @@ pub struct OwnedOrdinaryChild {
     child: Child,
     pidfd: OwnedFd,
     namespace: File,
-    gate: Option<UnixStream>,
+    check: Option<UnixStream>,
     control: UnixStream,
     remote: Option<UnixStream>,
     digest: [u8; 32],
@@ -318,7 +318,7 @@ impl OwnedOrdinaryChild {
         if same(&own_namespace, &namespace(target.pid())?)? {
             return Err(denied());
         }
-        let (gate, wait) = UnixStream::pair()?;
+        let (check, wait) = UnixStream::pair()?;
         let (control, remote) = UnixStream::pair()?;
         let mut cmd = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()));
         cmd.arg0(&command.program)
@@ -376,7 +376,7 @@ impl OwnedOrdinaryChild {
             child,
             pidfd,
             namespace: child_namespace,
-            gate: Some(gate),
+            check: Some(check),
             control,
             remote: Some(remote),
             digest,
@@ -391,8 +391,8 @@ impl OwnedOrdinaryChild {
         let launcher_namespace = self.namespace.try_clone()?;
         let cancel = self.cancel.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let custody = Arc::new(Mutex::new(Some(self)));
-        let owned = custody.clone();
+        let ownership = Arc::new(Mutex::new(Some(self)));
+        let owned = ownership.clone();
         let observed = stop_flag.clone();
         let worker = std::thread::Builder::new()
             .name("root-ordinary-launcher-owner".into())
@@ -414,7 +414,7 @@ impl OwnedOrdinaryChild {
             launcher_pid,
             launcher_pidfd,
             launcher_namespace,
-            custody,
+            ownership,
             cancel,
             stopped: stop_flag,
             worker: Some(worker),
@@ -436,7 +436,7 @@ impl OwnedOrdinaryChild {
         stream.write_all(&self.digest)?;
         tagged_send(stream, 90, self.pidfd.as_fd())?;
         tagged_send(stream, 91, self.namespace.as_fd())?;
-        tagged_send(stream, 92, self.gate.as_ref().ok_or_else(denied)?.as_fd())?;
+        tagged_send(stream, 92, self.check.as_ref().ok_or_else(denied)?.as_fd())?;
         tagged_send(
             stream,
             93,
@@ -449,7 +449,7 @@ impl OwnedOrdinaryChild {
         )?;
         tagged_send(stream, 95, self.remote.as_ref().ok_or_else(denied)?.as_fd())?;
         tagged_send(stream, 96, root_namespace.as_fd())?;
-        self.gate.take();
+        self.check.take();
         self.child.stdout.take();
         self.child.stderr.take();
         self.remote.take();
@@ -505,7 +505,7 @@ impl OwnedOrdinaryChild {
 }
 impl Drop for OwnedOrdinaryChild {
     fn drop(&mut self) {
-        // Handoff and owner-start failure retain real child custody until both reap and the
+        // Handoff and owner-start failure retain real child ownership until both reap and the
         // independently held kernel handle observe termination.
         loop {
             let _ = self.child.kill();
@@ -521,7 +521,7 @@ pub struct OrdinaryChildSupervisor {
     launcher_pid: u32,
     launcher_pidfd: OwnedFd,
     launcher_namespace: File,
-    custody: Arc<Mutex<Option<OwnedOrdinaryChild>>>,
+    ownership: Arc<Mutex<Option<OwnedOrdinaryChild>>>,
     cancel: ServiceCancellation,
     stopped: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -552,11 +552,11 @@ impl OrdinaryChildSupervisor {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        // Recover actual custody after an owner panic or failed observation; never replace this with a
+        // Recover actual ownership after an owner panic or failed observation; never replace this with a
         // thread-completion or cancellation claim.
         while !self.observed_stopped() {
             let mut locked = self
-                .custody
+                .ownership
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(child) = locked.as_mut() {
@@ -576,7 +576,7 @@ impl OrdinaryChildSupervisor {
 impl Drop for OrdinaryChildSupervisor {
     fn drop(&mut self) {
         self.retire_before_exit();
-        let _ = &self.custody;
+        let _ = &self.ownership;
     }
 }
 
@@ -623,14 +623,14 @@ mod tests {
         };
         let observed = pidfd.try_clone().unwrap();
         let (control, remote) = UnixStream::pair().unwrap();
-        let (gate, _wait) = UnixStream::pair().unwrap();
+        let (check, _wait) = UnixStream::pair().unwrap();
         let namespace = namespace(child.id()).unwrap();
         (
             OwnedOrdinaryChild {
                 child,
                 pidfd,
                 namespace,
-                gate: Some(gate),
+                check: Some(check),
                 control,
                 remote: None,
                 digest: [0; 32],
@@ -643,9 +643,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_live_child_is_witnessed_retired_and_reaped_by_its_owner;
+        fn a_live_child_is_observed_retired_and_reaped_by_its_owner;
 
-        phase live_launcher_witness_uses_immutable_observation_while_owner_serves;
+        phase live_launcher_proof_uses_immutable_observation_while_owner_serves;
         {
             let (child, _remote, observed) = controlled_child();
             let mut owner = child.start_supervision().unwrap();
@@ -672,24 +672,24 @@ mod tests {
             assert_eq!(remote.read(&mut response).unwrap(), 0);
         }
 
-        phase panicked_worker_retains_real_child_until_owner_recovers_poisoned_custody;
+        phase panicked_worker_retains_real_child_until_owner_recovers_poisoned_ownership;
         {
             let (child, _remote, observed) = controlled_child();
             let launcher_pid = child.child.id();
             let launcher_pidfd = child.pidfd.try_clone().unwrap();
             let launcher_namespace = child.namespace.try_clone().unwrap();
             let cancel = child.cancel.clone();
-            let custody = Arc::new(Mutex::new(Some(child)));
-            let worker_custody = custody.clone();
+            let ownership = Arc::new(Mutex::new(Some(child)));
+            let worker_ownership = ownership.clone();
             let worker = std::thread::spawn(move || {
-                let _held = worker_custody.lock().unwrap();
+                let _held = worker_ownership.lock().unwrap();
                 panic!("controlled owner failure before stop observation");
             });
             let mut owner = OrdinaryChildSupervisor {
                 launcher_pid,
                 launcher_pidfd,
                 launcher_namespace,
-                custody,
+                ownership,
                 cancel,
                 stopped: Arc::new(AtomicBool::new(false)),
                 worker: Some(worker),
@@ -701,7 +701,7 @@ mod tests {
             assert!(stopped(&observed).unwrap());
             assert!(
                 owner
-                    .custody
+                    .ownership
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_none()
@@ -858,7 +858,7 @@ impl BootstrapTransfer {
     }
 }
 
-/// Custody framing outcome only, never view admission or successful launch.
+/// Ownership framing outcome only, never view admission or successful launch.
 pub enum DelegationOutcome {
     Delegated,
     Refused,
@@ -1280,7 +1280,7 @@ impl ConsumingBootstrapEntry {
             _ => Err(denied()),
         }
     }
-    /// Deliver actual ordinary child custody on the independently authenticated direct Shell stream;
+    /// Deliver actual ordinary child ownership on the independently authenticated direct Shell stream;
     /// caller retains the returned root supervisor.
     pub fn handoff_ordinary(&mut self, child: &mut OwnedOrdinaryChild) -> io::Result<()> {
         self.check()?;

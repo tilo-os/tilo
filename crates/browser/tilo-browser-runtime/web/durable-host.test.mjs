@@ -64,13 +64,13 @@ test('accepted writes commit on their own in strict transactions and are acknowl
 test('flush resolves only once the commit is durable',async()=>{
   const h=harness();
   const storage=await h.host.open('p','d');
-  const gate=h.idb.gateNextCommit();
+  const hold=h.idb.holdNextCommit();
   h.runtime.write('p','d','doc','draft');
   let flushed=false;const flush=storage.flush().then(()=>{flushed=true;});
-  await gate.held;await settle();
+  await hold.held;await settle();
   assert.equal(flushed,false,'not before IndexedDB commits');
   assert.equal(storage.status.persistence,'pending');
-  gate.release();await flush;
+  hold.release();await flush;
   assert.deepEqual(h.stored(),{doc:'draft'});
   await storage.release();
 });
@@ -106,7 +106,7 @@ test('users share one lease; the last release flushes and frees the lock',async(
   await reopened.release();
 });
 
-test('a release whose flush fails keeps custody until retried',async()=>{
+test('a release whose flush fails keeps device key until retried',async()=>{
   const h=harness();
   const storage=await h.host.open('p','d');
   h.idb.failNextPut('AbortError');
@@ -129,7 +129,7 @@ test('host settings seed only a profile without stored settings',async()=>{
 });
 
 
-test('automatic document writes cannot outrun failed credential custody',async()=>{
+test('automatic document writes cannot outrun failed credential device key',async()=>{
   const h=harness();const storage=await h.host.open('p','d');
   h.runtime.flush_files=async()=>{throw Error('credential quota exceeded');};
   h.runtime.write('p','d','doc','opaque credential reference');

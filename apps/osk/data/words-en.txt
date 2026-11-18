@@ -579,7 +579,7 @@ june	7210
 parents	7210
 period	7210
 position	7210
-record	7210
+resource	7210
 similar	7210
 total	7210
 above	7200
@@ -1275,7 +1275,7 @@ overall	6900
 planning	6900
 professor	6900
 programs	6900
-records	6900
+resources	6900
 reports	6900
 shown	6900
 sit	6900

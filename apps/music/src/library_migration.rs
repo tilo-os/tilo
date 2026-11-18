@@ -1,5 +1,5 @@
 //! Upgrade the former list-backed library through the resource's atomic,
-//! deterministic housekeeping migration. Never initialize an existing record.
+//! deterministic housekeeping migration. Never initialize an existing resource.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,7 +10,7 @@ use crate::model::{Album, Artist, Library, Playlist, Track};
 
 /// Version one covered both the old document bridge and the typed model.
 /// Recognize the old bridge by its actual list and nested catalogue, rather
-/// than treating every unreadable record as a new empty library.
+/// than treating every unreadable resource as a new empty library.
 pub(crate) fn migrate(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     if from != 1 {
         return Err(ModelError::invalid(format!(
@@ -38,7 +38,7 @@ pub(crate) fn migrate(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
                 "unrecognized legacy Music library layout",
             ));
         }
-        // Already typed version-one records need only the version marker.
+        // Already typed version-one resources need only the version marker.
         // Invalid scalars or malformed collections still refuse unchanged.
         Library::read_fields(doc, &ROOT)?
             .check()

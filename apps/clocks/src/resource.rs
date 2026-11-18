@@ -2,7 +2,6 @@
 //! shows it, the effects that change only this device, and what the window
 //! adds to the published tree.
 
-use chrono::Utc;
 use ui::framework::{EffectAnswer, Effected, Publishes};
 use ui::prelude::*;
 use ui::tilo_actions::ResourcePresentation;
@@ -70,10 +69,12 @@ const SCENARIOS: &[&str] = &[
     "timers-narrow",
 ];
 
-pub(crate) struct ShotNow(pub(crate) chrono::DateTime<Utc>);
+pub(crate) struct ShotNow(pub(crate) jiff::Timestamp);
 
-fn shot_now() -> chrono::DateTime<Utc> {
-    chrono::DateTime::from_timestamp(1_782_806_400, 0).unwrap_or_default()
+fn shot_now() -> jiff::Timestamp {
+    jiff::Timestamp::from_second(1_782_806_400)
+        .ok()
+        .unwrap_or_default()
 }
 
 fn scene(name: Option<&str>) -> &str {
@@ -158,7 +159,7 @@ impl ResourceApp for ClocksShell {
     }
 
     fn launch_resource(input: &LaunchInput<'_>) -> Option<ui::resource::DocumentId> {
-        crate::native_timers::activation_record(input.arguments().first()?)
+        crate::native_timers::activation_resource(input.arguments().first()?)
     }
 
     /// An alarm's link (`tilo-clocks:alarm/<id>`, as its notice names it) opens that alarm.
@@ -271,7 +272,7 @@ impl Store {
             ClocksEffect::DismissNotice => self.notice.set(None),
             ClocksEffect::SnoozeAlarm { alarm, minutes } => {
                 let id = Id::from_raw(alarm.as_str());
-                let now_ms = wall_now().timestamp_millis();
+                let now_ms = wall_now().as_millisecond();
                 let mut delivery = self.device.get().delivery;
                 self.state.with(|shown| {
                     let alarm = shown
@@ -336,7 +337,7 @@ fn live_rows(shown: &Shown) -> Vec<LiveRow> {
         .presentation(ResourcePresentation {
             detail: Some(format!(
                 "At {0}, repeating {1}.",
-                ui::clock::time_of_day(&alarm.local_time()),
+                ui::clock::time_of_day(alarm.local_time()),
                 repeat_summary(&alarm.weekdays())
             )),
             badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
@@ -377,7 +378,7 @@ fn timer_row(
     id: &Id,
     timer: &crate::model::Timer,
     floating: bool,
-    now: chrono::DateTime<Utc>,
+    now: jiff::Timestamp,
 ) -> LiveRow {
     let status = if timer.is_running(now) {
         "Running"

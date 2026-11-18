@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The web page and the tilo.sh stack end to end, on one stack: the Lounge's
-# relay, the API server, the web entry and the programs this checkout built,
+# server, the API server, the web entry and the programs this checkout built,
 # brought up once by tilo-sh/stack.sh as production's manifests bring them up
 # (their images' entrypoints, their environment, production's Caddy in front).
 # The site every flow meets is the web entry image's, not a server beside it,
@@ -64,7 +64,7 @@
 #                  browser that forgot the site; a second workspace they make;
 #                  and a visitor with no invitation, still refused
 #                  (integration/onboarding.mjs)
-#   restart        the Lounge's relay starts again on its volume, and a person
+#   restart        the Lounge's server starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
 #                  writes in it
 #
@@ -81,7 +81,7 @@
 # brings `signin` with it and `restart` brings `people-call`. Needs node,
 # chromium, curl, bwrap, the stack's environment (TILO_SH_PROGRAMS,
 # TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t built), and
-# TILO_RELAY_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN for the wait
+# TILO_SERVER_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN for the wait
 # list's Lounge and the setups. E2E_FLOW_SECONDS bounds each flow (default
 # 480).
 set -euo pipefail
@@ -96,10 +96,10 @@ tilo_sh=$repo/os/containers/tilo-sh
 # hangs is stopped with everything it started.
 if [[ ${1:-} == --flow ]]; then
   flow=$2 out=$E2E_WORK/$2
-  site_origin=$E2E_SITE relay_origin=$E2E_RELAY workspace=$E2E_WORKSPACE stack=$E2E_STACK
+  site_origin=$E2E_SITE server_origin=$E2E_SERVER workspace=$E2E_WORKSPACE stack=$E2E_STACK
   case $flow in
     directory)
-      page=$(curl -fsS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
+      page=$(curl -fsS --max-time 5 -X POST "$server_origin/peer/v1/directory") \
         || { echo 'FAIL: the directory did not answer'; exit 1; }
       E2E_PAGE=$page python3 -c '
 import json, os, sys
@@ -123,14 +123,14 @@ if wrong:
 print("ok: the directory lists the Lounge, joined at its entry as an editor")
 ' "$workspace"
       exit ;;
-    boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
+    boot) exec node "$integration/page-boot.mjs" "$site_origin" "$server_origin" "$out" ;;
     people-call|people-shell|people-menus|people-invite)
-      TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
-        "$relay_origin" "$out" "$stack" ;;
-    share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$workspace" "$out" ;;
+      TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$server_origin" \
+        "$server_origin" "$out" "$stack" ;;
+    share-link) exec node "$integration/share-link.mjs" "$site_origin" "$server_origin" "$workspace" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
-      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$out" ;;
+      exec node "$integration/$flow.mjs" "$site_origin" "$server_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
       # A second Lounge, whose entry takes people by invitation: the one
@@ -144,14 +144,14 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
     restart)
       earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
         "$E2E_WORK/people-call/report.json") || { echo 'FAIL: people-call left no chat message behind'; exit 1; }
-      # The Lounge's relay alone, stopped and started again on the volume it
+      # The Lounge's server alone, stopped and started again on the volume it
       # kept, the site and the entry left serving: what a deployment's restart
       # is.
-      bash "$tilo_sh/stack.sh" restart relay
-      [[ $(cat "$TILO_SH_STATE/relay/lounge/workspace-id") == "$workspace" ]] \
+      bash "$tilo_sh/stack.sh" restart server
+      [[ $(cat "$TILO_SH_STATE/server/lounge/workspace-id") == "$workspace" ]] \
         || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
       echo "ok: the Lounge started again on its own volume ($workspace)"
-      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$stack" "$earlier" ;;
+      exec node "$integration/people.mjs" "$site_origin" "$server_origin" "$server_origin" "$out" "$stack" "$earlier" ;;
   esac
   exit 2
 fi
@@ -213,21 +213,21 @@ export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 # Its flows' people arrive as strangers and enter the Lounge as guests: the
 # entry open to anyone, not production's, which takes people by invitation.
-# Exported, so the restart flow's `stack.sh restart relay` brings the relay
+# Exported, so the restart flow's `stack.sh restart server` brings the server
 # back with the same entry (the wait-list and onboarding flows set their own).
 export TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open}
 bash "$tilo_sh/stack.sh" up --fresh
 # Sourced after it is up, for its addresses and its helpers (find_tilo,
-# sdk_python): the site, the relay and the entry every flow meets, and the one
+# sdk_python): the site, the server and the entry every flow meets, and the one
 # tilo command they run.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
-workspace=$(cat "$state/relay/lounge/workspace-id")
-log=$state/logs/relay.log
+workspace=$(cat "$state/server/lounge/workspace-id")
+log=$state/logs/server.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
-export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_WORKSPACE=$workspace \
+export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_SERVER=$server_origin E2E_WORKSPACE=$workspace \
   E2E_STACK=$tilo_sh/stack.sh E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
@@ -236,7 +236,7 @@ export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_
 # here, beside the flows that waited for it.
 service_complaints() {
   local name file said
-  for name in relay api web tls; do
+  for name in server api web tls; do
     file=$state/logs/$name.log
     [[ -s $file ]] || continue
     said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$file" | grep -E '^[0-9T:.-]+Z +(ERROR|WARN) ' \
@@ -330,6 +330,10 @@ await_flow() {
 }
 
 verify_records_read
+# The keys of people's sealed stores are kept apart from the stack's state, by
+# the server's own word and by where the files lie (stack.sh keys): here as
+# the stack comes up, and again below once every flow's people have been here.
+keys_apart || { echo "FAIL: the stack does not keep people's keys apart from its state" >&2; exit 1; }
 
 # The startup identity first, in its own flow: the visa run reads the key its
 # page approved.
@@ -375,6 +379,9 @@ if wants restart; then
     timing 'phase=the Lounge started again on its volume'
   fi
 fi
+
+# Where people's keys lie, now that every flow's people have been here.
+keys_apart || failed+=(people-keys)
 
 # What the services complained about while the flows ran, on every run,
 # passing or not.

@@ -545,7 +545,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
             fabric: None,
-            relays: test_relay::loopback(),
+            relays: test_server::loopback(),
             lan: None,
         },
         None,
@@ -704,7 +704,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
             fabric: None,
-            relays: test_relay::loopback(),
+            relays: test_server::loopback(),
             lan: None,
         },
         None,
@@ -713,7 +713,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
     )
     .expect("this device's endpoint binds");
-    // The laptop's endpoint, serving nothing but its own planes: the route it carries is not one of
+    // The laptop's endpoint, serving nothing but its own app wires: the route it carries is not one of
     // them.
     let (_laptop_reading, laptop_vpns) = tokio::sync::watch::channel(reading(None));
     let laptop_sync = Client::start(
@@ -724,7 +724,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
             fabric: None,
-            relays: test_relay::loopback(),
+            relays: test_server::loopback(),
             lan: None,
         },
         None,

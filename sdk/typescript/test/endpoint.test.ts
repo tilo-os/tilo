@@ -1,4 +1,4 @@
-/** The seam under every call: the request, its retries, and what an answer means. */
+/** The boundary under every call: the request, its retries, and what an answer means. */
 
 import { describe, expect, it } from "bun:test";
 

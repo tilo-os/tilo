@@ -19,7 +19,7 @@ impl Desktop {
     /// one.
     pub(super) fn announce_agents_finished(&self) {
         use tilo_actions::remote::workspace_activity as wire;
-        use tilo_actions::remote::{ActionHost as _, InvokeRequest};
+        use tilo_actions::remote::{ActionProvider as _, InvokeRequest};
         let now = crate::shell::now_ms();
         let finished = self.here.borrow_mut().take_agents_finished(now);
         for agent in finished {

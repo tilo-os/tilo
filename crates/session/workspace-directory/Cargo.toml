@@ -23,7 +23,7 @@ tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
 # A pasted workspace link names its site and its workspace.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
-tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 # The reads and joins run as one app task.
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 # What the sheet shows: the list as plain data.

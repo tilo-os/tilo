@@ -106,7 +106,7 @@ impl LayoutActions {
         let person = Actor::from(MemberId::person(self.person()));
         let asked = actor.unwrap_or(&person).clone();
         // What a `place`, a `show` or an `open` names no view of stands as content, through the
-        // view its app declares for a place of it, wherever it ends up standing: beside a turn it
+        // view its app declares for a place of it, wherever it ends up: beside a turn it
         // was aimed at too.
         self.place_as_content(&mut action);
         if self.kept_turn(&asked, arguments, &action)? {

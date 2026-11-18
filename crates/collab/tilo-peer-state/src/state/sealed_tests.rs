@@ -28,7 +28,7 @@ fn host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RelayDelta(key.verifying_key().to_bytes())
+    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
 }
 
 /// `key`'s sealed write number `seq` to the seeded record.
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
     phase a_revoked_author_cannot_add_sealed_history;
     {
         use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
-        let (mut host, a, b, now) = host();
+        let (mut holder, a, b, now) = host();
         let mut revocation = RevocationEntry {
             user_public_key: SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
             revoked_device_public_key: b.verifying_key().to_bytes(),
@@ -194,22 +194,42 @@ tilo_test_env::scenario! {
             signature: [0; 64],
         };
         sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32])).unwrap();
-        host.receive_from(
+        holder.receive_from(
             TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(host.owner_certificates()[0].clone()),
-                revocations: vec![revocation],
+                cert: Box::new(holder.owner_certificates()[0].clone()),
+                revocations: vec![revocation.clone()],
             },
             now,
         )
         .unwrap();
-        let before = held(&host);
-        assert!(
-            host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
-                .is_err()
+        let before = held(&holder);
+        // Known without its cut, the removal decides nothing of the device's
+        // writes yet: this one is held, and joins no history.
+        let report = holder
+            .receive_from_report(origin(&b), sealed(&holder, &b, 1, b"sealed"), now)
+            .unwrap();
+        assert_eq!(
+            report.primary(),
+            &InputDisposition::RetryLater(crate::MissingPrerequisite::RemovalCut)
         );
-        assert_eq!(held(&host), before);
+        assert_eq!(held(&holder), before);
+        // The governance takes the removal with its cut, which the write
+        // is above: the held write is let go, and sent again it is refused.
+        assert!(
+            holder.governance_mut()
+                .publish_governed_revocations(&[revocation], &a, now)
+                .unwrap()
+        );
+        assert_eq!(held(&holder), before);
+        assert!(
+            holder.receive_from(origin(&b), sealed(&holder, &b, 1, b"sealed"), now)
+                .unwrap_err()
+                .to_string()
+                .contains("revoked")
+        );
+        assert_eq!(held(&holder), before);
     }
 
     phase a_full_sealed_history_refuses_rather_than_evicts;
@@ -277,7 +297,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it;
+    phase a_keyless_owner_keeps_ownership_of_its_own_sealed_write_without_renewing_it;
     {
         let (mut member, _, b, now) = host();
         let author = b.verifying_key().to_bytes();

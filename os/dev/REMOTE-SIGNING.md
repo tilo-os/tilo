@@ -113,7 +113,7 @@ or nested image payload container.
 
 After public-only final image publication, use existing local Cosign to sign
 the immutable registry digest directly; no rootfs pull or private-key transfer
-is needed. Fresh source, installed-disk and boot acceptance are separate gates.
+is needed. Fresh source, installed-disk and boot acceptance are separate checks.
 
 Tests use newly generated fixture keys and exercise actual EFI/RSA signing,
 replay rejection, context/input mismatch, symlink/oversize refusal, substituted

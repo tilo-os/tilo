@@ -6,7 +6,7 @@
 //! direct descriptor clones are constrained by that call site, not proven absent
 //! by Arc counts. Source/worker admission begins only after successful unmount.
 //! No formatting, journal replay, filesystem repair, or existing mount adoption.
-use super::{Partition, inventory, mount_id, selected, unique_mount, witness};
+use super::{Partition, inventory, mount_id, proof, selected, unique_mount};
 use crate::imager_model::TargetDrive;
 use crate::media_layout::MediaPartitionBinding;
 use crate::setup::migration::PinnedDirectory;
@@ -76,8 +76,8 @@ impl BootLease {
             .id
             .ok_or_else(|| refused("Boot mount identity is unconfirmed"))?;
         attest_root(&root.file, &self.partition, &self.selected.number, id)?;
-        witness(root, &self.media, &self.selected.uuid)?;
-        // Re-read actual GPT after the mounted-root and filesystem witness checks.
+        proof(root, &self.media, &self.selected.uuid)?;
+        // Re-read actual GPT after the mounted-root and filesystem proof checks.
         if crate::media_layout::binding(&self.disk, self.target.size, stable)? != self.media {
             return Err(refused("Selected boot medium GPT changed"));
         }
@@ -121,7 +121,7 @@ impl BootMedium {
                 .as_ref()
                 .is_none_or(|root| Arc::strong_count(root) != 1)
             {
-                Err(refused("Boot medium still has callback custody"))
+                Err(refused("Boot medium still has callback ownership"))
             } else {
                 Ok(())
             }
@@ -162,7 +162,9 @@ fn require_raw(file: &File) -> io::Result<()> {
     if file.metadata()?.file_type().is_block_device() {
         Ok(())
     } else {
-        Err(refused("Boot medium requires held selected block custody"))
+        Err(refused(
+            "Boot medium requires held selected block ownership",
+        ))
     }
 }
 
@@ -216,7 +218,7 @@ pub fn with_boot_medium<T>(
     let daemon = Udisks::system().map_err(|_| refused("Boot mount service unavailable"))?;
     let partition = daemon
         .open_read_only(&before.name)
-        .map_err(|_| refused("Selected boot partition custody refused"))?;
+        .map_err(|_| refused("Selected boot partition ownership refused"))?;
     if super::super::number(&partition)? != before.number {
         return Err(refused("Selected boot partition descriptor differs"));
     }
@@ -290,6 +292,6 @@ mod tests {
         assert!(attest_root(&root, &regular, &number, actual_id).is_err());
         assert!(unique_mount(&number, actual_id.checked_add(1).unwrap()).is_err());
         // No successful test here qualifies UDisks mounting, Ext4 flags or a
-        // filesystem witness. Those require the selected disposable medium.
+        // filesystem proof. Those require the selected disposable medium.
     }
 }

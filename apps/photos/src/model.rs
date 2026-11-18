@@ -694,7 +694,7 @@ impl OpenImage {
     /// The picture whose bytes `content` names, opened from `origin`.
     ///
     /// Only the file name of `origin` is kept: a path is true on one machine,
-    /// and the record's reference is what every member resolves. Create
+    /// and the resource's reference is what every member resolves. Create
     /// one wherever the bytes are put into the content store, because a
     /// reference to content no member can reach names no picture at all.
     pub fn new(origin: &str, width: u32, height: u32, content: Bytes) -> Self {
@@ -735,7 +735,7 @@ impl OpenImage {
     }
 
     /// The picture named by `hash`, 64 hex digits, whose bytes no store here
-    /// holds: a record naming content this device has yet to receive.
+    /// holds: a resource naming content this device has yet to receive.
     #[cfg(test)]
     pub(crate) fn named(origin: &str, width: u32, height: u32, hash: &str) -> Self {
         Self::new(origin, width, height, named_content(hash))
@@ -749,7 +749,7 @@ impl OpenImage {
     }
 }
 
-/// A content hash as the 64 hex digits every record, address and failure
+/// A content hash as the 64 hex digits every resource, address and failure
 /// report spells it in.
 #[must_use]
 pub fn content_hex(hash: &[u8; 32]) -> String {
@@ -763,7 +763,7 @@ pub fn content_hex(hash: &[u8; 32]) -> String {
 /// The bytes of the picture `open` names, from this machine's content store.
 ///
 /// Resolving the hash is what turns "a photograph a member opened" into
-/// pixels here rather than into an empty canvas; a shared record never causes
+/// pixels here rather than into an empty canvas; a shared resource never causes
 /// this device to probe another member's filesystem.
 ///
 /// Missing bytes are not an error to report: content a member imported
@@ -809,7 +809,7 @@ pub(crate) fn valid_resource_id(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-/// Content named by `hash`, 64 hex digits, kept under it: what a record
+/// Content named by `hash`, 64 hex digits, kept under it: what a resource
 /// names when the bytes were kept before content was sealed.
 #[cfg(test)]
 pub(crate) fn named_content(hash: &str) -> Bytes {
@@ -817,7 +817,7 @@ pub(crate) fn named_content(hash: &str) -> Bytes {
     for (byte, pair) in bytes.iter_mut().zip(hash.as_bytes().chunks(2)) {
         *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or("0"), 16).unwrap_or(0);
     }
-    // A length the record carries, so the name is of content and not of
+    // A length the resource carries, so the name is of content and not of
     // nothing: these bytes are nowhere on this device.
     Bytes::Blob {
         hash: bytes,
@@ -981,7 +981,7 @@ pub(crate) fn merge_image_analysis(
 }
 
 /// Keep user-authored metadata compact enough that a library remains a small
-/// CRDT record, and reject (rather than normalize) malformed remote commands
+/// CRDT resource, and reject (rather than normalize) malformed remote commands
 /// so every replica either applies exactly the same labels or refuses them.
 pub(crate) fn valid_metadata(
     folder: Option<&str>,
@@ -1159,7 +1159,7 @@ fn valid_capture_offset(value: &str) -> bool {
 
 /// A person is a compact user-authored label.  This intentionally has the
 /// same limit and character rules as the `people` metadata array so a review
-/// action can never create a record an ordinary metadata edit would reject.
+/// action can never create a resource an ordinary metadata edit would reject.
 pub(crate) fn valid_person_label(value: &str) -> bool {
     !value.trim().is_empty()
         && value.trim().chars().count() <= 128

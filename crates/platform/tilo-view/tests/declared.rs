@@ -168,7 +168,7 @@ fn passes(tree: &Node) {
         tilo_view::patch::validate::PatchLimits::default(),
     );
     let batch = vec![tilo_view::patch::ToUi::Open {
-        lane: tilo_view::patch::Lane::Root,
+        level: tilo_view::patch::Level::Root,
         target: ResourceRef {
             id: "test.channel:1".to_owned(),
             ty: "test.channel".to_owned(),

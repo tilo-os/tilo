@@ -39,7 +39,7 @@ actual document heads despite search being local state. Query changes now replac
 only sidebar navigation; category selection still replaces the active content.
 The strict character/Backspace test verifies focus, caret, actual result rows,
 and unchanged document heads across filtering. A separate test verifies that the
-observer's disposable-clone witness leaves the original pending transaction and
+observer's disposable-clone observation leaves the original pending transaction and
 original document debug representation untouched.
 
 The scoped Settings app library suite passed 23 tests after this fix. Native

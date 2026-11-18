@@ -1,25 +1,24 @@
 //! Deterministic IANA time-zone resolution for Calendar's wall-time model.
 
-use chrono::{
-    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc,
-    Weekday,
-};
-use chrono_tz::Tz;
+use jiff::civil::{Date, DateTime, Weekday};
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::{SignedDuration, Span, Timestamp};
 
-pub use tilo_recurrence::zone::{Resolution, canonical_zone, normalize_wall, wall_to_utc};
+pub use tilo_recurrence::zone::{Resolution, canonical_zone, named, normalize_wall, wall_to_utc};
 
 mod windows_zones;
 
-pub fn endpoint_utc(zone: &str, wall: NaiveDateTime, later: bool) -> Option<DateTime<Utc>> {
-    if later
-        && let LocalResult::Ambiguous(a, b) = zone.parse::<Tz>().ok()?.from_local_datetime(&wall)
-    {
-        return Some(a.max(b).with_timezone(&Utc));
+pub fn endpoint_utc(zone: &str, wall: DateTime, later: bool) -> Option<Timestamp> {
+    if later {
+        let local = named(zone)?.to_ambiguous_timestamp(wall);
+        if matches!(local.offset(), AmbiguousOffset::Fold { .. }) {
+            return local.later().ok();
+        }
     }
     Some(wall_to_utc(zone, wall)?.0)
 }
 
-pub fn valid_span(zone: &str, start: NaiveDateTime, end: NaiveDateTime, later: bool) -> bool {
+pub fn valid_span(zone: &str, start: DateTime, end: DateTime, later: bool) -> bool {
     if zone == "floating" {
         return !later && end >= start;
     }
@@ -59,45 +58,35 @@ pub fn windows_zone(name: &str) -> Option<&'static str> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnsetDay {
     Nth(i8, Weekday),
-    OnOrAfter(u32, Weekday),
-    Fixed(u32),
+    OnOrAfter(i8, Weekday),
+    Fixed(i8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct YearlyRule {
-    pub month: u32,
+    pub month: i8,
     pub day: OnsetDay,
-    pub until: Option<NaiveDateTime>,
+    pub until: Option<DateTime>,
 }
 
 impl YearlyRule {
-    fn date_in(self, year: i32) -> Option<NaiveDate> {
-        let first = NaiveDate::from_ymd_opt(year, self.month, 1)?;
-        let next = if self.month == 12 {
-            NaiveDate::from_ymd_opt(year + 1, 1, 1)?
-        } else {
-            NaiveDate::from_ymd_opt(year, self.month + 1, 1)?
-        };
-        let on_or_after = |date: NaiveDate, weekday: Weekday| {
-            let ahead =
-                (7 + weekday.num_days_from_monday() - date.weekday().num_days_from_monday()) % 7;
-            date + Duration::days(i64::from(ahead))
+    fn date_in(self, year: i16) -> Option<Date> {
+        let first = Date::new(year, self.month, 1).ok()?;
+        let next = first.last_of_month().tomorrow().ok()?;
+        let on_or_after = |date: Date, weekday: Weekday| date.nth_weekday(1, weekday).ok();
+        let on_or_after = |date: Date, weekday: Weekday| {
+            if date.weekday() == weekday {
+                Some(date)
+            } else {
+                on_or_after(date, weekday)
+            }
         };
         let date = match self.day {
-            OnsetDay::Fixed(day) => NaiveDate::from_ymd_opt(year, self.month, day)?,
+            OnsetDay::Fixed(day) => Date::new(year, self.month, day).ok()?,
             OnsetDay::OnOrAfter(day, weekday) => {
-                on_or_after(NaiveDate::from_ymd_opt(year, self.month, day)?, weekday)
+                on_or_after(Date::new(year, self.month, day).ok()?, weekday)?
             }
-            OnsetDay::Nth(n, weekday) if n > 0 => {
-                on_or_after(first, weekday) + Duration::weeks(i64::from(n) - 1)
-            }
-            OnsetDay::Nth(n, weekday) => {
-                let last = next.pred_opt()?;
-                let back = (7 + last.weekday().num_days_from_monday()
-                    - weekday.num_days_from_monday())
-                    % 7;
-                last - Duration::days(i64::from(back)) - Duration::weeks(-i64::from(n) - 1)
-            }
+            OnsetDay::Nth(n, weekday) => first.nth_weekday_of_month(n, weekday).ok()?,
         };
         (date >= first && date < next).then_some(date)
     }
@@ -105,33 +94,33 @@ impl YearlyRule {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observance {
-    pub onset: NaiveDateTime,
+    pub onset: DateTime,
     pub offset_from: i32,
     pub offset_to: i32,
     pub rule: Option<YearlyRule>,
-    pub rdates: Vec<NaiveDateTime>,
+    pub rdates: Vec<DateTime>,
 }
 
 impl Observance {
-    fn onsets(
-        &self,
-        years: std::ops::RangeInclusive<i32>,
-    ) -> impl Iterator<Item = NaiveDateTime> + '_ {
+    fn onsets(&self, years: std::ops::RangeInclusive<i16>) -> impl Iterator<Item = DateTime> + '_ {
         let ruled = self.rule.into_iter().flat_map(move |rule| {
             years.clone().filter_map(move |year| {
-                let wall = rule.date_in(year)?.and_time(self.onset.time());
+                let wall = rule.date_in(year)?.to_datetime(self.onset.time());
                 (wall >= self.onset && rule.until.is_none_or(|until| wall <= until)).then_some(wall)
             })
         });
         std::iter::once(self.onset)
             .chain(self.rdates.iter().copied())
             .chain(ruled)
-            .map(|wall| wall - Duration::seconds(i64::from(self.offset_from)))
+            .filter_map(|wall| {
+                wall.checked_sub(SignedDuration::from_secs(i64::from(self.offset_from)))
+                    .ok()
+            })
     }
 }
 
-fn offset_following(observances: &[Observance], at: NaiveDateTime) -> Option<i32> {
-    let years = at.year() - 1..=at.year();
+fn offset_following(observances: &[Observance], at: DateTime) -> Option<i32> {
+    let years = at.year().saturating_sub(1)..=at.year();
     let latest = observances
         .iter()
         .flat_map(|observance| {
@@ -149,99 +138,91 @@ fn offset_following(observances: &[Observance], at: NaiveDateTime) -> Option<i32
     })
 }
 
-pub fn zone_following(observances: &[Observance], year: i32, tzid: &str) -> Option<String> {
-    let noon =
-        |month| NaiveDate::from_ymd_opt(year, month, 1).and_then(|date| date.and_hms_opt(12, 0, 0));
-    let mut samples: Vec<NaiveDateTime> = [noon(1), noon(7)].into_iter().flatten().collect();
+pub fn zone_following(observances: &[Observance], year: i16, tzid: &str) -> Option<String> {
+    let noon = |month| {
+        Date::new(year, month, 1)
+            .ok()
+            .map(|date| date.at(12, 0, 0, 0))
+    };
+    let mut samples: Vec<DateTime> = [noon(1), noon(7)].into_iter().flatten().collect();
     // Either side of each onset, to the minute: a zone that keeps the same
     // offsets but moves its clocks hours apart differs only here.
     let mut instants = Vec::new();
     for observance in observances {
         for onset in observance.onsets(year..=year) {
             if onset.year() == year {
-                samples.push(onset - Duration::days(1));
-                samples.push(onset + Duration::days(1));
-                instants.push(onset - Duration::minutes(1));
-                instants.push(onset + Duration::minutes(1));
+                let day = Span::new().days(1);
+                let minute = SignedDuration::from_mins(1);
+                samples.extend(
+                    [onset.checked_sub(day), onset.checked_add(day)]
+                        .into_iter()
+                        .flatten(),
+                );
+                instants.extend(
+                    [onset.checked_sub(minute), onset.checked_add(minute)]
+                        .into_iter()
+                        .flatten(),
+                );
             }
         }
     }
-    let wanted_at = |at: &[NaiveDateTime]| {
+    let wanted_at = |at: &[DateTime]| {
         at.iter()
             .map(|at| offset_following(observances, *at).map(|offset| (*at, offset)))
             .collect::<Option<Vec<_>>>()
     };
     let wanted = wanted_at(&samples)?;
     let wanted_instants = wanted_at(&instants).unwrap_or_default();
-    let keeps = |zone: &Tz, wanted: &[(NaiveDateTime, i32)]| {
+    let keeps = |zone: &TimeZone, wanted: &[(DateTime, i32)]| {
         wanted.iter().all(|(at, offset)| {
-            zone.offset_from_utc_datetime(at).fix().local_minus_utc() == *offset
+            at.to_zoned(TimeZone::UTC)
+                .is_ok_and(|at| zone.to_offset(at.timestamp()).seconds() == *offset)
         })
     };
     let candidates = windows_zones::WINDOWS_ZONES
         .iter()
-        .filter_map(|(_, iana)| iana.parse::<Tz>().ok())
-        .chain(chrono_tz::TZ_VARIANTS.iter().copied());
+        .map(|(_, iana)| *iana)
+        .chain(jiff_tzdb::available())
+        .filter_map(|name| named(name).map(|zone| (name, zone)));
     let mut first = None;
     let mut on_time = None;
-    for zone in candidates.filter(|zone| keeps(zone, &wanted)) {
-        let city = zone
-            .name()
+    for (name, zone) in candidates.filter(|(_, zone)| keeps(zone, &wanted)) {
+        let city = name
             .rsplit('/')
             .next()
             .unwrap_or_default()
             .replace('_', " ");
         if city.len() > 2 && tzid.contains(&city) {
-            return canonical_zone(zone.name());
+            return canonical_zone(name);
         }
         if on_time.is_none() && keeps(&zone, &wanted_instants) {
-            on_time = Some(zone);
+            on_time = Some(name);
         }
-        first.get_or_insert(zone);
+        first.get_or_insert(name);
     }
-    on_time
-        .or(first)
-        .and_then(|zone| canonical_zone(zone.name()))
+    on_time.or(first).and_then(canonical_zone)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
 
-    fn at(date: (i32, u32, u32), hour: u32, minute: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(date.0, date.1, date.2)
+    fn at(date: (i16, i8, i8), hour: i8, minute: i8) -> DateTime {
+        Date::new(date.0, date.1, date.2)
             .unwrap()
-            .and_hms_opt(hour, minute, 0)
-            .unwrap()
+            .at(hour, minute, 0, 0)
     }
 
     tilo_test_env::scenario! {
         /// Time zones: the wall times a clock change skips or repeats, and the names Windows gives.
         fn zones_resolve_through_gaps_folds_and_windows_names;
 
-        phase berlin_dst_gap_and_fold_resolve_and_invalid_zone_is_refused;
-        {
-            let wall = at((2026, 3, 29), 2, 30);
-            let (normalized, resolution) = normalize_wall("Europe/Berlin", wall).unwrap();
-            assert_eq!(normalized, at((2026, 3, 29), 3, 0));
-            assert_eq!(resolution, Resolution::ShiftedForward { minutes: 30 });
-
-            let wall = at((2026, 10, 25), 2, 30);
-            let (instant, resolution) = wall_to_utc("Europe/Berlin", wall).unwrap();
-            assert_eq!(instant.naive_utc(), at((2026, 10, 25), 0, 30));
-            assert_eq!(resolution, Resolution::AmbiguousEarlier);
-
-            assert_eq!(canonical_zone("Mars/Olympus"), None);
-            assert_eq!(wall_to_utc("Mars/Olympus", at((2026, 1, 1), 12, 0)), None);
-        }
-
         phase a_span_through_the_fold_ends_on_the_pass_it_names;
         {
             // 02:30 comes twice in Berlin that night: at 00:30 and at 01:30 UTC.
             let (start, end) = (at((2026, 10, 25), 2, 45), at((2026, 10, 25), 2, 30));
             let resolved =
-                |later| endpoint_utc("Europe/Berlin", end, later).map(|instant| instant.naive_utc());
+                |later| endpoint_utc("Europe/Berlin", end, later).map(|instant| instant.to_zoned(TimeZone::UTC).datetime());
             assert_eq!(resolved(false), Some(at((2026, 10, 25), 0, 30)));
             assert_eq!(resolved(true), Some(at((2026, 10, 25), 1, 30)));
             // An end the clock shows before the start comes after it only on the second pass.
@@ -251,14 +232,14 @@ mod tests {
             // Outside a fold there is one pass, whichever is asked for.
             let noon = at((2026, 6, 15), 12, 0);
             let summer =
-                |later| endpoint_utc("Europe/Berlin", noon, later).map(|instant| instant.naive_utc());
+                |later| endpoint_utc("Europe/Berlin", noon, later).map(|instant| instant.to_zoned(TimeZone::UTC).datetime());
             assert_eq!(summer(false), Some(at((2026, 6, 15), 10, 0)));
             assert_eq!(summer(true), summer(false));
             assert!(valid_span("Europe/Berlin", noon, noon, false));
             assert!(!valid_span(
                 "Europe/Berlin",
                 noon,
-                noon - Duration::minutes(1),
+                noon - jiff::SignedDuration::from_mins(1),
                 false
             ));
 

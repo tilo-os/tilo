@@ -753,7 +753,7 @@ pub fn note_stale(audit: &str, progress: &Progress) {
 // The span finder is what every ratchet's coverage rests on, so its shapes
 // are pinned here once: exactly the item the attribute governs, whether a
 // braced module, a bodyless item, a multi-line signature, a same-line
-// module or a whole test-gated file.
+// module or a whole test-guarded file.
 
 tilo_test_env::scenario! {
     fn test_module_spans_cover_exactly_the_test_code;
@@ -801,7 +801,7 @@ tilo_test_env::scenario! {
         assert_eq!(test_module_spans(source), vec![(0, 4)]);
     }
 
-    phase a_file_gated_to_tests_has_no_production_lines;
+    phase a_file_guarded_to_tests_has_no_production_lines;
     {
         let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
         assert_eq!(test_module_spans(source), vec![(0, 3)]);

@@ -21,7 +21,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -76,8 +76,10 @@ pub struct AppOutput {
     /// reads it.
     file: Option<Mutex<std::fs::File>>,
     stderr_tail: Mutex<VecDeque<String>>,
-    /// The threads reading the app's two pipes, joined by [`Self::finish`].
+    /// The threads reading the app's streams, joined by [`Self::finish`].
     readers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Set when the app ended: a reader following a stream that has not closed yet stops.
+    stopping: Arc<AtomicBool>,
     relayed: AtomicU64,
     dropped: AtomicU64,
 }
@@ -92,22 +94,23 @@ impl AppOutput {
             file: file.map(Mutex::new),
             stderr_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
             readers: Mutex::new(Vec::new()),
+            stopping: Arc::new(AtomicBool::new(false)),
             relayed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
         }
     }
 
-    /// Read `stdout` on a thread of its own, relaying each line as it comes.
-    pub fn relay_stdout(self: &Arc<Self>, stdout: impl std::io::Read + Send + 'static) {
+    /// Read `stdout` on a thread of its own, keeping each line as it comes.
+    pub fn keep_stdout(self: &Arc<Self>, stdout: impl std::io::Read + Send + 'static) {
         let output = Arc::clone(self);
         self.on_thread("stdout", move || {
             output.read(stdout, "stdout", None);
         });
     }
 
-    /// Read `stderr` on a thread of its own, relaying each line as it comes and
+    /// Read `stderr` on a thread of its own, keeping each line as it comes and
     /// keeping the last of them for the launch's end.
-    pub fn relay_stderr(self: &Arc<Self>, stderr: impl std::io::Read + Send + 'static) {
+    pub fn keep_stderr(self: &Arc<Self>, stderr: impl std::io::Read + Send + 'static) {
         let output = Arc::clone(self);
         self.on_thread("stderr", move || {
             let file = output.file.as_ref();
@@ -115,9 +118,34 @@ impl AppOutput {
         });
     }
 
+    /// Keep what the app wrote before this desktop took it over, and from now on: its keeper
+    /// kept both streams in `dir` while no session read them.
+    #[cfg(target_os = "linux")]
+    pub fn follow(self: &Arc<Self>, dir: &std::path::Path) {
+        for stream in ["stdout", "stderr"] {
+            let path = tilo_app_keeper::output::path(dir, stream);
+            let follow = match tilo_app_keeper::output::Follow::open(
+                &path,
+                Arc::clone(&self.stopping),
+            ) {
+                Ok(follow) => follow,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "what the app wrote is not read");
+                    continue;
+                }
+            };
+            match stream {
+                "stdout" => self.keep_stdout(follow),
+                _ => self.keep_stderr(follow),
+            }
+        }
+    }
+
     /// Wait until both streams are read to their end: the app's pipes close
     /// with it, and the tail is what it said only once they are drained.
     pub fn finish(&self) {
+        self.stopping.store(true, Ordering::Release);
         let readers = std::mem::take(&mut *self.readers.lock_recover());
         for reader in readers {
             let _ = reader.join();

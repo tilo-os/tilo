@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::Caller;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::{AppCatalogue, DocumentRoute, WorkspaceDocumentsLink, reads};
 

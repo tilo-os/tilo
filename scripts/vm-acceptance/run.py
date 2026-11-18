@@ -84,8 +84,8 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
-    # The installed-desktop gates os-acceptance-{arch} runs on a KVM guest: kernel and userspace
-    # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
+    # The installed-desktop checks os-acceptance-{arch} runs on a KVM guest: kernel and userspace
+    # to a usable greeter (whole seconds, the boot check's unit), and the render-path check's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
     # Userspace start to greetd active (R06), and the greeter's sign-in request to a drawn
@@ -448,8 +448,8 @@ def main() -> int:
                     help="run one part of the suite (SHARDS) in a session of its own: only its areas' "
                     "checks run, and the checks that judge the whole session (SESSION_JUDGES) judge "
                     "this one; with none of its checks selected, nothing boots")
-    ap.add_argument("--budgets", choices=("gate", "report"), default="gate",
-                    help="gate: a measurement over its budget fails its check; report: it is recorded as "
+    ap.add_argument("--budgets", choices=("check", "report"), default="check",
+                    help="check: a measurement over its budget fails its check; report: it is recorded as "
                          "over-budget and the run still passes (core.BudgetExceeded)")
     ap.add_argument("--idle-seconds", type=int, default=30)
     ap.add_argument("--memory-mb", type=int, default=4608)

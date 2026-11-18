@@ -16,7 +16,7 @@ use ui::{Arrival, LocalState};
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
-use crate::record::Row;
+use crate::workspace::Row;
 
 #[derive(Clone)]
 pub(crate) struct KvRow {
@@ -183,7 +183,7 @@ fn centred(control: Element) -> Element {
 
 /// The trailing blank has no checkbox or removal control; its first text edit rebuilds it
 /// as a durable pair.
-fn gated(row: &KvRow, control: impl Fn() -> Element + 'static) -> Element {
+fn guarded(row: &KvRow, control: impl Fn() -> Element + 'static) -> Element {
     if row.pending.get() {
         Box::new(Spacer::token(SpacingStep::S0))
     } else {
@@ -219,7 +219,7 @@ pub(crate) fn build_table(
                 let sink = enabled_sink.clone();
                 let id = ui::tilo_resource::Id::from_raw(row.id.clone());
                 let state = row.enabled.clone();
-                gated(row, move || -> Element {
+                guarded(row, move || -> Element {
                     let control = Checkbox::from_state(&state).with_accessible_name(
                         &crate::locales::CATALOG.t("api-tester-a11y-use-row"),
                     );
@@ -270,7 +270,7 @@ pub(crate) fn build_table(
             move |row: &KvRow, _| -> Element {
                 let sink = remove_sink.clone();
                 let id = row.id.clone();
-                gated(row, move || -> Element {
+                guarded(row, move || -> Element {
                     let sink = sink.clone();
                     let row = id.clone();
                     Box::new(

@@ -94,7 +94,7 @@ class Control:
             if state in ('failed', 'cancelled', 'refused'):
                 raise RuntimeError('actual canonical action terminated without success')
             if type(invocation) is not int or invocation <= 0:
-                raise RuntimeError('pending action lacks actual broker custody')
+                raise RuntimeError('pending action lacks actual broker ownership')
             if answer_authentication is not None:
                 answer_authentication()
             observed = self.command(['actions', 'status', str(invocation), '--wait=500'])

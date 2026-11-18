@@ -15,7 +15,7 @@
 )]
 
 use ed25519_dalek::SigningKey;
-use tilo_relay_client::issue_stand_in;
+use tilo_server_client::issue_stand_in;
 use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, RevocationList,
@@ -84,7 +84,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    place(&host.relay, &browser.cert).await;
+    place(&host.server, &browser.cert).await;
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -99,7 +99,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     // revoke the stand-in, and the entry reaches the host with the session
     // it already has.
     let revoked_at = stand_in.issued_at_ns + 2;
-    let entry = tilo_relay_client::revoke_device(
+    let entry = tilo_server_client::revoke_device(
         &root,
         stand_in.device_public_key,
         revoked_at,
@@ -110,7 +110,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     peer.send(Cmd::Revoke(entry.clone())).unwrap();
     let learned = wait_for("the host to record the revocation", || {
         let entry = entry.clone();
-        let workspaces = host.relay.workspaces().unwrap();
+        let workspaces = host.server.workspaces().unwrap();
         async move {
             let held = workspaces.state(crate::support::WORKSPACE).await?;
             held.revocations().into_iter().find(|held| held == &entry)
@@ -127,7 +127,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     // from the revocation on, and none it signed before.
     let mut revocations = RevocationList::new();
     for entry in host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .state(crate::support::WORKSPACE)
@@ -158,5 +158,5 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     assert!(revocations.refuses(&stand_in), "and the stand-in itself");
 
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

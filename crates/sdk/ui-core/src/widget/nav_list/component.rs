@@ -103,7 +103,7 @@ impl From<NavItemProps> for NavItem {
             item = item.icon(icon);
         }
         if let Some(person) = props.person {
-            item = item.person(person.identity.id(), None, false);
+            item = item.person(person.identity, None, false);
             item = item.person_face(person.name, None);
         }
         if let Some(mentions) = props.mentions.filter(|mentions| *mentions > 0) {

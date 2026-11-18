@@ -109,10 +109,30 @@ impl<'a> AvatarFace<'a> {
         }
     }
 
-    /// `person`'s face, in the hue they wear.
+    /// The face `person` wears on every surface, in the hue they wear: a person's picture
+    /// when they set one, else their initials; an agent's mark ([`Self::agent`]); a bot's
+    /// picture or initials on a rounded square. Every place that shows a member draws this one,
+    /// so they look the same in chat, in history, on the bar and in a chip.
     #[must_use]
     pub fn of(person: &'a crate::component::Person) -> Self {
-        Self::new(&person.name, person.identity.id()).hue(person.hue)
+        match person.identity.member_id() {
+            Some(member) => Self::member(&person.name, member),
+            None => Self::new(&person.name, person.identity.id()),
+        }
+        .hue(person.hue)
+    }
+
+    /// [`Self::of`] for `member`, called `name`, in the hue the member wears
+    /// ([`PresenceHue::of_member`]).
+    #[must_use]
+    pub fn member(name: &'a str, member: &'a tilo_actions::MemberId) -> Self {
+        use tilo_actions::MemberId;
+        let face = Self::new(name, member.id()).hue(PresenceHue::of_member(member));
+        match member {
+            MemberId::Agent(_) => face.agent(),
+            MemberId::Bot(_) => face.square(),
+            MemberId::Person(_) => face,
+        }
     }
 
     /// Software, not a person: the agent's own face, the agent mark on a rounded square in its
@@ -385,6 +405,42 @@ impl<'a> AvatarFace<'a> {
             side / 2.0
         };
         RoundedRect::from_rect(rect, radius)
+    }
+
+    /// The mark at `rect` as `node`'s look on a page: a tinted disc (a rounded square)
+    /// with the initials on it, or a picture of its paint for a photo or a glyph.
+    pub fn compose(&self, theme: &Theme, rect: Rect, node: &mut crate::composition::Composed) {
+        if self.image.is_some() || self.glyph.is_some() {
+            node.painted(0);
+            return;
+        }
+        let initials = self.initials();
+        if initials.is_empty() {
+            return;
+        }
+        // The initials are its picture, not its name, so a reader hears the person.
+        let fill = self.colour(theme);
+        let neutral = self.tint == Tint::Neutral;
+        node.ground = Some(crate::composition::Ground {
+            fill: Some(crate::composition::rgba8(fill)),
+            edge: neutral.then(|| crate::composition::rgba8(crate::surface::edge_on(fill))),
+            radius: self.shape(rect, theme).radii().top_left,
+        });
+        let style = initials_style(theme, rect.height());
+        let ink = if neutral {
+            theme.text_primary
+        } else {
+            initial_ink(fill, theme)
+        };
+        let mut look =
+            crate::composition::TextLook::new(initials, &style, Some(ink)).with_max_lines(Some(1));
+        // Centred on the disc, as the canvas sets them.
+        look.align = "center";
+        look.line_height = crate::num::f32_of_f64(rect.height() / f64::from(look.size));
+        let part = node.part("initials", "Text", rect);
+        part.tag = Some("span");
+        part.own = Some(crate::composition::Own::Text(look));
+        part.attrs.push(("aria-hidden", "true".into()));
     }
 
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
@@ -663,7 +719,8 @@ pub struct Avatar {
     name_state: Option<crate::local_state::LocalBinding<String>>,
     identity: String,
     presence: Option<Color>,
-    hue: Option<PresenceHue>,
+    /// The member it shows, whose kind and hue pick the face ([`AvatarFace::of`]).
+    who: Option<crate::component::Person>,
     picture: Picture,
     image: Option<peniko::ImageData>,
     size: AvatarSize,
@@ -671,7 +728,6 @@ pub struct Avatar {
     neutral: bool,
     status: Option<PresenceStatus>,
     glyph: Option<crate::icons::Icon>,
-    agent: bool,
     side: f64,
     rect: Rect,
     dirty: bool,
@@ -699,7 +755,7 @@ impl Avatar {
             name_state: None,
             identity: identity.into(),
             presence: None,
-            hue: None,
+            who: None,
             picture: Picture::None,
             image: None,
             size: AvatarSize::Regular,
@@ -707,7 +763,6 @@ impl Avatar {
             neutral: false,
             status: None,
             glyph: None,
-            agent: false,
             side: 0.0,
             rect: Rect::ZERO,
             dirty: true,
@@ -729,15 +784,12 @@ impl Avatar {
         self
     }
 
-    /// Software, not a person: the agent's own face ([`AvatarFace::agent`]) in its presence
-    /// colour ([`Self::with_presence`], its client's hue), so it is never read as anyone's face.
+    /// `who`'s face as every surface shows it ([`AvatarFace::of`]).
     #[must_use]
-    pub fn agent(mut self) -> Self {
-        self.agent = true;
-        self.glyph = None;
-        self.square = true;
-        self.neutral = false;
-        self
+    pub fn of(who: crate::component::Person) -> Self {
+        let mut avatar = Self::person(who.name.clone(), who.identity.id());
+        avatar.who = Some(who);
+        avatar
     }
 
     #[must_use]
@@ -764,12 +816,6 @@ impl Avatar {
     #[must_use]
     pub fn with_presence(mut self, colour: Color) -> Self {
         self.presence = Some(colour);
-        self
-    }
-
-    #[must_use]
-    pub fn with_hue(mut self, hue: PresenceHue) -> Self {
-        self.hue = Some(hue);
         self
     }
 
@@ -835,7 +881,11 @@ impl Avatar {
     }
 
     fn face(&self) -> AvatarFace<'_> {
-        let mut face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        let mut face = match &self.who {
+            Some(who) => AvatarFace::of(who),
+            None => AvatarFace::new(&self.name, &self.identity),
+        }
+        .image(self.image.as_ref());
         // A glyph draws on the neutral square unless a colour is given: the colour comes after
         // it, so an agent's mark wears its client's hue.
         if let Some(glyph) = self.glyph {
@@ -844,17 +894,11 @@ impl Avatar {
         if let Some(colour) = self.presence {
             face = face.presence(colour);
         }
-        if let Some(hue) = self.hue {
-            face = face.hue(hue);
-        }
         if self.square {
             face = face.square();
         }
         if self.neutral {
             face = face.neutral();
-        }
-        if self.agent {
-            face = face.agent();
         }
         if let Some(status) = self.status {
             face = face.status(status);
@@ -867,7 +911,6 @@ impl Widget for Avatar {
     /// A person's mark: their picture where a page can load its address, their initials
     /// otherwise, and their name for a reader.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::Ground;
         if self.placeholder {
             cx.element("div");
             cx.attr("aria-hidden", "true");
@@ -888,28 +931,7 @@ impl Widget for Avatar {
             cx.picture();
             return;
         }
-        let initials = self.initials();
-        if initials.is_empty() {
-            return;
-        }
-        // The mark is a tinted disc with the initials on it; the initials are its picture, not
-        // its name, so a reader hears the person.
-        let fill = theme.tokens.colors.surfaces.raised;
-        cx.ground(Ground {
-            fill: Some(crate::composition::rgba8(fill)),
-            edge: None,
-            radius: if self.square {
-                f64::from(theme.tokens.radii.control)
-            } else {
-                self.side / 2.0
-            },
-        });
-        let style = initials_style(theme, self.side);
-        let ink = initials_fill(fill, theme);
-        let look =
-            crate::composition::TextLook::new(initials, &style, Some(ink)).with_max_lines(Some(1));
-        let part = cx.words("initials", "span", rect, look);
-        part.attrs.push(("aria-hidden", "true".into()));
+        self.face().compose(theme, rect, cx.node());
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1031,6 +1053,39 @@ mod tests {
             Rect::new(0.0, 0.0, 40.0, 40.0),
         );
         scene
+    }
+
+    /// What a face paints, to tell two faces apart.
+    fn drawn(scene: &Scene) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        let encoding = scene.encoding();
+        let tags = encoding.draw_tags.iter().map(|tag| tag.0).collect();
+        (tags, encoding.draw_data.clone(), encoding.path_data.clone())
+    }
+
+    #[test]
+    fn a_member_wears_one_face_on_every_surface() {
+        use crate::component::{Described, Person};
+        let theme = Theme::dark();
+        let agent = Person::new(tilo_actions::MemberId::agent("helper"), "Helper");
+        let mark = drawn(&paint_face(
+            AvatarFace::new("Helper", "helper").hue(agent.hue).agent(),
+            &theme,
+        ));
+        let initials = drawn(&paint_face(AvatarFace::new("Helper", "helper"), &theme));
+        assert_ne!(mark, initials, "the agent mark is not a letter");
+        assert_eq!(drawn(&paint_face(AvatarFace::of(&agent), &theme)), mark);
+        // A described avatar: a history row's, a tilolang `ui.Avatar`.
+        let props = AvatarProps {
+            who: Some(agent.clone()),
+            ..AvatarProps::default()
+        };
+        let described = Avatar::from_props("who", props);
+        assert_eq!(drawn(&paint_face(described.face(), &theme)), mark);
+        // A bot wears its own picture or initials on the rounded square.
+        let bot = Person::new(tilo_actions::MemberId::bot("greeter"), "Greeter");
+        assert!(AvatarFace::of(&bot).is_square());
+        let person = Person::new(tilo_actions::MemberId::person("ada"), "Ada");
+        assert!(!AvatarFace::of(&person).is_square());
     }
 
     fn tags(scene: &Scene, tag: DrawTag) -> usize {

@@ -87,7 +87,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **A call that waits for someone's approval splits the run there.** The writes before the wait
   end the run and are published as its action; the answer starts a new invocation, and what the
   action does after the approval is a second action. What the person approved is what they were
-  asked about, and a decline leaves the run's first part standing.
+  asked about, and a decline leaves the run's first part state.
 - **`many`** applies one action to many items as one change, so it refuses an action that calls
   another: that action makes a change per call.
 - **Journaled reads and writes.** A run journals every read of a resource and map, every write,
@@ -234,7 +234,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **`open(r)` on the platform, for now.** Until the workspace window model lands, the host app
   shows the opened window as the next column of its shell, through the default view of `r`'s
   type: beside the root's list, or in place of the root's content with Back; a narrow window
-  pushes it (`tilolang_tilo::instance` opens it, `tilo_ui_host::window` composes it). Opening never creates a second window for a
+  pushes it (`tilolang_tilo::instance` opens it, `tilo_app_window::window` composes it). Opening never creates a second window for a
   resource: there are no windows yet.
 - **Roots.** The host opens `roots[0]` of a package through its default view, over the
   per-workspace resource of that type (`tilolang_tilo::host::Package::main`), replacing the old
@@ -294,7 +294,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   appear; one in a card shows its preview. What the workspace publishes (`Publications`) and what
   search finds (`SearchIndex`) are kept by the live window and updated from the store's
   changes, read off the frame the first time.
-- **Patches outside a list apply to single widgets.** The reconciler (`tilo_ui_host::
+- **Patches outside a list apply to single widgets.** The reconciler (`tilo_app_window::
   reconcile`) updates a widget in place where it can take the change (a text, a heading, an
   image, a holder, a button's enabled state, an input keeps its own) and reconciles a
   container's children by key through the toolkit's slot operations: `Arranged` (`replace`,
@@ -372,7 +372,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   touches is met with wasmi; wasmtime AOT would add a compiler and code cache to the platform
   for that. The time is in the host (store reads behind imports, search, publication), which is
   where the work goes. Revisit when a profile shows guest time as the larger share.
-- **One seam for engines.** What the runtime asks of an engine is a private trait in `engine.rs`:
+- **One boundary for engines.** What the runtime asks of an engine is a private trait in `engine.rs`:
   compile bytes into a shareable module, bind the import table, instantiate with fuel and a
   memory limit, call one export with a host context in the store. The module cache, instance
   pools, profile, import dispatch and the wording of every `CallError` sit above it, once, so a
@@ -416,7 +416,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   seeding allocated). `--budgets` holds the records to the budgets on the
   machine it runs on (open p95 300 ms; keystroke, press and peer p95 2 ms; scroll p50 1 ms; no
   idle wakeups, at 10k items; memory 60 MiB at 1k) and fails when one is over: a recorded local
-  check, since times depend on the machine. `tests/budgets.rs` gates on the work each scenario
+  check, since times depend on the machine. `tests/budgets.rs` waits for the work each scenario
   records instead (see "Counted, not timed" below).
 - **Where it stands** (release, aarch64, 10k items, 20 samples, p95; the runtime's share, the
   bench drives no window). notes: open 48 ms, keystroke 0.48 ms, peer edit 0.29 ms, scroll p50

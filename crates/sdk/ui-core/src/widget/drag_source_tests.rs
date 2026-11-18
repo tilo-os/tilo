@@ -149,7 +149,7 @@ fn a_press_on_a_source_outside_a_scroll_lifts_it_past_the_threshold() {
 
 #[test]
 fn a_press_on_a_source_inside_a_scroll_lifts_it_and_keeps_it_past_the_viewport() {
-    // The same source inside a scroll view with far more content than it shows, standing in the
+    // The same source inside a scroll view with far more content than it shows, in the
     // layouts a view composes around it (a page, a stack): a press over the source is the
     // source's, and what it holds lifts as it does anywhere else.
     let mut laid = Laid::of(

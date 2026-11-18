@@ -412,6 +412,7 @@ turn-unanswered = The agent stopped before it answered
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } mentioned you in ‘{ $place }’
 mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice-direct = { $name } wrote to you
 mention-notice = { $name } mentioned you
 mention-notice-someone = Someone
 mention-notice-open = Open

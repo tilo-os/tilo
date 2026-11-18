@@ -38,7 +38,7 @@ wayland-client.workspace = true
 wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 rustix = { workspace = true, features = ["event"] }
 # The sign-in screen's clock reads local time, as the lock screen's does.
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 # Battery level and charging state for the status corner, read from sysfs.
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 tilo-paths.workspace = true

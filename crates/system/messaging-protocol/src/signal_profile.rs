@@ -285,7 +285,7 @@ impl EncryptedSignalProfile {
     /// Seal-only replacement of the exact issued lease after the native host
     /// proves every working-profile writer stopped. This returns no plaintext
     /// and reads no credential, including when original authority has retired.
-    /// The storage layer does not construct a runtime quiescence witness.
+    /// The storage layer does not construct a runtime quiescence proof.
     pub fn checkpoint_files(
         &mut self,
         mut image: ProfileImage,

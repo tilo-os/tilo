@@ -759,10 +759,21 @@ impl Widget for Chart {
         "Chart"
     }
 
+    /// Named by its title, else by what its legend says of each series.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let name = if self.title.is_empty() {
+            self.series
+                .iter()
+                .map(|series| series.legend.as_str())
+                .filter(|legend| !legend.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            self.title.clone()
+        };
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Image)
-                .with_optional_name((!self.title.is_empty()).then(|| self.title.clone())),
+                .with_optional_name((!name.is_empty()).then_some(name)),
         )
     }
 }
@@ -898,7 +909,7 @@ impl Sparkline {
     }
 
     /// Where each sample of `data` lands inside `rect` — the same projection
-    /// [`Self::paint`] draws, so a host can seat labels or marks on the line.
+    /// [`Self::paint`] draws, so a host can place labels or marks on the line.
     pub fn points<T: Copy + Into<f64>>(rect: Rect, data: &[T], range: TrendRange) -> Vec<Point> {
         let len = data.len();
         data.iter()

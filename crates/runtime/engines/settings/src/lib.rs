@@ -1,5 +1,6 @@
 //! Settings itself and the libraries only Settings uses, as its own library in the
-//! runtime bundle (`libtilo_settings_engine.so`).
+//! runtime bundle (`libtilo_settings_engine.so`). Model Providers, the
+//! administration panel as a window of its own, starts from it too.
 //!
 //! Like `runtime-dylib` it re-exports what it provides, which records it
 //! as provided by this library for the apps' `-C prefer-dynamic` link.
@@ -31,6 +32,13 @@ pub use zone_globe;
 ui::engine_main!(
     settings::SettingsShell,
     init = settings::enable_provider_administration
+);
+
+#[cfg(feature = "thin")]
+ui::engine_main!(
+    model_providers::ProviderSettingsApp,
+    init = || model_providers::ProviderSettingsApp.init(),
+    entry = tilo_model_providers_engine_main
 );
 
 /// The engine's self-check ([`self_check`]) for its check binary, by the

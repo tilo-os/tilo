@@ -346,7 +346,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             offered(&run),
-            vec![wire::DetailAction::UndoRecord; 2],
+            vec![wire::DetailAction::UndoEntry; 2],
             "each document undoes on its own; the command leaves no history"
         );
         let detail = connection.pane.serve_detail(
@@ -375,7 +375,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             offered(&run),
-            vec![wire::DetailAction::UndoRecord],
+            vec![wire::DetailAction::UndoEntry],
             "the document still open undoes on its own"
         );
     }
@@ -459,7 +459,7 @@ tilo_test_env::scenario! {
         let action = &run.actions[0];
         assert_eq!(
             action.undo.as_ref().map(|undo| undo.action),
-            Some(wire::DetailAction::UndoRecord)
+            Some(wire::DetailAction::UndoEntry)
         );
         let query = wire::ResourceQuery {
             range: run.range.clone(),

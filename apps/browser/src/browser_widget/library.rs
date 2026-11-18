@@ -96,8 +96,9 @@ impl BrowserWidget {
         let mut groups: Vec<(String, Vec<Element>)> = Vec::new();
         for entry in entries.into_iter().take(ROW_LIMIT) {
             let when = visit_time(entry.last_visit);
-            let heading =
-                when.map_or_else(String::new, |when| day_heading(when.date_naive(), today));
+            let heading = when
+                .as_ref()
+                .map_or_else(String::new, |when| day_heading(when.date(), today));
             let id = history_resource_id(&entry.url);
             let site = crate::omnibox::display_url(&entry.url);
             let host = site
@@ -121,7 +122,7 @@ impl BrowserWidget {
                 row = row.on_action(binding);
             }
             // One page can be forgotten without losing the rest, through the same verb that
-            // clears all of them. A window that keeps no history record offers no removal.
+            // clears all of them. A window that keeps no history resource offers no removal.
             let forget: Vec<Button> = self
                 .unit_binding(&id, "forget-visit")
                 .map(|binding| {
@@ -153,7 +154,7 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// Forget one visited page in the person's record, and show the history it leaves: the
+    /// Forget one visited page in the person's resource, and show the history it leaves: the
     /// same verb the Settings row clears all of them with, for one page.
     pub(super) fn forget_visit(&mut self, url: &str) -> Result<(), String> {
         let record = self
@@ -508,16 +509,17 @@ impl BrowserWidget {
     }
 }
 
-fn visit_time(unix_secs: u64) -> Option<chrono::DateTime<chrono::Local>> {
+fn visit_time(unix_secs: u64) -> Option<jiff::Zoned> {
     let secs = i64::try_from(unix_secs).ok()?;
-    chrono::DateTime::from_timestamp(secs, 0).map(|utc| utc.with_timezone(&chrono::Local))
+    jiff::Timestamp::from_second(secs)
+        .ok()
+        .map(|utc| utc.to_zoned(jiff::tz::TimeZone::system()))
 }
 
 /// The heading of the day a visit falls on, seen from `today`: Today and Yesterday, a
 /// weekday within the past week, otherwise the date.
-fn day_heading(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
-    use chrono::Datelike as _;
-    let days = (day - today).num_days();
+fn day_heading(day: jiff::civil::Date, today: jiff::civil::Date) -> String {
+    let days = i64::from(day.since(today).map_or(0, |span| span.get_days()));
     // A visit stamped ahead of this clock (another device's) is today's.
     if days >= 0 {
         return ui::format::near_day(0).unwrap_or_default();
@@ -534,19 +536,19 @@ fn day_heading(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
 #[cfg(test)]
 mod history_day_tests {
     use super::day_heading;
-    use chrono::NaiveDate;
+    use jiff::civil::Date;
 
     #[test]
     fn history_days_read_as_a_person_names_them() {
-        let today = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
-        let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        let today = Date::new(2026, 6, 30).unwrap();
+        let day = |m, d| Date::new(2026, m, d).unwrap();
         assert_eq!(day_heading(today, today), "Today");
         assert_eq!(day_heading(day(7, 1), today), "Today");
         assert_eq!(day_heading(day(6, 29), today), "Yesterday");
         assert_eq!(day_heading(day(6, 26), today), "Friday");
         assert_eq!(day_heading(day(6, 1), today), "Monday, June 1");
         assert_eq!(
-            day_heading(NaiveDate::from_ymd_opt(2025, 12, 24).unwrap(), today),
+            day_heading(Date::new(2025, 12, 24).unwrap(), today),
             "Wednesday, December 24, 2025"
         );
     }

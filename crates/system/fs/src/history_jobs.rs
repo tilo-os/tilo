@@ -203,9 +203,9 @@ impl HistoryJobs {
     /// Hold every job started from now on before it fetches anything, until
     /// the returned semaphore gets a permit.
     pub(super) fn hold(&self) -> Arc<tokio::sync::Semaphore> {
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        *self.hold.lock_recover() = Some(Arc::clone(&gate));
-        gate
+        let check = Arc::new(tokio::sync::Semaphore::new(0));
+        *self.hold.lock_recover() = Some(Arc::clone(&check));
+        check
     }
 }
 

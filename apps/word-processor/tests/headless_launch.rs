@@ -115,7 +115,7 @@ fn positional_markdown_reaches_production_headless_root_without_stale_body_merge
         );
         assert!(
             !text.contains(absent),
-            "headless merged an obsolete body despite native in-memory record policy"
+            "headless merged an obsolete body despite native in-memory resource policy"
         );
         assert_eq!(std::fs::read_to_string(&source).unwrap(), contents);
     }

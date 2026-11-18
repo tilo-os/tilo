@@ -938,6 +938,7 @@ enum Leading {
 struct FactAvatar {
     name: String,
     identity: String,
+    who: Option<crate::component::Person>,
     image: Option<ImageData>,
     square: bool,
     glyph: Option<Icon>,
@@ -967,7 +968,11 @@ impl AuthorCell {
 
 impl FactAvatar {
     fn face(&self) -> AvatarFace<'_> {
-        let face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        let face = match &self.who {
+            Some(who) => AvatarFace::of(who),
+            None => AvatarFace::new(&self.name, &self.identity),
+        }
+        .image(self.image.as_ref());
         let face = if self.square { face.square() } else { face };
         match self.glyph {
             Some(glyph) => face.glyph(glyph),
@@ -2029,6 +2034,32 @@ impl ListRow {
         self.selected
     }
 
+    /// The row's parts as a page shows them ([`crate::composition::HtmlCode`]).
+    pub(crate) fn compose_html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let check = cx.semantics().and_then(|node| {
+            node.children
+                .iter()
+                .find(|child| child.role == Role::Checkbox)
+                .cloned()
+        });
+        // Its trailing control is a widget of its own; its words, icons and
+        // marks stand where the canvas paints them, around it.
+        cx.children();
+        cx.place_children();
+        if self.card {
+            // A card's surface, as the canvas lays it under the row.
+            let theme = cx.theme();
+            let raised = theme.tokens.colors.surfaces.raised;
+            cx.ground(crate::composition::Ground {
+                fill: Some(crate::composition::rgba8(raised)),
+                edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
+                radius: crate::widget::card::CardMetrics::new(theme).radius,
+            });
+        }
+        let band = self.text_band();
+        self.with_face(|face| face.compose(cx, band, check));
+    }
+
     fn reveal_actions(&self) -> bool {
         (self.selected && !self.environment.supports_hover()) || self.armed_action.is_some()
     }
@@ -2071,20 +2102,10 @@ impl ListRow {
             presence.draw_writes_in(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 (Some(field), item, &self.title),
-                None,
+                (None, None),
                 &mut |text, _, start, end| {
-                    let (bands, caret, ink) = face.title_span(band, (start, end), text, theme);
-                    let caret = caret.unwrap_or_else(|| {
-                        let last = ink.last().copied().unwrap_or(band);
-                        Rect::new(last.x1, last.y0, last.x1 + 1.5, last.y1)
-                    });
-                    (
-                        bands,
-                        Some(
-                            crate::presence::LabeledCaret::within(caret, band.y0)
-                                .among(ink, band.x1),
-                        ),
-                    )
+                    let (bands, caret) = face.title_span(band, (start, end), text, theme);
+                    (bands, Some(caret))
                 },
             );
         });
@@ -2533,14 +2554,10 @@ impl Widget for ListRow {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("li");
         cx.selected(self.selected);
-        let theme = cx.theme();
-        let look = crate::composition::TextLook::new(
-            self.title.clone(),
-            &theme.text(TextRole::Body),
-            Some(theme.tokens.colors.text_primary),
-        )
-        .with_max_lines(Some(1));
-        cx.text(look);
+        match crate::composition::HTML_CODE.get() {
+            Some(code) => (code.list_row)(self, cx),
+            None => cx.picture(),
+        }
     }
 
     crate::provides!(
@@ -3232,7 +3249,10 @@ impl Widget for ListRow {
             return self.perform_action(action, &[], state, path);
         }
         if target.strip_prefix(id.as_str()) == Some("/check") {
-            return matches!(action, crate::a11y::Action::Activate) && self.toggle_checkbox();
+            return matches!(
+                action,
+                crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+            ) && self.toggle_checkbox();
         }
         let Some(index) = target
             .strip_prefix(id.as_str())
@@ -3347,6 +3367,8 @@ use trailing::Trailing;
 mod colour;
 
 mod paint;
+
+mod html;
 pub(crate) use paint::paint_code_badge;
 
 mod spans;

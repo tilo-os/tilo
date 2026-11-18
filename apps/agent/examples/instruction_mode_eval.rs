@@ -64,7 +64,7 @@ struct Case {
 #[derive(Debug, Deserialize, Serialize)]
 #[expect(
     clippy::struct_field_names,
-    reason = "the record's field names are the JSON keys a recording is read back by"
+    reason = "the resource's field names are the JSON keys a recording is read back by"
 )]
 struct Decision {
     /// The profile and model that decided, as the gateway names them.

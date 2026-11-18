@@ -3,7 +3,7 @@
 //! Chat asks a shared note for its link; any window may ask a record another app keeps for one of
 //! its actions (provider `record:<app>:<record>`). On a native desktop the broker hands that to
 //! whatever serves the record. A page reaches the workspace's host, which runs a record's actions
-//! whoever has it open and decides each by the asking person's own standing: the page grants
+//! whoever has it open and decides each by the asking person's own access: the page grants
 //! nothing itself. The desktop's session carries such an action here
 //! ([`tilo_desktop_surface::session::DesktopSession::serve_workspace_api`]).
 
@@ -11,20 +11,20 @@ use std::sync::Arc;
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::remote::SessionActions;
 
 /// The workspace's host as this page reaches it now. The page's session with its host comes and
 /// goes, so the host's action API is looked up for every request.
-pub(in crate::browser) struct WorkspaceHost {
+pub(in crate::browser) struct KeepingDevice {
     peer: u32,
     workspace: WorkspaceId,
 }
 
-impl WorkspaceHost {
+impl KeepingDevice {
     /// The host of the workspace `config`'s page shows; `None` for a page with no workspace host.
     pub(in crate::browser) fn of(config: &super::super::Config) -> Option<Arc<Self>> {
         Some(Arc::new(Self {
@@ -33,21 +33,21 @@ impl WorkspaceHost {
         }))
     }
 
-    fn api(&self) -> Result<SessionActions, ActionHostError> {
+    fn api(&self) -> Result<SessionActions, ActionCallError> {
         crate::peer_sync::actions_of(self.peer, self.workspace).ok_or_else(|| {
-            ActionHostError::Unavailable {
+            ActionCallError::Unavailable {
                 reason: "The workspace's host can't be reached from here right now".into(),
             }
         })
     }
 }
 
-impl ActionHost for WorkspaceHost {
+impl ActionProvider for KeepingDevice {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         match self.api() {
             Ok(api) => api.query(caller, query),
             Err(error) => Pending::ready(Err(error)),
@@ -58,7 +58,7 @@ impl ActionHost for WorkspaceHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         match self.api() {
             Ok(api) => api.invoke(caller, request),
             Err(error) => Pending::ready(Err(error)),
@@ -73,7 +73,7 @@ impl ActionHost for WorkspaceHost {
         self.api().ok()?.next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         match self.api() {
             Ok(api) => api.cancel(caller, id),
             Err(error) => Pending::ready(Err(error)),

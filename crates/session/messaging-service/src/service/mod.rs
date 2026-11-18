@@ -1,4 +1,4 @@
-//! The service: the person's custody and vault, their running accounts, the
+//! The service: the person's ownership and vault, their running accounts, the
 //! one enrollment flow per service, and the apps it serves.
 
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ use crate::wire::{self, AccountView, AppLink, SetupView, Snapshot};
 
 mod consent;
 mod flow;
-mod gate;
+mod guard;
 mod identity;
 mod records;
 mod serve;
@@ -31,8 +31,8 @@ mod whatsapp;
 pub use serve::listen;
 
 use flow::Flow;
-use gate::{Gate, Running};
-use identity::{Credential, Custody, Identity};
+use guard::{AccountGuard, Running};
+use identity::{Credential, Identity, Ownership};
 
 /// The service's four flows.
 struct Flows {
@@ -42,7 +42,7 @@ struct Flows {
 }
 
 pub struct Service {
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     vault: CredentialOwner,
     session: SessionLink,
     registry: Arc<dyn MessagingRegistry>,
@@ -67,7 +67,7 @@ impl Service {
     /// state under `profile`, asking the compositor through `session`.
     ///
     /// # Errors
-    /// The person's custody cannot be read.
+    /// The person's ownership cannot be read.
     pub fn new(
         actor: &str,
         device: &str,
@@ -75,26 +75,26 @@ impl Service {
         session: SessionLink,
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
-        let custody = Arc::new(Custody::load(actor, device)?);
+        let ownership = Arc::new(Ownership::load(actor, device)?);
         let vault = CredentialOwner::deferred(actor, device, accounts::SecretStore::open)
             .map_err(|_| "the vault refuses this person or device".to_owned())?;
-        Self::assemble(custody, vault, profile, session, runtime)
+        Self::assemble(ownership, vault, profile, session, runtime)
     }
 
     fn assemble(
-        custody: Arc<Custody>,
+        ownership: Arc<Ownership>,
         vault: CredentialOwner,
         profile: &std::path::Path,
         session: SessionLink,
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
-        let actor = custody.actor().to_owned();
+        let actor = ownership.actor().to_owned();
         let actor = actor.as_str();
         let registry =
             tilo_messaging::messaging_registry(actor).map_err(|_| "invalid person".to_owned())?;
         let messaging = registry.clone().client();
         let service = Arc::new_cyclic(|this: &Weak<Self>| Self {
-            custody,
+            ownership,
             vault,
             session,
             registry,
@@ -192,7 +192,7 @@ impl Service {
         let accounts = running
             .iter()
             .map(|account| {
-                let id = account.gate().account();
+                let id = account.guard().account();
                 AccountView {
                     state: self.messaging.account_state(&id),
                     groups: self.messaging.groups(&id).is_some(),
@@ -211,31 +211,31 @@ impl Service {
         enrollments.extend(self.flows.whatsapp.views());
         enrollments.extend(self.flows.sms.views());
         Snapshot {
-            actor: self.custody.actor().into(),
+            actor: self.ownership.actor().into(),
             accounts,
             enrollments,
             proposals: *self.vault_changed.borrow(),
         }
     }
 
-    /// A new running account for `identity`, gated by its grant and the
+    /// A new running account for `identity`, guarded by its grant and the
     /// person's records, registered with the apps' client.
     pub(crate) fn account<A: Running + 'static>(
         &self,
         identity: &Identity,
         credential: Credential,
         scope: &str,
-        make: impl FnOnce(Arc<Gate>, Arc<AccountSupervisor>) -> A,
+        make: impl FnOnce(Arc<AccountGuard>, Arc<AccountSupervisor>) -> A,
     ) -> Result<Arc<A>, SendError> {
         let identity = identity.running();
         let authority =
             records::CurrentAuthority::new(&identity, &credential, scope, self.session.clone())?;
-        let gate = Gate::new(identity, credential, authority)?;
+        let guard = AccountGuard::new(identity, credential, authority)?;
         let supervisor =
-            AccountSupervisor::new_with_authority(&gate.identity.owner, Some(gate.clone()))?;
-        let account = Arc::new(make(gate, supervisor));
+            AccountSupervisor::new_with_authority(&guard.identity.owner, Some(guard.clone()))?;
+        let account = Arc::new(make(guard, supervisor));
         self.registry
-            .register(account.gate().account(), account.client())
+            .register(account.guard().account(), account.client())
             .map_err(|_| SendError::AlreadyReserved)?;
         self.running
             .lock()
@@ -250,7 +250,7 @@ impl Service {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .any(|running| &running.gate().account() == account)
+            .any(|running| &running.guard().account() == account)
     }
 
     /// The directory an account's private state lives in; never named by a
@@ -299,7 +299,7 @@ impl Service {
 
     /// The session became usable or stopped being so.
     fn session(self: &Arc<Self>, active: bool, generation: u64) {
-        self.custody.session(active, generation);
+        self.ownership.session(active, generation);
         if active && !self.restored.swap(true, Ordering::AcqRel) {
             let service = self.clone();
             self.runtime.spawn(async move {

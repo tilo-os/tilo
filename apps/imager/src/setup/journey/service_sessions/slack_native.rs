@@ -189,7 +189,7 @@ fn server(
 }
 
 #[test]
-fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_custody() {
+fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_ownership() {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let marker = std::fs::OpenOptions::new()
         .read(true)
@@ -266,7 +266,7 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
                 .permissions(std::fs::Permissions::from_mode(0o700))
                 .tempdir()
                 .unwrap();
-            let destination = target.path().join("custody");
+            let destination = target.path().join("ownership");
             assert!(
                 imager_backend::setup::service_sessions::import(
                     &artifact,
@@ -289,7 +289,7 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
             )
             .unwrap();
             let account = accounts::AccountId::from(declaration.sessions[0].id.clone());
-            let session = account_custody::Custodian::for_root(Some(destination))
+            let session = account_credentials::CredentialStore::for_root(Some(destination))
                 .service_session(&account, [7; 32], "isolated-slack-operation")
                 .unwrap();
             assert_eq!(session.cookies[0].value, "synthetic-encrypted-session");

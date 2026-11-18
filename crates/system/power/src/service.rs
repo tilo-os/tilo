@@ -259,7 +259,7 @@ pub struct PowerService {
     /// The logind `idle:sleep` lock mirroring the registry, present iff the registry
     /// currently holds any inhibitor.
     idle_sleep_lock: Option<LogindInhibitor>,
-    /// The registry hold standing in for other programs' logind block locks, with the
+    /// The registry hold in place of other programs' logind block locks, with the
     /// [`foreign_sleep_hold`] it was taken for.
     foreign_hold: Option<((Vec<String>, u32), InhibitToken)>,
     /// Delay inhibitor held while awake; it is released only after the compositor
@@ -772,7 +772,7 @@ impl PowerService {
     }
 
     /// Issue the suspend request, if logind allows it. The inhibitor registry is the
-    /// compositor's gate for idle suspend; lid and critical suspends are deliberate
+    /// compositor's check for idle suspend; lid and critical suspends are deliberate
     /// and proceed regardless.
     async fn start_suspend(&mut self) {
         if self.suspend_task.is_some() {

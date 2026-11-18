@@ -7,7 +7,7 @@ let
   package = flake.packages.x86_64-linux.tilo-session;
 in {
   package = package;
-  gate = pkgs.runCommand "tilo-merge-candidate-receipt" {
+  check = pkgs.runCommand "tilo-merge-candidate-receipt" {
     inherit candidate;
     _hydraAggregate = true;
     constituents = [ "package" ];

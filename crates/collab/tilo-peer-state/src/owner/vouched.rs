@@ -1,13 +1,13 @@
 //! Workspaces a device holds on its host's word rather than an enrollment of its
 //! own: a page reaches its workspaces through its person's host, which answers
 //! each subscription with the workspace's membership answer
-//! ([`tilo_relay_protocol::Envelope::WorkspaceBootstrap`]) over the session the
+//! ([`tilo_server_protocol::Envelope::WorkspaceBootstrap`]) over the session the
 //! page authenticated to it. The page holds the workspace from that answer as a
 //! native device holds a workspace it enrolled in; the workspace's governance arrives
 //! with the replay that follows and is admitted like any other.
 use crate::StatePeer;
 use crate::join::JoinTransportResponse;
-use crate::owner::record::{StoredVouch, StoredWorkspace};
+use crate::owner::stored::{StoredVouch, StoredWorkspace};
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
@@ -124,7 +124,7 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         let record = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: answer.host,
             device: device.clone(),
@@ -142,7 +142,7 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_ledger: crate::join_ledger::JoinLedger::default(),
+            join_log: crate::join_log::JoinLog::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
@@ -218,7 +218,7 @@ impl NativeWorkspaceOwner {
         ))
         .map_err(|error| error.to_string())?;
         let record = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: bootstrap.host.clone(),
             device: device.clone(),
@@ -236,7 +236,7 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_ledger: crate::join_ledger::JoinLedger::default(),
+            join_log: crate::join_log::JoinLog::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;

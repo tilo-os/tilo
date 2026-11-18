@@ -1,5 +1,5 @@
 //! Clipboard and primary selection across Wayland clients, X11 clients and
-//! the session's hosted surface apps.
+//! the session's surface apps.
 //!
 //! | protocol | who may bind | what it is for |
 //! |---|---|---|
@@ -8,7 +8,7 @@
 //! | `zwlr_data_control_manager_v1` | trusted clients only | clipboard managers |
 //! | `ext_data_control_manager_v1` | trusted clients only | ditto, the successor |
 //!
-//! `wl_data_device` is focus-gated by the protocol itself, so every client may
+//! `wl_data_device` is focus-guarded by the protocol itself, so every client may
 //! bind it. Data control sees every selection unconditionally, which would
 //! let a sandboxed app harvest one-time codes and passwords off the
 //! clipboard, so only clients the session trusts see it (a clipboard
@@ -17,18 +17,19 @@
 //! Xwayland's selections are bridged both ways: an X11 copy becomes the
 //! seat's selection (served by the X11 window manager), a Wayland copy is
 //! offered to X11 clients, and an X11 client reads only while an X11 window
-//! has keyboard focus. Hosted surface apps are no Wayland clients: they set
+//! has keyboard focus. Surface apps are no Wayland clients: they set
 //! a selection the compositor serves itself
 //! ([`crate::Compositor::set_selection`]) and read the current one through a
 //! pipe ([`crate::Compositor::receive_selection`]), never blocking on a
 //! client.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use smithay::input::Seat;
+use smithay::reexports::wayland_server::Client;
+use smithay::utils::Serial;
 use smithay::wayland::selection::data_device::{
     clear_data_device_selection, current_data_device_selection_userdata,
     request_data_device_client_selection, set_data_device_selection,
@@ -46,19 +47,15 @@ use smithay::xwayland::xwm::XwmId;
 
 use crate::state::{ClientState, State};
 
-/// UTF-8 text, the form every text offer is also given in.
-pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
+pub use tilo_x11_transfer::MAX_SELECTION_BYTES;
+pub use tilo_x11_transfer::TEXT_MIME;
+use tilo_x11_transfer::{MAX_MIMES, TEXT_MIMES, is_text_mime, valid_mime};
+pub(crate) use tilo_x11_transfer::{normalized_mimes, serve};
 
-/// The names text goes by, most specific first: X11 clients ask for the older ones through
-/// Xwayland.
-const TEXT_MIMES: [&str; 5] = [TEXT_MIME, "text/plain", "UTF8_STRING", "STRING", "TEXT"];
-
-/// Cap on the formats one offer advertises.
-const MAX_MIMES: usize = 16;
-/// Cap on one format's name.
-const MAX_MIME_BYTES: usize = 128;
-/// Cap on what a hosted app's offer holds in all.
-pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+/// How long after a connection arrives the session's keeper may re-assert the selection its app
+/// owned: long enough for the new desktop to hand out its globals, short enough that the person
+/// cannot have copied into anything else first.
+const KEEPER_CLAIM_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Which selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,13 +84,29 @@ impl From<Selection> for SelectionTarget {
     }
 }
 
+impl Selection {
+    /// Its place in the two-entry tables this module keeps.
+    fn index(self) -> usize {
+        match self {
+            Self::Clipboard => 0,
+            Self::Primary => 1,
+        }
+    }
+}
+
+/// A selection a session-handed connection re-asserted: the time its app set it, which orders
+/// two keepers' claims.
+struct Claim {
+    at: u32,
+}
+
 /// Who serves a selection the compositor set on the seat.
 #[derive(Clone, Debug)]
 pub enum Served {
     /// An X11 client of `xwm` 's display, through its window manager.
     X11(XwmId),
     /// A hosted surface app: these bytes per format.
-    Host(Arc<BTreeMap<String, Vec<u8>>>),
+    Surface(Arc<BTreeMap<String, Vec<u8>>>),
 }
 
 /// The compositor's side of the selections: the data-control globals and what each selection offers
@@ -106,6 +119,10 @@ pub(crate) struct Selections {
     /// How often each selection changed hands: a snapshot of `offered` and this number tells a new
     /// selection from none.
     changes: [u64; 2],
+    /// The keeper claim on each selection, when one is there.
+    claims: [Option<Claim>; 2],
+    /// The claim accepted for the request being handled, which `new_selection` keeps.
+    pending: [Option<Claim>; 2],
 }
 
 impl Selections {
@@ -123,6 +140,8 @@ impl Selections {
             ext: ExtDataControlState::new::<State, _>(display, Some(primary), trusted),
             offered: [Vec::new(), Vec::new()],
             changes: [0; 2],
+            claims: [None, None],
+            pending: [None, None],
         }
     }
 
@@ -152,6 +171,50 @@ impl Selections {
         }
     }
 
+    /// Whether `client` may set `selection` without holding the keyboard: a session-handed
+    /// connection's one claim, at the time its app's copy was made, while nothing else owns the
+    /// selection — or a keeper's own earlier claim, which a later copy replaces.
+    fn may_claim(&mut self, selection: Selection, client: &Client, at: u32) -> bool {
+        let Some(data) = client.get_data::<ClientState>() else {
+            return false;
+        };
+        if !data.handed() || data.attached().elapsed() > KEEPER_CLAIM_WINDOW {
+            return false;
+        }
+        // One claim per connection and selection: an attempt that loses is spent too.
+        if data.spend_claim(selection) {
+            return false;
+        }
+        let index = selection.index();
+        let accepted = match self.claims.get(index).and_then(Option::as_ref) {
+            Some(claim) => self.changes(selection) > 0 && Serial::from(claim.at) < Serial::from(at),
+            None => self.changes(selection) == 0,
+        };
+        if accepted && let Some(pending) = self.pending.get_mut(index) {
+            *pending = Some(Claim { at });
+        }
+        accepted
+    }
+
+    /// The claim the request being handled was accepted for, if any.
+    fn take_pending(&mut self, selection: Selection) -> Option<Claim> {
+        self.pending
+            .get_mut(selection.index())
+            .and_then(Option::take)
+    }
+
+    /// A client set `selection`: a keeper claim holds only when this was its own request.
+    fn keep_claim(&mut self, selection: Selection, claim: Option<Claim>) {
+        if let Some(kept) = self.claims.get_mut(selection.index()) {
+            *kept = claim;
+        }
+    }
+
+    /// `selection` is set by something other than a keeper's claim.
+    fn clear_claim(&mut self, selection: Selection) {
+        self.keep_claim(selection, None);
+    }
+
     /// The formats `selection` offers now.
     pub(crate) fn offered(&self, selection: Selection) -> &[String] {
         let [clipboard, primary] = &self.offered;
@@ -160,37 +223,6 @@ impl Selections {
             Selection::Primary => primary,
         }
     }
-}
-
-pub(crate) fn is_text_mime(mime: &str) -> bool {
-    TEXT_MIMES.contains(&mime)
-}
-
-fn valid_mime(mime: &str) -> bool {
-    !mime.is_empty()
-        && mime.len() <= MAX_MIME_BYTES
-        && !mime.chars().any(|c| c.is_control() || c.is_whitespace())
-}
-
-/// The formats an offer advertises: valid names only, bounded, and text under every name text goes
-/// by, UTF-8 first so old clients do not pick an ambiguous X11 alias.
-pub(crate) fn normalized_mimes(mimes: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut mimes: Vec<String> = mimes
-        .into_iter()
-        .filter(|mime| valid_mime(mime))
-        .take(MAX_MIMES)
-        .collect();
-    if mimes.iter().any(|mime| is_text_mime(mime)) {
-        for alias in TEXT_MIMES {
-            if !mimes.iter().any(|mime| mime == alias) && mimes.len() < MAX_MIMES {
-                mimes.push(alias.to_owned());
-            }
-        }
-    }
-    mimes.sort();
-    mimes.dedup();
-    mimes.sort_by_key(|mime| (mime != TEXT_MIME, mime.clone()));
-    mimes
 }
 
 /// The bytes an offer holds for `mime` , text under any of its names.
@@ -203,9 +235,9 @@ pub(crate) fn value_for<'a>(values: &'a BTreeMap<String, Vec<u8>>, mime: &str) -
     })
 }
 
-/// A hosted app's offer as the compositor keeps it: valid formats, within [`MAX_SELECTION_BYTES`];
+/// A surface app's offer as the compositor keeps it: valid formats, within [`MAX_SELECTION_BYTES`];
 /// `None` when it holds nothing to offer.
-pub(crate) fn host_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<String, Vec<u8>>> {
+pub(crate) fn surface_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<String, Vec<u8>>> {
     let mut total = 0usize;
     let mut values = BTreeMap::new();
     for (mime, bytes) in offer.into_iter().take(MAX_MIMES) {
@@ -221,27 +253,18 @@ pub(crate) fn host_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<Strin
     (!values.is_empty()).then_some(values)
 }
 
-/// Write `bytes` to a reader's pipe off the loop: a reader that is slow or never reads must not
-/// stall the compositor. Closing the pipe is the end.
-pub(crate) fn serve(fd: OwnedFd, bytes: Vec<u8>) {
-    std::thread::spawn(move || {
-        if let Err(error) = std::fs::File::from(fd).write_all(&bytes) {
-            tracing::debug!(%error, "selection reader went away mid-transfer");
-        }
-    });
-}
-
 impl State {
-    /// Put a hosted app's offer on the seat (an empty one clears the selection when a hosted app
+    /// Put a surface app's offer on the seat (an empty one clears the selection when a surface app
     /// owns it).
-    pub(crate) fn set_host_selection(
+    pub(crate) fn set_surface_selection(
         &mut self,
         selection: Selection,
         offer: Vec<(String, Vec<u8>)>,
     ) {
         let display = self.display.clone();
-        let Some(values) = host_offer(offer) else {
-            if matches!(self.served(selection), Some(Served::Host(_))) {
+        let Some(values) = surface_offer(offer) else {
+            if matches!(self.served(selection), Some(Served::Surface(_))) {
+                self.selections.clear_claim(selection);
                 match selection {
                     Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
                     Selection::Primary => clear_primary_selection(&display, &self.seat),
@@ -254,7 +277,8 @@ impl State {
             return;
         };
         let mimes = normalized_mimes(values.keys().cloned());
-        let served = Served::Host(Arc::new(values));
+        self.selections.clear_claim(selection);
+        let served = Served::Surface(Arc::new(values));
         match selection {
             Selection::Clipboard => {
                 set_data_device_selection(&display, &self.seat, mimes.clone(), served);
@@ -287,7 +311,7 @@ impl State {
         fd: OwnedFd,
     ) -> Result<(), String> {
         match self.served(selection) {
-            Some(Served::Host(values)) => {
+            Some(Served::Surface(values)) => {
                 let bytes = value_for(&values, mime)
                     .ok_or_else(|| format!("the selection offers no {mime}"))?;
                 serve(fd, bytes.to_vec());
@@ -329,7 +353,7 @@ impl State {
 
     /// Tell the displays what `selection` offers now (`None`: nothing).
     /// An X11 client's copy stays on its display: the apps of its workspace read it there, and no
-    /// other display is told of it. What a Wayland client or a hosted app copied goes to every
+    /// other display is told of it. What a Wayland client or a surface app copied goes to every
     /// display, as it does to every Wayland client.
     fn offer_to_x11(&mut self, selection: Selection, mimes: Option<&[String]>) {
         let owner = match self.served(selection) {
@@ -384,6 +408,7 @@ impl State {
         mimes: Vec<String>,
     ) {
         let display = self.display.clone();
+        self.selections.clear_claim(selection);
         match selection {
             Selection::Clipboard => {
                 set_data_device_selection(&display, &self.seat, mimes.clone(), Served::X11(xwm));
@@ -401,6 +426,7 @@ impl State {
             return;
         }
         let display = self.display.clone();
+        self.selections.clear_claim(selection);
         match selection {
             Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
             Selection::Primary => clear_primary_selection(&display, &self.seat),
@@ -415,6 +441,7 @@ impl State {
                 continue;
             }
             let display = self.display.clone();
+            self.selections.clear_claim(selection);
             match selection {
                 Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
                 Selection::Primary => clear_primary_selection(&display, &self.seat),
@@ -451,10 +478,28 @@ impl SelectionHandler for State {
         source: Option<SelectionSource>,
         _seat: Seat<Self>,
     ) {
-        let mimes = source.map(|source| source.mime_types());
+        let selection: Selection = ty.into();
+        let mimes = source.as_ref().map(SelectionSource::mime_types);
+        // A claim stands only for the request the compositor accepted it for; every other
+        // selection takes it over, as a fresh desktop's first copy does.
+        let pending = self.selections.take_pending(selection);
         self.selections
-            .set_offered(ty.into(), mimes.clone().unwrap_or_default());
-        self.offer_to_x11(ty.into(), mimes.as_deref());
+            .keep_claim(selection, pending.filter(|_| source.is_some()));
+        self.selections
+            .set_offered(selection, mimes.clone().unwrap_or_default());
+        self.offer_to_x11(selection, mimes.as_deref());
+    }
+
+    /// A session-handed connection asks to set a selection without holding the keyboard, as an
+    /// app keeper does once after its desktop restarts. See [`Selections::may_claim`].
+    fn may_set_selection_without_focus(
+        &mut self,
+        ty: SelectionTarget,
+        client: &Client,
+        serial: Serial,
+    ) -> bool {
+        self.selections
+            .may_claim(ty.into(), client, u32::from(serial))
     }
 
     fn send_selection(
@@ -466,7 +511,7 @@ impl SelectionHandler for State {
         user_data: &Served,
     ) {
         match user_data {
-            Served::Host(values) => {
+            Served::Surface(values) => {
                 if let Some(bytes) = value_for(values, &mime_type) {
                     serve(fd, bytes.to_vec());
                 } else {
@@ -509,28 +554,6 @@ mod tests {
         /// The formats a selection is offered and read under.
         fn text_selections_go_by_every_text_name;
 
-        phase text_offers_go_by_every_text_name_utf8_first_and_bad_names_are_dropped;
-        {
-            let mimes = normalized_mimes(strings(&["text/plain", "image/png", "bad mime", ""]));
-            assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
-            for alias in TEXT_MIMES {
-                assert!(
-                    mimes.iter().any(|mime| mime == alias),
-                    "{alias} missing: {mimes:?}"
-                );
-            }
-            assert!(mimes.iter().any(|mime| mime == "image/png"));
-            assert!(
-                !mimes
-                    .iter()
-                    .any(|mime| mime.contains(' ') || mime.is_empty())
-            );
-            assert_eq!(
-                normalized_mimes(strings(&["image/png"])),
-                strings(&["image/png"])
-            );
-        }
-
         phase text_is_read_under_any_of_its_names;
         {
             let values = BTreeMap::from([("text/plain".to_owned(), b"hello".to_vec())]);
@@ -539,15 +562,15 @@ mod tests {
             assert_eq!(value_for(&values, "image/png"), None);
         }
 
-        phase hosted_offers_are_bounded_and_empty_ones_offer_nothing;
+        phase surface_offers_are_bounded_and_empty_ones_offer_nothing;
         {
-            assert_eq!(host_offer(Vec::new()), None);
-            assert_eq!(host_offer(vec![("bad mime".into(), b"x".to_vec())]), None);
+            assert_eq!(surface_offer(Vec::new()), None);
+            assert_eq!(surface_offer(vec![("bad mime".into(), b"x".to_vec())]), None);
             let huge = vec![
                 ("text/plain".to_owned(), vec![b'a'; MAX_SELECTION_BYTES]),
                 ("text/html".to_owned(), vec![b'b'; 16]),
             ];
-            let kept = host_offer(huge).expect("the first format fits");
+            let kept = surface_offer(huge).expect("the first format fits");
             assert_eq!(
                 kept.keys().cloned().collect::<Vec<_>>(),
                 strings(&["text/plain"])

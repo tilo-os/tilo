@@ -1,13 +1,11 @@
-//! What a participant does about a fire time, given the progress the
+//! What a key holder does about a fire time, given the progress the
 //! workspace keeps: on time once, a missed time once when the trigger catches
 //! up (never once per period), and a moment once however late.
 
 use super::*;
 use crate::CatchUp;
 
-fn zone(_at: DateTime<Utc>) -> FixedOffset {
-    FixedOffset::east_opt(0).unwrap()
-}
+const ZONE: TimeZone = TimeZone::UTC;
 
 fn every(catch_up: CatchUp) -> Timed<'static> {
     // The schedule lives in a `static` so the borrowed value outlives the call.
@@ -21,14 +19,14 @@ fn every(catch_up: CatchUp) -> Timed<'static> {
 #[test]
 fn a_first_fire_time_starts_the_schedule_and_nothing_fires_yet() {
     assert_eq!(
-        plan(every(CatchUp::Skip), None, 3_600_001, &zone),
+        plan(every(CatchUp::Skip), None, 3_600_001, &ZONE),
         SchedulePlan::Waiting {
             answered_ms: 3_600_001
         }
     );
     // From there the next time is a minute away.
     assert_eq!(
-        plan(every(CatchUp::Skip), Some(3_600_001), 3_600_001, &zone),
+        plan(every(CatchUp::Skip), Some(3_600_001), 3_600_001, &ZONE),
         SchedulePlan::Waiting {
             answered_ms: 3_600_001
         }
@@ -38,7 +36,7 @@ fn a_first_fire_time_starts_the_schedule_and_nothing_fires_yet() {
 #[test]
 fn a_fire_time_comes_once_and_then_the_next() {
     assert_eq!(
-        plan(every(CatchUp::Skip), Some(3_600_001), 3_660_000, &zone),
+        plan(every(CatchUp::Skip), Some(3_600_001), 3_660_000, &ZONE),
         SchedulePlan::Fire {
             due_ms: 3_660_000,
             answered_ms: 3_660_000,
@@ -47,7 +45,7 @@ fn a_fire_time_comes_once_and_then_the_next() {
     );
     // The progress moved past the fire time even when it ran late.
     assert_eq!(
-        plan(every(CatchUp::Skip), Some(3_660_001), 3_660_500, &zone),
+        plan(every(CatchUp::Skip), Some(3_660_001), 3_660_500, &ZONE),
         SchedulePlan::Waiting {
             answered_ms: 3_660_001
         }
@@ -63,7 +61,7 @@ fn a_missed_fire_time_is_caught_up_once_and_skipped_when_the_trigger_skips() {
         every(CatchUp::RunOnce),
         Some(answered),
         ten_periods_later,
-        &zone,
+        &ZONE,
     );
     let SchedulePlan::Fire {
         due_ms,
@@ -82,7 +80,7 @@ fn a_missed_fire_time_is_caught_up_once_and_skipped_when_the_trigger_skips() {
             every(CatchUp::RunOnce),
             Some(answered_ms),
             ten_periods_later,
-            &zone
+            &ZONE
         ),
         SchedulePlan::Waiting {
             answered_ms: ten_periods_later
@@ -95,7 +93,7 @@ fn a_missed_fire_time_is_caught_up_once_and_skipped_when_the_trigger_skips() {
             every(CatchUp::Skip),
             Some(answered),
             ten_periods_later,
-            &zone
+            &ZONE
         ),
         SchedulePlan::Waiting {
             answered_ms: ten_periods_later
@@ -108,7 +106,7 @@ fn a_moment_fires_once_however_late_and_never_again() {
     let moment = Timed::Once { at_ms: 1_000 };
     // Seen after it passed: it fires in this same pass.
     assert_eq!(
-        plan(moment, None, 1_500, &zone),
+        plan(moment, None, 1_500, &ZONE),
         SchedulePlan::Fire {
             due_ms: 1_000,
             answered_ms: 1_000,
@@ -117,17 +115,17 @@ fn a_moment_fires_once_however_late_and_never_again() {
     );
     // Answered: it is spent, whatever a later reader's clock says.
     assert_eq!(
-        plan(moment, Some(1_000), 10_000, &zone),
+        plan(moment, Some(1_000), 10_000, &ZONE),
         SchedulePlan::Waiting { answered_ms: 1_000 }
     );
     // Seen before it comes: nothing fires, and the progress is when it was
     // seen, so a reader that comes back after it passed fires it once.
     assert_eq!(
-        plan(moment, Some(500), 900, &zone),
+        plan(moment, Some(500), 900, &ZONE),
         SchedulePlan::Waiting { answered_ms: 500 }
     );
     assert_eq!(
-        plan(moment, Some(500), 100_000, &zone),
+        plan(moment, Some(500), 100_000, &ZONE),
         SchedulePlan::Fire {
             due_ms: 1_000,
             answered_ms: 1_000,
@@ -135,8 +133,8 @@ fn a_moment_fires_once_however_late_and_never_again() {
         }
     );
     // Nothing more to wait for once it is answered.
-    assert_eq!(moment.waiting_ms(1_000, &zone), None);
-    assert_eq!(moment.waiting_ms(500, &zone), Some(1_000));
+    assert_eq!(moment.waiting_ms(1_000, &ZONE), None);
+    assert_eq!(moment.waiting_ms(500, &ZONE), Some(1_000));
     let repeats = every(CatchUp::Skip);
-    assert_eq!(repeats.waiting_ms(3_600_001, &zone), Some(3_660_000));
+    assert_eq!(repeats.waiting_ms(3_600_001, &ZONE), Some(3_660_000));
 }

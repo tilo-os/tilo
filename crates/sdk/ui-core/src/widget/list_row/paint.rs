@@ -17,6 +17,23 @@ use crate::theme::Theme;
 use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::{BadgeFace, MediaArt, Tone};
 
+/// Where a row's words stand ([`ListRowFace::text_frame`]).
+pub(super) struct TextFrame {
+    pub(super) geo: RowGeometry,
+    /// It shows lines under its title.
+    pub(super) extra: bool,
+    pub(super) title_style: crate::text_render::TextStyle,
+    pub(super) title_line: f64,
+    /// Where the title's words start, past the quiet word before them.
+    pub(super) title_x: f64,
+    /// The title as the lines it takes, the last cut short when it does not fit.
+    pub(super) lines: Vec<String>,
+    pub(super) text_top: f64,
+    pub(super) title_cy: f64,
+    /// The line the value, the meta and the marks are centred on.
+    pub(super) facts_cy: f64,
+}
+
 pub(super) fn paint_badge(ctx: &mut PaintCtx<'_>, _m: &RowMetrics, column: Rect, badge: &str) {
     paint_code_badge(ctx.scene, ctx.transform, ctx.text, ctx.theme, column, badge);
 }
@@ -159,23 +176,17 @@ impl ListRowFace<'_> {
             (ground, under)
         };
 
-        let geo = self.geometry(row, &m, ctx.text, theme);
-        let extra = self.extra_lines() > 0;
-        let TitleLayout {
-            style: title_style,
-            line: title_line,
+        let TextFrame {
+            geo,
+            extra,
+            title_style,
+            title_line,
+            title_x,
             lines,
-            top: text_top,
-            x: title_x,
-        } = self.title_layout(row, &m, &geo, ctx.text, theme);
-        let title_cy = text_top + title_line / 2.0;
-        let facts_cy = if self.card {
-            geo.facts_cy
-        } else if extra {
-            title_cy
-        } else {
-            row.center().y
-        };
+            text_top,
+            title_cy,
+            facts_cy,
+        } = self.text_frame(row, &m, ctx.text, theme);
 
         self.paint_leading(ctx, &m, geo.leading, under);
 
@@ -494,48 +505,57 @@ impl ListRowFace<'_> {
         }
     }
 
-    /// Where the bytes `start..end` of the title stand in `rect`, one band per line they reach,
-    /// and the caret after them; with every line the title shows, the ink a tag beside that caret
-    /// leaves readable. Nothing for a range the shown title cut off.
+    /// Where the row's words stand in `row`: its columns, its title's lines and the line its
+    /// facts are centred on, as the canvas paints them and a page composes them.
+    pub(super) fn text_frame(
+        &self,
+        row: Rect,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> TextFrame {
+        let geo = self.geometry(row, m, text, theme);
+        let extra = self.extra_lines() > 0;
+        let title = self.title_layout(row, m, &geo, text, theme);
+        let title_cy = title.top + title.line / 2.0;
+        let facts_cy = if self.card {
+            geo.facts_cy
+        } else if extra {
+            title_cy
+        } else {
+            row.center().y
+        };
+        TextFrame {
+            geo,
+            extra,
+            title_style: title.style,
+            title_line: title.line,
+            title_x: title.x,
+            lines: title.lines,
+            text_top: title.top,
+            title_cy,
+            facts_cy,
+        }
+    }
+
+    /// Where the bytes `start..end` of the title stand in `rect` ([`LabeledCaret::after_span`]).
     pub(super) fn title_span(
         &self,
         rect: Rect,
-        (start, end): (usize, usize),
+        span: (usize, usize),
         text: &mut TextRenderer,
         theme: &Theme,
-    ) -> (Vec<Rect>, Option<Rect>, Vec<Rect>) {
+    ) -> (Vec<Rect>, crate::presence::LabeledCaret) {
         let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
         let layout = self.title_layout(rect, &m, &geo, text, theme);
-        let (mut bands, mut caret, mut ink) = (Vec::new(), None, Vec::new());
-        let mut from = 0;
-        let mut y = layout.top;
-        for line in &layout.lines {
-            let shown = line.trim_end_matches('\u{2026}');
-            let Some(at) = self.title.get(from..).and_then(|rest| rest.find(shown)) else {
-                break;
-            };
-            let (line_start, line_end) = (from + at, from + at + shown.len());
-            from = line_end;
-            let x_of = |text: &mut TextRenderer, byte: usize| {
-                let before = self.title.get(line_start..byte).unwrap_or_default();
-                layout.x + f64::from(text.measure_style(before, None, &layout.style).0)
-            };
-            let right = x_of(text, line_end);
-            ink.push(Rect::new(layout.x, y, right, y + layout.line));
-            let (a, b) = (start.max(line_start), end.min(line_end));
-            if a <= b && start <= line_end && end >= line_start {
-                let (x0, x1) = (x_of(text, a), x_of(text, b));
-                if a < b {
-                    bands.push(Rect::new(x0, y, x1, y + layout.line));
-                }
-                if (line_start..=line_end).contains(&end) {
-                    caret = Some(Rect::new(x1, y, x1 + 1.5, y + layout.line));
-                }
-            }
-            y += layout.line;
-        }
-        (bands, caret, ink)
+        crate::presence::LabeledCaret::after_span(
+            text,
+            (self.title, &layout.lines, &layout.style),
+            (layout.x, layout.top, layout.line),
+            (rect.y0, rect.x1),
+            span,
+        )
     }
 
     /// The width the title is set in: its column, less the quiet word before it and the tags

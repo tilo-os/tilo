@@ -127,14 +127,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   // Whether the action in flight only reads the page, and is answered with
   // what it read: the outline, what changed in it, what a find or a search
-  // found, the fields, the forms, what is at a point, a picture. A gesture's
+  // found, the fields, the forms, a table, what is at a point, a picture. A gesture's
   // closing read of what it changed is the gesture's, not one of these.
   bool ReadsOnly() const {
     if(!pending_ || pending_->seq || PrivateText()) return false;
     const auto& asked=pending_->asked;
     if(asked=="at") return !HoverAtPoint();
     return asked=="outline" || asked=="changes" || asked=="find" || asked=="search" || asked=="fields" ||
-      asked=="forms" || asked=="capture";
+      asked=="forms" || asked=="table" || asked=="capture";
   }
   // The read in flight, asked again from its start of the document the page
   // shows now. It is the same request with what is left of its time, so a
@@ -219,17 +219,17 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // `since` names: who asked, what they asked for, what it acted on and how
   // it ended. It reads nothing of the page, so it answers at once whatever
   // is running, and says what is running and how many wait behind it.
-  void Ledger(CefRefPtr<CefDictionaryValue> d) {
+  void Log(CefRefPtr<CefDictionaryValue> d) {
     const double since=d->GetType("since")==VTYPE_DOUBLE?d->GetDouble("since"):d->GetInt("since");
     auto list=CefListValue::Create();size_t count=0;bool more=false;double last=since;
-    for(const auto& entry:ledger_) {
+    for(const auto& entry:log_) {
       if(entry->GetDouble("seq")<=since) continue;
-      if(count>=kMaxLedgerRead) { more=true;break; }
+      if(count>=kMaxLogRead) { more=true;break; }
       list->SetDictionary(count++,entry->Copy(false));last=entry->GetDouble("seq");
     }
     auto data=CefDictionaryValue::Create();
     data->SetList("entries",list);data->SetDouble("next",last);data->SetBool("more",more);
-    data->SetDouble("dropped",static_cast<double>(ledger_dropped_));
+    data->SetDouble("dropped",static_cast<double>(log_dropped_));
     data->SetInt("waiting",static_cast<int>(waiting_.size()));
     if(pending_ && pending_->seq) {
       auto running=CefDictionaryValue::Create();
@@ -2124,6 +2124,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     Succeed(Text(value,"message"),outline,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);
   }
   void Evaluate() {
+    // A text released for one site is written into the page's own document.
+    // It is never handed to a frame's, whatever site the frame is of: the
+    // script that carries it does not reach the frame's process at all.
+    if(!PrivateText() && pending_->command->HasKey("at") && !world_frame_.number.empty()) {
+      Fail("foreign_frame",Text(pending_->command,"element")+" is in a frame; what is kept for one site is written only into the page's own document");
+      return;
+    }
     auto command=CefDictionaryValue::Create();
     const auto action=Action();
     const bool elementless=!pending_->command->HasKey("element");
@@ -2132,7 +2139,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!PrivateText()) Mark(command);
     if(!PrivateText() && !world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     // A wait's words travel with it: `text` to wait for, `gone` to see gone.
-    for(const char* key:{"element","text","gone","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    for(const char* key:{"element","text","gone","key","lease","history_scope","at","into"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret","native_caret","enabled"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
     // A find names what to look for, so the words it matches travel with it.
     for(const char* key:{"role","name"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
@@ -2658,6 +2665,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(action=="fields" && !frame_doc_) { pending_->navigation="none";ReviewFrames(value);return; }
     if(action=="fields" || action=="forms" || action=="search") { pending_->navigation="none";
       Succeed(Text(value,"message"),Text(value,"outline"),Findings(value));return; }
+    // A table's rows are a read like those, with no outline of their own.
+    if(action=="table") { pending_->navigation="none";
+      Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
     // A form answered whole runs the page's input handlers, and may send
     // the form: it answers once the page has handled that, with what the
     // page said of each answer.
@@ -3078,19 +3088,19 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void NoteInput(const PageDocument& document,CefRefPtr<CefDictionaryValue> note) {
     auto entry=CefDictionaryValue::Create();
     entry->SetDouble("time_ms",NowMs());entry->SetString("actor","");entry->SetString("how","input");entry->SetBool("ok",true);
-    const auto said=Word(note,"said",kMaxLedgerText);
+    const auto said=Word(note,"said",kMaxLogText);
     entry->SetString("message",said.empty()?"Direct input into the page":"Direct input into "+said);
     entry->SetString("url",browser_->GetMainFrame()->GetURL());
     if(auto target=note->GetType("target")==VTYPE_DICTIONARY?note->GetDictionary("target"):nullptr) {
       auto kept=CefDictionaryValue::Create();
       if(const auto role=Word(target,"role",64);!role.empty()) kept->SetString("role",role);
-      if(const auto name=Word(target,"name",kMaxLedgerText);!name.empty()) kept->SetString("name",name);
+      if(const auto name=Word(target,"name",kMaxLogText);!name.empty()) kept->SetString("name",name);
       if(const double nth=Number(target,"nth");nth>=1 && nth<=100000) kept->SetInt("nth",static_cast<int>(nth));
       if(kept->GetSize()) entry->SetDictionary("target",kept);
     }
     NoteFrame(document,note,entry);
     if(note->GetType("secret")==VTYPE_BOOL && note->GetBool("secret")) entry->SetBool("secret",true);
-    else if(note->GetType("text")==VTYPE_STRING) entry->SetString("text",Word(note,"text",kMaxLedgerText));
+    else if(note->GetType("text")==VTYPE_STRING) entry->SetString("text",Word(note,"text",kMaxLogText));
     SetDownInTurn(entry);
   }
   // What the record says of a hold: `action` names what was held or how it
@@ -3104,7 +3114,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     entry->SetString("action",action);entry->SetBool("ok",true);
     std::string said=file.empty()?method:Clip(file,kMaxHeldFile);
     if(!said.empty() && !origin.empty()) said+=file.empty()?" ":", ";
-    entry->SetString("message",Clip(said+origin,kMaxLedgerText));
+    entry->SetString("message",Clip(said+origin,kMaxLogText));
     entry->SetString("url",page.empty()?browser_->GetMainFrame()->GetURL():CefString(page));
     if(!origin.empty()) entry->SetString("to_url",origin);
     SetDownInTurn(entry);
@@ -3118,8 +3128,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void SetDown(CefRefPtr<CefDictionaryValue> entry) {
     entry->SetDouble("seq",static_cast<double>(++acted_seq_));
-    ledger_.push_back(entry);
-    if(ledger_.size()>kMaxLedger) { ledger_.pop_front();++ledger_dropped_; }
+    log_.push_back(entry);
+    if(log_.size()>kMaxLog) { log_.pop_front();++log_dropped_; }
     // No action's answer carries this entry, so the app is told of it.
     auto told=CefDictionaryValue::Create();
     told->SetDouble("seq",static_cast<double>(acted_seq_));told->SetDictionary("entry",entry->Copy(false));
@@ -3156,9 +3166,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // A ref of the document that tells of it, and no other.
       if(RefDocument(ref)!=document.number || (how!="page" && how!="input")) continue;
       auto field=CefDictionaryValue::Create();field->SetString("element",ref);field->SetString("how",how);
-      field->SetString("role",Word(said,"role",64));field->SetString("name",Word(said,"name",kMaxLedgerText));
+      field->SetString("role",Word(said,"role",64));field->SetString("name",Word(said,"name",kMaxLogText));
       if(const auto form=Word(said,"form",64);!form.empty()) field->SetString("form",form);
-      if(const auto question=Word(said,"question",kMaxLedgerText);!question.empty()) field->SetString("question",question);
+      if(const auto question=Word(said,"question",kMaxLogText);!question.empty()) field->SetString("question",question);
       fields->SetDictionary(fields->GetSize(),field);
     }
     if(!forms->GetSize() && !fields->GetSize()) return;
@@ -3180,7 +3190,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       entry->SetString("actor",pending_->actor);entry->SetString("action",pending_->asked);
       entry->SetBool("ok",ok);
       if(!ok && fields->GetType("code")==VTYPE_STRING) entry->SetString("code",fields->GetString("code"));
-      if(fields->GetType("message")==VTYPE_STRING) entry->SetString("message",Clip(fields->GetString("message").ToString(),kMaxLedgerText));
+      if(fields->GetType("message")==VTYPE_STRING) entry->SetString("message",Clip(fields->GetString("message").ToString(),kMaxLogText));
       entry->SetString("url",pending_->began_url);
       const auto now=browser_?browser_->GetMainFrame()->GetURL().ToString():std::string();
       if(!now.empty() && now!=pending_->began_url) entry->SetString("to_url",now);
@@ -3202,13 +3212,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // element the action acted on, or because the caller said so.
       const bool secret=pending_->secret || (asked->GetType("secret")==VTYPE_BOOL && asked->GetBool("secret"));
       if(secret) entry->SetBool("secret",true);
-      if(ok && !secret && asked->GetType("text")==VTYPE_STRING) entry->SetString("text",Clip(asked->GetString("text").ToString(),kMaxLedgerText));
+      if(ok && !secret && asked->GetType("text")==VTYPE_STRING) entry->SetString("text",Clip(asked->GetString("text").ToString(),kMaxLogText));
       if(ok && asked->GetType("values")==VTYPE_LIST) entry->SetList("values",asked->GetList("values")->Copy());
       // A form's answers as the page placed them, by the names it asked.
       if(ok && fields->GetType("data")==VTYPE_DICTIONARY && fields->GetDictionary("data")->GetType("set")==VTYPE_LIST)
         entry->SetList("answers",fields->GetDictionary("data")->GetList("set")->Copy());
-      ledger_.push_back(entry);
-      if(ledger_.size()>kMaxLedger) { ledger_.pop_front();++ledger_dropped_; }
+      log_.push_back(entry);
+      if(log_.size()>kMaxLog) { log_.pop_front();++log_dropped_; }
       fields->SetDouble("seq",static_cast<double>(pending_->seq));
       // What a person typed while the action ran, and what the page was
       // held from sending meanwhile, takes its place after it.
@@ -3217,7 +3227,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(asked->GetType("actor")!=VTYPE_STRING) return;
     const uint64_t seen=seen_.count(pending_->actor)?seen_[pending_->actor]:0;
     std::vector<CefRefPtr<CefDictionaryValue>> theirs;
-    for(const auto& entry:ledger_) {
+    for(const auto& entry:log_) {
       if(static_cast<uint64_t>(entry->GetDouble("seq"))<=seen || entry->GetString("actor").ToString()==pending_->actor) continue;
       theirs.push_back(entry);
     }
@@ -3295,10 +3305,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // The tab's record of the actions that operated it, oldest first, with the
   // place the newest took and how many the record let go of; and how far
   // each actor has heard of the others' part in it.
-  std::deque<CefRefPtr<CefDictionaryValue>> ledger_;
-  uint64_t acted_seq_=0,ledger_dropped_=0;
+  std::deque<CefRefPtr<CefDictionaryValue>> log_;
+  uint64_t acted_seq_=0,log_dropped_=0;
   std::map<std::string,uint64_t> seen_;
-  static constexpr size_t kMaxLedger=1000,kMaxLedgerRead=200,kMaxOthers=8,kMaxActors=64,kMaxLedgerText=200;
+  static constexpr size_t kMaxLog=1000,kMaxLogRead=200,kMaxOthers=8,kMaxActors=64,kMaxLogText=200;
   // The most of an answering actor's name and of a held download's file
   // name the record keeps.
   static constexpr size_t kMaxActorBytes=256,kMaxHeldFile=120;

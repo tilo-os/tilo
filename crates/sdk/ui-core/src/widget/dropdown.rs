@@ -719,22 +719,22 @@ impl Dropdown {
     /// The open list's rows for the options `filtered` shows, and the row in
     /// them each of those options stands in: a group's heading takes a row
     /// above its first shown option, so a filter that hides the rest of a
-    /// group never leaves its heading standing alone.
+    /// group never leaves its heading current_heading alone.
     fn rows_for(&self, filtered: &[usize]) -> (Vec<Suggestion>, Vec<usize>) {
         let mut rows: Vec<Suggestion> = Vec::with_capacity(filtered.len());
         let mut at: Vec<usize> = Vec::with_capacity(filtered.len());
-        let mut standing: Option<&str> = None;
+        let mut current_heading: Option<&str> = None;
         for index in filtered {
             let (Some(label), Some(value)) = (self.options.get(*index), self.values.get(*index))
             else {
                 continue;
             };
             let heading = self.groups.get(*index).and_then(Option::as_deref);
-            if heading != standing {
+            if heading != current_heading {
                 if let Some(heading) = heading {
                     rows.push(Suggestion::heading(heading));
                 }
-                standing = heading;
+                current_heading = heading;
             }
             at.push(rows.len());
             let mut row = Suggestion::labelled(value.clone(), label.clone())
@@ -1120,6 +1120,12 @@ impl Widget for Dropdown {
         } else {
             Vec::new()
         };
+        let chevron = crate::composition::glyph(
+            crate::icons::Icon::ChevronDown,
+            f64::from(cx.theme().tokens.metrics.icon_sm),
+            colors.text_dim,
+            false,
+        );
         cx.control(Control::Select {
             current,
             placeholder: self.placeholder.clone(),
@@ -1127,6 +1133,7 @@ impl Widget for Dropdown {
             open: self.open,
             caption,
             icon,
+            chevron,
         });
     }
 
@@ -1695,16 +1702,16 @@ impl crate::widget::ResourceOperations for Dropdown {
 }
 
 impl crate::widget::controls::ActionControls for Dropdown {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(verb) = &mut self.change_verb {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

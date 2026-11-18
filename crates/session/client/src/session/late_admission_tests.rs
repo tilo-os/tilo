@@ -26,7 +26,7 @@ impl DeviceSigner for Key {
         self.0.verifying_key().to_bytes()
     }
 
-    fn sign(&self, message: Vec<u8>) -> tilo_relay_client::SignFuture<'_> {
+    fn sign(&self, message: Vec<u8>) -> tilo_server_client::SignFuture<'_> {
         let signature = ed25519_dalek::Signer::sign(&self.0, &message).to_bytes();
         Box::pin(std::future::ready(Ok(signature)))
     }
@@ -43,7 +43,7 @@ fn relayed(
         workspace_id,
         author_device_public_key: author,
         authored_at_ns: 1,
-        delta: tilo_relay_client::coedit::CoeditPayload::RetainedDelta {
+        delta: tilo_server_client::coedit::CoeditPayload::RetainedDelta {
             channel: [0; 32],
             body,
         }
@@ -74,7 +74,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
     let workspace = bootstrap.workspace_id.to_string();
     let host = bootstrap.host.clone();
     let config = PeerConfig {
-        host: tilo_relay_client::Host::through(
+        host: tilo_server_client::Host::through(
             iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(&host.device_public_key).unwrap(),
             ),

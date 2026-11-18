@@ -79,7 +79,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # File records: the tree a workspace's files are, and the kinds of node in it.
 fs-protocol = { path = "../../crates/system/fs-protocol", features = ["documents"] }
-chrono = { workspace = true, default-features = true }
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -159,7 +159,7 @@ tilo-fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-test-relay = { path = "../../crates/dev/test-relay" }
+test-server = { path = "../../crates/dev/test-server" }
 
 [[test]]
 name = "it"

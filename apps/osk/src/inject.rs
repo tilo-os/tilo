@@ -682,8 +682,8 @@ mod tests {
     }
 
     #[test]
-    fn injectors_record_actions_and_default_never_panics() {
-        eprintln!("phase null_injector_records_commit_and_send");
+    fn injectors_resource_actions_and_default_never_panics() {
+        eprintln!("phase null_injector_resources_commit_and_send");
         {
             let mut inj = NullInjector::new();
             assert_eq!(inj.backend_name(), "null");

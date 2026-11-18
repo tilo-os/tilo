@@ -116,3 +116,44 @@ fn an_issue_filed_through_the_api_is_listed_with_what_runs_on_it() {
         "a level at a time lists the filed issue with its comment: {walked:#?}"
     );
 }
+
+/// The view a link to an issue opens is found where the host mints the link:
+/// the issue is kept in a part, not in the tracker's own document, so its
+/// view is the one the tracker's view publishes for it. Without one, the link
+/// named the tracker.
+#[test]
+fn an_issue_in_a_part_offers_the_view_its_link_opens() {
+    let mut page = crate::common::open(
+        "so.tilo.tasks",
+        &MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let made = page
+        .invoke(
+            &ActionAddress::new(issues(), "create"),
+            serde_json::json!({"title": "Ship the launch"})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .expect("the issue is filed");
+    let issue = made
+        .resources
+        .first()
+        .expect("the create names the issue")
+        .clone();
+    let viewer = ui::permissions::PermissionContext::member_of(
+        crate::common::WORKSPACE,
+        &MemberId::person("ada"),
+        ui::permissions::Role::Viewer,
+    );
+    let views = page.resource_views(&issue, "tasks.issues.issues", &viewer);
+    assert!(
+        views
+            .iter()
+            .any(|view| view.address.resource == issue && view.address.action == "open"),
+        "the issue offers the view its link opens: {views:?}"
+    );
+}

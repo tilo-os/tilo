@@ -59,13 +59,16 @@ pub struct Metrics {
     /// at phone width. Resizing a window stops its edge here (`widget::edge_resize`), so
     /// every app's compact layout must fit it.
     pub window_min_width: f32,
+    /// The shortest a view grown in place works at: a window shared into a conversation
+    /// keeps its proportions and shrinks no further.
+    pub view_min_height: f32,
     pub list_min_width: f32,
     /// The narrowest a reading column (a message, an article) still works at: about 45
     /// characters of body text.
     pub reading_min_width: f32,
     pub page_min_width: f32,
     pub grid_min_width: f32,
-    pub board_lane_width: f32,
+    pub board_list_width: f32,
     /// How much wider than its threshold a window must grow before a layout that switched
     /// away switches back, so a window resized near a threshold does not flicker between
     /// two layouts.
@@ -164,11 +167,12 @@ impl Metrics {
         content_min_width: 560.0,
         detail_min_width: 360.0,
         window_min_width: 320.0,
+        view_min_height: 280.0,
         list_min_width: 320.0,
         reading_min_width: 360.0,
         page_min_width: 360.0,
         grid_min_width: 280.0,
-        board_lane_width: 320.0,
+        board_list_width: 320.0,
         layout_hysteresis: 24.0,
         readable_width: 720.0,
         reading_measure: 640.0,
@@ -283,11 +287,12 @@ impl Metrics {
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
             window_min_width: self.window_min_width * factor,
+            view_min_height: self.view_min_height * factor,
             list_min_width: self.list_min_width * factor,
             reading_min_width: self.reading_min_width * factor,
             page_min_width: self.page_min_width * factor,
             grid_min_width: self.grid_min_width * factor,
-            board_lane_width: self.board_lane_width * factor,
+            board_list_width: self.board_list_width * factor,
             layout_hysteresis: self.layout_hysteresis * factor,
             readable_width: self.readable_width * factor,
             reading_measure: self.reading_measure * factor,

@@ -37,7 +37,7 @@ fn vouched() -> Vouched {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(governor),
+                TransportOrigin::RetainedServerDelta(governor),
                 message,
                 now,
             )
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         let receive = |cert: &tilo_user_identity::DeviceCert| {
             held.owner.receive(
                 held.workspace,
-                TransportOrigin::RelayDelta(cert.device_public_key),
+                TransportOrigin::ServerDelta(cert.device_public_key),
                 hello(cert),
                 held.now,
             )

@@ -89,7 +89,7 @@ pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 /// archive, its signed manifest, root and chunk list, and the registry's catalogue, each carrying
 /// the number in its `format` or `protocol` field.
 /// `crates/packaging/tilo-app-package/interface.toml` holds the schema.
-pub const PACKAGE_FORMAT_VERSION: u32 = 2;
+pub const PACKAGE_FORMAT_VERSION: u32 = 3;
 
 /// Every catalogue protocol this build verifies, oldest first, the newest being
 /// [`PACKAGE_FORMAT_VERSION`]. A reader keeps every format it understands, so raising
@@ -97,7 +97,8 @@ pub const PACKAGE_FORMAT_VERSION: u32 = 2;
 /// ships and the list drops what nothing decodes.
 ///
 /// Format 2 renumbered the protocols into one number and widened it in the canonical signing form,
-/// so a catalogue written before it fails every signature here.
+/// so a catalogue written before it fails every signature here. Format 3 drops the retired
+/// `[sandbox.fs]` manifest block.
 pub const READABLE_CATALOGUE_FORMATS: [u32; 1] = [PACKAGE_FORMAT_VERSION];
 
 /// What a catalogue at a protocol this build does not read means, and what to do.

@@ -79,7 +79,7 @@ async fn admit(
 
 fn report() -> LocalDocumentActionReport {
     LocalDocumentActionReport {
-        custody: None,
+        ownership: None,
         version: 1,
         invocation: uuid::Uuid::from_bytes([1; 16]),
         capture_id: uuid::Uuid::from_bytes([4; 16]),
@@ -143,10 +143,29 @@ tilo_test_env::scenario! {
         }
         assert_eq!(json["invocation"], value.invocation.to_string());
         assert_eq!(json["capture_id"], value.capture_id.to_string());
-        let mut missing_custody = json.clone();
-        missing_custody.as_object_mut().unwrap().remove("custody");
-        let legacy: LocalDocumentActionReport = serde_json::from_value(missing_custody).unwrap();
-        assert!(legacy.custody.is_none());
+        let mut missing_ownership = json.clone();
+        missing_ownership.as_object_mut().unwrap().remove("custody");
+        let legacy: LocalDocumentActionReport = serde_json::from_value(missing_ownership).unwrap();
+        assert!(legacy.ownership.is_none());
+        // A report names its provenance as it always did. One that names it as the code
+        // does, as builds wrote it for a while, reads with what it holds, and is written as
+        // reports always were.
+        let provenance = serde_json::json!({
+            "root": vec![1; 32], "device": vec![2; 32], "agent": null,
+            "app_id": "app", "workspace": "workspace", "document": "document"
+        });
+        let mut before = json.clone();
+        before["custody"] = provenance.clone();
+        let mut between = json.clone();
+        between.as_object_mut().unwrap().remove("custody");
+        between["ownership"] = provenance.clone();
+        for written in [before, between] {
+            let read: LocalDocumentActionReport = serde_json::from_value(written).unwrap();
+            assert!(read.ownership.is_some());
+            let again = serde_json::to_value(&read).unwrap();
+            assert_eq!(again["custody"], provenance);
+            assert!(again.get("ownership").is_none());
+        }
         let mut missing_capture = json.clone();
         missing_capture
             .as_object_mut()

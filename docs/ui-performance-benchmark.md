@@ -11,24 +11,24 @@ flags, defaults, value parsing, dependencies, and diagnostic caveats. Historic
 measurements belong in version control; they are not evidence for the current
 checkout.
 
-Current results come from the scheduled performance lane, not from this page.
+Current results come from the scheduled performance job, not from this page.
 Each benchmark writes records with `tools/perf/record.py`, and the records are
 stored in the `tilo-perf-results` package. See
 [Performance results](measurements/performance.md) for how a benchmark
-such as `ui-perf` joins that lane.
+such as `ui-perf` joins that job.
 
 ## Where this runs
 
-`scripts/perf/render_bench.py` runs `ui-perf` the same way in each lane. Every
-lane starts with the pixel-equivalence preflight below, and a lane whose
+`scripts/perf/render_bench.py` runs `ui-perf` the same way in each job. Every
+job starts with the pixel-equivalence preflight below, and a job whose
 preflight fails records nothing.
 
-| Lane | When | What it checks |
+| Job | When | What it checks |
 |---|---|---|
-| Counters | By hand, on changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw gate's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw gate's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
+| Counters | By hand, on changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw check's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw check's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
 | The performance run's `render` group (`tools/ci/perf-scheduled.sh render`) | When the performance run is run | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events), then the same counters. |
 
-Both lanes run on the shared `runner` class, which has no GPU. Lavapipe
+Both jobs run on the shared `runner` class, which has no GPU. Lavapipe
 rasterises on the CPU, so the nightly records carry `renderer=lavapipe` and are
 compared only with each other. They follow regressions and never support a
 4K/144 Hz claim.
@@ -48,7 +48,7 @@ Build once so every run measures the same binary:
 cargo build -p ui-examples --release --example ui-perf
 ```
 
-Native 4K animated redraw and resource gate:
+Native 4K animated redraw and resource check:
 
 ```sh
 TILO_UI_DASH_ITERS=1000 \
@@ -71,17 +71,17 @@ rasterized; it does not reduce the target resolution.
 
 The growth baseline is captured after warm-up and after the timing histogram
 has been materialized and page-touched. Consequently, RSS growth does not
-misclassify benchmark storage as framework retention. The raster-pixel gate
+misclassify benchmark storage as framework retention. The raster-pixel check
 also makes a regression from damage rendering back to an 8,294,400-pixel full
 frame fail independently of timing noise.
 
 The redraw allocation budgets enable phase attribution automatically and fail
 if total allocator traffic exceeds either rate. To print the same phase table
 without enforcing a budget, set `TILO_UI_DASH_ALLOC_PROFILE=1` together with
-`TILO_UI_DASH_ALLOC_BREAKDOWN=1`. The no-redraw gate deliberately omits phase
+`TILO_UI_DASH_ALLOC_BREAKDOWN=1`. The no-redraw check deliberately omits phase
 snapshots so profiler bookkeeping does not contaminate its event timings.
 
-One-million-event no-redraw CPU/allocation gate:
+One-million-event no-redraw CPU/allocation check:
 
 ```sh
 TILO_UI_DASH_ITERS=1000000 \
@@ -109,7 +109,7 @@ same scene, allowing at most one channel value of antialiasing variation. All
 readbacks, suppresses performance reports, and rejects benchmark budget flags;
 its runtime and memory are not performance samples.
 
-Current requested native-4K gate (1,000 redraws, p99 at most 30,000 microseconds,
+Current requested native-4K check (1,000 redraws, p99 at most 30,000 microseconds,
 with default renderer options and no optimization environment overrides):
 
 ```sh
@@ -121,9 +121,9 @@ target/release/examples/ui-perf dashboard_perf_bench
 ```
 
 The UI harness also accepts `TILO_UI_DASH_MEAN_FRAME_BUDGET_US` as an
-optional exact-mean gate. These gates do not establish constant 60 fps.
+optional exact-mean check. These checks do not establish constant 60 fps.
 
-The earlier, stricter 4K/60 frame gate remains available:
+The earlier, stricter 4K/60 frame check remains available:
 
 ```sh
 TILO_UI_DASH_ITERS=1000 \

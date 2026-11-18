@@ -1,5 +1,5 @@
 //! Two devices of one person converge on a workspace directly over iroh,
-//! with no workspace host, relay or network actor in between, and a device
+//! with no workspace host, server or network actor in between, and a device
 //! outside the workspace roster is refused.
 #![allow(
     clippy::unwrap_used,
@@ -361,7 +361,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
 }
 
 /// The device dialled answers each write of the dialling device's it takes in, named as the
-/// writer's custody names it: the hash of the frame it published.
+/// writer's ownership names it: the hash of the frame it published.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_device_dialled_answers_each_write_it_takes_in() {
     let (a, a_key, b, b_key) = two_devices();

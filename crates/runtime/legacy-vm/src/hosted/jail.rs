@@ -234,7 +234,7 @@ impl Helper {
 
     /// The command that becomes the slot's Firecracker: booting from
     /// `/vm/firecracker.json` when `boot`, else waiting for a snapshot to
-    /// load. `relay` is the one destination besides the internet the VM's
+    /// load. `server` is the one destination besides the internet the VM's
     /// network allows, for its browser session. The caller spawns it and
     /// owns the child.
     #[must_use]
@@ -244,7 +244,7 @@ impl Helper {
         size: VmSize,
         boot: bool,
         dirs: &JailDirs<'_>,
-        relay: Option<Endpoint>,
+        server: Option<Endpoint>,
     ) -> Command {
         let mut command = self.command("start", slot);
         command
@@ -253,8 +253,8 @@ impl Helper {
             .arg("--memory-mib")
             .arg(size.memory_mib().to_string())
             .arg(if boot { "--boot" } else { "--restore" });
-        if let Some(relay) = relay {
-            command.arg("--relay-endpoint").arg(relay.to_string());
+        if let Some(server) = server {
+            command.arg("--server-endpoint").arg(server.to_string());
         }
         pass_dirs(&mut command, dirs);
         command

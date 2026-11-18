@@ -49,7 +49,7 @@ mod owner_commit_tests {
             };
             let (state, bridge_rx) = AppBrokerState::new_configured(&fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())), publisher,
-                Some(membership.authority()), None, Some(&config), HostServices::default());
+                Some(membership.authority()), None, Some(&config), ProcessServices::default());
             fanout.attach_app_broker(state.clone());
             state.ensure_channel(&route.channel_key());
             let mut subscriber = state.subscribe_ops(&route.channel_key(), 2);
@@ -135,7 +135,7 @@ mod owner_commit_tests {
                         }),
                         certificate_authority: Arc::new(ExplicitAuthority),
                     };
-                    let services = HostServices {
+                    let services = ProcessServices {
                         committed_documents: native.then(|| {
                             Arc::new(RequiredNativeReadUnavailable) as Arc<dyn NativeDocumentReads>
                         }),
@@ -254,7 +254,7 @@ mod owner_commit_tests {
 
     #[test]
     fn session_owner_commit_checked_writer_publishes_before_terminal() {
-        use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+        use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
         use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
         let workspace = uuid::Uuid::new_v4();
         let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
@@ -267,9 +267,9 @@ mod owner_commit_tests {
             ui::application_view::InstanceViewStore::portable(cache, &workspace.to_string())
                 .unwrap(),
         );
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "device".into(),
@@ -439,7 +439,7 @@ mod owner_commit_tests {
                         workspace: fixture.route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: fixture.route.app_id.clone(),
-                            record: fixture.route.document_id.clone(),
+                            document: fixture.route.document_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
                             own: None,
                         },
@@ -490,7 +490,7 @@ mod owner_commit_tests {
                     workspace: uuid::Uuid::new_v4().to_string(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                         app: fixture.route.app_id.clone(),
-                        record: fixture.route.document_id.clone(),
+                        document: fixture.route.document_id.clone(),
                         envelope: Box::new(owner_snapshot(&fixture)),
                         own: None,
                     },
@@ -599,7 +599,7 @@ mod owner_commit_tests {
             Some(membership.authority()),
             None,
             config.as_ref(),
-            HostServices::default(),
+            ProcessServices::default(),
         );
         fanout.attach_app_broker(state.clone());
         state.ensure_channel(&route.channel_key());
@@ -711,7 +711,7 @@ mod owner_commit_tests {
                 );
                 assert!(
                     subscriber.try_recv().is_err(),
-                    "current membership must gate fanout after owner await"
+                    "current membership must check fanout after owner await"
                 );
                 assert!(
                     f.owner.status().generation > before.generation,
@@ -977,7 +977,7 @@ mod owner_commit_tests {
      {
         use std::os::fd::IntoRawFd;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+        use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
         use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
         use ui::portable_storage::{PortableStorage, StorageKey};
         use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
@@ -1155,9 +1155,9 @@ mod owner_commit_tests {
             reveal: None,
         };
         let actor = person_id_for_root(cert.user_public_key);
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: records.clone(),
                 views,
                 device_id: "device".into(),
@@ -1333,7 +1333,7 @@ mod owner_commit_tests {
         for bytes in owner.outgoing() {
             remote
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::ServerDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).unwrap(),
                     SystemTime::now(),
                 )
@@ -1426,7 +1426,7 @@ mod owner_commit_tests {
                 workspace: f.route.cluster_id.clone(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
-                    record: f.route.document_id.clone(),
+                    document: f.route.document_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
                     own: None,
                 },

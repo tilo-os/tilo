@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 use zeroize::Zeroizing;
 
-use crate::{AccountId, Saved, Secret, SecretCustody, SecretVault};
+use crate::{AccountId, Saved, Secret, SecretVault, VaultBackend};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
 const GRANT_PREFIX: &str = "tilo-secret-grant:";
@@ -168,8 +168,8 @@ impl SecretStore {
     ///
     /// Callers should surface a local-file fallback honestly rather than
     /// implying that a desktop keyring accepted the credential.
-    pub fn custody(&self) -> SecretCustody {
-        self.vault.custody()
+    pub fn backend(&self) -> VaultBackend {
+        self.vault.backend()
     }
 
     pub fn recovery_error(&self) -> Option<&str> {
@@ -523,7 +523,7 @@ impl CredentialBroker {
     }
 
     /// Read a private messaging profile key through its existing exact grant.
-    /// Profile custody requires the original system vault; local-file fallback
+    /// Profile ownership requires the original system vault; local-file fallback
     /// and ordinary password items never authorize this path. Private metadata
     /// binds the item itself, independently of the permission grant.
     pub fn request_existing_profile_key(
@@ -532,7 +532,7 @@ impl CredentialBroker {
         scope: &CredentialScope,
     ) -> Result<Zeroizing<String>, BrokerError> {
         self.store.refresh();
-        if self.store.custody() != SecretCustody::System
+        if self.store.backend() != VaultBackend::System
             || self.store.recovery_error().is_some()
             || request.app_id != "so.tilo.messages"
             || !scope.valid()
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn broker_reports_custody_failure_without_prompting_or_hiding_existing_data() {
+    fn broker_reports_ownership_failure_without_prompting_or_hiding_existing_data() {
         let root = root();
         let mut store = SecretStore::open_in(&root);
         let mut item = SecretItem::login("private-title", "private-user", "private-password");
@@ -860,7 +860,7 @@ mod tests {
             Err(BrokerError::Storage(_))
         ));
         assert!(matches!(
-            broker.request(&request, |_, _| panic!("damaged custody must not prompt")),
+            broker.request(&request, |_, _| panic!("damaged ownership must not prompt")),
             Err(BrokerError::Storage(_))
         ));
         assert_eq!(std::fs::read(sealed).unwrap(), before);

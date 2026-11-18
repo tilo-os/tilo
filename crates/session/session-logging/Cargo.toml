@@ -10,7 +10,7 @@ license.workspace = true
 # The launch-timing lines the log always keeps.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Every panic's record.
-tilo-crash-records = { path = "../crash-records" }
+tilo-crash-reports = { path = "../crash-reports" }
 # The filter `RUST_LOG` sets, written to stderr.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
@@ -20,6 +20,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }
+# Lines written through the session's own filter, to read what it keeps.
+tracing.workspace = true
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 #![expect(
     clippy::result_large_err,
-    reason = "the tests return the production custody-carrying errors from closures"
+    reason = "the tests return the production ownership-carrying errors from closures"
 )]
 use super::*;
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
@@ -253,7 +253,7 @@ fn bounded_privacy_failure_guards_retry_original_commit_without_republication() 
     assert_eq!(fs::read(temp.path().join("data")).unwrap(), b"replacement");
 }
 #[test]
-fn bounded_privacy_fresh_barrier_failure_keeps_exact_custody_and_retry() {
+fn bounded_privacy_fresh_barrier_failure_keeps_exact_ownership_and_retry() {
     for at in [
         super::fresh::FreshCheckpoint::Child,
         super::fresh::FreshCheckpoint::Parent,

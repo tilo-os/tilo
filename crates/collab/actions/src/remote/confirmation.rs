@@ -1,5 +1,5 @@
-//! Asking the person, on their own device, about one invocation a device of
-//! theirs hosts.
+//! Asking the person, on their own device, about one invocation one of their
+//! devices answers.
 //!
 //! An action the person's grants leave to them asks first. At a device that
 //! is not theirs there is nobody at its screen to ask, so the question
@@ -15,14 +15,14 @@ pub enum Confirmation {
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
     /// The person the caller acts for confirmed this very invocation on
-    /// their own device: the host hands the caller this token, which names
+    /// their own device: the provider hands the caller this token, which names
     /// that answer. Only a person acting themselves confirms by their own
     /// word; anyone acting for them carries the person's answer.
-    Witnessed(String),
+    Approved(String),
 }
 
 /// What a confirmation is bound to of an invocation's arguments: their
-/// digest, so a host that keeps the person's answer for one invocation keeps
+/// digest, so a provider that keeps the person's answer for one invocation keeps
 /// no raw input, and arguments other than the ones answered find no answer.
 /// `argument` is the invocation's argument as it travels
 /// ([`InvokeArgument::to_slot`](super::InvokeArgument::to_slot)).
@@ -41,14 +41,14 @@ pub fn argument_digest(argument: Option<&str>) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// The person's answer to [`ActionHost::confirm`](super::ActionHost::confirm):
+/// The person's answer to [`ActionProvider::confirm`](super::ActionProvider::confirm):
 /// the confirmation to invoke again with, and the arguments to invoke with.
 ///
 /// Where the person changed the draft they were shown
 /// ([`Draft::apply_edits`](crate::Draft::apply_edits)), `arguments` holds
 /// the arguments as they changed them, and the confirmation is bound to
 /// exactly those: the caller invokes again with them, under the same
-/// invocation id. The host never swaps arguments on its own; arguments
+/// invocation id. The provider never swaps arguments on its own; arguments
 /// other than these are refused, as any other confirmation is for
 /// arguments it was not given for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,11 +123,11 @@ pub enum ConfirmationReply {
     Deny,
 }
 
-/// The answer a host that cannot ask has for a [`RemoteActionMessage::ConfirmationRequest`].
+/// The answer a provider that cannot ask has for a [`RemoteActionMessage::ConfirmationRequest`].
 #[must_use]
 pub(crate) fn unanswered(
     correlation: u64,
-    error: super::ActionHostError,
+    error: super::ActionCallError,
 ) -> super::RemoteActionMessage {
     super::RemoteActionMessage::ConfirmationResponse {
         correlation,

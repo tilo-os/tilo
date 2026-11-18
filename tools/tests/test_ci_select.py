@@ -31,19 +31,19 @@ class NamedPackageTests(unittest.TestCase):
         self.assertFalse(ci_select.LARGE_TEST_PACKAGES - names)
 
 
-class DesktopGateTests(unittest.TestCase):
-    """The shell's gate names a package and test targets, and all of them must exist.
+class DesktopCheckTests(unittest.TestCase):
+    """The shell's check names a package and test targets, and all of them must exist.
 
-    A gate keyed on a package that is not there is in no plan's selection: it
-    selects and runs nothing, which is how the gate went inert when the old
+    A check keyed on a package that is not there is in no plan's selection: it
+    selects and runs nothing, which is how the check went inert when the old
     shell's crate was removed.
     """
 
-    def tree(self, root: Path, *, package: str = ci_select.DESKTOP_GATE_PACKAGE,
+    def tree(self, root: Path, *, package: str = ci_select.DESKTOP_CHECK_PACKAGE,
              desktops: tuple[str, ...] = ci_select.SHELL_PACKAGES,
-             tests: tuple[str, ...] = ci_select.DESKTOP_GATE_TESTS,
-             binary: str = ci_select.DESKTOP_GATE_BINARY) -> Path:
-        session = root / ci_select.DESKTOP_GATE_MANIFEST
+             tests: tuple[str, ...] = ci_select.DESKTOP_CHECK_TESTS,
+             binary: str = ci_select.DESKTOP_CHECK_BINARY) -> Path:
+        session = root / ci_select.DESKTOP_CHECK_MANIFEST
         (session.parent / "tests").mkdir(parents=True, exist_ok=True)
         for test in tests:
             (session.parent / "tests" / f"{test}.rs").write_text("")
@@ -54,37 +54,37 @@ class DesktopGateTests(unittest.TestCase):
                            f'[[test]]\nname = "{binary}"\npath = "tests/it.rs"\n')
         return root
 
-    def test_the_gate_names_the_session_and_shell_tests_the_tree_holds(self):
-        self.assertEqual(ci_select.desktop_gate(REPO_ROOT), ci_select.DESKTOP_GATE)
-        self.assertEqual(sorted(ci_select.DESKTOP_GATE),
-                         [(ci_select.DESKTOP_GATE_PACKAGE, ci_select.DESKTOP_GATE_BINARY)])
-        # The shell's tests are modules of that binary, so the gate picks them out
+    def test_the_check_names_the_session_and_shell_tests_the_tree_holds(self):
+        self.assertEqual(ci_select.desktop_check(REPO_ROOT), ci_select.DESKTOP_CHECK)
+        self.assertEqual(sorted(ci_select.DESKTOP_CHECK),
+                         [(ci_select.DESKTOP_CHECK_PACKAGE, ci_select.DESKTOP_CHECK_BINARY)])
+        # The shell's tests are modules of that binary, so the check picks them out
         # by name and a name that is no binary would be refused by nextest.
-        scope = ci_select.DESKTOP_GATE[(ci_select.DESKTOP_GATE_PACKAGE,
-                                        ci_select.DESKTOP_GATE_BINARY)]
-        self.assertEqual(scope.test, ci_select.DESKTOP_GATE_BINARY)
-        for test in ci_select.DESKTOP_GATE_TESTS:
+        scope = ci_select.DESKTOP_CHECK[(ci_select.DESKTOP_CHECK_PACKAGE,
+                                        ci_select.DESKTOP_CHECK_BINARY)]
+        self.assertEqual(scope.test, ci_select.DESKTOP_CHECK_BINARY)
+        for test in ci_select.DESKTOP_CHECK_TESTS:
             self.assertIn(f"test({test}::)", scope.filter)
 
     def test_a_package_test_or_shell_crate_that_is_gone_fails_loudly(self):
         for phase, named, options in (
-            ("the session's package is renamed", ci_select.DESKTOP_GATE_PACKAGE,
+            ("the session's package is renamed", ci_select.DESKTOP_CHECK_PACKAGE,
              {"package": "another-session"}),
-            ("the test binary is gone", ci_select.DESKTOP_GATE_BINARY,
+            ("the test binary is gone", ci_select.DESKTOP_CHECK_BINARY,
              {"binary": "the_old_per_file_target"}),
-            ("a named test file is gone", ci_select.DESKTOP_GATE_TESTS[0],
-             {"tests": ci_select.DESKTOP_GATE_TESTS[1:]}),
+            ("a named test file is gone", ci_select.DESKTOP_CHECK_TESTS[0],
+             {"tests": ci_select.DESKTOP_CHECK_TESTS[1:]}),
             ("a shell crate is no longer the session's", ci_select.SHELL_PACKAGES[0],
              {"desktops": ci_select.SHELL_PACKAGES[1:]}),
         ):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 root = self.tree(Path(directory), **options)
                 with self.assertRaises(ValueError) as raised:
-                    ci_select.desktop_gate(root)
+                    ci_select.desktop_check(root)
                 self.assertIn(named, str(raised.exception))
         with self.subTest(phase="the session's manifest is gone"), tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
-                ci_select.desktop_gate(Path(directory))
+                ci_select.desktop_check(Path(directory))
 
 
 class SelectorTests(unittest.TestCase):
@@ -159,7 +159,7 @@ class SelectorTests(unittest.TestCase):
         self.assertFalse(any("-p tilo-web-desktop" in row["test_packages"]
                              for row in plan["matrix"]["include"]))
         # An actual native integration target must restore test execution,
-        # even while the library remains gated to wasm.
+        # even while the library remains guarded to wasm.
         native = directory / "tests/native.rs"
         native.parent.mkdir()
         native.write_text('#[test] fn native_subject() {}\n')
@@ -178,15 +178,15 @@ class SelectorTests(unittest.TestCase):
         self.assertNotIn("leaf", plan["near"])
         self.assertLessEqual(set(plan["near"]), set(plan["selected"]))
 
-    def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
-        # A gate entry is a test target of the session's, so two entries are two
-        # runs; the real gate names one, its shell tests being modules of it.
-        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(shell::)")
+    def test_the_desktop_check_runs_whenever_a_change_reaches_the_desktop(self):
+        # A check entry is a test target of the session's, so two entries are two
+        # runs; the real check names one, its shell tests being modules of it.
+        check = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(shell::)")
         probe_scope = ci_select.path_suites.ReaderScope((), "probe", "binary(probe)")
-        saved = ci_select.DESKTOP_GATE
-        self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
+        saved = ci_select.DESKTOP_CHECK
+        self.addCleanup(setattr, ci_select, "DESKTOP_CHECK", saved)
         # "leaf" stands in for the session: the end of the dependency chain.
-        ci_select.DESKTOP_GATE = {("leaf", "it"): gate, ("leaf", "probe"): probe_scope}
+        ci_select.DESKTOP_CHECK = {("leaf", "it"): check, ("leaf", "probe"): probe_scope}
         with self.subTest(phase="a foundation change reaching it without testing it runs its shell tests"):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
             self.assertIn("leaf", plan["selected"])
@@ -195,7 +195,7 @@ class SelectorTests(unittest.TestCase):
                 "leaf:it": "--test it -E 'binary(it) and test(shell::)'",
                 "leaf:probe": "--test probe -E 'binary(probe)'"})
             rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
-            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter},
+            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": check.filter},
                                      {"package": "leaf", "test": "probe", "filter": probe_scope.filter}]])
         with self.subTest(phase="a change to it tests all of it, and the shell tests are part of that"):
             plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
@@ -431,7 +431,7 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(ci_select.make_plan(
             self.metadata, self.root, ["apps/tl/notes/app.tl"], 2)["full"])
 
-    def test_android_lane_follows_selected_apps_with_an_android_example(self):
+    def test_android_job_follows_selected_apps_with_an_android_example(self):
         self.setUp()
         for package in self.metadata["packages"]:
             if package["name"] == "leaf":
@@ -468,7 +468,7 @@ class SelectorTests(unittest.TestCase):
              "android_required=false", "android_packages="],
         )
 
-    def test_wasm_lane_follows_selected_browser_crates(self):
+    def test_wasm_job_follows_selected_browser_crates(self):
         self.setUp()
         for package in self.metadata["packages"]:
             if package["name"] == "leaf":
@@ -556,7 +556,7 @@ class SelectorTests(unittest.TestCase):
         runner = (REPO_ROOT / ci_select.VENDORED_TEST_RUNNER).read_text()
         self.assertIn("from ci.package_sets import VENDORED_TEST_CRATES", runner)
 
-    def test_wasm_lane_builds_selected_examples_and_all_when_the_web_build_changes(self):
+    def test_wasm_job_builds_selected_examples_and_all_when_the_web_build_changes(self):
         self.setUp()
         self.metadata["packages"].append({
             "name": "example-counter",
@@ -737,15 +737,15 @@ class SelectorTests(unittest.TestCase):
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
         with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
             self.setUp()
-            names = ("tilo-fs", "tilo-relay", "tilo-action-broker", "light")
+            names = ("tilo-fs", "tilo-server", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
-            # By time alone tilo-fs and the relay would share the lighter
+            # By time alone tilo-fs and the server would share the lighter
             # shard. Placement breaks equal weights by name, so theirs differ.
-            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-relay": 99, "light": 1}
+            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-server": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
                                        ci_select.TEST_SHARD_APART)
             placed = [set(shard["packages"].split()[1::2]) for shard in shards]
-            self.assertIn({"tilo-relay", "tilo-action-broker"}, placed)
+            self.assertIn({"tilo-server", "tilo-action-broker"}, placed)
             self.assertTrue(any("tilo-fs" in names for names in placed))
             # One shard still takes everything.
             (only,) = ci_select.balance(set(packages), packages, 1, seconds,
@@ -1826,7 +1826,7 @@ class DependencyKindTests(unittest.TestCase):
             self.assertLessEqual({name} | reverse[name], selected, name)
             self.assertLessEqual(selected, ci_select.closure({name}, reverse), name)
 
-    def test_the_owner_commit_vocabulary_no_longer_lints_relay_or_the_wasm_crates(self):
+    def test_the_owner_commit_vocabulary_no_longer_lints_server_or_the_wasm_crates(self):
         # A workspace shape around tilo-owner-commit, with every edge kind
         # Cargo metadata reports.
         graph = {
@@ -1837,13 +1837,13 @@ class DependencyKindTests(unittest.TestCase):
             "tilo-runtime": [("tilo-owner-commit", None)],
             "agent": [("shell", "dev")],
             "tilo-session-host": [("tilo-owner-replica", "dev")],
-            "tilo-relay": [("tilo-session-host", None)],
+            "tilo-server": [("tilo-session-host", None)],
             "tilo-agent-session": [("tilo-session-host", None), ("agent", None)],
             "tilo-sync-load": [("tilo-session-host", None)],
             "tilo-browser-runtime": [("tilo-session-host", None)],
             "tilo-web-desktop": [("tilo-browser-runtime", None)],
-            "tilo-relay-shell": [("tilo-relay", "dev")],
-            "discord-worker": [("tilo-relay", "dev")],
+            "tilo-server-shell": [("tilo-server", "dev")],
+            "discord-worker": [("tilo-server", "dev")],
         }
         metadata = self.metadata(graph, wasm=frozenset({"tilo-browser-runtime", "tilo-web-desktop"}))
         packages, _ = ci_select.package_maps(metadata, self.root)
@@ -1861,7 +1861,7 @@ class DependencyKindTests(unittest.TestCase):
                              set(plan["tested"]))
         # A change to browser-peer itself still reaches relay and the wasm crates.
         plan = ci_select.make_plan(metadata, self.root, ["tilo-session-host/src/lib.rs"], 2)
-        self.assertLessEqual({"tilo-relay", "tilo-relay-shell", "discord-worker", "tilo-web-desktop"},
+        self.assertLessEqual({"tilo-server", "tilo-server-shell", "discord-worker", "tilo-web-desktop"},
                              set(plan["selected"]))
         self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-desktop"])
 
@@ -2554,7 +2554,7 @@ class MapHygieneTests(unittest.TestCase):
                     missing.append(path)
         for path in (*ci_select.NON_COMPILING_DOCS, *ci_select.PIN_FILES, *ci_select.GLOBAL_FILES,
                      ci_select.EXTERNAL_ASSET_MANIFEST, ci_select.VENDORED_TEST_RUNNER,
-                     ci_select.DESKTOP_GATE_MANIFEST):
+                     ci_select.DESKTOP_CHECK_MANIFEST):
             if not (REPO_ROOT / path).is_file():
                 missing.append(path)
         for crate, inputs in ci_select.VENDORED_TEST_CRATES.items():

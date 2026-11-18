@@ -205,14 +205,14 @@ impl std::error::Error for SearchCatalogError {}
 /// fields it is found and ranked by, and optionally a long [`SearchBody`] it is found by
 /// without the catalogue copying the prose.
 #[derive(Clone, Debug)]
-pub struct SearchRecord {
+pub struct SearchItem {
     resource_id: String,
     result: SearchResult,
     fields: Vec<(String, FieldWeight)>,
     body: Option<SearchBody>,
 }
 
-impl SearchRecord {
+impl SearchItem {
     /// A record for `resource_id`, activated through `result`, whose canonical action
     /// must address that same resource.
     #[must_use]
@@ -256,7 +256,7 @@ struct SearchCatalogInner {
 }
 
 impl SearchCatalogInner {
-    fn same_content(&self, ordinal: u64, record: &SearchRecord) -> bool {
+    fn same_content(&self, ordinal: u64, record: &SearchItem) -> bool {
         self.entries
             .get(&ordinal)
             .is_some_and(|entry| entry.result == record.result && entry.body == record.body)
@@ -266,8 +266,8 @@ impl SearchCatalogInner {
                 .is_some_and(|document| document.fields() == record.fields.as_slice())
     }
 
-    fn insert(&mut self, ordinal: u64, resource_id: Arc<str>, record: SearchRecord) {
-        let SearchRecord {
+    fn insert(&mut self, ordinal: u64, resource_id: Arc<str>, record: SearchItem) {
+        let SearchItem {
             result,
             fields,
             body,
@@ -305,7 +305,7 @@ impl SearchCatalogInner {
 
     /// Make `records`, validated and unique, the whole catalogue in their order, touching
     /// only what differs.
-    fn sync(&mut self, records: Vec<SearchRecord>) -> Result<usize, SearchCatalogError> {
+    fn sync(&mut self, records: Vec<SearchItem>) -> Result<usize, SearchCatalogError> {
         let held: Vec<Option<u64>> = records
             .iter()
             .map(|record| self.ordinals.get(record.resource_id.as_str()).copied())
@@ -351,7 +351,7 @@ impl SearchCatalogInner {
                 self.take(&record.resource_id);
             }
         }
-        let mut records: Vec<Option<SearchRecord>> = records.into_iter().map(Some).collect();
+        let mut records: Vec<Option<SearchItem>> = records.into_iter().map(Some).collect();
         for &at in &placed {
             let (Some(record), Some(&ordinal)) =
                 (records.get_mut(at).and_then(Option::take), planned.get(at))
@@ -374,7 +374,7 @@ pub struct SearchCatalog {
     inner: Arc<RwLock<SearchCatalogInner>>,
 }
 
-fn validate(record: &SearchRecord) -> Result<(), SearchCatalogError> {
+fn validate(record: &SearchItem) -> Result<(), SearchCatalogError> {
     if record.resource_id.is_empty() {
         return Err(SearchCatalogError::EmptyResourceId);
     }
@@ -422,7 +422,7 @@ impl SearchCatalog {
     /// records name the same resource.
     pub fn replace_all_resources(
         &self,
-        records: impl IntoIterator<Item = SearchRecord>,
+        records: impl IntoIterator<Item = SearchItem>,
     ) -> Result<(), SearchCatalogError> {
         let mut next = SearchCatalogInner {
             next_browse_ordinal: ordinals::GAP,
@@ -456,9 +456,9 @@ impl SearchCatalog {
     /// catalogue is then unchanged.
     pub fn sync_resources(
         &self,
-        records: impl IntoIterator<Item = SearchRecord>,
+        records: impl IntoIterator<Item = SearchItem>,
     ) -> Result<bool, SearchCatalogError> {
-        let records: Vec<SearchRecord> = records.into_iter().collect();
+        let records: Vec<SearchItem> = records.into_iter().collect();
         let mut seen = HashSet::with_capacity(records.len());
         for record in &records {
             validate(record)?;
@@ -484,7 +484,7 @@ impl SearchCatalog {
     /// [`SearchCatalogError::ResourceAddressMismatch`] for a hit that does not address
     /// the record's own resource, and the exhaustion errors when the catalogue's
     /// generation or browse identity runs out.
-    pub fn upsert_resource(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
+    pub fn upsert_resource(&self, record: SearchItem) -> Result<(), SearchCatalogError> {
         validate(&record)?;
         let mut inner = self.inner.write_recover();
         let existing = inner.ordinals.get(record.resource_id.as_str()).copied();
@@ -820,7 +820,7 @@ impl OpenResourceSearch {
                         super::system::icon_for_kind(&super::system::ResourceKind::Record)
                     }),
             );
-            let mut record = SearchRecord::new(resource.id.as_str(), hit)
+            let mut record = SearchItem::new(resource.id.as_str(), hit)
                 .field(resource.label.clone(), FieldWeight::TITLE);
             if let Some(detail) = &resource
                 .presentation
@@ -1127,8 +1127,8 @@ mod tests {
         resource_id: impl Into<String>,
         text: impl Into<String>,
         result: SearchResult,
-    ) -> SearchRecord {
-        SearchRecord::new(resource_id, result).field(text, FieldWeight::UNRANKED)
+    ) -> SearchItem {
+        SearchItem::new(resource_id, result).field(text, FieldWeight::UNRANKED)
     }
 
     fn catalog_rows(count: usize) -> SearchCatalog {
@@ -1703,8 +1703,8 @@ mod tests {
         }
     }
 
-    fn record(resource_id: &str, title: &str) -> SearchRecord {
-        SearchRecord::new(resource_id, catalog_hit(resource_id, title))
+    fn record(resource_id: &str, title: &str) -> SearchItem {
+        SearchItem::new(resource_id, catalog_hit(resource_id, title))
             .field(title, FieldWeight::TITLE)
     }
 
@@ -1731,7 +1731,7 @@ mod tests {
             let catalog = SearchCatalog::new("Documents");
             catalog
                 .replace_all_resources([
-                    SearchRecord::new("document:a", catalog_hit("document:a", "Travel notes"))
+                    SearchItem::new("document:a", catalog_hit("document:a", "Travel notes"))
                         .field("Travel notes", FieldWeight::TITLE)
                         .field("an atlas of old roads", FieldWeight::BODY),
                     record("document:b", "Atlas Press catalogue"),
@@ -1872,7 +1872,7 @@ mod tests {
         }
     }
 
-    fn body_resource(index: usize, paragraphs: Vec<String>) -> SearchRecord {
+    fn body_resource(index: usize, paragraphs: Vec<String>) -> SearchItem {
         let id = format!("document:{index:05}");
         let body = SearchBody::new(Arc::new(Paragraphs {
             resource: id.clone(),
@@ -2016,7 +2016,7 @@ mod tests {
             let address = ActionAddress::new("document:a", "share");
             session
                 .upsert_resource(
-                    SearchRecord::new(
+                    SearchItem::new(
                         address.encode(),
                         SearchResult::for_action("Actions", "Share", address.clone()),
                     )
@@ -2038,7 +2038,7 @@ mod tests {
             catalog.replace_all_resources(snapshot(None)).unwrap();
             let generation = catalog.stats().generation;
             let touched =
-                |records: Vec<SearchRecord>| catalog.inner.write().unwrap().sync(records).unwrap();
+                |records: Vec<SearchItem>| catalog.inner.write().unwrap().sync(records).unwrap();
             assert_eq!(touched(snapshot(None).collect()), 0);
             assert_eq!(
                 catalog.stats().generation,
@@ -2047,7 +2047,7 @@ mod tests {
             );
             assert_eq!(touched(snapshot(Some(500)).collect()), 1);
             assert_eq!(catalog.stats().generation, generation + 1);
-            let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
+            let mut records: Vec<SearchItem> = snapshot(Some(500)).collect();
             records.pop();
             records.insert(0, sync_resource(5_000, 0));
             assert_eq!(touched(records), 2);
@@ -2090,7 +2090,7 @@ mod tests {
 
     const SYNC_WORDS: [&str; 6] = ["harbour", "atlas", "granite", "lagoon", "fjord", "kestrel"];
 
-    fn sync_resource(id: usize, version: usize) -> SearchRecord {
+    fn sync_resource(id: usize, version: usize) -> SearchItem {
         let title = format!(
             "{} {} {id}",
             SYNC_WORDS[id % SYNC_WORDS.len()],

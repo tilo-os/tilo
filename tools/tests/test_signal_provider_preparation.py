@@ -34,7 +34,7 @@ class PreparationTests(unittest.TestCase):
             output = root / "prepared"
             preparation.prepare(source, output, pin)
             code = (output / "org/asamk/signal/manager/config/LiveConfig.java").read_text()
-            self.assertEqual(code, "prefix\nprivate static final Optional<HttpProxy> systemProxy = TiloHttpProxy.nativeGate();\nsuffix\n")
+            self.assertEqual(code, "prefix\nprivate static final Optional<HttpProxy> systemProxy = TiloHttpProxy.nativeProxy();\nsuffix\n")
             with self.assertRaisesRegex(ValueError, "already exists"):
                 preparation.prepare(source, output, pin)
 

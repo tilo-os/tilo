@@ -203,7 +203,7 @@ crate::testing::test_app_widget!(
 );
 
 fn owned_declared_directory_factory(
-    mut context: crate::application::HostContext,
+    mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
@@ -374,7 +374,7 @@ tilo_test_env::scenario! {
         let old = app.action_directory_revision();
         catalog
             .upsert_resource(
-                crate::search::SearchRecord::new(
+                crate::search::SearchItem::new(
                     "test.item:1",
                     crate::search::SearchResult::for_action(
                         "Large directory",
@@ -411,7 +411,7 @@ tilo_test_env::scenario! {
     phase hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter;
     {
         use crate::application::{
-            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
@@ -439,9 +439,9 @@ tilo_test_env::scenario! {
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let context = HostContext::prepare(
+        let context = ProcessContext::prepare(
             &definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records,
                 views,
                 device_id: "D".into(),
@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = admitted_delivery_manager();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -477,12 +477,12 @@ tilo_test_env::scenario! {
         app.publish_action_surface();
         let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
         assert_eq!(page.rows.len(), 1);
-        let before = crate::bound_dispatch::directory_witness(app.root_widget.as_ref(), &app.state.doc)
+        let before = crate::bound_dispatch::directory_observation(app.root_widget.as_ref(), &app.state.doc)
             .unwrap()[0]
             .generation
             .unwrap();
         app.pump_hosted_model();
-        let after = crate::bound_dispatch::directory_witness(app.root_widget.as_ref(), &app.state.doc)
+        let after = crate::bound_dispatch::directory_observation(app.root_widget.as_ref(), &app.state.doc)
             .unwrap()[0]
             .generation
             .unwrap();
@@ -848,7 +848,7 @@ struct OwingCounter {
     card: CounterCard,
     seen: i64,
     /// Lets the worker reply; the test holds the other end.
-    gate: Option<std::sync::mpsc::Receiver<()>>,
+    check: Option<std::sync::mpsc::Receiver<()>>,
     replies: Option<std::sync::mpsc::Receiver<i64>>,
     worker: Rc<RefCell<Option<std::thread::JoinHandle<()>>>>,
     taken: Rc<Cell<Option<i64>>>,
@@ -870,11 +870,11 @@ impl Widget for OwingCounter {
             return;
         }
         self.seen = count;
-        if let Some(gate) = self.gate.take() {
+        if let Some(check) = self.check.take() {
             let owed = crate::wake::WakeHandle::new().owe();
             let (reply, replies) = std::sync::mpsc::channel();
             *self.worker.borrow_mut() = Some(std::thread::spawn(move || {
-                let _ = gate.recv();
+                let _ = check.recv();
                 let _ = reply.send(count);
                 drop(owed);
             }));
@@ -910,7 +910,7 @@ impl Widget for OwingCounter {
 /// window's own frames go on.
 #[test]
 fn a_delivered_action_answers_once_the_work_it_caused_has_landed() {
-    let (go, gate) = std::sync::mpsc::channel();
+    let (go, check) = std::sync::mpsc::channel();
     let taken = Rc::new(Cell::new(None));
     let worker = Rc::new(RefCell::new(None));
     let scope = crate::wake::WakeScope::new();
@@ -919,7 +919,7 @@ fn a_delivered_action_answers_once_the_work_it_caused_has_landed() {
         Box::new(OwingCounter {
             card: CounterCard::new(),
             seen: 0,
-            gate: Some(gate),
+            check: Some(check),
             replies: None,
             worker: Rc::clone(&worker),
             taken: Rc::clone(&taken),

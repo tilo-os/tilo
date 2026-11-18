@@ -50,6 +50,11 @@ pub enum FetchedBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         text: String,
+        /// Why `text` is not what the page shows a person, where a read
+        /// without a browser cannot see that. Told to the reader by whoever
+        /// answers the read, never sent on with the text.
+        #[serde(skip)]
+        needs_browser: Option<readable::NeedsBrowser>,
     },
     /// Anything else (a PDF, an image, an archive), whole, as the server
     /// sent it. Never interpreted here: the caller stores it as content.
@@ -74,6 +79,16 @@ impl FetchedPage {
     pub fn title(&self) -> Option<&str> {
         match &self.body {
             FetchedBody::Text { title, .. } => title.as_deref(),
+            FetchedBody::Binary { .. } => None,
+        }
+    }
+
+    /// Why the page's text is not what it shows a person, where a read
+    /// without a browser cannot see that.
+    #[must_use]
+    pub fn needs_browser(&self) -> Option<readable::NeedsBrowser> {
+        match &self.body {
+            FetchedBody::Text { needs_browser, .. } => *needs_browser,
             FetchedBody::Binary { .. } => None,
         }
     }
@@ -149,12 +164,15 @@ fn size(bytes: usize) -> String {
 /// Every hop, the first and each redirect, is checked by [`check_url`], and
 /// where the name resolves here by [`check_address`], before a request goes
 /// out, so a redirect cannot lead somewhere the first address could not.
+/// What keeps a request off a local address for good is `client`'s own
+/// lookup: [`crate::client`] dials a name only where that lookup found it
+/// public, so `client` is the one it makes.
 pub async fn fetch(
     client: &tilo_net::Client,
     url: &str,
     limits: &FetchLimits,
 ) -> Result<FetchedPage, FetchError> {
-    fetch_reaching(client, url, limits, Reach::Web).await
+    fetch_reaching(client, url, limits, &Reach::Web(early())).await
 }
 
 /// [`fetch`] from a fixture server on this machine, which [`fetch`] refuses
@@ -169,13 +187,47 @@ pub async fn fetch_fixture(
     url: &str,
     limits: &FetchLimits,
 ) -> Result<FetchedPage, FetchError> {
-    fetch_reaching(client, url, limits, Reach::Fixture).await
+    fetch_reaching(client, url, limits, &Reach::Fixture).await
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// [`fetch`], looking a name up by `lookup` where [`fetch`] asks the
+/// system's resolver before it has the client dial: every refusal of
+/// [`fetch`] holds. For a test whose names no resolver knows; `client`
+/// resolves as the test made it.
+///
+/// # Errors
+///
+/// As [`fetch`].
+#[cfg(all(feature = "fixture-servers", not(target_family = "wasm")))]
+pub async fn fetch_looking_up(
+    client: &tilo_net::Client,
+    url: &str,
+    limits: &FetchLimits,
+    lookup: tilo_net::Lookup,
+) -> Result<FetchedPage, FetchError> {
+    fetch_reaching(client, url, limits, &Reach::Web(lookup)).await
+}
+
+/// What looks a name up before the client is asked to dial it: a resolver
+/// here, and nothing in a page, which has none.
+#[cfg(not(target_family = "wasm"))]
+type Early = tilo_net::Lookup;
+#[cfg(target_family = "wasm")]
+type Early = ();
+
+/// The system's resolver, where there is one.
+#[cfg(not(target_family = "wasm"))]
+fn early() -> Early {
+    crate::guard::system_lookup()
+}
+#[cfg(target_family = "wasm")]
+const fn early() -> Early {}
+
 enum Reach {
-    /// Public web addresses only.
-    Web,
+    /// Public web addresses only: an address is judged as written, and a
+    /// name by what the lookup held here resolves it to, before the client
+    /// dials it by its own.
+    Web(Early),
     #[cfg_attr(
         not(feature = "fixture-servers"),
         allow(dead_code, reason = "only fixture-server builds construct it")
@@ -187,7 +239,7 @@ async fn fetch_reaching(
     client: &tilo_net::Client,
     url: &str,
     limits: &FetchLimits,
-    reach: Reach,
+    reach: &Reach,
 ) -> Result<FetchedPage, FetchError> {
     let url = Url::parse(url.trim()).map_err(|e| FetchError::InvalidUrl(e.to_string()))?;
     tokio::time::timeout(limits.timeout, fetch_from(client, url, limits, reach))
@@ -199,14 +251,14 @@ async fn fetch_from(
     client: &tilo_net::Client,
     mut url: Url,
     limits: &FetchLimits,
-    reach: Reach,
+    reach: &Reach,
 ) -> Result<FetchedPage, FetchError> {
     url.set_fragment(None);
     let mut hops = 0u8;
     let mut response = loop {
-        if reach == Reach::Web {
+        if let Reach::Web(early) = reach {
             check_url(&url).map_err(FetchError::Refused)?;
-            check_resolved(&url).await?;
+            check_resolved(&url, early).await?;
         }
         let response = client
             .get(url.as_str())
@@ -216,7 +268,14 @@ async fn fetch_from(
             )
             .send()
             .await
-            .map_err(|e| FetchError::Network(e.to_string()))?;
+            .map_err(|error| match error {
+                // The client's own lookup found the name on this device or
+                // its network: nothing was sent.
+                tilo_net::NetError::Blocked(_) => {
+                    FetchError::Refused(Refusal::Local(url.domain().unwrap_or_default().to_owned()))
+                }
+                error => FetchError::Network(error.to_string()),
+            })?;
         if !response.status().is_redirection() {
             break response;
         }
@@ -264,15 +323,18 @@ async fn fetch_from(
             FetchedBody::Text {
                 title: page.title,
                 text: page.text,
+                needs_browser: page.needs_browser,
             }
         }
         Kind::Json => FetchedBody::Text {
             title: None,
             text: pretty_json(&bytes, truncated),
+            needs_browser: None,
         },
         Kind::Text => FetchedBody::Text {
             title: None,
             text: String::from_utf8_lossy(&bytes).trim().to_owned(),
+            needs_browser: None,
         },
     };
     Ok(FetchedPage {
@@ -297,24 +359,31 @@ fn pretty_json(bytes: &[u8], truncated: bool) -> String {
         .unwrap_or_else(sent)
 }
 
-/// Refuse a name that resolves to this device or its network.
+/// Refuse a name that resolves to this device or its network, early and in
+/// plain words. This look decides nothing for good: the connection resolves
+/// the name itself, and what holds is the lookup of [`crate::client`], which
+/// dials only the addresses it checked.
 ///
 /// A lookup that fails is not a refusal: inside a sandbox without a resolver
-/// the egress gate resolves instead, and it refuses local destinations
+/// the egress proxy resolves instead, and it refuses local destinations
 /// itself. A name that resolves to both public and local addresses is
 /// refused, since the connection might take either.
-async fn check_resolved(url: &Url) -> Result<(), FetchError> {
+async fn check_resolved(url: &Url, early: &Early) -> Result<(), FetchError> {
     let Some(url::Host::Domain(name)) = url.host() else {
         return Ok(());
     };
-    let port = url.port_or_known_default().unwrap_or(443);
-    let Ok(addresses) = tokio::net::lookup_host((name, port)).await else {
-        return Ok(());
-    };
-    for address in addresses {
-        check_address(address.ip())
-            .map_err(|_| FetchError::Refused(Refusal::Local(name.to_owned())))?;
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let Ok(addresses) = early(name.to_owned()).await else {
+            return Ok(());
+        };
+        for address in addresses {
+            check_address(address)
+                .map_err(|_| FetchError::Refused(Refusal::Local(name.to_owned())))?;
+        }
     }
+    #[cfg(target_family = "wasm")]
+    let _ = (name, early);
     Ok(())
 }
 

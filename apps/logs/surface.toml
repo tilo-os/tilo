@@ -38,13 +38,13 @@ params = [
 [[resources.types]]
 name = "Priority"
 cases = [
-  { name = "Emerg" },
-  { name = "Alert" },
-  { name = "Crit" },
-  { name = "Err" },
-  { name = "Warning" },
-  { name = "Notice" },
-  { name = "Info" },
-  { name = "Debug" },
+  { name = "emerg" },
+  { name = "alert" },
+  { name = "crit" },
+  { name = "err" },
+  { name = "warning" },
+  { name = "notice" },
+  { name = "info" },
+  { name = "debug" },
 ]
 

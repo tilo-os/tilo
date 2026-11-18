@@ -21,7 +21,6 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
-pub mod adopt;
 pub mod app;
 #[cfg(test)]
 mod cpu_profile;
@@ -36,6 +35,7 @@ pub mod note_header;
 pub mod notebook;
 pub mod notion;
 mod outline;
+pub mod part;
 pub mod read;
 pub mod resource;
 
@@ -57,6 +57,7 @@ pub use effect::NotesEffect;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
 pub use notebook::Notebook;
+pub use part::{PagePart, Pages};
 pub use resource::NotesShell;
 pub use shortcuts_overlay::ShortcutsOverlay;
 pub use status_bar::{SaveStatus, StatusBarState, StatusModel};

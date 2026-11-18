@@ -1,5 +1,5 @@
 // The web page boots for real: the built bundle in headless Chromium, served
-// beside a running relay, as a person's browser loads it. The tab arrives,
+// beside a running server, as a person's browser loads it. The tab arrives,
 // joins the Lounge's workspace, opens Notes from the search, and Notes'
 // window shows. Then its GPU device is lost, and the shell draws on with its
 // windows. (A sideways swipe over Sheets is the people's shell case,
@@ -12,7 +12,7 @@
 // exception the page throws, and any panic or error its console reports,
 // fails the run, even when the page went on.
 //
-// usage: node page-boot.mjs SITE_URL RELAY_ORIGIN OUT_DIR
+// usage: node page-boot.mjs SITE_URL SERVER_ORIGIN OUT_DIR
 //
 // Prints a JSON report and keeps the tab's console and a screenshot in
 // OUT_DIR; exits non-zero when a step did not happen or the page said it
@@ -23,14 +23,14 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, SHELL, machine} from './waits.mjs';
 
-const [site, relay, out] = process.argv.slice(2);
-if (!site || !relay || !out) {
-  console.error('usage: node page-boot.mjs SITE_URL RELAY_ORIGIN OUT_DIR');
+const [site, server, out] = process.argv.slice(2);
+if (!site || !server || !out) {
+  console.error('usage: node page-boot.mjs SITE_URL SERVER_ORIGIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
 const mark = clock();
-const report = {site, relay, at: new Date().toISOString()};
+const report = {site, server, at: new Date().toISOString()};
 const browser = await launch();
 // A person who has been past the first screen: their page opens the Lounge.
 const tab = await browser.tab();
@@ -178,10 +178,10 @@ if (arrival !== 'done') {
 console.log('ok: the page booted and arrived');
 mark('the page arrived');
 
-// 2. It joined the Lounge's workspace: a membership on the relay's host.
+// 2. It joined the Lounge's workspace: a membership on the server's host.
 const membership = await until(`(() => {
   const all = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}');
-  const kept = all[${JSON.stringify(new URL(relay).origin)}];
+  const kept = all[${JSON.stringify(new URL(server).origin)}];
   return kept?.workspace ? JSON.stringify(kept) : '';
 })()`, 'joining the Lounge\'s workspace');
 report.membership = JSON.parse(membership);

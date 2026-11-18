@@ -6,7 +6,7 @@
 use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
-use collab_types::caps::{Access, CapOverride, Effect, Expiry, Scope};
+use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Expiry, Scope};
 use provider_settings_ui::widgets::{
     El, Item, SettingsSection, StatusTone, block, error_row, note, page, row, rows, section,
     thing_row, untitled, value_row,
@@ -56,7 +56,7 @@ pub enum PermissionsEffect {
         #[param("Whether the application may use saved secrets")]
         allowed: bool,
     },
-    /// Remove an application's saved secrets and its record.
+    /// Remove an application's saved secrets and its resource.
     #[effect(job)]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
@@ -318,12 +318,12 @@ impl PermissionsReader for SamplePermissions {
         let caps = [
             (
                 "so.tilo.terminal",
-                Scope::Device("desktop-control".into()),
+                Scope::Device(DeviceCap::DesktopControl),
                 Access::Write,
             ),
             (
                 "so.tilo.camera",
-                Scope::Device("camera".into()),
+                Scope::Device(DeviceCap::Camera),
                 Access::Read,
             ),
         ]
@@ -783,17 +783,15 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             };
             ("Files", format!("{verb}: {p}"), Tint::Files)
         }
-        Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
-        Scope::Device(d) if d == "microphone" => {
+        Scope::Device(DeviceCap::Camera) => ("Camera", t("perm-capture-video"), Tint::Camera),
+        Scope::Device(DeviceCap::Microphone) => {
             ("Microphone", t("perm-capture-audio"), Tint::Microphone)
         }
-        Scope::Device(d) if d == "screencast" => {
+        Scope::Device(DeviceCap::Screen) => {
             ("Screen sharing", t("perm-stream-workspace"), Tint::Screen)
         }
-        Scope::Device(d) if d == "remote-desktop" => {
-            ("Remote control", t("perm-inject-input"), Tint::Remote)
-        }
-        Scope::Device(d) if d == "desktop-control" => {
+        Scope::Device(DeviceCap::Input) => ("Remote control", t("perm-inject-input"), Tint::Remote),
+        Scope::Device(DeviceCap::DesktopControl) => {
             ("Desktop control", t("perm-desktop-control"), Tint::Remote)
         }
         Scope::NetHost(h) => {
@@ -1384,8 +1382,8 @@ mod tests {
     #[test]
     fn a_stalled_device_read_never_holds_privacy_and_security() {
         ui::i18n::I18nManager::init("en-US");
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         crate::area::replace_in_next_window(move |_| {
             PermissionsArea::over(Arc::new(StalledReader(stalled)))
         });
@@ -1396,7 +1394,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("opening the pane");
+        check.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("perm-reading")), "{frame}");
         assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
@@ -1404,7 +1402,7 @@ mod tests {
         assert!(!frame.contains(&t("perm-unavailable-title")), "{frame}");
         assert!(!frame.contains(&t("perm-desktop-control")), "{frame}");
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
@@ -1423,7 +1421,7 @@ mod tests {
     fn sample_state() -> String {
         let cam = CapOverride::grant(
             Grantee::person("local"),
-            Scope::Device("camera".into()),
+            Scope::Device(DeviceCap::Camera),
             Access::Read,
         )
         .through("so.tilo.camera");
@@ -1527,23 +1525,23 @@ mod tests {
                     .map(|v| v.kind)
             };
             assert_eq!(
-                g(Scope::Device("camera".into()), Access::Read),
+                g(Scope::Device(DeviceCap::Camera), Access::Read),
                 Some("Camera")
             );
             assert_eq!(
-                g(Scope::Device("microphone".into()), Access::Read),
+                g(Scope::Device(DeviceCap::Microphone), Access::Read),
                 Some("Microphone")
             );
             assert_eq!(
-                g(Scope::Device("screencast".into()), Access::Read),
+                g(Scope::Device(DeviceCap::Screen), Access::Read),
                 Some("Screen sharing")
             );
             assert_eq!(
-                g(Scope::Device("remote-desktop".into()), Access::Write),
+                g(Scope::Device(DeviceCap::Input), Access::Write),
                 Some("Remote control")
             );
             assert_eq!(
-                g(Scope::Device("desktop-control".into()), Access::Write),
+                g(Scope::Device(DeviceCap::DesktopControl), Access::Write),
                 Some("Desktop control")
             );
             assert_eq!(
@@ -1581,7 +1579,7 @@ mod tests {
                 cap_view(
                     &CapOverride::new(
                         Grantee::person("local"),
-                        Scope::Device("camera".into()),
+                        Scope::Device(DeviceCap::Camera),
                         Effect::Restrict,
                         Access::Read,
                     )

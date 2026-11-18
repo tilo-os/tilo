@@ -1,7 +1,7 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{Browser, Device, Host, Hosted, RevocationList, ready, start_peer};
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_relay::workspaces::IssueInvitationRequest;
+use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_session_client::{Cmd, Outbox};
 
 pub(super) async fn open_admitted_peer(
@@ -10,17 +10,29 @@ pub(super) async fn open_admitted_peer(
     host: &Device,
     cluster_id: &str,
 ) -> Browser {
-    let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
+    open_admitted_at(&hosted.server, device, host, cluster_id).await
+}
+
+/// [`open_admitted_peer`] on whatever `server` serves the workspace: the page of `device`,
+/// whose person was admitted by an invitation, joins as a member does, under `holder`, the
+/// device that serves it.
+pub(super) async fn open_admitted_at(
+    server: &tilo_server::daemon::Server,
+    device: &Device,
+    holder: &Device,
+    cluster_id: &str,
+) -> Browser {
+    let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
     let peer = start_peer(
-        Host::at(hosted.relay.node_addr()),
+        Host::at(server.node_addr()),
         device.cert.clone(),
-        host.cert.clone(),
+        holder.cert.clone(),
         device.key.clone(),
     );
     let events = peer.events();
     peer.send(Cmd::Join(workspace)).unwrap();
     ready(&[&peer]).await;
-    Browser::joined((peer, events), device, host, cluster_id)
+    Browser::joined((peer, events), device, holder, cluster_id)
 }
 
 pub(super) async fn admit_person(
@@ -31,7 +43,7 @@ pub(super) async fn admit_person(
     role: Role,
 ) {
     let invitation = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .issue(
@@ -62,8 +74,8 @@ pub(super) async fn admit_person(
     // with relays off redeems only an invitation naming a direct address of
     // the host's own network. Its relay is this machine's loopback one, so
     // nothing here reaches the person's relays out on the internet.
-    let endpoint = test_relay::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
-    tilo_relay::workspace_join::WorkspaceJoinClient::new(endpoint)
+    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
+    tilo_server::workspace_join::WorkspaceJoinClient::new(endpoint)
         .redeem_hint(
             verified.grant().transport.first().unwrap(),
             invitation.signed_invitation.clone(),
@@ -147,4 +159,43 @@ pub(super) fn part_route(
         cluster_id: workspace.to_owned(),
         document: record.as_str().to_owned(),
     }
+}
+
+/// Each part of the notes the replica `engine` holds of `workspace`, oldest first, as
+/// its document.
+pub(super) fn notes_part_docs(
+    engine: &tilo_session_client::engine::Engine,
+    workspace: &str,
+) -> Vec<(u64, automerge::AutoCommit)> {
+    let chain = notes::part::chain();
+    let mut parts: Vec<(u64, automerge::AutoCommit)> = engine
+        .records(workspace)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(app, _)| app == ui::apps::NOTES)
+        .filter_map(|(_, record)| {
+            let (of, index) = ui::resource::DocumentId::parse(&record)?.chain_part()?;
+            if of != chain {
+                return None;
+            }
+            let bytes = engine.record(workspace, ui::apps::NOTES, &record).ok()??;
+            Some((index, automerge::AutoCommit::load(&bytes).ok()?))
+        })
+        .collect();
+    parts.sort_by_key(|(index, _)| *index);
+    parts
+}
+
+/// Each part of the notes the replica `engine` holds of `workspace`, oldest first, read.
+pub(super) fn notes_parts(
+    engine: &tilo_session_client::engine::Engine,
+    workspace: &str,
+) -> Vec<(u64, std::rc::Rc<notes::PagePart>)> {
+    notes_part_docs(engine, workspace)
+        .into_iter()
+        .filter_map(|(index, doc)| {
+            let part = <notes::PagePart as ui::tilo_resource::Resource>::read(&doc).ok()?;
+            Some((index, std::rc::Rc::new(part)))
+        })
+        .collect()
 }

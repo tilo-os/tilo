@@ -72,12 +72,12 @@ pub struct DirectoryConnection(Bridge<Request, Response>);
 
 impl DirectoryConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
-    /// Requires sole custody after all FUSE callbacks and handles have retired.
+    /// Requires sole ownership after all FUSE callbacks and handles have retired.
     pub fn retire(self) -> io::Result<()> {
         self.0.retire()
     }
     /// Terminally close this exact authenticated channel before waiting for
-    /// callbacks. The source provider observes peer death at native effect gates.
+    /// callbacks. The source provider observes peer death at native effect checks.
     pub fn revoke(&self) {
         self.0.revoke();
     }
@@ -113,7 +113,7 @@ impl DirectoryConnection {
         }
     }
     /// # Errors
-    /// Refuses revoked source metadata custody or transport failure.
+    /// Refuses revoked source metadata ownership or transport failure.
     pub fn check_pin(&self, id: u64) -> io::Result<()> {
         match self.call(Request::CheckPin(id))? {
             Response::Empty => Ok(()),
@@ -154,7 +154,7 @@ impl DirectoryConnection {
         }
     }
     /// # Errors
-    /// Refuses unavailable or revoked metadata custody.
+    /// Refuses unavailable or revoked metadata ownership.
     pub fn metadata_pin(&self, id: u64) -> io::Result<DirectoryStat> {
         match self.call(Request::PinStat(id))? {
             Response::DirectoryStat(stat) => Ok(stat),

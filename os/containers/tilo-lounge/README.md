@@ -1,11 +1,11 @@
 # Tilo Lounge
 
-One always-on public Tilo workspace, hosted by one process: `tilo-relay`'s
+One always-on public Tilo workspace, hosted by one process: `tilo-server`'s
 persistent public workspace, the deployment routes beside it, and the Discord
 bridge whose bot programs it runs.
 
 ```
-GET /mode                 {"relay":"up","revision":"<commit>"}   the readiness probe
+GET /mode                 {"server":"up","revision":"<commit>"}   the readiness probe
 GET /avatars/<name>       an avatar a bridged author published (immutable)
 GET /discord/callback     Discord's OAuth redirect: links the account, then
                           sends the browser back to the web entry with its
@@ -15,11 +15,11 @@ anything else             404; anything but GET     405
 
 The workspace's own pages are the Tilo app at the web entry; browsers reach
 the workspace through the ingress that forwards the workspace's origin to
-`9780`. The process serves the routes on `8790` and the relay on `9780`, both
+`9780`. The process serves the routes on `8790` and the server on `9780`, both
 plain HTTP behind that ingress, which ends TLS.
 
 Pages reach the host over WebTransport, the browser's own transport: their
-session, certification and the live plane (live cursors, presence, window
+session, certification and the live session (live cursors, presence, window
 streams). It is HTTP/3 on UDP, which no HTTPS ingress carries, so the process
 listens on `TILO_WORKSPACES_LINK` and pages open their sessions at
 `TILO_WORKSPACES_LINK_ORIGIN`, a name that leads straight to that UDP port. The
@@ -44,7 +44,7 @@ its settings. Required:
 | --- | --- |
 | `TILO_WORKSPACES_PERSISTENT` | the workspace's name; its state is `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT` |
 | `TILO_WORKSPACES_ROOT_FILE` | the workspace's owner root, 64 hex characters, from the operator's secrets |
-| `TILO_WORKSPACES_RELAY_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
+| `TILO_WORKSPACES_SERVER_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
 | `TILO_WORKSPACES_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its entry |
 | `TILO_WORKSPACES_WEB_ENTRY` | the Tilo app's web entry the links the host mints open |
 
@@ -61,10 +61,12 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
 | `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the workspace lives on |
 | `TILO_WORKSPACES_OWNERS` | none | comma-separated user public keys (64 hex characters) the workspace is started with as its owners: the people who let everyone else in, added at every start where they are not members yet. A deployment names its first ones here |
-| `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator asks the host for what only it does: another host holding a workspace (`hold`, `unhold`), and taking in the people an earlier release kept (`import_people`). Everything about who is in the workspace is an action its owners and administrators take (`tilo members add`, `tilo members invite`), not something this socket does |
-| `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds when the host governing one hands it over (the operator socket takes `hold` and `unhold` there): `anyone`, or their ids, comma-separated |
+| `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator asks the host for what only it does: another host holding a workspace (`hold`, `unhold`). Everything about who is in the workspace is an action its owners and administrators take (`tilo members add`, `tilo members invite`), not something this socket does |
+| `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds whoever's they are, when an owner has the host governing one hand it over (`tilo workspace hosts add`): `anyone`, or their ids, comma-separated. Without it the host holds those of the people it let in |
+| `TILO_WORKSPACES_CALL_OWN_NETWORK` | off | `1` lets the server call addresses on its own network, not only the public internet: a model provider a person names, and the site of another server an owner has keep a workspace. For servers that share one network, as a local stack's do; never on a public server |
 | `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
-| `TILO_WORKSPACES_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
+| `TILO_WORKSPACES_SERVER_ORIGINS_ALSO` | none | comma-separated origins a front publishes this same server at besides `TILO_WORKSPACES_SERVER_ORIGIN` (a second name for it, on another network). The server makes an agent's setup code for a page that came by any origin it was told, and refuses one whose link names an origin it was not told, whatever a request calls the server |
+| `TILO_WORKSPACES_SERVER_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_WORKSPACES_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
 | `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin devices dial the packet relay at |
 | `TILO_WORKSPACES_TLS_CERT` | none | a publicly trusted certificate chain (PEM) the host's HTTPS listener presents instead of its own development one; read again when it changes |
@@ -74,20 +76,32 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_WORKSPACES_FETCH_PROXY` | on | `0` turns the fetch proxy off |
 | `TILO_WORKSPACES_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |
-| `TILO_WORKSPACES_MODERATION_MODEL` | the relay's | the model it asks |
+| `TILO_WORKSPACES_MODERATION_MODEL` | the server's | the model it asks |
 | `TILO_WORKSPACES_DISCORD_CLIENT_ID` | none | the Discord application members connect, once sign-in is set up |
 | `TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE` | `/run/secrets/discord-client-secret` | its secret |
-| `TILO_WORKSPACES_DISCORD_REDIRECT_URL` | `$TILO_WORKSPACES_RELAY_ORIGIN/discord/callback` | where Discord sends the browser back |
+| `TILO_WORKSPACES_DISCORD_REDIRECT_URL` | `$TILO_WORKSPACES_SERVER_ORIGIN/discord/callback` | where Discord sends the browser back |
 | `TILO_WORKSPACES_DISCORD_AUTHORIZE_URL` | `https://discord.com/oauth2/authorize` | Discord's consent page |
 | `TILO_WORKSPACES_DISCORD_API_BASE` | `https://discord.com` | where Discord's API is, for a test server: the sign-in and the bridge's worker both reach it |
 | `TILO_WORKSPACES_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` | the bridge's bot token, read when the file is there |
 
 `TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;
 `TILO_SECRETS_DIR` already points into the state volume, where the workspace
-root is kept sealed. The relay's session limits
-(`TILO_RELAY_MAX_WEB_SESSIONS`, `TILO_RELAY_MAX_HANDSHAKES`,
-`TILO_RELAY_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
+root is kept sealed. The server's session limits
+(`TILO_SERVER_MAX_WEB_SESSIONS`, `TILO_SERVER_MAX_HANDSHAKES`,
+`TILO_SERVER_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
 raise.
+
+`TILO_PEOPLE_KEYS` (the image's default: `/var/lib/tilo-people-keys`) is where
+the keys of people's sealed stores are kept: a volume of its own, apart from
+the state volume, so that a copy or a backup of the state alone opens nobody's
+sign-ins, provider keys or vault items. The server keeps them there only when
+a volume is mounted at that path, and makes no folder itself. With none it
+keeps each key on the state volume, beside what it opens, and says so in its
+log as a warning every time it starts. A key that lies on the state volume
+from before moves to the keys' volume the first time its vault is opened.
+Whoever reads both volumes, or the machine itself, opens every vault: the
+second volume keeps the keys out of copies of the state, not from the machine
+that uses them.
 
 ## State on the volume
 
@@ -119,7 +133,7 @@ are also t's checks — `lounge-binaries`, `lounge-fonts`,
 `image-lounge-context`, `image-lounge` — so a change is built by naming them.
 The checks that run the programs without an image around them (`e2e`,
 `page-tour`) ask `lounge-binaries.sh` for the profile Cargo.toml's
-`lounge-gate` names: the same code and optimisation level without the
+`lounge-check` names: the same code and optimisation level without the
 whole-program link the image's own build spends.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
 `test-image.sh` what the built image must carry.
@@ -141,7 +155,7 @@ person who runs the host sends from the workspace's wait list, and the
 workspace of their own with their agent set up in it, the passkey that brings
 them back on a browser that forgot the site, a second workspace, and a visitor
 still refused), and the chat read back after
-the relay restarts. Each flow runs alone too:
+the server restarts. Each flow runs alone too:
 
 ```
 bash os/containers/tilo-lounge/test-e2e.sh out/web-desktop/bundle /tmp/e2e people-call
@@ -151,10 +165,10 @@ bash os/containers/tilo-lounge/test-onboarding.sh out/web-desktop/bundle /tmp/on
 It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,
 bwrap, `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`, `TILO_SH_SITE` and
 `TILO_SH_CADDY` naming what `tilo-sh-binaries`, `image-web-entry-context` and
-`tilo-sh-caddy` built, and `TILO_RELAY_BIN`, `TILO_CRYPTO_BIN`,
+`tilo-sh-caddy` built, and `TILO_SERVER_BIN`, `TILO_CRYPTO_BIN`,
 `TILO_FONTS_DIR` and `TILO_CLI_BIN` naming built programs (the
-`lounge-gate-binaries`, `lounge-gate-tools`, `lounge-fonts` and
-`lounge-gate-cli` outputs), which the wait list's own Lounge and the setups
+`lounge-check-binaries`, `lounge-check-tools`, `lounge-fonts` and
+`lounge-check-cli` outputs), which the wait list's own Lounge and the setups
 run. Every wait in the page drivers is a
 number of steps of `TILO_STEP_SECONDS` (5 s by default; `test-e2e.sh` sets
 20 s for a node that draws every page in software), so a hang fails within its

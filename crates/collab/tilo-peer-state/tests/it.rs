@@ -4,7 +4,7 @@
 //
 // The workspace engine's integration tests join a workspace through its host's
 // enrollment answer, which the fixtures and internals behind `test-support`
-// carry: the one target is gated on it.
+// carry: the one target depends on it.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -12,6 +12,8 @@ mod common;
 // Workspace documents are decoded on a worker of this executable: this binary is that worker.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "adhoc_group.rs"]
+mod adhoc_group;
 #[path = "bootstrap_growth.rs"]
 mod bootstrap_growth;
 #[path = "direct_actions.rs"]
@@ -24,8 +26,8 @@ mod direct_held_writes;
 mod direct_host_link;
 #[path = "direct_lost_history.rs"]
 mod direct_lost_history;
-#[path = "direct_member_custody.rs"]
-mod direct_member_custody;
+#[path = "direct_member_ownership.rs"]
+mod direct_member_ownership;
 #[path = "direct_two_devices.rs"]
 mod direct_two_devices;
 #[path = "offers.rs"]

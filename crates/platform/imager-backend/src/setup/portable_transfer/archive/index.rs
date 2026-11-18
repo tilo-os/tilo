@@ -36,7 +36,7 @@ struct Indexed {
     record: Record,
 }
 impl IndexValue for Indexed {
-    // Existing sparse/PAX policy allows an individual metadata witness larger
+    // Existing sparse/PAX policy allows an individual metadata proof larger
     // than ordinary inode Facts. The sort buffer separately has a byte bound.
     const RECORD_BYTES: usize = 32 * 1024 * 1024;
 }
@@ -189,7 +189,7 @@ impl Records {
                     let record = record?;
                     let data = match &record.kind {
                         Kind::File(_) => round(record.size)?,
-                        Kind::Sparse(witness) => witness.sparse.allocation_bytes(block)?,
+                        Kind::Sparse(proof) => proof.sparse.allocation_bytes(block)?,
                         _ => 0,
                     };
                     bytes = bytes

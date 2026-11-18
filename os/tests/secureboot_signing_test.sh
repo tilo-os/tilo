@@ -516,7 +516,7 @@ if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" \
 fi
 printf 'PK+KEK retired after verified enrollment\n' >"$captured/enrollment-keys-retired"
 printf '\6\0\0\0\1' >"$efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
-# Exercise the supported PCR7-only custody shape established above.
+# Exercise the supported PCR7-only ownership shape established above.
 if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_TPM_DEVICE=/dev/null \
   TILO_SB_EFIVARS="$efivars" TILO_TEST_FIRMWARE_DIR="$firmware" \
   TILO_SB_RUNTIME_DIR="$work/seal-run" TILO_SB_SYSTEMD_DIR="$work/systemd" \

@@ -1,0 +1,18 @@
+[package]
+name = "tilo-color-params"
+description = "The parameters of a wp_color_management_v1 image description and the rules a server checks them by, shared by the compositor and the app keeper."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The server side of the protocol's requests and events, which `server` reads and writes.
+wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

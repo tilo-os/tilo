@@ -124,9 +124,9 @@ struct Person {
     first: PersonalSync,
     endpoint: Endpoint,
     router: iroh::protocol::Router,
-    witness: PersonalSync,
-    witness_endpoint: Endpoint,
-    witness_link: tokio::task::JoinHandle<Result<(), String>>,
+    observer: PersonalSync,
+    observer_endpoint: Endpoint,
+    observer_link: tokio::task::JoinHandle<Result<(), String>>,
 }
 
 impl Person {
@@ -149,18 +149,19 @@ impl Person {
             .accept(PERSONAL_ALPN, first.clone())
             .spawn();
 
-        let (witness_key, witness_cert) = device(&root, 7);
-        let witness = PersonalSync::new(
-            PersonalStore::open(root_key, witness_cert, now).unwrap(),
-            witness_key.clone(),
+        let (observer_key, observer_cert) = device(&root, 7);
+        let observer = PersonalSync::new(
+            PersonalStore::open(root_key, observer_cert, now).unwrap(),
+            observer_key.clone(),
         );
-        let witness_endpoint = localhost_endpoint(&witness_key).await;
-        let witness_link = tokio::spawn({
-            let (witness, from, to) = (witness.clone(), witness_endpoint.clone(), addr(&endpoint));
-            async move { witness.connect(&from, to).await }
+        let observer_endpoint = localhost_endpoint(&observer_key).await;
+        let observer_link = tokio::spawn({
+            let (observer, from, to) =
+                (observer.clone(), observer_endpoint.clone(), addr(&endpoint));
+            async move { observer.connect(&from, to).await }
         });
         until(
-            &witness,
+            &observer,
             "the person's second device never caught up",
             |store| store.holds_document(APP, RECORD),
         )
@@ -171,9 +172,9 @@ impl Person {
             first,
             endpoint,
             router,
-            witness,
-            witness_endpoint,
-            witness_link,
+            observer,
+            observer_endpoint,
+            observer_link,
         }
     }
 
@@ -188,7 +189,7 @@ impl Person {
             .publish(|store, key, now| store.publish(APP, RECORD, &change(name, value), key, now))
             .unwrap();
         until(
-            &self.witness,
+            &self.observer,
             "a live write never reached the person's second device",
             |store| {
                 store
@@ -210,10 +211,10 @@ impl Person {
     }
 
     async fn part(self) {
-        self.witness_link.abort();
-        let _ = self.witness_link.await;
+        self.observer_link.abort();
+        let _ = self.observer_link.await;
         self.router.shutdown().await.unwrap();
-        self.witness_endpoint.close().await;
+        self.observer_endpoint.close().await;
         self.endpoint.close().await;
     }
 }

@@ -2,7 +2,7 @@
 //! share of it.
 //! Pairing finds the new device and the person checks its code there, as always. The certificate it
 //! needs is then signed by the person's devices that hold the key
-//! ([`tilo_identity_host::certification_ceremony`]): this device proposes it to each of the
+//! ([`tilo_identity::certification_ceremony`]): this device proposes it to each of the
 //! person's other devices over their private fabric ([`certify`]); a device holding key material
 //! shows the person a notification naming the new device, the device that found it and its code, as
 //! for any device asking to be them, and signs only when they approve it there ([`answer`], from
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::platform::fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::platform::fabric::{FabricLink, SharedLink};
-use tilo_identity_host::certification_ceremony::{
+use tilo_identity::certification_ceremony::{
     self as ceremony, Answer, Ask, Gathering, IdentityKey, Progress, Reply, Signer, Step,
 };
 use tilo_lock::MutexRecover as _;
@@ -106,7 +106,7 @@ enum Route {
     /// It opened this device's pairing link, and waits at the host the link names.
     Host {
         origin: String,
-        host: tilo_relay_client::Host,
+        host: tilo_server_client::Host,
         person: [u8; 32],
         device: [u8; 32],
     },
@@ -467,7 +467,7 @@ fn answer(
 /// Blocks on the host.
 fn answer_at_host(
     local: &DeviceId,
-    host: tilo_relay_client::Host,
+    host: tilo_server_client::Host,
     person: [u8; 32],
     digest: [u8; 32],
     approve: bool,
@@ -478,8 +478,9 @@ fn answer_at_host(
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let approver = tilo_relay_client::MemberApprover::new(host);
-        let answered = tilo_relay_client::answer_pairing(&approver, &signer, digest, approve).await;
+        let approver = tilo_server_client::MemberApprover::new(host);
+        let answered =
+            tilo_server_client::answer_pairing(&approver, &signer, digest, approve).await;
         approver.close().await;
         answered.map(drop).map_err(|error| error.to_string())
     })
@@ -543,14 +544,14 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
     runtime.block_on(async {
         let client = tilo_workspace_directory::client()
             .map_err(|error| tilo_sheets::directory::said(&error))?;
-        let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
+        let info = tilo_server_client::https::host_info(&tilo_server_client::https::Origin::new(
             &client, origin,
         ))
         .await
         .map_err(|error| error.to_string())?;
         let address = info.address.ok_or("the host takes no device connections")?;
-        let host = tilo_relay_client::Host::published(&address);
-        let approver = tilo_relay_client::MemberApprover::new(host.clone());
+        let host = tilo_server_client::Host::published(&address);
+        let approver = tilo_server_client::MemberApprover::new(host.clone());
         let mut known = Vec::new();
         let waited = loop {
             let until_ms = with_state(local, |state| {
@@ -560,7 +561,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
                 break Ok(());
             }
             let pending =
-                match tilo_relay_client::next_pairings(&approver, &signer, known.clone()).await {
+                match tilo_server_client::next_pairings(&approver, &signer, known.clone()).await {
                     Ok(pending) => pending,
                     Err(error) => break Err(error.to_string()),
                 };
@@ -578,9 +579,9 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
 fn follow_host(
     local: &DeviceId,
     origin: &str,
-    host: &tilo_relay_client::Host,
+    host: &tilo_server_client::Host,
     person: [u8; 32],
-    pending: Vec<tilo_relay_protocol::certify::PendingCertification>,
+    pending: Vec<tilo_server_protocol::certify::PendingCertification>,
 ) {
     let expired = expired_before();
     with_state(local, |state| {
@@ -906,17 +907,17 @@ mod tests {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
         let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&dir)
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(&dir)
             .load()
             .expect("registry");
         let id = registry.default_identity.expect("default identity");
-        let key = tilo_identity_host::device_fleet::DeviceFleetStore::at(&dir, device)
+        let key = tilo_identity::device_fleet::DeviceFleetStore::at(&dir, device)
             .identity_key(&id)
             .expect("the person's key");
         (root, key)
@@ -1066,7 +1067,7 @@ mod tests {
     fn pair(a: [u8; 32], b: [u8; 32]) -> (SharedLink, SharedLink, DeviceId, DeviceId) {
         let first = DeviceId::new(hex::encode(a)).expect("this laptop");
         let second = DeviceId::new(hex::encode(b)).expect("the other device");
-        // The devices know each other from the live plane, so the ask names the laptop the way the
+        // The devices know each other from the live session, so the ask names the laptop the way the
         // person knows it.
         let here = FabricRuntime::restored(Some((first.clone(), "This laptop".into())), None)
             .expect("a fabric here");
@@ -1099,13 +1100,13 @@ mod tests {
 
     /// The certificate proposed for a phone, as the pairing API proposes it.
     fn proposed(person: [u8; 32]) -> (DeviceCert, [u8; 32]) {
-        let candidate = tilo_identity_host::device_admin::Candidate {
+        let candidate = tilo_identity::device_admin::Candidate {
             device_node_id: hex::encode([0x51; 32]),
-            relay_service_node_id: hex::encode([0x52; 32]),
+            server_node_id: hex::encode([0x52; 32]),
             label: "Phone".into(),
             verification_code: "123456".into(),
         };
-        tilo_identity_host::device_admin::proposed_certificate(
+        tilo_identity::device_admin::proposed_certificate(
             person,
             &candidate,
             tilo_clock::unix_now_ns(),
@@ -1244,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn a_revoked_device_loses_its_record_and_its_session_on_the_live_plane() {
+    fn a_revoked_device_loses_its_record_and_its_session_on_the_live_session() {
         let key = [0x71; 32];
         let device = DeviceId::new(hex::encode(key)).expect("the old phone");
         let cert = DeviceCert {
@@ -1479,14 +1480,14 @@ mod tests {
         let now = tilo_clock::unix_now_ns();
         // Before it runs out, nothing is due.
         assert!(
-            tilo_identity_host::provisioning::joined_device_renewal_due(
+            tilo_identity::provisioning::joined_device_renewal_due(
                 &joined.paths,
                 joined.held.issued_at_ns
             )
             .is_none()
         );
         // Once it has, the certificate it holds is what is renewed.
-        let due = tilo_identity_host::provisioning::joined_device_renewal_due(&joined.paths, now)
+        let due = tilo_identity::provisioning::joined_device_renewal_due(&joined.paths, now)
             .expect("a lapsed joined certificate is due");
         assert_eq!(due, joined.held);
     }
@@ -1521,7 +1522,7 @@ mod tests {
     async fn person_host(
         root: &Arc<runtime_identity::SigningIdentity>,
         state: &std::path::Path,
-    ) -> (tilo_relay::daemon::Relay, tilo_relay::web::WebHandle) {
+    ) -> (tilo_server::daemon::Server, tilo_server::web::WebHandle) {
         let person = root.person();
         let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let mut host_cert = DeviceCert {
@@ -1541,25 +1542,25 @@ mod tests {
         tilo_user_identity::sign_device_cert_async(&mut host_cert, &root_signer)
             .await
             .unwrap();
-        let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
-            tilo_relay::RelayConfig {
+        let server = tilo_server::daemon::Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
                 state_root: state.join("host"),
-                ..tilo_relay::RelayConfig::default()
+                ..tilo_server::ServerConfig::default()
             },
-            tilo_relay::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: person,
                 device_signing_key: host_key,
                 device_cert: host_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
             },
-            test_relay::relay_mode(),
+            test_server::relay_mode(),
         )
         .await
         .unwrap();
-        let web = relay
-            .serve_web(tilo_relay::web::WebConfig {
+        let web = server
+            .serve_web(tilo_server::web::WebConfig {
                 listen: "127.0.0.1:0".parse().unwrap(),
-                tls: tilo_relay::web::TlsSource::Development {
+                tls: tilo_server::web::TlsSource::Development {
                     hosts: vec!["localhost".into(), "127.0.0.1".into()],
                     store: Some(state.join("web-dev-identity")),
                 },
@@ -1573,7 +1574,7 @@ mod tests {
             })
             .await
             .unwrap();
-        (relay, web)
+        (server, web)
     }
 
     /// The whole of adding a device from this computer: it shows the pairing link, a new device
@@ -1592,7 +1593,7 @@ mod tests {
 
         // The person's host on this machine, serving the web a new device opens the link on.
         let state = tempfile::tempdir().unwrap();
-        let (relay, web) = runtime.block_on(person_host(&root, state.path()));
+        let (server, web) = runtime.block_on(person_host(&root, state.path()));
         let origin = web.plain_origin.clone().unwrap();
 
         // This laptop holds the person's key and shows the link.
@@ -1625,7 +1626,7 @@ mod tests {
 
         // The phone opens it: it names the person and the host, and the phone asks there.
         let phone = ed25519_dalek::SigningKey::from_bytes(&[0x64; 32]);
-        let link = tilo_relay_client::login::PairingLink::parse(&shown.link).unwrap();
+        let link = tilo_server_client::login::PairingLink::parse(&shown.link).unwrap();
         assert_eq!(link.user_public_key, person);
         assert_eq!(link.host_origin, origin);
         let (code_shown, code) = std::sync::mpsc::channel();
@@ -1633,8 +1634,8 @@ mod tests {
             let phone = phone.clone();
             async move {
                 let client = tilo_workspace_directory::client().unwrap();
-                let at = tilo_relay_client::https::Origin::new(&client, &link.host_origin);
-                tilo_relay_client::login::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
+                let at = tilo_server_client::https::Origin::new(&client, &link.host_origin);
+                tilo_server_client::login::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
                     let _ = code_shown.send(code.to_owned());
                 })
                 .await
@@ -1670,6 +1671,6 @@ mod tests {
             "an answered device asks no more"
         );
         drop(web);
-        runtime.block_on(relay.shutdown());
+        runtime.block_on(server.shutdown());
     }
 }

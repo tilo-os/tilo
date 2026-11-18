@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # Decide whether this boot counts as a success.
 #
-# Ordered before boot-complete.target and required by it, which is the seam
+# Ordered before boot-complete.target and required by it, which is the boundary
 # systemd provides for exactly this: systemd-bless-boot.service is ordered AFTER
 # boot-complete.target and Requires= it, so a failure here means the boot loader
 # entry keeps its decremented counter. Three such boots and sd-boot stops offering
@@ -60,9 +60,9 @@
 # it are, for the whole settle window.
 #
 # It is deliberately NOT `systemctl is-system-running` = running, which
-# /usr/libexec/tilo-rollback-common uses for a different decision. That check gates
+# /usr/libexec/tilo-rollback-common uses for a different decision. That check checks
 # whether the fallback is *destroyed*, where being strict is right: refuse, keep
-# the fallback, lose nothing. This one gates whether the current generation is
+# the fallback, lose nothing. This one checks whether the current generation is
 # kept, where the same strictness is a trap — one unrelated failed unit would
 # fail every boot of every generation, walk the whole retention window down, and
 # leave the machine with nothing it is willing to boot. Failed units are reported

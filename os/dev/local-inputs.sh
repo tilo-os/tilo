@@ -19,7 +19,7 @@
 #                  use, never a production key.
 #   series         TILO_ALLOW_EMPTY_SERIES=1, as in those builds.
 #   browser        TILO_WITH_BROWSER=0 (no Browser or engine runtime).
-#   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image lane.
+#   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image job.
 #   layer epoch    TILO_LAYER_EPOCH=base: layers dated by the base image, so a new
 #                  commit alone does not invalidate podman's layer cache.
 #   Rust builder   TILO_CARGO_FRESHNESS=content: the builder keeps its target
@@ -59,8 +59,8 @@ mkdir -p "$_li_cache"
 
 : "${TILO_WITH_BROWSER:=0}"
 : "${TILO_ALLOW_EMPTY_SERIES:=1}"
-# No debug info in the in-image compile, as CI's dev image lane: it compiles
-# faster, and the same compile settings share that lane's compiler cache.
+# No debug info in the in-image compile, as CI's dev image job: it compiles
+# faster, and the same compile settings share that job's compiler cache.
 : "${TILO_RUST_DEBUGINFO:=0}"
 # Layers dated by the base image, not the commit: podman keys its layer cache on
 # the epoch, so a commit time rebuilt every layer after every commit

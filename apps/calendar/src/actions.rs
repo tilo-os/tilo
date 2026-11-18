@@ -2,7 +2,7 @@
 //! as a server or a file gives it), the ids its items are published under,
 //! and its calendar collections as live rows.
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use jiff::civil::{Date, DateTime, Time};
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect as _, JsonSchema, items::item_resource_id};
 
@@ -33,11 +33,11 @@ pub fn attendee_resource_id(event_id: Id, attendee_id: Id) -> String {
     format!("{}/attendees/{attendee_id}", event_resource_id(event_id))
 }
 
-pub fn occurrence_resource_id(event_id: Id, original_date: NaiveDate) -> String {
+pub fn occurrence_resource_id(event_id: Id, original_date: Date) -> String {
     format!(
         "{}/occurrences/{}",
         event_resource_id(event_id),
-        original_date.format(DATE_FMT)
+        original_date.strftime(DATE_FMT)
     )
 }
 
@@ -180,8 +180,8 @@ impl EventData {
         Self {
             id: e.id.to_string(),
             title: e.title.clone(),
-            start: e.start.format(DT_FMT).to_string(),
-            end: e.end.format(DT_FMT).to_string(),
+            start: e.start.strftime(DT_FMT).to_string(),
+            end: e.end.strftime(DT_FMT).to_string(),
             end_later_fold: e.end_later_fold,
             all_day: e.all_day,
             location: e.location.clone(),
@@ -226,12 +226,11 @@ impl EventData {
     }
 
     /// When it is: its start and end as its zone reads them, and that zone.
-    fn moments(&self) -> Result<(NaiveDateTime, NaiveDateTime, String), String> {
+    fn moments(&self) -> Result<(DateTime, DateTime, String), String> {
         const MOMENT: &str = "a date and time such as 2026-11-20T09:00";
-        let start = NaiveDateTime::parse_from_str(&self.start, DT_FMT)
-            .map_err(|_| format!("start is {MOMENT}"))?;
-        let end = NaiveDateTime::parse_from_str(&self.end, DT_FMT)
-            .map_err(|_| format!("end is {MOMENT}"))?;
+        let start =
+            DateTime::strptime(DT_FMT, &self.start).map_err(|_| format!("start is {MOMENT}"))?;
+        let end = DateTime::strptime(DT_FMT, &self.end).map_err(|_| format!("end is {MOMENT}"))?;
         let timezone = normalize_timezone(&self.timezone).ok_or_else(|| {
             "timezone is an IANA time zone such as Europe/Berlin, or `floating` for the same \
              time of day everywhere"
@@ -337,7 +336,7 @@ impl EventData {
             recurrence_exdates: self
                 .recurrence_exdates
                 .iter()
-                .map(|date| NaiveDate::parse_from_str(date, DATE_FMT))
+                .map(|date| Date::strptime(DATE_FMT, date))
                 .collect::<Result<_, _>>()
                 .map_err(|_| format!("recurrence_exdates are each {DATE}"))?,
             occurrence_overrides: self
@@ -371,11 +370,11 @@ impl EventData {
     clippy::option_option,
     reason = "outer option rejects malformed input; inner option represents an explicit empty value"
 )]
-fn parse_optional_date(value: &str) -> Option<Option<NaiveDate>> {
+fn parse_optional_date(value: &str) -> Option<Option<Date>> {
     if value.is_empty() {
         Some(None)
     } else {
-        NaiveDate::parse_from_str(value, DATE_FMT).ok().map(Some)
+        Date::strptime(DATE_FMT, value).ok().map(Some)
     }
 }
 
@@ -434,17 +433,17 @@ impl OccurrenceOverrideData {
             original_date: value.original_date.to_string(),
             original_time: value.original_time.map_or_else(String::new, |time| {
                 ui::format::machine!(
-                    "the override's stored time of day, as the record keeps it",
-                    time.format("%H:%M:%S").to_string()
+                    "the override's stored time of day, as the resource keeps it",
+                    time.strftime("%H:%M:%S").to_string()
                 )
             }),
             cancelled: value.cancelled,
             start: value
                 .start
-                .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+                .map_or_else(String::new, |date| date.strftime(DT_FMT).to_string()),
             end: value
                 .end
-                .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+                .map_or_else(String::new, |date| date.strftime(DT_FMT).to_string()),
             end_later_fold: value.end_later_fold,
             title: value.title.clone().unwrap_or_default(),
             location: value.location.clone().unwrap_or_default(),
@@ -455,22 +454,22 @@ impl OccurrenceOverrideData {
         let start = if self.start.is_empty() {
             None
         } else {
-            Some(NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?)
+            Some(DateTime::strptime(DT_FMT, &self.start).ok()?)
         };
         let end = if self.end.is_empty() {
             None
         } else {
-            Some(NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?)
+            Some(DateTime::strptime(DT_FMT, &self.end).ok()?)
         };
         if !self.end_later_fold && start.zip(end).is_some_and(|(start, end)| start > end) {
             return None;
         }
         Some(OccurrenceOverride {
-            original_date: NaiveDate::parse_from_str(&self.original_date, DATE_FMT).ok()?,
+            original_date: Date::strptime(DATE_FMT, &self.original_date).ok()?,
             original_time: if self.original_time.is_empty() {
                 None
             } else {
-                Some(NaiveTime::parse_from_str(&self.original_time, "%H:%M:%S").ok()?)
+                Some(Time::strptime("%H:%M:%S", &self.original_time).ok()?)
             },
             cancelled: self.cancelled,
             start,
@@ -516,7 +515,7 @@ impl TaskData {
             done: t.done,
             due: t
                 .due
-                .map(|d| d.format(DATE_FMT).to_string())
+                .map(|d| d.strftime(DATE_FMT).to_string())
                 .unwrap_or_default(),
             priority: t.priority.rank(),
             project: t.project.map(|p| p.to_string()).unwrap_or_default(),
@@ -527,7 +526,7 @@ impl TaskData {
     pub fn to_task(&self) -> Option<Task> {
         let id = self.id.parse::<Id>().ok()?;
         if self.priority > Priority::None.rank()
-            || (!self.due.is_empty() && NaiveDate::parse_from_str(&self.due, DATE_FMT).is_err())
+            || (!self.due.is_empty() && Date::strptime(DATE_FMT, &self.due).is_err())
             || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
             || (!self.parent.is_empty() && self.parent.parse::<Id>().is_err())
         {
@@ -538,7 +537,7 @@ impl TaskData {
             title: self.title.clone(),
             done: self.done,
             due: (!self.due.is_empty())
-                .then(|| NaiveDate::parse_from_str(&self.due, DATE_FMT).ok())
+                .then(|| Date::strptime(DATE_FMT, &self.due).ok())
                 .flatten(),
             priority: Priority::from_rank(self.priority),
             project: parse_opt_id(&self.project),

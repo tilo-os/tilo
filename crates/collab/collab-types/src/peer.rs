@@ -86,7 +86,7 @@ pub enum PeerPresencePayload {
         screen: bool,
     },
     /// What the sender says beside their pointer (cursor chat) in a workspace
-    /// with no live plane: `text` while the bubble is open (empty with
+    /// with no live session: `text` while the bubble is open (empty with
     /// nothing typed yet), `None` once it closed; `sent` once they pressed
     /// Enter. Desktop presence: shells show it, apps never receive it.
     Chat {
@@ -94,7 +94,7 @@ pub enum PeerPresencePayload {
         sent: bool,
     },
     /// The sender reacted with `emoji` from their pointer, in a workspace with no
-    /// live plane; a new `seq` is a new reaction. Desktop presence.
+    /// live session; a new `seq` is a new reaction. Desktop presence.
     Reaction {
         seq: u32,
         emoji: String,

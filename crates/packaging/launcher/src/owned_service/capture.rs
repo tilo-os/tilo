@@ -30,12 +30,12 @@ pub use original::{
 };
 mod installed_output;
 pub use installed_output::{
-    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputCustody,
-    InstalledCopyOutputFiles,
+    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputFiles,
+    InstalledCopyOutputOwnership,
 };
 mod root_output;
 pub use root_output::{
-    OriginalOutputAdmission, OriginalOutputBinding, OriginalOutputCustody, OriginalOutputFiles,
+    OriginalOutputAdmission, OriginalOutputBinding, OriginalOutputFiles, OriginalOutputOwnership,
 };
 mod output;
 pub use output::CaptureOutputAdmission;
@@ -54,11 +54,11 @@ pub(crate) fn archive_reserved_fd(fd: RawFd) -> bool {
 }
 const SHIM_FILE: &str = "bin/tilo-launcher";
 
-/// Native host custody, never a serialized app-selected path or capability.
+/// Native host ownership, never a serialized app-selected path or capability.
 pub struct CaptureAdmission {
     source: File,
     inventory_scratch: Option<inventory_scratch::Scratch>,
-    inventory_scratch_custody: Option<Arc<dyn ServiceAuthority>>,
+    inventory_scratch_ownership: Option<Arc<dyn ServiceAuthority>>,
     source_identity: (u64, u64),
     output: Option<(File, (u64, u64))>,
     output_proof: Option<CaptureOutputAdmission>,
@@ -79,7 +79,7 @@ pub struct CaptureAdmission {
     publisher: String,
     original_uid: u32,
     original_bootstrap: Option<original::Bootstrap>,
-    original_custody: Option<Arc<dyn ServiceAuthority>>,
+    original_ownership: Option<Arc<dyn ServiceAuthority>>,
 }
 impl CaptureAdmission {
     /// Admit an independently trusted, signed runtime and the broker's held subtree.
@@ -120,7 +120,7 @@ impl CaptureAdmission {
         Ok(Self {
             source,
             inventory_scratch: None,
-            inventory_scratch_custody: None,
+            inventory_scratch_ownership: None,
             source_identity: (facts.dev(), facts.ino()),
             output: None,
             output_proof: None,
@@ -141,7 +141,7 @@ impl CaptureAdmission {
             publisher: publisher.into(),
             original_uid,
             original_bootstrap: None,
-            original_custody: None,
+            original_ownership: None,
         })
     }
     /// Root-service-only original-source reader admission.
@@ -181,12 +181,12 @@ impl CaptureAdmission {
         binding: OriginalMountedBinding,
     ) -> io::Result<Self> {
         check_credentials(0)?;
-        let custody = self
-            .original_custody
+        let ownership = self
+            .original_ownership
             .as_ref()
             .ok_or(io::ErrorKind::PermissionDenied)?;
-        custody.check()?;
-        if custody.original_mounted_binding()?.as_ref() != Some(&binding) {
+        ownership.check()?;
+        if ownership.original_mounted_binding()?.as_ref() != Some(&binding) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let bootstrap = self
@@ -304,19 +304,19 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Retain the broker's inventory storage lease without granting output writes.
-    pub fn retain_inventory_scratch_custody(
+    pub fn retain_inventory_scratch_ownership(
         mut self,
-        custody: Arc<dyn ServiceAuthority>,
+        ownership: Arc<dyn ServiceAuthority>,
     ) -> io::Result<Self> {
         self.check()?;
-        if self.inventory_scratch.is_none() || self.inventory_scratch_custody.is_some() {
+        if self.inventory_scratch.is_none() || self.inventory_scratch_ownership.is_some() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        custody.check()?;
-        if !custody.network_hosts()?.is_empty() {
+        ownership.check()?;
+        if !ownership.network_hosts()?.is_empty() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        self.inventory_scratch_custody = Some(custody);
+        self.inventory_scratch_ownership = Some(ownership);
         self.check()?;
         Ok(self)
     }
@@ -370,7 +370,7 @@ impl CaptureAdmission {
         self.output_proof = Some(proof);
         Ok(self)
     }
-    /// Attach root-authenticated original output custody.
+    /// Attach root-authenticated original output ownership.
     pub fn with_original_output(mut self, proof: OriginalOutputAdmission) -> io::Result<Self> {
         self.check()?;
         let digest = self.original_read_claim_digest().ok_or_else(|| {
@@ -387,7 +387,7 @@ impl CaptureAdmission {
         self.check()?;
         Ok(self)
     }
-    /// Attach a distinct installed transaction; never impersonate USB custody.
+    /// Attach a distinct installed transaction; never impersonate USB ownership.
     pub fn with_installed_copy_output(
         mut self,
         proof: InstalledCopyOutputAdmission,
@@ -409,24 +409,24 @@ impl CaptureAdmission {
     }
     /// Retain the root controller's original read context through namespace supervision and
     /// authenticated endpoint use.
-    pub fn retain_original_source_custody(
+    pub fn retain_original_source_ownership(
         mut self,
-        custody: Arc<dyn ServiceAuthority>,
+        ownership: Arc<dyn ServiceAuthority>,
     ) -> io::Result<Self> {
-        if self.original_bootstrap.is_none() || self.original_custody.is_some() {
+        if self.original_bootstrap.is_none() || self.original_ownership.is_some() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         check_credentials(0)?;
-        custody.check()?;
-        if !custody.network_hosts()?.is_empty() {
+        ownership.check()?;
+        if !ownership.network_hosts()?.is_empty() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        self.original_custody = Some(custody);
+        self.original_ownership = Some(ownership);
         self.check()?;
         Ok(self)
     }
-    pub(super) fn original_custody(&self) -> Option<Arc<dyn ServiceAuthority>> {
-        self.original_custody.clone()
+    pub(super) fn original_ownership(&self) -> Option<Arc<dyn ServiceAuthority>> {
+        self.original_ownership.clone()
     }
     // Builder checks precede attachment.
     pub(super) fn check_execution(&self) -> io::Result<()> {
@@ -436,24 +436,24 @@ impl CaptureAdmission {
                 "Inventory scratch execution requires its signed package roots",
             ));
         }
-        if self.original_bootstrap.is_some() && self.original_custody.is_none() {
+        if self.original_bootstrap.is_some() && self.original_ownership.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Original-source execution requires retained read custody",
+                "Original-source execution requires retained read ownership",
             ));
         }
         self.check()
     }
     pub(super) fn check(&self) -> io::Result<()> {
-        if let Some(custody) = &self.inventory_scratch_custody {
-            custody.check()?;
-            if self.inventory_scratch.is_none() || !custody.network_hosts()?.is_empty() {
+        if let Some(ownership) = &self.inventory_scratch_ownership {
+            ownership.check()?;
+            if self.inventory_scratch.is_none() || !ownership.network_hosts()?.is_empty() {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
         }
-        if let Some(custody) = &self.original_custody {
-            custody.check()?;
-            if !custody.network_hosts()?.is_empty() {
+        if let Some(ownership) = &self.original_ownership {
+            ownership.check()?;
+            if !ownership.network_hosts()?.is_empty() {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
         }
@@ -832,7 +832,7 @@ mod tests {
         (runtime, identity)
     }
 
-    fn assert_archive_custody(admission: &CaptureAdmission, runtime: &Path) {
+    fn assert_archive_ownership(admission: &CaptureAdmission, runtime: &Path) {
         use std::io::{Seek, SeekFrom};
         let mut archive = archive::Archive::admit(admission).unwrap();
         assert!(!archive.libraries.is_empty());
@@ -847,7 +847,7 @@ mod tests {
         archive.tar.read_to_end(&mut held_tar).unwrap();
         assert_eq!(
             held_tar, original_tar,
-            "signed helper custody survives path replacement"
+            "signed helper ownership survives path replacement"
         );
         std::fs::write(runtime.join("bin/tar"), &original_tar).unwrap();
         let missing = runtime.join("bin/tar-missing");
@@ -887,7 +887,7 @@ mod tests {
                 uid,
             )
             .unwrap();
-            assert_archive_custody(&admission, &runtime);
+            assert_archive_ownership(&admission, &runtime);
             let alien = runtime_bundle::Identity::generate();
             // A portable native host authenticates its own runtime.
             let mut env = tilo_test_env::ScopedEnv::new();

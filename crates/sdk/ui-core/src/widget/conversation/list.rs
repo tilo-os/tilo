@@ -376,7 +376,7 @@ pub struct ListFace<'a> {
     /// Whether `lines` are an owner's own, which it never changes: then the
     /// slice is the conversation's identity and a kept layout stands while it
     /// does, without comparing a thread to itself every frame.
-    standing: bool,
+    owned: bool,
 }
 
 impl<'a> ListFace<'a> {
@@ -385,7 +385,7 @@ impl<'a> ListFace<'a> {
         Self {
             lines,
             clock,
-            standing: false,
+            owned: false,
         }
     }
 
@@ -395,11 +395,11 @@ impl<'a> ListFace<'a> {
     /// A fresh slice with the same contents is *not* the same conversation — a
     /// caller may edit a line in place — so only an owner that keeps its lines
     /// may say this, and it is not part of the public face.
-    pub(crate) fn standing(lines: &'a [ConversationLine], clock: ConversationClock) -> Self {
+    pub(crate) fn owned(lines: &'a [ConversationLine], clock: ConversationClock) -> Self {
         Self {
             lines,
             clock,
-            standing: true,
+            owned: true,
         }
     }
 
@@ -416,7 +416,7 @@ impl<'a> ListFace<'a> {
     }
 
     fn is_the_same_lines(&self, placed: &Placed) -> bool {
-        if self.standing {
+        if self.owned {
             return placed.at == self.lines.as_ptr().addr() && placed.len == self.lines.len();
         }
         placed.lines == self.lines
@@ -444,7 +444,7 @@ impl<'a> ListFace<'a> {
         Placed {
             at,
             len,
-            lines: if self.standing {
+            lines: if self.owned {
                 Vec::new()
             } else {
                 self.lines.to_vec()
@@ -879,7 +879,7 @@ impl Widget for ConversationList {
         cx.element("ul");
         let body = theme.text(TextRole::Body);
         let caption = theme.text(TextRole::Caption);
-        let author_style = theme.text(TextRole::Caption).strong();
+        let author_style = theme.text(TextRole::Caption);
         let rows = &self.cache.layout.rows;
         if rows.is_empty() {
             // A page never paints the list, so it lays its lines out itself when no paint has.
@@ -933,17 +933,18 @@ impl Widget for ConversationList {
             let (y0, y1) = row.band();
             match row {
                 Row::Divider { label, .. } => {
-                    let part = cx.words(
+                    // The day between its rules, as painted; read as a heading.
+                    let part = cx.part(
                         &format!("day:{index}"),
-                        "li",
+                        "SectionDivider",
                         Rect::new(self.rect.x0, y0, self.rect.x1, y1),
-                        TextLook::new(label.clone(), &caption, Some(theme.text_dim))
-                            .with_max_lines(Some(1)),
                     );
-                    part.semantics =
-                        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Heading {
-                            level: 3,
-                        }));
+                    part.tag = Some("li");
+                    part.painted(hash_of(label));
+                    part.semantics = Some(
+                        crate::a11y::AccessNode::new(crate::a11y::Role::Heading { level: 3 })
+                            .with_name(label.clone()),
+                    );
                 }
                 Row::Line {
                     index: at,
@@ -978,28 +979,41 @@ impl Widget for ConversationList {
                         part.tag = Some("p");
                         part.own = Some(crate::composition::Own::Text(look));
                     }
+                    // The words on their bubble, in its colours.
+                    let (fill, ink) = bubble_colors(theme, line.role);
+                    let shape = item.part("bubble", "Bubble", *bubble);
+                    shape.ground = Some(crate::composition::Ground {
+                        fill: Some(crate::composition::rgba8(fill)),
+                        edge: None,
+                        radius: f64::from(theme.tokens.radii.control),
+                    });
                     let body_part = item.part(
                         "body",
                         "Text",
-                        Rect::new(text.x, text.y, text.x + f64::from(*text_width), bubble.y1),
+                        Rect::new(
+                            text.x,
+                            text.y,
+                            text.x + f64::from(*text_width),
+                            bubble.y1 - (text.y - bubble.y0),
+                        ),
                     );
                     body_part.tag = Some("p");
                     body_part.own = Some(crate::composition::Own::Text(TextLook::new(
                         line.body.clone(),
                         &body,
-                        Some(theme.text_primary),
+                        Some(ink),
                     )));
-                    let mut spoken = Vec::new();
+                    // Its time and how far it got, as painted under it, and said.
+                    let mut spoken = vec![ConversationClock::local().clock(seconds(line.at_ms))];
                     if let Some(state) = line.delivery {
                         spoken.push(state.label());
                     }
-                    if !spoken.is_empty() {
-                        let look = TextLook::new(spoken.join(", "), &caption, Some(theme.text_dim))
-                            .with_max_lines(Some(1));
-                        let part = item.part("delivery", "Text", *caption_rect);
-                        part.tag = Some("p");
-                        part.own = Some(crate::composition::Own::Text(look));
-                    }
+                    let part = item.part("caption", "ConversationCaption", *caption_rect);
+                    part.painted(hash_of(&spoken));
+                    part.semantics = Some(
+                        crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+                            .with_name(spoken.join(", ")),
+                    );
                 }
             }
         }
@@ -1049,7 +1063,7 @@ impl Widget for ConversationList {
             taffy::AvailableSpace::Definite(w) => w,
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => 0.0,
         });
-        let face = ListFace::standing(&self.lines, ConversationClock::local());
+        let face = ListFace::owned(&self.lines, ConversationClock::local());
         let height = face.height_in(&mut self.cache, text_renderer, theme, f64::from(width));
         taffy::Size {
             width,
@@ -1070,7 +1084,7 @@ impl Widget for ConversationList {
         if presence.should_cull(self.rect) {
             return;
         }
-        let face = ListFace::standing(&self.lines, ConversationClock::local());
+        let face = ListFace::owned(&self.lines, ConversationClock::local());
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
         face.paint_in(&mut paint, self.rect, presence.viewport(), &mut self.cache);
     }
@@ -1168,4 +1182,12 @@ mod geometry_tests {
         }
         assert_eq!(checked, 2);
     }
+}
+
+/// A version for a picture showing `what`.
+fn hash_of(what: &impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    what.hash(&mut hash);
+    hash.finish()
 }

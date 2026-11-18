@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase document_effects_distinguish_retained_source_custody_from_local_reply_identity;
+    phase document_effects_distinguish_retained_source_ownership_from_local_reply_identity;
     {
         let source = tilo_actions::InvocationId::new();
         let mut owner = Owner {

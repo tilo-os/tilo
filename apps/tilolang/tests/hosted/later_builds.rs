@@ -105,7 +105,7 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
 impl Session {
     /// Hand the host `bundle` on its api, as a development session hands a reinstall over.
     fn take_build_over_the_api(&mut self, bundle: &tilolang_tilo::bundle::Bundle) {
-        let module = runtime_portal::tilolang_host::Module {
+        let module = runtime_portal::tilolang_process::Module {
             wasm: bundle.wasm.clone(),
             ids: bundle.ids.clone(),
             imports: bundle
@@ -115,7 +115,7 @@ impl Session {
                 .collect(),
         }
         .encode();
-        let build = runtime_portal::tilolang_host::AppBuild {
+        let build = runtime_portal::tilolang_process::AppBuild {
             app: bundle.meta.app.clone(),
             module_len: module.len() as u64,
         };
@@ -124,6 +124,6 @@ impl Session {
     }
 }
 
-fn text(text: &str) -> tilo_ui_host::Value {
-    tilo_ui_host::Value::Text(text.to_owned())
+fn text(text: &str) -> tilo_app_window::Value {
+    tilo_app_window::Value::Text(text.to_owned())
 }

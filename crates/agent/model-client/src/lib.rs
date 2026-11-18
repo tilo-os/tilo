@@ -23,7 +23,7 @@ pub mod validation;
 
 // Launcher and runtime-portal uppercase the service name without replacing '-'.
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL-GATEWAY_FD";
-/// Stable custody namespace used by origin-bound provider credentials.
+/// Stable ownership namespace used by origin-bound provider credentials.
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const RPC_VERSION: u16 = 3;
 /// Every gateway request and response: a little-endian `u32` length, then
@@ -181,7 +181,7 @@ pub enum Request {
         model_id: String,
         image: VisionImage,
     },
-    /// Fixed, consent-gated face detection and clustering.  The gateway owns
+    /// Fixed, consent-guarded face detection and clustering.  The gateway owns
     /// the request schema and admits it only for the signed local face model.
     /// It returns opaque cluster/photo membership; no embedding, crop, face
     /// rectangle, identity name, or raw path can cross this boundary.

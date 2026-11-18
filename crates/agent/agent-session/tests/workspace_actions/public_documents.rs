@@ -16,11 +16,11 @@
 //! still refused as absent, once the service heard the host say so.
 //!
 //! What the workspace holds is the host's to say, and a listing of it is what a
-//! member's agent names a record by: the chat the operator seated there is one
+//! member's agent names a record by: the chat the operator set up there is one
 //! of the workspace's records whether or not the service's own session was ever
 //! sent it, and a post goes into the channel it opens with.
 
-use super::own_agent::{listed_resources, page_paragraphs};
+use super::own_agent::{listed_resources, notes_resource, page_paragraphs};
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
 use serde_json::{Value, json};
@@ -28,7 +28,7 @@ use tilo_actions::MemberId;
 use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_mcp::{McpServer, Surface};
 use tilo_peer_state::join::Role;
-use tilo_relay_protocol::directory::Listing;
+use tilo_server_protocol::directory::Listing;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -56,7 +56,7 @@ fn address_of(replica: &Replica, action: &str) -> ActionAddress {
 /// The host's catalogue of `provider`, asked again while the service is still
 /// joining the workspace: a host that has not joined yet says so, and the
 /// caller asks again, as a page does.
-async fn catalogue(page: &mut Browser, provider: &str) -> Result<CataloguePage, ActionHostError> {
+async fn catalogue(page: &mut Browser, provider: &str) -> Result<CataloguePage, ActionCallError> {
     catalogue_under(page, provider, None).await
 }
 
@@ -66,7 +66,7 @@ async fn catalogue_under(
     page: &mut Browser,
     provider: &str,
     parent: Option<&str>,
-) -> Result<CataloguePage, ActionHostError> {
+) -> Result<CataloguePage, ActionCallError> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let query = CatalogueQuery {
@@ -76,7 +76,7 @@ async fn catalogue_under(
             ..CatalogueQuery::default()
         };
         match page.catalogue(query).await {
-            Err(ActionHostError::Unavailable { reason }) => {
+            Err(ActionCallError::Unavailable { reason }) => {
                 assert!(
                     Instant::now() < deadline,
                     "the host never joined the workspace: {reason}"
@@ -100,7 +100,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -146,6 +146,14 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         &note.take_mutation().unwrap().unwrap(),
     )
     .await;
+    // The note itself is kept in a part beside the notebook.
+    for (part, mutation) in note.take_document_mutations().unwrap() {
+        let part = DocumentRoute {
+            document: part.as_str().to_owned(),
+            ..route.clone()
+        };
+        crate::support::written(&member.peer, &part, &mutation).await;
+    }
     let provider = record_provider(&route);
 
     // The host's own action service never had the note: its session was sent
@@ -170,9 +178,20 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     else {
         panic!("the host lists the notebook the note is in: {page:?}");
     };
-    let pages = catalogue_under(&mut member, &provider, Some(&notebook))
+    let beside = catalogue_under(&mut member, &provider, Some(&notebook))
         .await
         .expect("the host serves the record the member wrote");
+    let Some(kept) = beside
+        .rows
+        .iter()
+        .find(|row| row.resource.kind == "notes.pages")
+        .map(|row| row.resource.id.clone())
+    else {
+        panic!("the host lists the notes the notebook keeps: {beside:?}");
+    };
+    let pages = catalogue_under(&mut member, &provider, Some(&kept))
+        .await
+        .expect("the host serves the notes the member wrote");
     let named = pages.rows.iter().any(|row| {
         [
             Some(&row.resource.kind),
@@ -209,11 +228,12 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let deadline = tilo_test_env::hang_deadline();
     loop {
         member.pump();
+        // In the part of the notes the new note is kept in.
         let authored = member
             .documents
-            .get(&route)
-            .into_iter()
-            .flatten()
+            .iter()
+            .filter(|(held, _)| held.app_id == route.app_id && held.document != route.document)
+            .flat_map(|(_, changes)| changes)
             .any(|checkpoint| checkpoint.0 == host.cert.device_public_key);
         if authored || Instant::now() >= deadline {
             assert!(
@@ -236,7 +256,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     assert!(
         matches!(
             refused,
-            Err(ActionHostError::UnknownAction | ActionHostError::NotPermitted)
+            Err(ActionCallError::UnknownAction | ActionCallError::NotPermitted)
         ),
         "a record the workspace has none of is refused: {refused:?}"
     );
@@ -249,11 +269,11 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// A public workspace — anyone may walk in, and its host sends a device its
-/// records when it opens them — whose chat the operator seated: the app's own
+/// records when it opens them — whose chat the operator set up: the app's own
 /// record of the workspace, holding the channel it opens with. Nobody's
 /// device has it open, and the workspace sends it to no one who does not.
 async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
@@ -265,7 +285,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -280,7 +300,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
         .unwrap();
     let workspace = lounge.workspace.clone();
 
-    // Its chat, as an operator seats it: the app's own record of the workspace,
+    // Its chat, as an operator sets it up: the app's own record of the workspace,
     // holding the channel it opens with. Nobody's device has it open, and the
     // workspace sends it to no one who does not.
     workspaces
@@ -301,13 +321,13 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
             CHAT,
             "",
             |doc| {
-                // The channel the operator seats, under the id the workspace's
+                // The channel the operator sets up, under the id the workspace's
                 // own settle gives it (`c_` and its name).
                 chat::demo::apply_as(
                     doc,
                     "operator",
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
-                        chat::record::chat::CreateChannelWithId {
+                        chat::chat::chat::CreateChannelWithId {
                             id: format!("c_{CHANNEL}"),
                             name: CHANNEL.parse().expect("a channel name"),
                             category: None,
@@ -327,7 +347,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
 }
 
 /// What an agent through the action API asks before it names a record: what runs in
-/// the workspace. The chat its operator seated there is one of them, and the
+/// the workspace. The chat its operator set up there is one of them, and the
 /// channel it opens with is where a post goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
@@ -408,14 +428,14 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// What the host keeps of the workspace's chat: its writes, which a chat
 /// founded again would add to.
 async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
     let history = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .document_history(workspace, CHAT, "")
@@ -426,7 +446,7 @@ async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
 }
 
 /// A member's agent opens Chat in a public workspace whose chat the operator
-/// seated. The service holds none of that record until asked, and Chat keeps
+/// set up. The service holds none of that record until asked, and Chat keeps
 /// one record per workspace: opening it must open the chat the workspace
 /// holds, never found it again as if it were new, which would lay an empty
 /// chat's genesis over the one people talk in.
@@ -467,7 +487,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     );
 
     // Nothing was founded: the chat the host keeps is the one the operator
-    // seated, write for write.
+    // set up, write for write.
     assert!(
         chat_history(&hosted, &workspace).await == before,
         "opening Chat wrote to the workspace's chat as if it were new"
@@ -496,7 +516,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// A visitor's agent writing in the public workspace's Notes, which the
@@ -516,7 +536,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -592,10 +612,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     )
     .await;
     let listing = call("tilo_ls", json!({"path": "notes"})).await;
-    let notebook = listed_resources(&listing)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let notebook = notes_resource(&listing);
     let pages = call("tilo_ls", json!({"path": format!("notes/{notebook}")})).await;
     let page = listed_resources(&pages)
         .into_iter()
@@ -636,6 +653,9 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     for line in &sent {
         assert!(read.contains(line), "the host reads {line:?}: {read}");
     }
+    // Their open notes follow the parts the notes are kept in, as a window
+    // asks for them: by the chain's head.
+    browser.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let seen = page_paragraphs(&mut browser, "Launch notes");
@@ -663,7 +683,7 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(

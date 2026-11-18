@@ -1,5 +1,5 @@
 //! Mechanical projection source over a committed document. It is not a
-//! caller/record authority witness.
+//! caller/record authority proof.
 use super::{
     AutoCommit, Basis, Limits, ObjId, ObjType, ReadDoc, ReadError, ScalarValueRef, TextPosition,
     Transactable, ValueRef, Work, escaped_bytes, field, object_fingerprint, validate_limits,
@@ -43,7 +43,7 @@ fn hex_digit(nibble: u8) -> char {
     char::from_digit(u32::from(nibble), 16).unwrap_or('0')
 }
 impl<'a> Source<'a> {
-    /// Supplied heads are data, not a binding witness.
+    /// Supplied heads are data, not a binding proof.
     pub fn new(doc: &'a AutoCommit, heads: &'a [automerge::ChangeHash]) -> Self {
         Self { doc, heads }
     }

@@ -277,8 +277,8 @@ impl AnnoKind {
     }
 }
 
-/// Which space an annotation's geometry is in: records store PDF user space, drawing
-/// is in page-point space, and older records stored page points.
+/// Which space an annotation's geometry is in: resources store PDF user space, drawing
+/// is in page-point space, and older resources stored page points.
 #[derive(
     Clone,
     Copy,
@@ -497,7 +497,7 @@ pub fn fit_scale(card_w: f64, card_h: f64, w: f64, h: f64) -> f64 {
 }
 
 /// How one displayed page maps between the spaces the reader works in: the engine's
-/// layer space, the PDF user space records store, and the card space everything is
+/// layer space, the PDF user space resources store, and the card space everything is
 /// drawn and hit-tested in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageMap {

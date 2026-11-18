@@ -35,7 +35,7 @@ use presence::presence_event;
 
 /// What a subscription receives from the broker's fanout. A host worker's
 /// feed ends with an error once that worker is no longer current, and a
-/// native window's once its workspace or document custody ended, checked on
+/// native window's once its workspace or document ownership ended, checked on
 /// both sides of every wait.
 pub(super) struct Feed<T> {
     native_guard: Option<NativeContextReadGuard>,
@@ -288,12 +288,19 @@ impl ChannelSession {
                     ready(channel.nearby_transfer_dispatch(&channel.route().app_id, body))
                 }
                 // The secret answer moves onto the wire without a copy left
-                // behind.
-                Service::BrowserServiceSession => ready(
-                    channel
-                        .browser_service_session_dispatch(body)
-                        .map(|mut reply| std::mem::take(&mut *reply)),
-                ),
+                // behind. An item's use is waited for here, by the answer, and
+                // never by the dispatch that started it.
+                Service::BrowserServiceSession => channel
+                    .browser_service_session_dispatch(body)
+                    .map_err(failed)
+                    .map(|reply| -> Answering {
+                        Box::pin(async move {
+                            reply
+                                .await
+                                .map(|mut reply| std::mem::take(&mut *reply))
+                                .map_err(Refusal::refusal)
+                        })
+                    }),
                 Service::WifiContinuity => channel
                     .wifi_continuity_dispatch(&channel.route().app_id, body)
                     .map_err(failed)
@@ -376,7 +383,7 @@ impl JoinedChannel {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
-                            record: route.document_id.clone(),
+                            document: route.document_id.clone(),
                             envelope: Box::new(envelope),
                             own: collab_types::OwnResource::recognise(
                                 &route.app_id,
@@ -435,7 +442,7 @@ impl JoinedChannel {
             .document_content
             .clone()
             .ok_or_else(|| {
-                BrokerError::unimplemented("this host keeps no record content".into())
+                BrokerError::unimplemented("this provider keeps no record content".into())
             })?;
         Ok((route, content))
     }
@@ -718,7 +725,9 @@ impl JoinedChannel {
                     ));
                 }
                 let keys = services.group_keys.clone().ok_or_else(|| {
-                    BrokerError::unimplemented("this host has no channel service to follow".into())
+                    BrokerError::unimplemented(
+                        "this provider has no channel service to follow".into(),
+                    )
                 })?;
                 let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
                     .ok_or_else(|| BrokerError::failed("the route names no workspace".into()))?;
@@ -808,12 +817,14 @@ impl JoinedChannel {
     }
 
     /// Answer a private service-session command from an app's own route:
-    /// the Browser's website sessions, or an account secret for the app the
-    /// custodian releases it to.
+    /// the Browser's website sessions, an account secret for the app the
+    /// owner releases it to, or a vault item's text for one of Browser's
+    /// page actions. Only the last is waited for: it comes from outside this
+    /// process, so this hands back its answer and returns.
     pub(super) fn browser_service_session_dispatch(
         &self,
         bytes: &[u8],
-    ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
+    ) -> Result<Answer<zeroize::Zeroizing<Vec<u8>>>, BrokerError> {
         let refused = || BrokerError::failed("private service-session request refused".into());
         // Only the person's own app connection: never an agent's. Which app
         // may ask what is decided per request.
@@ -826,7 +837,14 @@ impl JoinedChannel {
             self.verified_identity.actor_key.clone(),
             read,
         );
-        delegate_browser_service_session_command(&self.state.services, &context, bytes)
+        if let Some(awaited) = item_use::delegate_item_use(
+            self.state.services.browser_service_sessions.as_ref(),
+            &context,
+            bytes,
+        ) {
+            return awaited;
+        }
+        delegate_browser_service_session_command(&self.state.services, &context, bytes).map(ready)
     }
 
     /// Answer a speaker-group command, JSON both ways. Only the certified
@@ -853,7 +871,7 @@ impl JoinedChannel {
             ));
         }
         let speakers = self.state.services.speakers.as_ref().ok_or_else(|| {
-            BrokerError::failed("speaker groups are unsupported by this host".into())
+            BrokerError::failed("speaker groups are unsupported by this provider".into())
         })?;
         let reply = serde_json::to_vec(&speakers.command(command))
             .map_err(|error| BrokerError::failed(error.to_string()))?;
@@ -939,7 +957,7 @@ impl JoinedChannel {
         let person = current.caller(&route.cluster_id);
         // An app's request continuing an invocation someone asked of it (an
         // edit its effect submits, another app's action its effect calls) is
-        // decided as that invocation's caller, under its custody; its open
+        // decided as that invocation's caller, under its ownership; its open
         // of an application, else as the person whose press it follows.
         // Anything else, including what continues an invocation the app made
         // of itself, is the app's own API's to decide.
@@ -965,7 +983,10 @@ impl JoinedChannel {
                 },
             );
             let Some(api) = api else {
-                return refusal(&request.message);
+                return refusal(
+                    &request.message,
+                    tilo_actions::remote::ActionCallError::NotPermitted,
+                );
             };
             let answer =
                 tilo_actions::remote::serve(&api, &caller, request.message).ok_or_else(|| {
@@ -973,7 +994,7 @@ impl JoinedChannel {
                 })?;
             return Ok(Box::pin(async move {
                 answer.await.ok_or_else(|| {
-                    BrokerError::failed("the action host dropped the request".into())
+                    BrokerError::failed("the action provider dropped the request".into())
                 })
             }));
         } else {
@@ -993,7 +1014,7 @@ impl JoinedChannel {
         };
         if tilo_actions::remote::refuse(
             &request.message,
-            tilo_actions::remote::ActionHostError::UnknownAction,
+            tilo_actions::remote::ActionCallError::UnknownAction,
         )
         .is_none()
         {
@@ -1007,8 +1028,8 @@ impl JoinedChannel {
             (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) => {
                 match self.state.app_action_consent(&person, app_id, invoke) {
                     app_consent::ConsentStep::Serve => None,
-                    app_consent::ConsentStep::Refuse => {
-                        return refusal(&request.message);
+                    app_consent::ConsentStep::Refuse(refused) => {
+                        return refusal(&request.message, refused);
                     }
                     app_consent::ConsentStep::Ask(consent) => Some(consent),
                 }
@@ -1016,7 +1037,7 @@ impl JoinedChannel {
             _ => None,
         };
         let admitting_person = current.actor_key.clone();
-        let host = action_host::ConnectionActionHost {
+        let provider = action_provider::ConnectionActionProvider {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
             origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
@@ -1029,16 +1050,16 @@ impl JoinedChannel {
             return Ok(super::app_consent::serve_after_consent(
                 Arc::clone(&self.state),
                 consent,
-                host,
+                provider,
                 caller,
                 request.message,
             ));
         }
         // An invocation the caller may not confirm itself is put to the
         // person who admitted the connection, on their own device.
-        let answer = super::witness::serve_answering(
+        let answer = super::approval::serve_answering(
             Arc::clone(&self.state),
-            host,
+            provider,
             caller,
             admitting_person,
             request.message,
@@ -1046,9 +1067,9 @@ impl JoinedChannel {
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Ok(Box::pin(async move {
-            answer
-                .await
-                .ok_or_else(|| BrokerError::failed("the action host dropped the request".into()))
+            answer.await.ok_or_else(|| {
+                BrokerError::failed("the action provider dropped the request".into())
+            })
         }))
     }
 
@@ -1319,7 +1340,7 @@ impl JoinedChannel {
             .map_err(|_| unavailable())?
             .insert(peer_id, surface.clone());
         self.state
-            .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
+            .advance_approval_publication(peer_id, ApprovalPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
         // A catalogue offering its record is what an `open` of it waits for:
@@ -1500,7 +1521,7 @@ impl JoinedChannel {
             );
         }
         self.state
-            .advance_witness_publication(self.peer_id, WitnessPublicationKind::Directory);
+            .advance_approval_publication(self.peer_id, ApprovalPublicationKind::Directory);
         self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager
@@ -1513,7 +1534,7 @@ impl JoinedChannel {
     pub(super) fn realtime_feed(&self) -> Result<Feed<Vec<u8>>, BrokerError> {
         let context = self.realtime_context()?;
         let service = self.state.services.realtime.as_ref().ok_or_else(|| {
-            BrokerError::failed("realtime continuity is unsupported by this host".into())
+            BrokerError::failed("realtime continuity is unsupported by this provider".into())
         })?;
         let rx = service.subscribe(&context).map_err(BrokerError::failed)?;
         Ok(Feed::new(rx))
@@ -1725,7 +1746,7 @@ impl WireConnection {
             .services
             .published
             .clone()
-            .ok_or_else(|| "this host publishes no resources".to_owned())?;
+            .ok_or_else(|| "this provider publishes no resources".to_owned())?;
         let launch = service.lease.local_media.as_ref().ok_or_else(unlaunched)?;
         Ok(Publishing {
             published,
@@ -1958,7 +1979,7 @@ impl WireConnection {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one arm per request the host answers at once"
+        reason = "one arm per request the provider answers at once"
     )]
     #[allow(
         clippy::significant_drop_tightening,
@@ -2410,11 +2431,12 @@ fn ready<T: 'static>(answer: T) -> Answer<T> {
     Box::pin(std::future::ready(Ok(answer)))
 }
 
-/// The app's remote-action `message` refused as not permitted.
+/// The app's remote-action `message` refused with `error`.
 fn refusal(
     message: &tilo_actions::remote::RemoteActionMessage,
+    error: tilo_actions::remote::ActionCallError,
 ) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, BrokerError> {
-    tilo_actions::remote::refuse(message, tilo_actions::remote::ActionHostError::NotPermitted)
+    tilo_actions::remote::refuse(message, error)
         .map(ready)
         .ok_or_else(|| BrokerError::failed("only remote-action requests are answered".into()))
 }

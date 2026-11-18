@@ -15,7 +15,7 @@ use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
 use crate::run::Resolution;
-use crate::settle::{AgentBlock, InvocationRecord};
+use crate::settle::{AgentBlock, InvocationEntry};
 use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
@@ -603,7 +603,7 @@ impl Runtime {
     pub fn proposals_of(
         &self,
         resource: &ResourceRef,
-    ) -> Vec<(ResourceRef, crate::InvocationRecord)> {
+    ) -> Vec<(ResourceRef, crate::InvocationEntry)> {
         self.core.proposals_of(resource)
     }
 
@@ -615,7 +615,7 @@ impl Runtime {
     pub fn read_invocation(
         &self,
         invocation: &ResourceRef,
-    ) -> Result<InvocationRecord, RuntimeError> {
+    ) -> Result<InvocationEntry, RuntimeError> {
         self.core.read_invocation(invocation)
     }
 
@@ -1033,6 +1033,14 @@ impl Runtime {
     /// view node. Until it is set, its stored text.
     pub fn set_shown_host(&self, host: impl crate::core::ShownHost + 'static) {
         *self.core.shown.borrow_mut() = Some(Box::new(host));
+    }
+
+    /// How a day or a time of day reads in a sentence, from a plain function a caller already
+    /// has: `read` answers a day or a time of day (`kind` is `date` or `time`, `value` its stored
+    /// text) in the person's formats, so a caller with the toolkit's formats says them without
+    /// naming a trait here.
+    pub fn set_shown_by(&self, read: impl Fn(&str, &str) -> String + 'static) {
+        *self.core.shown_by.borrow_mut() = Some(Box::new(read));
     }
 
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The

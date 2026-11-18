@@ -22,7 +22,7 @@ pub struct OwnerCommitRequest {
 pub enum CommitOperation {
     Document {
         app: String,
-        record: String,
+        document: String,
         envelope: Box<collab_types::SignedOp>,
         /// The member's own record `record` is, when it is one: the write
         /// carries it on the wire.
@@ -57,7 +57,7 @@ pub enum CommitOperation {
     /// the variants after it at their encoded positions, and every binding of
     /// it is refused.
     RetiredWorkspaceTask,
-    /// Original authenticated person command; governor signing custody is
+    /// Original authenticated person command; governor signing ownership is
     /// supplied out of band by the installed owning host, never by arguments.
     WorkspaceMembershipCommand {
         invocation: uuid::Uuid,
@@ -110,7 +110,7 @@ pub enum CommitTarget {
         invocation: uuid::Uuid,
     },
     /// A device this device admitted into the workspace, answered through the
-    /// workspace's join ledger; not a caller-facing operation.
+    /// workspace's join log; not a caller-facing operation.
     JoinAdmission {
         device: [u8; 32],
     },
@@ -187,7 +187,7 @@ impl OwnerCommitRequest {
             } => membership_binding(*invocation, caller, command)?,
             CommitOperation::Document {
                 app,
-                record,
+                document: record,
                 envelope,
                 ..
             } => {
@@ -341,13 +341,13 @@ impl OwnerCommitReceipt {
         let (
             CommitOperation::Document {
                 app,
-                record,
+                document: record,
                 envelope,
                 ..
             },
             CommitOperation::Document {
                 app: taken_app,
-                record: taken_document,
+                document: taken_document,
                 envelope: taken,
                 ..
             },

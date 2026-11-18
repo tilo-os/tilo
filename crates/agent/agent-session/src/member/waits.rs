@@ -305,7 +305,7 @@ impl Waiting {
     /// added, is what it waits for: any message, or one whose lines hold
     /// its text ([`holds_wanted`]) beside `about`, what names the message
     /// (its record's title, its sender). A change that added no message (a
-    /// member introducing itself, a read mark) is not.
+    /// read mark, a channel renamed) is not.
     pub(super) fn answered_by(&self, added: &[String], about: &[&str]) -> bool {
         if added.is_empty() {
             return false;
@@ -756,8 +756,8 @@ impl AgentMember {
         self.fold_into_wake();
         self.forget_shown_news();
         let arrived = self.news_arrivals();
-        // A change that added no message (a member introducing itself in
-        // the chat, a read mark) is not news: nothing is planned again.
+        // A change that added no message (a read mark, a channel renamed) is
+        // not news: nothing is planned again.
         self.news
             .retain(|route| arrived.iter().any(|arrival| arrival.route == *route));
         if self.coordinates_news() {

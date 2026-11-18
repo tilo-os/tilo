@@ -1,23 +1,23 @@
-//! The record of what operated a tab's page, as a resource of Browser's.
+//! The resource of what operated a tab's page, as a resource of Browser's.
 //!
 //! Several actors may work in one tab, and the engine sets down every action
 //! that operated its page: who asked, what was done, the element it acted on
 //! by role and name, what it wrote and how it ended. The engine's own copy
 //! lives with the page and ends with it. This is where it is kept:
-//! [`PageResource`], a record Browser keeps in the workspace it is open in,
+//! [`PageResource`], a resource Browser keeps in the workspace it is open in,
 //! beside its browsing history. Each action is one recorded change of it,
 //! added after the tab's others and authored by the actor the action API
 //! admitted, so History steps through a tab action by action, a recording is
 //! a stretch of that log, and another device that holds the workspace reads
-//! the same record.
+//! the same resource.
 //!
 //! A window keeps none of it. What it holds ([`TabRecorder`]) is where its
-//! engine's record stands against the resource, which it loses with the
+//! engine's resource stands against the resource, which it loses with the
 //! engine and finds again in the resource.
 //!
 //! Only a window adds to it, and only what its engine listed. Setting an
 //! action down is Browser's own writing (`#[action(by_app)]`), not an action
-//! of the record: no caller is offered it, and the record's api refuses it
+//! of the record: no caller is offered it, and the resource's api refuses it
 //! by name, as a value and in a group. So an actor cannot set down what it
 //! never did, and a reviewer reads who did what.
 //!
@@ -26,7 +26,7 @@
 //! MCP server verified its connection came from, which the action system
 //! says on the invoker of each of its actions
 //! ([`ui::tilo_actions::ActionInvoker::device`]). The window writes it from
-//! there, never from what the engine lists, and the record's api refuses an
+//! there, never from what the engine lists, and the resource's api refuses an
 //! entry that names any other device than its author's.
 //!
 //! A window remembers whom the action system admitted under a name for the
@@ -52,7 +52,7 @@
 //!
 //! Never a secret: what was written into a secret field is not in what the
 //! engine lists, whatever wrote it, and the entry says so (`secret`). The
-//! record keeps of such an entry that the field was set and none of its
+//! resource keeps of such an entry that the field was set and none of its
 //! text, whatever the entry carries; and text the window itself sent as a
 //! secret is taken out of whatever the engine lists before it is written
 //! ([`TabRecorder::admitted`]).
@@ -75,23 +75,23 @@
 //! says it with the answer ([`TabRecorder::acts_as`]). Neither carries what
 //! was about to leave.
 //!
-//! The record is bounded as the engine bounds its own: a tab keeps its newest
-//! [`MAX_TAB_ACTIONS`] actions and the record its [`MAX_TABS`] most recently
-//! used tabs. What goes beyond leaves the record's state, counted in the
+//! The resource is bounded as the engine bounds its own: a tab keeps its newest
+//! [`MAX_TAB_ACTIONS`] actions and the resource its [`MAX_TABS`] most recently
+//! used tabs. What goes beyond leaves the resource's state, counted in the
 //! tab's `dropped`, and stays in its history, where History still shows it.
 
 use std::time::Instant;
 
 use serde_json::Value;
 use ui::framework::PersonResource;
-use ui::tilo_actions::{Acting, ActionInvoker, InvocationId, InvokerDevice};
+use ui::tilo_actions::{Acting, ActionInvoker, Actor, InvocationId, InvokerDevice};
 use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, Refusal, resource};
 use ui::webview::{PageActor, PageFailure, PageReply, PageRequest, PageResourceNote};
 
-/// How many actions of one tab the record holds: the newest, as the engine
+/// How many actions of one tab the resource holds: the newest, as the engine
 /// holds them.
 pub const MAX_TAB_ACTIONS: usize = 1000;
-/// How many tabs the record holds: the ones that acted last.
+/// How many tabs the resource holds: the ones that acted last.
 pub const MAX_TABS: usize = 32;
 /// How many actions one read answers with, as the engine answers.
 pub const MAX_READ: usize = 200;
@@ -128,12 +128,12 @@ pub struct Answer {
 /// when the action ended.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageAction {
-    /// Its place in the tab's record.
+    /// Its place in the tab's resource.
     pub seq: u64,
     /// When it ended, in milliseconds since the Unix epoch.
     pub time_ms: u64,
-    /// The name its actor acted under; empty for the person at the window.
-    pub actor: Atom,
+    /// Who did it; `None` for the person at the window.
+    pub actor: Option<Actor>,
     /// The other device of the person's its actor worked from, by its key in
     /// hex: the device the MCP server verified the actor's connection came
     /// from. Empty for an actor on the device whose engine runs the page,
@@ -179,7 +179,7 @@ pub struct PageAction {
     /// one.
     pub nth: u64,
     /// It wrote into a secret field: what it wrote is in the page and
-    /// nowhere else, and the record holds none of it.
+    /// nowhere else, and the resource holds none of it.
     pub secret: bool,
     /// The text it wrote. Never a secret's.
     pub text: Option<Atom>,
@@ -189,12 +189,12 @@ pub struct PageAction {
     pub answers: Vec<Answer>,
 }
 
-/// What the record keeps about one tab beside its actions.
+/// What the resource keeps about one tab beside its actions.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tab {
     /// The place of the newest action set down for the tab.
     pub last: u64,
-    /// How many of its oldest actions have left the record.
+    /// How many of its oldest actions have left the resource.
     pub dropped: u64,
     /// When its newest action ended, in milliseconds since the Unix epoch.
     pub at: u64,
@@ -202,8 +202,8 @@ pub struct Tab {
     pub device: Atom,
 }
 
-/// The record of what operated Browser's tabs, in the workspace Browser is
-/// open in: each action by its tab and its place in that tab's record.
+/// The resource of what operated Browser's tabs, in the workspace Browser is
+/// open in: each action by its tab and its place in that tab's resource.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct PageResource {
     /// The actions, by tab and place. Only setting one down changes them.
@@ -216,7 +216,7 @@ pub struct PageResource {
 
 /// A part of one tab's record: what a read of it answers with.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct RecordPage {
+pub struct ResourcePage {
     /// The actions after the place asked for, oldest first, as the engine
     /// lists them.
     pub entries: Vec<Value>,
@@ -224,17 +224,17 @@ pub struct RecordPage {
     pub next: u64,
     /// Whether more actions follow these.
     pub more: bool,
-    /// How many of the tab's oldest actions have left the record.
+    /// How many of the tab's oldest actions have left the resource.
     pub dropped: u64,
 }
 
 impl PageResource {
-    /// What the record holds: the actions that operated Browser's tabs, by tab and place, and
+    /// What the resource holds: the actions that operated Browser's tabs, by tab and place, and
     /// the tabs that have actions here.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it. A window reads one tab's actions a part at a time
     /// ([`Self::page`]).
     pub fn read_document(
@@ -255,13 +255,13 @@ impl PageResource {
     ///
     /// One action that operated a tab's page, as the tab's engine listed it
     /// when the action ended. It is added after the tab's others and changes
-    /// none of them; only what the record keeps of an action is taken from
+    /// none of them; only what the resource keeps of an action is taken from
     /// the entry.
     ///
     /// Only the window whose engine listed the action sets it down (its
     /// `TabRecorder`). It is the browser keeping its record: not an action
     /// anyone invokes, nor an edit of anyone's to take back. No caller is
-    /// offered it and the record's api refuses it, so nobody sets down an
+    /// offered it and the resource's api refuses it, so nobody sets down an
     /// action the engine did not list.
     ///
     /// The window writes each action as whoever did it: the entry's actor
@@ -277,7 +277,9 @@ impl PageResource {
         cx: &mut ActionCx,
         #[param("The id of the tab the action ran in")] tab: String,
         #[param("The device whose engine runs the tab's page")] device: String,
-        #[param("The action as the engine listed it, with its place in the tab's record as `seq`")]
+        #[param(
+            "The action as the engine listed it, with its place in the tab's resource as `seq`"
+        )]
         entry: serde_json::Value,
     ) -> Result<(), Refusal> {
         if !valid_tab(&tab) {
@@ -300,7 +302,7 @@ impl PageResource {
         }
         let known = self.tabs.get(&tab).cloned();
         if known.as_ref().is_some_and(|known| action.seq <= known.last) {
-            return Err(Refusal::new("the tab's record already holds that place"));
+            return Err(Refusal::new("the tab's resource already holds that place"));
         }
         // The tab that acted longest ago makes room for a new one.
         while known.is_none() && self.tabs.len() >= MAX_TABS {
@@ -319,7 +321,7 @@ impl PageResource {
         kept.at = kept.at.max(action.time_ms);
         kept.device = Atom(clipped(&device, MAX_NAME_BYTES));
         self.actions.insert(action_key(&tab, action.seq), action);
-        // A tab keeps its newest actions; the oldest leave the record's
+        // A tab keeps its newest actions; the oldest leave the resource's
         // state and stay in its history.
         let held = self.keys_of(&tab);
         let over = held.len().saturating_sub(MAX_TAB_ACTIONS);
@@ -335,12 +337,12 @@ impl PageResource {
 impl PageResource {
     /// The actions of `tab` after the place `since`, oldest first: at most
     /// [`MAX_READ`], with the place to read on from.
-    pub fn page(&self, tab: &str, since: u64) -> RecordPage {
+    pub fn page(&self, tab: &str, since: u64) -> ResourcePage {
         let prefix = tab_prefix(tab);
-        let mut page = RecordPage {
+        let mut page = ResourcePage {
             next: since,
             dropped: self.tabs.get(tab).map_or(0, |kept| kept.dropped),
-            ..RecordPage::default()
+            ..ResourcePage::default()
         };
         for (_, action) in self
             .actions
@@ -372,7 +374,7 @@ impl PageResource {
             .collect()
     }
 
-    /// Take `tab` and its actions out of the record's state.
+    /// Take `tab` and its actions out of the resource's state.
     fn forget_tab(&mut self, tab: &str) {
         for key in self.keys_of(tab) {
             self.actions.remove(&key);
@@ -382,7 +384,7 @@ impl PageResource {
 }
 
 impl PageAction {
-    /// The action `entry` lists, with only what the record keeps of one and
+    /// The action `entry` lists, with only what the resource keeps of one and
     /// each text within its bound. `None` for an entry without a place or
     /// that says neither what was asked nor how it came about.
     pub fn of(entry: &Value) -> Option<Self> {
@@ -455,7 +457,9 @@ impl PageAction {
         Some(Self {
             seq,
             time_ms: entry.get("time_ms").and_then(whole).unwrap_or(0),
-            actor: text("actor", MAX_NAME_BYTES),
+            actor: entry
+                .get("actor")
+                .and_then(|actor| serde_json::from_value(actor.clone()).ok()),
             device: text("device", MAX_NAME_BYTES),
             device_name: text("device_name", MAX_NAME_BYTES),
             device_unknown: entry.get("device_unknown").and_then(Value::as_bool) == Some(true),
@@ -487,15 +491,12 @@ impl PageAction {
 
     /// Whether `author`, invoked `by` that actor, is who did this action.
     /// What was typed straight into the page, and what the tab's unnamed
-    /// actor did, is a person's. Any other action is its actor's: the name
-    /// the engine keeps `author` under.
+    /// actor did, is a person's. Any other action is its actor's.
     fn is_by(&self, author: Option<&tilo_resource::MemberId>, by: Option<&Acting>) -> bool {
-        if self.how.0 == "input" || self.actor.0.is_empty() {
+        let Some(actor) = self.actor.as_ref().filter(|_| self.how.0 != "input") else {
             return by.is_none_or(Acting::is_person);
-        }
-        author
-            .and_then(|author| PageActor::of(&author.clone().into()))
-            .is_some_and(|named| named.as_str() == self.actor.0)
+        };
+        author.is_some_and(|author| actor.member_id() == Some(author))
     }
 
     /// Whether this action names the device its actor was admitted from:
@@ -515,7 +516,7 @@ impl PageAction {
 
     /// The action as the engine lists one: what [`Self::of`] kept, under the
     /// names it was listed by. The device its actor worked from stands
-    /// beside the actor, where the record keeps one.
+    /// beside the actor, where the resource keeps one.
     pub fn entry(&self) -> Value {
         let mut entry = serde_json::Map::new();
         let mut say = |key: &str, text: &Atom| {
@@ -535,7 +536,9 @@ impl PageAction {
         if self.time_ms > 0 {
             entry.insert("time_ms".into(), self.time_ms.into());
         }
-        entry.insert("actor".into(), self.actor.0.clone().into());
+        if let Some(actor) = &self.actor {
+            entry.insert("actor".into(), actor_value(actor));
+        }
         if !self.device.0.is_empty() {
             entry.insert("device".into(), self.device.0.clone().into());
             if !self.device_name.0.is_empty() {
@@ -623,7 +626,7 @@ fn clipped(text: &str, most: usize) -> String {
     text.get(..end).unwrap_or_default().to_owned()
 }
 
-/// `value` as the text the record keeps: a text as it is, anything else as
+/// `value` as the text the resource keeps: a text as it is, anything else as
 /// it is written.
 fn plain(value: &Value, most: usize) -> String {
     match value {
@@ -652,26 +655,26 @@ struct Turn {
 struct Owed {
     /// The name the engine keeps its actor under.
     actor: String,
-    /// Its place in the engine's record.
+    /// Its place in the engine's resource.
     seq: u64,
     /// Whom the action system admitted the answered action for; `None` where
     /// the window no longer held that.
     by: Option<ActionInvoker>,
 }
 
-/// Where a window's engine stands against the tab's record, and who the
+/// Where a window's engine stands against the tab's resource, and who the
 /// tab's actors were admitted as.
 ///
-/// Presentation-side bookkeeping only: the record is the resource. The
-/// engine counts its own record from 1 each time it starts, so the window
+/// Presentation-side bookkeeping only: the resource is the resource. The
+/// engine counts its own document from 1 each time it starts, so the window
 /// keeps how far it has read the engine's (`cursor`) and what the tab's
-/// record held when that engine began (`base`). An action the engine lists
+/// resource held when that engine began (`base`). An action the engine lists
 /// at its place *n* stands at `base + n` in the resource, and that is the
 /// place every answer names.
 #[derive(Default)]
 pub(crate) struct TabRecorder {
     record: Option<PersonResource<PageResource>>,
-    /// The tab's id in the record.
+    /// The tab's id in the resource.
     tab: String,
     /// The device this window runs on.
     device: String,
@@ -693,7 +696,7 @@ pub(crate) struct TabRecorder {
     turns: Vec<Turn>,
     /// The actions the engine said it set down, in answers this window has
     /// taken, that it has not written yet: each by its actor's name, its
-    /// place in the engine's record and whom its invocation was admitted
+    /// place in the engine's resource and whom its invocation was admitted
     /// for ([`Self::owes`]).
     owed: Vec<Owed>,
     /// This window has forgotten an actor it admitted. Until it has, a name
@@ -708,7 +711,7 @@ pub(crate) struct TabRecorder {
 }
 
 impl TabRecorder {
-    /// Keep the tab's record in `record`, as a tab of the device `device`.
+    /// Keep the tab's resource in `record`, as a tab of the device `device`.
     pub(crate) fn attach(&mut self, record: PersonResource<PageResource>, device: &str) {
         let mut key = [0; 32];
         for half in key.chunks_mut(16) {
@@ -723,18 +726,18 @@ impl TabRecorder {
         };
     }
 
-    /// Whether the tab's record is kept in a resource. A private window
+    /// Whether the tab's resource is kept in a resource. A private window
     /// keeps none.
     pub(crate) const fn attached(&self) -> bool {
         self.record.is_some()
     }
 
-    /// The tab's id in the record.
+    /// The tab's id in the resource.
     pub(crate) fn tab(&self) -> Option<&str> {
         self.attached().then_some(self.tab.as_str())
     }
 
-    /// Go on with the record of the tab `tab`: the one this window showed
+    /// Go on with the resource of the tab `tab`: the one this window showed
     /// before it was closed. Only a tab of this device is taken up, and only
     /// before this window set anything down under its own id.
     pub(crate) fn adopt(&mut self, tab: &str) {
@@ -757,7 +760,7 @@ impl TabRecorder {
     }
 
     /// The engine the tab's page runs in now. One this window has not read
-    /// yet counts its record from the start: the tab's record goes on from
+    /// yet counts its resource from the start: the tab's resource goes on from
     /// what it holds.
     pub(crate) fn engine_is(&mut self, engine: usize) {
         if self.engine == Some(engine) {
@@ -790,8 +793,8 @@ impl TabRecorder {
         if !self.attached() {
             return;
         }
-        if matches!(request, PageRequest::Ledger { .. }) {
-            // A read of the tab's record takes no turn and sets nothing down.
+        if matches!(request, PageRequest::Log { .. }) {
+            // A read of the tab's resource takes no turn and sets nothing down.
             self.acts_as(actor, invoker, working);
         } else {
             self.takes_turn(invocation, actor, invoker, working);
@@ -801,6 +804,11 @@ impl TabRecorder {
         } = request
         {
             self.sent_secret(text);
+        }
+        if let PageRequest::FillReleased { text, .. } = request {
+            // A text released for one site is remembered as any secret this
+            // window sent is.
+            let _ = text.read(|text| self.sent_secret(text));
         }
     }
 
@@ -1009,7 +1017,7 @@ impl TabRecorder {
         (Some(last), elsewhere)
     }
 
-    /// Write what the engine's record lists in `data` and this window has
+    /// Write what the engine's resource lists in `data` and this window has
     /// not written yet: each action one change of the resource, authored by
     /// its actor. What was typed straight into the page, and what the tab's
     /// unnamed actor did, is the person's. Whether the engine has more to
@@ -1043,8 +1051,8 @@ impl TabRecorder {
             } else {
                 (None, false)
             };
-            // A name this window does not remember is still an actor of
-            // that name, and the action is set down as theirs. Once the
+            // A handle this window does not remember is still the actor this
+            // process named by it, and the action is set down as theirs. Once the
             // window has forgotten an actor, what the API said of this one
             // may be gone: the entry then says that where they worked from
             // is not known instead of naming no device, which would read as
@@ -1056,8 +1064,10 @@ impl TabRecorder {
                 (true, Some(admitted)) if doubted => Some(admitted.from_device(None)),
                 (true, Some(admitted)) => Some(admitted),
                 (true, None) => {
-                    // A shortened name says nobody: it is not set down as anyone's.
-                    let Some(actor) = PageActor::actor_of(actor) else {
+                    // A handle no actor of this process has says nobody: it is not
+                    // set down as anyone's.
+                    let Some(actor) = PageActor::listed(actor).and_then(|actor| actor.actor())
+                    else {
                         self.cursor = seq;
                         continue;
                     };
@@ -1081,9 +1091,13 @@ impl TabRecorder {
                 if unknown {
                     fields.insert("device_unknown".into(), true.into());
                 }
+                fields.remove("actor");
+                if let Some(by) = &by {
+                    fields.insert("actor".into(), actor_value(&by.acting.by));
+                }
             }
             self.withhold(&mut entry);
-            // An entry the record cannot keep is passed over, not waited on.
+            // An entry the resource cannot keep is passed over, not waited on.
             if PageAction::of(&entry).is_none() {
                 self.cursor = seq;
                 continue;
@@ -1099,7 +1113,7 @@ impl TabRecorder {
             };
             if let Err(error) = written {
                 // It is read from the engine again with the next action.
-                tracing::warn!(%error, "a page action was not set down in the tab's record");
+                tracing::warn!(%error, "a page action was not set down in the tab's resource");
                 self.settle_owed();
                 return false;
             }
@@ -1117,7 +1131,7 @@ impl TabRecorder {
     /// it names none. One further on has actions
     /// before it this window has not read: it is written in its place once
     /// they are, from the engine's own listing. Whether the window is to
-    /// read the engine's record for that.
+    /// read the engine's resource for that.
     pub(crate) fn heard(&mut self, seq: u64, entry: &Value) -> bool {
         if !self.attached() || seq <= self.cursor {
             return false;
@@ -1134,7 +1148,7 @@ impl TabRecorder {
         self.cursor < seq
     }
 
-    /// The part of the tab's record after the place `since`, as a read of
+    /// The part of the tab's resource after the place `since`, as a read of
     /// it answers: `entries`, `next`, `more` and `dropped`. `engine_more`
     /// says the engine lists actions this window has not written yet.
     pub(crate) fn read(&self, since: u64, engine_more: bool) -> Option<Value> {
@@ -1148,25 +1162,26 @@ impl TabRecorder {
         }))
     }
 
-    /// How far this window has read its engine's record.
+    /// How far this window has read its engine's resource.
     pub(crate) const fn cursor(&self) -> u64 {
         self.cursor
     }
 
-    /// The engine's place `seq`, as the tab's record counts it.
+    /// The engine's place `seq`, as the tab's resource counts it.
     fn place(&self, seq: &Value) -> Option<Value> {
         whole(seq).map(|seq| self.base.saturating_add(seq).into())
     }
 
     /// The action the engine says is running, with its place as the tab's
-    /// record counts it.
+    /// resource counts it.
     pub(crate) fn running(&self, running: &Value) -> Value {
         let mut running = running.clone();
         self.replace(&mut running);
+        type_actor(&mut running, "actor");
         running
     }
 
-    /// Name the place in `entry` as the tab's record counts it.
+    /// Name the place in `entry` as the tab's resource counts it.
     fn replace(&self, entry: &mut Value) {
         if self.base == 0 {
             return;
@@ -1178,20 +1193,18 @@ impl TabRecorder {
         }
     }
 
-    /// Name the places `note` carries as the tab's record counts them.
+    /// Name the places and the actors `note` carries as the tab's resource counts and names them.
     pub(crate) fn places(&self, note: &mut PageResourceNote) {
-        if self.base == 0 {
-            return;
-        }
         note.seq = note.seq.map(|seq| self.base.saturating_add(seq));
         for other in &mut note.others {
             self.replace(other);
+            type_actor(other, "actor");
         }
     }
 
     /// Say on `set`, who set a field as the engine's review of the page
     /// says it, the other device that actor worked from. The engine knows
-    /// actors by name alone, so the device is the one the tab's record keeps
+    /// actors by name alone, so the device is the one the tab's resource keeps
     /// with the action that set the field, and, until that action is
     /// written, the one its actor was admitted from. A field an actor on
     /// this device set, or no actor's action, names none.
@@ -1212,7 +1225,7 @@ impl TabRecorder {
     /// Say on each entry of `listing`, the engine's own list of what it set
     /// down, the other device the entry's actor worked from, as
     /// [`Self::name_device`] says it of who set a field: what the review
-    /// screen reads to draw the tab's record. What a person typed names
+    /// screen reads to draw the tab's resource. What a person typed names
     /// none.
     pub(crate) fn name_devices(&self, listing: Option<&mut Value>) {
         let Some(Value::Array(entries)) = listing.and_then(|listing| listing.get_mut("entries"))
@@ -1224,12 +1237,8 @@ impl TabRecorder {
                 continue;
             };
             let typed = fields.get("how").and_then(Value::as_str) == Some("input");
-            let actor = fields
-                .get("actor")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            // The engine counts its own record; the tab's stands `base`
+            let actor = handle_at(fields, "actor");
+            // The engine counts its own document; the tab's stands `base`
             // further on.
             let place = fields
                 .get("seq")
@@ -1240,12 +1249,12 @@ impl TabRecorder {
     }
 
     /// Write into `said`, an entry or who set a field, the device `actor`
-    /// worked from when it did the action at `place` of the tab's record,
+    /// worked from when it did the action at `place` of the tab's resource,
     /// and take out whatever device it named before: only this window says
     /// one, from what the API that admitted the actor said. Where the
-    /// record keeps no such action and this window has forgotten the actor,
+    /// resource keeps no such action and this window has forgotten the actor,
     /// it says that the device is not known (`device_unknown`), as the
-    /// record does of an action set down so. An action the engine answered
+    /// resource does of an action set down so. An action the engine answered
     /// and this window has yet to write names the device its invocation was
     /// admitted from ([`Self::asked`]).
     fn say_device(
@@ -1265,7 +1274,12 @@ impl TabRecorder {
                 state
                     .actions
                     .get(&action_key(&self.tab, place))
-                    .filter(|kept| kept.actor.0 == actor)
+                    .filter(|kept| {
+                        kept.actor
+                            .as_ref()
+                            .and_then(PageActor::of)
+                            .is_some_and(|kept| kept.as_str() == actor)
+                    })
                     .map(|kept| {
                         (
                             kept.device.0.clone(),
@@ -1276,7 +1290,7 @@ impl TabRecorder {
             })
         });
         let (device, name, unknown) = kept.unwrap_or_else(|| {
-            // The engine counts its own record; the tab's stands `base`
+            // The engine counts its own document; the tab's stands `base`
             // further on.
             let seq = place.and_then(|place| place.checked_sub(self.base));
             match self.asked(actor, seq) {
@@ -1301,7 +1315,7 @@ impl TabRecorder {
         }
     }
 
-    /// An engine's answer with every place in it named as the tab's record
+    /// An engine's answer with every place in it named as the tab's resource
     /// counts it, and whether it says something was set down that this
     /// window should read.
     pub(crate) fn placed(
@@ -1328,6 +1342,7 @@ impl TabRecorder {
         };
         let news = note.seq.is_some() || !note.others.is_empty();
         self.places(note);
+        name_actors(&mut result);
         (result, news)
     }
 
@@ -1341,7 +1356,7 @@ impl TabRecorder {
         awaited
     }
 
-    /// This window asked its engine for its record as `request_id`, and
+    /// This window asked its engine for its resource as `request_id`, and
     /// waits for the answer until `until`.
     pub(crate) fn pull_sent(&mut self, request_id: u32, until: Instant) {
         self.pull = Some((request_id, until));
@@ -1362,6 +1377,89 @@ impl TabRecorder {
     pub(crate) fn take_again(&mut self) -> bool {
         std::mem::take(&mut self.again)
     }
+}
+
+/// `actor` as the tab's resource and its readers name it.
+fn actor_value(actor: &Actor) -> Value {
+    serde_json::to_value(actor).unwrap_or(Value::Null)
+}
+
+/// Name the actor of each entry of `listing`, the engine's own list of what it set down, and of
+/// the action it says runs, as the actor it is.
+pub(crate) fn name_listed(listing: Option<&mut Value>) {
+    let Some(listing) = listing else {
+        return;
+    };
+    if let Some(Value::Array(entries)) = listing.get_mut("entries") {
+        for entry in entries {
+            type_actor(entry, "actor");
+        }
+    }
+    if let Some(running) = listing.get_mut("running") {
+        type_actor(running, "actor");
+    }
+}
+
+/// Replace the handle the engine names an actor by at `key` of `said` with the actor it is
+/// ([`PageActor::actor`]); a handle no actor of this process has names nobody.
+fn type_actor(said: &mut Value, key: &str) {
+    let Some(fields) = said.as_object_mut() else {
+        return;
+    };
+    let Some(name) = fields.get(key).and_then(Value::as_str) else {
+        return;
+    };
+    match PageActor::listed(name).and_then(|handle| handle.actor()) {
+        Some(actor) => fields.insert(key.to_owned(), actor_value(&actor)),
+        None => fields.remove(key),
+    };
+}
+
+/// The handle the engine keeps the actor `said` names at `key` under: the actor's, where the
+/// window named it already, or the engine's own.
+fn handle_at(said: &serde_json::Map<String, Value>, key: &str) -> String {
+    match said.get(key) {
+        Some(Value::String(name)) => name.clone(),
+        Some(actor) => serde_json::from_value::<Actor>(actor.clone())
+            .ok()
+            .and_then(|actor| PageActor::of(&actor))
+            .map(|handle| handle.as_str().to_owned())
+            .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// Name each actor an answer of the engine's names by its handle as the actor it is: who set
+/// each field, who did each entry of a listing and the action that runs, and the other actors'
+/// work it carries.
+pub(crate) fn name_actors(result: &mut Result<PageReply, PageFailure>) {
+    let note = match result {
+        Ok(reply) => {
+            if let Some(data) = reply.data.as_mut() {
+                if let Some(Value::Array(fields)) = data.get_mut("fields") {
+                    for field in fields {
+                        if let Some(set) = field.get_mut("set") {
+                            type_actor(set, "by");
+                        }
+                    }
+                }
+                name_listed(Some(data));
+            }
+            &mut reply.record
+        }
+        Err(failure) => &mut failure.record,
+    };
+    for other in &mut note.others {
+        type_actor(other, "actor");
+    }
+}
+
+/// The handle the engine keeps the agent `id` under.
+#[cfg(test)]
+pub(crate) fn agent_handle(id: &str) -> String {
+    PageActor::of(&ui::tilo_actions::MemberId::agent(id).into())
+        .map(|handle| handle.as_str().to_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 #[ignore = "needs the owned-GPT native harness as root (os/scripts/installer-source-fixture/native_journey_tests.py)"]
-fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
+fn prepared_stage_rechecks_recovery_ownership_at_actual_write_admission() {
     if !native_retained::enter_owned_journey(
-        "setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_custody_at_actual_write_admission",
+        "setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_ownership_at_actual_write_admission",
     ) {
         return;
     }
@@ -62,7 +62,7 @@ fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
             &temp.path().join("identity"),
             "Ada",
             [20, 80, 140],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let prepared = PreparedMedia::prepare_for_install(
@@ -106,8 +106,8 @@ fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
         // A completed journal does not prove that these filesystem paths are
         // outside the raw target. The production binding path refuses it.
         assert!(prepared.bind_recovery(evidence.clone(), plan).is_err());
-        // Exercise the write gate itself against a stale/unsafe bound witness,
-        // not merely the selection-time check. Such a witness cannot yield a
+        // Exercise the write check itself against a stale/unsafe bound proof,
+        // not merely the selection-time check. Such a proof cannot yield a
         // staging artifact or pass the media writer's final admission.
         *prepared.recovery.lock().unwrap() =
             evidence.into_iter().map(|e| (e, plan.clone())).collect();

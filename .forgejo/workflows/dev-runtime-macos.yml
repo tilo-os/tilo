@@ -2,7 +2,7 @@ name: Dev / runtime-macos
 
 # The per-user runtime (`tilo-runtime`) is the Tilo host on machines without
 # the Tilo desktop, stock macOS first. Its library, standalone services and
-# `tilo-runtime` executable must keep building there, which no Linux lane
+# `tilo-runtime` executable must keep building there, which no Linux job
 # observes. It requests no OIDC token and runs on the persistent development
 # runner (`macos-aarch64`), never on the ephemeral release label
 # `imager-macos-aarch64`, so release-signing credentials are never minted for it.
@@ -10,7 +10,7 @@ name: Dev / runtime-macos
 # closure, written by tools/policy/check_workflow_package_paths.py --write and
 # checked by that script's step in the repository policy suite: the one Mac only
 # sees changes that can break it, and a dependency added to the runtime cannot
-# leave this lane behind by being forgotten here.
+# leave this job behind by being forgotten here.
 on:
   push:
     branches: ["main"]
@@ -46,22 +46,25 @@ on:
       - "crates/collab/workspace-keys/**"
       - "crates/dev/headless-schema/**"
       - "crates/dev/test-env/**"
-      - "crates/dev/test-relay/**"
+      - "crates/dev/test-server/**"
       - "crates/dev/ui-graph/**"
       - "crates/doc/bounded-zip/**"
       - "crates/doc/tilo-automerge/**"
       - "crates/doc/tilo-automerge-isolate/**"
       - "crates/doc/tilo-doc/**"
       - "crates/doc/tilo-doc-codecs/**"
-      - "crates/hosting/tilo-delivery-protocol/**"
-      - "crates/hosting/tilo-host-account/**"
-      - "crates/hosting/tilo-relay/**"
-      - "crates/hosting/tilo-relay-client/**"
-      - "crates/hosting/tilo-relay-protocol/**"
-      - "crates/hosting/tilo-relay-session/**"
-      - "crates/hosting/tilo-relay-store/**"
-      - "crates/hosting/tilo-workspace-host/**"
+      - "crates/doc/tilo-document/**"
+      - "crates/server/tilo-delivery-protocol/**"
+      - "crates/server/tilo-server-account/**"
+      - "crates/server/tilo-server/**"
+      - "crates/server/tilo-server-client/**"
+      - "crates/server/tilo-server-protocol/**"
+      - "crates/server/tilo-server-session/**"
+      - "crates/server/tilo-server-store/**"
+      - "crates/server/tilo-workspace-service/**"
+      - "crates/lang/tilolang/**"
       - "crates/lang/tilolang-lex/**"
+      - "crates/lang/tilolang-runtime/**"
       - "crates/media/thumbnail/**"
       - "crates/packaging/app-catalogue/**"
       - "crates/packaging/app-cli/**"
@@ -100,7 +103,11 @@ on:
       - "crates/platform/tilo-selector/**"
       - "crates/platform/tilo-settings-records/**"
       - "crates/platform/tilo-sort/**"
+      - "crates/platform/tilo-view/**"
       - "crates/platform/tilo-wake/**"
+      - "crates/platform/tilolang-process/**"
+      - "crates/platform/tilolang-mail/**"
+      - "crates/platform/tilolang-tilo/**"
       - "crates/runtime/cli/**"
       - "crates/runtime/egress/**"
       - "crates/runtime/env-tools/**"
@@ -114,7 +121,7 @@ on:
       - "crates/runtime/runtime-portal/**"
       - "crates/runtime/tilo-fs-client/**"
       - "crates/runtime/tilo-identity-client/**"
-      - "crates/runtime/tilo-identity-host/**"
+      - "crates/runtime/tilo-identity/**"
       - "crates/runtime/tilo-mcp/**"
       - "crates/runtime/tilo-runtime/**"
       - "crates/runtime/ush/**"
@@ -127,15 +134,21 @@ on:
       - "crates/sdk/tilo-cpu-raster/**"
       - "crates/sdk/tilo-formats/**"
       - "crates/sdk/tilo-history/**"
-      - "crates/sdk/tilo-host/**"
+      - "crates/sdk/tilo-process-services/**"
+      - "crates/sdk/tilo-recurrence/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/ui-core/**"
       - "crates/sdk/ui-macros/**"
       - "crates/sdk/ui-paint/**"
+      - "crates/session/audio-service/**"
       - "crates/session/client/**"
       - "crates/session/control-cli/**"
+      - "crates/session/core/**"
       - "crates/session/desktop-model/**"
+      - "crates/session/desktop-search/**"
+      - "crates/session/desktop-surface/**"
+      - "crates/session/service/**"
       - "crates/system/accounts/**"
       - "crates/system/advisory-lock/**"
       - "crates/system/app-state/**"

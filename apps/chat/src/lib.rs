@@ -3,7 +3,7 @@
 //! A collaborative chat + calls surface that runs in a Tilo workspace, its
 //! workspace. The convergent state — categories, channels, messages, reactions,
 //! edits + edit history, threads and members — is the [`record::Chat`]
-//! model, the workspace's own record of the chat, changed only through its verbs
+//! model, the workspace's own document of the chat, changed only through its verbs
 //! and field edits. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
 //! app's content store. The [`app::ChatApp`] widget is a projection of that
@@ -53,6 +53,7 @@ pub mod body;
 pub mod call;
 pub mod cause;
 mod channel_sheet;
+pub mod chat;
 pub mod composer;
 pub mod continuity;
 #[cfg(feature = "samples")]
@@ -64,7 +65,6 @@ pub mod events;
 mod external;
 pub mod feedback;
 pub mod geometry;
-mod host_model;
 pub mod i18n;
 pub mod identity;
 mod image_arrival;
@@ -75,8 +75,10 @@ mod live_share;
 mod live_share_panel;
 mod local_voice;
 pub mod mention;
+pub mod message_view;
 pub mod messages;
 pub mod model;
+mod model_stream;
 mod moderation;
 pub mod paint;
 pub mod parts;
@@ -87,7 +89,6 @@ pub mod projection;
 pub mod question;
 pub mod question_card;
 pub mod recall;
-pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
@@ -99,6 +100,7 @@ mod sidebar;
 pub mod summons;
 mod timeline;
 pub mod transcript;
+mod view_alone;
 pub mod views;
 mod window_bar;
 
@@ -108,7 +110,7 @@ impl ChatApp {
     /// Bind a mount-local model capability supplied by the host.
     #[must_use]
     pub fn with_models(mut self, models: ui::models::Models) -> Self {
-        self.host_model.models = models;
+        self.model_stream.models = models;
         self
     }
 }
@@ -119,6 +121,8 @@ mod cause_tests;
 mod component_tests;
 #[cfg(test)]
 mod live_share_tests;
+#[cfg(test)]
+mod message_view_tests;
 #[cfg(all(test, unix))]
 mod native_models_tests;
 #[cfg(all(test, not(target_family = "wasm")))]

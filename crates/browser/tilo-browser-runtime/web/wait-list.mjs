@@ -24,7 +24,7 @@
  * removal requests go; without one, nothing.
  */
 import {DESKTOP_LANGUAGE, localized, waitListFailure} from './arrival.mjs';
-import {confirmWaitList, leaveOnWaitList, leaveWaitList, waitListing, waitListStanding} from './workspaces.mjs';
+import {confirmWaitList, leaveOnWaitList, leaveWaitList, waitListing, waitListStatus} from './workspaces.mjs';
 
 /** Where the contact goes in its line, which is split there to link it. */
 const CONTACT_AT = '\u0000';
@@ -78,8 +78,8 @@ export function waitListWords({state = 'form', email = '', mail = false, leavabl
   };
 }
 
-/** The state an entry's standing at the entry (`waitListStanding`) shows. */
-const STANDING = {pending: 'inbox', listed: 'listed', invited: 'invited', gone: 'form'};
+/** The state an entry's status at the entry (`waitListStatus`) shows. */
+const STATUS = {pending: 'inbox', listed: 'listed', invited: 'invited', gone: 'form'};
 
 /**
  * Wire the entry's wait list for `workspace`: `elements` are the form
@@ -89,15 +89,17 @@ const STANDING = {pending: 'inbox', listed: 'listed', invited: 'invited', gone: 
  * and the contact's line (`contact`). `root` (the page's element) carries
  * `data-wait-list` (the state) and `data-wait-listed` while the address is
  * on the list. `mail`: the entry mails. `arrival` is what a mailed link
- * brought: `{confirm}` or `{remove}`, a secret. `join`, `leave`,
- * `listing`, `confirm` and `standing` reach the host (`leaveOnWaitList`,
+ * brought: `{confirm}` or `{remove}`, a secret. `language` is the page's
+ * ([`visitorLocale`](arrival.mjs)), which the mail it sends comes back in.
+ * `join`, `leave`,
+ * `listing`, `confirm` and `status` reach the host (`leaveOnWaitList`,
  * `leaveWaitList`, `waitListing`, `confirmWaitList`,
- * `waitListStanding`). Returns `state()` and `settled`, which resolves once
+ * `waitListStatus`). Returns `state()` and `settled`, which resolves once
  * the entry knows where the entry stands.
  */
 export function mountWaitList({elements, root, workspace, contact = null, mail = false, arrival = null, messages = null,
-  document = globalThis.document, join = leaveOnWaitList, leave = leaveWaitList, listing = waitListing,
-  confirm = confirmWaitList, standing = waitListStanding}) {
+  language = DESKTOP_LANGUAGE, document = globalThis.document, join = leaveOnWaitList, leave = leaveWaitList,
+  listing = waitListing, confirm = confirmWaitList, status = waitListStatus}) {
   const {form, email, submit, done, againLine, againPrompt, again, change, leave: leaveButton, note, contact: contactLine} = elements;
   const say = (key, english, args) => localized(messages, key, english, args);
   let state = 'form';
@@ -160,9 +162,9 @@ export function mountWaitList({elements, root, workspace, contact = null, mail =
       return;
     }
     if (!kept) return;
-    const stands = await standing({workspace});
+    const stands = await status({workspace});
     // Unless the visitor moved on meanwhile.
-    if (stands && state === (kept.pending ? 'inbox' : 'listed')) show(STANDING[stands] ?? state, kept.email);
+    if (stands && state === (kept.pending ? 'inbox' : 'listed')) show(STATUS[stands] ?? state, kept.email);
   };
   const settled = settle().catch(failed);
   const leaveIt = async () => {
@@ -175,7 +177,7 @@ export function mountWaitList({elements, root, workspace, contact = null, mail =
     again.disabled = true;
     try {
       // Its mail is in the language this page is in.
-      const left = await join({workspace, email: value, language: DESKTOP_LANGUAGE});
+      const left = await join({workspace, email: value, language});
       email.value = '';
       return left;
     } finally {

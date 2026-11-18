@@ -55,7 +55,7 @@ published in `registry.tilo.so/tilo/tilo-vm`:
 
 | Tag | What |
 | --- | --- |
-| `<arch>-ci`, `<board>-ci` | the dev channel: main's newest gated image |
+| `<arch>-ci`, `<board>-ci` | the dev channel: main's newest guarded image |
 | `main-<sha7>-ci-<arch>`, `main-<sha7>-<board>` | main's build of one commit |
 
 `--from sha:<commit>` takes the build of that commit: main's dev image, else a
@@ -67,7 +67,7 @@ to the channel at once. To see what exists:
 
 ## A disk of this tree, from t
 
-The published disk is main's, moved when the publishing lane passes; when you
+The published disk is main's, moved when the publishing job passes; when you
 need a disk of the commit you are on (or the channel has not moved), `t`
 builds the same disk for this tree on the build server and fetches it:
 

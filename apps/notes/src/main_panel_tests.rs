@@ -393,11 +393,10 @@ fn page_keys_while_writing_page_the_note() {
         writeln!(&mut body, "Paragraph {index}: words to scroll past.\n").unwrap();
     }
     let blocks = MainPanel::seed_blocks(&body, |_| None);
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
-            .unwrap(),
-    )
-    .unwrap();
+    crate::cpu_profile::invoke_page(
+        &mut app,
+        &crate::actions::write_body_action(target, &blocks),
+    );
     app.harness().relayout_at((1051, 952)).unwrap();
     let rect = app
         .harness()

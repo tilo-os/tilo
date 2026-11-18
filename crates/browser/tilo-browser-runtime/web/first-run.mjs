@@ -14,7 +14,7 @@
  * the visitor it turned away sees the wait list instead.
  *
  * Everything an agent does for the person goes through a login code
- * (`K7Q-MX2P`, `tilo-relay-protocol`'s `login_code`): the tab asks its host
+ * (`K7Q-MX2P`, `tilo-server-protocol`'s `login_code`): the tab asks its host
  * for one, the agent runs `tilo login <code>`, and the tab follows the code
  * (`follow()`, about once a second), showing each step the computer reports
  * as it happens.
@@ -235,6 +235,17 @@ export function stepLines(polled, mode = 'setup') {
 /** The host a site's codes come from, as people read it: `tilo.sh`. */
 const hostOf = site => { try { return new URL(site).host || 'tilo.sh'; } catch { return 'tilo.sh'; } };
 
+/** `site` as its person reads it in the address bar (`tilo.sh`,
+ * `tilo.example:8443`), or "this site" where that is an address by number,
+ * which names nothing to a person. */
+function nameOf(site) {
+  let url;
+  try { url = new URL(site); } catch { return 'this site'; }
+  const name = url.hostname;
+  if (!name || /^[\d.]+$/.test(name) || name.startsWith('[')) return 'this site';
+  return url.port ? `${name}:${url.port}` : name;
+}
+
 /** What the screen says of a passkey sign-in that did not work, from `error`.
  * Where the place cannot use passkeys at all (a web view inside an app that
  * may not use this site's), another passkey changes nothing: it says the ways
@@ -247,10 +258,24 @@ export function signInFailure(error) {
 }
 
 /** What the screen says when the page could not make or use a code, from
- * `error`, on `site`. */
+ * `error`, on `site`: what failed, and what still works. It says a workspace
+ * could not be opened only for a page that stopped (`stopped`), and promises
+ * a reason only there: that page shows its own under this screen, which Skip
+ * leaves for at once (`skip`). A code that could not be made leaves the
+ * person's workspace as it is, and the sentence says so. */
 export function setupFailure(error, {site = HOME_SITE} = {}) {
   const code = error?.code;
-  if (code === 'no-workspace' || code === 'refused') return 'Tilo could not open a workspace for you here yet. Skip for now to see why.';
+  if (code === 'stopped') return 'Tilo could not open a workspace for you here yet. Skip for now to see why.';
+  if (code === 'no-workspace') return 'There is no workspace here yet to set your agent up in. Try again, or skip for now.';
+  if (code === 'no-codes') return 'This tab can’t make the code an agent needs. Try again, or skip for now.';
+  // The site's server answered and would not make the code (a
+  // `LoginCodeError` of no other kind): said of the site by the name in the
+  // person's address bar, never by the address its codes come from, which may
+  // be one by number. Refused by anything else, the sentence names nobody.
+  if (code === 'refused') {
+    const by = error?.name === 'LoginCodeError' ? `: ${nameOf(site)} refused it` : '';
+    return `The code for your agent could not be made here${by}. Try again, or skip for now and use Tilo without an agent.`;
+  }
   if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it and copy it yourself.';
   if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
   if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
@@ -955,7 +980,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       onBack();
     },
     skip() {
-      if (!closed) leave();
+      if (closed) return;
+      // A page that stopped has no workspace to open: the screen leaves for
+      // what the page says of it underneath, as its sentence promised.
+      if (gone?.code === 'stopped') { close(); return; }
+      leave();
     },
     /** What leaving opens (the person's own workspace), run at once when
      * the screen is leaving already. */
@@ -1006,8 +1035,10 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       });
       if (!signInOnly) resumeFollow();
     },
-    /** The page cannot make codes (it was not let in): `error` says why. A
-     * screen opening the person's workspace leaves for what the page says. */
+    /** The page cannot make codes: `error` says why (`stopped`: the page
+     * cannot go on, and says so itself under this screen; `no-codes`: this
+     * tab has nothing to make one with). A screen opening the person's
+     * workspace leaves for what the page says. */
     unavailable(error) {
       gone = error;
       for (const kind of Object.keys(codes)) {

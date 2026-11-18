@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use ui::application::{
-    ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
-    RestoreInput,
+    ApplicationDefinition, ComponentRunnerInputs, LaunchTarget, ProcessContext,
+    ProcessContextInputs, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
@@ -48,7 +48,7 @@ fn bundled_library_definition() -> &'static ApplicationDefinition {
 }
 
 const DEVICE: &str = "books-device";
-/// The workspace these records are kept in: a route names it by id, as a session does.
+/// The workspace these resources are kept in: a route names it by id, as a session does.
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 struct Fixture {
@@ -86,11 +86,11 @@ impl Fixture {
         definition: &'static ApplicationDefinition,
         instance: u64,
         target: LaunchTarget,
-        host: impl FnOnce(&mut HostContext),
+        host: impl FnOnce(&mut ProcessContext),
     ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
-        let mut context = HostContext::prepare(
+        let mut context = ProcessContext::prepare(
             definition,
-            HostContextInputs {
+            ProcessContextInputs {
                 records: self.records.clone(),
                 views: self.views.clone(),
                 device_id: DEVICE.into(),
@@ -113,7 +113,7 @@ impl Fixture {
         instance: u64,
         target: LaunchTarget,
         book: &str,
-        host: impl FnOnce(&mut HostContext),
+        host: impl FnOnce(&mut ProcessContext),
     ) -> (FrameHarness, DocumentCheckout) {
         let component = self
             .component(definition, instance, target, host)

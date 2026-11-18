@@ -401,6 +401,12 @@ impl Launches {
         (start_time(pid) == Some(start)).then_some((start, windowless))
     }
 
+    /// The start time of the process `pid` this session started, when that process is the launch
+    /// of `app` in `workspace` and is still alive: what a service admits a launcher's connection by.
+    pub fn started_at(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
+        self.live(pid, app, workspace)
+    }
+
     /// The start time of the process `pid` started, when that process is the launch of `app` in
     /// `workspace` and still runs.
     fn live(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
@@ -511,7 +517,7 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        if tilo_app_launch::tilolang_hosts::runs_in_host(app) {
+        if tilo_app_launch::tilolang_processes::runs_in_process(app) {
             return Ok(None);
         }
         let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =

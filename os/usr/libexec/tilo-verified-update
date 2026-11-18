@@ -4,7 +4,7 @@ set -euo pipefail
 
 BOOTC="${TILO_IMAGE_TRUST_BOOTC:-/usr/bin/bootc}"
 TRUST_DIR="${TILO_IMAGE_TRUST_DIR:-/var/lib/tilo/image-trust}"
-GATE="${TILO_IMAGE_TRUST_GATE:-/usr/libexec/tilo-image-trust-staged}"
+CHECK="${TILO_IMAGE_TRUST_CHECK:-/usr/libexec/tilo-image-trust-staged}"
 UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-/run/tilo-verified-update.lock}"
 SUCCESSOR="${TILO_IMAGE_TRUST_SUCCESSOR:-/usr/libexec/tilo-board-successor}"
 CHANNEL="${TILO_IMAGE_TRUST_CHANNEL:-/usr/libexec/tilo-update-channel}"
@@ -88,9 +88,9 @@ for argument in "$@"; do
   esac
 done
 command=upgrade
-gate_arguments=(--require-staged)
+check_arguments=(--require-staged)
 if [ "$board" -eq 1 ]; then
-  now="$("$GATE" --trusted-time)"
+  now="$("$CHECK" --trusted-time)"
   if selected="$("$SUCCESSOR" "$now")"; then
     readarray -t fields <<<"$selected"
     [ "${#fields[@]}" -eq 4 ] \
@@ -110,7 +110,7 @@ if [ "$board" -eq 1 ]; then
     exit "$result"
   fi
   command=switch
-  gate_arguments=(--successor "${fields[0]##*@}" "${fields[1]}" "${fields[3]}" "$update_lock_fd" "$UPDATE_LOCK")
+  check_arguments=(--successor "${fields[0]##*@}" "${fields[1]}" "${fields[3]}" "$update_lock_fd" "$UPDATE_LOCK")
   "$BOOTC" switch --download-only "${common[@]}" "${fields[0]}"
 elif [ -n "$switch_to" ]; then
   command=switch
@@ -118,7 +118,7 @@ elif [ -n "$switch_to" ]; then
 else
   "$BOOTC" upgrade --download-only "${common[@]}"
 fi
-if "$GATE" "${gate_arguments[@]}"; then
+if "$CHECK" "${check_arguments[@]}"; then
   :
 else
   result=$?

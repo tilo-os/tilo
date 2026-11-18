@@ -61,7 +61,7 @@ pub mod plan;
 pub mod routing;
 pub mod spawner;
 #[cfg(target_os = "linux")]
-pub mod tilolang_hosts;
+pub mod tilolang_processes;
 pub mod workspace;
 
 pub use authority::Authority;
@@ -71,7 +71,7 @@ pub use launch::{Launch, Open};
 pub use links::{Connects, HeldLink, HostedWindow, Links, Opens, Routed, StartAlone};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 #[cfg(target_os = "linux")]
-pub use spawner::Adopted;
+pub use spawner::{Adopted, Handed, KeptDirs};
 pub use spawner::{Cause, End, Event, Spawner, Started, Teardown};
 pub use workspace::Workspace;
 

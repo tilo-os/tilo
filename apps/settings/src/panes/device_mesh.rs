@@ -1,5 +1,5 @@
 //! Sync between devices — configure seamless continuation and always-on sync.
-//! The pane reads and writes the same `RelayConfig` consumed by `tilo-relay`
+//! The pane reads and writes the same `ServerConfig` consumed by `tilo-server`
 //! and reads the daemon's once-per-second metrics snapshot for live status.
 
 use std::cell::RefCell;
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
 use provider_settings_ui::bound::SettingRows as _;
-use tilo_relay_protocol::{RelayConfig, WorkFrom, WorkSetting, WorkWhen};
+use tilo_server_protocol::{ServerConfig, WorkFrom, WorkSetting, WorkWhen};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
@@ -55,12 +55,12 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
     app.areas().find()
 }
 
-const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
+const DEFAULT_CONFIG: &str = "/etc/tilo/server.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_own_devices";
 const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
-const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
+const SERVER_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
@@ -93,9 +93,9 @@ fn work_from_key(key: &str) -> Option<WorkFrom> {
 fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
     WorkSetting {
         kinds: if from == WorkFrom::Nobody {
-            tilo_relay_protocol::WorkKinds::NONE
+            tilo_server_protocol::WorkKinds::NONE
         } else {
-            tilo_relay_protocol::WorkKinds::ALL
+            tilo_server_protocol::WorkKinds::ALL
         },
         from,
         when,
@@ -127,21 +127,21 @@ fn takes_work(work: &WorkSetting) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum RelayRuntimeStatus {
+enum ServerRuntimeStatus {
     #[default]
     Offline,
     Online,
     Syncing,
     Ready,
-    /// The relay's state could not be read from here, which says nothing
-    /// about whether the relay is running.
+    /// The server's state could not be read from here, which says nothing
+    /// about whether the server is running.
     Unreadable,
 }
 
-impl RelayRuntimeStatus {
-    fn read(config: &RelayConfig, now: SystemTime) -> Self {
+impl ServerRuntimeStatus {
+    fn read(config: &ServerConfig, now: SystemTime) -> Self {
         // The state directory's parent always exists on a device; when it is
-        // not visible the relay cannot be observed, not "offline".
+        // not visible the server cannot be observed, not "offline".
         if config
             .state_root
             .parent()
@@ -151,7 +151,7 @@ impl RelayRuntimeStatus {
         }
         let metrics_path = config
             .state_root
-            .join(tilo_relay_protocol::metrics::METRICS_FILE);
+            .join(tilo_server_protocol::metrics::METRICS_FILE);
         let modified =
             match std::fs::metadata(metrics_path).and_then(|metadata| metadata.modified()) {
                 Ok(modified) => modified,
@@ -161,7 +161,7 @@ impl RelayRuntimeStatus {
         if now.duration_since(modified).unwrap_or(Duration::ZERO) > STATUS_FRESHNESS {
             return Self::Offline;
         }
-        match tilo_relay_protocol::metrics::load_metrics(&config.state_root) {
+        match tilo_server_protocol::metrics::load_metrics(&config.state_root) {
             Ok(Some(_)) if config.services.full_content_replication => {
                 let ready = std::fs::read(&config.full_replica_status)
                     .ok()
@@ -207,31 +207,31 @@ const HOME_PEER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
 const PENDING_DECOMMISSIONS: &str = "pending-home-peer-decommissions.json";
 
-/// The wall clock the relay-status thread judges the heartbeat by: the
+/// The wall clock the server-status thread judges the heartbeat by: the
 /// process's, unless a test hands it one that reads fresh however long the
 /// thread takes to look.
 type StatusClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
-/// What a shown Device mesh pane follows: the relay's status, read on a
+/// What a shown Device mesh pane follows: the server's status, read on a
 /// thread of its own, and the files the pane shows.
 ///
-/// The relay rewrites its metrics every second as a heartbeat, so a watch
+/// The server rewrites its metrics every second as a heartbeat, so a watch
 /// that woke the window for each would be a one-second timer again. The
 /// thread re-reads the status on each heartbeat and once its freshness
 /// would lapse, and wakes the window only when the status changes.
 struct MeshFollow {
-    status: Arc<Mutex<Option<RelayRuntimeStatus>>>,
+    status: Arc<Mutex<Option<ServerRuntimeStatus>>>,
     files: crate::watch::Watched,
     stop: Arc<std::sync::atomic::AtomicBool>,
     poke: std::sync::mpsc::Sender<()>,
 }
 
 impl MeshFollow {
-    fn start(config: &RelayConfig, files: &[PathBuf]) -> Option<Self> {
+    fn start(config: &ServerConfig, files: &[PathBuf]) -> Option<Self> {
         Self::start_at(config, files, Arc::new(ui::time::wall))
     }
 
-    fn start_at(config: &RelayConfig, files: &[PathBuf], now: StatusClock) -> Option<Self> {
+    fn start_at(config: &ServerConfig, files: &[PathBuf], now: StatusClock) -> Option<Self> {
         let status = Arc::new(Mutex::new(None));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (poke, events) = std::sync::mpsc::channel();
@@ -243,9 +243,9 @@ impl MeshFollow {
                 poke.clone(),
             );
             let wake = ui::WakeHandle::new();
-            Box::new(move || follow_relay(&config, &latest, &stop, poke, &events, &wake, &*now))
+            Box::new(move || follow_server(&config, &latest, &stop, poke, &events, &wake, &*now))
         };
-        crate::device_read::thread("settings-relay-status", follow).ok()?;
+        crate::device_read::thread("settings-server-status", follow).ok()?;
         Some(Self {
             status,
             files: crate::watch::Watched::files(files),
@@ -264,7 +264,7 @@ impl MeshFollow {
         }
     }
 
-    fn status(&self) -> Option<RelayRuntimeStatus> {
+    fn status(&self) -> Option<ServerRuntimeStatus> {
         self.status.lock().ok().and_then(|status| *status)
     }
 }
@@ -276,9 +276,9 @@ impl Drop for MeshFollow {
     }
 }
 
-fn follow_relay(
-    config: &RelayConfig,
-    latest: &Mutex<Option<RelayRuntimeStatus>>,
+fn follow_server(
+    config: &ServerConfig,
+    latest: &Mutex<Option<ServerRuntimeStatus>>,
     stop: &std::sync::atomic::AtomicBool,
     poke: std::sync::mpsc::Sender<()>,
     events: &std::sync::mpsc::Receiver<()>,
@@ -289,7 +289,7 @@ fn follow_relay(
     let heartbeat = [
         config
             .state_root
-            .join(tilo_relay_protocol::metrics::METRICS_FILE),
+            .join(tilo_server_protocol::metrics::METRICS_FILE),
         config.full_replica_status.clone(),
     ];
     let on_change: crate::watch::OnChange = Arc::new(move || {
@@ -297,7 +297,7 @@ fn follow_relay(
     });
     let mut watch = crate::watch::Watched::calling(&heartbeat, &on_change);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        let status = RelayRuntimeStatus::read(config, now());
+        let status = ServerRuntimeStatus::read(config, now());
         if latest
             .lock()
             .is_ok_and(|mut latest| latest.replace(status) != Some(status))
@@ -308,7 +308,7 @@ fn follow_relay(
             Some(STATUS_REFRESH_INTERVAL)
         } else if matches!(
             status,
-            RelayRuntimeStatus::Offline | RelayRuntimeStatus::Unreadable
+            ServerRuntimeStatus::Offline | ServerRuntimeStatus::Unreadable
         ) {
             None
         } else {
@@ -328,11 +328,11 @@ fn follow_relay(
     }
 }
 
-fn runtime_status_tone(status: RelayRuntimeStatus) -> StatusTone {
+fn runtime_status_tone(status: ServerRuntimeStatus) -> StatusTone {
     match status {
-        RelayRuntimeStatus::Ready | RelayRuntimeStatus::Online => StatusTone::Success,
-        RelayRuntimeStatus::Syncing | RelayRuntimeStatus::Unreadable => StatusTone::Warning,
-        RelayRuntimeStatus::Offline => StatusTone::Neutral,
+        ServerRuntimeStatus::Ready | ServerRuntimeStatus::Online => StatusTone::Success,
+        ServerRuntimeStatus::Syncing | ServerRuntimeStatus::Unreadable => StatusTone::Warning,
+        ServerRuntimeStatus::Offline => StatusTone::Neutral,
     }
 }
 
@@ -362,7 +362,7 @@ pub enum DeviceMeshEffect {
     /// Offer or stop one service of a device that takes work.
     #[effect(idempotent)]
     SetDeviceService {
-        #[param("full_content_replication, inbound_relay, remote_control_relay, app_serving or compute", choices = SERVICES)]
+        #[param("full_content_replication, inbound_server, remote_control_server, app_serving or compute", choices = SERVICES)]
         service: String,
         on: bool,
     },
@@ -398,8 +398,8 @@ pub enum DeviceMeshEffect {
 const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
 const SERVICES: [&str; 5] = [
     "full_content_replication",
-    "inbound_relay",
-    "remote_control_relay",
+    "inbound_server",
+    "remote_control_server",
     "app_serving",
     "compute",
 ];
@@ -456,7 +456,7 @@ impl DeviceMeshArea {
         if self.devices {
             (PathBuf::from(DEFAULT_CONFIG), true)
         } else {
-            (PathBuf::from("/nonexistent/tilo/relay.toml"), false)
+            (PathBuf::from("/nonexistent/tilo/server.toml"), false)
         }
     }
 
@@ -530,7 +530,7 @@ fn home_server_row_id(node: &str) -> String {
     format!("settings.home-server:{node}")
 }
 
-fn home_server_row(peer: &tilo_relay_protocol::HomePeerRegistration) -> LiveRow {
+fn home_server_row(peer: &tilo_server_protocol::HomePeerRegistration) -> LiveRow {
     let device = peer.device_node_id.clone();
     LiveRow::new(
         home_server_row_id(&device),
@@ -636,12 +636,12 @@ impl MeshStatus {
 )]
 pub struct DeviceMeshModel {
     config_path: PathBuf,
-    config: RelayConfig,
+    config: ServerConfig,
     status: MeshStatus,
     devices: bool,
     changed: bool,
-    runtime_status: RelayRuntimeStatus,
-    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    runtime_status: ServerRuntimeStatus,
+    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_health: HashMap<String, HomePeerHealth>,
     home_peer_last_seen: HashMap<String, u64>,
     /// The person's devices as the session last read them; `None` until its first reading lands.
@@ -689,8 +689,8 @@ pub(super) enum PairingTarget {
     PersonalDevice,
 }
 
-fn registered_home_peers() -> Vec<tilo_relay_protocol::HomePeerRegistration> {
-    std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+fn registered_home_peers() -> Vec<tilo_server_protocol::HomePeerRegistration> {
+    std::fs::read(tilo_server_protocol::home_peer_registry_path(
         &identity_root(),
     ))
     .ok()
@@ -880,10 +880,10 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
 
 pub(crate) struct MeshRead {
     config_path: PathBuf,
-    config: RelayConfig,
+    config: ServerConfig,
     status: MeshStatus,
-    runtime_status: RelayRuntimeStatus,
-    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    runtime_status: ServerRuntimeStatus,
+    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_last_seen: HashMap<String, u64>,
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance: ProvenanceRead,
@@ -948,17 +948,17 @@ fn devices_in(reading: &str) -> Option<Vec<PersonalDevice>> {
 
 impl MeshRead {
     fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
-        let (config, status) = match RelayConfig::load(&config_path) {
+        let (config, status) = match ServerConfig::load(&config_path) {
             Ok(config) => (config, MeshStatus::Ready),
             // No sync settings file: this device was never set up to sync, whether or not the
             // directory that would hold it exists.
-            Err(tilo_relay_protocol::config::ConfigError::Io(error))
+            Err(tilo_server_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                let config = RelayConfig {
+                let config = ServerConfig {
                     work: WorkSetting::none(),
-                    services: tilo_relay_protocol::ServiceCapabilities::default(),
-                    ..RelayConfig::default()
+                    services: tilo_server_protocol::ServiceCapabilities::default(),
+                    ..ServerConfig::default()
                 };
                 (config, MeshStatus::NotConfigured)
             }
@@ -969,10 +969,10 @@ impl MeshRead {
                     config = %config_path.display(),
                     "this device's sync settings could not be read"
                 );
-                (RelayConfig::default(), MeshStatus::ConfigUnreadable)
+                (ServerConfig::default(), MeshStatus::ConfigUnreadable)
             }
         };
-        let runtime_status = RelayRuntimeStatus::read(&config, now);
+        let runtime_status = ServerRuntimeStatus::read(&config, now);
         let home_peers = if devices {
             registered_home_peers()
         } else {
@@ -1090,8 +1090,8 @@ impl DeviceMeshModel {
                     "full_content_replication" => {
                         self.config.services.full_content_replication = *on;
                     }
-                    "inbound_relay" => self.config.services.inbound_relay = *on,
-                    "remote_control_relay" => self.config.services.remote_control_relay = *on,
+                    "inbound_server" => self.config.services.inbound_server = *on,
+                    "remote_control_server" => self.config.services.remote_control_server = *on,
                     "app_serving" => self.config.services.app_serving = *on,
                     "compute" => self.config.services.compute = *on,
                     _ => return Err("unsupported device service".into()),
@@ -1108,7 +1108,7 @@ impl DeviceMeshModel {
             }
             DeviceMeshEffect::RenameHomeServer { device, name } => {
                 let peer = self.home_peer(device)?;
-                if !tilo_relay_protocol::valid_home_peer_label(name) {
+                if !tilo_server_protocol::valid_home_peer_label(name) {
                     return Err("that name cannot be used for a home server".into());
                 }
                 self.start_home_peer_command(&peer, "home-peer-rename", Some(name.trim()));
@@ -1194,14 +1194,14 @@ impl DeviceMeshModel {
         }
     }
 
-    fn start_home_peer_removal(&mut self, peer: &tilo_relay_protocol::HomePeerRegistration) {
+    fn start_home_peer_removal(&mut self, peer: &tilo_server_protocol::HomePeerRegistration) {
         use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
         if self.management_child.is_some() || self.management_call.is_some() {
             return;
         }
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".into(), peer.device_node_id.clone().into());
-        arguments.insert("service".into(), peer.relay_service_node_id.clone().into());
+        arguments.insert("service".into(), peer.server_node_id.clone().into());
         arguments.insert("confirm".into(), true.into());
         let call = self.remote.invoke(
             identity_admin::target(identity_admin::HOME_PEER_REMOVE),
@@ -1260,7 +1260,10 @@ impl DeviceMeshModel {
         self.changed = true;
     }
 
-    fn home_peer(&self, device: &str) -> Result<tilo_relay_protocol::HomePeerRegistration, String> {
+    fn home_peer(
+        &self,
+        device: &str,
+    ) -> Result<tilo_server_protocol::HomePeerRegistration, String> {
         self.home_peers
             .iter()
             .find(|peer| peer.device_node_id == device)
@@ -1269,7 +1272,7 @@ impl DeviceMeshModel {
     }
 
     fn refresh_runtime_status(&mut self) {
-        let status = RelayRuntimeStatus::read(&self.config, ui::time::wall());
+        let status = ServerRuntimeStatus::read(&self.config, ui::time::wall());
         if status != self.runtime_status {
             self.runtime_status = status;
             self.changed = true;
@@ -1306,7 +1309,7 @@ impl DeviceMeshModel {
         self.config.work = work;
         // A device that takes no work runs no service for others.
         self.config.services.workspace_replication = takes;
-        self.config.services.inbound_relay = takes;
+        self.config.services.inbound_server = takes;
         self.config.services.full_content_replication &= takes;
         self.next_status_refresh = ui::time::now();
         true
@@ -1569,8 +1572,8 @@ impl DeviceMeshModel {
             "work": self.config.work,
             "workspace_ids": Vec::<u64>::new(),
             "full_content_replication": self.config.services.full_content_replication,
-            "inbound_relay": self.config.services.inbound_relay,
-            "remote_control_relay": self.config.services.remote_control_relay,
+            "inbound_server": self.config.services.inbound_server,
+            "remote_control_server": self.config.services.remote_control_server,
             "app_serving": self.config.services.app_serving,
             "compute": self.config.services.compute,
         });
@@ -1730,20 +1733,20 @@ impl DeviceMeshModel {
 
     fn start_home_peer_command(
         &mut self,
-        peer: &tilo_relay_protocol::HomePeerRegistration,
+        peer: &tilo_server_protocol::HomePeerRegistration,
         action: &str,
         label: Option<&str>,
     ) {
         if self.management_child.is_some() || self.management_call.is_some() {
             return;
         }
-        let mut command = Command::new(RELAY_ADMIN);
+        let mut command = Command::new(SERVER_ADMIN);
         command
             .arg(action)
             .arg("--identity-root")
             .arg(identity_root())
             .args(["--device", &peer.device_node_id])
-            .args(["--service", &peer.relay_service_node_id]);
+            .args(["--service", &peer.server_node_id]);
         if let Some(label) = label {
             command.args(["--label", label]);
         }
@@ -2042,30 +2045,30 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_device_mesh_model_reads_and_edits_the_relay_configuration;
+        fn the_device_mesh_model_reads_and_edits_the_server_configuration;
 
         phase a_device_without_sync_settings_is_unconfigured_not_unreadable;
         {
             let dir = tempfile::tempdir().unwrap();
-            let absent = dir.path().join("etc-tilo").join("relay.toml");
+            let absent = dir.path().join("etc-tilo").join("server.toml");
             let pane = DeviceMeshModel::with_path(&absent);
             assert_eq!(pane.status, MeshStatus::NotConfigured);
             assert!(pane.status.settings_trouble_shown().is_none());
-            let config = RelayConfig {
-                state_root: dir.path().join("missing").join("tilo-relay"),
-                ..RelayConfig::default()
+            let config = ServerConfig {
+                state_root: dir.path().join("missing").join("tilo-server"),
+                ..ServerConfig::default()
             };
             assert_eq!(
-                RelayRuntimeStatus::read(&config, ui::time::wall()),
-                RelayRuntimeStatus::Unreadable
+                ServerRuntimeStatus::read(&config, ui::time::wall()),
+                ServerRuntimeStatus::Unreadable
             );
-            let config = RelayConfig {
-                state_root: dir.path().join("tilo-relay"),
-                ..RelayConfig::default()
+            let config = ServerConfig {
+                state_root: dir.path().join("tilo-server"),
+                ..ServerConfig::default()
             };
             assert_eq!(
-                RelayRuntimeStatus::read(&config, ui::time::wall()),
-                RelayRuntimeStatus::Offline
+                ServerRuntimeStatus::read(&config, ui::time::wall()),
+                ServerRuntimeStatus::Offline
             );
         }
 
@@ -2074,16 +2077,16 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_IDENTITY_ROOT", dir.path());
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             pane.config.work = WorkSetting::own_person();
             let follow = Rc::new(MeshFollow::by_hand());
             pane.following = Rc::downgrade(&follow);
             let _ = pane.poll();
             assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
 
-            *follow.status.lock().unwrap() = Some(RelayRuntimeStatus::Online);
+            *follow.status.lock().unwrap() = Some(ServerRuntimeStatus::Online);
             assert!(pane.poll(), "the thread's status is shown");
-            assert_eq!(pane.runtime_status, RelayRuntimeStatus::Online);
+            assert_eq!(pane.runtime_status, ServerRuntimeStatus::Online);
             assert!(!pane.poll(), "once");
 
             let provenance = pane.roaming_provenance_path.clone().unwrap();
@@ -2100,12 +2103,12 @@ mod tests {
             );
         }
 
-        phase relay_config_edits_are_real_honest_and_coalesced;
+        phase server_config_edits_are_real_honest_and_coalesced;
         {
             {
                 let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("relay.toml");
-                RelayConfig::default().save(&path).unwrap();
+                let path = dir.path().join("server.toml");
+                ServerConfig::default().save(&path).unwrap();
 
                 let mut pane = DeviceMeshModel::with_path(&path);
                 let _ = pane.poll();
@@ -2119,26 +2122,26 @@ mod tests {
                 })
                 .unwrap();
                 pane.apply(&DeviceMeshEffect::SetDeviceService {
-                    service: "remote_control_relay".into(),
+                    service: "remote_control_server".into(),
                     on: false,
                 })
                 .unwrap();
 
-                let saved = RelayConfig::load(&path).unwrap();
+                let saved = ServerConfig::load(&path).unwrap();
                 assert_eq!(saved.work.from, WorkFrom::Anyone);
                 assert!(saved.services.full_content_replication);
-                assert!(!saved.services.remote_control_relay);
+                assert!(!saved.services.remote_control_server);
             }
 
             {
                 let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("relay.toml");
+                let path = dir.path().join("server.toml");
                 let mut pane = DeviceMeshModel::with_path(&path);
                 assert_eq!(pane.status, MeshStatus::NotConfigured);
                 assert!(pane.config.work.takes_nothing());
                 assert_eq!(
                     pane.config.services,
-                    tilo_relay_protocol::ServiceCapabilities::default()
+                    tilo_server_protocol::ServiceCapabilities::default()
                 );
                 let _ = pane.poll();
                 assert!(!path.exists());
@@ -2161,7 +2164,7 @@ mod tests {
 
             {
                 let dir = tempfile::tempdir().unwrap();
-                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+                let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
                 pane.config_path = PathBuf::from(DEFAULT_CONFIG);
                 let mut command = Command::new("sleep");
                 command.arg("infinity");
@@ -2184,8 +2187,8 @@ mod tests {
         // it takes keeps them.
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
-            RelayConfig::default().save(&path).unwrap();
+            let path = dir.path().join("server.toml");
+            ServerConfig::default().save(&path).unwrap();
             let mut pane = DeviceMeshModel::with_path(&path);
             let _ = pane.poll();
 
@@ -2213,7 +2216,7 @@ mod tests {
                 work: "mesh-work-own".into(),
             })
             .unwrap();
-            let saved = RelayConfig::load(&path).unwrap();
+            let saved = ServerConfig::load(&path).unwrap();
             assert_eq!(
                 saved.work.when,
                 WorkWhen {
@@ -2234,10 +2237,10 @@ mod tests {
 
             {
                 let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("relay.toml");
-                let config = RelayConfig {
+                let path = dir.path().join("server.toml");
+                let config = ServerConfig {
                     work: WorkSetting::none(),
-                    ..RelayConfig::default()
+                    ..ServerConfig::default()
                 };
                 config.save(&path).unwrap();
                 let mut pane = DeviceMeshModel::with_path(&path);
@@ -2255,11 +2258,11 @@ mod tests {
 
             {
                 let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("relay.toml");
-                let config = RelayConfig {
+                let path = dir.path().join("server.toml");
+                let config = ServerConfig {
                     work: WorkSetting::none(),
-                    services: tilo_relay_protocol::ServiceCapabilities::default(),
-                    ..RelayConfig::default()
+                    services: tilo_server_protocol::ServiceCapabilities::default(),
+                    ..ServerConfig::default()
                 };
                 config.save(&path).unwrap();
 
@@ -2275,11 +2278,11 @@ mod tests {
                 })
                 .unwrap();
 
-                let saved = RelayConfig::load(&path).unwrap();
+                let saved = ServerConfig::load(&path).unwrap();
                 assert_eq!(saved.work.from, WorkFrom::Anyone);
                 assert!(saved.services.workspace_replication);
                 assert!(saved.services.full_content_replication);
-                assert!(saved.services.inbound_relay);
+                assert!(saved.services.inbound_server);
             }
         }
 
@@ -2304,57 +2307,57 @@ mod tests {
 
             {
                 let dir = tempfile::tempdir().unwrap();
-                let config = RelayConfig {
+                let config = ServerConfig {
                     state_root: dir.path().to_path_buf(),
                     work: WorkSetting::own_person(),
-                    ..RelayConfig::default()
+                    ..ServerConfig::default()
                 };
-                let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
+                let metrics = tilo_server_protocol::metrics::MetricsSnapshot {
                     deltas_received: 42,
                     ..Default::default()
                 };
-                tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+                tilo_server_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
                 let modified = std::fs::metadata(
                     config
                         .state_root
-                        .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                        .join(tilo_server_protocol::metrics::METRICS_FILE),
                 )
                 .unwrap()
                 .modified()
                 .unwrap();
 
                 assert_eq!(
-                    RelayRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
-                    RelayRuntimeStatus::Online
+                    ServerRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
+                    ServerRuntimeStatus::Online
                 );
                 assert_eq!(
-                    RelayRuntimeStatus::read(
+                    ServerRuntimeStatus::read(
                         &config,
                         modified + STATUS_FRESHNESS + Duration::from_secs(1)
                     ),
-                    RelayRuntimeStatus::Offline
+                    ServerRuntimeStatus::Offline
                 );
             }
 
             {
                 let dir = tempfile::tempdir().unwrap();
                 let proof = dir.path().join("full-replica.json");
-                let config = RelayConfig {
+                let config = ServerConfig {
                     state_root: dir.path().to_path_buf(),
                     full_replica_status: proof.clone(),
                     work: WorkSetting::own_person(),
-                    services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
-                    ..RelayConfig::default()
+                    services: tilo_server_protocol::ServiceCapabilities::personal_server(),
+                    ..ServerConfig::default()
                 };
-                tilo_relay_protocol::metrics::save_metrics(
+                tilo_server_protocol::metrics::save_metrics(
                     &config.state_root,
-                    &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
+                    &tilo_server_protocol::metrics::MetricsSnapshot::default(),
                 )
                 .unwrap();
                 let now = std::fs::metadata(
                     config
                         .state_root
-                        .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                        .join(tilo_server_protocol::metrics::METRICS_FILE),
                 )
                 .unwrap()
                 .modified()
@@ -2371,8 +2374,8 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(
-                    RelayRuntimeStatus::read(&config, now),
-                    RelayRuntimeStatus::Ready
+                    ServerRuntimeStatus::read(&config, now),
+                    ServerRuntimeStatus::Ready
                 );
                 std::fs::write(
                     &proof,
@@ -2380,8 +2383,8 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(
-                    RelayRuntimeStatus::read(&config, now),
-                    RelayRuntimeStatus::Syncing
+                    ServerRuntimeStatus::read(&config, now),
+                    ServerRuntimeStatus::Syncing
                 );
             }
         }
@@ -2399,7 +2402,7 @@ mod tests {
             assert!(area.is_open());
             assert_eq!(
                 model.config_path,
-                PathBuf::from("/nonexistent/tilo/relay.toml"),
+                PathBuf::from("/nonexistent/tilo/server.toml"),
                 "a test reads the stand-in configuration"
             );
             assert_eq!(model.personal_devices, Some(Vec::new()));
@@ -2411,7 +2414,7 @@ mod tests {
         phase a_read_builds_the_model_reading_in_place_builds;
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
+            let path = dir.path().join("server.toml");
             std::fs::write(&path, "iroh_listen = \"0.0.0.0:1234\"\n").unwrap();
             let here = DeviceMeshModel::from_path(path.clone(), false);
             let read = MeshRead::of(path, false, ui::time::wall());
@@ -2424,7 +2427,7 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_status_follows_its_heartbeat_and_its_lapse() {
+    fn the_server_status_follows_its_heartbeat_and_its_lapse() {
         let held = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let clock = {
             let held = Arc::clone(&held);
@@ -2434,24 +2437,24 @@ mod tests {
             }) as StatusClock
         };
         let dir = tempfile::tempdir().unwrap();
-        let state_root = dir.path().join("tilo-relay");
+        let state_root = dir.path().join("tilo-server");
         std::fs::create_dir_all(&state_root).unwrap();
-        let config = RelayConfig {
+        let config = ServerConfig {
             full_replica_status: state_root.join("full-replica.json"),
             state_root,
             work: WorkSetting::own_person(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         };
         let follow = MeshFollow::start_at(&config, &[], clock).expect("the status thread starts");
         tilo_test_env::wait_until("the first read", || {
-            follow.status() == Some(RelayRuntimeStatus::Offline)
+            follow.status() == Some(ServerRuntimeStatus::Offline)
         });
-        let metrics = tilo_relay_protocol::metrics::MetricsSnapshot::default();
-        tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+        let metrics = tilo_server_protocol::metrics::MetricsSnapshot::default();
+        tilo_server_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
         let written = std::fs::metadata(
             config
                 .state_root
-                .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                .join(tilo_server_protocol::metrics::METRICS_FILE),
         )
         .and_then(|metadata| metadata.modified())
         .unwrap();
@@ -2459,15 +2462,15 @@ mod tests {
             millis_since_epoch(written),
             std::sync::atomic::Ordering::Release,
         );
-        tilo_test_env::wait_until("the heartbeat to show the relay online", || {
-            follow.status() == Some(RelayRuntimeStatus::Online)
+        tilo_test_env::wait_until("the heartbeat to show the server online", || {
+            follow.status() == Some(ServerRuntimeStatus::Online)
         });
         held.store(
             millis_since_epoch(written + STATUS_FRESHNESS + Duration::from_secs(1)),
             std::sync::atomic::Ordering::Release,
         );
         tilo_test_env::wait_until("the lapsed heartbeat to show it offline", || {
-            follow.status() == Some(RelayRuntimeStatus::Offline)
+            follow.status() == Some(ServerRuntimeStatus::Offline)
         });
     }
 
@@ -2594,8 +2597,8 @@ mod tests {
     fn a_pairing_that_did_not_finish_says_what_to_do_not_the_hosts_words() {
         const HOST_WORDS: &str = "the code the second screen showed did not match";
         let dir = tempfile::tempdir().unwrap();
-        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        model.remote = ui::RemoteActions::with_host(
+        let mut model = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
+        model.remote = ui::RemoteActions::with_provider(
             Arc::new(PairingHost {
                 approval_failure: Some(HOST_WORDS.into()),
                 ..PairingHost::default()
@@ -2683,7 +2686,7 @@ mod tests {
     }
 
     fn devices_and_a_home_server(dir: &std::path::Path) -> DeviceMeshModel {
-        let mut pane = DeviceMeshModel::with_path(&dir.join("relay.toml"));
+        let mut pane = DeviceMeshModel::with_path(&dir.join("server.toml"));
         pane.personal_devices = devices_in(
             &serde_json::json!({"devices": [
                 {"id": THIS_DEVICE, "label": "Ada's Laptop", "local": true, "online": true},
@@ -2694,12 +2697,12 @@ mod tests {
         );
         pane.home_peers = vec![
             serde_json::from_value(serde_json::json!({
-                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                "schema_version": tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                 "device_node_id": NEARBY_DEVICE,
-                "relay_service_node_id": NEARBY_SERVICE,
+                "server_node_id": NEARBY_SERVICE,
                 "label": "Kitchen NAS",
                 "user_public_key": "33".repeat(32),
-                "relay_workspace_ids": [],
+                "server_workspace_ids": [],
             }))
             .unwrap(),
         ];
@@ -2823,16 +2826,16 @@ mod tests {
                     effect.id()
                 );
                 let dir = tempfile::tempdir().unwrap();
-                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+                let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
                 assert!(pane.apply(&effect).is_err(), "nothing unpaired is touched");
                 assert!(pane.management_child.is_none());
             }
 
             {
                 let dir = tempfile::tempdir().unwrap();
-                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+                let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
                 let host = Arc::new(PairingHost::default());
-                pane.remote = ui::RemoteActions::with_host(
+                pane.remote = ui::RemoteActions::with_provider(
                     host.clone(),
                     ui::tilo_actions::remote::Caller::local_person("owner"),
                 );
@@ -2848,20 +2851,20 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_IDENTITY_ROOT", dir.path());
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             let host = Arc::new(PairingHost::default());
-            pane.remote = ui::RemoteActions::with_host(
+            pane.remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
-            let server: tilo_relay_protocol::HomePeerRegistration =
+            let server: tilo_server_protocol::HomePeerRegistration =
                 serde_json::from_value(serde_json::json!({
-                    "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                    "schema_version": tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                     "device_node_id": NEARBY_DEVICE,
-                    "relay_service_node_id": NEARBY_SERVICE,
+                    "server_node_id": NEARBY_SERVICE,
                     "label": "Kitchen NAS",
                     "user_public_key": "33".repeat(32),
-                    "relay_workspace_ids": [],
+                    "server_workspace_ids": [],
                 }))
                 .unwrap();
             pane.home_peers = vec![server];
@@ -2871,7 +2874,7 @@ mod tests {
             .unwrap();
             assert!(
                 pane.management_child.is_none(),
-                "no relay process runs here"
+                "no server process runs here"
             );
             pane.poll_background_tasks();
             let asked = host.asked();
@@ -2904,7 +2907,7 @@ mod tests {
         phase a_home_server_that_does_not_answer_is_offline_not_the_hosts_words;
         {
             let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             pane.take_management_answer(
                 Some(NEARBY_DEVICE.into()),
                 Err("the home server was not reachable".into()),
@@ -2923,9 +2926,9 @@ mod tests {
         {
             use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
             let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             let host = Arc::new(PairingHost::default());
-            pane.remote = ui::RemoteActions::with_host(
+            pane.remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
@@ -3009,7 +3012,7 @@ mod tests {
         }
     }
 
-    impl ui::tilo_actions::remote::ActionHost for PairingHost {
+    impl ui::tilo_actions::remote::ActionProvider for PairingHost {
         fn query(
             &self,
             _: &ui::tilo_actions::remote::Caller,
@@ -3017,11 +3020,11 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::CataloguePage,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             ui::tilo_actions::remote::Pending::ready(Err(
-                ui::tilo_actions::remote::ActionHostError::NotPermitted,
+                ui::tilo_actions::remote::ActionCallError::NotPermitted,
             ))
         }
 
@@ -3032,7 +3035,7 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::InvocationReceipt,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             use ui::tilo_actions::remote::{device_pairing, identity_admin};
@@ -3093,7 +3096,7 @@ mod tests {
             &self,
             _: &ui::tilo_actions::remote::Caller,
             _: &ui::tilo_actions::InvocationId,
-        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
         {
             ui::tilo_actions::remote::Pending::ready(Ok(()))
         }
@@ -3105,7 +3108,7 @@ mod tests {
     fn the_device_list_is_the_sessions_reading() {
         let _settled = ui::motion::testing::settled();
         let dir = tempfile::tempdir().unwrap();
-        let pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        let pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
         assert_eq!(pane.personal_devices, None, "nothing is read in place");
         let mut app = window_on(pane);
         let text = |app: &mut TestApp<SettingsShell>| {

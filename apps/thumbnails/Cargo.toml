@@ -42,7 +42,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # the Landlock shim) exist on Linux only.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The production worker, catalogue and launcher sandbox the job runs through.
-tilo-relay = { path = "../../crates/hosting/tilo-relay" }
+tilo-server = { path = "../../crates/server/tilo-server" }
 # The in-sandbox shim the test binary serves, and job cancellation.
 launcher = { path = "../../crates/packaging/launcher" }
 # Installs the packed tapp where the worker's catalogue reads it.

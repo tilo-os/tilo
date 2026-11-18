@@ -7,6 +7,8 @@
 # [kpi."<id>"] entries:
 #   unit                     the record's unit; a mismatch fails
 #   p50, p95, p99, max       ceilings on that percentile of the record
+#   baseline_only            true: the series is held to its own baseline
+#                            alone, with no ceiling to miss
 #   enforce                  true: a ceiling miss fails the run at once;
 #                            false (default): it is reported as a target not
 #                            yet met (marketing targets that are not true yet)
@@ -21,12 +23,12 @@
 # A budgeted KPI whose group ran but produced no record fails the run as
 # `missing`, so list every KPI a benchmark is expected to report.
 #
-# [lanes.<lane>] say which run produces which KPIs, so a run is owed
-# only its own: compare.py --lane names the run's lane. `groups` are the
-# KPI id prefixes the run produces, each in exactly one lane; `kpis`
-# claims single KPIs whose prefix is another lane's group. Every budgeted KPI
-# needs exactly one lane, or the budgets do not load; tools/perf/test_compare.py
-# holds each run's groups (its t checks) equal to its lane.
+# [jobs.<job>] say which run produces which KPIs, so a run is owed
+# only its own: compare.py --job names the run's job. `groups` are the
+# KPI id prefixes the run produces, each in exactly one job; `kpis`
+# claims single KPIs whose prefix is another job's group. Every budgeted KPI
+# needs exactly one job, or the budgets do not load; tools/perf/test_compare.py
+# holds each run's groups (its t checks) equal to its job.
 
 [defaults]
 p50_tolerance = 1.10
@@ -36,28 +38,28 @@ baseline_min_runs = 1
 min_delta = 0.0
 
 # The scheduled run (tools/ci/perf-scheduled.sh): one t check per group,
-# perf-<group>; perf-scheduled compares them with the default lane.
-[lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "render", "hosting", "browser"]
+# perf-<group>; perf-scheduled compares them with the default job.
+[jobs.perf-scheduled]
+groups = ["fs", "footprint", "agent", "render", "server", "browser"]
 
 # VM acceptance (t's vm-acceptance, tools/ci/vm-acceptance.sh): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
 # that desktop, a render KPI the headless render benches cannot produce.
-[lanes.vm-acceptance]
+[jobs.vm-acceptance]
 groups = ["boot", "session", "idle", "memory", "disk", "app"]
 kpis = ["render.frame_cpu_ms"]
 
 # The reference machines' weekly run (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md), compared read-only.
-[lanes.reference-hardware]
+[jobs.reference-hardware]
 groups = ["hw"]
 
 # tilo-fs latency benchmarks (crates/system/fs/tests/performance_timing.rs), a
-# debug build on the shared `runner` class. The ceilings are the gate's own
+# debug build on the shared `runner` class. The ceilings are the check's own
 # SLO constants: twice the p99
 # of 56 CI runs, derived beside the constants; change both together.
 # Tolerances are wider than the default because single runs
-# of this gate on the shared runner have spread up to 1.8x between nights
+# of this check on the shared runner have spread up to 1.8x between nights
 # (KPI inventory: run 85201 against the maximum of eight runs); five
 # repetitions per night and a two-run rule absorb the rest.
 
@@ -117,10 +119,10 @@ source = "WARM_THUMBNAIL_SLO"
 
 # The conflict step of a writer's reconciliation pass over a 50,000-file
 # workspace. Idle: the namespace merge generation under one lock hold,
-# no node examined (the gate also asserts that count). After a merge: the
+# no node examined (the check also asserts that count). After a merge: the
 # namespace lock holds of the stepwise scan, one step of
 # fs::conflict::SCAN_STEP_NODES nodes each at any workspace size. The mean
-# hold is the steady gate; the longest only bounds a stall, since one
+# hold is the steady check; the longest only bounds a stall, since one
 # step on the shared runner held 50-77 ms against a 3.3 ms mean.
 [kpi."fs.conflict-idle-pass-50k"]
 unit = "ms"
@@ -152,11 +154,11 @@ source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
 # Document media after a daemon restart: the empty-range status read an
 # app's draw path makes, and one 4 MiB range near the end of a 64 MiB
 # attachment (the capability's limit). Each verifies only the chunk groups it
-# returns; loading the attachment whole instead takes the gate's reported
+# returns; loading the attachment whole instead takes the check's reported
 # document-media-whole-blob-load-64m (464.5 ms on the first CI run).
 # Both latency ceilings are provisional until CI runs give a p99, derived
 # beside their constants. The tail read must also stay within one eighth of
-# the whole load in the same run. tests/document_media_footprint.rs gates the
+# the whole load in the same run. tests/document_media_footprint.rs checks the
 # daemon heap of the same reads.
 [kpi."fs.document-media-cold-64m-status"]
 unit = "ms"
@@ -213,7 +215,7 @@ source = "CACHE_RETAINED_HEAP_SLO"
 # registry index, over the apps of tools/perf/tapp-size-budget/ (the default
 # collection; runtime and provider stubs and withdrawn packages are not apps).
 # The KPI targets (median <= 2 MB, max <= 6 MB, decimal
-# megabytes) are reported here. The enforced gate is the same job's
+# megabytes) are reported here. The enforced check is the same job's
 # tools/perf/tapp_size_ratchet.py fleet: each app within its budget, and the
 # median, p90 and max within the fleet ceilings beside those budgets.
 # The default relative rule also fails sustained growth.
@@ -233,7 +235,7 @@ source = "KPI: App package size"
 # The shared app runtime, libruntime_dylib.so: the newest published one per
 # architecture, measured from its ELF file by tools/perf/runtime_size_ratchet.py
 # published. The targets (tools/perf/runtime-size-budget/ [targets])
-# are reported here; the enforced gate is that command's per-architecture
+# are reported here; the enforced check is that command's per-architecture
 # budget, and the default relative rule fails sustained growth.
 
 [kpi."footprint.runtime.bytes.x86_64"]
@@ -332,7 +334,7 @@ source = "#4003: 9,067,894,573 B on db91126b44, plus 5 %; #4055: -83,213,633 B"
 # so the rule is a ceiling, with a wide relative tolerance that still fails
 # when updates stay several times larger: before content-based layers an update
 # re-sent 3.7 GB; a per-build app key re-sent 215 MB of identical apps; the
-# release lane's commit-time epoch renewed the 116 MB UKI and the rpmdb in
+# release job's commit-time epoch renewed the 116 MB UKI and the rpmdb in
 # every build. Consecutive rechunked main builds on 10-10 and 10-11 sent
 # 420-830 MB (x86_64) and 420-820 MB (aarch64), before the runtimes and Tilo's
 # programs got layers of their own.
@@ -365,7 +367,7 @@ source = "consecutive rechunked main builds 418,858,093-819,840,811 B before the
 # `runner` (Perf / scheduled 87525 and 87819), spread by p50 x1.12 (no-op)
 # to x1.89 (state dump, +0.26 ms) and x1.75 (throughput), and by p99 up to
 # x1.85. The default 10 %/20 % rule would call that a regression most
-# nights, so the group takes the fs gate's 1.5/2.0 and an absolute floor
+# nights, so the group takes the fs check's 1.5/2.0 and an absolute floor
 # above the observed jitter. A 5 ms authorize cost (run 87820, the #3586
 # shape) still moves the no-op p50 from 0.54-0.61 ms to 7.26 ms, the list
 # p50 from 1.9-2.6 ms to 8.9 ms and throughput from 328-575 us to 6,757 us
@@ -428,7 +430,7 @@ source = "provisional: derived from the no-op p50 target"
 # ms in order, 105 ms pipelined and 1.7 idle round trips per step. `idle` is
 # the host round trips per step that brought no news while a step ran (the
 # plan in order). Reported, not enforced, until three nightly records exist.
-# A whole app task is not this lane's: a builder starts no app, so only the
+# A whole app task is not this job's: a builder starts no app, so only the
 # agent's own loop is timed here.
 [kpi."agent.task.native.pipelined.wall"]
 unit = "ms"
@@ -507,7 +509,7 @@ source = "KPI: Workspace switch, dropped frames at 144 Hz"
 # Render frame time at native 4K (scripts/perf/render_bench.py timing): the
 # toolkit's dashboard harness (redrawing frames of 1,000 events). It drives
 # damage-limited frames, so the ceiling is the KPI's damage-limited target.
-# This lane renders with lavapipe on the shared `runner` class: the CPU
+# This job renders with lavapipe on the shared `runner` class: the CPU
 # rasterises, so the ceiling is reported, never enforced, and the relative
 # rule catches regressions. The session's own desktop surface is held to its
 # budgets in [devices.x86.session.*] by session_perf, in the same check.
@@ -689,7 +691,7 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # nothing can trap focus. The shared x86_64 runner takes two to three times as
 # long (1.3-2.0 / 5.5-13 ms at 1,000 and 2,500 items, its p95 at 1,000 items up
 # to 4.1 ms), so the 1,000 item recomputations are the enforced ceiling: the
-# smallest size the scheduled lane measures (500 items is not one of them, so a
+# smallest size the scheduled job measures (500 items is not one of them, so a
 # ceiling there would be a budget that never runs), at 5 ms p95, far under what
 # a per-node walk costs; the 2,500 item figures are reported.
 #
@@ -716,7 +718,7 @@ p95 = 2.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets; measured when the job is asked for it)"
 
 [kpi."render.framework_focus.native_recompute_ms.500"]
 unit = "ms"
@@ -724,7 +726,7 @@ p95 = 2.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
+source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets; measured when the job is asked for it)"
 
 [kpi."render.framework_focus.recompute_ms.1k"]
 unit = "ms"
@@ -944,7 +946,7 @@ source = "notes-latency, a host frame with no input over a 136-block note, raste
 unit = "s"
 max = 20.0
 min_delta = 1.0
-source = "os/tests/boot_performance_gate.sh budget under KVM (KPI target: 10 s on the reference laptop)"
+source = "os/tests/boot_performance_check.sh budget under KVM (KPI target: 10 s on the reference laptop)"
 
 # The kernel's memory init: the silence in the kernel log that ends at SLUB's first line,
 # while the boot CPU alone hands every free page to the page allocator. With the
@@ -1020,7 +1022,7 @@ source = "KPI: idle desktop at most 5 wakeups/s (context switches of every compo
 # `tilo-ush` process, CPU and context switches of all their threads, measured once the
 # shell runs so the first session's runtime import is not in the window. Measured
 # 0.0/s once the egress DNS stub blocks on its sockets (#4086, run 91757; 10.7/s
-# before, run 91741); vm-acceptance's R02 gate holds the same 1/s (run.py).
+# before, run 91741); vm-acceptance's R02 check holds the same 1/s (run.py).
 [kpi."idle.cpu_pct.tilo-ush.four_apps"]
 unit = "percent"
 max = 1.0
@@ -1093,7 +1095,7 @@ source = "KPI: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
 # The compositor with no app open (vm-acceptance R01, lavapipe): 238.7 MiB
 # on main (run 94055) and 159-167 MiB once startup's and every quiet moment's freed heap is
 # trimmed and the presenting renderer runs on Vulkan alone (runs 94419, 94637). Of what
-# remains, ~70 MiB is lavapipe's retained NIR (mtrace attribution, headless gate), which a
+# remains, ~70 MiB is lavapipe's retained NIR (mtrace attribution, headless check), which a
 # hardware GPU does not hold.
 [kpi."memory.shell_anon_mib.empty"]
 unit = "MiB"
@@ -1186,9 +1188,9 @@ p99 = 33.4
 min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
-# Relay hosting cost: crates/hosting/tilo-relay/examples/relay_load,
+# Server cost: crates/server/tilo-server/examples/server_load,
 # 100 members in workspaces of four, ten measured minutes, one sample per
-# minute; tools/perf/adapters.py hosting-load prices them with
+# minute; tools/perf/adapters.py server-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per
 # active member-hour.
 #
@@ -1197,58 +1199,58 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # and p99 244 ms. Bytes are nearly deterministic (egress 11.04 MB, frames
 # 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
 # a delta resent whole or a presence storm fails at once. CPU and latency
-# share the runner and get the fs gate's wider tolerances.
+# share the runner and get the fs check's wider tolerances.
 #
-# Baseline change, 2026-10-11: the nightly runs the relay on two CPUs
-# (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
+# Baseline change, 2026-10-11: the nightly runs the server on two CPUs
+# (`server_load --server-cpus 2`, record meta `server_cpus = "2"`), the priced
 # 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
-# workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
+# workers, meta `server_cpus = "all"` or absent). A scratch profile on the same
 # commit (Perf / scheduled 97584) measured 13.9 s CPU per member-hour at
 # four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
 # idle workers woken to steal work, more queueing. The first two-CPU run
-# (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
+# (Perf / scheduled on main, kpis=server, accept=all) starts the new
 # baseline, so neither series is compared with the other; the ceilings below
 # hold for both.
 
-[kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
+[kpi."server.cpu_s_per_collab_hour.n100"]
 unit = "s"
 p50 = 62.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 3.0
-source = "relay_load: relay process CPU-seconds per active member-hour"
+source = "server_load: server process CPU-seconds per active member-hour"
 
-[kpi."hosting.relay.rss_mib_per_collab.n100"]
+[kpi."server.rss_mib_per_collab.n100"]
 unit = "MiB"
 p50 = 2.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
-source = "relay_load: relay resident memory per connected member, above the idle relay"
+source = "server_load: server resident memory per connected member, above the idle server"
 
-[kpi."hosting.relay.egress_bytes_per_collab_hour.n100"]
+[kpi."server.egress_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 12700000.0
 enforce = true
-source = "relay_load: UDP bytes the relay's endpoint sent per active member-hour"
+source = "server_load: UDP bytes the relay's endpoint sent per active member-hour"
 
-[kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
+[kpi."server.relay.frame_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 10900000.0
 enforce = true
-source = "relay_load: framed bytes written to peer sessions per active member-hour"
+source = "server_load: framed bytes written to peer sessions per active member-hour"
 
 # Packets (the levers after bytes): a change that sends the same bytes in more
-# packets passes every byte budget, and costs egress, relay CPU and client
+# packets passes every byte budget, and costs egress, server CPU and client
 # radio time all the same. Counted on the members' QUIC connections
-# (`Connection::stats`; loopback, so what they received is what the relay
-# sent). The relay's ACK-only datagrams answer client packets that carried
+# (`Connection::stats`; loopback, so what they received is what the server
+# sent). The server's ACK-only datagrams answer client packets that carried
 # nothing to acknowledge back, so a client sending more packets shows twice.
 #
 # Measured in Perf / scheduled A/B runs 97792 and 97793 (8 rounds each): client
-# packets 23,838-23,923, of which data 6,188-6,210; relay datagrams
+# packets 23,838-23,923, of which data 6,188-6,210; server datagrams
 # 26,652-26,736, of which ACK-only 7,790-8,103 (p99 up to 8,230). The first
 # three vary by under 1 % between rounds, so their ceilings sit about 15 %
 # above, as the byte budgets do; ACK-only datagrams follow timing (which
@@ -1256,31 +1258,31 @@ source = "relay_load: framed bytes written to peer sessions per active member-ho
 # above. Run 97792's base, the bench on the commit before client pointer
 # pacing, measured 27,753 client packets, 9,086 data packets and 10,995
 # ACK-only datagrams: undoing that pacing fails three of the four at once.
-[kpi."hosting.relay.client_packets_per_collab_hour.n100"]
+[kpi."server.client_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 27500.0
 enforce = true
-source = "relay_load: UDP datagrams the members sent the relay per active member-hour"
+source = "server_load: UDP datagrams the members sent the relay per active member-hour"
 
-[kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
+[kpi."server.relay.client_data_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 7150.0
 enforce = true
-source = "relay_load: member datagrams carrying stream data per active member-hour"
+source = "server_load: member datagrams carrying stream data per active member-hour"
 
-[kpi."hosting.relay.datagrams_per_collab_hour.n100"]
+[kpi."server.datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 30700.0
 enforce = true
-source = "relay_load: UDP datagrams the relay sent the members per active member-hour"
+source = "server_load: UDP datagrams the relay sent the members per active member-hour"
 
-[kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+[kpi."server.relay.ack_only_datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 9700.0
 enforce = true
-source = "relay_load: relay datagrams carrying only acknowledgements per active member-hour"
+source = "server_load: server datagrams carrying only acknowledgements per active member-hour"
 
-[kpi."hosting.relay.fanout_ms.n100"]
+[kpi."server.fanout_ms.n100"]
 unit = "ms"
 p50 = 30.0
 p99 = 500.0
@@ -1288,17 +1290,17 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one edit, publish to receipt by each other member of the workspace"
+source = "server_load: one edit, publish to receipt by each other member of the workspace"
 
 # Presence delivery: publish to receipt of each pointer move and
-# caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
+# caret the server forwarded. The server paces a pointer to 20 Hz, so a move
 # waits up to 50 ms; carets wait 5 ms, or up to 20 ms for the delta they
 # follow. Measured in Perf / scheduled A/B run 94883: pointer 18.2 ms p50 and
 # 39.5 ms p99, caret 5.2 and 28.3 ms (a 5-minute run, 94831: pointer 18.8 and
 # 48.0, caret 9.0 and 39.7). The pointer's p99 ceiling is the 100 ms cursor
 # bound the issue set; the rest sit about twice the measurement, with the
 # fan-out's tolerances for the shared runner.
-[kpi."hosting.relay.presence_pointer_ms.n100"]
+[kpi."server.relay.presence_pointer_ms.n100"]
 unit = "ms"
 p50 = 40.0
 p99 = 100.0
@@ -1306,9 +1308,9 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the workspace"
+source = "server_load: one forwarded pointer move, publish to receipt by each other member of the workspace"
 
-[kpi."hosting.relay.presence_caret_ms.n100"]
+[kpi."server.relay.presence_caret_ms.n100"]
 unit = "ms"
 p50 = 25.0
 p99 = 80.0
@@ -1316,18 +1318,18 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one forwarded caret, publish to receipt by each other member of the workspace"
+source = "server_load: one forwarded caret, publish to receipt by each other member of the workspace"
 
 # File and directory barriers per committed edit: two are the floor
 # of the one-file-per-record store (the record, then its directory). Measured
 # 2.82 before #4047 (Perf / scheduled run 91348) and 2.10 after (run 91404),
 # within 0.4 % per window, so the ceiling sits about 15 % above: a reservation
 # renewed per commit or a resynced ancestor fails at once.
-[kpi."hosting.relay.store_fsyncs_per_edit.n100"]
+[kpi."server.store_fsyncs_per_edit.n100"]
 unit = "count"
 p50 = 2.4
 enforce = true
-source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)"
+source = "server_load: workspace-store fsyncs per committed delta (store::fsyncs)"
 
 # Directory entries listed per committed edit: a delta's commit
 # used to list its lineage's whole active generation, so this grew with the
@@ -1335,11 +1337,11 @@ source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)
 # (Perf / scheduled run 92268). The tail index answers from memory: 0.000 in
 # every window after (run 92278). It is deterministic, so the ceiling sits
 # just above zero: an edit that lists its history again fails at once.
-[kpi."hosting.relay.store_listed_entries_per_edit.n100"]
+[kpi."server.store_listed_entries_per_edit.n100"]
 unit = "count"
 p50 = 1.0
 enforce = true
-source = "relay_load: directory entries retention listed per committed delta (store::listed_entries)"
+source = "server_load: directory entries retention listed per committed delta (store::listed_entries)"
 
 # Compaction: each round verified every retained entry's document
 # signature 2-3 times, and every later round again, 23.47 per edit at p50
@@ -1348,33 +1350,33 @@ source = "relay_load: directory entries retention listed per committed delta (st
 # per edit (max 1.14) and 325 ms (run 92377). Checks per edit are nearly
 # deterministic, so their ceiling sits about 35 % above: a round verifying
 # its whole channel again fails at once. CPU shares the runner and gets the
-# relay CPU's tolerances, at about twice the measurement.
-[kpi."hosting.relay.compaction_signature_checks_per_edit.n100"]
+# server CPU's tolerances, at about twice the measurement.
+[kpi."server.compaction_signature_checks_per_edit.n100"]
 unit = "count"
 p50 = 1.5
 enforce = true
-source = "relay_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
+source = "server_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
 
-[kpi."hosting.relay.compaction_cpu_ms_per_collab_hour.n100"]
+[kpi."server.compaction_cpu_ms_per_collab_hour.n100"]
 unit = "ms"
 p50 = 700.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 100.0
-source = "relay_load: compaction thread CPU per active member-hour (compaction::cpu_ns)"
+source = "server_load: compaction thread CPU per active member-hour (compaction::cpu_ns)"
 
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
-[kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+[kpi."server.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
 p50 = 0.001
-source = "KPI: Relay cost per active member-hour"
+source = "KPI: Server cost per active member-hour"
 
-[kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+[kpi."server.cost_usd_per_collab_hour.hetzner-cx22.n100"]
 unit = "usd"
 p50 = 0.001
 enforce = true
-source = "KPI: Relay cost per active member-hour"
+source = "KPI: Server cost per active member-hour"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
 # desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry
@@ -1444,10 +1446,10 @@ source = "resource entries that started before the desktop's first presented fra
 # build-time budget keeps, rounded up to 64 KiB.
 #
 # It is the only budget on the bytes the page serves: tools/web/wasm-size-budget
-# holds the raw bytes of the desktop bundle the app-sdk lane builds
+# holds the raw bytes of the desktop bundle the app-sdk job builds
 # (`tilo-app build --target web`), a different and smaller program than the
 # runtime's own `build.sh --bundle desktop` output that ships (19.4 MB of
-# start-module function bodies against 26.4 MB: the SDK lane's desktop mount
+# start-module function bodies against 26.4 MB: the SDK job's desktop mount
 # carries no peer, MoQ transport or shader translation). Both are optimized
 # with the same arguments (tools/web/wasm-opt-flags). A cut that moves either
 # one lowers this ceiling too.
@@ -1496,6 +1498,7 @@ source = "frames an idle desktop of the demo windows presents per second (headle
 # page below and its CPU per frame.
 [kpi."browser.typing.key_to_frame"]
 unit = "ms"
+baseline_only = true
 baseline_min_runs = 3
 source = "page key event to the first presented frame after it, a fast typist's keys into a note (headless, SwiftShader)"
 
@@ -1504,6 +1507,7 @@ source = "page key event to the first presented frame after it, a fast typist's 
 # (EventLatency): the browser's own floor for a key, on any machine.
 [kpi."browser.typing.plain_page_key_to_frame"]
 unit = "ms"
+baseline_only = true
 baseline_min_runs = 3
 source = "key event to the frame that presented it (EventLatency), the same keys into a plain page's editable text, same browser (headless, SwiftShader)"
 

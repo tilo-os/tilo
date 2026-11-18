@@ -585,7 +585,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase large_text_activity_stays_single_line_inside_center_content_lane;
+    phase large_text_activity_stays_single_line_inside_center_content_area;
     {
         let mut bar = sample_chrome();
         bar.center_rect = Rect::new(460.0, 7.0, 820.0, 41.0);
@@ -606,7 +606,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             width <= max_width + 0.5,
-            "activity headline width {width} exceeds reserved center lane {max_width}"
+            "activity headline width {width} exceeds reserved center area {max_width}"
         );
         assert!(
             height <= topbar_height(&theme) - 4.0,
@@ -627,7 +627,7 @@ tilo_test_env::scenario! {
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         // The 960px chrome reserves a 360px centre selector; after its dots and breathing room, this is
-        // the usable activity lane.
+        // the usable activity area.
         bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
         bar.activity_headline = Some("Ada · 2 permission changes".into());
         bar.activity_unread = 4;
@@ -734,10 +734,10 @@ tilo_test_env::scenario! {
             "the reading stands on the pill, not as bare text"
         );
         assert!(
-            alone.width() < bar.center_lane.width() / 2.0,
+            alone.width() < bar.center_area.width() / 2.0,
             "an activity is a pill, not a second bar: {alone:?}"
         );
-        assert!((alone.center().x - bar.center_lane.center().x).abs() < 1e-9);
+        assert!((alone.center().x - bar.center_area.center().x).abs() < 1e-9);
 
         let one = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
         chrome.borrow_mut().activities = vec![
@@ -1348,9 +1348,9 @@ tilo_test_env::scenario! {
         clippy::arithmetic_side_effects,
         reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
     )]
-    fn the_bars_centre_lane_holds_the_time_and_the_activity;
+    fn the_bars_centre_area_holds_the_time_and_the_activity;
 
-    phase long_workspace_name_yields_to_the_center_lane;
+    phase long_workspace_name_yields_to_the_center_area;
     {
         for width in [800.0, 1280.0, 1600.0] {
             let mut bar = sample_chrome();
@@ -1371,7 +1371,7 @@ tilo_test_env::scenario! {
     {
         let mut short = sample_chrome();
         lay_out_and_draw(&mut short, 800.0);
-        assert_eq!(short.center_lane.width(), 220.0);
+        assert_eq!(short.center_area.width(), 220.0);
 
         let mut long = sample_chrome();
         long.workspace_name =
@@ -1391,7 +1391,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_phone_that_shows_the_time_gives_the_clocks_lane_to_the_workspace_name;
+    phase a_phone_that_shows_the_time_gives_the_clocks_area_to_the_workspace_name;
     // On a phone the device shows the time above the page: the bar draws no clock of its own there,
     // tells a reader none, and the workspace name takes the room the clock had rather than being cut
     // to a few letters. A bar that is the device's only clock keeps it.
@@ -1456,15 +1456,15 @@ tilo_test_env::scenario! {
     // off the band's middle.
     {
         let band = Rect::new(620.0, 2.0, 980.0, 22.0);
-        let (x0, x1) = TopBarChrome::center_content_lane(band);
+        let (x0, x1) = TopBarChrome::center_content_area(band);
         assert!((f64::midpoint(x0, x1) - band.center().x).abs() < 1e-9);
         assert!(x0 > band.x0 && x1 < band.x1);
     }
 
     phase the_clock_pill_hugs_the_time_and_holds_its_width;
-    // The clock's pill hugs the time instead of spanning the 360 px lane,
+    // The clock's pill hugs the time instead of spanning the 360 px area,
     // keeps the time on its centre and holds its width as the minutes
-    // change; the bar's neighbours lay out against the lane.
+    // change; the bar's neighbours lay out against the area.
     {
         let pill_at = |clock: &str| {
             let mut bar = sample_chrome();
@@ -1473,23 +1473,23 @@ tilo_test_env::scenario! {
                 ..ClockSnapshot::default()
             };
             lay_out_and_draw(&mut bar, 1600.0);
-            (bar.center_rect, bar.center_lane, bar.ws_pill_rect)
+            (bar.center_rect, bar.center_area, bar.ws_pill_rect)
         };
-        let (clock, lane, ws) = pill_at("11:11");
-        assert_eq!(lane.width(), 360.0);
+        let (clock, area, ws) = pill_at("11:11");
+        assert_eq!(area.width(), 360.0);
         assert!(
-            clock.width() < lane.width() / 2.0,
+            clock.width() < area.width() / 2.0,
             "a time is not a 360 px pill: {clock:?}"
         );
-        assert!((clock.center().x - lane.center().x).abs() < 1e-9);
-        let (later, later_lane, later_ws) = pill_at("20:08");
+        assert!((clock.center().x - area.center().x).abs() < 1e-9);
+        let (later, later_area, later_ws) = pill_at("20:08");
         assert_eq!(
             later.width(),
             clock.width(),
             "the pill holds still minute to minute"
         );
-        assert_eq!((later_lane, later_ws), (lane, ws), "neighbours do not move");
-        let (x0, x1) = TopBarChrome::center_content_lane(clock);
+        assert_eq!((later_area, later_ws), (area, ws), "neighbours do not move");
+        let (x0, x1) = TopBarChrome::center_content_area(clock);
         let mut text = TextRenderer::new();
         let theme = Theme::default();
         let (time, _) = text.measure_style(
@@ -1501,11 +1501,11 @@ tilo_test_env::scenario! {
                 .style(TextRole::Body)
                 .with_weight(sample_chrome().clock_text_weight()),
         );
-        assert!(x1 - x0 >= f64::from(time), "the time fits its content lane");
+        assert!(x1 - x0 >= f64::from(time), "the time fits its content area");
     }
 
     phase a_narrow_bar_centres_its_pill_on_the_reading_it_shows;
-    // A phone-wide bar grows its centre lane around a live activity's reading rather than pinning it
+    // A phone-wide bar grows its centre area around a live activity's reading rather than pinning it
     // to the clock's width: the highlight stands centred behind the text it belongs to, and the
     // workspace name beside it yields instead of drawing underneath.
     {
@@ -1520,7 +1520,7 @@ tilo_test_env::scenario! {
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         lay_out_and_draw(&mut bar, 520.0);
-        let clock = (bar.center_rect, bar.center_lane);
+        let clock = (bar.center_rect, bar.center_area);
         chrome.borrow_mut().activities = vec![(
             "so.tilo.chat".to_owned(),
             ui::live_activity::Summary::new(ui::live_activity::Kind::Call, "Ada and Milo", "0:42")
@@ -1528,7 +1528,7 @@ tilo_test_env::scenario! {
         )];
         bar.refresh_status_and_media_state();
         lay_out_and_draw(&mut bar, 520.0);
-        let (pill, lane) = (bar.center_rect, bar.center_lane);
+        let (pill, area) = (bar.center_rect, bar.center_area);
         assert!(
             pill.width() > clock.0.width(),
             "the pill stands on its reading, not the clock's width: {pill:?} beside {clock:?}"
@@ -1538,10 +1538,10 @@ tilo_test_env::scenario! {
             "the highlight is centred behind the text it belongs to: {pill:?} in {:?}",
             bar.rect
         );
-        let band_left = bar.rect.center().x - lane.width() / 2.0;
+        let band_left = bar.rect.center().x - area.width() / 2.0;
         assert!(
             bar.ws_pill_rect.x1 <= band_left + 1.0,
-            "the workspace name yields to the pill: {:?} beside a lane from {band_left}",
+            "the workspace name yields to the pill: {:?} beside an area from {band_left}",
             bar.ws_pill_rect
         );
     }
@@ -1706,9 +1706,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_centre_selector_grows_into_the_lane_and_back;
-    // The centre selector jumped from the time's width to the whole lane when an activity arrived; it
-    // grows into the lane on the standard expand/collapse motion and shrinks back to the time when it
+    phase the_centre_selector_grows_into_the_area_and_back;
+    // The centre selector jumped from the time's width to the whole area when an activity arrived; it
+    // grows into the area on the standard expand/collapse motion and shrinks back to the time when it
     // goes.
     {
         let mut tree = Layout {
@@ -1754,10 +1754,10 @@ tilo_test_env::scenario! {
         let start = ui::time::now();
         paint_at(&mut bar, start);
         let time_w = bar.center_rect.width();
-        let lane_w = bar.center_lane.width();
-        assert!(time_w + 1.0 < lane_w, "the time is narrower than its lane");
+        let area_w = bar.center_area.width();
+        assert!(time_w + 1.0 < area_w, "the time is narrower than its area");
 
-        for (shown, from, to) in [(3_usize, time_w, lane_w), (0, lane_w, time_w)] {
+        for (shown, from, to) in [(3_usize, time_w, area_w), (0, area_w, time_w)] {
             let at = bar.center_settles_at().unwrap_or(start).max(start) + Duration::from_secs(1);
             chrome.borrow_mut().publish_activity_glance(
                 Some("Ada prepared the launch brief".to_owned()),
@@ -2427,7 +2427,13 @@ tilo_test_env::scenario! {
         ]);
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
-        assert_eq!(bar.face_agents, vec![true, false]);
+        assert_eq!(
+            bar.face_members,
+            vec![
+                collab_types::MemberId::agent("scribe"),
+                collab_types::MemberId::person("ada")
+            ]
+        );
         // Each face is named for a reader, an agent as one.
         paint(&mut bar);
         let node = bar.accessibility().expect("topbar semantics");
@@ -2470,7 +2476,7 @@ tilo_test_env::scenario! {
             bar_rect.contains(clock.center()) && clock.y0 >= bar_rect.y0 && clock.y1 <= bar_rect.y1,
             "the clock reads inside the bar: {clock:?} in {bar_rect:?}"
         );
-        // The workspace's name and the people beside the clock yield to it instead of standing on it.
+        // The workspace's name and the people beside the clock yield to it instead of over it.
         assert!(
             bar.ws_pill_rect.x1 <= clock.x0 + 0.5,
             "the workspace's name ends before the clock: {:?} {clock:?}",
@@ -2503,7 +2509,8 @@ tilo_test_env::scenario! {
             };
             let mut bar = TopBarChrome::from_tree(&tree);
             bar.sync_from_tree(&tree);
-            (bar.face_agents.clone(), bar.face_colors.clone())
+            let agents: Vec<bool> = bar.face_members.iter().map(collab_types::MemberId::is_agent).collect();
+            (agents, bar.face_colors.clone())
         };
         let (agents, announced) = faces(Some(ui::tokens::PresenceHue::Violet));
         assert_eq!(agents, vec![true]);

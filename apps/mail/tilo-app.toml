@@ -2,7 +2,7 @@
 #
 # IMAP/SMTP against user-configured servers (feature `live`), so the
 # host set is user data — `mode = "host"`. Reads the person's accounts
-# record; the session's account custody releases it each email account's
+# resource; the session's account credentials releases it each email account's
 # secret, and it never opens the vault. Links open through the host opener.
 #
 
@@ -29,12 +29,12 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "gpu"]
 
 [resources]
-kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
+kinds = ["mail.mailbox", "mail.messages", "tilo.chain-unsent", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
 # Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["mail.mailbox", "mail.copies", "mail.trusted-senders"]
+own = ["mail.mailbox", "mail.copies", "mail.trusted-senders", "tilo.chain-unsent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -69,8 +69,8 @@ file-chooser = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@30"
-tilo-fs = "optional@30"
+collab = "optional@31"
+tilo-fs = "optional@31"
 
 [entrypoint]
 bin             = "bin/mail"

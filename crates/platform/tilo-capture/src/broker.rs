@@ -1,7 +1,7 @@
 //! Capture for an app its sandbox confines (macOS Seatbelt), brokered by the host
 //! that launched it.
 //!
-//! macOS gates camera and microphone through TCC, which the sandbox profile does
+//! macOS checks camera and microphone through TCC, which the sandbox profile does
 //! not grant, so the host that holds the permission captures on the app's behalf.
 //! The app inherits one control socket ([`CAPTURE_FD_ENV`]) and, for each capture,
 //! creates a socket pair and sends one end with its request: the host answers on

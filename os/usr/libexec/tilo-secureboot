@@ -735,7 +735,7 @@ Keep an encrypted offline recovery copy, then pass --yes."
   # PCR 7 authenticates the Secure Boot policy, not the particular booted UKI.
   # If firmware db contains a factory certificate or an extra image hash, an
   # alternate OS trusted by that entry can reproduce PCR 7 and decrypt db.key.
-  # Permit PCR7-only custody only when the owner certificate is the sole boot
+  # Permit PCR7-only ownership only when the owner certificate is the sole boot
   # authority. Hardware that must retain vendor db trust should keep db.key
   # offline rather than claiming the TPM has isolated it to Tilo.
   local firmware_db
@@ -890,11 +890,11 @@ cmd_enroll() {
       || die "$enrollment_key enrollment keyset is absent, unsafe, or oversized"
   done
 
-  # Gate 1: the artefacts must already be acceptable to the keys we are about to
+  # Check 1: the artefacts must already be acceptable to the keys we are about to
   # enrol. This is the check that keeps the machine bootable.
   cmd_verify
 
-  # Gate 2: something must keep signing after the next update.
+  # Check 2: something must keep signing after the next update.
   resign_armed || die "the re-signing units are not both enabled. Enable them
 first, or the next OS update stages a kernel nothing has signed and the machine
 stops booting at the reboot that follows:
@@ -902,7 +902,7 @@ stops booting at the reboot that follows:
     systemctl enable --now tilo-secureboot-sign.path tilo-secureboot-sign.timer \\
         tilo-secureboot-sign-shutdown.service"
 
-  # Gate 3: setup mode. Writing db/KEK/PK is only accepted there, and it means
+  # Check 3: setup mode. Writing db/KEK/PK is only accepted there, and it means
   # the owner has consciously cleared the factory keys.
   setup_mode || die "the firmware is not in setup mode.
 

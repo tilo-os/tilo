@@ -13,9 +13,9 @@ ROOT = Path(__file__).parents[2]
 spec = importlib.util.spec_from_file_location('native_resume', ROOT / 'os/dev/native_resume.py')
 resume = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(resume)
-REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-relay '
- 'tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer tilo-runtime-bundle '
- 'tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust '
+REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-server '
+ 'tilo-server-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer tilo-runtime-bundle '
+ 'tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust '
  'tilo-device-key-init tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '
  'tilo-projector tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime').split()
 
@@ -29,7 +29,7 @@ class ResumeRecipe(unittest.TestCase):
             retained -= {'tilo-crypto', 'tilo-windows-rail'}
             derived, missing = resume.derive_recipe(self.original, retained, REQUIRED)
             self.assertEqual(missing, {'release': ['tilo-crypto'], 'windows': ['tilo-windows-rail']})
-            self.assertIn('cargo build --release ${RELEASE_ARGS} -p tilo-relay --bin tilo-crypto ${BROWSER_PKG}', derived)
+            self.assertIn('cargo build --release ${RELEASE_ARGS} -p tilo-server --bin tilo-crypto ${BROWSER_PKG}', derived)
             self.assertIn('cargo build --release -p windows-vm --bin tilo-windows-rail', derived)
             self.assertNotIn(' --bins ', derived)
             self.assertLess(derived.index('cargo clean --profile thin-app'), derived.index('cp /tilo-resume/partial/*'))

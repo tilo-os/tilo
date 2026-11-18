@@ -1,6 +1,6 @@
 //! Git works natively on a captured tree, and every capture is a state git can
-//! recover from. Nothing in the data plane knows about git; this test checks
-//! the general guarantees with git as the witness.
+//! recover from. Nothing in the backend knows about git; this test checks
+//! the general guarantees with git as the proof.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

@@ -1,7 +1,7 @@
 //! The bytes committing a write reads, counted on each thread.
 //!
 //! A write must cost what it changed, however long its record's history.
-//! Time is a poor witness of that (it varies with the machine and with
+//! Time is a poor proof of that (it varies with the machine and with
 //! everything else running), so the steps that would read the history again
 //! count the bytes they read instead: a test commits writes into a short
 //! history and a long one and compares.

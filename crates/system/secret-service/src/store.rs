@@ -1,5 +1,5 @@
 //! The store: the vault, sealed at rest under a key the device identity
-//! releases, and every operation on it gated by the caller's identity.
+//! releases, and every operation on it guarded by the caller's identity.
 //!
 //! The store is **locked** until its key can be derived. The key comes from
 //! the machine's device identity (see [`DeviceIdentityKey`]), which the
@@ -391,7 +391,7 @@ impl Store {
             .map_err(|error| StoreError::Io(error.to_string()))
     }
 
-    /// Record `caller` in the ledger and refuse it if it was revoked.
+    /// Record `caller` in the log and refuse it if it was revoked.
     fn admit(open: &mut Open, caller: &CallerId) -> Result<()> {
         let now = open.now;
         let record = open.vault.apps.entry(caller.clone()).or_insert_with(|| {
@@ -818,7 +818,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchObject`] for an identity the ledger lacks.
+    /// [`StoreError::NoSuchObject`] for an identity the log lacks.
     pub fn set_access(&self, id: &CallerId, access: Access) -> Result<()> {
         self.with_open(|open| {
             open.vault
@@ -831,12 +831,12 @@ impl Store {
         })
     }
 
-    /// Remove an identity: its ledger row, its items and its portal secret.
+    /// Remove an identity: its log row, its items and its portal secret.
     /// The identity is recorded afresh if it asks again.
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoSuchObject`] for an identity the ledger lacks.
+    /// [`StoreError::NoSuchObject`] for an identity the log lacks.
     pub fn forget_app(&self, id: &CallerId) -> Result<()> {
         self.with_open(|open| {
             open.vault.apps.remove(id).ok_or(StoreError::NoSuchObject)?;

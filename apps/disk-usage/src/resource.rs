@@ -12,8 +12,8 @@ use crate::scan::ScanResult;
 /// The folders one device analyzed lately, newest first.
 pub type Folders = Recents<PathBuf, 5>;
 
-/// The folders analyzed lately, by the device whose disk they are on: a record Disk Usage
-/// keeps beside the app's record in the workspace, each device reading and writing only its
+/// The folders analyzed lately, by the device whose disk they are on: a resource Disk Usage
+/// keeps beside the app's resource in the workspace, each device reading and writing only its
 /// own list.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RecentFolders {
@@ -21,7 +21,7 @@ pub struct RecentFolders {
 }
 
 impl RecentFolders {
-    /// What the record holds: the folders analyzed lately, by device.
+    /// What the resource holds: the folders analyzed lately, by device.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -80,8 +80,8 @@ pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
 pub struct DiskUsage {}
 
 impl DiskUsage {
-    /// What the record holds: nothing — what it scans is this device's disk, and the
-    /// folders it remembers are kept in the record beside it.
+    /// What the resource holds: nothing — what it scans is this device's disk, and the
+    /// folders it remembers are kept in the resource beside it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -211,7 +211,7 @@ mod tests {
 
     const DEVICE: &str = "test-device";
 
-    /// The folders this device remembers, in the record.
+    /// The folders this device remembers, in the resource.
     fn recent(app: &mut TestApp<DiskUsageShell>) -> Vec<PathBuf> {
         app.person::<RecentFolders>()
             .map(|record| record.with(|recent| recent.on(DEVICE).to_vec()))
@@ -293,9 +293,10 @@ mod tests {
     fn a_chosen_folder_is_analyzed() {
         let folder = scratch_folder("choose");
         let mut app = TestApp::<DiskUsageShell>::new().unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(folder.clone()));
-        let answer = ui::host::scoped(&services, || app.effect(&DiskUsageEffect::Choose)).unwrap();
+        let answer =
+            ui::process::scoped(&services, || app.effect(&DiskUsageEffect::Choose)).unwrap();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
         assert!(picks[0].is_directory());

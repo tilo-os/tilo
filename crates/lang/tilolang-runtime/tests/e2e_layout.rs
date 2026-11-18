@@ -182,7 +182,7 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
     }
 
     /// The host puts a record's actions on the record, grouped as their declarations say: a
-    /// row's menu carries the run of each action on it (`group:`). This is the seam the
+    /// row's menu carries the run of each action on it (`group:`). This is the boundary the
     /// traditional desktop's action bar stands on.
     #[test]
     fn a_resource_read_by_id_offers_the_actions_its_declaration_grouped() {

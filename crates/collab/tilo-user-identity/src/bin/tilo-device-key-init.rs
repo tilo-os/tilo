@@ -3,7 +3,7 @@
 //! node session's own tree, created by the session's account before the
 //! node's install certifies it. The public half goes to `FILE` as
 //! `TILO_NODE_SESSION_DEVICE=<hex>`, a systemd `EnvironmentFile` the node's
-//! relay names the session with (`--session-device`).
+//! server names the session with (`--session-device`).
 //!
 //! `--branch` runs at every boot before anything uses the machine's key: it
 //! records which machine the key belongs to and re-keys a machine whose disk
@@ -72,8 +72,8 @@ mod branch {
     };
     use tilo_user_identity::persist::IdentityPaths;
 
-    /// Where the relay keeps its state, its workspaces' group state among it.
-    const RELAY_STATE: &str = "/var/lib/tilo-relay";
+    /// Where the server keeps its state, its workspaces' group state among it.
+    const SERVER_STATE: &str = "/var/lib/tilo-server";
     /// Each person's Secret Service, which re-seals their vault as them.
     const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
     const PASSWD: &str = "/etc/passwd";
@@ -88,8 +88,8 @@ mod branch {
         let people = people(Path::new(PASSWD));
         let vaults: Vec<PersonVault<'_>> =
             people.iter().map(|person| PersonVault { person }).collect();
-        let relay = RelayGroups {
-            root: PathBuf::from(RELAY_STATE),
+        let server = ServerGroups {
+            root: PathBuf::from(SERVER_STATE),
         };
         let names = MachineNames {
             machine_id: PathBuf::from(MACHINE_ID),
@@ -102,7 +102,7 @@ mod branch {
                 stores: vaults
                     .iter()
                     .map(|vault| vault as &dyn SealedStore)
-                    .chain([&relay as &dyn SealedStore])
+                    .chain([&server as &dyn SealedStore])
                     .collect(),
                 machine: Some(&names),
                 now_ns: std::time::SystemTime::now()
@@ -241,22 +241,22 @@ mod branch {
     /// Each workspace's group state: sealed under a key the device key
     /// derives, and every group in it names the source's device as its
     /// member, so no re-seal makes it this device's. Its member files are
-    /// dropped, and the relay joins its workspaces' groups as this device,
+    /// dropped, and the server joins its workspaces' groups as this device,
     /// admitted by their key holders.
-    struct RelayGroups {
+    struct ServerGroups {
         root: PathBuf,
     }
 
-    impl RelayGroups {
-        /// The directory the relay keeps each workspace's group state in.
+    impl ServerGroups {
+        /// The directory the server keeps each workspace's group state in.
         fn groups(&self) -> PathBuf {
             self.root.join("groups")
         }
     }
 
-    impl SealedStore for RelayGroups {
+    impl SealedStore for ServerGroups {
         fn name(&self) -> String {
-            format!("the relay's group state in {}", self.root.display())
+            format!("the server's group state in {}", self.root.display())
         }
 
         fn reseal(&self, _: &[SigningKey], _: &SigningKey) -> Result<Resealed, String> {
@@ -328,7 +328,7 @@ mod branch {
         use super::*;
 
         tilo_test_env::scenario! {
-            fn a_branch_finds_its_people_resets_the_relay_and_renames_the_machine;
+            fn a_branch_finds_its_people_resets_the_server_and_renames_the_machine;
 
             phase people_are_the_login_accounts;
             {
@@ -337,7 +337,7 @@ mod branch {
                 std::fs::write(
                     &passwd,
                     "root:x:0:0:root:/root:/bin/bash\n\
-                 tilo-relay:x:985:985::/var/lib/tilo-relay:/sbin/nologin\n\
+                 tilo-server:x:985:985::/var/lib/tilo-server:/sbin/nologin\n\
                  you:x:1000:1000:You:/var/home/you:/bin/bash\n\
                  broken:x:abc:1000::/home/broken:/bin/sh\n\
                  nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin\n",
@@ -351,25 +351,25 @@ mod branch {
                 assert!(super::people(&dir.path().join("missing")).is_empty());
             }
 
-            phase the_relays_group_members_are_dropped_and_its_other_files_kept;
+            phase the_servers_group_members_are_dropped_and_its_other_files_kept;
             {
                 let dir = tempfile::tempdir().unwrap();
-                let relay = RelayGroups {
+                let server = ServerGroups {
                     root: dir.path().to_path_buf(),
                 };
                 let key = SigningKey::from_bytes(&[1; 32]);
-                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
+                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Absent);
                 let groups = dir.path().join("groups");
                 std::fs::create_dir(&groups).unwrap();
-                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
+                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Absent);
                 let member = groups.join("ws-1.peer");
                 let kept = groups.join("notes");
                 std::fs::write(&member, "member").unwrap();
                 std::fs::write(&kept, "notes").unwrap();
-                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Reset);
+                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Reset);
                 assert!(!member.exists());
                 assert!(kept.exists());
-                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
+                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Absent);
             }
 
             phase a_branch_gets_a_machine_id_and_ssh_host_keys_of_its_own;
@@ -464,7 +464,7 @@ mod tests {
         );
         for before in [
             "fs.service",
-            "tilo-relay.service",
+            "tilo-server.service",
             "greetd.service",
             "NetworkManager.service",
             "sshd-keygen.target",

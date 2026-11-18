@@ -119,7 +119,7 @@ fn all_changes(doc: &AutoCommit) -> Vec<Vec<u8>> {
 fn member(writer_key: &str, root: [u8; 32]) -> Writer<'_> {
     Writer {
         key: writer_key,
-        standing: Standing::Member {
+        access: SenderAccess::Member {
             person: root,
             foreign: false,
         },
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
                 Some(&before),
                 Writer {
                     key: &writer,
-                    standing: Standing::TransportAuthorized,
+                    access: SenderAccess::TransportAuthorized,
                 },
                 &owner_root(),
                 &added,
@@ -359,7 +359,7 @@ tilo_test_env::scenario! {
                 None,
                 Writer {
                     key: &first,
-                    standing: Standing::TransportAuthorized,
+                    access: SenderAccess::TransportAuthorized,
                 },
                 &owner_root(),
                 &snapshot,
@@ -1209,10 +1209,10 @@ tilo_test_env::scenario! {
         let batch = changes_after(before, |doc| {
             crate::members::put_op(doc, &op).unwrap();
         });
-        let relay = hex::encode(workspace.viewer.device_public_key);
+        let server = hex::encode(workspace.viewer.device_public_key);
         let admitted = admit(
             Some(before),
-            member_of(&relay, &workspace.viewer),
+            member_of(&server, &workspace.viewer),
             &workspace.owner.user_public_key,
             &batch,
         )
@@ -1250,7 +1250,7 @@ fn person_of(cert: &DeviceCert) -> String {
 fn member_of<'a>(key: &'a str, cert: &DeviceCert) -> Writer<'a> {
     Writer {
         key,
-        standing: Standing::Member {
+        access: SenderAccess::Member {
             person: cert.user_public_key,
             foreign: false,
         },

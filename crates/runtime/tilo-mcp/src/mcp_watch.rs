@@ -53,7 +53,7 @@ pub(super) struct WatchArgs {
     wait_ms: Option<u64>,
 }
 
-/// What a watch has already told its caller: the last run event, the
+/// What a watch has already told its caller: the last invocation event, the
 /// workspace's roster as it last read it, and the last change of the watched
 /// path. Opaque to the caller, which hands it back as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -83,7 +83,7 @@ impl Cursor {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// How invocation `id` stands, as `tilo_status` answers it.
     pub(crate) async fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.observed(id)
@@ -125,19 +125,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         });
         keep_latest(&mut invocations);
         drop(invocations);
-        self.runs_moved();
+        self.invocations_moved();
     }
 
     /// Note that `invocation` reached `phase`, which is terminal.
     pub(super) fn watch_invocation_ended(&self, invocation: &str, phase: &str) {
         ended(&mut self.invocations.lock_recover(), invocation, phase);
-        self.runs_moved();
+        self.invocations_moved();
     }
 
     /// Note that `invocation` is held for the person, who allows it or not in their tab.
     pub(super) fn watch_invocation_held(&self, invocation: &str) {
         held(&mut self.invocations.lock_recover(), invocation);
-        self.runs_moved();
+        self.invocations_moved();
     }
 
     /// The group a watch attributes this session's calls to: the title a
@@ -240,25 +240,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // have moved.
             changed.extend(self.host.next_change(&caller, &id));
         }
-        changed.push(self.runs_changed());
+        changed.push(self.invocations_changed());
         first_wake(changed)
     }
 
-    /// Resolves on the next run event of this session: an invocation of it starting, being held
-    /// for its person, or ending ([`Self::runs_moved`]).
-    fn runs_changed(&self) -> tilo_actions::remote::Pending<()> {
+    /// Resolves on the next invocation event of this session: one of it starting, being held
+    /// for its person, or ending ([`Self::invocations_moved`]).
+    fn invocations_changed(&self) -> tilo_actions::remote::Pending<()> {
         let (changed, change) = tilo_actions::remote::pending();
-        let mut waiting = self.run_waiters.lock_recover();
+        let mut waiting = self.invocation_waiters.lock_recover();
         // A wait another source woke the watch from tells nobody: forgotten here rather than kept
-        // until the next run.
+        // until the next invocation.
         waiting.retain(|woken| !woken.is_abandoned());
         waiting.push(changed);
         change
     }
 
-    /// Wake every watch of this session: a run of it started, was held for its person, or ended.
-    fn runs_moved(&self) {
-        let waiting = std::mem::take(&mut *self.run_waiters.lock_recover());
+    /// Wake every watch of this session: an invocation of it started, was held for
+    /// its person, or ended.
+    fn invocations_moved(&self) {
+        let waiting = std::mem::take(&mut *self.invocation_waiters.lock_recover());
         for changed in waiting {
             changed.complete(());
         }
@@ -459,7 +460,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(Ok(page)) => Ok(Some(page)),
             // A host that keeps no feed says so; a watch still reports
             // invocations and presence.
-            Some(Err(tilo_actions::remote::ActionHostError::Unavailable { reason }))
+            Some(Err(tilo_actions::remote::ActionCallError::Unavailable { reason }))
                 if reason == tilo_actions::remote::CHANGE_FEED_UNAVAILABLE =>
             {
                 Ok(None)
@@ -558,8 +559,9 @@ fn first_wake(
 
 /// One change, as an agent or an API caller reads it: the resource it
 /// changed (the record, the item in it when the change names one), who made
-/// it, and the run it is a step of. The run's name is under `run` and the
-/// invocation under `invocation`, as the record's own history names them.
+/// it, and the group it is a step of. The group's title is under `title`,
+/// its id under `group`, and the invocation under `invocation`, as the
+/// resource's own history names them.
 fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Value) -> Value {
     let mut resource = serde_json::Map::new();
     resource.insert("path".into(), json!(path));
@@ -580,7 +582,7 @@ fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Val
         "time_ms": entry.get("time_ms").cloned().unwrap_or_default(),
     });
     if let (Some(fields), Some(entry)) = (event.as_object_mut(), entry.as_object()) {
-        for key in ["by", "run", "run_id", "invocation", "undone"] {
+        for key in ["by", "title", "group", "group_kind", "invocation", "undone"] {
             if let Some(value) = entry.get(key) {
                 fields.insert(key.to_owned(), value.clone());
             }
@@ -603,11 +605,11 @@ fn actor_of(entry: &serde_json::Map<String, Value>) -> Option<Value> {
     if name.is_empty() {
         return None;
     }
-    let run = entry
-        .get("run")
+    let grouped = entry
+        .get("group")
         .and_then(Value::as_str)
-        .is_some_and(|run| !run.is_empty());
-    Some(json!({"kind": if run { "agent" } else { "person" }, "name": name}))
+        .is_some_and(|group| !group.is_empty());
+    Some(json!({"kind": if grouped { "agent" } else { "person" }, "name": name}))
 }
 
 /// The entries of a `history` verb's answer `value`, oldest first: its
@@ -780,6 +782,45 @@ mod tests {
         }
         assert_eq!(invocations.len(), INVOCATIONS_KEPT);
         assert_eq!(invocations[0].invocation, "going");
+    }
+
+    /// A change a watch reports names the group it is a step of, as the
+    /// resource's own history does: the group's title, its id and its kind,
+    /// so an agent that watched a change can undo exactly its own group.
+    #[test]
+    fn a_change_event_names_the_group_its_change_is_a_step_of() {
+        let entry = json!({
+            "change": "a1",
+            "sentence": "Filled the form",
+            "title": "Fill Jane Doe's form",
+            "group": "agent-session:7",
+            "group_kind": "agent-session",
+            "time_ms": 5,
+        });
+        let event = change_event("forms/#fill", Some("forms"), None, &entry);
+        assert_eq!(event["title"], "Fill Jane Doe's form");
+        assert_eq!(event["group"], "agent-session:7");
+        assert_eq!(event["group_kind"], "agent-session");
+
+        // An entry naming its group made its change by an agent, even where
+        // it names the agent the way it names a person.
+        let entry = json!({
+            "change": "b1",
+            "by": "Jane Doe's agent",
+            "group": "agent-session:9",
+            "group_kind": "agent-session",
+        });
+        let event = change_event("notes/Todo/body", Some("notes"), None, &entry);
+        assert_eq!(
+            event["actor"],
+            json!({"kind": "agent", "name": "Jane Doe's agent"})
+        );
+
+        // A change of a person's own names no group, and is a person's.
+        let entry = json!({"change": "c1", "sentence": "Typed", "by": "Ada"});
+        let event = change_event("notes/Todo/body", Some("notes"), None, &entry);
+        assert!(event.get("group").is_none());
+        assert_eq!(event["actor"], json!({"kind": "person", "name": "Ada"}));
     }
 
     tilo_test_env::scenario! {

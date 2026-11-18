@@ -35,7 +35,7 @@ async fn answered(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatu
         let receipt = browser.invoke(attempt).await;
         match &receipt.status {
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. },
+                error: ActionCallError::Unavailable { .. },
             } if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -66,7 +66,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Bridged workspace").await.unwrap();
     workspaces
         .prepare_application(
@@ -114,12 +114,12 @@ async fn a_member_links_their_discord_account_through_the_host() {
             "so.tilo.discord",
             "",
             |doc| {
-                let mut bot = ui::tilo_resource::Replica::<discord::record::Guild>::from_doc(
+                let mut bot = ui::tilo_resource::Replica::<discord::guild::Guild>::from_doc(
                     std::mem::take(doc),
                 )
                 .as_bot_for("bridge-install", &hex::encode(host.cert.user_public_key));
                 let applied = bot
-                    .apply(discord::record::Guild::SET_SIGN_IN.with(page.to_owned()))
+                    .apply(discord::guild::Guild::SET_SIGN_IN.with(page.to_owned()))
                     .map(drop)
                     .map_err(|error| error.to_string());
                 std::mem::swap(doc, bot.doc_mut());
@@ -176,7 +176,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
             .expect("the governor holds the Discord record");
         let mut doc = automerge::AutoCommit::load(&saved).unwrap();
         let governors =
-            tilo_relay::workspace_bots::opened::<discord::record::Guild>(&mut doc).unwrap();
+            tilo_server::workspace_bots::opened::<discord::guild::Guild>(&mut doc).unwrap();
         let people: Vec<_> = governors
             .connects
             .iter()
@@ -214,7 +214,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// What the workspace's governor commits itself (connecting the bridge, a bot
@@ -231,7 +231,7 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Bridged workspace").await.unwrap();
     workspaces
         .prepare_application(
@@ -254,11 +254,11 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     );
     assert_eq!(reading["connected"], false, "{reading}");
 
-    tilo_relay::workspace_bots::discord::connect(
+    tilo_server::workspace_bots::discord::connect(
         workspaces,
         &workspace.workspace,
         &host.cert,
-        &tilo_relay::workspace_bots::discord::DiscordLink {
+        &tilo_server::workspace_bots::discord::DiscordLink {
             guild_id: "1".into(),
             only_channel: None,
             name: "Tilo".into(),
@@ -290,5 +290,5 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }

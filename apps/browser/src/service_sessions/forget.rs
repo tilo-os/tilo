@@ -108,7 +108,7 @@ impl PendingForget {
     pub fn report(&self) -> serde_json::Value {
         serde_json::json!({"session_id": self.selection.id, "service": self.selection.service,
             "status": if self.revoked { "forgotten" } else if self.failed { "forget-incomplete" } else { "forgetting" },
-            "custody_revoked": self.revoked, "custody_backend_needed": !self.revoked,
+            "ownership_revoked": self.revoked, "ownership_backend_needed": !self.revoked,
             "engine_shutdown_confirmed": self.local_done, "local_only": false, "authenticated": false})
     }
 

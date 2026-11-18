@@ -73,7 +73,7 @@ fn genesis(fixture: Box<Fixture>) -> Box<Fixture> {
         &fixture.vault,
     )
     .expect("genesis");
-    assert!(peer.gate().encryption_required);
+    assert!(peer.seal_check().encryption_required);
     fixture
 }
 

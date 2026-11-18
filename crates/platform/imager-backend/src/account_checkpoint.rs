@@ -1,4 +1,4 @@
-//! Device-local prepared account custody and authenticated restart checkpoint declarations.
+//! Device-local prepared account credentials and authenticated restart checkpoint declarations.
 use crate::account_transfer::{AccountActions, ConnectionError, Connector, DestinationGuard};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -94,7 +94,7 @@ impl PreparedAccounts {
             .map_err(|_| ConnectionError::InvalidConfiguration)
     }
     /// Export only consented staged accounts to a new private artifact outside
-    /// the original computer's source grant. Password/key custody stays private.
+    /// the original computer's source grant. Password/key storage stays private.
     pub fn export_password_sealed(
         &self,
         destination: &Path,
@@ -458,7 +458,7 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn unsupported_host_never_creates_account_checkpoint_custody() {
+    fn unsupported_host_never_creates_account_checkpoint_ownership() {
         assert_eq!(
             require_supported().unwrap_err().kind(),
             io::ErrorKind::Unsupported

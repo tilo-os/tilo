@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use account_custody::hugging_face::{self, HUGGING_FACE_DOWNLOADS, HubCredential, HubSignIn};
+use account_credentials::hugging_face::{self, HUGGING_FACE_DOWNLOADS, HubCredential, HubSignIn};
 use accounts::{ServiceAuthorization, ServiceCredentials};
 use agent_provider_config::local::ModelArtifactFormat;
 use agent_provider_config::local::hub::{
@@ -78,7 +78,7 @@ impl HubBrowser {
     pub(crate) fn sign_in(
         &mut self,
         by_code: bool,
-        custodian: &account_custody::Custodian,
+        credential_store: &account_credentials::CredentialStore,
         opener: &Arc<dyn crate::panes::accounts::BrowserOpener>,
         (userinfo, control): (&str, &Arc<dyn LocalModelControl>),
     ) -> Result<(), String> {
@@ -104,11 +104,11 @@ impl HubBrowser {
         };
         let userinfo = userinfo.to_owned();
         let wait = if by_code {
-            let custodian = custodian.clone();
+            let credential_store = credential_store.clone();
             SignInWait::device(
                 opener,
                 move || {
-                    custodian
+                    credential_store
                         .begin_device_sign_in(HUGGING_FACE_DOWNLOADS)
                         .map_err(|error| failed(&error))
                 },
@@ -119,7 +119,7 @@ impl HubBrowser {
                 },
             )
         } else {
-            let authorization = custodian
+            let authorization = credential_store
                 .begin_sign_in_for(HUGGING_FACE_DOWNLOADS, None)
                 .map_err(|error| failed(&error))?;
             let cancel = authorization
@@ -658,7 +658,7 @@ pub(crate) fn answer(
             let model = &mut *model;
             model.hub.sign_in(
                 matches!(effect, AgentModelsEffect::SignInWithHuggingFaceCode),
-                &model.custodian,
+                &model.credential_store,
                 &model.opener,
                 (&model.hub_userinfo, &model.control),
             )?;

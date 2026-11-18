@@ -40,7 +40,7 @@ fn public_flow_stage_artifact_search_and_view_preserve_scope() {
     let child = crate::evidence_flow_view::resource_id(&id, "stage", "physical");
     app.call_on(&child, "inspect-evidence", json!({})).unwrap();
     let read = app.call("read", json!({"item":child})).unwrap().unwrap();
-    assert_eq!(read["custody"], "reported_unverified");
+    assert_eq!(read["provenance"], "reported_unverified");
     assert_eq!(read["content"]["observations"]["scope"], "library_physical");
     assert_eq!(read["content"]["observations"]["clock_constraint_ns"], 6);
     let artifact = crate::evidence_flow_view::resource_id(&id, "artifact", "physical.json");

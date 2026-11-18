@@ -1,7 +1,7 @@
 //! External Accounts: one inventory over the canonical account stores that
 //! installed clients consume. Accounts are added and edited in one device-local
 //! form; removing one clears its metadata, its sealed credential and its sync
-//! record together.
+//! resource together.
 
 use std::rc::Rc;
 
@@ -31,12 +31,12 @@ mod cloud_signin;
 mod import_review;
 mod row_view;
 mod thunderbird_import;
-mod vault_lane;
+mod vault_queue;
 pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
 use row_view::{AccountEntry, account_status, kind_icon, kind_shown, sync_detail, sync_entries};
 use runtime_fs::cloud::CloudRequest;
-use vault_lane::Step;
+use vault_queue::Step;
 
 crate::effects::effect_family!(AccountsEffect => answer);
 
@@ -134,7 +134,7 @@ pub enum AccountsEffect {
         kind: String,
     },
     /// Add an email account with its password. The password is sealed by
-    /// the session's account custody and never shown or read back; Mail,
+    /// the session's account credentials and never shown or read back; Mail,
     /// which keeps email accounts, is released it to sign in. Without a
     /// password the account waits for the person to sign it in.
     #[effect(job, returns)]
@@ -212,7 +212,7 @@ pub enum AccountsEffect {
         #[param("The account's id")]
         account: String,
     },
-    /// Remove an account, its saved credential and its sync record.
+    /// Remove an account, its saved credential and its sync resource.
     #[effect(row, job, destructive)]
     RemoveAccount {
         #[param("The account's id")]
@@ -493,7 +493,7 @@ fn commit_thunderbird_import(
     revision: u64,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    if model.lane.is_idle() {
+    if model.queue.is_idle() {
         let root = model.account_root.clone();
         let result = model.import_review.commit(&root, revision)?;
         model.queue_reload();
@@ -503,7 +503,7 @@ fn commit_thunderbird_import(
     // Otherwise in turn with the account mutations under way, which
     // journal the stores this changes.
     let reply = cx.reply();
-    model.run_in_lane(move |pane| {
+    model.run_in_queue(move |pane| {
         let root = pane.account_root.clone();
         let result = pane.import_review.commit(&root, revision);
         if result.is_ok() {
@@ -578,7 +578,7 @@ pub struct AccountsArea {
     linked: ui::linked_accounts::LinkedAccounts,
     pub(crate) remote: ui::RemoteActions,
     removal: std::cell::RefCell<Option<browser_sessions::Removal>>,
-    custody: Option<ui::collaboration::browser_service_sessions::Client>,
+    session_secrets: Option<ui::collaboration::browser_service_sessions::Client>,
     adding: std::cell::RefCell<Option<add_email::AddingEmail>>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AccountsPane>>>,
     account_root: Option<AccountRoot>,
@@ -590,7 +590,7 @@ pub struct AccountsArea {
 pub(crate) struct AccountsRead {
     statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
-    custodian: account_custody::Custodian,
+    credential_store: account_credentials::CredentialStore,
 }
 
 impl AccountsRead {
@@ -598,7 +598,7 @@ impl AccountsRead {
         Self {
             statuses: root.statuses(),
             vault: root.vault(),
-            custodian: root.custodian(),
+            credential_store: root.credential_store(),
         }
     }
 
@@ -614,7 +614,7 @@ impl AccountsArea {
             linked: cx.linked.clone(),
             remote: ui::RemoteActions::current(),
             removal: std::cell::RefCell::default(),
-            custody: ui::collaboration::browser_service_sessions::Client::capture(),
+            session_secrets: ui::collaboration::browser_service_sessions::Client::capture(),
             adding: std::cell::RefCell::default(),
             model: std::cell::OnceCell::new(),
             account_root: None,
@@ -669,7 +669,7 @@ impl AccountsArea {
                     None => AccountsPane::recovered_in(root, None),
                 }
             } else {
-                AccountsPane::recovered_in(root, read.map(|read| read.custodian))
+                AccountsPane::recovered_in(root, read.map(|read| read.credential_store))
             };
             if let Some(kind) = scene.and_then(|scene| scene.account_form) {
                 model = model.with_open_form_for_shot(kind);
@@ -909,7 +909,7 @@ pub struct AccountsPane {
     vault: Option<accounts::SecretVault>,
     vault_opening: Option<crate::device_read::Landing>,
     mail_grants: MailGrants,
-    lane: vault_lane::VaultLane,
+    queue: vault_queue::VaultQueue,
     reload_queued: bool,
     is_sample: bool,
     form_kind: Option<AccountKind>,
@@ -943,7 +943,7 @@ pub struct AccountsPane {
     sign_in: Option<cloud_signin::SignInFlow>,
     sign_in_saving: bool,
     sign_in_round: u64,
-    custodian: account_custody::Custodian,
+    credential_store: account_credentials::CredentialStore,
     opener: std::sync::Arc<dyn BrowserOpener>,
     cloud: CloudMounts,
     browser_removal_error: Option<String>,
@@ -972,20 +972,20 @@ impl AccountsPane {
             sync_statuses: read.statuses,
             vault: Some(read.vault),
             cloud: CloudMounts::live(),
-            ..Self::over(account_root, dir, false, read.custodian)
+            ..Self::over(account_root, dir, false, read.credential_store)
         }
     }
 
     fn recovered_in(
         account_root: AccountRoot,
-        custodian: Option<account_custody::Custodian>,
+        credential_store: Option<account_credentials::CredentialStore>,
     ) -> Self {
         let dir = AccountDirectory::load_in(&account_root);
-        let custodian = custodian.unwrap_or_else(|| account_root.custodian());
+        let credential_store = credential_store.unwrap_or_else(|| account_root.credential_store());
         let mut pane = Self {
             sync_statuses: account_root.statuses(),
             cloud: CloudMounts::live(),
-            ..Self::over(account_root, dir, false, custodian)
+            ..Self::over(account_root, dir, false, credential_store)
         };
         pane.reopen_vault();
         pane
@@ -995,7 +995,7 @@ impl AccountsPane {
         account_root: AccountRoot,
         dir: AccountDirectory,
         is_sample: bool,
-        custodian: account_custody::Custodian,
+        credential_store: account_credentials::CredentialStore,
     ) -> Self {
         Self {
             dir,
@@ -1003,7 +1003,7 @@ impl AccountsPane {
             vault: None,
             vault_opening: None,
             mail_grants: MailGrants::default(),
-            lane: vault_lane::VaultLane::default(),
+            queue: vault_queue::VaultQueue::default(),
             reload_queued: false,
             is_sample,
             form_kind: None,
@@ -1032,7 +1032,7 @@ impl AccountsPane {
             sign_in: None,
             sign_in_saving: false,
             sign_in_round: 0,
-            custodian,
+            credential_store,
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::at(None),
             calendar_choices: Vec::new(),
@@ -1053,8 +1053,8 @@ impl AccountsPane {
     }
 
     pub fn from_dir_in(account_root: AccountRoot, dir: AccountDirectory, is_sample: bool) -> Self {
-        let custodian = account_root.custodian();
-        let mut pane = Self::over(account_root, dir, is_sample, custodian);
+        let credential_store = account_root.credential_store();
+        let mut pane = Self::over(account_root, dir, is_sample, credential_store);
         pane.reopen_vault();
         pane
     }
@@ -1124,14 +1124,14 @@ impl AccountsPane {
         let deadline = ui::time::now() + bound;
         while self.form_open() && ui::time::now() < deadline {
             let _ = self.poll();
-            if !self.calendar_choices.is_empty() && !self.form_saving && self.lane.is_idle() {
+            if !self.calendar_choices.is_empty() && !self.form_saving && self.queue.is_idle() {
                 return self.form_error.is_none();
             }
             if self.form_probe.is_none()
                 && self.sign_in.is_none()
                 && !self.form_saving
                 && !self.sign_in_saving
-                && self.lane.is_idle()
+                && self.queue.is_idle()
             {
                 return !self.form_open();
             }
@@ -1205,8 +1205,11 @@ impl AccountsPane {
     }
 
     #[must_use]
-    pub fn with_custodian(mut self, custodian: account_custody::Custodian) -> Self {
-        self.custodian = custodian;
+    pub fn with_credential_store(
+        mut self,
+        credential_store: account_credentials::CredentialStore,
+    ) -> Self {
+        self.credential_store = credential_store;
         self
     }
 
@@ -1265,7 +1268,7 @@ impl AccountsPane {
         } else {
             true
         };
-        self.settle_lane();
+        self.settle_queue();
         reported
     }
 
@@ -1280,7 +1283,7 @@ impl AccountsPane {
         let mut flow = cloud_signin::SignInFlow::new(
             kind,
             existing,
-            self.custodian.clone(),
+            self.credential_store.clone(),
             std::sync::Arc::clone(&self.opener),
         );
         if let Some(mail_id) = existing
@@ -1333,7 +1336,7 @@ impl AccountsPane {
         };
         self.sign_in_saving = true;
         let round = self.sign_in_round;
-        self.run_in_lane(move |pane| {
+        self.run_in_queue(move |pane| {
             match Self::signed_in_accounts(&pane.account_root, &completed) {
                 Ok((stored, mail)) => {
                     let id = stored.id.clone();
@@ -1382,11 +1385,11 @@ impl AccountsPane {
     }
 
     fn publish_signed_in(&mut self, id: accounts::AccountId) {
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         let _ = crate::device_read::thread(
             "settings-accounts-worker",
             Box::new(move || {
-                if let Err(error) = custodian.signed_in(&id) {
+                if let Err(error) = credential_store.signed_in(&id) {
                     warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
                 }
             }),
@@ -1757,7 +1760,7 @@ impl AccountsPane {
         if self
             .vault
             .as_ref()
-            .is_some_and(|vault| vault.custody() == accounts::SecretCustody::LocalFile)
+            .is_some_and(|vault| vault.backend() == accounts::VaultBackend::LocalFile)
         {
             intro.push(note(&t("accounts-vault-local")));
         }
@@ -2112,7 +2115,7 @@ impl AccountsPane {
                 .collect()
         };
         if kind.is_cloud_storage()
-            && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
+            && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.credential_store)
         {
             body.push(note(&reason));
         } else if kind.best_effort() {
@@ -2608,7 +2611,7 @@ impl AccountsPane {
         if std::mem::replace(&mut self.reload_queued, true) {
             return;
         }
-        self.run_in_lane(|pane| {
+        self.run_in_queue(|pane| {
             pane.reload_queued = false;
             pane.reload();
             Step::Done
@@ -2617,7 +2620,7 @@ impl AccountsPane {
 
     /// Reload the directory and the sync statuses here, and the vault on a
     /// worker. Loading the directory recovers an interrupted mutation, so
-    /// this runs only in the lane, never while a mutation is under way.
+    /// this runs only in the queue, never while a mutation is under way.
     fn reload(&mut self) {
         self.dir = AccountDirectory::load_in(&self.account_root);
         self.sync_statuses = self.account_root.statuses();
@@ -2868,12 +2871,18 @@ impl AccountsPane {
         Ok(stored)
     }
 
+    /// The credential a save of `account` uses: the one typed, or the kept
+    /// one where none was. A kept credential was typed for the servers the
+    /// account named then (`kept` is the account as it stands before this
+    /// save), and is used for no account that names another: its person
+    /// types the one for that server.
     fn prepare_secret(
-        vault: &accounts::SecretVault,
-        id: &accounts::AccountId,
+        vault: &mut accounts::SecretVault,
+        kept: Option<&accounts::Account>,
+        account: &accounts::Account,
         password: &str,
     ) -> Result<accounts::Secret, String> {
-        let mut secret = vault.get(id).unwrap_or_default();
+        let mut secret = vault.get(&account.id).unwrap_or_default();
         if password.trim().is_empty() {
             // An unreadable vault is not one without this account's credential.
             if let Some(error) = vault.recovery_error() {
@@ -2881,6 +2890,15 @@ impl AccountsPane {
             }
             if secret.is_empty() {
                 return Err("this account has no saved credential; enter one".into());
+            }
+            if let Some(kept) = kept {
+                vault.bind_first(kept);
+            }
+            if vault.typed_elsewhere(account) {
+                return Err(
+                    "this account's saved credential was entered for another server; enter the one for this server"
+                        .into(),
+                );
             }
         } else {
             // An edit may add/replace a password on an OAuth-capable account;
@@ -2895,10 +2913,13 @@ impl AccountsPane {
             Ok(stored) => stored,
             Err(error) => return settle(self, Err(error)),
         };
-        let id = stored.id.clone();
+        let kept = self.account_root.store().get(&stored.id).cloned();
+        let account = stored.clone();
         let password = draft.password.clone();
         Step::vault(
-            move |vault| Self::prepare_secret(&vault.open(), &id, &password),
+            move |vault| {
+                Self::prepare_secret(&mut vault.open(), kept.as_ref(), &account, &password)
+            },
             move |pane, secret| {
                 let secret = match secret {
                     Ok(secret) => secret,
@@ -2915,7 +2936,7 @@ impl AccountsPane {
                         }
                         Step::vault(
                             move |vault| {
-                                if let Err(error) = vault.custodian().publish(&id, false) {
+                                if let Err(error) = vault.credential_store().publish(&id, false) {
                                     warn!(target: "tilo::settings", %error, "could not publish the updated credential");
                                 }
                             },
@@ -2954,7 +2975,7 @@ impl AccountsPane {
         let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
-        pane.run_in_lane(move |pane| {
+        pane.run_in_queue(move |pane| {
             pane.save_draft_then(
                 draft,
                 Box::new(move |_: &mut Self, result: Result<(), String>| {
@@ -2963,7 +2984,7 @@ impl AccountsPane {
                 }),
             )
         });
-        pane.settle_lane();
+        pane.settle_queue();
         outcome
             .take()
             .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
@@ -2985,13 +3006,15 @@ impl AccountsPane {
         let (stored, secrets): (Vec<_>, Vec<_>) = accounts
             .into_iter()
             .map(|(account, secret)| {
-                let id = account.id.clone();
-                (account, secret.map(|secret| (id, secret)))
+                let entered = secret.map(|secret| (account.clone(), secret));
+                (account, entered)
             })
             .unzip();
-        let secrets: Vec<(accounts::AccountId, accounts::Secret)> =
+        // Each credential with the account it was entered for: the vault
+        // keeps the servers that account names beside it.
+        let secrets: Vec<(accounts::Account, accounts::Secret)> =
             secrets.into_iter().flatten().collect();
-        // Persist credential custody first. If metadata then fails, the only
+        // Persist credential storage first. If metadata then fails, the only
         // residue is an unreachable encrypted vault entry, never an account
         // that applications try to use without its credential.
         if secrets.is_empty() {
@@ -3002,10 +3025,10 @@ impl AccountsPane {
                 let mut vault = vault.open();
                 let previous: Vec<_> = secrets
                     .iter()
-                    .map(|(id, secret)| {
-                        let previous = vault.get(id);
-                        vault.put(id, secret);
-                        (id.clone(), previous)
+                    .map(|(account, secret)| {
+                        let previous = vault.get(&account.id);
+                        vault.put_for(account, secret);
+                        (account.id.clone(), previous)
                     })
                     .collect();
                 vault.try_save().map(|()| previous)
@@ -3090,7 +3113,7 @@ impl AccountsPane {
         let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
-        pane.run_in_lane(move |pane| {
+        pane.run_in_queue(move |pane| {
             pane.commit_then(
                 accounts,
                 Box::new(move |_: &mut Self, result: Result<(), String>| {
@@ -3099,7 +3122,7 @@ impl AccountsPane {
                 }),
             )
         });
-        pane.settle_lane();
+        pane.settle_queue();
         outcome
             .take()
             .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
@@ -3115,7 +3138,7 @@ impl AccountsPane {
             return;
         }
         let id = accounts::AccountId::from(id.to_owned());
-        self.run_in_lane(move |pane| {
+        self.run_in_queue(move |pane| {
             pane.removal(
                 id,
                 Box::new(move |pane: &mut Self, result: Result<(), String>| {
@@ -3223,14 +3246,14 @@ impl AccountsPane {
         if let (Some(account), Some(secret)) = (
             removal.original_store.get(&removal.id),
             removal.original_secret,
-        ) && account_custody::is_cloud_type(account.type_id.as_str())
+        ) && account_credentials::is_cloud_type(account.type_id.as_str())
         {
             let account = account.clone();
-            let custodian = self.custodian.clone();
+            let credential_store = self.credential_store.clone();
             let _ = crate::device_read::thread(
                 "settings-accounts-worker",
                 Box::new(move || {
-                    custodian.revoke(&account, &secret);
+                    credential_store.revoke(&account, &secret);
                 }),
             );
         }
@@ -3354,12 +3377,15 @@ impl AccountsPane {
             let id = account.id.clone();
             let typed = draft.password.clone();
             let original_account = self.account_root.store().get(&id).cloned();
-            self.run_in_lane(move |_| {
+            let kept = original_account.clone();
+            let asked = account.clone();
+            self.run_in_queue(move |_| {
                 Step::vault(
                     move |vault| {
-                        let vault = vault.open();
+                        let mut vault = vault.open();
                         let original = vault.get(&id);
-                        Self::prepare_secret(&vault, &id, &typed).map(|secret| (secret, original))
+                        Self::prepare_secret(&mut vault, kept.as_ref(), &asked, &typed)
+                            .map(|secret| (secret, original))
                     },
                     move |pane, secret| {
                         if round == pane.form_round {
@@ -3426,7 +3452,7 @@ impl AccountsPane {
             } else {
                 self.form_saving = true;
                 let round = self.form_round;
-                self.run_in_lane(move |pane| {
+                self.run_in_queue(move |pane| {
                     pane.check_calendar_credential_then(Box::new(move |pane, checked| {
                         if pane.form_round == round {
                             pane.form_saving = false;
@@ -3447,7 +3473,7 @@ impl AccountsPane {
             };
             self.form_saving = true;
             let round = self.form_round;
-            self.run_in_lane(move |pane| {
+            self.run_in_queue(move |pane| {
                 pane.save_draft_then(
                     candidate,
                     Box::new(move |pane: &mut Self, saved: Result<(), String>| {
@@ -3517,7 +3543,7 @@ impl AccountsPane {
                 self.changed = true;
                 let round = self.reauth_round;
                 let stored_id = account_id.clone();
-                self.run_in_lane(move |_| {
+                self.run_in_queue(move |_| {
                     Step::vault(
                         move |vault| vault.open().get(&stored_id).unwrap_or_default(),
                         move |pane, mut secret: accounts::Secret| {
@@ -3566,7 +3592,7 @@ impl AccountsPane {
             };
             self.reauth_saving = true;
             let round = self.reauth_round;
-            self.run_in_lane(move |_| {
+            self.run_in_queue(move |_| {
                 Step::vault(
                     move |vault| {
                         let mut vault = vault.open();
@@ -3600,7 +3626,7 @@ impl AccountsPane {
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
         self.remove_then(id, move |result| *landed.borrow_mut() = Some(result));
-        self.settle_lane();
+        self.settle_queue();
         outcome
             .take()
             .unwrap_or_else(|| Err("the removal stopped unexpectedly".into()))
@@ -3620,14 +3646,14 @@ impl AccountsPane {
         let cloud = AccountKind::from_type_id(account.type_id.as_str())
             .is_some_and(AccountKind::is_cloud_storage);
         let vault = self.account_root.vault_opener();
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         let tester = std::sync::Arc::clone(&self.account_tester);
         Ok(move || {
             let secret = vault.open().get(&account_id).ok_or_else(|| {
                 "this account has no saved credential; sign in again first".to_string()
             })?;
             if cloud {
-                custodian
+                credential_store
                     .publish(&account_id, true)
                     .map(|()| "The provider accepted the saved sign-in".to_string())
                     .map_err(|error| error.to_string())
@@ -3643,7 +3669,7 @@ impl AccountsPane {
             if self.seen_accounts.is_some() {
                 // After the vault work under way: a reload recovers a
                 // journalled mutation, which must not be one still running.
-                self.run_in_lane(|pane| {
+                self.run_in_queue(|pane| {
                     pane.reload();
                     if let Err(error) = pane.account_root.project() {
                         tracing::warn!(%error, "the device's account file could not follow the person's accounts");
@@ -3654,7 +3680,7 @@ impl AccountsPane {
             }
             self.seen_accounts = revision;
         }
-        self.advance_lane(false);
+        self.advance_queue(false);
         self.poll_vault_opening();
         self.poll_mail_grants();
         self.poll_form_probe();
@@ -3671,7 +3697,7 @@ impl AccountsPane {
     pub fn busy(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()
-            || !self.lane.is_idle()
+            || !self.queue.is_idle()
             || self.vault_opening.is_some()
             || self.mail_grants.reading.is_some()
             || self

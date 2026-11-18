@@ -4,8 +4,8 @@
 //! every record when opened (a public one), each route this session opens
 //! is asked for that way ([`Task::documents_when_opened`]).
 
-use super::{DocumentRoute, Envelope, RelayClient, Task};
-use tilo_relay_protocol::WorkspaceId;
+use super::{DocumentRoute, Envelope, ServerClient, Task};
+use tilo_server_protocol::WorkspaceId;
 
 impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its
@@ -15,7 +15,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         route: DocumentRoute,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
         // A chain's head names a part and holds nothing of its own: the
@@ -46,7 +46,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
         if self.opened_records.contains_key(&(workspace_id, channel))
@@ -63,7 +63,7 @@ impl Task {
     pub(super) fn documents_when_opened(
         &mut self,
         workspace_id: WorkspaceId,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         if !self.when_opened.insert(workspace_id) {
             return;
@@ -84,8 +84,8 @@ impl Task {
     pub(super) fn own_channel(
         &self,
         route: &DocumentRoute,
-    ) -> Option<tilo_relay_protocol::OwnedChannel> {
-        tilo_relay_protocol::OwnedChannel::recognise(
+    ) -> Option<tilo_server_protocol::OwnedChannel> {
+        tilo_server_protocol::OwnedChannel::recognise(
             &route.app_id,
             &route.document,
             self.config.cert.user_public_key,
@@ -94,7 +94,7 @@ impl Task {
 
     /// Open every record this session opened again on a new subscription.
     /// Returns `false` when the session could not take the requests.
-    pub(super) fn reopen_records(&self, client: &RelayClient) -> bool {
+    pub(super) fn reopen_records(&self, client: &ServerClient) -> bool {
         let mut sent_ok = true;
         for ((workspace_id, channel), route) in &self.opened_records {
             sent_ok &= client
@@ -114,10 +114,11 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     ) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
+        self.answered_behind(workspace_id, channel);
         if let Some(route) = self.opened_records.get(&(workspace_id, channel)) {
             self.reports.emit(&crate::Event::DocumentOpened {
                 ws: workspace_id,

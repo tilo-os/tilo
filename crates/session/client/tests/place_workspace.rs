@@ -25,7 +25,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspace = "0b7c6f0e-2d55-4f3a-9c1e-5a8d2b4e6f10";
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
     let page = start_peer(
         host.iroh(),
         laptop.cert.clone(),
@@ -35,7 +35,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     page.join_placed(workspace, "Garden").unwrap();
     crate::support::in_workspace(&page, workspace_id).await;
     let summary = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .summary(workspace)
@@ -53,7 +53,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     again.join_placed(workspace, "Another name").unwrap();
     crate::support::in_workspace(&again, workspace_id).await;
     assert_eq!(
-        host.relay
+        host.server
             .workspaces()
             .unwrap()
             .summary(workspace)

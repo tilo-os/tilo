@@ -7,7 +7,7 @@ license.workspace = true
 description = "Environment images (env-runtime and tool tapps) fetched from the OCI registry CI publishes them to."
 
 [dependencies]
-# The package store's fetcher seam.
+# The package store's fetcher boundary.
 tilo-app-package = { path = "../tilo-app-package" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Synchronous callers run their fetch on the process's one async runtime.

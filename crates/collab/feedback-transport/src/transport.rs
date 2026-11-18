@@ -6,7 +6,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
-use ui::permissions::{Acting, ActionKind, Answer, PermissionContext, Standing, TreePath};
+use ui::permissions::{Acting, ActionKind, Answer, MemberAccess, PermissionContext, TreePath};
 use ui::resource::{DocumentId, ResourceStore};
 
 use tilo_feedback::{
@@ -34,7 +34,7 @@ impl Enrollment {
     /// # Errors
     ///
     /// [`Error::ReceiptMismatch`] for any other identity, and the decoding
-    /// error of a malformed standing or sandbox.
+    /// error of a malformed member access or sandbox.
     pub fn admitted(
         answer: &FeedbackAnswer,
         destination: &FeedbackDestination,
@@ -50,8 +50,8 @@ impl Enrollment {
         {
             return Err(Error::ReceiptMismatch);
         }
-        let standing: Standing = serde_json::from_value(admission.standing.clone())?;
-        if standing.person_id() != Some(admission.reporter_user.as_str()) {
+        let access: MemberAccess = serde_json::from_value(admission.access.clone())?;
+        if access.person_id() != Some(admission.reporter_user.as_str()) {
             return Err(Error::ReceiptMismatch);
         }
         let workspace = destination.workspace.clone();
@@ -67,9 +67,9 @@ impl Enrollment {
             owner: caller(owner),
             reporter: caller(reporter),
             permissions: PermissionContext::new(
-                Acting::person(standing.person_id().unwrap_or_default()),
+                Acting::person(access.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.sandbox.clone())?,
-                standing,
+                access,
             )
             .at_unix_time(admission.unix_time),
         })
@@ -295,7 +295,7 @@ pub trait ReceiptSigner {
 }
 
 /// The exact retained record and app's pure registered report projection.
-/// Projection is never a durability witness; `CanonicalDestination` checks
+/// Projection is never a durability proof; `CanonicalDestination` checks
 /// current owner status around it and the signing service.
 pub struct CanonicalRecord {
     pub records: ResourceStore,
@@ -319,7 +319,7 @@ pub trait CanonicalReceiptSource {
     /// Refuses missing, unauthorized, conflicting or undurable reports.
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error>;
     /// Whether the owner's durable content store keeps bytes that hash to
-    /// `hash`: the witness a report's screenshot needs before its receipt.
+    /// `hash`: the proof a report's screenshot needs before its receipt.
     /// A source without a content store keeps nothing.
     ///
     /// # Errors
@@ -410,7 +410,7 @@ impl Transport for SessionTransport {
     }
 }
 
-/// Existing focused-surface consent/masking and content custody. Raw screenshots
+/// Existing focused-surface consent/masking and content ownership. Raw screenshots
 /// or whole-desktop capture must never be implemented by this adapter.
 pub trait Capture {
     /// Whether this adapter can produce a masked screenshot at all.
@@ -529,9 +529,9 @@ impl CanonicalDestination {
     ) -> Result<SignedReceipt, Error> {
         submission.validate()?;
         let pin = enrollment.authorize_receipt(submission)?;
-        // Saved report metadata does not prove custody of referenced content:
+        // Saved report metadata does not prove ownership of referenced content:
         // the owner must keep the screenshot's verified bytes itself.
-        self.witness_content(submission)?;
+        self.proof_content(submission)?;
         if enrollment.owner != self.owner
             || self.signer.owner() != &self.owner
             || submission.destination != self.destination
@@ -566,7 +566,7 @@ impl CanonicalDestination {
         if current != receipt || current_author != author {
             return Err(Error::ReceiptMismatch);
         }
-        self.witness_content(submission)?;
+        self.proof_content(submission)?;
         Ok(SignedReceipt { receipt, signature })
     }
 
@@ -591,7 +591,7 @@ impl CanonicalDestination {
 
     /// Refuses a report whose screenshot or recording the owner does not
     /// durably keep.
-    fn witness_content(&self, submission: &Submission) -> Result<(), Error> {
+    fn proof_content(&self, submission: &Submission) -> Result<(), Error> {
         let feedback = &submission.feedback;
         let named = feedback
             .screenshot
@@ -657,7 +657,7 @@ impl CanonicalReceiptSource for CanonicalRecord {
     }
 }
 
-/// Non-serializable startup custody supplied by the existing enrollment owner.
+/// Non-serializable startup ownership supplied by the existing enrollment owner.
 /// A launch URL or an application can neither construct nor replace its transport.
 pub struct Startup {
     enrollment: Enrollment,
@@ -695,7 +695,7 @@ impl Startup {
     }
 
     /// The host this startup opens over `store`, bound to the profile's
-    /// durable feedback authority: the custody a desktop installs.
+    /// durable feedback authority: the ownership a desktop installs.
     /// # Errors
     /// Refuses changed authority and undurable/unrecoverable storage.
     pub fn host(self, store: Rc<dyn DurableStore>) -> Result<Box<dyn FeedbackHost>, Error> {

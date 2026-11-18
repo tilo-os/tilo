@@ -76,6 +76,18 @@ test('a device is named by its browser and system, as people say them', () => {
   assert.ok(deviceLabel({userAgent: 'Firefox/1', platform: 'x'.repeat(100)}).length <= 64);
 });
 
+test('a native app that holds the page names its device itself', () => {
+  const safari = {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'};
+  assert.equal(deviceLabel(safari, {name: 'Tilo Assistant on Ada’s Mac'}), 'Tilo Assistant on Ada’s Mac');
+  // One line of at most 64 characters, whatever it was handed.
+  assert.equal(deviceLabel(safari, {name: '  Tilo\nAssistant\u0000 '}), 'Tilo Assistant');
+  assert.equal(deviceLabel(safari, {name: 'x'.repeat(100)}), 'x'.repeat(64));
+  // No name, an empty one or something that is no text leaves it to the browser and the system.
+  for (const none of [{}, {name: ''}, {name: ' \n '}, {name: 42}, {name: {toString: () => 'x'}}, null]) {
+    assert.equal(deviceLabel(safari, none), 'Safari on Mac');
+  }
+});
+
 test('when a device asked reads as words', () => {
   assert.equal(whenRequested(1000, {now: 20_000, locale: 'en'}), 'just now');
   assert.equal(whenRequested(0, {now: 2 * 60_000, locale: 'en'}), '2 minutes ago');
@@ -121,4 +133,52 @@ test('a waiting device is told where it is approved and where “Pair a new devi
   });
   assert.equal(INVITE_TTL_MS, 10 * 60 * 1000, 'the minutes the sentence names');
   assert.equal(pairingStatus('123456'), 'Pairing code 123456. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve 123456 where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.');
+});
+
+test('a device says whose it becomes in one sentence, with the name its host gave and nothing that could bend it', async () => {
+  const pairing = await import('./pairing.mjs');
+  // The name is the word of the site's own server, and of no other.
+  const own = {ofSite: true};
+  assert.equal(pairing.pairingWhose('Ada Lovelace', own), 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.');
+  // No name from the host: it says so, and what to go by instead.
+  for (const none of ['', null, undefined, '   ', '‮‏']) {
+    assert.equal(pairing.pairingWhose(none, own),
+      'You are adding this device to the devices of someone this host has no name for. If you did not make this link yourself, stop.');
+  }
+  // A name cannot turn the sentence round, break its line or run on.
+  assert.equal(pairing.pairingWhose('Bo‮\n  Smith⁦‏', own), 'You are adding this device to Bo Smith’s devices. If that is not you, stop.');
+  assert.equal(Array.from(pairing.shownName('x'.repeat(200))).length, 64);
+  // A server the site does not name as its own names nobody, whatever it
+  // answered, and so does a caller that did not say whose the server is.
+  for (const whose of [undefined, {}, {ofSite: false}, {ofSite: 'yes'}, {ofSite: 1}]) {
+    for (const name of ['Ada Lovelace', '', null]) {
+      assert.equal(pairing.pairingWhose(name, whose),
+        'You are adding this device to the devices of whoever made this link. If you did not make it yourself, stop.');
+    }
+  }
+});
+
+test('a device that stopped is told that nothing was paired', async () => {
+  const pairing = await import('./pairing.mjs');
+  assert.equal(pairing.pairingFailure(Object.assign(new Error('stopped here'), {code: 'stopped'})), pairing.PAIRING_STOPPED);
+  assert.match(pairing.PAIRING_STOPPED, /^Nothing was paired\./);
+});
+
+test('a pairing a tab asked for itself is known as its own once, and a link it did not ask for never is', async () => {
+  const {askOwnPairing, ownPairing} = await import('./pairing.mjs');
+  const kept = new Map();
+  const storage = {getItem: key => kept.get(key) ?? null, setItem: (key, value) => kept.set(key, value), removeItem: key => kept.delete(key)};
+  const invite = '0f'.repeat(16);
+  askOwnPairing(USER, invite, storage);
+  assert.equal(ownPairing(USER, invite, storage), true);
+  assert.equal(ownPairing(USER, invite, storage), false, 'read once');
+  askOwnPairing(USER, invite, storage);
+  assert.equal(ownPairing('cd'.repeat(32), invite, storage), false, 'another person');
+  askOwnPairing(USER, invite, storage);
+  assert.equal(ownPairing(USER, 'aa'.repeat(16), storage), false, 'another invite');
+  assert.equal(ownPairing(USER, invite, storage), false, 'and a mismatch spends it too');
+  assert.equal(ownPairing(USER, invite, null), false, 'no storage: nothing asked here');
+  const broken = {getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => {}};
+  askOwnPairing(USER, invite, broken);
+  assert.equal(ownPairing(USER, invite, broken), false);
 });

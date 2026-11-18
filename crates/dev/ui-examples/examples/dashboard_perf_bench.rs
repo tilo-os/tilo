@@ -87,7 +87,7 @@ fn verification_frame_count() -> usize {
 
 #[allow(
     clippy::exit,
-    reason = "mixing verifier readbacks with benchmark gates is a command-line configuration error"
+    reason = "mixing verifier readbacks with benchmark checks is a command-line configuration error"
 )]
 fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
     const ACCEPTANCE_BUDGETS: &[&str] = &[
@@ -137,7 +137,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     let mut col = Column::new().push(Box::new(Text::new(title_key).with_role(TextRole::Title)));
 
     // here — Toggle / Checkbox / Slider / DatePicker / etc. still
-    // default to `true` and would peg the gate forever. Once
+    // default to `true` and would peg the check forever. Once
     // those are migrated this can grow back.
     for i in 0..20 {
         let row_idx = idx.saturating_mul(20).saturating_add(i);
@@ -225,7 +225,7 @@ fn build_tree(include_animated: bool) -> Box<dyn Widget> {
     }
 
     // Footer kept light — only migrated widgets so the static-mode
-    // gate experiment isn't poisoned by Breadcrumb / Slider / etc.
+    // check experiment isn't poisoned by Breadcrumb / Slider / etc.
     // still returning `needs_redraw = true` by default.
     let footer = Row::new()
         .push(Box::new(Text::new("dash_title")))
@@ -1518,7 +1518,7 @@ fn run_bench_loop(
             );
         }
 
-        // App-style gate: only draw if the tree signals dirty (or the peer
+        // App-style check: only draw if the tree signals dirty (or the peer
         // moved).
         let redrew = state.clock.pin(|| state.root.needs_redraw()) || state.peer.is_some();
         if redrew {
@@ -1588,7 +1588,7 @@ fn print_timing_table(histo: &[Phase]) {
     );
     println!(
         "{:<20} {:>8} {:>8} {:>8}",
-        "layout (gated)",
+        "layout (guarded)",
         mean(histo, |p| p.layout_us),
         pct(histo, 95.0, |p| p.layout_us),
         pct(histo, 99.0, |p| p.layout_us)
@@ -1674,7 +1674,7 @@ fn print_frame_breakdown_group(label: &str, samples: &[Phase]) {
 }
 
 /// Reports existing frame samples after the timed loop. This does not alter
-/// the workload, gate population, or resource snapshots; it only classifies
+/// the workload, check population, or resource snapshots; it only classifies
 /// the `raster_pixels` that were already recorded for each redraw.
 fn print_frame_breakdown(histo: &[Phase], full_pixels: u64) {
     let redrawn = histo
@@ -1694,7 +1694,7 @@ fn print_frame_breakdown(histo: &[Phase], full_pixels: u64) {
         .collect::<Vec<_>>();
 
     println!();
-    println!("frame breakdown (post-timing; all gate samples remain unchanged):");
+    println!("frame breakdown (post-timing; all check samples remain unchanged):");
     println!(
         "{:<18} {:>8} {:>10} {:>10} {:>10} {:>10}",
         "kind", "samples", "mean total", "p99 total", "mean render", "p99 render"
@@ -2332,7 +2332,7 @@ fn print_final_report(
 
 #[allow(
     clippy::exit,
-    reason = "a benchmark budget is an executable acceptance gate for CI and target-hardware runs"
+    reason = "a benchmark budget is an executable acceptance check for CI and target-hardware runs"
 )]
 fn enforce_frame_budget(histo: &[Phase], budget_us: u128) {
     let redrawing = histo
@@ -2397,11 +2397,11 @@ fn redraw_frame_samples(histo: &[Phase]) -> String {
 }
 
 /// `TILO_UI_DASH_SAMPLES=<path>`: write every redrawing frame's total, so the
-/// scheduled performance lane records the distribution rather than the
+/// scheduled performance job records the distribution rather than the
 /// printed summary.
 #[allow(
     clippy::exit,
-    reason = "a run that cannot hand its samples to the performance lane must not pass as recorded"
+    reason = "a run that cannot hand its samples to the performance job must not pass as recorded"
 )]
 fn write_frame_samples(histo: &[Phase], path: &std::path::Path) {
     let samples = redraw_frame_samples(histo);
@@ -2447,7 +2447,7 @@ fn parse_mean_frame_budget(raw: Option<&str>) -> Result<Option<u128>, &'static s
 
 #[allow(
     clippy::exit,
-    reason = "a benchmark budget is an executable acceptance gate for CI and target-hardware runs"
+    reason = "a benchmark budget is an executable acceptance check for CI and target-hardware runs"
 )]
 fn enforce_mean_frame_budget(histo: &[Phase], budget_us: u128) {
     let Some((total_us, redraws)) = redraw_frame_totals(histo) else {
@@ -2459,7 +2459,7 @@ fn enforce_mean_frame_budget(histo: &[Phase], budget_us: u128) {
     let sample_count = u128::try_from(redraws).unwrap_or(u128::MAX);
     let mean_us = total_us.checked_div(sample_count).unwrap_or(0);
     // Compare totals, rather than the truncated integer mean, so a fractional
-    // microsecond excess cannot pass the acceptance gate.
+    // microsecond excess cannot pass the acceptance check.
     let passed = mean_frame_budget_passes(histo, budget_us).unwrap_or(false);
     println!(
         "mean-frame-budget: {} budget={}us mean={}us samples={}",
@@ -2475,7 +2475,7 @@ fn enforce_mean_frame_budget(histo: &[Phase], budget_us: u128) {
 
 #[allow(
     clippy::exit,
-    reason = "benchmark budgets are executable acceptance gates for CI and target-hardware runs"
+    reason = "benchmark budgets are executable acceptance checks for CI and target-hardware runs"
 )]
 fn enforce_event_budget(histo: &[Phase], budget_us: u128) {
     let p99_us = pct(histo, 99.0, |phase| phase.total_us);
@@ -2494,7 +2494,7 @@ fn enforce_event_budget(histo: &[Phase], budget_us: u128) {
 
 #[allow(
     clippy::exit,
-    reason = "raster work is an executable partial-redraw regression gate"
+    reason = "raster work is an executable partial-redraw regression check"
 )]
 fn enforce_raster_pixel_budget(histo: &[Phase], total_redraws: usize, budget: u128) {
     if total_redraws == 0 {
@@ -2515,7 +2515,7 @@ fn enforce_raster_pixel_budget(histo: &[Phase], total_redraws: usize, budget: u1
 
 #[allow(
     clippy::exit,
-    reason = "benchmark budgets are executable acceptance gates for CI and target-hardware runs"
+    reason = "benchmark budgets are executable acceptance checks for CI and target-hardware runs"
 )]
 fn enforce_resource_budgets(
     renderer: &OffscreenRenderer,
@@ -2587,7 +2587,7 @@ fn enforce_resource_budgets(
 
 #[allow(
     clippy::exit,
-    reason = "allocation budgets are executable acceptance gates for CI and target-hardware runs"
+    reason = "allocation budgets are executable acceptance checks for CI and target-hardware runs"
 )]
 fn report_and_enforce_allocations(
     snapshot: crate::AllocationSnapshot,
@@ -2796,7 +2796,7 @@ pub fn run(_args: &[String]) {
     println!(
         "mode: {}",
         if static_mode {
-            "static (no spinners / indeterminate bars — gate-skipped events should dominate)"
+            "static (no spinners / indeterminate bars — check-skipped events should dominate)"
         } else {
             "animated (header contains spinners + indeterminate progress)"
         }
@@ -2982,7 +2982,7 @@ pub fn run(_args: &[String]) {
     print_warmup_report(&state);
 
     // FROZEN — identical no-op CursorMoved every event. Proves
-    // the Unit 1+2 gate skips when nothing in the tree mutates.
+    // the Unit 1+2 check skips when nothing in the tree mutates.
     // SCROLL — fire a wheel event every iteration; exercises the
     // translation-invariant cache + Scrollable's scroll-dirty
     // signal, which must keep scrolling smooth.

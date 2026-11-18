@@ -384,7 +384,7 @@ impl Widget for FileExplorerWidget {
     fn needs_idle_sync(&self) -> bool {
         self.state
             .borrow()
-            .collaborative_record_pager
+            .collaborative_resource_pager
             .borrow()
             .has_more()
             || self.chrome.nav.needs_idle_sync()

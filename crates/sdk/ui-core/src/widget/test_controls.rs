@@ -1,11 +1,11 @@
-//! Test support for action-bound controls: a mount outside host custody
+//! Test support for action-bound controls: a mount outside host ownership
 //! and a one-parameter test action.
 
 use super::{Decorator, Widget, capability, controls};
 
-pub(crate) struct Uncustodied<W>(pub W);
+pub(crate) struct Unattached<W>(pub W);
 
-impl<W: Widget + controls::ActionControls + 'static> Decorator for Uncustodied<W> {
+impl<W: Widget + controls::ActionControls + 'static> Decorator for Unattached<W> {
     type Inner = W;
 
     fn inner(&self) -> &W {
@@ -33,15 +33,15 @@ impl<W: Widget + controls::ActionControls + 'static> Decorator for Uncustodied<W
     }
 
     fn name(&self) -> &'static str {
-        "Uncustodied"
+        "Unattached"
     }
 }
 
-impl<W: Widget + controls::ActionControls + 'static> controls::ActionControls for Uncustodied<W> {
-    fn install_control_custody(
+impl<W: Widget + controls::ActionControls + 'static> controls::ActionControls for Unattached<W> {
+    fn attach_controls(
         &mut self,
         _domain: &crate::ControlDomain,
-        _attachment: crate::control_custody::CustodyAttachment,
+        _attachment: crate::control_domain::DomainAttachment,
     ) {
     }
 

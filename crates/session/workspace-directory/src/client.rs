@@ -5,9 +5,9 @@
 //! A site's `entry.json` names its home workspace and its directory of public
 //! ones; the directory then lists every public workspace it serves with what
 //! it is, who is in it now and how lively it is
-//! ([`tilo_relay_protocol::directory`]). Joining one enters it through its
+//! ([`tilo_server_protocol::directory`]). Joining one enters it through its
 //! entry ([`through_entry`]): the device asks its entry on the session it opens
-//! with the entry's host ([`tilo_relay_protocol::entering`]), as every device
+//! with the entry's host ([`tilo_server_protocol::entering`]), as every device
 //! enters a workspace, so nothing is asked of the entry here.
 //!
 //! Every step of a join is logged at `info` under
@@ -235,11 +235,11 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, Si
 }
 
 /// The public workspaces the directory at `directory` lists. Every directory
-/// route is a `POST`, as a relay serves nothing else.
+/// route is a `POST`, as a server serves nothing else.
 pub async fn fetch_directory(
     client: &Client,
     directory: &url::Url,
-) -> Result<tilo_relay_protocol::directory::DirectoryPage, SiteError> {
+) -> Result<tilo_server_protocol::directory::DirectoryPage, SiteError> {
     let response = client
         .post(directory.as_str())
         .timeout(ANSWER_TIMEOUT)
@@ -402,7 +402,7 @@ async fn leave(
     let url = site
         .join(&format!("i/{}", sealed.handle))
         .map_err(|_| "that is not a web address".to_owned())?;
-    let stored = tilo_relay_protocol::sealed_invitations::Stored {
+    let stored = tilo_server_protocol::sealed_invitations::Stored {
         sealed: sealed.sealed_text(),
         expires_at_ns,
         delete: sealed.delete.clone(),
@@ -450,7 +450,7 @@ pub async fn take_back(
     let response = client
         .delete(url.as_str())
         .timeout(ANSWER_TIMEOUT)
-        .json(&tilo_relay_protocol::sealed_invitations::TakeBack {
+        .json(&tilo_server_protocol::sealed_invitations::TakeBack {
             delete: delete.to_owned(),
         })
         .send()
@@ -502,7 +502,7 @@ async fn redeem(
             )
         })?;
     let status = response.status().as_u16();
-    if status == tilo_relay_protocol::sealed_invitations::GONE {
+    if status == tilo_server_protocol::sealed_invitations::GONE {
         return Err(said(
             "a sealed invitation is gone",
             status,
@@ -526,7 +526,7 @@ async fn redeem(
                 "directory-error-unreadable",
             )
         })?;
-    let fetched: tilo_relay_protocol::sealed_invitations::Fetched = serde_json::from_slice(&bytes)
+    let fetched: tilo_server_protocol::sealed_invitations::Fetched = serde_json::from_slice(&bytes)
         .map_err(|error| {
             said(
                 "a site answered with something that is not an invitation",
@@ -949,7 +949,7 @@ mod tests {
             Reply::status(200)
                 .header("Content-Type", "application/json")
                 .body(
-                    serde_json::to_string(&tilo_relay_protocol::sealed_invitations::Fetched {
+                    serde_json::to_string(&tilo_server_protocol::sealed_invitations::Fetched {
                         sealed: sealed.sealed_text(),
                         host: Some(HOST.to_owned()),
                     })
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn a_link_whose_invitation_was_taken_back_says_so() {
         let responder = Responder::start(vec![Reply::status(
-            tilo_relay_protocol::sealed_invitations::GONE,
+            tilo_server_protocol::sealed_invitations::GONE,
         )]);
         let site = site(&responder);
         let sealed =
@@ -1067,7 +1067,7 @@ mod tests {
             Reply::status(200)
                 .header("Content-Type", "application/json")
                 .body(
-                    serde_json::to_string(&tilo_relay_protocol::sealed_invitations::Fetched {
+                    serde_json::to_string(&tilo_server_protocol::sealed_invitations::Fetched {
                         sealed: sealed.sealed_text(),
                         host: None,
                     })

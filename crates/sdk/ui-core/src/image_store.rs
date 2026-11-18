@@ -173,7 +173,7 @@ impl Shared {
         })
     }
 
-    /// Exact request identity, rather than its URL, owns pending custody.
+    /// Exact request identity, rather than its URL, owns pending ownership.
     fn settle(&self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
         let mut cache = self.slots.lock_recover();
         if !cache.slots.get(url).is_some_and(
@@ -218,7 +218,7 @@ pub struct HostImageLoader {
     max_dimension: u32,
 }
 
-/// Opaque custody for one admitted asynchronous image decode.
+/// Opaque ownership for one admitted asynchronous image decode.
 pub struct ImageCompletionTicket {
     shared: Arc<Shared>,
     request: Arc<RequestIdentity>,

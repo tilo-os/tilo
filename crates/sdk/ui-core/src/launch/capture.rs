@@ -19,7 +19,7 @@ pub(super) fn captures_frames(args: &LaunchArgs) -> bool {
 /// A capture set in the host's faces is not evidence about this product: every overflow, truncation and
 /// weight judgement made from it is about a font Tilo does not ship.
 #[cfg(not(test))]
-pub(super) fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
+pub(super) fn capture_font_check(args: &LaunchArgs) -> Result<(), LaunchError> {
     if !captures_frames(args) {
         return Ok(());
     }
@@ -35,7 +35,7 @@ pub(super) fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 #[cfg(test)]
-pub(super) fn capture_font_gate(_args: &LaunchArgs) -> Result<(), LaunchError> {
+pub(super) fn capture_font_check(_args: &LaunchArgs) -> Result<(), LaunchError> {
     Ok(())
 }
 

@@ -37,9 +37,9 @@ fn draft(tree: &SemanticTree) -> Option<ContinuationEvidence> {
 }
 
 tilo_test_env::scenario! {
-    fn semantic_set_value_continuation_keeps_its_lanes_route_and_admission;
+    fn semantic_set_value_continuation_keeps_its_inputs_route_and_admission;
 
-    phase semantic_set_value_continuation_preserves_both_dynamic_encoder_lanes;
+    phase semantic_set_value_continuation_preserves_both_dynamic_encoder_inputs;
     {
         let (tree, id) = projected();
         let spec = spec(&tree);

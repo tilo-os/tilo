@@ -290,7 +290,7 @@ impl HistoryGroup {
         parts
     }
 
-    /// "Alice", "Claude for Ada", "Alice and Bob", "Alice, Bob + 4".
+    /// "Alice", "Claude", "Alice and Bob", "Alice, Bob + 4".
     pub fn authors_label(&self) -> String {
         match self.authors.as_slice() {
             [] => String::new(),

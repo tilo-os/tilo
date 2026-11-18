@@ -387,7 +387,7 @@ fn managed_session_scope_needs_no_fabricated_task_but_retains_route_validation()
     session.scope = ManagedLaunchScope::AgentSession;
     session.validate().unwrap();
     task.validate().unwrap();
-    assert_ne!(session, task, "scope is part of exact launch custody");
+    assert_ne!(session, task, "scope is part of exact launch ownership");
     session.agent.clear();
     assert!(session.validate().is_err());
     session = binding();
@@ -705,7 +705,7 @@ tilo_test_env::scenario! {
         authority.allowed.store(false, Ordering::Release);
         assert!(
             permit.revalidate().is_err(),
-            "the pre-spawn gate must reject revoked policy without consuming a new claim"
+            "the pre-spawn check must reject revoked policy without consuming a new claim"
         );
         drop(permit);
         authority.allowed.store(true, Ordering::Release);

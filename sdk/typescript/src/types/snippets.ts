@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.snippets@ab6662b1374b4cde";
+export const SURFACE = "so.tilo.snippets@530e3c69f46d7e0c";
 
-/** One of "PlainText", "Shell", "Rust", "Sql", "Git", "Python", "JavaScript", "Json", "Yaml", "Markdown", "Html", "Css", "Toml", "Dockerfile". */
-export type Language = "PlainText" | "Shell" | "Rust" | "Sql" | "Git" | "Python" | "JavaScript" | "Json" | "Yaml" | "Markdown" | "Html" | "Css" | "Toml" | "Dockerfile";
+/** One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
+export type Language = "text" | "shell" | "rust" | "sql" | "git" | "python" | "javascript" | "json" | "yaml" | "markdown" | "html" | "css" | "toml" | "dockerfile";
 
 export interface Snippet {
   title: string;

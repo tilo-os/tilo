@@ -30,7 +30,7 @@
 //!   daemon and the UI which features exist so they degrade gracefully.
 //! - **Credentials are borrowed, never owned.** A source asks its
 //!   [`CredentialSource`] for a short-lived [`Credential`] per request and
-//!   reports a rejection; Settings keeps custody, refresh and any
+//!   reports a rejection; Settings keeps ownership, refresh and any
 //!   interactive step (`OAuth` consent, a 2FA code for a session trust token).
 //! - **Unofficial APIs say so.** A provider built on an undocumented API
 //!   (`iCloud` Drive's web API) declares [`Support::BestEffort`], and the UI

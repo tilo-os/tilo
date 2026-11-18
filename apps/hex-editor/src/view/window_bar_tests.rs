@@ -169,9 +169,9 @@ fn the_window_search_replaces_hex_bytes_as_one_undo_step() {
 
 /// A clipboard this test has to itself: the process clipboard is shared with every
 /// test running beside it.
-fn own_clipboard() -> ui::host::HostScope {
-    let (services, _recorder) = ui::host::HostServices::recording();
-    ui::host::enter(&services)
+fn own_clipboard() -> ui::process::ProcessScope {
+    let (services, _recorder) = ui::process::ProcessServices::recording();
+    ui::process::enter(&services)
 }
 
 fn chord(app: &mut TestApp<HexEditorShell>, key: &str) {

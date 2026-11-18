@@ -184,9 +184,9 @@ fn opening_sources_sets_identity_without_exposing_paths() {
 fn portal_open_is_single_flight_generation_fenced_and_retained() {
     {
         let mut app = PlayerState::new(RunMode::Capture);
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Chosen.webm")));
-        ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
+        ui::process::scoped(&services, || app.trigger_open(None)).expect("picker starts");
         assert_eq!(recorder.pick_requests().len(), 1);
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
@@ -227,9 +227,9 @@ fn portal_open_is_single_flight_generation_fenced_and_retained() {
     }
     {
         let mut app = PlayerState::new(RunMode::Capture);
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Stale.webm")));
-        ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
+        ui::process::scoped(&services, || app.trigger_open(None)).expect("picker starts");
         app.portal_generation += 1;
         app.drain_portal();
         assert_eq!(app.title, "No media");
@@ -238,9 +238,9 @@ fn portal_open_is_single_flight_generation_fenced_and_retained() {
     }
     {
         let mut app = PlayerState::new(RunMode::Capture);
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         recorder.respond_to_pick(PortalOutcome::Failed("permission denied".into()));
-        ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
+        ui::process::scoped(&services, || app.trigger_open(None)).expect("picker starts");
         app.drain_portal();
         assert_eq!(app.open_error.as_deref(), Some("permission denied"));
         assert!(app.player.latest_frame().is_none());

@@ -1,6 +1,6 @@
 //! Exact managed consuming namespace placement; wire facts never grant source access.
 use super::{
-    Arc, BASE, ExecutingPeer, ExposurePreparation, File, NamespaceWitness, OwnedFd, Read, identity,
+    Arc, BASE, ExecutingPeer, ExposurePreparation, File, NamespaceProof, OwnedFd, Read, identity,
     io, kernel_stopped, mount_id, namespace, refused,
 };
 use crate::ordinary_child::{ManagedConsumingBootstrap, exposure_control::PlacementRecord};
@@ -24,7 +24,7 @@ impl RemotePlacement {
         preparation.check()?;
         let owner = managed
             .lock()
-            .map_err(|_| refused("Managed exposure custody poisoned"))?;
+            .map_err(|_| refused("Managed exposure ownership poisoned"))?;
         owner.verify_launcher(preparation.target_peer())?;
         let namespace = owner.clone_namespace()?;
         let namespace_identity = identity(&namespace)?;
@@ -52,7 +52,7 @@ impl RemotePlacement {
         let mut owner = self
             .managed
             .lock()
-            .map_err(|_| refused("Managed exposure custody poisoned"))?;
+            .map_err(|_| refused("Managed exposure ownership poisoned"))?;
         let (named, ns) = owner.place_exposure(
             &self.record,
             self.view.as_ref().ok_or(io::ErrorKind::NotConnected)?,
@@ -74,7 +74,7 @@ impl RemotePlacement {
         let owner = self
             .managed
             .lock()
-            .map_err(|_| refused("Managed exposure custody poisoned"))?;
+            .map_err(|_| refused("Managed exposure ownership poisoned"))?;
         owner.check_current()?;
         if identity(&owner.clone_namespace()?)? != self.namespace_identity
             || identity(&self.namespace)? != self.namespace_identity
@@ -115,15 +115,15 @@ impl RemotePlacement {
     }
     pub(super) fn adopt_consumer(
         &self,
-        witness: &NamespaceWitness,
+        proof: &NamespaceProof,
         peer: &ExecutingPeer,
     ) -> io::Result<()> {
         let mut owner = self
             .managed
             .lock()
-            .map_err(|_| refused("Managed exposure custody poisoned"))?;
+            .map_err(|_| refused("Managed exposure ownership poisoned"))?;
         owner.verify_launcher(peer)?;
-        owner.adopt_exposure_consumer(&self.record, witness, peer)
+        owner.adopt_exposure_consumer(&self.record, proof, peer)
     }
     pub(super) fn retire(&mut self) -> io::Result<()> {
         if self.retired {
@@ -132,7 +132,7 @@ impl RemotePlacement {
         let mut owner = self
             .managed
             .lock()
-            .map_err(|_| refused("Managed exposure custody poisoned"))?;
+            .map_err(|_| refused("Managed exposure ownership poisoned"))?;
         owner.check_current()?;
         if identity(&owner.clone_namespace()?)? != self.namespace_identity
             || identity(&self.namespace)? != self.namespace_identity

@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
         // The same record is also the app's primary document, published on its
         // own frontier.
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::PrimaryRouteWitness {
+            Some(crate::collaboration::AcceptedRoute {
                 route: route.clone(),
                 epoch: uuid::Uuid::new_v4(),
             });
@@ -383,7 +383,7 @@ tilo_test_env::scenario! {
             fixture.app.publish_owned_documents();
             assert!(fixture.app.document_routes.sent.is_empty());
             fixture.app.actions.bound_broker_route_for_test =
-                Some(crate::collaboration::PrimaryRouteWitness {
+                Some(crate::collaboration::AcceptedRoute {
                     route: crate::collaboration::RouteSpec::app(
                         "outer-shell",
                         fixture.bindings[0].broker_route().unwrap().cluster_id,
@@ -710,7 +710,7 @@ tilo_test_env::scenario! {
         let binding = fixture.bindings[0].clone();
         let route = binding.broker_route().unwrap();
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::PrimaryRouteWitness {
+            Some(crate::collaboration::AcceptedRoute {
                 route: route.clone(),
                 epoch: uuid::Uuid::new_v4(),
             });

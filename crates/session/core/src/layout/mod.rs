@@ -184,7 +184,7 @@ pub enum LayoutAction {
         y: i64,
         width: i64,
         height: i64,
-        /// Float the place above the workspace's windows at `float` , instead of standing it on the
+        /// Float the place above the workspace's windows at `float` , instead of setting it on the
         /// canvas: how a conversation popped out of its app opens, its draft and scroll kept in the
         /// window it already was. Left out, the place stands on the canvas as it always did.
         #[serde(default)]
@@ -249,7 +249,7 @@ pub enum LayoutAction {
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): the resource
     /// `resource` placed with its view `view` (empty for its primary one) beside the place showing
     /// `beside` — the turn that asked, by the address of its message — or beside the place in
-    /// front when it names none. A resource already standing is brought forward instead. The action API
+    /// front when it names none. A resource already open is brought forward instead. The action API
     /// resolves it into the `Place` (or `Activate`) it makes before the step is recorded, so the
     /// record holds ids. Appended last.
     Open {
@@ -279,6 +279,12 @@ pub enum LayoutAction {
     /// stands and every other place where it is: what dragging a place's edge or corner on the
     /// canvas runs (`canvas.md` §2). Appended last.
     Size { place: u64, width: i64, height: i64 },
+    /// Report that the hugging place `place` is drawn `height` canvas pixels tall now: what its
+    /// canvas sees of what it shows, up to the place's own height. View state, never an
+    /// arranging step: it is kept as nobody's change of the layout, and the free area beside
+    /// a place checks what it takes on the canvas by it (`CanvasPlace::occupied`, canvas.md §1,
+    /// §7). Appended last.
+    Drawn { place: u64, height: i64 },
 }
 
 /// Where a place made on the layout now goes: the workspace in front, its row, and the ids the
@@ -586,7 +592,7 @@ pub struct Target {
     /// the app. `None` where the default view is the resource's own.
     pub place_view: Option<String>,
     /// What [`Self::place_view`] is called, as its app publishes the view (`All inboxes`, `All
-    /// notes`): what a place standing through it is captioned, since it shows the thing the view
+    /// notes`): what a place shown through it is captioned, since it shows the thing the view
     /// names rather than the record the resource's own label is (an app's root goes by its first
     /// account or record).
     pub place_title: String,
@@ -942,7 +948,7 @@ impl Layout {
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
     /// the top of the `hits` the system's search answered for it that a place can
     /// show ([`found_resource`]), resolved against what the session publishes now
-    /// ([`Catalog`]), standing at `at` through the layout action
+    /// ([`Catalog`]), at `at` through the layout action
     /// [`LayoutAction::Place`] — one attributed, undoable change of the
     /// person's record (shell.md §8). `view` empty shows the resource's primary
     /// view. `strip` names the strip the found resource joins as a tab (a strip
@@ -1088,7 +1094,7 @@ impl Layout {
 
     /// The place `place` shows what `answer` says, when the app the query asked has answered:
     /// exactly one match of its type re-points the place at that resource (one layout step, so
-    /// Undo puts the query back); several or none leave the query standing with what it found or
+    /// Undo puts the query back); several or none leave the query with what it found or
     /// did not. The layout is unchanged by this call alone: the re-point is one [Show] step.
     ///
     /// Returns the resource the place now shows, when it re-pointed, so a caller says so.
@@ -1189,7 +1195,7 @@ impl Layout {
 
     /// Settle the query a place stands with what its app answered, by the query's key: exactly one
     /// match re-points the place ([`LayoutAction::Show`], one step Undo takes back), and
-    /// several, none or a failure leave the query standing with what it found or did not. The one
+    /// several, none or a failure leave the query with what it found or did not. The one
     /// layout step is made as the person's.
     pub fn answer_query_of(&mut self, key: &str, answer: Answer, busy: Busy) {
         let Ok(place) = key.parse::<u64>() else {
@@ -1216,7 +1222,7 @@ impl Layout {
     }
 
     /// The place already showing `resource` or anything of its root, if one stands: what opening a
-    /// mailbox, a conversation, a notebook or one of its entries brings forward rather than standing
+    /// mailbox, a conversation, a notebook or one of its entries brings forward rather than opening
     /// a second place of the same app's record (`shell.md` §3, "Activating something already shown
     /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
     #[must_use]
@@ -1258,8 +1264,8 @@ impl Layout {
     /// with its view `view` (empty for its primary one) beside the place that shows `beside`'s
     /// resource — the turn that asked, by its [`turn_key`], or its conversation — or beside the
     /// place in front when
-    /// `beside` names nothing. A resource already standing on the layout is brought forward instead,
-    /// so opening what is shown raises it rather than standing a second place.
+    /// `beside` names nothing. A resource already on the layout is brought forward instead,
+    /// so opening what is shown raises it rather than opening a second place.
     ///
     /// Returns the place's id, or `None` when the layout already held one and brought it forward.
     ///
@@ -1642,6 +1648,30 @@ impl Layout {
             asked.member_id().and_then(MemberId::person_id) == Some(self.person.as_str());
         let catalog = self.catalog.clone();
         let before = self.handle.read(Clone::clone);
+        // How tall a place is drawn is the person's own canvas saying what it sees, never a step
+        // of theirs and never a change of the layout's shape. It is kept on this shell's tree where
+        // the canvas reads it, without building every view again: a canvas that rebuilt itself to
+        // report would measure and report once more, and report again, a frame at a time. Nothing
+        // is recorded, so Undo takes back the person's last step of arranging, never a place
+        // growing as its words arrive.
+        if let LayoutAction::Drawn { place, height } = action {
+            let Some((workspace, group)) = self.handle.read(|tree| {
+                tree.workspaces.iter().find_map(|held| {
+                    let group = held
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .find(|group| group.tabs.iter().any(|tab| tab.id == *place))?
+                        .id;
+                    Some((held.id(), group))
+                })
+            }) else {
+                return Err("that place is not in the layout".to_owned());
+            };
+            self.handle
+                .report_drawn(workspace, group, clamp_side(*height));
+            return Ok(());
+        }
         let mut tree = before.clone();
         if !change(&mut tree, action, by_the_person, &catalog)? {
             return Ok(());
@@ -1709,6 +1739,7 @@ fn change(
             width,
             height,
         } => size(tree, *place, clamp_side(*width), clamp_side(*height)),
+        LayoutAction::Drawn { place, height } => drawn(tree, *place, clamp_side(*height)),
         LayoutAction::Close { place } => close(tree, *place),
         LayoutAction::Activate { place } => activate(tree, *place),
         LayoutAction::Pin { place, pinned } => pin(tree, *place, *pinned),
@@ -1852,6 +1883,13 @@ fn size(tree: &mut Tree, place: u64, width: u32, height: u32) -> Result<bool, St
         return Err("that place is not in the layout".into());
     };
     Ok(held.layout.set_size(id, width, height))
+}
+
+/// Report how tall the hugging place `place` is drawn now, `height` canvas pixels: view state the
+/// person's own canvas sends, never an arranging step. Whether the layout changed.
+fn drawn(tree: &mut Tree, place: u64, height: u32) -> Result<bool, String> {
+    let (held, group) = holding(tree, place)?;
+    Ok(held.layout.set_drawn_height(group, height))
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
@@ -2284,6 +2322,7 @@ pub fn verb(action: &LayoutAction) -> &'static str {
         LayoutAction::Pin { .. } => "pin",
         LayoutAction::Position { .. } => "position",
         LayoutAction::Size { .. } => "size",
+        LayoutAction::Drawn { .. } => "drawn",
         LayoutAction::Place { .. } | LayoutAction::PlaceFound { .. } => "place",
         LayoutAction::Open { .. } => "open",
         LayoutAction::Float { .. } => "float",

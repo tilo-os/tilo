@@ -1,4 +1,4 @@
-//! Video Editor — a record-native non-linear editor for Tilo, built on the `ui` toolkit.
+//! Video Editor — a resource-native non-linear editor for Tilo, built on the `ui` toolkit.
 //!
 //! [`model`] holds the pure data and editing math, [`resource`] the project's verbs and the
 //! app, and [`app`] the root widget: media bin, preview with transport, timeline, inspector

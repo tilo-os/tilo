@@ -58,7 +58,7 @@ fn config(scratch: &std::path::Path, run: &str) -> ServiceConfig {
                 PathBuf::from,
             ),
             jail: None,
-            relay: None,
+            server: None,
             templates: None,
         },
     }
@@ -177,7 +177,7 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
     service.stop("ws1", "default").unwrap();
     let total_wall = wall.elapsed();
 
-    let records = config.ledger().records("acct-1").unwrap();
+    let records = config.log().records("acct-1").unwrap();
     for record in &records {
         eprintln!(
             "{:?} {:?} {} ms → {} s",

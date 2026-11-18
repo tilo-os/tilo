@@ -47,7 +47,7 @@ struct Entry {
     alive: Weak<()>,
     update: ErasedUpdate,
     /// The row the reader belongs to, when it belongs to one.
-    gate: Option<Gate>,
+    row_mount: Option<RowMount>,
 }
 
 /// Whether the readers of one row of an [`Each`](super::Each) run: while it
@@ -56,18 +56,18 @@ struct Entry {
 /// `stale` list and runs when the row mounts again, so a change costs the
 /// rows shown however long the list.
 #[derive(Clone, Default)]
-pub(crate) struct Gate {
+pub(crate) struct RowMount {
     mounted: Rc<std::cell::Cell<bool>>,
     read_unmounted: Rc<std::cell::Cell<bool>>,
     stale: Rc<RefCell<BTreeSet<u64>>>,
 }
 
-impl Gate {
-    /// A row's gate, mounted until its list lays it out of view.
+impl RowMount {
+    /// A row's check, mounted until its list lays it out of view.
     pub(crate) fn mounted() -> Self {
-        let gate = Self::default();
-        gate.mounted.set(true);
-        gate
+        let row_mount = Self::default();
+        row_mount.mounted.set(true);
+        row_mount
     }
 
     /// Something outside the row's widgets reads its readers' results (an
@@ -248,14 +248,14 @@ impl<R: Resource> Updaters<R> {
     pub(crate) fn push(
         &self,
         alive: Weak<()>,
-        gate: Option<Gate>,
+        row_mount: Option<RowMount>,
         reads: Reads,
         mut update: Update<R>,
     ) {
         push(
             &self.0,
             alive,
-            gate,
+            row_mount,
             reads,
             Box::new(move |state: &dyn std::any::Any| {
                 if let Some(state) = state.downcast_ref::<R::State>() {
@@ -272,17 +272,17 @@ impl<R: Resource> Updaters<R> {
         run(&self.0, state, change);
     }
 
-    /// Run the readers of `gate`'s row that changes woke while it was not
+    /// Run the readers of `check`'s row that changes woke while it was not
     /// mounted, now that it is.
-    pub(crate) fn catch_up(&self, gate: &Gate, state: &R::State) {
-        catch_up(&self.0, gate, state);
+    pub(crate) fn catch_up(&self, row_mount: &RowMount, state: &R::State) {
+        catch_up(&self.0, row_mount, state);
     }
 }
 
 fn push(
     cell: &RefCell<Index>,
     alive: Weak<()>,
-    gate: Option<Gate>,
+    row_mount: Option<RowMount>,
     reads: Reads,
     update: ErasedUpdate,
 ) {
@@ -294,7 +294,7 @@ fn push(
         Entry {
             alive,
             update,
-            gate,
+            row_mount,
         },
     );
     match reads {
@@ -343,8 +343,12 @@ fn run(cell: &RefCell<Index>, state: &dyn std::any::Any, change: &Change<'_>) {
         if entry.alive.strong_count() == 0 {
             continue;
         }
-        if let Some(gate) = entry.gate.as_ref().filter(|gate| !gate.runs()) {
-            gate.stale.borrow_mut().insert(id);
+        if let Some(row_mount) = entry
+            .row_mount
+            .as_ref()
+            .filter(|row_mount| !row_mount.runs())
+        {
+            row_mount.stale.borrow_mut().insert(id);
         } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.reader");
             (entry.update)(state);
@@ -353,8 +357,8 @@ fn run(cell: &RefCell<Index>, state: &dyn std::any::Any, change: &Change<'_>) {
     }
 }
 
-fn catch_up(cell: &RefCell<Index>, gate: &Gate, state: &dyn std::any::Any) {
-    let missed = std::mem::take(&mut *gate.stale.borrow_mut());
+fn catch_up(cell: &RefCell<Index>, row_mount: &RowMount, state: &dyn std::any::Any) {
+    let missed = std::mem::take(&mut *row_mount.stale.borrow_mut());
     for id in missed {
         let Some(mut entry) = cell.borrow_mut().entries.remove(&id) else {
             continue;

@@ -1,15 +1,15 @@
 //! The workspaces a host governs, administered from the page: one call turns
 //! the page's arguments into the shared protocol's own typed request
-//! ([`tilo_relay_protocol::workspaces`]) and answers in the shape the page
+//! ([`tilo_server_protocol::workspaces`]) and answers in the shape the page
 //! draws and its apps read as an action's output — times in milliseconds,
 //! roles as the workspace settings name them, keys in hex.
 //!
 //! Nothing is decided here: the host admits every request by the person's
-//! standing, and its refusal is the answer.
+//! member access, and its refusal is the answer.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     Member, PendingInvite, WaitListEntry, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_workspace_join::encode_invitation_text;
@@ -252,7 +252,7 @@ impl WasmPeer {
                 let list = governed(self.workspaces_request(WorkspacesRequest::List).await?)?;
                 match list.iter().find(|held| held.workspace == id) {
                     Some(held) => workspace(held),
-                    None => return Err(js_error("the host does not govern this workspace")),
+                    None => return Err(js_error("the server does not hold this workspace")),
                 }
             }
             // Whether the workspace lets this page's person invite here: the question its

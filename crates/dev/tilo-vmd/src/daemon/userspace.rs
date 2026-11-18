@@ -1,14 +1,13 @@
 //! One admitted, source-bound userspace generation and one final refresh.
 
 use super::{
-    AccountRecord, Action, ApplyResult, BTreeSet, ComponentInfo, Daemon, DaemonError, Instant,
-    Path, Policy, Provenance, Scope, Session, SessionChange, abi_check_verified, accounts, apply,
-    fs,
+    AccountEntry, Action, ApplyResult, BTreeSet, ComponentInfo, Daemon, DaemonError, Instant, Path,
+    Policy, Provenance, Scope, Session, SessionChange, abi_check_verified, accounts, apply, fs,
 };
 use tilo_vm_protocol::{USERSPACE_COMPONENTS, UserspaceApply, UserspacePhase, UserspaceResult};
 
 struct Admitted {
-    record: AccountRecord,
+    record: AccountEntry,
     entries: Vec<(String, accounts::Entry)>,
     cohort: crate::cohort::VerifiedCohort,
     warnings: Vec<String>,
@@ -30,7 +29,7 @@ impl Daemon {
         &mut self,
         account: &str,
         expected: u64,
-    ) -> Result<(AccountRecord, Option<String>), DaemonError> {
+    ) -> Result<(AccountEntry, Option<String>), DaemonError> {
         let record = self.load_account(account)?;
         let Some(interrupted) = self.accounts.pending(account) else {
             return Ok((record, None));

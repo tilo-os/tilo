@@ -12,7 +12,7 @@ use tilo_content::{ContentBackend, DirBackend};
 /// Native document snapshots share this backend with smaller receipt/index blocks.
 const MAX_HISTORY_BLOCK: usize = 3 * 1024 * 1024;
 
-/// Durable content custody shared by owner stores using the same state directory.
+/// Durable content ownership shared by owner stores using the same state directory.
 /// This is not an authority: an admitted signed workspace root authenticates references.
 pub struct HistoryContent {
     backend: Arc<dyn ContentBackend>,

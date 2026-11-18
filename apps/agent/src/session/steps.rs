@@ -5,7 +5,7 @@ use super::{
     TaskAction, TaskActionStop, Uuid,
 };
 use tilo_actions::remote::{
-    ActionHostError, ConfirmedInvocation, InvocationReceipt, InvokeArgument, InvokeRequest,
+    ActionCallError, ConfirmedInvocation, InvocationReceipt, InvokeArgument, InvokeRequest,
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget, UpdateMark,
 };
 
@@ -41,7 +41,7 @@ type Heard = (
 /// What the host's receipt says of the step it took or refused.
 fn receipt_update(
     receipt: InvocationReceipt,
-) -> Result<tilo_actions::InvocationUpdate, ActionHostError> {
+) -> Result<tilo_actions::InvocationUpdate, ActionCallError> {
     let invocation = receipt.invocation;
     Ok(match receipt.status {
         ReceiptStatus::Accepted => tilo_actions::InvocationUpdate::Accepted { invocation },
@@ -113,7 +113,7 @@ impl Session {
             };
             match receipt {
                 Ok(update) => break update,
-                Err(ActionHostError::ConfirmationRequired { .. }) if !asked_person => {
+                Err(ActionCallError::ConfirmationRequired { .. }) if !asked_person => {
                     // The step asks the person before it runs: the host puts the question on the
                     // system's sheet, and the step goes on once they allow it.
                     asked_person = true;
@@ -145,7 +145,7 @@ impl Session {
     fn await_receipt(
         &mut self,
         invocation: tilo_actions::InvocationId,
-    ) -> Result<Option<Result<tilo_actions::InvocationUpdate, ActionHostError>>> {
+    ) -> Result<Option<Result<tilo_actions::InvocationUpdate, ActionCallError>>> {
         let until = Session::task_wait_deadline(ADMISSION_WAIT);
         let mut deferred = Vec::new();
         let answer = loop {

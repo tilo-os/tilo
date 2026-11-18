@@ -34,7 +34,7 @@ def require(ok, message):
 
 
 def replace_once(text, before, after):
-    require(text.count(before) == 1, 'frozen recipe seam changed')
+    require(text.count(before) == 1, 'frozen recipe anchor changed')
     return text.replace(before, after, 1)
 
 
@@ -56,11 +56,11 @@ def derive_recipe(original, retained, required, *, thin_cache_approval_sha256=No
         require(re.fullmatch('[0-9a-f]{64}', thin_cache_approval_sha256), 'independent thin-cache approval required')
         text = replace_once(text, 'RUN --mount=type=bind,from=tilo-resume,target=/tilo-resume,ro',
             'RUN --mount=type=bind,from=tilo-thin-cache,target=/tilo-thin-cache,ro \\\n    --mount=type=bind,from=tilo-resume,target=/tilo-resume,ro')
-        seam = '    && cp /tilo-resume/partial/* target/release/ \\\n'
-        text = replace_once(text, seam, seam +
+        anchor = '    && cp /tilo-resume/partial/* target/release/ \\\n'
+        text = replace_once(text, anchor, anchor +
             '    && python3 /tilo-thin-cache/restore-thin-cache.py --approval-sha256 ' + thin_cache_approval_sha256 + ' \\\n')
-    before = '       cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG}'
-    command = ('cargo build --release ${RELEASE_ARGS} -p tilo-relay ' +
+    before = '       cargo build --release ${RELEASE_ARGS} -p tilo-server --bins ${BROWSER_PKG}'
+    command = ('cargo build --release ${RELEASE_ARGS} -p tilo-server ' +
                ' '.join('--bin ' + name for name in release) + ' ${BROWSER_PKG}') if release else 'true'
     text = replace_once(text, before, '       ' + command)
     before = '       cargo build --release -p windows-vm \\\n         --bin tilo-windows-vm-control --bin tilo-windows-rail'
@@ -148,7 +148,7 @@ def derive_driver(original, source_path, derived_recipe_path, seed_image_id):
     # scratch is an inert Dockerfile stage input, never a fabricated artifact.
     start = '_tilo_kernel_ref_override="${KERNEL_RPMS_REF:-}"\n'
     end = '# Pre-flight: every host-side COPY source exists.'
-    require(text.count(start) == 1 and text.count(end) == 1, 'frozen kernel selection seam changed')
+    require(text.count(start) == 1 and text.count(end) == 1, 'frozen kernel selection anchor changed')
     kernel = text[text.index(start):text.index(end)]
     text = replace_once(text, kernel,
         'if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n'
@@ -214,7 +214,7 @@ def check_complete(native, identity, inputs, metadata_sha256, reconstruction_sha
 
 
 def import_reconstructed(native, receipt_path, receipt_sha256, inputs, approved_reconstruction_sha256):
-    """Separate opt-in consumer seam; never accepted by the legacy importer."""
+    """Separate opt-in consumer anchor; never accepted by the legacy importer."""
     t = native.tools
     require(re.fullmatch('[0-9a-f]{64}', approved_reconstruction_sha256 or ''), 'independent reconstruction approval required')
     raw = t.read_bounded(Path(receipt_path), 1024 * 1024)

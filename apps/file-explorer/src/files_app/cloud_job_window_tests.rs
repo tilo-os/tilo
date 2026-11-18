@@ -13,8 +13,8 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let (services, _) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, _) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
         assert!(!files.state().cloud_fixture_consent);
         let folder = root.path().display().to_string();

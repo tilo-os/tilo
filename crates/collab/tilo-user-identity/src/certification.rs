@@ -2,11 +2,11 @@
 //! asks a root-holding device of the same user for a [`DeviceCert`].
 //!
 //! The requester signs a [`CertificationRequest`] with the device key it
-//! wants certified. That proves possession, so a relay carrying the request
+//! wants certified. That proves possession, so a server carrying the request
 //! cannot substitute another key. The approver checks the request, shows its
 //! [`CertificationRequest::pairing_code`] beside the one the requester
 //! displays, and issues a certificate clamped to a [`CertificationPolicy`].
-//! Either side, or the relay in between, checks the result with
+//! Either side, or the server in between, checks the result with
 //! [`verify_issued_cert`].
 //!
 //! The requester never sees the root key and never self-certifies; issuance
@@ -270,8 +270,6 @@ impl CertificationPolicy {
             // Operating web pages in Browser is a key's, given by its person
             // where they make it, never a device enrolled through a request.
             browser_pages: false,
-            // Retired grants are never granted again.
-            retired: crate::RetiredFlags::default(),
         }
     }
 

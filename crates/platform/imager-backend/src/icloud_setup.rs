@@ -1,6 +1,6 @@
 //! Private Apple sign-in state; only acknowledged canonical account IDs leave.
 use crate::account_transfer::Connector;
-use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
+use account_credentials::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use zeroize::{Zeroize, Zeroizing};

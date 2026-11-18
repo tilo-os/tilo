@@ -151,7 +151,6 @@ chat-quote-earlier = Eine Nachricht weiter oben
 chat-conversation-read-only = Du kannst diese Unterhaltung lesen, aber nicht darin schreiben.
 chat-direct-unavailable = Diese Unterhaltung ist noch nicht erreichbar: Dieses Gerät lädt den Arbeitsbereich noch.
 chat-person-unknown = In diesem Arbeitsbereich gibt es niemanden zum Anschreiben.
-chat-agent-author = { $name } (Agent)
 chat-resource-link-copied = Link kopiert
 chat-resource-link-unavailable = Link nicht verfügbar
 
@@ -185,7 +184,6 @@ chat-person-relative-name = { $name } ({ $tag })
 
 ## Verlauf: was jede Änderung getan hat, nach Verb und nach Feld
 chat-begin-chat = Hat den Chat begonnen
-chat-introduce = Hat sich als { $name } vorgestellt
 chat-create-category = Hat die Kategorie { $name } angelegt
 chat-create-channel = Hat den Kanal #{ $name } angelegt
 chat-create-channel-with-id = Hat den Kanal #{ $name } angelegt
@@ -229,11 +227,6 @@ chat-chat-channels = { $op ->
     [insert] Hat einen Kanal hinzugefügt
     [remove] Hat einen Kanal entfernt
    *[other] Hat die Kanäle neu geordnet
-}
-chat-chat-people = { $op ->
-    [insert] Hat eine Person hinzugefügt
-    [remove] Hat eine Person entfernt
-   *[other] Hat die Menschen geändert
 }
 chat-chat-feedback = { $op ->
     [insert] Hat eine Rückmeldung hinzugefügt
@@ -425,7 +418,7 @@ chat-effects-open-category = Kategorie öffnen
 chat-effects-toggle-category = Kategorie ein- oder ausklappen
 chat-effects-reveal-message = Beitrag anzeigen
 chat-effects-reveal-message-range = Beiträge anzeigen
-chat-effects-open-person = Person öffnen
+chat-effects-show-view = Ansicht anzeigen
 chat-effects-open-agent = Unterhaltung mit Agent öffnen
 chat-effects-open-direct-conversation = Direkte Unterhaltung öffnen
 chat-effects-send-direct-message = Direktnachricht senden
@@ -454,7 +447,7 @@ chat-effects-select-input = Mikrofon wählen
 
 ## What the app is called in a window and in the launcher
 chat-app-title = Chat
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 chat-drafts = Chat-Entwürfe
 chat-workspace = Chat
 chat-drafts-start-draft = Entwurf beginnen
@@ -478,10 +471,27 @@ chat-messages-withdraw-question = Eine Frage zurückziehen
 chat-messages-settle-question = Sagen, was aus einer Antwort wurde
 chat-messages-ask-agent = Einen Agenten fragen
 chat-messages-stop-agent = Die Arbeit eines Agenten stoppen
+chat-messages-post-view = Eine Ansicht senden
+chat-messages-answer-with-view = Mit einer Ansicht antworten
+chat-messages-rewrite-view = Eine Ansicht neu schreiben
 # Was einen Zug gestartet hat, den niemand getippt hat: steht dort, wo sonst der Name steht.
 chat-cause-reminder = Erinnerung: { $label }
 chat-cause-event = Ereignis: { $label }
 chat-cause-news = Neuigkeit: { $label }
+chat-view-attached = Eine Ansicht ist angehängt
+chat-view-attached-of = Eine Ansicht von { $apps } ist angehängt
+chat-view-alone = Ansicht
+chat-view-waiting = Dieser Beitrag ist noch nicht auf diesem Gerät
+chat-view-gone = Dieser Beitrag hat keine Ansicht
+chat-view-arriving = Ansicht wird geladen
+chat-view-unavailable = Eine Ansicht kann hier nicht gezeigt werden
+chat-view-unbound = Diese Ansicht gibt dich als Verfasser an. Tilo kann noch nicht sicher sagen, wer einen Beitrag geschrieben hat, deshalb wird sie hier nicht gezeigt
+chat-view-refused = Du darfst { $apps } hier nicht lesen, die Ansicht zeigt nichts davon
+chat-view-unread = { $apps } konnte hier nicht gelesen werden
+chat-view-asks = { $who } hat diese Ansicht geschrieben. Sie möchte das in { $app } tun
+chat-view-asks-given = { $name }: { $value }
+chat-view-allow = Einmal erlauben
+chat-view-dismiss = Verwerfen
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = Bei „{ $resource }“
@@ -492,6 +502,9 @@ chat-question-always = Für dieses Ereignis immer erlauben
 chat-question-deny = Nicht erlauben
 chat-question-allowed = einmal erlaubt
 chat-question-always-allowed = für dieses Ereignis immer erlaubt
+chat-question-with-item = Aus deinem Tresor: { $item }
+chat-question-always-item = Mit diesem Eintrag hier immer erlauben
+chat-question-always-item-allowed = mit diesem Eintrag hier immer erlaubt
 chat-question-denied = nicht erlaubt
 chat-question-you-answered = Deine Antwort: { $answer }
 chat-question-answered = Antwort von { $name }: { $answer }
@@ -507,7 +520,6 @@ chat-question-withdrawn-why = Wird nicht mehr gefragt: { $why }
 chat-messages-record-work = Arbeit des Agenten festhalten
 chat-messages-carry-counts = Zählstände der vorigen Teile übernehmen
 chat-messages-stream-output = Antwort beim Eintreffen festhalten
-chat-workspace-introduce = Stell dich vor
 chat-workspace-create-category = Neue Kategorie
 chat-workspace-create-channel = Neuer Kanal
 chat-workspace-create-channel-with-id = Neuer Kanal mit einer ID

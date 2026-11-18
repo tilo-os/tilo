@@ -31,7 +31,7 @@ class VerifierBundleTests(unittest.TestCase):
                 self.assertEqual(BUILDER, descriptor['compatible_builder'])
                 self.assertTrue((root / f'out/{arch}.tar.gz').is_file())
                 self.assertEqual({'tilo_pkg_sha256', 'tilo_runtime_bundle_sha256'}, set(descriptor['canonical_binaries']))
-        with self.subTest(phase='wrong source wrong native lane or compile failure cannot emit bundle'):
+        with self.subTest(phase='wrong source wrong native job or compile failure cannot emit bundle'):
             for failure in ('head_ok', 'arch_ok', 'compile_ok'):
                 with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)

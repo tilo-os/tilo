@@ -117,7 +117,7 @@ class CiscoOpenH264ImageTests(unittest.TestCase):
 
 class LiveRepositoryImageTests(unittest.TestCase):
     IMAGE = "os/Containerfile.legacy-guest"
-    GATED = """
+    GUARDED = """
     FROM registry.fedoraproject.org/fedora-minimal:44 AS runtime
     RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \\
       rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \\
@@ -132,7 +132,7 @@ class LiveRepositoryImageTests(unittest.TestCase):
             write(root, self.IMAGE, text)
             return [v.name for v in check_media_stack.live_repository_violations(root)]
 
-    def test_the_repositorys_live_repository_images_are_gated(self) -> None:
+    def test_the_repositorys_live_repository_images_are_guarded(self) -> None:
         self.assertEqual(check_media_stack.live_repository_violations(ROOT), [])
         for image in check_media_stack.LIVE_REPOSITORY_IMAGES:
             with self.subTest(image=image):
@@ -141,8 +141,8 @@ class LiveRepositoryImageTests(unittest.TestCase):
                                 "the image no longer installs packages; drop it from "
                                 "LIVE_REPOSITORY_IMAGES rather than keep a rule that observes nothing")
 
-    def test_a_removal_before_the_install_and_a_gate_after_it_pass(self) -> None:
-        self.assertEqual(self.found(self.GATED), [])
+    def test_a_removal_before_the_install_and_a_check_after_it_pass(self) -> None:
+        self.assertEqual(self.found(self.GUARDED), [])
         split = """
         FROM fedora-bootc:44
         RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \\
@@ -155,7 +155,7 @@ class LiveRepositoryImageTests(unittest.TestCase):
 
     def test_installing_without_removing_the_repository_first_is_reported(self) -> None:
         cases = {
-            "no removal": self.GATED.replace("rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo", "true"),
+            "no removal": self.GUARDED.replace("rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo", "true"),
             "removal after the install": """
             FROM fedora:44
             RUN dnf install -y flatpak && bash /run/verify-no-cisco-openh264.sh
@@ -172,10 +172,10 @@ class LiveRepositoryImageTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(self.found(text), ["fedora-cisco-openh264"])
 
-    def test_installing_without_the_resolved_gate_afterwards_is_reported(self) -> None:
+    def test_installing_without_the_resolved_check_afterwards_is_reported(self) -> None:
         cases = {
-            "no gate": self.GATED.replace("\\\n      && bash /run/tilo-verify-no-cisco-openh264.sh", ""),
-            "gate before the last install": """
+            "no check": self.GUARDED.replace("\\\n      && bash /run/tilo-verify-no-cisco-openh264.sh", ""),
+            "check before the last install": """
             FROM fedora:44
             RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo && bash /run/verify-no-cisco-openh264.sh
             RUN dnf install -y flatpak

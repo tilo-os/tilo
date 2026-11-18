@@ -20,7 +20,7 @@ use tilo_session_client::{Cmd, Outbox};
 
 use tilo_actions::api::ApiError;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
+    ActionCallError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, application_open_target, provider_workspace, workspace_provider,
 };
@@ -126,7 +126,7 @@ impl AgentMember {
             RemoteActionMessage::FeedbackRequest { correlation, .. } => {
                 RemoteActionMessage::FeedbackResponse {
                     correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: "agents do not own canonical feedback delivery".into(),
                     }),
                 }
@@ -146,14 +146,14 @@ impl AgentMember {
             },
             RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
                 invocation,
-                result: Err(ActionHostError::NotCancellable {
+                result: Err(ActionCallError::NotCancellable {
                     reason: "an app action runs to completion when invoked".into(),
                 }),
             },
             RemoteActionMessage::ResourceRead { correlation, .. } => {
                 RemoteActionMessage::ResourceReading {
                     correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: "an agent keeps no records to lend".into(),
                     }),
                 }
@@ -163,14 +163,14 @@ impl AgentMember {
             RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
                 RemoteActionMessage::ConfirmationResponse {
                     correlation,
-                    result: Err(ActionHostError::confirmation_required()),
+                    result: Err(ActionCallError::confirmation_required()),
                 }
             }
             // Nor does an agent confirm an action by its own word.
             RemoteActionMessage::Confirm { correlation, .. } => {
                 RemoteActionMessage::ConfirmResponse {
                     correlation,
-                    result: Err(ActionHostError::confirmation_required()),
+                    result: Err(ActionCallError::confirmation_required()),
                 }
             }
             // An agent holds no workspace of its own to search or follow.
@@ -179,7 +179,7 @@ impl AgentMember {
             | RemoteActionMessage::ChangedRequest { .. }) => {
                 let Some(refused) = tilo_actions::remote::refuse(
                     &message,
-                    ActionHostError::Unavailable {
+                    ActionCallError::Unavailable {
                         reason: "an agent keeps no records of a workspace".into(),
                     },
                 ) else {
@@ -191,7 +191,7 @@ impl AgentMember {
             RemoteActionMessage::ContentPutRequest { correlation, .. } => {
                 RemoteActionMessage::ContentPutResponse {
                     correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
                     }),
                 }
@@ -200,7 +200,7 @@ impl AgentMember {
             RemoteActionMessage::ContentGetRequest { correlation, .. } => {
                 RemoteActionMessage::ContentGetResponse {
                     correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: tilo_actions::remote::CONTENT_GETS_UNAVAILABLE.into(),
                     }),
                 }
@@ -208,7 +208,7 @@ impl AgentMember {
             RemoteActionMessage::ContentLinkRequest { correlation, .. } => {
                 RemoteActionMessage::ContentLinkResponse {
                     correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: tilo_actions::remote::CONTENT_LINKS_UNAVAILABLE.into(),
                     }),
                 }
@@ -217,7 +217,7 @@ impl AgentMember {
             RemoteActionMessage::SurfaceRequest { correlation, .. } => {
                 RemoteActionMessage::SurfaceResponse {
                     correlation,
-                    result: Err(ActionHostError::Unavailable {
+                    result: Err(ActionCallError::Unavailable {
                         reason: "an agent keeps no app surfaces".into(),
                     }),
                 }
@@ -326,7 +326,7 @@ impl AgentMember {
             return if earlier.same_invocation(&request) {
                 receipt.clone()
             } else {
-                rejected(&request, ActionHostError::InvocationConflict)
+                rejected(&request, ActionCallError::InvocationConflict)
             };
         }
         let status = match self.run_remote(&request) {
@@ -351,7 +351,7 @@ impl AgentMember {
     fn run_remote(&mut self, request: &InvokeRequest) -> Result<ActionOutput, ReceiptStatus> {
         let reject = |error| ReceiptStatus::Rejected { error };
         if !self.control.may_act() {
-            return Err(reject(ActionHostError::Unavailable {
+            return Err(reject(ActionCallError::Unavailable {
                 reason: "the agent is paused or stopped".into(),
             }));
         }
@@ -360,7 +360,7 @@ impl AgentMember {
             .as_ref()
             .is_some_and(|revision| *revision != self.revision())
         {
-            return Err(reject(ActionHostError::StaleRevision));
+            return Err(reject(ActionCallError::StaleRevision));
         }
         let target = &request.target;
         if provider_workspace(&target.provider) == Some(self.workspace.as_str()) {
@@ -369,14 +369,14 @@ impl AgentMember {
                 .resource
                 .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
                 .filter(|_| target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
-                .ok_or_else(|| reject(ActionHostError::UnknownAction))?
+                .ok_or_else(|| reject(ActionCallError::UnknownAction))?
                 .to_owned();
             if !self.identity.delegation.permits_app(&app) {
-                return Err(reject(ActionHostError::UnknownAction));
+                return Err(reject(ActionCallError::UnknownAction));
             }
             let route = self
                 .open(&app, None)
-                .map_err(|reason| reject(ActionHostError::Refused { reason }))?;
+                .map_err(|reason| reject(ActionCallError::Refused { reason }))?;
             return Ok(ActionOutput {
                 value: Some(
                     serde_json::json!({ "provider": record_provider(&route), "record": route.document }),
@@ -386,7 +386,7 @@ impl AgentMember {
         }
         let route = resource_of(&target.provider, &self.workspace)
             .filter(|route| self.apps.contains_key(route))
-            .ok_or_else(|| reject(ActionHostError::UnknownAction))?;
+            .ok_or_else(|| reject(ActionCallError::UnknownAction))?;
         let arguments = match &request.argument {
             InvokeArgument::None => serde_json::Map::new(),
             InvokeArgument::Text(text) => {
@@ -404,7 +404,7 @@ impl AgentMember {
             .map(Option::unwrap_or_default)
             .map_err(|error| match error {
                 Refusal::Api(error) => api_status(&error),
-                Refusal::Agent(reason) => reject(ActionHostError::Refused { reason }),
+                Refusal::Agent(reason) => reject(ActionCallError::Refused { reason }),
             })
     }
 }
@@ -428,7 +428,7 @@ impl Refusal {
     }
 }
 
-fn rejected(request: &InvokeRequest, error: ActionHostError) -> InvocationReceipt {
+fn rejected(request: &InvokeRequest, error: ActionCallError) -> InvocationReceipt {
     InvocationReceipt {
         invocation: request.invocation,
         status: ReceiptStatus::Rejected { error },
@@ -438,7 +438,7 @@ fn rejected(request: &InvokeRequest, error: ActionHostError) -> InvocationReceip
 /// How an invocation the API refused ended.
 pub(crate) enum Outcome {
     /// Nothing ran.
-    Rejected(ActionHostError),
+    Rejected(ActionCallError),
     Failed(ActionFailure),
 }
 
@@ -448,24 +448,24 @@ const PERMISSION_DENIED: &str = "permission_denied";
 pub(crate) fn api_outcome(error: &ApiError) -> Outcome {
     match error {
         ApiError::Unknown(_) | ApiError::UnregisteredType(_) => {
-            Outcome::Rejected(ActionHostError::UnknownAction)
+            Outcome::Rejected(ActionCallError::UnknownAction)
         }
         ApiError::ConfirmationRequired => {
-            Outcome::Rejected(ActionHostError::confirmation_required())
+            Outcome::Rejected(ActionCallError::confirmation_required())
         }
         ApiError::MissingArgument(_)
         | ApiError::UnexpectedArgument(_)
         | ApiError::InvalidArguments(_)
         | ApiError::ArgumentOutOfRange { .. } => {
-            Outcome::Rejected(ActionHostError::InvalidRequest {
+            Outcome::Rejected(ActionCallError::InvalidRequest {
                 reason: error.to_string(),
             })
         }
         // The grants refused it: not the caller's, whenever they ask again.
         ApiError::Unavailable { code, .. } if code == PERMISSION_DENIED => {
-            Outcome::Rejected(ActionHostError::NotPermitted)
+            Outcome::Rejected(ActionCallError::NotPermitted)
         }
-        ApiError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
+        ApiError::Unavailable { reason, .. } => Outcome::Rejected(ActionCallError::Unavailable {
             reason: reason.clone(),
         }),
         // The app said no, and named why: the code crosses with the words.

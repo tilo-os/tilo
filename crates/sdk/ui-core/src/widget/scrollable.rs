@@ -202,7 +202,7 @@ pub struct Scrollable {
     /// mutation writes back through `clamp`. See
     /// [`Scrollable::with_persisted_offset`].
     persisted_offset: Option<Rc<Cell<(f32, f32)>>>,
-    /// The trailing lane reserved for the vertical bar
+    /// The trailing gutter reserved for the vertical bar
     /// (`metrics.scrollbar_gutter`), resolved in `build_layout`.
     content_gutter: f32,
     /// Thumb thickness and the margin around it in the gutter, from the
@@ -213,31 +213,31 @@ pub struct Scrollable {
     /// it last drew: its bars keep out of them.
     corners: crate::widget::scrollbar::SurfaceCorners,
     /// Whether the content overflowed on the layout last applied, so the
-    /// bar's lane is reserved: vertical (trailing edge) and horizontal
+    /// bar's gutter is reserved: vertical (trailing edge) and horizontal
     /// (bottom). Content that fits keeps the full width. What a layout pass
     /// decides lives in its tree (the view's padding); this is taken from the
     /// layout applied, for drawing.
     reserve_vertical: bool,
-    /// The lanes each tree this layout solves found the content overflowing
-    /// without ([`NeededLanes`]): kept until the layout is applied, so
+    /// The gutters each tree this layout solves found the content overflowing
+    /// without ([`NeededGutters`]): kept until the layout is applied, so
     /// content that fits only beside its own bar does not drop the bar and
     /// overflow again, pass after pass. A retained tree is laid out again
     /// without being rebuilt, so applying the layout is what ends it.
-    lanes_needed: Vec<NeededLanes>,
-    /// Keep the themed trailing lane even when vertical content fits.
+    gutters_needed: Vec<NeededGutters>,
+    /// Keep the themed trailing gutter even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
     /// See [`Scrollable::with_edge_fade`].
     edge_fade: bool,
-    /// Reports the trailing lane currently reserved, for a pinned footer
+    /// Reports the trailing gutter currently reserved, for a pinned footer
     /// that shares this scroller's measure.
     gutter_probe: Option<Rc<Cell<f32>>>,
-    /// Reserved bottom lane that is excluded from both painting and scroll
+    /// Reserved bottom gutter that is excluded from both painting and scroll
     /// metrics. Sticky-footer dialogs use this to end overflowing prose on a
     /// clean boundary instead of clipping half a text baseline against the
     /// footer.
     bottom_content_inset: f32,
-    /// Additional bottom lane used only when the resolved viewport is this
+    /// Additional bottom gutter used only when the resolved viewport is this
     /// compact or shorter. Long-form setup pages use it to end their initial
     /// frame between blocks without wasting space on a normal-height dialog.
     compact_bottom_content_inset: Option<(f32, f32)>,
@@ -261,7 +261,7 @@ pub struct Scrollable {
     follow_end: bool,
     /// The offsets along each axis the detents its content offers sit at
     /// ([`Widget::snap_points`]), in content coordinates and ascending: a
-    /// board's lanes, a page each. Empty where the content offers none, and
+    /// board's gutters, a page each. Empty where the content offers none, and
     /// the view scrolls freely.
     snap_x: Vec<f32>,
     snap_y: Vec<f32>,
@@ -364,7 +364,7 @@ impl Scrollable {
             bar_margin: BAR_MARGIN,
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
-            lanes_needed: Vec::new(),
+            gutters_needed: Vec::new(),
             stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
@@ -475,7 +475,7 @@ impl Scrollable {
         self
     }
 
-    /// Keep the themed vertical scrollbar lane when content fits, so sibling
+    /// Keep the themed vertical scrollbar gutter when content fits, so sibling
     /// pages use the same content width across an overflow transition. The
     /// scrollbar itself still appears only when scrolling is possible.
     #[must_use]
@@ -579,7 +579,7 @@ impl Scrollable {
         self.persisted_offset = Some(cell);
     }
 
-    /// Share the trailing lane this scroller reserves for its bar (zero
+    /// Share the trailing gutter this scroller reserves for its bar (zero
     /// while the content fits) with a sibling laid out to the same measure.
     pub(crate) fn with_gutter_probe(mut self, probe: Rc<Cell<f32>>) -> Self {
         self.gutter_probe = Some(probe);
@@ -611,7 +611,7 @@ impl Scrollable {
     }
 
     /// Reserve a clean bottom edge inside the viewport for a sticky-footer
-    /// separation. Content is clipped above this lane and the effective
+    /// separation. Content is clipped above this gutter and the effective
     /// viewport used by scrolling shrinks by the same amount, so the final
     /// content remains reachable.
     #[must_use]
@@ -1024,19 +1024,19 @@ impl Scrollable {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
         (ox.clamp(0.0, max_x), oy.clamp(0.0, self.max_offset_y()))
     }
-    /// Reserve the bar's lane on the edge it scrolls along while the solved
+    /// Reserve the bar's gutter on the edge it scrolls along while the solved
     /// content overflows the viewport, and give it back once it fits.
     /// Narrower content is usually taller, not always: a grid whose cells
     /// scale with the width can overflow at full width and fit beside the
-    /// lane. A lane the content needed then stays for the rest of the layout,
+    /// gutter. A gutter the content needed then stays for the rest of the layout,
     /// so this settles within two steps.
     ///
-    /// Everything this reads and writes is the tree's being solved: the lanes
+    /// Everything this reads and writes is the tree's being solved: the gutters
     /// reserved now are the view's padding in `taffy`, and what the content
     /// needed is remembered per tree. A region measuring the view at its
     /// natural height solves a copy of the tree with this same widget, in a
-    /// box of another size; a lane decided there is not the real tree's. Held
-    /// on the widget, each solve undid the other's lane and reported a change
+    /// box of another size; a gutter decided there is not the real tree's. Held
+    /// on the widget, each solve undid the other's gutter and reported a change
     /// on every pass, and the window settled on no frame (a hugging answer on
     /// a canvas, taller than its cap). Whether it changed is whether the
     /// tree's style changed.
@@ -1073,36 +1073,39 @@ impl Scrollable {
             && self.show_scrollbar
             && viewport_w > 0.0
             && content_w > viewport_w + FIT_EPS;
-        // A lane the content overflowed without stays: content that fits
-        // only because the lane narrowed it would overflow again without it.
+        // A gutter the content overflowed without stays: content that fits
+        // only because the gutter narrowed it would overflow again without it.
         // Only in a box of the same size: one the view was measured at on
         // the way to its own size needed nothing of the box it gets.
         let tree = super::layout::TreeId::of(taffy);
         let size = (layout.size.width, layout.size.height);
-        let fresh = NeededLanes {
+        let fresh = NeededGutters {
             tree,
             size,
-            lanes: (false, false),
+            gutters: (false, false),
         };
-        let index = if let Some(index) = self.lanes_needed.iter().position(|held| held.tree == tree)
+        let index = if let Some(index) = self
+            .gutters_needed
+            .iter()
+            .position(|held| held.tree == tree)
         {
             index
         } else {
-            self.lanes_needed.push(fresh);
-            self.lanes_needed.len() - 1
+            self.gutters_needed.push(fresh);
+            self.gutters_needed.len() - 1
         };
-        let needed = &mut self.lanes_needed[index];
+        let needed = &mut self.gutters_needed[index];
         if needed.size != size {
             *needed = fresh;
         }
         if vertical && !reserved.0 {
-            needed.lanes.0 = true;
+            needed.gutters.0 = true;
         }
         if horizontal && !reserved.1 {
-            needed.lanes.1 = true;
+            needed.gutters.1 = true;
         }
-        let vertical = vertical || (reserved.0 && needed.lanes.0);
-        let horizontal = horizontal || (reserved.1 && needed.lanes.1);
+        let vertical = vertical || (reserved.0 && needed.gutters.0);
+        let horizontal = horizontal || (reserved.1 && needed.gutters.1);
         if let Some(probe) = &self.gutter_probe {
             probe.set(if vertical { self.content_gutter } else { 0.0 });
         }
@@ -1139,14 +1142,14 @@ impl Scrollable {
     }
 }
 
-/// The lanes one tree's solve found a scroll view's content overflowing
+/// The gutters one tree's solve found a scroll view's content overflowing
 /// without, in the box it had there ([`Scrollable::follow_overflow`]).
 #[derive(Clone, Copy, Debug)]
-struct NeededLanes {
+struct NeededGutters {
     tree: super::layout::TreeId,
     size: (f32, f32),
     /// Vertical, horizontal.
-    lanes: (bool, bool),
+    gutters: (bool, bool),
 }
 
 /// A presentational Grid surface at least as tall as the scroll view's
@@ -1309,7 +1312,7 @@ impl Widget for Scrollable {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.height_limit_dirty = false;
-        self.lanes_needed.clear();
+        self.gutters_needed.clear();
         self.child_node = self
             .child
             .as_mut()
@@ -1461,11 +1464,11 @@ impl Widget for Scrollable {
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;
-        // This layout is over: the next one checks the lanes afresh, so
+        // This layout is over: the next one checks the gutters afresh, so
         // content that now fits at full width gives its bar back.
-        self.lanes_needed.clear();
+        self.gutters_needed.clear();
         let l = taffy.layout(node).copied().unwrap_or_default();
-        // The lanes this layout settled on are the ones its tree holds.
+        // The gutters this layout settled on are the ones its tree holds.
         self.reserve_vertical = self.axis_has_vertical() && l.padding.right > 0.0;
         self.reserve_horizontal = self.axis_has_horizontal() && l.padding.bottom > 0.0;
         self.rect = crate::widget::placed(&l, origin);
@@ -2111,8 +2114,8 @@ impl crate::widget::controls::ActionControls for Scrollable {
 mod tests;
 
 #[cfg(test)]
-#[path = "scrollable_lane_tests.rs"]
-mod lane_tests;
+#[path = "scrollable_gutter_tests.rs"]
+mod gutter_tests;
 
 #[cfg(test)]
 #[path = "scrollable_snap_tests.rs"]

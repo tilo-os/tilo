@@ -1,26 +1,26 @@
-//! The maps a record keeps beside its fields: its items ([`crate::items`], `$items`), the
+//! The maps a document keeps beside its fields: its items ([`crate::items`], `$items`), the
 //! outside effects waiting on it (`$outbox`), the marks its migrations and triggers left, and
 //! the manifest that places its resources in chunks (`$chunks`).
 //!
-//! Each is a map at a key of the record's own map, made with the first thing put in it. Two
-//! replicas that each put the first thing into a record before they met make a map of their
+//! Each is a map at a key of the document's own map, made with the first thing put in it. Two
+//! replicas that each put the first thing into a document before they met make a map of their
 //! own: Automerge keeps one of the two, and everything in the other would be gone with it. So
 //! two things hold, and both are needed:
 //!
-//! * a record made now makes its `$items` and `$outbox` with it ([`crate::action`] at its
+//! * a document made now makes its `$items` and `$outbox` with it ([`crate::action`] at its
 //!   creation): the first thing put in afterwards goes into the one map there is;
-//! * a record that already holds two reads whole ([`maps`]: a read reads every copy, so the
-//!   things in the copy the record does not keep are never lost), and its next write folds the
+//! * a document that already holds two reads whole ([`maps`]: a read reads every copy, so the
+//!   things in the copy the document does not keep are never lost), and its next write folds the
 //!   copies into the one it keeps ([`single`]), the same way on every replica, so one map holds
 //!   everything again from that write on.
 //!
 //! The levels above the resources are maps of the same kind: the workspace's `tl` map, each
-//! app's map under it, and the workspace record's `$personal` with the maps below it. Two
-//! replicas that each write the first record of an app (or of a workspace) before they meet
+//! app's map under it, and the workspace document's `$personal` with the maps below it. Two
+//! replicas that each write the first document of an app (or of a workspace) before they meet
 //! make a map of their own, and everything in the map Automerge does not keep would be out of
 //! every read: a person's first task would be gone. The same two things hold for them: a read
 //! reaches through every copy at every step ([`reach`]), and a write makes and folds those maps
-//! ([`single`]), so a record that already holds two reads the union, and its next write
+//! ([`single`]), so a document that already holds two reads the union, and its next write
 //! converges on every replica.
 
 use automerge::transaction::Transactable as _;
@@ -29,9 +29,9 @@ use tilo_actions::ActionError;
 
 type Doc = tilo_resource::Doc;
 
-/// Every map the record `parent` holds at `key`: the copies a replica made before it met the
-/// others, oldest first, and last the one [`ReadDoc::get`] answers with, which the record keeps.
-/// A record that holds one map answers with that one.
+/// Every map the document `parent` holds at `key`: the copies a replica made before it met the
+/// others, oldest first, and last the one [`ReadDoc::get`] answers with, which the document keeps.
+/// A document that holds one map answers with that one.
 #[must_use]
 pub fn maps(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
     doc.get_all(parent, key)
@@ -52,7 +52,7 @@ pub fn maps(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
 /// last the one the document keeps.
 ///
 /// This is how a read of the levels above the resources (`tl`, `tl/<app>`, `$personal` and the
-/// maps below) reaches what a replica wrote before it met the others: a record of an app whose
+/// maps below) reaches what a replica wrote before it met the others: a document of an app whose
 /// map another replica made is under that map, which [`ReadDoc::get`] does not answer with.
 #[must_use]
 pub fn reach(doc: &Doc, parent: &ObjId, path: &[&str]) -> Vec<ObjId> {
@@ -63,11 +63,11 @@ pub fn reach(doc: &Doc, parent: &ObjId, path: &[&str]) -> Vec<ObjId> {
     at
 }
 
-/// The map at `key` of `parent`, made when the record holds none; the copies of it a replica
-/// made are folded into the one the record keeps.
+/// The map at `key` of `parent`, made when the document holds none; the copies of it a replica
+/// made are folded into the one the document keeps.
 ///
 /// # Errors
-/// A copy of the map could not be folded into the one the record keeps.
+/// A copy of the map could not be folded into the one the document keeps.
 pub fn single(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
     match fold(doc, parent, key)? {
         Some(kept) => Ok(kept),
@@ -75,17 +75,17 @@ pub fn single(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionE
     }
 }
 
-/// Fold every copy of the map at `key` of `parent` into the one the record keeps, and answer
-/// with it: every thing a copy holds that the record's map does not is copied into it, a map
+/// Fold every copy of the map at `key` of `parent` into the one the document keeps, and answer
+/// with it: every thing a copy holds that the document's map does not is copied into it, a map
 /// both hold is folded in turn, and the copy is emptied. `None` when there is no map at all, and
 /// nothing to fold.
 ///
-/// The record keeps the same copy on every replica ([`ReadDoc::get`] of the same changes
+/// The document keeps the same copy on every replica ([`ReadDoc::get`] of the same changes
 /// answers the same opid), so every replica folds the same way. A copy is only written when the
-/// record holds two maps, so a record that never had two never pays for this.
+/// document holds two maps, so a document that never had two never pays for this.
 ///
 /// # Errors
-/// A thing a copy holds could not be read or written into the map the record keeps.
+/// A thing a copy holds could not be read or written into the map the document keeps.
 pub fn fold(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<Option<ObjId>, ActionError> {
     let held = maps(doc, parent, key);
     let Some((kept, copies)) = held.split_last() else {
@@ -145,7 +145,7 @@ fn read(doc: &Doc, from: &ObjId, prop: &Prop) -> Result<Copy, ActionError> {
 /// Copy the value at `prop` of `from` to `to` of `into`: every entry of a map, every element of
 /// a list, the text of a text with its marks, or the scalar itself.
 ///
-/// A copy keeps what the value holds, not its history: a record's history is its action log,
+/// A copy keeps what the value holds, not its history: a document's history is its action log,
 /// and the ids of the things in it are their own.
 fn copy_value(
     doc: &mut Doc,

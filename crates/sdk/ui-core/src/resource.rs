@@ -9,7 +9,7 @@ pub mod bootstrap;
 pub use ::collaboration::document::ResourceSaveStatus;
 pub use collab_types::document::{
     DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, DocumentRef, MAX_DOCUMENT_RELATION_BYTES,
-    MAX_FORMER_IDS, ResourceType, valid_label,
+    MAX_FORMER_IDS, ResourceType, chain_of_resource_id, chain_resource_id, valid_label,
 };
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -89,7 +89,7 @@ pub fn init_scoped(
     home: &str,
     workspace: Option<&str>,
 ) -> bool {
-    // Primary custody is the checked app/workspace namespace, never a fake
+    // Primary ownership is the checked app/workspace namespace, never a fake
     // record stamp. Keep this serialized internal id stable across hosts.
     if id.is_package_primary() {
         return primary_document(doc);
@@ -281,7 +281,7 @@ fn restamp(doc: &mut AutoCommit, former: &DocumentId, want: &DocumentCheckout) -
 }
 
 /// Adopt the stored document of the first former identity of `want` that exists, belongs to its
-/// kind and workspace, and whose custody this successor can claim. The former document is only
+/// kind and workspace, and whose ownership this successor can claim. The former document is only
 /// read: the copy is restamped and returned to persist under the new id.
 fn adopt_former(
     store: &Rc<dyn DurableStore>,
@@ -584,7 +584,7 @@ impl ResourceSet {
     /// host's app id wins over `manifest_id`, as the workspace index does, or an app's
     /// records would split from its index; the host's workspace id scopes them.
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        let environment = crate::host::environment();
+        let environment = crate::process::environment();
         let identity = &environment.identity;
         let app_id = AppId::new(
             identity
@@ -907,7 +907,7 @@ impl ResourceSet {
             return self.finish_checkout(state, workspace, want);
         }
 
-        // A malformed incoming legacy document must fail before custody of
+        // A malformed incoming legacy document must fail before ownership of
         // the valid active document moves into a parked slot.
         let prepared = if self.open.contains_key(&want.id) {
             None
@@ -2040,25 +2040,11 @@ impl ResourceAdmission {
     }
 }
 
-/// The address the chain `chain` (whose parts are [`DocumentId::part`]) is
-/// published under, as one resource beside its app's own.
-#[must_use]
-pub fn chain_resource_id(chain: &DocumentId) -> String {
-    format!("chain:{}", chain.as_str())
-}
-
 /// The address the child records of `kind` that `parent` lists are
 /// published under, as one container resource beside the app's own.
 #[must_use]
 pub fn children_resource_id(parent: &DocumentId, kind: &str) -> String {
     format!("children:{kind}@{}", parent.as_str())
-}
-
-/// The chain a resource published under `id` is ([`chain_resource_id`]),
-/// or `None` when `id` names no chain.
-#[must_use]
-pub fn chain_of_resource_id(id: &str) -> Option<DocumentId> {
-    DocumentId::parse(id.strip_prefix("chain:")?)
 }
 
 /// The actor [`genesis`] makes record `id` of `workspace` under.
@@ -2325,7 +2311,7 @@ fn read_resource(
 impl ResourceStore {
     /// The route record `id` travels on: its workspace, the app and its wire name, unchecked
     /// against the record's document. What names a record across workspaces in one process (its
-    /// content lane) keys by it.
+    /// content content link) keys by it.
     pub fn wire_route(
         &self,
         id: &DocumentId,
@@ -2336,7 +2322,7 @@ impl ResourceStore {
             .wire_route(id)
     }
 
-    /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
+    /// Checked ownership-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
         &self,
         checkout: &DocumentCheckout,
@@ -2410,7 +2396,7 @@ impl ResourceStore {
         Ok(())
     }
 
-    /// Cheap content witness for retained projections over open records: base heads cover committed
+    /// Cheap content observation for retained projections over open records: base heads cover committed
     /// changes, `pending_ops` the live typing transaction, and the record identity makes opening or
     /// closing a document invalidate a snapshot.
     pub fn content_revision(&self) -> String {
@@ -2801,7 +2787,7 @@ impl ResourceStore {
         true
     }
 
-    /// Reserve a New identity with its gate and no document/history/writer yet:
+    /// Reserve a New identity with its check and no document/history/writer yet:
     /// the workspace's own records are reserved as shared writers, any other as
     /// its only writer.
     ///
@@ -3904,15 +3890,29 @@ impl ResourceStore {
         id: &DocumentId,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
     ) -> Result<T, String> {
+        let mut migrate = Some(migrate);
+        let mut outcome = None;
+        self.migrate_with(id, &mut |doc| {
+            outcome = migrate.take().map(|migrate| migrate(doc));
+        })?;
+        outcome.unwrap_or_else(|| Err("the document was not migrated".into()))
+    }
+
+    /// [`Self::migrate`] by one function for every caller: the generic
+    /// shell above only carries the outcome.
+    fn migrate_with(
+        &self,
+        id: &DocumentId,
+        migrate: &mut dyn FnMut(&mut AutoCommit),
+    ) -> Result<(), String> {
         self.with_action_state(id, |doc, _, actions| {
             let before = doc.get_heads();
-            let outcome = migrate(doc);
+            migrate(doc);
             for change in doc.get_changes(&before) {
                 actions.writers.borrow_mut().note(change.actor_id().clone());
             }
-            outcome
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
     }
 
     /// The open record `id` as a whole-document snapshot with its heads, for

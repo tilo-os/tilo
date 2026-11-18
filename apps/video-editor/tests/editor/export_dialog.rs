@@ -114,8 +114,8 @@ fn titled_cut(seconds: f64) -> video_editor::Project {
 #[test]
 #[cfg(feature = "gst")]
 fn a_cancelled_chooser_answers_the_export() {
-    let (services, host) = ui::host::HostServices::recording();
-    ui::host::install_default(services);
+    let (services, host) = ui::process::ProcessServices::recording();
+    ui::process::install_default(services);
     let mut app = editor_with(&titled_cut(1.0));
     let answer = app.effect(&video_editor::actions::VideoEditorEffect::Export { path: None });
     let refused = answer.expect_err("nothing was exported").to_string();
@@ -137,8 +137,8 @@ fn export_renders_into_the_chosen_file() {
     if !media_stack::media_stack() {
         return;
     }
-    let (services, host) = ui::host::HostServices::recording();
-    ui::host::install_default(services);
+    let (services, host) = ui::process::ProcessServices::recording();
+    ui::process::install_default(services);
     let out = tempfile::tempdir().unwrap();
     let file = out.path().join("Tiny.mp4");
     host.respond_to_pick(ui::portal::PortalOutcome::Opened(file.clone()));
@@ -158,8 +158,8 @@ fn a_dismissed_render_is_still_announced() {
     if !media_stack::media_stack() {
         return;
     }
-    let (services, host) = ui::host::HostServices::recording();
-    ui::host::install_default(services);
+    let (services, host) = ui::process::ProcessServices::recording();
+    ui::process::install_default(services);
     let out = tempfile::tempdir().unwrap();
     host.respond_to_pick(ui::portal::PortalOutcome::Opened(
         out.path().join("Tiny.mp4"),

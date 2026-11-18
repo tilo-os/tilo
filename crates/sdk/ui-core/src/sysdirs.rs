@@ -4,9 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// The host's [`crate::host::HostPaths::user_home`].
+/// The host's [`crate::process::ProcessPaths::user_home`].
 pub fn user_home_override() -> Option<PathBuf> {
-    let path = crate::host::environment().paths.user_home.clone()?;
+    let path = crate::process::environment().paths.user_home.clone()?;
     path.is_dir().then_some(path)
 }
 

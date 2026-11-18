@@ -83,6 +83,9 @@ mod page_events;
 #[cfg(test)]
 mod page_files_tests;
 mod page_find;
+mod page_items;
+#[cfg(test)]
+mod page_items_tests;
 mod page_resource;
 mod page_review_view;
 mod page_stopping;
@@ -392,7 +395,7 @@ struct CompositionKey {
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (bootstrap/headless \
               mode, engine-reported nav state, settings-pane visibility, dirty \
-              gates); grouping them into enums would not express any real \
+              checks); grouping them into enums would not express any real \
               invariant between them and would touch every read/write site \
               across this file"
 )]
@@ -517,7 +520,7 @@ pub struct BrowserWidget {
     swallow_address_release: bool,
     load_error: Option<String>,
     /// A locally rejected address must outlive any late event from an earlier
-    /// engine navigation. `WebView` events carry no request id, so this gate is
+    /// engine navigation. `WebView` events carry no request id, so this check is
     /// deliberately owned by the chrome and cleared only when the user starts
     /// a fresh, allowed navigation.
     address_error_active: bool,
@@ -618,12 +621,29 @@ pub struct BrowserWidget {
     /// came: several actors may work in one tab, and each takes its turn.
     page_waiting: std::collections::VecDeque<page_turns::WaitingPage>,
     /// Reads of the tab's record that are with the engine, and their answers
-    /// not yet read. They take no turn: the record answers whatever runs.
-    page_record_reads: Vec<page_turns::ResourceRead>,
-    page_record_answers: Vec<ui::tilo_actions::InvocationUpdate>,
-    /// Where this tab's engine stands against the tab's record, which is
+    /// not yet read. They take no turn: the resource answers whatever runs.
+    page_resource_reads: Vec<page_turns::ResourceRead>,
+    page_resource_answers: Vec<ui::tilo_actions::InvocationUpdate>,
+    /// Where this tab's engine stands against the tab's resource, which is
     /// Browser's resource ([`crate::page_resource`]).
     page_resource: crate::page_resource::TabRecorder,
+    /// This window's way to its person's vault, where it has one
+    /// ([`crate::page_items`]).
+    item_source: Option<Rc<dyn crate::page_items::ItemSource>>,
+    /// This window's own client of its session for vault items, until the window is live
+    /// and asks with it ([`crate::session_items`]).
+    item_client: Option<ui::collaboration::browser_service_sessions::Client>,
+    /// The question to this window's session whether it lends vault items to its pages,
+    /// while it is not settled.
+    item_lending: Option<crate::session_items::LendingQuestion>,
+    /// Fills by reference whose item was asked for and has not come yet.
+    item_fills: Vec<page_items::ItemFill>,
+    /// Fills by reference that ended before they took the tab's turn, and
+    /// whose callers have not read how.
+    item_fill_results: Vec<ui::tilo_actions::InvocationUpdate>,
+    /// What this window sent released for one site: struck out of everything
+    /// it answers afterwards.
+    struck: ui::webview::StruckTexts,
     /// What the window knows of its page's forms: the actions the page
     /// publishes for them, from a read of it or from site memory.
     forms: crate::page_forms::PageForms,
@@ -652,7 +672,7 @@ pub struct BrowserWidget {
     active_pip_refresh_probe: Option<u64>,
     next_pip_refresh_at: Option<ui::time::Instant>,
     pip_feedback: Option<PipFeedback>,
-    pending_capture_studio: Option<ui::widget::CaptureMode>,
+    pending_pip_area: bool,
     cursor: Point,
     compact_chrome: bool,
     compact_breakpoint: f32,
@@ -727,7 +747,7 @@ impl BrowserWidget {
         let client = self
             .service_client
             .clone()
-            .ok_or("Account custody is unavailable")?;
+            .ok_or("Account credentials is unavailable")?;
         self.service_forget = Some(crate::service_sessions::PendingForget::start(
             selection,
             person,
@@ -904,7 +924,7 @@ impl BrowserWidget {
         waker: ui::WakeHandle,
     ) -> Result<(), String> {
         if self.service_client.is_none() || self.service_list_reply.is_some() {
-            return Err("Account custody is unavailable or busy".into());
+            return Err("Account credentials is unavailable or busy".into());
         }
         self.service_list_reply = Some(reply);
         self.service_list_waker = Some(waker);
@@ -975,7 +995,7 @@ impl BrowserWidget {
                 .as_ref()
                 .map(crate::service_sessions::PendingForget::report);
             if let Some(report) = &self.service_observation
-                && report["custody_revoked"] == true
+                && report["ownership_revoked"] == true
             {
                 self.service_selections
                     .retain(|selected| Some(selected.id.as_str()) != report["session_id"].as_str());
@@ -1053,7 +1073,7 @@ impl BrowserWidget {
     /// The first URI; the binary has validated it against Browser's schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
-        if self.browsing_mode.holds_account_custody()
+        if self.browsing_mode.holds_account_credentials()
             && self.service_client.is_some()
             && let Some(destination) = crate::service_destinations::Destination::parse(&uri)
         {
@@ -1077,7 +1097,7 @@ impl BrowserWidget {
     /// Whether the page may hold a sign-in: always in the person's window, and
     /// in a visitor window once a credential was entered there.
     pub(crate) const fn page_holds_sign_in(&self) -> bool {
-        self.browsing_mode.holds_account_custody() || self.sign_in_entered
+        self.browsing_mode.holds_account_credentials() || self.sign_in_entered
     }
 
     /// The page holds a sign-in from now on; one-way.
@@ -1379,9 +1399,9 @@ impl BrowserWidget {
             page_dialog_answer: None,
             permission_answer: None,
             // Saved passwords and addresses are the person's account
-            // custody: a window without it neither offers nor saves them.
+            // ownership: a window without it neither offers nor saves them.
             credentials: crate::credentials::Credentials::new(
-                !browsing_mode.holds_account_custody(),
+                !browsing_mode.holds_account_credentials(),
             ),
             anchored_panel: None,
             side_panel_edge: None,
@@ -1490,9 +1510,15 @@ impl BrowserWidget {
             page_operation: None,
             page_operation_result: None,
             page_waiting: std::collections::VecDeque::new(),
-            page_record_reads: Vec::new(),
-            page_record_answers: Vec::new(),
+            page_resource_reads: Vec::new(),
+            page_resource_answers: Vec::new(),
             page_resource: crate::page_resource::TabRecorder::default(),
+            item_source: None,
+            item_client: None,
+            item_lending: None,
+            item_fills: Vec::new(),
+            item_fill_results: Vec::new(),
+            struck: ui::webview::StruckTexts::default(),
             forms: crate::page_forms::PageForms::default(),
             forms_read: forms_read::FormsRead::default(),
             page_review: page_review_view::PageReview::default(),
@@ -1513,7 +1539,7 @@ impl BrowserWidget {
             active_pip_refresh_probe: None,
             next_pip_refresh_at: None,
             pip_feedback: None,
-            pending_capture_studio: None,
+            pending_pip_area: false,
             cursor: Point::ZERO,
             review_stage: None,
             compact_chrome: false,
@@ -1949,7 +1975,7 @@ impl BrowserWidget {
             BrowserOperation::AnswerHeldRequest { .. } => {
                 return Err("a held request is answered through its resource action".into());
             }
-            BrowserOperation::Page(_) => {
+            BrowserOperation::Page(_) | BrowserOperation::FillPageItem { .. } => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
             BrowserOperation::Form(_) => {
@@ -2059,7 +2085,7 @@ impl BrowserWidget {
             .ok_or_else(|| "download destination is unavailable".into())
     }
 
-    /// Clear the history only when the record took the clear.
+    /// Clear the history only when the resource took the clear.
     fn clear_history_durably(&mut self) -> Result<(), String> {
         if let Some(record) = &self.person_history
             && let Err(error) =
@@ -2276,7 +2302,7 @@ impl BrowserWidget {
             match choice {
                 PipChoice::FloatPage => self.float_current_page(),
                 PipChoice::SelectArea => {
-                    self.pending_capture_studio = Some(ui::widget::CaptureMode::Pip);
+                    self.pending_pip_area = true;
                     self.pip_feedback = None;
                 }
             }
@@ -3205,8 +3231,14 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
-                WebViewEvent::PageResource { seq, entry } => self.hear_page_record(seq, &entry),
-                WebViewEvent::PageChanged(change) => self.hear_page_changed(&change),
+                WebViewEvent::PageResource { seq, mut entry } => {
+                    self.struck.strike_json(&mut entry);
+                    self.hear_page_resource(seq, &entry);
+                }
+                WebViewEvent::PageChanged(mut change) => {
+                    self.struck.strike_change(&mut change);
+                    self.hear_page_changed(&change);
+                }
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped
                     // answers with it.
@@ -4046,8 +4078,8 @@ impl FloatingSurfaceProvider for BrowserWidget {
         self.pending_pip.take()
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        self.pending_capture_studio.take()
+    fn take_pip_area_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_pip_area)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
@@ -4266,7 +4298,7 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The identity transform: nothing an ancestor cache records changes.
+        // The identity transform: nothing an ancestor cache resources changes.
         let coefficients = ui::scroll_copy::on_screen(transform).as_coeffs();
         let scale = coefficients[0].hypot(coefficients[1]);
         if scale.is_finite() && scale > 0.0 {
@@ -5334,6 +5366,14 @@ impl BrowserWidget {
             (E::ReadPageFields { frame: None }, &["frame"][..]),
             (E::ReadPageForms { frame: None }, &["frame"][..]),
             (
+                E::ReadPageTable {
+                    element: None,
+                    from: None,
+                    frame: None,
+                },
+                &["element", "from", "frame"][..],
+            ),
+            (
                 E::CapturePage {
                     element: None,
                     max_width: None,
@@ -5376,6 +5416,21 @@ impl BrowserWidget {
                 spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
+        // A field filled from the vault by reference is offered only where this
+        // window has a way to its person's vault.
+        if self.item_source.is_some() {
+            let spec = E::FillPageItem {
+                element: String::new(),
+                item: String::new(),
+                reason: None,
+            }
+            .bound_asking(&["element", "item", "reason"][..]);
+            page.actions.push(if web_page {
+                spec
+            } else {
+                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
+            });
+        }
         // Each form the page is known to ask is an action of its own.
         page.actions.extend(self.form_actions());
 
@@ -5407,7 +5462,7 @@ impl BrowserWidget {
         } else {
             clear
         });
-        // Newest first: the record keeps visits by address, so its own order is
+        // Newest first: the resource keeps visits by address, so its own order is
         // the alphabet's.
         let mut newest: Vec<&crate::history::HistoryEntry> =
             self.history.entries().iter().collect();
@@ -5429,7 +5484,7 @@ impl BrowserWidget {
                 }
                 .bound(),
             );
-            // Only a window that keeps a record offers the row its removal.
+            // Only a window that keeps a resource offers the row its removal.
             if self.person_history.is_some() {
                 row = row.with_action(
                     E::ForgetVisit {
@@ -5591,12 +5646,12 @@ impl BrowserWidget {
             )
             .with_action({
                 let list = E::ListServiceSessions.bound();
-                if self.browsing_mode.holds_account_custody() {
+                if self.browsing_mode.holds_account_credentials() {
                     list
                 } else {
                     list.unavailable(
-                        "no_account_custody",
-                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY),
+                        "no_account_credentials",
+                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_OWNERSHIP),
                     )
                 }
             }),
@@ -5653,6 +5708,18 @@ impl BrowserWidget {
         invocation: ui::tilo_actions::InvocationId,
         cancellation_requested: bool,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        let mut update = self.settled_invocation(invocation, cancellation_requested)?;
+        // Whatever the page said of a text this window sent released leaves the
+        // window struck out, in every answer and however the action ended.
+        self.strike_update(&mut update);
+        Some(update)
+    }
+
+    fn settled_invocation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        cancellation_requested: bool,
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
         if let Some(stopped) =
             self.answer_a_cancelled_page_operation(invocation, cancellation_requested)
         {
@@ -5660,6 +5727,10 @@ impl BrowserWidget {
         }
         if let Some(released) = self.holds.take_answer(invocation) {
             return Some(released);
+        }
+        self.drive_item_fills();
+        if let Some(ended) = self.take_item_fill_result(invocation) {
+            return Some(ended);
         }
         self.drive_page_operation();
         if self
@@ -5672,7 +5743,7 @@ impl BrowserWidget {
         if let Some(never_ran) = self.answer_a_page_action_that_waited_too_long(invocation) {
             return Some(never_ran);
         }
-        if let Some(record) = self.take_page_record_answer(invocation) {
+        if let Some(record) = self.take_page_resource_answer(invocation) {
             return Some(record);
         }
         if self
@@ -5778,6 +5849,7 @@ impl BrowserWidget {
     fn sync_frame(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.poll_service_admission();
+        self.drive_item_lending();
         if let Some(engine) = self
             .service_view
             .as_mut()
@@ -5860,6 +5932,7 @@ impl BrowserWidget {
         self.sync_window_toolbar();
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
+        self.drive_item_fills();
         self.drive_page_operation();
         self.sync_page_review();
         self.sync_forms_read();
@@ -5971,6 +6044,15 @@ impl BrowserWidget {
         }
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, actor, request)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
+        if let BrowserOperation::FillPageItem {
+            element,
+            item,
+            reason,
+        } = operation
+        {
+            self.start_item_fill(invocation, actor, invoker, element, item, reason)?;
             return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::ShowPageField { element, frame } = operation {

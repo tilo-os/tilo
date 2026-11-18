@@ -18,13 +18,13 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
     let hosted = start(&root, &host, state.path()).await;
 
     let peer = start_peer(
-        Host::at(hosted.relay.node_addr()),
+        Host::at(hosted.server.node_addr()),
         device.cert.clone(),
         host.cert.clone(),
         device.key.clone(),
     );
     let events = peer.events();
-    let workspace = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let workspace = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
 
     // The page joins and asks the workspace for its catalogue at once, as a
     // page does when it opens on the workspace's records: the join is a round

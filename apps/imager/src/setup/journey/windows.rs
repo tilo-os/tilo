@@ -1182,12 +1182,12 @@ mod tests {
             serde_json::from_slice(&std::fs::read(output.join("review.json")).unwrap()).unwrap();
         assert_eq!(receipt["replacement_authorized"], false);
         assert!(!receipt.to_string().contains(root.to_str().unwrap()));
-        let encrypted = account_custody::hints::PasswordHints::from_bytes(
+        let encrypted = account_credentials::hints::PasswordHints::from_bytes(
             &std::fs::read(output.join("account-hints.sealed")).unwrap(),
         )
         .unwrap();
         assert!(
-            account_custody::hints::open_password(
+            account_credentials::hints::open_password(
                 b"private-export-password",
                 receipt["hint_binding"].as_str().unwrap(),
                 &encrypted
@@ -1232,8 +1232,8 @@ mod tests {
                     .windows(profiles[0].email.len())
                     .any(|bytes| bytes == profiles[0].email.as_bytes())
             );
-            let sealed = account_custody::hints::PasswordHints::from_bytes(&bytes).unwrap();
-            let opened = account_custody::hints::open_password(
+            let sealed = account_credentials::hints::PasswordHints::from_bytes(&bytes).unwrap();
+            let opened = account_credentials::hints::open_password(
                 b"private-password",
                 receipt["hint_binding"].as_str().unwrap(),
                 &sealed,

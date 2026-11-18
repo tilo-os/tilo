@@ -1,7 +1,7 @@
 //! The documents this reader's workspace holds, as its empty state offers
-//! them, and opening one in place of the record the window shows: a reviewer
+//! them, and opening one in place of the resource the window shows: a reviewer
 //! opens the paper an agent filled in a hosted workspace without a file
-//! chooser, on that paper's own markup record.
+//! chooser, on that paper's own markup resource.
 
 use vello::kurbo::{Point, Rect};
 

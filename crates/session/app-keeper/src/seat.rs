@@ -137,6 +137,67 @@ impl SeatMirror {
             .map(|client| client.id())
     }
 
+    /// Pointer events the keeper makes for `surface`'s connection itself, past the desktop's: an
+    /// X11 server learns where a drag over its window is, or that the button its own drag holds
+    /// came up, only from its pointer (`xdnd.rs`).
+    pub(crate) fn synthetic_pointer_enter(&self, surface: &WlSurface, (x, y): (f64, f64)) {
+        for pointer in self.pointers_of(surface) {
+            pointer.enter(self.last_serial, surface, x, y);
+            if pointer.version() >= 5 {
+                pointer.frame();
+            }
+        }
+    }
+
+    pub(crate) fn synthetic_pointer_motion(
+        &self,
+        surface: &WlSurface,
+        time: u32,
+        (x, y): (f64, f64),
+    ) {
+        for pointer in self.pointers_of(surface) {
+            pointer.motion(time, x, y);
+            if pointer.version() >= 5 {
+                pointer.frame();
+            }
+        }
+    }
+
+    pub(crate) fn synthetic_pointer_release(&self, surface: &WlSurface, button: u32) {
+        // Milliseconds, wrapping as the protocol's do.
+        let time = u32::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                & u128::from(u32::MAX),
+        )
+        .unwrap_or_default();
+        for pointer in self.pointers_of(surface) {
+            pointer.button(
+                self.last_serial,
+                time,
+                button,
+                wl_pointer::ButtonState::Released,
+            );
+            if pointer.version() >= 5 {
+                pointer.frame();
+            }
+        }
+    }
+
+    pub(crate) fn synthetic_pointer_leave(&self, surface: &WlSurface) {
+        if !surface.is_alive() {
+            return;
+        }
+        for pointer in self.pointers_of(surface) {
+            pointer.leave(self.last_serial, surface);
+            if pointer.version() >= 5 {
+                pointer.frame();
+            }
+        }
+    }
+
     /// The last serial the desktop gave, which its requests accept.
     pub(crate) fn last_serial(&self) -> u32 {
         self.last_serial
@@ -513,12 +574,14 @@ impl wayland_client::Dispatch<c::wl_pointer::WlPointer, ()> for State {
                 pointer.enter(*serial, &surface, *surface_x, *surface_y);
                 state.reapply_cursor_shape(pointer, *serial);
             }
+            state.x11_drag_pointer(&surface, &event);
             state.seat.pointer_focus = Some(surface);
             return;
         }
         let Some(surface) = state.seat.pointer_focus.clone() else {
             return;
         };
+        state.x11_drag_pointer(&surface, &event);
         if let c::wl_pointer::Event::Leave { serial, .. } = event {
             state.seat.last_serial = serial;
             state.seat.pointer_focus = None;

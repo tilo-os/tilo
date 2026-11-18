@@ -2,8 +2,8 @@ use discord_wire::event::{AttachmentInfo, ThreadRef};
 use serde_json::json;
 
 use super::*;
+use crate::guild::{Link, Mapping, Ownership};
 use crate::layout::tests::mapping;
-use crate::record::{Link, Mapping, Ownership};
 use discord_wire::event::{Authorized, link_check, link_proof};
 
 fn guild() -> Guild {
@@ -93,10 +93,9 @@ tilo_test_env::scenario! {
             user_name: "alice".into(),
             ..Link::default()
         });
-        let chat = crate::tilo::ChatRead::new(
-            json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada Lovelace", "avatar": "blob-ada"}}}),
-            Vec::new(),
-        );
+        let chat = crate::tilo::ChatRead::new(json!({}), Vec::new()).knowing(&json!({
+            "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace", "avatar": "blob-ada"}]
+        }));
         let post = &plan_created(&g, &chat, &created("dm1", "hello")).posts[0];
         assert_eq!(
             post.appearance.name, "Ada Lovelace",
@@ -114,7 +113,7 @@ tilo_test_env::scenario! {
         );
 
         // Unlinked again, or a person Chat does not know: their Discord name.
-        let unknown = crate::tilo::ChatRead::new(json!({"people": {}}), vec![]);
+        let unknown = crate::tilo::ChatRead::new(json!({}), vec![]);
         let post = &plan_created(&g, &unknown, &created("dm2", "hi")).posts[0];
         assert_eq!(post.appearance.name, "alice");
         g.links.clear();
@@ -573,7 +572,7 @@ tilo_test_env::scenario! {
             person: "u_ada".into(),
             ..Link::default()
         });
-        let workspace = json!({"members": [{"person": "u_ada", "role": "editor"}]});
+        let workspace = json!({"members": [{"member": {"person": "u_ada"}, "role": "editor"}]});
         let changed = MemberChanged {
             user_id: "u7".into(),
             roles: vec!["r_own".into()],
@@ -783,8 +782,7 @@ fn named(user_name: &str, display_name: Option<&str>) -> UserName {
 }
 
 fn chat_with_ada() -> crate::tilo::ChatRead {
-    crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada Lovelace"}}}),
-        vec![],
-    )
+    crate::tilo::ChatRead::new(json!({}), vec![]).knowing(&json!({
+        "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace"}]
+    }))
 }

@@ -127,7 +127,7 @@ agent's group and checking no VM ran. It runs against any API server with a
 server key, or against a relay with its app workers on loopback:
 
 ```sh
-cargo run -p tilo-agent-session --example api-on-relay -- env VISA_REVOKE_SERVER_KEY=1 \
+cargo run -p tilo-agent-session --example api-on-server -- env VISA_REVOKE_SERVER_KEY=1 \
     uv run --project sdk/python python sdk/python/examples/visa_proof.py
 ```
 

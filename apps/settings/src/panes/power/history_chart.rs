@@ -202,10 +202,10 @@ impl HistoryChart {
 }
 
 fn weekday_label(day: i64) -> String {
-    let from_monday = u32::try_from((day + 3).rem_euclid(7)).unwrap_or_default();
+    let from_monday = i8::try_from((day + 3).rem_euclid(7)).unwrap_or_default();
     ui::format::week()
         .into_iter()
-        .find(|weekday| weekday.num_days_from_monday() == from_monday)
+        .find(|weekday| weekday.to_monday_zero_offset() == from_monday)
         .map(ui::format::weekday_short)
         .unwrap_or_default()
 }

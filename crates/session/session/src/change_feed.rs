@@ -1,6 +1,6 @@
 //! What changed in the records of a workspace this desktop holds: the feed a watch of the whole
 //! workspace reads through the MCP server ([`tilo_actions::remote::ChangeFeed`]), from the
-//! device's replica of the workspace, as a relay's workspace answers it from its own
+//! device's replica of the workspace, as a server's workspace answers it from its own
 //! ([`ui::history_source::feed`]).
 //!
 //! A caller follows the workspace it works in: an agent's run, admitted to one. Each workspace's
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_actions::remote::{
-    ActionHostError, CHANGE_FEED_UNAVAILABLE, Caller, ChangeFeed, ChangePage, Pending,
+    ActionCallError, CHANGE_FEED_UNAVAILABLE, Caller, ChangeFeed, ChangePage, Pending,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::engine::Engine;
@@ -57,29 +57,29 @@ impl ChangeFeed for Feeds {
         &self,
         caller: &Caller,
         after: Option<&str>,
-    ) -> Pending<Result<ChangePage, ActionHostError>> {
+    ) -> Pending<Result<ChangePage, ActionCallError>> {
         Pending::ready(self.page(caller, after))
     }
 }
 
 impl Feeds {
-    fn page(&self, caller: &Caller, after: Option<&str>) -> Result<ChangePage, ActionHostError> {
+    fn page(&self, caller: &Caller, after: Option<&str>) -> Result<ChangePage, ActionCallError> {
         let Some(workspace) = caller.workspace() else {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: "a watch of a workspace follows the workspace its caller works in, and \
                          this caller works in none"
                     .into(),
             });
         };
         let Some(engine) = self.engine.get() else {
-            return Err(ActionHostError::Unavailable {
+            return Err(ActionCallError::Unavailable {
                 reason: CHANGE_FEED_UNAVAILABLE.into(),
             });
         };
         let records: Vec<DocumentKey> =
             engine
                 .records(workspace)
-                .map_err(|reason| ActionHostError::Unavailable {
+                .map_err(|reason| ActionCallError::Unavailable {
                     reason: format!("the workspace's records are not read: {reason}"),
                 })?;
         let mut logs = self.logs.lock_recover();

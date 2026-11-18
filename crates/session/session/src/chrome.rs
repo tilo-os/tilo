@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetHost};
+use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetSurface};
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{
@@ -16,7 +16,7 @@ use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop::overlays::{Overlays, Part, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::Layout;
-use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
@@ -360,7 +360,7 @@ pub(crate) struct BarFeeds {
     pub(crate) readings: crate::status::Shared,
     pub(crate) activities: Rc<Activities>,
     /// The applications' tray items, when their watcher serves.
-    pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<Arc<tilo_tray::Tray>>,
     /// The monitors of the displays a fullscreen window owns, as the loop found them this pass.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
     /// The windows this session shares with its workspaces, which the bar says are being shared
@@ -410,7 +410,7 @@ pub(crate) struct SessionChrome {
     /// The session has no quick settings panel: the status cluster is the bell that opens the
     /// notification centre.
     notifications_only: bool,
-    /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
+    /// Who is here, when this session takes part in the peer network: the bar's trees carry
     /// them as the active workspace's members and their presence.
     sync: Option<Rc<crate::sync::Client>>,
     /// What each window of the shell shows, as its app reports it: where a person's record stands,
@@ -422,7 +422,7 @@ pub(crate) struct SessionChrome {
     /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
     activities: Rc<Activities>,
     /// The running applications' status-notifier items, as their host keeps them.
-    tray: Option<Arc<tilo_tray_host::Tray>>,
+    tray: Option<Arc<tilo_tray::Tray>>,
     /// The monitors of the displays a fullscreen window owns, which the loop takes from the
     /// compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
@@ -511,8 +511,8 @@ impl ChromeSource for SessionChrome {
 
     /// The person at this device owns its desktop: the desktop's one policy answers what they may
     /// change, as it answers a workspace's owner.
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
-        answer(&Standing {
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R {
+        answer(&Requester {
             person: &self.person,
             role: Some(Role::Owner),
             members: None,
@@ -689,7 +689,7 @@ impl ChromeSource for SessionChrome {
 
 /// One tray item as the bar draws it: the app's own words for it, the app it demonstrably belongs
 /// to, and the pixels it sent or named, with a letter badge for an icon nothing could draw.
-fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
+fn app_tray_item(item: tilo_tray::TrayItem) -> AppTrayItem {
     AppTrayItem {
         key: item.key,
         id: item.id.clone(),
@@ -700,12 +700,12 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
             item.title
         },
         status: match item.status {
-            tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
-            tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
-            tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
+            tilo_tray::ItemStatus::Passive => AppTrayStatus::Passive,
+            tilo_tray::ItemStatus::Active => AppTrayStatus::Active,
+            tilo_tray::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
         },
         icon: match item.icon {
-            tilo_tray_host::TrayIcon::Pixels {
+            tilo_tray::TrayIcon::Pixels {
                 width,
                 height,
                 rgba,
@@ -714,7 +714,7 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
                 height,
                 rgba,
             },
-            tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
+            tilo_tray::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
         },
         item_is_menu: item.item_is_menu,
     }
@@ -779,7 +779,7 @@ pub(crate) fn host(
     emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,
-) -> WidgetHost {
+) -> WidgetSurface {
     let ChromeWiring {
         intents,
         asks,
@@ -841,7 +841,7 @@ pub(crate) fn host(
         size: (1, 1),
         scale: options.scale,
     };
-    let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
+    let mut host = WidgetSurface::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
     // The chrome draws the overview, so the overview's flight asks frames of the chrome alone.
     overview.drawn_on(host.host().motion_surface());

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Identifies a workspace everywhere: in wire messages, relay routing, stored
+/// Identifies a workspace everywhere: in wire messages, server routing, stored
 /// keys and the desktop model. Every device that meets the workspace agrees on
 /// it without having met the others.
 #[derive(

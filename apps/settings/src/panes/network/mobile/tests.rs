@@ -735,7 +735,7 @@ fn counted(total: u64, at: i64) -> serde_json::Value {
             "name": "Telia", "received": total, "sent": 0,
         }],
         "boot": "b", "at": at,
-        "offset": ui::clock::local_now().offset().local_minus_utc(),
+        "offset": ui::clock::local_now().offset().seconds(),
     })
 }
 
@@ -753,7 +753,7 @@ fn the_count_is_kept_in_the_section_with_no_page_opened() {
         invoke_section(&mut app, kind, "count-data-used", counted(total, at)).unwrap();
     }
     let usage = app.settings::<NetworkUsage>().get();
-    let today = ui::clock::local_now().date_naive();
+    let today = ui::clock::local_now().date();
     assert_eq!(usage.connections["mobile:8931"].on(today).received, 750);
     assert_eq!(usage.counters["modem:0"].received, 9_750);
     let opened = app
@@ -774,7 +774,7 @@ fn the_reset_day_limit_and_reset_are_the_sections() {
     let now = tilo_clock::unix_now_i64();
     invoke_section(&mut app, kind, "count-data-used", counted(1_000, now)).unwrap();
     invoke_section(&mut app, kind, "count-data-used", counted(1_500, now)).unwrap();
-    let today = ui::clock::local_now().date_naive();
+    let today = ui::clock::local_now().date();
     assert_eq!(app.settings::<NetworkUsage>().get().mobile_used(today), 500);
 
     app.call("show-mobile", serde_json::json!({})).unwrap();

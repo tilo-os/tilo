@@ -25,7 +25,7 @@ use crate::owner::journal;
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
     Store,
-    record::{StoredPendingEnrollment, StoredWorkspace, format},
+    stored::{StoredPendingEnrollment, StoredWorkspace, format},
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -70,7 +70,7 @@ pub trait FileHost: std::any::Any + Send + Sync {
     /// or fails.
     ///
     /// # Errors
-    /// The host refuses the publication, or `write` failed.
+    /// The publication is refused, or `write` failed.
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
@@ -132,9 +132,9 @@ fn part_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
     parts.join(format!("{workspace}.{revision}.json"))
 }
 
-/// The file a run of `workspace`'s outgoing custody named `hash` is kept in.
-fn custody_run_of(parts: &Path, workspace: WorkspaceId, hash: [u8; 32]) -> PathBuf {
-    parts.join(crate::owner::custody_run_name(workspace, hash))
+/// The file the writes of `workspace`'s outgoing ownership named `hash` are kept in.
+fn ownership_run_of(parts: &Path, workspace: WorkspaceId, hash: [u8; 32]) -> PathBuf {
+    parts.join(crate::owner::ownership_run_name(workspace, hash))
 }
 
 /// The journal of the workspace file written at `revision`.
@@ -250,7 +250,7 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
 
 /// A recovery projection is a re-signed copy of frames this build re-sends
 /// as their signed originals. A record that holds one still loads; the copy
-/// is dropped here, and the record keeps its originals in custody until the
+/// is dropped here, and the record keeps its originals held until the
 /// workspace retires them.
 fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
     record.workspaces.values_mut().for_each(|workspace| {
@@ -309,7 +309,7 @@ pub fn open_file_with(
     )?;
     if migrated {
         // The form of records already there changes neither a workspace nor
-        // its relay workspace, so it goes straight to the files rather than
+        // its server workspace, so it goes straight to the files rather than
         // through a publication of the store: nothing a host follows has
         // changed.
         let record = owner.0.authority.read();
@@ -511,7 +511,7 @@ impl FileStore {
 
     /// Remove the workspace files `record`, the record as published, does not name: the one a
     /// workspace was published over, one a publication stopped before its index wrote, and the
-    /// runs of custody that moved to its head.
+    /// kept writes of ownership that moved to its head.
     fn prune_parts(&self, record: &NativeAuthorityStorage) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
@@ -519,7 +519,7 @@ impl FileStore {
         let index = index_of(&self.parts);
         let held = self.held.read();
         let runs: BTreeSet<PathBuf> = record
-            .custody_runs()
+            .ownership_runs()
             .map(|name| self.parts.join(name))
             .collect();
         for entry in entries.flatten() {
@@ -597,32 +597,39 @@ impl Store for FileStore {
     fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
         self.history.read(hash)
     }
-    fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
+    fn put_ownership(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
         if bytes.len() > crate::owner::publication::MAX_RUN_BYTES {
-            return Err("a run of outgoing custody exceeds its cap".into());
+            return Err("a run of outgoing ownership exceeds its cap".into());
         }
         provision(&self.parts)?;
         let hash = *blake3::hash(bytes).as_bytes();
-        // Named by its contents: a run kept already is the same run, and nothing names a new
-        // one before this returns, so it never fences the store.
+        // Named by its contents: what is kept already is the same bytes, and nothing names
+        // new ones before this returns, so it never fences the store.
         tilo_files::native::atomic::replace(
-            &custody_run_of(&self.parts, workspace, hash),
+            &ownership_run_of(&self.parts, workspace, hash),
             bytes,
             tilo_files::native::atomic::Privacy::OwnerOnly,
         )
         .map_err(|error| error.into_io_error().to_string())?;
         Ok(hash)
     }
-    fn read_custody(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let path = custody_run_of(&self.parts, workspace, hash);
-        let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+    fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        let file = match std::fs::File::open(ownership_run_of(&self.parts, workspace, hash)) {
+            // Kept by a build that named it as the code does.
+            Err(error) if error.kind() == ErrorKind::NotFound => std::fs::File::open(
+                self.parts
+                    .join(crate::owner::ownership_name_between(workspace, hash)),
+            ),
+            opened => opened,
+        }
+        .map_err(|error| error.to_string())?;
         let limit = crate::owner::publication::MAX_RUN_BYTES;
         let mut bytes = Vec::new();
         file.take((limit as u64).saturating_add(1))
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
         if bytes.len() > limit {
-            return Err("a run of outgoing custody exceeds its cap".into());
+            return Err("a run of outgoing ownership exceeds its cap".into());
         }
         Ok(bytes)
     }

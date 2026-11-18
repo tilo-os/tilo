@@ -173,7 +173,7 @@ fn copy_setup(
 }
 /// The source type cannot be reconstructed from a saved JSON qualification.
 /// The exact completed capsule and ciphertext are independently reacquired under
-/// genuine selected-medium custody before the receiving namespace is launched.
+/// genuine selected-medium ownership before the receiving namespace is launched.
 pub(super) fn consume(
     target: &crate::imager_model::TargetDrive,
     raw: &File,

@@ -1,6 +1,6 @@
 //! The index's filter columns (search.md, "Who indexes"): equality, ranges, membership and patterns
 //! answered from runs of a column, in a collection and across the workspace, kept change by
-//! change as a build from the record keeps them, with facet counts read from the same columns.
+//! change as a build from the document keeps them, with facet counts read from the same columns.
 
 use std::rc::Rc;
 
@@ -373,7 +373,7 @@ fn filter_columns_answer_what_reading_every_item_finds_and_follow_every_change()
     }
     assert_eq!(workspace.evaluated(), before, "answered from the columns");
 
-    // Every kind of change, each followed by the columns as a build from the record finds.
+    // Every kind of change, each followed by the columns as a build from the document finds.
     let board = workspace.board.clone();
     let steps: Vec<(&str, Step)> = vec![
         (
@@ -435,7 +435,7 @@ tilo_test_env::scenario! {
 
     phase a_listing_kept_across_a_change_lists_as_one_read_anew;
     // A filtered listing keeps what it checked across a change: an item put in, one made to be of
-    // the listing, one made not to be, and one taken out each list as the record read anew lists
+    // the listing, one made not to be, and one taken out each list as the document read anew lists
     // them.
     {
         let mut workspace = Workspace::new();
@@ -672,7 +672,7 @@ fn a_person_a_filter_names_is_a_run_of_its_column() {
         workspace.listed("assignee:none"),
         workspace.anew("assignee:none")
     );
-    // The columns follow the change, as a build from the record finds them.
+    // The columns follow the change, as a build from the document finds them.
     workspace.call(
         "assign",
         vec![
@@ -725,7 +725,7 @@ const INBOX_APP: &str = "so.tilo.inbox";
 fn inbox_workspace(n: usize) -> (Replica, Meta, ResourceRef) {
     inbox_workspace_of(SNOOZED, n, |i, item, meta| {
         use serde_json::json;
-        use tilolang_tilo::record::DynValue;
+        use tilolang_tilo::resource::DynValue;
         if let Some(DynValue::Register(snoozed)) =
             item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
             && i % 5 == 0
@@ -744,12 +744,12 @@ fn inbox_workspace(n: usize) -> (Replica, Meta, ResourceRef) {
 fn inbox_workspace_of(
     source: &str,
     n: usize,
-    shape: impl Fn(usize, &mut tilolang_tilo::DynRecord, &Meta),
+    shape: impl Fn(usize, &mut tilolang_tilo::DynResource, &Meta),
 ) -> (Replica, Meta, ResourceRef) {
     use serde_json::json;
     use tilo_resource::{Collection, Id, Model as _};
     use tilolang_tilo::action::{DynAction, DynEdit};
-    use tilolang_tilo::record::{DynRecord, DynValue};
+    use tilolang_tilo::resource::{DynResource, DynValue};
 
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(source, "")]);
     // The index writes what the filters that read the clock hold at the workspace's clock: a
@@ -763,7 +763,7 @@ fn inbox_workspace_of(
     let schema = tilolang_tilo::schema::lookup(&thread_ty.id).unwrap();
     let mut threads = Collection::default();
     for i in 0..n {
-        let mut item = DynRecord::empty(schema).unwrap();
+        let mut item = DynResource::empty(schema).unwrap();
         if let Some(DynValue::Text(title)) = item.get_mut(&field_id(&meta, "Thread", "title")) {
             *title = format!("Thread {i:05}");
         }
@@ -773,7 +773,7 @@ fn inbox_workspace_of(
         shape(i, &mut item, &meta);
         threads.push(Id::from_raw(format!("thread-{i:05}")), item);
     }
-    let mut root = DynRecord::empty(tilolang_tilo::schema::lookup(&mail_ty.id).unwrap()).unwrap();
+    let mut root = DynResource::empty(tilolang_tilo::schema::lookup(&mail_ty.id).unwrap()).unwrap();
     if let Some(DynValue::Collection(slot)) = root.get_mut(&field_id(&meta, "Mail", "threads")) {
         *slot = threads;
     }
@@ -945,7 +945,7 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
     let read = Rc::clone(&clock);
     let (ada, _meta, _mail) = inbox_workspace_of(INBOX_VIEW, 1_000, |i, item, meta| {
         use serde_json::json;
-        use tilolang_tilo::record::DynValue;
+        use tilolang_tilo::resource::DynValue;
         // The first conversation is snoozed until 2027, and comes back once it is there.
         if i == 0
             && let Some(DynValue::Register(snoozed)) =
@@ -1002,7 +1002,7 @@ tilo_test_env::scenario! {
 
     phase a_snooze_an_action_just_set_is_the_moment_the_view_waits_for;
     // USER REQUIREMENT: a conversation snoozed just now comes back at its moment, with no window
-    // open: the window waits for that moment, and the store's own write holds it before the record
+    // open: the window waits for that moment, and the store's own write holds it before the resource
     // brings it back.
     {
         let (mut ada, meta, mail) = inbox_workspace_of(&snoozing(), 3, |_, _, _| {});
@@ -1030,7 +1030,7 @@ tilo_test_env::scenario! {
                 ),
             )
             .unwrap();
-        // The write is the store's: the record has not brought it back yet, and the view that reads
+        // The write is the store's: the resource has not brought it back yet, and the view that reads
         // the inbox waits for the moment the conversation comes back.
         let view = ada.view(INBOX_APP);
         assert_eq!(
@@ -1047,7 +1047,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             view.wakes_at(),
             tilolang::calendar::instant(moment),
-            "and it is once the record holds it"
+            "and it is once the resource holds it"
         );
     }
 
@@ -1065,7 +1065,7 @@ tilo_test_env::scenario! {
         let snoozed = "2026-11-01T00:00:00Z";
         let (mut ada, meta, mail) = inbox_workspace_of(SNOOZED, 2, |i, item, meta| {
             use serde_json::json;
-            use tilolang_tilo::record::DynValue;
+            use tilolang_tilo::resource::DynValue;
             if i == 0
                 && let Some(DynValue::Register(until)) =
                     item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
@@ -1113,14 +1113,14 @@ tilo_test_env::scenario! {
             .id
             .clone();
         let mut late =
-            tilolang_tilo::DynRecord::empty(tilolang_tilo::schema::lookup(&thread_id).unwrap())
+            tilolang_tilo::DynResource::empty(tilolang_tilo::schema::lookup(&thread_id).unwrap())
                 .unwrap();
-        if let Some(tilolang_tilo::record::DynValue::Register(until)) =
+        if let Some(tilolang_tilo::resource::DynValue::Register(until)) =
             late.get_mut(&field_id(&meta, "Thread", "snoozed_until"))
         {
             until.clone_from(&serde_json::json!("2026-11-05T00:00:00Z"));
         }
-        if let Some(tilolang_tilo::record::DynValue::Set(boxes)) =
+        if let Some(tilolang_tilo::resource::DynValue::Set(boxes)) =
             late.get_mut(&field_id(&meta, "Thread", "boxes"))
         {
             boxes.insert(serde_json::json!("inbox"));

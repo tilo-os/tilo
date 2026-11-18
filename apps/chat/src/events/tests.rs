@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
                 &crate::resource::Chat::DELETE_CHANNEL
                     .with(ui::tilo_resource::Id::from_raw("c_crit"))
             ),
-            "the palette's delete-channel is the record's verb on that channel"
+            "the palette's delete-channel is the resource's verb on that channel"
         );
 
         // Drive the real on-screen affordance (right-click menu → Delete).
@@ -378,7 +378,7 @@ fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
     app.focus = Focus::Main;
     app.thread_open = None;
     let before = crate::testing::top_level(&doc, "c_general");
-    let too_long = "x".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES + 1);
+    let too_long = "x".repeat(crate::chat::MAX_MESSAGE_TEXT_BYTES + 1);
     crate::testing::write_draft(&mut app, &mut doc, &too_long);
     app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(crate::testing::top_level(&doc, "c_general"), before);
@@ -503,7 +503,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.composer_main.value(), "");
         assert!(
             !crate::projection::has_draft(&doc, "c_general"),
-            "a draft never enters the workspace's record"
+            "a draft never enters the workspace's document"
         );
     }
 
@@ -513,7 +513,7 @@ tilo_test_env::scenario! {
         // demo defaults the app boots with, the reload must re-home the
         // active channel and drop the stale demo thread.
         let mut doc = AutoCommit::new();
-        crate::testing::starter(&mut doc, model::ME, "You", "Y");
+        crate::testing::starter(&mut doc, model::ME, "You");
         let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
         app.reload(&doc);
         if app.ensure_selection() {
@@ -521,7 +521,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             app.active_channel,
-            crate::record::CHAT_CHANNEL,
+            crate::chat::CHAT_CHANNEL,
             "picked the first text channel"
         );
         assert!(app.thread_open.is_none(), "stale demo thread dropped");
@@ -1572,9 +1572,9 @@ fn a_file_the_workspace_would_not_take_is_refused_in_plain_words() {
     let (mut app, mut doc) = app_with_doc();
     app.active_channel = "c_crit".into();
     app.external_services = false;
-    let before = crate::record::Chat::read_fields(&doc.chat, &automerge::ROOT).unwrap();
+    let before = crate::chat::Chat::read_fields(&doc.chat, &automerge::ROOT).unwrap();
     let mut after = before.clone();
-    after.files = crate::record::WorkspaceFiles {
+    after.files = crate::chat::WorkspaceFiles {
         largest: 4 << 20,
         member_hourly: 6 << 20,
     };
@@ -2092,14 +2092,6 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
 }
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
-    for (author, invoke) in crate::resource::agent_work_steps() {
-        let mut replica = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(
-            std::mem::take(&mut doc.chat),
-        )
-        .as_member(author);
-        replica.apply_confirmed(invoke).unwrap();
-        std::mem::swap(&mut doc.chat, replica.doc_mut());
-    }
     let mut head = crate::parts::ChatPart::clone(&doc.messages().parts()[0].1);
     let (summons, message) = crate::resource::agent_summons();
     head.messages.push(summons, message);
@@ -2429,7 +2421,7 @@ tilo_test_env::scenario! {
     /// Joining, expanding and leaving a call from the window.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn a_call_is_joined_expanded_and_left_without_writing_the_record;
+    fn a_call_is_joined_expanded_and_left_without_writing_the_resource;
 
     phase switching_to_voice_channel_starts_a_muted_service_join_without_membership_write;
     {
@@ -2632,8 +2624,7 @@ tilo_test_env::scenario! {
     {
         let (mut app, mut doc) = app_with_doc();
         let name = "Book the room for the whole marketing team on Friday";
-        app.workspace_agent_names
-            .insert("planner".into(), name.into());
+        crate::testing::agent_member(&mut app, "planner", name);
         let channel = app.active_channel.clone();
         let id = doc
             .say(&MemberId::agent("planner"), &channel, "On it.")
@@ -2744,7 +2735,7 @@ struct PathlessHost {
 /// A file the host wrote: its name and bytes.
 type Written = (String, Vec<u8>);
 
-impl ui::host::FilePicker for PathlessHost {
+impl ui::process::FilePicker for PathlessHost {
     fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
         answered(ui::portal::PortalOutcome::Failed("no paths".into()))
     }
@@ -2783,8 +2774,8 @@ fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
 fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
     use crate::testing::MountedChat as _;
     let host = std::sync::Arc::new(PathlessHost::default());
-    let services = ui::host::HostServices::null().with_files(host.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_files(host.clone());
+    let _host = ui::process::enter(&services);
     let mut window = ui::framework::testing::TestApp::<crate::ChatShell>::new().unwrap();
     window
         .call_on(
@@ -2881,8 +2872,7 @@ tilo_test_env::scenario! {
 fn the_bar_leads_the_conversation_with_who_it_is_with() {
     let (mut app, _doc) = app_with_doc();
     app.active_channel =
-        crate::record::Chat::direct_id([app.me.id.clone(), MemberId::agent("assistant")])
-            .to_string();
+        crate::chat::Chat::direct_id([app.me.id.clone(), MemberId::agent("assistant")]).to_string();
     render_frame(&mut app, 360.0, 520.0);
     let location = ui::window_toolbar::declared()
         .and_then(|toolbar| toolbar.location)

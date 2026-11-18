@@ -26,8 +26,8 @@ use ui::permissions::{TreePath, policy::Level};
 use ui::{Arrival, InvocationCall, RemoteActions};
 
 use crate::app::ChatApp;
+use crate::chat::ShareAccess;
 use crate::model::Message;
-use crate::record::ShareAccess;
 
 /// The grants of this person's shares and what the workspace lets them do with
 /// the resources others share.
@@ -50,9 +50,9 @@ enum Editable {
     Answered(bool),
 }
 
-/// The node of the workspace's tree that `shared`'s resource, in the record
-/// `shared` names, stands at: an item of the record
-/// (`<kind>/<field>/<item>`), or the whole record. `None` for what names
+/// The node of the workspace's tree that `shared`'s resource, in the resource
+/// `shared` names, stands at: an item of the resource
+/// (`<kind>/<field>/<item>`), or the whole resource. `None` for what names
 /// neither.
 pub(crate) fn share_node(workspace: &str, shared: &tilo_reference::ResourceAt) -> Option<TreePath> {
     let record = shared.record.as_deref().unwrap_or_default();
@@ -62,8 +62,8 @@ pub(crate) fn share_node(workspace: &str, shared: &tilo_reference::ResourceAt) -
         && let Some((kind, field)) = collection.split_once('/')
         && !field.contains('/')
     {
-        // An app's own record of the workspace travels under no id of its
-        // own; the item's id is unique, so any record of the kind is it.
+        // An app's own document of the workspace travels under no id of its
+        // own; the item's id is unique, so any resource of the kind is it.
         let resource = if record.is_empty() {
             at(kind).any(Level::Resource)
         } else {
@@ -292,7 +292,7 @@ mod tests {
             Some(format!(
                 "workspace:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
             )),
-            "a whole record"
+            "a whole resource"
         );
         assert_eq!(
             share_node(

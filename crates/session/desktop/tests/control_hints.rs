@@ -226,7 +226,7 @@ fn learning_resize_only() -> Learned {
 }
 
 /// A hint is taught beside the strip's own windows, and points at a handle that is there to take:
-/// a card standing over the shell is another surface, so no hint is anchored to it, and none is
+/// a card over the shell is another surface, so no hint is anchored to it, and none is
 /// drawn over its content.
 #[test]
 fn no_hint_points_at_a_card_nor_covers_one() {

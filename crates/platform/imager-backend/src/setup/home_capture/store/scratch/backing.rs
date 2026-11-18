@@ -47,7 +47,7 @@ struct Observation {
     members: Members,
     nodes: BTreeMap<u64, Node>,
 }
-pub struct BackingWitness {
+pub struct BackingProof {
     directory: File,
     identity: (u64, u64),
     mount: u64,
@@ -465,7 +465,7 @@ fn observe(
     }
     Ok(Observation { members, nodes })
 }
-impl BackingWitness {
+impl BackingProof {
     pub fn review(directory: &File) -> io::Result<Self> {
         let directory = migration_durability::readable_directory(directory)?;
         let filesystem = magic(&directory)?;
@@ -574,7 +574,7 @@ mod tests {
             .tempdir_in(store)
             .unwrap();
         let directory = File::open(temporary.path()).unwrap();
-        let backing = BackingWitness::review(&directory).unwrap();
+        let backing = BackingProof::review(&directory).unwrap();
         backing.validate_directory(&directory).unwrap();
         std::fs::create_dir(temporary.path().join("different")).unwrap();
         let different = File::open(temporary.path().join("different")).unwrap();
@@ -582,6 +582,6 @@ mod tests {
         backing.validate().unwrap();
         let ram = File::open("/dev/shm").expect("observable native tmpfs required");
         assert_eq!(magic(&ram).unwrap(), libc::TMPFS_MAGIC);
-        assert!(BackingWitness::review(&ram).is_err());
+        assert!(BackingProof::review(&ram).is_err());
     }
 }

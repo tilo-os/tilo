@@ -221,7 +221,7 @@ tilo_test_env::scenario! {
         assert_eq!(second.get("same-url").unwrap().width, 3);
     }
 
-    phase canceled_generation_cannot_settle_a_retry_or_cancel_its_pending_custody;
+    phase canceled_generation_cannot_settle_a_retry_or_cancel_its_pending_ownership;
     {
         let (store, mut host) = ImageStore::host_driven();
         let old = requested(&store, &mut host, "retry");

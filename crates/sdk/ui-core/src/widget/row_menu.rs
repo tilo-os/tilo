@@ -178,17 +178,17 @@ impl crate::widget::Decorator for RowMenu {
 }
 
 impl ActionControls for RowMenu {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         for emitter in self
             .entries
             .iter_mut()
             .filter_map(|entry| entry.emitter.as_mut())
         {
-            let _ = emitter.install_custody(domain, attachment);
+            let _ = emitter.attach(domain, attachment);
         }
     }
 

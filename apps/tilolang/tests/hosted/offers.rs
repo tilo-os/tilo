@@ -1,5 +1,5 @@
 //! What a window's catalogue offers of an app's actions: what it is called there and whether it
-//! can run, as the record the app publishes now says it.
+//! can run, as the document the app publishes now says it.
 
 use super::*;
 
@@ -23,7 +23,7 @@ fn offered_at(
 }
 
 /// Deliver an invocation of `address` on the window's app, as another app's call or an agent's
-/// reaches it: the app runs it as that caller's step and publishes what the record is now.
+/// reaches it: the app runs it as that caller's step and publishes what the document is now.
 fn call(
     session: &mut Session,
     address: &ui::tilo_actions::ActionAddress,
@@ -46,7 +46,7 @@ fn a_task_checked_off_offers_reopen_and_the_finished_ones_can_be_cleared() {
     let mut session = Session::live_tasks();
     // A project's list folds the finished work under its foot: the task stays where the person
     // reads it once it is checked off, so what the window shows is unchanged and only the
-    // record moved.
+    // document moved.
     choose(&mut session, "New project");
     session.settle();
     let (px, py) = shown_at(&mut session, "New project");
@@ -90,7 +90,7 @@ fn a_task_checked_off_offers_reopen_and_the_finished_ones_can_be_cleared() {
     );
 
     // Checking it off at the app moves what the window offers of it, and whether the finished
-    // ones can be cleared: both are the app's answer for the record as it is now.
+    // ones can be cleared: both are the app's answer for the document as it is now.
     let complete = offered_at(&mut session, "Complete", &|resource| resource.contains('/'));
     call(&mut session, &complete, None);
     let now = labels(&mut session);

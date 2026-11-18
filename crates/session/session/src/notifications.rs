@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::platform::fabric::ContinuityNotificationProjection;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
-use chrono::{Datelike as _, Timelike as _};
+
 use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
@@ -100,7 +100,7 @@ pub(crate) fn mount_banners(
                 options.scale,
                 stack,
             )));
-            compositor.add_host(surface.clone());
+            compositor.add_surface(surface.clone());
             surfaces.add(surface);
             notices.show_banners_elsewhere();
         }
@@ -1446,12 +1446,16 @@ impl Notices for RoleNotices {
 /// The local wall clock as the notification policy reads it: unix seconds,
 /// minutes since midnight and the weekday counted from Monday.
 fn local_now() -> (i64, u16, u8) {
-    let now = chrono::Local::now();
+    let now = jiff::Zoned::now();
     (
-        now.timestamp(),
-        u16::try_from(now.hour().saturating_mul(60).saturating_add(now.minute()))
-            .unwrap_or(u16::MAX),
-        u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
+        now.timestamp().as_second(),
+        u16::try_from(
+            i16::from(now.hour())
+                .saturating_mul(60)
+                .saturating_add(i16::from(now.minute())),
+        )
+        .unwrap_or(u16::MAX),
+        u8::try_from(now.weekday().to_monday_zero_offset()).unwrap_or(u8::MAX),
     )
 }
 

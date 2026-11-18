@@ -16,7 +16,7 @@ fn interaction_costs() {
         .expect("store opens its capture");
 }
 
-/// What opening store costs on the UI thread, warm (its record already on the
+/// What opening store costs on the UI thread, warm (its resource already on the
 /// profile): from the host preparing the launch to the first frame drawn.
 #[test]
 fn start_cost() {

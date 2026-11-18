@@ -25,7 +25,7 @@ struct IntentRecord {
     complete: Vec<u8>,
     hint_index: u32,
 }
-/// Historical signed proof custody, not current workspace or media authority.
+/// Historical signed proof ownership, not current workspace or media authority.
 #[derive(Clone)]
 pub struct VerifiedNativeEnrollmentIntent {
     record: IntentRecord,

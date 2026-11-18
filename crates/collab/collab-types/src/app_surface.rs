@@ -178,6 +178,15 @@ fn surface_of(app_id: &str) -> Option<std::sync::Arc<crate::surface::SurfaceFile
         .clone()
 }
 
+/// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource
+/// whose `open` shows an item of that record. `None` when this process holds no surface for it.
+#[must_use]
+pub fn primary_kind(app_id: &str) -> Option<String> {
+    surface_of(app_id)?
+        .resource(None)
+        .map(|surface| surface.kind.clone())
+}
+
 /// The person-record kinds `app_id`'s surface declares (its
 /// `ResourceApp::PERSON_RESOURCES`): the records it may keep in, or read from,
 /// the person's own workspace. Empty when this process holds no surface for
@@ -196,7 +205,7 @@ pub fn person_resource_types(app_id: &str) -> Vec<String> {
 }
 
 /// The kinds `app_id`'s surface marks each member's own record in the
-/// workspace (`own`, a tilolang package's `records: .own`). Empty when this
+/// workspace (`own`, a tilolang package's `resources: .own`). Empty when this
 /// process holds no surface for it.
 #[must_use]
 pub fn own_resource_types(app_id: &str) -> Vec<String> {
@@ -230,7 +239,7 @@ pub fn reads_app(reader: &str, owner: &str) -> bool {
 }
 
 /// `claims` naming as units what each action may write by `app_id`'s
-/// surface: what a relay that cannot read a sealed change checks it against
+/// surface: what a server that cannot read a sealed change checks it against
 /// (devices that open it check what it really wrote). Every host that signs a
 /// change names its units this way; a claim left on the whole record is
 /// refused wherever the action may only write some of its units (a comment,

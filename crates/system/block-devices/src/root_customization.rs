@@ -463,7 +463,7 @@ mod tests {
         fs::write(
             etc.join("passwd"),
             "root:x:0:0:root:/root:/bin/bash\n\
-             tilo-relay:x:980:980::/var/lib/tilo-relay:/usr/sbin/nologin\n\
+             tilo-server:x:980:980::/var/lib/tilo-server:/usr/sbin/nologin\n\
              nobody:x:65534:65534:Kernel Overflow User:/:/usr/sbin/nologin\n",
         )
         .unwrap();

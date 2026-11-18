@@ -1,7 +1,7 @@
 use discord_wire::op::{DiscordResult, Queued};
 
 use super::*;
-use crate::record::{Mapping, Origin, map_key};
+use crate::guild::{Mapping, Origin, map_key};
 use crate::tilo::Category;
 
 pub(crate) fn dchan(

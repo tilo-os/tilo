@@ -10,9 +10,9 @@
 # /etc, the system bus filtered to the named authorities, the PipeWire
 # socket and the compositor's runtime state. Printing stays behind the
 # Print portal. The launcher also binds the parts of `~/.config/tilo` this
-# app is custodian of (the account stores and their credential vault) and,
+# app is owner of (the account stores and their credential vault) and,
 # read-only, the workspace tree; never the settings document, the identity
-# store, trust lists, app registries or settings records. The device's
+# store, trust lists, app registries or settings resources. The device's
 # settings it reads and writes through the shell's settings service, as
 # every app does: `settings.system` asks for every section, which the
 # image grants to this package alone. The
@@ -85,20 +85,18 @@ mode = "off"
 # image's system authority grant. A build is offered to, installed on and run
 # by only an OS that serves this version (os/usr/share/tilo/system-interfaces.toml).
 system = "required@1"
-collab = "optional@30"
-tilo-fs = "optional@30"
-# The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui   = "optional@34"
-tools = "optional@30"
+collab = "optional@31"
+tilo-fs = "optional@31"
+tools = "optional@31"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
 # requiring either socket here instead prevents every other settings pane from
 # opening at all.
-models = "optional@30"
-model-gateway = "optional@30"
+models = "optional@31"
+model-gateway = "optional@31"
 # The person's languages: which language packs the repositories offer, and
 # installing the one chosen. The host answers Settings that and nothing else.
-app-host = "optional@5"
+package-service = "optional@6"
 
 [entrypoint]
 bin             = "bin/settings"

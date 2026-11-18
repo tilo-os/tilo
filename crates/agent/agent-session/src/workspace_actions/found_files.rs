@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use fs_protocol::files::{FileNodeKind, TreeChunk};
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks};
 use tilo_actions::remote::Found;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::Worker;
 
@@ -167,6 +167,7 @@ fn ranked(files: Vec<File>, needle: &str, most: usize) -> Vec<Found> {
             arguments: serde_json::Map::new(),
             app: Some(FILES_APP.to_owned()),
             provider: None,
+            when: None,
         })
         .collect()
 }

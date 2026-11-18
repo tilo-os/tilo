@@ -60,7 +60,7 @@ Each check runs commands from this repository. Run them from the checkout on Lin
 | `vendored`                                              | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `package_sets.py`)                                                                                                                       |
 | `web`                                                   | `tools/ci/check-wasm.sh --check` (the page builds)                                                                                                                                                                                                                                                            |
 | `wasm`, `web-examples`                                  | `tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples                                                                                                                                                              |
-| `policy`, `fmt`, `deny`, `hakari`, `machete`, `changes` | `tools/policy/run.sh`, `cargo fmt --check`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh`, and the diff-based gates `changes` lists against `origin/main`                                                |
+| `policy`, `fmt`, `deny`, `hakari`, `machete`, `changes` | `tools/policy/run.sh`, `cargo fmt --check`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh`, and the diff-based checks `changes` lists against `origin/main`                                                |
 | `sdk-policy`                                            | `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check`; portability is `tilo-app check --lint --all` in `lint.yml`                                                                                                                                                        |
 | `sdk-linux`                                             | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp`                                                                                                   |
 | `sdk-web`                                               | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs`                                                                                                                                                                                   |
@@ -80,7 +80,7 @@ only label and time a command; leave them out locally.
 ## Main and `stable`
 
 `main` is an unstable integration branch: many agents push to it directly, no
-pull request gates it, and a commit that fails is fixed by a later one rather
+pull request checks it, and a commit that fails is fixed by a later one rather
 than reverted. `stable` is the release branch: it is moved by hand when a
 release is cut (it requires signed commits), and it is the only ref
 publications build from.
@@ -105,7 +105,7 @@ publications build from.
   build sees fails the head that introduced it. Its `wasm` job then adds the
   browser crates and web-capable examples the window selects.
 - `lint.yml` runs for every push: its format, commit-message and unused
-  dependency gates check exactly the commits the push added, so no push's run
+  dependency checks check exactly the commits the push added, so no push's run
   stands in for another's.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs

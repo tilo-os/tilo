@@ -341,14 +341,14 @@ fn a_stopped_run_resumes_where_it_stopped() {
 }
 
 #[test]
-fn a_runs_change_in_effect_is_found_by_the_run_id_history_keeps() {
-    let of = |change: &str, run: &str| serde_json::json!({"change": change, "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": run}});
+fn a_runs_change_in_effect_is_found_by_the_id_history_keeps() {
+    let of = |change: &str, run: &str| serde_json::json!({"change": change, "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "declared": run}});
     let history = serde_json::json!({"versions": [
         of("a1", "migrate-linear-1"),
         of("a2", "migrate-linear-1"),
         {"change": "b1", "actor": {"id": "person"}},
         of("c1", "migrate-linear-2"),
-        {"undone": true, "change": "c2", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": "migrate-linear-2"}},
+        {"undone": true, "change": "c2", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "declared": "migrate-linear-2"}},
     ]});
     assert_eq!(
         super::run_in_history(Some(&history), "migrate-linear-1"),
@@ -365,7 +365,7 @@ fn a_runs_change_in_effect_is_found_by_the_run_id_history_keeps() {
         super::RunInHistory::Absent
     );
     let undone = serde_json::json!({"versions": [
-        {"undone": true, "change": "d1", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": "migrate-linear-4"}},
+        {"undone": true, "change": "d1", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "declared": "migrate-linear-4"}},
     ]});
     assert_eq!(
         super::run_in_history(Some(&undone), "migrate-linear-4"),
@@ -460,4 +460,68 @@ fn starting_without_a_review_reviews_the_source_and_takes_everything() {
     );
     // Kept: a second start works from the same review.
     assert_eq!(place.review(thunderbird::SOURCE).unwrap().unwrap(), review);
+}
+
+/// A profile copied in from another Thunderbird location reviews with its
+/// mail; a folder that cannot be read is named in the answer, and the folders
+/// beside it are still listed.
+#[cfg(unix)]
+#[test]
+fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let server = migration_sources::thunderbird::fixture::WORK_SERVER;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    migration_sources::thunderbird::fixture::write_stale_mail_directories(&home);
+
+    let review = thunderbird::review(&home, None).unwrap();
+    assert!(review.unreadable.is_empty(), "{:?}", review.unreadable);
+    assert!(
+        review
+            .items
+            .iter()
+            .any(|item| item.key == "ada@example.com/INBOX")
+    );
+
+    let subfolder = home.join(format!(
+        ".thunderbird/fx8r2l9p.default-release/ImapMail/{server}/Projects.sbd"
+    ));
+    std::fs::create_dir(&subfolder).unwrap();
+    std::fs::write(
+        subfolder.join(std::ffi::OsStr::from_bytes(b"2026-\xff")),
+        b"",
+    )
+    .unwrap();
+
+    let review = thunderbird::review(&home, None).unwrap();
+    assert!(
+        review
+            .items
+            .iter()
+            .any(|item| item.key == "ada@example.com/INBOX"),
+        "the folders beside the unreadable one are still listed"
+    );
+    assert!(
+        review
+            .items
+            .iter()
+            .any(|item| item.key == "ada@example.com/Sent"),
+        "the folders beside it are still listed"
+    );
+    let relative = format!("ImapMail/{server}/Projects.sbd");
+    let problem = review
+        .unreadable
+        .first()
+        .expect("the review says what it could not read");
+    assert!(problem.contains(&relative), "{problem}");
+    assert!(problem.contains("unreadable data"), "{problem}");
+
+    let answer = super::review_answer(&review, &Journal::default());
+    let text = super::sentences(&answer);
+    assert!(
+        text.contains("incomplete:") && text.contains(&relative),
+        "{text}"
+    );
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The toolkit's render benchmark at native 4K for the performance lanes.
+"""The toolkit's render benchmark at native 4K for the performance jobs.
 
 The KPI is "Frame time p99 at 4K/144 Hz": at most 6.9 ms for a damage-limited
 frame and 16.7 ms for a full repaint. `ui-perf dashboard_perf_bench`
@@ -10,11 +10,11 @@ target. The session's own desktop surface is measured by `session_perf`
 
 Subcommands:
 
-- `counters UI_PERF`: the per-change gate. Runner-independent counters only:
+- `counters UI_PERF`: the per-change check. Runner-independent counters only:
   allocator calls and bytes per redraw, native pixels rasterised per redraw,
   and allocations per 1,000 events that need no redraw, against the budgets
   `docs/ui-performance-benchmark.md` documents. No clock is compared.
-- `timing UI_PERF`: the scheduled lane. Frame-time samples become the
+- `timing UI_PERF`: the scheduled job. Frame-time samples become the
   `render.ui.frame_us.4k` record (`tools/perf/record.py`).
 
 Both start with the damage-verification preflight: every retained frame must
@@ -49,9 +49,9 @@ NATIVE_4K = {"TILO_UI_DASH_WIDTH": "3840", "TILO_UI_DASH_HEIGHT": "2160"}
 VERIFY = {**NATIVE_4K, "TILO_UI_DASH_VERIFY": "1", "TILO_UI_DASH_VERIFY_FRAMES": "40",
           "TILO_UI_DASH_ITERS": "40"}
 # The documented acceptance budgets for the animated 4K redraw and the
-# one-million-event no-redraw gate, with fewer events: both are rates, and a
+# one-million-event no-redraw check, with fewer events: both are rates, and a
 # per-change run need not wait for the full count. The raster-pixel budget sits
-# about 30 % above the 95,000-116,000 px/redraw the lane measured in October
+# about 30 % above the 95,000-116,000 px/redraw the job measured in October
 # 2026, where 600,000 let a redraw grow five-fold unnoticed.
 REDRAW_COUNTERS = {**NATIVE_4K, "TILO_UI_DASH_ITERS": "200",
                    "TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW": "650",
@@ -174,14 +174,14 @@ def timing(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    gate = commands.add_parser("counters", help="the per-change counter gate")
-    gate.add_argument("ui_perf")
-    gate.add_argument("--out", type=Path, default=REPO / "target/render-bench")
-    lane = commands.add_parser("timing", help="frame-time records for the scheduled lane")
-    lane.add_argument("ui_perf")
-    lane.add_argument("--env-json", type=Path, required=True, help="tools/perf/record.py env output")
-    lane.add_argument("--out", type=Path, default=REPO / "target/render-bench")
-    lane.add_argument("--records", type=Path, help="append the records to this JSON-lines file")
+    check = commands.add_parser("counters", help="the per-change counter check")
+    check.add_argument("ui_perf")
+    check.add_argument("--out", type=Path, default=REPO / "target/render-bench")
+    job = commands.add_parser("timing", help="frame-time records for the scheduled job")
+    job.add_argument("ui_perf")
+    job.add_argument("--env-json", type=Path, required=True, help="tools/perf/record.py env output")
+    job.add_argument("--out", type=Path, default=REPO / "target/render-bench")
+    job.add_argument("--records", type=Path, help="append the records to this JSON-lines file")
     args = parser.parse_args(argv)
     return counters(args) if args.command == "counters" else timing(args)
 

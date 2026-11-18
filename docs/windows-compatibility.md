@@ -129,31 +129,63 @@ setup stays visible with a retry action on the stored digest.
 
 ## Session boundary
 
-The compositor loads the immutable Tilo, pinned UMU and metadata-only Bottles
-catalogues and owns the compatibility service. The launcher writes an
-authenticated app and workspace preamble to a connected descriptor; the service
-corroborates the launcher PID and kernel start time with a single-use,
-short-lived registry record the compositor owns. Requests carry only bounded
-typed methods. Launch and remove-launcher use opaque server entry IDs; installer
-inspection and either confirmed destination are the only methods allowed a
-descriptor; retry, vendor uninstall, publication removal and data deletion use
-opaque server-owned IDs the session already authorized.
+The desktop session serves the compatibility service as one of its own
+services (`compat` in its service table), on threads of its own beside the
+session's loop. It loads the immutable Tilo, pinned UMU and metadata-only
+Bottles catalogues; a computer without them, or without the runtime payloads,
+still answers the manager, and a launch says that Windows support is not
+installed.
 
-Workspace grants are re-read from the compositor's tree for every operation.
-Application query, executable, capsule path, environment, VM fallback intent and
-grants never come from the client. Blocking service I/O runs on the Windows Apps
-worker thread; the render thread paints a bounded cache and clears it after an
-invalid or disconnected response.
+Only the Windows Apps manager (`so.tilo.windows`) connects. The launcher
+writes an authenticated app and workspace preamble to a connected descriptor;
+the service accepts it only from a process running the session's
+`tilo-launcher`, whose parent is the session, and that the session itself
+started for the manager in that workspace and that is still alive (pid and kernel
+start time against the session's launch list). Each launch hands off once: a
+second connection of the same launcher process is refused. Requests carry only
+bounded typed methods. Launch and remove-launcher use opaque server entry IDs;
+installer inspection and either confirmed destination are the only methods
+allowed a descriptor; retry, vendor uninstall, publication removal and data
+deletion use opaque server-owned IDs the session already authorized.
 
-The managed-entry registry carries a monotonic compositor generation and is
-re-read from capsule state. A running manager starts with the entry snapshot
-authenticated at its launch. A VM installer transaction belongs to the
-workspace that imported its descriptor: that workspace can resume and publish
-its candidates, and another workspace sees neither. Publishing returns the
-opaque host entry only to the requesting session, so an app launches without
-widening other sessions. Deleting a launcher or capsule removes authority at
-once, and an entry another manager created needs a new authenticated launch
-snapshot, so a live client cannot widen itself by guessing identifiers.
+Workspace grants are re-read from the workspace's sandbox in the session's
+layout for every operation. Application query, executable, capsule path,
+environment, VM fallback intent and grants never come from the client.
+Blocking service I/O happens on the Windows Apps worker thread; the render thread
+paints a bounded cache and clears it after an invalid or disconnected response.
+
+A launch is answered once its program started, never held for its lifetime.
+The service watches each program it started: a list says which entries have
+a program open in the manager's workspace, and reports each program that ended
+since that connection last listed, with its exit status or why it never
+opened, so a manager opened later still hears it. **Quit app** ends a capsule
+program at once; the appliance's programs close inside Windows.
+
+A program is given its display when it starts, not when the service starts:
+the session answers with the Wayland socket its compositor bound and the
+render node it draws on, and refuses the launch while it has neither. The
+appliance's rail and SPICE presentations are given the same display.
+
+A capsule program stays open while the desktop restarts in place to apply an
+update. The service plans its sandbox for a display of its own, an app keeper's
+(`tilo-app-keeper`), and asks the session to start it as one of its own
+launches: `tilo-launcher windows-program` joins the launch's own scope, starts
+the keeper there and the sandbox as the keeper's child, with the descriptors
+the plan hands Bubblewrap passed down unchanged. Memory tiers, a force quit, a
+crash notice and a logout treat it as any other app. The desktop that follows
+the restart takes the keeper back, the program's windows return to their tabs,
+and its service lists the program open again and can quit it; a program that
+ended while no desktop was there is reported with its exit status.
+
+The entries a manager may address are read from capsule state and the
+appliance's published applications when it connects; it keeps that set until
+it ends. A VM installer transaction belongs to the workspace that imported its
+descriptor: that workspace can resume and publish its candidates, and another
+workspace sees neither. Publishing returns the opaque entry only to the
+requesting manager, so an app launches without widening other managers.
+Deleting a launcher or capsule removes authority at once, and an entry another
+manager created needs a new authenticated launch, so a live client cannot
+widen itself by guessing identifiers.
 
 ## Catalogue resolution
 
@@ -209,7 +241,7 @@ and every lease is revoked when the RemoteApp session ends. The shipped network
 is host-only with forwarding off: no NAT and no physical network. Native RAIL
 can turn a host-authorized `NetHost` request into a short-lived host-only
 CONNECT relay and a guest-local proxy inherited by the RemoteApp wrapper's
-process tree. The relay reuses Tilo's NetHost matcher and its protection against
+process tree. The server reuses Tilo's NetHost matcher and its protection against
 rebinding after DNS, and dropping the lease closes the listener instead of
 attaching an egress NIC. These are host-side lease controls, not per-process
 isolation: every program in the one persistent Windows session sees the union of

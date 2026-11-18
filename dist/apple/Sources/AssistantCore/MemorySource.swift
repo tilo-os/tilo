@@ -10,12 +10,26 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var main: [Item] = []
         public var subAgents: [SubAgent] = []
         public var subAgentChats: [SubAgent.ID: [Item]] = [:]
+        /// The replies a task's line counts and the conversation does not show.
+        public var replies: [AssistantTask.ID: [Item]] = [:]
         public var tasks: [AssistantTask] = []
         public var automations: [Automation] = []
         public var supervision = Supervision()
         public var models: [ModelChoice] = []
         /// Who a pairing link signs in. Nil: Tilo cannot be reached.
         public var pairsAs: Person?
+        /// The code a pairing shows for the person to compare, when it shows one.
+        public var pairingCode: String?
+        /// What is asked before a pairing, when something is: it goes on once the person answered.
+        public var pairingAsk: PairingAsk?
+        /// What stands between the person and a first answer.
+        public var setup: Setup = .ready
+        /// The models a provider offers once it is linked.
+        public var offered: [ModelChoice] = []
+        /// The providers a person can come back to the provider step for: linked, or to link.
+        public var providers: [ProviderChoice] = []
+        /// What the person was told while they were away.
+        public var sinceLeft: SinceLeft?
 
         public init() {}
     }
@@ -30,6 +44,16 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let supervisionNow: Broadcast<Supervision>
     private let modelChoices: [ModelChoice]
     private let pairsAs: Person?
+    private let taskReplies: [AssistantTask.ID: [Item]]
+    private let pairingCode: String?
+    private let pairingAsk: PairingAsk?
+    private let setupNow: Broadcast<Setup>
+    private let sinceNow: Broadcast<SinceLeft?>
+    private var presses: [Press] = []
+    private let offered: [ModelChoice]
+    private let providerChoices: [ProviderChoice]
+    private var linked: [ModelChoice] = []
+    private var keys: [ProviderChoice.ID: Secret] = [:]
     private var feeds: [Chat: Feed]
     private var vault: [SecretRequest.ID: Secret] = [:]
     private var files: [Attachment.ID: URL] = [:]
@@ -44,6 +68,13 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         supervisionNow = Broadcast(content.supervision)
         modelChoices = content.models
         pairsAs = content.pairsAs
+        taskReplies = content.replies
+        pairingCode = content.pairingCode
+        pairingAsk = content.pairingAsk
+        setupNow = Broadcast(content.setup)
+        sinceNow = Broadcast(content.sinceLeft)
+        offered = content.offered
+        providerChoices = content.providers
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
         for agent in content.subAgents {
             feeds[.subAgent(agent.id)] = Feed(content.subAgentChats[agent.id] ?? [])
@@ -82,6 +113,15 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         lock.withLock { vault[request] }
     }
 
+    /// The key the vault holds for a provider. The only way a linked key is ever seen again.
+    public func key(for provider: ProviderChoice.ID) -> Secret? {
+        lock.withLock { keys[provider] }
+    }
+
+    public func set(_ setup: Setup) {
+        setupNow.set(setup)
+    }
+
     /// Everything a conversation holds now.
     public func items(in chat: Chat = .main) -> [Item] {
         feed(chat)?.all ?? []
@@ -93,9 +133,96 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func reach() -> AsyncStream<Reach> { reachNow.stream() }
 
     public func pair(with link: PairingLink) async throws {
-        guard let person = pairsAs, reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        guard pairsAs != nil, reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        // Where something is asked first, the pairing goes on once the person answered.
+        if let pairingAsk {
+            sessionNow.set(.asked(pairingAsk))
+            return
+        }
+        letIn()
+    }
+
+    public func answerPairing(goOn: Bool) async {
+        guard case .asked = sessionNow.current else { return }
+        if goOn { letIn() } else { sessionNow.set(.signedOut) }
+    }
+
+    private func letIn() {
+        guard let person = pairsAs else { return }
         sessionNow.set(.pairing)
+        if let pairingCode { sessionNow.set(.confirming(code: pairingCode)) }
         sessionNow.set(.signedIn(person))
+    }
+
+    // MARK: The first run
+
+    public func setup() -> AsyncStream<Setup> { setupNow.stream() }
+
+    // MARK: Being told
+
+    /// One press of something offered with a piece.
+    public struct Press: Equatable, Sendable {
+        public var offer: Offer.ID
+        public var item: Item.ID
+        public var chat: Chat
+
+        public init(offer: Offer.ID, item: Item.ID, chat: Chat) {
+            self.offer = offer
+            self.item = item
+            self.chat = chat
+        }
+    }
+
+    /// Every offer the person pressed, in order: for a test.
+    public var pressed: [Press] { lock.withLock { presses } }
+
+    public func sinceLeft() -> AsyncStream<SinceLeft?> { sinceNow.stream() }
+
+    /// As if the person's Tilo had counted what happened while they were away.
+    public func setSinceLeft(_ since: SinceLeft?) {
+        sinceNow.set(since)
+    }
+
+    public func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws {
+        guard feed(chat)?.all.first(where: { $0.id == item })?.offers.contains(where: { $0.id == offer }) == true else {
+            throw SourceProblem.refused("This is no longer offered.")
+        }
+        lock.withLock { presses.append(Press(offer: offer, item: item, chat: chat)) }
+    }
+
+    public func makeAssistant() async throws {
+        try signedIn()
+        if case .noAssistant = setupNow.current { setupNow.set(.ready) }
+    }
+
+    public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
+        try signedIn()
+        guard !key.isEmpty else { throw SourceProblem.refused("Nothing was typed.") }
+        var first: [ProviderChoice] = []
+        if case .needsProvider(let choices) = setupNow.current { first = choices }
+        guard (first + providerChoices).contains(where: { $0.id == provider }) else {
+            throw SourceProblem.refused("This provider cannot be linked.")
+        }
+        let all = lock.withLock {
+            keys[provider] = key
+            linked = offered
+            return modelChoices + linked
+        }
+        // A person who comes back to the step keeps the model they chose: only the first
+        // link goes on to the choice of one.
+        if !first.isEmpty { setupNow.set(offered.isEmpty ? .ready : .needsModel(offered)) }
+        return all
+    }
+
+    public func providers() async throws -> [ProviderChoice] {
+        try signedIn()
+        return lock.withLock {
+            providerChoices.map { choice in
+                var choice = choice
+                if keys[choice.id] != nil { choice.isLinked = true }
+                return choice
+            }
+        }
     }
 
     public func signOut() async {
@@ -115,6 +242,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         return []
     }
 
+    public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] {
+        try signedIn()
+        return taskReplies[task] ?? []
+    }
+
     public func send(_ draft: Draft, to chat: Chat) async throws {
         try signedIn()
         guard !draft.isEmpty else { return }
@@ -126,6 +258,10 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         }
         feed.add([Item(id: Item.ID(nextName("item")), at: now(),
                        .message(Message(.person, draft.text, attachments: attachments)))])
+    }
+
+    public func stopAnswering(in chat: Chat) async throws {
+        feed(chat)?.setAnswering(false)
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
@@ -212,10 +348,10 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         try signedIn()
         let time = now()
         let stopped = agents.change { list -> Bool in
-            guard let index = list.firstIndex(where: { $0.id == subAgent }), list[index].standing == .working
-                    || list.contains(where: { $0.id == subAgent && $0.standing == .needsYou })
+            guard let index = list.firstIndex(where: { $0.id == subAgent }), list[index].state == .working
+                    || list.contains(where: { $0.id == subAgent && $0.state == .needsYou })
             else { return false }
-            list[index].standing = .stopped
+            list[index].state = .stopped
             list[index].finished = time
             return true
         }
@@ -230,7 +366,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         try signedIn()
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
-        let task = AssistantTask(id: AssistantTask.ID(nextName("task")), title: title, standing: .upNext)
+        let task = AssistantTask(id: AssistantTask.ID(nextName("task")), title: title, state: .upNext)
         taskList.change { $0.append(task) }
     }
 
@@ -257,16 +393,18 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func models() async throws -> [ModelChoice] {
         try signedIn()
-        return modelChoices
+        return lock.withLock { modelChoices + linked }
     }
 
     public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
         try signedIn()
-        guard let chosen = modelChoices.first(where: { $0.id == model }) else {
+        guard let chosen = lock.withLock({ modelChoices + linked }).first(where: { $0.id == model }) else {
             throw SourceProblem.refused("This model is not one of yours.")
         }
         // The view names the main chat's model: the one that answers.
-        if work == .request { supervisionNow.change { $0.model = chosen.name } }
+        guard work == .request else { return }
+        supervisionNow.change { $0.model = chosen.name }
+        if case .needsModel = setupNow.current { setupNow.set(.ready) }
     }
 
     public func forget(_ learned: Supervision.Learned.ID) async throws {
@@ -300,17 +438,17 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         }
     }
 
-    private func settle(_ request: SecretRequest.ID, as standing: SecretRequest.Standing,
+    private func settle(_ request: SecretRequest.ID, as state: SecretRequest.State,
                         needsManager: Bool = false) throws {
         var problem: SourceProblem? = .refused("This request is gone.")
         for feed in allFeeds() {
             let found = feed.change(where: { $0.content.secret?.id == request }) { item in
                 guard case .secret(var asked) = item.content else { return }
-                guard asked.standing == .waiting else { problem = .refused("This was settled already."); return }
+                guard asked.state == .waiting else { problem = .refused("This was settled already."); return }
                 guard !needsManager || asked.manager != nil else {
                     problem = .refused("No password manager is connected."); return
                 }
-                asked.standing = standing
+                asked.state = state
                 item.content = .secret(asked)
                 problem = nil
             }
@@ -319,13 +457,13 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         if let problem { throw problem }
     }
 
-    private func settle(_ offer: ConnectionOffer.ID, as standing: ConnectionOffer.Standing) throws {
+    private func settle(_ offer: ConnectionOffer.ID, as state: ConnectionOffer.State) throws {
         var problem: SourceProblem? = .refused("This offer is gone.")
         for feed in allFeeds() {
             let found = feed.change(where: { $0.content.connection?.id == offer }) { item in
                 guard case .connection(var offered) = item.content else { return }
-                guard offered.standing == .waiting else { problem = .refused("This was settled already."); return }
-                offered.standing = standing
+                guard offered.state == .waiting else { problem = .refused("This was settled already."); return }
+                offered.state = state
                 item.content = .connection(offered)
                 problem = nil
             }

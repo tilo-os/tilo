@@ -6,7 +6,7 @@ use super::{joined::Joined, workspace::ProfileWorkspace};
 use std::sync::Arc;
 use tilo_action_broker::services::WorkspaceAuthority;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_identity::broker::WorkspaceMembership;
 
 pub(super) struct Workspaces {
     pub(super) profile: Arc<ProfileWorkspace>,

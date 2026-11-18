@@ -5,7 +5,7 @@
 //! Neither a key minted for the workspace nor the invited person's key
 //! invites anyone.
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{accept_invitation, api_on_relay, approved_key};
+use super::api_on_server::{accept_invitation, api_on_server, approved_key};
 use super::*;
 use serde_json::{Value, json};
 
@@ -20,11 +20,11 @@ async fn members(mcp: &mut Mcp<'_>, workspace: Option<&str>, path: &str, args: V
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Visa backend").await;
     let mut backend = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -80,12 +80,12 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     .await;
     assert_eq!(theirs["status"], "ok", "{theirs}");
     let theirs = theirs["result"]["link"].as_str().unwrap().to_owned();
-    let (_ada_page, joined) = accept_invitation(&on_relay, &theirs, &ada, "Ada").await;
+    let (_ada_page, joined) = accept_invitation(&on_server, &theirs, &ada, "Ada").await;
     assert_eq!(joined["role"], "editor", "{joined}");
 
     // Rosa follows her link on a page of hers and is in as an Editor.
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa Ortiz", 1);
-    let (rosa_page, joined) = accept_invitation(&on_relay, &link, &rosa, "Rosa Ortiz").await;
+    let (rosa_page, joined) = accept_invitation(&on_server, &link, &rosa, "Rosa Ortiz").await;
     assert_eq!(joined["workspace"], workspace.as_str(), "{joined}");
     assert_eq!(joined["role"], "editor", "{joined}");
     let listed = members(&mut backend, here, "workspace/members#list", json!({})).await;
@@ -110,13 +110,13 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     assert!(
         !rows.iter().any(|row| row["name"]
             .as_str()
-            .is_some_and(|name| name.contains("Visa backend") || name == "relay")),
-        "no key of Ada's and not the relay that runs the workspace names a person: {listed}"
+            .is_some_and(|name| name.contains("Visa backend") || name == "server")),
+        "no key of Ada's and not the server that runs the workspace names a person: {listed}"
     );
 
     // A key she approves herself reaches the workspace as her, and invites
     // nobody into a workspace she does not administer.
-    let rosa_key = approved_key(&on_relay, &rosa, &rosa_page, "Rosa's review").await;
+    let rosa_key = approved_key(&on_server, &rosa, &rosa_page, "Rosa's review").await;
     // Her account lists the workspace she was invited into, with her role
     // there, so she reaches it by its name.
     let mut reviewer_account = Mcp {
@@ -210,11 +210,11 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
 /// the workspace nor anyone below an owner makes an owner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Ada's laptop").await;
+    let key = approved_key(&on_server, &ada, &page, "Ada's laptop").await;
     let mut ada_mcp = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -259,7 +259,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     // Grace approves a key of her own, which reaches the workspace as her
     // owner, and lets Hal in as an editor.
     let grace_page = enrol(&grace, "Grace's browser", DeviceCapabilities::member());
-    let grace_key = approved_key(&on_relay, &grace, &grace_page, "Grace's laptop").await;
+    let grace_key = approved_key(&on_server, &grace, &grace_page, "Grace's laptop").await;
     let mut grace_mcp = Mcp {
         api: &api,
         path: "/mcp".into(),

@@ -1,4 +1,4 @@
-//! Session-private authorization. Workers never write custody: only polling the currently
+//! Session-private authorization. Workers never write ownership: only polling the currently
 //! selected attempt can publish a verified result, and no value here is document-backed.
 
 pub mod browser;
@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
-use account_custody::portable::{self, PasswordSealedAccounts, PortableBinding};
-use account_custody::{Custodian, LoopbackCancel, OAuthCloud, OAuthIssuer, OAuthUse};
+use account_credentials::portable::{self, PasswordSealedAccounts, PortableBinding};
+use account_credentials::{CredentialStore, LoopbackCancel, OAuthCloud, OAuthIssuer, OAuthUse};
 use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
 use zeroize::Zeroize;
 
-pub use account_custody::hints::{self, AccountHint, Provider};
+pub use account_credentials::hints::{self, AccountHint, Provider};
 use browser::{BrowserOpener, LiveBrowserOpener};
 pub use tilo_seal::SymmetricKey;
 
@@ -76,7 +76,7 @@ impl std::fmt::Display for AccountsError {
             Self::Unavailable => "Account authorization is unavailable",
             Self::Busy => "Account authorization is still stopping",
             Self::InvalidRequest => "Requested account capabilities are unavailable or invalid",
-            Self::Storage => "Private account custody is unavailable",
+            Self::Storage => "Private account credentials is unavailable",
         })
     }
 }
@@ -108,7 +108,7 @@ impl Drop for Verified {
     }
 }
 
-struct PrivateTokens(account_custody::TokenSet);
+struct PrivateTokens(account_credentials::TokenSet);
 
 impl Drop for PrivateTokens {
     fn drop(&mut self) {
@@ -117,7 +117,7 @@ impl Drop for PrivateTokens {
     }
 }
 
-// Calendar discovery owns its combined grant; only selected service operations and private custody
+// Calendar discovery owns its combined grant; only selected service operations and private ownership
 // staging are available to the installer.
 enum PendingGrant {
     Existing(PrivateTokens),
@@ -127,35 +127,35 @@ enum PendingGrant {
 impl PendingGrant {
     fn resolve_storage(
         &self,
-        custody: &Custodian,
+        ownership: &CredentialStore,
         cloud: OAuthCloud,
     ) -> Result<serde_json::Value, AccountsError> {
         match self {
-            Self::Existing(tokens) => custody
+            Self::Existing(tokens) => ownership
                 .resolve_storage(cloud, &tokens.0)
                 .map_err(|_| AccountsError::Unavailable),
             Self::GoogleCalendar(pending) => pending
-                .resolve_storage(custody)
+                .resolve_storage(ownership)
                 .map_err(|_| AccountsError::Unavailable),
         }
     }
 
     fn mail_identity(
         &self,
-        custody: &Custodian,
+        ownership: &CredentialStore,
         issuer: OAuthIssuer,
     ) -> Result<String, AccountsError> {
         match self {
             Self::Existing(tokens) => {
                 let result = if issuer == OAuthIssuer::Microsoft {
-                    custody.microsoft_mail_identity(&tokens.0)
+                    ownership.microsoft_mail_identity(&tokens.0)
                 } else {
-                    custody.gmail_identity(&tokens.0)
+                    ownership.gmail_identity(&tokens.0)
                 };
                 result.map_err(|_| AccountsError::Unavailable)
             }
             Self::GoogleCalendar(pending) => pending
-                .mail_identity(custody)
+                .mail_identity(ownership)
                 .map_err(|_| AccountsError::Unavailable),
         }
     }
@@ -163,7 +163,7 @@ impl PendingGrant {
     fn staging_credential(&self) -> PendingCredential {
         match self {
             Self::Existing(tokens) => {
-                PendingCredential::Existing(account_custody::oauth_secret(&tokens.0))
+                PendingCredential::Existing(account_credentials::oauth_secret(&tokens.0))
             }
             Self::GoogleCalendar(pending) => PendingCredential::GoogleCalendar(Arc::clone(pending)),
         }
@@ -203,7 +203,7 @@ struct Attempt {
 /// opaque private ids.
 pub struct AccountsController {
     root: PathBuf,
-    custody: Arc<Custodian>,
+    ownership: Arc<CredentialStore>,
     opener: Arc<dyn BrowserOpener>,
     attempt: Option<Attempt>,
     worker_alive: Arc<AtomicBool>,
@@ -213,7 +213,7 @@ pub struct AccountsController {
 }
 
 impl AccountsController {
-    /// Starts a fresh isolated custody store below an owned 0700 session directory; both real and
+    /// Starts a fresh isolated ownership store below an owned 0700 session directory; both real and
     /// effective uid must be non-root.
     /// Seals the selected accounts for the installed system's first boot, bound to the reviewed
     /// target disk (size, device number, WWN and serial) and the account `user`; `None` when no
@@ -270,14 +270,14 @@ impl AccountsController {
         }
         validate_session(session_root)?;
         let opener = LiveBrowserOpener::new().map_err(|_| AccountsError::Unavailable)?;
-        Self::create(session_root, Arc::new(opener), |custody| custody)
+        Self::create(session_root, Arc::new(opener), |ownership| ownership)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(
         session_root: &Path,
         opener: Arc<dyn BrowserOpener>,
-        configure: impl FnOnce(Custodian) -> Custodian,
+        configure: impl FnOnce(CredentialStore) -> CredentialStore,
     ) -> Result<Self, AccountsError> {
         Self::create(session_root, opener, configure)
     }
@@ -285,7 +285,7 @@ impl AccountsController {
     fn create(
         session_root: &Path,
         opener: Arc<dyn BrowserOpener>,
-        configure: impl FnOnce(Custodian) -> Custodian,
+        configure: impl FnOnce(CredentialStore) -> CredentialStore,
     ) -> Result<Self, AccountsError> {
         validate_session(session_root)?;
         let root = std::fs::canonicalize(session_root)
@@ -295,10 +295,10 @@ impl AccountsController {
             .mode(0o700)
             .create(&root)
             .map_err(|_| AccountsError::Storage)?;
-        let custody = Arc::new(configure(Custodian::for_root(Some(root.clone()))));
+        let ownership = Arc::new(configure(CredentialStore::for_root(Some(root.clone()))));
         Ok(Self {
             root,
-            custody,
+            ownership,
             opener,
             attempt: None,
             worker_alive: Arc::new(AtomicBool::new(false)),
@@ -396,14 +396,14 @@ impl AccountsController {
         }
         let cancel = Arc::new(Mutex::new(Cancellation::default()));
         let (sender, result) = mpsc::sync_channel(1);
-        let custody = self.custody.clone();
+        let ownership = self.ownership.clone();
         let opener = self.opener.clone();
         let cancellation = cancel.clone();
         let alive = self.worker_alive.clone();
         let spawn = std::thread::Builder::new()
             .name("installer-account".into())
             .spawn(move || {
-                let outcome = authorize(&custody, opener.as_ref(), &request, &cancellation);
+                let outcome = authorize(&ownership, opener.as_ref(), &request, &cancellation);
                 let _ = sender.try_send(outcome);
                 alive.store(false, Ordering::Release);
             });
@@ -653,14 +653,14 @@ fn validate_request(request: &AccountRequest) -> Result<(), AccountsError> {
         return Err(AccountsError::InvalidRequest);
     }
     if request.provider == Provider::Nextcloud {
-        account_custody::nextcloud::server_url(&request.server)
+        account_credentials::nextcloud::server_url(&request.server)
             .map_err(|_| AccountsError::InvalidRequest)?;
     }
     Ok(())
 }
 
 fn authorize(
-    custody: &Custodian,
+    ownership: &CredentialStore,
     opener: &dyn BrowserOpener,
     request: &AccountRequest,
     cancellation: &Mutex<Cancellation>,
@@ -677,7 +677,7 @@ fn authorize(
     let hint = (!request.email.is_empty()).then_some(request.email.as_str());
     let issuer = cloud.issuer();
     let capabilities = requested_capabilities(request, issuer);
-    let authorization = custody
+    let authorization = ownership
         .begin_sign_in_for_capabilities(issuer, &capabilities, hint)
         .map_err(|_| AccountsError::Unavailable)?;
     let (private_tokens, pending_calendar) = if request.calendar {
@@ -700,7 +700,7 @@ fn authorize(
         calendar: None,
     };
     if request.files {
-        let mount = private_tokens.resolve_storage(custody, cloud)?;
+        let mount = private_tokens.resolve_storage(ownership, cloud)?;
         let mut account = new_account(cloud.type_id());
         account.config = serde_json::json!({"provider": cloud.type_id(), accounts::cloud_types::MOUNT_CONFIG_KEY: mount});
         verified
@@ -708,12 +708,12 @@ fn authorize(
             .push((account, private_tokens.staging_credential()));
     }
     if request.mail {
-        let email = private_tokens.mail_identity(custody, issuer)?;
+        let email = private_tokens.mail_identity(ownership, issuer)?;
         if email.len() > 2048 || hint.is_some_and(|hint| !hint.eq_ignore_ascii_case(&email)) {
             return Err(AccountsError::Unavailable);
         }
         let mail_tokens = if issuer == OAuthIssuer::Microsoft {
-            let authorization = custody
+            let authorization = ownership
                 .begin_sign_in_for(OAuthUse::mail(issuer), Some(&email))
                 .map_err(|_| AccountsError::Unavailable)?;
             Some(complete_authorization(authorization, opener, cancellation)?)
@@ -740,7 +740,7 @@ fn authorize(
             account,
             mail_tokens.as_ref().map_or_else(
                 || private_tokens.staging_credential(),
-                |tokens| PendingCredential::Existing(account_custody::oauth_secret(&tokens.0)),
+                |tokens| PendingCredential::Existing(account_credentials::oauth_secret(&tokens.0)),
             ),
         ));
     }
@@ -793,8 +793,8 @@ fn bind_confirmed_identity(verified: &mut Verified) {
 fn requested_capabilities(
     request: &AccountRequest,
     issuer: OAuthIssuer,
-) -> Vec<account_custody::Capability> {
-    use account_custody::Capability;
+) -> Vec<account_credentials::Capability> {
+    use account_credentials::Capability;
     let mut capabilities = Vec::new();
     if request.files {
         capabilities.push(Capability::Files);
@@ -813,18 +813,18 @@ fn requested_capabilities(
 }
 
 fn complete_authorization(
-    authorization: account_custody::Authorization,
+    authorization: account_credentials::Authorization,
     opener: &dyn BrowserOpener,
     cancellation: &Mutex<Cancellation>,
 ) -> Result<PrivateTokens, AccountsError> {
     launch_authorization(&authorization, opener, cancellation)?;
     Ok(PrivateTokens(
-        Custodian::finish_sign_in(authorization).map_err(|_| AccountsError::Unavailable)?,
+        CredentialStore::finish_sign_in(authorization).map_err(|_| AccountsError::Unavailable)?,
     ))
 }
 
 fn launch_authorization(
-    authorization: &account_custody::Authorization,
+    authorization: &account_credentials::Authorization,
     opener: &dyn BrowserOpener,
     cancellation: &Mutex<Cancellation>,
 ) -> Result<(), AccountsError> {
@@ -879,7 +879,7 @@ fn authorize_nextcloud(
     request: &AccountRequest,
     cancellation: &Mutex<Cancellation>,
 ) -> Result<Verified, AccountsError> {
-    use account_custody::nextcloud;
+    use account_credentials::nextcloud;
     let flow = nextcloud::begin(&request.server).map_err(|_| AccountsError::Unavailable)?;
     let (sender, receiver) = mpsc::sync_channel(1);
     {

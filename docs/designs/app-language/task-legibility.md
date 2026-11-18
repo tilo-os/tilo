@@ -8,7 +8,7 @@ shell.md §5. It is independent of which shell is running.
 
 - Every change a run makes is stamped with the run's group (`runtime_collab::task_run_group`),
   so history lists a run as one unit and `undo task` reverses it whole (tasks.md, "Agents").
-- `record-step` keeps each program the run ran with its changes; the issue's thread shows them
+- `resource-step` keeps each program the run ran with its changes; the issue's thread shows them
   as rows that undo.
 - tilolang reflection reads a resource's versions: `created(r)`, `updated(r)`, `history(r)`
   (who, when, which action).
@@ -16,7 +16,7 @@ shell.md §5. It is independent of which shell is running.
 What's missing is the link from a version to its task, a notion of "seen", and anything that
 draws it.
 
-## 2. The record
+## 2. The resource
 
 A version names the run that made it:
 
@@ -25,7 +25,7 @@ type Version { by: Person | Agent, at: Time, action: Text, run: Run?, kind: .cre
 ```
 
 `run` comes from the change's group stamp; the runtime fills it, nothing new is stored.
-Removals are versions too, so a removed record stays answerable (`history(r)` of a removed `r`
+Removals are versions too, so a removed resource stays answerable (`history(r)` of a removed `r`
 says who removed it, in which run).
 
 Two queries cover the presentation:
@@ -35,13 +35,13 @@ changes(of: run)                     // every version the run made, by step, old
 unseen(r)                            // r's versions newer than the person's seen mark for r
 ```
 
-**Seen marks** live in the person's own record (`records: .own`): per resource, the newest
+**Seen marks** live in the person's own document (`resources: .own`): per resource, the newest
 version they have seen. Showing a resource on screen does not set it; the person does
 (§4).
 
 ## 3. Marks in place, with no app code
 
-The UI host already knows which resource each part of a view is bound to: a list's rows are
+The app window already knows which resource each part of a view is bound to: a list's rows are
 `ui.ListItem(item:)` references to items and a tree's are `ui.TreeViewNode(item:)`,
 `ui.TextInput(bind: n.title)` binds a field, every window shows a resource. The host draws marks
 from `unseen(r)` at those points:
@@ -88,7 +88,7 @@ it reads (`unseen(r)`, the host's marks on its rows, fields and window).
 ## 5. Watching and contained
 
 Each run has a presentation, chosen by the person who started it and switchable while it runs.
-It's kept in their own record; the agent is never told which.
+It's kept in their own document; the agent is never told which.
 
 **Contained** (default for runs started from chat or the tracker): nothing in the person's
 layout changes. The run's log shows each step as the program it ran, then a live embedded
@@ -110,8 +110,8 @@ On a phone, watching is a notification per finished step whose activation shows 
 
 ## 6. Order
 
-1. `Version.run` and `kind`, `changes(of:)`, `unseen(r)`, seen marks in the own record.
-   Tested with a run that creates, changes and removes records in two apps.
+1. `Version.run` and `kind`, `changes(of:)`, `unseen(r)`, seen marks in the own document.
+   Tested with a run that creates, changes and removes resources in two apps.
 2. Host-drawn marks on list rows, bound fields and windows; activation opens the step. Pixel
    tests on Notes and Tasks with a scripted run.
 3. Contained: the run log's steps embed live views of what they touched.

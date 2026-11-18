@@ -1,14 +1,14 @@
-//! `chrono`'s dates and times as model values: written whole as their ISO
+//! Dates and times as model values: written whole as their ISO
 //! 8601 text, last writer wins.
 
 use automerge::{ObjId, ScalarValue, Value};
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use jiff::civil::{Date, DateTime, Time};
 
 use crate::model::{Doc, Model, ModelError, Slot, json_shape};
 use crate::path::Settable;
 
 macro_rules! date_model {
-    ($($ty:ty => $format:literal, $schema:literal, $what:literal, $field:ident;)*) => {$(
+    ($($ty:ty => $schema:literal, $what:literal, $field:ident;)*) => {$(
         impl Settable for $ty {}
         impl Model for $ty {
             crate::__own_table!($ty);
@@ -18,7 +18,7 @@ macro_rules! date_model {
                 crate::FieldType::$field
             }
             fn to_json(&self) -> serde_json::Value {
-                serde_json::Value::String(self.format($format).to_string())
+                serde_json::Value::String(self.to_string())
             }
             fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
                 match value {
@@ -40,10 +40,10 @@ macro_rules! date_model {
                 }
             }
             fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-                slot.put_scalar(doc, ScalarValue::Str(self.format($format).to_string().into()))
+                slot.put_scalar(doc, ScalarValue::Str(self.to_string().into()))
             }
             fn collect_text(&self, out: &mut Vec<String>) {
-                out.push(self.format($format).to_string());
+                out.push(self.to_string());
             }
         }
         impl crate::JsonSchema for $ty {
@@ -58,8 +58,8 @@ macro_rules! date_model {
 }
 
 date_model! {
-    NaiveDate => "%Y-%m-%d", r"^\d{4}-\d{2}-\d{2}$", "a date", Date;
-    NaiveTime => "%H:%M:%S%.f", r"^\d{2}:\d{2}:\d{2}(\.\d+)?$", "a time", Text;
-    NaiveDateTime => "%Y-%m-%dT%H:%M:%S%.f",
+    Date => r"^\d{4}-\d{2}-\d{2}$", "a date", Date;
+    Time => r"^\d{2}:\d{2}:\d{2}(\.\d+)?$", "a time", Text;
+    DateTime =>
         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$", "a date and time", Time;
 }

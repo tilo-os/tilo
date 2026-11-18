@@ -257,7 +257,7 @@ fn valid_id(id: &str) -> bool {
 
 fn valid_source(source: &str) -> bool {
     // A page's export can be a blob: or data: URL; an address with no scheme is
-    // no record at all.
+    // no resource at all.
     url::Url::parse(source).is_ok()
 }
 

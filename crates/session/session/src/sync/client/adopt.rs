@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tilo_desktop_model::WorkspaceId as InviteWorkspaceId;
-use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
+use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 
 use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
@@ -17,9 +17,9 @@ use crate::workspace_keys::KeyLink;
 /// history, not only what is recorded from now on.
 pub(super) async fn redeem(
     endpoint: iroh::Endpoint,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     engine: Arc<Engine>,
-    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    network: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
     link: Option<&KeyLink>,
@@ -74,7 +74,7 @@ pub(super) async fn redeem(
             .map_err(|_| "the workspace's host did not answer".to_owned())??;
             tokio::time::timeout(
                 SETTLE_WITHIN,
-                take_part_in(&owner, request.workspace_id, link, plane, events),
+                take_part_in(&owner, request.workspace_id, link, network, events),
             )
             .await
             .map_err(|_| "the workspace was not taken in time".to_owned())??;
@@ -95,14 +95,14 @@ pub(super) async fn redeem(
     )
     .await
     .map_err(|_| "the workspace's host did not answer".to_owned())??;
-    // What the host granted is taken in here, and the plane told to carry it: a person waiting to
-    // be let into a workspace is told when it did not happen rather than left on a plane that
+    // What the host granted is taken in here, and the peer network told to carry it: a person waiting to
+    // be let into a workspace is told when it did not happen rather than left on a peer network that
     // stopped taking work.
     tokio::time::timeout(SETTLE_WITHIN, async {
         owner
             .install(&enrollment, tilo_clock::wall())
             .map_err(tilo_session_client::EnrollFailure::from)?;
-        take_part_in(&owner, request.workspace_id, link, plane, events)
+        take_part_in(&owner, request.workspace_id, link, network, events)
             .await
             .map_err(tilo_session_client::EnrollFailure::from)
     })
@@ -118,24 +118,24 @@ const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(1
 /// Enter `workspace` through `entry`, as this computer's person named `name`: the entry's host (at
 /// the entry's own origin) says who it is, and this device's session with it asks to enter in its
 /// first message, as every device enters a workspace through its entry
-/// ([`tilo_relay_protocol::entering`]). The entry decides there by the workspace's own rules, and the
+/// ([`tilo_server_protocol::entering`]). The entry decides there by the workspace's own rules, and the
 /// workspace admits this device's own certificate. Answers the host's signed address for the
 /// workspace, where this device then takes its state as a member's device does; the session itself
-/// ends with the answer, since this device takes part over its own plane.
+/// ends with the answer, since this device takes part over its own peer network.
 async fn through_entry(
     endpoint: iroh::Endpoint,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     entry: &url::Url,
     workspace: InviteWorkspaceId,
     name: &str,
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
-    use tilo_relay_protocol::entering::{Entered, Entering, Through};
+    use tilo_server_protocol::entering::{Entered, Entering, Through};
     let topic = workspace;
     let client =
         tilo_workspace_directory::client().map_err(|error| tilo_sheets::directory::said(&error))?;
     let origin = entry.origin().ascii_serialization();
-    let host = tilo_relay_client::https::Origin::new(&client, &origin);
-    let info = tilo_relay_client::https::host_info(&host)
+    let host = tilo_server_client::https::Origin::new(&client, &origin);
+    let info = tilo_server_client::https::host_info(&host)
         .await
         .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
     let address = info
@@ -146,23 +146,23 @@ async fn through_entry(
     getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
     let entering = Entering {
         workspace: workspace.to_string(),
-        name: tilo_relay_protocol::web::kept(
+        name: tilo_server_protocol::web::kept(
             name,
-            tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+            tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id,
         through: Through::Entry,
     };
-    let session = tilo_relay_session::RelayClient::connect_with_signer(
+    let session = tilo_server_session::ServerClient::connect_with_signer(
         endpoint,
         address.endpoint_addr,
         Some(info.host_cert.user_public_key),
         Some(info.host_cert.device_public_key),
-        tilo_relay_session::ClientCredentials {
+        tilo_server_session::ClientCredentials {
             cert,
             signer: identity.signer.as_ref(),
             revocations: tilo_user_identity::RevocationList::new(),
-            entering: Some(tilo_relay_session::Entry {
+            entering: Some(tilo_server_session::Entry {
                 entering,
                 // This device's channels ask for the workspace's keys as a member, once it holds
                 // the workspace.
@@ -174,16 +174,16 @@ async fn through_entry(
     .await
     .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
     let answer = tokio::time::timeout(
-        tilo_relay_protocol::entering::ENTERING_DEADLINE.saturating_add(ENTRY_ANSWER_SLACK),
+        tilo_server_protocol::entering::ENTERING_DEADLINE.saturating_add(ENTRY_ANSWER_SLACK),
         session.recv(),
     )
     .await;
     let failure = session.handshake_failure();
-    // The endpoint is this device's own, which its plane goes on using: only the session's
+    // The endpoint is this device's own, which its peer network goes on using: only the session's
     // connection is closed.
     session.disconnect().await;
     let entered = match answer {
-        Ok(Some(tilo_relay_protocol::transport::Envelope::Entered(entered))) => entered,
+        Ok(Some(tilo_server_protocol::transport::Envelope::Entered(entered))) => entered,
         Ok(Some(_)) => {
             return Err("the workspace's host answered the entry with something else".into());
         }
@@ -218,30 +218,30 @@ pub(super) async fn take_part_in(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace_id: InviteWorkspaceId,
     link: Option<&KeyLink>,
-    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    network: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
 ) -> Result<(), String> {
     // The workspace is held here now: this device takes part in it, so what its people say and
-    // record reaches it as it happens, and the devices it admits are told to the plane.
+    // record reaches it as it happens, and the devices it admits are told to the peer network.
     if let Some(link) = link {
         link.workspace_changed(workspace_id);
     }
     // The workspace's subscription comes before the session it carries: what the host says the
     // moment this device joins is the workspace as it stands, and a workspace nobody listens to yet
     // drops it.
-    plane
+    network
         .send(NetCmd::JoinWorkspace {
             ws: workspace_id,
             on_event: events.clone(),
         })
         .await
-        .map_err(|_| "the collaboration plane is gone".to_owned())?;
+        .map_err(|_| "the peer network is gone".to_owned())?;
     let connect = tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)
         .map_err(|error| format!("the workspace was not taken in: {error}"))?;
-    plane
+    network
         .send(NetCmd::NativeConnect(connect))
         .await
-        .map_err(|_| "the collaboration plane is gone".to_owned())?;
+        .map_err(|_| "the peer network is gone".to_owned())?;
     Ok(())
 }
 
@@ -251,9 +251,9 @@ pub(super) async fn take_part_in(
 /// the records it holds, so this device takes part in the workspace as it stands.
 pub(super) async fn enter(
     endpoint: iroh::Endpoint,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     engine: Arc<Engine>,
-    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    network: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Entering,
     link: Option<&KeyLink>,
@@ -277,7 +277,7 @@ pub(super) async fn enter(
     .map_err(|_| "the workspace's host did not answer".to_owned())??;
     tokio::time::timeout(
         SETTLE_WITHIN,
-        take_part_in(&owner, request.workspace_id, link, plane, events),
+        take_part_in(&owner, request.workspace_id, link, network, events),
     )
     .await
     .map_err(|_| "the workspace was not taken in time".to_owned())??;

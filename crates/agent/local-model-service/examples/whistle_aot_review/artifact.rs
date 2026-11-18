@@ -1,6 +1,6 @@
 //! Exact private factory output, not caller-selected native-code authority.
 //! Pinned Wasmtime 49.0.2 / x86-64-v3 / default signal and Spectre protections.
-use super::custody;
+use super::ownership;
 use local_model_service::speech::SpeechError;
 use zeroize::Zeroizing;
 
@@ -11,7 +11,7 @@ pub fn verified(path: &str, digest: &str) -> Result<Zeroizing<Vec<u8>>, SpeechEr
     if digest != SHA {
         return Err(SpeechError::ModelReceipt);
     }
-    let bytes = custody::verified(path, SIZE, SHA)?;
+    let bytes = ownership::verified(path, SIZE, SHA)?;
     if bytes.len() != SIZE {
         return Err(SpeechError::ModelReceipt);
     }

@@ -226,7 +226,7 @@ impl Want {
     /// Where a want stands with `sources` connected: fetching while one of
     /// them has not said it lacks the content; past that unavailable when
     /// peers are connected, and waiting for one when none is.
-    fn standing(&self, sources: &ContentSources) -> ContentState {
+    fn current_state(&self, sources: &ContentSources) -> ContentState {
         if !sources.all().is_subset(&self.lacking) {
             ContentState::Pending
         } else if sources.peers.is_empty() {
@@ -338,7 +338,7 @@ impl RouteContent {
                     pieces: BTreeSet::new(),
                 };
                 want.follow(&sources);
-                want.state = want.standing(&sources);
+                want.state = want.current_state(&sources);
                 let state = want.state;
                 wants.open.insert(key, want);
                 (true, state)
@@ -388,7 +388,7 @@ impl RouteContent {
                 if want.follow(sources) {
                     asks.push((want.route.clone(), hash.clone()));
                 }
-                let state = want.standing(sources);
+                let state = want.current_state(sources);
                 if state != want.state {
                     want.state = state;
                     news.push((
@@ -428,7 +428,7 @@ impl RouteContent {
             if !sources.all().contains(&peer) || !want.lacking.insert(peer) {
                 return;
             }
-            let state = want.standing(&sources);
+            let state = want.current_state(&sources);
             if state == want.state {
                 return;
             }

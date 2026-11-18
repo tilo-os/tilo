@@ -238,8 +238,9 @@ impl MapsApp {
 
     pub(super) fn road_trip_clock(&self, duration_s: f64) -> (String, String) {
         let tt = self.model.transit_time;
-        let dur = chrono::Duration::seconds(duration_s.max(0.0) as i64);
-        let anchor = ui::clock::local_now() + chrono::Duration::minutes(i64::from(tt.offset_min));
+        let dur = jiff::SignedDuration::from_secs(duration_s.max(0.0) as i64);
+        let anchor = ui::clock::local_now().timestamp()
+            + jiff::SignedDuration::from_mins(i64::from(tt.offset_min));
         let (dep, arr) = if tt.arrive_by() {
             (anchor - dur, anchor)
         } else {
@@ -288,7 +289,8 @@ impl MapsApp {
         self.click_targets
             .push((segs[1], Hit::TransitTimeMode(TransitTimeMode::Arrive)));
 
-        let target = ui::clock::local_now() + chrono::Duration::minutes(i64::from(tt.offset_min));
+        let target = ui::clock::local_now().timestamp()
+            + jiff::SignedDuration::from_mins(i64::from(tt.offset_min));
         let label = if tt.is_now() {
             failure::t("maps-now")
         } else {

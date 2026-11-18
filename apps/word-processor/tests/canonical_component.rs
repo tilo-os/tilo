@@ -5,7 +5,7 @@ fn harness() -> (
 ) {
     use std::rc::Rc;
     use ui::application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        ComponentRunnerInputs, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     let cache = ui::portable_storage::PortableStorage::new("writer-test", "device").unwrap();
     let definition = word_processor::definition();
@@ -18,9 +18,9 @@ fn harness() -> (
             &ui::permissions::MemberId::person("author"),
             ui::permissions::Role::Owner,
         ));
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records: records.clone(),
             views,
             device_id: "device".into(),
@@ -52,7 +52,7 @@ fn harness() -> (
     (frame, records, checkout)
 }
 #[test]
-fn canonical_host_input_and_ime_commit_mutate_the_actual_writer_record() {
+fn canonical_host_input_and_ime_commit_mutate_the_actual_writer_resource() {
     let (mut frame, records, checkout) = harness();
     frame
         .perform_named("word_processor", &ui::a11y::Action::Focus)

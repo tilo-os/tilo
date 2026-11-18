@@ -5,16 +5,16 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo platform integration for tilolang apps: dynamic records in the workspace record, replayable actions, the published surface, and the UI graph translation."
+description = "Tilo platform integration for tilolang apps: dynamic documents in the workspace document, replayable actions, the published surface, and the UI graph translation."
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 automerge.workspace = true
 # The id a run's changes name, one for every change of the action and its calls.
 uuid.workspace = true
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 crc32fast.workspace = true
-# The index each package's records are listed and searched from: B-trees in one file, read
+# The index each package's documents are listed and searched from: B-trees in one file, read
 # from snapshots that later commits leave as they were.
 redb.workspace = true
 serde.workspace = true
@@ -24,13 +24,11 @@ toml.workspace = true
 tracing.workspace = true
 tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-# The record's content store, where an action too large to record whole keeps its parts, and
+# The document's content store, where an action too large to record whole keeps its parts, and
 # the wake scope of the window whose code records them.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-wake.workspace = true
 tilo-service = { path = "../../session/service" }
-# The one notice type, and the seam a device shows it through.
-tilo-session-core = { path = "../../session/core" }
 # The one policy what the runtime invokes is decided by.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.
@@ -47,29 +45,29 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # The interpreter alone in a browser page, where the compiled tier cannot run.
 tilolang-runtime = { path = "../../lang/tilolang-runtime", default-features = false }
 # The collab client an instance commits to its workspace through, without the toolkit, and the
-# history verbs every record answers (`history`).
+# history verbs every document answers (`history`).
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
-# The workspace record's on-disk copy and its writer, and who wrote a step (`instance::record`).
+# The workspace document's on-disk copy and its writer, and who wrote a step (`instance::document`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
-# Each member's own record of a package declaring `records: .own` (`member_record_of`).
+# Each member's own document of a package declaring `resources: .own` (`member_document_of`).
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The platform's history sentences, which the host's history verbs speak in.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 [features]
-# The instance's commit path to its workspace record through the collab client
-# (`instance::record`), without the toolkit.
-record = [
+# The instance's commit path to its workspace document through the collab client
+# (`instance::document`), without the toolkit.
+document = [
     "collaboration/native",
     "dep:tilo-app-state",
     "dep:durable-store",
 ]
 [dev-dependencies]
-# The tests drive the instance's commit path (`instance::record`) whatever else the build has
+# The tests drive the instance's commit path (`instance::document`) whatever else the build has
 # turned on.
-tilolang-tilo = { path = ".", features = ["record"] }
+tilolang-tilo = { path = ".", features = ["document"] }
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
@@ -84,7 +82,7 @@ uuid.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # The toolkit's words, as the session's hosts read them: what the tests' published
 # types are labelled in.
-tilo-ui-host = { version = "0.1.0", path = "../tilo-ui-host" }
+tilo-app-window = { version = "0.1.0", path = "../tilo-app-window" }
 # The palette, and a native app whose actions it lists beside a tilolang app's.
 tilo-desktop-search = { path = "../../session/desktop-search" }
 calculator = { path = "../../../apps/calculator" }

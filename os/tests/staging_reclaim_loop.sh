@@ -193,7 +193,7 @@ cat > "$record" <<EOF
  "target_root":{"partuuid":"$target_root_uuid","first_lba":$((2406 * mib)),"last_lba":$((4454 * mib - 1))},
  "target_esp_partuuid":"$target_esp_uuid"}
 EOF
-# Only the session gate is simulated; every disk tool is the real one.
+# Only the session check is simulated; every disk tool is the real one.
 cat > "$tmp/bin/loginctl" <<'SH'
 #!/bin/sh
 case "$1" in

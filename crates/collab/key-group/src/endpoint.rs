@@ -41,7 +41,7 @@ const SENDER_MEDIA_BOX_DOMAIN: &[u8] = b"tilo-sender-media-keys-v1";
 /// streams it publishes, and the tag space is larger than any device's.
 const MAX_SENDER_MEDIA_KEYS: usize = 256;
 
-/// Length of the tag naming one media stream: its lane and its source.
+/// Length of the tag naming one media stream: its kind of stream and its source.
 pub const MEDIA_STREAM_TAG_LEN: usize = 2;
 
 /// Domain of the per-stream media keys, so a key one of them derives is
@@ -182,7 +182,7 @@ impl ContentKeys {
     /// `"tilo-call-media-v1" ‖ workspace ‖ epoch ‖ sender ‖ stream`.
     ///
     /// `sender` is the sending device's public key and `stream` the two
-    /// bytes naming the lane and, within it, the source (a call lane's own
+    /// bytes naming the kind of stream and, within it, the source (a call stream's own
     /// vocabulary, so nothing but bytes of it lives here). Every holder of
     /// the epoch's content key derives the same value, which is why a member
     /// that joined later opens frames a lagging sender still seals under an
@@ -573,7 +573,7 @@ fn box_aad(workspace: WorkspaceId, epoch: u64, sender: &[u8; 32]) -> Vec<u8> {
 
 /// The X25519 form of a device's Ed25519 identity key, which is what a box is
 /// addressed to.
-fn box_recipient(device: [u8; 32]) -> Result<PublicKey> {
+pub(crate) fn box_recipient(device: [u8; 32]) -> Result<PublicKey> {
     Ok(PublicKey::from_bytes(
         VerifyingKey::from_bytes(&device)
             .map_err(|_| Error::InvalidState("not an ed25519 public key".into()))?

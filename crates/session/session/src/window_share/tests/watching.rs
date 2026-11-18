@@ -65,10 +65,10 @@ fn shell_of(seed: u8) -> (Layout, u16) {
     (shell, salt)
 }
 
-/// One device of the workspace whose session is in no live plane of it: it holds the workspace
+/// One device of the workspace whose session is in no live session of it: it holds the workspace
 /// and hears its members, and nothing of what it shares has a way out.
-fn member_outside_the_plane(seed: u8, shell: Layout, salt: u16) -> Member {
-    let (sync, said) = Client::planeless(
+fn member_outside_the_live_session(seed: u8, shell: Layout, salt: u16) -> Member {
+    let (sync, said) = Client::without_network(
         device(seed),
         OwnPresence {
             label: format!("Device {seed:x}"),
@@ -306,7 +306,7 @@ fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has()
     );
 }
 
-/// A window shared as pictures by a device whose session is in no live plane of the workspace:
+/// A window shared as pictures by a device whose session is in no live session of the workspace:
 /// its pictures have no way out. A device that asks to see it is named by the share's reading,
 /// which says that the window is not sent and what it waits for. The bar is told the device
 /// waits, its people control tells a reader that nothing was sent yet, and the window's menu
@@ -315,7 +315,7 @@ fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has()
 fn a_device_asking_for_a_window_whose_pictures_have_no_way_out_waits() {
     tilo_window_share::flatpak_share::read_encoders();
     let (shell, salt) = shell_of(0x93);
-    let mut host = member_outside_the_plane(0x93, shell, salt);
+    let mut host = member_outside_the_live_session(0x93, shell, salt);
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = foreign_tab(&host.session);
     let mut viewer = member(0x94, showing(host.sync.publisher(), APP, tab));

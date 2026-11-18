@@ -24,7 +24,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use sha2::{Digest, Sha256};
 use tilo_install_helpers::dev_target_uki::{
-    CMDLINE_ROOM, Host, MOUNT, Selected, gate, image_inputs, promote,
+    CMDLINE_ROOM, Host, MOUNT, Selected, check, image_inputs, promote,
 };
 use tilo_install_helpers::{Error, Result};
 
@@ -618,7 +618,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The VM gate, with this process modelled as root on a machine without the
+/// The VM check, with this process modelled as root on a machine without the
 /// development installer's marker.
 struct Root(Fixture);
 
@@ -769,10 +769,10 @@ tilo_test_env::scenario! {
         assert!(!fixture.uki_path().exists());
     }
 
-    phase unsigned_route_requires_real_vm_gate;
+    phase unsigned_route_requires_real_vm_check;
     {
         let host = Root(Fixture::new());
-        refused(gate(&host), "development installer VM");
+        refused(check(&host), "development installer VM");
         assert_eq!(host.0.builds.get(), 0);
     }
 

@@ -119,7 +119,7 @@ email client's accounts + folders.
     it goes one step back, and the **places** themselves, which stand in
     front of it, take Back to the screen they covered — the leading chip of
     their header row, or the window's bar's Back where the app declares its
-    toolbar there — with the toggle standing aside for it, so a phone is
+    toolbar there — with the toggle access aside for it, so a phone is
     never left on the places with no way to the list they came from. Esc
     and the system's back gesture take the same steps (and the gesture puts
     a floating drawer away too).
@@ -435,7 +435,7 @@ takes back asks nothing: it runs at once and offers Undo.
 
 ---
 
-## 5. System integration (file access, host services)
+## 5. System integration (file access, process services)
 
 - **File open/save goes through the XDG Desktop Portal**
   (`org.freedesktop.portal.FileChooser`, via `ashpd`) — an app **never draws its
@@ -502,7 +502,7 @@ completeness does not exempt a screen from these requirements.
   zero-state, per §4 — never fabricated content), loading and error states are
   designed, not raw.
 - **Motion is purposeful and quiet.** Transitions clarify a change (a panel
-  sliding in, a value settling); they never gate interaction or spin at idle
+  sliding in, a value settling); they never check interaction or spin at idle
   (§6). Reduced-motion is honored.
 - **Interactive things look interactive** and give feedback: hover, press, focus,
   and disabled are all distinct; a control that does nothing yet is a defect
@@ -517,7 +517,7 @@ completeness does not exempt a screen from these requirements.
   after a short rest on it and stays open by menu aim (the pointer's path
   heading for what it revealed), not by a long timer (`widget::hover_intent`).
 - **A maximized window is all app; its bar comes when reached for.** The
-  client fills the window (no lane above it, no margin below it). The
+  client fills the window (no area above it, no margin below it). The
   window's bar — title, Full screen, Restore, close — hides at rest and fades
   in *over* the window's top edge when the person reaches for it: a rest in
   the thin band at the very top, or a fast climb that brakes there (Fitts);
@@ -548,7 +548,7 @@ completeness does not exempt a screen from these requirements.
   current level alone, cut short; it never paints past its own bounds.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
   (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
-  colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
+  colors, no 1px boundaries from mismatched fills, no clipped glyphs or overlapping
   text.
 
 Validate these requirements with `--shots` for the primary screens (populated,
@@ -1371,10 +1371,10 @@ edge kept at full strength, so rest and disabled never look the same.
 | Checkbox | unchecked `surfaces.raised`, checked `intent.on_state`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
 | ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.value_fill`, `radii.detail` | none |
 | TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
-| Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
+| Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its area | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
 | StatTile, PropertyList, Section | the ground | none: separated by space |
-| MediaCard art | the art | a seated `hairline_on(ground)` inside the art's outline; badges over the art use the floating material |
+| MediaCard art | the art | a `hairline_on(ground)` just inside the art's outline; badges over the art use the floating material |
 | DropZone | the ground | dashed `edge_on(ground)`; your colour only while a drag hovers |
 | TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
 | ListRow | transparent | as the rows above; separators are inset `edge_on(ground)`, hidden beside the selection |
@@ -1899,13 +1899,13 @@ of exactly three faces:
 - **No inert control may exist.** A switch, Apply button or menu item for a
   privileged act is drawn only in the granted face. If it would not do the
   thing, it is not drawn. An unavailable surface has no disabled switches
-  standing in for the truth.
+  access in for the truth.
 - **Ask for the grant once, in words.** `Resolved::grantable` carries the words the
   grant step says. The grant is object-scoped ("change firewall rules", not
   "manage the system"), so revoking one privileged act does not silently take
   away another.
 - **Discovery is not resolution.** `which()`, `$PATH` and environment variables
-  are test seams (`#[cfg(test)]`, `testing`), never how a product decides what
+  are test hooks (`#[cfg(test)]`, `testing`), never how a product decides what
   it can do. An app may ask the platform or the person; it may not infer
   privilege from its environment.
 - **A preview is a person's choice, not a hidden mode.** If a flow offers a
@@ -1958,7 +1958,7 @@ in its update (`ui::jobs::apply`): **Stop** calls the worker's way out,
 **A failure is not just a row.** `Running::failed` raises an attention item
 with the reason and a **Show me** action, and reading the job's row takes that
 item back (`attention::dismissed(Target::Job)`). A failure nobody can decide
-about is a ledger entry, not a failure.
+about is a log entry, not a failure.
 
 **What an app never does.** Draw its own progress bar beside a long
 operation, refuse every other action "while one is in progress" (jobs are
@@ -1966,14 +1966,14 @@ concurrent by construction), or time out a job's notice. Reachable from
 anywhere: `ui::jobs::CHORD` (Ctrl+Shift+J) and `ui::jobs::open` ask for the
 surface; a host resolves the request with `take_opening`.
 
-## 11. Attention and the ledger: one raised hand, one record
+## 11. Attention and the log: one raised hand, one record
 
 Everything the system says about itself goes to exactly one of two places,
 and `ui::attention::publish` is the one call that decides:
 
 * **it needs a person** → an item in the waiting stack (`Notice::needs`, with
   the `Action` it waits on);
-* **it does not** → the ledger (`Notice::did`), append-only, attributed,
+* **it does not** → the log (`Notice::did`), append-only, attributed,
   never on a timer.
 
 There is no third place. In particular there is no toast: a notice that
@@ -2005,7 +2005,7 @@ selected (the lift, §9.3). Acting reports the verb once
 by the app that shows it. Reachable from anywhere: `ui::attention::CHORD`
 (Ctrl+Shift+A) and `ui::attention::open`, which a host resolves.
 
-**The ledger.** `ui::attention::entries` — every outcome that needed nobody,
+**The log.** `ui::attention::entries` — every outcome that needed nobody,
 with the app that did it, when, and what it was about. Activity's History
 lists it beside the workspace's changes, found by the same find
 (`entry.matches`), and nothing about it steals the focus: it is read when

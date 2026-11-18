@@ -18,7 +18,7 @@ impl GitClientState {
             self.model = model;
             self.diffs = diffs;
             self.graph_layout = graph::layout(&mut self.model.commits);
-            self.model.graph_width = self.graph_layout.lanes;
+            self.model.graph_width = self.graph_layout.columns;
             self.selected_change = first_change(&self.model);
             if self.selected_commit >= self.model.commits.len() {
                 self.selected_commit = 0;
@@ -34,7 +34,7 @@ impl GitClientState {
         }
     }
 
-    /// Run an action and record any error for the status line. On success
+    /// Run an action and resource any error for the status line. On success
     /// the model is reloaded from disk so the render reflects reality.
     pub(super) fn run_action(&mut self, result: anyhow::Result<()>) {
         match result {

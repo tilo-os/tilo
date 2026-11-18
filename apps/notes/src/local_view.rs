@@ -1,4 +1,4 @@
-//! Notes-owned presentation only. Canonical content is always projected from the record.
+//! Notes-owned presentation only. Canonical content is always projected from the resource.
 use crate::{PageId, model::TagId};
 use serde::{Deserialize, Serialize};
 use ui::{application_view::ApplicationLocalView, view::ThawError};

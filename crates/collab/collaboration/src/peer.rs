@@ -4,7 +4,7 @@ use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec, annot
 
 /// Transport adapters must authenticate ordinary peer joins and verify inbound
 /// envelopes before publishing events. Installing this adapter grants no model,
-/// action, HostContext, or storage authority. Queue failures are fail-closed.
+/// action, ProcessContext, or storage authority. Queue failures are fail-closed.
 pub trait PeerTransport {
     /// Authenticated connection provenance from the host, never app model state.
     fn connection_snapshot(
@@ -16,7 +16,7 @@ pub trait PeerTransport {
     fn is_connected(&self) -> bool;
     /// Whether this app is a surface of the desktop it speaks to, rather than
     /// an app of a document: what it offers lives with that desktop, so no
-    /// document history custodies its actions.
+    /// document history ownerships its actions.
     fn hosts_surface(&self) -> bool {
         false
     }
@@ -59,12 +59,12 @@ pub trait PeerTransport {
 }
 
 /// Drives a host-owned [`PeerTransport`] through the manager's single
-/// [`super::CollabTransport`] seam. Queue failures close the adapter, so the
+/// [`super::CollabTransport`] boundary. Queue failures close the adapter, so the
 /// manager reports it disconnected instead of continuing under the illusion
 /// that durable traffic was sent.
 ///
 /// Peer adapters are thread-bound (browser transports own `!Send` handles).
-/// Following the seam's contract, this wrapper satisfies `Send` by checking,
+/// Following the boundary's contract, this wrapper satisfies `Send` by checking,
 /// at runtime, that it is only ever touched from its creating thread: every
 /// method asserts it, and dropping it anywhere else leaks the peer rather than
 /// running its destructor off the owner thread.
@@ -84,7 +84,7 @@ pub(super) struct PeerTransportAdapter {
 #[allow(
     unsafe_code,
     clippy::non_send_fields_in_send_ty,
-    reason = "the collaboration seam's documented runtime-checked Send wrapper for thread-bound transports"
+    reason = "the collaboration boundary's documented runtime-checked Send wrapper for thread-bound transports"
 )]
 unsafe impl Send for PeerTransportAdapter {}
 

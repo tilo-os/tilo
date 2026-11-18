@@ -23,7 +23,7 @@ guarantees. Existing identity state is never silently migrated between tiers.
 
 1. Person root keys and recovery material are never treated as device identity.
 2. Device keys are individually certified and revocable.
-3. User data at rest is unavailable without a TPM-gated PIN or strong recovery
+3. User data at rest is unavailable without a TPM-guarded PIN or strong recovery
    credential; the recovery route remains independent of the TPM.
 4. Boot-critical code, initramfs, kernel arguments and root digest are bound to
    an owner-enrolled Secure Boot key through a UKI.
@@ -32,7 +32,7 @@ guarantees. Existing identity state is never silently migrated between tiers.
 7. Collaboration authority is scoped to a workspace, subject and action; a bearer
    invite can never grant ownership.
 8. A release channel never exposes an image before signature, SBOM, provenance,
-   reproducibility and boot gates complete.
+   reproducibility and boot checks complete.
 
 Availability, metadata privacy, and recovery are explicit assets too. A design
 that preserves secrecy by irrecoverably losing a user's data has failed.
@@ -46,7 +46,7 @@ that preserves secrecy by irrecoverably losing a user's data has failed.
 - A compromised legacy desktop app runs under the compatibility Linux account.
 - A hostile member has a valid identity and whatever old material they
   legitimately received. They may replay, reorder, fork and forge network data.
-- A network/relay operator observes endpoints, timing and sizes, drops or replays
+- A network/server operator observes endpoints, timing and sizes, drops or replays
   traffic, and tries machine-in-the-middle substitution.
 - A registry attacker can rewrite, delete and split-view tags and blobs but lacks
   the release signing key.
@@ -73,11 +73,11 @@ firmware + owner db key
 
 person root -> device certificate -> transport key -> signed collaboration op
 
-source + pinned inputs -> two builds -> boot gate -> candidate digest
+source + pinned inputs -> two builds -> boot check -> candidate digest
   -> KMS signature + SBOM + SLSA + transparency log -> release channel
 ```
 
-Crossing inward requires evidence; a name, UID, registry tag, relay connection,
+Crossing inward requires evidence; a name, UID, registry tag, server connection,
 or locally cached role is not evidence by itself.
 
 ## Abuse-case analysis and current controls
@@ -88,19 +88,19 @@ or locally cached role is not evidence by itself.
 | Evil-maid ESP/initramfs/cmdline change | Owner-enrolled Secure Boot; signed UKI embeds initramfs, command line, os-release, root digest and generation. Preflight verifies every section and signature. | Firmware UI and key-enrollment correctness vary by device and need a hardware matrix. |
 | Root filesystem replacement | Composefs/fs-verity root digest is sealed into the UKI command line. Release VM checks the installed image contract. | Kernel/composefs vulnerabilities remain trusted-computing-base defects. |
 | OS downgrade by disk snapshot | Per-generation LUKS secrets require a TPM NV monotonic floor; confirmation advances only after health, retains a bounded recovery window, and proves another unlock route before deleting a slot. Emulator tests restore old LUKS headers adversarially. | An old image may execute before unlock refusal; this is weaker than bootloader-enforced Android rollback indexes. Physical TPM validation is outstanding. |
-| Registry adds a fake `genN` | Generation resolver requires a release signature and SLSA generation match; history must be dense and signed `latest` must equal the highest generation. Promotion additionally requires a digest/generation/source-bound freshness attestation lasting at most seven days. | The freshness statement is initially signed by the release trust domain. A registry can freeze a *new* machine on an older complete view until clients require independent witness signatures; installed devices retain their TPM floor. |
+| Registry adds a fake `genN` | Generation resolver requires a release signature and SLSA generation match; history must be dense and signed `latest` must equal the highest generation. Promotion additionally requires a digest/generation/source-bound freshness attestation lasting at most seven days. | The freshness statement is initially signed by the release trust domain. A registry can freeze a *new* machine on an older complete view until clients require independent approval signatures; installed devices retain their TPM floor. |
 | Release key theft | CI accepts only a non-exportable KMS/HSM URI; no file or environment private key. Candidate is digest addressed and signed after boot verification. | KMS policy, workload identity, quorum, audit alerts and disaster recovery are deployment obligations, not proven by this repository. |
 | Compromised action/dependency | OS-release actions and OS/base/RPM/kernel inputs are immutable digest/commit pinned; SLSA records inputs. | A malicious pinned input is still malicious. Dependency review and builder diversity remain necessary. |
-| Non-reproducible or tampered release | A second no-cache OS build must have the same OCI manifest before publication. If installation adds the deterministic UKI reseal layer, the gate independently applies it and compares the final publishable manifests too. SBOM and SLSA attestations bind that digest. | Both invocations currently share one runner/operator/toolchain. This detects nondeterminism, not a trusting-trust compiler or runner compromise. Independent builders are required for a stronger claim. |
+| Non-reproducible or tampered release | A second no-cache OS build must have the same OCI manifest before publication. If installation adds the deterministic UKI reseal layer, the check independently applies it and compares the final publishable manifests too. SBOM and SLSA attestations bind that digest. | Both invocations currently share one runner/operator/toolchain. This detects nondeterminism, not a trusting-trust compiler or runner compromise. Independent builders are required for a stronger claim. |
 | Malicious tapp reads host files | Every tapp launch path requires fully enforced Landlock V5, including device-ioctl control. The shim closes every ambient descriptor except explicitly connected brokers. Seccomp denies namespace creation plus kernel administration, fault injection and process-introspection surfaces; core dumps are disabled and descriptor counts bounded. Two image-granted exceptions exist. Packages the image lists in `/usr/lib/tilo/web-engine-entitled.conf` (the browser) get the `tilo-web-engine` profile, which permits user, PID and network namespaces and `chroot` for Chromium's renderer sandbox; mount, `pivot_root`, `setns` and every other namespace kind stay refused. On an image that declares itself provider-sandboxed (`/etc/tilo/provider-sandbox.toml`, root-owned), first-party apps from the root-owned system store run without Landlock, because the hosting VM is the boundary; bubblewrap, seccomp and the network namespace still apply, and user-installed apps still require full Landlock (`crates/packaging/launcher/src/provider_sandbox.rs`). | The web-engine entitlement adds the kernel surface reachable through unprivileged user namespaces to the entitled packages. ABI 6 socket/signal scoping awaits a Tilo kernel that reports the applicable Landlock errata without making enforcement status ambiguous. Landlock and seccomp are not a complete sandbox; kernel bugs, permitted-path parser exploits, permitted device ioctls and covert channels need continuing review. |
 | Malicious tapp gets network access | Network is absent unless explicitly granted by package/runtime policy and enforced by the namespace/broker boundary. | Broker bugs and confused-deputy paths are in scope for fuzzing and integration tests. |
 | Package/manifest parser exploit | Signed root and semantic manifest validators have coverage-guided fuzz targets with bounded hostile input; daily CI preserves regressions. | Fuzzing proves neither completeness nor memory safety in native dependencies. Corpus quality and sanitizer coverage must be monitored. |
 | Stolen invite link | Ordinary Tilo invite UI requires a pasted person identity key and signs that key, role, name, workspace and expiry. Redemption requires a certified device for that person. Pending state stores only a BLAKE3 digest at mode 0600. | Compatibility APIs can still mint bearer invites for the Tilo Desktop/legacy tier. Treat those links as credentials and never present that path as hardened Tilo. |
-| Invite replay or restart race | Admission is single-use and atomically consumed from a durable ledger; invalid/duplicate ledger data fails closed. Administrators can revoke by digest. | Authority-offline admission is not complete: a host cannot safely invent durable governance without a verifiable admission proof. |
+| Invite replay or restart race | Admission is single-use and atomically consumed from a durable list; invalid/duplicate list data fails closed. Administrators can revoke by digest. | Authority-offline admission is not complete: a host cannot safely invent durable governance without a verifiable admission proof. |
 | Member self-promotes or writes outside role | Workspace governance, live certified identity, role/action checks and authority-pinned document merge reject local or remote capability widening. Every record of a workspace is sealed under the workspace's one MLS group, its ciphertext bound to the record's artifact. Read permission inside a workspace is not a key boundary: a grant may hide a resource in the UI, but every device holding the workspace's keys can open every record. Signed MLS governance frames bind the workspace, live membership revision, governor, epoch and hash-chain head; the broker-internal handle-only authority transaction journals exact Welcome/commit recipients and applies workspace admission/revocation with idempotent crash recovery. For MLS endpoint state, production startup installs the Secret Service provider and fails closed if it is unavailable (MLS stays off); a sealed owner-only file store replaces it only when `TILO_SECRETS_DIR` is set explicitly, for headless machines. Identity signing secrets differ: they fall back automatically to an owner-only private file when the Secret Service does not answer ([identity-security.md](../identity-security.md)). | Recovery and member/device provisioning UX still require product-level ceremony and testing. |
 | Accidental/hostile ownership transfer | Invite and generic role controls exclude the owner: the action policy refuses a membership op that hands out the owner's role, so ownership cannot be taken through the people surface, a search action or an agent. The owner is structural: it is set when the workspace is made and is never handed out or taken away. Co-owners are administrators instead: the owner, the person a host keeps the workspace for and its administrators make them, by direct grant or by an administrator's invitation, which every admitting member checks against whom it carries the making of; only the owner and that person unmake them. | A workspace cannot change hands through Tilo yet; a person who needs another owner makes a new workspace and invites them into it. |
-| Revoked device reconnects | Root-signed device revocation is checked when projecting peer identity and permissions. | Revocation freshness while all honest authorities are offline, and already-disclosed content, cannot be recovered cryptographically. |
-| Relay reads workspace content | For a route with an installed MLS endpoint, mutation payloads are encrypted before outer signing; brokers/relays validate clear signed metadata and fan out ciphertext without keys. Complete OpenMLS endpoint state has a Secret Service-key-sealed atomic restart format. The document store fsyncs encrypted compaction snapshots before minting a route-bound receipt; the authority transaction registers the journal whose migration gate rejects plaintext after acknowledgement. | Endpoint/timing/volume metadata and traffic analysis remain visible. A route is explicitly plaintext until its acknowledged snapshot transaction flips the durable gate, and a host reads every unsealed record in full. A node certified to own workspaces takes part in the groups of the workspaces it governs and holds their keys, so "without keys" holds only for a plain host certificate. iroh's default discovery and relays are number 0's public infrastructure, which sees endpoint ids and IP addresses. |
+| Revoked device reconnects | Root-signed device revocation is checked when projecting peer identity and permissions. What a workspace had taken of the device when its removal was written into the governance stays valid by its place in each document (the removal's cut, architecture.md 3.4); everything else it signs is refused, whoever hands it over and whatever time it claims. At the handshake the device is told that it was removed, by the server it dialled and under that server's signature for that hello, and nothing else. | Revocation freshness while all honest authorities are offline, and already-disclosed content, cannot be recovered cryptographically. The cut fixes where a removed device's history ends, not what it says: a holder that has the removed device's key can show a device that joins later another change under a number below the cut. The stated reason confirms a removal to whoever shows the removed device's certificate where its person is admitted; the refusal alone already told them. |
+| Relay reads workspace content | For a route with an installed MLS endpoint, mutation payloads are encrypted before outer signing; brokers/relays validate clear signed metadata and fan out ciphertext without keys. Complete OpenMLS endpoint state has a Secret Service-key-sealed atomic restart format. The document store fsyncs encrypted compaction snapshots before minting a route-bound receipt; the authority transaction registers the journal whose migration check rejects plaintext after acknowledgement. | Endpoint/timing/volume metadata and traffic analysis remain visible. A route is explicitly plaintext until its acknowledged snapshot transaction flips the durable check, and a host reads every unsealed record in full. A node certified to own workspaces takes part in the groups of the workspaces it governs and holds their keys, so "without keys" holds only for a plain host certificate. iroh's default discovery and relays are number 0's public infrastructure, which sees endpoint ids and IP addresses. |
 | Parser/resource exhaustion over network | Protocol, invite chain and identity wire formats have bounded inputs and fuzz targets; queues and roles are checked before application. | Sustained bandwidth/CPU/storage denial of service is only partially bounded. |
 | Compromised Tilo Desktop-on-Linux host | Compatibility identity associates with the existing Unix account and creates no second credential. | The host distro, account, boot, disk, session and ambient apps are trusted. This tier is explicitly not a hardened Tilo installation. |
 | Recovery abuse or loss | Recovery key is independent of TPM state; destructive rollback-floor/keyslot operations require proof another unlock path works. | Lost recovery material plus lost credential can mean permanent data loss; social/recovery UX needs dedicated tests. |
@@ -125,7 +125,7 @@ workflow results, and (when required) signed hardware-matrix results.
 
 ## Required negative tests
 
-Every security gate needs an adversarial case: modified UKI section, Secure Boot
+Every security check needs an adversarial case: modified UKI section, Secure Boot
 off, unsigned/higher/gapped generation tag, mismatched provenance, split latest,
 restored LUKS header, wrong-generation TPM prediction, partial Landlock support,
 path traversal package, stolen recipient-bound invite, replayed invite,
@@ -134,7 +134,7 @@ delegated admin. “Could not observe” is failure, not skip.
 
 ## Known priority gaps
 
-1. Add an independent signed freshness witness/checkpoint so a new install can
+1. Add an independent signed freshness approval/checkpoint so a new install can
    detect a registry freeze or complete signed rollback view.
 2. Run reproducibility on independently administered builders and publish both
    attestations, not just two invocations on one runner.

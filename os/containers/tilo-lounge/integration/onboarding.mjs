@@ -27,9 +27,9 @@
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
 //
-// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN STACK
+// usage: node onboarding.mjs SITE SERVER WORK TILO_BIN STACK
 //
-// SITE is the web entry's origin (the site people visit), RELAY the workspace
+// SITE is the web entry's origin (the site people visit), SERVER the workspace
 // host's, WORK the run's directory (the stack's state, the mail sink's files
 // and every page's screenshots and console live there), TILO_BIN the `tilo`
 // command an agent runs, and STACK os/containers/tilo-sh/stack.sh of the stack
@@ -43,9 +43,9 @@ import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
-const [site, relay, work, tiloBin, stack] = process.argv.slice(2);
-if (!site || !relay || !work || !tiloBin || !stack) {
-  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN STACK');
+const [site, server, work, tiloBin, stack] = process.argv.slice(2);
+if (!site || !server || !work || !tiloBin || !stack) {
+  console.error('usage: node onboarding.mjs SITE SERVER WORK TILO_BIN STACK');
   process.exit(2);
 }
 // The mail sink the stack points the entry at (`stack.sh mail` reads the same).
@@ -53,12 +53,12 @@ const mailDir = join(work, 'state', 'mail');
 const computer = join(work, 'computer');
 mkdirSync(mailDir, {recursive: true});
 const mark = clock();
-const report = {site, relay, at: new Date().toISOString(), steps: []};
+const report = {site, server, at: new Date().toISOString(), steps: []};
 const browsers = [];
 const said = [];
 
 /** Where the host is as the pages know it: a workspace is stored per origin. */
-const hostOrigin = new URL(relay).origin;
+const hostOrigin = new URL(server).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 
@@ -687,7 +687,16 @@ try {
   const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
-  await until(returning.tab, OWN_WORKSPACE, 'the signed-in tab in the person\'s own workspace', stepLimit(3));
+  // The person asked their agent to sign them in on this tab, so the tab asks
+  // them nothing about whose device it becomes: that card, which warns of a
+  // link someone else made, is for a link handed to a device.
+  const signedInOrAsked = await until(returning.tab, `(() => {
+    if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
+    return ${OWN_WORKSPACE};
+  })()`, 'the signed-in tab in the person\'s own workspace', stepLimit(3));
+  if (signedInOrAsked === 'asked') {
+    await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
+  }
   const signedIn = await person(returning.tab);
   report.signedIn = signedIn;
   if (signedIn.user !== report.landed.user) await fail(`the agent signed in ${signedIn.user}, not ${report.landed.user}`);

@@ -1,25 +1,25 @@
-//! The Lounge's chat across its relay's restart.
+//! The Lounge's chat across its server's restart.
 //!
-//! Posts made through the action API are written by the relay's own device: its app workers run the
-//! post for the member and the relay keeps the write under its own key. The relay's copy of the
+//! Posts made through the action API are written by the server's own device: its app workers run the
+//! post for the member and the server keeps the write under its own key. The server's copy of the
 //! workspace keeps every write it took in, and after a restart reads its records whole again
 //! from what it kept: none of them may wait for a change it lacks, and every post the action API
 //! answered for is in the chat.
 //!
-//! The relay stops a moment after the last post, closed or dropped as a killed process is, at a
+//! The server stops a moment after the last post, closed or dropped as a killed process is, at a
 //! point drawn at random each round; `TILO_CHAT_RESTART_SEED` repeats a round and
 //! `TILO_CHAT_RESTART_ROUNDS` runs more of them.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{OnRelay, api_on_relay, approved_key};
+use super::api_on_server::{OnServer, api_on_server, approved_key};
 use super::*;
 use serde_json::json;
 
-/// The chat's posts as the relay's copy holds them, by text.
-async fn posts_held(on_relay: &OnRelay) -> Result<Vec<String>, String> {
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+/// The chat's posts as the server's copy holds them, by text.
+async fn posts_held(on_server: &OnServer) -> Result<Vec<String>, String> {
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
     let whole = workspaces
-        .whole_documents(&on_relay.lobby, None)
+        .whole_documents(&on_server.lobby, None)
         .await
         .map_err(|error| error.to_string())?;
     if !whole.is_whole() {
@@ -34,7 +34,7 @@ async fn posts_held(on_relay: &OnRelay) -> Result<Vec<String>, String> {
         .documents
         .iter()
         .find(|((app, record), _)| app == "so.tilo.chat" && *record == route)
-        .ok_or("the relay holds no part of the chat")?;
+        .ok_or("the server holds no part of the chat")?;
     let doc = automerge::AutoCommit::load(held).map_err(|error| error.to_string())?;
     Ok(chat::messages::read_part(&doc)
         .messages
@@ -43,7 +43,7 @@ async fn posts_held(on_relay: &OnRelay) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// One round: the chat seated, posts through the action API, the relay restarted, the chat read.
+/// One round: the chat set up, posts through the action API, the server restarted, the chat read.
 async fn round(seed: u64) {
     let mut draw = seed | 1;
     let mut next = |below: u64| {
@@ -52,9 +52,9 @@ async fn round(seed: u64) {
         draw ^= draw << 17;
         draw.checked_rem(below).unwrap_or(0)
     };
-    let on_relay = api_on_relay(ISSUER).await;
-    let lobby = on_relay.lobby.clone();
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+    let on_server = api_on_server(ISSUER).await;
+    let lobby = on_server.lobby.clone();
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
     workspaces
         .prepare_application(
@@ -78,7 +78,7 @@ async fn round(seed: u64) {
                     doc,
                     "operator",
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
-                        chat::record::chat::CreateChannelWithId {
+                        chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
                             name: "general".parse().expect("a channel name"),
                             category: None,
@@ -95,12 +95,12 @@ async fn round(seed: u64) {
         .unwrap();
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Lounge").await;
+    let key = approved_key(&on_server, &ada, &page, "Lounge").await;
     let posts = usize::try_from(next(30)).unwrap().saturating_add(2);
     let mut posted = Vec::new();
     {
         let mut lounge = Mcp {
-            api: &on_relay.api,
+            api: &on_server.api,
             path: format!("/w/{lobby}/mcp"),
             token: key,
             session: None,
@@ -121,7 +121,7 @@ async fn round(seed: u64) {
             posted.push(text);
         }
     }
-    let before = posts_held(&on_relay).await.unwrap();
+    let before = posts_held(&on_server).await.unwrap();
     for text in &posted {
         assert!(
             before.contains(text),
@@ -132,8 +132,8 @@ async fn round(seed: u64) {
     let killed = next(2) == 0;
     eprintln!("CHAT-RESTART seed={seed} posts={posts} pause={pause:?} killed={killed}");
     tokio::time::sleep(pause).await;
-    let on_relay = on_relay.restart(killed).await;
-    let after = posts_held(&on_relay).await.unwrap_or_else(|error| {
+    let on_server = on_server.restart(killed).await;
+    let after = posts_held(&on_server).await.unwrap_or_else(|error| {
         panic!("seed {seed}: after the restart the chat does not read: {error}")
     });
     for text in &posted {

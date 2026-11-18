@@ -46,7 +46,7 @@ DeleteBytesArgs = TypedDict("DeleteBytesArgs", {
 
 class Document(Resource):
     """Hex document — `hex-editor.document`."""
-    __surface__ = "so.tilo.hex-editor@5d639d45f7ab2a9b"
+    __surface__ = "so.tilo.hex-editor@e3d7d95f6b291955"
     @property
     def name(self) -> str | None:
         """Read only."""

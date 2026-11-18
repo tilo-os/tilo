@@ -73,7 +73,7 @@ different directories forward unchanged. The scanner receives the same adapter
 through its dependency closure. There is no DYLD injection, locale forcing,
 library-validation exception, or helper source modification.
 
-## Qualification and signing gate
+## Qualification and signing check
 
 The script invokes neither `codesign` nor the SDK build path that automatically
 ad-hoc signs. Adapter compilation explicitly disables linker ad-hoc signing.

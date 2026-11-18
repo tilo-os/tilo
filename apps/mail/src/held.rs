@@ -2,16 +2,16 @@
 //!
 //! A server's mail stays outside the mailbox; an agent's confined worker, a seeded scenario or
 //! an injected event has no account and no network, so mail delivered to the workspace itself
-//! is kept in the record ([`HeldMessage`], under [`Mail::held`]), where it replicates, replays
+//! is kept in the resource ([`HeldMessage`], under [`Mail::held`]), where it replicates, replays
 //! and undoes like every other mailbox edit. Each message's folder, read and starred state and
 //! labels are its ordinary [`MessageState`]; it has no server copy, so nothing is queued for a
 //! server and nothing is ever sent from here.
 //!
 //! Mail moved in from another mail program keeps the message as it was sent
-//! ([`HeldMessage::original`], its MIME bytes in the record's content), so its
+//! ([`HeldMessage::original`], its MIME bytes in the resource's content), so its
 //! HTML, attachments and headers are what the window shows, read through the
 //! same parser fetched mail goes through; the text fields stay the message's
-//! words for whoever reads the record without its content.
+//! words for whoever reads the resource without its content.
 
 use std::fmt::Write as _;
 
@@ -20,6 +20,7 @@ use ui::tilo_resource::{self, ActionCx, Bytes, Id, JsonSchema, Model, Refusal, S
 
 use crate::actions::bounded_text;
 use crate::model::{Addr, Folder, Message, MessageId, normalize_subject};
+use crate::part::MessagePart;
 use crate::resource::{
     MAX_DRAFT_ADDRESS_CHARS, MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, Mail, MessageState,
 };
@@ -237,6 +238,114 @@ pub struct Delivery {
     /// the mailbox shows
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original: Option<Bytes>,
+    /// Filled in where it is delivered; leave it out: the `Message-ID` of
+    /// the held message it answers (`reply_to`), wherever it is kept
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<String>,
+}
+
+/// Fill in, where a delivery is invoked, what it reads of every part: the
+/// message it answers and its conversation, or the conversation of a held
+/// message about the same subject; and refuse a message the mailbox holds
+/// already, in whichever part.
+///
+/// # Errors
+/// Refuses a message held already, or an answer to a message not held.
+pub(crate) fn prepare_delivery(
+    delivery: &mut Delivery,
+    parts: &[(u64, std::rc::Rc<MessagePart>)],
+) -> Result<(), String> {
+    // Dated as it is delivered, here, so its id is the same on every replica
+    // and known before it is written.
+    if delivery
+        .date
+        .as_deref()
+        .is_none_or(|date| date.trim().is_empty())
+    {
+        let seconds = tilo_resource::origin_now_ms().div_euclid(1000);
+        delivery.date = Some(mail_parser::DateTime::from_timestamp(seconds).to_rfc3339());
+    }
+    let key = Id::from_raw(delivered_id(delivery).to_string());
+    if parts.iter().any(|(_, part)| part.holds(&key)) {
+        return Err(Refusal::coded(
+            ui::tilo_actions::codes::MESSAGE_ALREADY_HELD,
+            format!(
+                "this message is in the mailbox already, as {}",
+                key.as_str()
+            ),
+        )
+        .to_string());
+    }
+    if let Some(reply) = delivery
+        .reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|reply| !reply.is_empty())
+    {
+        let answered = parts
+            .iter()
+            .rev()
+            .find_map(|(_, part)| part.held_message(reply).map(|(_, held)| held.clone()))
+            .ok_or("the message it answers is not held in this mailbox")?;
+        delivery.answers = Some(answered.message_id.clone());
+        if delivery
+            .conversation
+            .as_deref()
+            .is_none_or(|c| c.trim().is_empty())
+        {
+            delivery.conversation = Some(answered.conversation);
+        }
+    } else {
+        delivery.answers = None;
+    }
+    if delivery
+        .conversation
+        .as_deref()
+        .is_none_or(|c| c.trim().is_empty())
+        && let Some(found) = parts
+            .iter()
+            .rev()
+            .find_map(|(_, part)| part.conversation_about(&delivery.subject))
+    {
+        delivery.conversation = Some(found);
+    }
+    Ok(())
+}
+
+/// The id a delivery is kept under: its own `Message-ID`'s, or one derived
+/// from what it says.
+fn delivered_id(delivery: &Delivery) -> MessageId {
+    let from = bounded_text(&delivery.from, MAX_DRAFT_ADDRESS_CHARS, false);
+    let to = bounded_text(
+        delivery.to.as_deref().unwrap_or(""),
+        MAX_DRAFT_ADDRESS_CHARS,
+        false,
+    );
+    let cc = bounded_text(
+        delivery.cc.as_deref().unwrap_or(""),
+        MAX_DRAFT_ADDRESS_CHARS,
+        false,
+    );
+    let subject = bounded_text(&delivery.subject, MAX_DRAFT_SUBJECT_CHARS, false);
+    let body = bounded_text(&delivery.body, MAX_DRAFT_BODY_CHARS, true);
+    let own = delivery
+        .message_id
+        .as_deref()
+        .map(bare_key)
+        .filter(|key| !key.is_empty());
+    let minutes = delivery
+        .date
+        .as_deref()
+        .filter(|d| !d.trim().is_empty())
+        .and_then(|date| minutes_of(date).ok());
+    match (own, minutes) {
+        (Some(own), _) => crate::transport::stable_message_id(&own),
+        // Without a date it is dated as it lands, which the part reads.
+        (None, Some(minutes)) => {
+            derived_id(&[&from, &to, &cc, &subject, &body, &minutes.to_string()])
+        }
+        (None, None) => MessageId::nil(),
+    }
 }
 
 /// The id a held message is kept under: derived from what it says, so
@@ -314,7 +423,7 @@ fn quoted(text: &str) -> String {
         .join("\n")
 }
 
-impl Mail {
+impl MessagePart {
     /// Keep `delivery` as a held message in its folder; the id it is kept
     /// under. Refused when the same message is held already.
     pub(crate) fn deliver(&mut self, cx: &ActionCx, delivery: &Delivery) -> Result<Id, Refusal> {
@@ -365,12 +474,15 @@ impl Mail {
                 format!("this message is in the mailbox already, as {id}"),
             ));
         }
+        // What it answers was read where it was delivered, from every part.
         let answered = match delivery.reply_to.as_deref().map(str::trim) {
-            Some(reply) if !reply.is_empty() => Some(
-                self.held_message(reply)
-                    .map(|(_, held)| held.clone())
+            Some(reply) if !reply.is_empty() => Some(match &delivery.answers {
+                Some(answers) => answers.clone(),
+                None => self
+                    .held_message(reply)
+                    .map(|(_, held)| held.message_id.clone())
                     .ok_or("the message it answers is not held in this mailbox")?,
-            ),
+            }),
             _ => None,
         };
         let (subject_label, from_label) = (subject.clone(), from.clone());
@@ -380,7 +492,6 @@ impl Mail {
             .as_deref()
             .map(bare_key)
             .filter(|key| !key.is_empty())
-            .or_else(|| answered.as_ref().map(|held| held.conversation.clone()))
             .or_else(|| self.conversation_about(&subject))
             .unwrap_or_else(|| message_id.clone());
         self.held.push(
@@ -393,7 +504,7 @@ impl Mail {
                 subject,
                 body,
                 minutes,
-                in_reply_to: answered.map(|held| held.message_id),
+                in_reply_to: answered,
                 conversation,
                 original,
             },
@@ -415,7 +526,7 @@ impl Mail {
 
     /// The conversation of a held message about `subject` (its reply and
     /// forward markers aside), when one is.
-    fn conversation_about(&self, subject: &str) -> Option<String> {
+    pub(crate) fn conversation_about(&self, subject: &str) -> Option<String> {
         let topic = normalize_subject(subject);
         if topic.is_empty() {
             return None;
@@ -457,32 +568,11 @@ impl Mail {
         Some(held.shown(id.as_str().parse().ok()?, state))
     }
 
-    /// What the mailbox holds, for a caller with no screen: with no item,
-    /// its folders, the held messages newest first and the draft; with a
-    /// folder, the messages in it; with a message, the whole message and
-    /// its conversation, oldest first.
-    /// Whether the published place `id` is part of what
-    /// [`Self::read_held`] answers: a folder, a draft or a message of the
-    /// mailbox. Each is document state, disclosed by its document read.
-    pub(crate) fn document_projection_child(&self, id: &str) -> bool {
-        let last = id.rsplit('/').next().unwrap_or(id);
-        if folder_named(last).is_some() {
-            return true;
-        }
-        if last == crate::resource::COMPOSER_DRAFT {
-            return true;
-        }
-        if let Some(draft) = last.strip_prefix("draft:") {
-            return self
-                .drafts_listed()
-                .iter()
-                .any(|(listed, _)| listed == draft);
-        }
-        message_named(last)
-            .and_then(|message| last.starts_with("message:").then_some(message))
-            .is_some_and(|message| self.message(message).is_some())
-    }
-
+    /// What a part of the mailbox holds, for a caller with no screen: with
+    /// no item, its folders with how many of its held messages each holds,
+    /// and those messages newest first; with a folder, the messages in it;
+    /// with a message, the whole message and its conversation, oldest
+    /// first.
     pub(crate) fn read_held(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let item = item.map_or("", |item| item.as_str().trim());
         if item.is_empty() {
@@ -496,7 +586,6 @@ impl Mail {
                     }))
                     .collect::<Vec<_>>(),
                 "messages": self.listing(None),
-                "drafts": self.drafts_listed().iter().map(|(id, draft)| draft_summary(id, draft)).collect::<Vec<_>>(),
             }));
         }
         if let Some(folder) = folder_named(item) {
@@ -504,12 +593,6 @@ impl Mail {
                 "folder": folder.as_key(),
                 "messages": self.listing(Some(folder)),
             }));
-        }
-        if let Some((id, draft)) = self.drafts_listed().into_iter().find(|(id, _)| {
-            item.ends_with(&format!("draft:{id}"))
-                || (item.ends_with("draft") && crate::resource::is_composer_draft(id))
-        }) {
-            return Ok(serde_json::json!({ "draft": draft_summary(&id, draft) }));
         }
         let Some((id, held)) = self.held_message(item) else {
             // A message whose body is on its server: what the mailbox knows
@@ -587,6 +670,7 @@ impl Mail {
     /// Markdown or JSON), newest first. Answers its address.
     pub(crate) fn export_held(
         &self,
+        mail: &Mail,
         format: Option<&str>,
         message: Option<&str>,
         folder: Option<Folder>,
@@ -608,7 +692,7 @@ impl Mail {
         let drafts: Vec<WrittenDraft> = if message.is_none_or(|m| m.trim().is_empty())
             && folder.is_none_or(|folder| folder == Folder::Drafts)
         {
-            self.drafts_listed()
+            mail.drafts_listed()
                 .into_iter()
                 .filter_map(|(_, draft)| written_draft(draft))
                 .collect()
@@ -709,6 +793,63 @@ impl Mail {
                 mailbox.insert(held.shown(message_id, state));
             }
         }
+    }
+}
+
+impl Mail {
+    /// What the mailbox holds, for a caller with no screen: with no item,
+    /// its folders, the held messages newest first and the draft; with a
+    /// folder, the messages in it; with a message, the whole message and
+    /// its conversation, oldest first.
+    /// Whether the published place `id` is part of what
+    /// [`Self::read_held`] answers: a folder or a draft of the mailbox. Each
+    /// is document state, disclosed by its document read; a message is its
+    /// part's.
+    pub(crate) fn document_projection_child(&self, id: &str) -> bool {
+        let last = id.rsplit('/').next().unwrap_or(id);
+        if folder_named(last).is_some() {
+            return true;
+        }
+        if last == crate::resource::COMPOSER_DRAFT {
+            return true;
+        }
+        if let Some(draft) = last.strip_prefix("draft:") {
+            return self
+                .drafts_listed()
+                .iter()
+                .any(|(listed, _)| listed == draft);
+        }
+        false
+    }
+
+    /// What the mailbox itself holds, for a caller with no screen:
+    /// with no item, its folders and the drafts; with a draft, that draft.
+    /// Its messages are kept in its parts, read through the messages it
+    /// publishes beside it.
+    pub(crate) fn read_held(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let item = item.map_or("", |item| item.as_str().trim());
+        if item.is_empty() {
+            return Ok(serde_json::json!({
+                "folders": Folder::ALL
+                    .iter()
+                    .map(|folder| serde_json::json!({
+                        "item": format!("mail.folder:{}", folder.as_key()),
+                        "name": folder.as_key(),
+                    }))
+                    .collect::<Vec<_>>(),
+                "drafts": self.drafts_listed().iter().map(|(id, draft)| draft_summary(id, draft)).collect::<Vec<_>>(),
+            }));
+        }
+        if let Some((id, draft)) = self.drafts_listed().into_iter().find(|(id, _)| {
+            item.ends_with(&format!("draft:{id}"))
+                || (item.ends_with("draft") && crate::resource::is_composer_draft(id))
+        }) {
+            return Ok(serde_json::json!({ "draft": draft_summary(&id, draft) }));
+        }
+        Err(format!(
+            "`{item}` is no draft of this mailbox; its messages are read through the mailbox's \
+             messages"
+        ))
     }
 }
 
@@ -968,17 +1109,7 @@ pub(crate) fn answer(
     action: &str,
     changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
-    if action == "draft-message" || action == "create-draft" {
-        let mail = crate::resource::read_mail(doc)?;
-        return changes.iter().find_map(|patch| {
-            let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
-                return None;
-            };
-            let draft = mail.drafts.get(&Id::from_raw(key.as_str()))?;
-            Some(serde_json::json!({ "draft": draft_summary(key, draft) }))
-        });
-    }
-    if action != "deliver-message" {
+    if action != "draft-message" && action != "create-draft" {
         return None;
     }
     let mail = crate::resource::read_mail(doc)?;
@@ -986,7 +1117,27 @@ pub(crate) fn answer(
         let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
             return None;
         };
-        let (id, held) = mail.held.iter().find(|(id, _)| id.as_str() == key)?;
+        let draft = mail.drafts.get(&Id::from_raw(key.as_str()))?;
+        Some(serde_json::json!({ "draft": draft_summary(key, draft) }))
+    })
+}
+
+/// What a delivery kept, answered to its caller: the message by id and
+/// item, read from the part it was kept in.
+pub(crate) fn answer_part(
+    doc: &tilo_resource::Doc,
+    action: &str,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
+    if action != "deliver-message" {
+        return None;
+    }
+    let part = <MessagePart as tilo_resource::Resource>::read(doc).ok()?;
+    changes.iter().find_map(|patch| {
+        let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
+            return None;
+        };
+        let (id, held) = part.held.iter().find(|(id, _)| id.as_str() == key)?;
         Some(serde_json::json!({
             "id": id.as_str(),
             "item": format!("mail.message:{}", id.as_str()),
@@ -1001,6 +1152,7 @@ pub(crate) fn answer(
 pub(crate) fn effect(
     effect: &crate::actions::MailEffect,
     mail: &Mail,
+    messages: &MessagePart,
 ) -> Option<ui::framework::EffectAnswer> {
     use crate::actions::MailEffect;
     let answer = match effect {
@@ -1008,7 +1160,7 @@ pub(crate) fn effect(
             format,
             message,
             folder,
-        } => mail.export_held(format.as_deref(), message.as_deref(), *folder),
+        } => messages.export_held(mail, format.as_deref(), message.as_deref(), *folder),
         _ => return None,
     };
     Some(answer.map(ui::framework::Effected::value))

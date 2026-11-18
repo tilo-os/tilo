@@ -10,7 +10,7 @@ use std::os::unix::net::UnixStream;
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use smithay::reexports::calloop::RegistrationToken;
 
-use crate::wire::{self, FromKeeper};
+use crate::wire;
 
 /// What a session was sent and has not read yet, beyond which it is closed: a session that stops
 /// reading never holds the keeper, and never grows it without end.
@@ -28,6 +28,15 @@ pub fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
 
 /// The uid of the process at the other end of `stream`, from the kernel (`SO_PEERCRED`).
 pub(crate) fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
+    peer_credentials(stream).map(|credentials| credentials.uid)
+}
+
+/// The peer's process id (0 when the kernel cannot name one in this namespace).
+pub(crate) fn peer_pid(stream: &UnixStream) -> io::Result<i32> {
+    peer_credentials(stream).map(|credentials| credentials.pid)
+}
+
+fn peer_credentials(stream: &UnixStream) -> io::Result<libc::ucred> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
@@ -48,7 +57,7 @@ pub(crate) fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
     if result != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(credentials.uid)
+    Ok(credentials)
 }
 
 /// The process's own uid.
@@ -67,6 +76,9 @@ pub(crate) struct Conn {
     pub writing: Option<RegistrationToken>,
     /// Said hello at this keeper's version.
     pub greeted: bool,
+    /// Said hello at another version and was told [`wire::HOLDING`]: while it stays open the app
+    /// is not ended for want of a desktop.
+    pub holds: bool,
 }
 
 impl Conn {
@@ -78,6 +90,7 @@ impl Conn {
             pending: Vec::new(),
             writing: None,
             greeted: false,
+            holds: false,
         }
     }
 
@@ -132,7 +145,7 @@ impl Conn {
     ///
     /// # Errors
     /// The session is gone, or has left more unread than [`PENDING_LIMIT`].
-    pub(crate) fn send(&mut self, message: &FromKeeper) -> io::Result<bool> {
+    pub(crate) fn send<T: serde::Serialize>(&mut self, message: &T) -> io::Result<bool> {
         let frame = wire::encode(message)?;
         if self.pending.len().saturating_add(frame.len()) > PENDING_LIMIT {
             return Err(io::Error::new(

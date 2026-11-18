@@ -2,7 +2,7 @@
 """Fail-closed input/buildroot/RPM checks for Fedora's traditional Wine mode.
 
 These checks establish packaging identity and loader layout, not execution
-support. Actual same-prefix cross-width acceptance remains a separate gate.
+support. Actual same-prefix cross-width acceptance remains a separate check.
 """
 import hashlib
 import json

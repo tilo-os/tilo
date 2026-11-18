@@ -142,14 +142,14 @@ pub fn holdings() -> Arriving<(), WorkspaceUnreachable> {
             .borrow_mut()
             .get_or_insert_with(|| {
                 let arriving = Arriving::pending(Source::Local);
-                arriving.stand(standing());
+                arriving.stand(pending());
                 arriving
             })
             .clone()
     })
 }
 
-fn standing() -> Arrival<(), WorkspaceUnreachable> {
+fn pending() -> Arrival<(), WorkspaceUnreachable> {
     if SHELL.with(Cell::get) && !HEARD.with(Cell::get) {
         if LOST.with(Cell::get) {
             return Arrival::Failed(WorkspaceUnreachable::ShellGone);
@@ -179,7 +179,7 @@ fn settle_holdings() -> bool {
     let Some(holdings) = HOLDINGS.with(|holdings| holdings.borrow().clone()) else {
         return false;
     };
-    let next = standing();
+    let next = pending();
     let moved = holdings.with(|now| *now != next);
     if moved {
         holdings.stand(next);

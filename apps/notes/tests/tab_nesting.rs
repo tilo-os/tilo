@@ -12,8 +12,11 @@ fn two_lines() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
-        .unwrap();
+    app.invoke_child::<notes::PagePart>(
+        &notes::part::chain_resource(),
+        Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("one");
@@ -24,7 +27,7 @@ fn two_lines() -> (TestApp<NotesShell>, PageId) {
 
 /// Each line of the note with how deep it is nested.
 fn outline(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, u8)> {
-    app.read_document(|doc| {
+    crate::framework_support::notes_doc(app, |doc| {
         read::page_blocks(doc, page)
             .into_iter()
             .map(|block| (block.text, block.nesting))

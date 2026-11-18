@@ -34,19 +34,12 @@
 //! the product's display name:
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
-//! - [`DEVCERT_V2_PREIMAGE_TAG`] — `tilo-devcert-v2\0` (foreign devices)
-//! - `DEVCERT_V3_PREIMAGE_TAG` — `tilo-devcert-v3\0` (administration)
-//! - [`DEVCERT_V4_PREIMAGE_TAG`] — `tilo-devcert-v4\0` (agents' grants)
-//! - [`DEVCERT_V5_PREIMAGE_TAG`] — `tilo-devcert-v5\0` (a person's stand-in
-//!   approver)
-//! - [`DEVCERT_V6_PREIMAGE_TAG`] — `tilo-devcert-v6\0` (certificates a
-//!   stand-in or a grant issued, binding its certificate)
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
-//! - [`HOST_WITNESS_PREIMAGE_TAG`] — `tilo-host-witness-v1\0`
+//! - [`HOST_APPROVAL_PREIMAGE_TAG`] — `tilo-host-approval-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -94,7 +87,7 @@ mod keychain;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
 // Identity files need an owner-checked filesystem; the browser keeps its
-// device key in host custody instead.
+// device key in host ownership instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;
@@ -103,24 +96,22 @@ pub mod root_envelope;
 pub mod root_statement;
 pub mod sign;
 pub mod sign_in;
+pub mod signed_approval;
 #[cfg(unix)]
 pub mod update_lock;
-pub mod witness;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
-    ApprovalLedger, ApprovalPurpose, ApprovalRequest, DeviceApproval,
+    ApprovalLog, ApprovalPurpose, ApprovalRequest, DeviceApproval,
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    AgentScope, BINARY_LAYOUT, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG,
-    DEVCERT_V4_PREIMAGE_TAG, DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities,
-    DeviceCert, DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, RetiredFlags,
-    STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of,
-    check_agent_grant, device_cert_signing_digest, device_name, prepare_minted_grant,
-    prepare_stand_in_cert, sign_device_cert, sign_device_cert_async, take_signature_checks,
-    verify_device_cert, verify_device_cert_at, verify_remembered, verify_stand_in_cert,
-    verify_stand_in_cert_at,
+    AgentScope, BINARY_LAYOUT, DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
+    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, STAND_IN_LIFETIME_NS,
+    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of, check_agent_grant,
+    device_cert_signing_digest, device_name, prepare_minted_grant, prepare_stand_in_cert,
+    sign_device_cert, sign_device_cert_async, take_signature_checks, verify_device_cert,
+    verify_device_cert_at, verify_remembered, verify_stand_in_cert, verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION,
@@ -144,7 +135,7 @@ pub use enrollment::{
     decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     verify_enrollment_token,
 };
-pub use fleet::{CertifiedFleet, DeviceStanding, FleetError};
+pub use fleet::{CertifiedFleet, DeviceCertification, FleetError};
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
     ImageEndorsementError, ImageSigningAuthorization, ImageSigningAuthorizationError,
@@ -174,7 +165,9 @@ pub use revocation::{
 };
 pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
-pub use witness::{Answered, HOST_WITNESS_PREIMAGE_TAG, HostWitness, HostWitnessError, Parties};
+pub use signed_approval::{
+    Answered, HOST_APPROVAL_PREIMAGE_TAG, HostApproval, HostApprovalError, Parties,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -310,11 +303,6 @@ mod tests {
         {
             assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
             assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
-            assert_eq!(cert::DEVCERT_V2_PREIMAGE_TAG, b"tilo-devcert-v2\0");
-            assert_eq!(cert::DEVCERT_V3_PREIMAGE_TAG, b"tilo-devcert-v3\0");
-            assert_eq!(cert::DEVCERT_V4_PREIMAGE_TAG, b"tilo-devcert-v4\0");
-            assert_eq!(cert::DEVCERT_V5_PREIMAGE_TAG, b"tilo-devcert-v5\0");
-            assert_eq!(cert::DEVCERT_V6_PREIMAGE_TAG, b"tilo-devcert-v6\0");
 
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);

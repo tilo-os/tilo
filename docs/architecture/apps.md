@@ -13,7 +13,7 @@ shown and the actions it was granted.
 | Part | What it is | Runs where |
 |---|---|---|
 | **Model and verbs** | `#[derive(Model)]` types and their `#[resource]` verbs: deterministic changes to the app's own documents | in the system's document host, as a WebAssembly module with no imports beyond the host's |
-| **Views** | what draws the app's resources: a tilolang package, or a native surface | the tilolang host, or a sandboxed surface process |
+| **Views** | what draws the app's resources: a tilolang package, or a native surface | the tilolang process, or a sandboxed surface process |
 | **Outbox handlers** | what an `Outbox<T>` entry does outside (send a mail, sync a calendar) | a sandboxed worker that runs only while there are entries to drain |
 
 An app written against the framework writes none of the following: storage, sync, merge,
@@ -82,7 +82,7 @@ the app's. An app cannot make a background write look like the person's.
 A token says the person was acting in that view. It does not say which action they meant,
 because the app chose what to submit. So an action that the policy says
 needs the person's consent (an outside action, a destructive one, anything beyond the
-app's standing grants) is confirmed on a sheet the system draws, which the app
+app's access grants) is confirmed on a sheet the system draws, which the app
 can't draw over or answer. The app's own pixels never decide consent.
 
 The session signs every change as its actor. The person's changes are signed with this
@@ -115,7 +115,7 @@ is a new rule at those points, never an app change:
 - **Scopes are whatever the session knows at those points:** the resource or
   path, the actor, the place the view shows it in (a strip, a window, a canvas
   place), the device, and the time. "Only in this strip", "for the next hour",
-  "read-only while shared in a call", "this agent, these three records": each is
+  "read-only while shared in a call", "this agent, these three resources": each is
   a grant over those facts. Today a grant (`action-policy` `Grant`) names a path
   at seven levels (workspace, app, kind, resource, item, field, action), a subject
   (person, role, agent, task, shortcut, app, bot, foreign device) and a lifetime
@@ -130,8 +130,8 @@ is a new rule at those points, never an app change:
   action", so it can't tell a new restriction from a quiet state, and needs no
   code for it.
 - **Creators, not owners.** A workspace's resources belong to the workspace. Who
-  made or changed something is in its history, and a person's own records
-  (`records: .own`) are theirs. A grant can name any of these facts; no app
+  made or changed something is in its history, and a person's own documents
+  (`resources: .own`) are theirs. A grant can name any of these facts; no app
   declares an owner.
 
 ## 7. What a hostile app can do
@@ -153,11 +153,11 @@ Today the framework runs inside the app process:
 - **Native apps:** every one built on the SDK's runner (about sixty under `apps/`,
   from activity to word-processor) loads the identity broker the launcher passed
   in, obtains a signed join proof for the workspace, requests content keys
-  (`tilo-identity-host` `group_keys`), and opens, signs and syncs documents
+  (`tilo-identity` `group_keys`), and opens, signs and syncs documents
   itself, through `crates/collab/collaboration` (`sdk_join_identity`, `join_native`).
 - **Tilolang apps:** they are closer. Their code is a WebAssembly module that
-  imports only the `tl` operations, and it runs in a tilolang host per workspace
-  and author. The host's own Rust code still holds the identity service, join
+  imports only the `tl` operations, and it runs in a tilolang process per workspace
+  and author. The process's own Rust code still holds the identity service, join
   proofs and content keys, in the same process as the modules.
 - **Permission checks:** the SDK checks a `PermissionContext` before submitting,
   and Chat calls it itself (`apps/chat/src/permissions.rs`).
@@ -167,13 +167,13 @@ Today the framework runs inside the app process:
 
 All of that moves to the document host:
 
-1. A Rust app's model may later run as an instance kind of the workspace's tilolang host,
+1. A Rust app's model may later run as an instance kind of the workspace's tilolang process,
    beside the tilolang packages'; its windows and an agent's windowless launch reach it.
 2. Outbox workers become their own sandboxed launch, with their grants.
 3. Input gesture tokens and actor attribution move into the session's action API.
 4. The identity broker connection, join proofs, channel keys and the peer
    capability are removed from app launches, from the SDK and from the
-   tilolang host; §6.5 of the security architecture is replaced by this document.
+   tilolang process; §6.5 of the security architecture is replaced by this document.
 5. Permission checks leave the SDK and the apps: a view sees what it is offered
    and nothing else, and Chat's own `ChatPermissions` goes.
 6. The outbox drain is decided per entry by the session's policy, like an action.

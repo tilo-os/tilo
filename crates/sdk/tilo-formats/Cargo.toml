@@ -16,7 +16,7 @@ path = "src/lib.rs"
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 serde.workspace = true
 serde_json.workspace = true
-chrono = { workspace = true, features = ["std", "clock"] }
+jiff.workspace = true
 # The styles are resource fields (`locale` in the settings), so they keep the model derive.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 

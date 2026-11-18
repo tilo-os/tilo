@@ -470,7 +470,7 @@ tilo_test_env::scenario! {
             .ok()
             .unwrap();
         let capture = crate::local_document_action::CapturedAction {
-            custody: None,
+            ownership: None,
             invocation: uuid::Uuid::nil(),
             capture_id: uuid::Uuid::nil(),
             revision: revision.clone(),
@@ -1276,7 +1276,7 @@ tilo_test_env::scenario! {
             let revision = app.action_directory_revision();
             catalog
                 .upsert_resource(
-                    crate::search::SearchRecord::new(
+                    crate::search::SearchItem::new(
                         "test.item:1",
                         crate::search::SearchResult::for_action(
                             "Large directory",
@@ -1331,7 +1331,7 @@ tilo_test_env::scenario! {
             revision,
             "a provider naming a new build moves the directory"
         );
-        assert_eq!(made.get(), 0, "the witness never makes a provider");
+        assert_eq!(made.get(), 0, "the observation never makes a provider");
     }
 
     phase directory_names_a_child_among_its_parents_children_alone;

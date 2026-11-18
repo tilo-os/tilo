@@ -379,16 +379,16 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let p = self.last_mouse;
-        if let Some((_, _, lane)) = self.bin_drop_lane(r) {
+        if let Some((_, _, track)) = self.bin_drop_track(r) {
             fill_rect(
                 scene,
                 tf,
-                Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
+                Rect::new(r.tracks.x0, track.y0, r.tracks.x1, track.y1),
                 c.intent.selection_tint,
             );
-            let t = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
-            let x = self.time_to_x(t, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
-            stroke_line(scene, tf, c.intent.you, x, lane.y0, x, lane.y1, 2.0);
+            let t = snap_to_frame(self.x_to_time(p.x, &r.tracks), self.project.fps);
+            let x = self.time_to_x(t, &r.tracks).clamp(r.tracks.x0, r.tracks.x1);
+            stroke_line(scene, tf, c.intent.you, x, track.y0, x, track.y1, 2.0);
         }
         // Ghost chip following the cursor: the clip it will become.
         if let Some(m) = self.project.media(bd.media) {

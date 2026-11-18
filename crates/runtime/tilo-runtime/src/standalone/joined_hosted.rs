@@ -1,16 +1,15 @@
-//! The profile's own workspace, placed on the workspace host this runtime runs.
+//! The profile's own workspace, placed on the workspace service this runtime runs.
 //!
-//! The runtime runs the same workspace host every device runs
-//! ([`HostMode::Device`](tilo_workspace_host::host::HostMode::Device)), in
-//! process: the host creates the profile's workspace and issues this device the
-//! invitation its replica redeems ([`WorkspaceHost::place_own_workspace`]), and from
+//! The runtime runs the same workspace service every device runs, in process:
+//! the service creates the profile's workspace and issues this device the
+//! invitation its replica redeems ([`WorkspaceService::place_own_workspace`]), and from
 //! then on the workspace is one of the workspaces this profile joined, its link
-//! to the host paired in process. The host takes part in the workspace's
+//! to the service paired in process. The service takes part in the workspace's
 //! channels as this device's one peer, asking this device's own channel service
 //! for their keys.
 //!
 //! An app's write to the workspace is admitted here and acknowledged once the
-//! host keeps it. A write to a record the workspace does
+//! service keeps it. A write to a record the workspace does
 //! not hold yet is taken only in a resource kind the app's installed
 //! manifest declares; in dev mode, an app that is not installed is trusted
 //! with the kind its own build names. The workspace lets the app author its
@@ -24,7 +23,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_workspace_host::host::WorkspaceHost;
+use tilo_workspace_service::service::WorkspaceService;
 
 /// How long a write waits for the workspace's session and for its host to keep it.
 const KEPT_WITHIN: Duration = Duration::from_secs(10);
@@ -53,7 +52,7 @@ impl RecordCreation {
 
 /// The workspace host this profile runs, and what it lets apps create there.
 pub(super) struct OwnHost {
-    host: Arc<WorkspaceHost>,
+    host: Arc<WorkspaceService>,
     creation: RecordCreation,
 }
 
@@ -66,7 +65,7 @@ impl Joined {
     /// A host is already running.
     pub(in crate::standalone) fn install_host(
         &self,
-        host: Arc<WorkspaceHost>,
+        host: Arc<WorkspaceService>,
         creation: RecordCreation,
     ) -> Result<(), String> {
         self.own_host
@@ -74,12 +73,12 @@ impl Joined {
             .map_err(|_| "this profile runs one workspace host".into())
     }
 
-    fn workspace_host(&self) -> Option<&Arc<WorkspaceHost>> {
+    fn workspace_host(&self) -> Option<&Arc<WorkspaceService>> {
         self.own_host.get().map(|own| &own.host)
     }
 
     fn own_device(&self) -> [u8; 32] {
-        self.custody.device_public_key()
+        self.identity.device_public_key()
     }
 
     /// Place `workspace`, the profile's workspace called `name`, on this
@@ -97,7 +96,7 @@ impl Joined {
         let invitation = self
             .workspace_host()
             .ok_or("this profile runs no workspace host")?
-            .place_own_workspace(&workspace.to_string(), name, &self.custody.device_cert)
+            .place_own_workspace(&workspace.to_string(), name, &self.identity.device_cert)
             .await?;
         if self.enroll(&invitation).await? != workspace {
             return Err("this device's host placed another workspace".into());
@@ -175,7 +174,7 @@ impl Joined {
         let binding = request.binding()?;
         let CommitOperation::Document {
             app,
-            record,
+            document: record,
             envelope,
             ..
         } = &request.operation

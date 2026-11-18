@@ -48,7 +48,7 @@ pub struct Texts {
     pub references: Vec<String>,
 }
 
-/// The path of the item `id` of a collection of `resource`: its id in the record, wherever it
+/// The path of the item `id` of a collection of `resource`: its id in the document, wherever it
 /// is.
 #[must_use]
 pub fn child(resource: &str, id: &str) -> String {
@@ -59,7 +59,7 @@ impl View<'_> {
     /// The value of `field` of `resource`, if the index holds one.
     pub fn field(&self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
         // A resource's versions are the log's, with the provisional ones of the actions this
-        // device committed and the record does not hold yet.
+        // device committed and the document does not hold yet.
         if let Some(written) = self.overlay.field(resource, field) {
             return Ok(written);
         }
@@ -176,9 +176,9 @@ impl View<'_> {
     }
 
     /// The type the workspace holds `resource` to be: the one the index derived, or the one the
-    /// store's writes named — a record they made or moved, which the index derives at its next
+    /// store's writes named — a document they made or moved, which the index derives at its next
     /// step. `None` when neither names it: the writes took it away, or it was never here, and
-    /// the record answers for no resource the workspace does not hold.
+    /// the document answers for no resource the workspace does not hold.
     pub fn type_of(&self, resource: &str) -> Result<Option<String>, IndexError> {
         self.text(resource, TYPE)
     }
@@ -356,7 +356,7 @@ impl View<'_> {
     /// The first non-empty text of the resource at `path` (of `schema`, unless the index holds
     /// another type for it), as stored (a text or rich text, [`crate::reads::text_value`]), and
     /// the path of the resource holding it: its own texts name it before its items' do, its
-    /// first text field first, and only a record holding no text of its own falls back to its
+    /// first text field first, and only a document holding no text of its own falls back to its
     /// items ([`crate::reads::first_text`]). The text names it by its first non-blank line. A
     /// root is named by a text of its own alone: what it holds names that, never the app's one
     /// resource ([`crate::store`]'s `named_by`).
@@ -366,8 +366,8 @@ impl View<'_> {
         schema: &TypeSchema,
     ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
-        // A type that says which field names its records is named by that field alone: one it
-        // holds nothing in leaves the record untitled, never named by another text it holds.
+        // A type that says which field names its documents is named by that field alone: one it
+        // holds nothing in leaves the document untitled, never named by another text it holds.
         if let Some(field) = schema
             .title
             .as_deref()
@@ -604,7 +604,7 @@ pub fn splices(
     ))
 }
 
-/// Every resource of the index (records and items) with text, by path: what search lists.
+/// Every resource of the index (documents and items) with text, by path: what search lists.
 pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexError> {
     let mut out = BTreeMap::new();
     for (doc, ty, _chunk) in snapshot.docs()? {
@@ -618,7 +618,7 @@ pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexE
     Ok(out)
 }
 
-/// The text that names a resource: its first non-blank line and nothing more (a record is
+/// The text that names a resource: its first non-blank line and nothing more (a document is
 /// called by what it opens with).
 fn first_line(text: &FieldValue) -> FieldValue {
     let first = |whole: &str| {

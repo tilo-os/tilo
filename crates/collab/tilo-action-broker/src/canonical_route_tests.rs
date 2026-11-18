@@ -45,12 +45,12 @@ fn canonical_host(
     workspace: &signed_worker::OriginalWorkspace,
 ) -> (
     tilo_actions::remote::Caller,
-    Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
 ) {
     let caller = canonical_caller(workspace);
     let host = workspace
         .state
-        .certified_local_action_host(
+        .certified_local_action_provider(
             &caller,
             &signed_worker::presentation(
                 &workspace.route.cluster_id,
@@ -137,7 +137,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                         .lock()
                         .unwrap()
                         .is_empty(),
-                    "no invocation was admitted before the changed custody check"
+                    "no invocation was admitted before the changed ownership check"
                 );
                 drop(replacement_stream);
                 drop(old_stream);
@@ -200,7 +200,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
             while workspace.state.host_workers.lock().unwrap().holds(91) {
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "actual retired socket retained worker custody"
+                    "actual retired socket retained worker ownership"
                 );
                 tokio::task::yield_now().await;
             }
@@ -233,7 +233,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 canonical_pending(&workspace, host.invoke(&caller, stale))
                     .await
                     .is_err(),
-                "a fresh UUID cannot use retired publisher custody"
+                "a fresh UUID cannot use retired publisher ownership"
             );
             let mut fresh = request;
             fresh.invocation = tilo_actions::InvocationId::new();
@@ -407,7 +407,7 @@ async fn a_canonical_provider_answers_another_apps_query_without_asking_its_dire
                 None,
             );
             let (worker, _) = workspace.join_worker(32).await;
-            // Canonical custody requires the worker's stable invocation stream
+            // Canonical ownership requires the worker's stable invocation stream
             // to stay subscribed, as the other canonical route fixtures keep it.
             let _stream = worker.handle.subscribe_stable_invocations().await.unwrap();
             let directory = signed_worker::directory_state("directory-r1");

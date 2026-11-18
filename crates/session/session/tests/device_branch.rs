@@ -30,7 +30,7 @@ use crate::common::people::{
     wait_shown,
 };
 use serde_json::json;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// The app whose window is opened on the sessions here.
 const NOTES: &str = "so.tilo.notes";
@@ -445,10 +445,10 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     );
 }
 
-/// What `device` says of the workspace `site` serves (`workspace_hosts`): who hosts it, and
+/// What `device` says of the workspace `site` serves (`keeping_devices`): who hosts it, and
 /// whether its host took `device` in yet. `Null` while `device` does not hold it.
 fn held_row(device: &Device, site: &Site) -> serde_json::Value {
-    device.ask(&serde_json::json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+    device.ask(&serde_json::json!({"op": "keeping_devices"}))["answer"]["workspaces"]
         .as_array()
         .and_then(|held| {
             held.iter()
@@ -572,7 +572,7 @@ fn titles_in(device: &Device, workspace: &str) -> Vec<String> {
 
 /// What `device` holds of its workspaces' hosts and logged of joining and syncing them.
 fn syncing(device: &Device) -> String {
-    let hosts = device.ask(&json!({"op": "workspace_hosts"}));
+    let hosts = device.ask(&json!({"op": "keeping_devices"}));
     let log = device.log();
     let said: Vec<&str> = log
         .lines()
@@ -586,14 +586,14 @@ fn syncing(device: &Device) -> String {
                 "history",
                 "workspace_sync",
                 "refus",
-                "custody",
+                "ownership",
                 "take this device",
                 "peer-sync",
                 "dials its host",
                 "device of the person",
                 "own host",
                 "layout",
-                "custody",
+                "ownership",
                 "native",
                 "link",
                 "WARN",
@@ -620,7 +620,7 @@ fn start_both(laptop: &mut Device, copy: &mut Device, hosted: &str) {
     copy.start();
     let until = tilo_test_env::hang_deadline();
     loop {
-        let rows = copy.ask(&json!({"op": "workspace_hosts"}));
+        let rows = copy.ask(&json!({"op": "keeping_devices"}));
         let admitted = rows["answer"]["workspaces"].as_array().is_some_and(|held| {
             held.iter().any(|row| {
                 row["workspace"].as_str() == Some(hosted) && row["awaiting_host"] == false
@@ -709,7 +709,7 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
                 .any(|title| title == "Before the copy")
         });
     }
-    // A link into the workspace waits for Bob: the laptop stays reachable at its relay through every
+    // A link into the workspace waits for Bob: the laptop stays reachable at its server through every
     // restart, as the boxes are on their network.
     let _out = shared_invitation(&laptop, "editor", Person::new("Bob").public);
     laptop.stop();
@@ -733,11 +733,11 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
 }
 
 /// A copy keeps reaching the workspace its source hosts however much it writes there: each window
-/// it opens shows on its source, past the writes its custody holds at once (`MAX_ENTRIES`, 64).
-/// The copy's writes stayed in its custody for good and, once that was full, a new one never left
+/// it opens shows on its source, past the writes its ownership holds at once (`MAX_ENTRIES`, 64).
+/// The copy's writes stayed in its ownership for good and, once that was full, a new one never left
 /// it (`e2e-branch` S11).
 #[test]
-fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_custody_holds() {
+fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_ownership_holds() {
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
     laptop.start();

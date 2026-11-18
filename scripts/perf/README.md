@@ -6,7 +6,7 @@ executable stand-alone; the higher-level flow is described below.
 ## Measure
 
 - `frame-loop-bench.py` — run the real compositor loop with cadence and
-  input-to-present instrumentation. Its `--gate` mode is the quick desktop
+  input-to-present instrumentation. Its `--check` mode is the quick desktop
   acceptance test: use `--refresh-hz 144 --input-hz 30 --launch-app
   dev.tilo.chat` to reject low frame throughput, laggy input, missing samples,
   or a native Chat launch whose window never draws a first frame (`frames` in

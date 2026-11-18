@@ -76,7 +76,7 @@ fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
             start + Duration::from_millis(1),
             &mut recent
         ),
-        "the same event arriving over a second relay session"
+        "the same event arriving over a second server session"
     );
     assert!(
         mark_new_input(
@@ -1016,7 +1016,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
         // its codec and nothing of when, so the same window shared again is announced in the
         // bytes of the first time, as its end is. The order is the one two machines took: shared,
         // stopped, shared again. The second announcement, dropped as a copy of the first, left
-        // the watching device asking the plane for the window's pictures, which a page has none
+        // the watching device asking the peer network for the window's pictures, which a page has none
         // of, so the window shared a second time was never drawn there.
         let announced = || NeighbourMsg::SurfaceStreamStart {
             surface: 7,

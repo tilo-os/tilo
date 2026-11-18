@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use crate::page_resource::agent_handle;
+
 use ui::webview::{
     AnsweredBy, HeldKind, HeldRequest, PageActor, PageKey, PageRequest, WebViewCommand,
     WebViewEngine as _,
@@ -306,8 +308,8 @@ fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() 
     let asked = answer(&mut widget, &doc, &root, submit);
     assert!(needs_the_person(&asked));
     let sent = page_requests(&engine).len();
-    // The person allowed it: the same invocation comes back, as the relay
-    // hands a witnessed invocation to the window again.
+    // The person allowed it: the same invocation comes back, as the server
+    // hands a observed invocation to the window again.
     assert!(
         matches!(
             widget.admit(submit, effect_operation(&submit_payload(&widget))),
@@ -814,7 +816,7 @@ fn a_release_and_another_actors_action_are_both_answered() {
     assert_eq!(output.value.clone().unwrap()["released"], true);
 }
 
-/// The tab's record says who let a held departure leave, and the engine that
+/// The tab's resource says who let a held departure leave, and the engine that
 /// keeps it cannot know: the window's answer says. An agent's action reached
 /// the submission, and the engine sets the hold down under that agent. The
 /// person's allow runs the agent's invocation again, and what lets the
@@ -840,7 +842,7 @@ fn the_persons_allow_of_an_agents_held_action_is_answered_as_the_persons() {
         engine.commands().into_iter().any(|command| matches!(
             command,
             WebViewCommand::Page { actor: Some(actor), request: PageRequest::Submit { .. }, .. }
-                if actor.as_str() == "agent:intake"
+                if actor.as_str() == agent_handle("intake")
         )),
         "the submission reaches the page as the agent's, and its hold is set down as theirs"
     );
@@ -899,7 +901,10 @@ fn whoever_answers_a_published_hold_is_named_with_the_answer() {
             (
                 4,
                 false,
-                AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"))
+                AnsweredBy::Actor(
+                    PageActor::of(&ui::tilo_actions::MemberId::agent("rev").into())
+                        .expect("a named actor")
+                )
             ),
             (5, true, AnsweredBy::Person),
         ],
@@ -931,7 +936,10 @@ fn whoever_answers_a_held_download_is_named_with_the_answer() {
         vec![(
             9,
             false,
-            AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"))
+            AnsweredBy::Actor(
+                PageActor::of(&ui::tilo_actions::MemberId::agent("rev").into())
+                    .expect("a named actor")
+            )
         )],
         "the download's decision says who discarded it"
     );
@@ -1013,7 +1021,7 @@ fn a_hold_beyond_those_the_window_asks_about_is_turned_away_at_once() {
             (9, false, AnsweredBy::TooMany),
             (30, false, AnsweredBy::TooMany)
         ],
-        "each is answered as one too many, which the tab's record sets down"
+        "each is answered as one too many, which the tab's resource sets down"
     );
 }
 

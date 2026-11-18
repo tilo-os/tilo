@@ -14,8 +14,10 @@ name = "clocks"
 path = "src/main.rs"
 
 [dependencies]
-chrono = { workspace = true, features = ["clock", "serde"] }
-chrono-tz = "0.10"
+jiff.workspace = true
+jiff-tzdb.workspace = true
+# A named zone read from the database built into Tilo, as Calendar reads it.
+tilo-recurrence = { path = "../../crates/sdk/tilo-recurrence" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -31,7 +33,7 @@ thin = ["dep:runtime-dylib"]
 # bundle (libtilo_timezone_engine.so, crates/runtime/engines/timezone)
 # instead of the runtime. The release collection enables it
 # (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
-# links chrono-tz statically, because an engine library links only through
+# links jiff-tzdb statically, because an engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-timezone-engine/thin"]
 

@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
         let mut account = Account::new("canonical-nextcloud", "nextcloud");
         account.config = serde_json::json!({"server_url":"https://cloud.example/remote.php/dav/files/internal/", "username":"internal", "use_files":true, "files":{"root":"documents"}});
         let original = account.config.clone();
-        let secret = account_custody::copied_secret(&account, &Secret::password("adopted-password"));
+        let secret = account_credentials::copied_secret(&account, &Secret::password("adopted-password"));
         let mut vault = SecretVault::open_in(root.path());
         vault.put(&account.id, &secret);
         vault.save();
@@ -68,6 +68,70 @@ tilo_test_env::scenario! {
             SecretVault::open_in(root.path()).get(&account.id),
             Some(secret)
         );
+    }
+
+    phase an_account_connected_for_reading_only_stays_so_when_its_calendars_are_chosen_again;
+    {
+        let config = CalDavConfig {
+            server_url: "https://cloud.example/remote.php/dav/".into(),
+            username: "internal".into(),
+            ..Default::default()
+        };
+        // Its server would let the person write this calendar.
+        let calendars = vec![collection("https://cloud.example")];
+        let mut account = Account::new("canonical-nextcloud", "nextcloud");
+        account.config = serde_json::json!({
+            "server_url": "https://cloud.example/remote.php/dav/files/internal/",
+            "username": "internal",
+            "use_files": true,
+            "calendar": {
+                "server_url": "https://cloud.example/remote.php/dav/",
+                "username": "internal",
+                "read_only": true,
+            },
+        });
+        select_calendars(
+            &mut account,
+            &config,
+            &calendars,
+            &[calendars[0].id.clone()],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            account.config["calendar"]["read_only"], true,
+            "the account keeps its word: {}",
+            account.config
+        );
+        assert_eq!(
+            account.config["calendar"]["calendars"][0]["read_only"], true,
+            "no calendar of it is taken as one that can be written: {}",
+            account.config
+        );
+        let mut shared = AccountStore::new();
+        shared.upsert(account);
+        let projection = crate::AccountStore::from_shared(&shared, None);
+        assert_eq!(projection.accounts.len(), 1);
+        assert!(projection.accounts[0].read_only);
+        assert!(projection.accounts[0].calendars[0].read_only);
+
+        // An account that is written to is chosen as its server answers.
+        let mut writing = Account::new("another-nextcloud", "nextcloud");
+        writing.config = serde_json::json!({
+            "server_url": "https://cloud.example/remote.php/dav/files/internal/",
+            "username": "internal",
+            "use_files": true,
+        });
+        select_calendars(
+            &mut writing,
+            &config,
+            &calendars,
+            &[calendars[0].id.clone()],
+            false,
+        )
+        .unwrap();
+        assert!(writing.config["calendar"].get("read_only").is_none());
+        assert_eq!(writing.config["calendar"]["calendars"][0]["read_only"], false);
     }
 
     phase selection_rejects_unconfirmed_duplicate_and_cross_origin_urls_without_mutation;
@@ -125,7 +189,7 @@ tilo_test_env::scenario! {
         ]);
         let root = tempfile::tempdir().unwrap();
         let account = Account::new("canonical", "nextcloud");
-        let secret = account_custody::copied_secret(&account, &Secret::password("adopted"));
+        let secret = account_credentials::copied_secret(&account, &Secret::password("adopted"));
         let mut vault = SecretVault::open_in(root.path());
         vault.put(&account.id, &secret);
         vault.save();
@@ -134,11 +198,11 @@ tilo_test_env::scenario! {
             username: "login".into(),
             ..Default::default()
         };
-        let custodian = account_custody::Custodian::for_root(Some(root.path().to_owned()));
+        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_owned()));
         let mut store = AccountStore::new();
         store.upsert(account.clone());
         store.save_in(root.path()).unwrap();
-        let service = tilo_dav::oauth::Service::new(custodian);
+        let service = tilo_dav::oauth::Service::new(credential_store);
         let found = discover_calendars(&service, &account, &config, false).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(
@@ -170,15 +234,15 @@ tilo_test_env::scenario! {
     {
         let root = tempfile::tempdir().unwrap();
         let token_server = Responder::start(vec![Reply::status(200).header("Content-Type", "application/json").body(r#"{"access_token":"renewed-calendar","token_type":"Bearer","expires_in":3600,"refresh_token":"rotated-refresh"}"#)]);
-        let mut provider = account_custody::OAuthIssuer::Google.endpoints();
+        let mut provider = account_credentials::OAuthIssuer::Google.endpoints();
         provider.token_endpoint = format!("{}/token", token_server.url());
-        let custodian = account_custody::Custodian::for_root(Some(root.path().to_owned()))
-            .with_issuer_endpoints(account_custody::OAuthIssuer::Google, provider);
+        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_owned()))
+            .with_issuer_endpoints(account_credentials::OAuthIssuer::Google, provider);
         let id = AccountId::from("canonical-google");
-        custodian
+        credential_store
             .seal_oauth(
                 &id,
-                &account_custody::TokenSet {
+                &account_credentials::TokenSet {
                     access_token: "expired".into(),
                     refresh_token: "old-refresh".into(),
                     obtained_at: 1,
@@ -199,7 +263,7 @@ tilo_test_env::scenario! {
         let mut store = AccountStore::new();
         store.upsert(Account::new(id.clone(), "google-drive"));
         store.save_in(root.path()).unwrap();
-        let service = tilo_dav::oauth::Service::for_test_origin(custodian, &server.url()).unwrap();
+        let service = tilo_dav::oauth::Service::for_test_origin(credential_store, &server.url()).unwrap();
         let url = format!("{}/cal/", server.url());
         let client = service
             .authorised(Some(id.as_str()), &config.server_url, "", "", &url)
@@ -291,11 +355,11 @@ tilo_test_env::scenario! {
         shared.upsert(account);
         let root = tempfile::tempdir().unwrap();
         shared.save_in(root.path()).unwrap();
-        let custodian = account_custody::Custodian::for_root(Some(root.path().to_owned()));
-        custodian
+        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_owned()));
+        credential_store
             .seal_oauth(
                 &AccountId::from("drive-account"),
-                &account_custody::TokenSet {
+                &account_credentials::TokenSet {
                     access_token: "approved-google-access".into(),
                     refresh_token: "canonical-refresh".into(),
                     obtained_at: 1,

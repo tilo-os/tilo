@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, ChangeFeed, ChangePage, Found, Pending, RemoteActionMessage,
-    ResourceSearch, pending,
+    ActionCallError, Caller, ChangeFeed, ChangePage, Found, Pending, RemoteActionMessage,
+    ResourceSearch, Within, pending,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -20,13 +20,23 @@ pub(super) struct SessionSearch(pub(super) SessionActions);
 pub(super) struct SessionChanges(pub(super) SessionActions);
 
 impl ResourceSearch for SessionSearch {
-    fn find(&self, _caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionHostError>> {
-        let needle = needle.to_owned();
+    fn find(&self, caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
+        self.find_within(caller, needle, &Within::default())
+    }
+
+    fn find_within(
+        &self,
+        _caller: &Caller,
+        needle: &str,
+        within: &Within,
+    ) -> Pending<Result<Vec<Found>, ActionCallError>> {
+        let (needle, within) = (needle.to_owned(), within.clone());
         self.0.ask(
             |waiting| &mut waiting.searches,
             move |correlation| RemoteActionMessage::SearchRequest {
                 correlation,
                 needle,
+                within,
             },
         )
     }
@@ -37,7 +47,7 @@ impl ChangeFeed for SessionChanges {
         &self,
         _caller: &Caller,
         after: Option<&str>,
-    ) -> Pending<Result<ChangePage, ActionHostError>> {
+    ) -> Pending<Result<ChangePage, ActionCallError>> {
         let after = after.map(str::to_owned);
         self.0.ask(
             |waiting| &mut waiting.changes,
@@ -47,7 +57,7 @@ impl ChangeFeed for SessionChanges {
 }
 
 /// Where the answers to one kind of request wait, by correlation.
-type Asks<T> = HashMap<u64, Asked<Result<T, ActionHostError>>>;
+type Asks<T> = HashMap<u64, Asked<Result<T, ActionCallError>>>;
 
 impl SessionActions {
     /// Send the request `message` makes of a fresh correlation, its answer awaited in the map
@@ -58,7 +68,7 @@ impl SessionActions {
         &self,
         asks: fn(&mut Waiting) -> &mut Asks<T>,
         message: impl FnOnce(u64) -> RemoteActionMessage,
-    ) -> Pending<Result<T, ActionHostError>> {
+    ) -> Pending<Result<T, ActionCallError>> {
         let correlation = self
             .0
             .next_correlation

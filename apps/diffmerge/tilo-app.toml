@@ -2,7 +2,7 @@
 #
 # Reads nothing it was not handed: both sides of a comparison arrive
 # through the host's file-chooser portal, so the app needs the session
-# bus and no standing filesystem grant at all. The one thing it writes is
+# bus and no access filesystem grant at all. The one thing it writes is
 # the merged result, and only where the person pointed the chooser.
 #
 
@@ -58,8 +58,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@30"
-tilo-fs = "optional@30"
+collab = "optional@31"
+tilo-fs = "optional@31"
 
 [entrypoint]
 bin             = "bin/diffmerge"

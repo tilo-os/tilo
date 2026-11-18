@@ -2,7 +2,7 @@
 //! wrote, delivered all together or not at all.
 //!
 //! A commit arrives inside the signed payload of each part's document op
-//! ([`collab_types::WorkspaceCommit`]). The gate here holds a part's event
+//! ([`collab_types::WorkspaceCommit`]). The check here holds a part's event
 //! until every part of its action has arrived, then releases them in the
 //! commit's own order, so an app never applies half an action and every peer
 //! that can read all parts applies them in the same order. A peer that
@@ -60,7 +60,7 @@ pub(crate) enum Delivery {
 /// then hand back all of its parts. `unit` is the (app, record) whose route
 /// the part arrived on, and `claims` the change hashes its signed envelope
 /// claims.
-pub(crate) fn gate(
+pub(crate) fn check(
     state: &BridgeState,
     commit: Option<WorkspaceCommit>,
     claims: &[[u8; 32]],
@@ -89,7 +89,7 @@ pub(crate) fn gate(
     // changes the envelope does not claim would let an action smuggle units
     // past the receiver's claims decision. A cleartext envelope carries its
     // claims in the changes themselves, which the app decides.
-    if !claims.is_empty() && !part.changes.iter().all(|change| claims.contains(change)) {
+    if !claims.is_empty() && !part.heads.iter().all(|head| claims.contains(head)) {
         return Delivery::Refused("the commit names changes its envelope does not claim");
     }
     state.commits().arrive(commit, unit, event)
@@ -112,7 +112,7 @@ impl Commits {
             .find(|held| {
                 held.commit
                     .part(unit.0, unit.1)
-                    .is_some_and(|part| part.changes.iter().all(|change| claims.contains(change)))
+                    .is_some_and(|part| part.heads.iter().all(|head| claims.contains(head)))
             })
             .map(|held| held.commit.clone())
     }
@@ -185,7 +185,7 @@ impl Commits {
     /// Every action this endpoint has seen in `workspace`, oldest first: one
     /// action with its author, its time and every unit change it made.
     #[cfg(test)]
-    pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
+    pub fn history(&self, workspace: uuid::Uuid) -> Vec<CommitHistory> {
         self.log.history(workspace)
     }
 
@@ -216,7 +216,7 @@ mod tests {
     use tilo_actions::{ActionContext, Did, EditOp, FieldEdit, InvocationId, PathStep};
 
     const DEVICE: [u8; 32] = [7; 32];
-    const WORKSPACE: &str = "workspace";
+    const WORKSPACE: uuid::Uuid = uuid::Uuid::from_u128(1);
 
     /// A record holding `field` = `value`, with the history entry an app's
     /// executor writes: the action `field`, invoked by alice under
@@ -262,7 +262,7 @@ mod tests {
         let claims = mutation_claims(&mutation, record_unit).unwrap();
         SignedOp::new_unsigned(
             framed,
-            document_artifact_id(app, WORKSPACE, document_id),
+            document_artifact_id(app, &WORKSPACE.to_string(), document_id),
             Ed25519PublicKey::from_bytes(DEVICE),
             AttestationId::new(),
             OpKind::Change,
@@ -307,7 +307,7 @@ mod tests {
     ) -> bool {
         let commit = WorkspaceCommit::of_envelope(op).unwrap();
         let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
-        match gate(state, commit, &claims, (app, document_id), event(op)) {
+        match check(state, commit, &claims, (app, document_id), event(op)) {
             Delivery::Now(event) => {
                 apply(peer, &event);
                 true
@@ -531,8 +531,8 @@ mod tests {
             );
             assert_eq!(action.parts, commit.parts);
             assert_eq!(action.parts.len(), 2);
-            assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
-            assert!(state.commits().history("elsewhere").is_empty());
+            assert_eq!(action.parts[0].heads, vec![commit.parts[0].heads[0]]);
+            assert!(state.commits().history(uuid::Uuid::from_u128(2)).is_empty());
         }
 
         phase a_peer_receiving_an_undo_reverts_both_units_together;
@@ -625,7 +625,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// What the gate refuses and how much it holds, each case on a bridge state of its own.
+        /// What the check refuses and how much it holds, each case on a bridge state of its own.
         fn a_part_outside_its_action_is_refused_and_held_parts_are_bounded;
 
         phase a_part_the_action_does_not_name_is_refused;
@@ -635,7 +635,7 @@ mod tests {
             let op = publication(&commit, "tasks", "a", &first, 1);
             let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
             assert!(matches!(
-                gate(
+                check(
                     &state,
                     WorkspaceCommit::of_envelope(&op).unwrap(),
                     &claims,
@@ -645,7 +645,7 @@ mod tests {
                 Delivery::Refused(_)
             ));
             assert!(matches!(
-                gate(
+                check(
                     &state,
                     WorkspaceCommit::of_envelope(&op).unwrap(),
                     &[[0; 32]],
@@ -666,7 +666,7 @@ mod tests {
             let framed = commit.frame(&frame).unwrap();
             let op = SignedOp::new_unsigned(
                 framed,
-                document_artifact_id("tasks", WORKSPACE, "a"),
+                document_artifact_id("tasks", &WORKSPACE.to_string(), "a"),
                 Ed25519PublicKey::from_bytes([8; 32]),
                 AttestationId::new(),
                 OpKind::Change,
@@ -699,12 +699,12 @@ mod tests {
                         CommitPart {
                             app: "tasks".to_owned(),
                             document: "a".to_owned(),
-                            changes: vec![first_change],
+                            heads: vec![first_change],
                         },
                         CommitPart {
                             app: "tasks".to_owned(),
                             document: "b".to_owned(),
-                            changes: vec![[u8::try_from(index).unwrap(); 32]],
+                            heads: vec![[u8::try_from(index).unwrap(); 32]],
                         },
                     ],
                 );

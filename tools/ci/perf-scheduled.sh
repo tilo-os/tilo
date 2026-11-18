@@ -59,15 +59,15 @@ case $group in
     cargo test --locked -p tilo-fs --test it --test document_media_footprint --no-run
     status=0
     for run in 1 2 3 4 5; do
-      TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test it performance_timing:: -- --nocapture --test-threads=1 \
-        2> "$out/fs-gate-$run.log" || status=$?
-      TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
-        2>> "$out/fs-gate-$run.log" || status=$?
-      # The gates' assertion messages name the scenario that failed.
-      grep '^PERF\| PERF \|exceeded \|panicked at' "$out/fs-gate-$run.log" || true
+      TILO_FS_PERF_CHECK=1 cargo test --locked -p tilo-fs --test it performance_timing:: -- --nocapture --test-threads=1 \
+        2> "$out/fs-check-$run.log" || status=$?
+      TILO_FS_PERF_CHECK=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
+        2>> "$out/fs-check-$run.log" || status=$?
+      # The checks' assertion messages name the scenario that failed.
+      grep '^PERF\| PERF \|exceeded \|panicked at' "$out/fs-check-$run.log" || true
     done
     env_json dev none kvm > "$out/env.json"
-    python3 tools/perf/adapters.py fs-gate --env-json "$out/env.json" "$out"/fs-gate-*.log > "$out/fs.jsonl"
+    python3 tools/perf/adapters.py fs-check --env-json "$out/env.json" "$out"/fs-check-*.log > "$out/fs.jsonl"
     exit "$status"
     ;;
   agent)
@@ -188,14 +188,14 @@ case $group in
       providers::tests::a_query_against_every_registry_app_stays_under_two_milliseconds \
       -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$out/palette-keystroke.log"
     ;;
-  hosting)
-    cargo build --locked --release -p tilo-relay --example relay_load
-    cargo run --locked -p tilo-relay --example keystroke_writes | tee "$out/keystroke-writes.log"
+  server)
+    cargo build --locked --release -p tilo-server --example server_load
+    cargo run --locked -p tilo-server --example keystroke_writes | tee "$out/keystroke-writes.log"
     env_json release none kvm > "$out/env.json"
-    "$target/release/examples/relay_load" --members 100 --minutes 10 --relay-cpus 2 \
-      --out "$out/run" | tee "$out/hosting-load.log"
-    python3 tools/perf/adapters.py hosting-load --env-json "$out/env.json" "$out/run/hosting-load.json" \
-      > "$out/hosting.jsonl"
+    "$target/release/examples/server_load" --members 100 --minutes 10 --server-cpus 2 \
+      --out "$out/run" | tee "$out/server-load.log"
+    python3 tools/perf/adapters.py server-load --env-json "$out/env.json" "$out/run/server-load.json" \
+      > "$out/server.jsonl"
     ;;
   browser)
     commit_checkout

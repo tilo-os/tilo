@@ -2,7 +2,7 @@
 //!
 //! Receivers decide each change against the surface file the signed op names. A tilolang app's
 //! surface has a resource per declared type (`tl.<app>.<Type>`), one for the package's
-//! record-less actions (`tl.<app>`), and `tl.host`; the kinds of the packages it uses are
+//! document-less actions (`tl.<app>`), and `tl.host`; the kinds of the packages it uses are
 //! declared as `reads`. `tilolang build` writes it into the app's payload ([`crate::bundle`]),
 //! and the host registers it with `app_surface::register_package` before its first signed
 //! operation.
@@ -31,7 +31,7 @@ pub use crate::publish::COMMIT;
 pub const VERSION: u32 = 1;
 
 /// The resource kind of the record type `key`: `tl.<app>.<Type>`.
-pub(crate) fn record_kind(key: &tilolang_runtime::meta::TypeKey) -> String {
+pub(crate) fn resource_type(key: &tilolang_runtime::meta::TypeKey) -> String {
     format!("tl.{}.{}", key.app, key.name)
 }
 
@@ -95,10 +95,10 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Duration => FieldType::Duration,
         Ty::Identifier => FieldType::Identifier,
         Ty::Actor => FieldType::Actor,
-        Ty::Record(key) => FieldType::Resource(record_kind(key)),
+        Ty::Record(key) => FieldType::Resource(resource_type(key)),
         Ty::Union(keys) => FieldType::Union(
             keys.iter()
-                .map(|key| FieldType::Resource(record_kind(key)))
+                .map(|key| FieldType::Resource(resource_type(key)))
                 .collect(),
         ),
         Ty::Enum(key) if key.app == meta.app => {
@@ -156,7 +156,7 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         // An account of some service, as its URI (`mailto:jane@x.com`).
         Ty::Identifier => json!({"type": "string", "format": "uri"}),
         Ty::Actor => actor_schema(),
-        Ty::Record(key) => tilo_actions::picked_resource_schema(&record_kind(key)),
+        Ty::Record(key) => tilo_actions::picked_resource_schema(&resource_type(key)),
         Ty::Enum(key) => match plain_cases(meta, key) {
             Some(cases) => {
                 let names: Vec<&str> = cases.iter().map(|(name, _)| name.as_str()).collect();
@@ -248,7 +248,7 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     };
     match present {
         Some(Ty::Record(key)) => built.picking(Pick::Resource {
-            kind: record_kind(key),
+            kind: resource_type(key),
         }),
         Some(Ty::Enum(key)) => match plain_cases(meta, key) {
             Some(cases) => built
@@ -283,7 +283,7 @@ pub fn is_primary(action: &ActionMeta) -> bool {
 
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
-        // The action as the record names it, which is what a change's claim names too
+        // The action as the document names it, which is what a change's claim names too
         // ([`crate::action::DynAction::describe`]): its id, the one its words keep
         // ([`crate::publish::action_type`]'s `label_of`), not the name the API offers it by.
         id: action.id.clone(),
@@ -310,13 +310,13 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
             schema: Json::Null,
             ty: field_type_of_type(meta, result, types),
         }),
-        writes: vec![RECORD_UNIT.to_owned()],
+        writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
     }
 }
 
-/// The record unit, where an action writes unless it says otherwise.
-pub const RECORD_UNIT: &str = tilo_actions::surface::RESOURCE_UNIT;
+/// The document unit, where an action writes unless it says otherwise.
+pub const RESOURCE_UNIT: &str = tilo_actions::surface::RESOURCE_UNIT;
 
 /// The names of the fields of `ty` that `edit-text` and `edit-flag` can set, from the type's
 /// metadata: a text (or rich-text) field the first, a flag field the second, in declaration
@@ -373,7 +373,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
         incoming_message: false,
         params: Vec::new(),
         returns: None,
-        writes: vec![RECORD_UNIT.to_owned()],
+        writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
     };
     let mut verbs = vec![create];
@@ -412,7 +412,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
                 },
             ],
             returns: None,
-            writes: vec![RECORD_UNIT.to_owned()],
+            writes: vec![RESOURCE_UNIT.to_owned()],
             field: None,
         }
     }));
@@ -509,7 +509,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         label: crate::publish::app_name(words, meta),
         version: VERSION,
         person: false,
-        own: meta.own_records,
+        own: meta.own_resources,
         verbs: loose,
         fields: Vec::new(),
         types: types.into_types(),
@@ -527,7 +527,7 @@ fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>)
         incoming_message: false,
         params,
         returns: None,
-        writes: vec![RECORD_UNIT.to_owned()],
+        writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
     }
 }
@@ -561,21 +561,21 @@ pub fn host_surface() -> Surface {
 #[derive(Serialize)]
 struct SurfaceFile<'a> {
     resources: &'a [Surface],
-    /// The kinds of the packages this one uses: it reads their records, live and read-only.
+    /// The kinds of the packages this one uses: it reads their documents, live and read-only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     reads: Vec<String>,
 }
 
 /// The `surface.toml` bytes of the host with these packages.
 ///
-/// The host resource comes first: it is the host record's own kind.
+/// The host resource comes first: it is the host document's own kind.
 pub fn surface_toml(packages: &[&Meta], words: &dyn Words) -> Result<Vec<u8>, toml::ser::Error> {
     surface_toml_reading(packages, &[], words)
 }
 
-/// The `surface.toml` bytes of an app of `packages` that reads the records of the packages
+/// The `surface.toml` bytes of an app of `packages` that reads the documents of the packages
 /// `reads` (those it `use`s): it declares their resource kinds as `reads`, which is what the
-/// broker admits its read-only join to their records by.
+/// broker admits its read-only join to their documents by.
 pub fn surface_toml_reading(
     packages: &[&Meta],
     reads: &[Meta],

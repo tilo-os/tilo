@@ -32,7 +32,7 @@ pub enum CaptureSource<'a> {
 pub struct ObservedOutput<'a> {
     pub node: u32,
     pub serial: u32,
-    /// Same observer custody requirement as `CaptureSource`; an independent
+    /// Same observer ownership requirement as `CaptureSource`; an independent
     /// connected socket, never a duplicate of an already active Gst core.
     pub remote_fd: BorrowedFd<'a>,
 }
@@ -76,7 +76,7 @@ pub struct VoiceAudio {
 impl VoiceAudio {
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "the observed output is a one-shot custody handoff; callers must not reuse it"
+        reason = "the observed output is a one-shot ownership handoff; callers must not reuse it"
     )]
     pub fn new(output: ObservedOutput<'_>) -> Result<Self, AudioError> {
         gst::init().map_err(|_| AudioError::Unavailable)?;
@@ -154,7 +154,7 @@ impl VoiceAudio {
     /// device, codec or capacity error that prevented startup.
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "the capture source is a one-shot custody handoff; callers must not reuse it"
+        reason = "the capture source is a one-shot ownership handoff; callers must not reuse it"
     )]
     pub fn start_capture(
         &mut self,
@@ -907,22 +907,22 @@ mod tests {
         use gst::subclass::prelude::*;
         #[derive(Default)]
         pub struct Source {
-            pub gate: std::sync::Mutex<Option<Arc<Gate>>>,
+            pub hold: std::sync::Mutex<Option<Arc<Hold>>>,
         }
         #[derive(Default)]
-        pub struct Gate {
+        pub struct Hold {
             pub entered: AtomicBool,
             pub left: AtomicBool,
             released: std::sync::Mutex<bool>,
             wake: std::sync::Condvar,
         }
-        impl Gate {
+        impl Hold {
             pub fn release(&self) {
                 *self.released.lock().unwrap() = true;
                 self.wake.notify_all();
             }
         }
-        impl Drop for Gate {
+        impl Drop for Hold {
             fn drop(&mut self) {
                 self.release();
             }
@@ -941,24 +941,24 @@ mod tests {
                 &self,
                 transition: gst::StateChange,
             ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-                let gate = if transition == gst::StateChange::NullToReady {
-                    self.gate.lock().unwrap().clone()
+                let hold = if transition == gst::StateChange::NullToReady {
+                    self.hold.lock().unwrap().clone()
                 } else {
                     None
                 };
-                if let Some(gate) = gate {
-                    gate.entered.store(true, Ordering::Release);
+                if let Some(hold) = hold {
+                    hold.entered.store(true, Ordering::Release);
                     // Held until released; the bound only keeps a failed test
                     // from leaving the element stuck.
-                    let _ = gate
+                    let _ = hold
                         .wake
                         .wait_timeout_while(
-                            gate.released.lock().unwrap(),
+                            hold.released.lock().unwrap(),
                             tilo_test_env::hang_bound().saturating_mul(2),
                             |released| !*released,
                         )
                         .unwrap();
-                    gate.left.store(true, Ordering::Release);
+                    hold.left.store(true, Ordering::Release);
                 }
                 self.parent_change_state(transition)
             }
@@ -967,16 +967,16 @@ mod tests {
     gst::glib::wrapper! {
         pub struct DelayedSource(ObjectSubclass<delayed::Source>) @extends gst::Bin, gst::Element, gst::Object;
     }
-    fn delayed_source() -> (gst::Element, Arc<delayed::Gate>) {
+    fn delayed_source() -> (gst::Element, Arc<delayed::Hold>) {
         delayed_element(false)
     }
-    fn delayed_element(output: bool) -> (gst::Element, Arc<delayed::Gate>) {
+    fn delayed_element(output: bool) -> (gst::Element, Arc<delayed::Hold>) {
         use gst::subclass::prelude::ObjectSubclassIsExt;
         crate::test_gst::shared_registry();
         gst::init().unwrap();
         let bin: DelayedSource = gst::glib::Object::new();
-        let gate = Arc::new(delayed::Gate::default());
-        *bin.imp().gate.lock().unwrap() = Some(gate.clone());
+        let hold = Arc::new(delayed::Hold::default());
+        *bin.imp().hold.lock().unwrap() = Some(hold.clone());
         let source = if output {
             gst::ElementFactory::make("fakesink")
                 .property("async", false)
@@ -996,7 +996,7 @@ mod tests {
         )
         .unwrap();
         bin.add_pad(&pad).unwrap();
-        (bin.upcast(), gate)
+        (bin.upcast(), hold)
     }
 
     fn wait_for_worker_exit(stop: &CaptureStop) {
@@ -1009,34 +1009,34 @@ mod tests {
             device::outstanding_workers() == 0
         });
     }
-    fn wait_for_gate(gate: &delayed::Gate) {
+    fn wait_for_hold(hold: &delayed::Hold) {
         tilo_test_env::wait_until("the real Gst state transition to be entered", || {
-            gate.entered.load(Ordering::Acquire)
+            hold.entered.load(Ordering::Acquire)
         });
     }
     fn pending_output() -> (
         VoiceAudio,
-        Arc<delayed::Gate>,
+        Arc<delayed::Hold>,
         std::os::unix::net::UnixStream,
     ) {
         crate::test_gst::shared_registry();
         gst::init().unwrap();
         let (fd, peer) = std::os::unix::net::UnixStream::pair().unwrap();
-        let (sink, gate) = delayed_element(true);
+        let (sink, hold) = delayed_element(true);
         let pipeline = gst::Pipeline::new();
         let source = app_source();
         pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
         source.link(&sink).unwrap();
         let audio = VoiceAudio::from_output_bound(pipeline, source, Some(fd.into())).unwrap();
-        wait_for_gate(&gate);
-        (audio, gate, peer)
+        wait_for_hold(&hold);
+        (audio, hold, peer)
     }
 
     #[test]
     fn delayed_device_start_does_not_block_control_or_publish_late_capture() {
         use std::io::Read;
         let (_device_test, mut audio) = device_audio();
-        let (source, gate) = delayed_source();
+        let (source, hold) = delayed_source();
         let observed = source.clone();
         let (fd, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (done, completed) = std::sync::mpsc::channel();
@@ -1049,7 +1049,7 @@ mod tests {
             );
             done.send((audio, result)).unwrap();
         });
-        wait_for_gate(&gate);
+        wait_for_hold(&hold);
         // The source's startup stays held until released below, so the start
         // returns only if it does not wait for the device.
         let (mut audio, result) = tilo_test_env::recv(
@@ -1061,7 +1061,7 @@ mod tests {
         let stop = audio.capture_stop_handle().unwrap();
         audio.stop_capture();
         assert!(
-            !gate.left.load(Ordering::Acquire),
+            !hold.left.load(Ordering::Acquire),
             "cancel waited for driver state lock"
         );
         peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -1076,7 +1076,7 @@ mod tests {
             !stop.finished(),
             "deliberately blocked worker must retain its permit"
         );
-        gate.release();
+        hold.release();
         wait_for_worker_exit(&stop);
         assert_eq!(observed.current_state(), gst::State::Null);
         assert!(audio.poll_capture(Instant::now()).unwrap().is_empty());
@@ -1119,7 +1119,7 @@ mod tests {
         let _device_test = device_test_lock();
         wait_for_device_workers();
         let start = Instant::now();
-        let (mut audio, gate, mut peer) = pending_output();
+        let (mut audio, hold, mut peer) = pending_output();
         let stop = audio.output.stop_handle();
         assert!(!audio.output_ready());
         peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -1136,7 +1136,7 @@ mod tests {
         assert!(!stop.finished(), "driver is deliberately still blocked");
         assert!(!audio.output_ready());
         assert_eq!(audio.playout(Instant::now()), Err(AudioError::DeviceLost));
-        gate.release();
+        hold.release();
         wait_for_worker_exit(&stop);
         assert_eq!(audio.output.pipeline.current_state(), gst::State::Null);
     }
@@ -1148,7 +1148,7 @@ mod tests {
         wait_for_device_workers();
         let mut pending = Vec::new();
         for _ in 0..device::MAX_DEVICE_WORKERS {
-            let (mut audio, gate, mut peer) = pending_output();
+            let (mut audio, hold, mut peer) = pending_output();
             let stop = audio.output.stop_handle();
             audio.close();
             drop(audio);
@@ -1156,14 +1156,14 @@ mod tests {
                 .unwrap();
             assert_eq!(peer.read(&mut [0]).unwrap(), 0);
             assert!(!stop.finished());
-            pending.push((gate, stop));
+            pending.push((hold, stop));
         }
         let denied =
             VoiceAudio::from_output(gst::Pipeline::new(), gst_app::AppSrc::builder().build());
         assert!(matches!(denied, Err(AudioError::Capacity)));
         assert_eq!(device::outstanding_workers(), device::MAX_DEVICE_WORKERS);
-        for (gate, _) in &pending {
-            gate.release();
+        for (hold, _) in &pending {
+            hold.release();
         }
         for (_, stop) in &pending {
             wait_for_worker_exit(stop);
@@ -1189,8 +1189,8 @@ mod tests {
         let original = audio.capture_stop_handle().unwrap();
         let mut pending = Vec::new();
         for _ in 2..device::MAX_DEVICE_WORKERS {
-            let (other, gate, _peer) = pending_output();
-            pending.push((other, gate));
+            let (other, hold, _peer) = pending_output();
+            pending.push((other, hold));
         }
         let source = audio_test_source();
         assert_eq!(
@@ -1199,9 +1199,9 @@ mod tests {
         );
         assert!(original.current());
         assert!(audio.capture_ready());
-        for (other, gate) in &mut pending {
+        for (other, hold) in &mut pending {
             other.close();
-            gate.release();
+            hold.release();
         }
     }
 

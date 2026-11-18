@@ -35,11 +35,11 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
     );
 }
 
-/// A full ledger makes room by forgetting what settled, never an invocation
+/// A full log makes room by forgetting what settled, never an invocation
 /// still to run or running: forgotten, it would never run, or leave its
 /// caller no answer, and a retry under its id would run it twice.
 #[test]
-fn a_full_ledger_forgets_only_settled_invocations() {
+fn a_full_log_forgets_only_settled_invocations() {
     use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
     use tilo_actions::{InvocationId, InvocationUpdate};
     let caller = tilo_actions::remote::Caller::local_person("ada");
@@ -57,49 +57,46 @@ fn a_full_ledger_forgets_only_settled_invocations() {
         wait_ms: None,
         appearance: None,
     };
-    let mut ledger = super::Ledger::default();
+    let mut log = super::InvocationLog::default();
     let pending = request().invocation;
     let first = InvokeRequest {
         invocation: pending,
         ..request()
     };
-    assert!(ledger.insert(&caller, first));
-    for _ in 1..super::ledger::REMEMBERED {
-        assert!(ledger.insert(&caller, request()));
+    assert!(log.insert(&caller, first));
+    for _ in 1..super::invocation_log::REMEMBERED {
+        assert!(log.insert(&caller, request()));
     }
     assert!(
-        !ledger.insert(&caller, request()),
+        !log.insert(&caller, request()),
         "with every invocation unsettled, a new one is refused, not one of them dropped"
     );
     assert!(
-        ledger.entries.contains_key(&pending),
+        log.entries.contains_key(&pending),
         "the pending write is kept"
     );
 
-    let settled = ledger.order[1];
-    if let Some(entry) = ledger.entries.get_mut(&settled) {
+    let settled = log.order[1];
+    if let Some(entry) = log.entries.get_mut(&settled) {
         entry.update = InvocationUpdate::Succeeded {
             invocation: settled,
             output: tilo_actions::ActionOutput::default(),
         };
     }
+    assert!(log.insert(&caller, request()), "a settled one makes room");
     assert!(
-        ledger.insert(&caller, request()),
-        "a settled one makes room"
-    );
-    assert!(
-        !ledger.entries.contains_key(&settled),
+        !log.entries.contains_key(&settled),
         "the settled one is forgotten"
     );
     assert!(
-        ledger.entries.contains_key(&pending),
+        log.entries.contains_key(&pending),
         "the oldest, still pending, is kept"
     );
 }
 
 #[test]
 fn a_request_waits_only_for_the_keys_of_what_it_reads() {
-    let workspace = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let workspace = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
     let b = route(WORKSPACE, "so.tilo.sheets", "b");
     let elsewhere = route(OTHER_WORKSPACE, "so.tilo.sheets", "a");
     // `a` opened; `b` here and the record elsewhere wait for their keys.
@@ -192,7 +189,7 @@ fn a_pending_write_settles_as_its_save_does() {
         wait_ms: None,
         appearance: None,
     };
-    let ledger = Arc::new(Mutex::new(super::Ledger::default()));
+    let log = Arc::new(Mutex::new(super::InvocationLog::default()));
     // Each write: its save's outcome, sent, dropped (`None`) or never said
     // (`Some(None)` holds the answer back), and how it settled.
     let mut kept = Vec::new();
@@ -200,13 +197,13 @@ fn a_pending_write_settles_as_its_save_does() {
         let asked = request();
         let invocation = asked.invocation;
         {
-            let mut held = ledger.lock().unwrap();
+            let mut held = log.lock().unwrap();
             assert!(held.insert(&caller, asked));
             held.entries.get_mut(&invocation).unwrap().saving = true;
         }
         let (answer, saved) = tilo_session_client::answer();
         let (settled, heard) = mpsc::channel();
-        let shared = Arc::clone(&ledger);
+        let shared = Arc::clone(&log);
         super::publish::Unsaved::waiting(saved).settle_within(
             std::time::Duration::from_millis(200),
             move |saved| {
@@ -224,7 +221,7 @@ fn a_pending_write_settles_as_its_save_does() {
         heard
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the save's outcome settles the write");
-        let (saving, update) = ledger
+        let (saving, update) = log
             .lock()
             .unwrap()
             .entries
@@ -464,7 +461,7 @@ fn an_apps_index_is_not_one_of_its_records() {
     // records at the empty route, where Files keeps its own record.
     fn per_window(app: &'static str) -> ui::application::ApplicationDefinition {
         fn no_component(
-            _: ui::application::HostContext,
+            _: ui::application::ProcessContext,
             _: ui::application::LaunchTarget,
             _: ui::application::RestoreInput,
         ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
@@ -605,4 +602,88 @@ fn a_replica_kept_for_a_slow_save_comes_back_to_the_caller_never_reopened() {
         .unpark(&key, wait)
         .expect("still there for the caller it was set aside for");
     assert!(Arc::ptr_eq(&replica, &again));
+}
+
+/// A typed call made through generated types asks the app service for the
+/// surface the types were written for. A service that mounts the workspace's
+/// apps itself answers from the signed build it carries, before the app's
+/// first window: the workspace's PDF Viewer has no window and no member
+/// holding its bytes, and the types are still checked against what it
+/// publishes.
+#[test]
+fn a_surface_request_is_answered_from_the_app_the_service_mounts() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tilo_actions::remote::{Caller, RemoteActionMessage};
+
+    let catalogue: super::CatalogueFactory = Arc::new(super::AppCatalogue::native);
+    let service = super::WorkspaceActions::new(catalogue);
+    let caller = Caller::local_person("ada");
+    let asked = |app: &str| {
+        let answer = service
+            .serve(
+                super::WorkspaceId::from_u128(1),
+                &caller,
+                RemoteActionMessage::SurfaceRequest {
+                    correlation: 7,
+                    app: app.to_owned(),
+                },
+            )
+            .expect("the service answers a surface request");
+        answer
+            .wait_timeout(Duration::from_secs(1))
+            .ok()
+            .flatten()
+            .expect("the answer is ready")
+    };
+    let surface = match asked("so.tilo.pdf-viewer") {
+        RemoteActionMessage::SurfaceResponse {
+            correlation: 7,
+            result: Ok(Some(surface)),
+        } => surface,
+        other => panic!("the app's surface is answered: {other:?}"),
+    };
+    assert_eq!(
+        surface,
+        include_str!("../../../../../apps/pdf-viewer/surface.toml"),
+        "the surface is the one the app's signed build names"
+    );
+    // An app the service mounts none of has no surface to decide a change
+    // against: it answers none rather than another app's.
+    match asked("so.tilo.no-such-app") {
+        RemoteActionMessage::SurfaceResponse {
+            result: Ok(None), ..
+        } => {}
+        other => panic!("an app the service mounts none of has no surface: {other:?}"),
+    }
+}
+
+/// A write the session never confirms is answered failed once its watch passed, with what the
+/// session says it keeps and waits for: whoever asked reads why, not only that it is not saved.
+#[test]
+fn a_write_not_saved_within_its_watch_fails_with_what_the_session_keeps() {
+    let (_answer, saved) = tilo_session_client::answer();
+    let (settled, heard) = tilo_session_client::answer();
+    super::publish::Unsaved::waiting(saved)
+        .asked_by(|| {
+            Some((
+                "so.tilo.chat/agents, which waits for the document it changes, for 61 s".to_owned(),
+                true,
+            ))
+        })
+        .settle_within(std::time::Duration::from_millis(50), move |saved| {
+            let _ = settled.send(saved);
+        });
+    let failure = heard
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the watch settles the write")
+        .expect_err("a write nobody confirmed is not saved");
+    assert_eq!(failure.code, "save_unconfirmed");
+    assert!(!failure.retryable, "it may still be saved");
+    assert!(
+        failure
+            .message
+            .ends_with(": the session keeps so.tilo.chat/agents, which waits for the document it changes, for 61 s"),
+        "{failure:?}"
+    );
 }

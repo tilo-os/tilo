@@ -1105,26 +1105,26 @@ impl VideoEditorApp {
                 rect.contains(self.last_mouse),
             );
         }
-        // ---- the lane's mix ---------------------------------------------
+        // ---- the track's mix ---------------------------------------------
         // The panel is otherwise about one clip, so the two knobs that reach past it say
-        // what they reach, including that everything else on the lane moves with them.
+        // what they reach, including that everything else on the track moves with them.
         if let Some(t) = self.selected_track() {
             let level = self.mix.track(t.id);
             if l.mix_track_y > 0.0 {
                 let others = self.project.clips_on(t.id).len().saturating_sub(1);
                 let words = match others {
                     0 => crate::resource::CATALOG.t_args(
-                        "video-editor-lane-clip-only",
-                        &[("lane", ui::i18n::ArgValue::Text(t.name.clone()))],
+                        "video-editor-track-clip-only",
+                        &[("track", ui::i18n::ArgValue::Text(t.name.clone()))],
                     ),
                     1 => crate::resource::CATALOG.t_args(
-                        "video-editor-lane-one-other",
-                        &[("lane", ui::i18n::ArgValue::Text(t.name.clone()))],
+                        "video-editor-track-one-other",
+                        &[("track", ui::i18n::ArgValue::Text(t.name.clone()))],
                     ),
                     n => crate::resource::CATALOG.t_args(
-                        "video-editor-lane-other-clips",
+                        "video-editor-track-other-clips",
                         &[
-                            ("lane", ui::i18n::ArgValue::Text(t.name.clone())),
+                            ("track", ui::i18n::ArgValue::Text(t.name.clone())),
                             ("count", ui::i18n::ArgValue::Number(n as f64)),
                         ],
                     ),

@@ -1,13 +1,13 @@
 //! The session's canvas, said first to an agent the person asked from it
 //! (`docs/designs/app-language/shell.md` §8.1): the arranging steps the session
-//! publishes, the places standing now, how the canvas is shown, and the
+//! publishes, the places there now, how the canvas is shown, and the
 //! resources there are to show. An agent asked on the canvas answers by showing
 //! what answers the question beside the conversation, so these are its main
 //! tools, ahead of every application's own operations.
 //!
 //! Nothing here names an application. The canvas is what the session publishes
 //! on its layout's resources (`shell:layout`, a `shell:place:<key>`
-//! per place, a `shell:strip:<key>` per strip) and on the record of how the
+//! per place, a `shell:strip:<key>` per strip) and on the resource of how the
 //! person views it (the style package's `Viewing`, whose `show_style` is
 //! the style switch, and every action a style package publishes there).
 
@@ -21,10 +21,10 @@ use crate::surface::{Catalogue, Offer};
 pub const LAYOUT: &str = "shell:layout";
 /// The action that shows a resource on the canvas.
 pub const PLACE: &str = "place";
-/// The prefix of every resource of the layout: itself, its record, and
+/// The prefix of every resource of the layout: itself, its resource, and
 /// each row, strip and place.
 const SHELL_PREFIX: &str = "shell:";
-/// The kind of the record a person's view of their shell is kept in: the shell
+/// The kind of the resource a person's view of their shell is kept in: the shell
 /// style it shows, and the strip in front. Its actions switch the style.
 const VIEWING_KIND_SUFFIX: &str = ".Viewing";
 /// The prefix of the resources a place of the canvas is published as.
@@ -152,7 +152,7 @@ pub fn conversation_of(task_id: &str) -> Option<&str> {
         .filter(|conversation| conversation.contains("/channels/"))
 }
 
-/// A resource there is to show on the canvas: a tilolang app's record, not
+/// A resource there is to show on the canvas: a tilolang app's resource, not
 /// one of the layout's own and not one of the style's.
 fn showable(offer: &Offer) -> bool {
     let resource = offer.address().resource.as_str();
@@ -161,9 +161,9 @@ fn showable(offer: &Offer) -> bool {
         && !offer.descriptor.resource_kind.is_empty()
 }
 
-/// What every record publishes about keeping it (its versions, its fields as raw edits, the
+/// What every resource publishes about keeping it (its versions, its fields as raw edits, the
 /// windows that open over it) rather than about how the canvas is arranged or shown: the style's
-/// own record carries them like any record, and listing them as arranging steps cost the first
+/// own document carries them like any resource, and listing them as arranging steps cost the first
 /// turn a few hundred tokens of ids no arranging uses.
 const RECORD_KEEPING: &[&str] = &[
     "read",
@@ -187,7 +187,7 @@ fn record_keeping(offer: &Offer) -> bool {
         || offer.address().resource.ends_with("layout-record")
 }
 
-/// The tilolang app whose record `resource` is (`tl:<app>:<record>`), whoever publishes it.
+/// The tilolang app whose resource `resource` is (`tl:<app>:<record>`), whoever publishes it.
 pub fn tilolang_app_of(resource: &str) -> Option<&str> {
     resource
         .strip_prefix(TILOLANG_PREFIX)
@@ -230,7 +230,7 @@ pub fn canvas_section(
     );
 
     // The layout steps on the layout itself and on how it is shown,
-    // then each place standing now with its own.
+    // then each place there now with its own.
     let (places, steps): (Vec<&Offer>, Vec<&Offer>) = catalogue
         .offers
         .iter()
@@ -378,10 +378,10 @@ pub fn without_canvas(catalogue: &Catalogue) -> Catalogue {
 
 #[cfg(test)]
 mod tilolang_app_tests {
-    /// A step on a tilolang app's record is a step in that app, whoever publishes the record: the
+    /// A step on a tilolang app's resource is a step in that app, whoever publishes the record: the
     /// session serves `tl:<app>:<record>`, and the part the model lists names the app.
     #[test]
-    fn a_tilolang_record_names_its_app() {
+    fn a_tilolang_resource_names_its_app() {
         assert_eq!(
             super::tilolang_app_of("tl:so.tilo.lang.tasks:root-fjqi4yze/i358b46da-26"),
             Some("so.tilo.lang.tasks")

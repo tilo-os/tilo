@@ -14,7 +14,7 @@ impl TopBarChrome {
     }
 
     /// The device shows its own time at phone width (a phone, above the page this bar is drawn
-    /// in): there the bar draws no clock of its own, and the workspace name takes the lane.
+    /// in): there the bar draws no clock of its own, and the workspace name takes the area.
     #[must_use]
     pub fn with_device_clock(mut self) -> Self {
         self.device_clock = true;
@@ -166,7 +166,7 @@ impl TopBarChrome {
         // Measured at the same weight it's drawn at (Semibold), so the pill width tracks the glyph
         // advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
-        // The centre carousel owns a fixed central lane.  Long translated or
+        // The centre carousel owns a fixed central area.  Long translated or
         // user-authored workspace names must yield to it instead of painting
         // underneath it.
         let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
@@ -174,7 +174,7 @@ impl TopBarChrome {
         // Capsule chrome around the label: a leading pad, the gap to the chevron, the chevron
         // itself and a trailing pad of the same size — so the pill reads centred on its contents.
         // The `s4` beyond that is the breathing room
-        // `long_workspace_name_yields_to_the_center_lane` keeps between the pill and the centre
+        // `long_workspace_name_yields_to_the_center_area` keeps between the pill and the centre
         // selector.
         let pad = f64::from(tokens.spacing.s2);
         let chevron = SMALL_GLYPH_PX;

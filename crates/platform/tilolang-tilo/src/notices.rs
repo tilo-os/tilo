@@ -1,18 +1,18 @@
 //! Showing a person their notices, on one device.
 //!
-//! A notice is a record of the host's `Notice` type, written by `notify` in the change that told
+//! A notice is a document of the host's `Notice` type, written by `notify` in the change that told
 //! the person ([`tilolang_runtime::notify`]). Every device of the workspace reads it like any
-//! record; this shows it to that notice's person, and to no one else's, as one
-//! [`tilo_session_core::notice::Notice`].
+//! document; this shows it to that notice's person, and to no one else's, as one
+//! [`tilo_service::notice::Notice`].
 //!
 //! What one device told is kept ([`Notices::kept`]) so a restart tells nothing twice, and what the
-//! record held when it first looked is old news ([`Notices::step`]): a record that reached it in a
+//! document held when it first looked is old news ([`Notices::step`]): a document that reached it in a
 //! replay tells nothing of what is already there. What the person did with a notice on any device
-//! is the record's `seen` field ([`Notices::seen`]), so the devices they were not at take it back.
+//! is the document's `seen` field ([`Notices::seen`]), so the devices they were not at take it back.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tilo_session_core::notice::{Notice, Place};
+use tilo_service::notice::{Notice, Place};
 use tilolang::{
     HOST_APP, NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE,
 };
@@ -26,7 +26,7 @@ use crate::host::Host;
 pub const SEEN_ACTION: &str = crate::action::EDIT_FLAG_ACTION;
 
 /// What a notice's notification tag starts with, so a host knows which of its closings are the
-/// record's.
+/// document's.
 pub const NOTICE_TAGS: &str = "notice:";
 
 /// The notices of one person on one device.
@@ -38,13 +38,13 @@ pub struct Notices {
     told: BTreeSet<String>,
     /// The notices it is showing, by the tag each shows under.
     showing: BTreeMap<String, String>,
-    /// The instant of the newest notice of theirs the record held when the device first looked:
+    /// The instant of the newest notice of theirs the document held when the device first looked:
     /// an older one is not news, whatever else it is.
     from: Option<i64>,
 }
 
 impl Notices {
-    /// The notices of `person` at this device, as the device starts: what the record holds the
+    /// The notices of `person` at this device, as the device starts: what the document holds the
     /// first time it looks is not news.
     #[must_use]
     pub fn new(person: impl Into<String>) -> Self {
@@ -62,7 +62,7 @@ impl Notices {
         self.told.extend(kept);
     }
 
-    /// What this device told, to keep: the notices it shows no more, whatever the record still
+    /// What this device told, to keep: the notices it shows no more, whatever the document still
     /// holds of them.
     #[must_use]
     pub fn kept(&self) -> Vec<String> {
@@ -84,21 +84,21 @@ impl Notices {
         }
         let newest = held.iter().map(|notice| notice.at).max();
         let from = *self.from.get_or_insert_with(|| newest.unwrap_or(i64::MIN));
-        let standing: Vec<&Held> = held
+        let access: Vec<&Held> = held
             .iter()
             .filter(|notice| !notice.seen && notice.at > from)
             .collect();
-        let standing_ids: BTreeSet<&str> = standing.iter().map(|n| n.id.as_str()).collect();
+        let access_ids: BTreeSet<&str> = access.iter().map(|n| n.id.as_str()).collect();
         let withdraw: Vec<String> = self
             .showing
             .iter()
-            .filter(|(id, _)| !standing_ids.contains(id.as_str()))
+            .filter(|(id, _)| !access_ids.contains(id.as_str()))
             .map(|(_, tag)| tag.clone())
             .collect();
         self.showing
-            .retain(|id, _| standing_ids.contains(id.as_str()));
+            .retain(|id, _| access_ids.contains(id.as_str()));
         let mut show: Vec<Notice> = Vec::new();
-        for notice in standing {
+        for notice in access {
             if self.told.contains(&notice.id) || self.showing.contains_key(&notice.id) {
                 continue;
             }
@@ -112,7 +112,7 @@ impl Notices {
     }
 
     /// The person at this device saw the notice `id`, by opening or dismissing it: it is marked
-    /// seen in the record, so every device of theirs takes it back. What is written waits for
+    /// seen in the document, so every device of theirs takes it back. What is written waits for
     /// the host to commit it (`Host::take_committed`).
     pub fn seen(&mut self, host: &Host, id: &str) -> Result<(), String> {
         host.store()
@@ -120,7 +120,7 @@ impl Notices {
             .map_err(|error| error.to_string())
     }
 
-    /// The notice this device is showing as the notification `tag`: the id the record keeps it
+    /// The notice this device is showing as the notification `tag`: the id the document keeps it
     /// under.
     #[must_use]
     pub fn shown_as(&self, tag: &str) -> Option<&str> {
@@ -140,7 +140,7 @@ pub struct Told {
     pub withdraw: Vec<String>,
 }
 
-/// A notice as the record holds it.
+/// A notice as the document holds it.
 struct Held {
     id: String,
     to: String,
@@ -154,14 +154,14 @@ struct Held {
 
 impl Held {
     /// The notice this notice shows as, and where choosing it lands: the app that keeps what it
-    /// opens, the record of the workspace that person's app keeps (their own, for an app that
+    /// opens, the document of the workspace that person's app keeps (their own, for an app that
     /// keeps one), and the resource itself, published as the session names it.
     fn shown(&self, host: &Host, person: &str) -> Option<Notice> {
         let schema = crate::schema::lookup(&self.opens.ty)?;
         let package = host.package(&schema.app);
         let record = package
             .as_ref()
-            .and_then(|package| crate::own_record(&package.meta, person))
+            .and_then(|package| crate::own_document(&package.meta, person))
             .unwrap_or_default();
         let app = package.as_ref().map_or_else(
             || schema.app.clone(),
@@ -182,7 +182,7 @@ impl Held {
     }
 }
 
-/// The notice `id`, as the record holds it; `None` for a resource the store does not answer for
+/// The notice `id`, as the document holds it; `None` for a resource the store does not answer for
 /// as a notice (one it does not hold, or one whose fields it cannot read).
 fn held_notice(host: &Host, id: &str) -> Option<Held> {
     let at = ResourceRef::root(id.to_owned(), NOTICE_TYPE.to_owned());

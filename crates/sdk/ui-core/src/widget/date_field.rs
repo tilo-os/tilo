@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use chrono::{NaiveDate, NaiveTime};
+use jiff::civil::{Date, Time};
 
 use crate::icons::Icon;
 use crate::widget::arrange::Stack;
@@ -17,43 +17,43 @@ use crate::widget::{
 mod component;
 pub use component::DateFieldProps;
 
-type Picked = Rc<Cell<Option<Option<NaiveDate>>>>;
+type Picked = Rc<Cell<Option<Option<Date>>>>;
 
 /// A day the bound value took while the calendar was open: shown once it closes, so a day set
 /// elsewhere never moves the calendar from under the person picking.
 #[derive(Clone, Copy)]
 enum Waiting {
     Nothing,
-    Day(Option<NaiveDate>),
+    Day(Option<Date>),
 }
 
 pub struct DateField {
     inner: PopoverButton<Stack>,
-    value: Option<NaiveDate>,
-    at: Option<NaiveTime>,
+    value: Option<Date>,
+    at: Option<Time>,
     label: Option<String>,
     compact: bool,
     optional: bool,
     picked: Picked,
     /// The day the calendar shows and highlights: the day the person picked, and the one the
     /// owner set from elsewhere, so the calendar never disagrees with the chip.
-    shown: crate::LocalState<NaiveDate>,
-    on_change: Option<Box<dyn FnMut(Option<NaiveDate>)>>,
-    bound: Option<BoxedBinding<Option<NaiveDate>>>,
+    shown: crate::LocalState<Date>,
+    on_change: Option<Box<dyn FnMut(Option<Date>)>>,
+    bound: Option<BoxedBinding<Option<Date>>>,
     waiting: Waiting,
 }
 
 impl DateField {
     /// A field showing `value`, which the person may clear when `optional`.
     #[must_use]
-    pub fn new(id: &str, value: Option<NaiveDate>, optional: bool) -> Self {
+    pub fn new(id: &str, value: Option<Date>, optional: bool) -> Self {
         Self::built(id, value, None, optional, false, Vec::new(), None)
     }
 
     fn built(
         id: &str,
-        value: Option<NaiveDate>,
-        at: Option<NaiveTime>,
+        value: Option<Date>,
+        at: Option<Time>,
         optional: bool,
         compact: bool,
         time: Vec<Element>,
@@ -89,7 +89,7 @@ impl DateField {
     }
 
     /// A field following the day `state` holds as its ISO text (`""` for no date), which the
-    /// person may clear when `optional`, with `time` standing in its popover as the control
+    /// person may clear when `optional`, with `time` in its popover as the control
     /// that picks `at`, the time of day the day is due at: a day set there shows in place.
     pub(super) fn from_state(
         id: &str,
@@ -112,18 +112,18 @@ impl DateField {
     }
 
     #[must_use]
-    pub fn on_change<F: FnMut(Option<NaiveDate>) + 'static>(mut self, f: F) -> Self {
+    pub fn on_change<F: FnMut(Option<Date>) + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
         self
     }
 
     #[must_use]
-    pub fn value(&self) -> Option<NaiveDate> {
+    pub fn value(&self) -> Option<Date> {
         self.value
     }
 
     #[must_use]
-    pub fn at(&self) -> Option<NaiveTime> {
+    pub fn at(&self) -> Option<Time> {
         self.at
     }
 
@@ -133,7 +133,7 @@ impl DateField {
         self.optional
     }
 
-    pub fn set_value(&mut self, value: Option<NaiveDate>) {
+    pub fn set_value(&mut self, value: Option<Date>) {
         if value == self.value {
             return;
         }
@@ -144,7 +144,7 @@ impl DateField {
 
     /// Show `at`, the time of day the day is due at, set elsewhere: only what the chip says
     /// changes.
-    pub fn set_at(&mut self, at: Option<NaiveTime>) {
+    pub fn set_at(&mut self, at: Option<Time>) {
         if at == self.at {
             return;
         }
@@ -196,7 +196,7 @@ impl DateField {
     /// What the field reads as, and the tone it says it in: the day and the time it is due at
     /// ("Today 9:00 AM", "Overdue since Jun 29"), or "Add date" while it holds none.
     #[must_use]
-    pub fn fact(value: Option<NaiveDate>, at: Option<NaiveTime>) -> (String, Tone) {
+    pub fn fact(value: Option<Date>, at: Option<Time>) -> (String, Tone) {
         value.map_or_else(
             || {
                 (
@@ -212,14 +212,14 @@ impl DateField {
     }
 
     #[must_use]
-    pub fn label(value: Option<NaiveDate>, at: Option<NaiveTime>) -> String {
+    pub fn label(value: Option<Date>, at: Option<Time>) -> String {
         Self::fact(value, at).0
     }
 
     /// What a screen reader hears of the chip: what the day is for and the day it holds
     /// ("Due, Today 9:00 AM"), or the day alone when nothing names it.
     #[must_use]
-    pub fn spoken(label: Option<&str>, value: Option<NaiveDate>, at: Option<NaiveTime>) -> String {
+    pub fn spoken(label: Option<&str>, value: Option<Date>, at: Option<Time>) -> String {
         let day = Self::label(value, at);
         label.map_or(day.clone(), |label| {
             crate::i18n::widget_format(
@@ -230,17 +230,17 @@ impl DateField {
     }
 }
 
-pub(crate) fn with_day(text: &str, day: Option<NaiveDate>) -> String {
+pub(crate) fn with_day(text: &str, day: Option<Date>) -> String {
     let Some(day) = day else {
         return String::new();
     };
     match time_in(Some(text)) {
         Some(time) => instant_text(day, time),
-        None => day.format("%Y-%m-%d").to_string(),
+        None => day.to_string(),
     }
 }
 
-pub(crate) fn with_time(text: &str, time: Option<NaiveTime>) -> String {
+pub(crate) fn with_time(text: &str, time: Option<Time>) -> String {
     let Some(time) = time else {
         return String::new();
     };
@@ -248,42 +248,34 @@ pub(crate) fn with_time(text: &str, time: Option<NaiveTime>) -> String {
         Some(day) => instant_text(day, time),
         None => crate::format::machine!(
             "the field's value, read back rather than shown in their style",
-            time.format("%H:%M").to_string()
+            time.strftime("%H:%M").to_string()
         ),
     }
 }
 
 /// The instant `day` at `time` in the person's zone, as ISO-8601 UTC text.
-fn instant_text(day: NaiveDate, time: NaiveTime) -> String {
-    use chrono::TimeZone as _;
-    let local = day.and_time(time);
-    let at = match chrono::Local.from_local_datetime(&local) {
-        chrono::LocalResult::Single(at) | chrono::LocalResult::Ambiguous(at, _) => Some(at),
-        chrono::LocalResult::None => {
-            tilo_failure::ignored!("an hour the change of clocks skipped keeps its day", None)
-        }
-    };
-    at.map_or_else(
-        || day.format("%Y-%m-%d").to_string(),
-        |at| {
-            at.with_timezone(&chrono::Utc)
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        },
-    )
+fn instant_text(day: Date, time: Time) -> String {
+    match crate::clock::instant_of(day.to_datetime(time)) {
+        Some(at) => format!("{at:.0}"),
+        None => tilo_failure::ignored!(
+            "an hour the change of clocks skipped keeps its day",
+            day.to_string()
+        ),
+    }
 }
 
 /// The time of day `text` names: the time of day a field holds (`09:00`), or the time of day an
 /// instant falls on; `None` for no time.
-pub(crate) fn time_in(text: Option<&str>) -> Option<NaiveTime> {
+pub(crate) fn time_in(text: Option<&str>) -> Option<Time> {
     let text = text?;
-    if let Ok(time) = NaiveTime::parse_from_str(text.trim(), "%H:%M") {
+    if let Ok(time) = Time::strptime("%H:%M", text.trim()) {
         return Some(time);
     }
     tilo_failure::ignored!(
         "a value that is no time is shown as no time",
-        chrono::DateTime::parse_from_rfc3339(text)
+        text.parse::<jiff::Timestamp>()
             .ok()
-            .map(|at| at.with_timezone(&chrono::Local).time())
+            .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).time())
     )
 }
 
@@ -302,10 +294,10 @@ struct Chip<'a> {
 /// "Clear date" when the date may be empty.
 fn field(
     chip: Chip<'_>,
-    value: Option<NaiveDate>,
-    at: Option<NaiveTime>,
+    value: Option<Date>,
+    at: Option<Time>,
     picked: &Picked,
-    shown: &crate::LocalState<NaiveDate>,
+    shown: &crate::LocalState<Date>,
 ) -> PopoverButton<Stack> {
     let Chip {
         id,
@@ -314,7 +306,7 @@ fn field(
         compact,
         time,
     } = chip;
-    let today = crate::clock::local_now().date_naive();
+    let today = crate::clock::local_now().date();
     let on_day = Rc::clone(picked);
     // The calendar is its own name inside the field: the chip carries what the day is for,
     // so a screen reader hears "Due, Today" on the field and "Calendar" on what opens over it,
@@ -410,9 +402,9 @@ mod tests {
 
         phase a_picked_day_is_shown_and_reported_and_clearing_reports_no_date;
         {
-            let reported: Rc<Cell<Option<Option<NaiveDate>>>> = Rc::default();
+            let reported: Rc<Cell<Option<Option<Date>>>> = Rc::default();
             let seen = Rc::clone(&reported);
-            let day = NaiveDate::from_ymd_opt(2026, 10, 24);
+            let day = Date::new(2026, 10, 24).ok();
             let mut field = DateField::new("due", None, true).on_change(move |value| {
                 seen.set(Some(value));
             });
@@ -429,7 +421,7 @@ mod tests {
 
         phase a_day_with_its_time_reads_as_one_fact;
         {
-            let nine = NaiveTime::from_hms_opt(9, 0, 0);
+            let nine = Time::new(9, 0, 0, 0).ok();
             let day = crate::clock::today();
             assert_eq!(
                 DateField::label(Some(day), nine),
@@ -446,8 +438,8 @@ mod tests {
         phase a_late_day_reads_in_the_overdue_tone;
         {
             let today = crate::clock::today();
-            let tomorrow = today.succ_opt().expect("a day");
-            let late = today.pred_opt().expect("a day");
+            let tomorrow = today.tomorrow().expect("a day");
+            let late = today.yesterday().expect("a day");
             assert_eq!(DateField::fact(Some(tomorrow), None).1, Tone::Neutral);
             assert_eq!(DateField::fact(Some(late), None).1, Tone::Danger);
         }
@@ -457,7 +449,7 @@ mod tests {
             let reported: Rc<Cell<bool>> = Rc::default();
             let seen = Rc::clone(&reported);
             let mut field = DateField::new("due", None, false).on_change(move |_| seen.set(true));
-            let day = NaiveDate::from_ymd_opt(2026, 11, 2).expect("a day");
+            let day = Date::new(2026, 11, 2).expect("a day");
             field.set_value(Some(day));
             assert_eq!(field.value(), Some(day));
             assert!(!field.take_pick());
@@ -471,10 +463,10 @@ mod tests {
 
         phase a_time_from_elsewhere_changes_only_what_the_chip_says;
         {
-            let day = NaiveDate::from_ymd_opt(2026, 6, 30);
+            let day = Date::new(2026, 6, 30).ok();
             let mut field = DateField::new("due", day, true);
-            field.set_at(NaiveTime::from_hms_opt(9, 0, 0));
-            assert_eq!(field.at(), NaiveTime::from_hms_opt(9, 0, 0));
+            field.set_at(Time::new(9, 0, 0, 0).ok());
+            assert_eq!(field.at(), Time::new(9, 0, 0, 0).ok());
             assert_eq!(
                 field.value(),
                 day,
@@ -488,14 +480,14 @@ mod tests {
             let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None, false);
             assert_eq!(
                 field.value(),
-                NaiveDate::from_ymd_opt(2026, 6, 30),
+                Date::new(2026, 6, 30).ok(),
                 "the day the binding holds is shown"
             );
             state.set("2026-07-01".to_owned());
             Decorator::sync(&mut field, &(), &());
             assert_eq!(
                 field.value(),
-                NaiveDate::from_ymd_opt(2026, 7, 1),
+                Date::new(2026, 7, 1).ok(),
                 "a day set elsewhere shows in place"
             );
             field.inner_mut().open();
@@ -503,14 +495,14 @@ mod tests {
             Decorator::sync(&mut field, &(), &());
             assert_eq!(
                 field.value(),
-                NaiveDate::from_ymd_opt(2026, 7, 1),
+                Date::new(2026, 7, 1).ok(),
                 "a day set while the calendar is open does not move it"
             );
             field.inner_mut().close();
             assert!(Decorator::update(&mut field, &(), &()));
             assert_eq!(
                 field.value(),
-                NaiveDate::from_ymd_opt(2026, 7, 2),
+                Date::new(2026, 7, 2).ok(),
                 "the day it took shows once the calendar closes"
             );
         }

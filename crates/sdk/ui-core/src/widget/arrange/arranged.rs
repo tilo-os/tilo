@@ -335,7 +335,7 @@ impl<L: Layout> Arranged<L> {
     }
 
     /// The box the children take, as far as they have been laid out: what a layout keeps around
-    /// its content — the gutters a page centres its column in, the room a lane keeps for the
+    /// its content — the gutters a page centres its column in, the room a gutter keeps for the
     /// column beside it — is not part of it.
     #[must_use]
     pub fn content_box(&self) -> Option<Rect> {

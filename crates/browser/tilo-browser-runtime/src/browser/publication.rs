@@ -135,7 +135,7 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
 }
 
 /// Native catalogue requests, answered by the page's existing certified peer.
-/// Shares the retained request collector with the local media lane.
+/// Shares the retained request collector with the local media queue.
 /// # Errors
 /// Refuses closed mounts or unencodable requests.
 #[wasm_bindgen]
@@ -144,6 +144,12 @@ pub fn component_catalogue_requests(id: u64) -> Result<String, JsValue> {
     // tree shows (an answer arrives through a call of its own).
     with_mount_quietly(id, |m| {
         let requests = m.media.take_catalogue_requests(&mut m.frame);
+        // Taking them also kept what the window of a mount of one app asked to read of other
+        // apps' documents: answered now by the peer's code, not on the next frame something
+        // else asks for.
+        if m.desktop.is_none() {
+            crate::replicated::answer_reads_alone(m);
+        }
         serde_json::to_string(&requests).map_err(error)
     })
 }

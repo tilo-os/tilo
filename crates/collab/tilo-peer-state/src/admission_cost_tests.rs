@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
     // same through the narrowed paths (the parts a change wrote, the rows a
     // change left as they were) as through a whole reading: each governance
     // write a test makes compares the two ([`crate::workspace::changed_rows_by`]),
-    // and the member list, access and standings after each step are the ones a
+    // and the member list, access and accesses after each step are the ones a
     // copy that never read an earlier state derives.
     {
         type Step<'a> = (&'a str, Box<dyn Fn(&mut StatePeer) + 'a>);
@@ -203,8 +203,8 @@ tilo_test_env::scenario! {
                 "{step}: who may read"
             );
             assert_eq!(
-                peer.governance().governed_standings(now).unwrap(),
-                fresh.governance().governed_standings(now).unwrap(),
+                peer.governance().governed_device_access(now).unwrap(),
+                fresh.governance().governed_device_access(now).unwrap(),
                 "{step}: what each device may do"
             );
         }
@@ -288,8 +288,8 @@ fn admission_cost_breakdown() {
         time("governed_access again", members, || {
             next.governance().governed_access(now).unwrap()
         });
-        time("governed_standings", members, || {
-            next.governance().governed_standings(now).unwrap()
+        time("governed_device_access", members, || {
+            next.governance().governed_device_access(now).unwrap()
         });
         time("governed_members", members, || {
             next.governance().governed_members(now).unwrap()
@@ -330,7 +330,7 @@ fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
     // The workspace's owner is one of its members, beside the `members` it
     // admitted.
     assert_eq!(people.members.len(), members.saturating_add(1));
-    guest.governance().governed_standings(now).unwrap();
+    guest.governance().governed_device_access(now).unwrap();
     assert!(matches!(guest.security_basis(), Some(Ok(_))));
     crate::governance_work::take()
 }

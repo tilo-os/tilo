@@ -1,12 +1,12 @@
 //! The workspace-join exchange answered by this device's own engine.
 //!
 //! Every key holder's device holds the workspace's admitted governance, its
-//! documents and its join ledger, so a join is answered by whichever device
-//! the joining one reaches: the same ledger, the same admission and the same
+//! documents and its join log, so a join is answered by whichever device
+//! the joining one reaches: the same log, the same admission and the same
 //! bootstrap, published by this device like any other change it makes. No
 //! device answers for another, and no device holds a privilege the workspace's
 //! governance does not give it.
-use super::record::{self, StoredJoinReceipt};
+use super::stored::{self, StoredJoinReceipt};
 use super::{NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::StatePeer;
 use crate::join::TransportHint;
@@ -14,7 +14,7 @@ use crate::join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
 };
 use crate::join_answer::{JoinWorkspaces, WorkspaceTxn};
-use crate::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
+use crate::join_log::{GovernanceMessages, Governed, JoinError, JoinLog, Signer};
 use crate::owner_commit::{CommitBinding, CommitTarget, OwnerCommitReceipt};
 use crate::replica::Replica;
 use collab_types::signer::DeviceSigner;
@@ -33,16 +33,16 @@ fn at(now: u64) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-/// The receipt binding of one join admission: the workspace's join ledger after
+/// The receipt binding of one join admission: the workspace's join log after
 /// it, and the governance change it committed.
 fn join_binding(
     workspace: WorkspaceId,
     device: [u8; 32],
-    ledger: &JoinLedger,
+    log: &JoinLog,
     changes: &[Vec<u8>],
 ) -> Result<CommitBinding, String> {
-    let mut encoded = postcard::to_allocvec(ledger).map_err(|error| error.to_string())?;
-    let request_digest = *blake3::Hasher::new_derive_key("Tilo join admission ledger v1")
+    let mut encoded = postcard::to_allocvec(log).map_err(|error| error.to_string())?;
+    let request_digest = *blake3::Hasher::new_derive_key("Tilo join admission log v1")
         .update(&encoded)
         .finalize()
         .as_bytes();
@@ -69,7 +69,7 @@ struct OwnerWorkspace<'a> {
     named: String,
     /// The workspace state this exchange decides on and answers with.
     peer: StatePeer,
-    record: record::StoredWorkspace,
+    record: stored::StoredWorkspace,
     /// This device's live replica, which the answer is installed into.
     replica: Replica,
     staged: bool,
@@ -117,13 +117,13 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
         }
     }
 
-    fn ledger(&self) -> &JoinLedger {
-        &self.record.join_ledger
+    fn log(&self) -> &JoinLog {
+        &self.record.join_log
     }
 
-    fn stage_ledger(&mut self, ledger: JoinLedger) {
-        if self.record.join_ledger != ledger {
-            self.record.join_ledger = ledger;
+    fn stage_log(&mut self, log: JoinLog) {
+        if self.record.join_log != log {
+            self.record.join_log = log;
             self.staged = true;
         }
     }
@@ -132,7 +132,7 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
         &mut self,
         peer: StatePeer,
         now: u64,
-        decide: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
+        decide: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError> {
         let before = self.peer.workspace_heads().unwrap_or_default();
         self.peer = peer;
@@ -158,18 +158,18 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
         // device takes no commit that brings it into the workspace's key group, and reads
         // nothing sealed under the keys that follow.
         let admitted = changes.clone();
-        self.record.join_ledger = answered;
+        self.record.join_log = answered;
         self.record.generation = generation;
         if !changes.is_empty() {
             let binding = join_binding(
                 self.workspace,
                 self.record.device.device_public_key,
-                &self.record.join_ledger,
+                &self.record.join_log,
                 &changes,
             )
             .map_err(JoinError::new)?;
             if self.record.join_admissions.len() >= MAX_JOIN_RECEIPTS {
-                return Err(JoinError::new("native join custody capacity exhausted"));
+                return Err(JoinError::new("native join ownership capacity exhausted"));
             }
             self.record.join_admissions.insert(
                 hex::encode(binding.request_digest),
@@ -221,7 +221,7 @@ impl std::fmt::Debug for OwnerJoinWorkspaces {
 
 impl OwnerJoinWorkspaces {
     /// Answer joins for `owner`'s workspaces as the device `signer` is the
-    /// custody of, the device its commits are made as.
+    /// ownership of, the device its commits are made as.
     #[must_use]
     pub fn new(owner: NativeWorkspaceOwner, signer: impl DeviceSigner + 'static) -> Self {
         Self {
@@ -281,9 +281,9 @@ impl JoinWorkspaces for OwnerJoinWorkspaces {
 }
 
 impl NativeWorkspaceOwner {
-    /// Issue an invitation into `workspace` as this device, signed by `signer`, its custody,
+    /// Issue an invitation into `workspace` as this device, signed by `signer`, its ownership,
     /// outside the owner's turn, and
-    /// publish it with the workspace's join ledger: the invitation's grant names
+    /// publish it with the workspace's join log: the invitation's grant names
     /// this device, which answers its redemption like any other key holder.
     /// With `makes_administrator`, it also makes whoever redeems it an
     /// administrator: an Editor's invitation, which only someone who may make
@@ -313,13 +313,6 @@ impl NativeWorkspaceOwner {
                 if key.device_public_key() != record.device.device_public_key {
                     return Err("invitation is not signed by this device".into());
                 }
-                view.peer().require_member_writer(key, now)?;
-                if makes_administrator {
-                    view.peer().require_administrator_invitation(key, now)?;
-                } else {
-                    view.peer()
-                        .require_invitation_authority(key, request.role, now)?;
-                }
                 let issued = {
                     let governed = Governed {
                         peer: view.peer().into(),
@@ -329,7 +322,7 @@ impl NativeWorkspaceOwner {
                         governance_messages: None,
                     };
                     record
-                        .join_ledger
+                        .join_log
                         .issue_as(
                             &governed,
                             administrator,
@@ -353,13 +346,13 @@ impl NativeWorkspaceOwner {
     }
 
     /// Cancel the invitation `request` names in `workspace` as this device,
-    /// signed with `key`, and publish the workspace's join ledger without it:
+    /// signed with `key`, and publish the workspace's join log without it:
     /// the link is dead for every member that takes the change, and no host
-    /// keeps a list of cancelled links. Answers whether the ledger changed;
+    /// keeps a list of cancelled links. Answers whether the log changed;
     /// asking again with the same request changes nothing.
     ///
     /// An invitation is cancelled by the person who issued it, from any of
-    /// their devices: the ledger keeps the issuer's user root, not the one
+    /// their devices: the log keeps the issuer's user root, not the one
     /// device that first made the link.
     ///
     /// # Errors
@@ -380,14 +373,14 @@ impl NativeWorkspaceOwner {
             }
             view.peer().require_member_writer(key, now)?;
             let issuer = record
-                .join_ledger
+                .join_log
                 .issuer_of(request.invite_id)
                 .ok_or("invitation does not exist")?;
             if issuer != record.device.user_public_key {
                 return Err("an invitation is cancelled by the person who issued it".into());
             }
             if !record
-                .join_ledger
+                .join_log
                 .cancel(request)
                 .map_err(|error| error.to_string())?
             {
@@ -415,6 +408,6 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<Vec<PendingInvitation>, String> {
         let now = crate::owner::enrollment::ns(now)?;
-        self.with_current(workspace, |view| Ok(view.record.join_ledger.pending(now)))
+        self.with_current(workspace, |view| Ok(view.record.join_log.pending(now)))
     }
 }

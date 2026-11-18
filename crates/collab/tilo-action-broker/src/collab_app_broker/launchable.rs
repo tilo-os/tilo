@@ -92,7 +92,7 @@ fn superseded_by(key: &SurfaceKey, retained: &SurfaceKey) -> bool {
 
 /// Starts `app_id` in a workspace in place of the host's launcher. Tests
 /// stand in for launching the installed app with one.
-/// Where an app runs with no window, standing in for the host's
+/// Where an app runs with no window, in place of the host's
 /// ([`crate::services::LauncherServices::windowless`]).
 pub(super) type WindowlessStarter = Arc<
     dyn Fn(&str, &str) -> Result<Option<crate::services::WindowlessStart>, String> + Send + Sync,
@@ -429,12 +429,12 @@ impl LaunchableCatalogue {
         }
     }
 
-    /// The launcher standing in for the host's, if one was installed.
+    /// The launcher in place of the host's, if one was installed.
     pub(super) fn launcher(&self) -> Option<AppLauncher> {
         self.launcher.lock_recover().clone()
     }
 
-    /// Where apps run with no window, standing in for the host's, if one
+    /// Where apps run with no window, in place of the host's, if one
     /// was installed.
     pub(super) fn windowless(&self) -> Option<WindowlessStarter> {
         self.windowless.lock_recover().clone()
@@ -467,7 +467,7 @@ mod tests {
     use std::sync::Weak;
 
     use tilo_actions::remote::{
-        ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
+        ActionCallError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
         RemoteActionTarget,
     };
 
@@ -864,7 +864,7 @@ mod tests {
         provider: &str,
         action: &str,
         confirmation: Option<Confirmation>,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         invoke_with(
             host,
             caller,
@@ -883,7 +883,7 @@ mod tests {
         address: &tilo_actions::ActionAddress,
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         host.action_invoke(
             caller,
             None,
@@ -907,7 +907,7 @@ mod tests {
         .ok()
         .flatten()
         .unwrap_or_else(|| {
-            Err(ActionHostError::Unavailable {
+            Err(ActionCallError::Unavailable {
                 reason: format!("the admission of {address:?} never arrived"),
             })
         })
@@ -1030,7 +1030,7 @@ mod tests {
             let tree = tree.shared();
             let (state, _bridge) = AppBrokerState::test_state(
                 Some(tree.authority()),
-                crate::services::HostServices {
+                crate::services::ProcessServices {
                     launcher: Some(Arc::new(Pressed(Mutex::new(vec!["so.tilo.chat".into()])))),
                     ..tree.services()
                 },
@@ -1178,15 +1178,15 @@ mod tests {
                     serde_json::json!({"path": [{"field": "notes"}], "op": "remove-item", "id": "n1"})
                 )
                 .err(),
-                Some(ActionHostError::confirmation_required()),
+                Some(ActionCallError::confirmation_required()),
                 "removing a note asks, as a delete verb does"
             );
         }
 
-        phase an_agent_asked_first_acts_only_on_the_persons_witnessed_confirmation;
+        phase an_agent_asked_first_acts_only_on_the_persons_approved_confirmation;
         // An action the workspace's grants let an agent take only after asking is
         // offered to it marked as asking for confirmation. The agent's own word
-        // does not confirm it; the person's answer, witnessed on their device,
+        // does not confirm it; the person's answer, approved on their device,
         // does, for that one invocation.
         {
             use crate::test_support::{Answer, Grantee, Grants as _, KindSet, TreePath};
@@ -1229,7 +1229,7 @@ mod tests {
 
             assert_eq!(
                 invoke(&state, &agent, "5", "new-window", None).err(),
-                Some(ActionHostError::confirmation_required())
+                Some(ActionCallError::confirmation_required())
             );
             assert_eq!(
                 invoke(
@@ -1240,7 +1240,7 @@ mod tests {
                     Some(Confirmation::Confirmed)
                 )
                 .err(),
-                Some(ActionHostError::confirmation_required()),
+                Some(ActionCallError::confirmation_required()),
                 "an agent never confirms by its own word"
             );
             assert!(app.try_recv().is_err(), "nothing ran");
@@ -1259,9 +1259,9 @@ mod tests {
                 appearance: None,
                 on_behalf_of: None,
             };
-            let binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
-            let witnessed = state.witness_confirmation(&binding).unwrap();
-            request.confirmation = Some(Confirmation::Witnessed(witnessed));
+            let binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
+            let approved = state.approval_confirmation(&binding).unwrap();
+            request.confirmation = Some(Confirmation::Approved(approved));
             let call = |request: &InvokeRequest| {
                 state
                     .action_invoke(&agent, None, None, request)
@@ -1284,16 +1284,16 @@ mod tests {
             request.invocation = tilo_actions::InvocationId::new();
             assert_eq!(
                 call(&request).err(),
-                Some(ActionHostError::confirmation_required())
+                Some(ActionCallError::confirmation_required())
             );
-            let mut other_binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
+            let mut other_binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             other_binding.action = "empty-trash".into();
-            request.confirmation = Some(Confirmation::Witnessed(
-                state.witness_confirmation(&other_binding).unwrap(),
+            request.confirmation = Some(Confirmation::Approved(
+                state.approval_confirmation(&other_binding).unwrap(),
             ));
             assert_eq!(
                 call(&request).err(),
-                Some(ActionHostError::confirmation_required())
+                Some(ActionCallError::confirmation_required())
             );
         }
 
@@ -1612,7 +1612,7 @@ mod tests {
             );
             assert_eq!(
                 invoke(&state, &owner, &target.provider, "empty-trash", None),
-                Err(ActionHostError::confirmation_required()),
+                Err(ActionCallError::confirmation_required()),
                 "the app's own contract admits what it offers"
             );
         }
@@ -1652,7 +1652,7 @@ mod tests {
                     "new-window",
                     None,
                 ),
-                Err(ActionHostError::NotPermitted),
+                Err(ActionCallError::NotPermitted),
             );
             assert!(launches.lock().expect("launches").is_empty());
 
@@ -1956,7 +1956,7 @@ mod tests {
         state: &Arc<AppBrokerState>,
         caller: &Caller,
         workspace: &str,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         state
             .action_invoke(
                 caller,
@@ -1984,7 +1984,7 @@ mod tests {
             .ok()
             .flatten()
             .unwrap_or_else(|| {
-                Err(ActionHostError::Unavailable {
+                Err(ActionCallError::Unavailable {
                     reason: "the start never answered".into(),
                 })
             })
@@ -2087,7 +2087,7 @@ mod tests {
                 "new-window",
             );
             match invoke(&state, &owner, &target.provider, "new-window", None) {
-                Err(ActionHostError::Unavailable { reason }) => {
+                Err(ActionCallError::Unavailable { reason }) => {
                     assert!(
                         reason.contains("no broker") && reason.contains(APP),
                         "{reason}"
@@ -2121,7 +2121,7 @@ mod tests {
                 "new-window",
             );
             match invoke(&state, &owner, &target.provider, "new-window", None) {
-                Err(ActionHostError::Unavailable { reason }) => assert!(
+                Err(ActionCallError::Unavailable { reason }) => assert!(
                     reason.contains("the record did not open") && reason.contains(APP),
                     "{reason}"
                 ),
@@ -2208,7 +2208,7 @@ mod tests {
         }]);
         let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.authority()),
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 launcher: Some(Arc::new(installed)),
                 ..tree.services()
             },
@@ -2364,7 +2364,7 @@ mod tests {
             assert!(offered_rows(&state, &stranger, "new-window").is_empty());
             assert_eq!(
                 invoke(&state, &stranger, &provider, "new-window", None),
-                Err(ActionHostError::NotPermitted),
+                Err(ActionCallError::NotPermitted),
             );
 
             let owner = Caller::local_person("owner").in_workspace(&workspace);
@@ -2378,7 +2378,7 @@ mod tests {
             );
             assert_eq!(
                 invoke(&state, &owner, &provider, "empty-trash", None),
-                Err(ActionHostError::confirmation_required()),
+                Err(ActionCallError::confirmation_required()),
                 "the manifest's confirmation is asked for before the launch"
             );
             assert!(
@@ -2409,7 +2409,7 @@ mod tests {
             let refused = invoke(&state, &owner, provider, "never-published", None);
             assert_eq!(*launches.lock().expect("launches"), [APP]);
             match refused {
-                Err(ActionHostError::Unavailable { reason }) => assert!(
+                Err(ActionCallError::Unavailable { reason }) => assert!(
                     reason.contains(APP) && reason.contains("did not offer \"never-published\""),
                     "{reason}"
                 ),
@@ -2439,7 +2439,7 @@ mod tests {
                     "new-window",
                     None,
                 ),
-                Err(ActionHostError::NotPermitted),
+                Err(ActionCallError::NotPermitted),
                 "a caller who may not launch the app does not start it"
             );
             assert_eq!(
@@ -2450,7 +2450,7 @@ mod tests {
                     "new-window",
                     None,
                 ),
-                Err(ActionHostError::UnknownAction),
+                Err(ActionCallError::UnknownAction),
                 "a remote device does not launch apps on this desktop"
             );
             let elsewhere = tilo_actions::remote::application_action_target(
@@ -2467,7 +2467,7 @@ mod tests {
                     "new-window",
                     None,
                 ),
-                Err(ActionHostError::UnknownAction),
+                Err(ActionCallError::UnknownAction),
                 "a workspace the caller is not in launches nothing"
             );
             assert!(launches.lock().expect("launches").is_empty());
@@ -2483,7 +2483,7 @@ mod tests {
 
             assert_eq!(
                 invoke(&state, &owner, &provider, "empty-trash", None),
-                Err(ActionHostError::confirmation_required())
+                Err(ActionCallError::confirmation_required())
             );
             assert_eq!(
                 invoke(
@@ -2493,7 +2493,7 @@ mod tests {
                     "new-window",
                     None,
                 ),
-                Err(ActionHostError::NotPermitted),
+                Err(ActionCallError::NotPermitted),
                 "a caller who may not launch the app does not start it"
             );
             assert_eq!(
@@ -2504,7 +2504,7 @@ mod tests {
                     "new-window",
                     None,
                 ),
-                Err(ActionHostError::UnknownAction),
+                Err(ActionCallError::UnknownAction),
                 "a remote device does not launch apps on this desktop"
             );
             assert!(launches.lock().expect("launches").is_empty());
@@ -2530,7 +2530,7 @@ mod tests {
             let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
             match invoke(&state, &owner, &provider, "new-window", None) {
-                Err(ActionHostError::Unavailable { reason }) => assert!(
+                Err(ActionCallError::Unavailable { reason }) => assert!(
                     reason.contains(APP) && reason.contains("did not offer"),
                     "the timeout names the app and what it failed to do: {reason}"
                 ),
@@ -2561,7 +2561,7 @@ mod tests {
         caller: &Caller,
         provider: &str,
         action: &'static str,
-    ) -> std::thread::JoinHandle<Result<tilo_actions::remote::InvocationReceipt, ActionHostError>>
+    ) -> std::thread::JoinHandle<Result<tilo_actions::remote::InvocationReceipt, ActionCallError>>
     {
         let state = Arc::clone(state);
         let caller = caller.clone();
@@ -2740,7 +2740,7 @@ mod tests {
     }
 
     type AdmissionAnswer = tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
     >;
 
     fn launch_answer(state: &Arc<AppBrokerState>, workspace: &str) -> AdmissionAnswer {
@@ -2868,7 +2868,7 @@ mod tests {
                 .ok()
                 .flatten();
             assert!(
-                matches!(result, Some(Err(ActionHostError::Unavailable { ref reason }))
+                matches!(result, Some(Err(ActionCallError::Unavailable { ref reason }))
                 if reason.contains("within 0.2 s")),
                 "the queued invocation must report its delivery deadline before pool release: {result:?}"
             );

@@ -5,16 +5,16 @@
 //! **XChaCha20-Poly1305** (192-bit-nonce AEAD, audited `RustCrypto` stack) under a 256-bit key,
 //! stored as `vault.enc` under `$XDG_CONFIG_HOME/tilo/accounts/vault/`. A fresh random nonce
 //! is drawn per write, so re-saving an unchanged vault still produces distinct ciphertext and
-//! no nonce is ever reused. Sealing and key custody live in the `secret-vault` crate, shared
+//! no nonce is ever reused. Sealing and key storage live in the `secret-vault` crate, shared
 //! with the authenticator; this module owns only the account vault's format identity.
 //!
-//! # Key custody
+//! # Key ownership
 //!
 //! Windows protects keys with current-user DPAPI and private file ACLs, including
 //! explicit-root stores. Existing private plaintext keys migrate only after
 //! authenticated restoration, and an existing key that becomes unavailable is
 //! never replaced.
-//! The person's own store has one key custody on every host Tilo runs on:
+//! The person's own store has one key storage on every host Tilo runs on:
 //! [`SecretVault::open`] holds the key in the platform's secret store
 //! (`tilo-secrets`: the Secret Service on Linux, the Keychain on macOS) where
 //! one answers, and otherwise in an owner-only `vault.key` beside the
@@ -39,7 +39,7 @@ use zeroize::Zeroizing;
 
 use crate::AccountId;
 
-pub use secret_vault::Custody as SecretCustody;
+pub use secret_vault::VaultBackend;
 
 /// One account's secret material. Kept out of the plaintext account store entirely — it
 /// only ever lives in the sealed vault (or in memory while an app is connecting).
@@ -101,7 +101,7 @@ pub struct SecretVault {
     /// A write on a thread of its own, for a caller that must not wait on
     /// the disk ([`Self::commit`] on the compositor's frame loop).
     native_in_flight: std::sync::Mutex<Option<NativeWrite>>,
-    custody: SecretCustody,
+    backend: VaultBackend,
     load_error: Option<String>,
     read_only: bool,
     /// The file the entries were read from, as it was then: another process
@@ -132,14 +132,14 @@ impl FileStamp {
     }
 }
 
-pub(crate) fn explicit_root_custody() -> SecretCustody {
+pub(crate) fn explicit_root_backend() -> VaultBackend {
     #[cfg(windows)]
     {
-        SecretCustody::WindowsDpapi
+        VaultBackend::WindowsDpapi
     }
     #[cfg(not(windows))]
     {
-        SecretCustody::LocalFile
+        VaultBackend::LocalFile
     }
 }
 impl SecretVault {
@@ -149,12 +149,12 @@ impl SecretVault {
     ///
     /// This is the person's store, whatever holds its key: the platform's
     /// secret store where it answers, otherwise an owner-only key file
-    /// beside the ciphertext ([`SecretCustody::for_session`]).
+    /// beside the ciphertext ([`VaultBackend::for_session`]).
     pub fn open() -> Self {
         match crate::config_root() {
             Some(root) => {
                 let dir = crate::vault_dir_in(&root);
-                Self::open_at(dir, SecretCustody::for_session())
+                Self::open_at(dir, VaultBackend::for_session())
             }
             None => match tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").config()) {
                 Ok(page) => Self::open_page(page),
@@ -166,7 +166,7 @@ impl SecretVault {
                     native_in_flight: std::sync::Mutex::default(),
                     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                     page_in_flight: std::sync::Mutex::default(),
-                    custody: explicit_root_custody(),
+                    backend: explicit_root_backend(),
                     stamp: None,
                     read_only: false,
                     load_error: Some(format!("user config directory unavailable: {error}")),
@@ -187,25 +187,25 @@ impl SecretVault {
     }
 
     /// Open the vault under an explicit config root. Windows uses the same
-    /// DPAPI custody as the default store; other hosts use a private local key.
+    /// DPAPI ownership as the default store; other hosts use a private local key.
     pub fn open_in(config_root: &Path) -> Self {
         let dir = crate::vault_dir_in(config_root);
-        let custody = explicit_root_custody();
-        Self::open_at(dir, custody)
+        let backend = explicit_root_backend();
+        Self::open_at(dir, backend)
     }
 
-    /// Read an existing explicit-root vault without changing its source custody.
+    /// Read an existing explicit-root vault without changing its source ownership.
     /// Missing ciphertext or keys are recovery errors. This view cannot be saved,
     /// including after in-memory edits; it never creates or restricts source files.
     pub fn open_read_only_in(config_root: &Path) -> Self {
         let dir = crate::vault_dir_in(config_root);
-        let custody = explicit_root_custody();
-        Self::open_read_only_at(dir, custody)
+        let backend = explicit_root_backend();
+        Self::open_read_only_at(dir, backend)
     }
 
-    fn open_read_only_at(dir: PathBuf, custody: SecretCustody) -> Self {
+    fn open_read_only_at(dir: PathBuf, backend: VaultBackend) -> Self {
         let stamp = FileStamp::of(&dir);
-        let (entries, load_error) = match load_entries_read_only(&dir, custody) {
+        let (entries, load_error) = match load_entries_read_only(&dir, backend) {
             Ok(entries) => (entries, None),
             Err(error) => (BTreeMap::new(), Some(error)),
         };
@@ -217,7 +217,7 @@ impl SecretVault {
             native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
-            custody,
+            backend,
             stamp,
             load_error,
             read_only: true,
@@ -225,9 +225,9 @@ impl SecretVault {
     }
 
     /// Open the encrypted vault in a supplied profile-bound config directory.
-    /// Browser hosts must load that directory's file mirror and secret custody
+    /// Browser hosts must load that directory's file mirror and secret storage
     /// before opening. The Dir capability, not an app-chosen user label, selects
-    /// the inventory; native key custody is unaffected.
+    /// the inventory; native key storage is unaffected.
     pub fn open_page(page: tilo_files::Dir) -> Self {
         let (entries, load_error) = match load_page_entries(&page) {
             Ok(entries) => (entries, None),
@@ -244,16 +244,16 @@ impl SecretVault {
             native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
-            custody: SecretCustody::System,
+            backend: VaultBackend::System,
             stamp: None,
             load_error,
             read_only: false,
         }
     }
 
-    fn open_at(dir: PathBuf, custody: SecretCustody) -> Self {
+    fn open_at(dir: PathBuf, backend: VaultBackend) -> Self {
         let stamp = FileStamp::of(&dir);
-        let (entries, load_error) = match load_entries(&dir, custody) {
+        let (entries, load_error) = match load_entries(&dir, backend) {
             Ok(entries) => (entries, None),
             Err(error) => {
                 tracing::warn!(%error, "accounts: vault unavailable; writes disabled until reopen");
@@ -268,7 +268,7 @@ impl SecretVault {
             native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
-            custody,
+            backend,
             stamp,
             load_error,
             read_only: false,
@@ -290,9 +290,9 @@ impl SecretVault {
             return;
         }
         let loaded = if self.read_only {
-            load_entries_read_only(&self.dir, self.custody)
+            load_entries_read_only(&self.dir, self.backend)
         } else {
-            load_entries(&self.dir, self.custody)
+            load_entries(&self.dir, self.backend)
         };
         match loaded {
             Ok(mut entries) => {
@@ -324,12 +324,17 @@ impl SecretVault {
         self.load_error.as_deref()
     }
 
-    pub fn custody(&self) -> SecretCustody {
-        self.custody
+    pub fn backend(&self) -> VaultBackend {
+        self.backend
     }
 
     /// Store (or replace) `secret` for `id`. In-memory until [`Self::save`].
     pub fn put(&mut self, id: &AccountId, secret: &Secret) {
+        // A secret that changes with no word of where it was typed for is
+        // typed for no server yet ([`crate::typed_for`]).
+        if self.entries.get(id.as_str()) != Some(secret) {
+            self.typed_for_nowhere(id);
+        }
         let original = self.entries.insert(id.as_str().to_string(), secret.clone());
         let change = self
             .pending
@@ -360,6 +365,7 @@ impl SecretVault {
 
     /// Remove the secret for `id`, returning whether one existed. In-memory until [`Self::save`].
     pub fn remove(&mut self, id: &AccountId) -> bool {
+        self.typed_for_nowhere(id);
         let original = self.entries.remove(id.as_str());
         let existed = original.is_some();
         let change = self
@@ -385,7 +391,7 @@ impl SecretVault {
     }
 
     /// Seal and atomically persist the vault, returning failures to callers
-    /// that must not publish account metadata unless credential custody
+    /// that must not publish account metadata unless credential storage
     /// succeeded first.
     pub fn try_save(&self) -> Result<(), String> {
         match self.written(true)? {
@@ -467,17 +473,17 @@ impl SecretVault {
         if wait {
             // Written even with no edits: a vault that cannot be read back
             // is refused here rather than reported saved.
-            write_native(&self.dir, self.custody, &submitted)?;
+            write_native(&self.dir, self.backend, &submitted)?;
             self.settle(submitted);
             return Ok(Written::Durable);
         }
         if submitted.is_empty() {
             return Ok(Written::Durable);
         }
-        let (dir, custody, edits) = (self.dir.clone(), self.custody, submitted.clone());
+        let (dir, backend, edits) = (self.dir.clone(), self.backend, submitted.clone());
         let thread = std::thread::Builder::new()
             .name("credential-vault".into())
-            .spawn(move || write_native(&dir, custody, &edits))
+            .spawn(move || write_native(&dir, backend, &edits))
             .map_err(|error| format!("could not start writing the credential vault: {error}"))?;
         *in_flight = Some(NativeWrite { submitted, thread });
         Ok(Written::InFlight)
@@ -524,15 +530,15 @@ impl std::fmt::Debug for NativeWrite {
 
 /// Seal and atomically write the vault in `dir` with `edits` merged into
 /// what it holds, under its lock.
-fn write_native(dir: &Path, custody: SecretCustody, edits: &PendingEdits) -> Result<(), String> {
+fn write_native(dir: &Path, backend: VaultBackend, edits: &PendingEdits) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("could not create vault directory: {error}"))?;
     let _lock =
         advisory_lock::FileLock::open(&dir.join("vault.lock"), advisory_lock::LockMode::Exclusive)
             .map_err(|error| format!("could not lock credential vault: {error}"))?;
-    let entries = merge_edits(load_entries(dir, custody)?, edits)?;
+    let entries = merge_edits(load_entries(dir, backend)?, edits)?;
     let key =
-        load_or_create_key(dir, custody).ok_or_else(|| "no vault key is available".to_string())?;
+        load_or_create_key(dir, backend).ok_or_else(|| "no vault key is available".to_string())?;
     let plaintext = Zeroizing::new(
         serde_json::to_vec(&entries)
             .map_err(|error| format!("could not serialize credential vault: {error}"))?,
@@ -687,10 +693,10 @@ fn decode_page_entries(
 }
 
 /// Bounded, owner-checked ciphertext reads preserve inherited ciphertext modes;
-/// the existing key retains strict canonical private-file custody.
+/// the existing key retains strict canonical private-file ownership.
 fn load_entries_read_only(
     dir: &Path,
-    custody: SecretCustody,
+    backend: VaultBackend,
 ) -> Result<BTreeMap<String, Secret>, String> {
     const MAX_BLOB: u64 = 8 * 1024 * 1024;
     let file = tilo_files::native::private::read_ciphertext(&dir.join("vault.enc"))
@@ -709,7 +715,7 @@ fn load_entries_read_only(
         return Err("credential vault exceeds read limit".to_string());
     }
     let key = FORMAT
-        .read_existing_key(dir, custody)
+        .read_existing_key(dir, backend)
         .ok_or_else(|| "existing credential vault key unavailable".to_string())?;
     let plaintext =
         open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
@@ -735,13 +741,13 @@ fn merge_edits(
     Ok(entries)
 }
 
-fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, Secret>, String> {
+fn load_entries(dir: &Path, backend: VaultBackend) -> Result<BTreeMap<String, Secret>, String> {
     let blob = match std::fs::read(dir.join("vault.enc")) {
         Ok(blob) => blob,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => return Err(format!("could not read credential vault: {error}")),
     };
-    let key = load_or_create_key(dir, custody)
+    let key = load_or_create_key(dir, backend)
         .ok_or_else(|| "credential vault key unavailable".to_string())?;
     let plaintext =
         open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
@@ -751,9 +757,9 @@ fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, S
 
 /// Read the vault key from `dir`, generating + persisting a fresh random one the first time.
 /// `None` only when the key can neither be read nor created. The single point of key
-/// custody — see module docs.
-fn load_or_create_key(dir: &Path, custody: SecretCustody) -> Option<VaultKey> {
-    FORMAT.load_or_create_key(dir, custody)
+/// ownership — see module docs.
+fn load_or_create_key(dir: &Path, backend: VaultBackend) -> Option<VaultKey> {
+    FORMAT.load_or_create_key(dir, backend)
 }
 
 fn seal(key: &VaultKey, plaintext: &[u8]) -> Option<Vec<u8>> {
@@ -809,7 +815,7 @@ mod tests {
     }
 
     fn local_file_key(dir: &Path) -> Option<VaultKey> {
-        load_or_create_key(dir, SecretCustody::LocalFile)
+        load_or_create_key(dir, VaultBackend::LocalFile)
     }
 
     fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
@@ -825,7 +831,7 @@ mod tests {
         use std::os::windows::fs::MetadataExt as _;
 
         #[derive(Debug, PartialEq, Eq)]
-        struct Witness {
+        struct Proof {
             name: std::ffi::OsString,
             bytes: Vec<u8>,
             attributes: u32,
@@ -847,7 +853,7 @@ mod tests {
             result.stdout
         }
 
-        fn snapshot(directory: &Path) -> Vec<Witness> {
+        fn snapshot(directory: &Path) -> Vec<Proof> {
             let mut paths: Vec<_> = std::fs::read_dir(directory)
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
@@ -865,7 +871,7 @@ mod tests {
                     } else {
                         Vec::new()
                     };
-                    Witness {
+                    Proof {
                         name: path.file_name().unwrap().to_owned(),
                         bytes,
                         attributes: metadata.file_attributes(),
@@ -896,7 +902,7 @@ mod tests {
             let before = snapshot(&directory);
             let mut readonly = SecretVault::open_read_only_in(&root);
             assert!(readonly.recovery_error().is_none());
-            assert_eq!(readonly.custody(), SecretCustody::WindowsDpapi);
+            assert_eq!(readonly.backend(), VaultBackend::WindowsDpapi);
             assert_eq!(
                 readonly.get(&id),
                 Some(Secret::password("original-private-secret"))
@@ -1006,7 +1012,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn readonly_missing_or_corrupt_source_custody_never_creates_or_repairs_files() {
+    fn readonly_missing_or_corrupt_source_ownership_never_creates_or_repairs_files() {
         use std::io::Write as _;
         let root = temp_root();
         let missing = root.join("absent");
@@ -1057,7 +1063,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let root = temp_root();
         let dir = crate::vault_dir_in(&root);
-        let mut vault = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
+        let mut vault = SecretVault::open_at(dir.clone(), VaultBackend::LocalFile);
         assert!(vault.recovery_error().is_none());
         vault.put(&AccountId::from("a"), &Secret::password("secret"));
         vault.try_save().unwrap();
@@ -1067,7 +1073,7 @@ mod tests {
             0,
             "the key beside the vault is the person's alone"
         );
-        let reopened = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
+        let reopened = SecretVault::open_at(dir.clone(), VaultBackend::LocalFile);
         assert!(reopened.recovery_error().is_none());
         assert_eq!(
             reopened.get(&AccountId::from("a")).unwrap().password,
@@ -1096,15 +1102,15 @@ mod tests {
     fn vault_key_is_created_once_and_owner_only() {
         {
             let root = temp_root();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let check = std::sync::Arc::new(std::sync::Barrier::new(4));
             // Spawn every member before joining: interleaving spawn/join
             // would deadlock the barrier.
             let mut workers = Vec::with_capacity(4);
             for _ in 0..4 {
                 let root = root.clone();
-                let gate = std::sync::Arc::clone(&gate);
+                let check = std::sync::Arc::clone(&check);
                 workers.push(std::thread::spawn(move || {
-                    gate.wait();
+                    check.wait();
                     local_file_key(&root).unwrap()
                 }));
             }
@@ -1143,11 +1149,11 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn windows_key_custody_never_leaks_rotates_or_falls_back() {
+    fn windows_key_ownership_never_leaks_rotates_or_falls_back() {
         {
             let root = temp_root();
             let mut vault =
-                SecretVault::open_at(crate::vault_dir_in(&root), SecretCustody::LocalFile);
+                SecretVault::open_at(crate::vault_dir_in(&root), VaultBackend::LocalFile);
             vault.put(&AccountId::from("protected"), &Secret::password("secret"));
             vault.try_save().unwrap();
             let directory = crate::vault_dir_in(&root);
@@ -1245,21 +1251,21 @@ mod tests {
 
         {
             let root = temp_root();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let check = std::sync::Arc::new(std::sync::Barrier::new(4));
             let mut workers = Vec::new();
             for _ in 0..4 {
                 let root = root.clone();
-                let gate = gate.clone();
+                let check = check.clone();
                 workers.push(std::thread::spawn(move || {
-                    gate.wait();
-                    load_or_create_key(&root, SecretCustody::WindowsDpapi).unwrap()
+                    check.wait();
+                    load_or_create_key(&root, VaultBackend::WindowsDpapi).unwrap()
                 }));
             }
             let keys: Vec<_> = workers
                 .into_iter()
                 .map(|worker| worker.join().unwrap())
                 .collect();
-            let persisted = load_or_create_key(&root, SecretCustody::WindowsDpapi).unwrap();
+            let persisted = load_or_create_key(&root, VaultBackend::WindowsDpapi).unwrap();
             assert!(keys.iter().all(|key| *key == persisted));
             assert!(!root.join("vault.key").exists());
             assert!(tilo_files::native::private::read(&root.join("vault.key.dpapi")).is_ok());
@@ -1451,9 +1457,9 @@ mod tests {
             {
                 let mut v = SecretVault::open_in(&root);
                 #[cfg(not(windows))]
-                assert_eq!(v.custody(), SecretCustody::LocalFile);
+                assert_eq!(v.backend(), VaultBackend::LocalFile);
                 #[cfg(windows)]
-                assert_eq!(v.custody(), SecretCustody::WindowsDpapi);
+                assert_eq!(v.backend(), VaultBackend::WindowsDpapi);
                 v.put(&id, &Secret::password("hunter2"));
                 v.save();
             }

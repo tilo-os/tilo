@@ -48,8 +48,8 @@ fn archive_review_cannot_authorize_a_different_backend_ciphertext() {
     .unwrap();
     // Both packages have valid passwords, purposes and archive contents, but
     // independent encryption means the second is not the reviewed ciphertext.
-    assert!(custody::hold(&reviewed, &second, PASSWORD, &cancel).is_err());
-    assert!(custody::hold(&reviewed, &first, PASSWORD, &cancel).is_ok());
+    assert!(ownership::hold(&reviewed, &second, PASSWORD, &cancel).is_err());
+    assert!(ownership::hold(&reviewed, &first, PASSWORD, &cancel).is_ok());
 }
 
 tilo_test_env::scenario! {
@@ -107,7 +107,7 @@ tilo_test_env::scenario! {
         assert_eq!(fs::read(target).unwrap(), fs::read(&package).unwrap());
     }
 
-    phase existing_receipt_refuses_delivery_without_changing_existing_custody;
+    phase existing_receipt_refuses_delivery_without_changing_existing_ownership;
     {
         let (_temp, root, package) = fixture();
         let media = root.join("media");

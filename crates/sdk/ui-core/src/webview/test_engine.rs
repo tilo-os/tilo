@@ -72,6 +72,21 @@ struct Inner {
     failing: std::collections::HashMap<String, String>,
     composition: bool,
     text_field: Option<super::TextField>,
+    /// The texts released for one site this engine was written, in order.
+    released: Vec<ReleasedFill>,
+}
+
+/// A text released for one site, as this engine was written it: what a test compares with
+/// what it had the text's keeper release. It prints nothing.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReleasedFill {
+    pub element: String,
+    /// The origin it was released for.
+    pub at: String,
+    pub into: super::FillInto,
+    /// The text, as an engine takes it out of the request; `None` for a request whose text
+    /// was taken before it came here.
+    pub text: Option<String>,
 }
 
 pub struct TestEngine {
@@ -95,6 +110,12 @@ impl TestEngine {
     /// Every command received so far, in order.
     pub fn commands(&self) -> Vec<WebViewCommand> {
         self.lock_inner().commands.clone()
+    }
+
+    /// The texts released for one site this engine was written, in order: what an engine
+    /// takes out of the request as it writes it into the page.
+    pub fn released_fills(&self) -> Vec<ReleasedFill> {
+        self.lock_inner().released.clone()
     }
 
     /// Whether it was asked to hold what the page sends, as a window an agent operates
@@ -360,7 +381,7 @@ impl TestEngine {
     }
 
     /// Answer every later page read of the kind `action` names
-    /// ([`PageRequest::action`]: `fields`, `forms`, `ledger`) with `data`,
+    /// ([`PageRequest::action`]: `fields`, `forms`, `log`) with `data`,
     /// as a page that holds this state answers however often it is read,
     /// until a test sets another. A reply queued with
     /// [`Self::push_page_reply`] still answers first.
@@ -392,13 +413,15 @@ impl TestEngine {
                 }
                 // A tab nothing has operated yet has an empty record, and a
                 // test page has no fields.
-                PageRequest::Ledger { since } => Some(serde_json::json!({
+                PageRequest::Log { since } => Some(serde_json::json!({
                     "entries": [], "next": since, "more": false, "dropped": 0, "waiting": 0,
                 })),
                 PageRequest::Fields { .. } => Some(serde_json::json!({"fields": []})),
                 // A test page holds no words to find and asks nothing.
                 PageRequest::Search { .. } => Some(serde_json::json!({"matches": [], "total": 0})),
                 PageRequest::Forms { .. } => Some(serde_json::json!({"forms": []})),
+                // And it shows no table.
+                PageRequest::Table { .. } => Some(serde_json::json!({"tables": []})),
                 PageRequest::FillForm { form, .. } => Some(serde_json::json!({
                     "form": form, "signature": "", "results": [], "set": [],
                     "submitted": false, "now_asks": [], "unanswered": [],
@@ -452,6 +475,7 @@ impl TestEngine {
                 PageRequest::Click { .. }
                     | PageRequest::Press { .. }
                     | PageRequest::Fill { .. }
+                    | PageRequest::FillReleased { .. }
                     | PageRequest::Select { .. }
                     | PageRequest::Submit { .. }
                     | PageRequest::FillForm { .. }
@@ -896,6 +920,23 @@ impl WebViewEngine for TestEngine {
                 request,
                 ..
             } => {
+                if let PageRequest::FillReleased {
+                    element,
+                    text,
+                    at,
+                    into,
+                } = &request
+                {
+                    // An engine takes the text as it writes the command: no copy of the
+                    // request, the one kept above among them, holds it afterwards.
+                    let text = text.take().map(|text| text.as_str().to_owned());
+                    inner.released.push(ReleasedFill {
+                        element: element.clone(),
+                        at: at.clone(),
+                        into: *into,
+                        text,
+                    });
+                }
                 let result = Self::page_reply_locked(&mut inner, &request);
                 inner
                     .events

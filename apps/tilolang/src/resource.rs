@@ -1,9 +1,9 @@
 //! The resource the framework hosts the tilolang app over.
 //!
-//! The framework's root hosts every app over a resource. A tilolang app's records, their
+//! The framework's root hosts every app over a resource. A tilolang app's documents, their
 //! history, api and search are its instance's: a tilolang host runs it
 //! ([`crate::hosted::HostedWindow`]), the session's or one in this process. This resource only
-//! names the record the framework keeps for the app; its state is that record's heads.
+//! names the document the framework keeps for the app; its state is that document's heads.
 
 use tilolang_tilo::action::DynAction;
 use ui::tilo_resource::{Doc, ModelError, Resource};
@@ -11,14 +11,14 @@ use ui::tilo_resource::{Doc, ModelError, Resource};
 /// The resource a tilolang app's window is hosted over.
 pub struct Workspace;
 
-/// What the framework keeps of its record: its heads, so a change is a new state.
+/// What the framework keeps of its document: its heads, so a change is a new state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceState {
     heads: Vec<ui::automerge::ChangeHash>,
 }
 
 impl Resource for Workspace {
-    const KIND: &'static str = crate::RECORD_KIND;
+    const KIND: &'static str = crate::RESOURCE_TYPE;
     const LABEL: &'static str = "Apps";
     const ACTION_TYPE: &'static str = tilolang_tilo::action::ACTION_TYPE;
 

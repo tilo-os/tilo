@@ -32,7 +32,7 @@ usage:
       from the checkout with cargo, and again on every change of its sources, restarting the
       window on it with its state.
       With --session, develop it in a running nested session instead (SESSION: its --ready
-      file, runtime directory or control socket): every saved .tl file is compiled, installed
+      file, runtime directory, control socket or state directory): every saved .tl file is compiled, installed
       and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
       runtime bundle installed in that session. See docs/tilolang-dev.md.
   tilolang profile [DIR] [--search DIR]... [--scenario NAME] [--seed N] [--size WxH]
@@ -49,9 +49,13 @@ usage:
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
   tilolang repl [--workspace NAME] [--key-file FILE] [--api URL] [--color always|never]
+  tilolang repl --session [SESSION] [--workspace NAME] [--color always|never]
       tilolang typed in one of your workspaces, as you: the one this computer's Tilo login is
       in, or NAME, or the one you pick when your key reaches several. Sign in first with
-      `tilo login` (or act as a key file, or as TILO_API_KEY at URL). Each entry is a program
+      `tilo login` (or act as a key file, or as TILO_API_KEY at URL). With --session, work in
+      a nested session open on this computer instead (dist/dev/nested-session.sh): the
+      only one, the one you pick, or SESSION (its state directory, --ready file, runtime
+      directory or control socket). Each entry is a program
       run as one step: lets are kept, refs (n3) name what answers showed, a bulk change
       previews until `confirm`, `undo` takes a step back.
   tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
@@ -369,6 +373,16 @@ fn repl_command(args: &[String]) -> Result<(), String> {
             "--workspace" | "-w" => options.workspace = Some(value(&mut iter, arg)?),
             "--key-file" => options.key_file = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--api" => options.api = Some(value(&mut iter, arg)?),
+            "--session" => {
+                let named = iter
+                    .as_slice()
+                    .first()
+                    .filter(|next| !next.starts_with('-'));
+                options.session = Some(named.map(PathBuf::from));
+                if named.is_some() {
+                    iter.next();
+                }
+            }
             "--color" => {
                 options.color = match value(&mut iter, arg)?.as_str() {
                     "always" => Some(true),

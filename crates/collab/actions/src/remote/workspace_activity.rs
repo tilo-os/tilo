@@ -518,7 +518,7 @@ pub enum DetailAction {
     Split,
     Merge,
     ChooseSource,
-    UndoRecord,
+    UndoEntry,
     /// Undo the whole agent session.
     UndoSession,
 }
@@ -534,7 +534,7 @@ impl DetailAction {
             Self::Restore => RESTORE,
             Self::Undo => UNDO,
             Self::UndoSession | Self::RetiredUndoSession => UNDO_SESSION,
-            Self::UndoRecord => UNDO_RECORD,
+            Self::UndoEntry => UNDO_RECORD,
             Self::Split => SPLIT,
             Self::Merge => MERGE,
             Self::ChooseSource => CHOOSE_SOURCE,
@@ -655,7 +655,7 @@ pub struct Detail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Comparison>,
     /// The fields the session changed, with what they held either side: empty
-    /// when the host could not read both states.
+    /// when the provider could not read both states.
     pub changes: Vec<FieldChange>,
     /// The session is no longer in the history (an undo or a filter moved it).
     pub gone: bool,
@@ -690,7 +690,7 @@ impl SessionsQuery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ActionView {
-    /// A file it changed: its path, and the lines either side when the host
+    /// A file it changed: its path, and the lines either side when the provider
     /// read them. Without lines the view reads them with a [`DETAIL`]
     /// comparison of the action's range.
     File {

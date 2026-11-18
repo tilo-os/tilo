@@ -10,7 +10,7 @@
 //! Each entry is framed with its length and digest: an entry a crash cut
 //! short fails its digest, and it and anything after it were never
 //! acknowledged, so the journal is read up to it.
-use crate::owner::record::StoredWorkspace;
+use crate::owner::stored::StoredWorkspace;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ const FRAME_HEAD: usize = 4 + 32;
 /// holds them.
 fn fields_of(stored: &StoredWorkspace) -> Result<Arc<[u8]>, String> {
     let fields = StoredWorkspace {
-        peer: crate::owner::record::DurablePeer::default(),
+        peer: crate::owner::stored::DurablePeer::default(),
         ..stored.clone()
     };
     serde_json::to_vec(&fields)

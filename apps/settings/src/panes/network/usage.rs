@@ -5,7 +5,7 @@
 //! page shows the mobile data period against its reset day and the plan's
 //! allowance.
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use provider_settings_ui::bound::{SettingRows as _, record_item};
 use provider_settings_ui::widgets::{El, Item, SettingsSection, block, card, note, row, rows};
 use ui::LocalState;
@@ -45,10 +45,11 @@ impl Span {
         })
     }
 
-    fn days(self, usage: &NetworkUsage, today: NaiveDate) -> (NaiveDate, NaiveDate) {
-        let back = |days: u64| {
+    fn days(self, usage: &NetworkUsage, today: Date) -> (Date, Date) {
+        let back = |days: i64| {
             today
-                .checked_sub_days(chrono::Days::new(days))
+                .checked_sub(jiff::Span::new().days(days))
+                .ok()
                 .unwrap_or(today)
         };
         let from = match self {
@@ -60,8 +61,8 @@ impl Span {
     }
 }
 
-fn today() -> NaiveDate {
-    ui::clock::local_now().date_naive()
+fn today() -> Date {
+    ui::clock::local_now().date()
 }
 
 const SHOWN: usize = 5;
@@ -91,8 +92,8 @@ fn icon_of(kind: ConnectionKind) -> Icon {
 
 fn ranked(
     usage: &NetworkUsage,
-    from: NaiveDate,
-    to: NaiveDate,
+    from: Date,
+    to: Date,
     only: Option<ConnectionKind>,
 ) -> Vec<(&str, &ConnectionUsage, Bytes)> {
     let mut ranked: Vec<_> = usage
@@ -117,9 +118,9 @@ fn detail(bytes: Bytes) -> String {
     )
 }
 
-fn day_label(day: NaiveDate, days: usize) -> String {
+fn day_label(day: Date, days: usize) -> String {
     if days <= 7 {
-        ui::format::weekday_short(chrono::Datelike::weekday(&day))
+        ui::format::weekday_short(day.weekday())
     } else {
         ui::format::month_day(day)
     }
@@ -127,11 +128,14 @@ fn day_label(day: NaiveDate, days: usize) -> String {
 
 pub(super) fn chart(
     usage: &NetworkUsage,
-    from: NaiveDate,
-    to: NaiveDate,
+    from: Date,
+    to: Date,
     only: Option<ConnectionKind>,
 ) -> CategoryChart {
-    let days: Vec<NaiveDate> = from.iter_days().take_while(|day| *day <= to).collect();
+    let days: Vec<Date> = from
+        .series(jiff::Span::new().days(1))
+        .take_while(|day| *day <= to)
+        .collect();
     let categories = days
         .iter()
         .map(|day| {
@@ -494,7 +498,7 @@ pub(crate) fn sample(storage: &ui::storage::AppStorage) {
         limit_gb: 20,
         ..NetworkUsage::default()
     };
-    let mut add = |key: &str, kind, name: &str, day: NaiveDate, megabytes: u64| {
+    let mut add = |key: &str, kind, name: &str, day: Date, megabytes: u64| {
         if megabytes == 0 {
             return;
         }
@@ -510,10 +514,11 @@ pub(crate) fn sample(storage: &ui::storage::AppStorage) {
         );
     };
     for back in 0..42_u64 {
-        let Some(day) = today.checked_sub_days(chrono::Days::new(back)) else {
+        let days = jiff::Span::new().days(i64::try_from(back).unwrap_or(0));
+        let Some(day) = today.checked_sub(days).ok() else {
             continue;
         };
-        let weekday = chrono::Datelike::weekday(&day).num_days_from_monday();
+        let weekday = day.weekday().to_monday_zero_offset();
         let wave = (back * 37 + 11) % 17;
         let workday = weekday < 5;
         add(

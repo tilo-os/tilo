@@ -306,8 +306,8 @@ fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(ui::chrome::panel_ground(theme))
 }
 
-fn clock_label(at: chrono::DateTime<chrono::Local>) -> String {
-    ui::clock::time_of_day(&at)
+fn clock_label(at: jiff::Timestamp) -> String {
+    ui::format::time_of(&at)
 }
 
 impl MapsApp {
@@ -1032,9 +1032,9 @@ impl ui::widget::controls::ActionControls for MapsApp {
 
 #[cfg(test)]
 fn host_location(outcome: LocationOutcome) -> LocationChannel {
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_location(outcome);
-    let channel = ui::host::scoped(&services, location::request_location);
+    let channel = ui::process::scoped(&services, location::request_location);
     assert_eq!(recorder.location_requests(), 1);
     channel
 }

@@ -30,7 +30,7 @@ Schema1 has exactly these fields:
   references. Only the base/RPM images needed for final UKI construction are
   pulled; the skipped stages still require their original parser arguments.
 - `signer`: root-owned external adapter outside the checkout, installed before
-  the launcher's operator-ready gate is released.
+  the launcher's operator-ready check is released.
 - `minimum_free_bytes`: admitted free-space reserve checked on the actual
   container store and evidence filesystem before every stage, including pulls.
   This is a reserve, not a claim to predict unknown expansion. The launcher
@@ -42,7 +42,7 @@ Schema1 has exactly these fields:
 - `prediction_stage_timeout_seconds`: aggregate deadline for all stage-6 work,
   300–8400 seconds. It must be greater than the signing-response deadline plus
   the non-signing command deadline. The 140-minute maximum leaves cleanup and
-  evidence-export time inside the preserved 155-minute post-gate allowance.
+  evidence-export time inside the preserved 155-minute post-check allowance.
   The complete worker deadline is also bounded independently by the launcher.
 - `publish_repository`: `registry.tilo.so/tilo/tilo-development`, exactly the
   repository portion of `new_target`. The driver never updates the intended
@@ -54,8 +54,8 @@ Requests that omit either signing deadline are rejected. Supplying a worker
 default would make the effective signing authorization differ from the exact
 request bytes bound into checkpoints and the operator handshake.
 
-The initial `/work/operator-ready` gate has a separate 7200-second human
-authorization window. Releasing that gate starts the existing request-bound
+The initial `/work/operator-ready` check has a separate 7200-second human
+authorization window. Releasing that check starts the existing request-bound
 signing and build deadlines; the staging allowance does not extend them.
 
 The request itself and all bundle paths are public. Registry authentication

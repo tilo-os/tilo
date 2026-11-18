@@ -44,7 +44,7 @@ class UiClockContractTests(unittest.TestCase):
                     "time.rs": "pub use std::time::{Instant, SystemTime};\n",
                     "lib.rs": "use crate::time::Instant;\nuse std::time::Duration;\n",
                 },
-                crate_path="crates/sdk/tilo-host",
+                crate_path="crates/sdk/tilo-process-services",
             )
             self.assertEqual(contract.audit(root), [])
         with self.subTest(phase='the clock module lives in the host crate only'):
@@ -53,15 +53,15 @@ class UiClockContractTests(unittest.TestCase):
             self.assertEqual(paths, ["crates/sdk/ui-core/src/time.rs"])
         with self.subTest(phase='every toolkit crate is audited'):
             root = self.fixture({"a.rs": "use std::time::Instant;\n"})
-            host = root / "crates/sdk/tilo-host"
+            host = root / "crates/sdk/tilo-process-services"
             (host / "src").mkdir(parents=True)
             (host / "src/b.rs").write_text("use std::time::SystemTime;\n", encoding="utf-8")
             audited = sorted(Path(v.path).as_posix() for v in contract.audit(root))
             self.assertEqual(
                 audited,
                 [
-                    "crates/sdk/tilo-host/clippy.toml",
-                    "crates/sdk/tilo-host/src/b.rs",
+                    "crates/sdk/tilo-process-services/clippy.toml",
+                    "crates/sdk/tilo-process-services/src/b.rs",
                     "crates/sdk/ui-core/src/a.rs",
                 ],
             )
@@ -104,7 +104,7 @@ class UiClockContractTests(unittest.TestCase):
     def found(self, root: Path) -> list[str]:
         return [f"{violation.path}:{violation.line}" for violation in contract.audit(root)]
 
-    def test_a_clock_type_named_through_the_seam_is_not_a_reading_through_it(self):
+    def test_a_clock_type_named_through_the_clock_is_not_a_reading_through_it(self):
         with self.subTest(phase='the module path is read directly'):
             root = self.tree(
                 {
@@ -119,7 +119,7 @@ class UiClockContractTests(unittest.TestCase):
                 self.found(root),
                 ["apps/board/src/faces.rs:2", "apps/board/src/faces.rs:3"],
             )
-        with self.subTest(phase='a bare name imported from the seam is read directly'):
+        with self.subTest(phase='a bare name imported from the clock module is read directly'):
             root = self.tree(
                 {
                     "apps/board/src/roster.rs": (
@@ -136,7 +136,7 @@ class UiClockContractTests(unittest.TestCase):
                 self.found(root),
                 ["apps/board/src/roster.rs:2", "apps/board/src/stamps.rs:2"],
             )
-        with self.subTest(phase='a glob import brings both of the seam types in'):
+        with self.subTest(phase='a glob import brings both of the clock types in'):
             root = self.tree(
                 {"apps/board/src/glob.rs": "use ui::time::*;\nfn f() { let _ = Instant::now(); }\n"}
             )
@@ -161,16 +161,16 @@ class UiClockContractTests(unittest.TestCase):
             )
             self.assertEqual(self.found(root), ["crates/sdk/tilo-app/src/saves.rs:2"])
 
-    def test_a_reading_through_the_seam_passes_and_another_time_module_is_not_it(self):
-        with self.subTest(phase='the seam and its types are read through it'):
+    def test_a_reading_through_the_clock_passes_and_another_time_module_is_not_it(self):
+        with self.subTest(phase='the clock module and its types are read through it'):
             root = self.tree(
                 {
-                    "apps/board/src/seam.rs": (
+                    "apps/board/src/clock.rs": (
                         "use ui::time::{Duration, Instant};\n"
                         "pub fn t(now: Instant) -> Duration { ui::time::now() - now }\n"
                         "pub fn w() -> ui::time::SystemTime { ui::time::wall() }\n"
                     ),
-                    "crates/sdk/ui-core/src/seam.rs": (
+                    "crates/sdk/ui-core/src/clock.rs": (
                         "use crate::time::Instant;\n"
                         "pub fn t(now: Instant) -> crate::time::Instant { crate::time::now() }\n"
                     ),
@@ -182,7 +182,7 @@ class UiClockContractTests(unittest.TestCase):
                 {"apps/board/src/renamed.rs": "use ui::time::Instant as Clock;\nfn f() -> Clock { Clock::now() }\n"}
             )
             self.assertEqual(self.found(root), [])
-        with self.subTest(phase='a nearer std import shadows the seam'):
+        with self.subTest(phase='a nearer std import shadows the clock module'):
             root = self.tree(
                 {
                     "apps/board/src/shadow.rs": (
@@ -202,7 +202,7 @@ class UiClockContractTests(unittest.TestCase):
             )
             self.assertEqual(self.found(root), [])
 
-    def test_a_read_past_the_seam_in_tests_or_comments_is_exempt(self):
+    def test_a_read_past_the_clock_in_tests_or_comments_is_exempt(self):
         root = self.tree(
             {
                 "apps/board/tests/probe.rs": "fn f() { let _ = ui::time::Instant::now(); }\n",

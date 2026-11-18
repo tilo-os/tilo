@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
 
-use crate::record::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
+use crate::guild::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
 use crate::tilo::{self, Message};
 use crate::{emoji, slug};
 
@@ -50,7 +50,7 @@ pub struct Context {
 }
 
 /// Where a workspace's host serves its resources on the web: what `share-link`
-/// mints its links from (`ResourceViewLocator`), less the record, which
+/// mints its links from (`ResourceViewLocator`), less the resource, which
 /// each message names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Links {
@@ -65,17 +65,17 @@ pub struct Links {
 }
 
 impl Links {
-    /// The link that opens `reference` in its record on the web: the URL
+    /// The link that opens `reference` in its resource on the web: the URL
     /// `share-link` mints for it on the workspace's host.
     pub fn resource(&self, reference: &tilo::Reference) -> Result<String, String> {
         let provider = reference
             .provider
             .as_deref()
-            .ok_or_else(|| format!("{} names no record", reference.id))?;
+            .ok_or_else(|| format!("{} names no resource", reference.id))?;
         let (app, record) = provider
             .strip_prefix("record:")
             .and_then(|rest| rest.split_once(':'))
-            .ok_or_else(|| format!("{provider} names no record"))?;
+            .ok_or_else(|| format!("{provider} names no resource"))?;
         let request = tilo_resource::share::ShareRequest {
             resource: reference.id.clone(),
             kind: reference.kind.clone(),
@@ -404,7 +404,7 @@ pub struct DeleteItem {
 /// What deleting or removing Tilo message `message` becomes: its Discord
 /// copy deleted, through the webhook when the bridge sent it and as the bot
 /// user otherwise. `channel` is the message's Tilo channel (the message is
-/// gone from the record by now).
+/// gone from the resource by now).
 #[must_use]
 pub fn plan_delete(guild: &Guild, channel: &str, message: &str) -> Vec<DeleteItem> {
     let Some(mapped) = guild.mapping(MappedKind::Message, message) else {

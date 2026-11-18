@@ -56,24 +56,24 @@ pub(crate) fn answering() -> bool {
 
 /// Answer what the person's agents on the host of session `peer`
 /// (`WasmPeer::id`, whose device `cert` certifies) ask them, over that
-/// session, with `custody`: the person's root where the page holds it, else
+/// session, with `device key`: the person's root where the page holds it, else
 /// the session's own device key ([`crate::peer::WasmPeer`]'s
 /// `answerAgentQuestions`). Once per session; asking again does nothing. The
 /// code is fetched if it is not in yet, and the requests kept meanwhile are
 /// answered as it arrives.
 ///
 /// # Errors
-/// `custody` is no custody.
+/// `device key` is no device key.
 pub(crate) fn answer_agent_questions(
     peer: u32,
-    custody: &JsValue,
+    device_key: &JsValue,
     cert: &DeviceCert,
 ) -> Result<(), JsError> {
     ANSWERING.with(|answering| answering.set(true));
     if let Some(code) = QUESTIONS.get() {
-        return (code.answer)(peer, custody, cert);
+        return (code.answer)(peer, device_key, cert);
     }
-    ASKED.with_borrow_mut(|asked| asked.push((peer, custody.clone(), cert.clone())));
+    ASKED.with_borrow_mut(|asked| asked.push((peer, device_key.clone(), cert.clone())));
     Ok(())
 }
 
@@ -83,8 +83,8 @@ pub fn code_arrived() {
         return;
     };
     let asked = ASKED.with_borrow_mut(std::mem::take);
-    for (peer, custody, cert) in asked {
-        if let Err(error) = (code.answer)(peer, &custody, &cert) {
+    for (peer, device_key, cert) in asked {
+        if let Err(error) = (code.answer)(peer, &device_key, &cert) {
             tracing::debug!(?error, "agent questions: this page cannot answer them");
         }
     }

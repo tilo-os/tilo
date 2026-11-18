@@ -1,5 +1,5 @@
 //! This device's lists as resources of the session's: its windows, the tray, the agents at the
-//! person's plane and the styles, and inviting into a workspace. A shell's views read them, and
+//! person's peer network and the styles, and inviting into a workspace. A shell's views read them, and
 //! so does a script or an agent, through the API, by the same addresses: one reading for every
 //! reader.
 
@@ -253,7 +253,7 @@ impl Surfaces {
             self.settled();
             return;
         }
-        // The quick settings are their own app, standing where the stack places its part: a
+        // The quick settings are their own app, where the stack places its part: a
         // press opens the part, and the panel's app draws it there. A device without that app,
         // or one the shell covers, keeps the shell's own view of the surface.
         if self.panel_shows(surface) {
@@ -405,14 +405,14 @@ pub(crate) struct DeviceLists {
     pub(crate) person: String,
     /// The surfaces the shell shows over its windows, and where they stand.
     pub(crate) surfaces: Surfaces,
-    /// Who is here, when this session takes part in the collaboration plane.
+    /// Who is here, when this session takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
     pub(crate) activities: Rc<crate::chrome::Activities>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     /// The agents the person admitted at its MCP server: each works here as itself, and the bar
     /// shows it as its own presence.
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
@@ -439,7 +439,7 @@ pub(crate) struct Shared {
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
 }
@@ -833,9 +833,9 @@ impl DeviceLists {
             )));
         };
         let request = if item.item_is_menu {
-            tilo_tray_host::TrayRequest::ContextMenu { x: 0, y: 0 }
+            tilo_tray::TrayRequest::ContextMenu { x: 0, y: 0 }
         } else {
-            tilo_tray_host::TrayRequest::Activate { x: 0, y: 0 }
+            tilo_tray::TrayRequest::Activate { x: 0, y: 0 }
         };
         tray.request_or_else(key, request, |_| {})
             .map_err(ApiError::Failed)?;

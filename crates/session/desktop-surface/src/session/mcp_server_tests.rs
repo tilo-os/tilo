@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, mcp_server,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
@@ -26,12 +26,12 @@ impl Host {
     }
 }
 
-impl ActionHost for Host {
+impl ActionProvider for Host {
     fn query(
         &self,
         _: &Caller,
         _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::default()))
     }
 
@@ -39,7 +39,7 @@ impl ActionHost for Host {
         &self,
         _: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.admitted
             .lock()
             .unwrap()
@@ -67,7 +67,7 @@ impl ActionHost for Host {
         self.admitted(id).then(|| Pending::ready(()))
     }
 
-    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }
@@ -87,8 +87,8 @@ fn ask(action: &str) -> InvokeRequest {
 }
 
 fn answer(
-    pending: Pending<Result<InvocationReceipt, ActionHostError>>,
-) -> Result<InvocationReceipt, ActionHostError> {
+    pending: Pending<Result<InvocationReceipt, ActionCallError>>,
+) -> Result<InvocationReceipt, ActionCallError> {
     pending
         .wait_timeout(Duration::from_secs(1))
         .ok()
@@ -103,7 +103,7 @@ fn the_persons_asks_reach_the_api_the_host_hands_the_session() {
 
     let early = answer(session.invoke(&person, ask(mcp_server::SERVER)));
     assert!(
-        matches!(early, Err(ActionHostError::Unavailable { .. })),
+        matches!(early, Err(ActionCallError::Unavailable { .. })),
         "without an API the read says none answers: {early:?}"
     );
 
@@ -127,7 +127,7 @@ fn the_persons_asks_reach_the_api_the_host_hands_the_session() {
     // invocation the API never admitted read through it.
     let agent = person.clone().delegated_to("claude-code");
     let refused = answer(session.invoke(&agent, ask(mcp_server::STOP)));
-    assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+    assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
     assert_eq!(api.admitted.lock().unwrap().len(), 2);
     assert!(session.observe(&person, &InvocationId::new()).is_none());
 }
@@ -147,7 +147,7 @@ fn the_persons_vault_is_asked_by_the_person_alone() {
     };
     let early = answer(session.invoke(&person, adding()));
     assert!(
-        matches!(early, Err(ActionHostError::Unavailable { .. })),
+        matches!(early, Err(ActionCallError::Unavailable { .. })),
         "without an API nothing keeps it: {early:?}"
     );
 
@@ -162,7 +162,7 @@ fn the_persons_vault_is_asked_by_the_person_alone() {
         .in_workspace("workspace");
     for other in [agent, app] {
         let refused = answer(session.invoke(&other, adding()));
-        assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+        assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
     }
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 }
@@ -182,7 +182,7 @@ fn what_a_person_was_told_is_asked_by_the_person_alone() {
     };
     let early = answer(session.invoke(&person, listing()));
     assert!(
-        matches!(early, Err(ActionHostError::Unavailable { .. })),
+        matches!(early, Err(ActionCallError::Unavailable { .. })),
         "without an API nothing answers it: {early:?}"
     );
 
@@ -197,7 +197,7 @@ fn what_a_person_was_told_is_asked_by_the_person_alone() {
         .in_workspace("workspace");
     for other in [agent, app] {
         let refused = answer(session.invoke(&other, listing()));
-        assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+        assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
     }
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 }
@@ -251,7 +251,7 @@ fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
         let agent = person.clone().delegated_to("claude-code");
         assert_eq!(
             answer(session.invoke(&agent, show())).unwrap_err(),
-            ActionHostError::UnknownAction,
+            ActionCallError::UnknownAction,
             "{shown}"
         );
         assert!(answer(session.invoke(&person, show())).is_ok(), "{shown}");

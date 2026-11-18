@@ -1003,15 +1003,15 @@ impl Storage {
         delete_if_exists(&self.deferred_pending_path(submission_id))
     }
 
-    pub fn load_review(&self, review_id: &str) -> Result<Option<ReviewRecord>, StorageError> {
+    pub fn load_review(&self, review_id: &str) -> Result<Option<ReviewEntry>, StorageError> {
         load_json(&self.review_path(review_id), "review")
     }
 
-    pub fn load_reviews(&self) -> Result<Vec<ReviewRecord>, StorageError> {
+    pub fn load_reviews(&self) -> Result<Vec<ReviewEntry>, StorageError> {
         load_json_dir(&self.root.join("reviews"), "review")
     }
 
-    pub fn save_review(&self, review: &ReviewRecord) -> Result<(), StorageError> {
+    pub fn save_review(&self, review: &ReviewEntry) -> Result<(), StorageError> {
         save_json(&self.review_path(&review.review_id), review)
     }
 
@@ -1848,7 +1848,7 @@ pub enum ReviewSubject {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReviewRecord {
+pub struct ReviewEntry {
     pub review_id: String,
     pub decision: ReviewDecision,
     pub reviewer: String,

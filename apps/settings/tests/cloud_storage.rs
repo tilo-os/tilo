@@ -1,6 +1,6 @@
 //! Cloud storage end to end, for every provider: the person connects the
 //! account in Settings (through the fake authorization server, or Apple's
-//! sign-in on the fake iCloud), custody publishes the short-lived handoff
+//! sign-in on the fake iCloud), ownership publishes the short-lived handoff
 //! credential, the storage daemon's cloud service mounts the account against
 //! the provider's fake server, a file is written and read back, and removing
 //! the account in Settings unmounts it and deletes its cache.
@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use account_custody::{OAuthCloud, Registration};
+use account_credentials::{OAuthCloud, Registration};
 use settings::accounts::{AccountKind, AccountRoot};
 use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
 use tilo_oauth::fake::FakeAuthorizationServer;
@@ -25,8 +25,8 @@ use tilo_oauth::fake::FakeAuthorizationServer;
 // Settings-only paste-code journey stays portable.
 #[cfg(target_os = "linux")]
 use {
-    account_custody::Custodian,
-    account_custody::icloud::WebICloud,
+    account_credentials::CredentialStore,
+    account_credentials::icloud::WebICloud,
     cloud_source::StaticCredential,
     fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig},
     std::io::Read as _,
@@ -49,7 +49,7 @@ impl BrowserOpener for Browser {
     }
 }
 
-/// Records the authorization URL instead of following it.
+/// Resources the authorization URL instead of following it.
 struct Recorder(std::sync::Mutex<Vec<String>>);
 
 impl BrowserOpener for Recorder {
@@ -64,7 +64,7 @@ impl BrowserOpener for Recorder {
 #[cfg(target_os = "linux")]
 struct Case {
     kind: AccountKind,
-    custodian: Custodian,
+    credential_store: CredentialStore,
     icloud: Option<(&'static str, &'static str, &'static str)>,
     /// A file already on the server, when the fake can hold one.
     seeded: Option<(&'static str, &'static [u8])>,
@@ -92,13 +92,13 @@ fn oauth_case(
         registration,
         storage,
     } = fake;
-    let custodian = root
-        .custodian()
+    let credential_store = root
+        .credential_store()
         .with_provider(cloud, auth.provider(), registration)
         .with_storage_config(cloud, storage);
     Case {
         kind,
-        custodian,
+        credential_store,
         icloud: None,
         seeded,
         _servers: Box::new((auth, server)),
@@ -191,12 +191,12 @@ fn dropbox(root: &AccountRoot) -> Case {
 fn icloud(root: &AccountRoot) -> Case {
     use cloud_source_icloud::fake::{APPLE_ID, DEVICE_CODE, FakeICloud, PASSWORD};
     let fake = FakeICloud::start();
-    let custodian = root
-        .custodian()
+    let credential_store = root
+        .credential_store()
         .with_icloud(Arc::new(WebICloud::new(fake.endpoints()).unwrap()));
     Case {
         kind: AccountKind::ICloudDrive,
-        custodian,
+        credential_store,
         icloud: Some((APPLE_ID, PASSWORD, DEVICE_CODE)),
         seeded: None,
         _servers: Box::new(fake),
@@ -285,7 +285,7 @@ fn on_server(
 fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
     let home = tempfile::tempdir().unwrap();
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(case.custodian.clone())
+        .with_credential_store(case.credential_store.clone())
         .with_browser_opener(Arc::new(Browser));
 
     sign_in(case, &mut pane);
@@ -317,7 +317,7 @@ fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
             config_root: Some(root_dir.to_path_buf()),
             mounts_root: home.path().join("Remote"),
             state_root: home.path().join("state"),
-            refresher: Arc::new(case.custodian.clone()),
+            refresher: Arc::new(case.credential_store.clone()),
             control_socket: None,
             file_socket: None,
         },
@@ -344,7 +344,7 @@ fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
     let handoff = accounts::HandoffStore::open_in(root_dir)
         .read(&account.id)
         .unwrap()
-        .expect("custody published a handoff credential");
+        .expect("ownership published a handoff credential");
     assert!(
         !matches!(&handoff, accounts::HandoffCredential::Bearer { token, .. } if token.starts_with("refresh-")),
         "the daemon never sees a refresh token"
@@ -424,13 +424,13 @@ fn a_dropbox_code_can_be_pasted_when_every_registered_port_is_taken() {
     };
     let mut config = cloud_source_dropbox::DropboxConfig::new("");
     config.endpoints = dropbox.endpoints();
-    let custodian = root
-        .custodian()
+    let credential_store = root
+        .credential_store()
         .with_provider(OAuthCloud::Dropbox, auth.provider(), registration)
         .with_storage_config(OAuthCloud::Dropbox, serde_json::to_value(config).unwrap());
     let browser = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custodian)
+        .with_credential_store(credential_store)
         .with_browser_opener(Arc::clone(&browser) as Arc<dyn BrowserOpener>);
     command(&mut pane, AccountViewCommand::Add(AccountKind::Dropbox));
     command(&mut pane, AccountViewCommand::Submit);

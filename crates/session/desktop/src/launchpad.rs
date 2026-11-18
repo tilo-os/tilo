@@ -1811,7 +1811,7 @@ mod tests {
             let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
             assert!(
                 x0 >= right.x0 && x1 <= right.x1,
-                "no card may straddle the seam: {cards:?}"
+                "no card may straddle the border: {cards:?}"
             );
             assert!(
                 (f64::midpoint(x0, x1) - right.center().x).abs() < 1.0,

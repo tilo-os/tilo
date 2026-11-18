@@ -1,21 +1,21 @@
 //! The current role behind a verified membership proof.
-use super::{DeviceCert, MembershipError, Role, StatePeer, SystemTime};
+use super::{MembershipError, Role, StatePeer, SystemTime};
 
 impl StatePeer {
+    /// The role of the device that proved `membership`, as any key holder
+    /// reads it: a device its person's root certified, which the workspace
+    /// holds and has not revoked, of a member. The key holder that challenged
+    /// it need not be the owner's: a member's further device is let in by
+    /// any ([`crate::join::VerifiedMembership`]).
     pub(super) fn current_membership_role(
         &self,
         membership: &crate::join::VerifiedMembership,
         now: SystemTime,
     ) -> Result<Role, String> {
-        if membership.workspace_id().to_string() != self.core.workspace
-            || !self.signed_by_owner(&membership.host_device_public_key())
-        {
-            return Err("membership proof is not from a device of the workspace's owner".into());
+        if membership.workspace_id().to_string() != self.core.workspace {
+            return Err("membership proof names another workspace".into());
         }
-        self.current_certificate_role(membership.device_cert(), now)
-    }
-
-    fn current_certificate_role(&self, cert: &DeviceCert, now: SystemTime) -> Result<Role, String> {
+        let cert = membership.device_cert();
         if self
             .core
             .certificates

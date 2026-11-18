@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope, serve,
 };
@@ -20,13 +20,13 @@ use crate::wake::WakeHandle;
 use crate::widget::Collaborative;
 use tilo_lock::MutexRecover as _;
 
-type Served = (Arc<dyn ActionHost + Send + Sync>, Caller);
+type Served = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 
 thread_local! {
     static SERVED: std::cell::RefCell<Option<Served>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Keeps a [`RemoteActions::enter`] host current on this thread.
+/// Keeps a [`RemoteActions::enter`] provider current on this thread.
 pub struct RemoteActionsGuard {
     previous: Option<Served>,
     thread_affinity: std::marker::PhantomData<*const ()>,
@@ -42,25 +42,25 @@ impl Drop for RemoteActionsGuard {
 /// How long an invocation's receipt may be held for its outcome, so a quick action answers in the one
 /// round trip that started it.
 const INVOKE_WAIT_MS: u32 = 2_000;
-/// How long one waiting observe may be held (the host caps it too).
+/// How long one waiting observe may be held (the provider caps it too).
 const OBSERVE_WAIT_MS: u32 = 10_000;
-/// How long a running invocation is left before it is observed again, for a host that answers a waiting
+/// How long a running invocation is left before it is observed again, for a provider that answers a waiting
 /// observe at once: one that predates waits.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
 /// A remote publisher cannot keep an application walking an unbounded or cyclic catalogue.
 const MAX_CATALOGUE_PAGES: usize = 64;
-/// How long a followed read asks its host to hold the answer for the next write. A host a connection
-/// reaches caps it at what it holds any waiting answer for; a desktop that hosts its windows in
+/// How long a followed read asks its provider to hold the answer for the next write. A provider a connection
+/// reaches caps it at what it holds any waiting answer for; a desktop that serves its windows in
 /// process holds it this long, so a record nobody writes costs its reader nothing in between.
 const FOLLOW_WAIT_MS: u32 = 60_000;
-/// How long a followed record is left before it is read again by a host that answers a waiting read
-/// at once, and after the first read its host could not answer.
+/// How long a followed record is left before it is read again by a provider that answers a waiting read
+/// at once, and after the first read its provider could not answer.
 const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
-/// The longest a followed record is left between reads its host cannot answer: each one in a row
+/// The longest a followed record is left between reads its provider cannot answer: each one in a row
 /// doubles the wait up to this.
 const FOLLOW_RETRY_MAX: Duration = Duration::from_secs(64);
 /// How long one catalogue page may go unanswered. A connection that carries the request nowhere (no
-/// host in reach to answer it) must not leave the app waiting forever: past this, the read is refused
+/// provider in reach to answer it) must not leave the app waiting forever: past this, the read is refused
 /// as unavailable.
 pub const CATALOGUE_WAIT: Duration = Duration::from_secs(20);
 /// Why a catalogue read was refused when nothing answered it in time.
@@ -68,20 +68,20 @@ pub const CATALOGUE_UNANSWERED: &str =
     "nothing in reach answered the request for the actions apps offer";
 
 /// A catalogue read: every page of one query, gathered.
-pub type CatalogueCall = Arriving<CataloguePage, ActionHostError>;
-/// An invocation: its latest lifecycle update, or the host's refusal (then nothing ran).
-pub type InvocationCall = Arriving<InvocationUpdate, ActionHostError>;
-/// A request to cancel a running invocation: `Ready(())` is the host's acknowledgement. Acknowledgement
+pub type CatalogueCall = Arriving<CataloguePage, ActionCallError>;
+/// An invocation: its latest lifecycle update, or the provider's refusal (then nothing ran).
+pub type InvocationCall = Arriving<InvocationUpdate, ActionCallError>;
+/// A request to cancel a running invocation: `Ready(())` is the provider's acknowledgement. Acknowledgement
 /// is not a terminal invocation outcome.
-pub type CancellationCall = Arriving<(), ActionHostError>;
+pub type CancellationCall = Arriving<(), ActionCallError>;
 /// A record read: the readings as every reader is answered them (`{"revision", "records": [{"record",
 /// "value" | "absent" | "arriving"}]}`).
-pub type ResourceReadCall = Arriving<serde_json::Value, ActionHostError>;
+pub type ResourceReadCall = Arriving<serde_json::Value, ActionCallError>;
 /// A wait for a change of the workspace: `Ready(())` once what the watch follows may have changed,
-/// or why the host cannot tell when it does.
-pub type ChangedCall = Arriving<(), ActionHostError>;
+/// or why the provider cannot tell when it does.
+pub type ChangedCall = Arriving<(), ActionCallError>;
 
-impl Arrival<InvocationUpdate, ActionHostError> {
+impl Arrival<InvocationUpdate, ActionCallError> {
     /// Whether the invocation can no longer change: refused, or finished.
     #[must_use]
     pub fn is_finished(&self) -> bool {
@@ -130,7 +130,7 @@ impl std::fmt::Debug for Followed {
     }
 }
 
-/// A record [`RemoteActions::follow_resource`] keeps current: its readings as the host answers
+/// A record [`RemoteActions::follow_resource`] keeps current: its readings as the provider answers
 /// them now and after every write to it, for as long as the handle lives.
 pub struct FollowedRead {
     remote: RemoteActions,
@@ -140,7 +140,7 @@ pub struct FollowedRead {
 
 impl FollowedRead {
     /// The record's latest readings: read again whenever a write to it lands, and failed with the
-    /// host's reason while it has never been read or once this reader may no longer read it.
+    /// provider's reason while it has never been read or once this reader may no longer read it.
     #[must_use]
     pub const fn call(&self) -> &ResourceReadCall {
         &self.answer
@@ -163,9 +163,9 @@ impl std::fmt::Debug for FollowedRead {
 
 enum Transport {
     Session,
-    /// Through an in-process host, as `caller`.
-    Host {
-        host: Arc<dyn ActionHost + Send + Sync>,
+    /// Through an in-process provider, as `caller`.
+    Provider {
+        provider: Arc<dyn ActionProvider + Send + Sync>,
         caller: Caller,
     },
 }
@@ -173,7 +173,7 @@ enum Transport {
 struct CatalogueWalk {
     query: CatalogueQuery,
     gathered: CataloguePage,
-    answer: ArrivalWriter<CataloguePage, ActionHostError>,
+    answer: ArrivalWriter<CataloguePage, ActionCallError>,
     pages_remaining: usize,
     seen_cursors: HashSet<(Option<String>, Vec<u8>)>,
     follow_pages: bool,
@@ -182,16 +182,16 @@ struct CatalogueWalk {
 }
 
 struct Running {
-    answer: ArrivalWriter<InvocationUpdate, ActionHostError>,
+    answer: ArrivalWriter<InvocationUpdate, ActionCallError>,
     /// Told each update as it lands, before the call shows it: how a follower reads each result once.
-    then: Option<Box<dyn FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send>>,
+    then: Option<Box<dyn FnMut(&Arrival<InvocationUpdate, ActionCallError>) + Send>>,
     cancellation: Option<CancellationCall>,
     observe_at: Option<Instant>,
     waiting: Option<(Instant, UpdateMark)>,
 }
 
 impl Running {
-    fn publish(&mut self, update: Arrival<InvocationUpdate, ActionHostError>) {
+    fn publish(&mut self, update: Arrival<InvocationUpdate, ActionCallError>) {
         if let Some(then) = &mut self.then {
             then(&update);
         }
@@ -206,7 +206,7 @@ impl Running {
 /// One record read in flight.
 enum Reading {
     /// Asked once: its answer is the call's.
-    Once(ArrivalWriter<serde_json::Value, ActionHostError>),
+    Once(ArrivalWriter<serde_json::Value, ActionCallError>),
     /// The next reading of a record that is followed.
     Followed(u64),
 }
@@ -217,23 +217,23 @@ struct Following {
     /// The record as it was asked for; each read after the first names the revision shown and
     /// waits for a write past it.
     read: ResourceReadRequest,
-    answer: ArrivalWriter<serde_json::Value, ActionHostError>,
+    answer: ArrivalWriter<serde_json::Value, ActionCallError>,
     /// The revision of the readings shown; `None` until the first arrived.
     revision: Option<String>,
     /// Whether the call says why the record, never read yet, could not be read.
     unread: bool,
     /// When the read in flight was sent to wait for a write past `revision`.
     waiting: Option<Instant>,
-    /// When the record is read again: after a read its host could not answer, and on the interval
-    /// for a host that holds no read.
+    /// When the record is read again: after a read its provider could not answer, and on the interval
+    /// for a provider that holds no read.
     read_at: Option<Instant>,
-    /// How long it is left after the next read its host cannot answer.
+    /// How long it is left after the next read its provider cannot answer.
     retry: Duration,
 }
 
 struct Inner {
     transport: Transport,
-    /// Made by [`RemoteActions::current`] with no host entered: served by the host entered on its
+    /// Made by [`RemoteActions::current`] with no provider entered: served by the provider entered on its
     /// thread when it first sends under one.
     unbound: bool,
     outbox: Vec<RemoteActionMessage>,
@@ -243,11 +243,11 @@ struct Inner {
     reads: HashMap<u64, Reading>,
     following: HashMap<u64, Following>,
     next_follow: u64,
-    changes: HashMap<u64, ArrivalWriter<(), ActionHostError>>,
-    /// Whether the host holds a waiting observe until something changes; cleared the first time it
+    changes: HashMap<u64, ArrivalWriter<(), ActionCallError>>,
+    /// Whether the provider holds a waiting observe until something changes; cleared the first time it
     /// answers one at once with nothing new.
     host_waits: bool,
-    /// Whether the host holds a waiting read until a write lands; cleared the first time it answers
+    /// Whether the provider holds a waiting read until a write lands; cleared the first time it answers
     /// one at once with the revision it was told.
     host_holds_reads: bool,
     wake: WakeHandle,
@@ -278,19 +278,19 @@ impl RemoteActions {
         Self::new(Transport::Session)
     }
 
-    /// A client served by `host` in this process, as `caller`.
+    /// A client served by `provider` in this process, as `caller`.
     #[must_use]
-    pub fn with_host(host: Arc<dyn ActionHost + Send + Sync>, caller: Caller) -> Self {
-        Self::new(Transport::Host { host, caller })
+    pub fn with_provider(provider: Arc<dyn ActionProvider + Send + Sync>, caller: Caller) -> Self {
+        Self::new(Transport::Provider { provider, caller })
     }
 
-    /// The client this thread's app should use: one served by the host a [`RemoteActions::enter`] guard
+    /// The client this thread's app should use: one served by the provider a [`RemoteActions::enter`] guard
     /// installed, else [`session`](Self::session).
     ///
     /// A window a desktop builds before it serves its windows (the one it opens with) makes its
-    /// client with no host entered. Such a client is the entered host's from the first request it
+    /// client with no provider entered. Such a client is the entered provider's from the first request it
     /// sends under one, with whatever it asked before: a window never talks past the desktop that
-    /// hosts it.
+    /// serves it.
     #[must_use]
     pub fn current() -> Self {
         SERVED.with(|served| served.borrow().clone()).map_or_else(
@@ -299,15 +299,18 @@ impl RemoteActions {
                 client.lock().unbound = true;
                 client
             },
-            |(host, caller)| Self::with_host(host, caller),
+            |(provider, caller)| Self::with_provider(provider, caller),
         )
     }
 
-    /// Serve every client [`current`](Self::current) makes on this thread from `host`, as `caller`,
-    /// until the guard drops — how a test or an embedding host stands in for the session.
-    #[must_use = "the host serves clients only while the guard lives"]
-    pub fn enter(host: Arc<dyn ActionHost + Send + Sync>, caller: Caller) -> RemoteActionsGuard {
-        let previous = SERVED.with(|served| served.replace(Some((host, caller))));
+    /// Serve every client [`current`](Self::current) makes on this thread from `provider`, as `caller`,
+    /// until the guard drops — how a test or an embedding provider stands in for the session.
+    #[must_use = "the provider serves clients only while the guard lives"]
+    pub fn enter(
+        provider: Arc<dyn ActionProvider + Send + Sync>,
+        caller: Caller,
+    ) -> RemoteActionsGuard {
+        let previous = SERVED.with(|served| served.replace(Some((provider, caller))));
         RemoteActionsGuard {
             previous,
             thread_affinity: std::marker::PhantomData,
@@ -427,8 +430,8 @@ impl RemoteActions {
         self.invoke_continuing(None, invocation, target, argument, confirmation)
     }
 
-    /// [`Self::invoke_with_id`] for a request made while running `on_behalf_of`, an invocation the host
-    /// delivered here: the host decides it as that invocation's caller.
+    /// [`Self::invoke_with_id`] for a request made while running `on_behalf_of`, an invocation the provider
+    /// delivered here: the provider decides it as that invocation's caller.
     #[must_use]
     pub fn invoke_continuing(
         &self,
@@ -479,7 +482,7 @@ impl RemoteActions {
         &self,
         target: RemoteActionTarget,
         argument: InvokeArgument,
-        then: impl FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send + 'static,
+        then: impl FnMut(&Arrival<InvocationUpdate, ActionCallError>) + Send + 'static,
     ) -> Followed {
         let invocation = InvocationId::new();
         let answer = Arriving::pending(self.source());
@@ -515,7 +518,7 @@ impl RemoteActions {
     }
 
     /// Read a record of the window's workspace through the record API, as a request of its own or
-    /// continuing `on_behalf_of`, an invocation the host delivered here: the host decides it as that
+    /// continuing `on_behalf_of`, an invocation the provider delivered here: the provider decides it as that
     /// invocation's caller.
     #[must_use]
     pub fn read_resource(
@@ -541,14 +544,14 @@ impl RemoteActions {
         answer
     }
 
-    /// Keep a record of the window's workspace current: `read` as the host answers it now, and
+    /// Keep a record of the window's workspace current: `read` as the provider answers it now, and
     /// again after every write to it, for as long as the returned handle lives. Each read is the
-    /// host's to decide, as [`Self::read_resource`]'s is: a reader that may no longer read the
+    /// provider's to decide, as [`Self::read_resource`]'s is: a reader that may no longer read the
     /// record is told so and shown nothing more.
     ///
     /// Nothing runs between writes. Each read after the first names the revision shown and asks the
-    /// host to hold its answer until the record differs (`after`, `wait_ms`), so a record nobody
-    /// writes costs its reader no frame and no timer; a host that holds no read is asked again on
+    /// provider to hold its answer until the record differs (`after`, `wait_ms`), so a record nobody
+    /// writes costs its reader no frame and no timer; a provider that holds no read is asked again on
     /// an interval. `read`'s own `after` and `wait_ms` are not used.
     #[must_use]
     pub fn follow_resource(
@@ -589,8 +592,8 @@ impl RemoteActions {
         }
     }
 
-    /// Ask the host to answer when what a watch of the workspace follows under `scope` may have
-    /// changed: a write landed in its records, or who is in it moved. A host that cannot tell
+    /// Ask the provider to answer when what a watch of the workspace follows under `scope` may have
+    /// changed: a write landed in its records, or who is in it moved. A provider that cannot tell
     /// says so at once.
     #[must_use]
     pub fn changed(&self, scope: WatchScope) -> ChangedCall {
@@ -624,7 +627,7 @@ impl RemoteActions {
                 .any(|following| following.revision.is_none() && !following.unread)
     }
 
-    /// Ask the host to cancel an invocation this client is still observing.
+    /// Ask the provider to cancel an invocation this client is still observing.
     #[must_use]
     pub fn cancel(&self, invocation: InvocationId) -> Option<CancellationCall> {
         let source = self.source();
@@ -649,28 +652,30 @@ impl RemoteActions {
         let (served, asked_before) = {
             let mut inner = self.lock();
             if inner.unbound
-                && let Some((host, caller)) = SERVED.with(|served| served.borrow().clone())
+                && let Some((provider, caller)) = SERVED.with(|served| served.borrow().clone())
             {
-                inner.transport = Transport::Host { host, caller };
+                inner.transport = Transport::Provider { provider, caller };
                 inner.unbound = false;
             }
             let served = match &inner.transport {
                 Transport::Session => None,
-                Transport::Host { host, caller } => Some((Arc::clone(host), caller.clone())),
+                Transport::Provider { provider, caller } => {
+                    Some((Arc::clone(provider), caller.clone()))
+                }
             };
             if served.is_none() {
                 inner.outbox.push(message);
                 inner.wake.wake();
                 return;
             }
-            // What it asked before its host was entered is that host's to answer too.
+            // What it asked before its provider was entered is that provider's to answer too.
             (served, std::mem::take(&mut inner.outbox))
         };
-        let Some((host, caller)) = served else {
+        let Some((provider, caller)) = served else {
             return;
         };
         for message in asked_before.into_iter().chain([message]) {
-            let Some(answer) = serve(&host, &caller, message) else {
+            let Some(answer) = serve(&provider, &caller, message) else {
                 continue;
             };
             let inner = Arc::clone(&self.inner);
@@ -685,7 +690,7 @@ impl RemoteActions {
         }
     }
 
-    /// Ask after invocations a host that does not wait is still running, once each is due.
+    /// Ask after invocations a provider that does not wait is still running, once each is due.
     pub fn poll(&self) {
         let now = crate::background::Background::current().now();
         let (due, reads): (Vec<InvocationId>, Vec<RemoteActionMessage>) = {
@@ -694,7 +699,7 @@ impl RemoteActions {
                 if walk.due > now {
                     return true;
                 }
-                walk.answer.fail(ActionHostError::Unavailable {
+                walk.answer.fail(ActionCallError::Unavailable {
                     reason: CATALOGUE_UNANSWERED.into(),
                 });
                 false
@@ -757,13 +762,13 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 return None;
             }
             if page.budget_exhausted {
-                walk.answer.fail(ActionHostError::Unavailable {
+                walk.answer.fail(ActionCallError::Unavailable {
                     reason: "catalogue provider exhausted its work budget".into(),
                 });
                 return None;
             }
             if !page.stale_cursor && page.exhausted != page.next_cursor.is_empty() {
-                walk.answer.fail(ActionHostError::Unavailable {
+                walk.answer.fail(ActionCallError::Unavailable {
                     reason: "catalogue provider returned inconsistent completion metadata".into(),
                 });
                 return None;
@@ -775,7 +780,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     .as_ref()
                     .is_some_and(|revision| revision != &page.revision)
             {
-                walk.answer.fail(ActionHostError::Unavailable {
+                walk.answer.fail(ActionCallError::Unavailable {
                     reason: "catalogue provider changed revision without a stale response".into(),
                 });
                 return None;
@@ -800,14 +805,14 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 walk.query.revision = Some(page.revision);
             }
             if walk.pages_remaining == 0 {
-                walk.answer.fail(ActionHostError::Unavailable {
+                walk.answer.fail(ActionCallError::Unavailable {
                     reason: "catalogue traversal exceeded its page budget".into(),
                 });
                 return None;
             }
             let cursor = (walk.query.revision.clone(), walk.query.cursor.clone());
             if !walk.seen_cursors.insert(cursor) {
-                walk.answer.fail(ActionHostError::Unavailable {
+                walk.answer.fail(ActionCallError::Unavailable {
                     reason: "catalogue traversal repeated a cursor".into(),
                 });
                 return None;
@@ -849,7 +854,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 return settle(inner, invocation, state.update);
             }
             if let Some(mut running) = inner.invocations.remove(&invocation) {
-                running.publish(Arrival::Failed(ActionHostError::UnknownInvocation));
+                running.publish(Arrival::Failed(ActionCallError::UnknownInvocation));
             }
             None
         }
@@ -865,7 +870,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         } => {
             let reading = inner.reads.remove(&correlation)?;
             let result = result.and_then(|text| {
-                serde_json::from_str(&text).map_err(|error| ActionHostError::Unavailable {
+                serde_json::from_str(&text).map_err(|error| ActionCallError::Unavailable {
                     reason: format!("the record read answered no readings: {error}"),
                 })
             });
@@ -943,12 +948,12 @@ fn next_read(
 }
 
 /// Show what a read of the followed record `follow` answered, and read it again: held for the next
-/// write where its host holds reads, after a wait where it does not or could not answer. A refusal
+/// write where its provider holds reads, after a wait where it does not or could not answer. A refusal
 /// ends the following: what was shown is no longer this reader's to see.
 fn followed(
     inner: &mut Inner,
     follow: u64,
-    result: Result<serde_json::Value, ActionHostError>,
+    result: Result<serde_json::Value, ActionCallError>,
 ) -> Option<RemoteActionMessage> {
     let background = crate::background::Background::current();
     let now = background.now();
@@ -976,7 +981,7 @@ fn followed(
                 now.saturating_duration_since(sent)
                     < Duration::from_millis(u64::from(OBSERVE_WAIT_MS / 2))
             }) {
-                // A host that holds a read answers early only with something new.
+                // A provider that holds a read answers early only with something new.
                 inner.host_holds_reads = false;
             }
             if inner.host_holds_reads && revision.is_some() {
@@ -986,12 +991,12 @@ fn followed(
             }
         }
         Err(
-            error @ (ActionHostError::Unavailable { .. }
-            | ActionHostError::Busy { .. }
-            | ActionHostError::NotReady
-            | ActionHostError::Unanswered),
+            error @ (ActionCallError::Unavailable { .. }
+            | ActionCallError::Busy { .. }
+            | ActionCallError::NotReady
+            | ActionCallError::Unanswered),
         ) => {
-            // A record that was read keeps what it shows while its host cannot answer; one never
+            // A record that was read keeps what it shows while its provider cannot answer; one never
             // read says why, once.
             if following.revision.is_none() && !following.unread {
                 following.unread = true;
@@ -1009,7 +1014,7 @@ fn followed(
 }
 
 /// Publish `update` for `invocation`; keep following it while it runs, returning the waiting observe
-/// that does, if the host holds one.
+/// that does, if the provider holds one.
 fn settle(
     inner: &mut Inner,
     invocation: InvocationId,
@@ -1026,8 +1031,8 @@ fn settle(
     let mark = UpdateMark::of(&update);
     let background = crate::background::Background::current();
     let now = background.now();
-    // A host that waits answers early only with something new; nothing new,
-    // and long before the wait was up, is a host that does not wait.
+    // A provider that waits answers early only with something new; nothing new,
+    // and long before the wait was up, is a provider that does not wait.
     let unheld = running.waiting.take().is_some_and(|(sent, seen)| {
         seen == mark
             && now.saturating_duration_since(sent)

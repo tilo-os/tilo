@@ -42,7 +42,11 @@ impl TopBarChrome {
             .enumerate()
             .filter_map(|(drawn, &index)| {
                 let name = self.face_names.get(index)?;
-                let name = if self.face_agents.get(index).copied().unwrap_or(false) {
+                let name = if self
+                    .face_members
+                    .get(index)
+                    .is_some_and(|member| !member.is_person())
+                {
                     t_args("topbar-face-agent", &[("name", name.as_str().into())])
                 } else {
                     name.clone()
@@ -83,7 +87,7 @@ impl TopBarChrome {
 
     /// Read how each face looks: who is idle or away, in a call (their ring breathing), or bouncing
     /// from a wave. What the roster the bar read says of each face leads: on a session whose people
-    /// come from the collaboration plane, that is everyone here, and `presence` is empty. A face
+    /// come from the peer network, that is everyone here, and `presence` is empty. A face
     /// the roster says nothing of falls back to `presence` , which is where a wave's bounce always
     /// comes from.
     pub(super) fn read_face_looks(
@@ -554,7 +558,7 @@ impl TopBarChrome {
             self.sharing_indicator_rect = Rect::ZERO;
             return right_x;
         };
-        let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
+        let available = (right_x - self.center_area.x1 - 48.0).clamp(28.0, 180.0);
         let width = self
             .sharing_chip(theme, &label, available)
             .width(text_renderer, theme);
@@ -603,7 +607,7 @@ impl TopBarChrome {
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = 24.0;
         let right = self.people_left_x - f64::from(theme.tokens.spacing.s3);
-        let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
+        let left_limit = self.center_area.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
         let natural = ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);

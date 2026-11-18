@@ -25,7 +25,7 @@ __all__ = [
     "Credentials",
     "Environment",
     "HttpMethod",
-    "RequestRecord",
+    "RequestResource",
     "Row",
     "SavedCollection",
     "Sent",
@@ -48,9 +48,9 @@ __all__ = [
     "RecordSentArgs",
 ]
 
-AuthScheme = Literal["None", "Bearer", "Basic", "ApiKey"]
+AuthScheme = Literal["none", "bearer", "basic", "api_key"]
 
-BodyMode = Literal["None", "Json", "Form", "Raw"]
+BodyMode = Literal["none", "json", "form", "raw"]
 
 class Credentials(TypedDict):
     scheme: AuthScheme
@@ -62,9 +62,9 @@ class Environment(TypedDict):
     name: str
     variables: list[Entry[Variable]]
 
-HttpMethod = Literal["Get", "Post", "Put", "Patch", "Delete", "Head", "Options"]
+HttpMethod = Literal["get", "post", "put", "patch", "delete", "head", "options"]
 
-class RequestRecord(TypedDict):
+class RequestResource(TypedDict):
     name: str
     method: HttpMethod
     url: str
@@ -82,7 +82,7 @@ class Row(TypedDict):
 
 class SavedCollection(TypedDict):
     name: str
-    requests: list[Entry[RequestRecord]]
+    requests: list[Entry[RequestResource]]
 
 class Sent(TypedDict):
     route: str
@@ -187,11 +187,11 @@ RecordSentArgs = TypedDict("RecordSentArgs", {
 
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
-    __surface__ = "so.tilo.api-tester@d34f2cdf6de15455"
+    __surface__ = "so.tilo.api-tester@3269c62757803c40"
     collections: list[Entry[SavedCollection]]
     environments: list[Entry[Environment]]
     active_environment: str | None
-    request: RequestRecord
+    request: RequestResource
     @property
     def opened(self) -> str:
         """Read only."""

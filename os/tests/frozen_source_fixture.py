@@ -3,7 +3,7 @@
 The helpers in os/dev/native_resume.py and os/dev/kernel_checkpoint_restore.py
 operate on recipes of two exact historical commits that are not part of this
 repository's history. The tests exercise the rewriting on these excerpts: every
-seam the helpers anchor on is copied verbatim from the frozen files, the rest of
+boundary the helpers anchor on is copied verbatim from the frozen files, the rest of
 each file is elided.
 """
 
@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
-       cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG} \
+       cargo build --release ${RELEASE_ARGS} -p tilo-server --bins ${BROWSER_PKG} \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \

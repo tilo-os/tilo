@@ -21,7 +21,7 @@ use tilo_actions::EncodedAction;
 use tilolang::{IdsLock, PackageMeta};
 use tilolang_runtime::ids::AppId;
 use tilolang_runtime::meta::{Meta, Ty, parse_ty};
-use tilolang_runtime::store::NewRecord;
+use tilolang_runtime::store::NewResource;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
     Actor, InvokeOutcome, ModuleHash, PackageId, Reading, Runtime, RuntimeError, StoreError,
@@ -34,7 +34,7 @@ use crate::meta::MetaExt as _;
 use crate::publish::{Caller, Committer, PlanRequest, Planner};
 use crate::schema::lookup;
 use crate::store::{Committed, TiloStore};
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 
 /// An action's arguments as it runs them, and as its invocation records them; `None` when the
 /// line a person typed names no item, so the action does not run.
@@ -176,13 +176,15 @@ pub(crate) struct HostInner {
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
-    /// The resource the last action planned returned, whoever invoked it, with the action:
-    /// what its invocation answers.
-    returned: RefCell<Option<(String, ResourceRef)>>,
+    /// The resource each action returned when its plan last happened, by the action: what its
+    /// invocation answers. Publishing a surface plans every action, so one place for the last
+    /// would answer one action with another's resource; each is kept by its action and taken
+    /// when that action's answer is asked for ([`Host::take_returned`]).
+    returned: RefCell<HashMap<String, ResourceRef>>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
-    /// Whether the next plan is the run of an invocation the record applies next
-    /// ([`Host::carrying_out`]): what it writes stays, as the change the record commits.
+    /// Whether the next plan is the run of an invocation the document applies next
+    /// ([`Host::carrying_out`]): what it writes stays, as the change the document commits.
     carried: Cell<bool>,
 }
 
@@ -205,10 +207,10 @@ pub struct Host {
     pub(crate) inner: Rc<HostInner>,
 }
 
-/// How a host opens: over which record, keeping its indexes where.
+/// How a host opens: over which document, keeping its indexes where.
 #[derive(Default)]
 pub struct Opening<'a> {
-    /// The workspace record; `None` to open over the indexes alone and take it later.
+    /// The workspace document; `None` to open over the indexes alone and take it later.
     pub record: Option<&'a tilo_resource::Doc>,
     /// Where each package's index is kept; `None` keeps them in memory.
     pub index_dir: Option<std::path::PathBuf>,
@@ -295,7 +297,7 @@ pub(crate) fn value_of(
 }
 
 /// The value of the type `ty` an argument given as `json` stands for, as the API publishes the
-/// parameter ([`crate::surface::published_param`]): a record by the catalogue's reference to it
+/// parameter ([`crate::surface::published_param`]): a document by the catalogue's reference to it
 /// (or its resource id), a plain enum by the name of its case, an actor as the workspace
 /// target it is, lists and options as plain JSON. A value encoded as the runtime stores it
 /// ([`from_json`]) is taken as it is.
@@ -303,7 +305,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
     match (ty, json) {
         (Ty::Record(key), _) => {
             // A parameter may be a type of another app of the workspace: one this host runs, or one
-            // it reads a record of (Today's cleanup over the Tasks list it shows). A record of an
+            // it reads a document of (Today's cleanup over the Tasks list it shows). A document of an
             // app this host does not run is read through its own description, and its type is the
             // `<app>#<Type>` a reading is kept under.
             let (kind, type_id) = if key.app == meta.app {
@@ -400,13 +402,13 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .as_f64()
             .map(Value::Float)
             .ok_or_else(|| "number out of range".to_owned()),
-        // A union of records: the reference's kind says which of them it is.
+        // A union of documents: the reference's kind says which of them it is.
         (Ty::Union(keys), _) => union_value(host, meta, json, keys),
         _ => from_json(json),
     }
 }
 
-/// The record of one of the types `keys` that the reference `json` names by its kind.
+/// The document of one of the types `keys` that the reference `json` names by its kind.
 fn union_value(
     host: &HostInner,
     meta: &Meta,
@@ -422,13 +424,13 @@ fn union_value(
     let kind = reference.get("kind").and_then(Json::as_str);
     let key = keys
         .iter()
-        .find(|key| Some(crate::surface::record_kind(key).as_str()) == kind)
+        .find(|key| Some(crate::surface::resource_type(key).as_str()) == kind)
         .ok_or_else(|| {
             format!(
                 "a {} is a resource of kind {}, not {}",
                 union_label(keys),
                 keys.iter()
-                    .map(crate::surface::record_kind)
+                    .map(crate::surface::resource_type)
                     .collect::<Vec<_>>()
                     .join(" or "),
                 kind.unwrap_or("none")
@@ -445,7 +447,7 @@ fn union_label(keys: &[tilolang_runtime::meta::TypeKey]) -> String {
 }
 
 /// `meta` as a runtime that does not run its app loads it: each of its roots (`root Mail`,
-/// `root notes: Notes`) named as the resource its app publishes it as, the root's record
+/// `root notes: Notes`) named as the resource its app publishes it as, the root's document
 /// (`root-<type id>`) by its published id. A root it names already is left as it is.
 fn published_roots(meta: &Meta) -> Meta {
     let mut meta = meta.clone();
@@ -473,7 +475,7 @@ fn published_roots(meta: &Meta) -> Meta {
 
 /// The argument `value` of the type `ty`, as the API takes it: in the shape the action's
 /// published parameter declares ([`crate::surface::published_param`]), which the broker binds
-/// before it delivers, and which [`value_of`] reads back as the same value. A record by the
+/// before it delivers, and which [`value_of`] reads back as the same value. A document by the
 /// catalogue's reference to it, of its own type, so a union or a type of another app says which
 /// it is; a plain enum by its case's name; an actor as the workspace target it is; an option
 /// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
@@ -497,7 +499,7 @@ pub fn argument_json(
         Ok((declared.id == target.ty).then(|| {
             serde_json::json!({
                 "app": key.app,
-                "kind": crate::surface::record_kind(key),
+                "kind": crate::surface::resource_type(key),
                 "id": target.id_string(),
                 "label": "",
             })
@@ -590,8 +592,8 @@ impl HostInner {
         // Planning is a trial run: whatever it wrote into the mirror is taken back, so asking
         // for an action (to describe it, to offer it) never changes the workspace. It runs the
         // action, so it is counted: a frame that shows controls plans none. The run of an
-        // invocation the record applies next keeps what it wrote: those writes are the change
-        // the record commits, and the action runs once.
+        // invocation the document applies next keeps what it wrote: those writes are the change
+        // the document commits, and the action runs once.
         let _phase = tilo_resource::profiling::Phase::start("tl.plan");
         let carried = self.carried.replace(false);
         let checkpoint = self.store.checkpoint();
@@ -621,13 +623,46 @@ impl HostInner {
     }
 
     /// What `action` returned, for its invocation's answer.
+    ///
+    /// The answer is the action's own: a plan the API made of some other action (publishing a
+    /// surface plans each action) writes that action's answer, never this one's, and an
+    /// invocation that changed nothing clears only its own. Each answer is taken once
+    /// ([`Host::take_returned`]), so one action's plan never answers another's invocation.
     fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
-        *self.returned.borrow_mut() = match outcome {
+        let mut returned = self.returned.borrow_mut();
+        match outcome {
             InvokeOutcome::Done(Value::Ref(made)) => {
-                Some((action.to_owned(), ResourceRef::clone(&made.target)))
+                returned.insert(action.to_owned(), ResourceRef::clone(&made.target));
             }
-            _ => None,
-        };
+            InvokeOutcome::Done(_) | InvokeOutcome::Denied => {
+                returned.remove(action);
+            }
+            InvokeOutcome::Suggested(_) => {}
+        }
+    }
+
+    /// The resource `action` returned its plan made when it stopped at a step a person must
+    /// answer first: the resource the plan makes of the type the action declares it returns,
+    /// when its plan made one. `None` for an action that returns no resource, or whose answer's
+    /// type its plan made nothing of.
+    fn made_by(
+        &self,
+        action: &DynAction,
+        declared: &tilolang_runtime::meta::Meta,
+    ) -> Option<ResourceRef> {
+        use crate::reading::Holdings as _;
+        let result = declared
+            .actions
+            .iter()
+            .find(|held| held.id == action.action_id)
+            .and_then(|held| held.result.clone())?;
+        let ty = declared.type_named(&result)?.id.clone();
+        action
+            .made()
+            .into_iter()
+            .filter(|made| made.kind == tilolang_runtime::store::VersionKind::Created)
+            .filter_map(|made| ResourceRef::parse_id(&made.resource, ty.clone()))
+            .find(|at| self.store.held(at).as_deref() == Some(ty.as_str()))
     }
 
     /// Whether the action `action` can run on the published resource `resource` now: whether it
@@ -760,6 +795,9 @@ impl HostInner {
             self.admit_agent(caller);
         }
         let mut committed = Vec::new();
+        // Whether the action stopped at a step a person must answer first: what it made before
+        // it stopped is still what it returns, and its invocation answers that resource.
+        let mut asked = false;
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
                 let first = self.store.next_ticket();
@@ -788,6 +826,7 @@ impl HostInner {
                     // An action that needs a person's approval is not refused: it is recorded as
                     // a suggested invocation, the answer an agent gets and a person decides.
                     InvokeOutcome::Suggested(suggestion) => {
+                        asked = true;
                         self.runtime
                             .record_suggestion(&invoker, request.action_id, args, &suggestion)
                             .map_err(|error| error.to_string())?;
@@ -820,7 +859,7 @@ impl HostInner {
             edits: Vec::new(),
         };
         for entry in committed {
-            // Follow-up changes of the host itself (an action block's invocation record) belong
+            // Follow-up changes of the host itself (an action block's invocation document) belong
             // to another app's resources than the action's.
             let other = entry.action.app != planned.app;
             for edit in entry.action.edits {
@@ -830,6 +869,14 @@ impl HostInner {
                     edit
                 });
             }
+        }
+        // A plan that stopped at an ask wrote what the action made before it stopped: the
+        // resource it returns is still its answer, so a program naming it goes on with it once
+        // the person answered, and the origin answers the one resource it made.
+        if asked && let Some(made) = self.made_by(&planned, &package.meta) {
+            self.returned
+                .borrow_mut()
+                .insert(planned.action_id.clone(), made);
         }
         Ok(planned)
     }
@@ -909,7 +956,7 @@ impl HostInner {
 }
 
 impl Host {
-    /// A host over the workspace record `record`, for `viewer`, whose standing in the workspace `standing`
+    /// A host over the workspace document `document`, for `viewer`, whose member access in the workspace `access`
     /// reads: what the runtime invokes is decided by the workspace's policy ([`TiloAuthority`]).
     ///
     /// # Errors
@@ -917,9 +964,9 @@ impl Host {
     pub fn new(
         record: &tilo_resource::Doc,
         viewer: Actor,
-        standing: impl Fn() -> Option<Standing> + 'static,
+        access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
-        Self::on_device(record, viewer, None, standing)
+        Self::on_device(record, viewer, None, access)
     }
 
     /// As [`Self::new`], on the device `device`: the device that carries out the outside effects
@@ -931,7 +978,7 @@ impl Host {
         record: &tilo_resource::Doc,
         viewer: Actor,
         device: Option<&str>,
-        standing: impl Fn() -> Option<Standing> + 'static,
+        access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
         Self::open(
             Opening {
@@ -940,12 +987,12 @@ impl Host {
                 ..Opening::default()
             },
             viewer,
-            standing,
+            access,
         )
     }
 
-    /// A host as `opening` says: over the workspace record, or (without it) over the indexes kept
-    /// in its index directory alone, taking the record when it is had (see
+    /// A host as `opening` says: over the workspace document, or (without it) over the indexes kept
+    /// in its index directory alone, taking the document when it is had (see
     /// [`TiloStore::detached`]).
     ///
     /// # Errors
@@ -953,7 +1000,7 @@ impl Host {
     pub fn open(
         opening: Opening<'_>,
         viewer: Actor,
-        standing: impl Fn() -> Option<Standing> + 'static,
+        access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
         let store = match (opening.record, opening.index_dir) {
             (Some(record), dir) => {
@@ -963,14 +1010,14 @@ impl Host {
                 }
                 store
             }
-            // Without the record: the indexes kept in the directory, or the chunks the caller
+            // Without the document: the indexes kept in the directory, or the chunks the caller
             // hands over next ([`Self::adopt`]), are what it opens over.
             (None, dir) => TiloStore::detached(dir),
         };
         if let Some(device) = opening.device {
             store.set_device(device);
         }
-        // The waker is the store's before anything of the record is derived: no derivation runs
+        // The waker is the store's before anything of the document is derived: no derivation runs
         // in the frame that opens the host, and the one that lands it wakes a frame.
         if let Some(wake) = opening.wake {
             store.set_waker(wake);
@@ -981,9 +1028,9 @@ impl Host {
         let _schemas = schemas.enter();
         host_meta.register_schemas();
         store.open_index(&host_meta.app, &host_meta.schema_text());
-        // What the runtime invokes is decided by the workspace's one policy: the person's standing,
+        // What the runtime invokes is decided by the workspace's one policy: the person's access,
         // an agent's delegation and the answers the person gave it, and the code's authors.
-        let authority = TiloAuthority::new(viewer.clone(), standing);
+        let authority = TiloAuthority::new(viewer.clone(), access);
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -1005,7 +1052,7 @@ impl Host {
         Ok(Self { inner })
     }
 
-    /// Whether every loaded package's index covers the record: none is being built, or waits
+    /// Whether every loaded package's index covers the document: none is being built, or waits
     /// for it (see [`TiloStore::index_ready`]).
     #[must_use]
     pub fn index_ready(&self) -> bool {
@@ -1013,7 +1060,7 @@ impl Host {
     }
 
     /// Whether every loaded package's index holds rows to read, though they may not be the
-    /// whole record's yet: until then its lists show nothing, and the window shows the
+    /// whole document's yet: until then its lists show nothing, and the window shows the
     /// platform's loading state (see [`TiloStore::index_answers`]).
     #[must_use]
     pub fn index_answers(&self) -> bool {
@@ -1026,8 +1073,8 @@ impl Host {
     }
 
     /// Whether a sync would take in work that changes what a window reads: an index being built
-    /// off the frame, one waiting for the record it is built from, one built anew, or a chunk of
-    /// the record the indexes do not reflect yet, which the store reads (see
+    /// off the frame, one waiting for the document it is built from, one built anew, or a chunk of
+    /// the document the indexes do not reflect yet, which the store reads (see
     /// [`TiloStore::index_pending`]). A window read before then shows the part of the workspace
     /// the index has read so far.
     #[must_use]
@@ -1047,7 +1094,7 @@ impl Host {
 
     /// How the host gets the workspace record when it opened without it: for a write, or a field
     /// no index holds.
-    pub fn set_record_loader(&self, loader: crate::store::Loader) {
+    pub fn set_document_loader(&self, loader: crate::store::Loader) {
         self.inner.store.set_loader(loader);
     }
 
@@ -1107,10 +1154,10 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
-    /// Carry out the outside effects of this device that wait in the record
+    /// Carry out the outside effects of this device that wait in the document
     /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
     /// what became of it is queued for the API like any other change. What `delivery(r)`
-    /// reads follows the record either way.
+    /// reads follows the document either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
@@ -1204,8 +1251,8 @@ impl Host {
         })
     }
 
-    /// Run `encode`, the API building an invocation the record applies as soon as it is built:
-    /// the action it plans keeps what it wrote, so the store's writes are the change the record
+    /// Run `encode`, the API building an invocation the document applies as soon as it is built:
+    /// the action it plans keeps what it wrote, so the store's writes are the change the document
     /// commits ([`crate::store::TiloStore::commit_action`]) and the action does not run a second
     /// time. It writes as `author`, whose change it is. Every other plan is a trial and is taken
     /// back.
@@ -1220,11 +1267,7 @@ impl Host {
     /// once: what its invocation answers.
     #[must_use]
     pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
-        let mut returned = self.inner.returned.borrow_mut();
-        match returned.as_ref() {
-            Some((made_by, _)) if made_by == action => returned.take().map(|(_, made)| made),
-            _ => None,
-        }
+        self.inner.returned.borrow_mut().remove(action)
     }
 
     #[must_use]
@@ -1275,8 +1318,8 @@ impl Host {
     }
 
     /// [`Self::load_bundle`], with each package it uses for which `other` holds loaded as
-    /// another app's ([`Self::load_foreign_package`]): an app of its own, whose records stay in
-    /// its own record and are read from there, and whose actions run at its own api.
+    /// another app's ([`Self::load_foreign_package`]): an app of its own, whose documents stay in
+    /// its own document and are read from there, and whose actions run at its own api.
     pub fn load_bundle_using(
         &self,
         bundle: &crate::bundle::Bundle,
@@ -1336,7 +1379,7 @@ impl Host {
     /// Load the package of an app this host does not run, trusted: its views draw resources of
     /// that app from the readings the session hands in ([`tilolang_runtime::Runtime::set_reading`]),
     /// and what they change is sent to those resources' apis through the runtime's invoker.
-    /// The store keeps none of its records, so the package is not among [`Self::packages`];
+    /// The store keeps none of its documents, so the package is not among [`Self::packages`];
     /// its code is decided by the host's authority as the app's own, as a loaded package's is.
     ///
     /// # Errors
@@ -1404,7 +1447,7 @@ impl Host {
             .find_map(|package| find(package))
     }
 
-    /// Bring the runtime's view of the workspace record up to date: its own chunk
+    /// Bring the runtime's view of the workspace document up to date: its own chunk
     /// ([`crate::chunk::FIRST`]) and every chunk above it the replica holds; see
     /// [`TiloStore::sync`]. A chunk the replica does not hold is taken in too: how a replica
     /// that was sent them all opens.
@@ -1412,12 +1455,12 @@ impl Host {
         self.inner.store.sync(record)
     }
 
-    /// Hold the record's chunks from here on, the one copy of each; see [`TiloStore::adopt`].
+    /// Hold the document's chunks from here on, the one copy of each; see [`TiloStore::adopt`].
     pub fn adopt(&self, chunks: crate::chunk::Chunks) {
         self.inner.store.adopt(chunks);
     }
 
-    /// Bring the runtime's view of a record kept as one document up to date; see
+    /// Bring the runtime's view of a document kept as one document up to date; see
     /// [`TiloStore::sync_from`].
     pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
         self.inner.store.sync_from(record)
@@ -1452,14 +1495,14 @@ impl Host {
     /// ([`RootView::default`] takes the package's first root).
     pub fn root_of_layer(&self, app: &str, chosen: &RootView) -> Result<ResourceRef, HostError> {
         let ty = self.root_type_of(app, chosen)?;
-        self.root_record(app, &ty)
+        self.root_resource(app, &ty)
     }
 
     /// The package's root resource of the root type `ty` (a type id): what a named root
     /// (`root shell: Shell`) is, by the id the checker gives it, or what
     /// [`Self::root_of_layer`] names. Created the first time it is wanted, as
     /// [`Self::root_of`] does.
-    pub fn root_record(&self, app: &str, ty: &str) -> Result<ResourceRef, HostError> {
+    pub fn root_resource(&self, app: &str, ty: &str) -> Result<ResourceRef, HostError> {
         let app_is_loaded = self
             .find_in_packages(|package| (package.meta.app == app).then_some(()))
             .is_some();
@@ -1470,7 +1513,7 @@ impl Host {
         if self.inner.store.contains(&id) {
             return Ok(ResourceRef::root(id, ty.to_owned()));
         }
-        let record = NewRecord {
+        let record = NewResource {
             ty: ty.to_owned(),
             app: AppId::from(app),
             fields: Vec::new(),
@@ -1509,7 +1552,7 @@ impl Host {
     /// was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
         // The words of a field that became rich text, before any migration reads it, each
-        // record's change committed under the package version's migration actor.
+        // document's change committed under the package version's migration actor.
         for package in self.packages() {
             self.inner
                 .store
@@ -1538,7 +1581,7 @@ impl Host {
                     self.inner
                         .store
                         .set_migrating(Some((migration.id.clone(), doc.clone())));
-                    // The package updating its own records, not the person at the window: the
+                    // The package updating its own documents, not the person at the window: the
                     // change is the package version's, under the platform's migration actor.
                     let by = Actor::App(AppId::from(package.meta.app.as_str()));
                     let outcome = self
@@ -1563,9 +1606,9 @@ impl Host {
     }
 
     /// Run what the packages declare comes due at `now` (seconds since the epoch): each
-    /// trigger, for each record of its type, as the app's own invocation
-    /// ([`crate::authority::trigger_actor`]), whose change records in the same edit what
-    /// the trigger last did for the record. Only the workspace's origin calls it
+    /// trigger, for each document of its type, as the app's own invocation
+    /// ([`crate::authority::trigger_actor`]), whose change documents in the same edit what
+    /// the trigger last did for the document. Only the workspace's origin calls it
     /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
     /// devices missed while all were off runs once when one comes up. Returns how many ran.
     pub fn run_triggers(&self, now: i64) -> usize {
@@ -1592,7 +1635,7 @@ impl Host {
         self.open_layer_at(app, chosen).map(|(_, view)| view)
     }
 
-    /// [`Self::open_layer`] with the resource it opened: the window's lane keeps the root it
+    /// [`Self::open_layer`] with the resource it opened: the window's level keeps the root it
     /// shows, so what is opened is resolved once rather than once for the root and once for the
     /// view.
     pub fn open_layer_at(
@@ -1644,7 +1687,7 @@ impl Host {
         self.inner.plan(request)
     }
 
-    /// The published records of the workspace: each resource of a loaded package with its type name.
+    /// The published documents of the workspace: each resource of a loaded package with its type name.
     #[must_use]
     pub fn records(&self) -> Vec<(Rc<Package>, String, String)> {
         let mut out = Vec::new();
@@ -1672,7 +1715,7 @@ impl Host {
             .any(|package| &package.id == module)
     }
 
-    /// The label of a published record; see [`Self::label_at`].
+    /// The label of a published document; see [`Self::label_at`].
     #[must_use]
     pub fn label_of(&self, doc: &str) -> String {
         let ty = self.inner.store.resource_type(doc).unwrap_or_default();

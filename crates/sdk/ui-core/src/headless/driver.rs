@@ -103,7 +103,7 @@ pub enum StepStatus {
 
 /// One step, and what it did.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StepRecord {
+pub struct StepEntry {
     /// The step's place in the drive, from zero.
     pub index: usize,
     pub status: StepStatus,
@@ -111,7 +111,7 @@ pub struct StepRecord {
     pub error: Option<String>,
 }
 
-impl StepRecord {
+impl StepEntry {
     #[must_use]
     pub const fn passed(index: usize) -> Self {
         Self {
@@ -151,13 +151,13 @@ pub struct Outcome {
     /// The resources the app publishes, each action's address among them.
     pub resources: Vec<serde_json::Value>,
     /// One record per step that ran, in order.
-    pub steps: Vec<StepRecord>,
+    pub steps: Vec<StepEntry>,
 }
 
 impl Outcome {
     /// The first step that failed, if one did.
     #[must_use]
-    pub fn failure(&self) -> Option<&StepRecord> {
+    pub fn failure(&self) -> Option<&StepEntry> {
         self.steps.iter().find(|step| !step.is_pass())
     }
 
@@ -183,15 +183,15 @@ pub fn drive(harness: &mut FrameHarness, steps: &[Step]) -> Outcome {
 }
 
 /// Run each step, keeping the answers every step bound for the ones after it.
-pub(crate) fn run_steps(harness: &mut FrameHarness, steps: &[Step]) -> (Vec<StepRecord>, Bindings) {
+pub(crate) fn run_steps(harness: &mut FrameHarness, steps: &[Step]) -> (Vec<StepEntry>, Bindings) {
     let mut records = Vec::with_capacity(steps.len());
     let mut bindings = Bindings::new();
     refresh(harness);
     for (index, step) in steps.iter().enumerate() {
         match run_step(harness, step, &mut bindings) {
-            Ok(()) => records.push(StepRecord::passed(index)),
+            Ok(()) => records.push(StepEntry::passed(index)),
             Err(error) => {
-                records.push(StepRecord::failed(index, error));
+                records.push(StepEntry::failed(index, error));
                 break;
             }
         }

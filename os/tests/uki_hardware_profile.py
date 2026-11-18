@@ -62,7 +62,7 @@ class HardwareProfileTests(unittest.TestCase):
         }
         self.write_profile()
         # Model Linux image metadata even on Windows/non-root test hosts. File
-        # reads remain real; explicit metadata mutations exercise the trust gate.
+        # reads remain real; explicit metadata mutations exercise the trust check.
         self.original_lstat = Path.lstat
         self.metadata_overrides = {}
 

@@ -392,10 +392,66 @@ pub trait Records {
         let _ = (app, workspace, record);
         None
     }
-    /// The kind of the records `app` keeps in `workspace` (`notes.notebook`), empty when unknown.
-    fn kind(&self, app: &str, workspace: &str) -> String {
-        let _ = (app, workspace);
-        String::new()
+    /// Everything `workspace` holds here, by app and route; the empty route is the app's own
+    /// document of the workspace, its index.
+    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+        let _ = workspace;
+        Vec::new()
+    }
+}
+
+/// What a role that reads on a worker of its own reads the workspaces through.
+#[cfg(target_os = "linux")]
+pub type Source = Arc<dyn Records + Send + Sync>;
+/// What a role reads the workspaces through, where the session has one thread.
+#[cfg(not(target_os = "linux"))]
+pub type Source = std::rc::Rc<dyn Records>;
+
+/// What a store keeps, as a page's replication writes it, with the changes noted as they were
+/// written.
+pub struct Kept {
+    store: Store,
+    changes: Changes,
+}
+
+impl Kept {
+    /// What `store` keeps, with `changes` saying what moved in it.
+    #[must_use]
+    pub fn over(store: Store, changes: Changes) -> Self {
+        Self { store, changes }
+    }
+}
+
+impl Records for Kept {
+    fn take_changed(&self) -> Vec<Changed> {
+        self.changes.take()
+    }
+
+    fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        document(self.store.as_ref(), app, workspace, route)
+    }
+
+    /// The apps' own documents of `workspace`, and what their indexes name.
+    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+        let indexes = self
+            .store
+            .workspace_indexes()
+            .inspect_err(|error| tracing::warn!(%error, "the workspace indexes are not listed"))
+            .unwrap_or_default();
+        indexes
+            .into_iter()
+            .filter(|(_, held)| held == workspace)
+            .flat_map(|(app, _)| {
+                let named = named_checkouts(self.store.as_ref(), &app, workspace)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(checkout, _)| checkout.id.route().to_owned());
+                std::iter::once(String::new())
+                    .chain(named)
+                    .map(move |route| (app.clone(), route))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 }
 
@@ -417,31 +473,6 @@ pub fn named_checkouts(
             })
             .collect(),
     )
-}
-
-/// `app`'s workspace document in `workspace` read once: the checkouts its index names, and the
-/// document itself as the record `app` keeps as itself (Notes' notebook, Chat's chat) once an
-/// action was done in it. Keeping the index alone is no one's work.
-#[must_use]
-pub fn workspace_resources(
-    store: &dyn DurableStore,
-    app: &str,
-    workspace: &str,
-) -> Option<(Vec<DocumentCheckout>, Option<AutoCommit>)> {
-    let document = index_document(store, app, workspace)?;
-    let checkouts = ui::resource::index::discoverable_references(&document);
-    // Only the changes' messages are read: rebuilding every change would cost the whole log.
-    let acted = document
-        .committed_document()
-        .get_changes_meta(&[])
-        .iter()
-        .any(|change| {
-            change.message.as_deref().is_some_and(|message| {
-                message.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX)
-                    || message.starts_with(tilo_actions::CONTINUATION_PREFIX)
-            })
-        });
-    Some((checkouts, acted.then_some(document)))
 }
 
 /// `app`'s workspace document in `workspace`, as its app last wrote it.
@@ -500,6 +531,21 @@ pub fn document(
         return index_document(store, app, workspace);
     }
     stored_document(store, &key)
+}
+
+/// The record document `app` keeps in `workspace` under the storage key `stored`
+/// ([`durable_store::DurableStore::documents`]), as far as its writer finished writing it:
+/// a document read without its id, as a part of a chain is listed.
+pub fn stored(
+    store: &dyn DurableStore,
+    app: &str,
+    workspace: &str,
+    stored: &str,
+) -> Option<AutoCommit> {
+    stored_document(
+        store,
+        &StorageKey::document(app, workspace, stored.to_owned()),
+    )
 }
 
 /// The record document kept at `key`, as far as its writer finished writing it.
@@ -926,38 +972,76 @@ impl DurableStore for Noted {
     }
 }
 
-/// This device's records, read through its store and the changes they were noted with.
+/// What each workspace holds, as this device's engine keeps it: what its apps write, what the
+/// person's other devices replicate and what search reads, with the changes noted as they land.
 #[cfg(target_os = "linux")]
-pub struct Linked {
-    store: Store,
+pub struct Held {
+    engine: Arc<crate::engine::Engine>,
     changes: Changes,
 }
 
 #[cfg(target_os = "linux")]
-impl Linked {
-    /// This device's records in `store`, with `changes` saying what changed in them.
+impl Held {
+    /// What `engine` holds, with `changes` saying what moved in it.
     #[must_use]
-    pub fn over(store: Store, changes: Changes) -> Self {
-        Self { store, changes }
+    pub fn over(engine: Arc<crate::engine::Engine>, changes: Changes) -> Self {
+        Self { engine, changes }
+    }
+
+    /// What `app`'s document at `route` in `workspace` holds since `heads`: all of it without
+    /// heads. Nothing while its keys are not here yet.
+    fn read(
+        &self,
+        (app, workspace, route): (&str, &str, &str),
+        heads: Option<&[automerge::ChangeHash]>,
+    ) -> Option<crate::engine::ResourceReading> {
+        let heads: Option<Vec<[u8; 32]>> =
+            heads.map(|heads| heads.iter().map(|head| head.0).collect());
+        self.engine
+            .record_update(workspace, app, route, heads.as_deref())
+            .inspect_err(|error| tracing::warn!(%error, %app, %route, "a document is not read"))
+            .ok()
     }
 }
 
 #[cfg(target_os = "linux")]
-impl Records for Linked {
+impl Records for Held {
     fn take_changed(&self) -> Vec<Changed> {
         self.changes.take()
     }
 
-    fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit> {
-        document(self.store.as_ref(), app, workspace, record)
+    fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        let Some(crate::engine::ResourceReading::Captured { bytes, .. }) =
+            self.read((app, workspace, route), None)
+        else {
+            return None;
+        };
+        AutoCommit::load(&bytes)
+            .inspect_err(|error| tracing::warn!(%error, %app, %route, "a document does not load"))
+            .ok()
     }
 
-    /// The kind the workspace's index names its first record as: the workspace's own word for the
-    /// records its app keeps.
-    fn kind(&self, app: &str, workspace: &str) -> String {
-        named_checkouts(self.store.as_ref(), app, workspace)
-            .and_then(|named| named.into_iter().next())
-            .map(|(checkout, _)| checkout.kind.as_str().to_owned())
+    fn since(
+        &self,
+        app: &str,
+        workspace: &str,
+        route: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Since {
+        match self.read((app, workspace, route), Some(heads)) {
+            Some(crate::engine::ResourceReading::Unchanged(_)) => Since::Unchanged,
+            Some(crate::engine::ResourceReading::Changes { heads, bytes, .. }) => Since::Changes {
+                heads: heads.into_iter().map(automerge::ChangeHash).collect(),
+                bytes,
+            },
+            _ => Since::Whole,
+        }
+    }
+
+    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+        self.engine
+            .records(workspace)
+            .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace is not listed"))
             .unwrap_or_default()
     }
 }

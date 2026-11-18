@@ -316,13 +316,13 @@ fn portable_review_trap_confines_tab_shift_tab_and_spatial_focus() {
 }
 
 /// A retained modal with explicit native Widget focus/modal contracts.
-struct Gate {
+struct Hold {
     content: Column,
     open: Rc<Cell<bool>>,
     traps: bool,
     delivered: Rc<Cell<usize>>,
 }
-impl Widget for Gate {
+impl Widget for Hold {
     crate::testing::delegate_widget_methods!(content: sync, apply_layout);
     fn build_layout(
         &mut self,
@@ -388,7 +388,7 @@ impl Widget for Gate {
         true
     }
     fn name(&self) -> &'static str {
-        "gate"
+        "hold"
     }
     fn get_rect(&self) -> Rect {
         self.content.get_rect()
@@ -403,13 +403,13 @@ impl Widget for Gate {
 #[test]
 fn portable_review_modal_enter_leave_restores_semantic_focus() {
     let open = Rc::new(Cell::new(false));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: open.clone(),
         traps: true,
         delivered: Rc::default(),
     };
-    let mut frame = behind_background(gate);
+    let mut frame = behind_background(hold);
     frame
         .perform_named("background", &crate::a11y::Action::Focus)
         .unwrap();
@@ -438,7 +438,7 @@ impl Widget for FocusAsked {
 fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
     let asked = Rc::new(Cell::new(0));
     let open = Rc::new(Cell::new(false));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: open.clone(),
         traps: true,
@@ -450,7 +450,7 @@ fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
             .push(Box::new(FocusAsked {
                 asked: asked.clone(),
             }))
-            .push(Box::new(gate)),
+            .push(Box::new(hold)),
     ));
     frame
         .perform_named("background", &crate::a11y::Action::Focus)
@@ -468,7 +468,7 @@ fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
         0,
         "untrapped idle and scroll frames walk no focus order, as the live App between rebuilds"
     );
-    // The gate opens without a structure change, so no rebuild announces it.
+    // The hold is released without a structure change, so no rebuild announces it.
     open.set(true);
     frame.relayout();
     assert!(
@@ -486,13 +486,13 @@ fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
 #[test]
 fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
     let delivered = Rc::new(Cell::new(0));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: Rc::new(Cell::new(true)),
         traps: false,
         delivered: delivered.clone(),
     };
-    let mut frame = behind_background(gate);
+    let mut frame = behind_background(hold);
     frame
         .perform_named("inside", &crate::a11y::Action::Focus)
         .unwrap();
@@ -513,13 +513,13 @@ fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
 #[test]
 fn portable_review_empty_trap_forwards_unhandled_tab_without_background_focus() {
     let delivered = Rc::new(Cell::new(0));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new(),
         open: Rc::new(Cell::new(true)),
         traps: true,
         delivered: delivered.clone(),
     };
-    let mut frame = behind_background(gate);
+    let mut frame = behind_background(hold);
     frame.key("Tab");
     assert_eq!(
         delivered.get(),
@@ -1319,13 +1319,13 @@ fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
 }
 
 /// An agent renaming an item a list shows is drawn on the row's title where the new title lands:
-/// the title in its colour and its caret wearing what it did, with no card standing for it
+/// the title in its colour and its caret wearing what it did, with no card drawn for it
 /// anywhere else on the page.
 #[test]
 fn an_agents_rename_is_drawn_on_the_rows_title() {
     use crate::permissions::MemberId;
     use crate::widget::ListRow;
-    let title = "Book room 4 for Friday";
+    let title = "Book the studio for Friday";
     let rows = || {
         Box::new(
             Column::new()
@@ -1352,7 +1352,7 @@ fn an_agents_rename_is_drawn_on_the_rows_title() {
     event.actor = tilo_actions::Acting::agent("scribe");
     event.action.label = "Rename".into();
     event.action.did = Some("renamed".into());
-    event.resource.label = "Book the room for Friday".into();
+    event.resource.label = "Book the studio for Friday".into();
     event.anchor = tilo_actions::InteractionAnchor::Text {
         region: "title".into(),
         ranges: vec![tilo_actions::InteractionTextRange {
@@ -1409,4 +1409,114 @@ fn an_agents_rename_is_drawn_on_the_rows_title() {
             && f64::from(changed.3) <= (row_b.y1 + 40.0) * scale,
         "only the renamed row and its caret's tag change, no card elsewhere: {changed:?} vs {row_b:?}"
     );
+}
+
+/// An agent's comment on an issue is drawn where a person sees it: in the issue's thread, its words
+/// in the agent's colour with its caret saying "wrote"; in the list, on the issue's row, which
+/// says the same.
+#[test]
+fn an_agents_comment_is_drawn_in_the_thread_and_on_the_issues_row() {
+    use crate::permissions::MemberId;
+    use crate::widget::{ListRow, Text};
+    let words = "Hall 4 is free Friday 10-12.";
+    let mut event = crate::headless::agent_acting("tasks.tracker", "comment");
+    event.actor = tilo_actions::Acting::agent("scribe");
+    event.phase = tilo_actions::InteractionPhase::Committed;
+    event.action.step = Some(tilo_actions::StepKind::Write);
+    event.anchor = tilo_actions::InteractionAnchor::Text {
+        region: "comments".into(),
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block: "issue-b/c1".into(),
+            start: 0,
+            end: u64::try_from(words.chars().count()).unwrap(),
+        }],
+    };
+    let tags = |root: Box<dyn Widget>| {
+        let mut plain = frame(root);
+        plain.relayout();
+        let before = plain.render_rgba();
+        let (width, height) = plain.device_size();
+        let at = crate::time::now()
+            .checked_sub(crate::time::Duration::from_millis(300))
+            .expect("the clock is later than a moment ago");
+        plain.update_presence(|presence| {
+            presence
+                .names
+                .insert(MemberId::agent("scribe"), "Ada".into());
+            presence
+                .apply_interaction_at(event.clone(), at)
+                .expect("a well-formed interaction applies")
+        });
+        plain.poll_frame().unwrap();
+        plain.relayout();
+        let after = plain.render_rgba();
+        let changed = changed_pixels(&before, &after, width, (0, 0, width, height));
+        let tags: Vec<String> = plain
+            .presence()
+            .caret_tags()
+            .into_iter()
+            .filter(|tag| tag.user == MemberId::agent("scribe"))
+            .map(|tag| tag.label)
+            .collect();
+        (tags, changed)
+    };
+    let thread =
+        Box::new(Column::new().push(Box::new(Text::new(words).edits("comments", "issue-b/c1"))));
+    let (said, changed) = tags(thread);
+    assert_eq!(
+        said,
+        vec!["Ada: wrote".to_owned()],
+        "its caret on the words it wrote"
+    );
+    assert!(
+        changed.is_some(),
+        "the comment's words are drawn as the agent's"
+    );
+    let list = Box::new(
+        Column::new()
+            .push(Box::new(ListRow::new("a", "First task").item("issue-a")))
+            .push(Box::new(
+                ListRow::new("b", "Book hall 4 for Friday")
+                    .item("issue-b")
+                    .edits("title"),
+            )),
+    );
+    let (said, changed) = tags(list);
+    assert_eq!(
+        said,
+        vec!["Ada: wrote".to_owned()],
+        "the issue's row says what it did"
+    );
+    assert!(changed.is_some(), "the row is the agent's place");
+}
+
+/// What someone else changed in a field stays only as the hover note saying who and what it held:
+/// the write itself is drawn where it landed by presence ([`crate::presence::PresenceCtx::draw_writes_in`]),
+/// so the field keeps no colour of theirs of its own.
+#[test]
+fn a_field_changed_by_someone_else_keeps_no_colour_of_theirs() {
+    use crate::component::{Bound, Described as _, Person};
+    use crate::widget::{TextInput, TextInputProps};
+    let field = |changed_by: Option<Person>, title: bool| {
+        let props = TextInputProps {
+            value: Bound {
+                state: crate::LocalState::new("Second agent task, renamed".to_owned()),
+                ..Bound::default()
+            },
+            changed_by,
+            previous: Some("Second agent task".to_owned()),
+            title,
+            ..TextInputProps::default()
+        };
+        let mut frame = frame(Box::new(TextInput::from_props("field", props)));
+        frame.relayout();
+        frame.render_rgba()
+    };
+    let agent = Person::new(crate::permissions::MemberId::agent("scribe"), "Ada");
+    for title in [false, true] {
+        assert!(
+            field(Some(agent.clone()), title) == field(None, title),
+            "a changed field draws as an unchanged one (title: {title})"
+        );
+    }
 }

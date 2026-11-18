@@ -176,10 +176,10 @@ pub enum InstallerPreviewEffect {
         )]
         destination: AbsolutePath,
     },
-    /// Continue an unfinished preparation after verifying its exact identity custody.
+    /// Continue an unfinished preparation after verifying its exact identity storage.
     #[effect(returns)]
     ResumeInstallerPreparation,
-    /// Retire the saved choices without deleting previous identity custody.
+    /// Retire the saved choices without deleting previous identity storage.
     #[effect(returns)]
     StartNewInstallerPreparation,
     /// Check retained preparation again; no identity is adopted by this action.
@@ -278,10 +278,10 @@ pub enum InstallerPreviewEffect {
         #[param(secret, "Unlock confirmation; never persisted or returned")]
         value: String,
     },
-    /// Create the chosen new identity in fresh, durable private custody.
+    /// Create the chosen new identity in fresh, durable private ownership.
     #[effect(returns)]
     CreatePreparedIdentity {
-        private_custody: AbsolutePath,
+        private_ownership: AbsolutePath,
         avatar_color: String,
     },
     /// Update the prepared identity's public profile, retaining its signing key.
@@ -884,7 +884,7 @@ impl InstallerPreview {
         if !self.live {
             return true;
         }
-        super::internal_install_flow::live_gate_open()
+        super::internal_install_flow::live_install_allowed()
     }
 
     fn storage_content(&self) -> ui::widget::Column {
@@ -1565,14 +1565,14 @@ impl InstallerPreview {
                 }
             }
             InstallerPreviewEffect::CreatePreparedIdentity {
-                private_custody,
+                private_ownership,
                 avatar_color,
             } if self.live && self.journey.identity == Some(Identity::New) => {
                 imager_backend::prepared_identity::require_supported()
                     .map_err(|_| "installer-preview-identity-unavailable")?;
                 {
                     self.personal.create(
-                        private_custody.into(),
+                        private_ownership.into(),
                         self.journey.name.clone(),
                         identity_color(&avatar_color)?,
                     )?;
@@ -3966,7 +3966,7 @@ impl InstallerPreview {
             .prepared_handle()
             .ok_or("installer-accounts-save-failed")?;
         let operation = prepared
-            .custody_directory()
+            .ownership_directory()
             .parent()
             .ok_or("installer-accounts-save-failed")?;
         let root = operation.join("accounts");
@@ -4799,7 +4799,7 @@ impl InstallerPreview {
             t(if self.direct_route_enabled() {
                 "installer-native-full-os-body"
             } else {
-                "imager-setup-internal-gated"
+                "imager-setup-internal-not-enabled"
             })
         } else if key == "computer" && !self.direct_route_enabled() {
             t("installer-preview-computer-usb-body")
@@ -5787,7 +5787,7 @@ mod tests {
         assert!(catalog_availability(&mut app, "export-windows-preparation").is_available());
         assert!(
             app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
-                private_custody: AbsolutePath::new("/must-not-open").unwrap(),
+                private_ownership: AbsolutePath::new("/must-not-open").unwrap(),
                 avatar_color: "#123456".into()
             })
             .is_err()
@@ -5829,7 +5829,7 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "startup restart inspection must complete under owned state custody"
+                "startup restart inspection must complete under owned state ownership"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -6067,9 +6067,9 @@ mod tests {
     #[cfg(unix)]
     #[cfg(target_os = "linux")]
     #[test]
-    fn approved_pairing_then_new_identity_releases_only_branch_guards_and_preserves_custody() {
-        let (custody, pairing) = pairing::certified_fixture();
-        let state_root = custody.path().canonicalize().unwrap();
+    fn approved_pairing_then_new_identity_releases_only_branch_guards_and_preserves_ownership() {
+        let (ownership, pairing) = pairing::certified_fixture();
+        let state_root = ownership.path().canonicalize().unwrap();
         let root = pairing.fixture_operation_directory();
         let original_certificate =
             std::fs::read(root.join("future-device/device/cert.bin")).unwrap();
@@ -6215,7 +6215,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn belongings_edit_cancel_retains_source_custody_and_persisted_consent() {
+    fn belongings_edit_cancel_retains_source_ownership_and_persisted_consent() {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
@@ -6640,7 +6640,7 @@ mod tests {
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -7002,7 +7002,7 @@ mod tests {
             &root.join("donor"),
             "Existing Ada",
             [25, 80, 120],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity::provisioning::IdentityStorage::for_session(),
         )
         .unwrap();
         let expected_photo =
@@ -7159,7 +7159,7 @@ mod tests {
         .unwrap();
         assert!(
             status(&mut app)["prepared_identity"]["public_key"].is_null(),
-            "first-time choice cannot reuse imported signing custody"
+            "first-time choice cannot reuse imported signing ownership"
         );
     }
 
@@ -7320,7 +7320,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn ordinary_password_continue_refuses_symlink_custody_without_advancing() {
+    fn ordinary_password_continue_refuses_symlink_ownership_without_advancing() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -7361,7 +7361,7 @@ mod tests {
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let custody = root.join("identity");
+        let ownership = root.join("identity");
         let artifact = root.join("identity.sealed");
         let mut app = fixture();
         choose(&mut app, "computer");
@@ -7377,14 +7377,14 @@ mod tests {
         .unwrap();
         assert!(
             app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
-                private_custody: AbsolutePath::new(&custody).unwrap(),
+                private_ownership: AbsolutePath::new(&ownership).unwrap(),
                 avatar_color: "invalid".into(),
             })
             .is_err()
         );
-        assert!(!custody.exists());
+        assert!(!ownership.exists());
         app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
-            private_custody: AbsolutePath::new(&custody).unwrap(),
+            private_ownership: AbsolutePath::new(&ownership).unwrap(),
             avatar_color: "123456".into(),
         })
         .unwrap();
@@ -7448,7 +7448,7 @@ mod tests {
             );
         }
         let metadata =
-            runtime_identity::load_metadata_from_path(&custody.join("primary.json")).unwrap();
+            runtime_identity::load_metadata_from_path(&ownership.join("primary.json")).unwrap();
         assert_eq!(metadata.display_name, "Ada");
         assert_eq!(metadata.avatar_color, [0xab, 0xcd, 0xef]);
         #[cfg(target_os = "linux")]
@@ -9001,15 +9001,15 @@ mod tests {
             return;
         }
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        type Gate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
-        static GATE: std::sync::OnceLock<std::sync::Mutex<Option<Gate>>> =
+        type Check = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+        static CHECK: std::sync::OnceLock<std::sync::Mutex<Option<Check>>> =
             std::sync::OnceLock::new();
-        fn gated_capture(
+        fn guarded_capture(
             home: &std::path::Path,
             operation: &str,
             categories: imager_backend::setup::migration_handoff::Categories,
         ) -> std::io::Result<imager_backend::setup::migration_handoff::Plan> {
-            let (started, release) = GATE.get().unwrap().lock().unwrap().take().unwrap();
+            let (started, release) = CHECK.get().unwrap().lock().unwrap().take().unwrap();
             started.send(()).map_err(std::io::Error::other)?;
             release
                 .recv_timeout(tilo_test_env::hang_bound())
@@ -9018,7 +9018,7 @@ mod tests {
         }
         let (started, ready) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
-        *GATE
+        *CHECK
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
             .unwrap() = Some((started, wait));
@@ -9031,7 +9031,7 @@ mod tests {
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         let (reply, receiver) = std::sync::mpsc::channel();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let mut app = fixture();
         choose(&mut app, "computer");
         choose(&mut app, "migrate");
@@ -9060,7 +9060,7 @@ mod tests {
             preview.journey.categories = [true, false, false];
             preview.belongings.home = Some(home.clone());
             preview.migration_selection.permission_reply = Some(receiver);
-            preview.migration_selection.capture = Some(gated_capture);
+            preview.migration_selection.capture = Some(guarded_capture);
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -9536,10 +9536,13 @@ mod tests {
         wait(&mut app, "complete");
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "real-settings");
         let active = volume.path().join("active");
-        for custody in [".config/tilo", ".local/state/tilo"] {
-            std::fs::create_dir_all(active.join(custody)).unwrap();
-            std::fs::set_permissions(active.join(custody), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
+        for ownership in [".config/tilo", ".local/state/tilo"] {
+            std::fs::create_dir_all(active.join(ownership)).unwrap();
+            std::fs::set_permissions(
+                active.join(ownership),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
         }
         std::fs::set_permissions(&active, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(active.join(".config/tilo/selected"), b"selected identity").unwrap();
@@ -9707,7 +9710,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", root.path().join("state"));
-        env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
+        env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -9859,11 +9862,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn gated_computer_route_reviews_explicit_usb_choice_without_empty_storage() {
+    fn guarded_computer_route_reviews_explicit_usb_choice_without_empty_storage() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
+        env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -9880,7 +9883,7 @@ mod tests {
             preview.live = true;
             assert!(
                 !preview.direct_route_enabled(),
-                "this qualification requires a closed release gate"
+                "this qualification requires a closed release check"
             );
         })
         .unwrap();
@@ -10046,7 +10049,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn review_profile_save_and_cancel_preserve_custody_and_exact_cached_photo() {
+    fn review_profile_save_and_cancel_preserve_ownership_and_exact_cached_photo() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -10105,7 +10108,7 @@ mod tests {
                 preview.personal.prepared_handle().unwrap()
             })
             .unwrap();
-        let record = identity.custody_directory().join("primary.json");
+        let record = identity.ownership_directory().join("primary.json");
         let original_bytes = std::fs::read(&record).unwrap();
         let key = identity.public_key();
         assert_eq!(
@@ -10288,7 +10291,7 @@ mod tests {
             })
             .unwrap();
         let identity_bytes =
-            std::fs::read(identity.custody_directory().join("primary.json")).unwrap();
+            std::fs::read(identity.ownership_directory().join("primary.json")).unwrap();
         let persisted = |app: &mut TestApp<ImagerShell>| {
             let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
             loop {
@@ -10353,7 +10356,7 @@ mod tests {
                 }
             );
             assert_eq!(
-                std::fs::read(identity.custody_directory().join("primary.json")).unwrap(),
+                std::fs::read(identity.ownership_directory().join("primary.json")).unwrap(),
                 identity_bytes
             );
             identity.metadata().unwrap();
@@ -11404,7 +11407,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -11564,7 +11567,7 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&bundle.get().unwrap(), &artifact));
         assert!(
             app.state().profile.prepared_setup.is_none(),
-            "custody receipts remain device-local"
+            "ownership receipts remain device-local"
         );
         assert_eq!(app.state().profile.user.full_name, "Ada");
         assert_eq!(

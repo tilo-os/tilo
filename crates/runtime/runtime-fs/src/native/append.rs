@@ -1,4 +1,4 @@
-//! Exact-inode append custody. Never changes the selected descriptor's flags.
+//! Exact-inode append ownership. Never changes the selected descriptor's flags.
 use super::{
     FileGrant, FsError, FsRight, FsSession, MAX_WRITE_CHUNK, NativeIdentity, OFlags, io_error,
 };
@@ -6,7 +6,7 @@ use super::{
 use std::os::{fd::AsRawFd, unix::fs::MetadataExt as StdMetadataExt};
 
 /// An independent append description of an already-writable selected inode.
-/// This is native custody, never a serialized grant or a reopened file name.
+/// This is native ownership, never a serialized grant or a reopened file name.
 pub struct FsAppendHandle {
     session: FsSession,
     file: FileGrant,

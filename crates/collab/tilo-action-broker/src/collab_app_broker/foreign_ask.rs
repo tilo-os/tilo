@@ -1,7 +1,7 @@
 //! Where a person at a device that is not theirs is asked.
 //!
 //! An action their grants leave to them asks first. At a device that is
-//! theirs, this host asks them itself ([`super::witness`]). At a foreign
+//! theirs, this host asks them itself ([`super::approval`]). At a foreign
 //! device the workspace is not their own and the person is not at this host's
 //! screen: the question is put to them on one of their own devices, which
 //! draws it and answers it with what only that device's person chose. The
@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, Confirmation, ConfirmationQuestion, InvokeRequest, Pending,
+    ActionCallError, Caller, Confirmation, ConfirmationQuestion, InvokeRequest, Pending,
 };
 
-use super::{AppBrokerState, WitnessBinding};
+use super::{AppBrokerState, ApprovalBinding};
 
 /// How long the person is given to answer on their own device.
 pub(super) const ANSWER_WAIT: Duration = Duration::from_secs(60);
@@ -34,28 +34,28 @@ impl AppBrokerState {
     /// own devices, and hold their answer to `binding`: the confirmation
     /// they give names this one invocation and dies with this process, like
     /// one given here on the host's own sheet.
-    pub(super) fn own_device_witness(
+    pub(super) fn own_device_approval(
         self: &Arc<Self>,
         caller: &Caller,
-        binding: &WitnessBinding,
+        binding: &ApprovalBinding,
         request: &InvokeRequest,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
-        self.own_device_witness_within(caller, binding, request, ANSWER_WAIT)
+    ) -> Pending<Result<Confirmation, ActionCallError>> {
+        self.own_device_approval_within(caller, binding, request, ANSWER_WAIT)
     }
 
-    /// [`Self::own_device_witness`], giving the person `within` to answer.
+    /// [`Self::own_device_approval`], giving the person `within` to answer.
     /// The wait is a parameter so the refusal of an answer that never comes
     /// is observable without a minute's wait.
-    pub(crate) fn own_device_witness_within(
+    pub(crate) fn own_device_approval_within(
         self: &Arc<Self>,
         caller: &Caller,
-        binding: &WitnessBinding,
+        binding: &ApprovalBinding,
         request: &InvokeRequest,
         within: Duration,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<Confirmation, ActionCallError>> {
         let Some(service) = self.services.own_device.as_ref() else {
             // Nobody to ask is nobody's confirmation.
-            return Pending::ready(Err(ActionHostError::confirmation_required()));
+            return Pending::ready(Err(ActionCallError::confirmation_required()));
         };
         let question = asked_there(self, caller, &binding.workspace, request);
         let asked = match service.ask_person(caller, &question) {
@@ -70,20 +70,20 @@ impl AppBrokerState {
         let spawned = std::thread::Builder::new()
             .name("foreign-confirmation".into())
             .spawn(move || {
-                let witness = match asked.wait_timeout(within) {
-                    Ok(Some(Ok(Confirmation::Witnessed(_)))) => state
-                        .witness_confirmation(&binding)
-                        .map(Confirmation::Witnessed)
-                        .ok_or(ActionHostError::confirmation_required()),
-                    // Denied, timed out, or no witness to name: nothing runs.
+                let approval = match asked.wait_timeout(within) {
+                    Ok(Some(Ok(Confirmation::Approved(_)))) => state
+                        .approval_confirmation(&binding)
+                        .map(Confirmation::Approved)
+                        .ok_or(ActionCallError::confirmation_required()),
+                    // Denied, timed out, or no approval to name: nothing runs.
                     Ok(Some(Ok(_) | Err(_)) | None) | Err(_) => {
-                        Err(ActionHostError::confirmation_required())
+                        Err(ActionCallError::confirmation_required())
                     }
                 };
-                completer.complete(witness);
+                completer.complete(approval);
             });
         if let Err(error) = spawned {
-            return Pending::ready(Err(ActionHostError::Unavailable {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: format!("the answer could not be awaited: {error}"),
             }));
         }
@@ -115,7 +115,7 @@ impl AppBrokerState {
                     .map(|descriptor| described(&descriptor))
             })
             .or_else(|| {
-                self.live_surfaces(super::action_host::RowScope::Provider(&target.provider))
+                self.live_surfaces(super::action_provider::RowScope::Provider(&target.provider))
                     .into_iter()
                     .find_map(|surface| {
                         surface
@@ -151,7 +151,7 @@ fn asked_there(
     let described = state.described_action(&request.target);
     ConfirmationQuestion {
         id,
-        // The device they are standing at, as the transport authenticated
+        // The device they are at, as the transport authenticated
         // it: a device of their own, elsewhere, is the other party here.
         device_label: caller.device_public_key().map_or_else(
             || "another device".to_owned(),

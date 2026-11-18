@@ -1,4 +1,4 @@
-//! The address book's own record, the places its contacts are published
+//! The address book's own document, the places its contacts are published
 //! under, and the app.
 //!
 //! The contacts are kept in numbered parts beside the book
@@ -163,13 +163,13 @@ impl ResourceApp for ContactsShell {
         Some(&crate::account_editor::CATALOG)
     }
 
-    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 
     /// The contacts, kept in parts beside the book.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.chain::<ContactPart>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<ContactPart>();
     }
 
     /// What a capture stages of the book, provided before the window is

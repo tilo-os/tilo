@@ -21,7 +21,7 @@ pub(super) struct Completion {
     admitted: usize,
     output: ActionOutput,
     error: Option<ActionFailure>,
-    custody: Option<ResourceInvocationScope>,
+    ownership: Option<ResourceInvocationScope>,
 }
 
 impl Completion {
@@ -106,7 +106,7 @@ impl CausalEffects {
             admitted: 0,
             output: applied.output().clone(),
             error: None,
-            custody: operation.with_custody().1.cloned(),
+            ownership: operation.with_ownership().1.cloned(),
         }));
         for entry in &mut self.drains {
             if entry.alive.strong_count() == 0 {
@@ -146,10 +146,10 @@ impl CausalEffects {
         cancel: bool,
     ) -> Option<InvocationUpdate> {
         let group = Rc::clone(self.groups.get(&invocation)?);
-        let custody = group.borrow().custody.clone();
+        let ownership = group.borrow().ownership.clone();
         if cancel {
-            if let Some(custody) = &custody {
-                custody.cancel();
+            if let Some(ownership) = &ownership {
+                ownership.cancel();
             }
             for entry in &mut self.drains {
                 entry.drain.cancel(invocation);
@@ -160,7 +160,10 @@ impl CausalEffects {
                 message: None,
             });
         }
-        if let Some(error) = custody.as_ref().and_then(|custody| custody.check().err()) {
+        if let Some(error) = ownership
+            .as_ref()
+            .and_then(|ownership| ownership.check().err())
+        {
             for entry in &mut self.drains {
                 entry.drain.cancel(invocation);
             }
@@ -207,7 +210,7 @@ impl CausalDrainer for Rc<RefCell<super::OutboxDrain>> {
         {
             return Err("document consequences exceed the budget or are already running".into());
         }
-        let (request, custody) = operation.with_custody();
+        let (request, ownership) = operation.with_ownership();
         for (id, value) in causes {
             operation.check()?;
             {
@@ -219,7 +222,7 @@ impl CausalDrainer for Rc<RefCell<super::OutboxDrain>> {
                 .caused
                 .insert(id.clone(), (request.invocation, Rc::clone(group)));
             if let Err(error) =
-                drain.start_entry(id.clone(), value, Some(request.invocation), custody)
+                drain.start_entry(id.clone(), value, Some(request.invocation), ownership)
                 && let Some((_, group)) = drain.caused.remove(&id)
             {
                 group.borrow_mut().finished(Err(failure(error)));

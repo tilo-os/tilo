@@ -12,7 +12,7 @@ use super::{AccountInfo, AuthError};
 use crate::http::{Cookies, secret};
 
 /// An iCloud web session: the cookies `accountLogin` set, plus the idmsa
-/// session and trust tokens that renew it. Custody seals it in the vault
+/// session and trust tokens that renew it. Ownership seals it in the vault
 /// (it is all secret apart from the URLs and IDs);
 /// [`StoredSession::credential`] is what a Drive source borrows per request.
 ///

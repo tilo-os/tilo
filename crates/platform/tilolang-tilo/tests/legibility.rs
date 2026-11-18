@@ -1,5 +1,5 @@
 //! Seeing what a task did (task-legibility.md §2, §4): an agent's run creates, changes and
-//! removes records in Notes and Tasks; every version names the run that made it and what it
+//! removes documents in Notes and Tasks; every version names the run that made it and what it
 //! did, removals included; the run's changes are listed across both apps; and what the person
 //! has not seen is what the run did after their seen mark, until they review the run, edit
 //! what it changed, or mark it seen.
@@ -99,7 +99,7 @@ impl Tidied {
 }
 
 /// Ada's workspace as another of her devices opens it over an index it builds whole from the
-/// record: the same lists, and what a list shows of what left it, without catching up.
+/// document: the same lists, and what a list shows of what left it, without catching up.
 pub(crate) fn built_over(ada: &Replica) -> Host {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("built-over-the-record");
     let _ = std::fs::remove_dir_all(&dir);
@@ -278,7 +278,7 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
         checked.last().unwrap().fields,
         [field(&ada, TASKS_APP, "Task", "done")]
     );
-    // A removed record stays answerable: who removed it, in which run.
+    // A removed document stays answerable: who removed it, in which run.
     for removed in [&old, &stale] {
         let versions = store.versions(removed).unwrap();
         let last = versions.last().unwrap();
@@ -319,7 +319,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         assert_eq!(runs(&unseen), [Some(RUN)], "{at:?}");
     }
 
-    // Editing a record marks what it shows as seen.
+    // Editing a document marks what it shows as seen.
     call(
         &ada,
         "ada",
@@ -330,7 +330,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     ada.commit();
     let runtime = ada.host.runtime();
     assert!(runtime.unseen(&me, &groceries).unwrap().is_empty());
-    // Marking one seen moves its mark to its newest version, kept for her own record.
+    // Marking one seen moves its mark to its newest version, kept for her own document.
     assert!(runtime.mark_seen(&me, &landlord).unwrap());
     assert!(runtime.unseen(&me, &landlord).unwrap().is_empty());
     let newest = ada.host.store().versions(&landlord).unwrap();
@@ -343,7 +343,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         }]
     );
     // Mark all seen on the run: every version it made, in both apps, in one step; kept for
-    // her own record as the run.
+    // her own document as the run.
     assert!(runtime.mark_run_seen(&me, RUN));
     assert!(!runtime.mark_run_seen(&me, RUN), "reviewed once");
     for at in &all {
@@ -380,7 +380,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         runs(&runtime.unseen(&me, &made).unwrap()),
         [Some(LATER_RUN)]
     );
-    // The host keeps what she saw in her own record and gives it back on another device: the
+    // The host keeps what she saw in her own document and gives it back on another device: the
     // runs and marks it sets are what `unseen` reads.
     let (mut other, _) = Replica::new(
         "ada",

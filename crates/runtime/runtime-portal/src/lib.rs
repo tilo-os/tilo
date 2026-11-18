@@ -13,6 +13,10 @@ pub mod environment_socket;
 /// connection is.
 #[cfg(unix)]
 pub mod launch_handoff;
+/// Holds a child until the host that started it has recorded
+/// its launch, so it can never reach the broker before it is attested.
+#[cfg(unix)]
+pub mod launch_hold;
 pub mod local_socket;
 /// The messages that travel over a connected socket: Unix sockets and the
 /// descriptors they carry, so Linux only, like the clients that use it.
@@ -21,16 +25,11 @@ pub mod message;
 pub mod origin_connector;
 pub mod pending_connection;
 pub mod process_binding;
-/// The gate that holds a child until the host that started it has recorded
-/// its launch, so it can never reach the broker before it is attested.
-#[cfg(unix)]
-pub mod registration_gate;
 #[cfg(unix)]
 pub mod request_rendezvous;
 pub mod retained_role;
-pub mod runtime_request;
 pub mod service_socket;
-pub mod tilolang_host;
+pub mod tilolang_process;
 pub mod tools;
 pub mod windows;
 
@@ -41,7 +40,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 30;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 31;
 
 use std::env;
 use std::io;
@@ -81,7 +80,7 @@ pub enum NotAvailable {
 }
 
 /// True iff we appear to be running inside a Tilo session. Heuristic only —
-/// apps must NOT use this as an authorisation gate; try the relevant
+/// apps must NOT use this as an authorisation check; try the relevant
 /// service client and react to [`NotAvailable`] instead. Intended for
 /// telemetry, boot-time toggles, and friendly first-run messaging.
 pub fn is_tilo_native() -> bool {
@@ -242,40 +241,40 @@ mod tests {
 pub mod fd_transport;
 
 #[cfg(unix)]
-pub mod descriptor_lane;
+pub mod descriptors;
 
 #[cfg(unix)]
-pub type DescriptorLane = Option<descriptor_lane::DescriptorSender>;
+pub type Descriptors = Option<descriptors::DescriptorSender>;
 #[cfg(not(unix))]
-pub type DescriptorLane = Option<std::convert::Infallible>;
+pub type Descriptors = Option<std::convert::Infallible>;
 
-/// A connected stream that carries a descriptor lane on the hosts that have
-/// one. The wrapping lives here, beside the lane it makes, so a caller never
+/// A connected stream that carries a descriptor stream on the hosts that have
+/// one. The wrapping lives here, beside the descriptor stream it makes, so a caller never
 /// selects a target to hand a service what the person selected.
 #[cfg(unix)]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors);
 }
 
 #[cfg(unix)]
 impl DescriptorStreamSource for UnixStream {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
-        let lane = descriptor_lane::DescriptorSender::new();
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors) {
+        let sender = descriptors::DescriptorSender::new();
         (
-            descriptor_lane::DescriptorStream::sending(self, lane.clone()),
-            Some(lane),
+            descriptors::DescriptorStream::sending(self, sender.clone()),
+            Some(sender),
         )
     }
 }
 
 #[cfg(not(unix))]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors);
 }
 
 #[cfg(not(unix))]
 impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors) {
         (self, None)
     }
 }

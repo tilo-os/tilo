@@ -98,7 +98,7 @@ test('an active call polls the retained controls even when the canvas stops redr
 });
 
 
-test('a page with no call still has its lane served: Chat watches the rosters there', async () => {
+test('a page with no call still has its media queue served: Chat watches the rosters there', async () => {
   const f = fixture();
   let scheduled;
   let schedules = 0;
@@ -368,11 +368,11 @@ test('the status names who the call hears talking, so the app can ring them', as
 
 test('a browser that cannot carry calls is told so when it joins, and opens no call', async () => {
   const f = fixture();
-  f.voice.call.unsupported = () => 'the call lane is unavailable';
+  f.voice.call.unsupported = () => 'the call media queue is unavailable';
   const answer = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.equal(answer.state, 'ended');
   assert.equal(answer.issue, 'unsupported');
   assert.deepEqual(f.opened, []);
   assert.deepEqual(f.operations, []);
-  assert.equal(endedIssue({admitted: false, unsupported: true, reason: 'the call lane is unavailable'}), 'unsupported');
+  assert.equal(endedIssue({admitted: false, unsupported: true, reason: 'the call media queue is unavailable'}), 'unsupported');
 });

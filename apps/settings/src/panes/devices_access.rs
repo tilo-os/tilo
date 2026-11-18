@@ -12,8 +12,8 @@ use ui::tilo_actions::remote::{
 };
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
-    Button, ButtonRole, Column, DisclosureGroup, DisclosureRow, Element, ListRow, Row, Spacer,
-    TextInput,
+    Button, ButtonRole, Column, Container, DisclosureGroup, DisclosureRow, Element, ListRow, Row,
+    Spacer, TextInput,
 };
 
 use crate::area::AreaContext;
@@ -66,8 +66,12 @@ pub enum DevicesAccessEffect {
         #[param("The session's name, as History names it")]
         session: String,
     },
-    /// Approve or decline a device asking to be the person.
-    #[effect(job, row)]
+    /// Approve or decline a device asking to be the person. Approving lets
+    /// the device act as the person from then on, so it is theirs alone to
+    /// do: its row asks for their confirmation ([`answering_risk`]), anyone
+    /// acting for them asks them first, and an agent's or an automation's
+    /// call lets nobody in.
+    #[effect(job, row, attended)]
     AnswerDevice {
         #[param("The ask's id, as the list of asking devices names it")]
         ask: String,
@@ -108,6 +112,9 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let area = area(app).ok_or_else(crate::area::missing)?;
+    if effect.lets_in() && !asked_by_the_person() {
+        return Err(t("settings-access-answer-yourself"));
+    }
     area.model()
         .borrow_mut()
         .act(&area.remote, &effect, Some(cx.reply()))?;
@@ -128,6 +135,39 @@ impl DevicesAccessEffect {
             Self::RevokeDevice { .. } | Self::RevokeBrowser { .. } | Self::RevokeAgent { .. }
         )
     }
+
+    /// Whether it lets a device in as the person.
+    const fn lets_in(&self) -> bool {
+        matches!(self, Self::AnswerDevice { approve: true, .. })
+    }
+}
+
+/// What answering a device risks, by what its caller answers: letting it in
+/// hands it everything the person may do, so that asks for their
+/// confirmation as handing out a credential does; declining it risks
+/// nothing. An answer that does not read as a decline is taken as letting
+/// it in.
+fn answering_risk(args: &ui::tilo_actions::ActionArgs) -> ui::tilo_actions::RiskLevel {
+    let declines = args
+        .to_json()
+        .get("approve")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+    if declines {
+        ui::tilo_actions::RiskLevel::None
+    } else {
+        ui::tilo_actions::RiskLevel::Privileged
+    }
+}
+
+/// Whether the call being answered is the person's own: made at this device,
+/// or delivered for the person acting themselves from a device of theirs.
+/// Settings passes what it is asked on to whoever keeps the person's devices
+/// as the person's own word, so what an agent, an automation, a bot or an
+/// app asks for them is never passed on as that.
+fn asked_by_the_person() -> bool {
+    ui::invocation_scope::current_invoker()
+        .is_none_or(|invoker| invoker.acting.direct_person().is_some())
 }
 
 crate::area::pane_area! {
@@ -452,7 +492,7 @@ impl Listed {
     /// why there is none.
     fn take(&mut self) -> Option<Result<Option<serde_json::Value>, String>> {
         use ui::tilo_actions::InvocationUpdate;
-        use ui::tilo_actions::remote::ActionHostError;
+        use ui::tilo_actions::remote::ActionCallError;
         let call = self.read.as_ref()?.call();
         let revision = call.revision();
         if revision == self.seen {
@@ -474,7 +514,7 @@ impl Listed {
                 Err("the host stopped before it answered".to_owned()),
             ),
             ui::Arrival::Failed(
-                error @ (ActionHostError::UnknownAction | ActionHostError::Unavailable { .. }),
+                error @ (ActionCallError::UnknownAction | ActionCallError::Unavailable { .. }),
             ) => (Kept::Nowhere, Err(error.to_string())),
             ui::Arrival::Failed(error) => (Kept::Once, Err(error.to_string())),
             ui::Arrival::Ready(
@@ -1336,17 +1376,22 @@ impl Removal {
             );
         }
         let cancel = state.clone();
+        // The pair takes the width it needs and no more. A line of controls
+        // fills its parent otherwise, and a row whose trailing control fills
+        // it leaves nothing for its name and what removing does.
         Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    Button::new(
-                        &format!("settings.access.{id}.cancel"),
-                        &t("settings-access-cancel"),
-                    )
-                    .on_view(move || cancel.ask_removal(None)),
-                ))
-                .push(Box::new(self.confirm)),
+            Container::new().hug().with_child(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Button::new(
+                            &format!("settings.access.{id}.cancel"),
+                            &t("settings-access-cancel"),
+                        )
+                        .on_view(move || cancel.ask_removal(None)),
+                    ))
+                    .push(Box::new(self.confirm)),
+            )),
         )
     }
 }
@@ -1388,7 +1433,7 @@ fn revocation(effect: DevicesAccessEffect) -> ui::tilo_actions::ActionSpec {
 }
 
 /// Naming `device`: a button that opens a field holding the name it reads by,
-/// and Save hands the new one to the host that keeps the person's record.
+/// and Save hands the new one to the host that keeps the person's resource.
 fn rename_control(
     cx: &ViewCx<Settings>,
     state: &PageState,
@@ -1667,7 +1712,9 @@ fn asking_row(asking: &Asking) -> LiveRow {
             // by an answer that was not given.
             approve: false,
         })
-        .bound_asking(&["approve"]),
+        .bound_asking(&["approve"])
+        // Letting the device in wants its caller's confirmation.
+        .with_risk(answering_risk),
     )
 }
 

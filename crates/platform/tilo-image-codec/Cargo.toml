@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "The one image codec seam: format sniffing, decode, encode and pixel operations, with the browser's own codecs on the web."
+description = "The one image codec boundary: format sniffing, decode, encode and pixel operations, with the browser's own codecs on the web."
 
 [dependencies]
 image = { workspace = true, features = ["gif", "jpeg", "png", "webp"] }

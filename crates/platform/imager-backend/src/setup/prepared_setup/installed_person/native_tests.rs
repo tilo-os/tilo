@@ -3,14 +3,14 @@ use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
-use tilo_identity_host::{
+use tilo_identity::{
     device_fleet::DeviceFleet,
     enrolled_transport::{AuthenticatedEnrolledDevice, EnrolledDevice},
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, IdentityPaths, RevocationReason, persist};
 const PASSWORD: &[u8] = b"synthetic retained anchor native fixture password";
-const TEST: &str = "setup::prepared_setup::installed_person::native_tests::authenticated_native_seed_revocations_and_certificate_custody";
+const TEST: &str = "setup::prepared_setup::installed_person::native_tests::authenticated_native_seed_revocations_and_certificate_ownership";
 const CHILD: &str = "TILO_INSTALLED_PERSON_ANCHOR_NATIVE_CHILD";
 struct Fixture {
     _temporary: tempfile::TempDir,
@@ -225,7 +225,7 @@ fn monotonic_and_foreign_issuer() {
     assert_eq!(
         std::fs::read(refresh_path(&f)).unwrap(),
         before,
-        "refused entries must not replace protected custody"
+        "refused entries must not replace protected ownership"
     );
     let self_revocation = revocation(&f.signer, f.device, 400);
     f.anchor
@@ -260,7 +260,7 @@ fn certificate_inode_replacement() {
     assert_eq!(std::fs::read(&f.certificate).unwrap(), bytes);
     assert!(
         f.anchor.current().is_err(),
-        "equal certificate bytes on a replaced inode cannot substitute live custody"
+        "equal certificate bytes on a replaced inode cannot substitute live ownership"
     );
     assert!(f.anchor.refresh_verified(&[]).is_err());
 }
@@ -284,7 +284,7 @@ fn certificate_same_inode_mutation() {
     assert!(f.anchor.refresh_verified(&[]).is_err());
 }
 #[test]
-fn authenticated_native_seed_revocations_and_certificate_custody() {
+fn authenticated_native_seed_revocations_and_certificate_ownership() {
     root().expect("root qualifier required; cannot skip unavailable authority");
     if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
         monotonic_and_foreign_issuer();

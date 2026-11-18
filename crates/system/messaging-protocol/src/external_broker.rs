@@ -1,5 +1,5 @@
 //! Host-to-Messages adapters for verified `WhatsApp` and SMS accounts.
-//! The publisher owns custody, provider handles and the current credential/SIM
+//! The publisher owns ownership, provider handles and the current credential/SIM
 //! lease. Neither editable metadata nor the app can create these capabilities.
 use crate::{
     journal::Owner,
@@ -170,7 +170,7 @@ impl NativeAdapter for crate::sms_runtime::SmsRuntime {
         })
     }
 }
-/// Current certified caller, account lease and reviewed provider identity gate.
+/// Current certified caller, account lease and reviewed provider identity check.
 /// The publisher must hold exclusive credential/SIM authority across adapter I/O.
 pub trait ExternalAuthority: Send + Sync {
     /// # Errors
@@ -196,9 +196,9 @@ pub struct ExternalBroker {
     observers: Arc<crate::signal_broker::observers::Observers>,
 }
 impl ExternalBroker {
-    /// Assemble an already linked native adapter using existing OS custody.
+    /// Assemble an already linked native adapter using existing OS ownership.
     /// The host supplies the authenticated provider handle and current grant
-    /// gate. This path never connects to an ambient service or creates keys.
+    /// check. This path never connects to an ambient service or creates keys.
     /// Run on the account supervisor's worker, not the rendering thread.
     pub fn open_system(
         root: &std::path::Path,
@@ -307,7 +307,7 @@ impl ExternalBroker {
             .map(|count| count > 0)
     }
     /// Atomically persist a bounded SDK batch before its durability hook succeeds.
-    /// The supervisor retains account custody throughout; no ACK or network I/O
+    /// The supervisor retains account credentials throughout; no ACK or network I/O
     /// is performed by this API. Unsupported or conflicting batches fail whole.
     /// # Errors
     /// Refuses another SDK/service, stale identities, unsupported payloads and

@@ -85,7 +85,7 @@ fn seeded(n: usize) -> Replica {
     use serde_json::json;
     use tilo_resource::{Collection, Id, Model as _};
     use tilolang_tilo::action::{DynAction, DynEdit};
-    use tilolang_tilo::record::{DynRecord, DynValue};
+    use tilolang_tilo::resource::{DynResource, DynValue};
 
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), PACKAGES);
     ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
@@ -96,7 +96,7 @@ fn seeded(n: usize) -> Replica {
     let schema = tilolang_tilo::schema::lookup(&task_ty.id).unwrap();
     let mut items = Collection::default();
     for i in 0..n {
-        let mut item = DynRecord::empty(schema).unwrap();
+        let mut item = DynResource::empty(schema).unwrap();
         if let Some(DynValue::Text(title)) = item.get_mut(&field_id(&meta, "Task", "title")) {
             *title = format!("Task {i:05}");
         }
@@ -113,10 +113,10 @@ fn seeded(n: usize) -> Replica {
         items.push(Id::from_raw(format!("task-{i:05}")), item);
     }
     let holding = meta.types.iter().find(|t| t.name == "Tasks").unwrap();
-    let mut root_record =
-        DynRecord::empty(tilolang_tilo::schema::lookup(&holding.id).unwrap()).unwrap();
+    let mut root_resource =
+        DynResource::empty(tilolang_tilo::schema::lookup(&holding.id).unwrap()).unwrap();
     if let Some(DynValue::Collection(slot)) =
-        root_record.get_mut(&field_id(&meta, "Tasks", "items"))
+        root_resource.get_mut(&field_id(&meta, "Tasks", "items"))
     {
         *slot = items;
     }
@@ -128,7 +128,7 @@ fn seeded(n: usize) -> Replica {
         authorship: tilolang_tilo::Authorship::default(),
         edits: vec![DynEdit::Create {
             id: root.id_string(),
-            record: root_record.to_json(),
+            record: root_resource.to_json(),
         }],
     };
     ada.apply(&create);

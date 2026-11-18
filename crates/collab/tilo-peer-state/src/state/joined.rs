@@ -5,11 +5,14 @@ use crate::TransportOrigin;
 
 impl StatePeer {
     /// [`Self::joined`] from a join's answer as it travels (a
-    /// [`crate::join::JoinBootstrap`] or its owner form): the workspace, its
-    /// governing `authority`, its `roster` and the `revocations` its
-    /// governance holds. The replica admits app documents by exact writer;
-    /// its governance follows from the answer's signed messages or the
-    /// workspace's replay.
+    /// [`crate::join::JoinBootstrap`] or its owner form): the workspace, the
+    /// `authority`, its `roster` and the `revocations` its governance holds.
+    /// The `authority` is the device the join was answered by, no particular
+    /// device of the workspace's owner: it is the replica's origin, and the
+    /// person of its owner only until the workspace's governance arrives,
+    /// which names the owner the replica then holds to. The replica admits
+    /// app documents by exact writer; its governance follows from the
+    /// answer's signed messages or the workspace's replay.
     ///
     /// # Errors
     /// A revocation does not verify, or [`Self::joined`] refuses the workspace.
@@ -54,8 +57,8 @@ impl StatePeer {
             return Err("not a document message".into());
         };
         let (source, retained) = match origin {
-            TransportOrigin::RelayDelta(source) => (source, false),
-            TransportOrigin::RetainedRelayDelta(source) => (source, true),
+            TransportOrigin::ServerDelta(source) => (source, false),
+            TransportOrigin::RetainedServerDelta(source) => (source, true),
             _ => return Err("a relayed document comes from the workspace's host".into()),
         };
         if *cluster_id != self.core.workspace
@@ -75,8 +78,9 @@ impl StatePeer {
             return Ok(false);
         }
         let at = if retained { envelope.timestamp } else { now };
-        Ok(self
-            .authorize_document(&source, app_id, document_id, envelope, at)?
-            .is_some())
+        Ok(matches!(
+            self.authorize_document(&source, app_id, document_id, envelope, at)?,
+            super::authority::Authorized::Admit { .. }
+        ))
     }
 }

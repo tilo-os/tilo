@@ -163,9 +163,8 @@ pub fn store_bodies_by_variant(
 /// with, to the millisecond (`2026-10-09T13:08:01.250Z`).
 #[must_use]
 pub fn iso_time(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .unwrap_or_default()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    let at = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    format!("{at:.3}")
 }
 
 /// The colour of a highlight or other marking: a named swatch, or an exact

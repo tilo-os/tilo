@@ -102,6 +102,11 @@ pub(crate) use presentation::{DrawPast, Presentation, operation_types, with_nati
 /// it asks for one: the app stages that item before it reads its view.
 pub(crate) use outline::rendered_anchor;
 
+/// The value's key explaining that this host cannot picture the view it just described: a
+/// page draws none for a caller, so it says so rather than answering nothing.
+#[cfg(target_family = "wasm")]
+const PICTURE_UNAVAILABLE: &str = "picture_unavailable";
+
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
 pub(crate) struct Presentation {
@@ -153,7 +158,7 @@ impl Presentation {
                 .and_then(serde_json::Value::as_object_mut)
         {
             fields.insert(
-                outline::PICTURE_UNAVAILABLE.into(),
+                PICTURE_UNAVAILABLE.into(),
                 "a page cannot picture its own view; the lines are what it shows".into(),
             );
         }

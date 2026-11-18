@@ -1,0 +1,848 @@
+//! Two windows of one workspace, each an instance without the toolkit, committing through the
+//! collab client: what one window's runtime planned reaches the other's workspace document and its
+//! runtime.
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use collaboration::{
+    CollabEvent, CollabRequest, CollabTransport, CollaborationManager, PeerTransport, RouteSpec,
+    TransportCommand, TransportError, TransportStatus,
+};
+use tilo_render_protocol::patch::local::{End, pair};
+use tilolang_tilo::host::Host;
+use tilolang_tilo::instance::document::InstanceDocument;
+use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::runtime::{Actor, NameHost};
+
+use crate::fixtures::{APP, COUNTER};
+
+/// The counter, loaded with the ids the workspace's first window gave its types.
+struct Counter {
+    ids: RefCell<String>,
+}
+
+impl Platform for Counter {
+    fn load(&self, host: &Host) -> u64 {
+        let package = host.load_builtin(COUNTER, &self.ids.borrow()).unwrap();
+        *self.ids.borrow_mut() = package.ids;
+        0
+    }
+
+    fn phrase(&self, id: &str, _args: &[(String, String)]) -> String {
+        id.to_owned()
+    }
+
+    fn now(&self) -> String {
+        "2026-10-28T10:00:00Z".to_owned()
+    }
+
+    fn waker(&self) -> tilolang_tilo::background::Waker {
+        Arc::new(|| {})
+    }
+}
+
+struct Alone;
+
+impl NameHost for Alone {
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
+    }
+}
+
+type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
+
+/// One end of a workspace's route as the broker relays it: what one replica sends reaches the
+/// other as the signed document envelope the broker delivers.
+struct Server {
+    route: RouteSpec,
+    mine: Inbox,
+    theirs: Inbox,
+    joined: Option<RouteSpec>,
+}
+
+impl PeerTransport for Server {
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        match request {
+            CollabRequest::Hello { .. } => {
+                self.joined = Some(self.route.clone());
+            }
+            CollabRequest::Document { mutation, .. } => {
+                let delivered = delivered(&self.route, &mutation)?;
+                self.theirs.borrow_mut().push_back(delivered);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        self.mine.borrow_mut().drain(..).collect()
+    }
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        self.joined.take().map(Ok)
+    }
+}
+
+/// `mutation` sent on `route`, as the signed document envelope the broker delivers to the
+/// route's other replicas.
+fn delivered(
+    route: &RouteSpec,
+    mutation: &collab_types::DocumentMutation,
+) -> Result<CollabEvent, String> {
+    let record = route.document.as_deref().unwrap_or("");
+    let workspace = route.cluster_id.to_string();
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().map_err(|error| error.to_string())?,
+        collab_types::document_artifact_id(&route.app_id, &workspace, record),
+        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+        collab_types::document_attestation_id(&route.app_id, &workspace, record),
+        collab_types::OpKind::Change,
+        std::time::SystemTime::UNIX_EPOCH,
+        0,
+    );
+    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+    Ok(CollabEvent::Document {
+        envelope: Box::new(envelope),
+        decrypted_payload: None,
+    })
+}
+
+type Queue = Arc<Mutex<VecDeque<CollabEvent>>>;
+
+/// One end of a workspace's route whose collab client fills up: while `busy`, it takes no document
+/// change (`TransportError::Busy`, as the broker transport's queue says under fast typing); what
+/// it takes reaches the other replica as [`Server`] relays it.
+struct Crowded {
+    route: RouteSpec,
+    mine: Queue,
+    theirs: Queue,
+    busy: Arc<AtomicBool>,
+    joined: Option<RouteSpec>,
+}
+
+impl CollabTransport for Crowded {
+    fn status(&self) -> TransportStatus {
+        TransportStatus::Ready
+    }
+
+    fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
+        match command {
+            TransportCommand::Primary(CollabRequest::Hello { .. }) => {
+                self.joined = Some(self.route.clone());
+            }
+            TransportCommand::Primary(CollabRequest::Document { mutation, .. }) => {
+                if self.busy.load(Ordering::SeqCst) {
+                    return Err(TransportError::Busy);
+                }
+                let delivered = delivered(&self.route, &mutation).unwrap();
+                self.theirs.lock().unwrap().push_back(delivered);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn drain(&mut self, out: &mut Vec<CollabEvent>) {
+        out.extend(self.mine.lock().unwrap().drain(..));
+    }
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        self.joined.take().map(Ok)
+    }
+
+    fn take_action_directory_requests(
+        &mut self,
+        _: &mut Vec<collaboration::ActionDirectoryRequest>,
+    ) {
+    }
+}
+
+/// A window of the counter for `me`, its instance over `doc`, committing on `route`.
+struct Window {
+    instance: Instance,
+    workspace: InstanceDocument,
+    patches: End,
+}
+
+fn window(
+    me: &str,
+    route: &RouteSpec,
+    mine: &Inbox,
+    theirs: &Inbox,
+    platform: &Rc<Counter>,
+    doc: automerge::AutoCommit,
+) -> Window {
+    let manager = CollaborationManager::with_peer_transport(Server {
+        route: route.clone(),
+        mine: Rc::clone(mine),
+        theirs: Rc::clone(theirs),
+        joined: None,
+    });
+    window_over(manager, me, route, platform, doc)
+}
+
+/// A window of the counter for `me`, its instance over `doc`, committing on `route` through
+/// `manager`.
+fn window_over(
+    mut manager: CollaborationManager,
+    me: &str,
+    route: &RouteSpec,
+    platform: &Rc<Counter>,
+    doc: automerge::AutoCommit,
+) -> Window {
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: route.document.clone(),
+        resource_type: None,
+        handle: Some(me.to_owned()),
+    }));
+    let _ = manager.poll();
+    let (app_end, window_end) = pair();
+    let instance = Instance::new(
+        Config {
+            app: APP.to_owned(),
+            me: me.into(),
+            mode: Mode::Live,
+            device: None,
+            index_dir: None,
+            document_loader: None,
+            root: tilolang_tilo::host::RootView::default(),
+            sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+        },
+        Rc::clone(platform) as Rc<dyn Platform>,
+        Rc::new(Alone),
+        Box::new(app_end),
+    );
+    let workspace = InstanceDocument::new(doc, manager, route.clone(), me);
+    Window {
+        instance,
+        workspace,
+        patches: window_end,
+    }
+}
+
+/// The window driven by hand takes in the index its load builds: without frames of its own,
+/// nothing wakes it to poll for it, as a running window's next frame would.
+fn settle(window: &mut Window) {
+    window.workspace.sync_instance(&mut window.instance);
+    if let Some(host) = window.instance.host() {
+        host.wait_index();
+    }
+    window.workspace.sync_instance(&mut window.instance);
+    window.instance.update();
+}
+
+#[test]
+fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let (ada_inbox, grace_inbox): (Inbox, Inbox) = (Rc::default(), Rc::default());
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let mut ada = window(
+        "ada",
+        &route,
+        &ada_inbox,
+        &grace_inbox,
+        &platform,
+        automerge::AutoCommit::new(),
+    );
+    let mut grace = window(
+        "grace",
+        &route,
+        &grace_inbox,
+        &ada_inbox,
+        &platform,
+        automerge::AutoCommit::new(),
+    );
+
+    settle(&mut ada);
+
+    // Ada's window opens over the empty workspace: its runtime plans the counter's root, and the
+    // workspace path commits it to her document and sends it.
+    let mut committed = Vec::new();
+    for _ in 0..100 {
+        ada.workspace.sync_instance(&mut ada.instance);
+        ada.instance.update();
+        committed.extend(ada.workspace.commit(&mut ada.instance).unwrap());
+        if !committed.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        !committed.is_empty(),
+        "the root ada's window planned is committed"
+    );
+    let ada_root = ada.instance.host().unwrap().root_of(APP).unwrap();
+    assert!(
+        !ada.workspace.doc().get_changes(&[]).is_empty(),
+        "the root is in ada's document"
+    );
+
+    // The change reaches grace's document through her collab client, and her window's runtime
+    // reads ada's root. The workspace held nothing of the document, so what went is the document
+    // whole: a workspace founds a document only from the whole of it, never from a change that
+    // builds on nothing it holds.
+    assert!(
+        !grace_inbox.borrow().is_empty(),
+        "the workspace relayed the change"
+    );
+    assert!(
+        grace_inbox.borrow().iter().all(|event| matches!(
+            event,
+            CollabEvent::Document { envelope, .. }
+                if matches!(
+                    collab_types::DocumentFrame::decode(&envelope.payload),
+                    Ok(collab_types::DocumentFrame::Whole(
+                        collab_types::DocumentMutation::Snapshot(_)
+                    ))
+                )
+        )),
+        "the document's first write is the document whole"
+    );
+    assert!(grace.workspace.receive(&mut grace.instance));
+    settle(&mut grace);
+    assert_eq!(
+        grace.workspace.doc().get_heads(),
+        ada.workspace.doc().get_heads(),
+        "grace holds what ada committed"
+    );
+    let grace_root = grace.instance.host().unwrap().root_of(APP).unwrap();
+    assert_eq!(
+        grace_root, ada_root,
+        "grace's window reads the root ada's made"
+    );
+}
+
+/// `who` adds one to the counter at `root` in their window: the runtime plans it and the workspace
+/// path commits it.
+fn add_one(window: &mut Window, root: &tilolang_tilo::runtime::ResourceRef, who: &str) {
+    let queued = queue_one(window, root, who);
+    let committed = window.workspace.commit(&mut window.instance).unwrap();
+    assert_eq!(committed, queued, "the edit is committed, never refused");
+    window.instance.update();
+}
+
+/// `who` adds one to the counter at `root` in their window, queued for the workspace and not
+/// committed yet: its tickets.
+fn queue_one(window: &Window, root: &tilolang_tilo::runtime::ResourceRef, who: &str) -> Vec<u64> {
+    let host = window.instance.host().unwrap();
+    let increment = host
+        .package(APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "increment")
+        .unwrap()
+        .id
+        .clone();
+    let first = host.next_ticket();
+    host.runtime()
+        .invoke_action(
+            &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                who,
+            )),
+            (
+                increment.as_str(),
+                vec![tilolang_tilo::runtime::Value::resource(root)],
+            ),
+        )
+        .unwrap();
+    let queued =
+        tilolang_tilo::instance::queue_commits(&host, &window.instance.outgoing(), first, None);
+    assert!(!queued.is_empty(), "the edit is queued for the workspace");
+    queued
+}
+
+/// A layout its origin derives: what the origin writes of it stays in the store's unsaved
+/// layer, open in the same document the counter's changes are written in.
+const LAYOUT: &str = r#"app so.tilo.test.layout "Layout"
+
+type Layout (origin: session.layout) {
+  clock: Text merge register
+}
+
+root Layout
+
+default view bar for Layout
+
+view bar(d: Layout) {
+  text(d.clock)
+}
+"#;
+
+/// Each action the person takes is written once, as the change replaying it makes, whatever else
+/// its document holds open: the layout its origin derives, written there and never saved, and a
+/// second action queued before the document took the first. A peer replaying every new change gets
+/// the same change, and the layout still reads what its origin wrote.
+#[test]
+fn an_action_is_written_once_whatever_else_its_document_holds_open() {
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let (mut ada, root) = ada_window(&route, &platform);
+    let host = ada.instance.host().unwrap();
+    let layout_package = host.load_builtin(LAYOUT, "").unwrap();
+    let layout = host.root_of("so.tilo.test.layout").unwrap();
+    let clock = tilolang_tilo::origin::origin_types(&layout_package.meta, "session")
+        .into_iter()
+        .find(|ty| ty.kind == "session.layout")
+        .unwrap()
+        .fields
+        .into_iter()
+        .find(|(name, _)| name.as_str() == "clock")
+        .unwrap()
+        .1;
+    host.runtime()
+        .apply_origin(
+            "session",
+            vec![tilolang_runtime::origin::OriginWrite::Set {
+                target: layout.clone(),
+                fields: vec![(
+                    clock,
+                    tilolang_tilo::runtime::Value::Text("12:01".to_owned()),
+                )],
+            }],
+            Some("2026-10-28T10:00:00Z".to_owned()),
+        )
+        .unwrap();
+    assert!(host.take_committed().is_empty(), "the layout is no change");
+    let before = ada.workspace.marks();
+    let written = host.store().stats().written_once;
+
+    // Two adds the document takes in one turn: the second is open behind the first.
+    let mut queued = queue_one(&ada, &root, "ada");
+    queued.extend(queue_one(&ada, &root, "ada"));
+    let committed = ada.workspace.commit(&mut ada.instance).unwrap();
+    assert_eq!(committed, queued, "both adds are committed");
+    ada.instance.update();
+    assert_eq!(value_at(&ada.instance, &root), 2, "both adds count");
+    assert_eq!(
+        host.store().stats().written_once,
+        written + 2,
+        "each add is written once, as the change it makes"
+    );
+    assert_eq!(
+        host.runtime().read(&layout, "clock").ok(),
+        Some(tilolang_tilo::runtime::Value::Text("12:01".to_owned())),
+        "the layout reads what its origin wrote"
+    );
+
+    let mut registry = tilo_actions::ActionRegistry::new();
+    tilolang_tilo::history::register(&mut registry);
+    let mut reproduced = 0;
+    for (chunk, doc) in ada.workspace.chunks().all() {
+        let mut peer = doc.clone();
+        let from = before.get(&chunk).cloned().unwrap_or_default();
+        let arrived: Vec<_> = peer
+            .get_changes(&from)
+            .iter()
+            .map(automerge::Change::hash)
+            .collect();
+        for change in arrived {
+            let verified =
+                host.with_schemas(|| tilo_actions::verify_change(&mut peer, change, &registry));
+            assert!(
+                matches!(verified, Ok(tilo_actions::Verified::Reproduced)),
+                "a peer replaying the change gets the same one: {verified:?}"
+            );
+            reproduced += 1;
+        }
+    }
+    assert_eq!(reproduced, 2, "each add is one change");
+}
+
+#[test]
+fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once_it_can() {
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let (ada_inbox, grace_inbox): (Queue, Queue) = (Queue::default(), Queue::default());
+    let (full, never) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let crowded = |mine: &Queue, theirs: &Queue, busy: &Arc<AtomicBool>| {
+        CollaborationManager::with_transport(Box::new(Crowded {
+            route: route.clone(),
+            mine: Arc::clone(mine),
+            theirs: Arc::clone(theirs),
+            busy: Arc::clone(busy),
+            joined: None,
+        }))
+    };
+    let mut ada = window_over(
+        crowded(&ada_inbox, &grace_inbox, &full),
+        "ada",
+        &route,
+        &platform,
+        automerge::AutoCommit::new(),
+    );
+    let mut grace = window_over(
+        crowded(&grace_inbox, &ada_inbox, &never),
+        "grace",
+        &route,
+        &platform,
+        automerge::AutoCommit::new(),
+    );
+    let root = make_root(&mut ada);
+    assert!(grace.workspace.receive(&mut grace.instance));
+    settle(&mut grace);
+
+    // Ada's collab client is full: what she does is committed to her document all the same, and
+    // waits there for the workspace.
+    full.store(true, Ordering::SeqCst);
+    add_one(&mut ada, &root, "ada");
+    add_one(&mut ada, &root, "ada");
+    assert_eq!(value_at(&ada.instance, &root), 2, "ada's window keeps both");
+    assert!(ada.workspace.unsent(), "both wait for the workspace");
+    assert!(grace_inbox.lock().unwrap().is_empty(), "nothing went out");
+
+    // Meanwhile grace's change reaches ada: what ada made still waits to go, never taken for
+    // sent.
+    add_one(&mut grace, &root, "grace");
+    assert!(ada.workspace.receive(&mut ada.instance));
+    assert!(
+        ada.workspace.unsent(),
+        "what ada made still waits for the workspace after grace's change came in"
+    );
+
+    // The client has workspace again: ada's next frame hands the workspace all of it, as one change.
+    full.store(false, Ordering::SeqCst);
+    assert!(ada.workspace.commit(&mut ada.instance).unwrap().is_empty());
+    assert!(!ada.workspace.unsent(), "everything went out");
+    assert_eq!(grace_inbox.lock().unwrap().len(), 1, "as one change");
+    assert!(grace.workspace.receive(&mut grace.instance));
+    grace.instance.update();
+    ada.instance.update();
+    assert_eq!(
+        grace.workspace.doc().get_heads(),
+        ada.workspace.doc().get_heads(),
+        "grace holds everything ada made while her client was full"
+    );
+    assert_eq!(
+        value_at(&grace.instance, &root),
+        value_at(&ada.instance, &root)
+    );
+}
+
+/// The counter's value at `root`, as the instance's runtime reads it.
+fn value_at(instance: &Instance, root: &tilolang_tilo::runtime::ResourceRef) -> i64 {
+    match instance
+        .host()
+        .unwrap()
+        .runtime()
+        .read(root, "value")
+        .unwrap()
+    {
+        tilolang_tilo::runtime::Value::Int(value) => value,
+        other => panic!("the counter's value is {other:?}"),
+    }
+}
+
+/// Ada's window, which made the counter's root in the workspace no host holds anything of yet,
+/// and the root.
+fn ada_window(
+    route: &RouteSpec,
+    platform: &Rc<Counter>,
+) -> (Window, tilolang_tilo::runtime::ResourceRef) {
+    let (ada_inbox, nobody): (Inbox, Inbox) = (Rc::default(), Rc::default());
+    let mut ada = window(
+        "ada",
+        route,
+        &ada_inbox,
+        &nobody,
+        platform,
+        automerge::AutoCommit::new(),
+    );
+    let root = make_root(&mut ada);
+    (ada, root)
+}
+
+/// The window opens over the empty workspace: its runtime plans the counter's root, and the
+/// workspace path commits it. The root.
+fn make_root(window: &mut Window) -> tilolang_tilo::runtime::ResourceRef {
+    settle(window);
+    for _ in 0..100 {
+        window.workspace.sync_instance(&mut window.instance);
+        window.instance.update();
+        if !window
+            .workspace
+            .commit(&mut window.instance)
+            .unwrap()
+            .is_empty()
+        {
+            break;
+        }
+    }
+    window.instance.host().unwrap().root_of(APP).unwrap()
+}
+
+/// Grace's window, its document opened as a launch opens it on `manager` from what `documents` keep.
+fn grace_over(
+    manager: CollaborationManager,
+    documents: &Rc<dyn durable_store::DurableStore>,
+    platform: &Rc<Counter>,
+) -> Window {
+    let mut workspace = InstanceDocument::open(manager, documents, "grace", "tl.test").unwrap();
+    let (instance, patches) = instance_over("grace", &mut workspace, platform);
+    Window {
+        instance,
+        workspace,
+        patches,
+    }
+}
+
+/// `me`'s instance of the counter over `document`, as the document holds it once it opened.
+fn instance_over(
+    me: &str,
+    record: &mut InstanceDocument,
+    platform: &Rc<Counter>,
+) -> (Instance, End) {
+    let (app_end, patches) = pair();
+    let mut instance = Instance::new(
+        Config {
+            app: APP.to_owned(),
+            me: me.into(),
+            mode: Mode::Live,
+            device: None,
+            index_dir: None,
+            document_loader: None,
+            root: tilolang_tilo::host::RootView::default(),
+            sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+        },
+        Rc::clone(platform) as Rc<dyn Platform>,
+        Rc::new(Alone),
+        Box::new(app_end),
+    );
+    record.sync_instance(&mut instance);
+    if let Some(host) = instance.host() {
+        // Driven by hand, this window has no frames to take in the index its load builds off
+        // them: it waits for it, as a running window's frames would.
+        host.wait_index();
+    }
+    record.sync_instance(&mut instance);
+    instance.update();
+    (instance, patches)
+}
+
+/// A workspace another host governs: the document is the broker's committed read, the window's edit is a
+/// step of its own that the person's Undo takes back (and Redo brings back), each sent on the
+/// workspace's route, and the document's on-disk copy keeps up with it.
+/// How many versions the document's History lists as `person`'s.
+fn steps_of(record: &InstanceDocument, person: &str) -> usize {
+    let listed = record
+        .view_history(br#"{"op":"history","last":null}"#)
+        .unwrap()
+        .value
+        .unwrap();
+    listed["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|version| version["actor"]["by"]["member"]["person"] == person)
+        .count()
+}
+
+#[test]
+fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
+    let workspace_id = uuid::Uuid::new_v4();
+    let route = RouteSpec::app(APP, workspace_id);
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+
+    let (ada, root) = ada_window(&route, &platform);
+    let committed = ada.workspace.doc().save();
+
+    // Grace's window opens on a connection whose route the broker reads committed.
+    let (manager, _) =
+        CollaborationManager::native_initial_fixture_for_test(APP, workspace_id, committed);
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut grace = grace_over(manager, &documents, &platform);
+    assert_eq!(
+        grace.instance.host().unwrap().root_of(APP).unwrap(),
+        root,
+        "grace's window reads the root the workspace's committed read holds"
+    );
+    assert_eq!(value_at(&grace.instance, &root), 0);
+    assert_eq!(
+        grace.workspace.can_undo(),
+        (false, false),
+        "nothing of hers yet"
+    );
+
+    // Grace adds one: the runtime plans it, the workspace path commits and sends it.
+    add_one(&mut grace, &root, "grace");
+    let Window {
+        mut instance,
+        workspace: mut record,
+        ..
+    } = grace;
+    assert_eq!(value_at(&instance, &root), 1);
+    assert_eq!(record.can_undo(), (true, false), "her edit is a step");
+
+    // Undo takes it back as a change of its own, and redo brings it back: the history verbs
+    // every app's document answers, on the app's resource.
+    let resource = tilolang_tilo::publish::package_resource_id(APP);
+    assert!(record.undo(&mut instance, &resource, APP).unwrap());
+    instance.update();
+    assert_eq!(value_at(&instance, &root), 0, "undo took the edit back");
+    assert_eq!(record.can_undo(), (false, true));
+    assert!(record.redo(&mut instance, &resource, APP).unwrap());
+    instance.update();
+    assert_eq!(value_at(&instance, &root), 1, "redo brought it back");
+    assert_eq!(
+        steps_of(&record, "grace"),
+        3,
+        "history lists her edit, its undo and the redo"
+    );
+
+    // The on-disk copy holds the document with the edit, the undo and the redo.
+    record.flush();
+    assert_eq!(
+        record.save_status(),
+        collaboration::document::ResourceSaveStatus::Saved
+    );
+    let heads = record.doc().get_heads();
+    let mut store = collaboration::document::save::workspace_document(
+        &documents,
+        APP,
+        &workspace_id.to_string(),
+    )
+    .unwrap();
+    drop(record);
+    let mut stored = store
+        .load_complete()
+        .unwrap()
+        .expect("the copy was written");
+    assert_eq!(stored.get_heads(), heads);
+}
+
+/// Another person's edit reaches a window of a workspace another host governs as the broker's
+/// committed read of the document: the window shows it, merged with the edit its person made
+/// meanwhile, and the document is the workspace's again, so what the person does next goes out.
+#[test]
+fn another_persons_edit_reaches_a_window_as_the_workspaces_committed_read() {
+    let workspace_id = uuid::Uuid::new_v4();
+    let route = RouteSpec::app(APP, workspace_id);
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let (mut ada, root) = ada_window(&route, &platform);
+    let (manager, broker) = CollaborationManager::native_refresh_fixture_for_test(
+        APP,
+        workspace_id,
+        ada.workspace.doc().save(),
+    );
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut grace = grace_over(manager, &documents, &platform);
+    assert_eq!(value_at(&grace.instance, &root), 0);
+    assert!(
+        grace.workspace.manager().document_route_publishable(&route),
+        "the document is the workspace's once read"
+    );
+
+    // Grace adds one in her window while ada adds one in hers, which the workspace commits.
+    add_one(&mut grace, &root, "grace");
+    let mine = grace.workspace.doc().get_heads();
+    add_one(&mut ada, &root, "ada");
+    broker.replace_history(ada.workspace.doc().save());
+
+    tilo_test_env::wait_until("ada's edit to show in grace's window", || {
+        grace.workspace.receive(&mut grace.instance);
+        grace.instance.update();
+        value_at(&grace.instance, &root) == 2
+    });
+    let mut held = grace.workspace.doc();
+    assert!(
+        mine.iter()
+            .all(|head| held.get_change_by_hash(head).is_some()),
+        "grace's own edit is kept beside ada's"
+    );
+    tilo_test_env::wait_until("the merged read to open the document again", || {
+        grace.workspace.receive(&mut grace.instance);
+        grace.workspace.manager().document_route_publishable(&route)
+    });
+}
+
+/// The workspace's copy of a document arrives as bytes no document of this app is. The window keeps
+/// what its person wrote, says once that the shared copy could not be read here, and the document
+/// goes on being the workspace's: nothing is left waiting on a copy it cannot take.
+#[test]
+fn an_unreadable_workspace_copy_leaves_the_window_its_own_document() {
+    use tilo_render_protocol::patch::{self, NoticeKind, ToUi, Transport as _, Words};
+    let workspace_id = uuid::Uuid::new_v4();
+    let route = RouteSpec::app(APP, workspace_id);
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let (ada, root) = ada_window(&route, &platform);
+    let (manager, broker) = CollaborationManager::native_refresh_fixture_for_test(
+        APP,
+        workspace_id,
+        ada.workspace.doc().save(),
+    );
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut grace = grace_over(manager, &documents, &platform);
+    assert!(
+        grace.workspace.manager().document_route_publishable(&route),
+        "the document is the workspace's once read"
+    );
+    add_one(&mut grace, &root, "grace");
+    let mine = grace.workspace.doc().get_heads();
+
+    // The workspace's copy of the document is not a document this app reads.
+    broker.replace_history(vec![0xff; 16]);
+    let mut said: Vec<(Words, NoticeKind)> = Vec::new();
+    tilo_test_env::wait_until("the window to say the copy could not be read", || {
+        grace.workspace.receive(&mut grace.instance);
+        grace.instance.update();
+        while let Some(batch) = grace.patches.recv().unwrap() {
+            for message in patch::decode_batch::<ToUi>(&batch).unwrap() {
+                if let ToUi::Notice { words, kind, .. } = message {
+                    said.push((words, kind));
+                }
+            }
+        }
+        !said.is_empty()
+    });
+    tilo_test_env::wait_until("the document to be the workspace's again", || {
+        grace.workspace.receive(&mut grace.instance);
+        grace.workspace.manager().document_route_publishable(&route)
+    });
+    assert_eq!(
+        value_at(&grace.instance, &root),
+        1,
+        "the window keeps its own edit"
+    );
+    let mut held = grace.workspace.doc();
+    assert!(
+        mine.iter()
+            .all(|head| held.get_change_by_hash(head).is_some()),
+        "the document this device holds is the one it had"
+    );
+    assert_eq!(said.len(), 1, "the person is told once");
+    assert_eq!(said[0].1, NoticeKind::Error, "as a failure, not a note");
+    assert!(
+        matches!(&said[0].0, Words::Plain(text) if text.contains("couldn't be read here")),
+        "in words about the shared copy: {:?}",
+        said[0].0
+    );
+}

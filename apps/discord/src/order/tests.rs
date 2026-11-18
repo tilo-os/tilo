@@ -2,8 +2,8 @@ use discord_wire::op::{DiscordResult, Queued};
 use ui::tilo_resource::Settled;
 
 use super::*;
+use crate::guild::{Mapping, Origin, Ownership};
 use crate::layout::tests::{dchan, mapping};
-use crate::record::{Mapping, Origin, Ownership};
 use crate::tilo::{Category, Channel};
 
 /// A mapping of something the server had when it was adopted.

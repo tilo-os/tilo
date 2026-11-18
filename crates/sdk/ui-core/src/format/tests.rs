@@ -2,7 +2,6 @@ use super::*;
 use crate::clock::TimeStyle;
 use crate::i18n::I18nManager;
 use crate::widget::Tone;
-use chrono::NaiveDate;
 
 fn speak(locale: &str) {
     let mut catalogues = vec![("en-US", "")];
@@ -13,12 +12,12 @@ fn speak(locale: &str) {
     I18nManager::register_widget_messages();
 }
 
-fn day(y: i32, m: u32, d: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+fn day(y: i16, m: i8, d: i8) -> Date {
+    Date::new(y, m, d).unwrap()
 }
 
-fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
-    day(y, m, d).and_hms_opt(h, min, 0).unwrap()
+fn at(y: i16, m: i8, d: i8, h: i8, min: i8) -> DateTime {
+    day(y, m, d).at(h, min, 0, 0)
 }
 
 fn formats(date: DateStyle, time: TimeStyle) -> Formats {
@@ -37,7 +36,7 @@ const H24: Formats = Formats::with(RegionFormats {
 });
 
 /// "Now" in every list case: Tuesday 30 June 2026, 14:00.
-fn now() -> NaiveDateTime {
+fn now() -> DateTime {
     at(2026, 6, 30, 14, 0)
 }
 
@@ -138,7 +137,7 @@ tilo_test_env::scenario! {
 
         speak("en-US");
         assert_eq!(unchosen.timestamp(moment), "Jun 30, 2026, 1:42 PM");
-        assert_eq!(unchosen.time(&moment), "1:42 PM");
+        assert_eq!(unchosen.time(moment), "1:42 PM");
         assert!(!TimeStyle::Language.is_24_hour(super::words()));
         assert_eq!(chosen24.timestamp(moment), "Jun 30, 2026, 13:42");
         assert_eq!(unchosen.date(day(2026, 6, 30)), "Jun 30, 2026");
@@ -147,7 +146,7 @@ tilo_test_env::scenario! {
         speak("de-DE");
         assert_eq!(unchosen.timestamp(moment), "30.06.2026, 13:42");
         assert_eq!(unchosen.date(day(2026, 1, 3)), "03.01.2026");
-        assert_eq!(unchosen.time(&moment), "13:42");
+        assert_eq!(unchosen.time(moment), "13:42");
         assert!(TimeStyle::Language.is_24_hour(super::words()));
         assert_eq!(TimeStyle::Language.example(super::words()), "14:05");
         assert_eq!(
@@ -155,7 +154,7 @@ tilo_test_env::scenario! {
                 time: TimeStyle::H12,
                 ..RegionFormats::default()
             })
-            .time(&moment),
+            .time(moment),
             "1:42 PM",
             "a chosen 12-hour clock holds in German"
         );
@@ -215,7 +214,10 @@ tilo_test_env::scenario! {
 
     phase the_week_starts_on_the_day_the_person_chose;
     {
-        use chrono::Weekday::{Fri, Mon, Sat, Sun, Thu, Tue, Wed};
+        use Weekday::{
+            Friday as Fri, Monday as Mon, Saturday as Sat, Sunday as Sun, Thursday as Thu,
+            Tuesday as Tue, Wednesday as Wed,
+        };
         for (first, want) in [
             (FirstDayOfWeek::Monday, [Mon, Tue, Wed, Thu, Fri, Sat, Sun]),
             (FirstDayOfWeek::Sunday, [Sun, Mon, Tue, Wed, Thu, Fri, Sat]),
@@ -472,15 +474,15 @@ fn a_formats_change_applies_live_and_moves_the_i18n_revision() {
         ..RegionFormats::default()
     });
     let before = I18nManager::revision();
-    let time = chrono::NaiveTime::from_hms_opt(16, 2, 0).unwrap();
-    assert_eq!(super::time(&time), "16:02");
+    let time = jiff::civil::time(16, 2, 0, 0);
+    assert_eq!(super::time(time), "16:02");
     assert!(region::install(RegionFormats {
         time: TimeStyle::H12,
         ..RegionFormats::default()
     }));
     assert_ne!(I18nManager::revision(), before);
-    assert_eq!(super::time(&time), "4:02 PM");
-    assert_eq!(crate::clock::time_of_day(&time), "4:02 PM");
+    assert_eq!(super::time(time), "4:02 PM");
+    assert_eq!(crate::clock::time_of_day(time), "4:02 PM");
     assert!(!region::install(RegionFormats {
         time: TimeStyle::H12,
         ..RegionFormats::default()
@@ -672,8 +674,8 @@ tilo_test_env::scenario! {
                 danger,
             ),
         ];
-        let time_of = |time: Option<(u32, u32)>| {
-            time.map(|(h, m)| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap())
+        let time_of = |time: Option<(i8, i8)>| {
+            time.map(|(h, m)| jiff::civil::time(h, m, 0, 0))
         };
         speak("en-US");
         for &(when, time, today, english, _, tone) in &cases {

@@ -1,4 +1,4 @@
-//! A standalone themed 1px rule, horizontal or vertical, usable as a free-standing element
+//! A standalone themed 1px rule, horizontal or vertical, usable as an element of its own
 //! inside a `Column` / `Row` (unlike `Toolbar::push_separator`, which is toolbar-scoped).
 //! Sizes itself along its cross-axis and stretches to fill the main axis.
 

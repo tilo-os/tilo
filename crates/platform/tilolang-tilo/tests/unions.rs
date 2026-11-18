@@ -1,5 +1,5 @@
 //! A root that holds a named collection (`type Board { pins: Collection<Pin> }`,
-//! `root board: Board`) and a collection of a union of types, through the workspace record and
+//! `root board: Board`) and a collection of a union of types, through the workspace document and
 //! a second replica.
 
 use automerge::AutoCommit;

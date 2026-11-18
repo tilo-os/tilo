@@ -4,7 +4,7 @@
 # These are static release builds, which link the SDK into every binary. This
 # file is NOT the app-size KPI. The ~2 MB figure in the README is the signed
 # thin tapp a person downloads, where the SDK is a shared library in the runtime
-# bundle. That figure is gated per app and per fleet by
+# bundle. That figure is guarded per app and per fleet by
 # tools/perf/tapp-size-budget/ (docs/measurements/app-package-size.md). These
 # budgets only catch a binary that suddenly links far more than it used to.
 #
@@ -44,7 +44,7 @@
 "photos" = 25   # 21.0 MB
 "tilo" = 1   # 0.7 MB
 "tilo-agent" = 11   # 9.4 MB
-"tilo-app-host" = 4   # 3.1 MB
+"tilo-package-service" = 4   # 3.1 MB
 "app" = 5   # 4.1 MB
 "tilo-cli-shim" = 1   # 0.5 MB
 "tilo-collab-probe" = 3   # 2.4 MB
@@ -58,8 +58,8 @@
 "tilo-loadclient" = 2   # 0.9 MB
 "tilo-app-package" = 14   # 12.1 MB
 "tilo-registry-server" = 4   # 2.8 MB
-"tilo-relay" = 16   # 13.8 MB
-"tilo-relay-admin" = 2   # 1.0 MB
+"tilo-server" = 16   # 13.8 MB
+"tilo-server-admin" = 2   # 1.0 MB
 "tilo-rollback" = 2   # 1.2 MB
 "tilo-runtime-bundle" = 2   # 1.2 MB
 "tilo-unlock-helper" = 1   # 0.3 MB

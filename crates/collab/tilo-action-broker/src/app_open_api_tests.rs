@@ -74,7 +74,7 @@ async fn pressed_opens_rig(env: &Environment) -> (Rig, Arc<PressedOpens>) {
     });
     let rig = Rig::with_services(
         env,
-        HostServices {
+        ProcessServices {
             launcher: Some(launcher.clone()),
             ..env.membership.services()
         },
@@ -126,7 +126,7 @@ fn refused(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
         tilo_actions::remote::RemoteActionMessage::Receipt(
             tilo_actions::remote::InvocationReceipt {
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::NotPermitted,
+                    error: tilo_actions::remote::ActionCallError::NotPermitted,
                 },
                 ..
             }
@@ -276,7 +276,7 @@ async fn an_app_launches_an_installed_app_only_for_a_press_or_an_invocation_it_r
             });
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..env.membership.services()
                 },

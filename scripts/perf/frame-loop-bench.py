@@ -569,7 +569,7 @@ def dismiss_first_login(ctl: Control, timeout: float = 5.0) -> None:
         time.sleep(0.2)
 
 
-def gate_failures(stats: dict, args: argparse.Namespace) -> list[str]:
+def check_failures(stats: dict, args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
     if stats.get("ticks", 0) < args.min_ticks:
         failures.append(f"only {stats.get('ticks', 0)} measured ticks")
@@ -883,7 +883,7 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path,
                             args.height,
                         )
                         input_ctl.close()
-                    except Exception as exc:  # surfaced below as a gate failure
+                    except Exception as exc:  # surfaced below as a check failure
                         input_result["error"] = str(exc)
 
                 input_thread = threading.Thread(target=inject, daemon=True)
@@ -1012,7 +1012,7 @@ def main() -> None:
         "--refresh-hz",
         type=float,
         help="the display rate to score the run against (microseconds per frame "
-        "for --target-us and the gate), when the backend reports no display rate "
+        "for --target-us and the check), when the backend reports no display rate "
         "of its own; it changes the scoring target, never the session's pacing",
     )
     p.add_argument("--label", help="name for the output files")
@@ -1023,7 +1023,7 @@ def main() -> None:
     )
     p.add_argument("--startup-timeout", type=float, default=30.0)
     p.add_argument(
-        "--gate", action="store_true", help="fail unless responsiveness thresholds pass"
+        "--check", action="store_true", help="fail unless responsiveness thresholds pass"
     )
     p.add_argument("--min-fps", type=float, default=120.0)
     p.add_argument("--max-input-p99-ms", type=float, default=25.0)
@@ -1109,8 +1109,8 @@ def main() -> None:
     print_summary(stats, stats["label"])
     print(f"\n[bench] trace:   {stats['trace']}")
     print(f"[bench] stats:   {out_dir / (stats['label'] + '.stats.json')}")
-    if args.gate:
-        failures = gate_failures(stats, args)
+    if args.check:
+        failures = check_failures(stats, args)
         if failures:
             print("\n[bench] FAIL: " + "; ".join(failures), file=sys.stderr)
             raise SystemExit(1)

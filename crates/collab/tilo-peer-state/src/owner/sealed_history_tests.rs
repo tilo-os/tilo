@@ -146,7 +146,7 @@ async fn write_all(
                     workspace: WORKSPACE.into(),
                     operation: CommitOperation::Document {
                         app: APP.into(),
-                        record: String::new(),
+                        document: String::new(),
                         envelope: Box::new(op),
                         own: None,
                     },
@@ -160,8 +160,8 @@ async fn write_all(
         .map(|committed| committed.len())
 }
 
-/// What custody holds, in the order it sends it.
-fn custody(
+/// What ownership holds, in the order it sends it.
+fn ownership(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
     now: SystemTime,
@@ -176,14 +176,14 @@ fn custody(
         .unwrap()
 }
 
-/// The host keeps all of custody durably: what it was sent, in order.
+/// The host keeps all of ownership durably: what it was sent, in order.
 fn answer(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
     now: SystemTime,
     order: &mut u64,
 ) -> Vec<NeighbourMsg> {
-    let held = custody(owner, workspace, now);
+    let held = ownership(owner, workspace, now);
     let answers = held
         .iter()
         .map(|(id, _)| {
@@ -220,7 +220,7 @@ fn written_at(
         .collect()
 }
 
-/// Everything custody holds, as the host takes it from its head until it owes nothing: the
+/// Everything ownership holds, as the host takes it from its head until it owes nothing: the
 /// device drafts what it sends next before each pass, as its session does.
 async fn drain(
     owner: &NativeWorkspaceOwner,
@@ -343,7 +343,7 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
         let changes = typist.change(&key);
         assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
         for message in answer(owner, workspace, now, &mut order) {
-            host.receive_from(TransportOrigin::RelayDelta(member), message, now)
+            host.receive_from(TransportOrigin::ServerDelta(member), message, now)
                 .unwrap();
         }
     }
@@ -373,14 +373,14 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
         "the device compacted while offline"
     );
     for message in sent.clone() {
-        host.receive_from(TransportOrigin::RelayDelta(member), message, now)
+        host.receive_from(TransportOrigin::ServerDelta(member), message, now)
             .unwrap();
     }
     for message in peers.clone() {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RelayDelta(governor),
+                TransportOrigin::ServerDelta(governor),
                 message,
                 now,
             )
@@ -446,7 +446,7 @@ async fn writes_past_a_full_sealed_history_land_after_its_compaction() {
         "every change reads"
     );
     assert!(held() <= 256, "the history stays within its bound");
-    // Custody sends the compaction before the writes it made workspace for.
+    // Ownership sends the compaction before the writes it made workspace for.
     let sent = drain(owner, workspace, now, &mut 0).await;
     let compaction = sent
         .iter()
@@ -528,7 +528,7 @@ async fn a_full_history_whose_first_compaction_failed_is_compacted_once_the_keys
     assert!(held() <= 256, "the history stays within its bound");
 }
 
-/// Writes a device makes while its host is away: custody keeps every one of them, past what
+/// Writes a device makes while its host is away: ownership keeps every one of them, past what
 /// it keeps in its record (eight writes here) and the record's sealed history bound many times.
 const AWAY: usize = 2_000;
 
@@ -555,7 +555,7 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
             Ok(1)
         );
         for message in answer(&joined.owner, workspace, now, &mut order) {
-            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+            host.receive_from(TransportOrigin::ServerDelta(member), message.clone(), now)
                 .unwrap();
             relayed.push(message);
         }
@@ -570,14 +570,14 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
         );
     }
     let owed = joined.owner.unadmitted_writes(workspace).unwrap();
-    assert!(owed >= AWAY, "custody owes every write: {owed}");
+    assert!(owed >= AWAY, "ownership owes every write: {owed}");
     drop(joined.owner);
     let owner = open_file(&path).unwrap();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
     assert_eq!(
         owner.unadmitted_writes(workspace).unwrap(),
         owed,
-        "custody keeps them all through a restart"
+        "ownership keeps them all through a restart"
     );
     // Meanwhile another member writes at the host.
     let peers = written_at(
@@ -588,9 +588,9 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
         now,
     );
 
-    // Back: custody goes to the host in its order until it owes nothing.
+    // Back: ownership goes to the host in its order until it owes nothing.
     for message in drain(&owner, workspace, now, &mut order).await {
-        host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+        host.receive_from(TransportOrigin::ServerDelta(member), message.clone(), now)
             .unwrap();
         relayed.push(message);
     }
@@ -599,7 +599,7 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
         owner
             .receive(
                 workspace,
-                TransportOrigin::RelayDelta(governor),
+                TransportOrigin::ServerDelta(governor),
                 message,
                 now,
             )
@@ -652,7 +652,7 @@ fn relay(member: &Enrolled, messages: impl IntoIterator<Item = NeighbourMsg>) {
                 let NeighbourMsg::AppDocument { envelope, .. } = &message else {
                     panic!("a document write");
                 };
-                let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+                let author = TransportOrigin::RetainedServerDelta(*envelope.author.as_bytes());
                 (author, message)
             })
             .collect();
@@ -681,7 +681,7 @@ async fn a_run_of_relayed_documents_is_decided_as_each_would_be_alone() {
     let alone = enrolled_with(fixture.clone());
     let together = enrolled_with(fixture);
     let (_, keys) = rotated_channel();
-    let origin = TransportOrigin::RetainedRelayDelta(governor_key.verifying_key().to_bytes());
+    let origin = TransportOrigin::RetainedServerDelta(governor_key.verifying_key().to_bytes());
     let mut relayed = written_at(
         &mut host,
         &base(&alone.owner, alone.workspace),
@@ -810,7 +810,7 @@ fn joins_after(
         late.owner
             .receive(
                 late.workspace,
-                TransportOrigin::RetainedRelayDelta(author),
+                TransportOrigin::RetainedServerDelta(author),
                 message,
                 late.now,
             )
@@ -882,7 +882,7 @@ impl Host {
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
             panic!("a document write");
         };
-        let origin = TransportOrigin::RelayDelta(*envelope.author.as_bytes());
+        let origin = TransportOrigin::ServerDelta(*envelope.author.as_bytes());
         let taken = self.peer.receive_from(origin, message.clone(), now).is_ok();
         if taken {
             self.relayed.push(message.clone());
@@ -894,7 +894,7 @@ impl Host {
     }
 }
 
-/// Custody goes to the host one write at a time, each answered as the host took it, until it
+/// Ownership goes to the host one write at a time, each answered as the host took it, until it
 /// owes nothing; the device drafts what it sends next before each, as its session does, and
 /// `refuse` picks writes the host refuses whatever they are. Answers what the host refused;
 /// with `until_refused`, as soon as it refused one.
@@ -911,7 +911,7 @@ async fn delivered(
             .compact_outgoing(workspace, &member_key(), now)
             .await
             .unwrap();
-        let Some((id, message)) = custody(owner, workspace, now).into_iter().next() else {
+        let Some((id, message)) = ownership(owner, workspace, now).into_iter().next() else {
             return refused;
         };
         let answer = if !refuse(&message) && host.take(&message, now) {
@@ -939,7 +939,7 @@ async fn delivered(
         }
     }
     panic!(
-        "custody still owes {} writes, {} refused",
+        "ownership still owes {} writes, {} refused",
         owner.unadmitted_writes(workspace).unwrap(),
         refused.len()
     );
@@ -1047,7 +1047,7 @@ async fn returns(away: Away, mut refuse: impl FnMut(&NeighbourMsg) -> bool) -> R
                     owner
                         .receive(
                             workspace,
-                            TransportOrigin::RelayDelta(governor),
+                            TransportOrigin::ServerDelta(governor),
                             message,
                             now,
                         )
@@ -1230,7 +1230,7 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
             );
         }
         for message in answer(owner, workspace, now, &mut order) {
-            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+            host.receive_from(TransportOrigin::ServerDelta(member), message.clone(), now)
                 .unwrap_or_else(|error| panic!("the host takes write {index}: {error}"));
             if matches!(&message,
                 NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)
@@ -1253,7 +1253,7 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
         let NeighbourMsg::AppDocument { envelope, .. } = &message else {
             panic!("a document write");
         };
-        let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+        let author = TransportOrigin::RetainedServerDelta(*envelope.author.as_bytes());
         late.owner
             .receive(late.workspace, author, message, late.now)
             .unwrap();
@@ -1275,4 +1275,116 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
         "a member joining late holds every change ever made"
     );
     assert_eq!(read.get_heads(), typist.0.get_heads());
+}
+
+/// A write the host refused leaves the device's record, and the device's next write of it goes
+/// out: it takes a sequence past every write of the device a peer's compaction folded, not one
+/// the record decided already.
+#[tokio::test]
+async fn a_refused_write_after_a_peers_fold_leaves_the_next_write_free() {
+    let (fixture, host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let mut host = Host::new(host);
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let governor = governor_key.verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let mut order = 0;
+    for key in keys_typed('k', 3) {
+        let changes = typist.change(&key);
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    }
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut host,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty());
+    // The governor folds the record's history, the device's writes with it.
+    let compaction = compacted_at(&mut host.peer, &keys, &governor_key, now);
+    owner
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(governor),
+            compaction,
+            now,
+        )
+        .unwrap();
+    // The host refuses the device's next write.
+    let changes = typist.change("krefused");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let [(id, _)]: [_; 1] = ownership(owner, workspace, now).try_into().unwrap();
+    owner
+        .retire_answered(workspace, &BTreeMap::from([(id, HostAnswer::Refused)]))
+        .unwrap();
+    // The device goes on writing, and the host takes it.
+    let mut typist = Typist::over(&opened(owner, workspace, &keys).save(), 1);
+    let changes = typist.change("kafter");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let relayed = host.relayed.len();
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut host,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty(), "the host refused {}", refused.len());
+    assert_eq!(
+        host.relayed.len(),
+        relayed + 1,
+        "the host took the next write"
+    );
+
+    // A record kept with the device's floor under the writes a compaction folded, as a refusal
+    // left it before, opens again with its floor back at the fold, and takes the device's next
+    // write.
+    let compaction = compacted_at(&mut host.peer, &keys, &governor_key, now);
+    owner
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(governor),
+            compaction,
+            now,
+        )
+        .unwrap();
+    let changes = typist.change("kgone");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let [(id, _)]: [_; 1] = ownership(owner, workspace, now).try_into().unwrap();
+    owner
+        .retire_answered(workspace, &BTreeMap::from([(id, HostAnswer::Refused)]))
+        .unwrap();
+    let device = member_key().verifying_key().to_bytes();
+    owner
+        .replica(workspace)
+        .unwrap()
+        .lock()
+        .forget_floor(APP, "", device);
+    owner.persist(workspace).unwrap();
+    let path = joined.path.clone();
+    drop(joined.owner);
+    let owner = &open_file(&path).unwrap();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&opened(owner, workspace, &keys).save(), 1);
+    let changes = typist.change("kreopened");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut host,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty(), "the host refused {}", refused.len());
+    assert_eq!(
+        host.relayed.len(),
+        relayed + 2,
+        "the host took the write after a restart"
+    );
 }

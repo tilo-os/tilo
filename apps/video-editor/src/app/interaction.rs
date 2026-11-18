@@ -492,7 +492,7 @@ impl VideoEditorApp {
                 if rect.contains(p) {
                     self.selected_media = Some(mid);
                     // When this same item was last *clicked*, not programmatically
-                    // selected: both the double-click and the rename are gated on it, so a
+                    // selected: both the double-click and the rename depend on it, so a
                     // freshly imported, auto-selected item is never renamed on first click.
                     let since = self.last_click_media.and_then(|(m, t)| {
                         (m == mid).then(|| ui::time::now().saturating_duration_since(t).as_millis())
@@ -576,12 +576,12 @@ impl VideoEditorApp {
         // Ruler scrub.
         if r.ruler.contains(p) {
             self.drag = Some(Drag::Playhead);
-            self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
+            self.playhead = snap_to_frame(self.x_to_time(p.x, &r.tracks), self.project.fps)
                 .clamp(0.0, self.project.duration());
             return;
         }
         // The measured add-track controls may extend from the gutter into
-        // the lanes. Their actual painted bounds own the press there too.
+        // the tracks. Their actual painted bounds own the press there too.
         for (kind, rect) in self.add_track_buttons(r) {
             if rect.contains(p) {
                 self.add_track(kind);
@@ -590,8 +590,8 @@ impl VideoEditorApp {
         }
         // Timeline gutter: per-track mute, lock and solo.
         if r.gutter.contains(p) {
-            for (tid, _kind, lane) in self.lane_rects(r) {
-                let header = VideoEditorApp::track_head_rect(r, &lane);
+            for (tid, _kind, track) in self.track_rects(r) {
+                let header = VideoEditorApp::track_head_rect(r, &track);
                 if header.contains(p) {
                     // The same bands the paint reads (`chrome_layout::track_head`),
                     // so the pill under the pointer is the pill that was drawn.
@@ -608,8 +608,8 @@ impl VideoEditorApp {
             }
             return;
         }
-        // Timeline lanes — clips, trim handles, rubber-band / scrub.
-        if r.lanes.contains(p) {
+        // Timeline tracks — clips, trim handles, rubber-band / scrub.
+        if r.tracks.contains(p) {
             self.press_timeline(r, p, shift);
         }
     }
@@ -645,7 +645,7 @@ impl VideoEditorApp {
             if !additive {
                 self.selection.clear();
             }
-            self.playhead = snap_to_frame(self.x_to_time(origin.x, &r.lanes), self.project.fps)
+            self.playhead = snap_to_frame(self.x_to_time(origin.x, &r.tracks), self.project.fps)
                 .clamp(0.0, self.project.duration());
             return;
         };
@@ -654,13 +654,13 @@ impl VideoEditorApp {
         } else {
             Vec::new()
         };
-        for (tid, _kind, lane) in self.lane_rects(r) {
-            if lane.y1 < band.y0 || lane.y0 > band.y1 {
+        for (tid, _kind, track) in self.track_rects(r) {
+            if track.y1 < band.y0 || track.y0 > band.y1 {
                 continue;
             }
             for c in self.project.clips_on(tid) {
-                let cr = self.clip_rect(c, &lane, r);
-                // Any horizontal overlap with the band counts — the lane test
+                let cr = self.clip_rect(c, &track, r);
+                // Any horizontal overlap with the band counts — the track test
                 // above already established the vertical one.
                 if cr.x1 >= band.x0 && cr.x0 <= band.x1 && !hits.contains(&c.id) {
                     hits.push(c.id);
@@ -671,14 +671,14 @@ impl VideoEditorApp {
     }
 
     pub(super) fn clip_at(&self, r: &Regions, p: Point) -> Option<(ClipId, Rect)> {
-        for (tid, _kind, lane) in self.lane_rects(r) {
-            if p.y < lane.y0 || p.y > lane.y1 {
+        for (tid, _kind, track) in self.track_rects(r) {
+            if p.y < track.y0 || p.y > track.y1 {
                 continue;
             }
             for c in self.project.clips_on(tid) {
-                let cr = self.clip_rect(c, &lane, r);
+                let cr = self.clip_rect(c, &track, r);
                 if p.x >= cr.x0 - 2.0 && p.x <= cr.x1 + 2.0 {
-                    return Some((c.id, lane));
+                    return Some((c.id, track));
                 }
             }
         }
@@ -690,7 +690,7 @@ impl VideoEditorApp {
     /// space: arm a rubber band, which becomes a playhead scrub if the press never
     /// moves.
     pub(super) fn press_timeline(&mut self, r: &Regions, p: Point, shift: bool) {
-        if let Some((cid, lane)) = self.clip_at(r, p) {
+        if let Some((cid, track)) = self.clip_at(r, p) {
             if shift {
                 self.selection.toggle(cid);
             } else if !self.selection.contains(cid) {
@@ -706,7 +706,7 @@ impl VideoEditorApp {
             let Some(clip) = self.project.clip(cid).cloned() else {
                 return;
             };
-            let cr = self.clip_rect(&clip, &lane, r);
+            let cr = self.clip_rect(&clip, &track, r);
             // Checked before the trim handles and the move drag: the smaller, more
             // specific target inside the same body.
             if !shift
@@ -714,7 +714,7 @@ impl VideoEditorApp {
                 && let Some(t) = clip
                     .key_times()
                     .into_iter()
-                    .find(|t| (self.time_to_x(*t, &r.lanes) - p.x).abs() <= 5.0)
+                    .find(|t| (self.time_to_x(*t, &r.tracks) - p.x).abs() <= 5.0)
             {
                 self.playhead = t.clamp(0.0, self.project.duration());
                 self.playback.playing = false;
@@ -737,13 +737,13 @@ impl VideoEditorApp {
                 }
                 self.drag = Some(Drag::ClipMove {
                     id: cid,
-                    grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start,
+                    grab_dt: self.x_to_time(p.x, &r.tracks) - clip.start,
                     track: clip.track,
                 });
             }
             return;
         }
-        // Empty lane area: a rubber band, resolved on release. A press that
+        // Empty track area: a rubber band, resolved on release. A press that
         // never travels past MARQUEE_THRESHOLD scrubs the playhead instead,
         // so click-to-scrub still works exactly as it did.
         self.drag = Some(Drag::Marquee {
@@ -799,7 +799,7 @@ impl VideoEditorApp {
             return;
         }
         // The project's format is project-level too, so it answers whether or
-        // not a clip is selected -- above the `l.valid` gate, which is what
+        // not a clip is selected -- above the `l.valid` check, which is what
         // marks "a clip's controls were laid out".
         for ((w, h), rect) in l.project_frames.clone() {
             if rect.contains(p) {

@@ -3,15 +3,34 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
-    Member, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc, RevocationList, Role,
-    Standing, SystemTime, Transactable, administrator_grant_id, err, governed_map, now_ns,
-    person_of, workspace,
+    Member, MemberAccess, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc,
+    RevocationList, Role, SystemTime, Transactable, administrator_grant_id, err, governed_map,
+    now_ns, person_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
 
 impl PeerGovernance<'_> {
+    /// Whether the governance carries a device's removal without its cut
+    /// ([`crate::removals`]): one recorded before cuts were kept. Until the
+    /// device that governs the workspace completes it
+    /// ([`PeerGovernanceMut::publish_governed_revocations`]), nobody decides
+    /// what that device wrote.
+    #[must_use]
+    pub fn lacks_removal_cuts(self) -> bool {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        let Ok(recorded) = crate::removals::recorded(doc) else {
+            return false;
+        };
+        doc.identities()
+            .values()
+            .filter_map(|identity| identity.as_ref().ok())
+            .flat_map(|identity| &identity.revocations)
+            .any(|entry| !recorded.contains(&entry.revoked_device_public_key))
+    }
     /// The sandbox capabilities the workspace's governance grants its apps.
     pub fn governed_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
         let doc = self
@@ -26,31 +45,33 @@ impl PeerGovernance<'_> {
             .map(|bytes| serde_json::from_slice(bytes).map_err(err))
             .collect()
     }
-    /// The standing of every governed member device at `now`: what a relay
+    /// The access of every governed member device at `now`: what a server
     /// that does not hold the workspace's governance decides their changes
     /// with, each held to its foreign-device bound.
-    pub fn governed_standings(
+    pub fn governed_device_access(
         self,
         now: SystemTime,
-    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>, String>
+    {
         let access = self.peer.governance().governed_access(now)?;
-        self.standings_of(&access.member_devices, now)
+        self.access_of(&access.member_devices, now)
     }
-    /// [`Self::governed_standings`] of `devices`, the member devices
+    /// [`Self::governed_device_access`] of `devices`, the member devices
     /// [`Self::governed_access`] at `now` answered: a host that just listed
     /// them for its access does not list them again.
-    pub fn standings_of(
+    pub fn access_of(
         self,
         devices: &[[u8; 32]],
         now: SystemTime,
-    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>, String>
+    {
         let doc = self
             .peer
             .core
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        // One policy, shared by every device's standing.
+        // One policy, shared by every device's access.
         let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
         Ok(devices
             .iter()
@@ -89,7 +110,7 @@ impl PeerGovernance<'_> {
         // A host the governance names holds the workspace: its device is let
         // in wherever the workspace is held, and its person, whose host holds
         // all of it already, is let reach the hosts holding it.
-        for hint in self.workspace_hosts() {
+        for hint in self.keeping_devices() {
             let cert = &hint.host;
             if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
                 && !self.peer.core.revocations.refuses(cert)
@@ -167,10 +188,23 @@ impl PeerGovernance<'_> {
     }
 
     /// The devices that hold the workspace's keys at `now`: every device of
-    /// its members. The workspace's one MLS group follows this set.
+    /// its members and every holder it names as holding them, and no holder
+    /// it names as a store of its ciphertext, whoever's device that is. The
+    /// workspace's one MLS group follows this set, so a holder named a store
+    /// leaves the group, and the commit that removes it rotates the keys.
     pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {
         let access = self.peer.governance().governed_access(now)?;
-        Ok(access.member_devices.into_iter().collect())
+        let stores: BTreeSet<[u8; 32]> = self
+            .keeping_devices()
+            .iter()
+            .filter(|hint| super::holder_role(hint) == super::CopyRole::Store)
+            .map(|hint| hint.host.device_public_key)
+            .collect();
+        Ok(access
+            .member_devices
+            .into_iter()
+            .filter(|device| !stores.contains(device))
+            .collect())
     }
 
     /// The workspace's people and grants as its governance records them: its
@@ -516,7 +550,11 @@ impl PeerGovernanceMut<'_> {
     /// replica refuses the revoked devices. The authority's root revokes any
     /// of its keys, kept on the authority's own row too so a device revoked
     /// before it was ever admitted stays refused; any other root revokes only
-    /// a device the workspace certifies to it. Returns whether governance changed.
+    /// a device the workspace certifies to it. With each removal goes its cut
+    /// ([`crate::removals`]): where each document's history stood for the
+    /// removed device as this replica holds it, written once, also for a
+    /// removal the governance carried before cuts were kept. Returns whether
+    /// governance changed.
     ///
     /// # Errors
     ///
@@ -571,7 +609,23 @@ impl PeerGovernanceMut<'_> {
             written.sort_by_key(|entry| entry.revoked_device_public_key);
             identity.revocations = written;
         }
-        let changed = super::governed_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
+        let mut changed =
+            super::governed_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
+        // With every removal the governance carries goes its cut, written
+        // once: where each document's history stood for the removed device, as
+        // this replica holds it now. A removal the governance carried before
+        // cuts were kept gets its cut here too: this replica refused
+        // everything of the device since, so what it holds of it is what the
+        // workspace had taken.
+        let removed: BTreeSet<[u8; 32]> = projected
+            .iter()
+            .flat_map(|(_, _, identity)| &identity.revocations)
+            .map(|entry| entry.revoked_device_public_key)
+            .collect();
+        for device in removed {
+            changed |= crate::removals::write(&mut doc, &device, &self.peer.taken_from(&device))
+                .map_err(err)?;
+        }
         if changed {
             doc.commit();
             self.peer.write_governance(doc, &before, key, now)?;
@@ -624,7 +678,16 @@ impl PeerGovernanceMut<'_> {
         if redemption.join().grant().workspace_id.to_string() != self.peer.core.workspace {
             return Err("invitation is not for this workspace".into());
         }
-        self.peer.require_inviter(key, now)?;
+        // An inviter writes the redemption, or a holder of the workspace that
+        // is no member: every receiver checks the invitation itself.
+        if let Err(error) = self.peer.require_inviter(key, now) {
+            let device = key.device_public_key();
+            if self.peer.role(&device, now).is_ok()
+                || self.peer.holder_certificate(&device).is_none()
+            {
+                return Err(error);
+            }
+        }
         let cert = redemption.certificate();
         if self.peer.core.revocations.refuses(cert) {
             return Err("device revoked".into());
@@ -663,12 +726,23 @@ impl PeerGovernanceMut<'_> {
         }
     }
     /// Admit `device`, a device certified by the root of someone already a
-    /// member, as that member's: it needs no invitation, and any member's
-    /// device `key` writes it in when it first asks. Whether the workspace changed.
+    /// member, as that member's: it needs no invitation, and the device
+    /// `key` that keeps the workspace's keys writes it in when it first
+    /// asks, whether its person is a member or a holder that is none.
+    /// Whether the workspace changed.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not a current member's device, `device`
+    /// Admit `device`, a device certified by the root of someone already a
+    /// member, as that member's: it needs no invitation, and the device
+    /// `key` that keeps the workspace's keys writes it in when it first
+    /// asks, whether its person is a member or a holder that is none.
+    /// Whether the workspace changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not a current member's device nor one of
+    /// the workspace's key-holding holders, `device`
     /// does not verify, is revoked or conflicts with the workspace's, its person
     /// is not a member, or governance cannot be updated.
     pub fn admit_member_device(
@@ -677,7 +751,7 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_member_writer(key, now)?;
+        self.peer.require_admitting_writer(key, now)?;
         tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
         if self.peer.core.revocations.refuses(device) {
             return Err("device revoked".into());
@@ -1153,7 +1227,7 @@ impl PeerGovernanceMut<'_> {
             policy
                 .grants
                 .iter()
-                .filter(|grant| grant.grantee == Grantee::person(person.clone()))
+                .filter(|grant| grant.grantee.person_id() == Some(person.as_str()))
                 .map(|grant| Change::Revoke(grant.id.clone()))
                 .collect()
         };
@@ -1200,7 +1274,7 @@ impl PeerGovernanceMut<'_> {
 impl super::StatePeer {
     /// The current member writing with `key`, as its own device's authority
     /// holds it: what inviting is decided by.
-    fn inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<Standing, String> {
+    fn inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<MemberAccess, String> {
         let device = key.device_public_key();
         self.require_member_writer(key, now)?;
         self.membership(device, now)

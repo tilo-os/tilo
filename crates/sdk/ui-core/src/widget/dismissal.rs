@@ -87,12 +87,12 @@ impl Dismissal {
         self.native.as_ref().map(NativeControl::resource)
     }
 
-    pub(crate) fn install_custody(
+    pub(crate) fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        let _ = self.action.install_custody(domain, attachment);
+        let _ = self.action.attach(domain, attachment);
     }
 
     pub(crate) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {

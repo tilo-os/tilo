@@ -1,6 +1,6 @@
 //! GOA metadata definitions shared by review and selected capture.
 use super::{Candidate, Inventory, Origin, Provider, Service};
-use account_custody::OAuthCloud;
+use account_credentials::OAuthCloud;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
 use tilo_secrets::owner_migration::GoaProvider;

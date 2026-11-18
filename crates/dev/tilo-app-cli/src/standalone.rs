@@ -39,9 +39,9 @@ const STUB_DIR: &str = "workspace-hack";
 const STUB_MANIFEST: &str = "[package]\nname = \"workspace-hack\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"MIT\"\ndescription = \"Empty stand-in for Tilo's hakari crate\"\n";
 /// Crates only tests depend on. The lockfile lists a package's
 /// dev-dependencies beside its others, so walking it from the SDK would
-/// reach whatever an SDK crate's tests start (a relay host, its agents and
+/// reach whatever an SDK crate's tests start (a server host, its agents and
 /// their engines), which no app links.
-const TEST_ONLY: [&str; 1] = ["test-relay"];
+const TEST_ONLY: [&str; 1] = ["test-server"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdkSource {

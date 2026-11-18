@@ -1,4 +1,4 @@
-//! Local test responders for frontend tests of native account custody.
+//! Local test responders for frontend tests of native account credentials.
 #[cfg(test)]
 pub(super) fn test_server() -> test_http::Responder {
     test_http::Responder::handle(|request| {

@@ -19,14 +19,14 @@ use runtime_collab::CollabClient;
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{OutputConfig, Selection};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, CLIPBOARD_RESOURCE, Launches, Options, Session};
+use tilo_session::{AppSocket, CLIPBOARD_RESOURCE, Launches, Options, Session};
 
 /// The app the person's device shows the session's own state in, and an app of its own: what the
 /// workspace grants apart.
 const PANEL: &str = "so.tilo.quick-settings";
 const APP: &str = "so.tilo.settings";
 
-/// A session serving the plane on `socket` , having started `app` in its one workspace, which this
+/// A session serving the app wire on `socket` , having started `app` in its one workspace, which this
 /// test's own process runs.
 fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     let wake = LoopWake::default();
@@ -37,7 +37,7 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
             collab: false,
             wake,
             launches: Arc::clone(&launches),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             ..Options::default()
         },
     );
@@ -75,7 +75,7 @@ fn app(socket: &std::path::Path, id: &str, workspace: &str, seen: &std::sync::mp
         .expect("a runtime for the app");
     runtime.block_on(async {
         let mut stream =
-            std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+            std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
         launcher::services::write_collab_handoff(&mut stream, id, workspace)
             .expect("the launcher names the app on the connection");
         stream

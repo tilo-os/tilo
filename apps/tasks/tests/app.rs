@@ -23,10 +23,10 @@ fn only(app: &TestApp<App>) -> Id {
     held(app).ids().into_iter().next().expect("an issue")
 }
 
-/// A workspace host that says where its record is served, so a link to a
+/// A workspace host that says where its resource is served, so a link to a
 /// resource of it can be made: what its web entry renders.
-fn served() -> ui::tilo_actions::remote::TestHost {
-    ui::tilo_actions::remote::TestHost::new().with_catalogue(|_, query| {
+fn served() -> ui::tilo_actions::remote::TestProvider {
+    ui::tilo_actions::remote::TestProvider::new().with_catalogue(|_, query| {
         Ok(ui::tilo_actions::remote::CataloguePage {
             locator: Some(ui::tilo_actions::remote::ResourceViewLocator {
                 origin: "https://host.example".into(),
@@ -366,14 +366,14 @@ tilo_test_env::scenario! {
         assert_eq!(
             picked,
             Some(ui::tilo_actions::Pick::Resource {
-                kind: "notes.notebook.pages".into()
+                kind: "notes.pages.pages".into()
             }),
             "the note is picked, never typed"
         );
         let note = json!({
             "app": tasks::NOTES,
-            "kind": "notes.notebook.pages",
-            "id": "notes.notebook/pages/7",
+            "kind": "notes.pages.pages",
+            "id": "notes.pages/pages/7",
             "label": "Launch checklist",
         });
         app.call_on(
@@ -391,8 +391,8 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].app, tasks::NOTES);
-        assert_eq!(links[0].kind, "notes.notebook.pages");
-        assert_eq!(links[0].resource, "notes.notebook/pages/7");
+        assert_eq!(links[0].kind, "notes.pages.pages");
+        assert_eq!(links[0].resource, "notes.pages/pages/7");
         assert_eq!(links[0].label, "Launch checklist");
         let issue_ref = json!({
             "app": "so.tilo.tasks",
@@ -412,14 +412,14 @@ tilo_test_env::scenario! {
     }
 
     phase a_link_opens_in_the_record_it_names;
-    // A link names the record of the app that keeps what it links to, and
-    // opens it there; a link made before links named a record opens the app's
-    // own record of the workspace.
+    // A link names the resource of the app that keeps what it links to, and
+    // opens it there; a link made before links named a resource opens the app's
+    // own document of the workspace.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
         env.set("TILO_WORKSPACE_ID", workspace);
-        let api = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+        let api = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
         let _served = ui::RemoteActions::enter(
             api.clone(),
             ui::tilo_actions::remote::Caller::local_person("ada"),
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(links[0].record.as_deref(), Some("/launch"));
         assert_eq!(links[1].record, None);
-        // What a link stored before it named a record reads as naming none.
+        // What a link stored before it named a resource reads as naming none.
         let old = <tasks::model::Link as ui::tilo_resource::Model>::from_json(&json!({
             "label": "Old", "app": "so.tilo.notes", "kind": "notes.page", "resource": "notes.page:1",
         }))
@@ -524,13 +524,13 @@ tilo_test_env::scenario! {
         assert_eq!(assignee(&app).as_deref(), Some("bob"));
         assert!(
             app.harness().a11y_node_named("Assignee: Bob").is_some(),
-            "the chip says the person's name, never the record's spelling"
+            "the chip says the person's name, never the resource's spelling"
         );
         pick(&mut app, "tasks-issue-assignee-agent-scribe");
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
         assert!(
             app.harness()
-                .a11y_node_named("Assignee: Scribe · Agent")
+                .a11y_node_named("Assignee: Scribe")
                 .is_some(),
             "an agent reads by name, and as an agent"
         );
@@ -566,13 +566,13 @@ tilo_test_env::scenario! {
         assert_eq!(
             held(&app).get(&issue).unwrap().assigned_person(),
             Some(root),
-            "the record keeps the bare root, not a prefixed spelling"
+            "the resource keeps the bare root, not a prefixed spelling"
         );
         app.call_on(&issue_resource(&issue), "open", json!({}))
             .expect("open the issue");
         assert!(
             app.harness().a11y_node_named("Assignee: Ada").is_some(),
-            "the roster names the id the record stores"
+            "the roster names the id the resource stores"
         );
         assert!(
             app.call_on(
@@ -594,11 +594,11 @@ tilo_test_env::scenario! {
             .expect("create");
         let issue = only(&app);
         // An issue already labelled makes that label one the picker offers.
-        app.call_on(&chain(), "create", json!({ "title": "Book the room" }))
+        app.call_on(&chain(), "create", json!({ "title": "Book the hall" }))
             .expect("create");
         let other = held(&app)
             .iter()
-            .find(|(_, shown)| shown.title == "Book the room")
+            .find(|(_, shown)| shown.title == "Book the hall")
             .map(|(id, _)| id)
             .expect("the other issue");
         app.call_on(&chain(), "add-label", json!({ "issue": other, "label": "launch" }))
@@ -893,7 +893,7 @@ fn the_sidebar_names_what_it_narrows_and_the_bar_names_the_place() {
 }
 
 tilo_test_env::scenario! {
-    fn the_list_and_the_board_follow_the_sidebars_filter_and_a_lane_adds_to_itself;
+    fn the_list_and_the_board_follow_the_sidebars_filter_and_a_list_adds_to_itself;
 
     phase the_sidebar_narrows_the_list_and_the_board_to_a_filter;
     // The sidebar narrows the list to what a person is looking for — their own
@@ -973,7 +973,7 @@ tilo_test_env::scenario! {
         assert_eq!(shown.len(), 1, "one issue carries the label: {shown:?}");
 
         // The board follows the same choice: the agent's issue is the only card
-        // in a lane.
+        // in a list.
         choose(&mut app, "An agent's");
         press_view(&mut app, "Board");
         let harness = app.harness();
@@ -994,10 +994,10 @@ tilo_test_env::scenario! {
         assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
     }
 
-    phase a_lanes_foot_adds_the_issue_to_that_lane;
-    // A lane of the board adds at its foot, in its own lane: what is typed
-    // there is made in that lane's status, and the board itself carries no
-    // entry of its own above the lanes.
+    phase a_lists_foot_adds_the_issue_to_that_list;
+    // A list of the board adds at its foot, in its own list: what is typed
+    // there is made in that list's status, and the board itself carries no
+    // entry of its own above the lists.
     {
         let mut app = open();
         press_view(&mut app, "Board");
@@ -1006,12 +1006,12 @@ tilo_test_env::scenario! {
             !app.harness()
                 .targets()
                 .contains_key("tasks-board-new-title"),
-            "the board carries no entry of its own above the lanes"
+            "the board carries no entry of its own above the lists"
         );
         let add = |app: &mut TestApp<App>, status: Status, title: &str| {
             app.harness()
                 .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
-                .unwrap_or_else(|error| panic!("the {status:?} lane is addable: {error}"));
+                .unwrap_or_else(|error| panic!("the {status:?} list is addable: {error}"));
             app.harness().type_text(title);
             app.harness().key("Enter");
             app.settle();
@@ -1019,19 +1019,18 @@ tilo_test_env::scenario! {
         add(&mut app, Status::Todo, "Ship the launch");
         add(&mut app, Status::InProgress, "Archive the banner");
 
-        let held = held(&app);
+        let held = held(&app).issues();
         let statuses: Vec<(&str, Status)> = held
-            .issues()
             .iter()
             .map(|(_, issue)| (issue.title.as_str(), issue.status))
             .collect();
         assert!(
             statuses.contains(&("Ship the launch", Status::Todo)),
-            "what the to-do lane's entry makes starts there: {statuses:?}"
+            "what the to-do list's entry makes starts there: {statuses:?}"
         );
         assert!(
             statuses.contains(&("Archive the banner", Status::InProgress)),
-            "and the working lane's entry starts a card that is being worked on: {statuses:?}"
+            "and the working list's entry starts a card that is being worked on: {statuses:?}"
         );
         assert_eq!(statuses.len(), 2, "one card per entry, nothing else");
     }
@@ -1067,13 +1066,13 @@ fn choose(app: &mut TestApp<App>, name: &str) {
 
 /// Notes as the session's api reaches it: makes the note each call asks
 /// for and answers its resource, as `create-page` does.
-fn notes_api() -> ui::tilo_actions::remote::TestHost {
+fn notes_api() -> ui::tilo_actions::remote::TestProvider {
     let made = std::sync::atomic::AtomicUsize::new(0);
-    ui::tilo_actions::remote::TestHost::new().completing(move |_| {
+    ui::tilo_actions::remote::TestProvider::new().completing(move |_| {
         let count = made
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .saturating_add(1);
-        let note = format!("notes.notebook/pages/{count}");
+        let note = format!("notes.pages/pages/{count}");
         ui::tilo_actions::ActionOutput {
             value: Some(json!({ "resource": note })),
             resources: vec![note],
@@ -1087,6 +1086,7 @@ fn notes_api() -> ui::tilo_actions::remote::TestHost {
 /// and their undo takes the link back. Pressed here, it is the app's own
 /// request.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one flow, from the ask to the undo")]
 fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     use ui::tilo_actions::{ActionInvoker, InvocationUpdate};
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -1125,10 +1125,15 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
 
     let asked = api.asked();
     assert_eq!(asked.len(), 1, "one call of Notes: {asked:?}");
-    let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
+    let notes = ui::resource::DocumentId::derived("pages", &DocumentId::workspace_default());
+    let pages = ui::tilo_reference::ResourceRef::whole(
+        "notes.pages",
+        ui::resource::chain_resource_id(&notes),
+        "",
+    );
     assert_eq!(
         asked[0].target,
-        notebook.action_target(workspace, tasks::NOTES, None, "create-page")
+        pages.action_target(workspace, tasks::NOTES, None, "create-page")
     );
     assert_eq!(
         asked[0].argument,
@@ -1151,7 +1156,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
             .any(|update| matches!(
                 update,
                 InvocationUpdate::Succeeded { output, .. }
-                    if output.value == Some(json!({ "resource": "notes.notebook/pages/1" }))
+                    if output.value == Some(json!({ "resource": "notes.pages/pages/1" }))
             )),
         "{:?}",
         app.harness().job_updates(invocation)
@@ -1166,8 +1171,8 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .collect();
     assert_eq!(links.len(), 1, "{links:?}");
     assert_eq!(links[0].app, tasks::NOTES);
-    assert_eq!(links[0].kind, "notes.notebook.pages");
-    assert_eq!(links[0].resource, "notes.notebook/pages/1");
+    assert_eq!(links[0].kind, "notes.pages.pages");
+    assert_eq!(links[0].resource, "notes.pages/pages/1");
     assert_eq!(links[0].label, "#1 Plan the launch");
     assert_eq!(links[0].record, None);
 
@@ -1465,4 +1470,67 @@ fn a_projects_page_offers_to_delete_it_and_undo_brings_it_back() {
         Some("Launch")
     );
     assert!(bar_menu_entry(&mut app, "Delete project").is_some());
+}
+
+/// An agent's comment, as its step lands, is drawn on its words in the issue's thread: the
+/// agent's caret there says what it did.
+#[test]
+fn an_agents_comment_is_drawn_on_its_words_in_the_thread() {
+    let mut app = open();
+    app.call_on(&chain(), "create", json!({ "title": "Book the hall" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    // The comment answers the comment it made, under its issue: where its step landed.
+    let made = app
+        .call_on_finished(
+            &chain(),
+            "comment",
+            json!({ "issue": issue.as_str(), "text": "Hall 4 is free" }),
+        )
+        .expect("comment")
+        .resources;
+    let comment = held(&app)
+        .get(&issue)
+        .and_then(|issue| issue.comments.iter().next().map(|(id, _)| id.clone()))
+        .expect("the comment");
+    assert_eq!(
+        made,
+        vec![format!(
+            "tasks.issues/issues/{}/comments/{}",
+            issue.as_str(),
+            comment.as_str()
+        )]
+    );
+    let mut event = ui::headless::agent_acting("tasks.tracker", "comment");
+    event.actor = ui::tilo_actions::Acting::agent("scribe");
+    event.phase = ui::tilo_actions::InteractionPhase::Committed;
+    event.action.step = Some(ui::tilo_actions::StepKind::Write);
+    event.anchor = ui::tilo_actions::InteractionAnchor::Text {
+        region: "comments".into(),
+        ranges: vec![ui::tilo_actions::InteractionTextRange {
+            block: format!("{}/{}", issue.as_str(), comment.as_str()),
+            start: 0,
+            end: 14,
+        }],
+    };
+    {
+        let presence = app.harness().presence_mut();
+        presence.set_display_name(ui::permissions::MemberId::agent("scribe"), "Scribe");
+        presence.apply_interaction(event).expect("it applies");
+    }
+    app.settle();
+    app.harness().render_rgba();
+    let tags: Vec<String> = app
+        .harness()
+        .presence()
+        .caret_tags()
+        .into_iter()
+        .map(|tag| tag.label)
+        .collect();
+    assert!(
+        tags.contains(&"Scribe: wrote".to_owned()),
+        "its caret on the comment's words: {tags:?}"
+    );
 }

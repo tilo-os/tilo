@@ -46,7 +46,7 @@ pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
         let mut parts: Vec<Element> = vec![Box::new(tabs)];
         parts.extend(match tab {
             Tab::Active => active(&reads),
-            Tab::Scheduled => standing_work(&reads),
+            Tab::Scheduled => progress_work(&reads),
             Tab::Resolved => resolved(&reads),
         });
         page(parts)
@@ -133,7 +133,7 @@ fn resolved(reads: &Reads) -> Vec<Element> {
 }
 
 /// What the assistant does at a time, and what it does when something happens.
-fn standing_work(reads: &Reads) -> Vec<Element> {
+fn progress_work(reads: &Reads) -> Vec<Element> {
     let (Read::Here(scheduled), Read::Here(events)) = (reads.scheduled(), reads.events()) else {
         return sentence("assistant-scheduled-not-here", None);
     };

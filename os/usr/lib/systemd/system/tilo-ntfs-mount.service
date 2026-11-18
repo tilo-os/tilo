@@ -3,7 +3,7 @@
 # for "Open safely". It exits after a minute without requests while no drive
 # is open.
 [Unit]
-Description=Consent-gated NTFS mount service
+Description=Consent-guarded NTFS mount service
 Requires=tilo-ntfs-mount.socket
 After=tilo-ntfs-mount.socket tilo-ntfs-boot-disks.service
 

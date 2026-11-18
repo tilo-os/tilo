@@ -817,6 +817,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead as _, Write as _};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A holder whose workers are both inside a step that walks a whole folder tree still ends
     /// when it is stopped: the steps are left behind rather than waited for, which is what a
@@ -847,7 +848,7 @@ mod tests {
     }
 
     /// A computer's login made again makes another device, with a holder of its own place at the
-    /// relay; one computer still runs one holder, so the two never hold a second endpoint under
+    /// server; one computer still runs one holder, so the two never hold a second endpoint under
     /// a device key at the same time.
     #[test]
     fn a_device_directory_has_one_holder_however_its_login_changed() {
@@ -907,7 +908,7 @@ mod tests {
             .env(CHILD_LOCK, &lock)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success(), "the child that took the lock failed");
         assert!(

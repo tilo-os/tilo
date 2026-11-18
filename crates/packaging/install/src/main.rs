@@ -602,7 +602,7 @@ fn validate_registry_constraints(
     Ok(vec![required])
 }
 
-struct Gated {
+struct Guarded {
     manifest: tilo_app_package::Manifest,
     publisher_key_hex: String,
     /// The trusted attestor that signed for the publisher; empty if none.
@@ -612,7 +612,7 @@ struct Gated {
     verified: bool,
 }
 
-fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Error> {
+fn verify_and_check(meta: &PackageMeta, trust: &TrustFlags) -> Result<Guarded, Error> {
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
     let required_publishers = validate_registry_constraints(meta.id, meta, trust)?;
@@ -632,7 +632,7 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
                     found: attestor,
                 });
             }
-            Ok(Gated {
+            Ok(Guarded {
                 manifest,
                 publisher_key_hex: hex::encode(meta.publisher()),
                 attested_by: attestor,
@@ -657,7 +657,7 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
                     hex::encode(identity)
                 );
             }
-            Ok(Gated {
+            Ok(Guarded {
                 manifest,
                 publisher_key_hex: hex::encode(identity),
                 attested_by: String::new(),
@@ -680,7 +680,7 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
                     found: "trusted-key".into(),
                 });
             }
-            Ok(Gated {
+            Ok(Guarded {
                 manifest,
                 publisher_key_hex: hex::encode(meta.publisher()),
                 attested_by: String::new(),
@@ -745,7 +745,7 @@ impl Checked {
     }
 }
 
-/// Read, verify and gate a `.tapp`, storing nothing.
+/// Read, verify and check a `.tapp`, storing nothing.
 ///
 /// No flag turns signature verification off: `--allow-self-signed` decides whose signature is
 /// acceptable, never whether one is required. Every payload blob the archive carries is checked
@@ -760,12 +760,12 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
         )));
     }
     let meta = tapp.meta;
-    let Gated {
+    let Guarded {
         manifest,
         publisher_key_hex,
         attested_by,
         verified,
-    } = verify_and_gate(&meta, trust)?;
+    } = verify_and_check(&meta, trust)?;
 
     let len = candidate.len()?;
     tilo_app_package::desktop::validate_native_host(&manifest)
@@ -1257,7 +1257,7 @@ fn install_runtime_package(
         {
             return Err(Error::AlreadyInstalled(checked.id().to_string()));
         }
-        // Publish the verified signed package through the catalogue and integrity records AppHost
+        // Publish the verified signed package through the catalogue and integrity records AppProcess
         // reads, reusing the blobs already fetched: a thin engine must not download its whole
         // payload a second time.
         let blobs = BlobDir(staging.join("blobs"));

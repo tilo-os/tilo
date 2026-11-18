@@ -3,7 +3,7 @@
 //! root behind a passkey with the production `identity.mjs`. A node is
 //! provisioned with a device key and an install token and no certificate;
 //! the root certifies it and the page installs the certificate through the
-//! node's install route, as `tilo-relay run --web … --install-token-file`
+//! node's install route, as `tilo-server run --web … --install-token-file`
 //! serves it. With it the root certifies the session beside the node, which
 //! runs the person's apps and agents with a key of its own: the node vouches
 //! for that key, and the session becomes one of her devices, never a host. The node then starts as the founder's host and the governor of
@@ -39,16 +39,16 @@ use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::RelayConfig;
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::install::{InstallListener, SessionDevice};
-use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_client::https::invitation as invitation_offer;
-use tilo_relay_client::invite::guest_certificate;
-use tilo_relay_client::{
+use tilo_server::ServerConfig;
+use tilo_server::daemon::{Server, ServerIdentity};
+use tilo_server::web::install::{InstallListener, SessionDevice};
+use tilo_server::web::{TlsSource, WebConfig};
+use tilo_server_client::https::invitation as invitation_offer;
+use tilo_server_client::invite::guest_certificate;
+use tilo_server_client::{
     DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
-use tilo_relay_protocol::workspaces::{
+use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
@@ -252,14 +252,14 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert_eq!(delivered.user_public_key, root.public_key);
     assert!(!delivered.capabilities.can_admit_devices);
 
-    // It starts as `tilo-relay run` then does: the person's host, on the
+    // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
-    let relay = Relay::start(
-        RelayConfig {
+    let server = Server::start(
+        ServerConfig {
             state_root: state.clone(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),
             device_cert: persist::read_device_cert(&paths.device_cert).unwrap(),
@@ -268,7 +268,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     )
     .await
     .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: dev_tls(&state),
@@ -283,7 +283,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     let https = DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
-    let host = Host::at(relay.node_addr());
+    let host = Host::at(server.node_addr());
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -342,7 +342,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .unwrap();
 
     // The node holds the document only as ciphertext.
-    let writes: Vec<_> = relay
+    let writes: Vec<_> = server
         .workspace_documents()
         .retained(acme.workspace_id)
         .await
@@ -535,7 +535,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         "{removed:?}"
     );
     wait_for("the node to end Cy's subscription", || async {
-        (!relay.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
+        (!server.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
     })
     .await;
 
@@ -544,13 +544,13 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     assert!(status.success(), "the page's expectations failed");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A session of `cert`'s device whose first message carries `invitation` (with the pre-admission
 /// `token` where there is one), and what the workspace answered it.
 async fn enters(
-    host: tilo_relay_client::Host,
+    host: tilo_server_client::Host,
     host_cert: &tilo_user_identity::DeviceCert,
     (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
     invitation: &[u8],
@@ -558,7 +558,7 @@ async fn enters(
     name: &str,
 ) -> (
     tilo_session_client::Link,
-    Result<tilo_relay_client::login::Admission, tilo_session_client::device::HostRefusal>,
+    Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal>,
 ) {
     let held = tilo_session_client::device::Held {
         cert: cert.clone(),

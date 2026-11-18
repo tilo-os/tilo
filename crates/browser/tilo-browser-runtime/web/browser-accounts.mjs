@@ -2,7 +2,7 @@ import {requestResult} from './storage-inline.mjs';
 import {transactionComplete} from './host-core.mjs';
 
 /** Inspect canonical storage keys, fetching only Settings' personal accounts.
- * No credential/custody database, writer lease, or profile registry is opened.
+ * No credential/device key database, writer lease, or profile registry is opened.
  * With `currentDevice(profile)` (`peer.mjs` `profileDevice`), only the
  * namespace a profile's peer keeps its state in now counts: one a host set up
  * again left behind is never offered for that host. */

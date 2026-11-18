@@ -6,7 +6,7 @@
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 
 use super::store::{Ask, Store};
-use super::{DeckRecord, MAX_PRESENTATION_FILE_BYTES};
+use super::{DeckResource, MAX_PRESENTATION_FILE_BYTES};
 use crate::actions;
 
 impl Store {
@@ -16,7 +16,7 @@ impl Store {
     pub(super) fn import_pptx_content(
         &mut self,
         content: &str,
-        cx: &EffectCx<DeckRecord>,
+        cx: &EffectCx<DeckResource>,
     ) -> EffectAnswer {
         let reference = ui::tilo_actions::named_reference(content).ok_or_else(|| {
             format!("`{content}` names no content: give `tilo.content:<reference>`")
@@ -44,7 +44,7 @@ impl Store {
 
     /// Keep the deck as a `.pptx` in the content store and answer its
     /// address.
-    pub(super) fn export_pptx_content(&self, cx: &EffectCx<DeckRecord>) -> EffectAnswer {
+    pub(super) fn export_pptx_content(&self, cx: &EffectCx<DeckResource>) -> EffectAnswer {
         let deck = crate::deck::mirror(&cx.live().get());
         let bytes = crate::pptx::write_pptx(&deck, &self.content)
             .map_err(|error| format!("the deck could not be written: {error}"))?;

@@ -259,10 +259,10 @@ pub fn apply_setup_handoff(
         if profile.user.username.trim().is_empty() {
             return Err("Choose the account name before enrolling this device.".into());
         }
-        let workspaces = tilo_identity_host::provisioning::personal_workspaces_export_path()
+        let workspaces = tilo_identity::provisioning::personal_workspaces_export_path()
             .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-workspaces.json"));
-        tilo_identity_host::provisioning::enroll_from_local_identity(
-            &tilo_identity_host::provisioning::JoinedDeviceLayout {
+        tilo_identity::provisioning::enroll_from_local_identity(
+            &tilo_identity::provisioning::JoinedDeviceLayout {
                 target_root: root,
                 username: profile.user.username.trim(),
                 local_identity_dir: local.identity_dir,
@@ -597,15 +597,15 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     static SYSTEM: OnceLock<tilo_user_identity::IdentityPaths> = OnceLock::new();
     static IDENTITY_DIR: OnceLock<PathBuf> = OnceLock::new();
     static HOME_PEERS: OnceLock<PathBuf> = OnceLock::new();
-    let system = SYSTEM.get_or_init(tilo_identity_host::provisioning::collaboration_identity_paths);
+    let system = SYSTEM.get_or_init(tilo_identity::provisioning::collaboration_identity_paths);
     let identity_dir = IDENTITY_DIR.get_or_init(|| {
-        tilo_identity_host::registry::IdentityRegistryStore::from_env().map_or_else(
+        tilo_identity::registry::IdentityRegistryStore::from_env().map_or_else(
             |_| dirs_fallback().join(".config/tilo/identity"),
             |store| store.identity_dir().to_path_buf(),
         )
     });
     let home_peers = HOME_PEERS.get_or_init(|| {
-        tilo_relay_protocol::home_peer_registry_path(
+        tilo_server_protocol::home_peer_registry_path(
             system
                 .user_pubkey
                 .parent()
@@ -634,25 +634,25 @@ mod tests {
         let identity_dir = local_dir.path().join("identity");
         let local_system =
             tilo_user_identity::IdentityPaths::under(local_dir.path().join("system"));
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &identity_dir,
             &local_system,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let local_cert =
             tilo_user_identity::persist::read_device_cert(&local_system.device_cert).unwrap();
         let identity_id = hex::encode(local_cert.user_public_key);
         let home_peers = local_dir.path().join("home-peers.json");
-        let peer = tilo_relay_protocol::HomePeerRegistration {
-            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+        let peer = tilo_server_protocol::HomePeerRegistration {
+            schema_version: tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(local_cert.device_public_key),
-            relay_service_node_id: hex::encode([4_u8; 32]),
-            relay_endpoint: None,
+            server_node_id: hex::encode([4_u8; 32]),
+            server_endpoint: None,
             label: "setup".into(),
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(7)],
+            server_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(7)],
         };
         fs::write(
             &home_peers,
@@ -701,8 +701,8 @@ mod tests {
         );
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         assert!(cert.capabilities.can_own_workspaces);
-        let copied: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(
-            &fs::read(tilo_relay_protocol::home_peer_registry_path(
+        let copied: Vec<tilo_server_protocol::HomePeerRegistration> = serde_json::from_slice(
+            &fs::read(tilo_server_protocol::home_peer_registry_path(
                 &dir.path().join("var/lib/tilo"),
             ))
             .unwrap(),
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(copied, vec![peer]);
         let direct: Vec<String> = serde_json::from_slice(
             &fs::read(
-                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                tilo_server_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
                     .with_file_name("personal-device-peers.json"),
             )
             .unwrap(),
@@ -723,7 +723,7 @@ mod tests {
             profile.user.username.trim()
         ));
         let target_fleet =
-            tilo_identity_host::device_fleet::DeviceFleetStore::at(&target_identity, paths)
+            tilo_identity::device_fleet::DeviceFleetStore::at(&target_identity, paths)
                 .load(&identity_id)
                 .unwrap();
         assert!(
@@ -739,7 +739,7 @@ mod tests {
                 .any(|item| item.device_public_key == local_cert.device_public_key)
         );
         let local_fleet =
-            tilo_identity_host::device_fleet::DeviceFleetStore::at(&identity_dir, local_system)
+            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, local_system)
                 .load(&identity_id)
                 .unwrap();
         assert!(

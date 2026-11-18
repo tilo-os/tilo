@@ -209,7 +209,7 @@ pub fn verify_original_mounted_roots(
     }))
 }
 impl VerifiedOriginalMountedRoots {
-    /// Refuses changed path, inode, mount or readonly projection custody.
+    /// Refuses changed path, inode, mount or readonly projection ownership.
     pub fn check(&self) -> io::Result<()> {
         for (root, file) in self.roots.iter().zip(&self.files) {
             let current = open_target(&root.source.placement, true)?;
@@ -219,7 +219,7 @@ impl VerifiedOriginalMountedRoots {
                 || super::super::super::inventory_scratch::identity(&current)?.2 != root.mount
                 || super::super::super::inventory_scratch::identity(file)?.2 != root.mount
             {
-                return Err(refused("Verified original projection custody changed"));
+                return Err(refused("Verified original projection ownership changed"));
             }
         }
         Ok(())

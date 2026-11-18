@@ -5,7 +5,7 @@
 //! fails the test.
 #[cfg(test)]
 mod tests {
-    use account_custody::portable::{self, PortableBinding};
+    use account_credentials::portable::{self, PortableBinding};
     use accounts::{Account, AccountId, AccountStore, AccountTypeId, Secret, SecretVault};
     use std::fs;
     use std::io::Write;
@@ -24,7 +24,7 @@ mod tests {
     const CHILD: &str = "TILO_ACCOUNTS_NATIVE_NAMESPACE";
 
     fn selected_secret() -> Secret {
-        account_custody::oauth_secret(&account_custody::TokenSet {
+        account_credentials::oauth_secret(&account_credentials::TokenSet {
             access_token: CREDENTIAL.into(),
             refresh_token: "native fixture renewable grant".into(),
             scope: Some("https://www.googleapis.com/auth/drive".into()),
@@ -299,7 +299,7 @@ mod tests {
         for id in [&selected, &unselected] {
             store.upsert(Account::new(
                 id.clone(),
-                AccountTypeId::new(account_custody::OAuthCloud::GoogleDrive.type_id()),
+                AccountTypeId::new(account_credentials::OAuthCloud::GoogleDrive.type_id()),
             ));
         }
         store.save_in(&source).unwrap();
@@ -321,7 +321,7 @@ mod tests {
     }
 
     fn verify_handoff(fixture: &Fixture, source: &Path, frame: &[u8]) {
-        // The source is deliberately writable by the destination UID: a custody alias
+        // The source is deliberately writable by the destination UID: an ownership alias
         // regression must be caught by the guard, not by Unix permissions.
         checked(Command::new("chown").args(["-R", "1000:1000"]).arg(source));
         let before = snapshot(source);
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(fs::read(&transport).unwrap(), corrupt);
         fs::write(&transport, frame).unwrap();
 
-        // A migrated custody alias must not redirect writes into source credentials.
+        // A migrated ownership alias must not redirect writes into source credentials.
         let config = fixture.path("var/home/alice/.config");
         fs::create_dir(&config).unwrap();
         fixture.chown("var/home/alice/.config", 1000);
@@ -392,7 +392,7 @@ mod tests {
         fixture.adopt(true);
         let destination = config.join("tilo");
         assert_eq!(AccountStore::load_in(&destination).len(), 1);
-        // Read canonical custody as the installed user, not root: custody readers
+        // Read canonical ownership as the installed user, not root: ownership readers
         // deliberately refuse keys owned by another real user.
         fs::copy(std::env::current_exe().unwrap(), fixture.path("verify")).unwrap();
         fs::set_permissions(fixture.path("verify"), fs::Permissions::from_mode(0o755)).unwrap();

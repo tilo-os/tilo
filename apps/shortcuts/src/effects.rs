@@ -461,7 +461,7 @@ impl EffectsCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: InvocationStatus::Running,
-                    started: ui::clock::time_of_day(&ui::clock::local_now()),
+                    started: ui::clock::time_of_day(ui::clock::local_now()),
                 },
             );
         });
@@ -824,9 +824,9 @@ impl Decorator for Effects {
 }
 
 /// Why the catalogue could not be read, as the person reads it.
-pub(crate) fn catalogue_refusal(error: &ui::tilo_actions::remote::ActionHostError) -> String {
+pub(crate) fn catalogue_refusal(error: &ui::tilo_actions::remote::ActionCallError) -> String {
     match error {
-        ui::tilo_actions::remote::ActionHostError::Unavailable { reason }
+        ui::tilo_actions::remote::ActionCallError::Unavailable { reason }
             if reason == ui::remote_actions::CATALOGUE_UNANSWERED =>
         {
             "Nothing in this workspace answered when Shortcuts asked which actions your \

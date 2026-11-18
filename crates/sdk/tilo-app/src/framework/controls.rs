@@ -159,7 +159,7 @@ pub(crate) struct ActionTable {
     /// actions a live row may offer; `None` for the app's own resource.
     record: Option<Rc<str>>,
     /// The provider keeping that record, which runs its actions
-    /// ([`Records::kept_by`](super::Records::kept_by)).
+    /// ([`Resources::kept_by`](super::Resources::kept_by)).
     kept_by: Option<&'static str>,
 }
 
@@ -522,7 +522,7 @@ impl<R: Resource> Actions<R> {
         decl: &tilo_resource::ActionDecl<R>,
     ) -> Option<tilo_actions::ActionSpec> {
         let record = self.table.record.as_deref()?;
-        let spec = super::record::route_spec(tilo_resource::declaration_spec(decl), record);
+        let spec = super::resources::route_spec(tilo_resource::declaration_spec(decl), record);
         Some(match self.table.kept_by {
             // The provider keeping the record runs the action this one
             // invokes of it.

@@ -8,8 +8,8 @@
 //! environment's granted directories at the same paths. The shell, its own commands and
 //! their run records are the same as on a device.
 //!
-//! A refused VM is typed ([`host_account::Refusal`]) and says what would let it through: a
-//! person's command the account's standing would admit waits and runs once the host's
+//! A refused VM is typed ([`server_account::Refusal`]) and says what would let it through: a
+//! person's command the account's access would admit waits and runs once the host's
 //! plans file names the account ([`held_mark`], Terminal showing the prompt), while an
 //! agent's command fails at once with the refusal and what to ask the person. When the
 //! hosts have no room ([`Reply::Busy`]) a command waits after one line saying so, and
@@ -33,11 +33,11 @@ use legacy_agent_protocol::{
 };
 use legacy_vm::hosted::control::{self, Reply, Request, ShareRequest, VmRequest};
 use legacy_vm::hosted::size::VmSize;
-use tilo_actions::remote::host_account;
+use tilo_actions::remote::server_account;
 use ush_shell::{Input, Output, Program, Std, Stdio};
 use ush_tilo::Programs;
 
-pub use tilo_host_account::{ACCOUNT_ENV, PLANS_ENV, SOCKET_ENV};
+pub use tilo_server_account::{ACCOUNT_ENV, PLANS_ENV, SOCKET_ENV};
 pub const SIZE_ENV: &str = "TILO_HOSTED_VM_SIZE";
 
 #[cfg(any(test, feature = "test-host"))]
@@ -79,14 +79,14 @@ type Shares = dyn Fn() -> Vec<ShareRequest> + Send + Sync;
 
 pub struct HostedPrograms {
     target: HostedTarget,
-    /// The session's Terminal runs key ([`crate::runs::KEY_ENV`]): the
+    /// The session's Terminal marks key ([`crate::command_marks::KEY_ENV`]): the
     /// held marks carry it, so no program can forge a prompt.
-    runs: Option<String>,
+    marks_key: Option<String>,
     workspace: String,
     environment: String,
     shares: Box<Shares>,
     terminal: Option<OwnedFd>,
-    refusals: Option<std::sync::Arc<std::sync::Mutex<Option<host_account::Refusal>>>>,
+    refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
 }
 
 impl HostedPrograms {
@@ -99,7 +99,7 @@ impl HostedPrograms {
     ) -> Self {
         Self {
             target,
-            runs: None,
+            marks_key: None,
             workspace,
             environment,
             shares,
@@ -113,7 +113,7 @@ impl HostedPrograms {
     #[must_use]
     pub fn reporting_refusals(
         mut self,
-        slot: std::sync::Arc<std::sync::Mutex<Option<host_account::Refusal>>>,
+        slot: std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>,
     ) -> Self {
         self.refusals = Some(slot);
         self
@@ -126,8 +126,8 @@ impl HostedPrograms {
     }
 
     #[must_use]
-    pub fn with_runs_key(mut self, key: Option<String>) -> Self {
-        self.runs = key;
+    pub fn with_marks_key(mut self, key: Option<String>) -> Self {
+        self.marks_key = key;
         self
     }
 
@@ -145,6 +145,27 @@ impl HostedPrograms {
 }
 
 /// The shares a policy's grants make: writable directories read-write,
+/// How long the hosted-VM service is given to say which VMs it keeps.
+const STATUS_PATIENCE: Duration = Duration::from_secs(5);
+
+/// The VMs the hosted-VM service at `socket` keeps, each as its workspace and
+/// environment; none when no service answers there.
+#[must_use]
+pub fn kept(socket: &Path) -> Vec<(String, String)> {
+    let Ok(Some(Reply::Status { vms, .. })) =
+        control::ask(socket, &Request::Status, STATUS_PATIENCE)
+    else {
+        return Vec::new();
+    };
+    vms.into_iter()
+        .filter_map(|vm| {
+            vm.vm
+                .split_once('/')
+                .map(|(workspace, environment)| (workspace.to_owned(), environment.to_owned()))
+        })
+        .collect()
+}
+
 /// readable ones read-only.
 #[must_use]
 pub fn shares_of(writable: Vec<PathBuf>, readable: Vec<PathBuf>) -> Vec<ShareRequest> {
@@ -307,7 +328,7 @@ impl HostedPrograms {
                             "needs a Linux machine.".to_owned()
                         } else {
                             match refusal
-                                .step(host_account::NextStepKind::AddPaymentMethod)
+                                .step(server_account::NextStepKind::AddPaymentMethod)
                                 .and_then(|step| step.url.as_deref())
                             {
                                 Some(url) => format!("{} Add it at {url}.", refusal.message),
@@ -336,14 +357,14 @@ impl HostedPrograms {
         }
     }
 
-    /// Write the mark `make` makes of the runs key to the session's
+    /// Write the mark `make` makes of the marks key to the session's
     /// terminal, when the session has a key and the command writes to the
     /// terminal itself.
     /// Write the mark `make` makes with the session's key to the terminal the session's runs are
     /// shown in, when it is one of the run's streams. Whether it was written: Terminal shows the
     /// prompt of a held mark, so the shell's own words can stay short.
     fn mark(&self, io: &Stdio, make: &dyn Fn(&str) -> String) -> bool {
-        let Some(key) = &self.runs else {
+        let Some(key) = &self.marks_key else {
             return false;
         };
         let terminal = if io.stderr.host_stream() == Some(Std::Err) {
@@ -361,7 +382,7 @@ impl HostedPrograms {
 /// `refusal`; `agent` says an agent asked for it, so the shell is not
 /// waiting.
 #[must_use]
-pub fn held_mark(key: &str, agent: bool, refusal: &host_account::Refusal) -> String {
+pub fn held_mark(key: &str, agent: bool, refusal: &server_account::Refusal) -> String {
     use base64::Engine as _;
     let json = serde_json::to_vec(refusal).unwrap_or_default();
     format!(
@@ -384,7 +405,7 @@ struct Hold {
 impl Hold {
     fn start(plans: &Path) -> std::io::Result<Self> {
         let (tell, changes) = std::sync::mpsc::channel();
-        let watch = tilo_host_account::watch_plans(plans, move || {
+        let watch = tilo_server_account::watch_plans(plans, move || {
             let _ = tell.send(());
         })?;
         Ok(Self {
@@ -724,8 +745,8 @@ mod tests {
                 control::FRAMING
                     .write_value(
                         &mut stream,
-                        &Reply::Refused(host_account::Refusal {
-                            reason: host_account::Reason::TooManyRunning {
+                        &Reply::Refused(server_account::Refusal {
+                            reason: server_account::Reason::TooManyRunning {
                                 limit: 1,
                                 running: vec!["ws2".into()],
                             },
@@ -873,7 +894,7 @@ mod tests {
             "default".into(),
             Box::new(Vec::new),
         )
-        .with_runs_key(Some(KEY.into()));
+        .with_marks_key(Some(KEY.into()));
         let (_, out) = Output::buffer();
         let (_, err) = Output::buffer();
         let io = Stdio {
@@ -884,7 +905,7 @@ mod tests {
         (programs, io, out, err)
     }
 
-    fn held(text: &str) -> Option<(bool, host_account::Refusal)> {
+    fn held(text: &str) -> Option<(bool, server_account::Refusal)> {
         use base64::Engine as _;
         let mark = text.split("\x1b]133;W;").nth(1)?.split('\x07').next()?;
         let mut agent = None;
@@ -941,10 +962,10 @@ mod tests {
             };
             let (agent, refusal) = mark;
             assert!(!agent);
-            assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+            assert_eq!(refusal.reason, server_account::Reason::NoPaymentMethod);
             assert_eq!(
                 refusal
-                    .step(host_account::NextStepKind::AddPaymentMethod)
+                    .step(server_account::NextStepKind::AddPaymentMethod)
                     .and_then(|step| step.url.as_deref()),
                 Some("https://tilo.sh/billing/card?account=acct-1")
             );
@@ -1008,7 +1029,7 @@ mod tests {
             let terminal = String::from_utf8(err.take()).unwrap();
             let (agent, refusal) = held(&terminal).expect("Terminal gets the typed refusal");
             assert!(agent);
-            assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+            assert_eq!(refusal.reason, server_account::Reason::NoPaymentMethod);
             assert!(
                 terminal.ends_with(
                     "ush: cargo: This needs a Linux machine. Tilo Cloud runs Linux machines for \

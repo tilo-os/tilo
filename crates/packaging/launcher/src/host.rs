@@ -155,7 +155,13 @@ fn spawn_with(
         );
     }
     if let Some(keep) = keep {
-        return spawn_kept(launch, keep);
+        let cmd = launch.to_command();
+        // An app the session serves X11 gets a display of its keeper's instead of the desktop's,
+        // whose server would end with the desktop and take the app's X11 windows with it.
+        let x11 = cmd
+            .get_envs()
+            .any(|(key, value)| key == "DISPLAY" && value.is_some());
+        return spawn_kept(&cmd, x11, keep);
     }
     let mut cmd = launch.to_command();
     cmd.stdin(Stdio::null());
@@ -170,16 +176,47 @@ fn spawn_with(
     })
 }
 
-/// Run `launch` behind the keeper `keep` names, and answer how the app ended as the keeper
-/// recorded it (the keeper's own status when it recorded nothing: the app never started).
-fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError> {
+/// Start a program the compatibility service planned (a Windows program's sandbox, `command`)
+/// behind the keeper `keep` names, in a scope of its own named for `app_id` and `name` as a
+/// machine app's is, with an X11 display of the keeper's when `x11`.
+///
+/// The descriptors the launcher inherited reach the program unchanged, as does the launcher's
+/// own environment: the sandbox's environment is in its arguments.
+pub fn start_kept(
+    app_id: &str,
+    name: &str,
+    command: &[std::ffi::OsString],
+    x11: bool,
+    keep: &Keep,
+) -> Result<ExitStatus, HostError> {
+    let Some((program, args)) = command.split_first() else {
+        return Err(HostError::Spawn {
+            program: String::new(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "no command"),
+        });
+    };
+    let busctl = Path::new(scope::BUSCTL);
+    if busctl.is_file()
+        && !crate::app_cgroup::current_is_app_cgroup()
+        && let Err(error) = scope::join_with(busctl, app_id, name, scope::JOIN_TIMEOUT)
+    {
+        eprintln!("tilo-launcher: {app_id} is outside a session scope: {error}");
+    }
+    let mut cmd = Command::new(program);
+    cmd.args(args).envs(std::env::vars_os());
+    spawn_kept(&cmd, x11, keep)
+}
+
+/// Start `cmd` behind the keeper `keep` names, with exactly the environment `cmd` sets, and answer
+/// how the app ended as the keeper recorded it (the keeper's own status when it recorded nothing:
+/// the app never started).
+fn spawn_kept(cmd: &Command, x11: bool, keep: &Keep) -> Result<ExitStatus, HostError> {
     use std::os::fd::AsFd as _;
     use std::os::unix::process::ExitStatusExt as _;
     let failed = |source| HostError::Spawn {
         program: keep.keeper.display().to_string(),
         source,
     };
-    let cmd = launch.to_command();
     let program = cmd.get_program().to_owned();
     let args: Vec<std::ffi::OsString> = cmd.get_args().map(ToOwned::to_owned).collect();
     let mut keeper = Command::new(&keep.keeper);
@@ -187,7 +224,11 @@ fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError>
         .arg("--dir")
         .arg(&keep.dir)
         .arg("--launch")
-        .arg(&keep.launch)
+        .arg(&keep.launch);
+    if x11 {
+        keeper.arg("--x11");
+    }
+    keeper
         .arg("--")
         .arg(program)
         .args(args)
@@ -199,7 +240,6 @@ fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError>
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    drop(cmd);
     configure_host_launch_session(&mut keeper);
     // The keeper and its app end with this launcher: what ends the launch (a logout's signal on a
     // host that gave it no scope) ends what it started.
@@ -393,7 +433,7 @@ mod tests {
             let keeper = dir.path().join("keeper");
             std::fs::write(
                 &keeper,
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\nshift 5\n\"$@\"\n\
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\n\"$@\"\n\
                  printf '{\"exited\":{\"code\":%s}}' $? > \"$KEPT/ended\"\nexit 0\n",
             )
             .expect("write the keeper");
@@ -417,6 +457,17 @@ mod tests {
                 argv.get(..5),
                 Some(&["--dir", kept.to_str().unwrap_or_default(), "--launch", "{\"app\":\"org.example.Kept\"}", "--"][..]),
                 "the keeper is told its directory and the launch, then the app's command"
+            );
+            // An app the session serves X11 gets the keeper's own display.
+            launch.env.insert("DISPLAY".into(), ":5".into());
+            let status = spawn_with(&launch, None, Duration::from_millis(20), Some(&keep))
+                .expect("the launch runs");
+            assert_eq!(status.code(), Some(7));
+            let argv = std::fs::read_to_string(dir.path().join("keeper.argv")).expect("handed");
+            assert_eq!(
+                argv.lines().nth(4),
+                Some("--x11"),
+                "an app with a display is served one by its keeper: {argv}"
             );
         }
 

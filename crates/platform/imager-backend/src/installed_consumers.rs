@@ -2,7 +2,7 @@
 //!
 //! The image build runs each producer once as root to publish a receipt under
 //! `/usr/share/tilo`; admission runs the matching check in-process before any
-//! target custody write. Checks re-execute the installed consumers' own
+//! target ownership write. Checks re-execute the installed consumers' own
 //! capability probes and rehash their artifacts, so a receipt can never stand
 //! in for the consumers it describes. None of these entry points accept paths,
 //! alternate helpers, saved evidence or environment configuration.

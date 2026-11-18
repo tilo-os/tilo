@@ -3,7 +3,7 @@ name = "tilo-live"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The live plane: a moq-lite session per device per scope, a relay that copies sealed bytes and admits from certificates and the roster, the sealing of every frame under its scope's keys, and the tilo-voice/1 and tilo-video/1 object profiles."
+description = "The live session: a moq-lite session per device per scope, a relay that copies sealed bytes and admits from certificates and the roster, the sealing of every frame under its scope's keys, and the tilo-voice/1 and tilo-video/1 object profiles."
 license.workspace = true
 
 [features]
@@ -12,14 +12,14 @@ default = []
 # in one scope, the tracks within it and their delivery, the sealing under
 # the scope's channel keys, and the admission a device runs on it.
 # Builds for the page, which publishes and reads them itself.
-plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
+live_session = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 # The relay: the copying and admitting half, which runs on the device that
-# serves a plane.
-relay = ["plane", "dep:bytes", "dep:tokio", "dep:serde_json"]
+# serves a live session.
+relay = ["live_session", "dep:bytes", "dep:tokio", "dep:serde_json"]
 # The carrier over a direct iroh connection, the one every device dials, a
-# page included: the client half only (`plane`), so it builds for the browser.
-# The listening half a device that serves a plane runs is `relay`'s.
-iroh = ["plane", "dep:iroh", "dep:bytes", "dep:serde_json"]
+# page included: the client half only (`live_session`), so it builds for the browser.
+# The listening half a device that serves a live session runs is `relay`'s.
+iroh = ["live_session", "dep:iroh", "dep:bytes", "dep:serde_json"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.
@@ -31,7 +31,7 @@ bytes = { workspace = true, optional = true }
 # The relay's copying and admission run on whatever executor the host drives them from, so the
 # crate asks tokio only for its channels and timers; a runtime is the caller's.
 tokio = { workspace = true, optional = true, features = ["macros", "sync", "time"] }
-# A frame names its stream in a lane's handshake; a carrier's handshake is
+# A frame names its stream in a stream's handshake; a carrier's handshake is
 # serde too.
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
@@ -60,7 +60,7 @@ name = "live_native"
 required-features = ["relay", "iroh"]
 
 [[test]]
-name = "live_plane"
+name = "live_session"
 required-features = ["relay", "iroh"]
 
 [lints]

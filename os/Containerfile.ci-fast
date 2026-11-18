@@ -27,11 +27,32 @@ RUN --mount=type=secret,id=actions_cache_url \
     && /opt/cargo-hakari/bin/cargo-hakari hakari --version
 
 FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b
+# The image's digest is its key: the smoke check that reads it keeps a need's outputs,
+# so two builds of the same inputs must be the same bytes or every head uploads a new
+# one. What that costs is the time the package transactions record. rpm takes it from
+# SOURCE_DATE_EPOCH when the variable is set (INSTALLTIME and INSTALLTID in its
+# database, which decide the database's bytes), and verifies the packages' signatures
+# against the real clock, so a mirror's newest update installs whatever the build's date
+# is: nothing here is held to the clock, only what it writes is dated. The check passes
+# the date as TILO_BUILD_EPOCH because buildah reads a build argument named
+# SOURCE_DATE_EPOCH as its own and refuses it beside --timestamp.
+#
+# What the transactions leave that is not package content is removed once they are done
+# (os/scripts/finalize-rpmdb.sh, os/scripts/clean-dnf-layer-state.sh): the rebuilt rpm
+# database in journal mode, DNF's history, log and repository state, ldconfig's
+# aux-cache (inode numbers and ctimes), fontconfig's caches, the machine ID and random
+# seed systemd's scriptlets generate. The helpers serve the build only and are taken out
+# with the rest.
+ARG TILO_BUILD_EPOCH
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
+RUN test -n "${TILO_BUILD_EPOCH}"
 # Fedora builds node with English-only ICU and ships the rest of the ICU data
 # as nodejs-full-i18n, a weak dependency. Without its break-iterator data
 # Intl.Segmenter's segment() dereferences a missing iterator and node dies
 # with SIGSEGV, so the JavaScript suites that count graphemes need it.
-RUN dnf install -y --setopt=install_weak_deps=False \
+RUN export SOURCE_DATE_EPOCH="${TILO_BUILD_EPOCH}" \
+    && dnf install -y --setopt=install_weak_deps=False \
       bash coreutils findutils grep sed tar gzip git python3 jq ripgrep nodejs nodejs-full-i18n \
       ca-certificates curl libgcc libstdc++ zlib-ng-compat \
       gnupg2 diffutils which \
@@ -42,7 +63,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # the app lints compile tilo-app-cli (`cc` is Fedora's alternatives symlink to gcc).
 # Baked in so those jobs neither wait on nor depend on a Fedora mirror; a
 # separate layer keeps the base cached.
-RUN dnf install -y --setopt=install_weak_deps=False \
+RUN export SOURCE_DATE_EPOCH="${TILO_BUILD_EPOCH}" \
+    && dnf install -y --setopt=install_weak_deps=False \
       gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts bubblewrap \
       dosfstools systemd-udev util-linux \
     && dnf clean all \
@@ -55,7 +77,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 # Preserve the installed component manifest: rust-toolchain.toml requests
-# rustfmt, clippy, rust-src and rust-analyzer even when this lane only formats.
+# rustfmt, clippy, rust-src and rust-analyzer even when this job only formats.
 COPY --from=tools /usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/ /usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/
 COPY --from=tools /usr/local/cargo/bin/rustup /usr/local/cargo/bin/rustup
 COPY --from=tools /usr/local/cargo/bin/cargo-deny /usr/local/cargo/bin/cargo-deny
@@ -76,3 +98,27 @@ RUN for tool in cargo rustc rustfmt cargo-fmt; do ln -s rustup /usr/local/cargo/
 # the restored toolchain's shims inside the repository would otherwise stop to
 # download it mid-run; carry it, like the builder does.
 RUN rustup target add --toolchain 1.97.1 wasm32-unknown-unknown
+
+# Finalize and clean up after the last package transaction, as the OS image's package
+# layer does: the rpm database is rebuilt at a fresh inode and left in journal mode
+# (a layer can capture an in-place rewrite torn; the rebuild keeps every header, so the
+# times the transactions recorded are the ones the checks see), the transaction
+# diagnostics, caches and repository state are gone (DNF's countme counter moves with
+# every metadata read), and the machine ID is empty, which systemd reads as one to
+# generate.
+#
+# Last, every directory's time is pinned to the build's date. oci-build.sh's --timestamp
+# dates the layer's files and symlinks, not its directories, and a directory a
+# transaction creates carries the kernel's time for it, which every build has its own
+# (os/scripts/pin-directory-times.py, as the OS image's package layer pins them).
+RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-pin-directory-times.py,ro \
+    /usr/libexec/tilo/finalize-rpmdb \
+    && rm -f /usr/libexec/tilo/finalize-rpmdb /usr/libexec/tilo/clean-dnf-layer-state \
+    && rm -rf /var/lib/dnf \
+    && rmdir /usr/libexec/tilo \
+    && test -x /usr/bin/rpm \
+    && test ! -s /etc/machine-id \
+    && test ! -e /var/log/dnf5.log \
+    && test ! -e /var/lib/dnf \
+    && test -z "$(ls -A /usr/lib/fontconfig/cache 2>/dev/null)" \
+    && python3 -B /run/tilo-pin-directory-times.py / "${TILO_BUILD_EPOCH}"

@@ -230,7 +230,8 @@ pub fn ranged_body(
 /// An RFC 3339 timestamp (`2024-05-01T12:30:45.123Z`, or with a numeric
 /// offset), to the nanosecond. `None` for anything else.
 pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
-    chrono::DateTime::parse_from_rfc3339(text.trim())
+    text.trim()
+        .parse::<jiff::Timestamp>()
         .ok()
         .map(SystemTime::from)
 }
@@ -238,19 +239,32 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
 /// `time` in RFC 3339 UTC, to the second: `2024-05-01T12:30:45Z`.
 #[must_use]
 pub fn format_rfc3339(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    jiff::Timestamp::try_from(time).map_or_else(|_| String::new(), |at| format!("{at:.0}"))
 }
 
 /// `time` in RFC 3339 UTC, to the millisecond: `2024-05-01T12:30:45.123Z`.
 #[must_use]
 pub fn format_rfc3339_millis(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    jiff::Timestamp::try_from(time).map_or_else(|_| String::new(), |at| format!("{at:.3}"))
+}
+
+/// `time` as an HTTP date in GMT: `Sun, 06 Nov 1994 08:49:37 GMT`.
+#[must_use]
+pub fn format_http_date(time: SystemTime) -> String {
+    jiff::Timestamp::try_from(time)
+        .ok()
+        .and_then(|at| {
+            jiff::fmt::rfc2822::DateTimePrinter::new()
+                .timestamp_to_rfc9110_string(&at)
+                .ok()
+        })
+        .unwrap_or_default()
 }
 
 pub fn parse_http_date(text: &str) -> Option<SystemTime> {
-    chrono::DateTime::parse_from_rfc2822(text.trim())
+    jiff::fmt::rfc2822::parse(text.trim())
         .ok()
-        .map(SystemTime::from)
+        .map(|at| SystemTime::from(at.timestamp()))
 }
 
 #[cfg(test)]

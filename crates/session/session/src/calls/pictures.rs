@@ -5,16 +5,16 @@
 //! **Sending.** A source has one [`Sending`]: its capture publishes the
 //! newest frame into a [`Feed`], and a thread of its own encodes each frame
 //! for every layer someone shows, as the [`Sink`] it was started with says
-//! ([`super::plane_pictures`] publishes them). A layer nobody shows is not
+//! ([`super::live_pictures`] publishes them). A layer nobody shows is not
 //! encoded, and a layer that starts being shown starts at a keyframe: the
-//! standing one while the picture has not changed since, so a still screen
+//! last one while the picture has not changed since, so a still screen
 //! costs no encode, or one encoded from the last frame at once.
 //!
-//! **Receiving.** The workspace's live plane seals a picture per layer and
+//! **Receiving.** The workspace's live session seals a picture per layer and
 //! opens the ones the app shows; each waits in the call's [`Inbox`] until the
 //! app collects it, and a stream that falls behind starts over at its next
 //! keyframe, so the app's decoder never sees a picture whose reference was
-//! dropped. A page's pictures arrive the same way, over its own plane.
+//! dropped. A page's pictures arrive the same way, over its own live session.
 //!
 //! Nothing here waits on a device: the capture thread only ever replaces the
 //! newest frame, and a picture is published the moment it is encoded.
@@ -183,7 +183,7 @@ pub fn fitted((width, height): (u32, u32), (box_width, box_height): (u16, u16)) 
     ((w & !1).max(2), (h & !1).max(2))
 }
 
-/// What this device must encode now: the layers the plane's devices show of each source, the
+/// What this device must encode now: the layers the live session's devices show of each source, the
 /// sources to start over at a keyframe, and this person's own camera tile.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Asking {
@@ -200,7 +200,7 @@ pub struct Asking {
 pub trait Sink: Send + Sync {
     /// What this device must encode of `source` now.
     fn asking(&self, source: Source) -> Asking;
-    /// One encoded picture, to be published on the plane.
+    /// One encoded picture, to be published on the live session.
     fn sent(&self, source: Source, object: &VideoObject);
     /// This person's own picture, for their own tile: encoded here, never sent.
     fn own(&self, object: &VideoObject);
@@ -248,7 +248,7 @@ struct LayerEncoder {
     output: (u16, u16),
     sequence: u64,
     /// The newest unit while it is a keyframe: a new reader starts at it.
-    standing: Option<VideoObject>,
+    last_keyframe: Option<VideoObject>,
 }
 
 impl LayerEncoder {
@@ -269,7 +269,7 @@ impl LayerEncoder {
                 u16::try_from(height).map_err(|_| "picture too tall")?,
             ),
             sequence: 0,
-            standing: None,
+            last_keyframe: None,
         })
     }
 }
@@ -370,12 +370,12 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
                 if !asked.contains(layer) {
                     continue;
                 }
-                if let Some(standing) = &encoder.standing {
+                if let Some(last_keyframe) = &encoder.last_keyframe {
                     if shown_here {
-                        sink.sent(source, standing);
+                        sink.sent(source, last_keyframe);
                     }
                     if own_here {
-                        sink.own(standing);
+                        sink.own(last_keyframe);
                     }
                     continue;
                 }
@@ -412,7 +412,7 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
                     payload: unit.data,
                 };
                 encoder.sequence = encoder.sequence.saturating_add(1);
-                encoder.standing = object.keyframe.then(|| object.clone());
+                encoder.last_keyframe = object.keyframe.then(|| object.clone());
                 if shown_here {
                     sink.sent(source, &object);
                 }
@@ -430,7 +430,7 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
 /// One received picture: an encoded tilo-video/1 object of one device's source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picture {
-    /// The device that sent it: the plane names it, and the keys prove it.
+    /// The device that sent it: the live session names it, and the keys prove it.
     pub from: [u8; 32],
     pub source: Source,
     pub keyframe: bool,
@@ -612,7 +612,7 @@ impl Video {
         self.inner.inbox.lock_recover().behind(from, source);
     }
 
-    /// One picture of `source` a device sent over the plane: queued for the app.
+    /// One picture of `source` a device sent over the live session: queued for the app.
     pub fn heard(&self, from: [u8; 32], source: Source, body: Vec<u8>) {
         let Ok(header) = video::validate(&body) else {
             return;

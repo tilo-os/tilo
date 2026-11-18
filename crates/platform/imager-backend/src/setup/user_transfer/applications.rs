@@ -306,7 +306,7 @@ pub(super) fn verify_output(
     }
     Ok(true)
 }
-/// Only a complete installation subtree at one journal-witnessed root can
+/// Only a complete installation subtree at one journal-observed root can
 /// receive this proof. An arbitrary active-home path is never a relocation grant.
 pub(super) fn verify_adopted_output(
     request: &TransferRequest,

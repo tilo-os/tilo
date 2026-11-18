@@ -30,7 +30,7 @@ use fs_protocol::{FileActor, TreeChunk, TreeChunks};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -216,7 +216,7 @@ struct Reader {
 impl Reader {
     fn open(&mut self, chunk: TreeChunk) {
         let route = route(&self.workspace, chunk);
-        let workspace = tilo_relay_protocol::WorkspaceId::parse(&self.workspace).unwrap();
+        let workspace = tilo_server_protocol::WorkspaceId::parse(&self.workspace).unwrap();
         self.link.send(Cmd::OpenRoute(route.clone())).unwrap();
         self.link
             .send(Cmd::OpenDocumentAt(workspace, route))
@@ -299,36 +299,66 @@ struct Window {
     memory: f64,
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes twenty thousand files; run it by name"]
-async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
+/// A host keeping a company's folder in a workspace every page that enters is an editor of.
+struct Folder<S> {
+    /// The running server, kept for as long as the folder is used.
+    server: S,
+    state: tempfile::TempDir,
+    owner_device: super::support::Device,
+    company: tilo_server_session::workspaces::WorkspaceSummary,
+    /// How a page reaches the host.
+    page: Host,
+}
+
+async fn folder() -> Folder<impl Sized> {
     let (owner, _) = UserIdentity::generate("Owner", 1);
-    let host_device = enrol(
+    let owner_device = enrol(
         &owner,
         "host",
         tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = super::support::scratch_dir();
-    let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let server =
+        start_workspace_host_relaying(&owner, &owner_device, state.path(), false, true).await;
+    let workspaces = server.server.workspaces().unwrap();
     let company = workspaces.create("Company").await.unwrap();
     workspaces
         .publish(
             &company.workspace,
-            &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            &owner_device.cert,
+            tilo_server_protocol::directory::Listing {
                 description: "The company's folder".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
-    let relay_url = address.relay_urls().next().cloned();
-    let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let address = server.server.node_addr();
+    let via = address.relay_urls().next().cloned();
+    let reach = || Host::through(iroh::EndpointAddr::new(address.id), via.clone());
+    Folder {
+        page: reach(),
+        server,
+        state,
+        owner_device,
+        company,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes twenty thousand files; run it by name"]
+async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
+    let Folder {
+        server: _server,
+        state,
+        owner_device,
+        company,
+        page,
+    } = folder().await;
+    let reach = || page.clone();
     let index = route(&company.workspace, 0);
-    let writer_link = arrive(page_host(), &host_device.cert, &company.workspace, "Laptop").await;
-    let reader_link = arrive(page_host(), &host_device.cert, &company.workspace, "Page").await;
+    let writer_link = arrive(reach(), &owner_device.cert, &company.workspace, "Laptop").await;
+    let reader_link = arrive(reach(), &owner_device.cert, &company.workspace, "Page").await;
     for link in [&writer_link, &reader_link] {
         link.send(Cmd::Join(company.workspace_id)).unwrap();
         link.send(Cmd::OpenRoute(index.clone())).unwrap();
@@ -479,6 +509,159 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
         "the memory a file takes grew with the folder: {early_memory:.0} B per file early on, {late_memory:.0} B at the end"
     );
     for link in [reader.link, writer.link] {
+        link.close();
+    }
+}
+
+/// How often the other member makes a small change while the checkout goes in.
+const OTHER_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The `percent`th percentile of `sorted`.
+fn percentile(sorted: &[std::time::Duration], percent: usize) -> std::time::Duration {
+    sorted[(sorted.len() - 1) * percent / 100]
+}
+
+/// One member checks a repository out into the workspace's folder as fast as its computer
+/// writes it, while another member makes a small change every tenth of a second. The host
+/// refuses neither: a member's changes are not counted against a clock. Every file of the
+/// checkout lands, and the other member's changes stay prompt, since a member's run of commits
+/// is taken in bounded runs, in turn with every other member's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes twenty thousand files; run it by name"]
+async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+        .with_writer(std::io::stderr)
+        .try_init();
+    let Folder {
+        server: _server,
+        state: _state,
+        owner_device,
+        company,
+        page,
+    } = folder().await;
+    let reach = || page.clone();
+    let index = route(&company.workspace, 0);
+    // Two people: one checks the repository out, the other keeps a record of their own.
+    let checkout = arrive(reach(), &owner_device.cert, &company.workspace, "Laptop").await;
+    let other = arrive(reach(), &owner_device.cert, &company.workspace, "Phone").await;
+    let theirs = route(&company.workspace, TreeChunk::MAX);
+    for (link, record) in [(&checkout, &index), (&other, &theirs)] {
+        link.send(Cmd::Join(company.workspace_id)).unwrap();
+        link.send(Cmd::OpenRoute(record.clone())).unwrap();
+        super::support::wait_keyed(link, record).await;
+    }
+    let refused = |link: &Link| {
+        link.events_where(|event| matches!(event, tilo_session_client::Event::Refused { .. }))
+    };
+    let (checkout_refused, other_refused) = (refused(&checkout), refused(&other));
+
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let changing = tokio::spawn({
+        let done = std::sync::Arc::clone(&done);
+        async move {
+            let mut doc = AutoCommit::new();
+            let mut took = Vec::new();
+            let mut every = tokio::time::interval(OTHER_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                every.tick().await;
+                let mutation = super::support::say(&mut doc, &format!("change {}", took.len()));
+                let sent = Instant::now();
+                other.write(theirs.clone(), &mutation).unwrap();
+                durable(&other).await;
+                took.push(sent.elapsed());
+            }
+            (other, took)
+        }
+    });
+
+    let began = Instant::now();
+    let mut writer = Writer {
+        link: checkout,
+        workspace: company.workspace.clone(),
+        namespace: Namespace::new("laptop").unwrap(),
+        sent: BTreeMap::new(),
+        actor: FileActor {
+            person: collab_types::Ed25519PublicKey([1; 32]),
+            device: collab_types::Ed25519PublicKey([2; 32]),
+        },
+        bytes: 0,
+    };
+    let mut folder = ROOT_INO;
+    for n in 0..FILES {
+        if n % PER_FOLDER == 0 {
+            folder = writer
+                .namespace
+                .create_dir(ROOT_INO, format!("dir-{}", n / PER_FOLDER), 1)
+                .unwrap();
+        }
+        writer.file(folder, n);
+        if n % BATCH == BATCH - 1 {
+            writer.write();
+            tokio::task::yield_now().await;
+        }
+    }
+    writer.write();
+    let handed = began.elapsed();
+    durable(&writer.link).await;
+    let landed = began.elapsed();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (other, mut took) = changing.await.unwrap();
+
+    // A page that opens the folder afterwards finds every file of the checkout.
+    let reader_link = arrive(reach(), &owner_device.cert, &company.workspace, "Page").await;
+    reader_link.send(Cmd::Join(company.workspace_id)).unwrap();
+    reader_link.send(Cmd::OpenRoute(index.clone())).unwrap();
+    super::support::wait_keyed(&reader_link, &index).await;
+    let mut reader = Reader {
+        landed: reader_link
+            .events_where(|event| matches!(event, tilo_session_client::Event::Landed { .. })),
+        unread: std::collections::BTreeSet::new(),
+        files: BTreeMap::new(),
+        busy: std::time::Duration::ZERO,
+        link: reader_link,
+        workspace: company.workspace.clone(),
+        docs: BTreeMap::new(),
+        heads: BTreeMap::new(),
+        tree: TreeChunks::default(),
+        bytes: 0,
+    };
+    reader.open(0);
+    wait_for("a page to show every file of the checkout", || {
+        let files = reader.read();
+        async move { (files >= FILES).then_some(()) }
+    })
+    .await;
+
+    took.sort();
+    let (p50, p99, max) = (
+        percentile(&took, 50),
+        percentile(&took, 99),
+        took[took.len() - 1],
+    );
+    let refusals = (checkout_refused.drain(), other_refused.drain());
+    eprintln!(
+        "{FILES} files handed over in {handed:?}, all landed after {landed:?}; the other member's {} changes landed after p50 {p50:?}, p99 {p99:?}, max {max:?}; refusals: {} of the checkout's, {} of the other's; failures: {:?} / {:?}",
+        took.len(),
+        refusals.0.len(),
+        refusals.1.len(),
+        writer.link.status().failures,
+        other.status().failures,
+    );
+    assert!(
+        refusals.0.is_empty() && refusals.1.is_empty(),
+        "the host refused a member's change: {refusals:?}"
+    );
+    assert!(
+        took.len() >= 10,
+        "the other member changed their record while the checkout went in"
+    );
+    assert!(
+        p99 < std::time::Duration::from_secs(1),
+        "the checkout held the other member's changes up: p99 {p99:?}"
+    );
+    for link in [reader.link, writer.link, other] {
         link.close();
     }
 }

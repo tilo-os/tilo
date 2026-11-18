@@ -285,7 +285,6 @@ pub struct TextInput {
     is_hovered: bool,
     invalid: bool,
     change: Option<(crate::component::Person, String)>,
-    change_before: Option<String>,
     is_focused: bool,
     caret_paint_suppressed: bool,
     host_shows_text: bool,
@@ -474,7 +473,7 @@ pub struct TextInput {
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
-    /// A caret standing on a surface ([`Self::as_caret`]): no well and no fill, and only as
+    /// A caret on a surface ([`Self::as_caret`]): no well and no fill, and only as
     /// wide as what it holds — the words typed, or its prompt while it holds none.
     caret: bool,
     /// What a caret field was last measured holding: an edit that changes it lays the field out
@@ -562,7 +561,7 @@ pub enum AccessoryAction {
     Clear,
     Run(Box<dyn FnMut()>),
     /// A toggle that stays pressed (a "clear this for every photo" switch): shown whatever the
-    /// field holds, standing on the selection lift while on and announced as a pressed toggle. A
+    /// field holds, on the selection lift while on and announced as a pressed toggle. A
     /// press flips it and passes the new state; the host keeps it in step with
     /// [`TextInput::set_accessory_pressed`].
     Toggle {
@@ -667,7 +666,6 @@ impl TextInput {
             is_hovered: false,
             invalid: false,
             change: None,
-            change_before: None,
             is_focused: false,
             caret_paint_suppressed: false,
             host_shows_text: false,
@@ -4581,7 +4579,6 @@ struct FieldState {
     focused: bool,
     invalid: bool,
     disabled: bool,
-    changed_by: Option<vello::peniko::Color>,
 }
 
 fn paint_field_chrome(
@@ -4595,12 +4592,6 @@ fn paint_field_chrome(
     let rest = theme.tokens.colors.surfaces.raised;
     // Focus keeps the rest fill: the ring alone marks it, so a focused
     // field reads as the same field. Hover is a half lift of an idle one.
-    let rest = match state.changed_by {
-        Some(tint) if !disabled => {
-            crate::tokens::colors::mix8(rest, tint, crate::widget::chip::TINT_FILL)
-        }
-        _ => rest,
-    };
     let bg_color = if state.hovered && !state.focused && !disabled {
         theme.tokens.colors.lift_on(rest, 0.5)
     } else {
@@ -4625,18 +4616,6 @@ fn paint_field_chrome(
                 &[bg_color, colors.surfaces.content],
                 colors.semantic.danger,
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-            ),
-        ))
-    } else if let Some(tint) = state
-        .changed_by
-        .filter(|_| !disabled && !theme.colors_are_forced())
-    {
-        Some((
-            1.0,
-            crate::tokens::colors::mix8(
-                colors.surfaces.raised,
-                tint,
-                crate::widget::chip::TINT_EDGE,
             ),
         ))
     } else if theme.colors_are_forced() && !bordered {
@@ -4902,6 +4881,22 @@ impl Widget for TextInput {
         let look = crate::composition::TextLook::new(value.clone(), &style, None);
         let placeholder = (!self.placeholder.is_empty()).then(|| self.placeholder.clone());
         cx.field(value, self.multiline, placeholder, look);
+        let theme = cx.theme();
+        if self.multiline {
+            cx.field_inset(self.ml_left(), self.multiline_padding_y());
+        } else {
+            cx.field_inset(self.text_inset_x(theme), 0.0);
+        }
+        if !self.plain {
+            // Its well, as the canvas paints it at rest: the raised fill, no edge.
+            cx.ground(crate::composition::Ground {
+                fill: Some(crate::composition::rgba8(
+                    theme.tokens.colors.surfaces.raised,
+                )),
+                edge: None,
+                radius: f64::from(theme.tokens.radii.control),
+            });
+        }
     }
 
     fn take_focus_request(&mut self) -> Option<String> {
@@ -5188,26 +5183,6 @@ impl Widget for TextInput {
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
-        } else if let Some((by, _)) = &self.change {
-            let colors = &theme.tokens.colors;
-            let tint = colors.presence.hue(by.hue);
-            let ground = colors.surfaces.content;
-            let wash = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_FILL);
-            let edge = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_EDGE);
-            // Out past the text by a related gap, so the text keeps its own edge.
-            let outset = f64::from(theme.tokens.spacing.s2);
-            let washed = RoundedRect::from_rect(
-                self.rect.inflate(outset, 0.0),
-                f64::from(theme.tokens.radii.control),
-            );
-            scene.fill(vello::peniko::Fill::NonZero, transform, wash, None, &washed);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                edge,
-                None,
-                &crate::surface::edge_outline(washed.rect(), washed.radii().top_left),
-            );
         }
         self.draw_accessory(scene, transform, theme);
 
@@ -5234,7 +5209,7 @@ impl Widget for TextInput {
             self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
-            self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+            self.draw_peers_and_permission_scrim(scene, transform, text_renderer, theme, presence);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
             self.note_shown(transform, theme, text_renderer);
@@ -5337,7 +5312,7 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         }
-        self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+        self.draw_peers_and_permission_scrim(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -5657,7 +5632,7 @@ impl Widget for TextInput {
     /// window that holds a field painting forever, which is what an idle
     /// window costs: nothing changed, so nothing is drawn. The pending edit
     /// notification ([`Self::dirty`]) is left out for the same reason: an
-    /// owner that reads the text when the person submits leaves it standing,
+    /// owner that reads the text when the person submits leaves it in place,
     /// and a field sitting in a window people are not touching must not keep
     /// that window drawing.
     fn needs_redraw(&self) -> bool {
@@ -6096,22 +6071,22 @@ impl crate::presence::capability::PublishesPresence for TextInput {
 }
 
 impl crate::widget::controls::ActionControls for TextInput {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(action) = &mut self.submit_action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some((action, _)) = &mut self.submit_view {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(verb) = &mut self.change_verb {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -6163,7 +6138,7 @@ impl TextInput {
             .is_some_and(|key| presence.shows_anyone_at(&key))
     }
 
-    fn draw_peers_and_gate(
+    fn draw_peers_and_permission_scrim(
         &self,
         scene: &mut Scene,
         transform: Affine,

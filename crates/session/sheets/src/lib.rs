@@ -5,7 +5,7 @@
 //! The shell mounts each one in its own process and shows it over the
 //! desktop; what only the shell can do for a sheet (power the machine down,
 //! say whether the sheet is up) it lends the app as a service of plain data
-//! in and requests out ([`ui::application::HostContext::lend`]).
+//! in and requests out ([`ui::application::ProcessContext::lend`]).
 
 pub mod add_app;
 pub mod delete_workspace;
@@ -67,5 +67,11 @@ pub fn words(key: &str, args: &[(&str, &str)]) -> String {
         .iter()
         .map(|(name, value)| (*name, ui::i18n::ArgValue::from(*value)))
         .collect();
-    t_args(key, &args)
+    words_with(key, &args)
+}
+
+/// The same, with `args` filled in, one of them a number the reader's grammar counts.
+#[must_use]
+pub fn words_with(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    t_args(key, args)
 }

@@ -27,7 +27,6 @@ pub fn member_of(value: &str) -> Option<MemberId> {
         tilo_reference::Embed::Resource(_) => None,
     }
 }
-const AUTHOR_MARK: &str = "author";
 /// The key a stored enum value keeps its variant under (`tilo_resource::VARIANT_KEY`).
 const VARIANT_KEY: &str = "$variant";
 /// The key the `Str` variant of a stored mark value keeps its string under, and the bare key an older
@@ -44,7 +43,6 @@ const RESOURCE_META: &str = "tilo:record";
 /// input, not a request to walk it without end.
 const MAX_DEPTH: usize = 32;
 const MAX_OBJECTS: usize = 200_000;
-const EXCERPT_CHARS: usize = 160;
 
 /// One mention in a record: who is named, by whom, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,14 +105,21 @@ pub fn touched_by(
             // A person's id is written in many places that are no mention of them (who wrote a
             // change, who sits where): only a mention's mark, or the value a stored mark span
             // keeps ([`Walk::mark_value`]), can make one.
-            let mark_value = matches!(
-                &op.key,
-                Key::Map(key) if matches!(key.as_str(), "value" | STR_FIELD | STR_FIELD_FLAT)
-            );
+            // So can an item's channel that is a direct conversation with one of them
+            // ([`Walk::addressed`]).
+            let key = match &op.key {
+                Key::Map(key) => key.as_str(),
+                Key::Seq(_) => "",
+            };
+            let mark_value = matches!(key, "value" | STR_FIELD | STR_FIELD_FLAT);
             match &op.action {
                 OpType::Put(ScalarValue::Str(value))
-                    if mark_value
-                        && member_of(value).is_some_and(|member| people.contains(&member)) =>
+                    if (mark_value
+                        && member_of(value).is_some_and(|member| people.contains(&member)))
+                        || (key == "channel"
+                            && MemberId::direct_conversation_members(value).is_some_and(
+                                |members| members.iter().any(|m| people.contains(m)),
+                            )) =>
                 {
                     touched.names = true;
                 }
@@ -204,6 +209,9 @@ impl Walk<'_> {
                                 item_obj: Some(child.clone()),
                             }
                         });
+                    if let Some(item) = &entered {
+                        self.addressed(item);
+                    }
                     path.push(key);
                     self.object(&child, child_kind, path, entered.as_ref().unwrap_or(cx));
                     path.pop();
@@ -250,10 +258,11 @@ impl Walk<'_> {
             };
             let by = marks
                 .iter()
-                .filter(|other| other.name() == AUTHOR_MARK)
+                .filter(|other| other.name() == tilo_resource::text::AUTHOR_MARK)
                 .filter(|other| (other.start..other.end).contains(&mark.start))
                 .find_map(|other| match other.value() {
-                    ScalarValue::Str(author) if !author.is_empty() => Some(author.to_string()),
+                    ScalarValue::Str(author) => MemberId::of_actor_bytes(author.as_bytes())
+                        .map(|member| member.id().to_owned()),
                     _ => None,
                 });
             let block = path
@@ -262,6 +271,35 @@ impl Walk<'_> {
                 .cloned();
             let excerpt = self.read_around(&text, &references, mark.start);
             self.push(person, by, block, excerpt, cx);
+        }
+    }
+
+    /// An item said in a direct conversation is addressed to each member of it but its author: news
+    /// for them as a mention of them is, its excerpt the item's first paragraph.
+    fn addressed(&mut self, cx: &Context) {
+        let Some(item) = cx.item_obj.clone() else {
+            return;
+        };
+        let Some(members) = self
+            .string(&item, "channel")
+            .and_then(|channel| MemberId::direct_conversation_members(&channel))
+        else {
+            return;
+        };
+        let author = self.author(&item);
+        let first = match self.doc.get(&item, "body") {
+            Ok(Some((Value::Object(ObjType::List), body))) => self.doc.get(&body, 0).ok().flatten(),
+            _ => None,
+        };
+        let excerpt = match first {
+            Some((Value::Object(ObjType::Map), block)) => self.paragraph(&block, 0),
+            _ => excerpt(&self.string(&item, "text").unwrap_or_default(), 0),
+        };
+        for member in members
+            .into_iter()
+            .filter(|member| author.as_deref() != Some(member.id()))
+        {
+            self.push(member, None, None, excerpt.clone(), cx);
         }
     }
 
@@ -294,19 +332,23 @@ impl Walk<'_> {
             return;
         };
         let start = self.int(obj, "start").unwrap_or(0);
-        let text = (path.len() >= 2)
-            .then(|| self.object_at(&path[..path.len() - 2]))
-            .flatten()
-            .and_then(|block| self.string(&block, "text"))
-            .unwrap_or_default();
-        let references = path
-            .split_last()
-            .and_then(|(_, up)| self.object_at(up))
-            .map(|marks| self.stored_references(&marks))
-            .unwrap_or_default();
-        let by = cx.item_obj.as_ref().and_then(|item| self.author(item));
-        let excerpt = self.read_around(&text, &references, start);
-        self.push(person, by, None, excerpt, cx);
+        let block = path
+            .len()
+            .checked_sub(2)
+            .and_then(|up| self.object_at(&path[..up]));
+        let excerpt = block.map_or_else(String::new, |block| self.paragraph(&block, start));
+        self.push(person, None, None, excerpt, cx);
+    }
+
+    /// The excerpt around character `at` of a stored paragraph (`{text, marks}`), as a chat
+    /// message keeps its paragraphs.
+    fn paragraph(&self, block: &ObjId, at: usize) -> String {
+        let references = match self.doc.get(block, "marks") {
+            Ok(Some((Value::Object(_), marks))) => self.stored_references(&marks),
+            _ => Vec::new(),
+        };
+        let text = self.string(block, "text").unwrap_or_default();
+        self.read_around(&text, &references, at)
     }
 
     /// The references to resources among the stored mark spans of the list `marks`: each run's start,
@@ -422,143 +464,34 @@ impl Walk<'_> {
     }
 }
 
+/// The text around character `at` of `text`, on one line.
 fn excerpt(text: &str, at: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let start = at.saturating_sub(EXCERPT_CHARS / 2).min(chars.len());
-    let start = if start == 0 {
-        0
-    } else {
-        chars[start..]
-            .iter()
-            .position(|c| c.is_whitespace())
-            .map_or(start, |offset| start + offset + 1)
-            .min(at.min(chars.len()))
-    };
-    let line: String = chars[start..]
-        .iter()
-        .take(EXCERPT_CHARS)
-        .map(|c| if c.is_control() { ' ' } else { *c })
-        .collect();
-    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let more = chars.len() > start + EXCERPT_CHARS;
-    match (start > 0, more) {
-        (false, false) => line,
-        (true, false) => format!("…{line}"),
-        (false, true) => format!("{line}…"),
-        (true, true) => format!("…{line}…"),
-    }
+    let around = tilo_search::excerpt_around(text, at, 0);
+    around.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Where choosing a notice lands: the app keeping a record, the record, and the item in it, opened
-/// as a search hit is: the `open` of `resource`, told `anchor` as the item to show.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Place {
-    /// The app keeping the record, by package id.
-    pub app: String,
-    /// The record, as its route names it: empty for the app's own record of the workspace.
-    pub record: String,
-    /// The resource whose `open` shows the item, or empty for the record as a whole.
-    pub resource: String,
-    /// The item that `open` shows (`<kind>/<field>/<id>` for an item of a record), or empty for
-    /// the resource itself.
-    pub anchor: String,
-}
-
-/// The activation scheme a notice's [`Place`] is carried by: what a host that reports clicks hands back
-/// when the person chooses it.
-pub const SCHEME: &str = "tilo-mention";
-
-/// What the tag of a mention's notice starts with ([`Place::tag`]): how a host showing them knows which
-/// of its notifications are theirs.
-pub const TAGS: &str = "mention:";
-
-impl Place {
-    /// The activation URI a host carries the place by:
-    /// `tilo-mention:<app>?<record>#<resource>#<anchor>`, each part percent-encoded.
-    #[must_use]
-    pub fn activation(&self) -> String {
-        format!(
-            "{SCHEME}:{}?{}#{}#{}",
-            encode(&self.app),
-            encode(&self.record),
-            encode(&self.resource),
-            encode(&self.anchor)
-        )
-    }
-
-    /// The place an [`Self::activation`] names.
-    #[must_use]
-    pub fn from_activation(uri: &str) -> Option<Self> {
-        let rest = uri.strip_prefix(SCHEME)?.strip_prefix(':')?;
-        let (app, rest) = rest.split_once('?')?;
-        let (record, rest) = rest.split_once('#')?;
-        let (resource, anchor) = rest.split_once('#')?;
-        let place = Self {
-            app: decode(app)?,
-            record: decode(record)?,
-            resource: decode(resource)?,
-            anchor: decode(anchor)?,
-        };
-        (!place.app.is_empty()).then_some(place)
-    }
-
-    /// The tag a notice of this place for `person` goes by: the same on every device and window, so the
-    /// host shows it once.
-    #[must_use]
-    pub fn tag(&self, person: &MemberId) -> String {
-        format!(
-            "{TAGS}{}/{}/{}/{}/{}",
-            self.app,
-            self.record,
-            self.resource,
-            self.anchor,
-            person.id()
-        )
-    }
-}
-
-fn encode(part: &str) -> String {
-    let mut out = String::with_capacity(part.len());
-    for byte in part.bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/' | b':' | b'@')
-        {
-            out.push(char::from(byte));
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
-fn decode(part: &str) -> Option<String> {
-    let bytes = part.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while at < bytes.len() {
-        if bytes[at] == b'%' {
-            let hex = part.get(at + 1..at + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            at += 3;
-        } else {
-            out.push(bytes[at]);
-            at += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-/// The route of the chain whose part the record `route` names ([`DocumentId::part`]): empty for a part of
-/// the app's own record.
+/// The record whose items the chain part `route` keeps ([`DocumentId::part`]), by route: the record
+/// its chain is derived from, empty for the app's own record of the workspace, which an app's
+/// chains are derived from. `None` for a route that names no part.
 #[must_use]
-pub fn chain_of(route: &str) -> Option<&str> {
+pub fn record_of_part(route: &str) -> Option<&str> {
     let (role, chain) = route.strip_prefix("derived:")?.split_once('@')?;
-    role.starts_with("part.")
-        .then_some(if chain == DocumentId::package_primary().as_str() {
+    if !role.starts_with("part.") {
+        return None;
+    }
+    let record = chain
+        .strip_prefix("derived:")
+        .and_then(|derived| derived.split_once('@'))
+        .map_or(chain, |(_, of)| of);
+    Some(
+        if record == DocumentId::workspace_default().as_str()
+            || record == DocumentId::package_primary().as_str()
+        {
             ""
         } else {
-            chain
-        })
+            record
+        },
+    )
 }
 
 /// The name of channel `id` of a chat record, as `#name`.

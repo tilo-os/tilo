@@ -1,4 +1,4 @@
-//! History: every change in the workspace, newest first — and, beside them, the ledger's
+//! History: every change in the workspace, newest first — and, beside them, the log's
 //! outcomes: what the system did that needs no decision.
 
 use std::collections::HashMap;
@@ -231,15 +231,16 @@ fn selected_span(feed: &wire::Feed, selection: Option<&wire::Range>) -> Option<(
 #[derive(Clone, PartialEq, Eq)]
 enum Heading {
     Group(String),
-    Day(Option<chrono::NaiveDate>),
+    Day(Option<jiff::civil::Date>),
 }
 
 fn heading(entry: &wire::Entry) -> Heading {
     entry.group.clone().map_or_else(
         || {
             Heading::Day(
-                chrono::DateTime::from_timestamp_millis(entry.at_ms)
-                    .map(|at| at.with_timezone(&chrono::Local).date_naive()),
+                jiff::Timestamp::from_millisecond(entry.at_ms)
+                    .ok()
+                    .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).date()),
             )
         },
         Heading::Group,
@@ -259,7 +260,7 @@ fn list(
         .iter()
         .map(|group| (group.id.as_str(), group))
         .collect();
-    let this_year = chrono::Local::now().date_naive();
+    let this_year = jiff::Zoned::now().date();
     let mut sections: Vec<(Heading, Vec<Element>)> = Vec::new();
     for (index, entry) in feed.entries.iter().enumerate() {
         let mut words: Vec<&str> = vec![entry.summary.as_str(), entry.author.name.as_str()];
@@ -306,26 +307,21 @@ fn list(
             Heading::Day(day) => {
                 Section::new(rows).with_header(SectionHeader::group(day.map_or_else(
                     || tr("activity-day-unknown"),
-                    |day| {
-                        ui::format::day_heading(
-                            day,
-                            chrono::Datelike::year(&day) != chrono::Datelike::year(&this_year),
-                        )
-                    },
+                    |day| ui::format::day_heading(day, day.year() != this_year.year()),
                 )))
             }
         };
         column = column.push(Box::new(section));
     }
-    if let Some(ledger) = ledger_section(filter) {
-        column = column.push(ledger);
+    if let Some(log) = log_section(filter) {
+        column = column.push(log);
     }
     Box::new(column)
 }
 
-/// What the system did, from the ledger: outcomes that needed nobody, with the app that did
+/// What the system did, from the log: outcomes that needed nobody, with the app that did
 /// them and when.
-fn ledger_section(filter: &Filter) -> Option<Element> {
+fn log_section(filter: &Filter) -> Option<Element> {
     let entries: Vec<ui::attention::Entry> = ui::attention::entries()
         .into_iter()
         .filter(|entry| {
@@ -343,7 +339,7 @@ fn ledger_section(filter: &Filter) -> Option<Element> {
         .iter()
         .rev()
         .map(|entry| {
-            let mut row = ListRow::new(format!("activity-ledger-{}", entry.id()), entry.what())
+            let mut row = ListRow::new(format!("activity-log-{}", entry.id()), entry.what())
                 .icon(entry.owner().icon)
                 .subtitle(entry.owner().name.clone())
                 .meta(ago(i64::try_from(entry.at_ms()).unwrap_or(i64::MAX)));
@@ -355,7 +351,7 @@ fn ledger_section(filter: &Filter) -> Option<Element> {
         })
         .collect();
     Some(Box::new(Section::new(rows).with_header(
-        SectionHeader::group(tr("activity-ledger-heading")),
+        SectionHeader::group(tr("activity-log-heading")),
     )))
 }
 

@@ -143,18 +143,18 @@ class BuildOrder(unittest.TestCase):
             self.assertEqual(result['TILO_CAPTURE_QUALIFIER_IMAGE'], image)
             self.assertEqual(json.loads((output / 'environment.json').read_text()), result)
 
-    def test_actual_producers_precede_host_and_mandatory_full_gate(self):
+    def test_actual_producers_precede_host_and_mandatory_full_check(self):
         self.exercise()
 
     def test_build_only_exposes_inputs_without_claiming_qualification(self):
         self.exercise(build_only=True)
 
-    def test_failed_full_gate_exposes_no_packaging_environment(self):
+    def test_failed_full_check_exposes_no_packaging_environment(self):
         self.exercise(reject=True)
 
 
 class MediumLayer(unittest.TestCase):
-    def test_installed_platform_paths_follow_full_gate_and_keep_observed_bytes(self):
+    def test_installed_platform_paths_follow_full_check_and_keep_observed_bytes(self):
         spec = importlib.util.spec_from_file_location('capture_medium', HERE / 'layer-capture-install-medium.py')
         medium = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(medium)
@@ -233,7 +233,7 @@ class NativePlatformArchive(unittest.TestCase):
                 'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract'},
                 bound_file=Mock(), admit_cohort=Mock(return_value={'roles': roles}))
 
-            def gate(command, env):
+            def check(command, env):
                 self.assertIn('stage-capture-sidecar.sh', str(command[1]))
                 prefix = Path(command[-2])
                 sidecar = prefix / 'share/tilo-imager/capture/service'
@@ -241,7 +241,7 @@ class NativePlatformArchive(unittest.TestCase):
                 (sidecar / 'home-export.tapp').write_bytes(b'isolated sidecar')
 
             output = root / 'platform.tar.gz'
-            with patch.object(platform.release, 'load_qualifier', return_value=qualifier), patch.object(platform.release, 'run', side_effect=gate) as run:
+            with patch.object(platform.release, 'load_qualifier', return_value=qualifier), patch.object(platform.release, 'run', side_effect=check) as run:
                 platform.package(output, host, {'TILO_CAPTURE_QUALIFICATION_COHORT': '/observed/cohort'})
             run.assert_called_once()
             with tarfile.open(output) as archive:
@@ -260,7 +260,7 @@ class NativePlatformArchive(unittest.TestCase):
                 self.assertEqual(archive.getmember('usr/bin/tilo-enroll').mode, 0o755)
 
 
-class StageGate(unittest.TestCase):
+class StageCheck(unittest.TestCase):
     def test_required_capture_cannot_be_silently_disabled(self):
         with tempfile.TemporaryDirectory() as scratch:
             env = {key: value for key, value in os.environ.items()

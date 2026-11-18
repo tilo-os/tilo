@@ -1,9 +1,9 @@
 //! Files' clipboard, as the session serves it to the app: the person copies a file in Files and
 //! pastes it into another folder, the copy also lands on the desktop's clipboard so any other app
 //! can take it, and a cut moves the file out of the folder it came from.
-//! The app speaks exactly as Files does: one launcher-attested connection to the session's plane,
-//! its selected objects handed over on that connection's descriptor lane, and the commands it sends
-//! naming them by lane number.
+//! The app speaks exactly as Files does: one launcher-attested connection to the session's app wire,
+//! its selected objects handed over on that connection's descriptor stream, and the commands it sends
+//! naming them by descriptor number.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -30,7 +30,7 @@ use runtime_collab::file_clipboard::{
 use runtime_portal::DescriptorStreamSource as _;
 use tilo_compositor::Selection;
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
+use tilo_session::{AppSocket, Launches, Lists, Options, Session};
 use tilo_user_identity::DeviceCert;
 
 use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentation};
@@ -53,7 +53,7 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
     let mut session = crate::common::headless(Options {
         collab: false,
         wake: LoopWake::default(),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: "Ada".to_owned(),
         launches,
         state: Some(fixture.state.clone()),
@@ -69,21 +69,22 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
     session
 }
 
-/// A connection to the session's plane as Files in the workspace, as the launcher hands an app one:
+/// A connection to the session's app wire as Files in the workspace, as the launcher hands an app one:
 /// its writes carry the descriptors of the objects it selected.
 fn connect(socket: &Path) -> CollabClient {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
     launcher::services::write_collab_handoff(&mut stream, FILES, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
         .set_nonblocking(true)
         .expect("the connection is ready for the runtime");
     let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
-    let (stream, lane) = stream.with_descriptor_lane();
+    let (stream, sender) = stream.with_descriptors();
     let (reader, writer) = tokio::io::split(stream);
     let (client, carrying) = CollabClient::over(reader, writer);
     tokio::spawn(carrying);
-    client.with_optional_descriptors(lane)
+    client.with_optional_descriptors(sender)
 }
 
 /// The channel key of Files' own route in the workspace.

@@ -1,5 +1,5 @@
 // Included in external_moderation_rpc_tests so the same admitted RPC fixture is used.
-// The host supplies committed Store bytes and answers the exact disclosure witness;
+// The host supplies committed Store bytes and answers the exact disclosure approval;
 // enrollment, purpose-key signing, HTTPS, registry verification and persistence are real.
 mod https_completion {
     use super::*;
@@ -32,7 +32,7 @@ mod https_completion {
 
     async fn native_app(workspace: &Workspace, peer: u64) -> signed_worker::Connection {
         use std::io::Write as _;
-        // A native app needs the launcher's kernel-pinned process custody,
+        // A native app needs the launcher's kernel-pinned process ownership,
         // not a private worker socket (which intentionally skips the handoff).
         let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
         let (marker, handoff) =
@@ -156,7 +156,7 @@ mod https_completion {
             },
             argument: tilo_actions::remote::InvokeArgument::Json(argument),
             context: None,
-            confirmation: Some(tilo_actions::remote::Confirmation::Witnessed(
+            confirmation: Some(tilo_actions::remote::Confirmation::Approved(
                 "caller-supplied".into(),
             )),
             revision: revision.map(Into::into),
@@ -514,7 +514,7 @@ mod https_completion {
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
                 let original = signed_worker::OriginalWorkspace::current_native();
                 let (device, _) =
-                    tilo_identity_host::broker::trusted_current_device(&original.route.cluster_id)
+                    tilo_identity::broker::trusted_current_device(&original.route.cluster_id)
                         .unwrap();
                 let server = HttpsRegistry::new(&device).await;
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
@@ -651,7 +651,7 @@ mod https_completion {
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
                 let original = signed_worker::OriginalWorkspace::current_native();
                 let (device, cert) =
-                    tilo_identity_host::broker::trusted_current_device(&original.route.cluster_id)
+                    tilo_identity::broker::trusted_current_device(&original.route.cluster_id)
                         .unwrap();
                 assert_eq!(cert, original.cert);
                 let server = HttpsRegistry::new(&device).await;

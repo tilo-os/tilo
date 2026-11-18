@@ -55,7 +55,7 @@ async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
 }
 
 #[tokio::test]
-async fn unsupported_alpn_identifies_tilo_relay_v1() {
+async fn unsupported_alpn_identifies_tilo_server_v1() {
     let server = endpoint(b"dummy-alpn/1").await.unwrap();
     let accept = async {
         let incoming = server.accept().await.unwrap();
@@ -71,13 +71,13 @@ async fn unsupported_alpn_identifies_tilo_relay_v1() {
     server.close().await;
     assert_eq!(
         error.unwrap(),
-        LinkError::Unavailable("host does not speak tilo-relay/1".into()),
+        LinkError::Unavailable("host does not speak tilo-server/1".into()),
     );
 }
 
 #[tokio::test]
 async fn transport_refusal_remains_generic_unavailable() {
-    let server = endpoint(b"tilo-relay/1").await.unwrap();
+    let server = endpoint(b"tilo-server/1").await.unwrap();
     let refuse = async {
         server.accept().await.unwrap().refuse();
     };
@@ -91,7 +91,7 @@ async fn transport_refusal_remains_generic_unavailable() {
         panic!("ordinary transport failures must remain unavailable: {error}");
     };
     assert!(!reason.is_empty());
-    assert_ne!(reason, "host does not speak tilo-relay/1");
+    assert_ne!(reason, "host does not speak tilo-server/1");
 }
 
 tilo_test_env::scenario! {
@@ -107,6 +107,23 @@ tilo_test_env::scenario! {
         assert!(!transient(&LinkError::Malformed("bad ack".into())));
         assert!(!transient(&LinkError::HostChanged));
         assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
+        assert!(!transient(&LinkError::DeviceRevoked));
+    }
+
+    phase a_removal_its_server_says_stops_the_session_at_once;
+    {
+        assert_eq!(
+            refusal(&LinkError::DeviceRevoked),
+            Refusal::Final(
+                "device-revoked",
+                "This device was removed from your devices.".to_owned()
+            ),
+        );
+        // A refusal with nothing said is counted before it stops anything.
+        assert_eq!(
+            refusal(&LinkError::Refused("the stream ended".into())),
+            Refusal::Unexplained,
+        );
     }
 
     phase retry_waits_double_with_jitter_and_stay_capped;
@@ -128,13 +145,13 @@ tilo_test_env::scenario! {
 
     phase every_client_error_has_a_deliberate_link_class;
     {
-        use tilo_relay_protocol::auth::AuthError;
-        use tilo_relay_session::ClientError;
+        use tilo_server_protocol::auth::AuthError;
+        use tilo_server_session::ClientError;
 
         // Reachability: retried with backoff, never counted as a refusal.
         assert_eq!(
             link_error(ClientError::UnsupportedProtocol),
-            LinkError::Unavailable("host does not speak tilo-relay/1".into()),
+            LinkError::Unavailable("host does not speak tilo-server/1".into()),
         );
         assert_eq!(
             link_error(ClientError::Transport("timed out".into())),
@@ -159,11 +176,22 @@ tilo_test_env::scenario! {
             link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
             LinkError::Refused("io: unexpected end of file".into()),
         );
+        assert_eq!(
+            link_error(ClientError::NoHandshakeAnswer("the stream ended".into())),
+            LinkError::Refused("the stream ended".into()),
+        );
+        // The server said why, under its own signature: no guess, and nothing to try again.
+        assert_eq!(
+            link_error(ClientError::Refused(
+                tilo_server_protocol::auth::HelloRefusal::DeviceRevoked
+            )),
+            LinkError::DeviceRevoked,
+        );
     }
 }
 
 /// A session beside its device's own dials its host from the endpoint the device already runs
-/// and binds none of its own: the device's key names one endpoint, at its relay and everywhere.
+/// and binds none of its own: the device's key names one endpoint, at its server and everywhere.
 #[tokio::test]
 async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -225,11 +253,11 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
         sockets.iter().any(|socket| socket.port() == from.port()),
         "the host hears the dial from the device's own endpoint: {from} is none of {sockets:?}"
     );
-    // The device's own session runs its live plane: a second one under the same key would shadow
+    // The device's own session runs its live session: a second one under the same key would shadow
     // the broadcast it publishes its presence on.
     assert!(
-        dial.plane().is_none(),
-        "a session beside the device's own joins no plane of its own"
+        dial.live_session().is_none(),
+        "a session beside the device's own joins no live session of its own"
     );
 
     // The session ending leaves the device's endpoint open: it is the device's.

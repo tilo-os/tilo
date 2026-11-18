@@ -99,7 +99,7 @@ impl Vpn {
         }
     }
 
-    /// What this device answers on the session's endpoint beside its own planes: another of the
+    /// What this device answers on the session's endpoint beside its own peer networks: another of the
     /// person's devices reaching this one to route through it. An endpoint's protocols are fixed
     /// once it binds, so the session hands these over before it binds
     /// ([`crate::sync::Client::start`]).

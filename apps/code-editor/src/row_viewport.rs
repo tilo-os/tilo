@@ -1,4 +1,4 @@
-//! Sparse render-only column witnesses for exceptionally long source rows.
+//! Sparse render-only column observations for exceptionally long source rows.
 
 use std::ops::Range;
 
@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(index.column(&source, prefix.len()), column);
         assert!(
             index.checkpoints.len() < 100,
-            "long rows retain sparse witnesses, not every character"
+            "long rows retain sparse observations, not every character"
         );
     }
 }

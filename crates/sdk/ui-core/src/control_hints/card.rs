@@ -94,7 +94,7 @@ fn words_style(theme: &Theme) -> TextStyle {
 const BAR_PAD_X: f64 = 12.0;
 const BAR_PAD_Y: f64 = 3.0;
 
-/// The card's size for `contents`: a card standing in the bar is the bar's pill.
+/// The card's size for `contents`: a card in the bar is the bar's pill.
 pub(super) fn size(
     contents: &Contents<'_>,
     text: &mut TextRenderer,

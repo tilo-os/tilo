@@ -1186,7 +1186,7 @@ impl ActionArgs {
 }
 
 fn looks_like_rfc3339(value: &str) -> bool {
-    chrono::DateTime::parse_from_rfc3339(value).is_ok()
+    value.parse::<jiff::Timestamp>().is_ok()
 }
 
 /// Distinct schema patterns kept compiled. A directory publishes a handful;

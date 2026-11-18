@@ -334,7 +334,7 @@ pub struct EngineProfile {
     pub compiling: Duration,
 }
 
-// ---- the seam --------------------------------------------------------------------------------
+// ---- the boundary --------------------------------------------------------------------------------
 
 /// What a call carries into the guest's store while it runs: who answers the imports, and the
 /// profile, if one is on.

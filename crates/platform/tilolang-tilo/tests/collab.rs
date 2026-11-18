@@ -9,7 +9,7 @@ use tilo_actions::{ActionRegistry, Did};
 use tilolang_tilo::action::register_actions;
 use tilolang_tilo::chunk::Chunks;
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{APP, COUNTER, Replica, TODO, button_key, count, field_id};
 

@@ -607,24 +607,24 @@ impl ImportReview {
     }
     pub fn verify_adoption(
         &mut self,
-        witness: &super::home_transfer::promotion::AdoptionWitness,
+        proof: &super::home_transfer::promotion::AdoptionProof,
         cancel: &AtomicBool,
     ) -> io::Result<()> {
         self.verify_held_ciphertext(cancel)?;
-        self.entries.check_existing_root(&witness.quarantine)?;
-        archive::verify_mapped(&self.entries, witness, cancel)?;
-        self.entries.check_existing_root(&witness.quarantine)?;
+        self.entries.check_existing_root(&proof.quarantine)?;
+        archive::verify_mapped(&self.entries, proof, cancel)?;
+        self.entries.check_existing_root(&proof.quarantine)?;
         self.verify_held_ciphertext(cancel)
     }
     pub fn verify_adoption_after_applications(
         &mut self,
-        witness: &super::home_transfer::promotion::AdoptionWitness,
+        proof: &super::home_transfer::promotion::AdoptionProof,
         cancel: &AtomicBool,
     ) -> io::Result<()> {
         self.verify_held_ciphertext(cancel)?;
-        self.entries.check_existing_root(&witness.quarantine)?;
-        archive::verify_mapped_after_applications(&self.entries, witness, cancel)?;
-        self.entries.check_existing_root(&witness.quarantine)?;
+        self.entries.check_existing_root(&proof.quarantine)?;
+        archive::verify_mapped_after_applications(&self.entries, proof, cancel)?;
+        self.entries.check_existing_root(&proof.quarantine)?;
         self.verify_held_ciphertext(cancel)
     }
     pub fn verify_original_application_config(&self, bytes: &[u8]) -> io::Result<()> {
@@ -705,7 +705,7 @@ impl ImportReview {
             .file_name()
             .ok_or_else(|| changed("Quarantine name missing"))?;
         // Only a fully authenticated and verified tree gets the requested name, so an interrupted
-        // attempt cannot masquerade as completed custody or block a later one.
+        // attempt cannot masquerade as completed ownership or block a later one.
         match super::nofollow::metadata_nofollow(&parent.file, Path::new(name)) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),

@@ -159,7 +159,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let shift = |token: &RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, |_, reference| {
+    rewrite_refs(raw, &mut |_, reference| {
         Moved::To(match reference {
             Ref::Cell(first) => shift(first),
             Ref::Range(first, sep, second) => format!("{}{sep}{}", shift(first), shift(second)),
@@ -190,7 +190,7 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
 /// engine reads no error after a sheet's name. A reference the change does not move keeps its
 /// spelling.
 pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str>) -> String {
-    rewrite_refs(raw, |sheet, reference| {
+    rewrite_refs(raw, &mut |sheet, reference| {
         let on_changed_sheet = match sheet {
             None => own,
             Some(written) => named.is_some_and(|named| fold_sheet(written) == named),
@@ -240,23 +240,10 @@ pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str
     })
 }
 
-/// A formula with every reference naming the sheet `named` (folded as [`fold_sheet`] does)
-/// turned into `#REF!`, as when that sheet is deleted: a later sheet of its name is not the one
-/// the formula read.
-pub fn unsheet_refs(raw: &str, named: &str) -> String {
-    if !raw.contains('!') {
-        return raw.to_owned();
-    }
-    rewrite_refs(raw, |sheet, _| match sheet {
-        Some(written) if fold_sheet(written) == named => Moved::Gone,
-        _ => Moved::Kept,
-    })
-}
-
 /// Each reference of a formula: the sheet it names as written (`None` for the formula's own)
 /// and the corners of what it reads. Whole rows and columns reach the last column and row.
 pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)) {
-    drop(rewrite_refs(raw, |sheet, reference| {
+    drop(rewrite_refs(raw, &mut |sheet, reference| {
         let (start, end) = reference.corners();
         visit(sheet, start, end);
         Moved::Kept
@@ -265,7 +252,7 @@ pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)
 
 /// A formula with each reference to another sheet renamed by `rename`, which gets the name as
 /// written and answers the one to write instead.
-pub fn rename_sheets(raw: &str, mut rename: impl FnMut(&str) -> Option<String>) -> String {
+pub fn rename_sheets(raw: &str, rename: &mut dyn FnMut(&str) -> Option<String>) -> String {
     let Some(body) = raw.strip_prefix('=').filter(|body| body.contains('!')) else {
         return raw.to_string();
     };
@@ -317,7 +304,7 @@ pub fn fold_sheet(name: &str) -> String {
 
 /// One reference the rewrite hands its callback: a cell, a range, or whole rows or columns, the
 /// last two with what is written between their ends.
-enum Ref {
+pub(crate) enum Ref {
     Cell(RefToken),
     Range(RefToken, String, RefToken),
     Lines(Line, String, Line),
@@ -351,11 +338,13 @@ impl Ref {
 }
 
 /// What a rewrite does with one reference.
-enum Moved {
+pub(crate) enum Moved {
     /// As written, with the sheet it names.
     Kept,
     /// Written anew, after the sheet it names.
     To(String),
+    /// Written anew with the sheet it names: the name and the reference.
+    Whole(String),
     /// `#REF!` in its place and in the place of the sheet it names.
     Gone,
 }
@@ -363,7 +352,10 @@ enum Moved {
 /// Every reference in a formula rewritten through `rewrite`, which gets the sheet the reference
 /// names as written (`None` for the formula's own sheet); literals, function names and
 /// exponents are copied verbatim.
-fn rewrite_refs(raw: &str, mut rewrite: impl FnMut(Option<&str>, &Ref) -> Moved) -> String {
+pub(crate) fn rewrite_refs(
+    raw: &str,
+    rewrite: &mut dyn FnMut(Option<&str>, &Ref) -> Moved,
+) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
     };
@@ -402,6 +394,7 @@ fn rewrite_refs(raw: &str, mut rewrite: impl FnMut(Option<&str>, &Ref) -> Moved)
                 out.push_str(prefix.as_deref().unwrap_or_default());
                 out.push_str(&text);
             }
+            Moved::Whole(text) => out.push_str(&text),
             Moved::Gone => out.push_str("#REF!"),
         }
     }
@@ -489,7 +482,7 @@ fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.'
 }
 
-/// A quoted sheet name and the `!` after it, a doubled quote standing for one.
+/// A quoted sheet name and the `!` after it, a doubled quote for one.
 fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
     scan.bump();
     let mut name = String::new();
@@ -508,10 +501,10 @@ fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
 
 /// One end of a whole-row or whole-column range, remembering its `$`.
 #[derive(Clone, Copy)]
-struct Line {
+pub(crate) struct Line {
     /// The row or column, zero-based.
-    at: u32,
-    rows: bool,
+    pub(crate) at: u32,
+    pub(crate) rows: bool,
     abs: bool,
 }
 
@@ -552,7 +545,7 @@ impl Line {
     }
 
     /// Line `at` spelled with this end's `$`.
-    fn render(self, at: u32) -> String {
+    pub(crate) fn render(self, at: u32) -> String {
         let anchor = if self.abs { "$" } else { "" };
         if self.rows {
             format!("{anchor}{}", at.saturating_add(1))
@@ -585,8 +578,8 @@ fn line_range(scan: Scan<'_>) -> Option<(Line, String, Line, Scan<'_>)> {
 
 /// An `A1` token remembering its `$` spelling, as written.
 #[derive(Clone, Copy)]
-struct RefToken {
-    addr: Addr,
+pub(crate) struct RefToken {
+    pub(crate) addr: Addr,
     col_abs: bool,
     row_abs: bool,
 }
@@ -648,7 +641,8 @@ impl RefToken {
         )
     }
 
-    fn render(self, (col, row): Addr) -> String {
+    /// The cell `(col, row)` spelled with this token's `$`.
+    pub(crate) fn render(self, (col, row): Addr) -> String {
         let mut result = String::new();
         if self.col_abs {
             result.push('$');
@@ -833,7 +827,7 @@ mod tests {
             );
             assert_eq!(references("Rates!A2+B1").len(), 1);
             let renamed = |raw: &str| {
-                rename_sheets(raw, |written| {
+                rename_sheets(raw, &mut |written| {
                     (fold_sheet(written) == "rates").then(|| "Q3 rates".to_owned())
                 })
             };
@@ -878,13 +872,6 @@ mod tests {
                 remap_sheet_refs("=A2+Data!A2", GridEdit::InsertRow(0), true, None),
                 "=A3+Data!A2",
                 "a sheet no name reaches moves only its bare references"
-            );
-            assert_eq!(
-                unsheet_refs(
-                    "=A1+Data!A2+SUM('data'!B:B)+Rates!A1+\"Data!A1\"+Data!Total",
-                    "data"
-                ),
-                "=A1+#REF!+SUM(#REF!)+Rates!A1+\"Data!A1\"+Data!Total"
             );
             let mut read = Vec::new();
             each_reference("=A2+SUM(Data!B2:C4)+SUM('Q 3'!2:3)+SUM(D:D)", |sheet, start, end| {

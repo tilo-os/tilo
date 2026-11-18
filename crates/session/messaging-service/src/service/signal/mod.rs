@@ -25,7 +25,7 @@ use tilo_messaging_protocol::signal_runtime::SignalReceiver;
 use tilo_messaging_protocol::supervisor::{AccountAuthority, AccountSupervisor};
 
 use super::consent::{self, Policy};
-use super::gate::{Gate, Running};
+use super::guard::{AccountGuard, Running};
 use super::identity::Identity;
 
 pub(crate) mod working_profile;
@@ -248,7 +248,7 @@ impl Linked {
 
 /// A running Signal account.
 pub(crate) struct Account {
-    pub(crate) gate: Arc<Gate>,
+    pub(crate) guard: Arc<AccountGuard>,
     supervisor: Arc<AccountSupervisor>,
     /// 0: not started; 1: starting; 2: started.
     activation: AtomicU8,
@@ -257,14 +257,14 @@ pub(crate) struct Account {
 }
 
 impl Running for Account {
-    fn gate(&self) -> &Arc<Gate> {
-        &self.gate
+    fn guard(&self) -> &Arc<AccountGuard> {
+        &self.guard
     }
     fn supervisor(&self) -> &Arc<AccountSupervisor> {
         &self.supervisor
     }
     fn retire(&self) {
-        self.gate.stop();
+        self.guard.stop();
         let provider = self
             .provider
             .lock()
@@ -286,9 +286,9 @@ type UnsealProfile = fn(
 ) -> Result<EncryptedSignalProfile, ProfileError>;
 
 impl Account {
-    pub(crate) fn new(gate: Arc<Gate>, supervisor: Arc<AccountSupervisor>) -> Self {
+    pub(crate) fn new(guard: Arc<AccountGuard>, supervisor: Arc<AccountSupervisor>) -> Self {
         Self {
-            gate,
+            guard,
             supervisor,
             activation: AtomicU8::new(0),
             provider: std::sync::Mutex::new(None),
@@ -310,19 +310,19 @@ impl Account {
         root: &Path,
         unseal: UnsealProfile,
     ) -> Result<EncryptedSignalProfile, SendError> {
-        self.gate.check()?;
+        self.guard.check()?;
         if !root.is_absolute() {
             return Err(SendError::Unavailable);
         }
-        let key = self.gate.credential.profile_key()?;
+        let key = self.guard.credential.profile_key()?;
         let profile = unseal(
             root,
-            self.gate.identity.owner.clone(),
+            self.guard.identity.owner.clone(),
             key,
-            self.gate.clone(),
+            self.guard.clone(),
         )
         .map_err(|_| SendError::Unavailable)?;
-        self.gate.check()?;
+        self.guard.check()?;
         Ok(profile)
     }
 
@@ -351,7 +351,7 @@ impl Account {
             .store(if result.is_ok() { 2 } else { 0 }, Ordering::Release);
         if result.is_err() {
             policy.cancellation.cancel();
-            let state = if self.gate.check().is_err() {
+            let state = if self.guard.check().is_err() {
                 AccountState::Locked
             } else {
                 AccountState::Failed
@@ -362,12 +362,12 @@ impl Account {
     }
 
     fn run(self: &Arc<Self>, storage: &Storage, policy: &Policy) -> Result<(), SendError> {
-        self.gate.check()?;
-        let consent = consent::request(self.gate.identity.clone(), policy)?;
-        self.gate
+        self.guard.check()?;
+        let consent = consent::request(self.guard.identity.clone(), policy)?;
+        self.guard
             .check_account_scope(&format!("signal:{}", storage.signal_account))?;
         let cancellation = policy.cancellation.clone();
-        let launch = acquire_launch(|| self.gate.check(), &cancellation)?;
+        let launch = acquire_launch(|| self.guard.check(), &cancellation)?;
         let profile = self.materialize_profile(&storage.profile, &storage.runtime)?;
         let (send, receive) = mpsc::sync_channel(1);
         let service = cancellation;
@@ -389,11 +389,11 @@ impl Account {
         let [sender, receiver] = receive
             .recv_timeout(STREAMS)
             .map_err(|_| SendError::Unavailable)?;
-        self.gate.check()?;
+        self.guard.check()?;
         let (broker, receiver) =
             self.assemble(&storage.history, &storage.signal_account, sender, receiver)?;
-        self.gate.check()?;
-        self.gate.check_account_scope(broker.scope())?;
+        self.guard.check()?;
+        self.guard.check_account_scope(broker.scope())?;
         self.supervisor.install_signal_receiving(&broker, receiver)
     }
 
@@ -405,9 +405,9 @@ impl Account {
         receiver: std::os::unix::net::UnixStream,
     ) -> Result<(SignalBroker, SignalReceiver), SendError> {
         // Enrollment approved this account's key; nothing mints another.
-        let key = self.gate.credential.profile_key()?;
-        self.gate.check()?;
-        let owner = &self.gate.identity.owner;
+        let key = self.guard.credential.profile_key()?;
+        self.guard.check()?;
+        let owner = &self.guard.identity.owner;
         let history = tilo_messaging_protocol::signal_broker::History::open(
             &root.join("history"),
             owner,
@@ -426,7 +426,7 @@ impl Account {
             journal,
         )
         .map_err(|_| SendError::Unavailable)?;
-        let authority: Arc<dyn SignalAuthority> = self.gate.clone();
+        let authority: Arc<dyn SignalAuthority> = self.guard.clone();
         let broker = SignalBroker::new(runtime, history, authority, signal_account.into())?;
         let receiver = SignalReceiver::new(owner.clone(), signal_account.into(), receiver)
             .map_err(|_| SendError::Unavailable)?;

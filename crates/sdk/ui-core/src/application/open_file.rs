@@ -1,7 +1,7 @@
 //! A file a host hands a component to open, as an explicit launch input. Apps have no ambient
 //! filesystem: a host that was asked to open a file (an OS file association, a page embedding the
 //! browser runtime) reads the bytes itself and lends them to the component through
-//! [`HostContext::provide_open_file`](super::HostContext::provide_open_file).
+//! [`ProcessContext::provide_open_file`](super::ProcessContext::provide_open_file).
 use std::cell::RefCell;
 use std::rc::Rc;
 

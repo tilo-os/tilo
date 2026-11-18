@@ -198,7 +198,7 @@ try {
     const network = await tab.send('Network.enable');
     assert.equal(network.error, undefined, 'fixture network control must be available');
     const blocked = await tab.send('Network.setBlockedURLs', {urls:[fixture.origin + '/*']});
-    assert.equal(blocked.error, undefined, 'only the fixture relay origin must be blocked');
+    assert.equal(blocked.error, undefined, 'only the fixture server origin must be blocked');
     // Close the existing certified carrier; a real browser request to the
     // blocked fixture origin must fail, rather than fabricating peer state.
     await tab.evaluate('peer.reconnect()');
@@ -216,7 +216,7 @@ try {
     await tab.waitFor('peer.getSnapshot().outgoingPending > 0 && !peer.getSnapshot().health.transport.authenticated');
     stage('compiled-browser-post-queued-without-transport');
     const unblocked = await tab.send('Network.setBlockedURLs', {urls:[]});
-    assert.equal(unblocked.error, undefined, 'fixture relay network must be restored');
+    assert.equal(unblocked.error, undefined, 'fixture server network must be restored');
     const recovered = await tab.evaluate('peer.recover({kind:"retry-connection"})');
     assert.equal(recovered.operationId, 'retry-connection');
     await tab.waitFor('peer.getSnapshot().phase === "ready" && peer.getSnapshot().health.transport.authenticated');
@@ -289,7 +289,7 @@ try {
   stage('production-account-choice-and-resource-page-mount');
   await tab.navigate(origin + '/fixture.html');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
-  stage('leaving-the-page-releases-mounted-app-and-device-custody');
+  stage('leaving-the-page-releases-mounted-app-and-device-key');
   await tab.navigate(link);
   await waitForAccounts();
   stage('page-navigation-reopens-existing-account-picker');

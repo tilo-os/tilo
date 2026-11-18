@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the update settings a server's document asks for
+
+[Path]
+PathChanged=/var/lib/tilo-server/update-policy.request
+Unit=tilo-server-update-policy.service
+
+[Install]
+WantedBy=multi-user.target

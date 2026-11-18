@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
 
     phase a_face_pressed_again_brings_everyone_here;
     // A press on someone's face opens their card where the roster stands; a second press on the same
-    // face, their card standing, brings everyone here in its place. The bar has no people button while
+    // face, their card shown, brings everyone here in its place. The bar has no people button while
     // it shows a face, so this is how a pointer reaches the roster.
     {
         let _settled = ui::motion::testing::settled();
@@ -236,7 +236,7 @@ tilo_test_env::scenario! {
         frame.click_at(keep.x, keep.y);
         settle(&mut frame);
         assert!(
-            people.borrow().shown.borrow().standing(),
+            people.borrow().shown.borrow().is_kept(),
             "the roster is kept on screen"
         );
         let panel = people
@@ -261,7 +261,7 @@ tilo_test_env::scenario! {
         assert!(!frame.dispatch_to_root(&ui::synthetic_input::mouse_release()));
         settle(&mut frame);
         assert!(
-            people.borrow().shown.borrow().standing(),
+            people.borrow().shown.borrow().is_kept(),
             "and the roster stays kept"
         );
 

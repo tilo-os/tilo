@@ -1163,8 +1163,8 @@ fn save_without_a_path_writes_a_copy_where_the_chooser_answers() {
     let path = directory.path().join("harbour.png");
     let image = crate::shots_pattern(32, 24);
     std::fs::write(&path, crate::pixels::encode_png(&image).unwrap()).unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
     let chosen = directory.path().join("chosen.png");
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));

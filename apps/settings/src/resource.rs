@@ -173,13 +173,13 @@ impl ResourceApp for SettingsShell {
     }
 
     /// Every section of the person's settings Settings edits: each is a
-    /// record of the person's own, published with its field edits, so the
+    /// resource of the person's own, published with its field edits, so the
     /// palette, agents and assistive technology change it by path. The
     /// session keeps and publishes the system's own
     /// ([`settings_sections::declare`]); the panes' controls change them
     /// through its actions.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.kept_by(
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.kept_by(
             tilo_actions::remote::settings_resources::PROVIDER,
             settings_sections::declare,
         );
@@ -464,16 +464,16 @@ mod web_tests {
 
 #[cfg(test)]
 mod own_resource_tests {
-    /// What Settings changes is the person's: a window naming no record opens
-    /// their own record of the workspace, never the workspace's, so a reader
+    /// What Settings changes is the person's: a window naming no resource opens
+    /// their own document of the workspace, never the workspace's, so a reader
     /// of the workspace changes their own settings like anyone else.
     #[test]
-    fn settings_opens_the_persons_own_record() {
+    fn settings_opens_the_persons_own_resource() {
         let definition = ui::framework::definition::<super::SettingsShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
         let own = definition
             .member_resource_of(&person)
-            .expect("each member keeps their own Settings record");
+            .expect("each member keeps their own Settings resource");
         assert_eq!(
             own.id,
             ui::resource::DocumentId::of_member(person.id(), "settings.root").unwrap()

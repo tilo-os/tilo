@@ -3,13 +3,13 @@
 
 use vello::kurbo::Rect;
 
-use super::{ListModel, VirtualList};
+use super::{ListKey, VirtualRows};
 
 /// What a press on the pill reaches the list by, as its accessible node names it: the way back is
 /// one control wherever it stands, so a reader or an agent holds it across the rows moving.
 pub(super) const PILL_TARGET: &str = "jump-pill";
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     #[must_use]
     pub fn following_end(mut self) -> Self {
         self.follow_end = true;
@@ -29,14 +29,14 @@ impl<M: ListModel> VirtualList<M> {
         self.unread.as_deref()
     }
 
-    pub(super) fn unread_row(&self) -> Option<M::Key> {
+    pub(super) fn unread_row(&self) -> Option<ListKey> {
         let item = self.unread.as_deref()?;
         self.model
             .key_presenting(item)
             .or_else(|| self.names_item.borrow().as_ref().and_then(|f| f(item)))
     }
 
-    pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<M::Key> + 'static) {
+    pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<ListKey> + 'static) {
         *self.names_item.borrow_mut() = Some(Box::new(f));
     }
 

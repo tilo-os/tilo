@@ -140,7 +140,7 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
         .with_surface(|terminal: &mut crate::TerminalView| terminal.inspect_session())
         .unwrap();
     panic!(
-        "the session record never got there: {:#?} {inspected}",
+        "the session resource never got there: {:#?} {inspected}",
         app.state()
     );
 }
@@ -239,7 +239,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     assert_eq!(
         entry.settled,
         Some(Settled::Done(CommandAnswer {
-            run: Some(request.clone()),
+            id: Some(request.clone()),
             exit: Some(0),
             refusal: None,
         }))
@@ -933,8 +933,8 @@ fn an_agents_run_gets_the_agent_rendering() {
     );
 }
 
-fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
-    use ui::tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
+fn no_card() -> ui::tilo_actions::remote::server_account::Refusal {
+    use ui::tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
     Refusal {
         reason: Reason::NoPaymentMethod,
         message: "This needs a Linux machine.".into(),
@@ -945,7 +945,7 @@ fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
     }
 }
 
-fn held_mark(agent: bool, refusal: &ui::tilo_actions::remote::host_account::Refusal) -> String {
+fn held_mark(agent: bool, refusal: &ui::tilo_actions::remote::server_account::Refusal) -> String {
     format!(
         "\x1b]133;W;k={KEY};a={};r={}\x07",
         u8::from(agent),

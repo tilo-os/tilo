@@ -1,4 +1,4 @@
-//! Root-host original-source output custody. Never a live non-root broker proof.
+//! Root-host original-source output ownership. Never a live non-root broker proof.
 use super::{contains, writable_directory};
 use crate::owned_service::ServiceAuthority;
 use std::{
@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-/// Immutable host facts, copied only from authenticated pending setup/custody.
+/// Immutable host facts, copied only from authenticated pending setup/ownership.
 #[derive(Clone, PartialEq, Eq)]
 pub struct OriginalOutputBinding {
     pub read_claim_digest: [u8; 32],
@@ -28,7 +28,7 @@ pub struct OriginalOutputBinding {
     pub filesystem_uuid: [u8; 16],
     pub reserve_bytes: u64,
 }
-/// Strong native custody, never inherited into the worker or serialized.
+/// Strong native ownership, never inherited into the worker or serialized.
 pub struct OriginalOutputFiles {
     pub source: File,
     pub output: File,
@@ -37,14 +37,14 @@ pub struct OriginalOutputFiles {
     pub mount_root: File,
 }
 /// Trusted native root-controller boundary.
-pub trait OriginalOutputCustody: ServiceAuthority {
+pub trait OriginalOutputOwnership: ServiceAuthority {
     /// Clone the controller's held source and output descriptors.
     fn held_files(&self) -> io::Result<OriginalOutputFiles>;
     /// Return the authenticated output transaction binding.
     fn binding(&self) -> io::Result<OriginalOutputBinding>;
 }
 pub struct OriginalOutputAdmission {
-    custody: Arc<dyn OriginalOutputCustody>,
+    ownership: Arc<dyn OriginalOutputOwnership>,
     files: OriginalOutputFiles,
     binding: OriginalOutputBinding,
 }
@@ -104,7 +104,7 @@ fn validate_files(files: &OriginalOutputFiles, binding: &OriginalOutputBinding) 
         || partition.rdev() != binding.partition_rdev
         || disk.rdev() == partition.rdev()
     {
-        return Err(refuse("Original output block custody differs"));
+        return Err(refuse("Original output block ownership differs"));
     }
     let root = files.mount_root.metadata()?;
     if identity(&files.source)? != binding.source
@@ -145,16 +145,16 @@ fn validate_files(files: &OriginalOutputFiles, binding: &OriginalOutputBinding) 
 }
 impl OriginalOutputAdmission {
     /// Admit output held by the authenticated root transaction controller.
-    pub fn admit(custody: Arc<dyn OriginalOutputCustody>) -> io::Result<Self> {
+    pub fn admit(ownership: Arc<dyn OriginalOutputOwnership>) -> io::Result<Self> {
         // SAFETY: observes current real/effective/filesystem UIDs, no change.
         if rustix::process::getuid().as_raw() != 0
             || rustix::process::geteuid().as_raw() != 0
             || unsafe { libc::setfsuid(u32::MAX) } != 0
         {
-            return Err(refuse("Original output requires native root custody"));
+            return Err(refuse("Original output requires native root ownership"));
         }
-        custody.check()?;
-        let binding = custody.binding()?;
+        ownership.check()?;
+        let binding = ownership.binding()?;
         if binding.read_claim_digest == [0; 32]
             || binding.medium_claim_digest == [0; 32]
             || binding.original_uid == 0
@@ -172,7 +172,7 @@ impl OriginalOutputAdmission {
         {
             return Err(refuse("Original output authenticated binding is invalid"));
         }
-        let files = custody.held_files()?;
+        let files = ownership.held_files()?;
         validate_files(&files, &binding)?;
         if binding.reserve_bytes > actual_capacity(&files.output)? {
             return Err(refuse(
@@ -180,7 +180,7 @@ impl OriginalOutputAdmission {
             ));
         }
         let admission = Self {
-            custody,
+            ownership,
             files,
             binding,
         };
@@ -188,8 +188,8 @@ impl OriginalOutputAdmission {
         Ok(admission)
     }
     pub(crate) fn check(&self) -> io::Result<()> {
-        self.custody.check()?;
-        if self.custody.binding()? != self.binding {
+        self.ownership.check()?;
+        if self.ownership.binding()? != self.binding {
             return Err(refuse("Original output transaction retired or changed"));
         }
         validate_files(&self.files, &self.binding)
@@ -224,7 +224,7 @@ mod tests {
     use std::os::unix::fs::OpenOptionsExt;
 
     tilo_test_env::scenario! {
-        fn original_output_admission_needs_held_native_custody;
+        fn original_output_admission_needs_held_native_ownership;
 
         phase original_output_real_held_ancestry_rejects_overlap_and_alias;
         // Exercises the same descriptor ancestry boundary used by admission; no fake setup/GPT or
@@ -256,7 +256,7 @@ mod tests {
             assert!(!contains(&source, &output).unwrap());
         }
 
-        phase original_output_retired_native_custody_never_requests_files_or_claim;
+        phase original_output_retired_native_ownership_never_requests_files_or_claim;
         {
             struct Retired(std::sync::atomic::AtomicUsize);
             impl ServiceAuthority for Retired {
@@ -264,7 +264,7 @@ mod tests {
                     Err(refuse("Original transaction retired"))
                 }
             }
-            impl OriginalOutputCustody for Retired {
+            impl OriginalOutputOwnership for Retired {
                 fn held_files(&self) -> io::Result<OriginalOutputFiles> {
                     self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     Err(refuse(
@@ -278,9 +278,9 @@ mod tests {
                     ))
                 }
             }
-            let custody = Arc::new(Retired(std::sync::atomic::AtomicUsize::new(0)));
-            let result = OriginalOutputAdmission::admit(custody.clone());
-            assert_eq!(custody.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let ownership = Arc::new(Retired(std::sync::atomic::AtomicUsize::new(0)));
+            let result = OriginalOutputAdmission::admit(ownership.clone());
+            assert_eq!(ownership.0.load(std::sync::atomic::Ordering::SeqCst), 0);
             let Err(error) = result else {
                 panic!("Retired authority admitted");
             };
@@ -292,7 +292,7 @@ mod tests {
             {
                 "Original transaction retired"
             } else {
-                "Original output requires native root custody"
+                "Original output requires native root ownership"
             };
             assert_eq!(error.to_string(), expected);
         }
@@ -335,7 +335,7 @@ mod tests {
             };
             let error = validate_files(&files, &binding).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert_eq!(error.to_string(), "Original output block custody differs");
+            assert_eq!(error.to_string(), "Original output block ownership differs");
         }
     }
 }

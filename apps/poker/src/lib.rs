@@ -41,7 +41,7 @@ impl ResourceApp for App {
     }
 
     /// A capture cannot play twelve seconds into a turn, so the scenario stages the table
-    /// it reached as the record's start.
+    /// it reached as the resource's start.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Table>) {
         let Some(scenario) = fixture.scenario() else {

@@ -53,6 +53,14 @@ pub fn session_verbs()
 
 /// Settings' committed surface, the one its package ships.
 const SETTINGS_SURFACE: &str = include_str!("../../../../apps/settings/surface.toml");
+/// The settings service's own resource a view reads and changes: the agent
+/// model choice, over the device's provider section and the person's (its
+/// committed surface beside the service, written by its own test, as
+/// `device-surface.json` is beside the session). Settings' window does not
+/// edit it through this service, so it is published beside Settings' surface
+/// rather than in it.
+const AGENT_MODELS_SURFACE: &str =
+    include_str!("../../../session/settings-service/agent-models-surface.json");
 
 /// Each published resource a view names, by package: the name a view reads it by
 /// (`device.sound`), its type there, and the resource the session publishes it as.
@@ -78,6 +86,14 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
         "notifications",
         "Notifications",
         "settings:settings.notifications",
+    ),
+    // The agent model choice the canvas shows and switches: a reading of
+    // both provider sections, its `use-model` answered by the settings
+    // service (`agent-models-surface.json`).
+    (
+        "agent_models",
+        "AgentModels",
+        "settings:settings.agent-models",
     ),
 ];
 
@@ -105,6 +121,21 @@ pub fn device_surfaces() -> Result<Vec<Surface>, String> {
     serde_json::from_str::<File>(DEVICE_SURFACE)
         .map(|file| file.resources)
         .map_err(|error| error.to_string())
+}
+
+/// Settings' resources as its package publishes them: those its committed
+/// `surface.toml` declares, and the settings service's own
+/// ([`AGENT_MODELS_SURFACE`]) a view reads beside them.
+fn settings_surfaces() -> Result<Vec<Surface>, String> {
+    #[derive(Deserialize)]
+    struct File {
+        resources: Vec<Surface>,
+    }
+    let mut surfaces = parse_surfaces(SETTINGS_SURFACE)?;
+    let service: File =
+        serde_json::from_str(AGENT_MODELS_SURFACE).map_err(|error| error.to_string())?;
+    surfaces.extend(service.resources);
+    Ok(surfaces)
 }
 
 /// The packages of the device and Settings, each read from the surface it publishes, its
@@ -142,7 +173,7 @@ fn read_packages() -> Result<Vec<PackageMeta>, String> {
         DEVICE_ROOTS,
     )?;
     let settings = named(
-        package_of(SETTINGS_APP, "Settings", &parse_surfaces(SETTINGS_SURFACE)?),
+        package_of(SETTINGS_APP, "Settings", &settings_surfaces()?),
         SETTINGS_ROOTS,
     )?;
     // The session's own resources are described here, as the runtime loads them

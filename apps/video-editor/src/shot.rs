@@ -47,7 +47,7 @@ mod tests {
     use crate::VideoEditor;
     use ui::prelude::TestApp;
 
-    /// A whole independent build of the app, the record and the scene, which is
+    /// A whole independent build of the app, the resource and the scene, which is
     /// what `--shots --scenario` does and what a second process would do.
     fn capture(scenario: Option<&str>, size: (u32, u32)) -> TestApp<VideoEditor> {
         TestApp::<VideoEditor>::capture_at(scenario, size).expect("the scenario stages")

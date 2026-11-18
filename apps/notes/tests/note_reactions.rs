@@ -10,8 +10,8 @@ use ui::tilo_resource::{Invoke, Replica};
 const ME: &str = "test-author";
 
 fn reactions_of(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<String>)> {
-    app.state()
-        .pages
+    let parts = crate::framework_support::parts(app);
+    notes::Pages::of(&parts)
         .get(&notes::notebook::page_id(page))
         .expect("the note")
         .reactions
@@ -32,24 +32,28 @@ fn reactions_of(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<Str
 fn a_reaction_on_another_replica_converges_and_shows_in_the_header() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-note", serde_json::json!({ "title": "Plan" }))
-        .unwrap();
+    app.call_on(
+        &notes::part::chain_resource(),
+        "new-note",
+        serde_json::json!({ "title": "Plan" }),
+    )
+    .unwrap();
     app.settle();
-    let page = app.read_document(notes::read::list_pages)[0].id;
+    let page = crate::framework_support::shown(&app).pages()[0].id;
     app.harness()
         .presence_mut()
         .set_display_name(MemberId::person("bob"), "Bob");
 
     // Bob reacts on his replica.
-    let mut bob =
-        Replica::<notes::resource::Notebook>::from_doc(app.peer_document()).as_author("bob");
-    let field = notes::resource::Notebook::paths()
+    let (part, peer) = crate::framework_support::peer_part(&app, page);
+    let mut bob = Replica::<notes::PagePart>::from_doc(peer).as_author("bob");
+    let field = notes::PagePart::paths()
         .pages
         .item(&notes::notebook::page_id(page))
         .reactions;
     bob.apply(Invoke::edit(&field.react("🎉")).unwrap())
         .unwrap();
-    app.merge_peer(bob.doc_mut()).unwrap();
+    crate::framework_support::merge_part(&mut app, &part, bob.doc_mut());
     app.settle();
 
     let ours = reactions_of(&app, page);

@@ -2,76 +2,30 @@ use super::*;
 use tilo_actions::policy::MemberId;
 use ui::widget::Widget;
 
-/// A window's person joins the roster through `introduce`.
+/// A record that does not read is not an empty chat: nothing is derived from the read that
+/// failed, and what last read whole stays.
 #[test]
-fn a_live_peer_joins_through_the_user_action() {
+fn a_record_that_does_not_read_keeps_the_channels() {
     let mut app = ChatApp::new(
         crate::identity::LocalIdentity::for_member(&MemberId::person("person-1")),
         ChatRuntime::Unavailable,
         ContentStore::memory(),
-    )
-    .announcing();
+    );
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
         &ui::tilo_resource::MemberId::person("person-1"),
     ));
     let mut state = ui::State::new();
-    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
-    Widget::sync(&mut app, &state.doc, &state.root);
-    app.land(&mut state.doc);
-    let recorded = app
-        .last_dispatched()
-        .expect("the live peer is submitted as introduce");
-    assert_eq!(
-        serde_json::to_value(&recorded).unwrap(),
-        crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-            crate::record::chat::Introduce {
-                name: app.me.name.clone(),
-                initials: app.me.initials.clone(),
-                color: u32::try_from(app.me.color_idx).unwrap(),
-            }
-        ))
-    );
-    let joined = crate::testing::users(&state.doc)
-        .into_iter()
-        .find(|user| user.id == app.me.id)
-        .expect("the window's person is in the roster");
-    assert_eq!(
-        (joined.name, joined.initials, joined.status),
-        (
-            app.me.name.clone(),
-            app.me.initials.clone(),
-            crate::model::Presence::Online
-        )
-    );
-}
-
-/// A record that does not read is not an empty chat: the window's person
-/// is introduced once it reads, not lost to the read that failed, and what
-/// last read whole stays.
-#[test]
-fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
-    let mut app = ChatApp::new(
-        crate::identity::LocalIdentity::for_member(&MemberId::person("person-1")),
-        ChatRuntime::Unavailable,
-        ContentStore::memory(),
-    )
-    .announcing();
-    app.attach_framework(ui::framework::Dispatcher::detached(
-        "so.tilo.chat",
-        &ui::tilo_resource::MemberId::person("person-1"),
-    ));
-    let mut state = ui::State::new();
-    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
+    crate::testing::starter(&mut state.doc, "owner", "Owner");
     let mut broken = state.doc.clone();
     ui::tilo_resource::write_key(
         &mut broken,
         &automerge::ROOT,
-        "people",
-        &ui::tilo_resource::Atom("not a roster".into()),
+        "read",
+        &ui::tilo_resource::Atom("not a set of read marks".into()),
     )
     .expect("the field is written");
-    assert!(<crate::record::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
+    assert!(<crate::chat::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
 
     app.reload(&state.doc);
     let channels = app.channels.len();
@@ -87,21 +41,6 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
         app.channels.len(),
         channels,
         "the channels that last read stay"
-    );
-
-    Widget::sync(&mut app, &state.doc, &state.root);
-    let recorded = app
-        .last_dispatched()
-        .expect("the introduction waited for a record that reads");
-    assert_eq!(
-        serde_json::to_value(&recorded).unwrap(),
-        crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-            crate::record::chat::Introduce {
-                name: app.me.name.clone(),
-                initials: app.me.initials.clone(),
-                color: u32::try_from(app.me.color_idx).unwrap(),
-            }
-        ))
     );
 }
 
@@ -137,7 +76,6 @@ fn user(id: &str, is_agent: bool) -> User {
         },
         name: id.into(),
         initials: "U".into(),
-        color_idx: 0,
         status: crate::model::Presence::Online,
         is_agent,
     }
@@ -150,7 +88,7 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     let mut state = ui::State::new();
     let stranger = "peer@9007495404254172154";
     let mut workspace = crate::testing::Workspace::default();
-    crate::testing::starter(&mut workspace, stranger, "You", "Y");
+    crate::testing::starter(&mut workspace, stranger, "You");
     crate::testing::say(
         &mut workspace,
         stranger,
@@ -182,7 +120,7 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     );
     assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
     assert_eq!(
-        crate::testing::users(&state.doc)[0].name,
+        crate::testing::users()[0].name,
         "You",
         "presentation must not rewrite saved person data"
     );
@@ -257,7 +195,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.user_name(&MemberId::person("a-peer")), "sam (1)");
         assert_eq!(app.user_name(&me), "Sam (2)");
         assert_eq!(app.user_name(&MemberId::person("z-peer")), "Kim");
-        let offered: Vec<String> = app.members().into_iter().map(|p| p.name).collect();
+        let offered: Vec<String> = app.members().into_iter().map(|(_, name)| name).collect();
         assert!(
             offered.contains(&"sam (1)".to_owned()),
             "the @ picker offers the numbered name, got {offered:?}"
@@ -321,7 +259,7 @@ fn a_call_names_each_person_once() {
     let offered = app
         .members()
         .into_iter()
-        .filter(|p| p.name == "Clever Crane")
+        .filter(|(_, name)| name == "Clever Crane")
         .count();
     assert_eq!(offered, 1, "the @ picker offers them once");
 }
@@ -337,7 +275,6 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
         id: MemberId::person("ada-root"),
         name: "Swift Lynx".into(),
         initials: "SL".into(),
-        color_idx: 0,
         status: crate::model::Presence::default(),
         is_agent: false,
     });
@@ -360,20 +297,19 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     );
 }
 
-/// An agent is a member like a person: its answer reads by the name the workspace's own
-/// record of its agents keeps for it — whether or not its device works here — and the conversation
-/// with it is named for it. Never by a placeholder that spells part of its routing id.
+/// An agent is a member like a person: its answer reads by the name the workspace's member list
+/// gives it — whether or not its device works here — and the conversation with it is named for
+/// it. Never by a placeholder that spells part of its routing id.
 #[test]
-fn an_agents_answer_reads_by_the_workspaces_agent_record() {
+fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
     let mut app = ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
-    // The workspace's record of its agents names it; presence never saw it.
-    app.workspace_agent_names
-        .insert("notes".to_owned(), "Notes".to_owned());
+    // The member list names it; its device never worked here.
+    crate::testing::agent_member(&mut app, "notes", "Notes");
     app.reload(&doc);
-    let conversation = crate::record::Chat::direct_id([
+    let conversation = crate::chat::Chat::direct_id([
         MemberId::person(crate::model::ME),
         MemberId::agent("notes"),
     ]);
@@ -388,20 +324,17 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
 
     let answer = doc.message_row(&replied).expect("the agent's answer");
     assert_eq!(app.display_name(&MemberId::agent("notes")), "Notes");
-    assert_eq!(app.user_name(&MemberId::agent("notes")), "Notes (agent)");
-    assert_eq!(app.message_author_name(&answer), "Notes (agent)");
+    assert_eq!(app.user_name(&MemberId::agent("notes")), "Notes");
+    assert_eq!(app.message_author_name(&answer), "Notes");
     assert!(
         matches!(
-            app.message_author(&answer, "Notes (agent)", "", None),
-            ui::author::Author::Agent {
-                for_person: None,
-                ..
-            }
+            app.message_author(&answer, "Notes", None),
+            ui::author::Author::Agent { .. }
         ),
         "an agent's answer is drawn as an agent, not as a person"
     );
     assert!(
-        !crate::host_model::is_provider_output(&answer),
+        !crate::model_stream::is_provider_output(&answer),
         "an agent's own answer is the agent's, not a model's output"
     );
 
@@ -411,18 +344,15 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         read.display_names(
             &conversation,
             Some(&MemberId::person(crate::model::ME)),
-            (&app.workspace_agent_names, &app.workspace_names)
+            &app.workspace_names
         ),
         "Notes"
     );
 
-    // An agent wears the colour its own record gives it, whatever presence announced.
-    app.workspace_agent_colours.insert("notes".to_owned(), 3);
-    app.workspace_colors
-        .insert(MemberId::agent("notes"), (255, 0, 0));
+    // An agent wears the one colour of who it is, as its cursor and caret do in every app.
     assert_eq!(
         app.member_hue(&MemberId::agent("notes")),
-        ui::tokens::PresenceHue::from_slot(3)
+        ui::tokens::PresenceHue::of_member(&MemberId::agent("notes"))
     );
 
     // The sidebar lists the conversation once, by the agent's name and wearing its own face in
@@ -441,8 +371,11 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         .person
         .as_ref()
         .expect("the row wears the agent's face");
-    assert!(face.agent, "an agent's face, never a person's");
-    assert_eq!(face.identity, "notes");
+    assert_eq!(
+        face.who,
+        MemberId::agent("notes").into(),
+        "an agent's face, never a person's"
+    );
     assert_eq!(
         face.colour,
         Some(app.identity_colour(&MemberId::agent("notes")))
@@ -458,9 +391,26 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         ("Notes", "notes")
     );
 
-    // An agent the record names not is never shown a part of its routing id either.
+    // An agent the resource names not is never shown a part of its routing id either.
     assert_eq!(
         app.user_name(&MemberId::agent("stranger")),
         crate::identity::unnamed_label(&MemberId::agent("stranger"))
     );
+}
+
+/// An app's code answers where no window heard a member list: the members the device lends it
+/// name the people it reads, as a window names them.
+#[test]
+fn an_apps_code_names_a_member_by_the_members_the_device_lends_it() {
+    let mut doc = crate::testing::Workspace::default();
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
+    let mut app = ChatApp::new_ephemeral();
+    app.attach_workspace(&doc);
+    app.users.clear();
+    app.workspace_names.clear();
+    let rae = MemberId::person("r".repeat(32));
+    ui::tilo_resource::members::know([(rae.clone(), " Rae ".to_owned())]);
+    assert_eq!(app.display_name(&rae), "Rae");
+    assert_eq!(app.user_name(&rae), "Rae");
+    ui::tilo_resource::members::know([]);
 }

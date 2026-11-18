@@ -100,7 +100,7 @@ assert profile["hostname"] == "loop-backed"
 PY
 
 # Broadening discovery must not make an arbitrary choice when two attached
-# removable devices both carry profiles. Preserve the exactly-one safety gate.
+# removable devices both carry profiles. Preserve the exactly-one safety check.
 second_media="$work/second-media.img"
 cp "$discovered_media" "$second_media"
 rm -rf "$out"

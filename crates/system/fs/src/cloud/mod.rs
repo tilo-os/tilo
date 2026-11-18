@@ -11,7 +11,7 @@
 //! use. [`service`] runs one mount per account, [`volume`] is the account's
 //! engine and [`fuse`] the kernel adapter.
 //!
-//! This is separate from the workspace data plane on purpose: workspaces
+//! This is separate from the workspace backend on purpose: workspaces
 //! replicate signed records between peers, while a cloud account mirrors a
 //! server that is the authority for its own tree.
 

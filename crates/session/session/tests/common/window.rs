@@ -273,6 +273,20 @@ impl Client {
         index
     }
 
+    /// Close the toplevel at `index`, as an app closes one of its windows: it goes from the
+    /// display, and its index stays taken.
+    ///
+    /// # Panics
+    /// The client opened no toplevel at `index`.
+    pub fn close(&self, index: usize) {
+        self.windows
+            .get(index)
+            .expect("the client opened it")
+            .1
+            .destroy();
+        let _ = self.connection.flush();
+    }
+
     /// The toplevel at `index` , for a test that asks it something (a popup's parent, a rectangle
     /// to grab).
     #[track_caller]

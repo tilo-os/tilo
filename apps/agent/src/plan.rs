@@ -1,4 +1,4 @@
-//! What the agent was asked to do, and the gate an answered operation id
+//! What the agent was asked to do, and the check an answered operation id
 //! passes before it becomes an instruction.
 //!
 //! What an instruction may ask for is exactly what the workspace's apps currently
@@ -52,7 +52,7 @@ pub enum Refused {
 }
 
 impl Instruction {
-    /// The full gate over an answered id: checked against what the workspace
+    /// The full check over an answered id: checked against what the workspace
     /// exports **now**, not against what it exported when the id was
     /// offered.
     ///
@@ -282,7 +282,7 @@ mod tests {
     use super::*;
 
     /// An offer built from a real descriptor, so what these tests check is
-    /// what a gate checks against a real survey.
+    /// what a check checks against a real survey.
     fn offer(
         app: &'static str,
         resource: &str,

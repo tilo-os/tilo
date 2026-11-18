@@ -808,7 +808,7 @@ impl UiGraphHandle {
     /// Load a screen from the host's live graph directory when one is set, otherwise from
     /// the embedded source.
     pub fn from_embedded_or_live(screen: &str, embedded: &str) -> Result<Self, UiGraphError> {
-        if let Some(dir) = crate::host::environment().ui_graph_dir.clone() {
+        if let Some(dir) = crate::process::environment().ui_graph_dir.clone() {
             let path = dir.join(format!("{screen}.json"));
             return Self::open_live(path);
         }

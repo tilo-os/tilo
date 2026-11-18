@@ -3,7 +3,7 @@
 //! The transport is deliberately outside this module. These pure wire types
 //! bind a request and response to two root-certified device keys, one purpose,
 //! one challenge, and a short time window. The requester consumes an approval
-//! once through [`ApprovalLedger`]; approval never grants ambient remote
+//! once through [`ApprovalLog`]; approval never grants ambient remote
 //! control or an open-ended authentication session.
 
 use std::collections::BTreeMap;
@@ -264,13 +264,13 @@ impl DeviceApproval {
     }
 }
 
-/// Bounded requester-side replay ledger.
+/// Bounded requester-side replay log.
 #[derive(Clone, Debug, Default)]
-pub struct ApprovalLedger {
+pub struct ApprovalLog {
     spent: BTreeMap<[u8; 32], u64>,
 }
 
-impl ApprovalLedger {
+impl ApprovalLog {
     /// Verify and consume one positive response exactly once.
     pub fn consume(
         &mut self,
@@ -314,7 +314,7 @@ impl ApprovalLedger {
             return Err(ApprovalError::Replay);
         }
         if self.spent.len() >= MAX_SPENT_APPROVALS {
-            return Err(ApprovalError::LedgerFull);
+            return Err(ApprovalError::LogFull);
         }
         self.spent
             .insert(approval.request_digest, request.expires_at_ns);
@@ -358,9 +358,9 @@ pub enum ApprovalError {
     /// This positive approval has already been consumed.
     #[error("device-approval was already consumed")]
     Replay,
-    /// The bounded replay ledger has no capacity for another live request.
-    #[error("device-approval replay ledger is full")]
-    LedgerFull,
+    /// The bounded replay log has no capacity for another live request.
+    #[error("device-approval replay log is full")]
+    LogFull,
     /// Canonical wire encoding failed.
     #[error("device-approval canonical encoding failed: {0}")]
     Canonical(#[from] CanonicalError),
@@ -428,12 +428,12 @@ mod tests {
                 .verify_for(&requester_cert, approver.verifying_key().to_bytes(), 200)
                 .unwrap();
             let approval = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
-            let mut ledger = ApprovalLedger::default();
-            ledger
+            let mut log = ApprovalLog::default();
+            log
                 .consume(&request, &approval, &requester_cert, &approver_cert, 300)
                 .unwrap();
             assert_eq!(
-                ledger.consume(&request, &approval, &requester_cert, &approver_cert, 301),
+                log.consume(&request, &approval, &requester_cert, &approver_cert, 301),
                 Err(ApprovalError::Replay)
             );
         }
@@ -459,7 +459,7 @@ mod tests {
 
             let denial = DeviceApproval::sign_for(&request, false, 250, &approver).unwrap();
             assert_eq!(
-                ApprovalLedger::default().consume(
+                ApprovalLog::default().consume(
                     &request,
                     &denial,
                     &requester_cert,
@@ -471,7 +471,7 @@ mod tests {
             let mut mutated = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
             mutated.approved = false;
             assert_eq!(
-                ApprovalLedger::default().consume(
+                ApprovalLog::default().consume(
                     &request,
                     &mutated,
                     &requester_cert,
@@ -494,7 +494,7 @@ mod tests {
             let request = request(&requester, &approver);
             let approval = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
             assert_eq!(
-                ApprovalLedger::default().consume(
+                ApprovalLog::default().consume(
                     &request,
                     &approval,
                     &requester_cert,
@@ -507,7 +507,7 @@ mod tests {
             let future = DeviceApproval::sign_for(&request, true, 400, &approver).unwrap();
             let approver_cert = cert(&requester_root, &approver);
             assert_eq!(
-                ApprovalLedger::default().consume(
+                ApprovalLog::default().consume(
                     &request,
                     &future,
                     &requester_cert,

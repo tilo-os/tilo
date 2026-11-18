@@ -1,4 +1,4 @@
-//! The waiting stack and the ledger: one place for a decision, one for a record, and no third.
+//! The waiting stack and the log: one place for a decision, one for a record, and no third.
 
 use super::{
     Action, Item, Notice, Owner, Published, State, Target, Urgency, act, clear, defer, deferred,
@@ -157,11 +157,11 @@ tilo_test_env::scenario! {
         assert_eq!(waiting[0].title(), "Update available");
     }
 
-    phase publish_sends_a_decision_to_the_stack_and_a_record_to_the_ledger;
+    phase publish_sends_a_decision_to_the_stack_and_a_record_to_the_log;
     {
         let _serial = crate::jobs::test_lock();
         clear();
-        attention_ledger_clear();
+        attention_log_clear();
         let waiting = publish(Notice::needs(
             owner("so.tilo.print-centre"),
             "The printer ran out of paper",
@@ -207,8 +207,8 @@ tilo_test_env::scenario! {
     }
 }
 
-fn attention_ledger_clear() {
-    super::clear_ledger();
+fn attention_log_clear() {
+    super::clear_log();
 }
 
 #[test]

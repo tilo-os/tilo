@@ -243,9 +243,9 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
 }
 
 #[test]
-fn asking_for_a_host_intent_reads_no_display() {
+fn asking_for_a_process_intent_reads_no_display() {
     let mut window = reading_after();
-    let intent = window.harness().take_host_intent();
+    let intent = window.harness().take_process_intent();
     assert!(intent.is_none(), "nothing was asked of the host");
     assert!(
         !read(&mut window).contains(&"settings.rows.displays"),

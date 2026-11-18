@@ -11,7 +11,7 @@ use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
 fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
     let (state, _bridge) =
-        AppBrokerState::test_state(None, crate::services::HostServices::default());
+        AppBrokerState::test_state(None, crate::services::ProcessServices::default());
     *state.journal.lock().unwrap() = Ok(Some(
         invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
@@ -66,11 +66,11 @@ impl crate::services::LocalPersonServices for ClosedDevice {
 tilo_test_env::scenario! {
     fn host_action_admission_is_signed_and_durable;
 
-    phase configured_native_seat_never_admits_an_unsigned_actor_label;
+    phase configured_local_person_never_admits_an_unsigned_actor_label;
     {
         let (state, _) = AppBrokerState::test_state(
             None,
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 local_person: Some(Arc::new(ClosedDevice)),
                 ..Default::default()
             },
@@ -95,11 +95,11 @@ tilo_test_env::scenario! {
         assert!(state.completed_invocations.lock().unwrap().is_empty());
     }
 
-    phase configured_certificates_without_a_native_seat_never_admit_unsigned_owners;
+    phase configured_certificates_without_a_local_person_never_admit_unsigned_owners;
     {
         let (state, _) = AppBrokerState::test_state(
             None,
-            crate::services::HostServices {
+            crate::services::ProcessServices {
                 native_certificates: Some(Arc::new(ClosedCertificates)),
                 ..Default::default()
             },
@@ -174,7 +174,7 @@ tilo_test_env::scenario! {
             );
             if configured {
                 assert!(
-                    matches!(result, Err(ActionHostError::Unavailable { reason })
+                    matches!(result, Err(ActionCallError::Unavailable { reason })
                     if reason.contains("original certificate missing"))
                 );
             } else {

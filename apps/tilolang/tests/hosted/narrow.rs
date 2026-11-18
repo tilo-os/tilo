@@ -18,7 +18,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
             .expect("the channel it made"),
         other => panic!("the channel was made: {other:?}"),
     };
-    // Sending is the app's own: an action of no one record, given the conversation it writes in.
+    // Sending is the app's own: an action of no one document, given the conversation it writes in.
     let send = session.published_doing(&format!("tl.{CHAT}"), "send");
     let to = serde_json::json!({
         "app": CHAT,
@@ -47,7 +47,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
 }
 
 /// What the way back over a conversation is in a window drawn at a phone's width: a control
-/// saying the words the pill shows, standing where the pill is drawn, which a reader, an agent or
+/// saying the words the pill shows, where the pill is drawn, which a reader, an agent or
 /// a keyboard takes to the first message the person has not seen.
 #[test]
 fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread() {

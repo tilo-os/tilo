@@ -412,7 +412,7 @@ impl Fixture {
             &self.root.join(format!("identity-{label}")),
             "Native Fixture",
             [1, 2, 3],
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let setup_root = self.root.join(format!("setup-{label}"));
@@ -577,7 +577,7 @@ fn add_source_remote(root: &Path, home: &Path) {
     )
     .unwrap();
     // Source construction uses the real bounded CLI so failures expose native diagnostics;
-    // destination restoration still runs through the canonical trust gate.
+    // destination restoration still runs through the canonical trust check.
     command(
         "/usr/bin/flatpak",
         home,

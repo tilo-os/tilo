@@ -3,7 +3,7 @@
 //!
 //! What only this window knows (the page, navigation, downloads, extensions) is
 //! published from the view's live rows and effects; the visit log and address book
-//! are the person's own records.
+//! are the person's own documents.
 
 use std::rc::Rc;
 
@@ -43,7 +43,7 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// What the record holds: the bookmarks, the preferences that follow the person to every
+    /// What the resource holds: the bookmarks, the preferences that follow the person to every
     /// window, and the sites tracker protection is off for.
     pub fn read_document(
         &self,
@@ -444,19 +444,27 @@ impl ResourceApp for BrowserShell {
             if let Err(error) = crate::storage::prepare_window(mode.is_private()) {
                 tracing::error!(%error, "Cannot prepare browser storage");
             }
-            BrowserWidget::new_with_mode(mode).with_service_client(
-                if mode.holds_account_custody()
-                    && cx
-                        .me()
-                        .and_then(ui::tilo_resource::MemberId::person_id)
-                        .and_then(crate::service_sessions::identity)
-                        .is_some()
-                {
-                    ui::collaboration::browser_service_sessions::Client::capture()
-                } else {
+            BrowserWidget::new_with_mode(mode)
+                .with_service_client(
+                    if mode.holds_account_credentials()
+                        && cx
+                            .me()
+                            .and_then(ui::tilo_resource::MemberId::person_id)
+                            .and_then(crate::service_sessions::identity)
+                            .is_some()
+                    {
+                        ui::collaboration::browser_service_sessions::Client::capture()
+                    } else {
+                        None
+                    },
+                )
+                // A client of its own for vault items: whether the session lends any to this
+                // window's pages is the session's to say, once the window is live.
+                .with_item_client(if mode.is_private() {
                     None
-                },
-            )
+                } else {
+                    ui::collaboration::browser_service_sessions::Client::capture()
+                })
         } else {
             BrowserWidget::new_headless_in(mode)
         };
@@ -559,19 +567,19 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
 }
 
 /// Lend `window` what it keeps from the host: the API for its edits, the content
-/// store, and in a live window the person's records, this device's settings and the
+/// store, and in a live window the person's resources, this device's settings and the
 /// engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
-    // The person's account custody (their website accounts, saved addresses, the
+    // The person's account credentials (their website accounts, saved addresses, the
     // profile handed over from another device) is lent only to their own window: a
     // window opened for an agent browses as a visitor.
-    let custody = window_mode(cx).holds_account_custody();
+    let ownership = window_mode(cx).holds_account_credentials();
     window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
         cx.me()
             .and_then(ui::tilo_resource::MemberId::person_id)
             .and_then(crate::service_sessions::identity)
-            .filter(|_| custody),
+            .filter(|_| ownership),
         cx.waker(),
     );
     // A picture of the page is content: the store the host lent this window
@@ -583,7 +591,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     if !cx.mode().is_live() {
         return;
     }
-    if custody
+    if ownership
         && cx
             .me()
             .and_then(ui::tilo_resource::MemberId::person_id)
@@ -592,6 +600,9 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.page_mut().attach_service_catalog(cx.waker());
     }
+    // Whether this window's pages are filled from vault items is its session's to say: a
+    // session that holds a workspace's Browser lends them, a person's own does not.
+    window.page_mut().attach_item_lending(cx.waker());
     // Visits and addresses are the person's own: they follow them to their other
     // devices and never reach a member; a private window keeps none. Downloads
     // and side panel widths stay on this device.
@@ -609,7 +620,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.attach_history(history);
     }
-    // What operated this tab's page is a record of Browser's in the
+    // What operated this tab's page is a resource of Browser's in the
     // workspace, each action a change of it by whoever acted: History, a
     // recording and the person's other devices read it there. A private
     // window keeps none.
@@ -618,14 +629,14 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window
             .page_mut()
-            .attach_page_record(record, cx.device().unwrap_or_default());
+            .attach_page_resource(record, cx.device().unwrap_or_default());
     }
-    if custody && let Some(person) = cx.me().and_then(ui::tilo_resource::MemberId::person_id) {
+    if ownership && let Some(person) = cx.me().and_then(ui::tilo_resource::MemberId::person_id) {
         window
             .page_mut()
             .attach_continuity(person, cx.storage().files(), cx.waker());
     }
-    if custody && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
+    if ownership && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
         window.attach_address_book(book);
     }
     // The engine publishes frames and navigation from its own threads; each wakes the
@@ -1028,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_launched_as_a_visitor_holds_none_of_the_persons_custody() {
+    fn a_window_launched_as_a_visitor_holds_none_of_the_persons_ownership() {
         use ui::permissions::policy::Answer::{Allow, Ask};
         let answers = |arguments: &[&str]| {
             let engine = ui::webview::test_engine::TestEngine::new();

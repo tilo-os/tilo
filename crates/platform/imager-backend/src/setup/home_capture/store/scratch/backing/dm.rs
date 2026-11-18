@@ -2,7 +2,7 @@
 //!
 //! Status mode never requests table parameters (in particular crypt keys).
 //! Only linear and crypt mappings are supported; their dependency graph must
-//! still be checked by the caller down to independently witnessed block media.
+//! still be checked by the caller down to independently observed block media.
 
 use std::{fs::File, io, os::fd::AsRawFd};
 

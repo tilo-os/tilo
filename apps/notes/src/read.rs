@@ -1,13 +1,17 @@
-//! What a notebook document holds, read through the [`Notebook`] record: for
-//! tools and tests that look at a document rather than a window.
+//! What a notebook's documents hold, read through its records: the
+//! [`Notebook`] and the parts its notes are kept in ([`PagePart`]). For tools
+//! and tests that look at documents rather than a window.
+
+use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
 use ui::tilo_resource::Resource;
 use ui::widget::BlockContent;
 
-use crate::actions::{InlineMarkSpan, StoredBlock};
+use crate::actions::{Action, InlineMarkSpan, StoredBlock};
 use crate::model::{PageId, PageMeta, TagId, TagMeta, Workspace};
 use crate::notebook::{Notebook, Page, page_id};
+use crate::part::PagePart;
 
 /// Start a new notebook in `doc`.
 ///
@@ -21,71 +25,123 @@ pub fn initialize(doc: &mut AutoCommit) {
     Notebook::initialize(doc).expect("a new notebook");
 }
 
+/// Start a new part of the notes in `doc`.
+///
+/// # Panics
+/// When `doc` cannot be written.
+#[allow(clippy::expect_used, reason = "a fresh document always takes a part")]
+pub fn initialize_part(doc: &mut AutoCommit) {
+    PagePart::initialize(doc).expect("a new part");
+}
+
 /// The notebook `doc` holds; an empty one when it holds none.
 #[must_use]
 pub fn notebook(doc: &AutoCommit) -> Notebook {
     Notebook::read(doc).unwrap_or_default()
 }
 
-/// Whether `doc` reads as a notebook.
+/// The part of the notes `doc` holds; an empty one when it holds none.
+#[must_use]
+pub fn part(doc: &AutoCommit) -> PagePart {
+    PagePart::read(doc).unwrap_or_default()
+}
+
+/// Whether `doc` reads as a part of the notes.
 pub fn validate(doc: &AutoCommit) -> Result<(), String> {
-    Notebook::read(doc)
+    PagePart::read(doc)
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
-/// The notebook `doc` holds as the window shows it, or why it does not read.
-pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
-    let notebook = Notebook::read(doc).map_err(|error| error.to_string())?;
-    Ok(Workspace::of(&notebook, &Workspace::default()))
-}
-
-/// The notebook `doc` holds, as the window shows it.
+/// The notebook and the notes its `parts` keep, as the window shows them.
 #[must_use]
-pub fn workspace(doc: &AutoCommit) -> Workspace {
-    Workspace::of(&notebook(doc), &Workspace::default())
+pub fn workspace(notebook: &Notebook, parts: &[(u64, Rc<PagePart>)]) -> Workspace {
+    Workspace::of(notebook, parts, &Workspace::default())
 }
 
-/// Every note's title and place, in notebook order.
+/// The notes the part `doc` holds as the window shows them, with no tags,
+/// or why it does not read.
+pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
+    let part = PagePart::read(doc).map_err(|error| error.to_string())?;
+    Ok(workspace(&Notebook::default(), &[(0, Rc::new(part))]))
+}
+
+/// The notes the part `part` holds and the tags of the notebook `notebook`,
+/// as the window shows them, or why either does not read.
+pub fn project_in(notebook: &AutoCommit, part: &AutoCommit) -> Result<Workspace, String> {
+    let tags = Notebook::read(notebook).map_err(|error| error.to_string())?;
+    let held = PagePart::read(part).map_err(|error| error.to_string())?;
+    Ok(workspace(&tags, &[(0, Rc::new(held))]))
+}
+
+/// A note's `action` as a window holding only the part `doc` carries it
+/// out: what it reads of the notes filled in against that part and
+/// `notebook`, or why it is refused.
+pub fn prepared(doc: &AutoCommit, notebook: &Notebook, action: &Action) -> Result<Action, String> {
+    let held = PagePart::read(doc).map_err(|error| error.to_string())?;
+    let mut action = action.clone();
+    crate::part::prepare(&mut action, notebook, &[(0, Rc::new(held))], None)?;
+    Ok(action)
+}
+
+/// Carry out a note's `action` on the part `doc` as a window holding only
+/// that part does ([`prepared`]), as the person's own change.
+pub fn apply_in_part(
+    doc: &mut AutoCommit,
+    notebook: &Notebook,
+    action: &Action,
+) -> Result<(), String> {
+    let action = prepared(doc, notebook, action)?;
+    tilo_actions::apply_local(doc, &action, crate::actions::encode(&action))
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// Every note's title and place the part `doc` holds, in notebook order.
 #[must_use]
 pub fn list_pages(doc: &AutoCommit) -> Vec<PageMeta> {
-    workspace(doc).data.pages
+    workspace(&Notebook::default(), &[(0, Rc::new(part(doc)))])
+        .data
+        .pages
 }
 
-/// Every tag, by name.
+/// Every tag the notebook `doc` holds, by name.
 #[must_use]
 pub fn list_tags(doc: &AutoCommit) -> Vec<TagMeta> {
-    workspace(doc).data.tags
+    workspace(&notebook(doc), &[]).data.tags
 }
 
-/// Every note↔tag edge.
+/// Every note↔tag edge of `workspace`.
 #[must_use]
-pub fn list_tag_assignments(doc: &AutoCommit) -> Vec<(PageId, TagId)> {
-    workspace(doc)
+pub fn list_tag_assignments(workspace: &Workspace) -> Vec<(PageId, TagId)> {
+    workspace
         .data
         .tag_assignments
-        .into_iter()
+        .iter()
         .map(|edge| (edge.page, edge.tag))
         .collect()
 }
 
 fn page(doc: &AutoCommit, id: PageId) -> Option<Page> {
-    notebook(doc).pages.get(&page_id(id)).cloned()
+    part(doc).pages.get(&page_id(id)).cloned()
 }
 
-/// The object note `id`'s body is kept in, when the note exists.
+/// The object note `id`'s body is kept in, in the part `doc`, when the part
+/// keeps the note.
 #[must_use]
 pub fn page_body(doc: &AutoCommit, id: PageId) -> Option<ObjId> {
-    crate::notebook::body_object(doc, id)
+    crate::part::body_object(doc, id)
 }
 
-/// Note `id`'s body as the editor shows it, a block per paragraph.
+/// Note `id`'s body, kept in the part `doc`, as the editor shows it, a block
+/// per paragraph.
 #[must_use]
 pub fn page_blocks(doc: &AutoCommit, id: PageId) -> Vec<BlockContent> {
     page(doc, id).map(|page| page.blocks()).unwrap_or_default()
 }
 
-/// The id and text of every block of note `id`, in order.
+/// The id and text of every block of note `id`, kept in the part `doc`, in
+/// order.
 #[must_use]
 pub fn page_block_snapshots(doc: &AutoCommit, id: PageId) -> Vec<(String, String)> {
     page_blocks(doc, id)
@@ -94,7 +150,8 @@ pub fn page_block_snapshots(doc: &AutoCommit, id: PageId) -> Vec<(String, String
         .collect()
 }
 
-/// The formatting and page links of every block of note `id`.
+/// The formatting and page links of every block of note `id`, kept in the
+/// part `doc`.
 #[must_use]
 pub fn page_block_marks(doc: &AutoCommit, id: PageId) -> Vec<(String, Vec<InlineMarkSpan>)> {
     page_stored_blocks(doc, id)
@@ -103,7 +160,8 @@ pub fn page_block_marks(doc: &AutoCommit, id: PageId) -> Vec<(String, Vec<Inline
         .collect()
 }
 
-/// Every block of note `id` with its formatting and page links.
+/// Every block of note `id`, kept in the part `doc`, with its formatting and
+/// page links.
 #[must_use]
 pub fn page_stored_blocks(doc: &AutoCommit, id: PageId) -> Vec<StoredBlock> {
     page(doc, id)
@@ -111,10 +169,10 @@ pub fn page_stored_blocks(doc: &AutoCommit, id: PageId) -> Vec<StoredBlock> {
         .unwrap_or_default()
 }
 
-/// The pictures `doc` holds whose bytes are readable now, by the `asset:`
-/// source the notes show them by.
+/// The pictures the `parts` keep whose bytes are readable now, by the
+/// `asset:` source the notes show them by.
 #[must_use]
-pub fn images(doc: &AutoCommit) -> std::collections::HashMap<String, Vec<u8>> {
+pub fn images(parts: &[(u64, Rc<PagePart>)]) -> std::collections::HashMap<String, Vec<u8>> {
     let content = crate::notebook::content();
-    crate::notebook::image_snapshot(&notebook(doc).images, &content)
+    crate::notebook::image_snapshot(&crate::part::images(parts), &content)
 }

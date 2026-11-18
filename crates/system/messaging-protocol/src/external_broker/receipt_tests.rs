@@ -117,7 +117,7 @@ pub(super) fn assemble(
         Box::new(runtime),
         history,
         route.scope.clone(),
-        Arc::new(tests::Gate {
+        Arc::new(tests::Hold {
             owner: owner.clone(),
             revoked: revoked.clone(),
         }),

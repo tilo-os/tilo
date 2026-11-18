@@ -165,13 +165,13 @@ driver leaves behind, so there the greeter is still required.
 A server has no sign-in screen, so it is judged by what it is for. The server
 image enables the same boot assessment, and `tilo-boot-health` there is given
 `tilo-server-health` as this machine's own liveness (`TILO_BOOT_HEALTH_UNIT`, the
-same seam an always-on board uses for its session). That probe passes when the
-relay is active — it notifies readiness only after its iroh endpoint is bound and
+same boundary an always-on board uses for its session). That probe passes when the
+server is active — it notifies readiness only after its iroh endpoint is bound and
 accepting, so peers can dial it, and it keeps writing its metrics snapshot into
-its state root — and `tilo-relay-admin status` could open every durable workspace
+its state root — and `tilo-server-admin status` could open every durable workspace
 store; where the machine runs a filesystem replica (`/etc/tilo/home-peer.toml`),
 that replica is active and publishes complete content. A server that has not
-been paired yet has no relay to serve; it is judged by reaching
+been paired yet has nothing to serve; it is judged by reaching
 `multi-user.target` alone, so a fresh machine waiting at its pairing prompt is
 never rolled back for it. A server stages an update but does not restart into it
 blindly: `tilo-server-update-apply` does that only inside the operator's update
@@ -258,6 +258,29 @@ Boot loader entries (what the firmware will actually offer):
   tilo-repair.conf                               no boot counter
 ```
 
+
+### A person's servers update one at a time
+
+A server reboots into a staged update (`tilo-server-update-apply`, inside its
+update window and only once its running generation passed its health check)
+only after its server daemon said so (`tilo-server-admin rollout prepare`): the
+daemon takes its person's admin workspace's update lease, so at most one of
+their servers restarts at a time; checks that every workspace the server holds
+keeps its copies on the person's other servers; and drains — it takes and renews
+no lease of any workspace from then on and lets go of the ones it holds, so their
+other holders take that work over at once, and it suspends its workspaces' Linux
+machines. A server that waits says why in its journal.
+
+After the restart, once the new generation passed `tilo-server-health`
+(`tilo-boot-health` is active), the same unit tells the daemon which image it booted
+(`rollout booted`), and the daemon lets the lease go to the person's next server.
+A generation that fails its health check is taken back by the boot loader as
+above, and the server comes up on the old one still holding the lease: the
+person's other servers never start that update, so the rollout halts by itself,
+and this server does not reboot into the same image again. The next update that
+boots healthy here releases the lease and the rollout goes on. Desktops holding
+a workspace together never take this lease.
+
 ## Repair Mode
 
 A boot menu entry called **Tilo Repair Mode**, always present, that brings the
@@ -275,7 +298,7 @@ filesystem, no update timer, no sshd. It gives you a console with
 It is the same rootfs the desktop boots, selected by `tilo.mode=repair` on a
 *sealed* kernel command line — see [security/repair-mode.md](security/repair-mode.md)
 for how that is derived and for the authentication story (short version: on an
-encrypted machine the recovery gate verifies a passphrase against the LUKS
+encrypted machine the recovery check verifies a passphrase against the LUKS
 header, even when the disk is already unlocked).
 
 What repair mode cannot fix: a rootfs that will not mount. The composefs root is
@@ -342,8 +365,8 @@ Check the following invariants and paths:
 ```bash
 # Host-side, no VM: the invariants the mechanism rests on — that the two
 # tilo.mode values are the same length, that the repair entry sorts below every
-# deployment and carries no counter, that the health gate is wired the way
-# systemd expects, that every repair verb is behind the passphrase gate.
+# deployment and carries no counter, that the health check is wired the way
+# systemd expects, that every repair verb is behind the passphrase check.
 ./os/tests/repair_mode.sh
 
 # And that the ESP is sized for the retention window plus the repair image.

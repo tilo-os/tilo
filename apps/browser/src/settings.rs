@@ -122,7 +122,7 @@ fn search_engine_choices(current: &str) -> Vec<(String, String)> {
 
 /// Durable browser preferences, as the browser document holds them.
 ///
-/// A new record starts with ad-blocking on, clear-on-exit off and `DuckDuckGo` for
+/// A new resource starts with ad-blocking on, clear-on-exit off and `DuckDuckGo` for
 /// both search and homepage. The homepage and search engine are always absolute
 /// http(s) addresses.
 #[derive(Clone, Debug, PartialEq, Eq, Model)]

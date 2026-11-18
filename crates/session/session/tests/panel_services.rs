@@ -29,7 +29,7 @@ use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_service::LoopWake;
 use tilo_session::surfaces::Surface;
-use tilo_session::{ActionPlane, Options, Service, Session};
+use tilo_session::{AppSocket, Options, Service, Session};
 use tilo_test_env::ScopedEnv;
 
 /// One display's refresh: how often the session asks its clients for their next frame.
@@ -60,7 +60,7 @@ fn panel_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// The session the panel talks to: headless, hosting the sound service, with its plane on `socket`
+/// The session the panel talks to: headless, hosting the sound service, with its app wire on `socket`
 /// and the panel started the way it starts Quick Settings.
 fn session_with_panel(socket: &Path) -> Session {
     let wake = LoopWake::default();
@@ -71,14 +71,14 @@ fn session_with_panel(socket: &Path) -> Session {
             services,
             collab: false,
             wake,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             surfaces: vec![Surface::new("probe", panel_binary())],
             ..Options::default()
         },
     )
 }
 
-/// A session with the sound service and its plane, starting no panel.
+/// A session with the sound service and its app wire, starting no panel.
 fn session_alone(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
@@ -88,7 +88,7 @@ fn session_alone(socket: &Path) -> Session {
             services,
             collab: false,
             wake,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             ..Options::default()
         },
     )

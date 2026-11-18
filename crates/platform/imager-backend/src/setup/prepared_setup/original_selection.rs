@@ -13,9 +13,9 @@ pub struct OfflineApplicationsPlan {
     caller: super::super::home_capture::OriginalCallerFacts,
     sealed_reservation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_witness: Option<super::super::home_capture::SourceWitness>,
+    source_proof: Option<super::super::home_capture::SourceProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    mounted_witness: Option<super::super::home_capture::MountedWitness>,
+    mounted_proof: Option<super::super::home_capture::MountedProof>,
 }
 impl OfflineApplicationsPlan {
     pub fn new(
@@ -35,35 +35,35 @@ impl OfflineApplicationsPlan {
             media,
             caller,
             sealed_reservation,
-            source_witness: None,
-            mounted_witness: None,
+            source_proof: None,
+            mounted_proof: None,
         };
         value.validate()?;
         Ok(value)
     }
-    pub fn with_source_witness(
+    pub fn with_source_proof(
         mut self,
-        witness: super::super::home_capture::SourceWitness,
+        proof: super::super::home_capture::SourceProof,
     ) -> io::Result<Self> {
-        witness.validate_plan(&self.source)?;
-        self.source_witness = Some(witness);
+        proof.validate_plan(&self.source)?;
+        self.source_proof = Some(proof);
         self.validate()?;
         Ok(self)
     }
-    pub fn source_witness(&self) -> Option<&super::super::home_capture::SourceWitness> {
-        self.source_witness.as_ref()
+    pub fn source_proof(&self) -> Option<&super::super::home_capture::SourceProof> {
+        self.source_proof.as_ref()
     }
-    pub fn with_mounted_witness(
+    pub fn with_mounted_proof(
         mut self,
-        witness: super::super::home_capture::MountedWitness,
+        proof: super::super::home_capture::MountedProof,
     ) -> io::Result<Self> {
-        witness.matches_source(self.source_witness.as_ref().ok_or_else(invalid)?)?;
-        self.mounted_witness = Some(witness);
+        proof.matches_source(self.source_proof.as_ref().ok_or_else(invalid)?)?;
+        self.mounted_proof = Some(proof);
         self.validate()?;
         Ok(self)
     }
-    pub fn mounted_witness(&self) -> Option<&super::super::home_capture::MountedWitness> {
-        self.mounted_witness.as_ref()
+    pub fn mounted_proof(&self) -> Option<&super::super::home_capture::MountedProof> {
+        self.mounted_proof.as_ref()
     }
     pub(super) fn validate(&self) -> io::Result<()> {
         self.source.validate()?;
@@ -86,11 +86,11 @@ impl OfflineApplicationsPlan {
             }
         }
         self.caller.validate(self.source.home.original_uid())?;
-        if let Some(witness) = &self.source_witness {
-            witness.validate_plan(&self.source)?;
+        if let Some(proof) = &self.source_proof {
+            proof.validate_plan(&self.source)?;
         }
-        if let Some(witness) = &self.mounted_witness {
-            witness.matches_source(self.source_witness.as_ref().ok_or_else(invalid)?)?;
+        if let Some(proof) = &self.mounted_proof {
+            proof.matches_source(self.source_proof.as_ref().ok_or_else(invalid)?)?;
         }
         let uuid = |value: &str| {
             uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
@@ -149,32 +149,32 @@ impl OfflineApplicationsPlan {
         &self.media
     }
     /// Reconstruct the producer's complete geometry from the authenticated
-    /// declaration and, for selected installations, its genuine source custody.
+    /// declaration and, for selected installations, its genuine source ownership.
     /// Protected marker JSON alone never supplies an installation inventory.
     #[cfg(target_os = "linux")]
     pub fn authenticated_source_plans(&self) -> io::Result<Vec<Vec<u8>>> {
         let geometry = crate::setup::source_geometry::original_source_plans;
-        if !self.source.categories.flatpak && self.mounted_witness.is_none() {
+        if !self.source.categories.flatpak && self.mounted_proof.is_none() {
             return geometry(&self.source);
         }
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Original installation geometry requires root custody",
+                "Original installation geometry requires root ownership",
             ));
         }
-        let witness = self.source_witness().ok_or_else(|| {
+        let proof = self.source_proof().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Original installation geometry lacks source witness",
+                "Original installation geometry lacks source proof",
             )
         })?;
         let source = super::super::migration_handoff::mount_read_only(&self.source)?;
         // Retain the actual owned resolver while record authentication runs:
         // a construction error must not fall through an unobserved mount Drop.
-        let original = match super::super::home_capture::SourceReadContext::review_witness(
+        let original = match super::super::home_capture::SourceReadContext::review_proof(
             source.clone(),
-            witness,
+            proof,
         ) {
             Ok(original) => {
                 drop(source);
@@ -186,7 +186,7 @@ impl OfflineApplicationsPlan {
             }
         };
         let result = (|| {
-            original.verify_requested(&self.source, witness, &self.caller)?;
+            original.verify_requested(&self.source, proof, &self.caller)?;
             let mut plans = if self.source.categories.flatpak {
                 let inventory =
                     super::super::flatpak_transfer::offline_original::OriginalInventoryGrant::review(
@@ -207,13 +207,13 @@ impl OfflineApplicationsPlan {
             } else {
                 geometry(&self.source)?
             };
-            if let Some(mounted) = self.mounted_witness() {
+            if let Some(mounted) = self.mounted_proof() {
                 // This API is a bounded metadata-only review with no job token.
                 // The export path uses its live token and retained epoch instead.
                 let cancel = std::sync::atomic::AtomicBool::new(false);
                 original.append_mounted_source_geometry(mounted, &mut plans, &cancel)?;
             }
-            original.verify_requested(&self.source, witness, &self.caller)?;
+            original.verify_requested(&self.source, proof, &self.caller)?;
             Ok(plans)
         })();
         // All borrowed inventory descriptors are gone before mount retirement.
@@ -293,16 +293,16 @@ impl OriginalSelectionPlan {
             Self::Applications(plan) => plan.requested_caller(),
         }
     }
-    pub fn source_witness(&self) -> Option<&super::super::home_capture::SourceWitness> {
+    pub fn source_proof(&self) -> Option<&super::super::home_capture::SourceProof> {
         match self {
-            Self::Home(plan) => plan.source_witness(),
-            Self::Applications(plan) => plan.source_witness(),
+            Self::Home(plan) => plan.source_proof(),
+            Self::Applications(plan) => plan.source_proof(),
         }
     }
-    pub fn mounted_witness(&self) -> Option<&super::super::home_capture::MountedWitness> {
+    pub fn mounted_proof(&self) -> Option<&super::super::home_capture::MountedProof> {
         match self {
-            Self::Home(plan) => plan.mounted_witness(),
-            Self::Applications(plan) => plan.mounted_witness(),
+            Self::Home(plan) => plan.mounted_proof(),
+            Self::Applications(plan) => plan.mounted_proof(),
         }
     }
     pub fn sealed_reservation(&self) -> u64 {

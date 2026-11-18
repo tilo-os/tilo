@@ -160,7 +160,7 @@ pub trait Backend {
         )))
     }
 
-    /// Draw and blur what lies below a hosted surface's translucent region (see
+    /// Draw and blur what lies below a surface's translucent region (see
     /// [`crate::backdrop::draw`]); `None` when it did not change. Backends that cannot draw outside
     /// their frames have none.
     fn backdrop(
@@ -217,6 +217,30 @@ pub trait Backend {
         Err(BackendError(format!(
             "{name}: this backend does not read frames back"
         )))
+    }
+
+    /// Set what the output `name` says it is, as a display the person named does: what its clients
+    /// read through `xdg-output`. A backend with no such output says so.
+    fn set_output_description(
+        &mut self,
+        name: &str,
+        description: &str,
+    ) -> Result<(), BackendError> {
+        let _ = description;
+        Err(BackendError(format!(
+            "{name}: this backend has no such output"
+        )))
+    }
+
+    /// What the output named `name` shows, the pointer and every pen's cursor in front, read
+    /// back: what a display draws, where [`Backend::screenshot`] leaves them out so the scene can
+    /// be compared on its own. A backend that does not say draws no cursor.
+    fn screenshot_with_cursor(
+        &mut self,
+        state: &mut State,
+        name: &str,
+    ) -> Result<Screenshot, BackendError> {
+        self.screenshot(state, name)
     }
 }
 

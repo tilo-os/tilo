@@ -209,7 +209,7 @@ impl SetupApp {
             launch_worker,
             InternalInstall::new(
                 install_flow::StagingRuntime::live(),
-                install_flow::live_gate_open(),
+                install_flow::live_install_allowed(),
                 host,
             ),
         );
@@ -233,7 +233,7 @@ impl SetupApp {
 
     fn check_ready(&self) -> bool {
         self.full_os_check.is_some()
-            && self.internal_install.gate()
+            && self.internal_install.check()
             && self.internal_install.offers_full_os()
             && self
                 .internal_download_flow
@@ -289,7 +289,7 @@ impl SetupApp {
         self.desktop_flow = DesktopFlow::new_live();
         if let Some(preparation) = &self.guided_desktop {
             self.desktop_flow
-                .require_account_protocol(preparation.prepared.account_custody_protocol());
+                .require_account_protocol(preparation.prepared.account_credentials_protocol());
             self.desktop_flow
                 .require_service_session_protocol(preparation.prepared.service_session_protocol());
             self.refresh_guided_navigation();
@@ -313,7 +313,7 @@ impl SetupApp {
         Self::with_parts(
             capabilities,
             worker_launcher,
-            InternalInstall::gated(capabilities.platform.host),
+            InternalInstall::guarded(capabilities.platform.host),
         )
     }
 
@@ -1297,7 +1297,7 @@ impl SetupApp {
     }
 
     fn apply_install_capability(&mut self) {
-        if !self.internal_install.gate() {
+        if !self.internal_install.check() {
             return;
         }
         let mut platform = self.capabilities.platform;
@@ -1410,7 +1410,7 @@ impl SetupApp {
                 t("imager-setup-internal-status-fast-startup"),
             ),
             SetupCommand::RecheckInternal => (
-                if self.internal_install.gate()
+                if self.internal_install.check()
                     && !self.internal_install.is_probing()
                     && !self.internal_install.is_running()
                 {
@@ -1534,7 +1534,7 @@ impl SetupApp {
         let bounds = install.bounds_gib();
         super::actions::InternalProjection {
             readiness: match install.readiness() {
-                Readiness::Gated => "gated",
+                Readiness::NotEnabled => "not-enabled",
                 Readiness::Checking => "checking",
                 Readiness::NoRelease => "no-release",
                 Readiness::Unsupported(_) => "unsupported",
@@ -1589,11 +1589,11 @@ impl SetupApp {
                 restart: on_review && install.can_restart() && idle_host,
                 restart_later: on_review && install.can_restart() && !install.restart_deferred(),
                 retry: self.full_os_check.is_none()
-                    && install.gate()
+                    && install.check()
                     && pending.is_some()
                     && !running,
                 remove: self.full_os_check.is_none()
-                    && install.gate()
+                    && install.check()
                     && true
                     && pending.is_some()
                     && !running,
@@ -1603,7 +1603,7 @@ impl SetupApp {
                 disable_fast_startup: self.on_full_os_review()
                     && idle_host
                     && install.command_available(HostCommand::DisableFastStartup),
-                recheck: install.gate() && true && !install.is_probing() && !running,
+                recheck: install.check() && true && !install.is_probing() && !running,
             },
         }
     }
@@ -1611,10 +1611,10 @@ impl SetupApp {
     fn internal_readiness_text(&self) -> String {
         let host = install_flow::host_arg(self.internal_install.host());
         match self.internal_install.readiness() {
-            Readiness::Gated if self.full_os_check.is_some() => {
-                super::strings::t("imager-setup-check-gated")
+            Readiness::NotEnabled if self.full_os_check.is_some() => {
+                super::strings::t("imager-setup-check-not-enabled")
             }
-            Readiness::Gated => super::strings::t("imager-setup-internal-gated"),
+            Readiness::NotEnabled => super::strings::t("imager-setup-internal-not-enabled"),
             Readiness::Checking => {
                 super::strings::t_args("imager-setup-internal-checking", &[("host", host.into())])
             }
@@ -1763,7 +1763,7 @@ impl SetupApp {
             "imager-setup-internal-expect",
             &[("host", host.into())],
         ))));
-        if install_flow::BUILD_GATE != Some("1") {
+        if install_flow::BUILD_ALLOW != Some("1") {
             content = content.push(Box::new(
                 Text::new(&t("imager-setup-internal-unverified"))
                     .with_id("setup.internal.unverified")
@@ -2037,7 +2037,7 @@ fn fixture_desktop_release() -> DesktopRelease {
         url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
         byte_size: 7,
         sha256: sha256.clone(),
-        account_custody: None,
+        account_credentials: None,
         verified_runtime: Some(RuntimeEvidence {
             schema: 1,
             reference: "nonproduction screenshot fixture".into(),
@@ -2240,7 +2240,7 @@ mod tests {
 
         phase guided_navigation_follows_actual_download_and_staging_and_refuses_legacy_back;
         {
-            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let mut fixture = guarded_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
             open_full_review(app);
             app.refresh_guided_navigation();
@@ -2835,7 +2835,7 @@ mod tests {
                 .is_available()
         );
 
-        let mut blocked = gated_app(
+        let mut blocked = guarded_app(
             install_flow::tests::Fakes::new(vec![super::super::staging::probe::Blocker::NotGpt]),
             HostOs::Windows,
         );
@@ -2845,7 +2845,7 @@ mod tests {
         assert!(invoke_internal(&mut blocked.app, "install-internal").is_err());
         assert!(blocked.fakes.launches.lock().unwrap().is_empty());
 
-        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Windows);
+        let mut fixture = guarded_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Windows);
         let app = &mut fixture.app;
         app.review_full_os();
         assert!(invoke_internal(app, "install-internal").is_err());
@@ -2916,7 +2916,7 @@ mod tests {
 
         phase full_os_check_refuses_mutations_even_with_forged_public_actions;
         {
-            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let mut fixture = guarded_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let result = LocalState::new(None);
             let app = &mut fixture.app;
             app.review_full_os();
@@ -2974,7 +2974,7 @@ mod tests {
             pending
                 .records
                 .push(install_flow::tests::record("actual-operation"));
-            let mut fixture = gated_app(pending, HostOs::Linux);
+            let mut fixture = guarded_app(pending, HostOs::Linux);
             fixture.app.review_full_os();
             fixture.app.full_os_check = Some(LocalState::new(None));
             fixture.app.start_host_probe();
@@ -3003,7 +3003,7 @@ mod tests {
         {
             let fakes = install_flow::tests::Fakes::new(Vec::new());
             let facts = Arc::new(std::sync::Mutex::new(fakes.facts.clone()));
-            let mut fixture = gated_app(fakes, HostOs::Linux);
+            let mut fixture = guarded_app(fakes, HostOs::Linux);
             let mut runtime = fixture.fakes.runtime();
             let current = Arc::clone(&facts);
             runtime.probe = Arc::new(move || current.lock().unwrap().clone());
@@ -3037,16 +3037,16 @@ mod tests {
             assert!(fixture.fakes.launches.lock().unwrap().is_empty());
         }
 
-        phase full_os_check_closed_gate_is_build_limitation_and_keeps_back_available;
+        phase full_os_check_closed_check_is_build_limitation_and_keeps_back_available;
         {
             let result = LocalState::new(None);
             let mut app = SetupApp::for_full_os_check(result);
-            app.internal_install = InternalInstall::gated(HostOs::Linux);
+            app.internal_install = InternalInstall::guarded(HostOs::Linux);
             assert!(!app.check_ready());
             assert!(app.guided_navigation_guard().get());
             assert_eq!(
                 app.internal_readiness_text(),
-                super::super::strings::t("imager-setup-check-gated")
+                super::super::strings::t("imager-setup-check-not-enabled")
             );
             assert!(!app.internal_projection().availability.install);
         }
@@ -3057,7 +3057,7 @@ mod tests {
         Ok(())
     }
 
-    struct GatedFixture {
+    struct HeldFixture {
         app: SetupApp,
         fakes: install_flow::tests::Fakes,
         bytes: Vec<u8>,
@@ -3066,7 +3066,7 @@ mod tests {
         _preference: tempfile::TempDir,
     }
 
-    fn gated_app(fakes: install_flow::tests::Fakes, host: HostOs) -> GatedFixture {
+    fn guarded_app(fakes: install_flow::tests::Fakes, host: HostOs) -> HeldFixture {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
         let server = Server::new(vec![
             response(200, "", &bytes),
@@ -3101,7 +3101,7 @@ mod tests {
             ],
             "x86_64",
         ));
-        GatedFixture {
+        HeldFixture {
             app,
             fakes,
             bytes,
@@ -3132,7 +3132,8 @@ mod tests {
     )]
     fn full_os_install_stages_only_the_current_reviewed_plan() {
         {
-            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let mut fixture =
+                guarded_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
             assert!(!app.capabilities.platform.supports(Experience::FullOs));
             assert!(
@@ -3144,7 +3145,7 @@ mod tests {
             assert!(app.capabilities.platform.supports(Experience::FullOs));
             assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
 
-            let mut blocked = gated_app(
+            let mut blocked = guarded_app(
                 install_flow::tests::Fakes::new(vec![
                     super::super::staging::probe::Blocker::NotGpt,
                 ]),
@@ -3163,7 +3164,8 @@ mod tests {
         }
 
         {
-            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let mut fixture =
+                guarded_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
             open_full_review(app);
             let composition = app.build_composition();
@@ -3261,7 +3263,8 @@ mod tests {
         }
 
         {
-            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let mut fixture =
+                guarded_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
             open_full_review(app);
             invoke_internal(app, "start-internal-download").unwrap();
@@ -3290,7 +3293,7 @@ mod tests {
 
         {
             use super::super::staging::probe::Blocker;
-            let mut fixture = gated_app(
+            let mut fixture = guarded_app(
                 install_flow::tests::Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]),
                 HostOs::Windows,
             );
@@ -3328,7 +3331,7 @@ mod tests {
             assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
             assert!(fixture.fakes.launches.lock().unwrap().is_empty());
 
-            let mut battery = gated_app(
+            let mut battery = guarded_app(
                 install_flow::tests::Fakes::new(vec![Blocker::OnBattery]),
                 HostOs::Linux,
             );
@@ -3356,7 +3359,7 @@ mod tests {
             use super::super::staging::probe::Blocker;
             let mut fakes = install_flow::tests::Fakes::new(vec![Blocker::PendingOperation]);
             fakes.records = vec![install_flow::tests::record("op-1")];
-            let mut fixture = gated_app(fakes, HostOs::Linux);
+            let mut fixture = guarded_app(fakes, HostOs::Linux);
             let app = &mut fixture.app;
             app.start_host_probe();
             app.poll_background();

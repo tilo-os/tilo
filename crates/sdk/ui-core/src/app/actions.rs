@@ -367,7 +367,7 @@ impl App {
         )
     }
 
-    fn bound_broker_route(&self) -> Option<&crate::collaboration::PrimaryRouteWitness> {
+    fn bound_broker_route(&self) -> Option<&crate::collaboration::AcceptedRoute> {
         #[cfg(test)]
         if let Some(route) = &self.actions.bound_broker_route_for_test {
             return Some(route);
@@ -378,9 +378,9 @@ impl App {
         if crate::bound_dispatch::has_matching_broker_component(
             self.root_widget.as_ref(),
             self.bound_broker_route(),
-        ) && let Some(witness) = self.bound_broker_route()
+        ) && let Some(observation) = self.bound_broker_route()
         {
-            return witness.route().app_id.clone();
+            return observation.route().app_id.clone();
         }
         crate::collaboration::local_app_id()
     }
@@ -536,18 +536,18 @@ impl App {
         // publish the same surface, so the route carries it already. Each
         // keystroke begins by publishing (an input's edits are attributed
         // to the surface on the route); this keeps that to a comparison.
-        let witness = tilo_resource::profiling::Phase::start("ui.publish.witness");
+        let observation = tilo_resource::profiling::Phase::start("ui.publish.observation");
         let stamp = self.publication_stamp();
         let unchanged = stamp.as_ref().is_some_and(|stamp| {
             Some(stamp) == self.actions.published_stamp.as_ref()
-                // The directory's own witness (the bound owners' generations
+                // The directory's own observation (the bound owners' generations
                 // and permissions), taken now: a grant revoked in place is a
                 // change though no generation moved.
                 && self
                     .try_action_directory_revision()
                     .is_ok_and(|now| now == stamp.revision())
         });
-        drop(witness);
+        drop(observation);
         if unchanged {
             self.settle_held_own_invocations(true);
             return;
@@ -577,31 +577,64 @@ impl App {
         };
     }
 
+    /// How long an invocation of this app's own action waits for the route
+    /// that offers it while the connection stands, before the person is told
+    /// it was not carried out. The hold stands in every build of the toolkit,
+    /// with its feature native and without, so the type is named by its full
+    /// path: this file's parent brings the short name in for native and test
+    /// builds alone.
+    const HELD_OWN_INVOCATION_WAIT: crate::time::Duration = crate::time::Duration::from_secs(20);
+
     /// Send an invocation of this app's own action to the session action
     /// host, on the route, after the surface that offers it. It waits here,
     /// behind any invocation made before it, while the route cannot carry
     /// that surface yet.
     fn send_own_invocation(&mut self, request: tilo_actions::remote::InvokeRequest) {
-        self.actions.held_own_invocations.push_back(request);
+        self.actions
+            .held_own_invocations
+            .push_back(HeldOwnInvocation {
+                request,
+                since: crate::time::now(),
+            });
         self.publish_action_surface();
+        // Still waiting, and the first to wait: a route that never opens brings
+        // no event of its own, so the pass that ends the wait is asked for now.
+        if self.actions.held_own_invocations.len() == 1
+            && let Some(scope) = &self.wake_scope
+        {
+            crate::background::Background::current()
+                .wake_after(Self::HELD_OWN_INVOCATION_WAIT, scope.handle());
+        }
     }
 
     /// Release the held own invocations, in order, once the route carries
     /// the current surface; refuse them with the connection's own reason
     /// once it has gone. Otherwise they keep waiting: the publication the
     /// route's readiness brings settles them.
+    ///
+    /// The wait has an end while the connection stands too: once the route's
+    /// join has failed, or the oldest of them has waited
+    /// [`Self::HELD_OWN_INVOCATION_WAIT`], they are refused with why, and the
+    /// person is told ([`Self::settle_own_refusal`]).
     fn settle_held_own_invocations(&mut self, carried: bool) {
-        use tilo_actions::remote::{ActionHostError, RemoteActionMessage};
+        use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
         if self.actions.held_own_invocations.is_empty() {
             return;
         }
         let connected = self.collaboration.manager.is_connected();
-        if connected && !carried {
-            return;
-        }
-        while let Some(request) = self.actions.held_own_invocations.pop_front() {
+        let ended = if connected && !carried {
+            let Some(why) = self.held_own_invocations_ended() else {
+                return;
+            };
+            Some(why)
+        } else {
+            None
+        };
+        while let Some(held) = self.actions.held_own_invocations.pop_front() {
+            let request = held.request;
             let refusal = RemoteActionMessage::Invoke(request.clone());
-            if connected
+            if ended.is_none()
+                && connected
                 && self
                     .collaboration
                     .manager
@@ -611,13 +644,47 @@ impl App {
             {
                 continue;
             }
-            let reason = self.collaboration.manager.state().reason().to_owned();
+            let reason = ended
+                .clone()
+                .unwrap_or_else(|| self.collaboration.manager.state().reason().to_owned());
             if let Some(answer) =
-                tilo_actions::remote::refuse(&refusal, ActionHostError::Unavailable { reason })
+                tilo_actions::remote::refuse(&refusal, ActionCallError::Unavailable { reason })
             {
                 self.apply_remote_action_answer(answer);
             }
         }
+    }
+
+    /// Why the held own invocations wait no longer though the connection
+    /// stands, once they do not: the join of the route that offers them
+    /// failed, or the oldest of them waited
+    /// [`Self::HELD_OWN_INVOCATION_WAIT`]. Logged as it is found.
+    fn held_own_invocations_ended(&self) -> Option<String> {
+        let failed = self.bound_broker_route().and_then(|accepted| {
+            self.collaboration
+                .manager
+                .route_join_failure(accepted.route())
+        });
+        let waited = self
+            .actions
+            .held_own_invocations
+            .front()
+            .map(|held| crate::time::now().saturating_duration_since(held.since));
+        let why = match (failed, waited) {
+            (Some(failure), _) => failure,
+            (None, Some(waited)) if waited >= Self::HELD_OWN_INVOCATION_WAIT => {
+                crate::i18n::I18nManager::lookup_plain("action-own-route-not-open")
+            }
+            _ => return None,
+        };
+        tracing::warn!(
+            held = self.actions.held_own_invocations.len(),
+            waited_ms = waited.map_or(0, |waited| u64::try_from(waited.as_millis())
+                .unwrap_or(u64::MAX)),
+            %why,
+            "invocations of this window's own actions waited for a route that does not open"
+        );
+        Some(why)
     }
 
     /// Withdraw everything this app published: a reset delta with nothing in it.
@@ -674,11 +741,11 @@ impl App {
             return;
         }
         // A surface's actions belong to the shell that placed it, not to a
-        // document: there is no history to custody them, and no route to
-        // witness.
+        // document: there is no history to ownership them, and no route to
+        // observation.
         if !self.collaboration.manager.hosts_surface() && !self.published_action_history_ready() {
             // An already accepted delivery lost its original owner-history
-            // custody. Run no handler; disconnect retains admitted uncertainty.
+            // ownership. Run no handler; disconnect retains admitted uncertainty.
             self.action_publication_failure = Some(
                 "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
             );
@@ -783,7 +850,7 @@ impl App {
             self.dispatch_control_invocations();
             if let Some(scope) = &authorization {
                 // Submitted continuations already carry their original broker
-                // custody. A retained handler clone must not submit more work
+                // ownership. A retained handler clone must not submit more work
                 // once this handler has answered, even while those edits settle.
                 scope.cancel();
             }
@@ -909,7 +976,7 @@ impl App {
         self.collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
     }
 
     fn encode_resource_action(
@@ -1963,7 +2030,7 @@ impl App {
             return 0;
         }
         // A committed refresh temporarily closes the original native history
-        // gate. Keep control/causal intents with their existing producers until
+        // check. Keep control/causal intents with their existing producers until
         // the owner applies that capture and its worker rechecks the route.
         // Nothing has crossed the action API yet; accepted deliveries retain
         // the separate fail-closed guard in invoke_published_action.
@@ -2044,6 +2111,26 @@ impl App {
             self.refuse_in_window(&tilo_actions::ApiError::Failed(reason));
         }
         true
+    }
+
+    /// The broker refused an invocation of this window's own action outright
+    /// (`request_id` is none of the kinds settled before this): nothing was
+    /// carried out and no handler of the app answers for it, so the person
+    /// is told here, in the window's bar, and a line is logged.
+    pub(super) fn settle_own_refusal(
+        &mut self,
+        request_id: u64,
+        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
+    ) {
+        let Err(reason) = result else {
+            return;
+        };
+        tracing::warn!(
+            request_id,
+            %reason,
+            "an invocation of this window's own action was refused"
+        );
+        self.refuse_in_window(&tilo_actions::ApiError::Failed(reason.clone()));
     }
 
     fn request_invocation_cancellation(&mut self, wire_id: u64) {
@@ -2692,7 +2779,7 @@ impl App {
             return;
         }
         // SAFETY: the layout solve has settled the exclusively owned tree and
-        // its current custody map. Removed or ambiguous openers cannot match.
+        // its current ownership map. Removed or ambiguous openers cannot match.
         self.focused_node = unsafe {
             focus.restore(
                 &self.layout.node_map,
@@ -2896,7 +2983,7 @@ impl App {
             .as_deref()
             .and_then(crate::action_palette::ActionPalette::history_exact_capture_request);
         if let Some((target, invocation, original_arguments)) = exact_capture {
-            let witness = crate::bound_dispatch::control_witness_with_arguments(
+            let observation = crate::bound_dispatch::control_observation_with_arguments(
                 self.root_widget.as_ref(),
                 &self.state.doc,
                 &target,
@@ -2905,7 +2992,7 @@ impl App {
             )
             .map_err(|error| error.to_string());
             if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-                palette.retain_history_exact_witness(witness);
+                palette.retain_history_exact_observation(observation);
             }
         }
         // An operation row may have fired. Document mutations go through the
@@ -2976,7 +3063,7 @@ impl App {
                                 reason,
                             })
                     });
-                let current = if pending.history_witness.is_some() {
+                let current = if pending.history_seen.is_some() {
                     pending
                         .history_identity
                         .as_ref()
@@ -3000,7 +3087,7 @@ impl App {
                         &pending.address,
                     )
                 };
-                let witness = match pending.history_witness.as_ref() {
+                let observation = match pending.history_seen.as_ref() {
                     Some(Ok(captured)) => pending.control_invocation().ok_or_else(|| {
                         tilo_actions::ApiError::InvalidArguments(
                             "The retained palette arguments are incomplete".into(),
@@ -3011,7 +3098,7 @@ impl App {
                                 "The retained palette argument representation is invalid".into(),
                             )
                         })?;
-                        crate::bound_dispatch::control_witness_with_arguments(
+                        crate::bound_dispatch::control_observation_with_arguments(
                             self.root_widget.as_ref(), &self.state.doc, &target, &invocation,
                             original_arguments,
                         ).and_then(|current| {
@@ -3037,13 +3124,13 @@ impl App {
                                 "The retained palette argument representation is invalid".into(),
                             )
                         })?;
-                        crate::bound_dispatch::control_witness_with_arguments(
+                        crate::bound_dispatch::control_observation_with_arguments(
                             self.root_widget.as_ref(), &self.state.doc, &target, &invocation,
                             original_arguments,
                         ).map(|_| ())
                     }),
                 };
-                match (draft, captured, current, witness) {
+                match (draft, captured, current, observation) {
                     (Ok(()), Ok(captured), Ok(current), Ok(())) if captured == current => match target {
                         crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(&target, &palette_request, None),
                         crate::bound_dispatch::local_target::LocalResourceTarget::Outer => self.invoke_unbound_resource_action(&palette_request),
@@ -3215,7 +3302,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
     fn workspace(&self) -> Option<String> {
         self.manager
             .primary_route()
-            .map(|witness| witness.route().cluster_id.to_string())
+            .map(|observation| observation.route().cluster_id.to_string())
     }
 
     fn invoke(
@@ -3247,7 +3334,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
     }
 }
 
-impl crate::host_core::ControlHost for App {
+impl crate::app_core::ControlCore for App {
     fn local_author(&self) -> &crate::permissions::MemberId {
         &self.collaboration.local_author
     }
@@ -3333,7 +3420,7 @@ impl crate::host_core::ControlHost for App {
         true
     }
 
-    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+    fn control_domain(&self) -> &crate::control_domain::ControlDomain {
         &self.control_domain
     }
 

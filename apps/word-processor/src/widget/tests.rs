@@ -281,7 +281,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
 }
 
 #[test]
-fn resources_navigate_by_stable_ranges_and_files_are_records() {
+fn resources_navigate_by_stable_ranges_and_files_are_resources() {
     {
         let mut state = crate::initialized_state();
         let mut wp = Editor::detached();
@@ -3863,9 +3863,9 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
     }
 
     {
-        let services = ui::host::HostServices::null()
+        let services = ui::process::ProcessServices::null()
             .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         let mut state = crate::initialized_state();
         let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
@@ -4853,7 +4853,7 @@ fn tracked_changes_render_and_accept_individually() {
         );
         assert!(
             !after.changes.iter().any(|ch| ch.id == ins_id),
-            "the change record is dropped after accept"
+            "the change resource is dropped after accept"
         );
         assert!(
             block_change_decos(b).0.is_empty(),
@@ -4902,7 +4902,7 @@ fn tracked_changes_render_and_accept_individually() {
         );
         assert!(
             !after.changes.iter().any(|ch| ch.id == del_id),
-            "the change record is dropped after accept"
+            "the change resource is dropped after accept"
         );
         assert!(
             block_change_decos(b).1.is_empty(),
@@ -4948,7 +4948,7 @@ fn tracked_changes_reject_and_accept_all() {
         assert_eq!(b.text, "keep gone", "rejecting a deletion keeps the text");
         assert!(
             !after.changes.iter().any(|ch| ch.id == del_id),
-            "the change record is dropped after reject"
+            "the change resource is dropped after reject"
         );
         assert!(
             block_change_decos(b).1.is_empty(),
@@ -6316,356 +6316,128 @@ fn drawn_focused() -> Framed<WordProcessorWidget> {
     mount(state, wp, 1100, 760)
 }
 
-#[test]
-fn semantic_text_caret_is_painted_without_a_selection_or_input() {
-    let mut framed = drawn_focused();
-    let framed = editor(&mut framed);
-    let block = first_block_id(framed);
+/// What the agent `helper` wrote into `from..to` of `block`, landed.
+fn agent_wrote(block: &str, from: u64, to: u64) -> PresenceCtx {
     let mut presence = PresenceCtx::empty();
+    let write = tilo_actions::SemanticInteraction {
+        version: tilo_actions::INTERACTION_VERSION,
+        invocation: tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: tilo_actions::Acting::agent("helper"),
+        phase: tilo_actions::InteractionPhase::Committed,
+        action: tilo_actions::InteractionAction {
+            id: "type-text".into(),
+            label: "Type text".into(),
+            app: None,
+            step: None,
+            creates: None,
+            did: None,
+        },
+        resource: tilo_actions::ActionResource {
+            id: "word-processor.document".into(),
+            kind: "document".into(),
+            label: "A document".into(),
+        },
+        anchor: tilo_actions::InteractionAnchor::Text {
+            region: "body".into(),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: block.into(),
+                start: from,
+                end: to,
+            }],
+        },
+        group: None,
+    };
+    if let Some(member) = write.actor.member_id() {
+        presence.set_display_name(member.clone(), "Helper");
+    }
+    presence.apply_interaction(write).unwrap();
     presence
-        .apply_interaction(tilo_actions::SemanticInteraction {
-            version: tilo_actions::INTERACTION_VERSION,
-            invocation: tilo_actions::InvocationId::new(),
-            sequence: 1,
-            actor: tilo_actions::Acting::agent("synthetic-semantic-run"),
-            phase: tilo_actions::InteractionPhase::Applying,
-            action: tilo_actions::InteractionAction {
-                id: "type-text".into(),
-                label: "Type text".into(),
-                app: None,
-                step: None,
-                creates: None,
-                did: None,
-            },
-            resource: tilo_actions::ActionResource {
-                id: "word-processor.document".into(),
-                kind: "document".into(),
-                label: "Synthetic document".into(),
-            },
-            anchor: tilo_actions::InteractionAnchor::Text {
-                region: "body".into(),
-                ranges: vec![tilo_actions::InteractionTextRange {
-                    block,
-                    start: 0,
-                    end: 0,
-                }],
-            },
-            group: None,
-        })
-        .unwrap();
-    let before = (
-        framed.inner.caret.clone(),
-        framed.scroll_y,
-        framed.lifecycle.focused,
-    );
-    let mut scene = Scene::new();
-    framed.draw_remote_overlays(
-        &mut scene,
-        framed.content_transform(Affine::IDENTITY),
-        framed.zoom_viewport,
-        &mut TextRenderer::new(),
-        &Theme::dark(),
-        &presence,
-    );
-    assert!(
-        !scene.encoding().path_tags.is_empty(),
-        "an actual collapsed semantic text range must paint its shaped caret"
-    );
-    assert_eq!(
-        scene.encoding().n_clips,
-        2,
-        "semantic decoration and label share one balanced document clip"
-    );
-    assert_eq!(
-        (
-            framed.inner.caret.clone(),
-            framed.scroll_y,
-            framed.lifecycle.focused
-        ),
-        before,
-        "observing semantic work must not move or focus the local editor"
-    );
 }
 
-fn semantic_text_anchor(block: &str, start: u64, end: u64) -> tilo_actions::InteractionAnchor {
-    tilo_actions::InteractionAnchor::Text {
-        region: "body".into(),
-        ranges: vec![tilo_actions::InteractionTextRange {
-            block: block.into(),
-            start,
-            end,
-        }],
-    }
+/// One frame of the editor's presence overlays, at `at`: what it painted, and the caret tags it
+/// noted.
+fn presence_frame(
+    framed: &Editor,
+    presence: &PresenceCtx,
+    at: ui::time::Instant,
+) -> (usize, Vec<ui::presence::CaretTag>) {
+    ui::time::testing::with_monotonic_time(at, || {
+        presence.clear_caret_tags();
+        let mut scene = Scene::new();
+        framed.draw_remote_overlays(
+            &mut scene,
+            framed.content_transform(Affine::IDENTITY),
+            framed.zoom_viewport,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            presence,
+        );
+        (scene.encoding().path_tags.len(), presence.caret_tags())
+    })
 }
 
-fn semantic_text_fixture(text: &str) -> Framed<WordProcessorWidget> {
-    let mut state = crate::initialized_state();
-    let mut wp = Editor::detached();
-    wp.sync(&state.doc, &state.root);
-    wp.model_mut().insert_str(&mut edits(&mut state.doc), text);
-    mount(state, wp, 1100, 760)
-}
-
-#[test]
-fn semantic_text_geometry_uses_unicode_character_endpoints_and_real_carets() {
-    let mut framed = semantic_text_fixture("a😀éZ");
-    let (wp, state) = split(&mut framed);
-    let block = first_block_id(wp);
-    let laid = &wp.laid[0];
-    let layout = &wp.layout_cache[&block].1;
-    let before = (
-        state.doc.save(),
-        wp.inner.caret.clone(),
-        wp.scroll_y,
-        wp.lifecycle.focused,
-    );
-    let expected = layout
-        .selection_rects(1, 7)
-        .into_iter()
-        .map(|(x0, y0, x1, y1)| {
-            Rect::new(
-                laid.text_x + f64::from(x0),
-                laid.layout_y + f64::from(y0),
-                laid.text_x + f64::from(x1),
-                laid.layout_y + f64::from(y1),
-            )
-        })
-        .collect::<Vec<_>>();
-    let transform = wp.content_transform(Affine::IDENTITY);
-    assert_eq!(
-        wp.semantic_text_rects(
-            &semantic_text_anchor(&block, 1, 3),
-            transform,
-            wp.zoom_viewport
-        ),
-        Some(expected)
-    );
-    for (character, byte) in [(0, 0), (3, 7), (4, 8)] {
-        let (x, y, h) = layout.caret_geometry(byte);
-        let expected = Rect::new(
-            laid.text_x + f64::from(x),
-            laid.layout_y + f64::from(y),
-            laid.text_x + f64::from(x) + CARET_WIDTH,
-            laid.layout_y + f64::from(y + h),
-        );
-        assert_eq!(
-            wp.semantic_text_rects(
-                &semantic_text_anchor(&block, character, character),
-                transform,
-                wp.zoom_viewport
-            ),
-            Some(vec![expected])
-        );
-    }
-    assert_eq!(
-        (
-            state.doc.save(),
-            wp.inner.caret.clone(),
-            wp.scroll_y,
-            wp.lifecycle.focused
-        ),
-        before
-    );
-    let mut empty = semantic_text_fixture("");
-    let empty = editor(&mut empty);
-    let rects = empty
-        .semantic_text_rects(
-            &semantic_text_anchor(&first_block_id(empty), 0, 0),
-            empty.content_transform(Affine::IDENTITY),
-            empty.zoom_viewport,
-        )
-        .unwrap();
-    assert_eq!(rects.len(), 1);
-    assert!(rects[0].width() > 0.0 && rects[0].height() > 0.0);
-}
-
-#[test]
-fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
-    let mut framed = semantic_text_fixture("abc");
-    let framed = editor(&mut framed);
-    let block = first_block_id(framed);
-    let transform = framed.content_transform(Affine::IDENTITY);
-    let clip = framed.zoom_viewport;
-    for anchor in [
-        semantic_text_anchor(&block, 2, 1),
-        semantic_text_anchor(&block, 0, 4),
-        semantic_text_anchor(&block, u64::MAX, u64::MAX),
-        semantic_text_anchor("missing", 0, 0),
-    ] {
-        assert!(
-            framed
-                .semantic_text_rects(&anchor, transform, clip)
-                .is_none()
-        );
-    }
-    for region in ["header", "footer", "unknown"] {
-        let mut anchor = semantic_text_anchor(&block, 0, 1);
-        let tilo_actions::InteractionAnchor::Text { region: target, .. } = &mut anchor else {
-            unreachable!()
-        };
-        *target = region.into();
-        assert!(
-            framed
-                .semantic_text_rects(&anchor, transform, clip)
-                .is_none()
-        );
-    }
-    for transform in [
-        Affine::scale(0.0),
-        Affine::scale(f64::NAN),
-        Affine::rotate(0.5),
-    ] {
-        assert!(
-            framed
-                .semantic_text_rects(&semantic_text_anchor(&block, 0, 1), transform, clip)
-                .is_none()
-        );
-    }
-    framed.layout_cache.remove(&block);
-    assert!(
-        framed
-            .semantic_text_rects(&semantic_text_anchor(&block, 0, 1), transform, clip)
-            .is_none()
-    );
-}
-
-#[test]
-fn semantic_text_geometry_never_turns_an_image_hit_test_layout_into_a_caret() {
-    let mut state = crate::initialized_state();
-    let mut wp = Editor::detached();
-    wp.sync(&state.doc, &state.root);
-    wp.model_mut()
-        .insert_image_bytes(&mut edits(&mut state.doc), TEST_PNG);
+fn a_document_with_text() -> Framed<WordProcessorWidget> {
+    let (state, mut wp) = populated();
+    wp.set_focus(true);
     let mut framed = mount(state, wp, 1100, 760);
-    let framed = editor(&mut framed);
-    let image = framed
-        .laid
-        .iter()
-        .find(|laid| laid.kind == "image")
-        .unwrap();
-    assert!(
-        framed.layout_cache.contains_key(&image.id),
-        "image fixture has the real empty hit-test layout"
-    );
-    assert!(
-        framed
-            .semantic_text_rects(
-                &semantic_text_anchor(&image.id, 0, 0),
-                framed.content_transform(Affine::IDENTITY),
-                framed.zoom_viewport
-            )
-            .is_none()
-    );
+    pipeline_draw(&mut framed, 1100, 760);
+    framed
 }
 
 #[test]
-fn semantic_text_geometry_clips_after_pan_and_zoom_without_edge_clamping() {
-    let mut framed = semantic_text_fixture("abcdefgh");
-    let framed = editor(&mut framed);
-    let anchor = semantic_text_anchor(&first_block_id(framed), 0, 8);
-    let transform = Affine::translate((31.0, 47.0)) * Affine::scale(1.75);
-    let all = framed
-        .semantic_text_rects(
-            &anchor,
-            transform,
-            Rect::new(-10000.0, -10000.0, 10000.0, 10000.0),
-        )
-        .unwrap();
-    assert_eq!(all.len(), 1);
-    let bounds = transform.transform_rect_bbox(all[0]);
-    let clip = Rect::new(bounds.center().x, bounds.y0, bounds.x1, bounds.y1);
-    let partial = framed
-        .semantic_text_rects(&anchor, transform, clip)
-        .unwrap();
-    assert_eq!(partial.len(), 1);
-    let visible = transform.transform_rect_bbox(partial[0]);
-    assert!((visible.x0 - clip.x0).abs() < 1e-8);
-    assert!((visible.x1 - clip.x1).abs() < 1e-8);
-    assert!(
-        framed
-            .semantic_text_rects(&anchor, transform, Rect::new(-100.0, -100.0, -50.0, -50.0))
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn semantic_text_geometry_uses_each_visible_page_slices_layout_origin() {
-    let text = "A paragraph spanning real page slices with wrapped words. ".repeat(300);
-    let mut framed = semantic_text_fixture(&text);
-    pipeline_draw(&mut framed, 1100, 3000);
+fn an_agents_text_write_arrives_then_rests_where_it_landed() {
+    let mut framed = a_document_with_text();
     let framed = editor(&mut framed);
     let block = first_block_id(framed);
-    let transform = framed.content_transform(Affine::IDENTITY);
-    let anchor = semantic_text_anchor(&block, 0, text.chars().count() as u64);
-    let rects = framed
-        .semantic_text_rects(&anchor, transform, framed.zoom_viewport)
-        .unwrap();
-    let visible_slices = framed
-        .laid
-        .iter()
-        .filter(|laid| laid.id == block)
-        .filter_map(|laid| laid.clip)
-        .filter(|clip| {
-            let visible = transform
-                .transform_rect_bbox(*clip)
-                .intersect(framed.zoom_viewport);
-            visible.width() > 0.0 && visible.height() > 0.0
-        })
-        .collect::<Vec<_>>();
+    let at = ui::time::now();
+    let presence = ui::time::testing::with_monotonic_time(at, || agent_wrote(&block, 0, 5));
+    let empty = presence_frame(framed, &PresenceCtx::empty(), at).0;
+    let (painted, tags) = presence_frame(framed, &presence, at);
+    assert!(painted > empty, "the write is washed over its characters");
+    assert_eq!(tags.len(), 1, "its caret wears one tag saying what it did");
     assert!(
-        visible_slices.len() >= 2,
-        "real pagination fixture must expose multiple slices"
+        tags[0].label.contains("Helper"),
+        "the tag names who writes: {:?}",
+        tags[0].label
     );
-    for slice in visible_slices {
-        assert!(
-            rects.iter().any(|rect| {
-                let hit = rect.intersect(slice);
-                hit.width() > 0.0 && hit.height() > 0.0
-            }),
-            "every visible slice must resolve its own text lines"
-        );
-    }
-    for rect in &rects {
-        assert!(
-            framed
-                .laid
-                .iter()
-                .filter(|laid| laid.id == block)
-                .filter_map(|laid| laid.clip)
-                .any(|clip| clip.intersect(*rect) == *rect),
-            "selection must not cross a page gap"
-        );
-    }
-    let later = framed
-        .laid
-        .iter()
-        .find(|laid| laid.id == block && laid.layout_y < laid.y_top - 1.0 && laid.clip.is_some())
-        .unwrap();
-    let (_, layout) = &framed.layout_cache[&block];
-    let expected_line = layout
-        .selection_rects(0, text.len())
-        .into_iter()
-        .find(|(_, y0, _, y1)| {
-            let top = later.layout_y + f64::from(*y0);
-            let bottom = later.layout_y + f64::from(*y1);
-            top >= later.y_top && bottom <= later.y_top + later.height
-        })
-        .unwrap();
-    let exact = Rect::new(
-        later.text_x + f64::from(expected_line.0),
-        later.layout_y + f64::from(expected_line.1),
-        later.text_x + f64::from(expected_line.2),
-        later.layout_y + f64::from(expected_line.3),
+    let rest = at + ui::motion::Trace::LIFE * 2;
+    let (painted, tags) = presence_frame(framed, &presence, rest);
+    assert!(painted > empty, "its last write keeps a quiet wash");
+    assert!(tags.is_empty(), "the resting mark wears no caret");
+}
+
+#[test]
+fn the_person_editing_or_reaching_into_a_write_puts_its_mark_away() {
+    let caret_inside = {
+        let mut framed = a_document_with_text();
+        let framed = editor(&mut framed);
+        let block = first_block_id(framed);
+        framed.inner.set_caret(Caret {
+            block: block.clone(),
+            offset: 2,
+        });
+        let at = ui::time::now();
+        let presence = ui::time::testing::with_monotonic_time(at, || agent_wrote(&block, 0, 5));
+        let empty = presence_frame(framed, &PresenceCtx::empty(), at).0;
+        presence_frame(framed, &presence, at).0 - empty
+    };
+    assert_eq!(
+        caret_inside, 0,
+        "the person's caret in the write puts the mark away"
     );
-    let only = framed
-        .semantic_text_rects(&anchor, transform, transform.transform_rect_bbox(exact))
-        .unwrap();
-    assert!(!only.is_empty());
-    assert!(
-        only.iter()
-            .all(|rect| (rect.y0 - exact.y0).abs() < 1e-8 && (rect.y1 - exact.y1).abs() < 1e-8)
-    );
+    let edited = {
+        let mut framed = a_document_with_text();
+        let framed = editor(&mut framed);
+        let block = first_block_id(framed);
+        let at = ui::time::now();
+        let presence = ui::time::testing::with_monotonic_time(at, || agent_wrote(&block, 0, 5));
+        let empty = presence_frame(framed, &PresenceCtx::empty(), at).0;
+        assert!(presence_frame(framed, &presence, at).0 > empty, "it landed");
+        framed.edited_at = Some((block, at));
+        presence_frame(framed, &presence, at).0 - empty
+    };
+    assert_eq!(edited, 0, "editing the block puts the mark away");
 }
 
 #[test]

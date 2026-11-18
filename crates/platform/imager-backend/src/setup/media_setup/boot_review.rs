@@ -117,7 +117,7 @@ impl<'a> PendingBootReview<'a> {
                     )?,
                 )
             {
-                return Err(changed("Pending boot custody changed"));
+                return Err(changed("Pending boot ownership changed"));
             }
             Ok(())
         })
@@ -140,7 +140,7 @@ fn review_pending<'a>(
 ) -> io::Result<PendingBootReview<'a>> {
     // SAFETY: geteuid only observes the executing root controller's credentials.
     if rustix::process::geteuid().as_raw() != 0 {
-        return Err(changed("Boot pending setup review requires root custody"));
+        return Err(changed("Boot pending setup review requires root ownership"));
     }
     check_cancel(cancel)?;
     root.validate_destination()?;
@@ -185,7 +185,7 @@ fn review_pending<'a>(
         || actual.mode() & 0o022 != 0
         || actual.dev() != inbox.metadata()?.dev()
     {
-        return Err(changed("Pending setup directory custody differs"));
+        return Err(changed("Pending setup directory ownership differs"));
     }
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
@@ -196,7 +196,7 @@ fn review_pending<'a>(
         || before.mode() & 0o022 != 0
         || before.len() != area.setup.sealed_bytes
     {
-        return Err(changed("Pending setup ciphertext custody differs"));
+        return Err(changed("Pending setup ciphertext ownership differs"));
     }
     let quarantine = tempfile::Builder::new()
         .prefix("tilo-boot-pending-setup-")

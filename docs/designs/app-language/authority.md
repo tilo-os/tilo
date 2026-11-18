@@ -40,17 +40,17 @@ who proposed it. Dismissing records the refusal and changes nothing.
   between actions, kept answers, other apps) and lists what broke.
 - Schema changes migrate. A migration never deletes data or changes an id; what can't be read
   is set aside, never dropped.
-- A package migrates its own records with a `migration action` on the type whose resources
+- A package migrates its own documents with a `migration action` on the type whose resources
   change. A field the type no longer uses stays declared as an ordinary field: its values stay
-  in the records, and migrations read them. The platform runs the migration once on each
+  in the resources, and migrations read them. The platform runs the migration once on each
   resource of its type, as an ordinary action in history (undone like any other), recording in
   the same change that it ran. It may move items between collections, which keeps their ids.
 - An app renamed keeps what it had: `app so.tilo.lang.tasks "Tasks" (previously:
-  so.tilo.lang.todo)` reads the records under the old id as its own, where they are. The old id
+  so.tilo.lang.todo)` reads the resources under the old id as its own, where they are. The old id
   is signed into the app, and only the same publisher's app can take it over. The renamed app
-  keeps opening the workspace record of its earliest id
-  (`<workspace>#app:so.tilo.lang.todo`): nothing is copied to a record of the new id. It works
-  on that record as itself: its grants, publications and windows name the new id, and the session
+  keeps opening the workspace document of its earliest id
+  (`<workspace>#app:so.tilo.lang.todo`): nothing is copied to a resource of the new id. It works
+  on that resource as itself: its grants, publications and windows name the new id, and the session
   admits it there only once the takeover is verified.
 
 ## Not yet

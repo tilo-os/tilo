@@ -303,10 +303,10 @@ impl Receiver {
             return Err(denied());
         }
         // ACK83 is transport only. Keep this source fixture's actual stack,
-        // protected records and capsule custody alive for the whole journey.
+        // protected records and capsule ownership alive for the whole journey.
         // The original namespace init sends final84 only after its normal
         // action/status and source-owner retirement observations complete.
-        // Lost transport cannot prove that completion: retain custody until
+        // Lost transport cannot prove that completion: retain ownership until
         // the outer owned PID namespace is actually retired.
         installed.revalidate()?;
         loop {

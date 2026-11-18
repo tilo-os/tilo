@@ -380,7 +380,7 @@ tilo_test_env::scenario! {
             "the bell stands inside the bar's band: {bell:?} of {band:?}"
         );
         // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped inside
-        // the control it counts, so a bell standing inside the bar's band carries no pixel of its count
+        // the control it counts, so a bell inside the bar's band carries no pixel of its count
         // over the screen's top edge. (What the notice itself draws on the shell is not the bar's; the
         // pixels below the bar change with it.)
         let (inside, _) = changed_in(&before, &after, bell);
@@ -406,7 +406,7 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     // A second workspace, in front.
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -456,7 +456,7 @@ fn the_workspaces_menu_stands_while_the_change_feed_under_it() {
     // The shell changes under the menu: another workspace, in front.
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -496,7 +496,12 @@ fn with_nothing_changing_the_bar_does_no_work() {
     for _ in 0..20 {
         session.step(Duration::from_millis(1)).unwrap();
     }
-    let minute = || ui::clock::local_now().timestamp().div_euclid(60);
+    let minute = || {
+        ui::clock::local_now()
+            .timestamp()
+            .as_second()
+            .div_euclid(60)
+    };
     loop {
         let before = session.shell_work().expect("the shell's bar runs");
         let at = minute();
@@ -527,7 +532,7 @@ fn with_nothing_changing_the_bar_does_no_work() {
     let before = session.shell_work().unwrap();
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -571,7 +576,7 @@ fn a_new_workspace_frame_is_measured() {
         let workspaces = shell(&session).workspaces.len();
         session
             .invoke(
-                tilo_surface_host::shell_part::CHROME_RESOURCE,
+                tilo_shell_surface::shell_part::CHROME_RESOURCE,
                 "new-workspace",
                 &serde_json::Map::new(),
             )
@@ -771,7 +776,7 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     // A second workspace, in front, with a window of its own.
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -840,7 +845,7 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     let behind = shell(&session).workspace;
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -1062,15 +1067,11 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     // The panel comes up on the frame after the reading moves: its keys are drawn with it.
     until(&mut session, |session| says(session, "Go there"));
     // Its keys are named with it, and stand where the frame that draws them lays them out.
-    let keys = crate::common::wait_for(
-        &mut session,
-        "the keys standing in the switcher",
-        |session| {
-            let labels = session.accessible_labels();
-            let keys = labels.iter().find(|label| label.contains("Alt + Tab"))?;
-            session.shell_control(keys)
-        },
-    );
+    let keys = crate::common::wait_for(&mut session, "the keys in the switcher", |session| {
+        let labels = session.accessible_labels();
+        let keys = labels.iter().find(|label| label.contains("Alt + Tab"))?;
+        session.shell_control(keys)
+    });
     let held = keep(&mut session, "shell-switcher");
     // The switcher names every window it walks, each with the app it shows, and the keys stand
     // under them rather than over their titles.
@@ -1349,7 +1350,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         session.shell_control("Mia Clayton").is_none(),
         "no face of a person who is not here"
     );
-    // Someone here, as the collaboration plane lists them: their face, named for assistive
+    // Someone here, as the peer network lists them: their face, named for assistive
     // technology, on the one button that opens the roster.
     set_here(&session, 1);
     until(&mut session, |session| says(session, "Mia Clayton is here"));
@@ -1486,7 +1487,7 @@ tilo_test_env::scenario! {
     phase an_apps_open_the_shell_calls_starts_it;
     // An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app in the
     // workspace in front, as the launcher's row of it does. (The press making that call is
-    // `tilo-surface-host` 's `a_press_on_a_dock_app_asks_the_session_to_open_it` .)
+    // `tilo-shell-surface` 's `a_press_on_a_dock_app_asks_the_session_to_open_it` .)
     {
         let _settled = ui::motion::testing::settled();
         let apps = Rc::new(Apps::default());
@@ -1502,7 +1503,7 @@ tilo_test_env::scenario! {
         session
             .shell_link()
             .expect("the shell runs")
-            .ask(tilo_surface_host::shell_part::Ask {
+            .ask(tilo_shell_surface::shell_part::Ask {
                 resource: "app.so.tilo.sheets".to_owned(),
                 action: "open".to_owned(),
                 arguments: std::collections::BTreeMap::new(),
@@ -1568,7 +1569,7 @@ fn session_with_devices(width: i32, height: i32) -> Session {
 }
 
 /// The devices session of the shell's own chrome, with quick settings' app installed: the panel the
-/// chrome shows, started as a process of the session and standing where the stack places the slot,
+/// chrome shows, started as a process of the session and where the stack places the slot,
 /// over the bar's status. The screen shell draws its own quick settings (`quick.tl`), so the
 /// panel's app is the shell's.
 fn session_with_the_panel(width: i32, height: i32) -> Session {
@@ -1780,7 +1781,7 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     // panel's app where the stack placed it.
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "quick-settings",
             &serde_json::Map::new(),
         )
@@ -1862,7 +1863,7 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
     until_settled(&mut session, |session| says(session, &time(session).clock));
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "quick-settings",
             &serde_json::Map::new(),
         )
@@ -2204,7 +2205,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
         .clone();
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -2218,7 +2219,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
         .clone();
     session
         .invoke(
-            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            tilo_shell_surface::shell_part::CHROME_RESOURCE,
             "switch-workspace",
             &serde_json::Map::from_iter([(
                 "workspace".to_owned(),
@@ -2314,7 +2315,7 @@ const HERE: [&str; 5] = [
     "Nils Berg",
 ];
 
-/// Who is here, as the collaboration plane lists them: the first `count` of [`HERE`].
+/// Who is here, as the peer network lists them: the first `count` of [`HERE`].
 fn set_here(session: &Session, count: usize) {
     let here: Vec<_> = HERE
         .iter()
@@ -2329,7 +2330,7 @@ fn set_here(session: &Session, count: usize) {
         .collect();
     session
         .sync()
-        .expect("the session takes part in the plane")
+        .expect("the session takes part in the app wire")
         .here()
         .borrow_mut()
         .set_members(None, Some(here));
@@ -2375,7 +2376,7 @@ fn bar_band(session: &Session) -> (f64, f64, f64, f64) {
 /// The height of the bar's band: its ground's padding around the controls it holds.
 const BAR_BAND_HEIGHT: f64 = 40.0;
 
-/// The controls standing in the bar's band, by where their middle is: what a person sees on
+/// The controls in the bar's band, by where their middle is: what a person sees on
 /// the bar, not on the shell. A control that reaches out of the band is still one of the bar's,
 /// which is what lets a test see it overflow.
 fn bar_band_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
@@ -2841,7 +2842,7 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
         until_settled(&mut session, |session| says(session, &time(session).clock));
         session
             .invoke(
-                tilo_surface_host::shell_part::CHROME_RESOURCE,
+                tilo_shell_surface::shell_part::CHROME_RESOURCE,
                 "quick-settings",
                 &serde_json::Map::new(),
             )
@@ -2924,7 +2925,7 @@ fn the_shell_loads_from_the_package_store_and_not_the_builds_copy() {
     // from source and cannot be byte-identical to it, so the two differ where the path did its
     // work: a module compiled from `include_str!` and one the build staged are not the same
     // bytes.
-    let fallback = tilo_surface_host::shell_part::compile_shell().expect("the fallback compiles");
+    let fallback = tilo_shell_surface::shell_part::compile_shell().expect("the fallback compiles");
     assert_ne!(
         fallback.last().map(|package| package.wasm.as_slice()),
         installed.last().map(|package| package.wasm.as_slice()),

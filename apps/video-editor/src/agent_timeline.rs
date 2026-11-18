@@ -70,9 +70,9 @@ fn content_of(media: &MediaItem) -> Option<&str> {
     tilo_actions::named_reference(&media.path).map(|_| media.path.as_str())
 }
 
-/// The kind and number a lane's name reads as: `V2` a second video track,
+/// The kind and number a track's name reads as: `V2` a second video track,
 /// `a1` the first audio track; `None` for any other name.
-fn lane_named(named: &str) -> Option<(TrackKind, u32)> {
+fn track_named(named: &str) -> Option<(TrackKind, u32)> {
     let mut chars = named.chars();
     let kind = match chars.next()?.to_ascii_uppercase() {
         'V' => TrackKind::Video,
@@ -317,8 +317,8 @@ impl Project {
 
     /// By id or name, which must carry `kind`; with no name, the lowest unlocked track of that
     /// kind (V1: the cut, under the titles and overlays). A name no track has that reads as a
-    /// lane, V1 or A2, makes that track: a new project has none.
-    fn lane_for(&mut self, named: Option<&str>, kind: TrackKind) -> Result<TrackId, Refusal> {
+    /// track, V1 or A2, makes that track: a new project has none.
+    fn track_for(&mut self, named: Option<&str>, kind: TrackKind) -> Result<TrackId, Refusal> {
         let Some(named) = named.map(str::trim).filter(|named| !named.is_empty()) else {
             let lowest = self
                 .tracks
@@ -326,7 +326,7 @@ impl Project {
                 .filter(|track| track.kind == kind && !track.locked)
                 .min_by_key(|track| track.index)
                 .map(|track| track.id);
-            return Ok(lowest.unwrap_or_else(|| self.new_lane(kind)));
+            return Ok(lowest.unwrap_or_else(|| self.new_track(kind)));
         };
         let found = named
             .parse::<Uuid>()
@@ -337,24 +337,24 @@ impl Project {
                     .iter()
                     .find(|track| track.name.eq_ignore_ascii_case(named))
             });
-        let track = match (found, lane_named(named)) {
+        let track = match (found, track_named(named)) {
             (Some(track), _) => track,
-            (None, Some((lane, index))) if lane == kind => return Ok(self.lane_at(kind, index)),
-            (None, Some((lane, _))) => {
+            (None, Some((track, index))) if track == kind => return Ok(self.track_at(kind, index)),
+            (None, Some((track, _))) => {
                 return Err(Refusal::new(format!(
                     "{named} would be {}; this goes on {}",
-                    a_track(lane),
+                    a_track(track),
                     a_track(kind)
                 )));
             }
             (None, None) => {
-                let lanes: Vec<&str> = self.tracks.iter().map(|t| t.name.as_str()).collect();
+                let tracks: Vec<&str> = self.tracks.iter().map(|t| t.name.as_str()).collect();
                 return Err(Refusal::new(format!(
                     "no track `{named}`; the tracks are {}. Name one like {} to make it",
-                    if lanes.is_empty() {
+                    if tracks.is_empty() {
                         "none yet".to_owned()
                     } else {
-                        lanes.join(", ")
+                        tracks.join(", ")
                     },
                     if kind == TrackKind::Video { "V1" } else { "A1" }
                 )));
@@ -375,7 +375,7 @@ impl Project {
     }
 
     /// A new empty track of `kind` above (or below) the others: V2 over V1.
-    pub(crate) fn new_lane(&mut self, kind: TrackKind) -> TrackId {
+    pub(crate) fn new_track(&mut self, kind: TrackKind) -> TrackId {
         let index = self
             .tracks
             .iter()
@@ -384,11 +384,11 @@ impl Project {
             .max()
             .unwrap_or(0)
             + 1;
-        self.lane_at(kind, index)
+        self.track_at(kind, index)
     }
 
     /// A new empty track of `kind` named for `index`: V3, A1.
-    fn lane_at(&mut self, kind: TrackKind, index: u32) -> TrackId {
+    fn track_at(&mut self, kind: TrackKind, index: u32) -> TrackId {
         let prefix = if kind == TrackKind::Video { "V" } else { "A" };
         let id = tilo_resource::fresh_uuid();
         self.tracks.push(Track {
@@ -402,9 +402,9 @@ impl Project {
     }
 
     /// Refuse a span on `track` that a clip outside `moving` already covers:
-    /// an agent does not see the lane, so a clip hidden under another is
+    /// an agent does not see the track, so a clip hidden under another is
     /// never what it meant.
-    fn lane_free(
+    fn track_free(
         &self,
         track: TrackId,
         start: f64,
@@ -417,7 +417,7 @@ impl Project {
         match taken {
             None => Ok(()),
             Some(clip) => {
-                let lane = self.track(track).map_or("the track", |t| t.name.as_str());
+                let name = self.track(track).map_or("the track", |t| t.name.as_str());
                 let free = self
                     .clips_on(track)
                     .iter()
@@ -425,7 +425,7 @@ impl Project {
                     .map(|c| c.end())
                     .fold(0.0, f64::max);
                 Err(Refusal::new(format!(
-                    "{lane} is taken from {:.2} s to {:.2} s by {}: place it at {free:.2} s or \
+                    "{name} is taken from {:.2} s to {:.2} s by {}: place it at {free:.2} s or \
                      later, or on another track",
                     clip.start,
                     clip.end(),
@@ -457,7 +457,7 @@ impl Project {
         } else {
             TrackKind::Video
         };
-        let lane = self.lane_for(track, kind)?;
+        let track = self.track_for(track, kind)?;
         let source_in = finite_at_least_zero(source_in.unwrap_or(0.0), "in")?;
         let source_out = source_out.unwrap_or(source.duration);
         if !source_out.is_finite() || source_out < source_in + MIN_CLIP {
@@ -475,13 +475,13 @@ impl Project {
         let start = match at {
             Some(at) => finite_at_least_zero(at, "at")?,
             None => self
-                .clips_on(lane)
+                .clips_on(track)
                 .iter()
                 .map(|c| c.end())
                 .fold(0.0, f64::max),
         };
         let length = source_out - source_in;
-        self.lane_free(lane, start, start + length, &[])?;
+        self.track_free(track, start, start + length, &[])?;
         check_fades(fade_in, fade_out, length)?;
         if source_out > source.duration
             && let Some(item) = self.media.find_mut(&key(source.id))
@@ -489,7 +489,7 @@ impl Project {
             item.duration = source_out;
         }
         let id = self
-            .add_clip(lane, source.id, start)
+            .add_clip(track, source.id, start)
             .ok_or_else(|| Refusal::new(format!("no source `{media}`: {IMPORT_HINT}")))?;
         let clip = self.clip_mut(id).ok_or("the clip was not placed")?;
         clip.in_point = source_in;
@@ -512,8 +512,8 @@ impl Project {
             .clip(id)
             .cloned()
             .ok_or("no such clip in this project")?;
-        let lane = match track {
-            Some(named) => self.lane_for(Some(named), self.clip_kind(id))?,
+        let track = match track {
+            Some(named) => self.track_for(Some(named), self.clip_kind(id))?,
             None => clip.track,
         };
         let delta = at - clip.start;
@@ -522,8 +522,8 @@ impl Project {
             let Some(other) = self.clip(*member) else {
                 continue;
             };
-            let (lane, start) = if *member == id {
-                (lane, at)
+            let (track, start) = if *member == id {
+                (track, at)
             } else {
                 (other.track, other.start + delta)
             };
@@ -532,8 +532,8 @@ impl Project {
                     "a linked clip would start before the timeline does",
                 ));
             }
-            self.lane_free(
-                lane,
+            self.track_free(
+                track,
                 start.max(0.0),
                 start.max(0.0) + other.duration(),
                 &group,
@@ -541,7 +541,7 @@ impl Project {
         }
         for member in group {
             if member == id {
-                if !self.move_clip_to(id, lane, at) {
+                if !self.move_clip_to(id, track, at) {
                     return Err(Refusal::new("the clip cannot go on that track"));
                 }
             } else if let Some(other) = self.clip(member).map(|c| c.start) {
@@ -980,7 +980,7 @@ fn track_json(project: &Project, track: &Track, budget: &mut usize) -> Value {
 /// Gaps shorter than this are rounding, not a gap a person would see.
 const GAP: f64 = 0.0005;
 
-/// The stretches before the timeline's end where a lane holding shots
+/// The stretches before the timeline's end where a track holding shots
 /// shows none, from 0 s. Titles over nothing are not shots.
 fn gaps(project: &Project) -> Vec<Value> {
     let mut gaps = Vec::new();
@@ -1002,7 +1002,7 @@ fn gaps(project: &Project) -> Vec<Value> {
 }
 
 /// The whole timeline as a caller reads it: the project's format, the
-/// render range when one is marked, each track (top picture lane first)
+/// render range when one is marked, each track (top picture track first)
 /// with its clips, the gaps between shots, the bin and the markers.
 #[must_use]
 pub fn timeline_json(project: &Project) -> Value {

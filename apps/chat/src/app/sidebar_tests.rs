@@ -4,9 +4,9 @@
 use super::*;
 use tilo_actions::policy::MemberId;
 
-/// A direct conversation row as the record projects it, named `name`.
+/// A direct conversation row as the resource projects it, named `name`.
 fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
-    let id = crate::record::Chat::direct_id([app.me.id.clone(), MemberId::person(key)]);
+    let id = crate::chat::Chat::direct_id([app.me.id.clone(), MemberId::person(key)]);
     crate::model::Channel {
         id: id.to_string(),
         category: String::new(),
@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
         let me = app.me.id.clone();
         let key = |i: u64| format!("{i:064x}");
         let row = |i: u64, name: &str| {
-            let id = crate::record::Chat::direct_id([
+            let id = crate::chat::Chat::direct_id([
                 me.clone(),
                 MemberId::person(key(i)),
             ]);

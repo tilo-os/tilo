@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use crate::page_resource::agent_handle;
+
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{
     ActionFailure, ActionInvoker, ActionSpec, ApiError, InvocationUpdate, ParamType,
@@ -370,7 +372,7 @@ fn fill(
     submit: FormSubmit,
 ) -> (Option<String>, PageRequest) {
     (
-        Some("agent:ada".to_owned()),
+        Some(agent_handle("ada")),
         PageRequest::FillForm {
             form: signature.into(),
             answers: answers.as_object().expect("answers are an object").clone(),
@@ -1072,7 +1074,7 @@ fn a_form_in_a_frame_is_answered_through_fill_page_form_with_its_frame() {
     assert_eq!(
         asked(&engine),
         [(
-            Some("agent:ada".to_owned()),
+            Some(agent_handle("ada")),
             PageRequest::FillForm {
                 form: "form1".into(),
                 answers: serde_json::json!({"Card holder": "Ada Lovelace"})
@@ -1634,12 +1636,12 @@ fn a_reload_at_the_same_address_reads_the_page_again() {
     assert!(asked(&engine).is_empty());
 }
 
-/// The window's reads take no place in the tab's record and name no actor:
+/// The window's reads take no place in the tab's resource and name no actor:
 /// each is the read `read-page-forms` makes, which only observes the page,
-/// sent as the tab's unnamed actor, and the record holds nothing after
+/// sent as the tab's unnamed actor, and the resource holds nothing after
 /// them.
 #[test]
-fn the_windows_reads_take_no_place_in_the_record() {
+fn the_windows_reads_take_no_place_in_the_resource() {
     let (engine, mut app) = open_on(APPLY, &[visa_form()]);
     engine.send(WebViewCommand::Reload);
     settle(&mut app);
@@ -1654,7 +1656,7 @@ fn the_windows_reads_take_no_place_in_the_record() {
         );
     }
     let record = run(&mut app, "read-page-record", &serde_json::json!({}))
-        .answer("the tab's record is read");
+        .answer("the tab's resource is read");
     assert_eq!(record["data"]["entries"], serde_json::json!([]));
     assert_eq!(record["data"]["next"], 0);
 }

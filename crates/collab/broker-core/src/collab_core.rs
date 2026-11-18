@@ -80,11 +80,11 @@ pub struct BrokerChannels {
     pub states: HashMap<ArtifactId, InboundState>,
     pub audit: AuditLog,
     pub redactions: RedactionLog,
-    /// Ingress gates of the channels this device's channel encryption service takes part in,
+    /// Ingress checks of the channels this device's channel encryption service takes part in,
     /// consulted on every local and peer document ingress. Registered before the first op of a
-    /// channel is accepted and refreshed on every membership change; the broker holds the gate,
+    /// channel is accepted and refreshed on every membership change; the broker holds the check,
     /// never a key.
-    pub gates: tilo_workspace_keys::Gates,
+    pub checks: tilo_workspace_keys::SealChecks,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<crate::collab_history::CollabHistoryStore>,
@@ -114,17 +114,17 @@ impl BrokerChannels {
         self.states.insert(artifact, state);
     }
 
-    /// Install or refresh a workspace's ingress gate.
-    pub fn register_gate(
+    /// Install or refresh a workspace's ingress check.
+    pub fn register_seal_check(
         &mut self,
         workspace: collab_types::WorkspaceId,
-        gate: key_group::SealGate,
+        check: key_group::SealCheck,
     ) {
-        self.gates.register(workspace, gate);
+        self.checks.register(workspace, check);
     }
 
-    /// A route with no gate has not been opened encrypted on this device
-    /// yet. Once its gate closes plaintext, this device writes none to it,
+    /// A route with no check has not been opened encrypted on this device
+    /// yet. Once its check closes plaintext, this device writes none to it,
     /// including after a restart. Content sealed under any of the channel's
     /// epochs passes: a member's write reaches this device after the
     /// channel's next membership change.
@@ -133,7 +133,7 @@ impl BrokerChannels {
         workspace: &str,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gates.allows_document(workspace, encryption)
+        self.checks.allows_document(workspace, encryption)
     }
 
     /// Whether another device's write of `artifact`'s record may enter, by
@@ -143,7 +143,7 @@ impl BrokerChannels {
     /// joins it later, reads the record only by taking that base in first,
     /// however it arrives. So a write in the clear enters until a sealed
     /// write of the record has, and never after; a sealed one enters when
-    /// the channel's gate takes its epoch.
+    /// the channel's check takes its epoch.
     pub fn document_order_allowed(
         &self,
         workspace: &str,
@@ -152,7 +152,7 @@ impl BrokerChannels {
     ) -> bool {
         match encryption {
             None => !self.sealed.contains(&artifact),
-            Some(_) => self.gates.allows_document(workspace, encryption),
+            Some(_) => self.checks.allows_document(workspace, encryption),
         }
     }
 
@@ -403,14 +403,18 @@ pub fn apply_redaction_from_envelope(
     }
 }
 
-/// Where a channel service registers the gates this broker refuses plaintext with.
+/// Where a channel service registers the checks this broker refuses plaintext with.
 #[derive(Clone, Default)]
-pub struct BrokerGates(pub Arc<Mutex<BrokerChannels>>);
+pub struct BrokerSealChecks(pub Arc<Mutex<BrokerChannels>>);
 
-impl tilo_workspace_keys::GateRegistry for BrokerGates {
-    fn register_gate(&self, workspace: collab_types::WorkspaceId, gate: key_group::SealGate) {
+impl tilo_workspace_keys::SealCheckRegistry for BrokerSealChecks {
+    fn register_seal_check(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        check: key_group::SealCheck,
+    ) {
         if let Ok(mut channels) = self.0.lock() {
-            channels.register_gate(workspace, gate);
+            channels.register_seal_check(workspace, check);
         }
     }
 }

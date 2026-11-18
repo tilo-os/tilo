@@ -365,10 +365,9 @@ impl ChatApp {
         max_x: f64,
     ) -> (f64, f64, ui::author::AuthorLine) {
         let name = self.message_author_name(m);
-        let initiator = self.user_name(&m.author);
         // The avatar the bot showed, once the content store has it.
         let shown = self.shown_avatar(m);
-        let author = self.message_author(m, &name, &initiator, shown.as_ref());
+        let author = self.message_author(m, &name, shown.as_ref());
         let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
         let theme = ctx.theme;
         let style = theme.text(TextRole::Body).strong();
@@ -404,7 +403,7 @@ impl ChatApp {
     ) {
         if m.author.is_bot()
             || !m.author.is_person()
-            || crate::host_model::is_provider_output(m)
+            || crate::model_stream::is_provider_output(m)
             || m.cause.as_ref().is_some_and(|cause| !cause.by_person())
         {
             return;
@@ -430,18 +429,13 @@ impl ChatApp {
         &'a self,
         m: &'a Message,
         name: &'a str,
-        initiator: &'a str,
         shown: Option<&'a vello::peniko::ImageData>,
     ) -> Author<'a> {
         let color = self.identity_colour(&m.author);
         if m.cause.as_ref().is_some_and(|cause| !cause.by_person()) {
             // What started a turn is named for itself, never drawn as the
             // person it is for.
-            return Author::Agent {
-                name,
-                for_person: None,
-                color,
-            };
+            return Author::Agent { name, color };
         }
         if m.author.is_bot() {
             // The member a persona is linked to, by the name the workspace knows
@@ -467,18 +461,8 @@ impl ChatApp {
                 linked_color: linked.map(|user| self.identity_colour(&user.id)),
                 image: shown,
             }
-        } else if crate::host_model::is_provider_output(m) {
-            Author::Agent {
-                name,
-                for_person: Some(initiator),
-                color,
-            }
-        } else if !m.author.is_person() {
-            Author::Agent {
-                name,
-                for_person: None,
-                color,
-            }
+        } else if crate::model_stream::is_provider_output(m) || !m.author.is_person() {
+            Author::Agent { name, color }
         } else {
             Author::Person {
                 name,
@@ -792,6 +776,8 @@ pub(crate) struct RowM {
     pub(crate) resource_h: f64,
     /// The question the message asks, drawn under what it carries.
     question_h: f64,
+    /// The line that says the message carries a view.
+    view_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -806,7 +792,7 @@ pub(crate) struct RowM {
 }
 
 impl RowM {
-    /// A row the frame did not measure, standing `height` tall where nothing of it
+    /// A row the frame did not measure, drawn `height` tall where nothing of it
     /// shows: the timeline's own total is summed from what its rows were measured at,
     /// and a row out of view is measured when it comes into it.
     pub(crate) fn unmeasured(id: &str, height: f64) -> Self {
@@ -821,6 +807,7 @@ impl RowM {
             reasoning_h: 0.0,
             resource_h: 0.0,
             question_h: 0.0,
+            view_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,
@@ -845,6 +832,7 @@ impl RowM {
             + self.reasoning_h
             + self.resource_h
             + self.question_h
+            + self.view_h
             + self.edited_h
             + self.att_h
             + self.react_h
@@ -927,6 +915,7 @@ mod tests {
             share: None,
             question: None,
             cause: None,
+            view: None,
             attempts: 0,
             sending: false,
         };
@@ -1118,6 +1107,7 @@ mod tests {
                 reasoning_h: 0.0,
                 resource_h: 0.0,
             question_h: 0.0,
+            view_h: 0.0,
                 att_h: 0.0,
                 react_h: 0.0,
                 edited_h: 0.0,

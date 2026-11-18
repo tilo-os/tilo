@@ -4,7 +4,7 @@ import Foundation
 /// start of every document and does nothing on another origin, so no other site's content
 /// reaches the engine through it.
 ///
-/// It tells the engine where the page stands at its site's door and when what the page shows
+/// It tells the engine where the page stands on its site's entry page and when what the page shows
 /// changed, and it hands the engine the page's own mount: the actions the page publishes and
 /// the one entry that invokes them, which is the entry the palette, agents and assistive
 /// technology use. It holds no key and reads none: the device's key stays where the page
@@ -12,6 +12,18 @@ import Foundation
 public enum EngineScript {
     /// The name the page posts to: `webkit.messageHandlers.tiloLive`.
     public static let name = "tiloLive"
+
+    /// Whether what a mount beside the page says it opened is among the routes the page names,
+    /// one line `route APP/DOCUMENT: STATE;` each. It is text of the script: a function of the
+    /// app, what the mount opened and the page's lines. An app's own document of the workspace
+    /// is what a mount with no document named opens. Such a mount says its record is
+    /// `@tilo:package-primary`, a name that never travels: the page's line for it holds no
+    /// document at all (`route so.tilo.chat/: ready;`). A mount that names nothing it opened
+    /// has nothing to wait for.
+    static let joined = #"""
+    (app, opened, routes) => typeof opened !== 'string'
+            || String(routes).includes(`${app}/${opened === '@tilo:package-primary' ? '' : opened}:`)
+    """#
 
     /// - Parameters:
     ///   - origin: the one site whose page may speak to the engine.
@@ -24,14 +36,20 @@ public enum EngineScript {
     ///     made it and hands it in with every such ask. Without one no such ask is taken.
     ///   - providers: the providers of the person's own the script asks for the engine; an ask
     ///     of any other is refused.
-    public static func source(origin: String, unseen: Bool, pass: String = "", providers: [String] = []) -> String {
+    ///   - device: what this device is called where its person lets it in and lists their
+    ///     devices. Empty leaves the name to the page, which says the browser and the system.
+    public static func source(origin: String, unseen: Bool, pass: String = "", providers: [String] = [],
+                              device: String = "") -> String {
         let listed = (try? JSONSerialization.data(withJSONObject: providers)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return source
+            .replacingOccurrences(of: "%JOINED%", with: joined)
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%NAME%", with: name)
             .replacingOccurrences(of: "%UNSEEN%", with: unseen ? "true" : "false")
             .replacingOccurrences(of: "%PASS%", with: literal(pass))
             .replacingOccurrences(of: "%PROVIDERS%", with: listed)
+            // Last, so that nothing a name holds is read as one of the places above.
+            .replacingOccurrences(of: "%DEVICE%", with: literal(String(device.prefix(64))))
     }
 
     static func literal(_ text: String) -> String {
@@ -78,32 +96,54 @@ public enum EngineScript {
       Object.defineProperty(document, 'visibilityState', {get: () => 'visible', configurable: true});
       Object.defineProperty(document, 'hidden', {get: () => false, configurable: true});
 
-      // Where the page stands at its site's door, said once per change: the page writes it on
+      // Where the page stands on its site's entry page, said once per change: the page writes it on
       // its root element (`data-entry`, `data-arrival`, `data-pairing-code`) and in its status line.
       const root = document.documentElement;
       let mount;
       let said = '';
-      const standing = () => {
+      // What the page asks before it pairs a device (web/entry-page.mjs, `pairingAgree`): a card
+      // of its own that says whose device this becomes, which server adds it and what follows,
+      // with its two ways on. The app shows its person these sentences; nothing here answers.
+      const whoseCard = () => {
+        const card = document.querySelector('.tilo-entry-card[data-card="pair-whose"]');
+        const buttons = card ? [...card.querySelectorAll('button')] : [];
+        const go = buttons.find(button => button.classList.contains('tilo-entry-primary'));
+        const stop = buttons.find(button => button !== go);
+        return go && stop ? {card, go, stop} : null;
+      };
+      const asking = () => {
+        const found = whoseCard();
+        if (!found) return null;
+        const words = element => (element?.textContent ?? '').trim().slice(0, 600);
+        return {heading: words(found.card.querySelector('h2')), go: words(found.go), stop: words(found.stop),
+          said: [...found.card.querySelectorAll('p')].map(words).filter(Boolean).slice(0, 8)};
+      };
+      const state = () => {
         const data = root.dataset;
         const now = {
-          kind: 'standing', entry: data.entry ?? '', arrival: data.arrival ?? '', code: data.pairingCode ?? '',
-          status: (document.getElementById('status')?.textContent ?? '').slice(0, 400),
-          route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount),
+          kind: 'state', entry: data.entry ?? '', arrival: data.arrival ?? '', code: data.pairingCode ?? '',
+          // A page that cannot draw empties its status line and says why in a card.
+          status: ((document.getElementById('status')?.textContent ?? '')
+            || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
+          route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount), ask: asking(),
         };
         const text = JSON.stringify(now);
         if (text === said) return;
         said = text;
         post(now);
       };
-      new MutationObserver(standing).observe(root,
+      new MutationObserver(state).observe(root,
         {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code']});
       const ready = () => {
         const status = document.getElementById('status');
-        if (status) new MutationObserver(standing).observe(status, {childList: true, characterData: true, subtree: true});
-        standing();
+        if (status) new MutationObserver(state).observe(status, {childList: true, characterData: true, subtree: true});
+        // The page's cards are children of its body: the one that says it cannot draw may come
+        // a moment after the page said that it stopped.
+        if (document.body) new MutationObserver(state).observe(document.body, {childList: true});
+        state();
       };
       if (document.readyState === 'loading') addEventListener('DOMContentLoaded', ready, {once: true}); else ready();
-      addEventListener('hashchange', standing);
+      addEventListener('hashchange', state);
 
       // What the page shows changed: its own description of itself for assistive technology
       // did. Said at most once in forty milliseconds; the engine reads what it wants then.
@@ -112,6 +152,27 @@ public enum EngineScript {
         if (pending) return;
         pending = setTimeout(() => { pending = 0; post({kind: 'changed'}); }, 40);
       };
+      // Tilo's page says `tiloChanges` at every frame it draws and at every word of its
+      // session: many times a second while nothing happens. What its device heard and which
+      // documents it holds is what `tiloChannels` reads as, so only when that moved is the
+      // word handed on, looked at eight times a second at most. What arrives in a document
+      // the device holds already does not always move it, so while the app expects a change
+      // (it just changed something itself, or an agent is at work on what it shows) every
+      // word is handed on, as often.
+      let heard = '';
+      let weighing = 0;
+      let expecting = 0;
+      const expect = ms => { expecting = Math.max(expecting, Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 60000)); };
+      const weigh = () => {
+        weighing = 0;
+        if (Date.now() < expecting) { changed(); return; }
+        let now = heard;
+        try { now = String(globalThis.tiloChannels()); } catch { /* said at the page's next word */ }
+        if (now === heard) return;
+        heard = now;
+        changed();
+      };
+      const perhaps = () => { if (!weighing) weighing = setTimeout(weigh, 120); };
       let watching;
       let listening;
       const watch = () => {
@@ -121,13 +182,16 @@ public enum EngineScript {
         listening = undefined;
         // A page that says what it published is listened to (`tiloChanges`, web/changes.mjs).
         // One that does not yet is watched where it describes itself.
-        const told = globalThis.tiloChanges?.listen?.(changed);
+        const weighs = typeof globalThis.tiloChannels === 'function';
+        // What the device has heard so far is where it starts from: the first read is asked for below.
+        if (weighs) { try { heard = String(globalThis.tiloChannels()); } catch { /* weighed at the page's first word */ } }
+        const told = globalThis.tiloChanges?.listen?.(weighs ? perhaps : changed);
         if (typeof told === 'function') listening = told;
         if (mount?.semantics) {
           watching = new MutationObserver(changed);
           watching.observe(mount.semantics, {subtree: true, childList: true, characterData: true, attributes: true});
         }
-        standing();
+        state();
         changed();
       };
       // The page names its mount `tiloMount` once it is in. Hearing the name being given
@@ -158,6 +222,9 @@ public enum EngineScript {
         document.body.append(element);
         return element;
       };
+      // Whether what a mount beside the page opened is among what the page itself holds
+      // (`EngineScript.joined`).
+      const joined = %JOINED%;
       // A page that offers `tiloOpen(element, {app, record, newDocument, instance})` mounts
       // beside itself. One that does not yet is reached through its own modules: the mount
       // the page itself calls, told the page's own profile, device, workspace and peer.
@@ -180,7 +247,7 @@ public enum EngineScript {
               peer: {runtimeId, origin: scope.host, workspace: scope.workspace}});
             const record = made.state()?.record;
             const routes = globalThis.tiloChannels?.() ?? '';
-            if (made.state()?.phase !== 'failed' && (typeof record !== 'string' || routes.includes(`${what.app}/${record}:`))) return made;
+            if (made.state()?.phase !== 'failed' && joined(what.app, record, routes)) return made;
             last = new Error(`failed: ${made.state()?.error ?? 'The record did not join the workspace'}`);
             await made.cleanup().catch(() => {});
           } catch (error) { last = error; }
@@ -191,6 +258,36 @@ public enum EngineScript {
         for (const [name, live] of lives) live.element.style.display = name === id ? 'block' : 'none';
       };
       const live = id => (id ? lives.get(id)?.mount : mount);
+      // The size a live thing's content asks for, as its mount's status says it (`content`):
+      // handed on when it is first known and when it changes. The app gives its place that
+      // height.
+      const sizes = new Map();
+      const sized = (id, status) => {
+        const asks = status?.content;
+        if (!asks || !Number.isFinite(asks.width) || !Number.isFinite(asks.height)) return;
+        const now = `${Math.ceil(asks.width)}x${Math.ceil(asks.height)}`;
+        if (sizes.get(id) === now) return;
+        sizes.set(id, now);
+        post({kind: 'live', id, width: Math.ceil(asks.width), height: Math.ceil(asks.height)});
+      };
+      // Chat shows the view one message carries, alone: the view `view` of the message's own
+      // item, opened by the action the item offers for it. The message is named and never its
+      // view's text, so whose code the view is and what it reads stays Chat's to say.
+      const alone = async (shown, view) => {
+        const message = String(view?.message ?? '');
+        if (!/^[A-Za-z0-9._:-]{1,128}$/.test(message)) throw new Error('unknown_action: no such message');
+        const item = `/messages/${message}`;
+        for (let tries = 0; ; tries++) {
+          let listed = [];
+          try { listed = shown.actions() ?? []; } catch { /* the mount is still coming in */ }
+          const open = listed.find(action => action.view?.id === 'view' && action.view.open_action === action.address?.action
+            && String(action.address?.resource ?? '').endsWith(item));
+          if (open) { await shown.invokeAction(open.address.resource, open.address.action, {}, {confirm: false}); return; }
+          // A message further back is offered once it is addressed.
+          if (tries >= 12) { await shown.invokeAction(`chat.workspace${item}`, 'show-view', {}, {confirm: false}); return; }
+          await new Promise(done => setTimeout(done, 250));
+        }
+      };
 
       // The device's own entry. A page that knows a native app may hold it hands this over once
       // it is in (web/native-host.mjs): its asks of the workspace's host as the person on this
@@ -198,12 +295,22 @@ public enum EngineScript {
       // a document is taken, so nothing that runs later puts another in its place.
       let device;
       Object.defineProperty(globalThis, 'tiloNativeHost', {value: Object.freeze({
+        // What this device is called where its person lets it in: the app's name for it.
+        name: %DEVICE%,
         device(entry) { if (!device && entry && typeof entry.invoke === 'function') device = entry; },
       })});
       // The pass is this engine's own: the engine made it and hands it in with every ask of
       // the person's providers. It stands here, in no function a page's script could print.
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
+      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent']);
+      // An app's own document of the workspace, as the workspace's server names what it offers
+      // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
+      const ownDocument = app => `record:${app}:`;
+      // The chain the workspace's tracker keeps its issues in (Tasks' `tasks.issues`), as every
+      // device of the workspace names it, and what is asked of it for the app.
+      const issues = 'chain:derived:issues@derived:default@tab:0000000000000000';
+      const issueActions = new Set(['read', 'create']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -229,9 +336,13 @@ public enum EngineScript {
         JSON.stringify({error: {code: 'unknown_action', reason: `no action addressed by (${provider}, ${action})`}});
       const noDevice = () =>
         JSON.stringify({error: {code: 'unavailable', reason: 'This page hands a native app no way to its person\'s own providers'}});
+      // The steps of putting one file into the workspace this page is in (`put` below).
+      const putSteps = new Set(['offered', 'begin', 'append', 'finish']);
 
       Object.defineProperty(globalThis, '__tiloLive', {value: Object.freeze({
         seen,
+        // The app expects what the page holds to change within `ms`.
+        expect(ms) { expect(ms); return true; },
         // One of the person's own providers on their host, asked for the app's own code alone:
         // with this engine's pass, and of the providers the engine names. `hidden` is a field
         // of the argument and what the person typed into a protected field for it.
@@ -262,6 +373,79 @@ public enum EngineScript {
             return JSON.stringify({ok: {id: own?.id ?? null, name: own?.name ?? null, origin: own?.origin ?? null}});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
+        // Which of the documents the app follows changed in the workspace, as the entry of this
+        // device says it (its `changed`): their names and where to ask on from,
+        // never what one of them holds. The page holds the ask, ten seconds at most.
+        async followed(given, of, after, waitMs) {
+          if (!holds(given)) return unknown('tilo.device', 'changed');
+          if (!device) return noDevice();
+          if (typeof device.changed !== 'function') return unknown('tilo.device', 'changed');
+          try {
+            const told = await device.changed({of, after: typeof after === 'string' && after ? after : null, waitMs: Number(waitMs) || 0});
+            const named = (Array.isArray(told?.changed) ? told.changed : []).slice(0, 256)
+              .filter(one => typeof one?.app === 'string' && typeof one?.document === 'string')
+              .map(one => ({app: one.app, document: one.document}));
+            return JSON.stringify({ok: {changed: named, cursor: typeof told?.cursor === 'string' ? told.cursor : ''}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // One of the person's files goes into the workspace this page is in, a piece at a
+        // time, through what the page hands a native app for it (`put`): `begin` with the
+        // file's size, `append` with a piece as base64 text at the offset the piece before it
+        // ended, `finish` for what the workspace keeps the file under. `offered` asks nothing
+        // of anyone: it says whether this page hands such a way at all. Only the app's own
+        // code reaches this, with the engine's pass. What is answered is the page's answer to
+        // the step and nothing of a piece; nothing of one is posted to the engine or kept.
+        async put(given, step, of) {
+          if (!holds(given) || !putSteps.has(step)) return unknown('tilo.content', 'put');
+          if (!device) return noDevice();
+          const put = device.put;
+          if (!put || ![put.begin, put.append, put.finish].every(one => typeof one === 'function')) return unknown('tilo.content', 'put');
+          try {
+            if (step === 'offered') return JSON.stringify({ok: true});
+            if (step === 'begin') return JSON.stringify({ok: {upload: (await put.begin(of?.size))?.upload ?? null}});
+            if (step === 'append') return JSON.stringify({ok: {written: (await put.append(of?.upload, of?.offset, of?.piece))?.written ?? null}});
+            return JSON.stringify({ok: {content: (await put.finish(of?.upload))?.content ?? null}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // The person's answer to what the page asks before it pairs, handed on as a press of
+        // the page's own button. Only the app's own code reaches this, with the engine's
+        // pass, and the app calls it only from its person's press.
+        pairing(given, goOn) {
+          const found = holds(given) ? whoseCard() : null;
+          if (!found) return false;
+          (goOn === true ? found.go : found.stop).click();
+          return true;
+        },
+        // The agents the workspace keeps (Chat's `chat.agent`), asked of the workspace's server
+        // as the person on this device: their read, one agent's read, the two actions that
+        // make a person's assistant, and the one that takes back a second one made in the same
+        // moment. Nothing else of Chat's document is asked this way.
+        async agents(given, action, argument, item) {
+          const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
+          if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);
+          if (!device) return noDevice();
+          const provider = ownDocument('so.tilo.chat');
+          try {
+            const answer = await device.invoke({provider, address: {resource: item ? `chat.agent/agents/${item}` : 'chat.agent', action}},
+              argument && Object.keys(argument).length ? argument : null);
+            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
+              error: answer?.error ?? null}, '')});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // The tasks of the person's assistant are issues of the workspace's tracker, which this
+        // page does not hold: it shows Chat. They are asked of the workspace's server as the
+        // person on this device: the read of the tracker's issues and the action that files one,
+        // and nothing else of Tasks.
+        async tasks(given, action, argument) {
+          if (!holds(given) || !issueActions.has(action)) return unknown('tasks.issues', action);
+          if (!device) return noDevice();
+          try {
+            const answer = await device.invoke({provider: ownDocument('so.tilo.tasks'), address: {resource: issues, action}},
+              argument && Object.keys(argument).length ? argument : null);
+            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
+              error: answer?.error ?? null}, '')});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
         actions(resource, id) {
           const from = live(id);
           if (!from) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
@@ -271,10 +455,16 @@ public enum EngineScript {
         async invoke(resource, action, args, confirm, id) {
           const from = live(id);
           if (!from) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
-          try { return JSON.stringify({ok: await from.invokeAction(resource, action, args ?? {}, {confirm: Boolean(confirm)}) ?? null}); }
-          catch (error) { return JSON.stringify({error: failure(error)}); }
+          try {
+            const answer = JSON.stringify({ok: await from.invokeAction(resource, action, args ?? {}, {confirm: Boolean(confirm)}) ?? null});
+            // What the app itself changed is read again without waiting for anyone's word,
+            // and what comes of it is expected.
+            if (action !== 'read') { expect(15000); changed(); }
+            return answer;
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
-        // Mount `what` (`{app, record}`, or `{app, newDocument: true}`) as the live thing `id`
+        // Mount `what` (`{app, record}`, `{app, newDocument: true}`, or Chat with the `view` of
+        // one message, `{app, view: {message, conversation}}`) as the live thing `id`
         // and bring it to the front. One that is mounted already only comes to the front.
         async show(id, what) {
           if (!mount) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
@@ -282,8 +472,20 @@ public enum EngineScript {
             if (!lives.has(id)) {
               const element = place(id);
               element.style.display = 'block';
-              try { lives.set(id, {element, mount: await beside(element, {...what, instance: instance++})}); }
-              catch (error) { element.remove(); throw error; }
+              // A message's view stands in Chat's own document of the workspace: Chat is mounted
+              // as the page itself opens it, with no document named.
+              const {view, ...rest} = what;
+              let made;
+              try {
+                made = await beside(element, {...rest, instance: instance++, onStatus: status => sized(id, status)});
+                if (view) await alone(made, view);
+                lives.set(id, {element, mount: made});
+              } catch (error) {
+                element.remove();
+                sizes.delete(id);
+                await made?.cleanup?.().catch(() => {});
+                throw error;
+              }
             }
             front(id);
             const shown = lives.get(id).mount;
@@ -297,6 +499,7 @@ public enum EngineScript {
           const gone = lives.get(id);
           if (!gone) return false;
           lives.delete(id);
+          sizes.delete(id);
           gone.element.remove();
           await gone.mount.cleanup?.().catch(() => {});
           return true;

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Pure invitation and join types: what a client speaks before any workspace state.
 license = "MIT"
-# `tilo-relay-protocol` is published and re-exports the delegations, so this is too.
+# `tilo-server-protocol` is published and re-exports the delegations, so this is too.
 publish = true
 repository.workspace = true
 homepage.workspace = true
@@ -15,7 +15,7 @@ description = "Signed workspace invitations, join and membership proofs, and tra
 test-support = []
 
 # The invitation and join contract, below workspace state: pure types and signature
-# checks, no Automerge, admission or transport. Browsers and the relay client
+# checks, no Automerge, admission or transport. Browsers and the server client
 # speak it; `tilo-peer-state` re-exports it as `tilo_peer_state::join`.
 [package.metadata.cargo-machete]
 # Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.

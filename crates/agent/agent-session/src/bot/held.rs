@@ -93,14 +93,14 @@ impl HeldDocuments {
     /// record's node as the workspace decides any reader's read of it.
     fn may_read(&self, route: &DocumentRoute) -> bool {
         use policy::{ActionKind, Answer, Context};
-        let standing = match &self.actor {
-            ReplicaActor::Bot { standing, .. } | ReplicaActor::Member { standing, .. } => standing,
+        let access = match &self.actor {
+            ReplicaActor::Bot { access, .. } | ReplicaActor::Member { access, .. } => access,
             ReplicaActor::Owner => return true,
-            ReplicaActor::Agent => return false,
+            ReplicaActor::Agent { .. } => return false,
         };
         let node = collab_types::document_node(&self.workspace, &route.app_id, &route.document);
         let now = tilo_clock::unix_now_ms();
-        standing.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
+        access.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
     }
 
     /// Hold the record at `route` as `saved` (the record's whole document)
@@ -388,10 +388,10 @@ mod tests {
     }
 
     /// A bot reads the copy of each record it follows, as far as its grant
-    /// and its installer's standing reach.
+    /// and its installer's access reach.
     #[test]
     fn a_bot_reads_what_it_holds_inside_its_grant() {
-        use policy::{Answer, Grant, Grantee, KindSet, Level, Rule, Standing, TreePath};
+        use policy::{Answer, Grant, Grantee, KindSet, Level, MemberAccess, Rule, TreePath};
         let workspace = "workspace-1";
         let bot = Grantee::bot("b1");
         let chat = Rule::new(
@@ -410,7 +410,7 @@ mod tests {
             chat.answer,
             Grantee::person("ada"),
         )];
-        let standing = Standing::person(policy::WorkspacePolicy::new(workspace, "ada"), "ada")
+        let access = MemberAccess::person(policy::WorkspacePolicy::new(workspace, "ada"), "ada")
             .acting_as(policy::Actor::Member(policy::MemberId::bot("b1")), grants);
         let mut held = HeldDocuments::new(
             AppCatalogue::native(),
@@ -419,7 +419,7 @@ mod tests {
             ReplicaActor::Bot {
                 installation: "b1".into(),
                 installer: "ada".into(),
-                standing,
+                access,
             },
         );
         let route = |app: &str| DocumentRoute {

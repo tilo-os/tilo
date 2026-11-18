@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tilo_ui::widget::TaffyTreeExt;
 
 use automerge::AutoCommit;
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1131,7 +1131,7 @@ fn pane_blocks() -> Vec<Block> {
         }),
         block("Date", 320.0, 320.0, |_| {
             Box::new(DatePicker::new(
-                NaiveDate::from_ymd_opt(2026, 6, 30).unwrap_or_default(),
+                Date::new(2026, 6, 30).ok().unwrap_or_default(),
             ))
         }),
         block("Avatars and badges", 560.0, 120.0, |theme| {

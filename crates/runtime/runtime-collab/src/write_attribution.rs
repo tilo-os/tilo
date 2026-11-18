@@ -4,8 +4,8 @@
 //! and the app writes through the workspace mount, so the version is signed
 //! for the device's person. Before writing for an invocation, the app names
 //! the paths it is about to write and the invocation they are for, over the
-//! same lane the local clipboard uses. The host resolves the invocation
-//! against its own custody of that app's live invocations and takes the actor
+//! same endpoint the local clipboard uses. The host resolves the invocation
+//! against its own ownership of that app's live invocations and takes the actor
 //! from there; nothing in this envelope names who acted. When that actor is an
 //! agent acting for the session's person, the filesystem records it beside
 //! those versions. It grants nothing, and a refusal never stops the write.
@@ -64,7 +64,7 @@ impl Request {
 }
 
 /// Whether `bytes` is a write attribution envelope rather than another
-/// command of the same lane.
+/// command of the same endpoint.
 #[must_use]
 pub fn is_envelope(bytes: &[u8]) -> bool {
     if bytes.len() > MAX_WIRE_BYTES {
@@ -88,7 +88,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, String> {
 #[cfg(feature = "client")]
 impl crate::ChannelHandle {
     /// Name the paths this app is about to write for its own live invocation
-    /// `parent`. The host resolves `parent` against its custody of this
+    /// `parent`. The host resolves `parent` against its ownership of this
     /// app's invocations, never against anything sent here, and records the
     /// agent behind those writes when an agent acting for the session's
     /// person asked for them.
@@ -121,7 +121,7 @@ mod tests {
         let bytes = serde_json::to_vec(&request).unwrap();
         assert!(is_envelope(&bytes));
         assert_eq!(decode(&bytes), Ok(request));
-        // The lane's other commands are not attribution envelopes.
+        // The endpoint's other commands are not attribution envelopes.
         assert!(!is_envelope(br#"{"Snapshot":null}"#));
         assert!(!is_envelope(b"\"Snapshot\""));
 

@@ -101,7 +101,7 @@ bool IsExtensionDocument(CefRefPtr<CefFrame> frame) {
 }
 // A document a page wrote into one of its frames (about:blank,
 // about:srcdoc), as rich editors write the one they edit in: what is copied
-// and pasted there is the page's. The host's gates (the person's activation
+// and pasted there is the page's. The host's checks (the person's activation
 // for a copy, the site's setting for a read) do not rest on the document's
 // address. A tab's own blank page is no page's.
 bool IsWrittenDocument(CefRefPtr<CefFrame> frame) {

@@ -208,7 +208,7 @@ pub fn load_mount_identity(paths: &IdentityPaths) -> Result<MountIdentity> {
 }
 
 /// Load the stable mount key plus its root-signed device certificate, the required
-/// entry point for any collaborative network plane. Fails closed when enrollment has
+/// entry point for any collaborative network backend. Fails closed when enrollment has
 /// produced no certificate, when it cannot be decoded or verified, when it is
 /// expired or not yet valid, or when it names another device key.
 pub fn load_certified_mount_identity(

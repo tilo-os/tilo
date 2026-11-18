@@ -171,7 +171,7 @@ impl StoredReport {
 /// root identity; this index never authorizes overwrite.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OperationRecord {
+pub struct OperationEntry {
     id: String,
     source: NativePath,
     destination: NativePath,
@@ -184,7 +184,7 @@ pub struct OperationRecord {
     failure: Option<String>,
 }
 
-impl OperationRecord {
+impl OperationEntry {
     pub fn new(job: &MigrationJob) -> Self {
         Self {
             id: job.operation_id().to_string(),
@@ -409,7 +409,7 @@ impl OperationRecord {
 #[serde(deny_unknown_fields)]
 struct StoreDocument {
     version: u32,
-    operations: Vec<OperationRecord>,
+    operations: Vec<OperationEntry>,
 }
 
 pub struct MigrationStore {
@@ -623,7 +623,7 @@ impl MigrationStore {
         migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())
     }
 
-    pub fn load(&self) -> Result<Vec<OperationRecord>, String> {
+    pub fn load(&self) -> Result<Vec<OperationEntry>, String> {
         self.validate_ownership()?;
         self.root
             .validate_destination()
@@ -680,7 +680,7 @@ impl MigrationStore {
         Ok(document.operations)
     }
 
-    fn save_issues(&self, operation: &OperationRecord) -> Result<String, String> {
+    fn save_issues(&self, operation: &OperationEntry) -> Result<String, String> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .ok()
@@ -716,11 +716,7 @@ impl MigrationStore {
         Ok(name)
     }
 
-    pub fn issue_page(
-        &self,
-        operation: &OperationRecord,
-        offset: u64,
-    ) -> Result<IssuePage, String> {
+    pub fn issue_page(&self, operation: &OperationEntry, offset: u64) -> Result<IssuePage, String> {
         self.validate_ownership()?;
         self.root
             .validate_destination()
@@ -796,14 +792,11 @@ impl MigrationStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn save(&self, operations: &[OperationRecord]) -> Result<(), String> {
+    pub fn save(&self, operations: &[OperationEntry]) -> Result<(), String> {
         self.save_snapshot(operations).map(drop)
     }
 
-    fn save_snapshot(
-        &self,
-        operations: &[OperationRecord],
-    ) -> Result<Vec<OperationRecord>, String> {
+    fn save_snapshot(&self, operations: &[OperationEntry]) -> Result<Vec<OperationEntry>, String> {
         #[cfg(any(test, feature = "test-support"))]
         test_support::before_save(&self.root_path);
         self.validate_ownership()?;
@@ -868,8 +861,8 @@ pub struct IssuePage {
 }
 
 type SaveRequest = (
-    Vec<OperationRecord>,
-    std::sync::mpsc::Sender<Result<Vec<OperationRecord>, String>>,
+    Vec<OperationEntry>,
+    std::sync::mpsc::Sender<Result<Vec<OperationEntry>, String>>,
 );
 
 /// All index writes are serialized off the event thread; the writer owns the store lock until every
@@ -910,8 +903,8 @@ impl StoreWriter {
 
     pub fn save(
         &self,
-        operations: Vec<OperationRecord>,
-    ) -> Result<std::sync::mpsc::Receiver<Result<Vec<OperationRecord>, String>>, String> {
+        operations: Vec<OperationEntry>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<Vec<OperationEntry>, String>>, String> {
         let (reply, receiver) = std::sync::mpsc::channel();
         self.sender
             .send((operations, reply))
@@ -921,8 +914,8 @@ impl StoreWriter {
 
     pub fn checkpoint(
         &self,
-        operations: Vec<OperationRecord>,
-    ) -> Result<Vec<OperationRecord>, String> {
+        operations: Vec<OperationEntry>,
+    ) -> Result<Vec<OperationEntry>, String> {
         self.save(operations)?
             .recv()
             .map_err(|_| "local copy state writer lost its checkpoint response".to_string())?
@@ -1060,7 +1053,7 @@ mod tests {
     fn issue_details_and_pages_stay_attempt_scoped_and_bounded() {
         {
             let (_temp, store, job) = fixture();
-            let mut earlier = OperationRecord::new(&job);
+            let mut earlier = OperationEntry::new(&job);
             earlier.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
                 failed: (0..40)
                     .map(|n| (PathBuf::from(format!("file-{n}")), "old reason".into()))
@@ -1069,7 +1062,7 @@ mod tests {
             }));
             store.save(&[earlier]).unwrap();
             let saved = store.load().unwrap().remove(0);
-            let mut later = OperationRecord::new(&job);
+            let mut later = OperationEntry::new(&job);
             later.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
                 failed: (0..40)
                     .map(|n| {
@@ -1093,7 +1086,7 @@ mod tests {
             let (_temp, store, job) = fixture();
             let store = Arc::new(store);
             let writer = StoreWriter::new(Arc::clone(&store)).unwrap();
-            let mut legacy = OperationRecord::new(&job);
+            let mut legacy = OperationEntry::new(&job);
             legacy.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
                 failed: (0..40)
                     .map(|n| (PathBuf::from(format!("legacy-{n}")), "reason".into()))
@@ -1111,7 +1104,7 @@ mod tests {
 
         {
             let (_temp, store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
                 failed: (0..40)
                     .map(|n| (PathBuf::from(format!("old-{n}")), "old reason".into()))
@@ -1135,7 +1128,7 @@ mod tests {
 
         {
             let (_temp, store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
                 failed: (0..1000)
                     .map(|n| (PathBuf::from(format!("file-{n}")), format!("reason-{n}")))
@@ -1169,7 +1162,7 @@ mod tests {
 
         {
             let (_temp, store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             let report = CopyReport {
                 verified_files: (0..10000)
                     .map(|n| PathBuf::from(format!("{n:08}-{}", "x".repeat(200))))
@@ -1244,7 +1237,7 @@ mod tests {
 
         {
             let (_temp, store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.approve();
             operation.mark_running().unwrap();
             store.save(&[operation]).unwrap();
@@ -1269,12 +1262,12 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn operation_records_reopen_review_and_round_trip_truthfully() {
+    fn operation_entries_reopen_review_and_round_trip_truthfully() {
         // An operation index's stale Running marker is not evidence that work completed while the
         // application was closed.
         {
             let (_temp, store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.approve();
             operation.mark_running().unwrap();
             store.save(&[operation]).unwrap();
@@ -1289,7 +1282,7 @@ mod tests {
         // kept.
         {
             let (temp, _store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.approve();
             assert!(operation.start_job().is_ok());
 
@@ -1303,7 +1296,7 @@ mod tests {
                 job.journal().to_path_buf(),
             )
             .unwrap();
-            let changed_operation = OperationRecord::new(&changed);
+            let changed_operation = OperationEntry::new(&changed);
 
             assert_eq!(changed_operation.state(), OperationState::AwaitingReview);
             assert!(changed_operation.start_job().is_err());
@@ -1312,7 +1305,7 @@ mod tests {
         // Terminal detail must survive restart, to tell partial failure from verified completion.
         {
             let (_temp, store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.approve();
             operation.mark_running().unwrap();
             operation.apply_progress(&CopyProgress {
@@ -1347,7 +1340,7 @@ mod tests {
         // A retry replaces the previous attempt's counts, issues and current path.
         {
             let (_temp, _store, job) = fixture();
-            let mut operation = OperationRecord::new(&job);
+            let mut operation = OperationEntry::new(&job);
             operation.approve();
             operation.mark_running().unwrap();
             operation.apply_progress(&CopyProgress {
@@ -1397,7 +1390,7 @@ mod tests {
                 store.root().join("native.journal"),
             )
             .unwrap();
-            store.save(&[OperationRecord::new(&job)]).unwrap();
+            store.save(&[OperationEntry::new(&job)]).unwrap();
 
             assert_eq!(store.load().unwrap()[0].source().unwrap(), source);
         }

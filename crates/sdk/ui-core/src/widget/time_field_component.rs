@@ -35,7 +35,7 @@ impl Default for TimeFieldProps {
 fn reports(
     value: &Bound<String>,
     change: &Event,
-) -> impl FnMut(Option<chrono::NaiveTime>) + 'static {
+) -> impl FnMut(Option<jiff::civil::Time>) + 'static {
     let bound = value.clone();
     let held = value.state.clone();
     let change = change.clone();

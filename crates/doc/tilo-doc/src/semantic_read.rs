@@ -93,7 +93,7 @@ pub fn validate_limits(limits: Limits, max_items: usize) -> Result<(), ReadError
 }
 
 /// Inert cursor scope for the bound tilo-doc object, from its canonical counter/actor identity; the
-/// cached actor-table index is excluded. This is not a record/caller witness.
+/// cached actor-table index is excluded. This is not a record/caller proof.
 ///
 /// # Errors
 ///

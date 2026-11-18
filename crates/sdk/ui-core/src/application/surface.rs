@@ -3,7 +3,8 @@
 use std::rc::Rc;
 
 use super::{
-    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
 };
 use crate::application_view::InstanceViewStore;
 use crate::launch::LaunchError;
@@ -23,7 +24,7 @@ pub fn prepare_private_surface(
     person: &str,
     workspace: &str,
     instance: u64,
-    lend: impl FnOnce(&mut HostContext),
+    lend: impl FnOnce(&mut ProcessContext),
 ) -> Result<AppComponent, LaunchError> {
     let store = Rc::new(durable_store::MemoryStore::new());
     let records = crate::resource::ResourceOwners::with_store(store.clone())
@@ -34,9 +35,9 @@ pub fn prepare_private_surface(
             .map_err(|error| LaunchError::Operation(error.to_string()))?,
     );
     let target = LaunchTarget::New;
-    let mut context = HostContext::prepare(
+    let mut context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: device.to_owned(),

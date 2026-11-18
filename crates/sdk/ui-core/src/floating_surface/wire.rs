@@ -96,7 +96,7 @@ impl Recipient {
 #[must_use]
 pub fn recipients_matching(all: &[Recipient], query: &str) -> Vec<Recipient> {
     let needle = query.trim().to_lowercase();
-    let standing = |recipient: &Recipient| {
+    let rank = |recipient: &Recipient| {
         let name = recipient.name.to_lowercase();
         if name == needle {
             return Some(4);
@@ -125,9 +125,9 @@ pub fn recipients_matching(all: &[Recipient], query: &str) -> Vec<Recipient> {
     }
     let mut found: Vec<(u8, &Recipient)> = all
         .iter()
-        .filter_map(|recipient| Some((standing(recipient)?, recipient)))
+        .filter_map(|recipient| Some((rank(recipient)?, recipient)))
         .collect();
-    found.sort_by_key(|(standing, _)| std::cmp::Reverse(*standing));
+    found.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
     found
         .into_iter()
         .take(12)
@@ -226,8 +226,7 @@ impl FloatingSurfaceProtocolRole {
     }
 }
 
-/// Starting mode for an app-requested session-shell chooser. The request only
-/// opens trusted shell UI; it never grants an app capture permission or pixels.
+/// The kind of capture the session's studio opens choosing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureStudioProtocolMode {
@@ -283,10 +282,9 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Terminal asks for the existing host-shell permission prompt.
     AllowHostShell,
-    /// Ask the trusted session shell to show its ordinary user-confirmed chooser.
-    OpenCaptureStudio {
-        mode: CaptureStudioProtocolMode,
-    },
+    /// Ask the session to let the person pick an area of the screen to float, in its own capture
+    /// studio: the app is given nothing the person did not pick.
+    PickPictureInPictureArea,
     Present {
         request: FloatingSurfaceProtocolRequest,
     },

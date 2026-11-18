@@ -104,7 +104,7 @@ impl AuthorDirectory {
     /// person it works for, and every person by the root key they write as. What
     /// a folder file's version names — the person who signed it and the computer
     /// that vouched for it — resolves through this, so a row reads "Ada" and
-    /// "Claude Code for Ada" on a page as it does on a computer.
+    /// "Claude Code" on a page as it does on a computer.
     #[must_use]
     pub fn from_presence(presence: &crate::presence::PresenceCtx) -> Self {
         use crate::permissions::MemberId;
@@ -251,10 +251,7 @@ impl AuthorDirectory {
                 let identity = automerge::ActorId::from(handle.as_slice()).to_hex_string();
                 let (shown, rgb) = if agent {
                     let member = tilo_actions::MemberId::agent(noted.name.clone());
-                    (
-                        agent_display_label(&noted.name),
-                        crate::presence::member_color(&member),
-                    )
+                    (noted.name.clone(), crate::presence::member_color(&member))
                 } else {
                     person(&noted.name)
                         .unwrap_or_else(|| (noted.name.clone(), identity_colour(&noted.name)))
@@ -765,14 +762,13 @@ pub fn read_as(member: &tilo_actions::MemberId) {
     THREAD_READER.with(|reader| *reader.borrow_mut() = Some(member.clone()));
 }
 
-/// What `actor` is called in history and audit: an agent by its name with the agent kind label,
-/// an app by its own name in the person's language, a bot or an automation by its name, a person
-/// by their id, which a registered name replaces.
+/// What `actor` is called in history and audit: an agent, a bot or an automation by its name, an
+/// app by its own name in the person's language, a person by their id, which a registered name
+/// replaces.
 pub fn actor_label(actor: &tilo_actions::Actor) -> String {
     use tilo_actions::{Actor, MemberId};
     match actor {
-        Actor::Member(MemberId::Agent(id)) => agent_display_label(id),
-        Actor::Member(MemberId::Bot(id)) => name_words(id),
+        Actor::Member(MemberId::Agent(id) | MemberId::Bot(id)) => name_words(id),
         Actor::Member(MemberId::Person(person)) => person.as_str().to_owned(),
         Actor::Automation(id) => name_words(id.as_str()),
         Actor::App(app) => app_name(
@@ -780,12 +776,6 @@ pub fn actor_label(actor: &tilo_actions::Actor) -> String {
             crate::i18n::I18nManager::window_locale().as_str(),
         ),
     }
-}
-
-/// `name` with the localized agent kind label, as every agent is shown in
-/// history, presence and activity.
-pub fn agent_display_label(name: &str) -> String {
-    crate::i18n::widget_format("member-agent", &[("name", name.into())])
 }
 
 /// Build a [`HistoryAuthor`] from the local identity
@@ -848,17 +838,13 @@ mod noted_mount_tests {
         assert_eq!(name(&phone), "You");
         assert_eq!(
             name(&reader),
-            "Reading agent · Agent",
+            "Reading agent",
             "an author the workspace admits as an agent is shown as one"
         );
-        assert_eq!(
-            name(&agent),
-            "Scribe · Agent",
-            "an agent mount's display name"
-        );
+        assert_eq!(name(&agent), "Scribe", "an agent mount's display name");
         assert_eq!(
             name(&automerge::ActorId::from("agent-task:reading".as_bytes())),
-            "Scribe · Agent",
+            "Scribe",
             "and its actions"
         );
         assert_eq!(name(&stranger), UNKNOWN_AUTHOR_NAME, "nobody noted it");
@@ -909,7 +895,7 @@ mod noted_mount_tests {
         assert_eq!(ada.name, "Ada");
         assert_eq!(
             resolve(&crate::resource::author_writer(&record, "Scout")).name,
-            "Scout · Agent",
+            "Scout",
             "a second mount's edits are its own, not the first mount's"
         );
         assert_eq!(
@@ -1047,11 +1033,11 @@ mod tests {
         phase agent_actors_are_presented_as_named_agents_not_wire_ids;
         {
             let scribe = tilo_actions::MemberId::agent("scribe");
-            assert_eq!(actor_label(&scribe.clone().into()), "scribe · Agent");
+            assert_eq!(actor_label(&scribe.clone().into()), "Scribe");
 
             let actor = automerge::ActorId::from(scribe.actor_bytes());
             let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
-            assert_eq!(resolved.name, "scribe · Agent");
+            assert_eq!(resolved.name, "Scribe");
             assert!(!resolved.name.contains("agent:"));
         }
 

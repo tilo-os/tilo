@@ -9,7 +9,7 @@
 //! `tilo_peer_state::join`.
 //!
 //! [`delegation`] holds the root-signed agent and bot delegations; it is
-//! re-exported by `tilo-relay-protocol`.
+//! re-exported by `tilo-server-protocol`.
 //!
 //! A workspace is named by its [`WorkspaceId`] everywhere here.
 
@@ -142,7 +142,7 @@ pub struct InviteGrant {
 
 /// The person who sent an invitation, as the issuer recorded them under its
 /// signature: the user root of the device that asked for it and the name
-/// they gave.
+/// they go by there, empty when the workspace knows none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Inviter {
     pub user_public_key: [u8; 32],
@@ -380,9 +380,6 @@ impl VerifiedMembership {
     pub fn workspace_id(&self) -> WorkspaceId {
         self.challenge.workspace_id
     }
-    pub fn host_device_public_key(&self) -> [u8; 32] {
-        self.challenge.host_device_public_key
-    }
     pub fn request_id(&self) -> [u8; 32] {
         self.challenge.request_id
     }
@@ -590,10 +587,22 @@ pub fn issue_administrator_invitation(
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
 
+/// Whether `inviter` names who sent an invitation well: a name of at most
+/// [`MAX_INVITER_NAME_CHARS`] printable characters, or none at all, for a
+/// person whose name its workspace does not know. The name is what a surface
+/// shows beside the invitation; who sent it is its
+/// [`user_public_key`](Inviter::user_public_key), which every admitting member
+/// checks.
 fn validate_inviter(inviter: &Inviter) -> Result<(), String> {
     let name = inviter.name.trim();
-    if name.is_empty()
-        || name != inviter.name
+    if name.is_empty() {
+        return if inviter.name.is_empty() {
+            Ok(())
+        } else {
+            Err("invalid inviter name".into())
+        };
+    }
+    if name != inviter.name
         || name.chars().count() > MAX_INVITER_NAME_CHARS
         || name.chars().any(char::is_control)
     {

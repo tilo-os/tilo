@@ -23,7 +23,7 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::invite::guest_certificate;
+use tilo_server_client::invite::guest_certificate;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::native::NativeDevice;
@@ -45,7 +45,7 @@ async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
 
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "async Relay::shutdown consumes the relay; the suggested later drop is a use-after-move"
+    reason = "async Server::shutdown consumes the server; the suggested later drop is a use-after-move"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record() {
@@ -59,7 +59,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice_root, &host_device, state.path(), false).await;
     let workspace = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Pages talking")
@@ -121,7 +121,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document);
     let alice_device = alice.key.verifying_key().to_bytes();
     let mut desktop =
-        NativeDevice::start(&host.relay, alice_root_key, alice, workspace.workspace_id).await;
+        NativeDevice::start(&host.server, alice_root_key, alice, workspace.workspace_id).await;
     desktop.join().await;
     let bob_device = bob_cert.device_public_key;
 
@@ -167,5 +167,5 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     desktop.session.close().await;
     bob.close();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

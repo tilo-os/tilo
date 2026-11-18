@@ -124,7 +124,6 @@ pub fn tilo_permissions(capabilities: &[String]) -> Vec<Permission> {
                 "processes" => Permission::RunsPrograms,
                 "secrets" => Permission::Secrets,
                 "open-uri" => Permission::OpensLinks,
-                "notifications" => Permission::Notifications,
                 "camera" => Permission::Camera,
                 "microphone" => Permission::Microphone,
                 "location" => Permission::Location,

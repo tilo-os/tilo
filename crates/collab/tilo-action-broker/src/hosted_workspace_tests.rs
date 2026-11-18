@@ -18,22 +18,22 @@ struct RecordingHost {
 impl RecordingHost {
     fn output() -> tilo_actions::ActionOutput {
         tilo_actions::ActionOutput {
-            value: Some(serde_json::json!("ran on the host")),
+            value: Some(serde_json::json!("ran on the provider")),
             resources: Vec::new(),
         }
     }
 }
 
-impl tilo_actions::remote::ActionHost for RecordingHost {
+impl tilo_actions::remote::ActionProvider for RecordingHost {
     fn query(
         &self,
         _: &tilo_actions::remote::Caller,
         _: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         tilo_actions::remote::Pending::ready(Err(
-            tilo_actions::remote::ActionHostError::UnknownAction,
+            tilo_actions::remote::ActionCallError::UnknownAction,
         ))
     }
 
@@ -42,7 +42,7 @@ impl tilo_actions::remote::ActionHost for RecordingHost {
         caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         let invocation = request.invocation;
         self.asked.lock().unwrap().push((caller.clone(), request));
@@ -78,7 +78,7 @@ impl tilo_actions::remote::ActionHost for RecordingHost {
         &self,
         _: &tilo_actions::remote::Caller,
         _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -86,16 +86,17 @@ impl tilo_actions::remote::ActionHost for RecordingHost {
 /// The one workspace another device hosts, and its host.
 struct HostedElsewhere {
     workspace: String,
-    host: Arc<RecordingHost>,
+    provider: Arc<RecordingHost>,
 }
 
 impl crate::services::HostedWorkspaces for HostedElsewhere {
     fn host_actions(
         &self,
         workspace: &str,
-    ) -> Option<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>> {
+    ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>> {
         (workspace == self.workspace).then(|| {
-            Arc::clone(&self.host) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>
+            Arc::clone(&self.provider)
+                as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
         })
     }
 }
@@ -107,15 +108,15 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
     };
     tokio::task::LocalSet::new()
         .run_until(async {
-            let host = Arc::new(RecordingHost::default());
+            let provider = Arc::new(RecordingHost::default());
             let base = local_directory_fixture();
             let membership = base.membership.as_ref().unwrap().clone();
             let workspace = base.cluster_id.clone();
             drop(base);
-            let services = HostServices {
+            let services = ProcessServices {
                 hosted_workspaces: Some(Arc::new(HostedElsewhere {
                     workspace,
-                    host: Arc::clone(&host),
+                    provider: Arc::clone(&provider),
                 })),
                 ..membership.services()
             };
@@ -168,7 +169,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             let mut pending = fixture.state.action_invoke(&person, None, None, &sent);
             let receipt = match pending.poll_ready() {
                 PendingPoll::Ready(Ok(receipt)) => receipt,
-                other => panic!("the host's receipt answers at once here: {other:?}"),
+                other => panic!("the provider's receipt answers at once here: {other:?}"),
             };
             assert_eq!(receipt.invocation, sent.invocation);
             assert!(
@@ -179,11 +180,11 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                 "{receipt:?}"
             );
             {
-                let asked = host.asked.lock().unwrap();
+                let asked = provider.asked.lock().unwrap();
                 let [(caller, forwarded)] = asked.as_slice() else {
-                    panic!("the host is asked once: {asked:?}");
+                    panic!("the provider is asked once: {asked:?}");
                 };
-                assert_eq!(caller, &person, "the host decides it for the person");
+                assert_eq!(caller, &person, "the provider decides it for the person");
                 assert_eq!(
                     forwarded.target.provider,
                     format!(
@@ -192,7 +193,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                         fixture.route.app_id,
                         fixture.route.document_id
                     ),
-                    "the host names the record"
+                    "the provider names the record"
                 );
                 assert_eq!(forwarded.target.address, sent.target.address);
                 assert_eq!(forwarded.invocation, sent.invocation);
@@ -229,7 +230,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                 .take_invocation_identity()
                 .expect("an own-device action runs here");
             assert_eq!(delivered, local.invocation);
-            assert_eq!(host.asked.lock().unwrap().len(), 1);
+            assert_eq!(provider.asked.lock().unwrap().len(), 1);
 
             // So does an agent's call: it is decided here, as its own.
             publish(&fixture, &action);
@@ -243,9 +244,9 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                 .action_invoke(&agent, None, None, &by_agent)
                 .poll_ready();
             assert_eq!(
-                host.asked.lock().unwrap().len(),
+                provider.asked.lock().unwrap().len(),
                 1,
-                "an agent's call is not sent to the host"
+                "an agent's call is not sent to the provider"
             );
             // Whatever the workspace's grants made of it here.
             let _ = fixture.take_invocation_identity();
@@ -261,13 +262,20 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             let mut listed = request(&fixture, &action);
             listed.revision = None;
             let pending = fixture.state.action_invoke(&person, None, None, &listed);
-            let receipt = fixture.drive(pending).await.expect("the host's receipt");
+            let receipt = fixture
+                .drive(pending)
+                .await
+                .expect("the provider's receipt");
             assert!(
                 matches!(receipt.status, ReceiptStatus::Completed { .. }),
                 "{receipt:?}"
             );
-            let asked = host.asked.lock().unwrap();
-            assert_eq!(asked.len(), 2, "the host is asked for the listed action");
+            let asked = provider.asked.lock().unwrap();
+            assert_eq!(
+                asked.len(),
+                2,
+                "the provider is asked for the listed action"
+            );
             assert_eq!(asked[1].1.invocation, listed.invocation);
             assert!(fixture.take_invocation_identity().is_none());
         })

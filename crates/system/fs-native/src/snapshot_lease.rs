@@ -163,7 +163,7 @@ fn single_component(root: &File, cancel: &AtomicBool) -> io::Result<()> {
     Ok(())
 }
 
-/// Non-secret durable custody receipt; the broker persists this under its own
+/// Non-secret durable ownership receipt; the broker persists this under its own
 /// authenticated operation record, never accepting an untrusted claim as
 /// authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,7 +186,7 @@ pub struct Request {
     pub reserve_bytes: u64,
 }
 
-/// Holds only broker-owned capture custody. Drop attempts exact-ID cleanup; a
+/// Holds only broker-owned capture ownership. Drop attempts exact-ID cleanup; a
 /// failed cleanup must also be recovered from the broker's durable receipt.
 pub struct SnapshotLease {
     parent: File,
@@ -271,7 +271,7 @@ impl SnapshotLease {
     pub fn restore(parent: File, receipt: Receipt, cancel: &AtomicBool) -> io::Result<Self> {
         private_parent(&parent)?;
         let root = child(&parent, OsStr::new(&receipt.name))?;
-        // Do not attach cleanup custody to an unverified replacement entry.
+        // Do not attach cleanup ownership to an unverified replacement entry.
         if btrfs::subvolume_identity(root.as_fd())? != receipt.snapshot {
             return Err(refusal("retained capture identity changed"));
         }
@@ -311,7 +311,7 @@ impl SnapshotLease {
     }
 
     /// Adopt a previously durably published renewal of the same capture, refusing
-    /// changed identity, source, reserve, selection, cancellation, expired custody
+    /// changed identity, source, reserve, selection, cancellation, expired ownership
     /// or a deadline beyond the bounded renewal horizon.
     pub fn commit_renewal(&mut self, renewal: &Receipt, cancel: &AtomicBool) -> io::Result<()> {
         self.validate(cancel)?;

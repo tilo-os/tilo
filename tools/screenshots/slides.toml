@@ -36,7 +36,7 @@ invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Fee
 invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Hands-on", layout = "section" } }
 
 [[situation.steps]]
-invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Shaping a boule", body = "Pre-shape, rest twenty minutes\nBuild tension, seam side up into the basket", layout = "title_content" } }
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Shaping a boule", body = "Pre-shape, rest twenty minutes\nBuild tension, boundary side up into the basket", layout = "title_content" } }
 
 [[situation.steps]]
 invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Questions?", layout = "title" } }

@@ -1,4 +1,4 @@
-//! Containers as a resource: the new-container draft is the record, and the engine's
+//! Containers as a resource: the new-container draft is the resource, and the engine's
 //! containers, images, volumes and distroboxes are live rows. Where the window is
 //! belongs to the window, offered to every caller as effects.
 
@@ -20,7 +20,7 @@ pub struct Containers {
 }
 
 impl Containers {
-    /// What the record holds: the new-container draft.
+    /// What the resource holds: the new-container draft.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -340,7 +340,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_create_draft_record_is_edited_merged_and_published;
+        fn the_create_draft_resource_is_edited_merged_and_published;
 
         phase the_draft_is_edited_by_splices_and_cleared_whole;
         {

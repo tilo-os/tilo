@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::frame::{self, FrameBuf};
 
-/// Frames per second written into the container timing. A clip records at
+/// Frames per second written into the container timing. A clip resources at
 /// whatever rate frames actually arrive; 30 is the standard assumption used
 /// for the `dwRate/dwScale` header and duration math.
 pub const FPS: u32 = 30;

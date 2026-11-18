@@ -1,5 +1,5 @@
 //! The calculator's in-memory state: authored here and committed as actions,
-//! so undo and collaboration see the same record.
+//! so undo and collaboration see the same resource.
 
 use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};

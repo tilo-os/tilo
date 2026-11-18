@@ -427,7 +427,7 @@ impl LiveEngine {
 
 /// Open the live engine a profile targets. Every engine connects for real:
 /// the bundled sample or an on-disk file for `SQLite`, a real TCP socket for
-/// `PostgreSQL` and `MySQL`. This is the single seam the [`crate::worker`] thread
+/// `PostgreSQL` and `MySQL`. This is the single boundary the [`crate::worker`] thread
 /// calls; it never runs on the UI thread because each variant blocks.
 pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
     #[cfg(feature = "samples")]

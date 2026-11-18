@@ -73,9 +73,9 @@ fn the_bars_sidebar_shows_and_hides_the_library_as_its_actions_do() {
 #[test]
 fn the_bars_open_runs_the_published_open_and_names_the_chosen_video() {
     let mut app = TestApp::<VideoPlayerShell>::new().expect("the player starts");
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Chosen.webm")));
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.harness()
             .press_window_action("Open video")
             .expect("the bar offers Open");

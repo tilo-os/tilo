@@ -1,8 +1,8 @@
-//! What the index holds, derived from the workspace record: a package's records whole, or what a
+//! What the index holds, derived from the workspace document: a package's documents whole, or what a
 //! set of changes reached, field by field.
 //!
 //! The same derivation keeps the index on disk ([`super::Writer`]) and the store's open writes
-//! ([`super::overlay::Overlay`]) as the record holds them: both are a [`Sink`].
+//! ([`super::overlay::Overlay`]) as the document holds them: both are a [`Sink`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -125,14 +125,14 @@ fn lists_within(resource: &str) -> [String; 4] {
     ]
 }
 
-/// The resource of the item `id` of the record `doc` (or of the record a resource `doc/...` is
+/// The resource of the item `id` of the document `doc` (or of the document a resource `doc/...` is
 /// in): `doc/id`, wherever the item is.
 #[must_use]
 pub fn item_path(doc: &str, id: &str) -> String {
     format!("{}/{id}", doc_of(doc))
 }
 
-/// The id of the item at `path`; `None` for a record.
+/// The id of the item at `path`; `None` for a document.
 #[must_use]
 pub fn id_of(path: &str) -> Option<&str> {
     path.split_once('/').map(|(_, id)| id)
@@ -200,23 +200,23 @@ pub trait Sink {
     fn set_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError>;
 
     /// Drop `resource` and everything inside it: fields, lists, and what search finds them by.
-    /// The newest version kept of it stays, as the record's log keeps its versions.
+    /// The newest version kept of it stays, as the document's log keeps its versions.
     fn remove(&mut self, resource: &str) -> Result<(), IndexError>;
 
     /// Drop `resource` and everything inside it to derive it anew: as [`Sink::remove`], but
-    /// the versions kept of each ([`reflect`]) stay, as they are not in the record.
+    /// the versions kept of each ([`reflect`]) stay, as they are not in the document.
     fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
         self.remove(resource)
     }
 
-    /// Drop what is held of the resources within the record `doc` that hold no type: the
+    /// Drop what is held of the resources within the document `doc` that hold no type: the
     /// versions [`Sink::clear`] kept of items a derivation anew finds in no collection.
     fn prune(&mut self, doc: &str) -> Result<(), IndexError> {
         let _ = doc;
         Ok(())
     }
 
-    /// That the package's record `doc` is of the type `ty` (else `None`) and stored in the chunk
+    /// That the package's document `doc` is of the type `ty` (else `None`) and stored in the chunk
     /// `chunk`.
     fn doc(&mut self, doc: &str, ty: Option<&str>, chunk: ChunkNo) -> Result<(), IndexError>;
 
@@ -251,7 +251,7 @@ pub trait Sink {
 
     /// Record the instant the columns of `ty` that read the clock are written at
     /// ([`super::clock`]), unless the index records one: the first one written is the one every
-    /// later one is past. A sink that keeps no columns of its own (`keeps_columns`) records
+    /// later one is past. A sink that keeps no columns of its own (`keeps_columns`) documents
     /// nothing.
     fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
         let _ = (ty, clock);
@@ -365,7 +365,7 @@ impl Sink for Writer<'_> {
             .filter(|(_, field, _)| field == TYPE)
             .map(|(resource, _, _)| resource.as_str())
             .collect();
-        // An item the record places in no collection keeps where it left from, which the next
+        // An item the document places in no collection keeps where it left from, which the next
         // removal of it reads: its other fields go.
         let stale: Vec<(String, String)> = held
             .iter()
@@ -422,10 +422,10 @@ impl Sink for Writer<'_> {
     }
 }
 
-/// What derivation read of the record, counted: work that does not depend on the machine.
+/// What derivation read of the document, counted: work that does not depend on the machine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DocReads {
-    /// Resources found by walking the record.
+    /// Resources found by walking the document.
     pub located: u64,
     /// Field values read.
     pub fields: u64,
@@ -445,14 +445,14 @@ impl DocReads {
     }
 }
 
-/// Derivation over one record.
+/// Derivation over one document.
 pub struct Derive<'d> {
-    /// The documents the store holds: a resource is read in the chunk the record's manifest
+    /// The documents the store holds: a resource is read in the chunk the document's manifest
     /// places it in.
     chunks: &'d Chunks,
-    /// Every record of the workspace: its app and type.
+    /// Every document of the workspace: its app and type.
     docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
-    /// Where the items of records written before items were flat are.
+    /// Where the items of documents written before items were flat are.
     nested: &'d Nested,
     pub reads: DocReads,
     /// Resources derived whole in this pass: a change naming them again is done.
@@ -464,7 +464,7 @@ pub struct Derive<'d> {
     /// The collections whose items it added, removed or moved, with those items: what a
     /// listing of each is brought in line by.
     pub moved: BTreeMap<FieldKey, BTreeSet<String>>,
-    /// The records it derived anew whole while deriving changes, where a change could not be
+    /// The documents it derived anew whole while deriving changes, where a change could not be
     /// taken in item by item: everything read of them may have changed.
     pub wholes: BTreeSet<DocId>,
     /// Fields a change moved on resources it did not name, per document: a link target's
@@ -480,15 +480,15 @@ pub struct Derive<'d> {
     /// The chunks the step derives, when it derives some: a change is read of the chunks it is
     /// in, and each item it names is read where those chunks hold it.
     part: Option<&'d [ChunkNo]>,
-    /// Where the items of the chunks the step derives are, by record and id: read once, so that
+    /// Where the items of the chunks the step derives are, by document and id: read once, so that
     /// deriving each item a change names is a lookup rather than a search of every chunk the
     /// store holds (which, an item at a time, is the workspace read once an item).
     found: BTreeMap<DocId, BTreeMap<ItemId, Found>>,
     /// The chunks the step derives a few changes of, not read whole: an item read from `found`
     /// is looked up in these as well, as one of their changes may have moved a copy of it there.
     looked: Vec<ChunkNo>,
-    /// Whether a record derives only the items of the chunks the step reads: the first step of
-    /// a build, which is where the window's first rows are, the rest of the record derived as
+    /// Whether a document derives only the items of the chunks the step reads: the first step of
+    /// a build, which is where the window's first rows are, the rest of the document derived as
     /// the chunks holding it are read.
     opening: bool,
 }
@@ -511,7 +511,7 @@ impl Reached {
     }
 }
 
-/// A record's items, as a whole derivation reads them.
+/// A document's items, as a whole derivation reads them.
 struct Whole<'a> {
     doc: &'a str,
     items: &'a Items,
@@ -682,7 +682,7 @@ fn returned(sink: &mut impl Sink, path: &str) -> Result<(), IndexError> {
 }
 
 /// The items that left the collections `schema` holds in `resource`, as `sink` keeps them, by
-/// the collection's field: what a derivation anew of it writes back, as the record holds where
+/// the collection's field: what a derivation anew of it writes back, as the document holds where
 /// an item is now, never where it was.
 fn kept_removed(
     sink: &mut impl Sink,
@@ -897,8 +897,8 @@ impl<'d> Derive<'d> {
         derive
     }
 
-    /// [`Self::step`] for the first step of a build: a record derives only the items of the
-    /// chunks it reads, which is what a window's first rows are made of, the rest of the record
+    /// [`Self::step`] for the first step of a build: a document derives only the items of the
+    /// chunks it reads, which is what a window's first rows are made of, the rest of the document
     /// derived as the chunks holding it are read.
     pub fn opening(
         chunks: &'d Chunks,
@@ -912,13 +912,13 @@ impl<'d> Derive<'d> {
         derive
     }
 
-    /// Read where the items of the chunks `part` hold them, by record and id.
+    /// Read where the items of the chunks `part` hold them, by document and id.
     fn read_part(&mut self, part: &[ChunkNo]) {
         for chunk in part {
             let Some(doc) = self.chunks.mirror(*chunk) else {
                 continue;
             };
-            // The records this chunk holds, never every record of the store: a chunk holds the
+            // The documents this chunk holds, never every document of the store: a chunk holds the
             // items of a few of them.
             for record in crate::reads::held_ids(doc) {
                 let Some((app, ty)) = self.docs.get(&record) else {
@@ -940,7 +940,7 @@ impl<'d> Derive<'d> {
         }
     }
 
-    /// The item `id` of the record `doc` (of `app`, of type `schema`): where the chunks the step
+    /// The item `id` of the document `doc` (of `app`, of type `schema`): where the chunks the step
     /// reads hold it, and the index reads it from there, else searched for across the chunks the
     /// store holds, and kept for the items the step names again.
     fn item(
@@ -971,7 +971,7 @@ impl<'d> Derive<'d> {
             return Ok(Some(found));
         }
         // An item the store holds two copies of (a move made on two replicas at once) is read
-        // from the copy that is later in the record's order, wherever it stands.
+        // from the copy that is later in the document's order, wherever it stands.
         let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, id);
         if let Some(found) = &found {
             self.found
@@ -987,7 +987,7 @@ impl<'d> Derive<'d> {
         self.chunks.doc(id)
     }
 
-    /// The chunk the map at `path` is stored in: the item's own, or the record's.
+    /// The chunk the map at `path` is stored in: the item's own, or the document's.
     fn chunk_of(&self, path: &str) -> ChunkNo {
         self.chunks_of
             .get(path)
@@ -1000,7 +1000,7 @@ impl<'d> Derive<'d> {
         self.chunks.mirror(self.chunk_of(path))
     }
 
-    /// Derive every record of `app` into `sink`, which holds none of them.
+    /// Derive every document of `app` into `sink`, which holds none of them.
     pub fn all(&mut self, sink: &mut impl Sink, app: &str) -> Result<(), IndexError> {
         let records: Vec<(String, TypeId)> = self
             .docs
@@ -1020,8 +1020,8 @@ impl<'d> Derive<'d> {
         Ok(())
     }
 
-    /// Derive every record of `app` into `sink`, which holds none of them, with the versions
-    /// `ends` holds of its resources: the first and last of the record's whole log and the
+    /// Derive every document of `app` into `sink`, which holds none of them, with the versions
+    /// `ends` holds of its resources: the first and last of the document's whole log and the
     /// last change of each field ([`reflect::ends_of`]), and the items `removed` holds that
     /// left their collections ([`super::REMOVED`]).
     pub fn all_with_versions(
@@ -1032,7 +1032,7 @@ impl<'d> Derive<'d> {
         removed: &Removed,
     ) -> Result<(), IndexError> {
         // Written first, so the columns of each resource are derived with its versions; those
-        // of resources the record no longer holds go again once the records are derived.
+        // of resources the document no longer holds go again once the documents are derived.
         let of_app: Vec<(&String, &Ends)> = ends
             .iter()
             .filter(|(resource, _)| self.of_app(resource, app))
@@ -1041,8 +1041,8 @@ impl<'d> Derive<'d> {
             write_ends(sink, resource, end, None)?;
         }
         self.all(sink, app)?;
-        // What a mark reads of a resource without its log, once the records are derived: of a
-        // resource the record no longer holds, the version that removed it.
+        // What a mark reads of a resource without its log, once the documents are derived: of a
+        // resource the document no longer holds, the version that removed it.
         for (resource, end) in &of_app {
             if sink.text(resource, TYPE)?.is_none() {
                 sink.remove(resource)?;
@@ -1082,7 +1082,7 @@ impl<'d> Derive<'d> {
         ends: &BTreeMap<String, Ends>,
     ) -> Result<(), IndexError> {
         // Where each item the changes removed left from, read before they were derived: what
-        // the record held of its place is gone with them.
+        // the document held of its place is gone with them.
         for (path, key, stamp, ty) in std::mem::take(&mut self.left) {
             // An item in a collection again is no row of what left one, whatever the change
             // that returned it was derived with.
@@ -1110,8 +1110,8 @@ impl<'d> Derive<'d> {
     }
 
     /// Take in what `ends` holds as removed of each collection, read before the changes that
-    /// removed it are derived: where an item was is in the record the changes take away, and a
-    /// record derived anew holds no item it lost. [`Self::removed`] writes the rows afterwards,
+    /// removed it are derived: where an item was is in the document the changes take away, and a
+    /// document derived anew holds no item it lost. [`Self::removed`] writes the rows afterwards,
     /// when each item's place is read again.
     pub fn removed_before(
         &mut self,
@@ -1158,7 +1158,7 @@ impl<'d> Derive<'d> {
     }
 
     /// [`Self::removed`], for the collections `moved` names: what a local write's plan placed
-    /// and took out, derived into the overlay before the record holds its change.
+    /// and took out, derived into the overlay before the document holds its change.
     pub fn removed_of(
         &mut self,
         sink: &mut impl Sink,
@@ -1192,7 +1192,7 @@ impl<'d> Derive<'d> {
         Ok(())
     }
 
-    /// Whether the resource at `path` is in a record of `app`.
+    /// Whether the resource at `path` is in a document of `app`.
     fn of_app(&self, path: &str, app: &str) -> bool {
         self.docs.get(doc_of(path)).is_some_and(|(a, _)| a == app)
     }
@@ -1211,10 +1211,10 @@ impl<'d> Derive<'d> {
             if !self.of_app(resource, app) {
                 continue;
             }
-            // The newest version of it, whatever the record holds of it now: a mark of an item
-            // the record no longer has reads the version that took it out of its collection. A
+            // The newest version of it, whatever the document holds of it now: a mark of an item
+            // the document no longer has reads the version that took it out of its collection. A
             // step took a change to it back, so the version the index holds may be one the
-            // record no longer counts: its whole log's newest replaces it.
+            // document no longer counts: its whole log's newest replaces it.
             if end.restored {
                 sink.set_newest(resource, &end.newest())?;
             } else {
@@ -1306,7 +1306,7 @@ impl<'d> Derive<'d> {
         Ok(())
     }
 
-    /// Derive the record `doc` of `app` anew, with every item placed in it.
+    /// Derive the document `doc` of `app` anew, with every item placed in it.
     fn record(
         &mut self,
         sink: &mut impl Sink,
@@ -1314,7 +1314,7 @@ impl<'d> Derive<'d> {
         doc: &str,
         ty: &str,
     ) -> Result<(), IndexError> {
-        // A record of a chunk the store was not sent is derived when that chunk arrives.
+        // A document of a chunk the store was not sent is derived when that chunk arrives.
         let (Some(source), chunk) = (self.chunks.doc(doc), self.chunks.chunk(doc)) else {
             return Ok(());
         };
@@ -1364,7 +1364,7 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive the resource at `path` (its map `obj`, of the type `schema`; the item `holder`
-    /// of the record, or the record for `None`) and every item placed in it; returns the values
+    /// of the document, or the document for `None`) and every item placed in it; returns the values
     /// of its columns, for the lists of the collection it is in.
     fn tree(
         &mut self,
@@ -1547,7 +1547,7 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive the collection `field` of the resource at `path` (the item `holder`, or the
-    /// record) whole: its list, its items and their columns.
+    /// document) whole: its list, its items and their columns.
     fn collection(
         &mut self,
         sink: &mut impl Sink,
@@ -1613,24 +1613,24 @@ impl<'d> Derive<'d> {
         Ok(())
     }
 
-    /// The map of the record `doc` and its type.
-    fn record_of(&mut self, doc: &str) -> Option<(ObjId, &'static TypeSchema)> {
+    /// The map of the document `doc` and its type.
+    fn document_of(&mut self, doc: &str) -> Option<(ObjId, &'static TypeSchema)> {
         let (app, ty) = self.docs.get(doc)?;
         self.reads.located = self.reads.located.saturating_add(1);
         let obj = crate::reads::resource_obj(self.source(doc)?, app, doc)?;
         Some((obj, lookup(ty)?))
     }
 
-    /// Where the resource at `path` is in the record, and its type: `None` when it is not
+    /// Where the resource at `path` is in the document, and its type: `None` when it is not
     /// there. The chunk holding the item's map is kept with it: it is where its fields are read
-    /// and its writes go, and an item of a run is in a chunk above the record's.
+    /// and its writes go, and an item of a run is in a chunk above the document's.
     fn locate(
         &mut self,
         sink: &mut impl Sink,
         path: &str,
     ) -> Result<Option<(Option<ObjId>, &'static TypeSchema)>, IndexError> {
         let doc = doc_of(path);
-        let Some((root, schema)) = self.record_of(doc) else {
+        let Some((root, schema)) = self.document_of(doc) else {
             return Ok(None);
         };
         let Some(item) = id_of(path) else {
@@ -1650,8 +1650,8 @@ impl<'d> Derive<'d> {
         Ok(Some((found.obj, item_schema)))
     }
 
-    /// Apply what changes to the record reached, of the records of `app`, to `sink`, which
-    /// held the record as it was before them.
+    /// Apply what changes to the document reached, of the documents of `app`, to `sink`, which
+    /// held the document as it was before them.
     pub fn changes(
         &mut self,
         sink: &mut impl Sink,
@@ -1661,12 +1661,12 @@ impl<'d> Derive<'d> {
         let of_app = |doc: &str, docs: &BTreeMap<DocId, (AppId, TypeId)>| {
             docs.get(doc).is_some_and(|(a, _)| a == app)
         };
-        // Records as a whole, first: what is inside them is derived with them.
+        // Documents as a whole, first: what is inside them is derived with them.
         //
-        // In a step of a build or a catch-up ([`Self::step`]), a record whose own map the changes
+        // In a step of a build or a catch-up ([`Self::step`]), a document whose own map the changes
         // named whole (any field of it) is derived whole here too, rather than after its items'
         // placements: each item the step places would otherwise be derived once where it
-        // arrives and again with the record, which for the rest of a build is every item of the
+        // arrives and again with the document, which for the rest of a build is every item of the
         // workspace twice. A step reports no item that moved (the store takes it in as a change
         // to everything, [`Self::moved`] unread); a change derived on the frame does, for the
         // lists it keeps, and places its items first.
@@ -1683,7 +1683,7 @@ impl<'d> Derive<'d> {
                     let ty = ty.clone();
                     self.record(sink, app, doc, &ty)?;
                 }
-                // Gone from the record (or never this package's): what the index held of it
+                // Gone from the document (or never this package's): what the index held of it
                 // goes.
                 None if fields.is_empty() && sink.text(doc, TYPE)?.is_some() => {
                     sink.remove(doc)?;
@@ -1721,7 +1721,7 @@ impl<'d> Derive<'d> {
         self.done.contains(path) || self.done.contains(doc_of(path))
     }
 
-    /// Derive the record `doc` anew whole, as a change to it could not be taken in item by
+    /// Derive the document `doc` anew whole, as a change to it could not be taken in item by
     /// item.
     fn whole(&mut self, sink: &mut impl Sink, app: &str, doc: &str) -> Result<(), IndexError> {
         let Some((_, ty)) = self.docs.get(doc).cloned() else {
@@ -1748,7 +1748,7 @@ impl<'d> Derive<'d> {
         Ok(())
     }
 
-    /// The placements of the items `items` of the record `doc` were written (each `true` when
+    /// The placements of the items `items` of the document `doc` were written (each `true` when
     /// the changes made it): move each to the collection it is in now, out of the one it was
     /// in, and take out those in none, with everything in them.
     fn placements(
@@ -1758,12 +1758,12 @@ impl<'d> Derive<'d> {
         doc: &str,
         items: &BTreeMap<String, bool>,
     ) -> Result<(), IndexError> {
-        // A record where a move closed a cycle is derived whole, as which move holds back
+        // A document where a move closed a cycle is derived whole, as which move holds back
         // depends on the others.
         if sink.text(doc, CYCLES)?.is_some() {
             return self.whole(sink, app, doc);
         }
-        let Some((_, schema)) = self.record_of(doc) else {
+        let Some((_, schema)) = self.document_of(doc) else {
             return Ok(());
         };
         let Some((held_app, _)) = self.docs.get(doc).cloned() else {
@@ -1822,13 +1822,13 @@ impl<'d> Derive<'d> {
                         self.remove_tree(sink, &path)?;
                         // It went with the item that held it, as a card goes with its column:
                         // `leave` keeps the row of what left for the item holding it, and
-                        // where it left from is not kept for an item the record no longer
-                        // holds. A derivation of the record anew writes it the same way, and
+                        // where it left from is not kept for an item the document no longer
+                        // holds. A derivation of the document anew writes it the same way, and
                         // the index reads the same however it was derived.
                     }
                     (None, Some(place)) => {
                         // An item that was in no collection, and that the changes did not
-                        // make, may hold items of its own: its whole record is derived again.
+                        // make, may hold items of its own: its whole document is derived again.
                         if !made {
                             return self.whole(sink, app, doc);
                         }
@@ -1919,7 +1919,7 @@ impl<'d> Derive<'d> {
         }
     }
 
-    /// The place `place` of an item of `item_schema` in the record `doc`, if its collection
+    /// The place `place` of an item of `item_schema` in the document `doc`, if its collection
     /// may hold the item and its holder is in a collection itself.
     fn fitting(
         sink: &mut impl Sink,
@@ -2040,7 +2040,7 @@ impl<'d> Derive<'d> {
     /// anew, where it is.
     fn resource(&mut self, sink: &mut impl Sink, path: &str) -> Result<(), IndexError> {
         if id_of(path).is_none() {
-            // A record: derived whole.
+            // A document: derived whole.
             let doc = path.to_owned();
             if let Some((app, ty)) = self.docs.get(&doc).cloned() {
                 self.record(sink, &app, &doc, &ty)?;
@@ -2195,7 +2195,7 @@ enum Holds {
     Cycle,
 }
 
-/// The resource holding the collection `place` names, in the record `doc`.
+/// The resource holding the collection `place` names, in the document `doc`.
 fn place_holder(doc: &str, place: &Place) -> String {
     match &place.parent {
         Some(parent) => item_path(doc, parent),

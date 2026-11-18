@@ -395,6 +395,60 @@ tilo_test_env::scenario! {
                 app_id: "so.tilo.mail".into(),
                 kind: "mail.message".into(),
             },
+            TriggerSpec::ResourceTime {
+                kind: "tilo.accounts.calendars".into(),
+                field: "entries.*.start".into(),
+                offset_secs: -900,
+                filter: serde_json::Map::from_iter([(
+                    "categories".to_owned(),
+                    Value::from("Board"),
+                )]),
+            },
+            TriggerSpec::ResourceTime {
+                kind: "tasks.issues".into(),
+                field: "issues.*.due_ms".into(),
+                offset_secs: 0,
+                filter: serde_json::Map::new(),
+            },
+            TriggerSpec::ResourceTime {
+                kind: "calendar.calendar".into(),
+                field: "events.*.end".into(),
+                offset_secs: 259_200,
+                filter: serde_json::Map::from_iter([
+                    ("all_day".to_owned(), Value::Bool(false)),
+                    ("title".to_owned(), Value::from("Renewal")),
+                ]),
+            },
+            TriggerSpec::ResourceTime {
+                kind: "tasks.issues".into(),
+                field: "issues.*.due_ms".into(),
+                offset_secs: -90,
+                filter: serde_json::Map::new(),
+            },
+            TriggerSpec::SourceChanged {
+                kind: crate::source_change::PERSON_MAIL.into(),
+                at: String::new(),
+                every_secs: None,
+                filter: serde_json::Map::new(),
+            },
+            TriggerSpec::SourceChanged {
+                kind: crate::source_change::WEB_FEED.into(),
+                at: "https://example.org/feed.xml".into(),
+                every_secs: Some(3600),
+                filter: serde_json::Map::from_iter([(
+                    "author".to_owned(),
+                    Value::from("Ada"),
+                )]),
+            },
+            TriggerSpec::SourceChanged {
+                kind: crate::source_change::PERSON_MAIL.into(),
+                at: "ada@example.com".into(),
+                every_secs: None,
+                filter: serde_json::Map::from_iter([
+                    ("from".to_owned(), Value::from("bo@example.com")),
+                    ("hasAttachments".to_owned(), Value::Bool(true)),
+                ]),
+            },
         ];
         let shortcut = Shortcut {
             id: "triggered".into(),
@@ -436,6 +490,30 @@ tilo_test_env::scenario! {
         assert!(
             trigger::trigger_of("once at noon").is_err(),
             "a moment is a date and a time, not a word"
+        );
+        assert!(
+            text.contains(
+                r#"when something new is in "tilo.accounts.mail" at "ada@example.com" where from is "bo@example.com" where hasAttachments is yes"#
+            ),
+            "something new in a source names its kind, which one, and what narrows it: {text}"
+        );
+        assert!(
+            trigger::trigger_of(r#"when something new is in "tilo.accounts.mail" sometimes"#)
+                .is_err(),
+            "nothing follows a source but which one and what narrows it"
+        );
+        assert!(
+            text.contains(
+                r#"when something new is in "tilo.web.feed" at "https://example.org/feed.xml" looked at every 3600 seconds where author is "Ada""#
+            ),
+            "a source that is looked at on a clock says how often: {text}"
+        );
+        assert!(
+            trigger::trigger_of(
+                r#"when something new is in "tilo.web.page" at "https://example.org/" looked at every hour"#
+            )
+            .is_err(),
+            "how often a source is looked at is a number of seconds"
         );
     }
 }

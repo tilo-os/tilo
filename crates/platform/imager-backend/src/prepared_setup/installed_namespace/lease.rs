@@ -10,7 +10,7 @@ use std::{
 };
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
 
-/// Nonserializable root-owned record custody. No frontend-supplied descriptor,
+/// Nonserializable root-owned record ownership. No frontend-supplied descriptor,
 /// callback or deserialized record can construct this lease.
 pub struct InstalledRecordLease {
     path: PathBuf,
@@ -20,7 +20,7 @@ pub struct InstalledRecordLease {
     snapshot: Vec<u8>,
 }
 impl InstalledRecordLease {
-    /// Open only through the native root-role and controlled-parent gate.
+    /// Open only through the native root-role and controlled-parent check.
     /// The returned bytes still require the caller's closed typed validation.
     pub fn open(path: &Path, id: &str) -> io::Result<Self> {
         operation(id)?;

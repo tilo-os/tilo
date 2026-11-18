@@ -1,4 +1,4 @@
-//! A hosted tilolang app as a person uses it: the window process's own window (the UI host's
+//! A hosted tilolang app as a person uses it: the window process's own window (the app window's
 //! half, `HostedWindow`) driven by pointer and key events, over a real patch connection to a
 //! tilolang host running the app's instance on a broker the test plays: in the headless frame
 //! harness, and in the live `App` a window process runs, fed input as its surface feeds it.
@@ -31,11 +31,11 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_app::hosted::HostedWindow;
-use tilolang_host::TilolangHost;
-use tilolang_host::hosted::{Hosted, Spec};
-use tilolang_host::phrases::Phrases;
-use tilolang_host::testing::{Broker, Inbox, Routed, Sent};
-use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_process::TilolangProcess;
+use tilolang_process::hosted::{Hosted, Spec};
+use tilolang_process::phrases::Phrases;
+use tilolang_process::testing::{Broker, Inbox, Routed, Sent};
+use tilolang_tilo::instance::document::InstanceDocument;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
@@ -123,7 +123,7 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The broker's end of a connection, as the workspace answers it: while `busy`, its queue takes
-/// no change of the record (`TransportError::Busy`, as the broker transport's queue says under
+/// no change of the document (`TransportError::Busy`, as the broker transport's queue says under
 /// fast typing); while `refusing`, it answers a change it took with a refusal, as the broker does
 /// a change the workspace's grants deny; and it refuses a change that builds on one it does not
 /// hold, as the workspace's owner does. What it took is `held`.
@@ -140,7 +140,7 @@ impl WorkspaceEnd {
         self.held.lock().unwrap().get_heads()
     }
 
-    /// Whether the workspace took all `session`'s record holds.
+    /// Whether the workspace took all `session`'s document holds.
     fn holds(&self, session: &Session) -> bool {
         let mut record = session.host.instances().next().unwrap().record().doc();
         self.heads() == record.get_heads()
@@ -512,7 +512,7 @@ pub(crate) struct Session {
     app: String,
     /// The person at the window.
     person: String,
-    host: TilolangHost,
+    host: TilolangProcess,
     window: Window,
     /// The requests the instance's connection sent.
     sent: Sent,
@@ -532,7 +532,7 @@ fn spec_of(route: &RouteSpec, person: &str) -> Spec {
 /// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
 /// loading state. An index being built answers from its first step, so this is reached before
 /// the whole workspace is read.
-fn index_ready(host: &TilolangHost) -> bool {
+fn index_ready(host: &TilolangProcess) -> bool {
     host.instances()
         .next()
         .and_then(|hosted| hosted.instance().host())
@@ -571,7 +571,7 @@ impl Session {
     }
 
     /// A person at a Today window the live `App` runs, the workspace having Tasks and Notes
-    /// installed as the apps of their own records it reads.
+    /// installed as the apps of their own documents it reads.
     fn today(window: impl FnOnce(HostedWindow) -> Window) -> Self {
         let route = RouteSpec::app(TODAY, uuid::Uuid::new_v4());
         let mut spec =
@@ -678,7 +678,7 @@ impl Session {
     }
 
     /// [`Self::brokered`] of the instance `spec` names, as the session named it: whose window reads
-    /// the other apps installed here, each read from its own record.
+    /// the other apps installed here, each read from its own document.
     fn brokered_as(
         route: &RouteSpec,
         spec: Spec,
@@ -694,11 +694,11 @@ impl Session {
     }
 
     /// A person at a harness window of the instance `spec` names, of the app of `route`, over the
-    /// workspace record `chunks`, on a connection of `bus`: what they say of themselves reaches
+    /// workspace document `chunks`, on a connection of `bus`: what they say of themselves reaches
     /// the bus's other connections on the route, and the bus's member list names everyone.
     /// Settled.
     pub(crate) fn on_bus(
-        bus: &Rc<tilolang_host::testing::Bus>,
+        bus: &Rc<tilolang_process::testing::Bus>,
         route: &RouteSpec,
         spec: Spec,
         chunks: tilolang_tilo::chunk::Chunks,
@@ -713,7 +713,7 @@ impl Session {
         session
     }
 
-    /// A person at a Tasks window over the workspace record `chunks` (its own chunk and the
+    /// A person at a Tasks window over the workspace document `chunks` (its own chunk and the
     /// chunks above it this replica holds), opened on `route`, whose package keeps what it
     /// keeps in `storage`: the indexes an earlier window of the same route left there are read,
     /// not built. The window settles before it is handed over.
@@ -771,7 +771,7 @@ impl Session {
         // What arrives while the route joins, the member list among it, the host takes once the
         // instance runs.
         let early = manager.poll();
-        let record = InstanceRecord::of(
+        let record = InstanceDocument::of(
             chunks,
             manager,
             route.clone(),
@@ -919,11 +919,11 @@ impl Session {
     }
 
     /// The window's hosted instance.
-    fn instance(&self) -> &tilolang_host::hosted::Hosted {
+    fn instance(&self) -> &tilolang_process::hosted::Hosted {
         self.host.instances().next().expect("the window's instance")
     }
 
-    fn instance_mut(&mut self) -> &mut tilolang_host::hosted::Hosted {
+    fn instance_mut(&mut self) -> &mut tilolang_process::hosted::Hosted {
         self.host
             .instances_mut()
             .next()
@@ -938,7 +938,7 @@ impl Session {
             .expect("the instance's store")
     }
 
-    /// How many indexes the window's instance built from its record: none when it opens over
+    /// How many indexes the window's instance built from its document: none when it opens over
     /// the ones an earlier run of the app kept.
     fn builds(&self) -> u64 {
         self.instance_host().store().stats().builds
@@ -964,7 +964,7 @@ impl Session {
             .expect("the window is the hosted window")
     }
 
-    /// The texts the window's views show: its overview, and the page the content lane opens.
+    /// The texts the window's views show: its overview, and the page the content level opens.
     fn shown(&mut self) -> Vec<String> {
         let view = self.hosted().view().expect("the window is connected");
         let mut out = Vec::new();
@@ -980,7 +980,7 @@ impl Session {
         let view = self.hosted().view().expect("the window is connected");
         let mut titles = Vec::new();
         for list in view.lists() {
-            if list.starts_with(tilo_ui_host::shell::DETAIL) {
+            if list.starts_with(tilo_app_window::shell::DETAIL) {
                 continue;
             }
             let rows = view.rows_of(&list).expect("the list's rows");
@@ -996,24 +996,24 @@ impl Session {
 
 /// The title a window's row shows of its item: a tree's row names it in its node's label, a
 /// list's row in the row the item draws.
-fn title_of(row: &tilo_ui_host::UiNode) -> String {
+fn title_of(row: &tilo_app_window::UiNode) -> String {
     if let Some(node) = find(row, &|node| node.kind == "ui.TreeViewNode")
         && let Some(label) = node.props.get("label")
     {
-        return tilo_ui_host::reconcile::display(label);
+        return tilo_app_window::reconcile::display(label);
     }
     find(row, &|node| node.kind == "ui.ListRow")
         .and_then(|row| match row.props.get("title") {
-            Some(tilo_ui_host::Value::Text(title)) => Some(title.clone()),
+            Some(tilo_app_window::Value::Text(title)) => Some(title.clone()),
             _ => None,
         })
         .unwrap_or_else(|| panic!("a row shows its item's title: {row:?}"))
 }
 
 fn find<'a>(
-    node: &'a tilo_ui_host::UiNode,
-    want: &dyn Fn(&tilo_ui_host::UiNode) -> bool,
-) -> Option<&'a tilo_ui_host::UiNode> {
+    node: &'a tilo_app_window::UiNode,
+    want: &dyn Fn(&tilo_app_window::UiNode) -> bool,
+) -> Option<&'a tilo_app_window::UiNode> {
     if want(node) {
         return Some(node);
     }
@@ -1021,8 +1021,12 @@ fn find<'a>(
 }
 
 /// The nodes of the content part of `tree`, the window shell's page beside its sidebar.
-fn content_nodes<'a>(tree: &'a tilo_ui_host::UiNode, out: &mut Vec<&'a tilo_ui_host::UiNode>) {
-    if tree.kind == "part" && tree.props.get("name") == Some(&tilo_ui_host::Value::text("content"))
+fn content_nodes<'a>(
+    tree: &'a tilo_app_window::UiNode,
+    out: &mut Vec<&'a tilo_app_window::UiNode>,
+) {
+    if tree.kind == "part"
+        && tree.props.get("name") == Some(&tilo_app_window::Value::text("content"))
     {
         out.extend(tree.children.iter());
         return;
@@ -1263,7 +1267,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
 fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_key() {
     // The person's id is their key, as a real workspace's ids are.
     let ada = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
-    let bus = Rc::new(tilolang_host::testing::Bus::default());
+    let bus = Rc::new(tilolang_process::testing::Bus::default());
     bus.member(ui::tilo_actions::MemberId::person(ada), "Ada");
     let route = RouteSpec::app("so.tilo.lang.signed", uuid::Uuid::new_v4());
     let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
@@ -1271,10 +1275,10 @@ fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_ke
     let root = session
         .hosted()
         .view()
-        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .and_then(tilo_app_window::AppWindow::root_tree)
         .expect("the page is shown");
     let key = find(&root, &|node| {
-        matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == "Title")
+        matches!(node.props.get("placeholder"), Some(tilo_app_window::Value::Text(p)) if p == "Title")
     })
     .expect("the page has its title field")
     .key
@@ -1283,7 +1287,7 @@ fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_ke
         .expect("the title field is laid out")
         .get_rect();
     session.window.click_at(rect.center().x, rect.center().y);
-    // Each letter is a change of the record: the page reads the one that named them the editor.
+    // Each letter is a change of the document: the page reads the one that named them the editor.
     session.window.type_text("Plan");
     session.settle();
     // The workspace renames the person: the page follows.
@@ -1360,7 +1364,7 @@ fn press_between_the_keys(session: &mut Session) {
 /// field; the body is rich text, read a line per paragraph.
 fn open_note(session: &mut Session) -> (String, String) {
     let title = match session.field_value("title") {
-        Some(tilo_ui_host::Value::Text(text)) => text,
+        Some(tilo_app_window::Value::Text(text)) => text,
         None => String::new(),
         Some(other) => panic!("a title: {other:?}"),
     };
@@ -1415,7 +1419,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
         session.window.type_text("Note title");
         session.settle();
         let title = match session.field_value("title") {
-            Some(tilo_ui_host::Value::Text(text)) => text,
+            Some(tilo_app_window::Value::Text(text)) => text,
             other => panic!("a title: {other:?}"),
         };
         assert_eq!(
@@ -1433,8 +1437,8 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
 /// The text of the open note's body, a line per paragraph, whether it is plain or rich.
 fn body_text(session: &mut Session) -> String {
     match session.field_value("body") {
-        Some(tilo_ui_host::Value::Text(text)) => text,
-        Some(tilo_ui_host::Value::Rich(rich)) => rich
+        Some(tilo_app_window::Value::Text(text)) => text,
+        Some(tilo_app_window::Value::Rich(rich)) => rich
             .blocks
             .iter()
             .map(|block| block.text.as_str())
@@ -1474,9 +1478,9 @@ fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body_in_the_live_window(
     enter_in_a_new_notes_title_moves_to_its_body(Session::live_notes());
 }
 
-/// The window is made by the component shown before its record and taken over by the one the
-/// record opens, which closes the first. What its instance sends from then on (a change another
-/// writer made at the record's origin, an undo) wakes the component running the window: the
+/// The window is made by the component shown before its document and taken over by the one the
+/// document opens, which closes the first. What its instance sends from then on (a change another
+/// writer made at the document's origin, an undo) wakes the component running the window: the
 /// window shows it then, not whenever something else wakes it.
 #[test]
 fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
@@ -1494,14 +1498,14 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
     }
 
     let (ours, theirs) = Channel::pair().unwrap();
-    // The component shown before the record makes the window, its patch connection at hand.
+    // The component shown before the document makes the window, its patch connection at hand.
     let mut opening = WakeScope::new();
     let _opening_woken = woken(&mut opening);
     let mut window = {
         let _entry = opening.enter();
         HostedWindow::over(theirs)
     };
-    // The record opened: the component it opens takes the window over and closes the first.
+    // The document opened: the component it opens takes the window over and closes the first.
     let mut running = WakeScope::new();
     let running_woken = woken(&mut running);
     drop(opening);
@@ -1541,7 +1545,7 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
 }
 
 /// "+", a title typed, Ctrl+Z, Ctrl+Shift+Z: the window's undo takes back what was typed into the
-/// bound field, as one step of the person's, and redo brings it back. One undo, the record's: the
+/// bound field, as one step of the person's, and redo brings it back. One undo, the document's: the
 /// field keeps no history of its own beside it, and a burst of typing is one step of it.
 fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
     let plus = session.control(&session.doing("Notebook", "new_note"));
@@ -1559,7 +1563,7 @@ fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
     );
     assert_eq!(
         session.field_value("title"),
-        Some(tilo_ui_host::Value::Text(String::new())),
+        Some(tilo_app_window::Value::Text(String::new())),
         "the field shows it"
     );
     session.window.chord(&["ctrl", "shift"], "Z");
@@ -1653,7 +1657,7 @@ fn a_rich_body_is_a_document_and_markdown_typed_into_it_becomes_its_paragraphs()
     session.window.type_text("**bold**");
     session.settle();
     let blocks = match session.field_value("body") {
-        Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
+        Some(tilo_app_window::Value::Rich(rich)) => rich.blocks,
         other => panic!("a rich body: {other:?}"),
     };
     let written: Vec<(&str, &str)> = blocks
@@ -1722,7 +1726,7 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
     session.window.type_text("fn main() {}");
     session.settle();
     let blocks = match session.field_value("body") {
-        Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
+        Some(tilo_app_window::Value::Rich(rich)) => rich.blocks,
         other => panic!("a rich body: {other:?}"),
     };
     let int_attr = |block: &tilo_render_protocol::patch::rich::Block, name: &str| match block
@@ -1775,9 +1779,9 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
         })
         .expect("the body is the block editor");
     assert_eq!(rects.len(), 6, "one rect per block");
-    let list_lane = rects[1].x0;
+    let list_level = rects[1].x0;
     assert!(
-        rects.iter().all(|rect| rect.x0 <= list_lane),
+        rects.iter().all(|rect| rect.x0 <= list_level),
         "no block starts right of a top-level list item's line, so a quote or a code block \
          typed after the list sits on the page and not inside it: {rects:?}"
     );
@@ -1798,7 +1802,7 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
 }
 
 /// What a note's body was written as comes back when its note is opened again: the document is
-/// the field's value, kept in the record, not a draft the window holds.
+/// the field's value, kept in the document, not a draft the window holds.
 #[test]
 fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
     let mut session = Session::live_rich();
@@ -1818,7 +1822,7 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
     assert_eq!(title, "Groceries");
     assert_eq!(body, "Plan\nmilk", "the document as it was written");
     let kinds: Vec<String> = match session.field_value("body") {
-        Some(tilo_ui_host::Value::Rich(rich)) => {
+        Some(tilo_app_window::Value::Rich(rich)) => {
             rich.blocks.iter().map(|block| block.kind.clone()).collect()
         }
         other => panic!("a rich body: {other:?}"),
@@ -1829,7 +1833,7 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
 /// The blocks of the open note's body as the window holds them: each paragraph's kind and text.
 fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
     match session.field_value("body") {
-        Some(tilo_ui_host::Value::Rich(rich)) => rich
+        Some(tilo_app_window::Value::Rich(rich)) => rich
             .blocks
             .iter()
             .map(|block| (block.kind.clone(), block.text.clone()))
@@ -1841,17 +1845,19 @@ fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
 /// The level a block of the open note's body carries, when it is a heading.
 fn heading_level(session: &mut Session, block: usize) -> Option<i64> {
     match session.field_value("body") {
-        Some(tilo_ui_host::Value::Rich(rich)) => match rich.blocks.get(block)?.attrs.get("level") {
-            Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
-            _ => None,
-        },
+        Some(tilo_app_window::Value::Rich(rich)) => {
+            match rich.blocks.get(block)?.attrs.get("level") {
+                Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
+                _ => None,
+            }
+        }
         other => panic!("a rich body: {other:?}"),
     }
 }
 
 /// A heading typed as `## ` at the start of a line is a heading of that level with no marker
 /// left, and Ctrl+Z brings the marker back: what the person typed last is one step of theirs,
-/// kept in the record.
+/// kept in the document.
 fn a_typed_heading_prefix_is_a_heading_undo_puts_back() {
     let mut session = Session::live_rich();
     new_note(&mut session, "Groceries");
@@ -1905,7 +1911,7 @@ fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_frame_harness() {
 }
 
 /// The format menu's Ctrl+Alt+2 makes the line the person is in a heading, over writing that is
-/// already there, and Ctrl+Alt+0 makes it body text again: the record keeps the line's kind,
+/// already there, and Ctrl+Alt+0 makes it body text again: the document keeps the line's kind,
 /// and its words are never moved.
 #[test]
 fn the_heading_chord_makes_the_line_a_heading_and_body_text_again() {
@@ -2071,7 +2077,7 @@ fn entry_key(session: &mut Session) -> String {
     let tree = session
         .hosted()
         .view()
-        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .and_then(tilo_app_window::AppWindow::root_tree)
         .expect("the window has a tree");
     find(&tree, &|node| {
         node.kind == "ui.TextInput" && node.props.contains_key("entry")
@@ -2089,7 +2095,7 @@ fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
     let tree = session
         .hosted()
         .view()
-        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .and_then(tilo_app_window::AppWindow::root_tree)
         .expect("the window has a tree");
     let adds = buttons_named(&tree, "New task");
     assert_eq!(
@@ -2118,10 +2124,10 @@ fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
 }
 
 /// The keys of the buttons named `label` in `node` and under it.
-fn buttons_named(node: &tilo_ui_host::UiNode, label: &str) -> Vec<String> {
+fn buttons_named(node: &tilo_app_window::UiNode, label: &str) -> Vec<String> {
     let mut found = Vec::new();
     if node.kind == "ui.Button"
-        && matches!(node.props.get("label"), Some(tilo_ui_host::Value::Text(name)) if name == label)
+        && matches!(node.props.get("label"), Some(tilo_app_window::Value::Text(name)) if name == label)
     {
         found.push(node.key.clone());
     }
@@ -2141,7 +2147,7 @@ fn entry(session: &mut Session) -> String {
         .map_or_else(String::new, |input| input.value().to_owned())
 }
 
-/// The record's heads: what the app has written, as its changes name it.
+/// The document's heads: what the app has written, as its changes name it.
 fn heads(session: &Session) -> Vec<String> {
     session
         .instance()
@@ -2153,7 +2159,7 @@ fn heads(session: &Session) -> Vec<String> {
         .collect()
 }
 
-/// How many changes the window's record holds: what the window wrote into the workspace.
+/// How many changes the window's document holds: what the window wrote into the workspace.
 fn changes(session: &Session) -> usize {
     let doc = session.instance().record().doc();
     doc.committed_document().get_changes(&[]).len()
@@ -2164,17 +2170,17 @@ fn store(session: &Session) -> tilolang_tilo::store::TiloStore {
     session.instance_host().store().clone()
 }
 
-/// The window's record: the workspace as this device holds it.
+/// The window's document: the workspace as this device holds it.
 fn record(session: &Session) -> tilolang_tilo::chunk::Chunks {
     session.instance().record().chunks()
 }
 
 /// The texts a view's tree shows: every text and every person it names.
-fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+fn texts(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
     for value in node.props.values() {
         match value {
-            tilo_ui_host::Value::Text(text) => out.push(text.clone()),
-            tilo_ui_host::Value::Actor(who) => out.push(who.name.clone()),
+            tilo_app_window::Value::Text(text) => out.push(text.clone()),
+            tilo_app_window::Value::Actor(who) => out.push(who.name.clone()),
             _ => {}
         }
     }
@@ -2186,7 +2192,7 @@ fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
 /// Whether a box a row of the window shows is checked: the box the open task's row draws, bound
 /// to the field the app keeps it in.
 fn a_checked_row_box(session: &mut Session) -> bool {
-    fn boxes(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    fn boxes(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
         if node.kind == "ui.Checkbox" {
             out.push(node.key.clone());
         }
@@ -2198,7 +2204,7 @@ fn a_checked_row_box(session: &mut Session) -> bool {
     {
         let view = session.hosted().view().expect("the window is connected");
         for list in view.lists() {
-            if list.starts_with(tilo_ui_host::shell::DETAIL) {
+            if list.starts_with(tilo_app_window::shell::DETAIL) {
                 continue;
             }
             let rows = view.rows_of(&list).expect("the list's rows");
@@ -2209,8 +2215,12 @@ fn a_checked_row_box(session: &mut Session) -> bool {
         }
     }
     let view = session.hosted().view().expect("the window is connected");
-    keys.iter()
-        .any(|key| matches!(view.bound_value(key), Some(tilo_ui_host::Value::Bool(true))))
+    keys.iter().any(|key| {
+        matches!(
+            view.bound_value(key),
+            Some(tilo_app_window::Value::Bool(true))
+        )
+    })
 }
 
 /// The accessible nodes of the window, each with the widget that draws it.
@@ -2282,7 +2292,7 @@ fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
 }
 
 /// A draft nobody commits leaves nothing: Escape empties it, and leaving it empty makes no task
-/// and writes nothing at all — no row, no change in the record's history.
+/// and writes nothing at all — no row, no change in the document's history.
 #[test]
 fn an_entry_left_empty_makes_no_task_and_no_history() {
     use ui::winit::keyboard::NamedKey;
@@ -2328,7 +2338,7 @@ fn the_entry_adds_a_task_due_today_in_the_today_list() {
 }
 
 /// Undo takes back a task the entry made, as it takes back any other change: the row goes, and
-/// the create is one step the record takes back whole.
+/// the create is one step the document takes back whole.
 #[test]
 fn undo_removes_a_task_the_entry_made() {
     use ui::winit::keyboard::NamedKey;
@@ -2340,7 +2350,7 @@ fn undo_removes_a_task_the_entry_made() {
     session.settle();
     assert_eq!(session.titles(), ["Water the plants"]);
 
-    // The person's Undo: the window's key, which the record answers.
+    // The person's Undo: the window's key, which the document answers.
     session.window.chord(&["ctrl"], "z");
     session.settle();
     assert!(
@@ -2514,7 +2524,7 @@ fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
         "the task starts unchecked"
     );
     // Running it there checks the task off at the app: the row the window holds for it, on the
-    // same record the palette wrote, shows its box checked.
+    // same document the palette wrote, shows its box checked.
     choose(&mut session, "Complete");
     assert!(
         a_checked_row_box(&mut session),
@@ -2704,13 +2714,13 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     // screen as a resource, and the actions a person can take on it, once each.
     // An action that asks for more than a row collects (Assign to…, Place in
     // board, Move to) stays where it lives, and no row repeats another: the
-    // app's row opens its record and the task's row opens the task, so no
+    // app's row opens its document and the task's row opens the task, so no
     // bare Open stands beside them.
     session
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    // A task made by the list's entry: it is a record the window holds. The window opens on
+    // A task made by the list's entry: it is a document the window holds. The window opens on
     // Today, so the day it names none of is today, and the day is there to clear.
     session.window.chord(&["ctrl"], "n");
     session.settle();
@@ -2798,9 +2808,9 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
     /// Every node of `kind` under `node`, its own first.
     fn of_kind<'a>(
-        node: &'a tilo_ui_host::UiNode,
+        node: &'a tilo_app_window::UiNode,
         kind: &str,
-        out: &mut Vec<&'a tilo_ui_host::UiNode>,
+        out: &mut Vec<&'a tilo_app_window::UiNode>,
     ) {
         if node.kind == kind {
             out.push(node);
@@ -2820,19 +2830,19 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
         buttons
             .iter()
             .find(|button| {
-                button.props.get("label") == Some(&tilo_ui_host::Value::Text(label.to_owned()))
+                button.props.get("label") == Some(&tilo_app_window::Value::Text(label.to_owned()))
             })
             .unwrap_or_else(|| panic!("the header holds {label}"))
     };
     let clear = button("Delete finished tasks");
     assert_eq!(
         clear.props.get("enabled"),
-        Some(&tilo_ui_host::Value::Int(0)),
+        Some(&tilo_app_window::Value::Int(0)),
         "nothing is finished, so Delete finished tasks is disabled"
     );
     assert_eq!(
         clear.props.get("description"),
-        Some(&tilo_ui_host::Value::Text(
+        Some(&tilo_app_window::Value::Text(
             "Nothing is finished yet".to_owned()
         )),
         "and it says why"
@@ -2840,12 +2850,12 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
     let new_task = buttons
         .iter()
         .find(|button| {
-            button.props.get("label") == Some(&tilo_ui_host::Value::Text("New task".to_owned()))
+            button.props.get("label") == Some(&tilo_app_window::Value::Text("New task".to_owned()))
         })
         .expect("the bar holds the window's primary, New task");
     assert_eq!(
         new_task.props.get("role"),
-        Some(&tilo_ui_host::Value::Text("primary".to_owned())),
+        Some(&tilo_app_window::Value::Text("primary".to_owned())),
         "the window's primary action, drawn once in its bar"
     );
     // Pressed with nothing typed, it leaves the person in the list's entry rather than making
@@ -2907,7 +2917,7 @@ fn a_click_on_a_tasks_box_marks_it_done() {
     );
     session.settle();
     assert!(
-        task_in_record(&session, "Water the plants", true),
+        task_in_document(&session, "Water the plants", true),
         "the click marked the task done in the workspace"
     );
 }
@@ -2940,27 +2950,27 @@ fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
     session.window.press_named("Mark Water the plants done");
     session.settle();
     assert!(
-        task_in_record(&session, "Water the plants", true),
+        task_in_document(&session, "Water the plants", true),
         "the box marked the task done"
     );
 }
 
-/// Whether the workspace's record holds a task titled `title`, done when `done` says so, as the
+/// Whether the workspace's document holds a task titled `title`, done when `done` says so, as the
 /// window's instance runs it: the list shows only the rows on screen, so it is read off the
-/// record's chunks.
-fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
+/// document's chunks.
+fn task_in_document(session: &Session, title: &str, done: bool) -> bool {
     use tilolang_tilo::DynValue;
     let chunks = session.instance().record().chunks();
     let Some(record) = chunks.first() else {
         return false;
     };
-    let has = |item: &tilolang_tilo::DynRecord, wanted: &dyn Fn(&DynValue) -> bool| {
+    let has = |item: &tilolang_tilo::DynResource, wanted: &dyn Fn(&DynValue) -> bool| {
         item.schema()
             .fields
             .iter()
             .any(|field| item.get(&field.id).is_some_and(wanted))
     };
-    let the_task = |item: &tilolang_tilo::DynRecord| {
+    let the_task = |item: &tilolang_tilo::DynResource| {
         has(
             item,
             &|value| matches!(value, DynValue::Text(text) if text == title),

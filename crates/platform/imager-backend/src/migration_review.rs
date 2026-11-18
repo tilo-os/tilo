@@ -90,19 +90,19 @@ pub fn mounted_home_locations(error: &io::Error) -> Option<Arc<MountedHomeLocati
 }
 
 #[cfg(target_os = "linux")]
-mod capture_custody;
+mod capture_ownership;
 #[cfg(target_os = "linux")]
-pub use capture_custody::CaptureCustody;
+pub use capture_ownership::CaptureOwnership;
 #[cfg(target_os = "linux")]
-mod original_custody;
+mod original_ownership;
 #[cfg(target_os = "linux")]
-pub use original_custody::{OriginalOmission, OriginalPreparation};
+pub use original_ownership::{OriginalOmission, OriginalPreparation};
 
 pub mod storage;
 #[cfg(target_os = "linux")]
 pub use storage::scratch::InventoryScratch;
 
-pub trait InventoryScratchCustody: Send + Sync {
+pub trait InventoryScratchOwnership: Send + Sync {
     fn check(&self) -> io::Result<()>;
 }
 
@@ -153,9 +153,9 @@ pub struct SourceInventory {
     projected_roots: Option<Arc<launcher::owned_service::VerifiedOriginalMountedRoots>>,
     max_entries: usize,
     #[cfg(target_os = "linux")]
-    custody: Option<Arc<InstallerCustody>>,
+    ownership: Option<Arc<InstallerOwnership>>,
     #[cfg(target_os = "linux")]
-    original_custody: Vec<Arc<original_custody::OriginalCustody>>,
+    original_ownership: Vec<Arc<original_ownership::OriginalOwnership>>,
     exclusions: Vec<PathBuf>,
     /// Files the running setup keeps in this Home for itself.
     running: Vec<PathBuf>,
@@ -231,9 +231,9 @@ impl SourceInventory {
             projected_roots: None,
             max_entries: MAX_ENTRIES,
             #[cfg(target_os = "linux")]
-            custody: None,
+            ownership: None,
             #[cfg(target_os = "linux")]
-            original_custody: Vec::new(),
+            original_ownership: Vec::new(),
             exclusions: Vec::new(),
             running: Vec::new(),
         };
@@ -253,9 +253,9 @@ impl SourceInventory {
             projected_roots: None,
             max_entries: 1_000_000,
             #[cfg(target_os = "linux")]
-            custody: None,
+            ownership: None,
             #[cfg(target_os = "linux")]
-            original_custody: Vec::new(),
+            original_ownership: Vec::new(),
             exclusions: Vec::new(),
             running: Vec::new(),
         };
@@ -267,7 +267,7 @@ impl SourceInventory {
     /// caller supplies a traversal filter.
     #[cfg(target_os = "linux")]
     pub fn capture_portable_home(root: &Arc<PinnedDirectory>, home: &Path) -> io::Result<Self> {
-        let mut inventory = Self::capture_home_policy(root, InstallerCustody::review(home)?)?;
+        let mut inventory = Self::capture_home_policy(root, InstallerOwnership::review(home)?)?;
         inventory.running = running_setup_files(home);
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
@@ -279,13 +279,13 @@ impl SourceInventory {
         scratch: Arc<InventoryScratch>,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
-        let custody = InstallerCustody::review(home)?;
+        let ownership = InstallerOwnership::review(home)?;
         if let Err(disjoint) = scratch.validate_source(root) {
-            let admitted = custody.as_ref().ok_or(disjoint)?;
+            let admitted = ownership.as_ref().ok_or(disjoint)?;
             admitted.validate()?;
             scratch.validate_excluded_source(root, &admitted.pin)?;
         }
-        let mut inventory = Self::capture_home_policy(root, custody)?;
+        let mut inventory = Self::capture_home_policy(root, ownership)?;
         inventory.running = running_setup_files(home);
         inventory.facts = storage::Storage::with_scratch(scratch);
         inventory.walk_with_cancel(root, Path::new(""), 0, cancel)?;
@@ -299,7 +299,7 @@ impl SourceInventory {
     #[cfg(target_os = "linux")]
     fn capture_home_policy(
         root: &Arc<PinnedDirectory>,
-        custody: Option<Arc<InstallerCustody>>,
+        ownership: Option<Arc<InstallerOwnership>>,
     ) -> io::Result<Self> {
         use cap_fs_ext::MetadataExt;
         Ok(Self {
@@ -308,8 +308,8 @@ impl SourceInventory {
             same_mount: Some(fs_native::snapshot_lease::mount_id(&root.file)?),
             projected_roots: None,
             max_entries: 1_000_000,
-            custody,
-            original_custody: Vec::new(),
+            ownership,
+            original_ownership: Vec::new(),
             exclusions: Vec::new(),
             running: Vec::new(),
         })
@@ -324,14 +324,14 @@ impl SourceInventory {
             return Ok(true);
         }
         #[cfg(target_os = "linux")]
-        if let Some(custody) = &self.custody {
-            custody.validate()?;
-            return Ok(path == custody.relative);
+        if let Some(ownership) = &self.ownership {
+            ownership.validate()?;
+            return Ok(path == ownership.relative);
         }
         #[cfg(target_os = "linux")]
-        for custody in &self.original_custody {
-            custody.validate()?;
-            if path == custody.relative {
+        for ownership in &self.original_ownership {
+            ownership.validate()?;
+            if path == ownership.relative {
                 return Ok(true);
             }
         }
@@ -348,24 +348,24 @@ impl SourceInventory {
             return true;
         }
         #[cfg(target_os = "linux")]
-        if let Some(custody) = &self.custody {
-            return custody.mutable_ancestors
-                && path != custody.relative
-                && custody.relative.starts_with(path);
+        if let Some(ownership) = &self.ownership {
+            return ownership.mutable_ancestors
+                && path != ownership.relative
+                && ownership.relative.starts_with(path);
         }
         let _ = path;
         false
     }
     pub fn excluded_paths(&self) -> Vec<&Path> {
         #[cfg(target_os = "linux")]
-        let custody = self
-            .custody
+        let ownership = self
+            .ownership
             .iter()
             .map(|c| c.relative.as_path())
-            .chain(self.original_custody.iter().map(|c| c.relative.as_path()));
+            .chain(self.original_ownership.iter().map(|c| c.relative.as_path()));
         #[cfg(not(target_os = "linux"))]
-        let custody = std::iter::empty::<&Path>();
-        custody
+        let ownership = std::iter::empty::<&Path>();
+        ownership
             .chain(self.exclusions.iter().map(PathBuf::as_path))
             .chain(self.running.iter().map(PathBuf::as_path))
             .collect()
@@ -600,9 +600,9 @@ impl SourceInventory {
             projected_roots: self.projected_roots.clone(),
             max_entries: self.max_entries,
             #[cfg(target_os = "linux")]
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             #[cfg(target_os = "linux")]
-            original_custody: self.original_custody.clone(),
+            original_ownership: self.original_ownership.clone(),
             exclusions: self.exclusions.clone(),
             running: self.running.clone(),
         };
@@ -687,14 +687,14 @@ mod tests {
         environment.set("XDG_STATE_HOME", home_path.join(".local/state"));
         let namespace = crate::session::preparation_namespace().unwrap();
         let home = PinnedDirectory::open_absolute(&home_path).unwrap();
-        let mut custody = home.clone();
+        let mut ownership = home.clone();
         for component in namespace.strip_prefix(&home_path).unwrap().components() {
             let std::path::Component::Normal(name) = component else {
                 panic!("canonical preparation namespace must be beneath fixture home");
             };
-            custody = custody.create_child(name).unwrap();
+            ownership = ownership.create_child(name).unwrap();
         }
-        let scratch_pin = custody
+        let scratch_pin = ownership
             .create_child(std::ffi::OsStr::new("working-storage"))
             .unwrap();
         let scratch = InventoryScratch::review(scratch_pin, 32 * 1024 * 1024).unwrap();
@@ -747,7 +747,7 @@ mod tests {
 }
 
 #[cfg(target_os = "linux")]
-struct InstallerCustody {
+struct InstallerOwnership {
     mutable_ancestors: bool,
     pin: Arc<PinnedDirectory>,
     relative: PathBuf,
@@ -842,7 +842,7 @@ fn held_file(
     )))
 }
 
-impl InstallerCustody {
+impl InstallerOwnership {
     fn review(home: &Path) -> io::Result<Option<Arc<Self>>> {
         use cap_fs_ext::MetadataExt;
         let Some(namespace) = crate::session::preparation_namespace() else {
@@ -852,7 +852,7 @@ impl InstallerCustody {
             return Ok(None);
         };
         if relative.as_os_str().is_empty() {
-            return Err(changed("Home cannot be installer custody"));
+            return Err(changed("Home cannot be installer ownership"));
         }
         match std::fs::symlink_metadata(&namespace) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

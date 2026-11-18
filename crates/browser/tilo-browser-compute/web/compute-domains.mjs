@@ -15,7 +15,7 @@ export function createComputeDomains({workerFactory=()=>new Worker(new URL('./co
   }
   function retire(job) {
     if(!job.leased)return;
-    job.leased=false;leases--;if(job.owner.lane==='background')background--;
+    job.leased=false;leases--;if(job.owner.priority==='background')background--;
     job.owner.active=false;clearTimeout(job.timer);
     const queued=ready.indexOf(job.owner);if(queued>=0){ready.splice(queued,1);ready.push(job.owner);}
     if(job.worker){for(const [k,f] of job.listeners)job.worker.removeEventListener(k,f);job.worker.terminate();job.worker=null;}
@@ -36,7 +36,7 @@ export function createComputeDomains({workerFactory=()=>new Worker(new URL('./co
   async function consume(job) {
     if(!authorized(job)){finish(job,fault('closed'));return;}
     // Retirement and the next owner's authorize callback can reenter/close us.
-    // Keep custody across the entire handoff, then check at actual delivery.
+    // Keep ownership across the entire handoff, then check at actual delivery.
     job.consuming=true;
     try {
       retire(job);pump();
@@ -94,19 +94,19 @@ export function createComputeDomains({workerFactory=()=>new Worker(new URL('./co
   }
   function pump() {
     while(leases<2){
-      const index=ready.findIndex(o=>!o.closed&&!o.active&&o.queue.length&&(o.lane==='foreground'||background<1));
+      const index=ready.findIndex(o=>!o.closed&&!o.active&&o.queue.length&&(o.priority==='foreground'||background<1));
       if(index<0)return;
       const owner=ready.splice(index,1)[0],job=owner.queue.shift();
       if(owner.queue.length)ready.push(owner);
       if(job.dead)continue;
-      owner.active=true;job.leased=true;leases++;if(owner.lane==='background')background++;
+      owner.active=true;job.leased=true;leases++;if(owner.priority==='background')background++;
       job.timer=setTimeout(()=>finish(job,fault('timeout')),timeoutMs);
       void start(job);
     }
   }
   function bindOwner(options) {
     const o=fields(options);
-    if(![o.owner,o.lifetime,o.domain].every(text)||!['foreground','background'].includes(o.lane)||typeof o.authorize!=='function')throw fault('protocol');
+    if(![o.owner,o.lifetime,o.domain].every(text)||!['foreground','background'].includes(o.priority)||typeof o.authorize!=='function')throw fault('protocol');
     const binding=JSON.stringify([o.owner,o.lifetime]);
     if(bindings.has(binding))throw fault('binding');
     bindings.add(binding);

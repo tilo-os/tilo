@@ -35,8 +35,8 @@ static HOSTED: Mutex<(Kinds, Vec<(&'static str, Seed)>)> = Mutex::new((Kinds::ne
 pub(crate) fn register<A: ResourceApp>() {
     // The parts of the chains it keeps beside its record are its kinds too:
     // a host reads a part (a chat's messages) as the app's window does.
-    let mut declared = super::Records::declaring();
-    A::records(&mut declared);
+    let mut declared = super::Resources::declaring();
+    A::resources(&mut declared);
     // A runtime that runs a package hosts the kinds under the package's app.
     let app = super::app::hooks::<A>();
     // What the app is called, for every resource its types publish: its

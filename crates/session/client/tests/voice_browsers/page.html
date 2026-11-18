@@ -18,7 +18,7 @@ const workspace = await (await fetch('/api/workspace')).text();
 const device = await (await fetch('/api/host')).text();
 const api = (path, method = 'GET') => fetch(`/api/${who}/${path}`, {method, cache: 'no-store'});
 // Only the certified session crosses this fixture proxy. Call control, the
-// pictures the page publishes on its call's plane (and the layers it shows,
+// pictures the page publishes on its call's live session (and the layers it shows,
 // and the keyframes it asks for), and all audio/capture/codec code are the
 // production browser modules.
 const certified = {
@@ -27,10 +27,10 @@ const certified = {
   voiceCalls: () => {void api('calls', 'POST');},
   voiceCall: (_, operation, request) => {void fetch(`/api/${who}/call/${request}`, {method: 'POST', body: operation, cache: 'no-store'});},
   // The microphone's frames, which the page publishes on its workspace's live
-  // plane: this fixture holds no plane, so it counts them instead.
+  // live session: this fixture holds no live session, so it counts them instead.
   callAudio: (_, frames) => {window.publishedFrames = (window.publishedFrames ?? 0) + JSON.parse(frames).length; changed();},
   // What the page makes and reads of the call's pictures, posted to the
-  // fixture that holds the plane: each as it is made, never on a timer.
+  // fixture that holds the live session: each as it is made, never on a timer.
   callPictures: (_, pictures) => {void fetch(`/api/${who}/pictures`, {method: 'POST', body: pictures, cache: 'no-store'});},
   callShowing: (_, shown) => {void fetch(`/api/${who}/showing`, {method: 'POST', body: shown, cache: 'no-store'});},
   callPictureRestart: (_, device, source) => {void fetch(`/api/${who}/keyframe/${device}/${source}`, {method: 'POST', cache: 'no-store'});},

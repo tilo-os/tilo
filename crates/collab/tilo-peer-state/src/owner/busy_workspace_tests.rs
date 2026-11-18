@@ -37,7 +37,7 @@ fn redemption(
 ) {
     let signed = join::issue_invitation(
         join::InviteGrant {
-            workspace_id: tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
+            workspace_id: tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: governor.clone(),
             role: join::Role::Editor,
             nonce: [nonce; 16],
@@ -138,11 +138,13 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let governor = certificate(&root, &governor_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
     let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = WorkspaceDeviceHintV1 {
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -327,7 +329,7 @@ fn joining_a_busy_public_workspace_never_fails_because_of_how_many_messages_it_h
         .unwrap();
 }
 
-/// How many relay inputs of one session the shell admits in one commit.
+/// How many server inputs of one session the shell admits in one commit.
 const BATCH: usize = 256;
 
 #[test]
@@ -346,7 +348,7 @@ fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
         let batch = sync
             .by_ref()
             .take(BATCH)
-            .map(|(author, message)| (TransportOrigin::RetainedRelayDelta(author), message))
+            .map(|(author, message)| (TransportOrigin::RetainedServerDelta(author), message))
             .collect();
         let reports = owner
             .receive_batch(id, batch, workspace.now)
@@ -362,7 +364,7 @@ fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
             assert!(report.summary().dropped.is_empty());
         }
     }
-    eprintln!("{inputs} relay inputs admitted in {:?}", started.elapsed());
+    eprintln!("{inputs} server inputs admitted in {:?}", started.elapsed());
     assert_eq!(
         owner
             .with_current(id, |view| Ok(view.generation()))

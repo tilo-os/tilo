@@ -6,7 +6,7 @@ use super::super::{
     migration::PinnedDirectory,
     portable_home_media::{HomeSource, MediaGrant},
 };
-use super::super::{migration_review::CaptureCustody, portable_home_media::Expectation};
+use super::super::{migration_review::CaptureOwnership, portable_home_media::Expectation};
 use super::failure;
 mod original;
 #[cfg(feature = "capture-worker")]
@@ -91,7 +91,7 @@ impl Secret {
 pub struct Request {
     pub(super) schema: u32,
     pub(super) operation: String,
-    pub(super) custody: Option<CaptureCustody>,
+    pub(super) ownership: Option<CaptureOwnership>,
     pub(super) command: Command,
 }
 impl Request {
@@ -108,8 +108,8 @@ impl Request {
         }
         if let Some(authority) = self.command.original_authority() {
             authority.validate_shape(&self.operation)?;
-            if self.custody.is_some() {
-                return Err(failure("Original reader cannot accept snapshot custody"));
+            if self.ownership.is_some() {
+                return Err(failure("Original reader cannot accept snapshot ownership"));
             }
         }
         match &self.command {
@@ -635,7 +635,7 @@ pub fn serve_once(channel: &mut (impl Read + Write), cancel: &AtomicBool) -> io:
     let source = if let Some(authority) = &original_authority {
         HomeSource::review_original_reader(pin, authority, scratch, cancel)?
     } else {
-        HomeSource::review_captured(pin, request.custody.as_ref(), scratch, cancel)?
+        HomeSource::review_captured(pin, request.ownership.as_ref(), scratch, cancel)?
     };
     let response = match request.command {
         Command::Review | Command::ReviewOriginal { .. } => {
@@ -837,9 +837,9 @@ mod tests {
 
         phase worker_commands_have_no_source_or_output_path_authority;
         {
-            let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","custody":null,"command":{"action":"review","source":"/other-home"}}"#;
+            let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","ownership":null,"command":{"action":"review","source":"/other-home"}}"#;
             assert!(serde_json::from_slice::<Request>(input).is_err());
-            let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","custody":null,"command":{"action":"review"},"output":"/other-volume"}"#;
+            let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","ownership":null,"command":{"action":"review"},"output":"/other-volume"}"#;
             assert!(serde_json::from_slice::<Request>(input).is_err());
         }
 
@@ -848,7 +848,7 @@ mod tests {
             let mut request = Request {
                 schema: 1,
                 operation: uuid::Uuid::new_v4().to_string(),
-                custody: None,
+                ownership: None,
                 command: Command::Review,
             };
             assert_eq!(
@@ -965,7 +965,7 @@ mod tests {
             assert!(encoded["command"].get("password").is_none());
             assert!(encoded["command"].get("output").is_none());
             let mut snapshot_claim = encoded.clone();
-            snapshot_claim["custody"] = serde_json::json!({"preparation":{
+            snapshot_claim["ownership"] = serde_json::json!({"preparation":{
                 "relative":crate::setup::migration_store::NativePath::encode(
                     std::path::Path::new(".local/state/tilo/installer/preparations")),
                 "stable":[1,448,1000,1001]},"settings_lock":null});
@@ -1016,7 +1016,7 @@ mod tests {
             let normal = Request {
                 schema: WORKER_PROTOCOL,
                 operation: uuid::Uuid::new_v4().to_string(),
-                custody: None,
+                ownership: None,
                 command: Command::Review,
             };
             normal.require_capture_route().unwrap();
@@ -1025,7 +1025,7 @@ mod tests {
     fn original_review_request() -> Request {
         let operation = uuid::Uuid::new_v4().to_string();
         serde_json::from_value(serde_json::json!({
-            "schema":WORKER_PROTOCOL,"operation":operation,"custody":null,
+            "schema":WORKER_PROTOCOL,"operation":operation,"ownership":null,
             "command":{"action":"review-original","authority":{
                 "schema":2,"operation":operation,"export_operation":operation,
                 "sealed_reservation":1048576,"omissions":[],"setup_binding":"authenticated-setup",

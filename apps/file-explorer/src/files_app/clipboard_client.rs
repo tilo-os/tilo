@@ -1,4 +1,4 @@
-//! The host's native clipboard lane, for a selection too large to carry in the
+//! The host's native clipboard descriptor stream, for a selection too large to carry in the
 //! app.
 
 use super::FilesState;
@@ -985,7 +985,7 @@ mod tests {
             StartupInputs {
                 initial_dir: path.into(),
                 workspace_roots: vec![path.into()],
-                record_roots: Vec::new(),
+                resource_roots: Vec::new(),
                 remote_accounts: Vec::new(),
                 trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
             },
@@ -1009,7 +1009,7 @@ mod tests {
             .take_request()
             .expect("pending native command")
         else {
-            panic!("wrong host lane")
+            panic!("wrong host descriptor stream")
         };
         assert_eq!(on_behalf_of, Some(invocation));
         assert!(command.valid());

@@ -942,15 +942,19 @@ impl crate::app::ChatApp {
                     roster.deafened.iter().any(|person| person == user),
                 ),
             };
-            let member = |user: &str, (muted, deafened): (bool, bool)| crate::model::VoiceMember {
-                user: ui::tilo_resource::MemberId::person(user),
-                talking: snapshot.speaking.iter().any(|person| person == user),
-                muted,
-                deafened,
-                audio_only: !roster.cameras.iter().any(|person| person == user),
-                sharing: roster.screens.iter().any(|person| person == user),
-                ticket: None,
-                video: None,
+            // A roster names its people by their stored keys; one that
+            // names no member is no one to show a tile for.
+            let member = |user: &str, (muted, deafened): (bool, bool)| {
+                Some(crate::model::VoiceMember {
+                    user: ui::tilo_resource::MemberId::parsed_person(user)?,
+                    talking: snapshot.speaking.iter().any(|person| person == user),
+                    muted,
+                    deafened,
+                    audio_only: !roster.cameras.iter().any(|person| person == user),
+                    sharing: roster.screens.iter().any(|person| person == user),
+                    ticket: None,
+                    video: None,
+                })
             };
             let voice = self.channels.iter().any(|channel| {
                 channel.id == roster.channel_id && channel.kind == crate::model::ChannelKind::Voice
@@ -959,7 +963,7 @@ impl crate::app::ChatApp {
                 let mut members: Vec<_> = roster
                     .people
                     .iter()
-                    .map(|person| member(person, hearing(person)))
+                    .filter_map(|person| member(person, hearing(person)))
                     .collect();
                 // A person's devices are one person; the service sorted them.
                 members.dedup_by(|a, b| a.user == b.user);

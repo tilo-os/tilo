@@ -8,7 +8,7 @@
 //! The record is a projection of the fabric: each device writes the answers it
 //! hears under the answering device's actor, at the time it decided.
 //! Nothing is invented: an answer enters only if it validates
-//! ([`UnlockDecisionRecord::validate`]), and a document this build cannot read is
+//! ([`UnlockDecisionEntry::validate`]), and a document this build cannot read is
 //! never written over.
 
 use std::cell::RefCell;
@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::platform::fabric::DeviceFabric;
-use crate::platform::fabric::{DecisionOutcome, UnlockDecisionRecord};
+use crate::platform::fabric::{DecisionOutcome, UnlockDecisionEntry};
 use crate::platform::fabric::{FabricLink as _, SharedLink};
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjType, OnPartialLoad, ROOT, ReadDoc as _};
@@ -214,7 +214,7 @@ struct Boot {
 }
 
 /// The device `answer` 's boot belongs to, by the enrolment it names.
-fn boot_of(fabric: &DeviceFabric, answer: &UnlockDecisionRecord) -> Boot {
+fn boot_of(fabric: &DeviceFabric, answer: &UnlockDecisionEntry) -> Boot {
     for snapshot in fabric.snapshots().values() {
         for enrolment in &snapshot.unlock.enrolments {
             if enrolment.id() != Some(answer.boot_cert_digest) {
@@ -241,7 +241,7 @@ fn boot_of(fabric: &DeviceFabric, answer: &UnlockDecisionRecord) -> Boot {
 /// The key an answer is kept under: when it was made, which device made it and which boot it
 /// answers. The same device answering the same boot again — after its answer ran out — is another
 /// answer, and another entry.
-fn key_of(answer: &UnlockDecisionRecord) -> String {
+fn key_of(answer: &UnlockDecisionEntry) -> String {
     format!(
         "{}-{}-{}",
         answer.decided_at_ns,
@@ -260,7 +260,7 @@ const fn outcome(answer: DecisionOutcome) -> &'static str {
 
 /// How the change `answer` makes reads in the history: "Disk unlock: Approved unlocking The phone",
 /// by the device that answered, about the boot that asked and the disk it asked for.
-fn context_of(answer: &UnlockDecisionRecord, boot: &Boot) -> ActionContext {
+fn context_of(answer: &UnlockDecisionEntry, boot: &Boot) -> ActionContext {
     let outcome = outcome(answer.outcome);
     ActionContext {
         app: Some(ActionApp {
@@ -291,12 +291,7 @@ fn context_of(answer: &UnlockDecisionRecord, boot: &Boot) -> ActionContext {
 
 /// Write `answer` into `doc` as the entry `key` names: the facts a reader of the person's record
 /// asks for, as plain values. Whether it was written.
-fn write_entry(
-    doc: &mut AutoCommit,
-    key: &str,
-    answer: &UnlockDecisionRecord,
-    boot: &Boot,
-) -> bool {
+fn write_entry(doc: &mut AutoCommit, key: &str, answer: &UnlockDecisionEntry, boot: &Boot) -> bool {
     let Ok(entry) = doc.put_object(ROOT, key, ObjType::Map) else {
         return false;
     };

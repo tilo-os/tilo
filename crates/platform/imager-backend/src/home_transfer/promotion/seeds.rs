@@ -1,6 +1,6 @@
 //! Root-attested firstboot defaults may be retained before imported originals move.
 use super::*;
-pub(super) use crate::home_transfer::seeds::Witness;
+pub(super) use crate::home_transfer::seeds::RecoveryBinding;
 use crate::home_transfer::seeds::{Authority, Generated, relative, stamp};
 use std::os::unix::fs::MetadataExt as _;
 const SEED_LIMIT: u64 = 4 * 1024 * 1024;
@@ -70,7 +70,7 @@ impl Classifier {
             return Ok(());
         };
         if matches(&self.home, generated)? {
-            entry.seed = Some(Witness {
+            entry.seed = Some(RecoveryBinding {
                 proof_sha256: proof.digest().to_owned(),
                 generated: generated.clone(),
                 target: target.clone(),
@@ -82,12 +82,12 @@ impl Classifier {
 }
 
 fn retained(home: &Arc<PinnedDirectory>, create: bool) -> io::Result<Arc<PinnedDirectory>> {
-    let custody = parent(home, Path::new(".local/state/tilo"))?;
+    let ownership = parent(home, Path::new(".local/state/tilo"))?;
     let name = OsStr::new("firstboot-preserved");
-    let directory = match metadata_nofollow(&custody.file, Path::new(name)) {
-        Ok(metadata) => custody.open_child(name, &metadata)?,
+    let directory = match metadata_nofollow(&ownership.file, Path::new(name)) {
+        Ok(metadata) => ownership.open_child(name, &metadata)?,
         Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
-            custody.create_child(name)?
+            ownership.create_child(name)?
         }
         Err(error) => return Err(error),
     };
@@ -95,15 +95,18 @@ fn retained(home: &Arc<PinnedDirectory>, create: bool) -> io::Result<Arc<PinnedD
     destination_security::check_private_file(&directory.file)?;
     Ok(directory)
 }
-pub(super) fn validate_witness(path: &Path, witness: &Witness) -> io::Result<()> {
-    witness.validate(path)
+pub(super) fn validate_proof(path: &Path, proof: &RecoveryBinding) -> io::Result<()> {
+    proof.validate(path)
 }
-pub(super) fn verify_retained(home: &Arc<PinnedDirectory>, witness: &Witness) -> io::Result<()> {
-    witness.verify_authority(&home.file)?;
+pub(super) fn verify_retained(
+    home: &Arc<PinnedDirectory>,
+    proof: &RecoveryBinding,
+) -> io::Result<()> {
+    proof.verify_authority(&home.file)?;
     let backup = retained(home, false)?;
-    let name = witness.backup_name();
-    if !matches_at(&backup, &name, &witness.generated, true)?
-        || tree::fact(&backup, &name, Path::new(&name))?.0 != witness.target
+    let name = proof.backup_name();
+    if !matches_at(&backup, &name, &proof.generated, true)?
+        || tree::fact(&backup, &name, Path::new(&name))?.0 != proof.target
     {
         return Err(changed("Preserved firstboot seed changed"));
     }
@@ -112,16 +115,16 @@ pub(super) fn verify_retained(home: &Arc<PinnedDirectory>, witness: &Witness) ->
 pub(super) fn preserve(
     home: &Arc<PinnedDirectory>,
     path: &Path,
-    witness: &Witness,
+    proof: &RecoveryBinding,
 ) -> io::Result<()> {
-    validate_witness(path, witness)?;
-    witness.verify_authority(&home.file)?;
+    validate_proof(path, proof)?;
+    proof.verify_authority(&home.file)?;
     let backup = retained(home, true)?;
-    let name = witness.backup_name();
+    let name = proof.backup_name();
     if metadata_nofollow(&backup.file, Path::new(&name)).is_ok() {
-        return verify_retained(home, witness);
+        return verify_retained(home, proof);
     }
-    if !matches(home, &witness.generated)? {
+    if !matches(home, &proof.generated)? {
         return Err(changed(
             "Firstboot seed was edited; target remains a conflict",
         ));
@@ -153,22 +156,22 @@ pub(super) fn preserve(
     }
     durable::sync_directory(&directory.file)?;
     durable::sync_directory(&backup.file)?;
-    verify_retained(home, witness)
+    verify_retained(home, proof)
 }
 
 pub(super) fn verify_pending(
     home: &Arc<PinnedDirectory>,
     path: &Path,
-    witness: &Witness,
+    proof: &RecoveryBinding,
 ) -> io::Result<()> {
-    validate_witness(path, witness)?;
-    witness.verify_authority(&home.file)?;
+    validate_proof(path, proof)?;
+    proof.verify_authority(&home.file)?;
     let backup = match retained(home, false) {
         Ok(backup) => Some(backup),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    let name = witness.backup_name();
+    let name = proof.backup_name();
     let preserved = backup
         .as_ref()
         .is_some_and(|backup| metadata_nofollow(&backup.file, Path::new(&name)).is_ok());
@@ -181,16 +184,16 @@ pub(super) fn verify_pending(
         .file_name()
         .ok_or_else(|| changed("Missing seed name"))?;
     if preserved {
-        verify_retained(home, witness)?;
+        verify_retained(home, proof)?;
         match metadata_nofollow(&directory.file, Path::new(source_name)) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             _ => Err(changed("Adoption target appeared after seed preservation")),
         }
-    } else if matches(home, &witness.generated)?
-        && tree::fact(&directory, source_name, path)?.0 == witness.target
+    } else if matches(home, &proof.generated)?
+        && tree::fact(&directory, source_name, path)?.0 == proof.target
     {
         Ok(())
     } else {
-        Err(changed("Unchanged firstboot seed custody was lost"))
+        Err(changed("Unchanged firstboot seed ownership was lost"))
     }
 }

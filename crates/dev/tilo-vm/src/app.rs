@@ -52,6 +52,7 @@ mod artifact;
 mod branch;
 mod branch_admit;
 mod builder;
+mod client;
 mod device;
 #[cfg(test)]
 mod forwarded_port_tests;
@@ -1317,6 +1318,7 @@ impl App {
                 vm,
                 command,
             } => self.vm_ssh(name.or(vm).as_deref(), raw, &command),
+            VmCommand::Client { name, command } => self.vm_client(name.as_deref(), &command),
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Branch(args) => self.vm_branch(&args),
@@ -2096,6 +2098,13 @@ impl App {
                     crate::lan::new_mac(|mac| lan_taken(&registry, mac))
                 }
             });
+        let render_node = if args.gl {
+            Some(crate::qemu::resolve_rendernode(
+                args.render_node.as_deref(),
+            )?)
+        } else {
+            None
+        };
         let entry = VmEntry {
             lan,
             hypervisor: plan.choice.adapter.to_owned(),
@@ -2111,6 +2120,7 @@ impl App {
             headless: args.headless,
             heads: args.heads,
             gl: args.gl,
+            render_node: render_node.as_ref().map(|node| node.path.clone()),
             resolution: args.resolution,
             cpus: args.cpus,
             ssh_port: plan.ssh_port,
@@ -2168,6 +2178,9 @@ impl App {
                 plan.choice.adapter
             );
         }
+        if let Some(node) = &render_node {
+            let _ = write!(text, "\n  GL renders on {} ({})", node.path, node.reason);
+        }
         if plan.choice.adapter == "libvirt" {
             let _ = write!(text, "\n  {}", host::VIRT_MANAGER_TIP);
         }
@@ -2175,7 +2188,7 @@ impl App {
         let account = "tilo-vm account create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "ssh_port": plan.ssh_port, "key": key, "key_as_credential": credentials, "commands": commands }),
+            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "ssh_port": plan.ssh_port, "key": key, "key_as_credential": credentials, "commands": commands, "render_node": render_node.as_ref().map(|n| &n.path) }),
         );
         outcome.next = vec![start, account];
         Ok(outcome)
@@ -3086,7 +3099,7 @@ impl App {
                 image: format!("ci:{tag}"),
                 problem: match &target.board {
                     Some(board) => format!(
-                        "names no {board} board image this host can pull (tried {tried}); CI builds one in each Build / OS dev run with an aarch64 lane"
+                        "names no {board} board image this host can pull (tried {tried}); CI builds one in each Build / OS dev run with an aarch64 job"
                     ),
                     None => format!("names no CI build this host can pull (tried {tried})"),
                 },
@@ -3499,26 +3512,48 @@ impl App {
         staged: Option<&imageup::Deployment>,
     ) -> Result<(), CliError> {
         let output = self.vm_sh(vm, endpoint, imageup::BOOT_ENTRIES)?;
-        match imageup::parse_entries(&output.stdout) {
+        // A running image's pass can be older than its own boot layout (a dev
+        // image published before its kernel/initrd entries were understood
+        // fails its own `entries`). The staged deployment's try counter is
+        // what protects the reboot, and tilo-vm can give it that itself, so a
+        // broken in-image pass falls through to the same counting below once
+        // it has a staged deployment to protect.
+        let broken = match imageup::parse_entries(&output.stdout) {
             imageup::EntriesOutcome::Done => return Ok(()),
-            imageup::EntriesOutcome::Failed(detail) => {
-                return Err(CliError::CommandFailed {
-                    command: "tilo-deployment entries".into(),
-                    status: output.status,
-                    stderr: format!(
-                        "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one; fix this before rebooting VM {}",
-                        vm.name
-                    ),
-                });
-            }
-            imageup::EntriesOutcome::NoLayout | imageup::EntriesOutcome::Absent => {}
-        }
+            imageup::EntriesOutcome::Failed(detail) => Some((detail, output.status.clone())),
+            imageup::EntriesOutcome::NoLayout | imageup::EntriesOutcome::Absent => None,
+        };
+        let no_counter = |detail: Option<(String, String)>| {
+            detail.map(|(detail, status)| CliError::CommandFailed {
+                command: "tilo-deployment entries".into(),
+                status,
+                stderr: format!(
+                    "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one; fix this before rebooting VM {}",
+                    vm.name
+                ),
+            })
+        };
         let Some(verity) = staged.and_then(|d| d.verity.as_deref()) else {
-            return Ok(());
+            return match no_counter(broken) {
+                Some(error) => Err(error),
+                None => Ok(()),
+            };
         };
         let output = self.vm_sh(vm, endpoint, &imageup::count_staged_entry_script(verity))?;
         match imageup::parse_counted(&output.stdout) {
-            imageup::Counted::Entries(0) => {
+            imageup::Counted::Entries(count) if count > 0 => {
+                if let Some((detail, _)) = broken {
+                    self.warnings.push(format!(
+                        "VM {}: its image cannot maintain its own boot entries ({detail}); tilo-vm gave the staged deployment its try counter, and the image it boots maintains them from then on",
+                        vm.name
+                    ));
+                }
+                Ok(())
+            }
+            imageup::Counted::Entries(_) => {
+                if let Some(error) = no_counter(broken) {
+                    return Err(error);
+                }
                 self.warnings.push(format!(
                     "VM {}: no boot loader entry boots the staged deployment (composefs {}), so it has no try counter; if it fails to boot, choose the previous entry in the boot menu",
                     vm.name,
@@ -3526,7 +3561,10 @@ impl App {
                 ));
                 Ok(())
             }
-            imageup::Counted::Entries(_) | imageup::Counted::NoBootLoader => Ok(()),
+            imageup::Counted::NoBootLoader => match no_counter(broken) {
+                Some(error) => Err(error),
+                None => Ok(()),
+            },
             imageup::Counted::Failed(why) => Err(CliError::CommandFailed {
                 command: "count the staged boot entry".into(),
                 status: output.status,
@@ -6331,7 +6369,7 @@ fn describe_owner(owner: &Owner) -> Option<String> {
 pub fn scenario_driver(entry: &Component) -> String {
     match entry.name.as_str() {
         "installer" => {
-            "tilo-vm scenario install   (a throwaway VM installs from your medium through the installer's actions and cold-boots the result; the release gate is os/dev/test-installer-cycle.sh)".into()
+            "tilo-vm scenario install   (a throwaway VM installs from your medium through the installer's actions and cold-boots the result; the release check is os/dev/test-installer-cycle.sh)".into()
         }
         _ => entry
             .scenario
@@ -8831,6 +8869,7 @@ mod tests {
             headless: false,
             heads: None,
             gl: false,
+            render_node: None,
             resolution: None,
             cpus: None,
             ssh: None,

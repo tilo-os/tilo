@@ -187,12 +187,12 @@ fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
 }
 
 #[derive(Clone, Copy)]
-struct Standing<'a> {
+struct ScrollRole<'a> {
     content_of: Option<&'a ScrollOffer>,
     scroller: bool,
 }
 
-fn standings<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<Standing<'a>> {
+fn roles<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<ScrollRole<'a>> {
     let mut open: Vec<(usize, &ScrollOffer)> = Vec::new();
     list.iter()
         .map(|&((widget, depth), _)| {
@@ -204,7 +204,7 @@ fn standings<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<Standing<'a>
             if let Some(offer) = scroller {
                 open.push((depth, offer));
             }
-            Standing {
+            ScrollRole {
                 content_of,
                 scroller: scroller.is_some(),
             }
@@ -229,22 +229,22 @@ pub(crate) struct Moves {
 /// title above a scrolled body, a sticky header over it) is damage where it is and where
 /// the copy took its pixels. The scroller itself must not move.
 pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[ScrollOffer]) -> Moves {
-    let old_standings = standings(before, offers);
-    let new_standings = standings(after, offers);
+    let old_roles = roles(before, offers);
+    let new_roles = roles(after, offers);
     let old: std::collections::HashMap<_, _> = before
         .iter()
-        .zip(&old_standings)
-        .map(|(&(widget, rect), &standing)| (widget, (rect, standing)))
+        .zip(&old_roles)
+        .map(|(&(widget, rect), &role)| (widget, (rect, role)))
         .collect();
     let mut moves = Moves::default();
     let mut kept = std::collections::HashSet::with_capacity(after.len());
-    for (&(widget, new), &standing) in after.iter().zip(&new_standings) {
-        let Some(&(was, was_standing)) = old.get(&widget) else {
-            match standing.content_of {
+    for (&(widget, new), &role) in after.iter().zip(&new_roles) {
+        let Some(&(was, was_role)) = old.get(&widget) else {
+            match role.content_of {
                 // One the walk of the content near its view reached only now stood out of
                 // the view before (`for_each_child_in_clip`): where it is, the copy
                 // brought nothing, and what it exposed is repainted.
-                Some(offer) if !standing.scroller => {
+                Some(offer) if !role.scroller => {
                     let stood = (new - offer.delta).intersect(offer.viewport);
                     if !empty(stood) {
                         moves.carried.push(new);
@@ -255,16 +255,16 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
             continue;
         };
         kept.insert(widget);
-        let explained = match (standing, was_standing) {
-            _ if standing.scroller || was_standing.scroller => {
-                standing.scroller == was_standing.scroller && was == new
+        let explained = match (role, was_role) {
+            _ if role.scroller || was_role.scroller => {
+                role.scroller == was_role.scroller && was == new
             }
             (
-                Standing {
+                ScrollRole {
                     content_of: Some(offer),
                     ..
                 },
-                Standing {
+                ScrollRole {
                     content_of: Some(was_offer),
                     ..
                 },
@@ -286,10 +286,10 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
                 }
             }
             (
-                Standing {
+                ScrollRole {
                     content_of: None, ..
                 },
-                Standing {
+                ScrollRole {
                     content_of: None, ..
                 },
             ) => was == new,
@@ -299,12 +299,12 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
             moves.besides.extend([was, new]);
         }
     }
-    for (&(widget, was), standing) in before.iter().zip(&old_standings) {
+    for (&(widget, was), role) in before.iter().zip(&old_roles) {
         if kept.contains(&widget) {
             continue;
         }
-        match standing.content_of {
-            Some(offer) if !standing.scroller => {
+        match role.content_of {
+            Some(offer) if !role.scroller => {
                 let landed = (was + offer.delta).intersect(offer.viewport);
                 if !empty(landed) {
                     moves.carried.push(landed);

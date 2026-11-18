@@ -20,11 +20,9 @@ use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, ObservedInput, Selection};
 use tilo_session_core::surface::Scroll;
 
-use tilo_desktop_model::capability::Capability;
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
-use tilo_portal::WorkspaceGrants;
 use tilo_portal::clipboard::Clipboard;
 use tilo_portal::input_capture::{CaptureZone, CapturedInput, InputCaptures};
 use tilo_portal::pipewire::Producer;
@@ -81,8 +79,6 @@ struct Shared {
     workspaces: Mutex<BTreeMap<String, String>>,
     /// The apps this session started in one of the launcher's sandboxes.
     sandboxed: Mutex<BTreeSet<String>>,
-    /// The device scopes each `(workspace, app)` is granted.
-    grants: Mutex<BTreeMap<(String, String), Vec<String>>>,
     /// What the portal asked for since the session's last pass.
     asks: Mutex<Vec<Ask>>,
     wake: Wake,
@@ -137,25 +133,6 @@ impl PortalSide {
     #[must_use]
     pub fn sandboxed(&self, app_id: &str) -> bool {
         self.shared.sandboxed.lock_recover().contains(app_id)
-    }
-
-    /// What the shell's workspaces grant standing in for the person's answer: a workspace already
-    /// granting an app what a portal asks of it needs no sheet.
-    #[must_use]
-    pub fn grants(&self) -> WorkspaceGrants {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(
-            move |caller: &tilo_portal::PortalCaller, capability: &str| {
-                let (Some(workspace), Some(scope)) = (&caller.workspace, shell_scope(capability))
-                else {
-                    return false;
-                };
-                let grants = shared.grants.lock_recover();
-                grants
-                    .get(&(workspace.clone(), caller.app_id.clone()))
-                    .is_some_and(|scopes| scopes.iter().any(|granted| granted == scope))
-            },
-        )
     }
 
     /// Wake `watch` with the desktop's selection types whenever it changes hands, so the apps
@@ -216,7 +193,6 @@ pub fn channel(wake: Wake) -> (PortalSide, SessionLink) {
         selection_changed: tokio::sync::Notify::new(),
         workspaces: Mutex::new(BTreeMap::new()),
         sandboxed: Mutex::new(BTreeSet::new()),
-        grants: Mutex::new(BTreeMap::new()),
         asks: Mutex::new(Vec::new()),
         wake,
     });
@@ -352,16 +328,10 @@ impl SessionLink {
         *self.shared.sandboxed.lock_recover() = apps;
     }
 
-    /// Tell the portal which workspace each app runs in, and what those workspaces grant their
-    /// apps: the shell's own answer stands for the person's where it already covers what a portal
-    /// asks.
+    /// Tell the portal which workspace each app runs in.
     fn publish_layout(&self, shell: &DesktopHandle) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
-        let (workspaces, grants) = shell.read(|tree| {
+        let workspaces = shell.read(|tree| {
             let mut workspaces = BTreeMap::new();
-            let mut grants = BTreeMap::new();
             for workspace in &tree.workspaces {
                 for strip in &workspace.strips {
                     for group in &strip.window_groups {
@@ -378,19 +348,10 @@ impl SessionLink {
                         }
                     }
                 }
-                for (app_id, capabilities) in workspace.app_grants_snapshot_at(now) {
-                    let scopes: Vec<String> = capabilities
-                        .iter()
-                        .filter_map(Capability::device_scope)
-                        .map(str::to_owned)
-                        .collect();
-                    grants.insert((workspace.id().to_string(), String::from(app_id)), scopes);
-                }
             }
-            (workspaces, grants)
+            workspaces
         });
         *self.shared.workspaces.lock_recover() = workspaces;
-        *self.shared.grants.lock_recover() = grants;
     }
 
     /// Where the screens are, as input captures see them.
@@ -754,18 +715,6 @@ impl Clipboard for ClipboardLink {
 
     fn clear(&self) {
         self.shared.ask(Ask::Clear);
-    }
-}
-
-/// The shell's name for what a portal asks of an app: reading the screen and driving the seat are
-/// one grant each, however they are asked.
-fn shell_scope(capability: &str) -> Option<&'static str> {
-    match capability {
-        "camera" => Some("camera"),
-        "microphone" => Some("microphone"),
-        "screenshot" | "screencast" => Some("screencast"),
-        "input-capture" | "remote-desktop" => Some("remote-desktop"),
-        _ => None,
     }
 }
 

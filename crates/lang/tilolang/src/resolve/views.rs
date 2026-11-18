@@ -1,5 +1,5 @@
 //! The declarations that attach views to a type: the row a list shows for each item of it, what a
-//! place of it shows standing on its own, and the views a window of it switches between. A view none
+//! place of it shows on its own, and the views a window of it switches between. A view none
 //! names is the app's own helper, which no window offers.
 
 use crate::ast;
@@ -10,7 +10,7 @@ use super::{CKind, Resolver, ViewsInfo};
 impl Resolver<'_> {
     /// `row view v for T`: a view of one `T` whose body is one list row, `row(title, ...)`.
     pub(super) fn row_view_decl(&mut self, d: &ast::DefaultViewDecl) {
-        let Some(key) = self.own_record(&d.ty, "row view") else {
+        let Some(key) = self.own_document(&d.ty, "row view") else {
             return;
         };
         if self.env.row_views.iter().any(|(k, _)| *k == key) {
@@ -47,7 +47,7 @@ impl Resolver<'_> {
     /// `place view v for T`: what a place of a `T` shows when it stands as content on its own
     /// rather than as the app's window, a view of one `T` and nothing else besides its default.
     pub(super) fn place_view_decl(&mut self, d: &ast::DefaultViewDecl) {
-        let Some(key) = self.own_record(&d.ty, "place view") else {
+        let Some(key) = self.own_document(&d.ty, "place view") else {
             return;
         };
         if self.env.place_views.iter().any(|(k, _)| *k == key) {
@@ -84,7 +84,7 @@ impl Resolver<'_> {
     /// `views a, b for T`: the views a window of the type switches between, in the order written. Each is a
     /// view of one `T` and nothing else; a view not named stays the app's own helper.
     pub(super) fn views_decl(&mut self, d: &ast::ViewsDecl) {
-        let Some(key) = self.own_record(&d.ty, "views") else {
+        let Some(key) = self.own_document(&d.ty, "views") else {
             return;
         };
         if self.env.views_of.iter().any(|(k, _, _)| *k == key) {

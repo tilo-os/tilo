@@ -1,10 +1,9 @@
 //! The sheets window as a bound view of the workbook.
 
 use super::{
-    Addr, Atom, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandSlot, ContextMenu,
-    Currency, DocSettings, Edits, EffectiveLocale, Grid, Id, Invoke, Locale, PathBuf, Pending,
-    PendingReveal, Point, Popover, PopoverSide, Rc, Rect, SettingsPanel, SheetsApp, Theme,
-    Workbook,
+    Addr, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandSlot, ContextMenu, Currency,
+    DocSettings, Edits, EffectiveLocale, Grid, Id, Invoke, Locale, PathBuf, Pending, PendingReveal,
+    Point, Popover, PopoverSide, Rc, Rect, SettingsPanel, SheetsApp, Theme, Workbook,
 };
 
 impl SheetsApp {
@@ -228,7 +227,7 @@ impl SheetsApp {
             .into_iter()
             .map(|(addr, raw, format)| {
                 let mut cell = stored(addr);
-                cell.raw = Atom(raw);
+                cell.raw = crate::bound::Input::typed(raw);
                 if let Some(format) = format {
                     cell.format = format;
                 }

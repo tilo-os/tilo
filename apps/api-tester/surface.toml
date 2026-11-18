@@ -9,7 +9,7 @@ version = 1
 fields = [
   { path = "collections", type = { collection = { named = "SavedCollection" } }, stored = "collection" },
   { path = "collections.*.name", type = "text", label = true },
-  { path = "collections.*.requests", type = { collection = { named = "RequestRecord" } }, stored = "collection" },
+  { path = "collections.*.requests", type = { collection = { named = "RequestResource" } }, stored = "collection" },
   { path = "collections.*.requests.*.name", type = "text", label = true },
   { path = "collections.*.requests.*.method", type = { named = "HttpMethod" } },
   { path = "collections.*.requests.*.url", type = "text" },
@@ -40,7 +40,7 @@ fields = [
   { path = "environments.*.variables.*.enabled", type = "bool" },
   { path = "environments.*.variables.*.secret", type = "bool", readonly = true },
   { path = "active_environment", type = { option = "text" } },
-  { path = "request", type = { named = "RequestRecord" }, stored = "record" },
+  { path = "request", type = { named = "RequestResource" }, stored = "record" },
   { path = "request.name", type = "text", label = true },
   { path = "request.method", type = { named = "HttpMethod" } },
   { path = "request.url", type = "text" },
@@ -195,19 +195,19 @@ params = [
 [[resources.types]]
 name = "AuthScheme"
 cases = [
-  { name = "None" },
-  { name = "Bearer" },
-  { name = "Basic" },
-  { name = "ApiKey" },
+  { name = "none" },
+  { name = "bearer" },
+  { name = "basic" },
+  { name = "api_key" },
 ]
 
 [[resources.types]]
 name = "BodyMode"
 cases = [
-  { name = "None" },
-  { name = "Json" },
-  { name = "Form" },
-  { name = "Raw" },
+  { name = "none" },
+  { name = "json" },
+  { name = "form" },
+  { name = "raw" },
 ]
 
 [[resources.types]]
@@ -229,17 +229,17 @@ fields = [
 [[resources.types]]
 name = "HttpMethod"
 cases = [
-  { name = "Get" },
-  { name = "Post" },
-  { name = "Put" },
-  { name = "Patch" },
-  { name = "Delete" },
-  { name = "Head" },
-  { name = "Options" },
+  { name = "get" },
+  { name = "post" },
+  { name = "put" },
+  { name = "patch" },
+  { name = "delete" },
+  { name = "head" },
+  { name = "options" },
 ]
 
 [[resources.types]]
-name = "RequestRecord"
+name = "RequestResource"
 fields = [
   { name = "name", type = "text" },
   { name = "method", type = { named = "HttpMethod" } },
@@ -264,7 +264,7 @@ fields = [
 name = "SavedCollection"
 fields = [
   { name = "name", type = "text" },
-  { name = "requests", type = { collection = { named = "RequestRecord" } } },
+  { name = "requests", type = { collection = { named = "RequestResource" } } },
 ]
 
 [[resources.types]]

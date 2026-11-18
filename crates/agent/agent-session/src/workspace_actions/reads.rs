@@ -10,7 +10,7 @@ use tilo_actions::{
     ActionDescriptor, ActionOutput,
     api::{ActionAddress, ApiError},
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use ui::resource::DocumentId;
 
 pub(super) fn document_id(wire: &str) -> Result<DocumentId, String> {
@@ -85,7 +85,7 @@ impl CanonicalRead {
             .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .ok_or("canonical read permission retired")?;
         if fresh.workspace != self.admitted.workspace
-            || fresh.standing != self.admitted.standing
+            || fresh.access != self.admitted.access
             || fresh.sandbox != self.admitted.sandbox
         {
             return Err("canonical read policy changed".into());

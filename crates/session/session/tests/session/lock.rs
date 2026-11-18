@@ -3,7 +3,7 @@
 //! the person's password back as actions on that resource.
 //!
 //! These start the lock screen the way locking does — through the session's
-//! own surface machinery, over a plane only this test reaches — and type into
+//! own surface machinery, over an app wire only this test reaches — and type into
 //! it through the compositor: what a person at the machine does. What the
 //! screen shows and what it says is read from the session's published resource,
 //! which is what any app of the session reads.
@@ -15,7 +15,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use tilo_session::ActionPlane;
+use tilo_session::AppSocket;
 use tilo_session::surfaces::Surface;
 
 /// The resource the session publishes the lock as.
@@ -94,13 +94,13 @@ pub(super) fn lock_screen() -> Surface {
     Surface::new("lock", screen_binary()).lock()
 }
 
-/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// A directory for the app wire's socket that only this user reaches: the broker refuses to serve one
 /// anybody else could open.
 pub(super) fn private_home() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
+    let root = tempfile::tempdir().expect("a directory to serve the app wire in");
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
+        .expect("the app wire's directory is this user's");
     root
 }
 
@@ -166,7 +166,7 @@ pub(super) fn lockable_session(
 ) -> Session {
     Session::headless(
         Options {
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             ..locking_options(verifier)
         },
         outputs,
@@ -358,7 +358,7 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     let reading = session.read(LOCK).expect("the session publishes the lock");
     assert_eq!(
         reading["person"],
-        tilo_identity_host::provisioning::login_account_display_name(),
+        tilo_identity::provisioning::login_account_display_name(),
         "it says whose session this is, as their own avatar on the bar names them, never the \
          account the password is checked against"
     );
@@ -462,7 +462,7 @@ fn the_lock_shows_its_prompt_from_the_first_frame_after_it_locks() {
     let reading = session.read(LOCK).expect("the session publishes the lock");
     assert_eq!(
         reading["person"],
-        tilo_identity_host::provisioning::login_account_display_name(),
+        tilo_identity::provisioning::login_account_display_name(),
         "the first frame names the person whose session it is"
     );
 }
@@ -513,7 +513,7 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
     let control = home.path().join("test-control.sock");
     let mut session = Session::headless(
         Options {
-            action_plane: ActionPlane::At(home.path().join("collab.sock")),
+            app_socket: AppSocket::At(home.path().join("collab.sock")),
             test_control: Some(control.clone()),
             ..locking_options(std::sync::Arc::new(Sesame))
         },
@@ -603,7 +603,7 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             collab: false,
-            action_plane: ActionPlane::At(home.path().join("collab.sock")),
+            app_socket: AppSocket::At(home.path().join("collab.sock")),
             surfaces: Vec::new(),
             ..Options::default()
         },
@@ -796,7 +796,7 @@ fn the_lock_screens_transport_steers_whatever_plays() {
         user: "ada".to_owned(),
         verifier: std::sync::Arc::new(Sesame),
         collab: false,
-        action_plane: ActionPlane::At(home.path().join("collab.sock")),
+        app_socket: AppSocket::At(home.path().join("collab.sock")),
         surfaces: vec![lock_screen()],
         ..Options::default()
     });
@@ -1152,7 +1152,7 @@ impl Locked {
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
                 collab: false,
-                action_plane: ActionPlane::At(home.path().join("collab.sock")),
+                app_socket: AppSocket::At(home.path().join("collab.sock")),
                 surfaces: vec![lock_screen()],
                 ..Options::default()
             },
@@ -1205,8 +1205,13 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
     // minute the test runs in, the screen changes for what plays and for nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
-            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
-                .expect("a second of the minute"),
+            u64::try_from(
+                ui::clock::local_now()
+                    .timestamp()
+                    .as_second()
+                    .rem_euclid(60),
+            )
+            .expect("a second of the minute"),
         ))
         .expect("the minute the test runs in");
     ui::time::testing::with_wall(at, || {
@@ -1410,7 +1415,7 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
             verifier: std::sync::Arc::clone(&held)
                 as std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
             collab: false,
-            action_plane: ActionPlane::At(home.path().join("collab.sock")),
+            app_socket: AppSocket::At(home.path().join("collab.sock")),
             surfaces: vec![lock_screen()],
             services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
             ..Options::default()

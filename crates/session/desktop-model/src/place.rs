@@ -20,47 +20,79 @@ use crate::{IdMinter, TileContent, shared_resource};
 pub struct View<'a> {
     pub app_id: &'a str,
     pub title: &'a str,
-    /// The record the view shows, in the wire spelling pages note their
-    /// windows' records in: empty for the app's primary record.
-    pub record: &'a str,
+    /// The document the view shows, in the wire spelling pages note their
+    /// windows' documents in: empty for the app's primary document.
+    pub document: &'a str,
     /// The app and record whose view the agent works in already, to open
     /// beside.
     pub beside: Option<(&'a str, &'a str)>,
 }
 
-/// Who opens a view: the person whose window it is, and the agent run that
+/// Who opens a view: the person whose window it is, and the agent session that
 /// opened it for them.
 pub struct Opener<'a> {
     pub person: &'a str,
-    pub run: Option<OpenedBy>,
+    pub opened_by: Option<OpenedBy>,
 }
 
-/// The change that puts `view` on `layout`, opened by `opener`; `None` when a
-/// tab already shows the record, or `layout` holds no layout.
-#[must_use]
-pub fn place_view(layout: &AutoCommit, opener: &Opener<'_>, view: &View<'_>) -> Option<Vec<u8>> {
+/// Why a view could not be placed on a layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotPlaced {
+    /// The document holds no layout: no page showing the workspace has started one yet.
+    NoLayout,
+    /// The layout holds no workspace to put a window in.
+    NoWorkspace,
+    /// The layout had no place for the window.
+    NoPlace(String),
+    /// The layout with the window did not write.
+    Unwritten(String),
+}
+
+impl std::fmt::Display for NotPlaced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoLayout => f.write_str("the workspace has no layout yet: no page has shown it"),
+            Self::NoWorkspace => f.write_str("the workspace's layout holds no workspace"),
+            Self::NoPlace(why) => write!(f, "the layout has no place for the window: {why}"),
+            Self::Unwritten(why) => write!(f, "the layout with the window did not write: {why}"),
+        }
+    }
+}
+
+/// The change that puts `view` on `layout`, opened by `opener`: `None` when a
+/// tab already shows the document, which stays where the people put it.
+///
+/// # Errors
+///
+/// Why the view could not be placed ([`NotPlaced`]).
+pub fn place_view(
+    layout: &AutoCommit,
+    opener: &Opener<'_>,
+    view: &View<'_>,
+) -> Result<Option<Vec<u8>>, NotPlaced> {
     let mut doc = layout.clone();
-    let mut desktop = shared_resource::read(&doc, None)?;
-    if shown_at(&desktop, view.app_id, view.record).is_some()
-        || (view.record.is_empty() && opening(&desktop, view.app_id))
+    let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
+    if shown_at(&desktop, view.app_id, view.document).is_some()
+        || (view.document.is_empty() && opening(&desktop, view.app_id))
     {
-        return None;
+        return Ok(None);
     }
     let author = opener.person;
     let tab = add_tab(&mut desktop, author, view)?;
-    desktop.records.push((tab, view.record.to_owned()));
+    desktop.records.push((tab, view.document.to_owned()));
     desktop.records.sort_unstable();
     // The window is the person's to close, as anyone's window is theirs;
-    // the run says their agent opened it.
+    // the agent session says their agent opened it.
     desktop.authors.insert(tab, author.to_owned());
-    if let Some(run) = &opener.run {
-        desktop.opened_by.insert(tab, run.clone());
+    if let Some(opened_by) = &opener.opened_by {
+        desktop.opened_by.insert(tab, opened_by.clone());
     }
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
-    shared_resource::write(&mut doc, &desktop).ok()?;
+    shared_resource::write(&mut doc, &desktop)
+        .map_err(|error| NotPlaced::Unwritten(error.to_string()))?;
     doc.commit();
-    Some(doc.save_after(&before))
+    Ok(Some(doc.save_after(&before)))
 }
 
 /// The tab of `desktop` that shows `app`'s `record`: the record and the app
@@ -94,11 +126,15 @@ fn opening(desktop: &SharedDesktop, app: &str) -> bool {
 
 /// Add a tab for `view` to the desktop's first workspace, beside the group
 /// showing `view.beside`, in `author`'s id namespace. Returns the tab id.
-fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option<u64> {
+fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Result<u64, NotPlaced> {
     let beside_tab = view
         .beside
         .and_then(|(app, record)| shown_at(desktop, app, record));
-    let workspace = desktop.tree.workspaces.first_mut()?;
+    let workspace = desktop
+        .tree
+        .workspaces
+        .first_mut()
+        .ok_or(NotPlaced::NoWorkspace)?;
     let beside_group = beside_tab.and_then(|tab| {
         workspace
             .strips
@@ -110,7 +146,8 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option
     let at = beside_group
         .and_then(|group| OpenContext::beside(workspace, group))
         .unwrap_or_default();
-    let placement = open_app_placement(workspace, &at, |_| true).ok()?;
+    let placement = open_app_placement(workspace, &at, |_| true)
+        .map_err(|error| NotPlaced::NoPlace(format!("{error:?}")))?;
     let salt = salt_of(author);
     let mut ids = IdMinter::resume(salt, namespace_counter(workspace, salt, 1));
     let mut opened = None;
@@ -133,8 +170,8 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option
             ))
         },
     )
-    .ok()?;
-    opened
+    .map_err(|error| NotPlaced::NoPlace(format!("{error:?}")))?;
+    opened.ok_or_else(|| NotPlaced::NoPlace("no tab was opened".to_owned()))
 }
 
 /// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never
@@ -161,7 +198,7 @@ mod tests {
     fn opener() -> Opener<'static> {
         Opener {
             person: PERSON,
-            run: Some(OpenedBy {
+            opened_by: Some(OpenedBy {
                 run: "agent-session:7".into(),
                 label: "Scribe".into(),
                 title: "File the receipts".into(),
@@ -244,10 +281,12 @@ mod tests {
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",
-            record: "files-record",
+            document: "files-record",
             beside: Some(("so.tilo.notes", "notes-record")),
         };
-        let change = place_view(&merged(&changes), &opener(), &view).expect("a tab is added");
+        let change = place_view(&merged(&changes), &opener(), &view)
+            .expect("the view is placed")
+            .expect("a tab is added");
         changes.push(change);
         let desktop = read(&changes);
         let task = &desktop.tree.workspaces[0].strips[1];
@@ -272,7 +311,7 @@ mod tests {
             "the person's strip is untouched"
         );
         assert!(
-            place_view(&merged(&changes), &opener(), &view).is_none(),
+            place_view(&merged(&changes), &opener(), &view) == Ok(None),
             "a record already on the layout stays where it is"
         );
     }
@@ -304,20 +343,21 @@ mod tests {
         let notes = View {
             app_id: "so.tilo.notes",
             title: "Notes",
-            record: "",
+            document: "",
             beside: None,
         };
         assert!(
-            place_view(&doc, &opener(), &notes).is_none(),
+            place_view(&doc, &opener(), &notes) == Ok(None),
             "the person's Notes window shows the note"
         );
         let chat = View {
             app_id: "so.tilo.chat",
             title: "Chat",
-            record: "",
+            document: "",
             beside: Some(("so.tilo.notes", "")),
         };
         let change = place_view(&doc, &opener(), &chat)
+            .expect("the view is placed")
             .expect("another app's primary record opens its own window");
         let desktop = read(&[doc.save(), change]);
         let groups = &desktop.tree.workspaces[0].strips[0].window_groups;
@@ -350,30 +390,33 @@ mod tests {
         let notes = View {
             app_id: "so.tilo.notes",
             title: "Notes",
-            record: "",
+            document: "",
             beside: None,
         };
-        assert!(place_view(&doc, &opener(), &notes).is_none());
+        assert_eq!(place_view(&doc, &opener(), &notes), Ok(None));
         let page = View {
-            record: "a-page-record",
+            document: "a-page-record",
             ..notes
         };
         assert!(
-            place_view(&doc, &opener(), &page).is_some(),
+            matches!(place_view(&doc, &opener(), &page), Ok(Some(_))),
             "a record of its own still gets its window"
         );
     }
 
-    /// A device that holds no layout of the workspace starts none: the view is placed by a device
-    /// that holds it, so it lands beside the people's own windows.
+    /// A device that holds no layout of the workspace starts none, and says so: the view is placed
+    /// by a device that holds it, so it lands beside the people's own windows.
     #[test]
     fn a_device_without_the_layout_starts_none() {
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",
-            record: "files-record",
+            document: "files-record",
             beside: None,
         };
-        assert!(place_view(&AutoCommit::new(), &opener(), &view).is_none());
+        assert_eq!(
+            place_view(&AutoCommit::new(), &opener(), &view),
+            Err(NotPlaced::NoLayout)
+        );
     }
 }

@@ -395,7 +395,7 @@ impl Core {
     pub(crate) fn proposals_of(
         &self,
         of: &ResourceRef,
-    ) -> Vec<(ResourceRef, crate::InvocationRecord)> {
+    ) -> Vec<(ResourceRef, crate::InvocationEntry)> {
         self.read_links_of(of);
         let Ok(links) = self.store.borrow().linked(of) else {
             return Vec::new();
@@ -417,7 +417,7 @@ impl Core {
         &self,
         cx: &Build<'_>,
         key: &str,
-        (inv, rec): &(ResourceRef, crate::InvocationRecord),
+        (inv, rec): &(ResourceRef, crate::InvocationEntry),
         acc: &mut Acc,
     ) -> Result<UiNode, RuntimeError> {
         let mut card = self.invocation_card(cx, key, Some(inv), acc)?;

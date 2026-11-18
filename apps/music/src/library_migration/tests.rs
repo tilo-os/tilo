@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase typed_version_one_records_keep_their_objects_and_values;
+    phase typed_version_one_resources_keep_their_objects_and_values;
     {
         let mut doc = AutoCommit::new();
         crate::seed::sample_library()

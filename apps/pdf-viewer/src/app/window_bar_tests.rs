@@ -226,7 +226,7 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
 
 #[test]
 #[serial(pdfium)]
-fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
+fn the_marker_colour_recolours_the_selected_mark_through_the_resource() {
     let (_directory, mut app) = reader();
     let mark = Annotation::new(
         1,
@@ -510,7 +510,7 @@ struct SaveFailsOnce {
     asked: std::sync::Arc<std::sync::Mutex<usize>>,
 }
 
-impl ui::host::FilePicker for SaveFailsOnce {
+impl ui::process::FilePicker for SaveFailsOnce {
     fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
         let _ = tx.send(ui::portal::PortalOutcome::Failed("no chooser here".into()));
@@ -582,10 +582,10 @@ fn a_failed_saves_try_again_saves_again() {
     ] {
         let asked = std::sync::Arc::new(std::sync::Mutex::new(0));
         let services =
-            ui::host::HostServices::null().with_files(std::sync::Arc::new(SaveFailsOnce {
+            ui::process::ProcessServices::null().with_files(std::sync::Arc::new(SaveFailsOnce {
                 asked: std::sync::Arc::clone(&asked),
             }));
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         let (_directory, mut app) = reader();
         let name = suggested_name(&mut app);
         press_named(&mut app, "Save annotated PDF");
@@ -625,7 +625,7 @@ struct ChoosesInTurn {
     files: std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>>,
 }
 
-impl ui::host::FilePicker for ChoosesInTurn {
+impl ui::process::FilePicker for ChoosesInTurn {
     fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
         let next = self.files.lock().unwrap().pop_front();
@@ -678,10 +678,10 @@ fn a_failed_imports_try_again_imports_again() {
             .save(&swatch)
             .unwrap();
         let services =
-            ui::host::HostServices::null().with_files(std::sync::Arc::new(ChoosesInTurn {
+            ui::process::ProcessServices::null().with_files(std::sync::Arc::new(ChoosesInTurn {
                 files: std::sync::Mutex::new([broken, swatch].into()),
             }));
-        let _host = ui::host::enter(&services);
+        let _host = ui::process::enter(&services);
         let pages = reader_state(&mut app, |pdf| pdf.doc.page_count());
         reader_state(&mut app, PdfApp::request_import_via_portal);
         wait_for_note(&mut app, &crate::t("pdf-note-import-failed"));

@@ -144,8 +144,8 @@ One action:
 action's output value as the app typed it (absent when it gave none); `resources` are the
 resources the answer says it touched; `edited_by_person` is there when the person changed the
 arguments before allowing the action, and holds what actually ran. `link` is there when the
-action changed a record the workspace serves: the record link a person copies in the app
-(`share-link` on the record's root), which opens the record in its app for the workspace's
+action changed a resource the workspace serves: the resource link a person copies in the app
+(`share-link` on the resource's root), which opens the resource in its app for the workspace's
 members and carries no secret, so someone else must be invited first. A read answers none. A
 failure also carries the `action` row, so a caller can see what it takes.
 
@@ -160,7 +160,7 @@ Several actions (`calls`) answer one step each, in order:
 ```
 
 Steps before the failed one stay applied, as the text says. A batch also answers `links`: the
-`link` of every step that has one, each record once, in the order first changed.
+`link` of every step that has one, each resource once, in the order first changed.
 
 `tilo_status` answers the same shape for one invocation, `link` included once a change it
 follows finished, and with `cancel: true` stops it.
@@ -173,7 +173,7 @@ follows finished, and with `cancel: true` stops it.
 ```
 
 The link to whatever `path` names: the resource's own `share-link` when it offers one (a
-message, a range of a text), else its record's. `mode` (`app`, the default, or `desktop`)
+message, a range of a text), else its resource's. `mode` (`app`, the default, or `desktop`)
 chooses how it opens.
 
 ### tilo_find
@@ -187,6 +187,13 @@ chooses how it opens.
 `path` is a path the other tools take; `action` names the action the hit's row offers
 (`open` when the row opens the resource itself). One hit per resource path, best first, as the
 desktop's search ranks them.
+
+A query narrows itself with `in:here` (the conversation an agent's turn is in) or `in:` a
+conversation's path, and with `after:` and `before:` a day (`2026-11-10`) or a moment
+(`2026-11-10T14:00:00Z`). Narrowed, it needs no words and lists the newest first. A hit that
+says when it was written carries `when`, in seconds since the Unix epoch. A workspace's
+server narrows; a search that cannot (a desktop's) refuses a narrowed query, and never
+answers it with everything. A caller is answered only with what it may read.
 
 ### tilo
 
@@ -218,6 +225,7 @@ to one resource and what is under it.
 ```json
 {"events": [
   {"kind": "change", "path": "notes/Todo", "change": "c1a2…",
+   "resources": [{"path": "notes/Todo", "app": "so.tilo.notes"}],
    "sentence": "added \"Buy milk\"", "by": "Jane", "title": "Fill Jane's application",
    "group": "mcp:…", "time_ms": 1730000000000, "undone": false},
   {"kind": "invocation", "phase": "started", "invocation_id": "3f0c…",
@@ -231,9 +239,11 @@ to one resource and what is under it.
  "cursor": "…"}
 ```
 
-- **change** — a step in the watched resource's history: who made it (`by`, or the group's
-  title), what it did (`sentence`), and whether it has been taken back. A change under a
-  watched path is named by its own path.
+- **change** — a step in a resource's history. `resources` names what changed: its `app`, the
+  `item` inside it when the change names one, and the id the app gives it when the watch is of
+  the whole workspace (which names the app's short name in `path`, `notes` for
+  `so.tilo.notes`; a watch of one path names that path). `by` names who made it, or `actor`
+  when the change keeps one; `sentence` says what it did, and `undone` says it was taken back.
 - **invocation** — one of this session's invocations starting or finishing (`started`,
   `succeeded`, `failed`, `cancelled`). `title` is the group's title and `group` its id: the
   same group a set of calls is attributed to.
@@ -242,10 +252,10 @@ to one resource and what is under it.
   no presence rather than an empty workspace.
 
 An answer with no events still carries the cursor to ask again from. A caller that got its
-cursor from an earlier answer only ever sees each event once. A held watch reads the watched
-resource's history about twice a second and the host's invocations and roster on every look, so a
-change reaches a watching caller within a second of it landing. The stream is a long poll, not a
-push: one `tools/call` at a time, straight through the same POST path every other call takes.
+cursor from an earlier answer only ever sees each event once. A held watch listens for every
+source it reports on, so a change to a resource, an invocation of the session or a person joining
+answers it as that happens, without a re-read on a timer. The stream is a long poll, not a push:
+one `tools/call` at a time, straight through the same POST path every other call takes.
 
 ## Invocations
 

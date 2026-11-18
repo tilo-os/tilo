@@ -221,7 +221,7 @@ pub fn installed_original_consumer_facts()
 
 /// Verify candidate artifact facts without granting native service admission.
 /// The signed publisher, payload, protocol and runtime must match every pin.
-/// Native source custody still requires the separately authenticated caller.
+/// Native source ownership still requires the separately authenticated caller.
 pub fn verify_sidecar(
     sidecar: &Path,
     pins: &CaptureServicePins,

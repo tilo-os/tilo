@@ -5,7 +5,7 @@
 //! certificate the person's root signed, answers this device's challenge, and waits. The person is
 //! asked on the session's question sheet, with the approval code the boot screen shows; an approval
 //! releases the half sealed to the boot's ephemeral key, and the next boot needs another approval.
-//! The answer is a fact this device keeps ([`UnlockDecisionRecord`]) and their other devices carry:
+//! The answer is a fact this device keeps ([`UnlockDecisionEntry`]) and their other devices carry:
 //! a boot whose stream went away before the answer reached it hears the same answer again, with a
 //! half sealed to its own new key where the person allowed it, instead of asking them twice.
 //! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the session's enrolment
@@ -21,20 +21,20 @@ use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{
     AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
-    UnlockDecisionRecord, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
+    UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
     decision_for, merged_unlock_state,
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::registry::IdentityRegistryStore;
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_identity::registry::IdentityRegistryStore;
 use tilo_service::{Asked, Question, Questions};
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, BootKeyCert, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,
     EnrolRequest, EnrolResponse, PROTOCOL_VERSION, RefusalReason, SiblingContact, SiblingFrame,
     SlotId, UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, seal_sibling_half,
 };
-use tilo_user_identity::{CertifiedFleet, DeviceStanding};
+use tilo_user_identity::{CertifiedFleet, DeviceCertification};
 
 /// The kind the session's sheet reads a disk-unlock request as.
 pub(crate) const KIND: &str = "network.device-unlock";
@@ -56,11 +56,11 @@ pub(crate) struct UnlockQuestion {
 }
 
 /// The person's identity this session answers as, and what it holds.
-struct Custody {
+struct Ownership {
     identity_id: String,
     fleet: CertifiedFleet,
     /// Whether this device holds the person's root, so it can release.
-    custodian: bool,
+    key_holder: bool,
 }
 
 /// The sibling side of disk unlock, served by one session.
@@ -99,12 +99,12 @@ impl Unlock {
             connection.close(0u32.into(), b"not a boot");
             return;
         };
-        let Some(custody) = read_custody() else {
-            tell(send, SiblingFrame::Refused(RefusalReason::NotACustodian)).await;
+        let Some(ownership) = read_ownership() else {
+            tell(send, SiblingFrame::Refused(RefusalReason::NotAKeyHolder)).await;
             return;
         };
-        let published = self.published(&custody);
-        let challenge = self.challenge(&hello, &custody, &published);
+        let published = self.published(&ownership);
+        let challenge = self.challenge(&hello, &ownership, &published);
         let SiblingFrame::Challenge(issued) = &challenge else {
             tell(send, challenge.clone()).await;
             return;
@@ -132,11 +132,11 @@ impl Unlock {
             .is_some_and(|record| record.outcome == DecisionOutcome::Approve);
         let frame = {
             let secret_sync = if allowed_before {
-                self.secret_sync(&custody).await
+                self.secret_sync(&ownership).await
             } else {
                 None
             };
-            let view = view_of(&custody, &published, secret_sync.as_ref());
+            let view = view_of(&ownership, &published, secret_sync.as_ref());
             self.lock().request(&request, &hello, &nonce, &view, now)
         };
         let SiblingFrame::Pending { approval_code } = &frame else {
@@ -168,7 +168,7 @@ impl Unlock {
         let approved = answer.is_some();
         // Released only with the person's consent, and only for a boot still waiting: a decision on
         // a request that went away decides nothing.
-        if let Some(decided) = self.decide(&custody, &published, &digest, approved).await {
+        if let Some(decided) = self.decide(&ownership, &published, &digest, approved).await {
             if let Some(record) = decided.record {
                 self.keep(record);
             }
@@ -186,10 +186,10 @@ impl Unlock {
     fn challenge(
         &self,
         hello: &UnlockHello,
-        custody: &Custody,
+        ownership: &Ownership,
         published: &MergedUnlock,
     ) -> SiblingFrame {
-        let view = view_of(custody, published, None);
+        let view = view_of(ownership, published, None);
         self.lock().hello(
             hello,
             &view,
@@ -207,8 +207,8 @@ impl Unlock {
 
     /// The person's secret-sync key, held only where this device may release a half: loaded then,
     /// never before.
-    async fn secret_sync(&self, custody: &Custody) -> Option<tilo_seal::SecretKey> {
-        if !custody.custodian {
+    async fn secret_sync(&self, ownership: &Ownership) -> Option<tilo_seal::SecretKey> {
+        if !ownership.key_holder {
             return None;
         }
         tokio::task::spawn_blocking(secret_sync_key)
@@ -220,13 +220,13 @@ impl Unlock {
     /// Record the person's decision on the request `digest` , for the boot still waiting.
     async fn decide(
         &self,
-        custody: &Custody,
+        ownership: &Ownership,
         published: &MergedUnlock,
         digest: &[u8; 32],
         approved: bool,
     ) -> Option<Decided> {
         let secret_sync = if approved {
-            self.secret_sync(custody).await
+            self.secret_sync(ownership).await
         } else {
             None
         };
@@ -239,7 +239,7 @@ impl Unlock {
                 approver: self.local,
             }
         };
-        let view = view_of(custody, published, secret_sync.as_ref());
+        let view = view_of(ownership, published, secret_sync.as_ref());
         self.lock()
             .decide(digest, decision, &view, tilo_clock::unix_now_ns())
     }
@@ -284,11 +284,11 @@ impl Unlock {
 
     /// The enrolments, auto-approvals and answers the person's fabric holds now, under the fleet
     /// this device trusts.
-    fn published(&self, custody: &Custody) -> MergedUnlock {
+    fn published(&self, ownership: &Ownership) -> MergedUnlock {
         let fabric = self.link.device_fabric();
         merged_unlock_state(
             fabric.snapshots().values().map(|snapshot| &snapshot.unlock),
-            &custody.fleet,
+            &ownership.fleet,
             tilo_clock::unix_now_ns(),
         )
     }
@@ -306,15 +306,15 @@ impl Unlock {
         request
             .verify()
             .map_err(|error| format!("enrolment request: {error}"))?;
-        let custody = read_custody()
+        let ownership = read_ownership()
             .ok_or_else(|| "this session holds no identity for the person's devices".to_string())?;
-        if !custody.custodian {
+        if !ownership.key_holder {
             return Err("this device does not hold the person's root".into());
         }
         let store = DeviceFleetStore::from_env().map_err(|error| error.to_string())?;
         let mut cert = BootKeyCert {
             version: PROTOCOL_VERSION,
-            user_public_key: *custody.fleet.user_public_key(),
+            user_public_key: *ownership.fleet.user_public_key(),
             device_public_key: self.local,
             boot_public_key: request.boot_public_key,
             slot: request.slot,
@@ -323,32 +323,31 @@ impl Unlock {
             signature: [0; 64],
         };
         store
-            .certify_boot_key(&custody.identity_id, &mut cert)
+            .certify_boot_key(&ownership.identity_id, &mut cert)
             .map_err(|error| error.to_string())?;
         let secret_sync = store
-            .secret_sync_key(&custody.identity_id)
+            .secret_sync_key(&ownership.identity_id)
             .and_then(|key| key.public_key().map_err(std::io::Error::other))
             .map_err(|error| error.to_string())?;
         let sealed_half = seal_sibling_half(&secret_sync, &cert, &request.sibling_half)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::unix_now_ns();
-        let siblings = self
-            .link
-            .device_fabric()
-            .snapshots()
-            .iter()
-            .filter(|(owner, _)| owner.as_str() != hex::encode(self.local))
-            .filter_map(|(owner, snapshot)| {
-                let key = crate::network::key_of(owner)?;
-                (custody.fleet.standing(&key, now) == DeviceStanding::Certified).then(|| {
-                    SiblingContact {
-                        device_public_key: key,
-                        label: snapshot.presence.label.clone(),
-                        endpoint: String::new(),
-                    }
+        let siblings =
+            self.link
+                .device_fabric()
+                .snapshots()
+                .iter()
+                .filter(|(owner, _)| owner.as_str() != hex::encode(self.local))
+                .filter_map(|(owner, snapshot)| {
+                    let key = crate::network::key_of(owner)?;
+                    (ownership.fleet.certification(&key, now) == DeviceCertification::Certified)
+                        .then(|| SiblingContact {
+                            device_public_key: key,
+                            label: snapshot.presence.label.clone(),
+                            endpoint: String::new(),
+                        })
                 })
-            })
-            .collect();
+                .collect();
         // An enrolment for an unattended unlock asks, with the boot chain it
         // measures now, to be released without a prompt. The root signs that
         // acceptance, so any of the person's devices reads it as the owner's.
@@ -356,7 +355,7 @@ impl Unlock {
             .unattended_chain
             .map(|chain| -> Result<AutoApproval, String> {
                 let mut approval = AutoApproval::unsigned(
-                    *custody.fleet.user_public_key(),
+                    *ownership.fleet.user_public_key(),
                     self.local,
                     vec![chain],
                     tilo_clock::unix_now_ns(),
@@ -365,7 +364,7 @@ impl Unlock {
                     .digest()
                     .ok_or_else(|| "the unlock policy could not be encoded".to_string())?;
                 approval.signature = store
-                    .sign_root(&custody.identity_id, &digest)
+                    .sign_root(&ownership.identity_id, &digest)
                     .map_err(|error| error.to_string())?
                     .to_vec();
                 approval
@@ -410,7 +409,7 @@ impl Unlock {
 
     /// Keep the owner's answer in this device's own fabric record, so their other devices answer
     /// the same boot the same way. Answers that no longer hold give way to the newest ones.
-    fn keep(&self, record: UnlockDecisionRecord) {
+    fn keep(&self, record: UnlockDecisionEntry) {
         let now = tilo_clock::unix_now_ns();
         self.update_state(|state| {
             state
@@ -492,16 +491,16 @@ impl Unlock {
 /// What the sibling state machine reads: the fleet this device trusts and the person's fabric as it
 /// holds it.
 fn view_of<'a>(
-    custody: &'a Custody,
+    ownership: &'a Ownership,
     published: &'a MergedUnlock,
     secret_sync: Option<&'a tilo_seal::SecretKey>,
 ) -> UnlockView<'a> {
     UnlockView {
-        fleet: &custody.fleet,
+        fleet: &ownership.fleet,
         enrolments: &published.enrolments,
         auto_approvals: &published.auto_approvals,
         decisions: &published.decisions,
-        custodian: custody.custodian,
+        key_holder: ownership.key_holder,
         secret_sync,
     }
 }
@@ -552,7 +551,7 @@ pub(crate) fn slot_name(slot: &SlotId) -> String {
 }
 
 /// This device's identity, the fleet it is certified by, and whether it holds the person's root.
-fn read_custody() -> Option<Custody> {
+fn read_ownership() -> Option<Ownership> {
     let registry = IdentityRegistryStore::from_env()
         .ok()?
         .load_reconciled_cached()
@@ -562,11 +561,11 @@ fn read_custody() -> Option<Custody> {
     let fleet = store
         .certified_fleet(&profile.id, profile.user_public_key)
         .ok()?;
-    let custodian = store.secret_sync_key(&profile.id).is_ok();
-    Some(Custody {
+    let key_holder = store.secret_sync_key(&profile.id).is_ok();
+    Some(Ownership {
         identity_id: profile.id,
         fleet,
-        custodian,
+        key_holder,
     })
 }
 

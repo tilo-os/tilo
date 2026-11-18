@@ -4,7 +4,7 @@
 use crate::resource::CATALOG;
 use std::sync::Arc;
 
-use app_host::install::InstallExpectation;
+use package_service::install::InstallExpectation;
 
 use crate::{StoreItem, StoreSource, StoreTrust};
 
@@ -17,19 +17,22 @@ pub struct ImportedPackage {
     pub item: StoreItem,
     pub expected: InstallExpectation,
     pub registry: String,
-    pub local: Option<app_host::local_package::LocalReview>,
+    pub local: Option<package_service::local_package::LocalReview>,
 }
 
 pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
         return Err(CATALOG.t("store-package-size-refused"));
     }
-    let archive = app_host::local_package::review_archive(&bytes).map_err(|error| match error {
-        app_host::local_package::ArchiveReviewError::Invalid => CATALOG.t("store-package-invalid"),
-        app_host::local_package::ArchiveReviewError::NotApplication => {
-            CATALOG.t("store-package-app-only")
-        }
-    })?;
+    let archive =
+        package_service::local_package::review_archive(&bytes).map_err(|error| match error {
+            package_service::local_package::ArchiveReviewError::Invalid => {
+                CATALOG.t("store-package-invalid")
+            }
+            package_service::local_package::ArchiveReviewError::NotApplication => {
+                CATALOG.t("store-package-app-only")
+            }
+        })?;
     for item in offers {
         let StoreSource::Tilo { registry_name } = &item.source else {
             continue;
@@ -90,14 +93,14 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
 /// Returns an existing-trust refusal; never supplies a publisher trust key.
 pub fn review_local(
     bytes: Vec<u8>,
-    host: &app_host::client::BlockingClient,
+    host: &package_service::client::BlockingClient,
 ) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
         return Err(CATALOG.t("store-package-size-refused"));
     }
     let checked = host.review_local(&bytes)?;
     let package = &checked.manifest.package;
-    let expected = app_host::local_package::local_expectation(&checked, bytes.len() as u64)
+    let expected = package_service::local_package::local_expectation(&checked, bytes.len() as u64)
         .map_err(|_| CATALOG.t("store-package-invalid"))?;
     let item = StoreItem {
         bot: None,

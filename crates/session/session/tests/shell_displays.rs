@@ -1,4 +1,4 @@
-//! The tilolang shell on every display: one part per output, standing on its own display's
+//! The tilolang shell on every display: one part per output, on its own display's
 //! rectangle (each part follows an output added, moved or taken away), not stretched across the
 //! displays' bounding box as one; and a part steps aside on the display a fullscreen window owns,
 //! from the signal the compositor names those displays by.
@@ -231,7 +231,7 @@ fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
     let full = client.map_plain(&mut session, "full", (300, 200));
     assert!(
         session.shell_parts().iter().all(|part| !part.aside),
-        "a window that is not fullscreen leaves every part standing: {:?}",
+        "a window that is not fullscreen leaves every part in place: {:?}",
         session.shell_parts()
     );
 

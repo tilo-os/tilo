@@ -5,7 +5,7 @@
 use automerge::AutoCommit;
 use tilolang_runtime::store::Version;
 use tilolang_runtime::{
-    Actor, AgentBlock, InvocationRecord, InvokeOutcome, Resolution, ResourceRef, Store as _, Value,
+    Actor, AgentBlock, InvocationEntry, InvokeOutcome, Resolution, ResourceRef, Store as _, Value,
 };
 use tilolang_tilo::publish::Caller;
 
@@ -82,7 +82,7 @@ fn schedule_source(task: &Value) -> String {
 }
 
 /// Run `source` as the agent `who` in the workspace, answering the recorded proposal.
-fn suggest(ada: &Replica, who: &str, source: &str) -> (ResourceRef, InvocationRecord) {
+fn suggest(ada: &Replica, who: &str, source: &str) -> (ResourceRef, InvocationEntry) {
     ada.host.admit_agent(&agent(who));
     match ada
         .host
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
         );
         ada.commit();
         assert_eq!(read(&ada, &task, "due"), Value::none());
-        // The refusal is a record of its own, not a change of the task.
+        // The refusal is a document of its own, not a change of the task.
         assert_eq!(
             ada.host.store().versions(&target(&task)).unwrap().len(),
             before

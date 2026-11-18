@@ -40,7 +40,7 @@ struct Source {
     held: Arc<Held>,
 }
 
-impl RecordSource for Source {
+impl DocumentSource for Source {
     fn workspaces(&self) -> Vec<String> {
         vec![self.workspace.clone()]
     }

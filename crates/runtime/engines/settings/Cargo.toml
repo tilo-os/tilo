@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Settings itself (the app's library: its window, effects and panes) and the libraries only Settings uses (the settings sections as resource models, the model-provider administration panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility settings, the PC keyboard outlines, the time-zone globe) as an engine library beside the shared runtime: libtilo_settings_engine.so, shipped in the runtime bundle and loaded only by Settings."
+description = "Settings itself (the app's library: its window, effects and panes) and the libraries only Settings uses (the settings sections as resource models, the model-provider administration panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility settings, the PC keyboard outlines, the time-zone globe) as an engine library beside the shared runtime: libtilo_settings_engine.so, shipped in the runtime bundle and loaded only by Settings and Model Providers."
 
 # A runtime engine: code few apps need that no other app should map. It is a
 # Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as
@@ -40,6 +40,7 @@ thin = [
     "dep:tilo-zone-globe",
     "dep:settings-sections",
     "dep:settings",
+    "dep:model-providers",
     "dep:ui",
     "tilo-accounts-engine/thin",
     "dep:workspace-hack",
@@ -49,8 +50,7 @@ thin = [
 runtime-dylib = { path = "../../runtime-dylib", optional = true }
 # The features Settings builds them with (apps/settings/Cargo.toml): one copy
 # of each in the thin graph, or the app's symbols would name a crate hash this
-# library does not export. Model Providers links the administration panel
-# itself and never loads this library.
+# library does not export.
 provider-settings-ui = { path = "../../../sdk/provider-settings-ui", optional = true }
 tilo-ntfs-mount = { path = "../../../system/ntfs-mount", default-features = false, optional = true }
 tilo-wallpapers = { path = "../../../platform/tilo-wallpapers", optional = true }
@@ -63,9 +63,12 @@ settings-sections = { path = "../../../system/settings-sections", optional = tru
 # app's package stays far below the package size limit; Settings' code ships
 # in the runtime bundle and changes with it.
 settings = { path = "../../../../apps/settings", optional = true }
+# Model Providers, the administration panel as a window of its own: its
+# binary is one call into this library too (apps/model-providers/src/main.rs).
+model-providers = { path = "../../../../apps/model-providers", optional = true }
 # The SDK entry the app's binary calls (`ui::engine_main!`).
 ui = { package = "tilo-app", path = "../../../sdk/tilo-app", optional = true }
-# Account custody and the IMAP client, which Settings uses, come from
+# Account credentials and the IMAP client, which Settings uses, come from
 # their own engine library: one copy of each in the app's process.
 tilo-accounts-engine = { path = "../accounts", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

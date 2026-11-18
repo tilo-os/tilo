@@ -89,8 +89,8 @@ use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::gate::SealGate;
 use crate::persistence::MemberRecord;
+use crate::seal_check::SealCheck;
 use crate::signer::{DeviceSigner, complete_now};
 use crate::{
     ContentKeyring, ContentKeys, Error, KeyGroup, KeyPackage, MemberKey, Result, VaultKey,
@@ -233,7 +233,7 @@ pub struct GroupPeer {
     /// that made the loser while it heard nothing hears of the winner.
     genesis_frame: Option<MlsGovernanceFrame>,
     /// The newest epoch a checked frame named, for a device not in the
-    /// group: what its broker gates content on.
+    /// group: what its broker checks content on.
     seen_epoch: Option<u64>,
     /// Each device's newest request.
     requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
@@ -654,8 +654,8 @@ impl GroupPeer {
     }
 
     /// What a broker checks every document op of this workspace against.
-    pub fn gate(&self) -> SealGate {
-        SealGate {
+    pub fn seal_check(&self) -> SealCheck {
+        SealCheck {
             // A device that knows the workspace has a group (it saw its
             // genesis or a commit of it, or is in it) must never take the
             // record for plaintext, whether or not it ever saw the genesis
@@ -746,7 +746,7 @@ impl GroupPeer {
     /// ([`PeerEvent::Desynchronised`]), as it does when a host kept only the
     /// newest frame.
     #[must_use]
-    pub fn standing(&self) -> Vec<MlsGovernanceFrame> {
+    pub fn current_frames(&self) -> Vec<MlsGovernanceFrame> {
         if !matches!(self.record, MemberRecord::Joined(_)) {
             return Vec::new();
         }
@@ -873,7 +873,7 @@ impl GroupPeer {
     /// An access request carrying a fresh key package, still to be signed by
     /// the device key ([`MlsAccessRequestV1::unsigned`]), or `None` when the
     /// device is already admitted: for a device key held apart from this
-    /// state (a browser's page custody). A removed device starts waiting
+    /// state (a browser's page ownership). A removed device starts waiting
     /// again. With `fresh`, a waiting device asks with a new member key: the
     /// key holders then see a device they may have admitted already (whose
     /// Welcome never arrived here) asking with another key, and admit it
@@ -1737,7 +1737,7 @@ impl GroupPeer {
         self.desynchronise(vault)
     }
 
-    /// Start over: wait with a fresh member key, keeping the gate.
+    /// Start over: wait with a fresh member key, keeping the check.
     fn desynchronise(&mut self, vault: &VaultKey) -> Result<PeerEvent> {
         if let MemberRecord::Joined(group) = &self.record {
             self.seen_epoch = Some(self.seen_epoch.unwrap_or(0).max(group.epoch()));

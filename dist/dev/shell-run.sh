@@ -209,7 +209,11 @@ home=$scratch/home
 runtime=$scratch/run
 mkdir -m 700 "$home" "$runtime"
 log=$scratch/session.log
+# The tree's apps are this session's image: their store is its system store, as
+# a device's /usr/share/tilo-apps is, so the launcher treats them as the image's
+# own. The person's store starts empty.
 store=$scratch/apps
+user_store=$scratch/user-apps
 runtimes=$scratch/runtimes
 keys=$scratch/keys
 # This session's own secret store: a file-backed one, as a headless machine uses
@@ -221,7 +225,7 @@ keys=$scratch/keys
 # scratch directory, and goes with the rest of it.
 secrets=$scratch/secrets
 mkdir -m 700 "$secrets"
-mkdir -m 700 "$store" "$runtimes" "$keys"
+mkdir -m 700 "$store" "$user_store" "$runtimes" "$keys"
 
 session_pid=
 group=
@@ -320,16 +324,16 @@ say "the apps run on $app_runtime"
 tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
     "$repo_root/apps/tilolang/tilo-runtime.toml")
 [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
-# Beside it, the tilolang host (crates/platform/tilolang-host), which runs a workspace's tilolang
+# Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances, as `nested-session.sh` bakes it: without it every tilolang
 # app's window and every agent program finds no host to run in. `nested-session-build.sh` builds
 # it without the toolkit, so it runs on the app runtime's loader and libraries alone.
-tilolang_host_bin=$repo_root/target/nested-session/bin/tilolang-host
-[[ -f $tilolang_host_bin ]] || die "no tilolang host at $tilolang_host_bin: run dist/dev/nested-session-build.sh"
+tilolang_process_bin=$repo_root/target/nested-session/bin/tilolang-process
+[[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin: run dist/dev/nested-session-build.sh"
 say "baking the tilolang runtime bundle $tilolang_version"
 "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
     --out "$runtimes/$tilolang_version" --include-bin "$tilolang_bin" \
-    --include-bin "$tilolang_host_bin" \
+    --include-bin "$tilolang_process_bin" \
     --identity "$identity" >/dev/null
 tilolang_runtime=tilolang/$tilolang_version
 
@@ -388,8 +392,8 @@ install_apps() {
     rm -rf "$out"
 }
 
-# Install the package at `tapp` into the session's own store, as `tilo-install` installs a
-# person's app: signed with this session's key, which the launcher's trust file names. The
+# Install the package at `tapp` into the session's system store, as `tilo-install` installs an
+# image's app: signed with this session's key, which the launcher's trust file names. The
 # store reads the same file, so a package this session built and signed installs under the
 # local-build ceiling: a `thin-dev` build is compiled for speed, not size, and is never published.
 install_tapp() {
@@ -486,7 +490,8 @@ start_session() {
         XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
         XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
         TILO_SECRETS_DIR="$secrets" \
-        TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+        TILO_APPS_DATA_DIR="$user_store" TILO_APPS_SYSTEM_DIR="$store" \
+        TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
@@ -543,15 +548,19 @@ agent_key_args=()
 start_session --shell screen "${agent_key_args[@]}" "${apps[@]}"
 # The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
-# A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the seat's own
+# A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the session's own
 # path in this session's runtime directory, which it announces the same way.
-tries=600
-until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
-    kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its MCP server"; }
-    ((tries--)) || { tail -40 "$log" >&2; die "the session serves no MCP server"; }
-    sleep 0.1
-done
-socket=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
+# A session in a window serves none unless it holds an agent key (`tilo-session`'s options say why).
+socket=
+if ((!window)) || [[ -n $agent_key ]]; then
+    tries=600
+    until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
+        kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its MCP server"; }
+        ((tries--)) || { tail -40 "$log" >&2; die "the session serves no MCP server"; }
+        sleep 0.1
+    done
+    socket=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
+fi
 
 if [[ -n $model_record ]]; then
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
@@ -564,12 +573,13 @@ if [[ -n $model_record ]]; then
     say "the person's model provider: $model_record"
 fi
 
+[[ -n $socket ]] && echo "TILO_MCP_SERVER=$socket"
 cat <<EOF
-TILO_MCP_SERVER=$socket
 TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
 The session runs (pid $session_pid). From another terminal:
   a screenshot:  TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
+  the REPL:      XDG_RUNTIME_DIR=$runtime $bin/tilolang repl
 Stop it with Ctrl+C (or SIGTERM to pid $$); everything it started goes with it.
 EOF
 

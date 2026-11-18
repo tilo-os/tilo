@@ -131,7 +131,7 @@ fn keychain_error(error: &SecretError) -> PersistError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persist::{DeviceKeyCustody, load_device_key, load_or_create_device_key};
+    use crate::persist::{DeviceKeyOwnership, load_device_key, load_or_create_device_key};
     use std::sync::Arc;
     use tilo_secrets::{Protection, Secret, SecretBackend};
 
@@ -140,14 +140,15 @@ mod tests {
     fn layout() -> (tempfile::TempDir, IdentityPaths) {
         let dir = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(dir.path()).unwrap();
-        let paths = IdentityPaths::under(root).with_device_key_custody(DeviceKeyCustody::Keychain);
+        let paths =
+            IdentityPaths::under(root).with_device_key_ownership(DeviceKeyOwnership::Keychain);
         (dir, paths)
     }
 
     fn file_layout(paths: &IdentityPaths) -> IdentityPaths {
         paths
             .clone()
-            .with_device_key_custody(DeviceKeyCustody::File)
+            .with_device_key_ownership(DeviceKeyOwnership::File)
     }
 
     struct Broken;

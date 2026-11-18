@@ -9,7 +9,7 @@
 //! What this proves is the whole path and nothing test-only about it: a search action an instance
 //! runs queues an outside effect, the session hands the effect to the connector over the socket it
 //! started, and the answer lands in the client's record — its videos and the search's settled state
-//! — which the session publishes and its plane reads.
+//! — which the session publishes and its app wire reads.
 //! Before this work the session started no connector at all: the effect stayed in the instance's
 //! own process, and nothing outside ever asked `YouTube` .
 
@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
+use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 
 use crate::common::{PERSON, private_home};
 
@@ -52,10 +52,10 @@ fn youtube_connector_child() {
     // The launcher's release: the descriptor the connector's socket came in on. The stand-in
     // launcher is the launcher's sandbox here: it hands the socket straight into this process,
     // where a real launch would hand it in as the `tilolang-origin` service.
-    if runtime_portal::registration_gate::wait_on_stdin().is_err() {
+    if runtime_portal::launch_hold::wait_on_stdin().is_err() {
         return;
     }
-    let Some(socket) = runtime_portal::registration_gate::take_window_link() else {
+    let Some(socket) = runtime_portal::launch_hold::take_window_link() else {
         return;
     };
     let attachments = std::iter::from_fn(move || {
@@ -140,12 +140,12 @@ fn scripted() -> tilolang_youtube::Scripted {
 }
 
 /// Write the launcher the session starts the apps' connectors through: the stand-in runs this test
-/// binary as the connector process, on the gate the launcher is handed. The apps are the ones
+/// binary as the connector process, on the hold the launcher is handed. The apps are the ones
 /// installed in `home` 's own store ([`crate::common::install_apps_in`]), the `YouTube` client's signed
 /// package among them; its manifest declares the `youtube` origin.
 fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
     // The launcher the session starts connectors through: it runs this test binary as the connector
-    // process, keeping the gate it was handed as stdin.
+    // process, keeping the hold it was handed as stdin.
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
         &format!(
@@ -182,7 +182,7 @@ fn session(
         collab: false,
         services: seeded,
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.join("plane.sock")),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         test_control: Some(root.join("test-control.sock")),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
@@ -218,7 +218,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         "the answer's video is not in the record before the search"
     );
 
-    // The person's search, through the session's plane as any action: the outside effect it queues
+    // The person's search, through the session's app wire as any action: the outside effect it queues
     // goes to the connector the session started for the app's origin.
     let root = session
         .resources()
@@ -251,7 +251,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         .expect("the search action runs");
 
     // The answer lands in the client's record: the video the scripted service found and the channel
-    // it names, each a resource of the client's the plane reads, and the search settled
+    // it names, each a resource of the client's the app wire reads, and the search settled
     // (`search_state` `done` , so the client's view stops saying it searches).
     crate::common::until(&mut session, "the answer in the record", |session| {
         record_says(session, VIDEO) && record_says(session, NAME)
@@ -269,7 +269,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
 }
 
 /// The client's items of the kind `kind` (`Video`, `Channel` ): each its published id and the text
-/// of each of its fields that is a text, read through the session's plane.
+/// of each of its fields that is a text, read through the session's app wire.
 fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
     let Some(root) = session
         .resources()
@@ -385,7 +385,7 @@ fn placed(session: &Session) -> Vec<(String, String)> {
     crate::common::placed_resources(session)
 }
 
-/// Whether any of the client's records holds `text` in a text field, as the session's plane reads
+/// Whether any of the client's records holds `text` in a text field, as the session's app wire reads
 /// them.
 fn record_says(session: &Session, text: &str) -> bool {
     ["Video", "Channel"].into_iter().any(|kind| {
@@ -404,7 +404,7 @@ fn query_shown(session: &Session) -> Option<tilo_session_core::layout::LayoutQue
     reading
         .places
         .iter()
-        .find(|place| place.record.starts_with("shell:query:"))
+        .find(|place| place.resource.starts_with("shell:query:"))
         .and_then(|place| layout.query_of(place.key.parse().ok()?))
 }
 
@@ -439,7 +439,7 @@ fn live_session(
 }
 
 /// "youtube videos of <creator>" that the origin answers with two channels of the same name leaves
-/// the query standing with its rows, not a guessed place: a press on a row shows that channel in
+/// the query with its rows, not a guessed place: a press on a row shows that channel in
 /// the same place (search.md §4, §7; shell.md §8 "Finding what to place").
 #[test]
 fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {

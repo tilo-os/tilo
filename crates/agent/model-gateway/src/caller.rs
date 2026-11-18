@@ -201,7 +201,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Who may administer providers through the gateway.
-        fn provider_management_needs_the_exact_panel_identity_and_live_settings_custody;
+        fn provider_management_needs_the_exact_panel_identity_and_live_settings_ownership;
 
         phase provider_control_panel_identity_is_exact;
         {
@@ -221,7 +221,7 @@ mod tests {
             }
         }
 
-        phase legacy_management_requires_live_settings_custody_permission;
+        phase legacy_management_requires_live_settings_ownership_permission;
         {
             for request in [
                 crate::Request::GetProviderConfig,

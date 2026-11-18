@@ -175,11 +175,11 @@ def own_table(root: pathlib.Path) -> list[tuple[str, str]]:
         if "id" in package:
             table.extend((package["id"], kind) for kind in own_kinds(manifest))
     # A tilolang package declares its records each member's own in its header
-    # (`app <id> "<name>" (records: .own)`): its record kind is `tl.<id>`.
+    # (`app <id> "<name>" (resources: .own)`): its record kind is `tl.<id>`.
     for header_path in sorted((root / "apps" / "tl").glob("*/app.tl")):
         header = header_path.read_text(encoding="utf-8").splitlines()[0]
         found = re.match(r'app\s+(\S+)\s+"[^"]*"\s*\((.*)\)', header)
-        if found and re.search(r"\brecords:\s*\.own\b", found.group(2)):
+        if found and re.search(r"\bresources:\s*\.own\b", found.group(2)):
             table.append((found.group(1), f"tl.{found.group(1)}"))
     return table
 

@@ -10,14 +10,65 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-/// Filter args passed after `SOURCE DEST` to `xdg-dbus-proxy`.
-pub const DEFAULT_FILTER_ARGS: &[&str] = &[
-    "--filter",
-    "--see=org.freedesktop.DBus",
-    "--talk=org.freedesktop.portal.*",
-    "--talk=org.freedesktop.Notifications",
-    "--talk=org.mpris.MediaPlayer2.*",
-];
+/// The bus name and object every xdg-desktop-portal interface is served on.
+const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+
+/// The session-bus rules for the portals `portals` allows (named in
+/// [`tilo_app_package::manifest::PORTALS`]), the notification portal when the app has a window, and
+/// nothing for the rest.
+///
+/// Each granted portal adds calls to, and broadcasts from, its own interface on the portal object.
+/// Any grant adds what portal answers travel through: reading the portal object's properties (each
+/// interface's `version`), and the `Request` and `Session` objects the portal hands back, which can
+/// only be closed. Notifications also reach the notification daemon, which keeps scheduled
+/// notifications and priority contacts.
+#[must_use]
+pub fn portal_filter_args(
+    portals: &std::collections::BTreeMap<String, crate::manifest::PortalPolicy>,
+    graphical: bool,
+) -> Vec<String> {
+    let mut interfaces = tilo_app_package::manifest::PORTALS
+        .iter()
+        .filter(|(name, _)| {
+            portals
+                .get(*name)
+                .is_some_and(|policy| matches!(policy, crate::manifest::PortalPolicy::ViaHost))
+        })
+        .filter_map(|(_, interface)| *interface)
+        .collect::<Vec<_>>();
+    if graphical {
+        interfaces.push("Notification");
+    }
+    if interfaces.is_empty() {
+        return Vec::new();
+    }
+    let mut args = Vec::new();
+    for interface in interfaces {
+        for kind in ["call", "broadcast"] {
+            args.push(format!(
+                "--{kind}={PORTAL_NAME}=org.freedesktop.portal.{interface}.*@{PORTAL_PATH}"
+            ));
+        }
+    }
+    for rule in [
+        "--call=NAME=org.freedesktop.DBus.Properties.Get@PATH",
+        "--call=NAME=org.freedesktop.DBus.Properties.GetAll@PATH",
+        "--call=NAME=org.freedesktop.portal.Request.Close@PATH/request/*",
+        "--broadcast=NAME=org.freedesktop.portal.Request.Response@PATH/request/*",
+        "--call=NAME=org.freedesktop.portal.Session.Close@PATH/session/*",
+        "--broadcast=NAME=org.freedesktop.portal.Session.Closed@PATH/session/*",
+    ] {
+        args.push(
+            rule.replace("NAME", PORTAL_NAME)
+                .replace("PATH", PORTAL_PATH),
+        );
+    }
+    for kind in ["call", "broadcast"].iter().filter(|_| graphical) {
+        args.push(format!("--{kind}=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications"));
+    }
+    args
+}
 
 /// The session-bus rules every graphical app gets, and the only ones a portal-less app gets:
 /// `org.a11y.Bus.GetAddress`, reading the `org.a11y.Status` properties (`IsEnabled`,
@@ -52,23 +103,28 @@ pub fn media_player_for(manifest: &crate::manifest::ManifestView) -> Option<Stri
         .flatten()
 }
 
-/// The session-bus filter for one launch: the bus daemon for `Hello`, the portal names when the
-/// manifest declares a `via-host` portal, the accessibility status rules when the app has a display,
-/// and ownership of `media_player` (see [`media_player_for`]) when the app publishes its player.
+/// The session-bus filter for one launch: the bus daemon for `Hello`, the portals the manifest
+/// grants and notifications ([`portal_filter_args`]), the accessibility status rules when the app
+/// has a display, and ownership of `media_player` (see [`media_player_for`]) when the app publishes
+/// its player.
 #[must_use]
 pub fn session_filter_args(
-    portals: bool,
+    portals: &std::collections::BTreeMap<String, crate::manifest::PortalPolicy>,
     graphical: bool,
     media_player: Option<&str>,
 ) -> Vec<String> {
-    let mut args = vec!["--filter", "--see=org.freedesktop.DBus"];
-    if portals {
-        args.extend(DEFAULT_FILTER_ARGS.iter().skip(2));
-    }
+    let mut args = vec![
+        "--filter".to_owned(),
+        "--see=org.freedesktop.DBus".to_owned(),
+    ];
+    args.extend(portal_filter_args(portals, graphical));
     if graphical {
-        args.extend(A11Y_STATUS_FILTER_ARGS);
+        args.extend(
+            A11Y_STATUS_FILTER_ARGS
+                .iter()
+                .map(|rule| (*rule).to_owned()),
+        );
     }
-    let mut args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
     if let Some(name) = media_player {
         args.push(format!("--own={name}"));
     }
@@ -99,7 +155,7 @@ pub const ATSPI_READ_ONLY_ENV: &str = "TILO_ATSPI_READ_ONLY";
 const IMAGE_FLAVOUR: &str = "/usr/lib/tilo/image-flavour";
 
 /// Whether apps launched here serve their AT-SPI tree read-only: always, except on the dev image, whose
-/// release gates drive apps over AT-SPI (`tools/atspi_external_client.py`).
+/// release checks drive apps over AT-SPI (`tools/atspi_external_client.py`).
 #[must_use]
 pub fn atspi_read_only() -> bool {
     atspi_read_only_on(std::fs::read(IMAGE_FLAVOUR).ok().as_deref())
@@ -141,21 +197,21 @@ pub fn find_proxy_binary() -> Option<PathBuf> {
     None
 }
 
-/// The session's runtime directory, where a launcher's host-side sockets live: the one the session that
-/// launches it runs in (`XDG_RUNTIME_DIR`), so a nested session's proxies stay in its own directory and
+/// The session's runtime directory, where a launcher's own sockets live: the one the session that
+/// launches it lives in (`XDG_RUNTIME_DIR`), so a nested session's proxies stay in its own directory and
 /// never in the host desktop's, whose launchers number their sockets by pid too.
 #[must_use]
 pub fn session_runtime_dir() -> PathBuf {
     tilo_paths::xdg::runtime_dir_or_default()
 }
 
-/// Host-side path where the per-launcher proxy listens: `<runtime>/tilo/dbus-proxy/<pid>.sock`, in the
+/// Path where the per-launcher proxy listens: `<runtime>/tilo/dbus-proxy/<pid>.sock`, in the
 /// session's runtime directory ([`session_runtime_dir`]).
 pub fn proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/dbus-proxy/{launcher_pid}.sock"))
 }
 
-/// Host-side path of the per-launcher system-bus proxy socket, for the packages
+/// Path of the per-launcher system-bus proxy socket, for the packages
 /// [`crate::system_authority`] grants it.
 pub fn system_proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/dbus-proxy/{launcher_pid}-system.sock"))
@@ -172,7 +228,7 @@ pub fn sandbox_bus_env(uid: u32) -> String {
     format!("unix:path=/run/user/{uid}/bus")
 }
 
-/// Host-side path of the per-launcher AT-SPI proxy socket.
+/// Path of the per-launcher AT-SPI proxy socket.
 pub fn atspi_proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/dbus-proxy/{launcher_pid}-atspi.sock"))
 }
@@ -230,17 +286,7 @@ pub enum ProxyError {
     NotReady { path: PathBuf, timeout: Duration },
 }
 
-/// Spawn `xdg-dbus-proxy` with the standard filter set.
-pub fn spawn_dbus_proxy(
-    binary: &Path,
-    bus_addr: &str,
-    socket_path: &Path,
-) -> Result<DBusProxyGuard, ProxyError> {
-    spawn_dbus_proxy_within(binary, bus_addr, socket_path, PROXY_READY_TIMEOUT)
-}
-
-/// [`spawn_dbus_proxy`] with an explicit filter (one of this module's allowlists, never a caller-built
-/// one).
+/// Spawn `xdg-dbus-proxy` with `filter` (one of this module's allowlists, never a caller-built one).
 pub fn spawn_filtered_proxy(
     binary: &Path,
     bus_addr: &str,
@@ -264,22 +310,6 @@ pub fn spawn_filtered_proxy_within(
 /// Maximum wait for the proxy's listener readiness notification.
 pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener socket.
-pub fn spawn_dbus_proxy_within(
-    binary: &Path,
-    bus_addr: &str,
-    socket_path: &Path,
-    ready_within: Duration,
-) -> Result<DBusProxyGuard, ProxyError> {
-    spawn_proxy(
-        binary,
-        bus_addr,
-        socket_path,
-        DEFAULT_FILTER_ARGS,
-        ready_within,
-    )
-}
-
 fn spawn_proxy(
     binary: &Path,
     bus_addr: &str,
@@ -293,7 +323,7 @@ fn spawn_proxy(
             source,
         })?;
     }
-    // A stale socket from a previous run would make `bind()` fail with EADDRINUSE.
+    // A stale socket from an earlier launch would make `bind()` fail with EADDRINUSE.
     let _ = std::fs::remove_file(socket_path);
 
     let (ready_channel, child_channel) = UnixStream::pair().map_err(ProxyError::Spawn)?;
@@ -374,6 +404,7 @@ impl Drop for DBusProxyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_package::manifest::PORTALS;
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path) so callers waiting on socket
     /// existence see it, then becomes a `sleep` that the guard's SIGTERM ends.
@@ -416,37 +447,88 @@ exit 1
 
         phase filters_grant_exactly_the_listed_rules;
         {
-            // A portal-less graphical app: the bus daemon and the accessibility status questions, nothing
-            // else.
+            use crate::manifest::PortalPolicy::{Deny, ViaHost as Allow};
+            let portals = |entries: &[(&str, crate::manifest::PortalPolicy)]| {
+                entries
+                    .iter()
+                    .map(|(name, policy)| ((*name).to_owned(), *policy))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            };
+            let none = portals(&[]);
+            let answers = [
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.Get@/org/freedesktop/portal/desktop",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.GetAll@/org/freedesktop/portal/desktop",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Close@/org/freedesktop/portal/desktop/request/*",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Response@/org/freedesktop/portal/desktop/request/*",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Close@/org/freedesktop/portal/desktop/session/*",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Closed@/org/freedesktop/portal/desktop/session/*",
+            ];
+            // A graphical app that declares no portal: the bus daemon, notifications (portal and
+            // daemon) with the answer objects, and the accessibility status questions.
+            let mut expected = vec![
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop",
+            ];
+            expected.extend(answers);
+            expected.extend([
+                "--call=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
+                "--broadcast=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
+            ]);
+            expected.extend(A11Y_STATUS_FILTER_ARGS);
+            assert_eq!(session_filter_args(&none, true, None), expected);
+            // Without a window: screencast allowed and file-chooser denied gives the screencast
+            // portal and the answer objects, and no notifications.
+            let mut expected = vec![
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.ScreenCast.*@/org/freedesktop/portal/desktop",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.ScreenCast.*@/org/freedesktop/portal/desktop",
+            ];
+            expected.extend(answers);
             assert_eq!(
-                session_filter_args(false, true, None),
-                [
-                    "--filter",
-                    "--see=org.freedesktop.DBus",
-                    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
-                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
-                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
-                    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
-                ]
+                session_filter_args(&portals(&[("screencast", Allow), ("file-chooser", Deny)]), false, None),
+                expected
             );
-            assert_eq!(
-                session_filter_args(true, true, None),
-                [
-                    "--filter",
-                    "--see=org.freedesktop.DBus",
-                    "--talk=org.freedesktop.portal.*",
-                    "--talk=org.freedesktop.Notifications",
-                    "--talk=org.mpris.MediaPlayer2.*",
-                    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
-                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
-                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
-                    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
-                ]
-            );
-            assert_eq!(session_filter_args(true, false, None), DEFAULT_FILTER_ARGS);
+            // Denied names, the device-only microphone and unknown names grant nothing at all.
+            for denied in [
+                portals(&[("screencast", Deny), ("file-chooser", Deny)]),
+                portals(&[("microphone", Allow), ("org.freedesktop.impl.portal.desktop.tilo", Allow)]),
+            ] {
+                assert_eq!(session_filter_args(&denied, false, None), ["--filter", "--see=org.freedesktop.DBus"]);
+            }
+            // Every portal is granted on its own: one interface, at the portal object only.
+            for (name, interface) in PORTALS {
+                let rules = portal_filter_args(&portals(&[(name, Allow)]), false);
+                for (other_name, other) in PORTALS {
+                    let Some(other) = other else { continue };
+                    assert_eq!(
+                        rules.iter().any(|rule| rule.contains(&format!(".portal.{other}.*@"))),
+                        other_name == name,
+                        "{name} must grant {interface:?} and no other portal: {rules:?}"
+                    );
+                }
+            }
+            // No portal grant ever names a whole bus name, another portal bus (documents, the Flatpak
+            // portal, tilo's backend), or a wildcard object.
+            let all = portals(&PORTALS.iter().map(|(name, _)| (*name, Allow)).collect::<Vec<_>>());
+            for rule in portal_filter_args(&all, true) {
+                assert!(rule.starts_with("--call=") || rule.starts_with("--broadcast="), "{rule}");
+                let (name, rest) = rule.split_once('=').unwrap().1.split_once('=').unwrap();
+                assert!(matches!(name, "org.freedesktop.portal.Desktop" | "org.freedesktop.Notifications"), "{rule}");
+                let path = rest.rsplit_once('@').expect("every rule names an object path").1;
+                assert!(
+                    path == "/org/freedesktop/portal/desktop"
+                        || path == "/org/freedesktop/Notifications"
+                        || path.ends_with("/request/*")
+                        || path.ends_with("/session/*"),
+                    "{rule}"
+                );
+            }
             // An app publishing its player owns exactly its own MPRIS name.
             assert_eq!(
-                session_filter_args(false, false, Some("org.mpris.MediaPlayer2.so.tilo.music")),
+                session_filter_args(&none, false, Some("org.mpris.MediaPlayer2.so.tilo.music")),
                 [
                     "--filter",
                     "--see=org.freedesktop.DBus",
@@ -461,7 +543,7 @@ exit 1
             assert_eq!(media_player_name(""), None);
             // No rule anywhere grants a whole name on the accessibility side, and nothing else ever widens
             // to ownership or to the raw bus.
-            for arg in session_filter_args(true, true, None)
+            for arg in session_filter_args(&all, true, None)
                 .iter()
                 .map(String::as_str)
                 .chain(ATSPI_FILTER_ARGS.iter().copied())
@@ -571,10 +653,11 @@ exit 1
                 .unwrap();
                 std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
                 let socket = tmp.path().join("proxy.sock");
-                let result = spawn_dbus_proxy_within(
+                let result = spawn_filtered_proxy_within(
                     &script,
                     "unix:path=/dev/null/nope",
                     &socket,
+                    &["--filter"],
                     Duration::from_millis(100),
                 );
                 assert!(
@@ -592,7 +675,7 @@ exit 1
                 let mock = write_mock_proxy(tmp.path());
                 let socket = tmp.path().join("dbus-proxy.sock");
                 let mut guard =
-                    spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
+                    spawn_filtered_proxy(&mock, "unix:path=/dev/null/nope", &socket, &["--filter"]).expect("spawn");
                 let pid = guard.pid().expect("proxy pid");
                 assert!(socket.exists(), "socket marker should be present");
                 // /proc/<pid> is present as long as the process is running.
@@ -611,7 +694,7 @@ exit 1
                 let socket = tmp.path().join("dbus-proxy.sock");
                 let pid = {
                     let guard =
-                        spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
+                        spawn_filtered_proxy(&mock, "unix:path=/dev/null/nope", &socket, &["--filter"]).expect("spawn");
                     guard.pid().expect("proxy pid")
                 };
                 // Drop signals and waits for the proxy before it returns.

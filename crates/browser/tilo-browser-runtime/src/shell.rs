@@ -40,7 +40,7 @@ use tilo_desktop::profile_card::{
 };
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::Layout;
-use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
@@ -96,7 +96,7 @@ pub(crate) enum HostRequest {
     /// workspace's session open it there, as a mention's notice does. It never reaches the
     /// embedding page.
     #[serde(skip)]
-    ShowInApp(tilo_session_core::notice::Place),
+    ShowInApp(tilo_service::notice::Place),
     /// Show what `link` names in `app`, the app that claims its scheme, through its `open-link` on
     /// `resource`: the page has the workspace's session hand it the link, in the window it has or
     /// one it opens. It never reaches the embedding page.
@@ -244,12 +244,12 @@ impl ChromeSource for PageChrome {
         tilo_desktop::here::place_here(tree, &people, following.as_deref());
     }
 
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R {
         let members = self.shared.members.borrow();
-        let standing = self
+        let requester = self
             .shared
-            .standing_of(&self.authorship.author, members.as_ref());
-        answer(&standing)
+            .requester_of(&self.authorship.author, members.as_ref());
+        answer(&requester)
     }
 
     fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
@@ -295,7 +295,7 @@ impl ChromeSource for PageChrome {
     fn facts(&self, facts: &mut Facts) {
         facts.number(self.here.borrow().revision());
         facts.number(self.notifications.revision());
-        facts.number(u64::from(self.shared.standing.code()));
+        facts.number(u64::from(self.shared.role.code()));
         facts.number(tilo_session::platform::readings::Machine::revision(
             &*self.machine,
         ));
@@ -499,7 +499,7 @@ pub(crate) struct BrowserShell {
     /// Who is here: the session's own roster, its cards and every other person's pointer, on the
     /// layer it placed over the shell.
     people: Rc<RefCell<tilo_session::people::People>>,
-    /// The session's sync, when this page takes part in the workspace's plane.
+    /// The session's sync, when this page takes part in the workspace's live session.
     sync: Option<Rc<tilo_session::sync::Client>>,
     /// Whether the person may invite someone here, as the workspace last answered: the roster's
     /// footer is offered on it.
@@ -991,7 +991,7 @@ impl BrowserShell {
     }
 
     /// Keep what this person says they are doing, in their own words: their other devices read it
-    /// on the plane, and this page's own bar says it here.
+    /// on the live session, and this page's own bar says it here.
     fn keep_own_words(&self, words: &str) {
         self.chrome
             .here
@@ -1020,7 +1020,7 @@ impl BrowserShell {
                 }
                 // Where they work: their window comes forward, else one of the app they are in.
                 tilo_session::people::PeopleAsk::GoTo { who } => self.go_to_person(&who),
-                // A page seats no agent of its own: whoever the card stands for, the ask goes
+                // A page starts no agent of its own: whoever the card stands for, the ask goes
                 // through the agent's card in Console.
                 tilo_session::people::PeopleAsk::Agent { client, ask, .. } => {
                     self.chrome.shared.ask_app_action(
@@ -1435,14 +1435,14 @@ impl BrowserShell {
         let asked = crate::replicated::host_then(
             peer,
             Box::new(
-                move |_| tilo_relay_protocol::workspaces::WorkspacesRequest::Rename {
+                move |_| tilo_server_protocol::workspaces::WorkspacesRequest::Rename {
                     workspace,
                     name,
                 },
             ),
             Box::new(move |answer| {
                 match answer {
-                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Refused(why))
+                    Ok(tilo_server_protocol::workspaces::WorkspacesReply::Refused(why))
                     | Err(why) => {
                         said.post(tilo_desktop_surface::notifications::Notification::new(
                             why, "",
@@ -2368,7 +2368,7 @@ mod tests {
     use std::collections::BTreeMap;
     use tilo_action_policy::Role;
     use tilo_desktop_model::IdMinter;
-    use tilo_desktop_model::commands::{DesktopCommand, Standing};
+    use tilo_desktop_model::commands::{DesktopCommand, Requester};
 
     const GUEST: &str = "guest";
     const OTHER_GUEST: &str = "other-guest";
@@ -2408,11 +2408,11 @@ mod tests {
         add_strip: bool,
     }
 
-    /// What `standing` may change about `tree`'s active workspace, whose
+    /// What `requester` may change about `tree`'s active workspace, whose
     /// strips and windows `authors` made, as the desktop's one policy
     /// answers the menu.
     fn offered_edits(
-        standing: &Standing<'_>,
+        requester: &Requester<'_>,
         authors: &BTreeMap<u64, String>,
         tree: &Layout,
     ) -> OfferedEdits {
@@ -2420,7 +2420,7 @@ mod tests {
             return OfferedEdits::default();
         };
         let may = |command: DesktopCommand| {
-            tilo_desktop_model::commands::may_command(standing, authors, workspace, &command)
+            tilo_desktop_model::commands::may_command(requester, authors, workspace, &command)
                 .is_ok()
         };
         OfferedEdits {
@@ -2433,8 +2433,8 @@ mod tests {
         }
     }
 
-    fn standing(person: &str, role: Option<Role>) -> Standing<'_> {
-        Standing {
+    fn requester(person: &str, role: Option<Role>) -> Requester<'_> {
+        Requester {
             person,
             role,
             members: None,
@@ -2460,7 +2460,7 @@ mod tests {
     #[test]
     fn the_workspace_menu_offers_rename_and_new_strip_only_to_who_governs() {
         let (tree, authors) = lounge();
-        let offers = |person, role| offered_edits(&standing(person, role), &authors, &tree);
+        let offers = |person, role| offered_edits(&requester(person, role), &authors, &tree);
         let none = OfferedEdits {
             rename: false,
             add_strip: false,
@@ -2477,7 +2477,7 @@ mod tests {
         assert_eq!(offers("owner", Some(Role::Owner)), all);
         // Until the workspace has answered, nothing is offered to take back.
         assert_eq!(offers(GUEST, None), none);
-        let own = crate::desktop::Standing::default();
+        let own = crate::desktop::SharedRole::default();
         assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
     }
 
@@ -2493,7 +2493,7 @@ mod tests {
             .map(|(id, _)| *id)
             .unwrap();
         for role in [Role::Editor, Role::Moderator] {
-            shared.standing.set(Some(role));
+            shared.role.set(Some(role));
             let held = shared.holders(&tree, GUEST, "Lounge", &mut person);
             if role == Role::Moderator {
                 assert!(held.is_empty(), "a moderator closes anyone's window");
@@ -2513,7 +2513,7 @@ mod tests {
         let (tree, authors) = lounge();
         let shared = crate::desktop::Shared::default();
         shared.authors.borrow_mut().clone_from(&authors);
-        shared.standing.set(Some(Role::Editor));
+        shared.role.set(Some(Role::Editor));
         let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
         shared
             .members

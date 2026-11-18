@@ -43,7 +43,7 @@ pub struct LegacyImportRequest {
     pub max_bytes: u64,
 }
 
-/// Original owner-action custody, retained by the host, not accepted from JSON.
+/// Original owner-action ownership, retained by the host, not accepted from JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LegacyImportApproval {
     pub account: String,
@@ -56,8 +56,8 @@ pub struct LegacyImportApproval {
 }
 
 /// Implement on the host's existing authenticated owner-action authority.
-/// A check must reject changed arguments/custody and invalidated authority.
-/// There is no extra witness requirement after that exact action was approved.
+/// A check must reject changed arguments/ownership and invalidated authority.
+/// There is no extra proof requirement after that exact action was approved.
 pub trait LegacyImportAuthority: Send + Sync {
     /// # Errors
     /// Refuse unless this exact original owner action and its current authority
@@ -175,7 +175,7 @@ impl LegacyMediaImportHost {
         ] {
             ensure!(
                 !field.is_empty() && field.len() <= 256,
-                "invalid legacy import custody"
+                "invalid legacy import ownership"
             );
         }
         self.authority.authorize(&request, &approval)?;

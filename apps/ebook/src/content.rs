@@ -898,7 +898,7 @@ mod tests {
                 after.id, before.id,
                 "identity (and thus annotations/progress) is preserved"
             );
-            // The library records canonical shared availability, not a workspace
+            // The library resources canonical shared availability, not a workspace
             // root that might mean something different on another device.
             let mut doc = Library::new();
             doc.apply(crate::resource::shelve(

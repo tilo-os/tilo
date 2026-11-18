@@ -71,7 +71,7 @@ impl Drop for Row {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Ledger {
+struct Log {
     owner: Owner,
     rows: BTreeMap<String, Row>,
     #[serde(default)]
@@ -79,7 +79,7 @@ struct Ledger {
     #[serde(default)]
     pending: Vec<Vec<u8>>,
 }
-impl Drop for Ledger {
+impl Drop for Log {
     fn drop(&mut self) {
         self.pending.zeroize();
     }
@@ -96,12 +96,12 @@ pub(crate) struct IncomingRecord<'a> {
 pub struct History {
     path: PathBuf,
     key: VaultKey,
-    ledger: Ledger,
+    log: Log,
     usable: bool,
     _lock: FileLock,
 }
 impl History {
-    /// Open private ciphertext under existing host-owned custody; never reset.
+    /// Open private ciphertext under existing host-owned ownership; never reset.
     pub fn open(root: &Path, owner: &Owner, key: VaultKey) -> Result<Self, SendError> {
         if !owner.valid_actor()
             || !matches!(
@@ -122,7 +122,7 @@ impl History {
         let lock = FileLock::try_exclusive(file).map_err(|_| SendError::Unavailable)?;
         let path = root.join("history.enc");
         let mut created = false;
-        let ledger = match tilo_files::native::private::open_owned_for_read(
+        let log = match tilo_files::native::private::open_owned_for_read(
             &path,
             (MAX_BYTES + 1024) as u64,
         ) {
@@ -133,11 +133,11 @@ impl History {
                     .map_err(|_| SendError::Unavailable)?;
                 let plain = FORMAT.open(&key, &bytes).ok_or(SendError::Unavailable)?;
                 let plain = Zeroizing::new(plain);
-                serde_json::from_slice::<Ledger>(&plain).map_err(|_| SendError::Unavailable)?
+                serde_json::from_slice::<Log>(&plain).map_err(|_| SendError::Unavailable)?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 created = true;
-                Ledger {
+                Log {
                     owner: owner.clone(),
                     rows: BTreeMap::new(),
                     groups: BTreeMap::new(),
@@ -146,15 +146,15 @@ impl History {
             }
             Err(_) => return Err(SendError::Unavailable),
         };
-        if &ledger.owner != owner
-            || ledger.rows.len().saturating_add(ledger.groups.len()) > MAX_ROWS
-            || (!ledger.groups.is_empty() && owner.service != crate::Service::Whatsapp)
-            || ledger.groups.iter().any(|(key, row)| {
+        if &log.owner != owner
+            || log.rows.len().saturating_add(log.groups.len()) > MAX_ROWS
+            || (!log.groups.is_empty() && owner.service != crate::Service::Whatsapp)
+            || log.groups.iter().any(|(key, row)| {
                 !row.valid() || !matches!(row.key(),Ok(ref expected) if expected==key)
             })
-            || ledger.pending.len() > 64
-            || ledger.pending.iter().map(Vec::len).sum::<usize>() > 4 * 1024 * 1024
-            || ledger.rows.values().any(|r| {
+            || log.pending.len() > 64
+            || log.pending.iter().map(Vec::len).sum::<usize>() > 4 * 1024 * 1024
+            || log.rows.values().any(|r| {
                 r.text.len() > 32 * 1024
                     || r.timestamp == 0
                     || r.address.service != service_name(owner.service)
@@ -173,7 +173,7 @@ impl History {
         let mut history = Self {
             path,
             key,
-            ledger,
+            log,
             usable: true,
             _lock: lock,
         };
@@ -183,13 +183,12 @@ impl History {
         Ok(history)
     }
     pub(crate) fn owner(&self) -> &Owner {
-        &self.ledger.owner
+        &self.log.owner
     }
     fn persist(&mut self) -> Result<(), SendError> {
         let result = (|| {
-            let bytes = Zeroizing::new(
-                serde_json::to_vec(&self.ledger).map_err(|_| SendError::Unavailable)?,
-            );
+            let bytes =
+                Zeroizing::new(serde_json::to_vec(&self.log).map_err(|_| SendError::Unavailable)?);
             if bytes.len() > MAX_BYTES {
                 return Err(SendError::Unavailable);
             }
@@ -206,9 +205,9 @@ impl History {
     }
     pub(crate) fn stage_events(&mut self, events: &[Zeroizing<Vec<u8>>]) -> Result<(), SendError> {
         if !self.usable
-            || self.ledger.pending.len().saturating_add(events.len()) > 64
+            || self.log.pending.len().saturating_add(events.len()) > 64
             || self
-                .ledger
+                .log
                 .pending
                 .iter()
                 .map(Vec::len)
@@ -221,9 +220,7 @@ impl History {
         if events.is_empty() {
             return Ok(());
         }
-        self.ledger
-            .pending
-            .extend(events.iter().map(|e| e.to_vec()));
+        self.log.pending.extend(events.iter().map(|e| e.to_vec()));
         self.persist()
     }
     pub(crate) fn stage_incoming(
@@ -236,7 +233,7 @@ impl History {
         self.stage_events(&[bytes])
     }
     pub(crate) fn pending(&self) -> Vec<Zeroizing<Vec<u8>>> {
-        self.ledger
+        self.log
             .pending
             .iter()
             .cloned()
@@ -250,18 +247,18 @@ impl History {
         if !self.usable {
             return Err(SendError::Unavailable);
         }
-        if events.len() == self.ledger.pending.len() {
+        if events.len() == self.log.pending.len() {
             return Ok(());
         }
-        self.ledger.pending.zeroize();
-        self.ledger.pending = events.iter().map(|e| e.to_vec()).collect();
+        self.log.pending.zeroize();
+        self.log.pending = events.iter().map(|e| e.to_vec()).collect();
         self.persist()
     }
     pub(crate) fn check_operation(&self, operation: &str) -> Result<(), SendError> {
         if !self.usable {
             return Err(SendError::Unavailable);
         }
-        if self.ledger.rows.contains_key(&format!("out:{operation}")) {
+        if self.log.rows.contains_key(&format!("out:{operation}")) {
             return Err(SendError::AlreadyReserved);
         }
         Ok(())
@@ -297,7 +294,7 @@ impl History {
         time: u64,
     ) -> Result<bool, SendError> {
         let key = format!("in:{id}");
-        if let Some(existing) = self.ledger.rows.get(&key) {
+        if let Some(existing) = self.log.rows.get(&key) {
             return if self.usable
                 && existing.address == Address::from(route)
                 && existing.text == text
@@ -338,7 +335,7 @@ impl History {
             }
             let key = format!("in:{}", incoming.id);
             let address = Address::from(incoming.route);
-            if let Some(existing) = self.ledger.rows.get(&key).or_else(|| staged.get(&key)) {
+            if let Some(existing) = self.log.rows.get(&key).or_else(|| staged.get(&key)) {
                 if existing.address != address
                     || existing.text != incoming.text
                     || existing.timestamp != incoming.timestamp_ms
@@ -372,21 +369,16 @@ impl History {
         incoming: bool,
     ) -> Result<(), SendError> {
         if !self.usable
-            || self
-                .ledger
-                .rows
-                .len()
-                .saturating_add(self.ledger.groups.len())
-                >= MAX_ROWS
+            || self.log.rows.len().saturating_add(self.log.groups.len()) >= MAX_ROWS
             || text.len() > 32 * 1024
             || time == 0
         {
             return Err(SendError::Unavailable);
         }
-        if self.ledger.rows.contains_key(&id) {
+        if self.log.rows.contains_key(&id) {
             return Err(SendError::AlreadyReserved);
         }
-        self.ledger.rows.insert(
+        self.log.rows.insert(
             id,
             Row {
                 address: Address::from(route),
@@ -406,7 +398,7 @@ impl History {
             return Err(SendError::Uncertain);
         }
         let row = self
-            .ledger
+            .log
             .rows
             .get_mut(&format!("out:{operation}"))
             .ok_or(SendError::Uncertain)?;
@@ -418,7 +410,7 @@ impl History {
             return Err(SendError::Uncertain);
         }
         let row = self
-            .ledger
+            .log
             .rows
             .get_mut(&format!("out:{operation}"))
             .ok_or(SendError::Uncertain)?;
@@ -431,7 +423,7 @@ impl History {
             return Err(SendError::Unavailable);
         }
         let address = &self
-            .ledger
+            .log
             .rows
             .get(&format!("out:{operation}"))
             .ok_or(SendError::InvalidRequest)?
@@ -453,14 +445,14 @@ impl History {
         evidence: crate::journal::RecipientEvidence,
     ) -> Result<bool, SendError> {
         if !matches!(
-            self.ledger.owner.service,
+            self.log.owner.service,
             crate::Service::Tilo | crate::Service::Whatsapp | crate::Service::Signal
         ) || self.outgoing_route(operation)? != *route
         {
             return Err(SendError::Revoked);
         }
         let row = self
-            .ledger
+            .log
             .rows
             .get_mut(&format!("out:{operation}"))
             .ok_or(SendError::InvalidRequest)?;
@@ -490,7 +482,7 @@ impl History {
         }
         let address = Address::from(&route);
         let mut rows: Vec<_> = self
-            .ledger
+            .log
             .rows
             .iter()
             .filter(|(_, r)| r.address == address)

@@ -1,5 +1,5 @@
 //! What the host runs for a member who is not its own person, and for that
-//! member's agent, decided by the member's standing now: a viewer changes
+//! member's agent, decided by the member's access now: a viewer changes
 //! nothing, a commenter comments and nothing else, an editor edits but is
 //! asked first where the action asks, and a member removed or a device
 //! revoked is refused whatever it still holds. The workspace's policy is
@@ -11,7 +11,7 @@ use tilo_actions::remote::{
     Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
 use ui::permissions::Role;
 
@@ -20,10 +20,10 @@ const TASKS: &str = "so.tilo.tasks";
 
 /// The workspace's word on one member: their role, whether their device is
 /// revoked, and what they answer when the host asks them.
-struct Membership {
+pub(super) struct Membership {
     member: HostDevice,
     /// The host's workspaces, which hand the service the keys its device holds.
-    workspaces: tilo_relay::workspaces::Workspaces,
+    workspaces: tilo_server::workspaces::Workspaces,
     person: [u8; 32],
     device: [u8; 32],
     role: Mutex<Option<Role>>,
@@ -34,7 +34,40 @@ struct Membership {
 }
 
 impl Membership {
-    fn standing(&self, caller: &Caller) -> Option<ui::permissions::Standing> {
+    /// The workspace's word on `member`, a viewer until it says otherwise, as the service of
+    /// `server`'s device reads it.
+    pub(super) fn of(
+        hosted: &Hosted,
+        server: &Device,
+        member: &Device,
+        content: std::path::PathBuf,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            member: HostDevice {
+                endpoint: tilo_agent_session::HostEndpoint::iroh(
+                    hosted.server.node_addr(),
+                    server.cert.clone(),
+                ),
+                key: server.key.clone(),
+                runtime: tokio::runtime::Handle::current(),
+            },
+            workspaces: hosted.server.workspaces().unwrap().clone(),
+            person: member.cert.user_public_key,
+            device: member.cert.device_public_key,
+            role: Mutex::new(Some(Role::Viewer)),
+            revoked: AtomicBool::new(false),
+            answer: Mutex::new(None),
+            asked: AtomicUsize::new(0),
+            content: tilo_content::ContentStore::in_dir(content),
+        })
+    }
+
+    /// The member's role from now on; none once the workspace removed them.
+    pub(super) fn set_role(&self, role: Option<Role>) {
+        *self.role.lock().unwrap() = role;
+    }
+
+    fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
         let role = (*self.role.lock().unwrap())?;
         (!self.revoked.load(Ordering::SeqCst)
             && caller.user_public_key() == Some(&self.person)
@@ -46,7 +79,7 @@ impl Membership {
                 &ui::permissions::MemberId::person(hex::encode(self.person)),
                 role,
             )
-            .standing()
+            .access()
             .clone()
         })
     }
@@ -60,7 +93,7 @@ impl WorkspaceDocumentsLink for Membership {
         self.member.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
-        self.standing(caller).is_some()
+        self.access(caller).is_some()
     }
     fn view_read_policy(
         &self,
@@ -71,9 +104,10 @@ impl WorkspaceDocumentsLink for Membership {
     ) -> Option<ViewReadPolicy> {
         Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: self.standing(caller)?,
+            access: self.access(caller)?,
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+            agent_bound: Vec::new(),
         })
     }
     fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
@@ -96,7 +130,7 @@ impl WorkspaceDocumentsLink for Membership {
         _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         assert_eq!(
             caller.user_public_key(),
             Some(&self.person),
@@ -125,7 +159,7 @@ fn served(
 }
 
 /// The status `caller`'s `request` is answered with.
-fn invoked(
+pub(super) fn invoked(
     actions: &tilo_agent_session::WorkspaceActions,
     workspace: WorkspaceId,
     caller: &Caller,
@@ -149,7 +183,7 @@ fn invoked(
         let again = matches!(
             &status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. }
+                error: ActionCallError::Unavailable { .. }
             }
         ) || matches!(&status, ReceiptStatus::Failed { error } if error.retryable);
         if again && Instant::now() < deadline {
@@ -187,7 +221,7 @@ fn put(
     workspace: WorkspaceId,
     caller: &Caller,
     bytes: &[u8],
-) -> Result<String, ActionHostError> {
+) -> Result<String, ActionCallError> {
     let step = |step| match served(
         actions,
         workspace,
@@ -223,7 +257,7 @@ fn got(
     workspace: WorkspaceId,
     caller: &Caller,
     content: &str,
-) -> Result<Vec<u8>, ActionHostError> {
+) -> Result<Vec<u8>, ActionCallError> {
     match served(
         actions,
         workspace,
@@ -242,10 +276,10 @@ fn got(
     }
 }
 
-/// The actions `caller` is listed on the record `provider` names, at every
+/// The actions `caller` is listed on the document `provider` names, at every
 /// level of it: a listing holds the actions of the resources directly under
 /// the one it names, so the record is walked as an agent walks it.
-fn listed(
+pub(super) fn listed(
     actions: &tilo_agent_session::WorkspaceActions,
     workspace: WorkspaceId,
     caller: &Caller,
@@ -296,30 +330,50 @@ fn listed(
     listed
 }
 
-fn json(value: serde_json::Value) -> InvokeArgument {
+/// End a test's page and its server.
+pub(super) async fn ended(browser: Browser, hosted: Hosted) {
+    browser.peer.close();
+    hosted.agents.shutdown();
+    hosted.server.shutdown().await;
+}
+
+pub(super) fn json(value: serde_json::Value) -> InvokeArgument {
     let serde_json::Value::Object(map) = value else {
         panic!("arguments are an object")
     };
     InvokeArgument::Json(map)
 }
 
-/// The titles of the notes the record at `notes` holds, as `browser` has
-/// received it.
+/// The titles of the notes kept beside the record at `notes`, in the parts of its notes,
+/// as `browser` has received them.
 fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
-    browser
-        .mount(notes)
-        .read(|doc| {
-            <notes::Notebook as ui::tilo_resource::Resource>::read(doc)
-                .map(|notebook| {
-                    notebook
-                        .pages
-                        .iter()
-                        .map(|(_, page)| page.title.clone())
-                        .collect()
+    let mut titles = Vec::new();
+    for index in 0.. {
+        let part = DocumentRoute {
+            document: ::notes::part::chain().part(index).as_str().to_owned(),
+            ..notes.clone()
+        };
+        browser.pump();
+        if !browser.documents.contains_key(&part) {
+            break;
+        }
+        titles.extend(
+            browser
+                .mount(&part)
+                .read(|doc| {
+                    <::notes::PagePart as ui::tilo_resource::Resource>::read(doc)
+                        .map(|held| {
+                            held.pages
+                                .iter()
+                                .map(|(_, page)| page.title.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
                 })
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+                .unwrap_or_default(),
+        );
+    }
+    titles
 }
 
 /// Wait until the host's own person's note `marker` reached `browser`, then
@@ -329,7 +383,7 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
     let made = browser
         .invoke_settled(request(
             &provider,
-            ActionAddress::new("notes.notebook", "new-note"),
+            ActionAddress::new(notes::part::chain_resource(), "new-note"),
             json(serde_json::json!({"title": marker})),
         ))
         .await;
@@ -352,7 +406,7 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
+async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
@@ -384,28 +438,19 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         ))
         .await;
     assert!(
-        matches!(filed.status, ReceiptStatus::Completed { .. }),
+        matches!(
+            filed.status,
+            ReceiptStatus::Completed { .. } | ReceiptStatus::Accepted
+        ),
         "{filed:?}"
     );
 
-    let membership = Arc::new(Membership {
-        member: HostDevice {
-            endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
-                host.cert.clone(),
-            ),
-            key: host.key.clone(),
-            runtime: tokio::runtime::Handle::current(),
-        },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
-        person: guest_device.cert.user_public_key,
-        device: guest_device.cert.device_public_key,
-        role: Mutex::new(Some(Role::Viewer)),
-        revoked: AtomicBool::new(false),
-        answer: Mutex::new(None),
-        asked: AtomicUsize::new(0),
-        content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
-    });
+    let membership = Membership::of(
+        &hosted,
+        &host,
+        &guest_device,
+        state.path().join("member-content"),
+    );
     let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(membership.clone()).unwrap();
     let workspace = browser.workspace;
@@ -450,7 +495,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     let new_note = |title: &str| {
         request(
             &notes_provider,
-            ActionAddress::new("notes.notebook", "new-note"),
+            ActionAddress::new(notes::part::chain_resource(), "new-note"),
             json(serde_json::json!({"title": title})),
         )
     };
@@ -461,7 +506,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert_eq!(
         viewer,
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
     assert!(
@@ -497,7 +542,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the commenter")),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
 
@@ -549,13 +594,13 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     for caller in [&member, &agent] {
         assert_eq!(
             put(&actions, workspace, caller, b"by a viewer"),
-            Err(ActionHostError::NotPermitted),
+            Err(ActionCallError::NotPermitted),
             "a viewer, and their agent, puts nothing"
         );
         assert_eq!(
             invoked(&actions, workspace, caller, &open()),
             ReceiptStatus::Rejected {
-                error: ActionHostError::NotPermitted
+                error: ActionCallError::NotPermitted
             },
             "a viewer, and their agent, opens nothing"
         );
@@ -569,22 +614,19 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     *membership.role.lock().unwrap() = None;
     assert_eq!(
         got(&actions, workspace, &member, &by_agent),
-        Err(ActionHostError::NotPermitted),
+        Err(ActionCallError::NotPermitted),
         "someone the workspace no longer admits gets nothing"
     );
     *membership.role.lock().unwrap() = Some(Role::Editor);
-    // An action people alone are offered is listed to the editor and not to
-    // their agent, which runs only what it is listed.
+    // An agent is listed nothing people alone are offered, and runs only what
+    // it is listed. The apps here offer no such action now that Tasks' plan is
+    // everyone's, so this is the guard against one being listed later.
     let people_only = |caller: &Caller| {
         listed(&actions, workspace, caller, &tasks_provider)
             .into_iter()
             .filter(|action| !action.contract.reaches_agents())
             .count()
     };
-    assert!(
-        people_only(&member) > 0,
-        "the editor is offered what people alone are"
-    );
     assert_eq!(people_only(&agent), 0, "their agent is not");
     let by_agent = invoked(&actions, workspace, &agent, &new_note("By the agent"));
     assert!(
@@ -617,8 +659,8 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
             matches!(
                 status,
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::InvalidRequest { .. }
-                        | ActionHostError::Unavailable { .. }
+                    error: ActionCallError::InvalidRequest { .. }
+                        | ActionCallError::Unavailable { .. }
                 }
             ),
             "listed {:?}, answered: {status:?}",
@@ -637,7 +679,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     };
     for (confirmation, what) in [
         (Confirmation::Confirmed, "their own word"),
-        (Confirmation::Witnessed("x".into()), "a forged token"),
+        (Confirmation::Approved("x".into()), "a forged token"),
     ] {
         let refused = invoked(
             &actions,
@@ -649,14 +691,14 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
             },
         );
         assert!(
-            matches!(&refused, ReceiptStatus::Rejected { error: ActionHostError::Refused { reason } } if reason.contains("person")),
+            matches!(&refused, ReceiptStatus::Rejected { error: ActionCallError::Refused { reason } } if reason.contains("person")),
             "{what} confirms nothing: {refused:?}"
         );
     }
     assert_eq!(
         invoked(&actions, workspace, &member, &remove()),
         ReceiptStatus::Rejected {
-            error: ActionHostError::confirmation_required()
+            error: ActionCallError::confirmation_required()
         },
         "with nobody to ask, it stays refused"
     );
@@ -703,7 +745,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the removed")),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
     *membership.role.lock().unwrap() = Some(Role::Editor);
@@ -711,7 +753,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the revoked")),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
     assert_eq!(
@@ -722,7 +764,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
             &new_note("By the revoked agent")
         ),
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         }
     );
 
@@ -770,7 +812,10 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
                 && invoker.acting.acted_for_person() == Some(person.as_str())),
         "{invokers:?}"
     );
-    browser.peer.close();
-    hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    ended(browser, hosted).await;
 }
+
+// What an app keeps for its whole workspace is reached the same way and judged by the same
+// membership, so its tests stand below this fixture.
+#[path = "workspace_documents.rs"]
+mod workspace_documents;

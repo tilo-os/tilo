@@ -35,6 +35,7 @@ impl Log {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Line {
     pub text: String,
+    pub marked: bool,
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -48,7 +49,23 @@ impl LogPart {
     /// Write a line.
     #[action]
     pub fn write(&mut self, cx: &mut ActionCx, text: String) {
-        self.lines.push(cx.id(), Line { text });
+        self.lines.push(
+            cx.id(),
+            Line {
+                text,
+                marked: false,
+            },
+        );
+    }
+
+    /// Mark lines.
+    #[action]
+    pub fn mark(&mut self, lines: Vec<String>) {
+        for id in lines {
+            if let Some(line) = self.lines.get_mut(&Id::from_raw(id)) {
+                line.marked = true;
+            }
+        }
     }
 }
 
@@ -67,6 +84,32 @@ impl Chained for LogPart {
                 *head
             }
         }))
+    }
+
+    /// Marking lines of several parts marks them in each.
+    fn split(
+        action: &Self::Action,
+        parts: &[(u64, Rc<Self>)],
+    ) -> Result<Option<Vec<(u64, Self::Action)>>, String> {
+        let LogPartAction::Mark(log_part::Mark { lines }) = &action.operation else {
+            return Ok(None);
+        };
+        let shares = parts
+            .iter()
+            .filter_map(|(index, part)| {
+                let held: Vec<String> = lines
+                    .iter()
+                    .filter(|id| part.lines.get(&Id::from_raw(id.as_str())).is_some())
+                    .cloned()
+                    .collect();
+                (!held.is_empty()).then(|| {
+                    let mut share = action.clone();
+                    share.operation = LogPartAction::Mark(log_part::Mark { lines: held });
+                    (*index, share)
+                })
+            })
+            .collect();
+        Ok(Some(shares))
     }
 }
 
@@ -565,4 +608,46 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
         !reader.is_ready(&LogPart::chain().part(0)),
         "the chain's first part was never founded, or opened, here"
     );
+}
+
+tilo_test_env::scenario! {
+    fn a_verb_over_lines_of_several_parts_is_one_step;
+
+    phase it_writes_each_part_holding_some_and_undo_takes_back_all;
+    {
+        let store = device();
+        let chain = chain_in(&store, "ada");
+        for n in 0..=PART_LINES {
+            chain
+                .invoke(&LogPart::WRITE.with(log_part::Write {
+                    text: format!("line {n}"),
+                }))
+                .unwrap();
+        }
+        assert_eq!(chain.head(), Some(1));
+        let ids: Vec<String> = texts(&chain.parts())
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        // The first line of part 0 and the one line of part 1.
+        let marking = vec![ids[0].clone(), ids[PART_LINES].clone()];
+        let before: Vec<Rc<LogPart>> = chain.parts().into_iter().map(|(_, p)| p).collect();
+        chain
+            .invoke(&LogPart::MARK.with(log_part::Mark { lines: marking }))
+            .unwrap();
+        let marked = |chain: &Chain<LogPart>| -> Vec<bool> {
+            chain
+                .parts()
+                .iter()
+                .flat_map(|(_, part)| part.lines.iter().map(|(_, line)| line.marked).collect::<Vec<_>>())
+                .collect()
+        };
+        assert_eq!(marked(&chain), [true, false, false, true]);
+        let after: Vec<Rc<LogPart>> = chain.parts().into_iter().map(|(_, p)| p).collect();
+        assert!(before.iter().zip(&after).all(|(b, a)| !Rc::ptr_eq(b, a)), "both parts written");
+        assert!(chain.undo_last(), "one step");
+        assert_eq!(marked(&chain), [false, false, false, false]);
+        assert!(chain.redo_last());
+        assert_eq!(marked(&chain), [true, false, false, true]);
+    }
 }

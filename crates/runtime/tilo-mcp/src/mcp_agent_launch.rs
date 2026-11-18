@@ -2,11 +2,11 @@
 //! and `pdf-viewer#open content=…` opens a file the workspace holds in the app that opens it,
 //! whether or not the app runs already.
 
-use super::{ActionHost, Addressed, McpServer, OneCall, Value, json};
-use super::{Done, LsArgs, ParsedPath, Reply, app_names, outcome, starts_app};
+use super::{ActionProvider, Addressed, McpServer, OneCall, Value, json};
+use super::{Done, LsArgs, ParsedPath, Reply, app_names, outcome};
 use std::fmt::Write as _;
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `notes#open` (or `notes#start`, without a window): start an installed app, then say
     /// what is in it.
     pub(super) async fn launch(
@@ -42,17 +42,108 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Done, super::Failure> {
         let (value, reply) =
             Box::pin(self.launch(parsed, app_id, action, arguments, invocation, wait_ms)).await?;
-        Ok(Done::Launched { value, reply })
+        // `open` puts the app's window in front of the person, on the document it opened; `start`
+        // starts it without one. The app is started either way: a window that cannot be put there is
+        // said beside what the open did.
+        let mut not_shown = None;
+        if action == tilo_actions::remote::APPLICATION_OPEN_ACTION && !reply.failed {
+            let opened = value
+                .pointer("/update/output/value/provider")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            not_shown = self.show(opened, app_id).await.err();
+        }
+        Ok(Done::Launched {
+            value,
+            reply,
+            not_shown,
+        })
+    }
+
+    /// Do the one action `path` names. One of Files' verbs on the workspace's own folder
+    /// ([`in_workspace_folder`]), which is on no one device, is asked of the workspace, with no
+    /// app started for it; every other action is done in the app that offers it. A file read
+    /// by its bare name is first the entry Files shows by that name where the agent acts
+    /// ([`Self::read_where_shown`]).
+    pub(super) async fn do_one_value(
+        &self,
+        path: &str,
+        arguments: serde_json::Map<String, Value>,
+        invocation: Option<String>,
+        wait_ms: Option<u64>,
+    ) -> Result<Done, super::Failure> {
+        // Only a path that begins with Files' name is read here before it is read where it acts.
+        let app = path.split(['#', '/']).next().unwrap_or_default().trim();
+        if names_files(app)
+            && let Ok(parsed) = super::parse_path(path)
+            && let Some(action) = parsed.action.as_deref()
+            && in_workspace_folder(&parsed, action, &arguments)
+        {
+            if reads_by_bare_name(action, &arguments)
+                && let Some(read) = self.read_where_shown(path, &arguments, wait_ms).await
+            {
+                return read;
+            }
+            let files = fs_protocol::tree::FILES_APP;
+            let value = self
+                .app_in_workspace(files, action, arguments, invocation, wait_ms)
+                .await?;
+            let reply = outcome(&value);
+            return Ok(Done::Launched {
+                value,
+                reply,
+                not_shown: None,
+            });
+        }
+        Box::pin(self.do_in_app(path, arguments, invocation, wait_ms)).await
+    }
+
+    /// The read of a file named by its bare name, done by Files where the agent acts, when
+    /// Files is started there and shows an entry by that name: an agent that sees a folder in
+    /// Files on its device and names one of its entries means that entry, as it did before a
+    /// workspace's own folder was read by a path. `None` where nothing of Files is started (a
+    /// turn on a server), or where the folder it shows holds no such entry: the name is then
+    /// a path in the workspace's own folder. What Files refuses for another reason (a file
+    /// that is no text) is its answer.
+    async fn read_where_shown(
+        &self,
+        path: &str,
+        arguments: &serde_json::Map<String, Value>,
+        wait_ms: Option<u64>,
+    ) -> Option<Result<Done, super::Failure>> {
+        let (_, started) = self.providers().await.ok()?;
+        // An app's own instance is named by its number; what a holder serves of the
+        // workspace's documents is not Files showing a folder.
+        let shows = started.iter().any(|(provider, app)| {
+            provider.parse::<u64>().is_ok()
+                && app["app_id"].as_str() == Some(fs_protocol::tree::FILES_APP)
+        });
+        if !shows {
+            return None;
+        }
+        let read = Box::pin(self.do_in_app(path, arguments.clone(), None, wait_ms)).await;
+        let said = match &read {
+            Ok(Done::Invoked { value, .. } | Done::Launched { value, .. }) => outcome(value).text,
+            Err(failure) => failure.message.clone(),
+        };
+        (!said.contains(NOT_SHOWN)).then_some(read)
     }
 
     /// `action` (`open` or `start`) of the app `resolved` names, which runs already: it is there,
     /// and what is in it. Running is not shown: `open` asks for the app's window on the person's
-    /// shell, or brings the one there into view.
-    pub(super) async fn running(&self, resolved: &super::Resolved, action: &str) -> Done {
+    /// shell, or brings the one there into view, and says why beside what it did when neither
+    /// can be done.
+    pub(super) async fn running(
+        &self,
+        resolved: &super::Resolved,
+        action: &str,
+    ) -> Result<Done, super::Failure> {
         let app_id = resolved.app_id.as_str();
-        if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
-            self.show(&resolved.provider, app_id).await;
-        }
+        let not_shown = if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
+            self.show(&resolved.provider, app_id).await.err()
+        } else {
+            None
+        };
         // What is in the window it answered with: the record the workspace lists
         // it on, so a caller opening an app that runs learns the window it
         // attached to and the record that window shows, as the open that made
@@ -85,7 +176,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             None => json!({"update": {"state": "succeeded", "output": {}}}),
         };
         let reply = self.opened_reply(app_id, &value).await;
-        Done::Launched { value, reply }
+        Ok(Done::Launched {
+            value,
+            reply,
+            not_shown,
+        })
     }
 
     /// What starting `app_id` answers once it runs: that it does, and what
@@ -162,4 +257,72 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         .await
         .map_err(String::from)
     }
+}
+
+/// Whether `action` is the word that starts an app: its `open` (with its window) or its `start`.
+pub(super) fn starts_app(action: &str) -> bool {
+    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        || action == tilo_actions::remote::APPLICATION_START_ACTION
+}
+
+/// Whether `name` names Files, every workspace's own folder: its name, the last part of its id,
+/// or its id.
+pub(super) fn names_files(name: &str) -> bool {
+    ["files", "file-explorer", "so.tilo.file-explorer"]
+        .iter()
+        .any(|files| name.eq_ignore_ascii_case(files))
+}
+
+/// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
+/// the workspace's own folder, its `write-file` there, or one of its reads of it
+/// ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
+/// change or read. Those go to the workspace, which changes its tree wherever that is kept, as a file put
+/// into the workspace does; with a `device` they stay Files' own on that device.
+pub(super) fn in_workspace_folder(
+    parsed: &ParsedPath,
+    action: &str,
+    arguments: &serde_json::Map<String, Value>,
+) -> bool {
+    parsed.segments.is_empty()
+        && names_files(&parsed.app)
+        && (fs_protocol::tree::is_tree_verb(action)
+            || action == fs_protocol::tree::WRITE_FILE
+            || reads_workspace_folder(action, arguments))
+        && !arguments.contains_key("device")
+}
+
+/// Whether `action` with `arguments` is one of Files' reads of the workspace's own folder by a
+/// path in the workspace: its `list`, and its `read-text` of a file whose path starts at the
+/// workspace's folder. A path that starts with `/` or `~` is a file on a computer's own disk,
+/// which Files on that computer reads.
+fn reads_workspace_folder(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
+    use fs_protocol::tree::{LIST, READ_TEXT};
+    action == LIST
+        || (action == READ_TEXT
+            && arguments
+                .get("file")
+                .and_then(Value::as_str)
+                .is_some_and(|file| !file.trim_start().starts_with(['/', '~'])))
+}
+
+/// What Files says of a name that is neither an absolute path nor an entry of the folder it
+/// shows (`FilesState::named_file` in the Files app): by these words a bare name it does not
+/// show is known, and is then read as a path in the workspace's own folder.
+const NOT_SHOWN: &str = "an entry of the folder shown";
+
+/// Whether `action` with `arguments` reads a file named by its bare name, with no folder
+/// before it: as much the name of an entry of the folder Files shows as a path in the
+/// workspace's own folder.
+fn reads_by_bare_name(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
+    action == fs_protocol::tree::READ_TEXT
+        && arguments
+            .get("file")
+            .and_then(Value::as_str)
+            .is_some_and(|file| !file.trim().is_empty() && !file.contains('/'))
+}
+
+/// Whether `arguments` are those of an app's own `open` of a file: they name the file's
+/// content, as the workspace's open reads it.
+pub(super) fn opens_a_file(arguments: &serde_json::Map<String, Value>) -> bool {
+    arguments.contains_key("content")
 }

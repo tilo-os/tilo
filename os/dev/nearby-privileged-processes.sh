@@ -6,11 +6,11 @@
 #
 # A process is identified by its own name (its comm, which the kernel cuts to
 # 15 bytes) or the program its argv[0] names, never by a pattern anywhere in
-# its command line. The gate used `ssh host '! pgrep -f polkit-agent-helper-1'`:
+# its command line. The check used `ssh host '! pgrep -f polkit-agent-helper-1'`:
 # procps leaves out only pgrep itself, not the shell that started it, so that
 # found the remote shell whose command line carried the pattern and reported
 # a helper that never ran. os/tests/nearby_privileged_processes_test.sh runs
-# this the way the gate does.
+# this the way the check does.
 set -u
 
 [ -r /proc/self/comm ] || {

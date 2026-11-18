@@ -76,7 +76,7 @@ impl FlatpakRef {
     }
 
     /// Present this reference through the regular Store card/action model.
-    /// The user still has to press Install, which is the confirmation gate;
+    /// The user still has to press Install, which is the confirmation check;
     /// merely opening a file never starts a package transaction.
     pub fn into_store_item(self, installed_version: Option<String>) -> StoreItem {
         let installed =

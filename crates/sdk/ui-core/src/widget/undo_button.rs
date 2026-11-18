@@ -528,7 +528,7 @@ mod tests {
 
             // Case `a_control_that_goes_unavailable_surrenders_focus`.
             // Undoing the last action with the keyboard empties the stack under the
-            // control the user is standing on. It must not keep the focus ring, and
+            // control the user is on. It must not keep the focus ring, and
             // must not keep telling an assistive technology it is focused — it has
             // just left the focus order.
             {

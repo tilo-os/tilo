@@ -397,7 +397,7 @@ pub async fn serve(
     sheets: Arc<dyn Sheets>,
     roaming: super::store::RoamingWifiSlot,
 ) -> zbus::Result<AgentHandle> {
-    // Choosing the vault's custody probes the secret store over a blocking
+    // Choosing the vault's ownership probes the secret store over a blocking
     // D-Bus call, which must not run on a runtime thread.
     let store = tokio::task::spawn_blocking(move || super::store::VaultStore::for_session(roaming))
         .await

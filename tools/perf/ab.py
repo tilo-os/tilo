@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Same-job A/B: prove a performance change despite runner noise.
 
-The scheduled lane compares a run with earlier nights on other hosts, and on
+The scheduled job compares a run with earlier nights on other hosts, and on
 the shared `runner` class that spread is larger than most changes (the same
-relay bench measured 15.9 and 31.2 CPU-seconds per member-hour on two
+server bench measured 15.9 and 31.2 CPU-seconds per member-hour on two
 runs). This tool builds two commits in one checkout, one after the other, and
 runs the existing benchmark of a KPI group on both, alternating, in one job
 on one machine. A slow host then slows both sides alike, and pairing each
 round's two runs cancels it.
 
-    python3 tools/perf/ab.py run --groups hosting --base origin/main --candidate HEAD \\
+    python3 tools/perf/ab.py run --groups server --base origin/main --candidate HEAD \\
         --rounds 8 --out target/perf-ab
 
 1. **Build.** The tree must have no tracked changes. For each side the
@@ -374,17 +374,17 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
     return status
 
 
-def run_hosting(ctx: RunContext) -> list[record.Record]:
-    # Historical refs predate this gate; every side that has it must pass it.
+def run_server(ctx: RunContext) -> list[record.Record]:
+    # Historical refs predate this check; every side that has it must pass it.
     if "keystroke_writes" in ctx.bins:
         call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
-    # Both sides need a bench that knows --relay-cpus; an older one refuses it.
-    cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
-    call([ctx.bins["relay_load"], "--members", "100", "--minutes", str(ctx.options.hosting_minutes),
+    # Both sides need a bench that knows --server-cpus; an older one refuses it.
+    cpus = ["--server-cpus", str(ctx.options.server_cpus)] if ctx.options.server_cpus else []
+    call([ctx.bins["server_load"], "--members", "100", "--minutes", str(ctx.options.server_minutes),
           *cpus, "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
-    report = json.loads((ctx.dir / "hosting-load.json").read_text(encoding="utf-8"))
+    report = json.loads((ctx.dir / "server-load.json").read_text(encoding="utf-8"))
     prices = tomllib.loads(adapters.PRICES.read_text(encoding="utf-8"))
-    return adapters.hosting_load(report, prices, ctx.env, require_all=False)
+    return adapters.server_load(report, prices, ctx.env, require_all=False)
 
 
 def run_agent(ctx: RunContext) -> list[record.Record]:
@@ -420,10 +420,10 @@ def run_render(ctx: RunContext) -> list[record.Record]:
 
 
 def run_fs(ctx: RunContext) -> list[record.Record]:
-    log = ctx.dir / "fs-gate.log"
+    log = ctx.dir / "fs-check.log"
     call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["performance_timing"], "--nocapture",
-          "--test-threads=1"], log, ctx.cwd["performance_timing"], {"TILO_FS_PERF_GATE": "1"}, check=False)
-    return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
+          "--test-threads=1"], log, ctx.cwd["performance_timing"], {"TILO_FS_PERF_CHECK": "1"}, check=False)
+    return adapters.fs_check([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
 # The session and its MCP server, as tools/ci/perf-scheduled.sh builds them:
@@ -460,11 +460,11 @@ BROWSER_BUILD = ("bash", "-c",
 # The groups of tools/ci/perf-scheduled.sh that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
-    Group("hosting", "release", "none",
-          (("cargo", "build", "--locked", "--release", "-p", "tilo-relay", "--example", "relay_load"),),
-          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting,
-          {"keystroke_writes": ("crates/hosting/tilo-relay/examples/keystroke_writes.rs",
-                                ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
+    Group("server", "release", "none",
+          (("cargo", "build", "--locked", "--release", "-p", "tilo-server", "--example", "server_load"),),
+          {"server_load": "target/release/examples/server_load"}, {}, {}, run_server,
+          {"keystroke_writes": ("crates/server/tilo-server/examples/keystroke_writes.rs",
+                                ("cargo", "build", "--locked", "-p", "tilo-server", "--example",
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
     Group("agent", "release", "lavapipe", (RELEASE_SESSION,),
@@ -520,10 +520,10 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
 def side_group(group: Group, repo: Path) -> Group:
     """Keep A/B comparisons with refs before a benchmark moved usable."""
     if group.name == "fs" and not (repo / "crates/system/fs/tests/performance_timing.rs").is_file():
-        # The latency scenarios were the performance gate until it counted work.
+        # The latency scenarios were the performance check until it counted work.
         return dataclasses.replace(group, tests={"performance_timing": (
-            ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate", "--no-run"),
-            "performance_gate")})
+            ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_check", "--no-run"),
+            "performance_check")})
     return group
 
 
@@ -641,7 +641,7 @@ def run(options: argparse.Namespace, repo: Path, groups: list[Group]) -> int:
     if options.summary:
         with options.summary.open("a", encoding="utf-8") as stream:
             stream.write(text)
-    # A verdict is evidence, not a gate: only a run that could not measure fails.
+    # A verdict is evidence, not a check: only a run that could not measure fails.
     return 0 if analysis.paired and not failures else 1
 
 
@@ -657,9 +657,9 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--summary", type=Path, help="also append the summary here ($GITHUB_STEP_SUMMARY)")
     go.add_argument("--virtualization", default="none", choices=sorted(record.VIRTUALIZATIONS))
     go.add_argument("--runner", default="local", help="the runner class, as record.py env takes it")
-    go.add_argument("--hosting-minutes", type=int, default=3, help="measured minutes per hosting run")
-    go.add_argument("--hosting-relay-cpus", type=int, default=0,
-                    help="confine the relay to this many CPUs, as on a VM with that many vCPUs (0: all)")
+    go.add_argument("--server-minutes", type=int, default=3, help="measured minutes per server run")
+    go.add_argument("--server-cpus", type=int, default=0,
+                    help="confine the server to this many CPUs, as on a VM with that many vCPUs (0: all)")
     again = commands.add_parser("analyse", help="analyse the records of an earlier run again")
     again.add_argument("records", type=Path)
     args = parser.parse_args(argv)

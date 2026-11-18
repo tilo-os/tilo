@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
 
-    phase action_mode_and_availability_gate_mutation_and_callbacks;
+    phase action_mode_and_availability_check_mutation_and_callbacks;
     {
         fn button_test_id_is_stable_constructor_id() {
             let b = Button::new("id", "Save");
@@ -1304,13 +1304,8 @@ tilo_test_env::scenario! {
 
         fn a_compacted_faced_button_shows_one_face_and_keeps_it_under_new_words() {
             let mut text = TextRenderer::new();
-            let faces = || {
-                vec![
-                    ("Ada".to_owned(), "ada".to_owned()),
-                    ("Bo".to_owned(), "bo".to_owned()),
-                ]
-            };
-            let mut button = Button::new("mark", "2 changes by Ada and Bo").with_faces_of(faces());
+            let faces = || ["Ada".to_owned(), "Bo".to_owned()];
+            let mut button = Button::new("mark", "2 changes by Ada and Bo").with_faces(faces());
             let full = button.intrinsic_width(&mut text);
             button.set_compact_toolbar_presentation(true);
             let compact = button.intrinsic_width(&mut text);
@@ -1324,7 +1319,7 @@ tilo_test_env::scenario! {
             );
             // A change arrives while the row is short: the mark takes the new words for when the row
             // gives it width again, and stays one face where it stands now.
-            let fresh = Button::new("mark", "3 changes by Ada and Bo").with_faces_of(faces());
+            let fresh = Button::new("mark", "3 changes by Ada and Bo").with_faces(faces());
             assert!(
                 button.take_words(&fresh),
                 "the mark keeps its place and its face"

@@ -19,6 +19,8 @@ pub mod block_editor_gestures;
 pub mod by_app;
 #[path = "chain_list.rs"]
 pub mod chain_list;
+#[path = "chain_spread.rs"]
+pub mod chain_spread;
 #[path = "child_records.rs"]
 pub mod child_records;
 #[path = "child_resources.rs"]
@@ -73,8 +75,12 @@ pub mod model_contract;
 pub mod other_resources;
 #[path = "outbox.rs"]
 pub mod outbox;
+#[path = "owed.rs"]
+pub mod owed;
 #[path = "support/own_kinds.rs"]
 pub mod own_kinds;
+#[path = "people.rs"]
+pub mod people;
 #[path = "person_resources.rs"]
 pub mod person_resources;
 #[path = "private_windows.rs"]

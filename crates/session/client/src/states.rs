@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use crate::link::{PeerStatus, TransportPhase};
 

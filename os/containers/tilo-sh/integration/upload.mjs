@@ -22,7 +22,7 @@
 // Each keeps a picture of the hover and of the end, and reads what the page
 // said at the drop's place.
 //
-// usage: node upload.mjs SITE RELAY OUT_DIR FOLDER [--follow LINK]
+// usage: node upload.mjs SITE SERVER OUT_DIR FOLDER [--follow LINK]
 //
 // FOLDER holds the files dropped: `plan.pdf`, `photo.png`, `notes.md`,
 // `data.json`, `second.png`, `big.bin` (tens of megabytes) and a folder
@@ -33,20 +33,20 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, out, folderArg, ...rest] = process.argv.slice(2);
+const [site, server, out, folderArg, ...rest] = process.argv.slice(2);
 const option = name => {
   const at = rest.indexOf(name);
   return at < 0 ? null : rest[at + 1];
 };
-if (!site || !relay || !out || !folderArg) {
-  console.error('usage: node upload.mjs SITE RELAY OUT_DIR FOLDER [--follow LINK]');
+if (!site || !server || !out || !folderArg) {
+  console.error('usage: node upload.mjs SITE SERVER OUT_DIR FOLDER [--follow LINK]');
   process.exit(2);
 }
 const folder = resolve(folderArg);
 const follow = option('--follow');
 mkdirSync(out, {recursive: true});
 const file = name => join(folder, name);
-const report = {site, relay, folder, steps: {}};
+const report = {site, server, folder, steps: {}};
 
 const browser = await launch();
 const tab = await browser.tab();

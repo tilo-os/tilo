@@ -10,7 +10,7 @@ use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_service::Services;
 use tilo_session_core::shell::{Ask, LayoutReading};
@@ -118,8 +118,8 @@ pub(crate) struct Shell {
     /// any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
     /// The same record as it is kept: where its document lives on this device and how it reaches
-    /// the person's other devices ([`crate::shell_record`]).
-    record_kept: crate::shell_record::ShellRecord,
+    /// the person's other devices ([`crate::shell_document`]).
+    record_kept: crate::shell_document::ShellRecord,
     /// One part per output, in the order the outputs are known: each stands on its own display, and
     /// a display added (or taken away) has its part made (or dropped) to follow.
     parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
@@ -165,7 +165,7 @@ impl Shell {
         // The shell's own record is the person's, kept where every app's own record of theirs is
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_record::ShellRecord::open(state, &lists.person);
+        let record = crate::shell_document::ShellRecord::open(state, &lists.person);
         let shared = record.record();
         let mut shell = Self {
             lists,
@@ -284,7 +284,7 @@ impl Shell {
             Rc::new(move |key: &str| pictured(&handle, key)),
         );
         let part = Rc::new(RefCell::new(part));
-        compositor.add_host(part.clone());
+        compositor.add_surface(part.clone());
         // Each display's part is its own surface on the API: what the person, a script or an agent
         // drives the shell through, and what reads its labels.
         surfaces.add(Rc::clone(&part) as tilo_session_core::surfaces::Shared);
@@ -301,7 +301,7 @@ impl Shell {
     }
 
     /// Tell the displays what the screen says of its edges: the pointer at the top or bottom edge,
-    /// and a window standing where a bar or a dock there rides. What a bar or dock that shows
+    /// and a window where a bar or a dock there rides. What a bar or dock that shows
     /// only sometimes follows. Whether that moved.
     fn publish_edges(&self, compositor: &Compositor, displays: &displays::Displays) -> bool {
         let Some(outputs) = Self::outputs(compositor) else {
@@ -404,12 +404,12 @@ impl Shell {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
             let resources = services.resources();
-            let placed = tilolang_tilo::records_service::placed_records(
-                layout.places.iter().map(|place| place.record.as_str()),
+            let placed = tilolang_tilo::resource_service::placed_documents(
+                layout.places.iter().map(|place| place.resource.as_str()),
                 &resources,
             );
             let mut packages = std::collections::BTreeMap::new();
-            let app_of = tilolang_tilo::records_service::app_of;
+            let app_of = tilolang_tilo::resource_service::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
                 self.needed.iter().map(String::as_str).collect();
             apps.extend(placed.values().filter_map(|ty| app_of(ty)));
@@ -423,8 +423,8 @@ impl Shell {
             }
             // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
             // those run as their own app's code here, so their packages are loaded with it, as
-            // an app's own window loads them (`RecordService::service_record`).
-            let packages = tilo_surface_host::shell_part::readings::with_uses(packages, |app| {
+            // an app's own window loads them (`ResourceService::service_document`).
+            let packages = tilo_shell_surface::shell_part::readings::with_uses(packages, |app| {
                 services
                     .module(app)
                     .or_else(|| crate::styles::module_from_store(app))
@@ -453,7 +453,7 @@ impl Shell {
             }
         }
         for (id, ty) in wanted {
-            let app = tilolang_tilo::records_service::app_of(&ty);
+            let app = tilolang_tilo::resource_service::app_of(&ty);
             let shown = app.is_some_and(|app| {
                 self.link.package_apps().iter().any(|held| held == app) || rust_views.contains(&app)
             });
@@ -768,7 +768,7 @@ impl Shell {
     /// arranged is merged here, so the shell this session draws is the one they have everywhere.
     ///
     /// Cheap when nothing moved, which is what every pass runs. `None` on a session that takes part
-    /// in no plane of the person's.
+    /// in no peer network of the person's.
     pub(crate) fn sync_resource(&self, personal: &tilo_peer_state::PersonalSync) {
         let id = self.record_kept.id().to_owned();
         let app = self.app.as_str();
@@ -862,7 +862,7 @@ impl Shell {
         let taken = services.borrow_mut().share(&tilo_service::Share {
             app: &compiled.meta.app,
             wasm: &compiled.wasm,
-            records: &records,
+            documents: &records,
         });
         match taken {
             Ok(()) => surfaces.keep_records_of(&compiled.meta.app),
@@ -1150,7 +1150,10 @@ fn typed(value: Value, ty: Option<tilo_actions::params::ParamType>) -> Value {
 /// windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a second set
 /// of either. It still keeps the windows' model the wells place them by. Without a shell, the
 /// desktop is the shell and stands as itself.
-pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Rc<RefCell<dyn SurfaceHost>> {
+pub(crate) fn under(
+    shell: bool,
+    host: impl ShellSurface + 'static,
+) -> Rc<RefCell<dyn ShellSurface>> {
     if shell {
         Rc::new(RefCell::new(Aside(host)))
     } else {
@@ -1452,14 +1455,14 @@ impl tilo_session_core::surfaces::Published for ShellLists {
 /// A surface of the session's own the shell stands in for: the desktop's bar, which the shell's bar
 /// replaces, and the desktop's shell, whose strips the shell draws. It draws nothing and takes no
 /// pointer and no key: every chord the person presses is the shell's to answer or the session's
-/// own. What it holds still moves with what is asked of it ([`SurfaceHost::advance`]), so a
+/// own. What it holds still moves with what is asked of it ([`ShellSurface::advance`]), so a
 /// workspace switched or a window closed is the shell's to draw, and it still hears the outputs
 /// change, so what it holds follows the displays the shell stands on. Left alone it asks for no
 /// frame, as none of it shows.
 pub(crate) struct Aside<T>(pub(crate) T);
 
-impl<T: SurfaceHost> SurfaceHost for Aside<T> {
-    fn layers(&self) -> Vec<HostLayer> {
+impl<T: ShellSurface> ShellSurface for Aside<T> {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -1471,7 +1474,7 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         self.0.outputs_changed(outputs);
     }
 
@@ -1706,7 +1709,7 @@ impl crate::Session {
         self.shell.as_ref()?.record_setting(field)
     }
 
-    /// The collaboration plane this session takes part in, when it does: what a test hands it is
+    /// The peer network this session takes part in, when it does: what a test hands it is
     /// who is here.
     #[must_use]
     pub fn sync(&self) -> Option<&Rc<crate::sync::Client>> {
@@ -1948,8 +1951,8 @@ mod tests {
         outputs: u32,
     }
 
-    impl tilo_session_core::surface::SurfaceHost for Asked {
-        fn layers(&self) -> Vec<tilo_session_core::surface::HostLayer> {
+    impl tilo_session_core::surface::ShellSurface for Asked {
+        fn layers(&self) -> Vec<tilo_session_core::surface::SurfaceLayer> {
             Vec::new()
         }
 
@@ -1963,7 +1966,7 @@ mod tests {
 
         fn claim_key(
             &mut self,
-            _key: &tilo_session_core::surface::HostKey,
+            _key: &tilo_session_core::surface::SurfaceKey,
             _locked: bool,
             _inhibited: bool,
         ) -> tilo_session_core::surface::KeyClaim {
@@ -1971,11 +1974,11 @@ mod tests {
             tilo_session_core::surface::KeyClaim::Take
         }
 
-        fn key(&mut self, _key: &tilo_session_core::surface::HostKey) {
+        fn key(&mut self, _key: &tilo_session_core::surface::SurfaceKey) {
             self.keys = self.keys.saturating_add(1);
         }
 
-        fn outputs_changed(&mut self, _outputs: &[tilo_session_core::surface::HostedOutput]) {
+        fn outputs_changed(&mut self, _outputs: &[tilo_session_core::surface::SurfaceOutput]) {
             self.outputs = self.outputs.saturating_add(1);
         }
 
@@ -1989,8 +1992,8 @@ mod tests {
     /// pointer: what it hears still reaches it, so it follows the displays the shell is on.
     #[test]
     fn the_desktop_aside_prepares_draws_and_takes_nothing() {
-        use tilo_session_core::surface::SurfaceHost as _;
-        let key = tilo_session_core::surface::HostKey {
+        use tilo_session_core::surface::ShellSurface as _;
+        let key = tilo_session_core::surface::SurfaceKey {
             keycode: 0,
             at: std::time::Instant::now(),
             pressed: true,
@@ -2013,7 +2016,7 @@ mod tests {
         assert_eq!(aside.0.keys, 0, "no key reached the shell behind it");
         assert!(aside.layers().is_empty(), "it draws nothing");
         assert!(!aside.accepts_pointer(1.0, 1.0), "it takes no pointer");
-        aside.outputs_changed(&[tilo_session_core::surface::HostedOutput {
+        aside.outputs_changed(&[tilo_session_core::surface::SurfaceOutput {
             rect: (0, 0, 1280, 800),
             scale: 1.0,
         }]);

@@ -217,7 +217,7 @@ fn assert_material(session: &browser_continuity::sessions::SessionCookies, servi
 }
 
 #[test]
-fn official_electron_source_seals_and_imports_enrolled_receiver_custody() {
+fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
     let owner = guarded_owner();
     let home = PathBuf::from(std::env::var_os("HOME").expect("qualification HOME absent"));
     assert!(home.is_absolute() && home.file_name() == Some(std::ffi::OsStr::new("home")));
@@ -229,7 +229,7 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_custody() {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("tilo-receiver-"))
     );
-    let parent = std::fs::symlink_metadata(fixture).expect("fixture custody unavailable");
+    let parent = std::fs::symlink_metadata(fixture).expect("fixture ownership unavailable");
     assert!(
         parent.is_dir()
             && parent.uid() == 0
@@ -314,15 +314,15 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_custody() {
     .expect("canonical enrolled receiver account import refused");
     let store = accounts::AccountStore::load_in(&target);
     assert!(store.len() == 2);
-    let custodian = account_custody::Custodian::for_root(Some(target.clone()));
+    let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone()));
     for selected in &declaration.sessions {
-        let session = custodian
+        let session = credential_store
             .service_session(
                 &accounts::AccountId::from(selected.id.clone()),
                 identity,
                 &binding,
             )
-            .expect("actual readonly selected-session custody refused");
+            .expect("actual readonly selected-session ownership refused");
         assert_material(&session, selected.service);
     }
     let final_named = File::open(&target).unwrap().metadata().unwrap();
@@ -333,7 +333,7 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_custody() {
         "qualification report handle absent"
     );
     let mut report = unsafe { File::from_raw_fd(REPORT_FD) };
-    let public = serde_json::json!({"schema":1,"consumer_protocol":2,"source_format":"electron-44.4.5", "sealed_custody_verified":true,"authenticated":false,"sessions":declaration.sessions});
+    let public = serde_json::json!({"schema":1,"consumer_protocol":2,"source_format":"electron-44.4.5", "sealed_ownership_verified":true,"authenticated":false,"sessions":declaration.sessions});
     let encoded = serde_json::to_vec(&public).unwrap();
     assert!(encoded.len() <= 1024);
     report

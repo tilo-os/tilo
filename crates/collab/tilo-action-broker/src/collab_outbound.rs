@@ -19,7 +19,7 @@ use crate::route::CrdtRoute;
 
 /// The network operations the broker's outbound half needs. A trait
 /// rather than a bare `ShellNetwork` so the routing decision can be
-/// tested against a recording sink instead of standing up Iroh.
+/// tested against a recording sink instead of bringing up Iroh.
 pub trait PeerPublishSink: Send + Sync {
     fn app_document(
         &self,
@@ -36,7 +36,7 @@ pub trait PeerPublishSink: Send + Sync {
     /// history; only its members are asked, and only they may answer.
     fn scrollback_request(&self, cluster_id: &str, artifact: ArtifactId, before_seq: u64, max: u16);
 
-    /// Also show typed presence on the workspace's live plane, where browsers and
+    /// Also show typed presence on the workspace's live session, where browsers and
     /// agents draw it in `document_id` (empty when the app announced none).
     fn app_live_presence(
         &self,
@@ -238,7 +238,7 @@ impl PeerPublisher {
     }
 
     /// [`Self::ready`] for a payload that repeats (pointer rate) — same
-    /// gate, logged at `debug!` so it doesn't bury the warning that matters.
+    /// check, logged at `debug!` so it doesn't bury the warning that matters.
     fn ready_quietly(&self, route: &CrdtRoute, what: &str) -> Option<&Arc<dyn PeerPublishSink>> {
         self.ready_at(route, what, false)
     }
@@ -285,7 +285,7 @@ impl PeerPublisher {
 }
 
 /// A sink that keeps what it was asked to publish, so a test can ask
-/// "what route reached the wire" without standing up Iroh. Lives here
+/// "what route reached the wire" without bringing up Iroh. Lives here
 /// for assertions against the broker's single typed ingress.
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording {

@@ -581,7 +581,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
     env.set("XDG_CONFIG_HOME", &config);
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+    env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     let picture = root.join("avatar.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
     let mut app = App::launched(&["--setup"]).unwrap();
@@ -601,7 +601,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
         &["installer.device-name", "installer.next", "installer.back"],
     );
     story_accounts_and_storage(&mut app, &home);
-    env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
+    env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
     app.with_widget::<InstallerPreview, _>(|v| v.dirty = true)
         .unwrap();
     app.settle();
@@ -754,7 +754,7 @@ fn prepare_native_portable_story_source(
         .unwrap();
     let namespace = personal::preparation_namespace().unwrap();
     assert!(namespace.starts_with(home));
-    assert!(identity.custody_directory().starts_with(&namespace));
+    assert!(identity.ownership_directory().starts_with(&namespace));
     assert!(
         super::draft::DraftStore::for_session()
             .unwrap()
@@ -881,12 +881,12 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CACHE_HOME", root.join("cache"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+    env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     let donor = PreparedIdentity::create(
         &root.join("donor"),
         "Existing Ada",
         [25, 80, 120],
-        tilo_identity_host::provisioning::IdentityStorage::for_session(),
+        tilo_identity::provisioning::IdentityStorage::for_session(),
     )
     .unwrap();
     let backup = root.join("original.sealed");

@@ -18,6 +18,12 @@ import WebKit
 // of Chat as it arrives (each read is started by the page's own word that something changed,
 // never by a clock), and takes steps on standard input, one JSON object a line:
 //   {"do": "send", "kind": "conversation", "id": "c_chat", "name": "chat", "text": "…"}
+//   {"do": "add-device"}  {"do": "stop-pairing"}   the answer to what the page asks before it pairs
+//   {"do": "agents", "action": "read"}    the workspace's agents as its server says them; also
+//                                         "create-agent" and "set-agent-on-host" with "argument"
+//   {"do": "person", "provider": "tilo.models", "resource": "models", "action": "list"}
+//                                         one of the person's own providers; with "argument", and
+//                                         with "field" and "file" for what a protected field holds
 //   {"do": "window"}                      the web view goes into a window nobody can see
 //   {"do": "show", "id": "doc", "app": "so.tilo.word-processor", "record": "…"}   or "new": true
 //   {"do": "text", "id": "doc"}           what the live document reads as
@@ -49,7 +55,8 @@ final class Probe {
     private let engine: TiloEngine
     private let codeFile: String?
     private let routeFile: String?
-    private var known: [String] = []
+    /// The messages printed so far, each with the words it was printed with.
+    private var known: [String: String] = [:]
     private var signals = 0
     private var reads = 0
     private var looking = false
@@ -69,7 +76,7 @@ final class Probe {
     }
 
     func run() {
-        Task { for await standing in engine.standings() { stood(standing) } }
+        Task { for await state in engine.states() { stood(state) } }
         Task {
             for await _ in engine.changes() {
                 signals += 1
@@ -78,27 +85,30 @@ final class Probe {
         }
     }
 
-    private func stood(_ standing: TiloEngine.Standing) {
+    private func stood(_ state: TiloEngine.State) {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
-        switch standing {
+        switch state {
         case .away: break
         case .arriving(let step):
             // A page that stopped on its way in and is loaded once more says why it stopped.
-            var line: [String: JSON] = ["standing": "arriving", "step": .string(step), "s": seconds]
+            var line: [String: JSON] = ["state": "arriving", "step": .string(step), "s": seconds]
             if step == "load", let why = engine.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
             say(.object(line))
+        case .asking(let ask):
+            // The page asks before it pairs. Whoever drives the probe is its person: `add-device` goes on.
+            say(["state": "asking", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)), "s": seconds])
         case .pairing(let code):
             if let codeFile { keep(code, in: codeFile) }
-            say(["standing": "pairing", "s": seconds])
+            say(["state": "pairing", "s": seconds])
         case .open(let route):
             if let routeFile { keep(route, in: routeFile) }
             // The workspace by the start of its id: enough to tell two apart, and no address.
             let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
-            say(["standing": "open", "app": .string(route.split(separator: "/").last.map(String.init) ?? ""),
+            say(["state": "open", "app": .string(route.split(separator: "/").last.map(String.init) ?? ""),
                  "workspace": .string(workspace), "s": seconds])
             Task { await look(after: "getting in") }
-        case .refused(let why): say(["standing": "refused", "why": .string(why), "s": seconds])
-        case .failed(let why): say(["standing": "failed", "why": .string(why), "s": seconds])
+        case .refused(let why): say(["state": "refused", "why": .string(why), "s": seconds])
+        case .failed(let why): say(["state": "failed", "why": .string(why), "s": seconds])
         }
     }
 
@@ -107,7 +117,7 @@ final class Probe {
     /// what really started the read that found it. After every read it says so (`looked`): a
     /// check then knows the program has caught up with what was there.
     private func look(after why: String) async {
-        guard case .open = engine.standing else { return }
+        guard case .open = engine.state else { return }
         guard !looking else { again = why; return }
         looking = true
         defer { looking = false }
@@ -117,12 +127,16 @@ final class Probe {
             var printed = 0
             do {
                 reads += 1
-                for item in try await engine.chatLatest(50) where !known.contains(item) {
-                    guard let message = try await engine.chatMessage(item) else { continue }
-                    known.append(item)
+                let latest = try await engine.chatLatest(50)
+                for item in latest where known[item] == nil || latest.suffix(8).contains(item) {
+                    // An agent's answer is there before its words are: the newest are read again,
+                    // and printed again when their words changed.
+                    guard let message = try await engine.chatMessage(item), known[item] != message.text else { continue }
+                    known[item] = message.text
                     printed += 1
-                    say(["message": ["id": .string(String(item.split(separator: "/").last ?? "")), "channel": .string(message.channel),
-                                     "author": .string(String(message.author.prefix(6))), "text": .string(message.text),
+                    say(["message": ["id": .string(String(item.split(separator: "/").last ?? "")), "channel": .string(message.conversation),
+                                     "author": .string(String(message.author.id.prefix(6))),
+                                     "by": message.author.kind.map { .string($0.rawValue) } ?? .null, "text": .string(message.text),
                                      "at": .number(message.at.timeIntervalSince1970)],
                          "after": .string(reason), "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
                 }
@@ -172,6 +186,29 @@ final class Probe {
                 say(["text": read["output"]?["value"]?["content"]?["markdown"] ?? .null])
             } catch {
                 say(["error": .string("reading the document: \(error)")])
+            }
+        case "add-device", "stop-pairing":
+            say(["answered": .bool(await engine.answerPairing(goOn: what == "add-device"))])
+        case "agents":
+            // The workspace's agents as its server says them to this device: one ask of the engine.
+            guard let action = step["action"]?.string else { say(["error": "agents takes action"]); return }
+            do {
+                say(["agents": try await engine.askAgents(action, step["argument"]?.object ?? [:], agent: step["agent"]?.string)])
+            } catch {
+                say(["agents": false, "why": .string("\(error)")])
+            }
+        case "person":
+            // One of the person's own providers on their server: one ask of the engine. What a
+            // protected field holds is read from a file, and no answer says it.
+            guard let provider = step["provider"]?.string.flatMap(PersonProvider.init(rawValue:)),
+                  let resource = step["resource"]?.string, let action = step["action"]?.string
+            else { say(["error": "person takes provider, resource and action"]); return }
+            var protected: (field: String, value: Protected)?
+            if let field = step["field"]?.string, let file = step["file"]?.string { protected = (field, Protected(words(of: file))) }
+            do {
+                say(["person": try await engine.ask(provider, action, of: resource, step["argument"]?.object ?? [:], protected: protected)])
+            } catch {
+                say(["person": false, "why": .string("\(error)")])
             }
         case "click":
             guard let x = step["x"]?.number, let y = step["y"]?.number else { say(["error": "click takes x and y"]); return }

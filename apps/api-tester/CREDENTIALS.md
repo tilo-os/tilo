@@ -1,4 +1,4 @@
-# Authentication custody
+# Authentication ownership
 
 Bearer tokens, Basic credentials and API keys live in the app's host-provided
 `SecretStore`. Saved requests and action payloads contain only an opaque
@@ -6,13 +6,13 @@ Bearer tokens, Basic credentials and API keys live in the app's host-provided
 explicitly provisioned the corresponding secret. Sending with a missing, locked
 or invalid secret fails rather than silently sending without authentication.
 Native standalone launches select the platform store at their composition root;
-host-mounted components use `HostContext::secrets()`.
+app-process-mounted components use `ProcessContext::secrets()`.
 
 On opening an older document, migration seals the visible authentication values
-before replacing their current fields, including legacy JSON record blobs.
+before replacing their current fields, including legacy JSON resource blobs.
 Failed protected writes leave the document unchanged so unlocking and retrying
 can preserve the credentials. Plaintext auth values cannot be serialized into
-new collaborative records or actions, and debug output redacts auth and outgoing
+new collaborative resources or actions, and debug output redacts auth and outgoing
 requests.
 
 **This migration does not erase Automerge history.** Old changes, peer replicas,
@@ -34,10 +34,10 @@ permission or crypto errors leave credentials local and require recovery before
 saving. Multi-field migrations retain each acknowledged reference locally across
 retries and publish document edits only once every field is ready; retrying must
 not consume the same acknowledgement twice or start another write for it. A save
-action submitted while custody is pending can be retried after the pending write
+action submitted while ownership is pending can be retried after the pending write
 completes.
 
-Browser custody is not an authentication boundary between same-origin scripts:
+Browser ownership is not an authentication boundary between same-origin scripts:
 those scripts can use the origin's non-extractable keys. Requests are also
 subject to browser CORS and forbidden-header rules. A backend proxy must
 authenticate the caller and authorize the destination; neither a secret id nor

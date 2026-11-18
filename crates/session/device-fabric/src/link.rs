@@ -52,7 +52,7 @@ pub trait FabricLink {
     /// The devices with a live session right now.
     fn online_device_ids(&self) -> BTreeSet<DeviceId>;
     /// The person's other devices heard on this device's local network now,
-    /// so reachable without a relay.
+    /// so reachable without a server.
     fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
         BTreeSet::new()
     }

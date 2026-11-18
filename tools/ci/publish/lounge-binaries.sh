@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The Lounge image's programs: tilo-relay with the feature `agents` (the host's
+# The Lounge image's programs: tilo-server with the feature `agents` (the host's
 # agent session crate links every web app, since the host mounts the apps' own
 # components) and the Discord connector's outside worker, which the bridge
-# starts beside the relay. usage: lounge-binaries.sh OUT [PROFILE]
+# starts beside the server. usage: lounge-binaries.sh OUT [PROFILE]
 #
 # `release` is what the image carries. A check that only runs these two
-# programs (e2e, page-tour, the tilo.sh stack) builds `lounge-gate`
+# programs (e2e, page-tour, the tilo.sh stack) builds `lounge-check`
 # instead: the same code and the same opt-level without the whole-program link,
 # which is most of a run and buys nothing a check can see.
 set -euo pipefail
@@ -19,14 +19,14 @@ rm -rf "$out"
 mkdir -p "$out"
 case $profile in
   release)
-    # Fat LTO over one codegen unit got the relay's link killed for memory;
+    # Fat LTO over one codegen unit got the server's link killed for memory;
     # thin LTO keeps these server binaries fast at a fraction of the memory and
     # time.
     export CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 ;;
-  lounge-gate) ;;
-  *) die "unknown profile $profile: release or lounge-gate" ;;
+  lounge-check) ;;
+  *) die "unknown profile $profile: release or lounge-check" ;;
 esac
-bins=(tilo-relay discord-worker)
-cargo build --locked --profile "$profile" -p tilo-relay -p discord-worker \
-  --features tilo-relay/agents "${bins[@]/#/--bin=}"
+bins=(tilo-server discord-worker)
+cargo build --locked --profile "$profile" -p tilo-server -p discord-worker \
+  --features tilo-server/agents "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/$profile/$bin" "$out/"; done

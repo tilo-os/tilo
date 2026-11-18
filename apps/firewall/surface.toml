@@ -53,8 +53,8 @@ kind = "read"
 [[resources.types]]
 name = "Action"
 cases = [
-  { name = "Allow" },
-  { name = "Deny" },
+  { name = "allow" },
+  { name = "deny" },
 ]
 
 [[resources.types]]
@@ -94,10 +94,10 @@ fields = [
 [[resources.types]]
 name = "Target"
 cases = [
-  { name = "Default" },
-  { name = "Accept" },
-  { name = "Reject" },
-  { name = "Drop" },
+  { name = "default" },
+  { name = "accept" },
+  { name = "reject" },
+  { name = "drop" },
 ]
 
 [[resources.types]]

@@ -67,7 +67,7 @@ impl VolumeNamespace {
         if root.file.metadata()?.uid() != 0
             || fs_native::snapshot_lease::mount_id(&root.file)? != mount.id
         {
-            return Err(refusal("Volume filesystem root lacks protected custody"));
+            return Err(refusal("Volume filesystem root lacks protected ownership"));
         }
         let result = Self {
             root,

@@ -1451,6 +1451,12 @@ pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> 
 // lives as marks on it, so concurrent edits in one paragraph merge per character. Every block
 // constructor creates that object in the same change as the block itself.
 
+/// The Text object a block keeps its characters in, for a caller that reads it or places cursors
+/// in it. `None` when the block stores no text.
+pub fn block_text_obj(doc: &AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
+    canonical_text(doc, block_obj)
+}
+
 fn canonical_text(doc: &AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
     match doc.get(block_obj, BLOCK_TEXT) {
         Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),

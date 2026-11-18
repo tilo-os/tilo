@@ -440,7 +440,7 @@ fn filter_value(key: &str, label: &str, icon: Option<&str>, query: String, toggl
 ///
 /// A label is words the window shows, so `say` reads the message
 /// [`tilolang::messages::filter_key`] names in the reader's language, the filter's own words
-/// standing in when no catalogue of theirs holds it.
+/// in its place when no catalogue of theirs holds it.
 #[must_use]
 pub fn filters_of(
     ty: &TypeMeta,

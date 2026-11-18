@@ -24,7 +24,6 @@ fn open_agent(app: &mut TestApp<ChatShell>) {
                 keeper: None,
                 id: Some("assistant".to_owned()),
                 model: None,
-                colour: None,
                 mcp_client: None,
             }),
         )
@@ -46,7 +45,7 @@ fn a_conversation_with_an_agent_takes_its_first_message_before_it_is_listed() {
     open_agent(&mut window);
     let conversation = window.chat().active_channel.clone();
     let members =
-        crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(conversation.clone()))
+        crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(conversation.clone()))
             .expect("the window shows a direct conversation");
     assert!(
         members.contains(&ui::tilo_resource::MemberId::agent("assistant".to_owned())),

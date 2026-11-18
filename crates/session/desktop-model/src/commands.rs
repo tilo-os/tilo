@@ -23,8 +23,10 @@ mod admission;
 mod placement;
 pub mod policy;
 pub use admission::{check_owned, namespace_counter, resolve_open_app};
-pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
-pub use policy::{Refusal, Standing, may_command, may_create_workspace};
+pub use placement::{
+    Border, GroupSpan, OpenContext, OpenIntent, StripViewport, open_app_placement,
+};
+pub use policy::{Refusal, Requester, may_command, may_create_workspace};
 
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
@@ -38,8 +40,8 @@ pub mod layout {
     /// Open a resource, content or web address in a new window.
     pub const OPEN: &str = "open";
     pub const ARRANGE: &str = "arrange";
-    /// Take a run of layout changes back (`{"run": …}`), as every
-    /// history's `undo` does.
+    /// Take an invocation of layout changes back (`{"invocation": …}`), as
+    /// every history's `undo` does.
     pub const UNDO: &str = "undo";
 }
 
@@ -649,7 +651,7 @@ fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<T
 }
 fn reopen(workspace: &mut Workspace, strip: Option<u64>) -> Result<(), String> {
     workspace
-        .reopen_closed(strip.map(StripId))
+        .reopen_closed(strip.map(StripId), None)
         .map(|_| ())
         .ok_or_else(|| "there is no closed window to reopen".to_owned())
 }

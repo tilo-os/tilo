@@ -34,6 +34,11 @@ pub fn target() -> RemoteActionTarget {
 pub struct ProgramAnswer {
     /// What the agent reads: tilolang, each resource named by a short reference.
     pub text: String,
+    /// What a person reads: the same answer in their words — no reference literals, a day or a
+    /// moment in their formats, a field that is none left out. A reply with `{answer}` in it
+    /// takes these; the model keeps `text` for its next program.
+    #[serde(default)]
+    pub person_text: String,
     pub failed: bool,
     /// The task host's answer (`{state, output, detail, steps, changed, apps}`), when the
     /// program ran.

@@ -35,9 +35,11 @@ the person it acted for.
 An undo is the app's own action, so it is recorded like anything else and is itself undoable:
 
 - **An invocation**: `invocation.undo()` (`POST /v1/workspaces/{workspace}/invocations/{invocation}/undo`)
-  takes back exactly what the invocation's calls changed, in every record they changed. When someone else's
-  change stands on top of the invocation's in a record, it is refused and nothing is taken back, naming
-  whose change it is.
+  takes back exactly what the invocation's calls changed, in every resource they changed. Any key that may
+  undo there can take it back, from any connection. A call's id names it while the server remembers the
+  call; after the server restarts, the invocation's `step` from the listing names it. When someone else's
+  change stands on top of the invocation's, it is refused and nothing is taken back, naming whose change
+  it is.
 - **One step**: `undo` with `steps: 1` on the record, which takes back its last change, whoever made it.
 - **A person**: Undo in the record's history, which is those same actions.
 

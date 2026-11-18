@@ -11,7 +11,7 @@ containerfile="$repo/os/Containerfile"
 test -x "$script"
 test -f "$containerfile"
 
-# Assembly must keep the script and must not treat its runtime as an install gate.
+# Assembly must keep the script and must not treat its runtime as an install check.
 grep -Fq 'COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh' \
   "$containerfile"
 grep -Fq 'Optional AirPlay media acceptance runs against the assembled image separately.' \
@@ -250,7 +250,7 @@ set -e
 grep -Fq 'airplay plugin-discovery failed: openh264enc is not available' "$work/stderr"
 
 # Discovery succeeds for a stub; initialization failure or no decoded frames
-# must stop before either network participant starts.
+# must stop before either side starts on the network.
 write_gst_ok
 for codec in stub empty; do
   write_codec "$codec"

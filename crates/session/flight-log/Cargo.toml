@@ -1,0 +1,30 @@
+[package]
+name = "tilo-flight-log"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Session flight recorder that relays the compositor's output into a bounded private entry, and the report that summarises those entries."
+
+[[bin]]
+name = "tilo-flight-recorder"
+path = "src/bin/tilo-flight-recorder.rs"
+
+[[bin]]
+name = "tilo-session-report"
+path = "src/bin/tilo-session-report.rs"
+
+[dependencies]
+libc.workspace = true
+regex.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }

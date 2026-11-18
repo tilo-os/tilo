@@ -570,7 +570,7 @@ impl Table {
 }
 
 impl Table {
-    /// What the record holds: who sits where, with what, and the hand being played.
+    /// What the resource holds: who sits where, with what, and the hand being played.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

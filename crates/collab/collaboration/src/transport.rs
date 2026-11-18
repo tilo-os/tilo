@@ -1,4 +1,4 @@
-//! The one seam between [`CollaborationManager`](super::CollaborationManager)
+//! The one boundary between [`CollaborationManager`](super::CollaborationManager)
 //! and whatever carries its traffic.
 //!
 //! A transport is driven synchronously from the manager's owner thread by
@@ -207,7 +207,7 @@ pub trait CollabTransport: Send {
         let _ = wake;
     }
 
-    /// Crate-internal access to the concrete transport behind the seam, for
+    /// Crate-internal access to the concrete transport behind the boundary, for
     /// facilities that share the built-in worker's queues.
     #[doc(hidden)]
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -227,7 +227,7 @@ pub trait CollabTransport: Send {
 
     /// Whether this app is a surface of the desktop it speaks to, rather than
     /// an app of a document: what it offers lives with that desktop, so no
-    /// document history custodies its actions.
+    /// document history ownerships its actions.
     fn hosts_surface(&mut self) -> bool {
         false
     }
@@ -250,7 +250,7 @@ pub trait CollabTransport: Send {
         None
     }
 
-    /// Whether committed-document custody allows publishing a document
+    /// Whether committed-document ownership allows publishing a document
     /// mutation on `channel` (the primary route when `None` is not yet
     /// acknowledged). Transports without committed reads always allow it.
     fn document_publishable(&self, channel: Option<&str>) -> bool {
@@ -348,7 +348,7 @@ pub trait CollabTransport: Send {
     }
 
     /// Join `route`, whose record holds `resource_type`, through the existing
-    /// worker when committed custody needs it, returning the original
+    /// worker when committed ownership needs it, returning the original
     /// committed history once it is available.
     fn prepare_committed_document(
         &mut self,

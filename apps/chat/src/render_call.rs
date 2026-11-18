@@ -263,7 +263,8 @@ impl ChatApp {
                 .snapshot
                 .speaking
                 .iter()
-                .any(|person| self.is_me(&MemberId::person(person.as_str()))),
+                .filter_map(|person| MemberId::parsed_person(person))
+                .any(|person| self.is_me(&person)),
             muted: self.call.muted,
             deafened: self.call.deafened,
             audio_only: self.call.audio_only,
@@ -379,7 +380,7 @@ impl ChatApp {
     /// colour as a ring, and their speaking ring while the call hears them.
     pub(crate) fn paint_call_face(&self, ctx: &mut PaintCtx<'_>, rect: Rect, user: &MemberId) {
         let name = self.user_name(user);
-        ui::widget::AvatarFace::new(&name, user.id())
+        ui::widget::AvatarFace::member(&name, user)
             .presence(self.identity_colour(user))
             .presence_ring()
             .speaking(self.speaking.level(user.id(), ui::motion::frame_now()))
@@ -1997,7 +1998,7 @@ impl ChatApp {
 
 /// The local time of `ts` as `HH:MM`.
 fn clock_label(ts: i64) -> String {
-    model::clock(ts + i64::from(ui::clock::local_now().offset().local_minus_utc()))
+    model::clock(ts + i64::from(ui::clock::local_now().offset().seconds()))
 }
 
 /// Greedy-pack buttons `widths` wide into rows that each fit `max_row_w`.

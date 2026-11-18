@@ -2,7 +2,7 @@
 //! the invoker's signal alongside the UI thread's own, and which jobs stop
 //! before they are polled ([`Running::prepare`](super::Running::prepare)).
 
-use super::{Job, JobCustody, JobEvent, Next, Progress, failure, track_in, track_job};
+use super::{Job, JobEvent, JobOwnership, Next, Progress, failure, track_in, track_job};
 use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,16 +57,16 @@ pub(super) struct JobCore {
     pub(super) task: Option<ui_core::rt::JoinHandle<()>>,
     pub(super) source: Option<super::Source>,
     sequence: u64,
-    pub(super) custody: Option<ResourceInvocationScope>,
+    pub(super) ownership: Option<ResourceInvocationScope>,
 }
 
 impl JobCore {
     /// The core of the job `event`s arrives on, reporting through
-    /// `signals`, under `custody`.
+    /// `signals`, under `ownership`.
     pub(super) fn of(
         events: Receiver<JobEvent>,
         signals: Signals,
-        custody: Option<ResourceInvocationScope>,
+        ownership: Option<ResourceInvocationScope>,
     ) -> Self {
         Self {
             events,
@@ -74,7 +74,7 @@ impl JobCore {
             task: None,
             source: None,
             sequence: 0,
-            custody,
+            ownership,
         }
     }
 
@@ -93,9 +93,9 @@ impl JobCore {
     /// The next thing the job reports, if it reported anything.
     pub(super) fn next(&mut self) -> Option<Next> {
         if let Some(error) = self
-            .custody
+            .ownership
             .as_ref()
-            .and_then(|custody| custody.check().err())
+            .and_then(|ownership| ownership.check().err())
         {
             return Some(Next::Failed(failure(error)));
         }
@@ -113,9 +113,9 @@ impl JobCore {
             }
         };
         if let Some(error) = self
-            .custody
+            .ownership
             .as_ref()
-            .and_then(|custody| custody.check().err())
+            .and_then(|ownership| ownership.check().err())
         {
             return Some(Next::Failed(failure(error)));
         }
@@ -145,7 +145,7 @@ pub(super) struct Tracking<'a> {
     pub(super) started: &'a mut Option<Job>,
     pub(super) wake: &'a WakeHandle,
     pub(super) worker: Option<&'a ResourceEffectScope>,
-    pub(super) custody: Option<&'a ResourceInvocationScope>,
+    pub(super) ownership: Option<&'a ResourceInvocationScope>,
     pub(super) scope: Option<&'a std::rc::Weak<super::super::surface::SurfaceScope>>,
     /// The signal the invocation's cancellation sets, for a job whose answer
     /// outlives the caller's own wait
@@ -163,7 +163,7 @@ pub(super) fn track_for(tracking: &mut Tracking<'_>, then: Option<Box<dyn Any>>)
     let progress = track_job(
         &mut *tracking.started,
         tracking.wake,
-        JobCustody::of(tracking.worker, tracking.custody),
+        JobOwnership::of(tracking.worker, tracking.ownership),
         then,
         tracking.owner,
         tracking.cancel_by.cloned(),

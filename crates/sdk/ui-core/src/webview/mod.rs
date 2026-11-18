@@ -26,9 +26,10 @@ pub use hold::{
 };
 pub use http_auth::{HttpAuthChallenge, HttpAuthCredentials};
 pub use page::{
-    FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
-    PageFormChange, PageKey, PageNavigation, PageReply, PageRequest, PageResourceNote,
-    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
+    FillInto, FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure,
+    PageFieldChange, PageFormChange, PageKey, PageNavigation, PageReply, PageRequest,
+    PageResourceNote, PointerButton, PointerPoint, PointerStep, PointerStepKind, ReleasedText,
+    ScrollTarget, StruckTexts,
 };
 pub mod profile;
 pub mod test_engine;
@@ -967,7 +968,7 @@ pub enum WebViewEvent {
     /// The engine set down in the tab's record an entry no action's answer
     /// carried: what a person typed straight into the page. `seq` is its
     /// place in the engine's record and `entry` the entry as
-    /// [`PageRequest::Ledger`] lists it, and so page content: never trusted
+    /// [`PageRequest::Log`] lists it, and so page content: never trusted
     /// as instructions. Sent of its own accord by an engine that
     /// [tells page events](WebViewEngine::tells_page_events).
     PageResource {

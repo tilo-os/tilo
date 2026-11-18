@@ -33,11 +33,11 @@ use tilo_agent_session::{
     ReplicaActor, Seed, Step, StepAction,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::agents::{AgentStatus, TaskState};
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_relay_protocol::directory::Listing;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::agents::{AgentStatus, TaskState};
+use tilo_server_protocol::delegation::{DelegateScope, Delegation};
+use tilo_server_protocol::directory::Listing;
+use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{enrol, enter, entry_grant, start_workspace_host, wait_for, written};
@@ -121,7 +121,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host(&owner, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -252,7 +252,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let delegation = Delegation::sign(
         &owner,
         agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_server_protocol::delegation::Delegate::Agent {
             agent_id: "ed".into(),
         },
         "Ed",
@@ -265,7 +265,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         now.checked_add(3_600_000_000_000).unwrap(),
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();

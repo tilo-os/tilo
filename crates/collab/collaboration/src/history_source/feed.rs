@@ -1,6 +1,6 @@
 //! What changed in a workspace's records, as a host's replica of them took it in: the feed a
 //! watch of the whole workspace reads ([`tilo_actions::remote::ChangeFeed`]), one for every host
-//! that holds a workspace's records (a desktop, a relay's workspace).
+//! that holds a workspace's records (a desktop, a server's workspace).
 //!
 //! The replica holds every record the workspace sent the host, whoever wrote it: a page's edits,
 //! another device's, the host's own runs. Each time the feed is asked, each record whose revision

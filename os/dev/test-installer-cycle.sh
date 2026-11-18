@@ -150,7 +150,7 @@ scrub_artifact_secrets() {
 }
 # Prove the upload boundary itself rejects both the backend marker and the
 # recovery-key shape before any VM work begins. The canary and redaction notice
-# are removed after the expected rejection; a broken scrubber aborts the gate.
+# are removed after the expected rejection; a broken scrubber aborts the check.
 printf '%s\n%s\n' '::tilo-recovery-key::artifact-canary' \
   'bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk' \
   > "$out/.artifact-secret-canary.txt"

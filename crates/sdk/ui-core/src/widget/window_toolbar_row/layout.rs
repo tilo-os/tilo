@@ -818,7 +818,7 @@ impl Parts {
             .all(|rect| rect.x0 >= lead)
     }
 
-    /// Whether the parts could not keep the width they need across `row`: a button standing on
+    /// Whether the parts could not keep the width they need across `row`: a button on
     /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
     /// shorter forms cut short in the one it shows. Where the bar itself took that width (its
     /// strip's "+" ahead of the row), it asks before it keeps it.

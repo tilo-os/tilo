@@ -1,5 +1,5 @@
 //! Signed services whose successful exit proves their private PID namespace has
-//! finished. Ordinary bwrap leader exit is deliberately not this witness.
+//! finished. Ordinary bwrap leader exit is deliberately not this proof.
 use crate::{
     managed::EnrolledProcessObserver,
     run::{RunError, RunOptions},
@@ -44,8 +44,8 @@ const WORKER_NAMESPACES: &[&str] = &[
 
 /// What one signed service's credential splice names, where its own protocol differs from every
 /// other's.
-pub(crate) struct CustodySplice {
-    /// The flag the signed shim reads its custody token from.
+pub(crate) struct OwnershipSplice {
+    /// The flag the signed shim reads its ownership token from.
     pub token_flag: &'static str,
     /// The descriptor carrying that token.
     pub token_fd: RawFd,
@@ -56,7 +56,7 @@ pub(crate) struct CustodySplice {
     /// Flags that must not already be in the argv: their presence means the plan this splice was
     /// written for is not the plan it got.
     pub forbidden: &'static [&'static str],
-    /// Refusal when [`CustodySplice::forbidden`] matches.
+    /// Refusal when [`OwnershipSplice::forbidden`] matches.
     pub changed: &'static str,
     /// Refusal when the launcher's `--unshare-all` is missing.
     pub no_namespaces: &'static str,
@@ -65,7 +65,7 @@ pub(crate) struct CustodySplice {
 }
 
 /// The credential splice every signed service performs on a launch's argv.
-pub(crate) fn splice_custody(argv: &mut Vec<String>, spec: &CustodySplice) -> io::Result<()> {
+pub(crate) fn splice_ownership(argv: &mut Vec<String>, spec: &OwnershipSplice) -> io::Result<()> {
     if argv.iter().any(|v| spec.forbidden.contains(&v.as_str())) {
         return Err(refused(spec.changed));
     }
@@ -98,7 +98,7 @@ mod delayed_filter;
 pub(crate) mod retained_io;
 mod retained_worker;
 mod workspace;
-pub use retained_worker::{RetainedWorkerConnector, RetainedWorkerWitness};
+pub use retained_worker::{RetainedWorkerConnector, RetainedWorkerProof};
 pub mod target_projection;
 pub use target_projection::{
     AdmittedTargetFuse, TargetFuseReady, TargetProjectionAdmission, TargetProjectionAuthority,
@@ -124,17 +124,17 @@ pub const RETAINED_HOME_IO_WORKER_ARGUMENT: &str = "--tilo-retained-home-io";
 pub use capture::original::verify_original_read_claim;
 pub use capture::{
     CaptureAdmission, CaptureOutputAdmission, INVENTORY_SCRATCH_BYTES_ENV, INVENTORY_SCRATCH_PATH,
-    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputCustody,
-    InstalledCopyOutputFiles, ORIGINAL_FLATPAK_INVENTORY_PATH, ORIGINAL_FLATPAK_SOURCE_PATH,
+    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputFiles,
+    InstalledCopyOutputOwnership, ORIGINAL_FLATPAK_INVENTORY_PATH, ORIGINAL_FLATPAK_SOURCE_PATH,
     OUTPUT_PATH as CAPTURE_OUTPUT_PATH, OriginalFlatpakBinding, OriginalFlatpakProjection,
     OriginalMountedBinding, OriginalMountedIdentity, OriginalMountedInput, OriginalOutputAdmission,
-    OriginalOutputBinding, OriginalOutputCustody, OriginalOutputFiles,
+    OriginalOutputBinding, OriginalOutputFiles, OriginalOutputOwnership,
     SOURCE_PATH as CAPTURE_SOURCE_PATH, VerifiedOriginalMountedRoots,
     original_mounted_table_sha256, run_capture, run_capture_connected,
     run_capture_connected_observed, verify_original_mounted_roots,
 };
 
-/// Original host admission/custody, checked before spawn and while running.
+/// Original host admission/ownership, checked before spawn and while running.
 pub trait ServiceAuthority: Send + Sync {
     /// Temporary protected network decision of the original native host.
     fn network_hosts(&self) -> io::Result<Vec<String>> {
@@ -311,7 +311,7 @@ pub fn run_retained_io_connected(
     SupervisedRun { result, shutdown }
 }
 
-/// Run the fixed signed target-FUSE worker through canonical native custody.
+/// Run the fixed signed target-FUSE worker through canonical native ownership.
 pub fn run_target_projection_connected(
     launch: ServiceLaunch,
     admission: TargetProjectionAdmission,
@@ -404,7 +404,7 @@ fn configure_service_options(
         || options.render_node.is_some()
     {
         return Err(RunError::InvalidServiceLaunch(
-            "service custody options changed".into(),
+            "service ownership options changed".into(),
         ));
     }
     options.bwrap_bin = Some("/usr/bin/bwrap".into());
@@ -476,7 +476,7 @@ fn check_service_exit_authority(owner: &NamespaceOwner) -> Result<(), RunError> 
     if let Some(original) = owner
         .capture
         .as_ref()
-        .and_then(CaptureAdmission::original_custody)
+        .and_then(CaptureAdmission::original_ownership)
     {
         original.check()?;
         if !original.network_hosts()?.is_empty() {
@@ -506,9 +506,7 @@ fn validate_service_manifest(
             || manifest.kind != "service"
             || !manifest.required_runtimes.is_empty()
             || !manifest.sandbox.portals.is_empty()
-            || !manifest.sandbox.services.is_empty()
-            || !manifest.sandbox.fs.read.is_empty()
-            || !manifest.sandbox.fs.write.is_empty())
+            || !manifest.sandbox.services.is_empty())
     {
         return Err(RunError::InvalidServiceLaunch(
             "Retained I/O manifest authority differs".into(),
@@ -632,7 +630,7 @@ fn original_read_authority(
     authority: Arc<dyn ServiceAuthority>,
     capture: Option<&CaptureAdmission>,
 ) -> Arc<dyn ServiceAuthority> {
-    match capture.and_then(CaptureAdmission::original_custody) {
+    match capture.and_then(CaptureAdmission::original_ownership) {
         Some(original) => Arc::new(OriginalReadAuthority {
             outer: authority,
             original,
@@ -678,7 +676,7 @@ pub struct ServiceEndpoint {
 }
 /// Observed kernel facts for durable recovery; this DTO itself grants no authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ServiceCustody {
+pub struct ServiceOwnership {
     pub init_pid: u32,
     pub start_ticks: u64,
     pub namespace_dev: u64,
@@ -693,7 +691,7 @@ impl ServiceEndpoint {
         exited(&self.init)
     }
     /// Observe the exact live namespace before issuing any provider command.
-    pub fn custody(&self) -> io::Result<ServiceCustody> {
+    pub fn ownership(&self) -> io::Result<ServiceOwnership> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
             return Err(io::ErrorKind::Interrupted.into());
@@ -711,7 +709,7 @@ impl ServiceEndpoint {
         if self.cancellation.is_cancelled() || exited(&self.init)? {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        Ok(ServiceCustody {
+        Ok(ServiceOwnership {
             init_pid: self.init_pid,
             start_ticks,
             namespace_dev: held.dev(),
@@ -933,7 +931,7 @@ impl NamespaceOwner {
         if let Some(connected) = ordinary_connected {
             self.before_connection()?;
             let mount_namespace = File::open(format!("/proc/{init_pid}/ns/mnt"))?;
-            let witness = crate::ordinary_namespace::NamespaceWitness::observed(
+            let proof = crate::ordinary_namespace::NamespaceProof::observed(
                 owned
                     .init
                     .as_ref()
@@ -945,7 +943,7 @@ impl NamespaceOwner {
                 owned.child.id(),
             );
             // The fixed bounded handoff sends held descriptors to the protected root owner.
-            connected.send(witness, &self.cancellation)?;
+            connected.send(proof, &self.cancellation)?;
             self.before_connection()?;
         }
         if let Some(target) = &self.target_projection {
@@ -969,7 +967,7 @@ impl NamespaceOwner {
             *self
                 .mount_namespace
                 .lock()
-                .map_err(|_| io::Error::other("Target mount custody poisoned"))? =
+                .map_err(|_| io::Error::other("Target mount ownership poisoned"))? =
                 Some(endpoint.mount_namespace_clone()?);
             let callback = self
                 .target_connected
@@ -1176,7 +1174,7 @@ pub(crate) fn verify_init(pid: i32, parent: u32) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "private namespace witness differs: pid={pid} parent={parent} actual_parent={actual_parent:?} nspid={nspid:?}"
+                "private namespace proof differs: pid={pid} parent={parent} actual_parent={actual_parent:?} nspid={nspid:?}"
             ),
         ));
     }
@@ -1244,14 +1242,14 @@ impl Drop for ServiceChild {
                         break;
                     }
                     Err(error) if !reported => {
-                        tracing::error!(%error, "owned namespace exit observation failed; retaining custody");
+                        tracing::error!(%error, "owned namespace exit observation failed; retaining ownership");
                         reported = true;
                     }
                     Ok(false) | Err(_) => {}
                 }
                 if !reported && started.elapsed() >= Duration::from_secs(3) {
                     tracing::error!(
-                        "owned namespace cleanup timed out; retaining custody until kernel exit"
+                        "owned namespace cleanup timed out; retaining ownership until kernel exit"
                     );
                     reported = true;
                 }
@@ -1374,7 +1372,7 @@ mod tests {
             assert_eq!(
                 unsafe { libc::fcntl(init.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
                 libc::FD_CLOEXEC,
-                "root-side init custody remains owned after incomplete handoff"
+                "root-side init ownership remains owned after incomplete handoff"
             );
         }
 
@@ -1772,7 +1770,7 @@ mod tests {
             assert!(
                 retained_worker::same_worker_peer(
                     &stream,
-                    &endpoint.custody().unwrap(),
+                    &endpoint.ownership().unwrap(),
                     rustix::process::geteuid().as_raw(),
                     rustix::process::getegid().as_raw()
                 )
@@ -1804,7 +1802,7 @@ mod tests {
             );
         }
 
-        phase another_lease_cannot_reuse_a_namespace_checkpoint_witness;
+        phase another_lease_cannot_reuse_a_namespace_checkpoint_proof;
         {
             let key = ServiceLeaseKey::default();
             let exit = QuiescentExit {

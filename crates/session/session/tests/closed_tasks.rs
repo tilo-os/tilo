@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::workspaces::Role;
 
 /// The app whose record the step changes.
 const APP: &str = "so.tilo.tasks";

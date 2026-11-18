@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Filesystem policy probes must fail closed without pinning the async runtime.
-# The network gate follows NetworkManager over D-Bus through tilo-nm, so the
+# The network check follows NetworkManager over D-Bus through tilo-nm, so the
 # monitor forks no subprocess at all, and an unreadable state denies.
 set -euo pipefail
 

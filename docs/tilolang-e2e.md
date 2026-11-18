@@ -10,7 +10,7 @@ scripts/headless-examples/tilolang-e2e.py --no-build # reuses target/nested-sess
 
 Without `--no-build` it builds the nested session through
 `dist/dev/nested-session.sh`
-and the `tilolang` tool, `tilo-collab-probe` and tilolang-host's `components`
+and the `tilolang` tool, `tilo-collab-probe` and tilolang-process's `components`
 example (which names the test ids of an app's components) with cargo.
 `--no-build` needs `target/nested-session`, `target/debug/tilolang`,
 `target/debug/tilo-collab-probe` and `target/debug/examples/components` to
@@ -33,12 +33,12 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   category (`actions list`, provider `applications`).
 - **launch**: each opens from the applications provider, and the compositor
   admits its window under its own app id, which a sandboxed client gets only
-  through verified launch custody. Each window presents a frame.
+  through verified launch ownership. Each window presents a frame.
 - **processes**: each app is its own `tilolang-app` process from the tilolang
   runtime bundle, in its own user, mount and pid namespaces. No process loads
   a Vulkan driver except lavapipe.
 - **hosts**: each app's window is its window alone (`TILO_TILOLANG_HOSTED`): its
-  instance runs in a tilolang host, and the apps of one publisher in one
+  instance runs in a tilolang process, and the apps of one publisher in one
   workspace share one host process, which was handed every window's instance.
 - **actions**: each app publishes its actions; a tilolang app's are its
   host's instance's, with the history verbs, `read` and "Show this window"
@@ -58,7 +58,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   the workspace's records with their ids and kinds; a read of the notebook lists the
   note "New note" made, by the id a read takes.
 - **idle**: each app left untouched for 10 s, native Notes among them, and the
-  tilolang host that runs the apps' instances: every thread of them sleeps, and
+  tilolang process that runs the apps' instances: every thread of them sleeps, and
   the check fails on one context switch, naming the threads that woke. Nothing
   animates here (each app's workspace is one this device holds) and every
   window's frame count (`windows` reports `frames`, what its client committed)
@@ -80,9 +80,9 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   probe in place of Today (whose surface declares that it reads Notes' kinds)
   and Tasks (which declares no read). The probe runs as each app's own launched
   process (its entrypoint names the probe's runtime, not tilolang's), with that
-  app's launch custody. Tasks' join is refused as it declares no read; Today's
+  app's launch ownership. Tasks' join is refused as it declares no read; Today's
   is refused before its declared read is read, because this session's broker
-  keeps what it admits and a tilolang host holds an app's route. The check
+  keeps what it admits and a tilolang process holds an app's route. The check
   reports that refusal.
 
 Each app opens once in the session's own workspace; the checks above open it there.

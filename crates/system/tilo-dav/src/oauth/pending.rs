@@ -1,9 +1,9 @@
-//! Discovery before an account has been committed to custody.
+//! Discovery before an account has been committed to ownership.
 
 #[cfg(test)]
 mod tests;
 
-use account_custody::{Authorization, Custodian, TokenSet};
+use account_credentials::{Authorization, CredentialStore, TokenSet};
 use zeroize::Zeroize;
 
 use super::{Binding, CALENDAR_SCOPE, GOOGLE_SERVER, options};
@@ -21,7 +21,7 @@ impl PendingGoogleCalendar {
     /// Google's calendar scope.
     pub fn complete(authorization: Authorization) -> Result<Self, String> {
         let url = Url::parse(authorization.url()).map_err(|_| "invalid authorization URL")?;
-        let expected = account_custody::OAuthIssuer::Google.endpoints();
+        let expected = account_credentials::OAuthIssuer::Google.endpoints();
         let expected = Url::parse(&expected.authorization_endpoint)
             .map_err(|_| "invalid Google authorization URL")?;
         if url.origin() != expected.origin()
@@ -35,7 +35,8 @@ impl PendingGoogleCalendar {
         {
             return Err("Google calendar authorization is required".into());
         }
-        let tokens = Custodian::finish_sign_in(authorization).map_err(|error| error.to_string())?;
+        let tokens =
+            CredentialStore::finish_sign_in(authorization).map_err(|error| error.to_string())?;
         let pending = Self { tokens };
         if pending.tokens.scope.as_deref().is_some_and(|scopes| {
             !scopes
@@ -95,15 +96,18 @@ impl PendingGoogleCalendar {
         })
     }
 
-    pub fn resolve_storage(&self, custody: &Custodian) -> Result<serde_json::Value, String> {
-        custody
-            .resolve_storage(account_custody::OAuthCloud::GoogleDrive, &self.tokens)
+    pub fn resolve_storage(
+        &self,
+        ownership: &CredentialStore,
+    ) -> Result<serde_json::Value, String> {
+        ownership
+            .resolve_storage(account_credentials::OAuthCloud::GoogleDrive, &self.tokens)
             .map_err(|error| error.to_string())
     }
 
     /// Resolve the Gmail identity without exposing the combined consent grant.
-    pub fn mail_identity(&self, custody: &Custodian) -> Result<String, String> {
-        custody
+    pub fn mail_identity(&self, ownership: &CredentialStore) -> Result<String, String> {
+        ownership
             .gmail_identity(&self.tokens)
             .map_err(|error| error.to_string())
     }
@@ -111,7 +115,7 @@ impl PendingGoogleCalendar {
     /// Stage this grant in the selected private vault without exposing its bytes. The
     /// caller saves explicitly, after calendar selection is confirmed.
     pub fn stage(&self, id: &accounts::AccountId, vault: &mut accounts::SecretVault) {
-        let mut secret = account_custody::oauth_secret(&self.tokens);
+        let mut secret = account_credentials::oauth_secret(&self.tokens);
         vault.put(id, &secret);
         secret.password.zeroize();
         if let Some(token) = secret.token.as_mut() {
@@ -145,8 +149,8 @@ pub struct PendingNextcloudCalendar {
 impl PendingNextcloudCalendar {
     /// Validate the deployment URL before accepting credentials for discovery.
     pub fn new(server: &str, username: &str, password: &str) -> Result<Self, String> {
-        let mut base =
-            account_custody::nextcloud::server_url(server).map_err(|error| error.to_string())?;
+        let mut base = account_credentials::nextcloud::server_url(server)
+            .map_err(|error| error.to_string())?;
         discovery::safe_url(&base, server)?;
         base.set_path(&format!(
             "{}/remote.php/dav/",

@@ -19,7 +19,7 @@
 
 use ui::tilo_resource::{custom_emoji_name, valid_custom_emoji_name};
 
-use crate::record::{Guild, MappedKind};
+use crate::guild::{Guild, MappedKind};
 use crate::tilo::Reaction;
 
 /// Variation selector 16, asking for an emoji's colourful presentation.
@@ -87,7 +87,7 @@ pub fn discord_name(name: &str) -> String {
     named
 }
 
-/// The server's emoji standing for the workspace emoji `name`, as its name
+/// The server's emoji for the workspace emoji `name`, as its name
 /// in Discord and its id: the one the bridge uploaded for it, else the
 /// server's own of that name.
 #[must_use]
@@ -221,8 +221,8 @@ mod tests {
         phase an_emoji_the_bridge_uploaded_stands_for_its_workspace_emoji;
         {
             let mut guild = guild_with(&[("party", "7")]);
-            guild.map.push(crate::record::Mapping {
-                key: crate::record::map_key(MappedKind::Emoji, "tilo_wave"),
+            guild.map.push(crate::guild::Mapping {
+                key: crate::guild::map_key(MappedKind::Emoji, "tilo_wave"),
                 kind: MappedKind::Emoji,
                 tilo: "tilo_wave".into(),
                 discord: "91".into(),

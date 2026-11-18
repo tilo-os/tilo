@@ -27,7 +27,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The dates a step's computed arguments (`{{= workday(…) }}`) work with.
-chrono.workspace = true
+jiff.workspace = true
 # The patterns a step's argument takes a part of a value out with
 # (`{{…|match:INV-\d+}}`): matched in linear time, compiled size bounded.
 regex.workspace = true
@@ -89,15 +89,15 @@ weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
 # The member's client: the certified relay session (iroh for a host-side agent) with its live
-# plane, the same code a browser page runs, and the board of who is here and the agent's own word
+# live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.
 tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: the host an agent's session dials, and the signer it holds.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# A device on the plane is named by its endpoint id.
+tilo-server-client = { path = "../../server/tilo-server-client" }
+# A device on the live session is named by its endpoint id.
 iroh.workspace = true
 iroh-base.workspace = true
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 collab-types = { path = "../../collab/collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same
@@ -190,15 +190,15 @@ tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
-tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
+tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
 # The API server, driven through its HTTP routes against the relay.
-tilo-api = { path = "../../hosting/tilo-api" }
+tilo-api = { path = "../../server/tilo-api" }
 # A device's endpoint on this machine's loopback relay, as a person's device dials.
-test-relay = { path = "../../dev/test-relay" }
+test-server = { path = "../../dev/test-server" }
 test-http = { path = "../../dev/test-http" }
 # Opens an invitation's link as a page does, from the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
-# `tilolang repl`, driven in process against a workspace the relay hosts.
+# `tilolang repl`, driven in process against a workspace the server hosts.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
@@ -218,7 +218,7 @@ tokio = { workspace = true, features = ["full"] }
 tilo-reference = { path = "../../collab/reference" }
 # The desktop's search over a workspace's record index, as a person finds a record.
 tilo-desktop-search = { path = "../../session/desktop-search" }
-# The subscriber the `api-on-relay` example traces with.
+# The subscriber the `api-on-server` example traces with.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]

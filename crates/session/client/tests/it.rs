@@ -14,7 +14,7 @@
 )]
 
 // A site admits its members' records through an Automerge worker: this binary
-// is that worker, as the relay host's own is.
+// is that worker, as the server host's own is.
 tilo_automerge_isolate::test_worker!();
 
 #[path = "support/native.rs"]
@@ -28,6 +28,8 @@ mod support;
 
 #[path = "agent_login.rs"]
 mod agent_login;
+#[path = "barrier_of_workspace.rs"]
+mod barrier_of_workspace;
 #[path = "browser_root.rs"]
 mod browser_root;
 #[path = "carriers.rs"]
@@ -72,6 +74,8 @@ mod held_document_keys;
 mod host_order;
 #[path = "invitation_entry.rs"]
 mod invitation_entry;
+#[path = "kept_after_kill.rs"]
+mod kept_after_kill;
 #[path = "late_join.rs"]
 mod late_join;
 #[path = "lifecycle_states.rs"]
@@ -106,12 +110,12 @@ mod place_workspace;
 mod plain_http;
 #[path = "recovery.rs"]
 mod recovery;
-#[path = "refused_commit.rs"]
-mod refused_commit;
 #[path = "rename.rs"]
 mod rename;
 #[path = "resume.rs"]
 mod resume;
+#[path = "revoked_device_history.rs"]
+mod revoked_device_history;
 #[path = "routed_actions.rs"]
 mod routed_actions;
 #[path = "session_store.rs"]

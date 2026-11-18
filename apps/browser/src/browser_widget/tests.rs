@@ -479,7 +479,7 @@ pub(super) fn person_history() -> (
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
         .person::<crate::history::BrowsingHistory>()
-        .expect("a test profile keeps person records");
+        .expect("a test profile keeps person resources");
     (app, record)
 }
 
@@ -1452,7 +1452,7 @@ fn site_panel_stays_retained_composed_and_actionable() {
     reason = "Keep the real panel action and ordered asynchronous replies in one regression fixture."
 )]
 fn site_protection_reload_updates_chrome_only_after_correlated_success() {
-    // Keep engine replies under test control: TestEngine records commands,
+    // Keep engine replies under test control: TestEngine resources commands,
     // while this queue models the native helper's asynchronous event order.
     struct QueuedEngine {
         events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -1925,11 +1925,8 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
                 .is_some()
             );
             w.sync(&state, &root);
-            assert_eq!(
-                w.take_capture_studio_request(),
-                Some(ui::widget::CaptureMode::Pip)
-            );
-            assert!(w.take_capture_studio_request().is_none());
+            assert!(w.take_pip_area_request());
+            assert!(!w.take_pip_area_request());
             assert!(w.take_floating_surface_request().is_none());
             assert!(w.pip_feedback.is_none());
         }

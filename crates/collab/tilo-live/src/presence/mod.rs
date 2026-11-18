@@ -2,7 +2,7 @@
 //! the roster can open, and the board a reader keeps of everyone's last word.
 //!
 //! Presence is one sealed object per [`Presence`] frame on [`Track::Presence`]
-//! ([`crate::plane`]): the plane opens it, this module names what is in it.
+//! ([`crate::live_session`]): the live session opens it, this module names what is in it.
 //! The relay copies bytes it cannot read; a reader that is not on the roster
 //! never opens one.
 //!
@@ -19,7 +19,7 @@
 use collab_types::presence::Presence;
 
 use crate::live::Track;
-use crate::plane::{Plane, PlaneError};
+use crate::live_session::{LiveError, LiveSession};
 
 mod board;
 pub mod place;
@@ -43,29 +43,29 @@ pub use smooth::Smoother;
 pub use collab_types::presence::ShownWave as Wave;
 
 /// Say `frames`, one burst of this device's presence, each as the object its number names, as one
-/// group of the plane's presence track ([`Plane::publish_burst`]).
+/// group of the live session's presence track ([`LiveSession::publish_burst`]).
 ///
 /// # Errors
 ///
-/// [`PlaneError::Invalid`] when the frame cannot be encoded, and whatever the
-/// plane answers with: [`PlaneError::Ended`] when the session ended,
-/// [`PlaneError::Unavailable`] when the broadcast is gone,
-/// [`PlaneError::Refused`] when the scope's keys do not seal this device.
-pub fn say(plane: &Plane, frames: &[(u32, Presence)]) -> Result<(), PlaneError> {
+/// [`LiveError::Invalid`] when the frame cannot be encoded, and whatever the
+/// live session answers with: [`LiveError::Ended`] when the session ended,
+/// [`LiveError::Unavailable`] when the broadcast is gone,
+/// [`LiveError::Refused`] when the scope's keys do not seal this device.
+pub fn say(live_session: &LiveSession, frames: &[(u32, Presence)]) -> Result<(), LiveError> {
     let bodies = frames
         .iter()
         .map(|(sequence, presence)| {
             presence
                 .encode()
                 .map(|body| (*sequence, body))
-                .map_err(|_| PlaneError::Invalid)
+                .map_err(|_| LiveError::Invalid)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let objects: Vec<(u32, &[u8])> = bodies
         .iter()
         .map(|(sequence, body)| (*sequence, body.as_slice()))
         .collect();
-    plane.publish_burst(Track::Presence, &objects)
+    live_session.publish_burst(Track::Presence, &objects)
 }
 
 /// The frame `body` carries, or `None` when it is not one.

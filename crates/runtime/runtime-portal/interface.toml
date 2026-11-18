@@ -5,9 +5,9 @@
 # App ↔ runtime: the session services the launcher connects an app to
 # (collaboration, the filesystem and its document media, the identity
 # broker, shell-owned tools), one number for all of them. The app host is an
-# interface of its own (crates/packaging/app-host/interface.toml).
+# interface of its own (crates/packaging/package-service/interface.toml).
 name = "runtime"
-version = 30
+version = 31
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -47,11 +47,10 @@ sources = [
     "crates/runtime/tilo-fs-client/src/entry_name.rs",
 ]
 roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame", "FsRequest", "FsReply"]
-# Settings' language packs (`request.rs`) and the shell-owned tools (`tools.rs`) are
-# length-prefixed JSON on their own sockets; the rest of this interface is postcard.
-# Both share the interface's one version and are checked by the stricter rules, but a
-# field left out of a JSON message is only left out, so only the postcard roots pin
-# what a compact encoding carries.
+# The shell-owned tools (`tools.rs`) are length-prefixed JSON on their own socket;
+# the rest of this interface is postcard. Both share the interface's one version and
+# are checked by the stricter rules, but a field left out of a JSON message is only
+# left out, so only the postcard roots pin what a compact encoding carries.
 json_roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 
 [opaque]
@@ -225,9 +224,8 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "DriveEntry.open_at" = "#4 Option<String>"
 "DriveEntry.size_bytes" = "#2 u64"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
-"EncryptionMetadata" = "struct"
+"EncryptionMetadata" = "struct deny_unknown_fields"
 "EncryptionMetadata.epoch" = "#0 u64"
-"EncryptionMetadata.retired_channel" = "#2 Option<Uuid>"
 "EncryptionMetadata.scheme" = "#1 EncryptionScheme"
 "EncryptionScheme" = "enum external"
 "EncryptionScheme::ContentKey" = "#1 struct"
@@ -888,8 +886,8 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "SignedOp.artifact" = "#1 ArtifactId"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"
-"SignedOp.claims" = "#8 Vec<ChangeClaim>"
-"SignedOp.encryption" = "#7 Option<EncryptionMetadata> with=encryption_wire"
+"SignedOp.claims" = "#8 Vec<ChangeClaim> with=claims_wire"
+"SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"

@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
         let workspace = front(&session);
 
         // An agent asks the session's launcher for Notes in the workspace in front, from a thread that
-        // owns no part of the shell: the broker's launcher seam is the one path such an open takes.
+        // owns no part of the shell: the broker's launcher service is the one path such an open takes.
         let asked = {
             let opened = Arc::clone(&opened);
             let workspace = workspace.clone();

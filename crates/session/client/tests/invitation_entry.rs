@@ -20,7 +20,7 @@ use tilo_session_client::{Cmd, Outbox};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_session_client::device::{
-    Device, Entering, Held, HostRefusal, entered, entering_certificate, invitation_entry,
+    Device, DeviceRefusal, Entering, Held, entered, entering_certificate, invitation_entry,
 };
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
@@ -38,7 +38,7 @@ fn entering<'a>(
 ) -> Entering<'a> {
     Entering {
         held,
-        root: root.map(|root| root as &dyn tilo_relay_client::DeviceSigner),
+        root: root.map(|root| root as &dyn tilo_server_client::DeviceSigner),
         label: "Firefox on Linux",
         name: "Bob",
         token: Some(token),
@@ -51,7 +51,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
     let host_cert = host_device.cert.clone();
     let bob = new_key();
@@ -137,7 +137,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     )
     .await
     .unwrap_err();
-    assert_eq!(none.code, HostRefusal::NO_CERTIFICATE, "{none:?}");
+    assert_eq!(none.code, DeviceRefusal::NO_CERTIFICATE, "{none:?}");
 
     // An invitation bound to someone else does not admit Bob's device: the workspace refuses on
     // the session, and the session stops.
@@ -166,7 +166,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     refused_peer.close();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -175,7 +175,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
     let beta = workspaces.create("Beta").await.unwrap();
     let host_cert = host_device.cert.clone();
@@ -216,7 +216,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
         .issue(
             &beta.workspace,
             &host_device.cert,
-            tilo_relay::workspaces::IssueInvitationRequest {
+            tilo_server::workspaces::IssueInvitationRequest {
                 request_id: [9; 32],
                 role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: Some(user),
@@ -242,13 +242,13 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     // Spent, it admits nobody again.
     let again = device.redeem(&issued, "Bob").await.unwrap_err();
     assert!(
-        matches!(again, tilo_relay_client::CertifyError::Denied(_)),
+        matches!(again, tilo_server_client::CertifyError::Denied(_)),
         "{again:?}"
     );
     device.close();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test]
@@ -259,7 +259,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     let bob = new_key();
     let page = new_key();
     let now = 1_000_000_000_000_u64;
-    let cert = tilo_relay_client::invite::guest_certificate(
+    let cert = tilo_server_client::invite::guest_certificate(
         &bob,
         page.verifying_key().to_bytes(),
         "Firefox on Linux",
@@ -281,7 +281,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
                 &host,
                 &page,
                 root.as_ref()
-                    .map(|root| root as &dyn tilo_relay_client::DeviceSigner),
+                    .map(|root| root as &dyn tilo_server_client::DeviceSigner),
                 "Firefox on Linux",
                 now,
             )
@@ -300,7 +300,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
             .await
             .unwrap_err()
             .code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
     // Another person's, where this person's root is at hand.
     let carol = new_key();
@@ -357,7 +357,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     // Ending within a day with no root at hand: nothing held serves, and nothing certifies.
     assert_eq!(
         choose(held(ending, &host), None).await.unwrap_err().code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
     // Kept without the host it was kept for: it serves no host, so only a root enters.
     let hostless = |cert: DeviceCert| Held {
@@ -366,7 +366,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     };
     assert_eq!(
         choose(hostless(cert.clone()), None).await.unwrap_err().code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
     assert_eq!(
         choose(hostless(lasting.clone()), Some(&bob))
@@ -381,7 +381,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
         None,
         &host,
         &page,
-        Some(&bob as &dyn tilo_relay_client::DeviceSigner),
+        Some(&bob as &dyn tilo_server_client::DeviceSigner),
         "Firefox on Linux",
         now,
     )
@@ -394,7 +394,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
             .await
             .unwrap_err()
             .code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
 }
 
@@ -419,7 +419,7 @@ async fn an_invitation_that_names_no_workspace_is_refused_before_a_certificate_i
             let case = format!("{row}, with a root: {}: {refused:?}", root.is_some());
             // Without a root and with nothing held, choosing a certificate first would have said
             // `no_certificate`: the invitation is read before that.
-            assert_eq!(refused.code, HostRefusal::NOT_ADMITTED, "{case}");
+            assert_eq!(refused.code, DeviceRefusal::NOT_ADMITTED, "{case}");
             assert!(
                 refused
                     .message

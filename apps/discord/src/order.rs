@@ -34,7 +34,7 @@ use discord_wire::op::{ArrangeOp, CategoryPlace, ChannelKind, ChannelPlace, Disc
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, JsonSchema, Keyed};
 
-use crate::record::{DChannel, Guild, MappedKind};
+use crate::guild::{DChannel, Guild, MappedKind};
 use crate::tilo::WorkspaceChat;
 
 /// Chat `arrange-channels`: the bridged categories, and the bridged
@@ -212,7 +212,7 @@ fn shown(guild: &Guild, op: &ArrangeOp, channels: &Keyed<DChannel>) -> bool {
 }
 
 /// The outbox entries of orders done with: refused or failed, or
-/// shown whole in the layout the record holds or in `after`, the one just
+/// shown whole in the layout the resource holds or in `after`, the one just
 /// reported.
 #[must_use]
 pub fn finished(guild: &Guild, after: &Keyed<DChannel>) -> Vec<Id> {

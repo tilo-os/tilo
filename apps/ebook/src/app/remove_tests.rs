@@ -47,7 +47,7 @@ fn with_dropped_book(dir: &Path) -> (TestApp<EbookShell>, String, tilo_test_env:
     (app, id, env)
 }
 
-/// Where this device opens the book `id` from, as the book files record
+/// Where this device opens the book `id` from, as the book files resource
 /// keeps it: `None` once it forgot the book's file.
 fn grant(app: &mut TestApp<EbookShell>, id: &str) -> Option<PathBuf> {
     let record = app.person::<crate::local_library::BookFiles>()?;

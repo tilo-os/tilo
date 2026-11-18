@@ -110,11 +110,11 @@ impl App {
         // semantic mount and its writer.
         self.close_components();
         self.retirement = retirement;
-        let control_domain = crate::control_custody::ControlDomain::outer();
-        crate::widget::controls::install_control_custody(
+        let control_domain = crate::control_domain::ControlDomain::outer();
+        crate::widget::controls::attach_controls(
             root.as_mut(),
             &control_domain,
-            crate::control_custody::CustodyAttachment::Initial,
+            crate::control_domain::DomainAttachment::Initial,
         );
         control_domain.finish_initial_installation();
         self.control_domain = control_domain;
@@ -232,7 +232,7 @@ impl App {
                             .collaboration
                             .manager
                             .primary_route()
-                            .map(|witness| witness.route().clone());
+                            .map(|observation| observation.route().clone());
                     }
                     if let Err(error) = self.collaboration.manager.switch_native_resource(&checkout)
                     {

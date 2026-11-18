@@ -253,7 +253,7 @@ pub struct VirtualListProps {
     /// How far the list is scrolled, in logical pixels.
     #[component(state)]
     pub scroll: Option<f64>,
-    /// The item standing open into its document where it stands in the list: its row grows to
+    /// The item held open into its document where it stands in the list: its row grows to
     /// hold what the item's row gives as its `detail`, and Escape or a press beside it closes
     /// it. A host keeps which item is open and gives it back, so a list it builds again shows
     /// the item as the person left it.
@@ -276,7 +276,7 @@ pub struct VirtualListProps {
     /// The person opened a row into its item where it stands: carries the item.
     #[component(event(value = ResourceId))]
     pub opened: Event,
-    /// The row standing open closed: pressed again, Escape, a press beside it, or its item
+    /// The row held open closed: pressed again, Escape, a press beside it, or its item
     /// left the list.
     #[component(event)]
     pub closed: Event,
@@ -287,7 +287,7 @@ pub struct VirtualListProps {
 #[derive(Default)]
 pub struct DescribedRows {
     held: Held,
-    /// Rows standing in for removed items, after the items ([`VirtualListProps::removed`]).
+    /// Rows in place of removed items, after the items ([`VirtualListProps::removed`]).
     removed: Rc<Vec<ListItemProps>>,
     /// The heading over the rows whose item names no group
     /// ([`VirtualListProps::ungrouped_title`]).
@@ -401,7 +401,7 @@ impl DescribedRows {
         }
     }
 
-    /// Whether `key` is a row standing in for a removed item.
+    /// Whether `key` is a row in place of a removed item.
     fn is_removed(&self, key: &str) -> bool {
         self.removed.iter().any(|item| item.key == key)
     }
@@ -564,7 +564,7 @@ impl ListModel for DescribedRows {
     /// height the rows around it take, and shows a placeholder there until it arrives, rather
     /// than a row of nothing.
     ///
-    /// A row standing in for an item someone removed is the list's own, given whole beside the
+    /// A row in place of an item someone removed is the list's own, given whole beside the
     /// rows the host renders: the host never renders it, and asking it for one would leave the
     /// row on its way forever.
     fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &str> {
@@ -796,16 +796,12 @@ impl DescribedList {
             return false;
         };
         let key = id.and_then(|id| list.model().key_presenting(id));
-        let selection = list.selection_mut();
-        let now: Vec<String> = selection.stored_keys().cloned().collect();
+        let now: Vec<String> = list.selection().stored_keys().cloned().collect();
         let want: Vec<String> = key.iter().cloned().collect();
         if now == want {
             return false;
         }
-        selection.clear();
-        if let Some(key) = key {
-            selection.select_only(key);
-        }
+        list.select_only(key);
         true
     }
 
@@ -1321,7 +1317,9 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     };
     let key = match at {
         Some(point) => list.key_at_point(point),
-        None => list.focused_row_key(),
+        None => list
+            .focused_row_key()
+            .and_then(|key| key.get::<String>().cloned()),
     };
     let Some(key) = key else {
         return Vec::new();
@@ -2244,26 +2242,26 @@ mod tests {
         assert_eq!(
             inner.open_row().map(String::as_str),
             Some("row-2"),
-            "the item the host holds open is the row standing open"
+            "the item the host holds open is the row held open"
         );
         lay_out(inner, 400.0);
         // // The item's document stands in the row's place: the rows over it keep their parts, // and the
-        // rows under it follow where the document ends, never standing one row above // it. What the row
+        // rows under it follow where the document ends, never one row above // it. What the row
         // writes there is the layout check's to read (`repeated_row_title`), // which watches a title
         // written in a row and again in the item it opened into.
-        let standing = inner.viewport.item_top(2).unwrap_or_default();
+        let row_top = inner.viewport.item_top(2).unwrap_or_default();
         let above = inner.viewport.item_top(1).unwrap_or_default()
             + inner.viewport.item_height(1).unwrap_or_default();
         assert_eq!(
-            standing, above,
-            "the document stands where the row stood: {standing} over the row's {above}"
+            row_top, above,
+            "the document stands where the row stood: {row_top} over the row's {above}"
         );
         assert_eq!(
             inner.row_box(2).map(|row| row.y0),
-            Some(standing),
+            Some(row_top),
             "the row drawn for the item starts where its part does"
         );
-        let below = standing + inner.viewport.item_height(2).unwrap_or_default();
+        let below = row_top + inner.viewport.item_height(2).unwrap_or_default();
         assert_eq!(
             inner.viewport.item_top(3),
             Some(below),
@@ -2309,7 +2307,7 @@ mod tests {
         let mut list = DescribedList::from_props("list", props);
         let inner = list.list_mut().expect("the list stands");
         lay_out(inner, 400.0);
-        inner.activate_key("row-1".to_owned());
+        inner.activate_key(crate::widget::ListKey::new("row-1".to_owned()));
         assert_eq!(inner.open_row().map(String::as_str), Some("row-1"));
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "the host hears one event: {fired:?}");
@@ -2376,12 +2374,12 @@ mod tests {
         );
     }
 
-    /// The rows standing in for items someone else removed are the list's own: the host that
+    /// The rows in place of items someone else removed are the list's own: the host that
     /// renders the rows it shows, one at a time, has never rendered them and never will. A list
     /// showing one row builds such a row beside the one it holds, struck, rather than leaving
     /// its part on its way.
     #[test]
-    fn a_row_standing_in_for_a_removed_item_is_built_beside_the_hosts_rows() {
+    fn a_row_in_place_of_a_removed_item_is_built_beside_the_hosts_rows() {
         let props = |removed: Vec<ListItemProps>| VirtualListProps {
             in_column: true,
             rows: DescribedRows {
@@ -2742,7 +2740,7 @@ mod tests {
     /// box, so its leading control and its title stand on the column the rows at its depth stand
     /// on, and only what the item holds grows.
     #[test]
-    fn an_item_standing_open_keeps_the_column_of_the_rows_at_its_depth() {
+    fn an_item_held_open_keeps_the_column_of_the_rows_at_its_depth() {
         let list = |open: &str, theme: &crate::theme::Theme| {
             let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(
                 &[
@@ -2778,9 +2776,8 @@ mod tests {
                 let scaled = theme.text_scale != 1.0;
                 let node = laid_out_in(list(open, &theme), theme.clone());
                 let at = |id: &str| {
-                    rect_of_id(&node, id).unwrap_or_else(|| {
-                        panic!("the widget {id} shows with {open} standing open")
-                    })
+                    rect_of_id(&node, id)
+                        .unwrap_or_else(|| panic!("the widget {id} shows with {open} held open"))
                 };
                 let grid = row_grid(&node, beside)
                     .unwrap_or_else(|| panic!("the row {beside} lays its content out"));
@@ -2792,7 +2789,7 @@ mod tests {
                 let document = at(&format!("document-{open}"));
                 assert!(
                     (document[0] - content).abs() < 0.5,
-                    "the item standing open starts its document at x {:.0}, where the row {beside} \
+                    "the item held open starts its document at x {:.0}, where the row {beside} \
                  starts its content at x {content:.0}{}",
                     document[0],
                     if scaled { " at text scale 1.5" } else { "" }

@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
         owner.invalidate_identity(workspace);
         assert!(
             !a.execution_is_live(),
-            "the actual owner callback has returned, so old custody must already be closed"
+            "the actual owner callback has returned, so old ownership must already be closed"
         );
         assert!(b.execution_is_live());
         assert!(!first.caller.execution_is_live());

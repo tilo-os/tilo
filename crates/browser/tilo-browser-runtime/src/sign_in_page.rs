@@ -4,18 +4,23 @@
 //! posts a form back; everything signed happens here, on the peer's own
 //! paths. The root the page holds certifies this browser's device key, that
 //! device proves the person to the service
-//! ([`tilo_relay_client::sign_in_proof`]), and — when the person lets an
+//! ([`tilo_server_client::sign_in_proof`]), and — when the person lets an
 //! agent act for them — the root certifies the key the service generated for
-//! the grant ([`tilo_relay_client::issue_agent_grant`]).
+//! the grant ([`tilo_server_client::issue_agent_grant`]).
 //!
 //! The certificate the proof carries is issued for this answer alone: a host
 //! issues the page's device certificate when it joins a workspace, and a
 //! sign-in to a service has no workspace behind it.
+//!
+//! The service reads both certificates by its own clock the moment the
+//! answer arrives, and a person's computer is seldom the one that is behind.
+//! So both are valid from the one clock allowance before this browser's
+//! clock ([`tilo_server_client::issue_sign_in_cert`]), as a paired device's
+//! certificate is, and the service keeps its exact check.
 
 use serde::{Deserialize, Serialize};
-use tilo_relay_client::{
-    DeviceSigner as _, IssuedRole, encode, grant_label, issue_agent_grant, issue_device_cert,
-    sign_in_proof,
+use tilo_server_client::{
+    DeviceSigner as _, encode, grant_label, issue_agent_grant, issue_sign_in_cert, sign_in_proof,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities};
 use wasm_bindgen::prelude::*;
@@ -77,8 +82,8 @@ struct Answer {
 /// canonical bytes of what the service decodes, in base64url without
 /// padding.
 ///
-/// `root` is the person's unlocked root (`identity.mjs`) and `custody` the
-/// device key this page signs with (`device-custody.mjs`); `ask` is JSON:
+/// `root` is the person's unlocked root (`identity.mjs`) and `ownership` the
+/// device key this page signs with (`device-key.mjs`); `ask` is JSON:
 /// `{audience, challenge, client, grantKey?, grantScope?, expiresAtMs?, serverKey?, operateBrowserPages?}`.
 ///
 /// # Errors
@@ -88,21 +93,16 @@ struct Answer {
 #[wasm_bindgen(js_name = signInAnswer)]
 pub async fn sign_in_answer(
     root: JsValue,
-    custody: JsValue,
+    ownership: JsValue,
     ask: String,
 ) -> Result<String, JsError> {
     let ask: Ask = serde_json::from_str(&ask).map_err(js_error)?;
     let root = PageSigner::from_js(&root)?;
-    let device = PageSigner::from_js(&custody)?;
+    let device = PageSigner::from_js(&ownership)?;
     let challenge = device_key(&ask.challenge)?;
-    let cert = issue_device_cert(
-        &root,
-        device.device_public_key(),
-        BROWSER_LABEL,
-        IssuedRole::Browser,
-    )
-    .await
-    .map_err(js_error)?;
+    let cert = issue_sign_in_cert(&root, device.device_public_key(), BROWSER_LABEL)
+        .await
+        .map_err(js_error)?;
     let proof = sign_in_proof(cert, &device, &ask.audience, challenge)
         .await
         .map_err(js_error)?;

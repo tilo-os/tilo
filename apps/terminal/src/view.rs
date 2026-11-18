@@ -180,7 +180,7 @@ impl AppWidget for TerminalView {
         self.terminal().permission_hint()
     }
 
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.terminal_mut().take_host_intent()
+    fn take_process_intent(&mut self) -> Option<ui::widget::AppProcessIntent> {
+        self.terminal_mut().take_process_intent()
     }
 }

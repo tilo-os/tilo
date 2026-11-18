@@ -968,7 +968,7 @@ mod tests {
         prepared_identity::PreparedIdentity,
     };
     use std::os::unix::fs::PermissionsExt;
-    use tilo_identity_host::provisioning::IdentityStorage;
+    use tilo_identity::provisioning::IdentityStorage;
 
     fn write(path: &Path, bytes: impl AsRef<[u8]>) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -980,7 +980,7 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    /// The real identity-host custody, not a fixture grant.
+    /// The real identity-host ownership, not a fixture grant.
     fn provision_device(
         root: &Path,
         identity: &PreparedIdentity,
@@ -991,19 +991,19 @@ mod tests {
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
         environment.set("XDG_CONFIG_HOME", &config);
         environment.set("TILO_IDENTITY_ROOT", root.join("system"));
-        let record = identity.custody_directory().join("primary.json");
-        let mut registry = tilo_identity_host::registry::IdentityRegistry::default();
+        let record = identity.ownership_directory().join("primary.json");
+        let mut registry = tilo_identity::registry::IdentityRegistry::default();
         let id = registry.register_record(&record).unwrap().id.clone();
-        tilo_identity_host::registry::IdentityRegistryStore::from_env()
+        tilo_identity::registry::IdentityRegistryStore::from_env()
             .unwrap()
             .save(&registry)
             .unwrap();
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let cert_path =
-            tilo_identity_host::provisioning::ensure_device_certificate_for_record(&record, &paths)
+            tilo_identity::provisioning::ensure_device_certificate_for_record(&record, &paths)
                 .unwrap();
         let cert = tilo_user_identity::persist::read_device_cert(&cert_path).unwrap();
-        tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        tilo_identity::device_fleet::DeviceFleetStore::from_env()
             .unwrap()
             .remember_certificate(&id, cert)
             .unwrap();

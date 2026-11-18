@@ -10,7 +10,7 @@ mod tests {
             "pid": 2, "start": 1, "uid": 1000, "boot": vec![1; 16]
         }))
         .unwrap();
-        let mut custody = Custody {
+        let mut ownership = Ownership {
             host,
             namespace: None,
             launch_acknowledged: false,
@@ -23,10 +23,10 @@ mod tests {
         };
         let errors = [
             Incarnation::capture(2, 1000).unwrap_err(),
-            custody.active_namespace().unwrap_err(),
-            custody.admit_namespace(namespace).unwrap_err(),
-            custody.require_stopped().unwrap_err(),
-            custody.stop_and_observe().unwrap_err(),
+            ownership.active_namespace().unwrap_err(),
+            ownership.admit_namespace(namespace).unwrap_err(),
+            ownership.require_stopped().unwrap_err(),
+            ownership.stop_and_observe().unwrap_err(),
         ];
         for error in errors {
             assert_eq!(error.kind(), io::ErrorKind::Unsupported);
@@ -46,7 +46,7 @@ impl Incarnation {
         Err(super::super::Error::Unsupported.into())
     }
 }
-impl Custody {
+impl Ownership {
     pub fn active_namespace(&self) -> io::Result<bool> {
         Err(super::super::Error::Unsupported.into())
     }

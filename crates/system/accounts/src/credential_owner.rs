@@ -38,7 +38,7 @@ impl CredentialOwner {
         let origin = super::canonical_origin(origin)?;
         let encoded_scope = serde_json::to_string(scope).map_err(|_| BrokerError::CorruptItem)?;
         self.edit(|store| {
-            if store.custody() != crate::SecretCustody::System || store.recovery_error().is_some() {
+            if store.backend() != crate::VaultBackend::System || store.recovery_error().is_some() {
                 return Err(BrokerError::Denied);
             }
             let mut occupied = false;
@@ -230,7 +230,7 @@ impl CredentialOwner {
         current.revoke_grant(grant)
     }
     /// # Errors
-    /// Refuses unavailable custody or a failed durable revocation.
+    /// Refuses unavailable ownership or a failed durable revocation.
     pub fn revoke_app(&self, app: &str) -> Result<usize, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;

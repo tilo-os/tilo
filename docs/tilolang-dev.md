@@ -16,7 +16,7 @@ There are two ways to run them:
   is the everyday loop.
 - **In a real session.** `tilolang dev DIR --session SESSION` develops the package inside
   a running nested session, where it runs as an installed app: launched by the launcher,
-  in its sandbox, under its own id and custody. Use it to test a change against a real
+  in its sandbox, under its own id and ownership. Use it to test a change against a real
   session.
 
 ## On this desktop
@@ -105,8 +105,19 @@ dist/dev/nested-session.sh --headless --software --state /tmp/s --ready /tmp/s.j
 tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json
 ```
 
-`--session` takes the `--ready` file, the session's runtime directory or its control
-socket.
+`--session` takes the `--ready` file, the session's runtime directory, its control
+socket or its state directory.
+
+To type tilolang at the app's data, as the session's person, attach the REPL the same way:
+
+```sh
+tilolang repl --session            # the only session running, or the one you pick
+tilolang repl --session /tmp/s     # that one
+```
+
+The REPL reaches the session through Tilo's API, which every session serves its own person's
+programs on this computer ([the Tilo API](developers/api.md)). What it changes shows in the
+session's History as the person's, and `undo` takes it back.
 
 There, on every save `tilolang dev`:
 
@@ -137,7 +148,7 @@ tools/web/html-renderer/tilolang-web.sh apps/tl/tasks --search apps/tl
 ```
 
 builds the package and the tilolang runtime's web bundle on the build machine
-(`build-tilolang-web.sh` through `rcargo exec`), fetches them and serves them on
+(`build-tilolang-web.sh` through `$CARGO exec`), fetches them and serves them on
 this machine's loopback. It prints the page to open: the app on the WebGPU canvas
 and as HTML, side by side or one at a time, in light or dark. `--no-build`
 serves the last build again.
@@ -179,11 +190,11 @@ record, unread. Renaming keeps state too, because the ids lock keeps each id
 (`tilolang ids --rename`). tilolang has no migration rules yet. When it does, this is
 where they run.
 
-### How the swap stays inside custody in a session
+### How the swap stays inside ownership in a session
 
 A dev-mode swap installs a package exactly as any install does: verified by
 `tilo-install`, its old version kept while it runs. Then the session hands the new
-module to the tilolang host that runs the app's instances. Nothing else can.
+module to the tilolang process that runs the app's instances. Nothing else can.
 
 - **Development sessions only.** The session follows reinstalls only when two things
   hold:
@@ -203,7 +214,7 @@ module to the tilolang host that runs the app's instances. Nothing else can.
 
 The windows, their sandboxes and grants stay as they were launched. The only thing
 that changes is which verified module the host interprets. The code is in
-`crates/session/app-launch/src/tilolang_hosts.rs` and `crates/platform/tilolang-host`.
+`crates/session/app-launch/src/tilolang_processes.rs` and `crates/platform/tilolang-process`.
 
 On the desktop there is no session to hand anything over: the tool runs the app itself and
 publishes into a directory of its own, private to the person, which the app reads

@@ -26,7 +26,7 @@ fn plain(key: &str) -> String {
     crate::locales::CATALOG.t(key)
 }
 
-/// The whole table, built again whenever the record changes.
+/// The whole table, built again whenever the resource changes.
 pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
     let me = cx.me().and_then(MemberId::person_id).map(str::to_owned);
     let people = cx.people();
@@ -156,7 +156,7 @@ fn seat_view(
         }
         return seat_box(Box::new(body));
     };
-    let name = people.name(&MemberId::person(player));
+    let name = player_name(people, player);
     let you = me == Some(player);
     let title = if you {
         plain("poker-seat-you")
@@ -174,8 +174,11 @@ fn seat_view(
     {
         stack = stack.tertiary(state);
     }
-    let avatar = ui::widget::Avatar::person(name, player.to_owned())
-        .with_hue(people.hue(&MemberId::person(player)));
+    let avatar = ui::widget::Avatar::of(ui::component::Person {
+        name,
+        hue: player_hue(people, player),
+        ..ui::component::Person::named(player)
+    });
     let mut body = ui::column![
         ui::row![avatar, stack]
             .with_rhythm(Rhythm::Sibling)
@@ -243,9 +246,10 @@ fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize, people: &People
         } else if p.folded && table.hand.street.in_play() {
             continue;
         } else {
-            Showing::Back(ui::presence::identity_rgb(
-                people.hue(&MemberId::person(p.player.as_str())),
-            ))
+            Showing::Back(ui::presence::identity_rgb(player_hue(
+                people,
+                p.player.as_str(),
+            )))
         };
         row = row.push(Box::new(CardView::new(id, showing, CardSize::Small)));
     }
@@ -307,7 +311,7 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
         Street::Idle => lines.push(waiting(table, people, me)),
         Street::Done => {
             for award in &hand.awards {
-                let name = people.name(&MemberId::person(award.player.as_str()));
+                let name = player_name(people, award.player.as_str());
                 lines.push(if award.category.is_empty() {
                     fmt(
                         "poker-won-uncontested",
@@ -338,10 +342,7 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
                 } else {
                     fmt(
                         "poker-status-their-turn",
-                        &[(
-                            "name",
-                            people.name(&MemberId::person(actor.player.as_str())).into(),
-                        )],
+                        &[("name", player_name(people, actor.player.as_str()).into())],
                     )
                 });
             }
@@ -369,7 +370,7 @@ fn waiting(table: &Table, people: &People, me: Option<&str>) -> String {
         Some(dealer) if Some(dealer) == me => plain("poker-status-you-deal"),
         Some(dealer) => fmt(
             "poker-status-waiting-dealer",
-            &[("name", people.name(&MemberId::person(dealer)).into())],
+            &[("name", player_name(people, dealer).into())],
         ),
         None => plain("poker-status-need-players"),
     }
@@ -505,7 +506,7 @@ fn show_cards(cx: &ViewCx<Table>, hand: &game::Hand, me: &str) -> Option<Element
 fn skip_control(cx: &ViewCx<Table>, table: &Table, people: &People) -> Option<Element> {
     let actor = table.hand.actor()?;
     let opens = table.skip_opens_ms()?;
-    let name = people.name(&MemberId::person(actor.player.as_str()));
+    let name = player_name(people, actor.player.as_str());
     let phrase: Rc<Phrase> = Rc::new(move |seconds: u64| {
         fmt(
             "poker-skip-wait",
@@ -642,4 +643,18 @@ impl ui::widget::Decorator for Grace {
     fn name(&self) -> &'static str {
         "PokerGrace"
     }
+}
+
+/// A player's name: the table keys its players by person; a key
+/// that names no person (one no device of ours wrote) shows as its key.
+fn player_name(people: &People, player: &str) -> String {
+    MemberId::parsed_person(player).map_or_else(|| player.to_owned(), |member| people.name(&member))
+}
+
+/// A player's colour, by the same key as [`player_name`].
+fn player_hue(people: &People, player: &str) -> ui::tokens::PresenceHue {
+    MemberId::parsed_person(player).map_or_else(
+        || ui::tokens::PresenceHue::of_identity(player),
+        |member| people.hue(&member),
+    )
 }

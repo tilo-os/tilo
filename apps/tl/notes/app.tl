@@ -179,7 +179,7 @@ action insert_image(n: Note, image: File) (icon: .image, did: "added an image") 
     n.images.put(image.url, base_name(image.name))
 }
 
-/// A note as Markdown: its title, then its body, each picture it shows standing beside it as
+/// A note as Markdown: its title, then its body, each picture it shows written beside it as
 /// `<note>/images/<name>`, a path another reader of the file follows and this app reads again
 /// as the address of the picture's bytes.
 action export_markdown(n: Note) -> Text (icon: .download) {
@@ -478,7 +478,7 @@ view note_node(n: Note) {
     ui.TreeViewRow(icon: if n.pinned { .pin } else { .file_text }, tone: .secondary)
 }
 
-/// The notes standing on their own, as a place shows them: each note a row, in the notebook's
+/// The notes on their own, as a place shows them: each note a row, in the notebook's
 /// order, opening beside the list. None of the window's tree, editor or bar is around them.
 view notes(nb: Notebook) {
     if nb.notes.is_empty() {
@@ -635,7 +635,7 @@ fn note_files(n: Note, name: Text, folder: Text, pages: Map<Text>) -> List<File>
     [[page], pictures].flat_map(files -> files)
 }
 
-/// A note as Markdown: its title, then its body, each picture it shows standing under `name`'s own
+/// A note as Markdown: its title, then its body, each picture it shows under `name`'s own
 /// `images` folder — a path relative to the note, as a reader of the file follows it — and each
 /// note it links to a link to that note's page, at the path from the folder it is written in.
 fn note_markdown(n: Note, name: Text, folder: Text, pages: Map<Text>) -> Text {
@@ -780,7 +780,7 @@ fn pictures_shown(markdown: Text, page: Text, pictures: List<File>) -> Text {
 }
 
 /// `path` as a page in `folder` names it: the files beside it by their own name, and those under
-/// it by the path from it (`images/fox.png` for a page standing in `Q3 plan`). What a page cannot
+/// it by the path from it (`images/fox.png` for a page in `Q3 plan`). What a page cannot
 /// reach from where it stands it does not name.
 fn page_ref(folder: Text, path: Text) -> Option<Text> {
     if folder == "" {

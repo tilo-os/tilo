@@ -2,7 +2,9 @@
 //!
 //! The REPL is a client of Tilo's API (`docs/developers/api.md`) through the same client the
 //! `tilo` command uses ([`tilo_api::client`]): in process with the key `tilo login` made of this
-//! computer (or `--key-file`), or at an API server with `TILO_API_KEY`. What it changes is the
+//! computer (or `--key-file`), at an API server with `TILO_API_KEY`, or in a nested Tilo session
+//! running on this computer (`--session`), which serves the same API to its own person's
+//! programs. What it changes is the
 //! person's, attributed to them, in history and undo. Each entry is a program for
 //! `POST …/programs`, run in one program session the REPL carries from entry to entry: `let`s
 //! kept between entries, references (`n3`) naming what answers showed, one step per entry with a
@@ -29,6 +31,9 @@ pub struct ReplOptions {
     pub key_file: Option<PathBuf>,
     /// The API server `TILO_API_KEY` is for (`--api`).
     pub api: Option<String>,
+    /// A nested session running on this computer to work in (`--session`): the one it names, or
+    /// with `None` the only one running.
+    pub session: Option<Option<PathBuf>>,
     /// Colour: `None` for when the output is a terminal.
     pub color: Option<bool>,
 }
@@ -377,12 +382,58 @@ impl Complete for Repl<'_> {
     }
 }
 
+/// [`NOT_SIGNED_IN`], and how to work in a nested session when one is running here.
+fn not_signed_in() -> String {
+    if crate::session::Running::all().is_empty() {
+        NOT_SIGNED_IN.to_owned()
+    } else {
+        format!(
+            "{NOT_SIGNED_IN} A Tilo session you started is running here: \
+             `tilolang repl --session` works in it."
+        )
+    }
+}
+
+/// The nested session `named` names, else the only one running, else the one the person picks.
+fn attach(
+    editor: &Editor,
+    named: Option<&std::path::Path>,
+) -> Result<crate::session::Running, String> {
+    if let Some(named) = named {
+        return crate::session::Running::named(named);
+    }
+    let mut all = crate::session::Running::all();
+    match all.len() {
+        0 => Err(
+            "No nested Tilo session is open on this computer: start one with \
+                  dist/dev/nested-session.sh."
+                .to_owned(),
+        ),
+        1 => Ok(all.remove(0)),
+        _ => {
+            let states: Vec<String> = all
+                .iter()
+                .map(|running| running.state.display().to_string())
+                .collect();
+            let index = pick(editor, "Which session?", &states)?;
+            Ok(all.swap_remove(index))
+        }
+    }
+}
+
 /// Whether anything on this computer signs the person in: a key file named, an API key, or the
 /// login `tilo login` kept.
 fn signed_in(options: &ReplOptions) -> Result<bool, String> {
     if options.key_file.is_some()
         || std::env::var_os(tilo_api::client::KEY_ENV).is_some_and(|key| !key.is_empty())
     {
+        return Ok(true);
+    }
+    // This login's own desktop serves its person at its socket: a program of
+    // this login answers as the person there, with no key, because the
+    // socket's own permissions and the kernel's account of the peer admit it
+    // (`tilo_api::client::desktop_socket`).
+    if tilo_api::client::desktop_socket().is_some() {
         return Ok(true);
     }
     let dir = tilo_api::client::device::device_dir().map_err(|error| error.to_string())?;
@@ -395,7 +446,7 @@ fn signed_in(options: &ReplOptions) -> Result<bool, String> {
 /// login is in, else the key's one workspace, else the one the person picks.
 async fn workspaces(
     client: &Client,
-    reach: Reach<'_>,
+    entered: Option<(String, String)>,
     named: Option<&str>,
 ) -> Result<Result<(String, String), Vec<(String, String)>>, String> {
     if let Some(named) = named {
@@ -405,9 +456,7 @@ async fn workspaces(
             .map_err(|error| error.to_string())?;
         return Ok(Ok((id, named.to_owned())));
     }
-    if let Some(entered) =
-        tilo_api::client::entered_workspace(reach).map_err(|error| error.to_string())?
-    {
+    if let Some(entered) = entered {
         return Ok(Ok(entered));
     }
     let listed = client
@@ -439,28 +488,28 @@ async fn workspaces(
     }
 }
 
-/// Ask the person which of `all` to work in.
-fn pick(editor: &Editor, all: &[(String, String)]) -> Result<(String, String), String> {
-    println!("Which workspace?");
-    for (number, (_, name)) in all.iter().enumerate() {
+/// Ask the person `question`, answered with one of `names`: its index.
+fn pick(editor: &Editor, question: &str, names: &[String]) -> Result<usize, String> {
+    println!("{question}");
+    for (number, name) in names.iter().enumerate() {
         println!("  {}  {name}", number.saturating_add(1));
     }
     loop {
         let line = match editor.read("number: ", &NoCompletion) {
             Ok(Read::Line(line)) => line,
-            Ok(Read::Interrupted | Read::Eof) => return Err("no workspace picked".to_owned()),
+            Ok(Read::Interrupted | Read::Eof) => return Err("nothing picked".to_owned()),
             Err(error) => return Err(error.to_string()),
         };
-        let picked = line.trim().parse::<usize>().ok().and_then(|number| {
-            number
-                .checked_sub(1)
-                .and_then(|index| all.get(index))
-                .cloned()
-        });
+        let picked = line
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .filter(|index| *index < names.len());
         if let Some(picked) = picked {
             return Ok(picked);
         }
-        println!("a number from 1 to {}", all.len());
+        println!("a number from 1 to {}", names.len());
     }
 }
 
@@ -475,23 +524,36 @@ impl Complete for NoCompletion {
 pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));
-    if !signed_in(options)? {
-        return Err(NOT_SIGNED_IN.to_owned());
-    }
-    let reach = Reach {
-        api: options.api.as_deref(),
-        key_file: options.key_file.as_deref(),
-        json: false,
+    let (client, entered) = if let Some(named) = &options.session {
+        let running = attach(&editor, named.as_deref())?;
+        (Client::session(&running.socket), None)
+    } else {
+        if !signed_in(options)? {
+            return Err(not_signed_in());
+        }
+        let reach = Reach {
+            api: options.api.as_deref(),
+            key_file: options.key_file.as_deref(),
+            json: false,
+        };
+        let entered =
+            tilo_api::client::entered_workspace(reach).map_err(|error| error.to_string())?;
+        (
+            Client::open(reach).map_err(|error| error.to_string())?,
+            entered,
+        )
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    let client = Client::open(reach).map_err(|error| error.to_string())?;
     let (workspace, name) =
-        match runtime.block_on(workspaces(&client, reach, options.workspace.as_deref()))? {
+        match runtime.block_on(workspaces(&client, entered, options.workspace.as_deref()))? {
             Ok(one) => one,
-            Err(all) => pick(&editor, &all)?,
+            Err(mut all) => {
+                let names: Vec<String> = all.iter().map(|(_, name)| name.clone()).collect();
+                all.swap_remove(pick(&editor, "Which workspace?", &names)?)
+            }
         };
     let mut repl = runtime.block_on(Repl::open(&client, &workspace))?;
     println!(

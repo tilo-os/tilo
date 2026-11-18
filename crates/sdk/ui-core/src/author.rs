@@ -10,7 +10,6 @@ use unicode_normalization::UnicodeNormalization;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 
-use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::i18n::widget_format;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
@@ -28,12 +27,8 @@ pub enum Author<'a> {
         avatar: Option<&'a ImageData>,
         color: Option<Color>,
     },
-    /// An agent acting for a person.
-    Agent {
-        name: &'a str,
-        for_person: Option<&'a str>,
-        color: Color,
-    },
+    /// An agent, by its own name.
+    Agent { name: &'a str, color: Color },
     /// An installed bot, by its name and installer, with the appearance it
     /// showed, the Tilo person its persona is linked to, and the image its
     /// tile shows (the appearance's avatar, else the bot's icon).
@@ -397,14 +392,10 @@ impl<'a> Author<'a> {
                 };
                 face.paint(ctx, line.mark);
             }
-            Self::Agent { color, .. } => draw_agent_identity_mark(
-                ctx.scene,
-                ctx.transform,
-                line.mark,
-                color,
-                ctx.theme,
-                AgentIdentityStyle::Solid,
-            ),
+            Self::Agent { name, color } => AvatarFace::new(name, name)
+                .presence(color)
+                .agent()
+                .paint(ctx, line.mark),
             Self::Bot {
                 bot_name,
                 image,

@@ -7,20 +7,6 @@ kind = "mail.mailbox"
 label = "Mail"
 version = 1
 fields = [
-  { path = "messages", type = { collection = { named = "MessageState" } }, stored = "collection" },
-  { path = "messages.*.read", type = "bool", readonly = true },
-  { path = "messages.*.starred", type = "bool" },
-  { path = "messages.*.folder", type = { named = "Folder" } },
-  { path = "messages.*.labels", type = { set = "text" } },
-  { path = "messages.*.server", type = { option = { named = "ServerCopy" } }, readonly = true, stored = "record" },
-  { path = "messages.*.server.account", type = "text" },
-  { path = "messages.*.server.locator", type = "text" },
-  { path = "messages.*.server.read", type = "bool" },
-  { path = "messages.*.server.starred", type = "bool" },
-  { path = "messages.*.server.folder", type = { named = "Folder" } },
-  { path = "messages.*.server.removed", type = "bool" },
-  { path = "messages.*.purged", type = "bool", readonly = true },
-  { path = "messages.*.label", type = "text", readonly = true },
   { path = "folders", type = { collection = { named = "LocalFolder" } }, stored = "collection" },
   { path = "folders.*.name", type = "text", label = true },
   { path = "draft", type = { named = "DraftState" }, stored = "record" },
@@ -64,62 +50,10 @@ fields = [
   { path = "outbox", type = { outbox = "any" }, unit = true },
   { path = "server", type = { outbox = "any" }, unit = true },
   { path = "checks", type = { outbox = "any" }, unit = true },
-  { path = "held", type = { collection = { named = "HeldMessage" } }, stored = "collection" },
-  { path = "held.*.message_id", type = "text" },
-  { path = "held.*.from", type = "text" },
-  { path = "held.*.to", type = "text" },
-  { path = "held.*.cc", type = "text" },
-  { path = "held.*.subject", type = "text", label = true },
-  { path = "held.*.body", type = "text" },
-  { path = "held.*.minutes", type = "int" },
-  { path = "held.*.in_reply_to", type = { option = "text" } },
-  { path = "held.*.conversation", type = "text" },
-  { path = "held.*.original", type = { option = "any" } },
-]
-
-[[resources.verbs]]
-id = "mark-read"
-kind = "outside"
-params = [
-  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "read", type = "bool", required = true, schema = { type = "boolean" } },
-]
-
-[[resources.verbs]]
-id = "archive"
-kind = "outside"
-params = [
-  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-]
-
-[[resources.verbs]]
-id = "trash"
-kind = "outside"
-params = [
-  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-]
-
-[[resources.verbs]]
-id = "move-messages"
-kind = "outside"
-params = [
-  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "to", type = { named = "Folder" }, required = true, schema = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } },
-]
-
-[[resources.verbs]]
-id = "purge"
-destructive = true
-kind = "outside"
-params = [
-  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-]
-
-[[resources.verbs]]
-id = "ingest"
-kind = "outside"
-params = [
-  { name = "messages", type = { list = { named = "IngestBaseline" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = ["string", "null"] }, folder = { type = ["string", "null"] }, id = { type = "string" }, label = { type = ["string", "null"] }, locator = { type = ["string", "null"] }, read = { type = ["boolean", "null"] }, starred = { type = ["boolean", "null"] } }, required = ["id"] } } },
+  { path = "retired", type = { collection = { named = "RetiredCopy" } }, readonly = true, stored = "collection" },
+  { path = "retired.*.account", type = "text" },
+  { path = "retired.*.locator", type = "text" },
+  { path = "retired.*.removed", type = "bool" },
 ]
 
 [[resources.verbs]]
@@ -206,25 +140,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "deliver-message"
-kind = "undoable"
-returns = { schema = { type = "object" } }
-params = [
-  { name = "from", type = "text", required = true, schema = { type = "string" } },
-  { name = "to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "cc", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "subject", type = "text", required = true, schema = { type = "string" } },
-  { name = "body", type = "text", required = true, schema = { type = "string" } },
-  { name = "date", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "folder", type = { option = { named = "Folder" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }] } },
-  { name = "read", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
-  { name = "reply_to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "conversation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "message_id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "original", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }] } },
-]
-
-[[resources.verbs]]
 id = "draft-message"
 kind = "undoable"
 returns = { schema = { type = "object" } }
@@ -264,23 +179,6 @@ params = [
   { name = "format", type = { option = "text" }, required = false },
   { name = "message", type = { option = "text" }, required = false },
   { name = "folder", type = { option = { named = "Folder" } }, required = false },
-]
-
-[[resources.types]]
-name = "Delivery"
-fields = [
-  { name = "from", type = "text" },
-  { name = "to", type = { option = "text" } },
-  { name = "cc", type = { option = "text" } },
-  { name = "subject", type = "text" },
-  { name = "body", type = "text" },
-  { name = "date", type = { option = "text" } },
-  { name = "folder", type = { option = { named = "Folder" } } },
-  { name = "read", type = { option = "bool" } },
-  { name = "reply_to", type = { option = "text" } },
-  { name = "conversation", type = { option = "text" } },
-  { name = "message_id", type = { option = "text" } },
-  { name = "original", type = { option = "any" } },
 ]
 
 [[resources.types]]
@@ -354,6 +252,193 @@ cases = [
 ]
 
 [[resources.types]]
+name = "LocalFolder"
+fields = [
+  { name = "name", type = "text" },
+]
+
+[[resources.types]]
+name = "RetiredCopy"
+fields = [
+  { name = "account", type = "text" },
+  { name = "locator", type = "text" },
+  { name = "removed", type = "bool" },
+]
+
+[[resources.types]]
+name = "ServerUpdate"
+cases = [
+  { name = "Flags", fields = [{ name = "id", type = "text" }, { name = "account", type = "text" }, { name = "locator", type = "text" }, { name = "folder", type = { named = "Folder" } }, { name = "read", type = "bool" }, { name = "starred", type = "bool" }] },
+  { name = "Move", fields = [{ name = "id", type = "text" }, { name = "account", type = "text" }, { name = "locator", type = "text" }, { name = "from", type = { named = "Folder" } }, { name = "to", type = { named = "Folder" } }] },
+  { name = "Remove", fields = [{ name = "id", type = "text" }, { name = "account", type = "text" }, { name = "locator", type = "text" }, { name = "folder", type = { named = "Folder" } }] },
+  { name = "SaveDraft", fields = [{ name = "id", type = "text" }, { name = "account", type = "text" }, { name = "locator", type = "text" }, { name = "written", type = "text" }, { name = "draft", type = { named = "DraftData" } }, { name = "in_reply_to", type = { option = "text" } }] },
+]
+
+[[resources]]
+kind = "mail.messages"
+label = "Messages"
+version = 1
+fields = [
+  { path = "messages", type = { collection = { named = "MessageState" } }, stored = "collection" },
+  { path = "messages.*.read", type = "bool", readonly = true },
+  { path = "messages.*.starred", type = "bool" },
+  { path = "messages.*.folder", type = { named = "Folder" } },
+  { path = "messages.*.labels", type = { set = "text" } },
+  { path = "messages.*.server", type = { option = { named = "ServerCopy" } }, readonly = true, stored = "record" },
+  { path = "messages.*.server.account", type = "text" },
+  { path = "messages.*.server.locator", type = "text" },
+  { path = "messages.*.server.read", type = "bool" },
+  { path = "messages.*.server.starred", type = "bool" },
+  { path = "messages.*.server.folder", type = { named = "Folder" } },
+  { path = "messages.*.server.removed", type = "bool" },
+  { path = "messages.*.purged", type = "bool", readonly = true },
+  { path = "messages.*.label", type = "text", readonly = true },
+  { path = "held", type = { collection = { named = "HeldMessage" } }, readonly = true, stored = "collection" },
+  { path = "held.*.message_id", type = "text" },
+  { path = "held.*.from", type = "text" },
+  { path = "held.*.to", type = "text" },
+  { path = "held.*.cc", type = "text" },
+  { path = "held.*.subject", type = "text", label = true },
+  { path = "held.*.body", type = "text" },
+  { path = "held.*.minutes", type = "int" },
+  { path = "held.*.in_reply_to", type = { option = "text" } },
+  { path = "held.*.conversation", type = "text" },
+  { path = "held.*.original", type = { option = "any" } },
+]
+
+[[resources.verbs]]
+id = "mark-read"
+kind = "undoable"
+params = [
+  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "read", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "archive"
+kind = "undoable"
+params = [
+  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "trash"
+kind = "undoable"
+params = [
+  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "move-messages"
+kind = "undoable"
+params = [
+  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "to", type = { named = "Folder" }, required = true, schema = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } },
+]
+
+[[resources.verbs]]
+id = "purge"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "ingest"
+kind = "undoable"
+params = [
+  { name = "messages", type = { list = { named = "IngestBaseline" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = ["string", "null"] }, folder = { type = ["string", "null"] }, id = { type = "string" }, label = { type = ["string", "null"] }, locator = { type = ["string", "null"] }, read = { type = ["boolean", "null"] }, starred = { type = ["boolean", "null"] } }, required = ["id"] } } },
+]
+
+[[resources.verbs]]
+id = "server-applied"
+kind = "undoable"
+params = [
+  { name = "updates", type = { list = { named = "ServerUpdate" } }, required = true, schema = { type = "array", items = { oneOf = [{ type = "object", additionalProperties = false, properties = { Flags = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" }, read = { type = "boolean" }, starred = { type = "boolean" } }, required = ["id", "account", "locator", "folder", "read", "starred"] } }, required = ["Flags"] }, { type = "object", additionalProperties = false, properties = { Move = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, from = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" }, to = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } }, required = ["id", "account", "locator", "from", "to"] } }, required = ["Move"] }, { type = "object", additionalProperties = false, properties = { Remove = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" } }, required = ["id", "account", "locator", "folder"] } }, required = ["Remove"] }, { type = "object", additionalProperties = false, properties = { SaveDraft = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, draft = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] }, id = { type = "string" }, in_reply_to = { type = ["string", "null"] }, locator = { type = "string" }, written = { type = "string" } }, required = ["id", "account", "locator", "written", "draft"] } }, required = ["SaveDraft"] }] } } },
+]
+
+[[resources.verbs]]
+id = "deliver-message"
+kind = "undoable"
+returns = { schema = { type = "object" } }
+params = [
+  { name = "from", type = "text", required = true, schema = { type = "string" } },
+  { name = "to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "cc", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "subject", type = "text", required = true, schema = { type = "string" } },
+  { name = "body", type = "text", required = true, schema = { type = "string" } },
+  { name = "date", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "folder", type = { option = { named = "Folder" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }] } },
+  { name = "read", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "reply_to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "conversation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "message_id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "original", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }] } },
+  { name = "answers", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.types]]
+name = "Delivery"
+fields = [
+  { name = "from", type = "text" },
+  { name = "to", type = { option = "text" } },
+  { name = "cc", type = { option = "text" } },
+  { name = "subject", type = "text" },
+  { name = "body", type = "text" },
+  { name = "date", type = { option = "text" } },
+  { name = "folder", type = { option = { named = "Folder" } } },
+  { name = "read", type = { option = "bool" } },
+  { name = "reply_to", type = { option = "text" } },
+  { name = "conversation", type = { option = "text" } },
+  { name = "message_id", type = { option = "text" } },
+  { name = "original", type = { option = "any" } },
+  { name = "answers", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "DraftAttachment"
+fields = [
+  { name = "content_id", type = "text" },
+  { name = "filename", type = "text" },
+  { name = "mime", type = "text" },
+  { name = "size", type = "int" },
+]
+
+[[resources.types]]
+name = "DraftData"
+fields = [
+  { name = "sender", type = { option = { named = "DraftSender" } } },
+  { name = "to", type = "text" },
+  { name = "cc", type = "text" },
+  { name = "bcc", type = "text" },
+  { name = "subject", type = "text" },
+  { name = "body", type = "text" },
+  { name = "html_body", type = { option = "text" } },
+  { name = "calendar_ics", type = { option = "text" } },
+  { name = "attachments", type = { list = { named = "DraftAttachment" } } },
+]
+
+[[resources.types]]
+name = "DraftSender"
+fields = [
+  { name = "account", type = "text" },
+  { name = "email", type = "text" },
+]
+
+[[resources.types]]
+name = "Folder"
+cases = [
+  { name = "inbox" },
+  { name = "starred" },
+  { name = "sent" },
+  { name = "drafts" },
+  { name = "archive" },
+  { name = "trash" },
+  { name = "junk" },
+]
+
+[[resources.types]]
 name = "HeldMessage"
 fields = [
   { name = "message_id", type = "text" },
@@ -378,12 +463,6 @@ fields = [
   { name = "account", type = { option = "text" } },
   { name = "locator", type = { option = "text" } },
   { name = "label", type = { option = "text" } },
-]
-
-[[resources.types]]
-name = "LocalFolder"
-fields = [
-  { name = "name", type = "text" },
 ]
 
 [[resources.types]]

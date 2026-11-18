@@ -283,11 +283,14 @@ mail-effects-draft-reply = Draft reply
 mail-effects-open-attachment = Open attachment
 mail-effects-content = Get content
 mail-effects-export-content = Export content
+mail-messages = Messages
+mail-messages-mark-read = Mark read
+mail-messages-trash = Move to Trash
+mail-messages-move-messages = Move messages
+mail-messages-ingest = Add fetched messages
+mail-messages-server-applied = Server applied the update
+mail-messages-deliver-message = Deliver message
 mail-mailbox = Mail
-mail-mailbox-mark-read = Mark read
-mail-mailbox-trash = Move to Trash
-mail-mailbox-move-messages = Move messages
-mail-mailbox-ingest = Add fetched messages
 mail-mailbox-server-applied = Server applied the update
 mail-mailbox-start-draft-body = Start the draft body
 mail-mailbox-create-draft = New draft
@@ -295,7 +298,6 @@ mail-mailbox-show-draft = Show the draft
 mail-mailbox-attach = Attach to draft
 mail-mailbox-send-message = Send message
 mail-mailbox-check-mail = Check for new mail
-mail-mailbox-deliver-message = Deliver message
 mail-mailbox-draft-message = Draft message
 mail-trusted-senders = Trusted senders
 mail-trusted-senders-trust = Trust this sender
@@ -303,7 +305,7 @@ mail-trusted-senders-distrust = Stop trusting this sender
 
 ## What the app is called in a window and in the launcher
 mail-app-title = Mail
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 mail-copies = Mail on your devices
 mail-copies-keep-copies = Keep fetched mail
 mail-copies-forget-copies = Forget fetched mail

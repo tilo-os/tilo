@@ -1,6 +1,6 @@
 //! The view's copy of the bytes with its presentation state: cursor, selection, edit
 //! mode, column, bytes per row and the changed bytes. A keystroke edits the copy at
-//! once and records the [`BufferEdit`] the view submits; the record's state replaces
+//! once and records the [`BufferEdit`] the view submits; the resource's state replaces
 //! the copy whenever it differs. No rendering, no storage.
 
 use std::collections::BTreeSet;
@@ -13,7 +13,7 @@ use crate::buffer::Hex;
 
 /// One primitive buffer mutation: an insert, delete or overwrite at an offset. Cursor,
 /// selection, scroll and the column and endianness settings stay presentation. It is
-/// also the edit of the record's bytes at their path.
+/// also the edit of the resource's bytes at their path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum BufferEdit {
     /// Splice `bytes` in before `offset`, growing the buffer.
@@ -168,7 +168,7 @@ impl HexModel {
         std::mem::take(&mut self.edits)
     }
 
-    /// Show `bytes`, the buffer as the record holds it now, keeping the cursor
+    /// Show `bytes`, the buffer as the resource holds it now, keeping the cursor
     /// (clamped) and the view settings. Changed bytes are marked against `saved`.
     pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
         let unchanged = bytes == self.bytes.as_slice();

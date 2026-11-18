@@ -3,14 +3,14 @@
 use super::*;
 use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
-    self as probe, ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
+    self as probe, ProbeHarness, runner_inputs, runner_permissions, runner_probe_definition,
 };
 use crate::resource::{DocumentCheckout, ResourceSaveStatus};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::rc::Rc;
 
 struct Fixture {
-    host: ProbeHost,
+    host: ProbeHarness,
     backend: Rc<durable_store::MemoryStore>,
     frame: FrameHarness,
     checkout: DocumentCheckout,
@@ -23,7 +23,7 @@ struct Fixture {
 impl Fixture {
     fn new(backend: durable_store::MemoryStore) -> Self {
         let backend = Rc::new(backend);
-        let mut host = ProbeHost::new();
+        let mut host = ProbeHarness::new();
         let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
         host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
         host.views = Rc::new(

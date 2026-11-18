@@ -244,7 +244,7 @@ fn assert_fresh_detached_leases(
         );
         assert_ne!(
             base.3, second.3,
-            "second launch must not reuse original custody"
+            "second launch must not reuse original ownership"
         );
         assert_ne!(
             first.3, second.3,
@@ -254,7 +254,7 @@ fn assert_fresh_detached_leases(
     assert_eq!(
         root_identities(original),
         baseline,
-        "cloning must leave original mount custody unchanged"
+        "cloning must leave original mount ownership unchanged"
     );
 }
 fn outer() {
@@ -325,13 +325,13 @@ fn outer() {
     let filtered = bootstrap
         .filter_for_launch(&compiler)
         .unwrap()
-        .expect("roots require canonical baseline custody");
+        .expect("roots require canonical baseline ownership");
     use std::os::fd::AsRawFd;
     let original_pairs = bootstrap.root_pairs();
     let second = bootstrap
         .filter_for_launch(&compiler)
         .unwrap()
-        .expect("second real launch must receive separate detached custody");
+        .expect("second real launch must receive separate detached ownership");
     assert_fresh_detached_leases(&original_pairs, &filtered, &second);
     assert_eq!(bootstrap.root_pairs(), original_pairs);
     assert_filter_launch_splices(
@@ -513,10 +513,9 @@ fn original_projection_error_restores_actual_filesystem_credentials_without_clai
         Some("inner") => inner(),
         Some(other) => panic!("unexpected owned fixture mode {other}"),
         None => {
-            let witness = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(witness.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-            let marker: PathBuf = witness.path().join("complete");
+            let proof = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(proof.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let marker: PathBuf = proof.path().join("complete");
             let mut command = current_command("outer");
             command.env(MARKER, &marker);
             isolate_parent_death(&mut command);
@@ -623,9 +622,9 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         std::fs::write(marker, COMPLETE).unwrap();
         return;
     }
-    let witness = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(witness.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let marker = witness.path().join("complete");
+    let proof = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(proof.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let marker = proof.path().join("complete");
     let mut command = Command::new("/usr/bin/unshare");
     command
         .args(["--mount", "--propagation", "private"])

@@ -257,14 +257,14 @@ fn arrow_pixels(side: u32) -> Vec<u8> {
 }
 
 impl State {
-    /// What the pointer shows now: nothing while it is parked, else a hosted surface under it
+    /// What the pointer shows now: nothing while it is parked, else a surface under it
     /// chooses its shape, else the focused client.
     fn cursor_status(&self) -> CursorImageStatus {
         if self.pointer_parked {
             return CursorImageStatus::Hidden;
         }
-        match self.host_under_pointer() {
-            Some(host) => CursorImageStatus::Named(host.cursor()),
+        match self.surface_under_pointer() {
+            Some(surface) => CursorImageStatus::Named(surface.cursor()),
             None => self.cursor.status.clone(),
         }
     }
@@ -306,13 +306,24 @@ impl State {
         let Some(geometry) = self.space.output_geometry(output) else {
             return Vec::new();
         };
-        if !geometry.to_f64().contains(self.pointer) {
-            return Vec::new();
-        }
         let scale = output.current_scale().fractional_scale();
-        let at: Point<i32, Physical> =
-            (self.pointer - geometry.loc.to_f64()).to_physical_precise_round(scale);
-        self.cursor_elements_at(renderer, at, scale)
+        let mut elements = Vec::new();
+        if geometry.to_f64().contains(self.pointer) {
+            let at: Point<i32, Physical> =
+                (self.pointer - geometry.loc.to_f64()).to_physical_precise_round(scale);
+            elements.extend(self.cursor_elements_at(renderer, at, scale));
+        }
+        // A pen's tool draws its own image where its tip is, beside the pointer's: a tablet
+        // reports where the tool is, not where a mouse is.
+        for cursor in self.tablets.cursor_images() {
+            if !geometry.to_f64().contains(cursor.at) {
+                continue;
+            }
+            let at: Point<i32, Physical> =
+                (cursor.at - geometry.loc.to_f64()).to_physical_precise_round(scale);
+            elements.extend(self.image_elements_at(renderer, &cursor.image, at, scale));
+        }
+        elements
     }
 
     /// The pointer's elements with its hotspot at `at` (physical pixels of whatever they are drawn
@@ -327,14 +338,30 @@ impl State {
         R: Renderer + ImportAll + ImportMem,
         R::TextureId: Clone + Send + 'static,
     {
-        match self.cursor_status() {
+        self.image_elements_at(renderer, &self.cursor_status(), at, scale)
+    }
+
+    /// `image` drawn with its hotspot at `at` (physical pixels of whatever it is drawn into) at
+    /// `scale` ; none while it is hidden.
+    pub(crate) fn image_elements_at<R>(
+        &self,
+        renderer: &mut R,
+        image: &CursorImageStatus,
+        at: Point<i32, Physical>,
+        scale: f64,
+    ) -> Vec<OutputRenderElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        match image {
             CursorImageStatus::Hidden => Vec::new(),
             CursorImageStatus::Surface(surface) => {
-                let hotspot = surface_hotspot(&surface);
+                let hotspot = surface_hotspot(surface);
                 let origin = at - hotspot.to_physical_precise_round(scale);
                 render_elements_from_surface_tree(
                     renderer,
-                    &surface,
+                    surface,
                     origin,
                     Scale::from(scale),
                     1.0,
@@ -342,7 +369,7 @@ impl State {
                 )
             }
             CursorImageStatus::Named(icon) => {
-                let image = self.cursor.image(icon, self.cursor.size, scale);
+                let image = self.cursor.image(*icon, self.cursor.size, scale);
                 let origin = at - image.hotspot;
                 match named_element(renderer, &image, origin, scale) {
                     Ok(element) => vec![element],

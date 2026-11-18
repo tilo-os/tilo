@@ -10,7 +10,7 @@ use crate::meta::{
     ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
     field_kind, parse_ty,
 };
-use crate::store::{FieldSpec, NewRecord};
+use crate::store::{FieldSpec, NewResource};
 use crate::value::EnumValue;
 
 #[derive(Clone, Debug)]
@@ -659,9 +659,9 @@ impl Registry {
     }
 
     /// What a new resource of this type starts out with.
-    pub fn new_record(&self, ty: &str) -> Option<NewRecord> {
+    pub fn new_record(&self, ty: &str) -> Option<NewResource> {
         let (pkg, info) = self.type_info(ty)?;
-        Some(NewRecord {
+        Some(NewResource {
             ty: info.id.clone(),
             app: AppId::from(pkg.meta.app.as_str()),
             fields: info.specs(),

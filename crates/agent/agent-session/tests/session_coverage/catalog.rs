@@ -9,7 +9,7 @@ use super::{
 };
 use tilo_agent_session::ModelPlanner;
 use tilo_agent_session::profile::Catalog;
-use tilo_relay_protocol::agents::TaskState;
+use tilo_server_protocol::agents::TaskState;
 
 const NOTES: &str = "so.tilo.notes";
 
@@ -124,7 +124,7 @@ async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
     }
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// An agent granted more apps than its reference describes at once (mode
@@ -184,5 +184,5 @@ async fn a_reference_keeps_the_apps_it_described() {
     assert_eq!(requests[1]["tools"], requests[2]["tools"]);
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

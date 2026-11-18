@@ -52,8 +52,8 @@ pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
     DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,
-    PendingToken, SearchCatalog, SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage,
-    SearchProvider, SearchRecord, SearchResult, normalize_search_text,
+    PendingToken, SearchCatalog, SearchCatalogError, SearchCatalogStats, SearchCursor, SearchItem,
+    SearchPage, SearchProvider, SearchResult, normalize_search_text,
 };
 pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};

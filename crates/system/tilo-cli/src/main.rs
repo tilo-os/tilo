@@ -391,11 +391,15 @@ enum Cmd {
     #[command(
         after_help = "Examples:\n  tilo migrate sources\n  tilo migrate review thunderbird\n  \
                             tilo migrate choose thunderbird ada@example.com --only\n  \
-                            tilo migrate start thunderbird\n  tilo migrate status\n\n\
+                            tilo migrate start thunderbird\n  tilo migrate start thunderbird -w \"Jane Doe\"\n  \
+                            tilo migrate status\n\n\
                       Each step is its own command, so an agent can show the person what a source holds \
                       before anything moves. What comes over appears in the workspace as one entry in \
                       History, which undoes it. Running it again brings only what is not there yet. \
-                      Keys and passwords are never arguments: `connect` asks the person for a key."
+                      Keys and passwords are never arguments: `connect` asks the person for a key.\n\n\
+                      Without -w a run lands in this computer's own workspace. With it, the run lands in \
+                      that hosted workspace (a name or an id) through Tilo's API, with the key this \
+                      computer holds: TILO_API_KEY, the file --key-file names, or the key `tilo login` kept."
     )]
     Migrate {
         /// The answer as JSON.
@@ -581,7 +585,12 @@ fn command_here(here: Here) -> clap::Command {
         })
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
-                "open" | "action" | "workspace" => !here.desktop,
+                "open" | "action" => !here.desktop,
+                // A hosted workspace's hosts are chosen from anywhere; only
+                // branching one is this desktop's.
+                "workspace" => {
+                    return sub.mut_subcommand("branch", |branch| branch.hide(!here.desktop));
+                }
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 // A computer logged in as one of the person's devices tells of its folders.
@@ -1038,6 +1047,21 @@ fn run_hosted(
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
+        Cmd::Workspace {
+            cmd: desktop::WorkspaceCmd::Hosts { cmd },
+        } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::hosts(reach, &workspace, cmd)),
+        // Only an explicit `-w` lands a migration in a hosted workspace: without one it comes
+        // over this computer's own, through the session `tilo login` holds.
+        Cmd::Migrate { json, cmd } if workspace.is_some() => {
+            let target = migrate::Target::Hosted {
+                api: api.map(str::to_owned),
+                key_file: key_file.map(std::path::Path::to_path_buf),
+                workspace: workspace.unwrap_or_default(),
+            };
+            migrate::run_into(cmd, json, &target)
+        }
         other => return Err(other),
     })
 }
@@ -2278,24 +2302,24 @@ mod tests {
                     "Usage: tilo [OPTIONS] <COMMAND>\n",
                     "\n",
                     "Commands:\n",
-                    "  app        Find, get, update and remove apps\n",
-                    "  action     See what this desktop can do, and do it\n",
-                    "  do         Do one thing this desktop, or a hosted workspace (-w), can do\n",
-                    "  ls         List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
-                    "  read       Read one resource of a hosted workspace (-w)\n",
-                    "  view       What an app shows of a resource: its view, line by line\n",
-                    "  workspace  Your workspaces on this desktop\n",
-                    "  keys       Keys to your hosted workspaces, for your code and its agents\n",
-                    "  members    The people in a hosted workspace, inviting more, and how it names you\n",
-                    "  account    Your hosted account: its workspaces\n",
-                    "  files      Files into a hosted workspace\n",
-                    "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
-                    "  runs       The runs of a hosted workspace (-w) in records you may read, newest first\n",
-                    "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
-                    "  device     Your devices: update them, go back, repair them, develop on them\n",
-                    "  agent      Connect agents to this desktop, and choose their models\n",
-                    "  package    Make and sign packages\n",
-                    "  help       Print this message or the help of the given subcommand(s)\n",
+                    "  app          Find, get, update and remove apps\n",
+                    "  action       See what this desktop can do, and do it\n",
+                    "  do           Do one thing this desktop, or a hosted workspace (-w), can do\n",
+                    "  ls           List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
+                    "  read         Read one resource of a hosted workspace (-w)\n",
+                    "  view         What an app shows of a resource: its view, line by line\n",
+                    "  workspace    Your workspaces on this desktop\n",
+                    "  keys         Keys to your hosted workspaces, for your code and its agents\n",
+                    "  members      The people in a hosted workspace, inviting more, and how it names you\n",
+                    "  account      Your hosted account: its workspaces\n",
+                    "  files        Files into a hosted workspace\n",
+                    "  run          Run a tilolang program in a hosted workspace, as one undoable step\n",
+                    "  invocations  The invocations of a hosted workspace (-w) in records you may read, newest first\n",
+                    "  sdk          Write the SDK's types for a workspace's apps, from their surfaces\n",
+                    "  device       Your devices: update them, go back, repair them, develop on them\n",
+                    "  agent        Connect agents to this desktop, and choose their models\n",
+                    "  package      Make and sign packages\n",
+                    "  help         Print this message or the help of the given subcommand(s)\n",
                     "\n",
                     "Options:\n",
                     "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id; this computer's own when not given\n",
@@ -2338,8 +2362,8 @@ mod tests {
             assert_eq!(
                 listed(elsewhere),
                 [
-                    "app", "do", "ls", "read", "view", "keys", "members", "account", "files",
-                    "run", "invocations", "sdk", "login", "folders", "migrate"
+                    "app", "do", "ls", "read", "view", "workspace", "keys", "members", "account",
+                    "files", "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2358,9 +2382,8 @@ mod tests {
             assert_eq!(
                 listed(nothing),
                 [
-                    "do", "ls", "read", "view", "keys", "members", "account", "files", "run",
-                    "invocations",
-                    "sdk", "login", "folders", "migrate"
+                    "do", "ls", "read", "view", "workspace", "keys", "members", "account", "files",
+                    "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let bare = command_here(nothing).render_help().to_string();
@@ -2537,6 +2560,18 @@ mod tests {
                 Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
                 "a branch is named"
             );
+            let hosts = Cli::try_parse_from([
+                "tilo", "workspace", "hosts", "add", "https://tilo.sh", "-w", "Tilo",
+            ])
+            .expect("workspace hosts add parses");
+            assert!(matches!(
+                hosts.cmd,
+                Cmd::Workspace {
+                    cmd: desktop::WorkspaceCmd::Hosts {
+                        cmd: hosted::HostsCmd::Add { ref origin }
+                    }
+                } if origin == "https://tilo.sh"
+            ));
             let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
             assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
             let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");

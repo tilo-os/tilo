@@ -4,7 +4,7 @@
 //! the two people it is between open from either side.
 //!
 //! Such a record is its owner's resource: the workspace's grants on the owner's
-//! node decide every change, here at the API as on the relay, whichever
+//! node decide every change, here at the API as on the server, whichever
 //! app's window makes it. The window opens it on first use, follows it
 //! change by change, and reports its route so the runtime syncs it; only
 //! the owner's own window publishes it (and lists it in its surface).
@@ -12,7 +12,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 use tilo_resource::{Invoke, Resource};
@@ -24,6 +24,7 @@ use ui_core::resource::workspace::WorkspaceResources;
 use ui_core::wake::WakeHandle;
 
 use super::live::Live;
+use super::resources::{Held, ResourceApi};
 
 /// A record every app of the window's workspace opens, held for the window
 /// ([`ResourceEnv::workspace`](super::ResourceEnv::workspace)).
@@ -33,14 +34,14 @@ pub struct WorkspaceResource<P: Resource> {
 
 /// Opens the record `id` of `P` that one owner keeps, later, from a widget that outlives the
 /// view that built it: a page's Files window opens each chunk of the workspace's tree as the
-/// tree lists it ([`ResourceEnv::record_opener`](super::ResourceEnv::record_opener)).
-pub struct RecordOpener<P: Resource> {
+/// tree lists it ([`ResourceEnv::resource_opener`](super::ResourceEnv::resource_opener)).
+pub struct ResourceOpener<P: Resource> {
     storage: Rc<super::settings::ViewStorage>,
     owner: &'static str,
     resource: std::marker::PhantomData<fn() -> P>,
 }
 
-impl<P: Resource> Clone for RecordOpener<P> {
+impl<P: Resource> Clone for ResourceOpener<P> {
     fn clone(&self) -> Self {
         Self {
             storage: Rc::clone(&self.storage),
@@ -50,7 +51,7 @@ impl<P: Resource> Clone for RecordOpener<P> {
     }
 }
 
-impl<P: Resource> RecordOpener<P> {
+impl<P: Resource> ResourceOpener<P> {
     pub(crate) fn new(storage: Rc<super::settings::ViewStorage>, owner: &'static str) -> Self {
         Self {
             storage,
@@ -79,7 +80,7 @@ struct Shared<P: Resource> {
     record: StoredResource,
     /// The app that keeps it: whose node the workspace's grants decide on.
     owner: &'static str,
-    app_id: &'static str,
+    /// Where its changes are made, as their history names it.
     app_title: &'static str,
     me: tilo_resource::MemberId,
     permissions: Option<LivePermissions>,
@@ -194,15 +195,18 @@ impl<P: Resource> Shared<P> {
         };
         let change = action.change_kind();
         // Who the change is: the invoker's own actor (an agent acting in a turn, attributed as it
-        // is at an app's record origin), or the person seated here for an invoker naming nobody.
+        // is at an app's record origin), or the person at this device for an invoker naming nobody.
         let invoker = if invoker.acting.by.id().is_empty() {
             ActionInvoker::member(self.me.clone())
         } else {
             invoker.clone()
         };
         let actor = invoker.acting.by.actor_bytes();
+        // The change is the owner's action, whichever window or tab makes it: every receiver
+        // decides it against the owner's surface and refuses a verb named under another app. The
+        // title still says where it was made ("Workspace settings").
         let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
-            .with_app(self.app_id, self.app_title)
+            .with_app(self.owner, self.app_title)
             .with_invoker(invoker)
             .with_change(change);
         let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
@@ -369,7 +373,6 @@ impl<P: Resource> WorkspaceResource<P> {
             shared: Rc::new(Shared::<P> {
                 record,
                 owner,
-                app_id: app.0,
                 app_title: app.1,
                 me,
                 permissions,
@@ -457,7 +460,7 @@ impl<P: Resource> WorkspaceResource<P> {
     /// record does, or the record cannot be changed right now (for that,
     /// [`Self::invoke_then`] waits).
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
-        self.invoke_as(&super::record::acting(&self.shared.me), invoke)
+        self.invoke_as(&super::resources::acting(&self.shared.me), invoke)
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), which the change is attributed to —
@@ -502,7 +505,7 @@ impl<P: Resource> WorkspaceResource<P> {
             .waiting
             .try_borrow()
             .is_ok_and(|waiting| waiting.is_empty());
-        let invoker = super::record::acting(&shared.me);
+        let invoker = super::resources::acting(&shared.me);
         if first && let Applied::Done(result) = shared.apply_as(&action, &invoker) {
             shared.refresh();
             return then(result);
@@ -515,6 +518,43 @@ impl<P: Resource> WorkspaceResource<P> {
         });
         if let Some(window) = &shared.wake {
             window.wake();
+        }
+    }
+
+    /// Refuse `action` unless the workspace's grants let the window's person do it: a verb as
+    /// [`Self::may`] decides it, a field edit at the field it changes. What a caller from
+    /// outside asks for passes here before it is applied.
+    fn admitted(&self, action: &P::Action) -> Result<(), ActionError> {
+        let refused = || {
+            ActionError::Refused(format!(
+                "you may not change the workspace's {}",
+                P::LABEL.to_lowercase()
+            ))
+        };
+        if let Some(verb) = verb_of::<P>(action) {
+            return if self.may(&verb) {
+                Ok(())
+            } else {
+                Err(refused())
+            };
+        }
+        let Some(permissions) = &self.shared.permissions else {
+            return Ok(());
+        };
+        let need = tilo_resource::need_of::<P>(action);
+        let node = TreePath::root()
+            .app(self.shared.owner)
+            .kind(P::KIND)
+            .resource(self.id().as_str().to_owned())
+            .field(need.field.as_deref().unwrap_or_default())
+            .action(tilo_resource::FIELD_EDIT);
+        if permissions.check(&PermissionScope::Action {
+            node,
+            kind: need.kind,
+        }) {
+            Ok(())
+        } else {
+            Err(refused())
         }
     }
 
@@ -542,6 +582,48 @@ impl<P: Resource> WorkspaceResource<P> {
     }
 }
 
+/// What `shared` holds as the keeping app's window offers it to callers from outside, beside
+/// the app's own resource: its read, and each action once the workspace's grants admit it
+/// ([`WorkspaceResource::admitted`]), applied as whoever asked.
+fn offered<P: Resource>(shared: &Rc<Shared<P>>) -> Held<P> {
+    let following = Rc::downgrade(shared);
+    let applying = Rc::downgrade(shared);
+    let reading = Rc::downgrade(shared);
+    Held::new(
+        P::KIND.to_owned(),
+        P::LABEL.to_owned(),
+        true,
+        shared.live.clone(),
+        move |_: &Live<P>| {
+            if let Some(shared) = following.upgrade() {
+                shared.refresh();
+            }
+        },
+        move |action: &P::Action, invoker: &ActionInvoker| {
+            let shared = applying
+                .upgrade()
+                .ok_or_else(|| ActionError::Refused("the document is closed".into()))?;
+            let document = WorkspaceResource { shared };
+            document.admitted(action)?;
+            match document.shared.apply_as(action, invoker) {
+                Applied::Done(result) => {
+                    document.shared.refresh();
+                    result
+                }
+                Applied::Waits => Err(ActionError::Refused(
+                    ui_core::resource::HistoryUnavailable::StoreInUse.to_string(),
+                )),
+            }
+        },
+    )
+    .decided_by_grants()
+    .reading(move |read| {
+        if let Some(shared) = reading.upgrade() {
+            WorkspaceResource { shared }.read(|doc| read(doc));
+        }
+    })
+}
+
 /// The verb `action` invokes, as its record publishes it and history names
 /// it (what a grant on one verb covers); `None` for a field edit.
 pub(crate) fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
@@ -567,6 +649,10 @@ pub(crate) enum Unopened {
     Failed,
 }
 
+/// Asks a window's [`WorkspaceState`] once more for one document that was on its way: whether
+/// it opened.
+type AskAgain = Rc<dyn Fn(&WorkspaceState) -> bool>;
+
 /// The records every app of the workspace opens that a window's views opened:
 /// one [`WorkspaceResource`] per kind.
 pub(crate) struct WorkspaceState {
@@ -577,12 +663,35 @@ pub(crate) struct WorkspaceState {
     /// Wakes the window when another replica's change arrives.
     wake: Option<WakeHandle>,
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
-    /// Records still on their way from the workspace when a view asked for them, with what had
+    /// Resources still on their way from the workspace when a view asked for them, with what had
     /// arrived in their stores then ([`Self::arrivals`]): each is tried again once something
-    /// arrives, not on every draw that asks for it.
-    unopened: RefCell<HashMap<OpenKey, u64>>,
+    /// arrives, not on every draw that asks for it. With each, how to ask for it once more:
+    /// the window's refresh does when something arrived ([`Self::open_arrived`]), since a
+    /// declaration asks once and a view only when it is built.
+    unopened: RefCell<HashMap<OpenKey, (u64, AskAgain)>>,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    /// What this app keeps for its whole workspace, as its window offers it to callers from
+    /// outside ([`offered`]): none in a window of any other app.
+    published: RefCell<Vec<Rc<dyn ResourceApi>>>,
+    /// The parts of the window's views being built now, the innermost last
+    /// ([`Self::building`]).
+    building: RefCell<Vec<Weak<()>>>,
+    /// The parts whose build asked for a document that was on its way, each with that
+    /// document: what it read then was "not here", so it is built again once the document
+    /// opens ([`Self::take_arrived`]).
+    asked: RefCell<Vec<(OpenKey, Weak<()>)>>,
+    /// The parts to build again: what they asked for has opened since they were built.
+    arrived: RefCell<Vec<Weak<()>>>,
+}
+
+/// A part of a view being built ([`WorkspaceState::building`]), until this is dropped.
+pub(crate) struct Building(Rc<WorkspaceState>);
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        self.0.building.borrow_mut().pop();
+    }
 }
 
 impl WorkspaceState {
@@ -603,6 +712,82 @@ impl WorkspaceState {
             unopened: RefCell::default(),
             owners: RefCell::default(),
             refreshers: RefCell::default(),
+            published: RefCell::default(),
+            building: RefCell::default(),
+            asked: RefCell::default(),
+            arrived: RefCell::default(),
+        }
+    }
+
+    /// The part of a view kept alive by `part` is being built, until what this returns is
+    /// dropped. A document it asks for meanwhile that is still on its way from the workspace
+    /// is one it reads as not here, so it is built again, it alone, once that document opens
+    /// ([`Self::take_arrived`]): nothing else would show the part what arrived, since a part
+    /// reads when it is built.
+    pub(crate) fn building(self: &Rc<Self>, part: &Rc<()>) -> Building {
+        self.building.borrow_mut().push(Rc::downgrade(part));
+        Building(Rc::clone(self))
+    }
+
+    /// Whether the part kept alive by `part` asked, while it was built, for a document that
+    /// was on its way and has opened since: answered once, to the part, which builds itself
+    /// again. A window in which nothing arrived answers every part from an empty list.
+    pub(crate) fn take_arrived(&self, part: &Rc<()>) -> bool {
+        let mut arrived = self.arrived.borrow_mut();
+        if arrived.is_empty() {
+            return false;
+        }
+        let this = Rc::downgrade(part);
+        let mut found = false;
+        // A part that went before it was built again is forgotten here.
+        arrived.retain(|waiting| {
+            if waiting.ptr_eq(&this) {
+                found = true;
+                return false;
+            }
+            waiting.strong_count() > 0
+        });
+        found
+    }
+
+    /// The part being built now asked for the document `key`, which is on its way.
+    fn asked_while_building(&self, key: &OpenKey) {
+        let Some(part) = self.building.borrow().last().cloned() else {
+            return;
+        };
+        let mut asked = self.asked.borrow_mut();
+        asked.retain(|(_, waiting)| waiting.strong_count() > 0);
+        if !asked
+            .iter()
+            .any(|(wanted, waiting)| wanted == key && waiting.ptr_eq(&part))
+        {
+            asked.push((key.clone(), part));
+        }
+    }
+
+    /// The document `key` opened: the parts that asked for it while it was on its way are
+    /// built again in the window's next frame, which is asked for.
+    fn opened_for_parts(&self, key: &OpenKey) {
+        let mut asked = self.asked.borrow_mut();
+        if asked.is_empty() {
+            return;
+        }
+        let mut arrived = self.arrived.borrow_mut();
+        let known = arrived.len();
+        asked.retain(|(wanted, waiting)| {
+            if wanted != key {
+                return true;
+            }
+            if waiting.strong_count() > 0 && !arrived.iter().any(|due| due.ptr_eq(waiting)) {
+                arrived.push(waiting.clone());
+            }
+            false
+        });
+        let due = arrived.len() > known;
+        drop(arrived);
+        drop(asked);
+        if due && let Some(window) = &self.wake {
+            window.wake();
         }
     }
 
@@ -673,30 +858,84 @@ impl WorkspaceState {
             super::controls::opened_resource::<P>();
         }
         let arrived = self.arrivals(owner);
-        if self.unopened.borrow().get(&key) == Some(&arrived) {
+        if self
+            .unopened
+            .borrow()
+            .get(&key)
+            .is_some_and(|(seen, _)| *seen == arrived)
+        {
+            self.asked_while_building(&key);
             return None;
         }
         match open(&self.records) {
             Ok(opened) => {
                 self.unopened.borrow_mut().remove(&key);
+                self.opened_for_parts(&key);
                 self.held(key, Some(opened))
             }
             Err(Unopened::Arriving) => {
-                self.unopened.borrow_mut().insert(key, arrived);
+                // Its store tells the window when something arrives in it, also for what
+                // never opened here: nothing else would, and the window would go on showing
+                // that the workspace has none until something else woke it.
+                if let (Some(window), Ok(store)) = (&self.wake, self.records.store_of(owner)) {
+                    store.wake_on_arrival(window.clone());
+                }
+                let again = Self::asking_again::<P>(owner, id);
+                self.asked_while_building(&key);
+                self.unopened.borrow_mut().insert(key, (arrived, again));
                 None
             }
             Err(Unopened::Failed) => None,
         }
     }
 
-    /// What arrived so far in the stores a record of `owner` opens in, the owner's and this
+    /// How to ask once more for the document `id` of `P` that `owner` keeps, which was on its
+    /// way when a view or a declaration asked for it.
+    fn asking_again<P: Resource>(owner: &'static str, id: &str) -> AskAgain {
+        let id = id.to_owned();
+        Rc::new(move |state: &Self| {
+            if id == ui_core::resource::workspace::document_id(P::KIND) {
+                state.open::<P>(owner).is_some()
+            } else {
+                state.open_at::<P>(owner, &id).is_some()
+            }
+        })
+    }
+
+    /// Open what was on its way when it was asked for, once something arrived for it: the
+    /// workspace delivered it, or answered that it holds none of it, so it is founded here.
+    /// The window is woken for what opened, so that what shows it is built with it. Whether
+    /// anything opened. A window does this in its refresh; a view no window shows is never
+    /// refreshed, and whoever holds it asks for this when it told the view what arrived.
+    pub(crate) fn open_arrived(&self) -> bool {
+        let due: Vec<AskAgain> = {
+            let unopened = self.unopened.borrow();
+            if unopened.is_empty() {
+                return false;
+            }
+            unopened
+                .iter()
+                .filter(|((owner, _, _), (seen, _))| self.arrivals(owner) != *seen)
+                .map(|(_, (_, again))| Rc::clone(again))
+                .collect()
+        };
+        let opened = due.iter().fold(false, |opened, again| again(self) | opened);
+        if opened && let Some(window) = &self.wake {
+            window.wake();
+        }
+        opened
+    }
+
+    /// What arrived so far in the stores a document of `owner` opens in, the owner's and this
     /// app's: it moves whenever the workspace delivers a record to either, or answers that it
     /// holds none of one asked for ([`ui_core::resource::ResourceStore::kept_revision`]).
     fn arrivals(&self, owner: &str) -> u64 {
+        // A store that does not open yet counts as nothing arrived, so that its opening is
+        // an arrival too.
         let kept = |owner: &str| {
             self.records
                 .store_of(owner)
-                .map_or(0, |store| store.kept_revision())
+                .map_or(0, |store| store.kept_revision().wrapping_add(1))
         };
         let own = kept(owner);
         if owner == self.app_id {
@@ -719,6 +958,13 @@ impl WorkspaceState {
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
         }));
+        // The keeping app's own window offers it to callers from outside, beside its own
+        // resource; every other app's window only opens it.
+        if key.0 == self.app_id {
+            self.published
+                .borrow_mut()
+                .push(Rc::new(offered(&shared)) as Rc<dyn ResourceApi>);
+        }
         self.opened
             .borrow_mut()
             .insert(key, Rc::clone(&shared) as Rc<dyn Any>);
@@ -727,10 +973,16 @@ impl WorkspaceState {
 
     /// Read every open record that moved. Whether one did.
     pub(crate) fn refresh(&self) -> bool {
+        let arrived = self.open_arrived();
         self.refreshers
             .borrow()
             .iter()
-            .fold(false, |moved, refresh| refresh() | moved)
+            .fold(arrived, |moved, refresh| refresh() | moved)
+    }
+
+    /// What this app keeps for its whole workspace, as the API offers and changes it.
+    pub(crate) fn apis(&self) -> Vec<Rc<dyn ResourceApi>> {
+        self.published.borrow().clone()
     }
 
     /// The routes of the open records, which the runtime syncs.

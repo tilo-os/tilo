@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase invocation_locus_oversized_metadata_and_expired_custody_remain_unavailable;
+    phase invocation_locus_oversized_metadata_and_expired_ownership_remain_unavailable;
     {
         let fixture = ActionFixture::broker();
         let actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("a".repeat(4097)));
@@ -268,7 +268,7 @@ tilo_test_env::scenario! {
         allowed.store(true, Ordering::Release);
         assert!(
             scope.locus_basis().is_err(),
-            "original custody cannot revive after expiry"
+            "original ownership cannot revive after expiry"
         );
     }
 

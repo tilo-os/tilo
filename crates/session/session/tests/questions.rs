@@ -37,7 +37,7 @@ use tilo_portal::file_chooser::{
 };
 use tilo_portal::screenshot::ScreenshotQuestion;
 use tilo_service::{Answer, Asked, Question, Questions, Service, Started, decode, offer};
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileMode, FilePickerEffect};
 use tilo_sheets::portal::{Body, Dialog, Field, PortalEffect, Prompt, PromptKind};
@@ -292,7 +292,7 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
         shown.title, "org.example.Recorder wants to use your screen",
         "what the app asks for, in the person's words"
     );
-    assert_eq!(shown.heading, "org.example.Recorder");
+    assert_eq!(shown.heading, "", "the title already names the app");
     assert_eq!(
         shown.body,
         Body::Choices(vec![
@@ -312,7 +312,7 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
 
     let grant = dialog(&session);
     assert_eq!(grant.title, "Allowed for good");
-    assert_eq!(grant.heading, "org.example.Recorder");
+    assert_eq!(grant.heading, "", "its detail names the app");
     assert_eq!(
         grant.detail,
         "org.example.Recorder may now use your screen without asking. \
@@ -624,7 +624,7 @@ fn the_network_that_could_not_be_joined_offers_to_join_it() {
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
     assert_eq!(shown.title, "Couldn't join Cafe");
-    assert_eq!(shown.heading, "Cafe");
+    assert_eq!(shown.heading, "", "the title already names the network");
     assert_eq!(shown.detail, "Enter the password to connect.");
     assert_eq!(shown.body, Body::Choices(vec!["Enter password".to_owned()]));
     assert_eq!(shown.confirm_label, "Enter password");
@@ -845,9 +845,9 @@ impl Service for Allowances {
 }
 
 /// An app allowed for good is shown its allowance at once, and the sheet's two answers either take
-/// it back through the portal's own action or leave it standing.
+/// it back through the portal's own action or leave it open.
 #[test]
-fn the_allowance_given_for_good_is_revoked_or_left_standing() {
+fn the_allowance_given_for_good_is_revoked_or_left_access() {
     for revoke in [true, false] {
         let _settled = ui::motion::testing::settled();
         let kept = Arc::new(Mutex::new(vec![(
@@ -1112,7 +1112,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     let mut session = crate::common::headless(Options {
         questions: Some(questions.clone()),
         collab: false,
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(socket.clone()),
         ..Options::default()
     });
@@ -1129,7 +1129,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
     assert_eq!(
-        shown.title, "Work in “Workspace” as the agent claude-code@host#1",
+        shown.title, "Work in “Workspace” as the agent Claude Code",
         "where it would work, and as what"
     );
     assert!(
@@ -1167,11 +1167,11 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     pump(&mut session, |session| {
         agents_present(session)
             .iter()
-            .any(|agent| agent == "Claude Code #1")
+            .any(|agent| agent == "Claude Code")
     });
     assert_eq!(
         agents_present(&session),
-        ["Claude Code #1".to_owned()],
+        ["Claude Code".to_owned()],
         "the bar shows the agent the person let in while it works here"
     );
     assert!(
@@ -1196,7 +1196,7 @@ fn a_program_the_person_refuses_works_nowhere() {
     let mut session = crate::common::headless(Options {
         questions: Some(questions.clone()),
         collab: false,
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(socket.clone()),
         ..Options::default()
     });

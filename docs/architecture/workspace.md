@@ -3,7 +3,7 @@
 A workspace is the one unit of collaboration. It is the same thing on the
 native desktop, on a workspace host, in the standalone runtime and in the
 browser. There is no second unit beside or under it: no personal space, no
-continuity lane.
+continuity path.
 
 A workspace has three parts:
 
@@ -28,8 +28,12 @@ grants and history name members, never devices.
 the device key is its iroh `EndpointId`. Pairing brings the identity to a new
 device; any of the person's devices can pair another, and the devices that hold
 the identity key approve it. Revocations travel in the same hellos as
-certificates and win over them. Each device lists the certificates it holds in
-a record of the person's own store, which only their devices are handed, so
+certificates and win over them. A removed device loses its future, not its
+person's past: with the removal the workspace's governance keeps where each
+resource's history stood for that device, and what it wrote up to there stays
+valid for everyone, the devices added later too
+([security](../security/architecture.md), 3.4). Each device lists the certificates it holds in
+a document of the person's own store, which only their devices are handed, so
 every device comes to know the others whichever of them it paired with; a
 certificate read there is checked as one a device shows for itself. Nothing
 of that store leaves a device for one it holds no such certificate of: a
@@ -63,14 +67,14 @@ always resolve alike; a passed-over device carries its reason.
 A piece of the workspace's work that must happen once — a bot's scheduled
 trigger, an automation only one device should run — is taken under a lease kept
 in the workspace's own state, so a group of desktops with no server has it. A
-participant that wants the work writes its own claim with a deadline it pushes
+key holder that wants the work writes its own claim with a deadline it pushes
 out while it works; claims rank by placement and the best live one of the
-latest term holds. Two participants that claim after a partition keep both
+latest term holds. Two key holders that claim after a partition keep both
 claims until the merge, then agree on one winner on every device; the loser
 withdraws its claim and stops. A claim is over only a minute past its deadline,
 so devices whose clocks differ by less than that never disagree about whether
 the lease is free. What the work got to is workspace state too: a bot's
-schedule keeps the fire time it answered, so whichever participant holds the
+schedule keeps the fire time it answered, so whichever key holder holds the
 lease carries on from it and a time missed while none ran is caught up once.
 
 A host is not a different kind of node. "Workspace hosting" is a device with
@@ -84,23 +88,48 @@ an address that host signed. Being named there is what lets a host in
 everywhere the workspace is held: its device holds the workspace, and its
 person may reach the hosts that do. Another host of the governor's own person
 is also admitted as one of the owner's devices; a host of another person, a
-hosted relay such as tilo.sh, is named and nothing more, so the workspace's
-members and roles stay as they were. Whom a workspace is held by is the
+hosted server such as tilo.sh, is named and nothing more, so the workspace's
+members and roles stay as they were. Such a host writes one thing into the
+workspace: the redemption of an invitation it answers. Every receiver checks
+that its device was among the workspace's signed holders where it wrote the
+redemption, and checks the invitation itself; anything else it writes is
+refused. Adding people otherwise and changing roles stays with the owner's
+and administrators' devices. Whom a workspace is held by is the
 owner's decision and the keeper's: a device of the governor's person, or of
 the person the workspace is kept for, asks its governor to have another host
 hold it (`workspace.attach-host`, an operator's `hold`), and the governor
 hands that host the workspace and names it. The other host takes it only when
 its own operator's work setting takes that work: by default only its own
 person's, and another person's only for the workspaces its operator names or
-for anyone when it says so, so a relay never holds strangers' workspaces
-unasked. From then on both hold it: each carries what is written through it
-to the other, signed by the device that wrote it, so its history and
-authors are the same on both, and each picks up again after a restart. A
+for anyone when it says so, so a server never holds strangers' workspaces
+unasked. From then on both hold it: each keeps a writable copy and carries what is
+written through it to every other holder, signed by the device that wrote
+it, so its history and authors are the same on all of them, and each picks up
+again after a restart. None of them is needed by the others: losing any one
+leaves the workspace writable and governed at the rest. The workspace's
+compacted base stays with the host it was made on; the others publish only
+their changes after it. A
 member's device dials the holders alike, starting with the one it last
 reached, and keeps its link with whichever answers. Every receiver reads a
 holder's address only with that host's own signature on it, whoever wrote it
 into the governance.
 Detached, the other host lets the workspace go and keeps its files.
+
+**How many copies a workspace keeps.** A workspace says how many key holders
+and how many stores it wants, in its governance beside the servers that hold
+it, chosen by the same owners (`copies.set`). One that never chose wants one
+of each once a server holds it; a group of desktops with no server wants
+nothing beyond the devices it has, so it needs no setup and is never short.
+Each holder says in the workspace's state where its own copy stands: which
+holders it is still taking what it lacks from, and which it cannot reach and
+since when. Every device reads the same rows, so every device names the same
+shortfall: which holder lacks what (history from another holder, or what was
+written since it was last reached) and how many current copies of each kind
+are missing (`tilo_peer_state::CopyStatus`, answered with the holder list). A
+holder that comes back dials the others, takes in what they hold and it
+lacks, and says it is current; the others, reaching it again, say so too.
+A store compacting its history keeps every frame a device that asked it for
+history still lacks, and the newest checkpoint of each document.
 
 ### A machine copied from another
 
@@ -113,12 +142,12 @@ The device key belongs to a machine. Beside it, `device-private/machine.bin`
 records the firmware's system UUID (`/sys/class/dmi/id/product_uuid`), which a
 VM host sets per machine and keeps across that machine's reboots;
 `/etc/machine-id` is on the disk, so a copy carries it and it proves nothing.
-At every boot, before the filesystem, the relay, the network, SSH or a login
+At every boot, before the filesystem, the server, the network, SSH or a login
 read anything, `tilo-device-branch.service` compares the two
 (`tilo_user_identity::branch`):
 
 - the recorded machine: nothing happens;
-- nothing recorded (an install from before the record, or the first boot):
+- nothing recorded (an install from before the document, or the first boot):
   the machine is recorded, nothing else. A copy of a machine that never booted
   a build with this unit cannot be told from its source this way, and both
   keep the one key: **boot the source once on such a build before branching
@@ -153,7 +182,7 @@ cannot be re-sealed into the new one's, so it is dropped and rebuilt from the
 device's peers:
 
 - **Group membership.** Each MLS group the copy holds names the source's
-  device as its member. The relay's group member files (sealed under a key
+  device as its member. The server's group member files (sealed under a key
   its device key derives) are dropped at re-key; a session's (sealed under the
   person's own vault) are dropped where the key service finds them naming
   another device (`key_group::Error::OtherDevice`). Neither is ever used,
@@ -169,7 +198,7 @@ device's peers:
   not land. The membership the host answers replaces the source's enrollment
   the copy held, which was never this device's to act with.
 - **The person's own store.** The store the source kept is set aside beside it
-  (`documents.of-<source>`), and the person's records come back from their
+  (`documents.of-<source>`), and the person's documents come back from their
   other devices.
 
 The old device is **never revoked**: the machine it was copied from still is
@@ -192,7 +221,7 @@ certificate:
   (`user-identity/privkey.bin`) certifies its branch at boot, granting exactly
   what the source's certificate granted, and no expiry the source did not
   have. It could sign any certificate for that person already.
-- A person whose root is in their own identity record (the usual primary
+- A person whose root is in their own identity document (the usual primary
   device) has it issued at their next sign-in, the same provisioning that
   issues a certificate to any of their devices that holds none; it carries the
   branch's name (`device/branch-label`).
@@ -210,30 +239,37 @@ A person's servers are configured in their admin workspace: an ordinary
 workspace whose only member is the person, in which each server, being one of
 their devices, takes part. Its id follows from the person's root, so every
 server finds the same one; a server enrolled into the person's identity makes
-it where it holds none and enters itself on its first start. One record of
+it where it holds none and enters itself on its first start. One document of
 kind `tilo.servers` holds each server's desired configuration: its name, which
-workspaces it holds and as what (store or participant), what it offers
-(storage, compute, machines), its update channel and daily maintenance window,
+workspaces it holds and as what (store or key holder), what it offers
+(storage, compute, machines), the updates it follows and daily maintenance window,
 how it unlocks after a boot, and whether it was retired. Every change is a
-typed action on that record, so it has history and an author, and a server
+typed action on that document, so it has history and an author, and a server
 applies what its entry says: no setting of a server lives in a file of its
-own. Today a server takes its name and its retirement from the record; the
-other fields are declared for the parts that apply them.
+own. A device of the person that governs a workspace hands it to the servers
+the entry names and names them among its hosts, so choosing a holder is one
+action on that document, and an entry that stops naming a workspace lets it
+go.
+A server applies its own entry's offer to what it answers devices that offer
+it work, and writes the updates it follows and its maintenance window for a
+root-run helper to apply. A retired server lets go of everything it holds and takes no
+work. Holding a workspace as an encrypted store, rather than as a key holder,
+is not applied yet.
 
 ## Transport
 
 Devices talk over iroh, and nothing else. A device reaches the other devices
 that hold a workspace, directly or through any device that stores it;
 store-and-forward is what a store does. There is no separate relay protocol,
-no second send path, and no gossip lane beside it.
+no second send path, and no gossip path beside it.
 
 A device is one iroh endpoint, under its device key, and one member of each
 workspace's key group; both are its engine's. Whatever else its session asks a
 host (the actions of a workspace placed there, the person's list kept there)
-runs on that endpoint, in a session that holds no keys. A relay hands what is
+runs on that endpoint, in a session that holds no keys. A server hands what is
 sent to an endpoint id to the connection that registered under it last, so a
 second endpoint of the device's key takes the device's place there: a device
-that starts later, or comes back, then dials it through the relay and reaches
+that starts later, or comes back, then dials it through the server and reaches
 an endpoint that answers nothing. And a second member key asked for as the same
 device has the group's key holders commit one in and the other out, turn
 about, for as long as both sessions run.
@@ -260,18 +296,18 @@ where they live, and activating one brings it here.
 **A file is a resource whose identity is a path.** History, sharing and
 permissions have one implementation, and the file case is not privileged.
 
-### Records shown as files
+### Resources shown as files
 
-The workspace's folder (its Files record, the tree every member mounts) also
+The workspace's folder (its Files document, the tree every member mounts) also
 shows records that are not files of their own. Each note of the workspace's
 notebook is `Notes/<title>.md` there, so an agent, a script or any program
 reads and writes notes as plain files. There is one copy of each note: **the
-note record is the source of truth and the file is its projection.** The
-file's node in the tree names the record it projects and what the two last
+note document is the source of truth and the file is its projection.** The
+file's node in the tree names the document it projects and what the two last
 read as (`Namespace::set_projection`), and the workspace's host keeps them in
-step. It holds both records and runs app actions
+step. It holds both documents and runs app actions
 (`agent-session/src/workspace_actions/notes_folder.rs`), and every write
-to either record starts a pass.
+to either document starts a pass.
 
 - A note made or changed in Notes is written into its file as the host's own
   change of the tree. A renamed note renames its file.
@@ -365,7 +401,7 @@ naming a history a receiver does not hold, starts nothing.
 
 The rows stay, as a projection: every admission writes them from the ops it
 holds, and refuses a batch that changes a row the ops do not change. An older
-build, a store and a relay that keep only the document therefore read the
+build, a store and a server that keep only the document therefore read the
 same membership every device computes, and the log is what decides it. A
 batch may only add ops; a held op is never changed or dropped.
 
@@ -373,7 +409,7 @@ batch may only add ops; a held op is never changed or dropped.
 when narrowed, the person it is for. Redeeming it writes the receipt, with
 its signed invitation, into the workspace's rows; every key holder folds the
 receipts it holds into the membership, checking the invitation at the joining
-time the workspace records for that person, so the invitation is judged once
+time the workspace documents for that person, so the invitation is judged once
 and every key holder judges it the same. Any key holder that holds the
 invitation admits it, with no particular device needed online. A member's own
 further devices need no invitation: a device certified by a member's root is
@@ -386,7 +422,7 @@ choice, recorded in the same resource.
 Content is sealed under content keys (`key-group`), one per key epoch.
 The key epoch's group is an MLS group whose members are exactly the
 workspace's key-holding devices: a projection of `workspace.members`, never a
-second record of who belongs.
+second document of who belongs.
 
 - **Any key holder commits.** When the membership resource admits a
   key-holding device or removes one, any key holder that sees the group
@@ -410,15 +446,15 @@ second record of who belongs.
   reads the whole history locally. It grows with membership changes, never
   with content.
 
-**One group per workspace.** Every record of a workspace seals under the
+**One group per workspace.** Every document of a workspace seals under the
 workspace's one MLS group and its content keys. A payload still names its
-record, so content stays bound to the record and artifact it was written for.
+document, so content stays bound to the document and artifact it was written for.
 A membership or device change costs one commit, however many records the
 workspace holds.
 
 **Read permission is not a key boundary.** Every device that holds the
-workspace's keys can decrypt every record in it. A grant that denies Read on a
-record, an app or a pattern hides the resource in the UI and keeps a device
+workspace's keys can decrypt every document in it. A grant that denies Read on a
+document, an app or a pattern hides the resource in the UI and keeps a device
 from asking for it through the action API, but it is not a security boundary:
 data that must stay away from some members belongs in another workspace, or in
 a person's personal resources.
@@ -430,7 +466,7 @@ no answer from a host makes it found a group of its own. If two geneses ever
 meet, they reconcile like two commits: every device keeps the group whose
 genesis has the lower digest, and a device in the other starts over and joins
 the winner by Welcome, whose bundle brings the keys its writes were sealed
-under. A record's cleartext writes stay the base its sealed writes are
+under. A document's cleartext writes stay the base its sealed writes are
 changes over: a device joining after the seal takes that base in from the
 host's replay, while a live cleartext write is refused.
 
@@ -456,7 +492,7 @@ device's desktop, never a second copy of the workspace.
 
 **Continuing on another device.** Beside its windows, a device notes in its
 part of the layout how each window it runs resumes (the app's small,
-path-free resume state and the record it shows) and which window it is on.
+path-free resume state and the document it shows) and which window it is on.
 Only the window's maker writes its note, and only a device's person its
 focus. The person's other devices hold the layout already, so they offer to
 continue there and open the window where it was left, with no channel of
@@ -479,7 +515,7 @@ into the workspace's layout as a window that runs on it. Every other device
 holds it as that device's window: it starts no instance of the app for it,
 asking for the app there opens that device's own window, and the window's tab
 shows its picture while its device shares it. An app that says nothing has
-windows that are views of records, and a window one device opens is one every
+windows that are views of documents, and a window one device opens is one every
 other device opens for itself.
 
 A person shares a window from its own menu, "Share with workspace", on the
@@ -502,7 +538,7 @@ the change to that host, which admits it and hands it on to the workspace's
 other devices. The device that hosts the workspace keeps its governance
 itself, so it has no host to send to: what it commits there (a share, its end,
 a member's role, a grant, a device it admits) goes at once to the devices
-linked to it in that workspace, as its record writes do, and to no device of
+linked to it in that workspace, as its document writes do, and to no device of
 another workspace it hosts. A device that links later reads it in the
 governance its link starts with. The admission matters to a share as much as
 the share does: a device that was never told of a newcomer takes no commit
@@ -545,7 +581,7 @@ share it: a person shares a window on the device that has it.
 A window whose app draws its own page, as the Browser's does, is shared as
 that page and not as a picture of it. Its app hands the session the page as a
 display list while a member's shell shows the window, the list travels the
-live plane on a track of its own, sealed as the pictures are, and the device
+live session on a track of its own, sealed as the pictures are, and the device
 showing the window draws it with its own text and vector stack. Nothing of
 such a window is captured or encoded, and the device showing it sends it no
 input. Pictures of it would show a watcher what the page masks, so it is never
@@ -562,8 +598,8 @@ workspace its app was started in. The tile that draws the page names the page's 
 is drawn, so a reader who cannot see the page, and a tool that lists what a
 shell shows, read what is on the screen.
 
-The window's pictures travel the workspace's live plane, which the device
-serving the workspace relays for its members. A device is in the plane once
+The window's pictures travel the workspace's live session, which the device
+serving the workspace relays for its members. A device is in the live session once
 it holds the workspace's keys and reached that device; while it is not taken
 in, it asks again, waiting longer each time and at most every fifteen
 seconds, each device up to a quarter sooner by its own key so that the
@@ -577,20 +613,20 @@ workspace's devices out (`MAX_ADMITTING`, `MAX_ADMITTING_OF_ONE` and
 more it closes as busy, unread: it judged nobody, so the device it closed
 asks again the same way and reads as told busy by it (`relay-busy`), where a
 device that did not reach it reads as waiting to reach it and a device it
-judged and did not admit reads as refused. A plane reads thirty-two devices
-at once (`MAX_HEARD` in `crates/collab/tilo-live/src/plane.rs`): each is
+judged and did not admit reads as refused. A live session reads thirty-two devices
+at once (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`): each is
 three tracks that it and the relay hold open, about 250 KiB between them,
 and that, not the transport, is what a further device costs. A device that
-is in the plane beyond those is not heard on this device, and the plane's
+is in the live session beyond those is not heard on this device, and the live session's
 row says how many those are and why (`unheard`, `unheard_why`, `not_heard`).
 The connection to the relay is allowed the streams thirty-two devices take
 once its session is admitted (`MAX_BI_STREAMS` and `MAX_UNI_STREAMS` in
 `crates/collab/tilo-live/src/native.rs`), on a session's endpoint as on one
-bound for the plane alone. The share's reading
-says how far that came, since a plane that is not open drops nothing and
-reports nothing by itself: `live` names each workspace's plane as open or by
+bound for the live session alone. The share's reading
+says how far that came, since a live session that is not open drops nothing and
+reports nothing by itself: `live` names each workspace's live session as open or by
 what it waits for (the keys, the device that relays it, that device being
-busy, or its refusal), a window shared or watched under a plane that is not open says the
+busy, or its refusal), a window shared or watched under a live session that is not open says the
 same on its own row (`waiting_for`), and a shared window says whether it goes
 out to a member's shell now (`streaming`): a captured window as soon as a shell
 asks for it, a window shared as its page once its app handed a page over. A
@@ -608,12 +644,12 @@ window is that device's to say (`pictured`), and it says so in the turn the
 tile takes the window or loses it: a picture is decoded off the loop and taken
 into the tile while the shell builds a frame, so the session asks its tiles
 again once that frame is drawn. An open
-plane also says the epoch it seals under, what it opened and could not open
+live session also says the epoch it seals under, what it opened and could not open
 of the other devices, and which of its windows another device asks it for
 (`asked_for`), which is where two devices that hear nothing of each other read
 why. A device that holds none of the workspace's keys and is lent the keys of
 its own streams by the workspace's host, as the session in a workspace's VM
-is, is in the plane on those (`lent_keys`): it sends what it shares and opens
+is, is in the live session on those (`lent_keys`): it sends what it shares and opens
 nothing another device sends, and a window it watches says so.
 
 ## Presence
@@ -652,27 +688,27 @@ Tools that spell the workspace verbs `workspace.create` and `workspace.branch`
 on the control socket reach the same two actions. The action answers the new
 workspace's id at once; the copy runs off the session's loop, so the shell never
 waits for it, and the branch goes on the shell — with the person in it — once
-what it holds is there, so no app opens in it before its records are and founds
-an empty record of its own. The person is told when it is ready, and what did
+what it holds is there, so no app opens in it before its documents are and founds
+an empty document of its own. The person is told when it is ready, and what did
 not come along if anything did not.
 
 **Who may branch.** Whoever reads the whole workspace: this device holds it and
 its governance names the person as its owner or as a member not removed
 (a workspace the device holds no governance of is the shell's own, and the
-person's unless it names someone else). A record sealed to readers that exclude
+person's unless it names someone else). A document sealed to readers that exclude
 this device is one it cannot read, so it is not branched. An agent may branch
 only the workspace it works in, and only as the person's grants let it take
 the shell's actions; a branch of another workspace is refused at the MCP server.
 
 **What a branch copies**
 
-- **Records, with their history.** Every record the source holds on this
+- **Resources, with their history.** Every document the source holds on this
   device is read whole and written into the branch as its founding write,
   sealed under the branch's own keys. Each document is forked under a
   writer of its own and gets one more change naming the branch as its
-  workspace; its record id stays (an id names a document only inside its
-  workspace, so references between the workspace's records keep working) and
-  so does where it was minted. A record an app also keeps on this device has
+  workspace; its document id stays (an id names a document only inside its
+  workspace, so references between the workspace's documents keep working) and
+  so does where it was minted. A document an app also keeps on this device has
   that copy's changes merged in first, and the branch's local copy is the very
   document the branch's engine holds. No document is shared between the two
   workspaces: an edit in either stays there, also after a restart.
@@ -684,9 +720,9 @@ the shell's actions; a branch of another workspace is refused at the MCP server.
   (`FICLONE`) and copied where it cannot (`tilo_files::native::tree`), so a
   large tree on Btrfs or XFS is a matter of seconds and no space.
 - **Terminal environments.** The runtime that keeps them branches them
-  (`ush`'s `branch-workspace`): each record forked with its history, naming the
+  (`ush`'s `branch-workspace`): each document forked with its history, naming the
   branch as its workspace, its home and its grants of the source's files moved
-  to the same places in the branch's, and what it keeps outside its record (its
+  to the same places in the branch's, and what it keeps outside its document (its
   `/var` and legacy home) copied. Its id (`TILO_ENVIRONMENT`, `<branch>/<key>`)
   and its `TILO_WORKSPACE` are the branch's, so its sessions and its MCP server
   act in the branch only. File actions not carried out yet stay with the
@@ -694,8 +730,8 @@ the shell's actions; a branch of another workspace is refused at the MCP server.
 - **The shell.** The source's strips, a window for each of this device's
   windows in it (opened again by its app, in the branch), and what the
   workspace grants its apps, its own files named as the branch's. The branch's
-  shared shell record is written from these windows, never copied from the
-  source's record of everyone's.
+  shared shell document is written from these windows, never copied from the
+  source's document of everyone's.
 - Secrets (the Secret Service, the passwords vault, provider keys) are the
   person's on the device, not the workspace's: a branch on the same device has
   them already.
@@ -705,7 +741,7 @@ the shell's actions; a branch of another workspace is refused at the MCP server.
 - Chat: every conversation, with each person's drafts and read marks. The
   workspace's own emoji and its agents, which Chat keeps for the workspace,
   come along.
-- Each person's own place in the workspace's tilolang apps, one record for all
+- Each person's own place in the workspace's tilolang apps, one document for all
   of them.
 - Membership and governance: the branch's are new — a new workspace id, its
   only member the person who branched it, as owner, its own keys. No
@@ -725,12 +761,12 @@ key for one workspace makes none, and someone else's workspace is not theirs
 to branch. The host is a member of every channel of the workspaces it governs,
 so it copies what it reads, as a device does:
 
-- every record of the source, read whole with its history, forked as above
-  and founded in the branch as the governor founds a record, sealed under the
-  branch's own keys where its records are sealed; a record the host does not
+- every document of the source, read whole with its history, forked as above
+  and founded in the branch as the governor founds a document, sealed under the
+  branch's own keys where its documents are sealed; a document the host does not
   read whole stops the branch before anything is made, and a person's own
-  records sealed for their devices alone (drafts) are not the host's to read;
-- the content those records name, and the chunks of the files that is, copied
+  documents sealed for their devices alone (drafts) are not the host's to read;
+- the content those documents name, and the chunks of the files that is, copied
   from the source's content store into the branch's under the same addresses,
   so the references they hold open in the branch.
 
@@ -743,7 +779,7 @@ the call fails naming that part (`branch_incomplete`; why stays in the host's lo
 workspaces only once it is whole. `branch` is the new workspace's id: asked
 again under the same one, the host answers the branch it made and copies
 nothing twice (the API passes the id its `Idempotency-Key` names). Whoever keeps
-more of a workspace than its records hears of each branch made
+more of a workspace than its documents hears of each branch made
 (`Workspaces::branches`: source, branch, person), as of a deletion.
 
 ## The shell
@@ -756,19 +792,19 @@ compositor stays thin: windows, input, outputs and scanout. Rendering
 capabilities the shell needs (retained layers, damage tracking, interactive
 animation) belong in the toolkit, so every app has them.
 
-## Records that outgrow a snapshot
+## Resources that outgrow a snapshot
 
-Chat keeps its messages in a chain of `ChatPart` records
-(`tilo_app::framework::chain`), because one record outgrows what a snapshot
-can carry: a snapshot folds a record only up to 16 MiB, and a fold always
-carries the record's whole history.
+Chat keeps its messages in a chain of `ChatPart` documents
+(`tilo_app::framework::chain`), because one document outgrows what a snapshot
+can carry: a snapshot folds a document only up to 16 MiB, and a fold always
+carries the document's whole history.
 
-The chain stays in the SDK, as one resource. Segmenting one record's history
+The chain stays in the SDK, as one resource. Segmenting one document's history
 in the storage layer would need what Automerge does not have (a snapshot
 without the history before it) and a compaction checkpoint every device
 agrees on, and it would not help: a chat's current state grows with it, so a
 newcomer would still load all of it. Every layer below already treats a
-record as the unit and serves whole records on demand.
+document as the unit and serves whole documents on demand.
 
 So the chain's consumers see one resource and never parts: `Chain::publish`
 presents every held part as one resource, and the framework, not the app,
@@ -776,89 +812,107 @@ holds an earlier part when a reader scrolls back to it. Headless readers
 (bots, moderation, the Discord bridge, agents) read and page the chain through
 that resource instead of enumerating parts themselves.
 
-**A change costs its part, not its record.** Every holder of a record (the
-relay, each device, the page) loads, verifies, diffs and saves the record
-whole, so whatever grows without end in one record makes every change cost
+**A change costs its part, not its document.** Every holder of a document (the
+relay, each device, the page) loads, verifies, diffs and saves the document
+whole, so whatever grows without end in one document makes every change cost
 everything before it. Anything an app keeps that grows without end is a chain
-of bounded parts, and the record the app shows keeps only what stays small.
+of bounded parts, and the document the app shows keeps only what stays small.
 What one change costs on any holder is then the cost of one part, whatever
 the workspace holds. The framework gives every chain the same pieces, so an
 app writes none of them:
 
 - **Where a write goes.** `Chained::part_for` names the part an action
   changes (the one holding the item it names; for a new item the head, or the
-  next part once the head is full). `Chained::prepare` reads the app's record
+  next part once the head is full). `Chained::prepare` reads the app's document
   and every held part where the action is invoked, and fills in or refuses
   what spans parts (an issue's parent in another part, its place in the
   order), so the verb itself reads only its part and replays the same
   everywhere.
+- **What one change means elsewhere.** `Chained::spread` names further
+  actions the same invocation writes into other parts right after the action
+  lands: renaming a note relabels the links to it in every part holding one.
+  Each is the same invoker's step in its own part's history, so each part's
+  change costs that part.
 - **Held whole or by the reader.** A chain whose views list all of it
   (`Chained::HELD_WHOLE`: a tracker's issues, a reader's articles) holds every
   part as soon as it knows the head; one read back in time (a chat) holds the
   head and what a reader scrolled to. What one step changes across many parts
   (marking every subscription read) is written as a summary in the part it is
   invoked on, so the step costs one part too.
-- **Read as it changes.** `ViewCx::chain_value` follows the record and the
-  chain's parts the way `ViewCx::value` follows the record, and a part is a
-  record a view part is built over (`Chain::part_record` with
-  `ViewCx::record`), so an item's page binds its fields by path as before.
+- **Read as it changes.** `ViewCx::chain_value` follows the document and the
+  chain's parts the way `ViewCx::value` follows the document, and a part is a
+  document a view part is built over (`Chain::part_document` with
+  `ViewCx::document`), so an item's page binds its fields by path as before.
 - **Published, searched and undone per part.** The chain's publication and
   search entries are built again only for the part that changed; its items
   open where the window shows them; the window's Undo takes back the
-  person's last write into a part before the record's own history.
-- **Held where a host acts.** A host acting on a record for a member or an
-  agent hands the record it mounts the newest part of each of its chains and
+  person's last write into a part before the document's own history.
+- **Held where a host acts.** A host acting on a document for a member or an
+  agent hands the document it mounts the newest part of each of its chains and
   every part the chain then asks for, from what the workspace holds, and
   keeps each current with the changes after it.
-- **Beside a person's own record.** An app that keeps one record per member
-  (Mail) keeps the parts beside that person's record
+- **Beside a person's own document.** An app that keeps one document per member
+  (Mail) keeps the parts beside that person's document
   (`Chained::chain_beside`), never beside the workspace's, so a mailbox's
   parts are as private as the mailbox.
 - **Places over everything the chain holds.** What the app derives from all
   of it — a book's groups, its favorites, its likely duplicates — the chain
   publishes as its own children (`Chained::places`), and what search finds
   beyond the items (`Chained::search_over`), so derived resources do not
-  need the record to hold the items.
+  need the document to hold the items.
 - **A group as one step.** Several actions invoked as one (a saved form's
   field edits) land as one change in each part they touch, so they stay one
   undo step and one version.
+- **A verb over items of several parts.** A verb naming many items (archive
+  these messages) says what share of it each part holding some of them
+  carries out (`Chained::split`); the shares are written into those parts
+  only, as one step the window's Undo takes back whole.
+- **What the outside is owed.** Items an outside server keeps too (a
+  mailbox's messages, a calendar's events) carry what that server last
+  confirmed beside what the person did. The work still owed is derived from
+  each part (`ResourceEnv::owed`), read again only for a part that changed,
+  and carried out on the device that holds the account; the app confirms what
+  the server now holds with an action on the item's part. No queue is kept,
+  so a change writes its one part and a confirmation writes only the part
+  holding its item.
 
-What one app record holds at the size of a small company's workspace (101 wiki
+What one app document holds at the size of a small company's workspace (101 wiki
 pages, about 2,500 issues, a 19,513-file repository), and what a change costs
 there before it moves into parts:
 
-| App | What one record holds | Grows with | One change today |
+| App | What one document holds | Grows with | One change today |
 | --- | --- | --- | --- |
 | Tasks | (before) every issue with its body, thread, links and attachment references | issues | 6.7 ms to apply and a 711 ms load at 2,500 issues (311 KB saved, 2.6 MB with history), every holder |
-| Tasks | (now) projects and areas; issues in parts of at most 500 issues or 512 KiB of text | parts | one part's cost: the same bytes and record size at 10× the issues |
-| Notes | every page, its rich-text body and reactions | pages | 600 KB at 101 pages; whole record per change |
-| Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole record per change |
-| Files (folder) | (now) the tree's own record, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
+| Tasks | (now) projects and areas; issues in parts of at most 500 issues or 512 KiB of text | parts | one part's cost: the same bytes and document size at 10× the issues |
+| Notes | (before) every page, its rich-text body and reactions | pages | 600 KB at 101 pages; whole document per change |
+| Notes | (now) tags; pages in parts of at most 200 pages or 512 KiB of text | parts | one part's cost: the same bytes at 10× the pages |
+| Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole document per change |
+| Files (folder) | (now) the tree's own document, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
 | Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |
 | Feeds | (before) every article with its full text | articles | grows until its feed is removed |
 | Feeds | (now) folders and subscriptions; articles in parts of at most 300 articles or 1 MiB of their text | parts | one part's cost, the same bytes at 10× the articles |
 | Messages | every conversation with every message | messages | grows without bound |
 | Discord bridge | a mapping row per mirrored message | messages | grows without bound |
 | Calendar | every event with overrides and attendees | events | grows with the calendar |
-| Contacts | (now) nothing; contacts in parts of at most 500 contacts or 512 KiB of text and portraits | parts | one part's cost: the same bytes and record size at 10× the contacts |
+| Contacts | (now) nothing; contacts in parts of at most 500 contacts or 512 KiB of text and portraits | parts | one part's cost: the same bytes and document size at 10× the contacts |
 | Snippets, Photos, Music | every item; Music playlist covers inline up to 256 KiB | items | grows with the library |
 | Chat | channels and people; messages in parts of 2,000 messages or 1 MiB | parts | one part |
-| Sheets, Slides, Word processor, Canvas | one record per file | the file | bounded by the document |
+| Sheets, Slides, Word processor, Canvas | one document per file | the file | bounded by the document |
 | Desktop layout | strips and windows, and `effect_receipts` with no cap | receipts | grows with use |
 | Settings, Shortcuts, Activity | small | — | small |
 
 Binary content (attachments, images, file contents) is already a
-content-addressed blob that the record only names (`Bytes` above 1 KiB, the
+content-addressed blob that the document only names (`Bytes` above 1 KiB, the
 folder's iroh-blobs hashes), except Music's playlist covers and Contacts'
 portraits, which are inline data.
 
-A workspace's folder is split another way: its tree outgrows a record by its
+A workspace's folder is split another way: its tree outgrows a document by its
 files, not by a history that only grows at one end, and a file anywhere in it
-is written again. So the tree is chunks (`fs_protocol::tree`). The tree's own record holds the
-root's identity and lists the chunks; each chunk is a record of its own
-(`derived:chunk.<n>@` the tree's record) holding up to about a thousand nodes
+is written again. So the tree is chunks (`fs_protocol::tree`). The tree's own document holds the
+root's identity and lists the chunks; each chunk is a document of its own
+(`derived:chunk.<n>@` the tree's document) holding up to about a thousand nodes
 with their versions, attributes and leases. A node lives in the chunk its
-record id names, chosen when it is made (the newest chunk while it has room),
+document id names, chosen when it is made (the newest chunk while it has room),
 and never moves, so renaming, moving, editing or deleting a file is a change
 of that one chunk. Writing a file then costs what its chunk costs, whatever
 the folder holds: one change sent, one chunk's journal appended, one chunk
@@ -875,10 +929,10 @@ workspace's group, `tilo-app-state`'s `record_cost` for a unit and its document,
 x86_64 development container, three samples; instruction counts repeat on any
 machine, times are that container's.
 
-**One group per record** (one MLS group per record, three devices in each),
-per record — what a group per record would cost:
+**One group per document** (one MLS group per document, three devices in each),
+per document — what a group per document would cost:
 
-| records | join | per record | join bytes | removal | removal bytes | device state |
+| documents | join | per document | join bytes | removal | removal bytes | device state |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 1.99 ms | 1.99 ms | 3.1 KiB | 0.84 ms | 700 B | 757 B |
 | 10 | 22.0 ms | 2.20 ms | 3.1 KiB | 0.77 ms | 700 B | 763 B |
@@ -888,7 +942,7 @@ per record — what a group per record would cost:
 The cost is flat per group and does not shrink as a workspace grows: 2.0 ms
 and 3.1 KiB of governance frames per group to admit one device, 0.8 ms and
 700 B per group for one removal, and 760 B of sealed peer state per group on
-the device. A user joining a workspace of 1000 records would pay about two
+the device. A user joining a workspace of 1000 documents would pay about two
 seconds and 3 MiB before reading anything, and every membership change after
 that would repeat it, on every device.
 
@@ -902,7 +956,7 @@ workspace, three devices), by the units it carries:
 | 100 | 1.87 ms | 18.7 us | 3.1 KiB | 0.74 ms | 700 B |
 | 1000 | 1.88 ms | 1.9 us | 3.1 KiB | 0.76 ms | 700 B |
 
-Flat in the units carried: a workspace of 1000 records costs 1.9 ms and 3.1
+Flat in the units carried: a workspace of 1000 documents costs 1.9 ms and 3.1
 KiB to admit a device and 0.76 ms and 700 B to remove one, instead of 1.99 s
 and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content seals and opens under
 the workspace's keys, bound to the unit's artifact: 4.8 us per unit at one
@@ -935,16 +989,16 @@ and holds about 38 times its snapshot in memory (the change graph, kept for
 merging). Its history is about twenty times the snapshot, and one more change
 is about 120 bytes whatever the size.
 
-A record on disk also keeps `state.hashes`, its own list of change hashes as a
+A document on disk also keeps `state.hashes`, its own list of change hashes as a
 load hint: 32 bytes per change, so 320 KiB beside a 70 KiB snapshot at ten
 thousand items, and 3.2 MiB beside 730 KiB at a hundred thousand. The hint pays
-for itself on open (a 10k-item record loads in 12 ms where the same document
+for itself on open (a 10k-item document loads in 12 ms where the same document
 takes 31 ms to load from its snapshot alone, because the hint skips re-hashing
 every change), but it is the same order as the history, not a rounding error.
 
 **One index**, one redb file per package and workspace, one row set per record:
 
-| records | write one record | open | one lookup | file |
+| documents | write one document | open | one lookup | file |
 | --- | --- | --- | --- | --- |
 | 1 | 42 us | 0.04 ms | 5.1 us | 1.0 MiB |
 | 10 | 30 us | 0.04 ms | 0.7 us | 1.0 MiB |
@@ -953,9 +1007,9 @@ every change), but it is the same order as the history, not a rounding error.
 | 10000 | 36 us | 0.10 ms | 0.6 us | 2.1 MiB |
 
 An index answers a lookup in under a microsecond and opens in a tenth of a
-millisecond whether it holds ten records or ten thousand; the rows are about
-100 bytes per record. What it costs per workspace and not per record is redb's
-minimum file: about a megabyte before it has a record in it, which is why an
+millisecond whether it holds ten documents or ten thousand; the rows are about
+100 bytes per document. What it costs per workspace and not per document is redb's
+minimum file: about a megabyte before it has a document in it, which is why an
 index is one per (package, workspace) pair rather than one per unit.
 
 **A host opening a workspace** (`tilolang-tilo`'s `bench` example,
@@ -963,31 +1017,31 @@ index is one per (package, workspace) pair rather than one per unit.
 other builds shared it, load average around fifty, so the times are inflated
 several-fold; notes here, the board earlier, on a quieter aarch64 laptop):
 
-| items | open (over the index) | of which building the view | load the record |
+| items | open (over the index) | of which building the view | load the document |
 | --- | --- | --- | --- |
 | 10k | 0.39 s (66 ms earlier) | 0.31 s | 0.45 s (412 ms earlier) |
 | 100k | 3.6 s (1.04 s earlier) | 3.1 s | 4.3 s (6.7 s earlier) |
 
-In both measurements loading the record costs as much as opening over the index
+In both measurements loading the document costs as much as opening over the index
 or several times more, so the index saves reading it but not having it: what a
-host pays for a workspace is dominated by the record's own bytes and by the
+host pays for a workspace is dominated by the document's own bytes and by the
 view building its rows from them, and both grow with the number of items. A
 chunk the views do not read in full is what brings either down.
 
 What that implies for the layers above:
 
-- **Keys per workspace, not per record.** Per-record keys would make a
+- **Keys per workspace, not per document.** Per-record keys would make a
   membership change linear in the workspace: the 1.96 ms above is one commit
   and one delivered frame set per group, on every member. One group per
   workspace makes the same change one commit, and a device's sealed state one
-  file per workspace instead of 760 B per record.
-- **A chunk is a few thousand items, not a record per app.** A 10k-item chunk
+  file per workspace instead of 760 B per document.
+- **A chunk is a few thousand items, not a document per app.** A 10k-item chunk
   loads in 31 ms and holds 3 MiB; a 1k-item chunk in 3.6 ms and 276 KiB. A
   chunk that holds a whole collection of a few thousand small resources keeps
   open, save and memory at tens of megabytes for a workspace of a hundred
   thousand items, where one document per app at that size is 27 MiB and
   325 ms to load before anything is shown.
-- **Units stay separate for what is written separately.** A record's fixed
+- **Units stay separate for what is written separately.** A document's fixed
   cost is small enough that units are not the thing to merge; what has to
   change is what is written and sealed together, so that a chunk's commit is
   one scope and one append.
@@ -998,15 +1052,15 @@ The code still carries models this page does not have. Each goes, not beside
 the model but instead of it:
 
 - **The old spelling.** The `workspace` key a desktop entry or an action row
-  stores its workspace id under, `(app, workspace, record)` addresses and
+  stores its workspace id under, `(app, workspace, document)` addresses and
   `tilo-workspaces` on disk.
-- **Governance by one device.** The governor, the pinned governance writer,
-  the separate governance document with its receipts, custody and succession,
+- **Governance by one device.** The governor, the separate governance document
+  with its receipts, ownership and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
 - **Per-person spaces.** The person's devices meet on the session between two
-  of them (`tilo-relay-sibling/1`) and learn the person's workspaces from the
-  hosts holding them. The person's own records are in no workspace: their
+  of them (`tilo-server-sibling/1`) and learn the person's workspaces from the
+  hosts holding them. The person's own documents are in no workspace: their
   store is
   one cluster per person, derived from the root key, and the readers of its
   group are the identity's certified devices that are not revoked — the

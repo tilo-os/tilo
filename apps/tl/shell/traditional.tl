@@ -4,14 +4,14 @@
 /// across the screen names the focused window and holds its commands the way macOS's action bar
 /// does; and the dock rides the bottom edge (`docks.tl`, reused as it is).
 ///
-/// Everything here is a view over resources the session publishes and the shell's own record:
+/// Everything here is a view over resources the session publishes and the shell's own document:
 ///
 /// - a **frame** is the shell's view of one place: the window — the resource drawn through its
 ///   type's own view (`show(r)`, §8), its header holding its title and actions, or a well a
 ///   foreign window shows in (§4 `frame_classic`) — with the shell's controls at the end of its
 ///   one bar;
 /// - the **action bar** is the focused place's window's menu: the host fills it with every
-///   action `resource(p.record)` publishes, so the window in front keeps one list of what it can
+///   action `resource(p.resource)` publishes, so the window in front keeps one list of what it can
 ///   do now, in the app's own words;
 /// - the **top bar** is one row, edge to edge: the system menu and the focused window's
 ///   commands leading, the tasks, the time, who is here, the status, the notifications and the
@@ -51,7 +51,7 @@ view traditional_desktop(a: Layout, lists: Bool) {
 }
 
 /// The window in front alone, filling the room it is given: what a compact output shows of the
-/// desktop (`desktop`), where windows standing where they were left would show their corners cut
+/// desktop (`desktop`), where windows left where they were would show their corners cut
 /// off and the window the person is in could stand behind another.
 view front_window(a: Layout, lists: Bool) {
     if let s = focused_strip(a) {
@@ -81,7 +81,7 @@ view desktop_frame(a: Layout, s: LayoutStrip, p: LayoutPlace, focused: Bool, lis
 /// one bar, never the shell's stacked on the app's. A foreign window stands in its well, under
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app. The frame tells the window's bar to keep its title and the shell's controls
-/// alone (`lists_actions`), the window's own actions standing in the shell's one menu: the frame's
+/// alone (`lists_actions`), the window's own actions in the shell's one menu: the frame's
 /// `Window actions` where the shell's bar lists none, else the shell's bar
 /// (`bar_lists_actions`). `lists`: the shell's bar already lists them, so the frame's menu gives
 /// way, and every action stands once.
@@ -90,7 +90,7 @@ view frame_classic(a: Layout, p: LayoutPlace, focused: Bool, lists: Bool) {
         name: place_title(p),
         focused: focused,
         lists_actions: lists_the_place(p),
-        carries: p.record,
+        carries: p.resource,
         fill,
     ) {
         controls: {
@@ -146,13 +146,13 @@ view frame_buttons(a: Layout, p: LayoutPlace, lists: Bool) {
 /// The focused window's commands, as a macOS menu bar draws an app's: the window's name, and
 /// under it every action its resource publishes — exactly what the window's own heading would
 /// offer, in the app's own words, the host filling the menu from the declarations so a view
-/// never lists them itself. A place that shows no record (a foreign surface) offers the shell's
+/// never lists them itself. A place that shows no document (a foreign surface) offers the shell's
 /// commands on the window instead, so the bar is never empty. `room` is how much the top bar has:
 /// on the narrowest it stands as the window's icon, named by the window.
 view action_bar(a: Layout, room: BarRoom) {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
-            if let r = placed_resource(p.record) {
+            if let r = placed_resource(p.resource) {
                 ui.MenuButton(
                     place_title(p),
                     icon: .app_window,
@@ -202,14 +202,14 @@ fn front_place(a: Layout) -> Text {
     ""
 }
 
-/// The record a place shows, as its own type (`resource(id)`), so this view reads the same
-/// actions the app's window header does. `.none` for a place showing no record this store
+/// The resource a place shows, as its own type (`resource(id)`), so this view reads the same
+/// actions the app's window header does. `.none` for a place showing no resource this store
 /// holds.
-fn placed_resource(record: Text) -> Option<host.Resource> {
-    if record != "" { resource(record) }
+fn placed_resource(id: Text) -> Option<host.Resource> {
+    if id != "" { resource(id) }
 }
 
-/// The shell's own commands on a window whose record it cannot read (a foreign surface): its
+/// The shell's own commands on a window whose document it cannot read (a foreign surface): its
 /// name, moving it to another row, and closing it. On the narrowest bar the menu is named by the
 /// window's icon alone, as an app's window's one menu is.
 view window_commands(a: Layout, p: LayoutPlace, room: BarRoom) {

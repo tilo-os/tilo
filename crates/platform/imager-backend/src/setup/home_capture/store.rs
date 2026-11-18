@@ -1,4 +1,4 @@
-//! Held, root-private durable capture intent and custody receipts.
+//! Held, root-private durable capture intent and ownership receipts.
 use super::super::{migration_durability, nofollow::metadata_nofollow};
 use super::*;
 #[cfg(test)]
@@ -25,7 +25,7 @@ pub use output_attempt::{
     review_uncommitted_original_applications_selection, review_uncommitted_original_selection,
 };
 pub(super) use output_attempt::{OriginalOutputExpectations, StageBinding};
-pub use scratch::BackingWitness;
+pub use scratch::BackingProof;
 pub(super) use scratch::{ScratchLease, ScratchReceipt};
 
 const MAX_RECORD: u64 = 64 * 1024;
@@ -82,7 +82,7 @@ pub(super) struct Record {
     pub(super) state: State,
     pub(super) capture: Option<Capture>,
     #[serde(default)]
-    pub(super) worker: Option<super::process::Custody>,
+    pub(super) worker: Option<super::process::Ownership>,
 }
 impl Record {
     pub(super) fn intent(
@@ -183,7 +183,7 @@ impl Record {
     }
 }
 
-/// The operation ledger retains legacy snapshot receipts unchanged. An
+/// The operation log retains legacy snapshot receipts unchanged. An
 /// original-volume intent carries no invented snapshot/capture identity.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -495,4 +495,4 @@ fn original_output_conflict(file: File, expected: &[u8]) -> io::Result<io::Error
     }
 }
 
-pub use original::mounted::MountedWitness;
+pub use original::mounted::MountedProof;

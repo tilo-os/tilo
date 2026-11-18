@@ -53,7 +53,7 @@ d-ks6wodcv = Items
 d-crrlhv3r = Draft
 
 d-knnd7epb = Release
-    .doc = The team's items on a board, a lane per stage.
+    .doc = The team's items on a board, a list per stage.
     .noun = { $count ->
         [one] release
        *[other] releases
@@ -602,6 +602,13 @@ d-juvyfisd = Custom
     .w-hours-worked-each-day-this-week = Hours worked each day this week
     .w-charts-and-graphs = Charts and graphs
     .w-the-last-ten-minutes = The last ten minutes
+    .w-week-1 = Week 1
+    .w-week-2 = Week 2
+    .w-week-3 = Week 3
+    .w-week-4 = Week 4
+    .w-issues-each-week = Issues each week
+    .w-hours-by-team = Hours by team
+    .w-88-hours = 88 hours
     .w-release-pipeline = Release pipeline
     .w-fetch = Fetch
     .w-fetched = Fetched
@@ -797,9 +804,9 @@ d-rygoropv = Shell parts
     .w-invite = Invite
     .w-bo-is-viewing = Bo is viewing
     .w-drag-run = Drag run
-    .w-items-a-person-reorders-by-dragging = Items a person reorders by dragging one, across or standing.
+    .w-items-a-person-reorders-by-dragging = Items a person reorders by dragging one, across or stacked.
     .w-pinned = Pinned
-    .w-pinned-standing = Pinned, standing
+    .w-pinned-stacked = Pinned, stacked
     .w-drag-source-and-drop-target = Drag source and drop target
     .w-a-view-picked-up-and-carried = A view picked up and carried to a target that takes it.
     .w-a-drop-target = A drop target

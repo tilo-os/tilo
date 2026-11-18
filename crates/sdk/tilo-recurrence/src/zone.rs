@@ -8,8 +8,9 @@
 //! the earlier instant in a fold, and advance through a gap to the first
 //! valid wall minute.
 
-use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, TimeZone, Utc};
-use chrono_tz::Tz;
+use jiff::Timestamp;
+use jiff::civil::DateTime;
+use jiff::tz::{AmbiguousOffset, TimeZone};
 
 /// How long the resolver walks forward out of a zone's skipped hour.
 const MAX_GAP_MINUTES: i64 = 180;
@@ -22,6 +23,14 @@ pub enum Resolution {
     ShiftedForward { minutes: i64 },
 }
 
+/// The zone named `name` (`Europe/Vienna`, any letter case) from the database built into Tilo,
+/// so every device reads a named zone the same way whatever its host has installed.
+#[must_use]
+pub fn named(name: &str) -> Option<TimeZone> {
+    let (name, data) = jiff_tzdb::get(name)?;
+    TimeZone::tzif(name, data).ok()
+}
+
 /// Validate a persisted zone spelling. `floating` deliberately has no instant;
 /// `UTC` is accepted as the canonical zero-offset spelling.
 #[must_use]
@@ -32,77 +41,78 @@ pub fn canonical_zone(value: &str) -> Option<String> {
     } else if value.eq_ignore_ascii_case("UTC") || value == "Etc/UTC" {
         Some("UTC".into())
     } else {
-        value.parse::<Tz>().ok().map(|zone| zone.name().to_string())
+        jiff_tzdb::get(value).map(|(name, _)| name.to_string())
     }
 }
 
 /// Resolve one named-zone wall time to UTC using the fold/gap policy above.
 #[must_use]
-pub fn wall_to_utc(zone: &str, wall: NaiveDateTime) -> Option<(DateTime<Utc>, Resolution)> {
+pub fn wall_to_utc(zone: &str, wall: DateTime) -> Option<(Timestamp, Resolution)> {
     if zone == "UTC" {
-        return Some((Utc.from_utc_datetime(&wall), Resolution::Exact));
+        return Some((
+            wall.to_zoned(TimeZone::UTC).ok()?.timestamp(),
+            Resolution::Exact,
+        ));
     }
-    let zone = zone.parse::<Tz>().ok()?;
-    match zone.from_local_datetime(&wall) {
-        LocalResult::Single(value) => Some((value.with_timezone(&Utc), Resolution::Exact)),
-        LocalResult::Ambiguous(earlier, later) => Some((
-            earlier.min(later).with_timezone(&Utc),
-            Resolution::AmbiguousEarlier,
-        )),
-        LocalResult::None => {
-            for minutes in 1..=MAX_GAP_MINUTES {
-                let shifted = wall.checked_add_signed(Duration::minutes(minutes))?;
-                match zone.from_local_datetime(&shifted) {
-                    LocalResult::Single(value) => {
-                        return Some((
-                            value.with_timezone(&Utc),
-                            Resolution::ShiftedForward { minutes },
-                        ));
-                    }
-                    LocalResult::Ambiguous(earlier, later) => {
-                        return Some((
-                            earlier.min(later).with_timezone(&Utc),
-                            Resolution::ShiftedForward { minutes },
-                        ));
-                    }
-                    LocalResult::None => {}
-                }
-            }
-            None
+    let zone = named(zone)?;
+    let resolve = |wall: DateTime| {
+        let local = zone.to_ambiguous_timestamp(wall);
+        let gap = matches!(local.offset(), AmbiguousOffset::Gap { .. });
+        let fold = matches!(local.offset(), AmbiguousOffset::Fold { .. });
+        (!gap)
+            .then(|| local.earlier().ok().map(|at| (at, fold)))
+            .flatten()
+    };
+    if let Some((instant, fold)) = resolve(wall) {
+        let resolution = if fold {
+            Resolution::AmbiguousEarlier
+        } else {
+            Resolution::Exact
+        };
+        return Some((instant, resolution));
+    }
+    for minutes in 1..=MAX_GAP_MINUTES {
+        let shifted = wall
+            .checked_add(jiff::SignedDuration::from_mins(minutes))
+            .ok()?;
+        if let Some((instant, _)) = resolve(shifted) {
+            return Some((instant, Resolution::ShiftedForward { minutes }));
         }
     }
+    None
 }
 
 /// The instant `wall` names in `zone`, for a reader with no host clock to ask: `floating` (a
 /// wall time with no zone of its own) and a zone this build does not know read as UTC.
 #[must_use]
-pub fn wall_instant(zone: &str, wall: NaiveDateTime) -> DateTime<Utc> {
-    wall_to_utc(zone, wall).map_or_else(|| wall.and_utc(), |(instant, _)| instant)
+pub fn wall_instant(zone: &str, wall: DateTime) -> Timestamp {
+    wall_to_utc(zone, wall).map_or_else(
+        || {
+            wall.to_zoned(TimeZone::UTC)
+                .map_or(Timestamp::UNIX_EPOCH, |at| at.timestamp())
+        },
+        |(instant, _)| instant,
+    )
 }
 
 /// Return the canonical wall time after applying the deterministic gap rule.
 /// Fold inputs remain textually unchanged; their earlier-instant choice is made
 /// by [`wall_to_utc`] whenever an instant is requested.
 #[must_use]
-pub fn normalize_wall(zone: &str, wall: NaiveDateTime) -> Option<(NaiveDateTime, Resolution)> {
+pub fn normalize_wall(zone: &str, wall: DateTime) -> Option<(DateTime, Resolution)> {
     let (instant, resolution) = wall_to_utc(zone, wall)?;
     if zone == "UTC" {
         return Some((wall, resolution));
     }
-    let zone = zone.parse::<Tz>().ok()?;
-    Some((instant.with_timezone(&zone).naive_local(), resolution))
+    Some((instant.to_zoned(named(zone)?).datetime(), resolution))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
 
-    fn at(date: (i32, u32, u32), hour: u32, minute: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(date.0, date.1, date.2)
-            .unwrap()
-            .and_hms_opt(hour, minute, 0)
-            .unwrap()
+    fn at(date: (i16, i8, i8), hour: i8, minute: i8) -> DateTime {
+        DateTime::new(date.0, date.1, date.2, hour, minute, 0, 0).unwrap()
     }
 
     #[test]
@@ -116,7 +126,10 @@ mod tests {
         // DST fold chooses the earlier instant.
         let wall = at((2026, 10, 25), 2, 30);
         let (instant, resolution) = wall_to_utc("Europe/Berlin", wall).unwrap();
-        assert_eq!(instant.naive_utc(), at((2026, 10, 25), 0, 30));
+        assert_eq!(
+            instant.to_zoned(TimeZone::UTC).datetime(),
+            at((2026, 10, 25), 0, 30)
+        );
         assert_eq!(resolution, Resolution::AmbiguousEarlier);
 
         // An invalid zone is refused instead of becoming floating.
@@ -131,15 +144,15 @@ mod tests {
         let midnight = at((2026, 10, 27), 0, 0);
         assert_eq!(
             wall_instant("America/Los_Angeles", midnight).to_string(),
-            "2026-10-27 07:00:00 UTC"
+            "2026-10-27T07:00:00Z"
         );
         assert_eq!(
             wall_instant("floating", midnight).to_string(),
-            "2026-10-27 00:00:00 UTC"
+            "2026-10-27T00:00:00Z"
         );
         assert_eq!(
             wall_instant("Mars/Olympus", midnight).to_string(),
-            "2026-10-27 00:00:00 UTC"
+            "2026-10-27T00:00:00Z"
         );
     }
 }

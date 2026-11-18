@@ -8,18 +8,18 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::registration_gate::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
+use launcher::launch_hold::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(
     fd: RawFd,
-) -> std::io::Result<Option<launcher::retained_view::OrdinaryLaunchGate>> {
+) -> std::io::Result<Option<launcher::retained_view::OrdinaryLaunchAdmission>> {
     if fd < 3 {
         return Err(std::io::ErrorKind::InvalidInput.into());
     }
-    let gate = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
-    launcher::retained_view::RetainedLaunchGate::receive_registration(
-        gate,
+    let socket = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+    launcher::retained_view::RetainedLaunchAdmission::receive_registration(
+        socket,
         &launcher::owned_service::ServiceCancellation::default(),
     )
 }
@@ -29,7 +29,7 @@ fn wait_for_registration_fd(
     reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
 )]
 fn wait_for_shell_registration()
--> Result<Option<launcher::retained_view::OrdinaryLaunchGate>, String> {
+-> Result<Option<launcher::retained_view::OrdinaryLaunchAdmission>, String> {
     let on_stdin = std::env::var_os(LAUNCH_REGISTRATION_STDIN_ENV).is_some();
     let raw_fd = std::env::var(LAUNCH_REGISTRATION_FD_ENV);
     // SAFETY: process startup is single-threaded; remove the internal handoff before any launched app
@@ -39,7 +39,7 @@ fn wait_for_shell_registration()
         std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV);
     }
     if on_stdin {
-        return launcher::registration_gate::wait_on_stdin()
+        return launcher::launch_hold::wait_on_stdin()
             .map(|()| None)
             .map_err(|error| format!("launch-registration handoff failed: {error}"));
     }
@@ -144,13 +144,13 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
         /// A tilolang app whose instance a tilolang host runs: the process is its window alone, with no
-        /// collaboration connection (`RunOptions::tilolang_hosted`).
+        /// collaboration connection (`RunOptions::tilolang_process`).
         #[arg(long, conflicts_with = "service")]
-        tilolang_hosted: bool,
+        tilolang_process: bool,
         /// A tilolang app's connector for the origin named (`imap`), not a window: the process the
         /// session runs for an app whose types hold an outside service's resources, with the socket its
         /// instances attach over (`RunOptions::tilolang_connector`).
-        #[arg(long, conflicts_with_all = ["service", "tilolang_hosted", "wayland_socket", "open", "open_uri"])]
+        #[arg(long, conflicts_with_all = ["service", "tilolang_process", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -202,7 +202,22 @@ enum Cmd {
     },
     /// Launch an application Tilo did **not** package: a `.desktop` entry already installed on the
     /// host, Flatpak or otherwise.
-    SessionHost(RunHostArgs),
+    MachineApp(MachineAppArgs),
+    /// Start a Windows program's sandbox, as the compatibility service planned it, behind an app
+    /// keeper in a scope of its own: the session starts each such program through this, so the
+    /// program stays open while the desktop restarts in place.
+    #[command(name = "windows-program", hide = true)]
+    WindowsProgram(WindowsProgramArgs),
+    /// Start a Windows program's sandbox on the X11 display its keeper serves (`DISPLAY`,
+    /// `XAUTHORITY`): the keeper picks the display only as it starts, after the sandbox was
+    /// planned, so `windows-program --x11` has the keeper start this, which adds the display to
+    /// the sandbox and becomes it.
+    #[command(name = "windows-x11-sandbox", hide = true)]
+    WindowsX11Sandbox {
+        /// The sandbox's command line.
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -231,9 +246,9 @@ enum Cmd {
     },
     /// Run a tilolang host: the launch kind that runs one author's tilolang apps in one workspace as
     /// instances, in a sandbox holding only the verified tilolang runtime and the Tilo runtime it runs
-    /// on, its storage and its socket (`launcher::run::tilolang_host`).
-    #[command(name = "tilolang-host", hide = true)]
-    TilolangHost {
+    /// on, its storage and its socket (`launcher::run::tilolang_process`).
+    #[command(name = "tilolang-process", hide = true)]
+    TilolangProcess {
         /// The tilolang runtime, `tilolang/<version>`.
         #[arg(long)]
         runtime: String,
@@ -241,7 +256,7 @@ enum Cmd {
         /// host's binary runs on.
         #[arg(long)]
         app_runtime: String,
-        /// The storage of the host's workspace and author.
+        /// The storage of the process's workspace and author.
         #[arg(long)]
         storage: PathBuf,
     },
@@ -277,7 +292,7 @@ enum SandboxViewCmd {
 }
 
 #[derive(Debug, clap::Args)]
-struct RunHostArgs {
+struct MachineAppArgs {
     /// Desktop-file id: the entry's file name without `.desktop` (`com.spotify.Client`,
     /// `org.gnome.TextEditor`).
     #[arg(long)]
@@ -319,6 +334,93 @@ struct RunHostArgs {
     /// What the session names this launch, handed to the keeper as given (`--launch`).
     #[arg(long, requires = "keeper")]
     keep_as: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+struct WindowsProgramArgs {
+    /// The app id the program's scope and windows are named for.
+    #[arg(long)]
+    app_id: String,
+    /// The name the program is shown by.
+    #[arg(long)]
+    name: String,
+    /// Serve the program an X11 display of its keeper's.
+    #[arg(long)]
+    x11: bool,
+    /// The app keeper the program starts behind.
+    #[arg(long)]
+    keeper: PathBuf,
+    /// The keeper's private directory (`--dir` of the keeper).
+    #[arg(long)]
+    keep_in: PathBuf,
+    /// What the session names this launch, handed to the keeper as given (`--launch`).
+    #[arg(long)]
+    keep_as: String,
+    /// The sandbox's command line.
+    #[arg(last = true, required = true)]
+    command: Vec<std::ffi::OsString>,
+}
+
+/// Start a Windows program behind its keeper, and end as it ended.
+fn windows_program(args: &WindowsProgramArgs) -> ExitCode {
+    let keep = launcher::host::Keep {
+        keeper: args.keeper.clone(),
+        dir: args.keep_in.clone(),
+        launch: args.keep_as.clone(),
+    };
+    let mut command = args.command.clone();
+    if args.x11 {
+        let Ok(launcher) = std::env::current_exe() else {
+            eprintln!("tilo-launcher: this launcher's own program is not known");
+            return ExitCode::FAILURE;
+        };
+        command.splice(
+            0..0,
+            [
+                launcher.into_os_string(),
+                "windows-x11-sandbox".into(),
+                "--".into(),
+            ],
+        );
+    }
+    match launcher::host::start_kept(&args.app_id, &args.name, &command, args.x11, &keep) {
+        Ok(status) => {
+            if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+                launcher::host::end_by(signal);
+            }
+            exit_code(status.code().unwrap_or(1))
+        }
+        Err(e) => {
+            eprintln!("tilo-launcher: {e}");
+            exit_code(e.to_exit_code())
+        }
+    }
+}
+
+/// Become the sandbox `command` with the keeper's X11 display added to it.
+fn windows_x11_sandbox(mut command: Vec<std::ffi::OsString>) -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+    let (Some(display), Some(authority)) =
+        (std::env::var_os("DISPLAY"), std::env::var_os("XAUTHORITY"))
+    else {
+        eprintln!("tilo-launcher: the keeper serves this program no X11 display");
+        return ExitCode::FAILURE;
+    };
+    if let Err(error) = launcher::sandbox::give_x11_display(
+        &mut command,
+        &display.to_string_lossy(),
+        Path::new(&authority),
+    ) {
+        eprintln!("tilo-launcher: {error}");
+        return ExitCode::FAILURE;
+    }
+    let Some((program, args)) = command.split_first() else {
+        return ExitCode::FAILURE;
+    };
+    // The descriptors the sandbox is handed stay open across the exec, as they did into this.
+    let error = std::process::Command::new(program).args(args).exec();
+    eprintln!("tilo-launcher: {}: {error}", program.to_string_lossy());
+    ExitCode::FAILURE
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
@@ -373,13 +475,13 @@ fn main() -> ExitCode {
 
 fn dispatch_command(
     command: Cmd,
-    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
+    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchAdmission>,
 ) -> ExitCode {
     // Whatever runs an app, or is about to start one, leaves the session's protection from the OOM
     // killer, which it may have inherited from the compositor: an app is always a candidate.
     if matches!(
         command,
-        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::SessionHost(_)
+        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::MachineApp(_)
     ) {
         launcher::priority::leave_session_protection();
     }
@@ -416,7 +518,9 @@ fn dispatch_command(
                 capabilities_path: None,
             },
         ),
-        Cmd::SessionHost(args) => run_host(args),
+        Cmd::MachineApp(args) => machine_app(args),
+        Cmd::WindowsProgram(args) => windows_program(&args),
+        Cmd::WindowsX11Sandbox { command } => windows_x11_sandbox(command),
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),
@@ -425,26 +529,26 @@ fn dispatch_command(
             runtime_root,
             user: false,
         } => runtime_resident(Path::new(&registry), &runtime_root),
-        Cmd::TilolangHost {
+        Cmd::TilolangProcess {
             runtime,
             app_runtime,
             storage,
-        } => tilolang_host(runtime, app_runtime, storage),
+        } => tilolang_process(runtime, app_runtime, storage),
     }
 }
 
 /// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
-fn tilolang_host(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
-    use launcher::run::tilolang_host::{HostLaunch, SOCKET_CHILD_FD, run_tilolang_host};
+fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
+    use launcher::run::tilolang_process::{ProcessLaunch, SOCKET_CHILD_FD, run_tilolang_process};
     // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
     let socket =
         unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(SOCKET_CHILD_FD) };
-    let launch = HostLaunch {
+    let launch = ProcessLaunch {
         runtime,
         app_runtime,
         storage,
     };
-    match run_tilolang_host(&launch, socket, &launcher::run::RunOptions::default()) {
+    match run_tilolang_process(&launch, socket, &launcher::run::RunOptions::default()) {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("tilo-launcher: the tilolang host did not start: {error}");
@@ -478,7 +582,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_as_visitor,
         headless_console,
         service,
-        tilolang_hosted,
+        tilolang_process,
         tilolang_connector,
         rest,
     } = command
@@ -510,7 +614,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_as_visitor,
         headless_console,
         service,
-        tilolang_hosted,
+        tilolang_process,
         tilolang_connector,
         rest,
     })
@@ -735,7 +839,7 @@ struct RunCliArgs {
     open_as_visitor: bool,
     headless_console: Option<u64>,
     service: bool,
-    tilolang_hosted: bool,
+    tilolang_process: bool,
     tilolang_connector: Option<String>,
     rest: Vec<String>,
 }
@@ -744,7 +848,7 @@ struct RunCliArgs {
 /// entrypoint or its explicitly requested managed-service entrypoint.
 fn run_gui_command(
     args: RunCliArgs,
-    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
+    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchAdmission>,
 ) -> ExitCode {
     warn_deprecated_minimal_libs(args.minimal_libs);
     let opts = RunOptions {
@@ -786,7 +890,7 @@ fn run_gui_command(
         open_uri: args.open_uri,
         open_as_visitor: args.open_as_visitor,
         headless_console: args.headless_console,
-        tilolang_hosted: args.tilolang_hosted,
+        tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
     };
     // Held from before the package is verified until the app exits, so an update meanwhile leaves the
@@ -803,7 +907,7 @@ fn run_gui_command(
         if let Some(endpoint) = retained_endpoint {
             let cancellation = launcher::owned_service::ServiceCancellation::default();
             match endpoint {
-                launcher::retained_view::OrdinaryLaunchGate::Home(endpoint) => {
+                launcher::retained_view::OrdinaryLaunchAdmission::Home(endpoint) => {
                     launcher::retained_view::RetainedViewAdmission::receive(
                         endpoint,
                         &args.manifest,
@@ -1107,8 +1211,8 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
 }
 
 /// Launch a host application.
-fn run_host(args: RunHostArgs) -> ExitCode {
-    let RunHostArgs {
+fn machine_app(args: MachineAppArgs) -> ExitCode {
+    let MachineAppArgs {
         desktop_id,
         desktop_file,
         program,
@@ -1276,7 +1380,7 @@ fn run_installed(
         gui_argv: Vec::new(),
         open_as_visitor: false,
         headless_console: None,
-        tilolang_hosted: false,
+        tilolang_process: false,
         tilolang_connector: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
@@ -1324,6 +1428,71 @@ mod host_launch_tests {
         assert!(host_launch_env_is_secret("DESKTOP_STARTUP_ID"));
         assert!(!host_launch_env_is_secret("TILO_HOST_ACTIVATION_TOKEN"));
         assert!(!host_launch_env_is_secret("WAYLAND_DISPLAY"));
+    }
+
+    /// The session starts every machine app as `tilo-launcher machine-app …`
+    /// (`tilo_app_launch::plan`), behind its keeper when it has one: a launcher that answers to
+    /// another name opens none of them.
+    #[test]
+    fn the_sessions_machine_app_launch_parses() {
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "machine-app",
+            "--desktop-id",
+            "foot",
+            "--wayland-socket",
+            "/run/user/1000/wayland-1",
+            "--keeper",
+            "/usr/libexec/tilo-app-keeper",
+            "--keep-in",
+            "/run/user/1000/tilo-session/kept/1",
+            "--keep-as",
+            "foot",
+        ])
+        .expect("the session's launch of a machine app parses");
+        let Cmd::MachineApp(args) = parsed.cmd else {
+            panic!("a machine app's launch is not machine-app");
+        };
+        assert_eq!(args.desktop_id, "foot");
+        assert_eq!(
+            args.keeper.as_deref(),
+            Some(Path::new("/usr/libexec/tilo-app-keeper"))
+        );
+    }
+
+    /// The session starts a Windows program as `tilo-launcher windows-program …`
+    /// (`tilo_session`'s Windows programs), the sandbox's command after `--`, flags and all.
+    #[test]
+    fn the_sessions_windows_program_launch_parses() {
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "windows-program",
+            "--app-id",
+            "so.tilo.windows.probe",
+            "--name",
+            "Probe",
+            "--keeper",
+            "/usr/libexec/tilo-app-keeper",
+            "--keep-in",
+            "/tmp/kept/1",
+            "--keep-as",
+            "{}",
+            "--",
+            "/usr/bin/bwrap",
+            "--unshare-all",
+            "--",
+            "/usr/bin/wine",
+        ])
+        .expect("the session's launch of a Windows program parses");
+        let Cmd::WindowsProgram(args) = parsed.cmd else {
+            panic!("a Windows program's launch is not windows-program");
+        };
+        assert_eq!(args.app_id, "so.tilo.windows.probe");
+        assert!(!args.x11);
+        assert_eq!(
+            args.command,
+            ["/usr/bin/bwrap", "--unshare-all", "--", "/usr/bin/wine"]
+        );
     }
 }
 

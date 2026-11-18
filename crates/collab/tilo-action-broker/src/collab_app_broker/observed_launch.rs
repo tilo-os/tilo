@@ -187,7 +187,7 @@ impl JoinedChannel {
         let time = self.state.registered_policy_time()?;
         let invocation = InvocationId::new();
         // A continuation belongs to its starter, not the Store worker that
-        // happens to carry this RPC. Never reconstruct custody from an actor.
+        // happens to carry this RPC. Never reconstruct ownership from an actor.
         let (caller, origin) = if let Some(parent) = parent {
             self.launch_actor(Some(parent))?;
             let caller = self
@@ -301,7 +301,7 @@ impl JoinedChannel {
                     || window.adoption_id.is_nil())
             {
                 return Err(LaunchReadinessError::Failed(
-                    "the adopted application window has foreign custody".into(),
+                    "the adopted application window has foreign ownership".into(),
                 ));
             }
             Ok(adoption)

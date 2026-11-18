@@ -108,7 +108,7 @@ fn a_language_chosen_while_hosted_windows_are_open_relabels_them() {
 
     // The person picks German once: the one locale their session says on the API of every host
     // it runs, each of which speaks it to every instance it holds.
-    let german = tilolang_host::Locale {
+    let german = tilolang_process::Locale {
         formats: today.host.formats().get(),
         language: "de-DE".to_owned(),
     };

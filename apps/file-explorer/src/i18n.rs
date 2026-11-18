@@ -17,11 +17,7 @@ pub fn current_locale() -> String {
     CATALOG.current_locale()
 }
 
-pub fn format_date(value: chrono::DateTime<chrono::Local>) -> String {
-    ui::format::date(value.date_naive())
-}
-
-pub fn format_datetime(value: chrono::DateTime<chrono::Local>) -> String {
+pub fn format_datetime(value: jiff::Timestamp) -> String {
     ui::format::timestamp(&value)
 }
 

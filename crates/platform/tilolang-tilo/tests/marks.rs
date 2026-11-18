@@ -360,10 +360,10 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     assert!(removed_rows(notebook.tree()).is_empty());
 }
 
-/// A list built over a record that already holds the removal shows the row struck too: the
+/// A list built over a document that already holds the removal shows the row struck too: the
 /// index knows what left each collection without reading the log.
 #[test]
-fn a_list_built_over_the_record_shows_what_left_it() {
+fn a_list_built_over_the_document_shows_what_left_it() {
     let Tidied { ada, .. } = a_run_in_notes_and_tasks();
     let fresh = crate::legibility::built_over(&ada);
     assert!(
@@ -692,8 +692,8 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_record_changed_many_times_stands_as_one_row;
-    // A record someone changed many times since the person looked stands as one row: it says who
+    phase a_document_changed_many_times_stands_as_one_row;
+    // A document someone changed many times since the person looked stands as one row: it says who
     // changed it and what the newest change did, and, as history folds the changes of one hand,
     // how many it folds. Never a line per change.
     {
@@ -702,7 +702,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             window.props.get("count"),
             Some(&Value::Int(1)),
-            "one record changed: {window:?}"
+            "one document changed: {window:?}"
         );
         let content = catch_up(&window);
         let mut lines = Vec::new();
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             lines.len(),
             1,
-            "one line for the record, however many changes it holds: {content:?}"
+            "one line for the document, however many changes it holds: {content:?}"
         );
         assert_eq!(
             texts(&content, "caption"),
@@ -788,13 +788,13 @@ fn a_task_bo_changed(changes: usize) -> (Replica, ResourceRef) {
     (ada, milk)
 }
 
-/// A record someone changed a thousand times since the person looked: opening the window reads a
-/// page of the record's history, never the thousand, and still says it once.
+/// A document someone changed a thousand times since the person looked: opening the window reads a
+/// page of the document's history, never the thousand, and still says it once.
 #[test]
-fn a_records_history_costs_a_page_whatever_its_length() {
+fn a_documents_history_costs_a_page_whatever_its_length() {
     const CHANGES: usize = 1_000;
     let (ada, _) = a_task_bo_changed(CHANGES);
-    // The window opened once already, so what the second opening reads is the record's history
+    // The window opened once already, so what the second opening reads is the document's history
     // and nothing the store builds.
     window_mark(&mut ada.view(crate::legibility::TASKS_APP));
     let before = ada.host.store().read_stats().versions_read;
@@ -808,12 +808,12 @@ fn a_records_history_costs_a_page_whatever_its_length() {
     let window = window_mark(&mut view);
     assert!(
         read <= 16,
-        "opening read {read} versions of a record of {CHANGES} changes"
+        "opening read {read} versions of a document of {CHANGES} changes"
     );
     assert_eq!(
         window.props.get("count"),
         Some(&Value::Int(1)),
-        "one record changed: {window:?}"
+        "one document changed: {window:?}"
     );
     let content = catch_up(&window);
     let mut lines = Vec::new();
@@ -867,7 +867,7 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
     fn away(compiled: &[tilolang::Compiled], n: usize) -> (ViewInstance, usize) {
         let doc = tilolang_tilo::bench::seeded_record_by(compiled, n, "ada")
             .expect("the workspace seeds");
-        // The packages the record was seeded from, loaded as a workspace loads them: from the
+        // The packages the document was seeded from, loaded as a workspace loads them: from the
         // compilation both sizes share, not compiled again per size.
         let host = Host::new(
             &doc,
@@ -902,7 +902,7 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
         let view = ada.view(crate::legibility::TASKS_APP);
         (view, items.len())
     }
-    // Compiled once: the same package seeds the record at both sizes and runs its window.
+    // Compiled once: the same package seeds the document at both sizes and runs its window.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
     let compiled = tilolang_tilo::bench::compile(&dir).expect("the tasks package compiles");
     // The larger workspace is seeded in seventeen actions to the thousand's four, and holds nine
@@ -920,7 +920,7 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
 }
 
 /// A note the run removed stands struck in the notebook's tree until the person has seen it go:
-/// a node of the tree, standing after its rows, with who removed it.
+/// a node of the tree, after its rows, with who removed it.
 #[test]
 fn a_note_the_run_removed_stands_struck_in_the_tree() {
     let Tidied { ada, old, .. } = a_run_in_notes_and_tasks();

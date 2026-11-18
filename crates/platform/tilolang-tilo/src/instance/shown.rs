@@ -1,6 +1,6 @@
 //! The resources a window shows, as the app publishes them.
 //!
-//! A window shows the resource of each of its lanes, and every resource the view it shows
+//! A window shows the resource of each of its levels, and every resource the view it shows
 //! refers to (its rows, and what a row's controls name). That set is one notion for both
 //! readers: the palette offers the app's actions on it and the app answers their conditions
 //! when it publishes, and what the window's connection publishes is bounded by it, so a change
@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use tilo_render_protocol::patch::Lane;
+use tilo_render_protocol::patch::Level;
 
 use super::{Instance, Shown};
 use crate::publish::resource_id;
@@ -18,13 +18,13 @@ use crate::runtime::{UiNode, Value};
 impl Instance {
     /// The root view and, when a row went somewhere, the detail view.
     fn shown(&self) -> impl Iterator<Item = &Shown> {
-        [Lane::Root, Lane::Detail]
+        [Level::Root, Level::Detail]
             .into_iter()
-            .filter_map(|lane| self.lane(lane))
+            .filter_map(|level| self.level(level))
     }
 
     /// The published resources the window shows, as the app publishes them
-    /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each lane's own, every resource the view it
+    /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each level's own, every resource the view it
     /// shows refers to, and the items of the rows its lists hold — a row's actions are published
     /// on its resource, whether or not the list has rendered that row yet.
     #[must_use]

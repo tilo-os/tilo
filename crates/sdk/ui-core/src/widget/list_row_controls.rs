@@ -7,28 +7,28 @@ use crate::widget::{ActionEmitter, ControlBindingMetadata, Widget};
 use super::{ActionHandler, ListRow};
 
 impl ActionControls for ListRow {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.activation.install_custody(domain, attachment);
+        self.activation.attach(domain, attachment);
         if let Some(verb) = &mut self.check_verb {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
         if let Some(action) = &mut self.check_action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         for action in &mut self.actions {
             if let ActionHandler::Bound(emitter) = &mut action.handler {
-                let _ = emitter.install_custody(domain, attachment);
+                let _ = emitter.attach(domain, attachment);
             }
         }
         if let Some(swipe) = &self.swipe {
-            swipe.press.install_custody(domain, attachment);
+            swipe.press.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

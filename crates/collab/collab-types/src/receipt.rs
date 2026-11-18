@@ -1,7 +1,7 @@
 //! Deciding a received document op change by change, before it is merged.
 //!
 //! Every peer checks every incoming change. This
-//! is the check that needs no app code and reads no content, so a relay runs
+//! is the check that needs no app code and reads no content, so a server runs
 //! it on cleartext and sealed ops alike: each change's [`ChangeClaim`] names
 //! an action the record's app publishes, the author is granted that action
 //! on the record, and the change writes only the storage units the action
@@ -466,7 +466,7 @@ pub fn decide_op(
 /// Refuse changes whose invoker shows an appearance unless they come from
 /// the one bot actor their author device may show other names as
 /// (`persona_author`, the bot of a bot device whose installation allows `Personas`), and the appearance is valid as written.
-/// The relay cannot read a sealed change, so devices run this once they hold
+/// The server cannot read a sealed change, so devices run this once they hold
 /// the plaintext.
 ///
 /// # Errors
@@ -556,7 +556,7 @@ pub fn decide_op_pinned(
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
             let Some(changes) = cleartext_changes(op)? else {
-                // A sealed op: the relay decides the claims its envelope
+                // A sealed op: the server decides the claims its envelope
                 // carries; devices check the changes once they open them.
                 return check_claims_by_kind(&op.claims, document, kind, &surface_for, allows);
             };
@@ -628,7 +628,7 @@ pub type SurfaceFor<'a> = dyn Fn(Option<&str>) -> Option<std::sync::Arc<dyn Rece
 
 /// Decide `claims`, each against the resource of the app's surface it is
 /// decided against ([`by_kind`]), as a receiver that reads none of their
-/// changes does: a relay deciding a sealed op, or its author checking what
+/// changes does: a server deciding a sealed op, or its author checking what
 /// it is about to send. `surface_for` finds the surface of a resource kind
 /// (the app's own resource for `None`); one that is not here holds the op.
 ///

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A stranger's way into tilo.sh, end to end, on a whole tilo.sh of this run's
-# own: the Lounge relay, the API server, the web entry and production's Caddy,
+# own: the Lounge server, the API server, the web entry and production's Caddy,
 # started the way production's manifests start them (os/containers/tilo-sh's
 # stack.sh), so the entry a stranger meets here is the one tilo.sh runs — taking
 # people by invitation, keeping a wait list, and mailing through a sink this run
@@ -56,13 +56,13 @@ fi
 export TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 bash "$tilo_sh/stack.sh" up --fresh || { echo 'FAIL: the stack did not come up' >&2; exit 1; }
-# Sourced after it is up, for its addresses: the site, the relay, the entry and
+# Sourced after it is up, for its addresses: the site, the server, the entry and
 # the mail sink, all production's own.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
 bash "$tilo_sh/stack.sh" status || true
 
-node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" "$tilo_sh/stack.sh" \
+node "$driver" "$site_origin" "$server_origin" "$out" "$tilo_bin" "$tilo_sh/stack.sh" \
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
        echo '--- the mails the entry sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }

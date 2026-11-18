@@ -126,7 +126,7 @@ impl LiveActivities {
 
     /// Wake `wake` whenever an activity or a pressed control moves the
     /// board, so the host presenting it can draw again.
-    pub fn set_host_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+    pub fn set_shell_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *self.lock_host() = Some(wake);
     }
 
@@ -342,7 +342,7 @@ mod tests {
             let board = LiveActivities::default();
             let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let counter = Arc::clone(&woken);
-            board.set_host_wake(Arc::new(move || {
+            board.set_shell_wake(Arc::new(move || {
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }));
             board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));

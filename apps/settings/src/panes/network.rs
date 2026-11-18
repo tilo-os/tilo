@@ -2828,7 +2828,7 @@ impl NetworkModel {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
             }
             NetworkEffect::OpenNetworkSignIn => {
-                let opener = ui::host::current().opener;
+                let opener = ui::process::current().opener;
                 Begun::work(move || {
                     Landed::SignedIn(service.sign_in_page().and_then(|uri| {
                         ui::portal::open_uri_with(&*opener, &uri).map_err(|error| {

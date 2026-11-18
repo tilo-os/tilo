@@ -255,11 +255,9 @@ impl Entrypoint {
 pub struct Sandbox {
     pub seccomp: String,
     pub net: Net,
-    pub fs: Fs,
     pub services: BTreeMap<String, ServiceReq>,
-    /// XDG portal policy per portal name. When at least one is `ViaHost`
-    /// the launcher bind-mounts the host session D-Bus socket and sets
-    /// `DBUS_SESSION_BUS_ADDRESS`; absent/empty means the bus is NOT exposed.
+    /// XDG portal policy per portal name. The launch's session-bus proxy
+    /// lets the app reach exactly the portals it allows.
     pub portals: BTreeMap<String, PortalPolicy>,
 }
 
@@ -270,7 +268,6 @@ impl Default for Sandbox {
         Self {
             seccomp: DEFAULT_SECCOMP_PROFILE.to_string(),
             net: Net::default(),
-            fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
         }
@@ -284,10 +281,6 @@ impl From<crate::manifest::Sandbox> for Sandbox {
             net: Net {
                 mode: sandbox.net.mode.as_str().to_string(),
                 hosts: sandbox.net.hosts,
-            },
-            fs: Fs {
-                read: sandbox.fs.read,
-                write: sandbox.fs.write,
             },
             services: sandbox.services,
             portals: sandbox.portals,
@@ -309,14 +302,6 @@ impl Default for Net {
             hosts: Vec::new(),
         }
     }
-}
-
-/// `[sandbox.fs]` — **retired**. Carried only so a manifest still
-/// declaring it can be named in the launcher's refusal.
-#[derive(Debug, Clone, Default)]
-pub struct Fs {
-    pub read: Vec<String>,
-    pub write: Vec<String>,
 }
 
 /// Read and decode a manifest file.
@@ -405,7 +390,7 @@ mod tests {
                 "package_id = \"so.tilo.store\"\nversion = \"9.9.9\"\n{}",
                 source(
                     "id = \"com.evil.app\"\nversion = \"0.1.0\"\nkind = \"app\"",
-                    "[entrypoint]\nbin = \"bin/x\"\n[sandbox.services]\napp-host = \"required@1\"",
+                    "[entrypoint]\nbin = \"bin/x\"\n[sandbox.services]\npackage-service = \"required@1\"",
                 )
             );
             let view = ManifestView::from_toml_str(&confused).expect("decodes");
@@ -489,7 +474,6 @@ mod tests {
             let m = app(
                 "com.example.notes",
                 "[entrypoint]\nbin = \"bin/notes\"\n\
-             [sandbox.fs]\nread = [\"/usr/share/fonts\"]\nwrite = []\n\
              [sandbox.services]\ncollab = \"required@1\"\nfs = \"optional@2\"\nmodels = \"required\"",
             );
             assert_eq!(m.package_id, "com.example.notes");
@@ -498,7 +482,6 @@ mod tests {
             assert_eq!(m.entrypoint.r#type, EntrypointType::Gui);
             assert_eq!(m.sandbox.net.mode, "off");
             assert_eq!(m.sandbox.seccomp, DEFAULT_SECCOMP_PROFILE);
-            assert_eq!(m.sandbox.fs.read, vec!["/usr/share/fonts".to_string()]);
             assert_eq!(
                 m.sandbox
                     .services
@@ -560,7 +543,7 @@ mod tests {
              optional-runtimes = [\"tilo-runtime/2026.10.0-chromium\"]",
                 "[entrypoint]\nbin = \"bin/browser\"\n[sandbox.net]\nmode = \"allowlist\"\n\
              hosts = [\"example.org\"]\n\
-             [sandbox.portals]\nfile-chooser = \"via-host\"\nnotifications = \"deny\"",
+             [sandbox.portals]\nfile-chooser = \"via-host\"\nscreencast = \"deny\"",
             ))
             .unwrap();
             assert_eq!(m.name.as_deref(), Some("Browser"));
@@ -573,7 +556,7 @@ mod tests {
                 Some(PortalPolicy::ViaHost)
             );
             assert_eq!(
-                m.sandbox.portals.get("notifications").copied(),
+                m.sandbox.portals.get("screencast").copied(),
                 Some(PortalPolicy::Deny)
             );
             assert!(

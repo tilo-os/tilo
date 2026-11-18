@@ -21,14 +21,14 @@ use tilo_session_client::{Cmd, Outbox, TransportPhase};
 use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_relay_client::frame::{read_frame, read_frame_or_eof, write_frame};
-use tilo_relay_protocol::auth::{Hello, HelloAck};
-use tilo_relay_protocol::entering::{
+use tilo_server_client::frame::{read_frame, read_frame_or_eof, write_frame};
+use tilo_server_protocol::auth::{Hello, HelloAck};
+use tilo_server_protocol::entering::{
     ENTRY_BINDING_LABEL, EnterRefusal, Entered, Entering as EntryRequest, Entry, entry_digest,
 };
-use tilo_relay_protocol::transport::{ALPN, Envelope};
+use tilo_server_protocol::transport::{ALPN, Envelope};
 use tilo_session_client::MemoryPeerStore;
-use tilo_session_client::device::{Entering, Held, HostRefusal, entered, entry_request};
+use tilo_session_client::device::{DeviceRefusal, Entering, Held, entered, entry_request};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
@@ -54,15 +54,15 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -150,12 +150,12 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     closed.close();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A device certificate `root`'s person makes for `device`, as a new visitor's page does.
 async fn guest(root: &SigningKey, device: &SigningKey) -> DeviceCert {
-    tilo_relay_client::invite::guest_certificate(
+    tilo_server_client::invite::guest_certificate(
         root,
         device.verifying_key().to_bytes(),
         "Stranger",
@@ -206,15 +206,15 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
             &lounge.workspace,
             &host_device.cert,
-            tilo_relay_protocol::directory::Listing {
+            tilo_server_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -228,7 +228,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         workspace: workspace.to_owned(),
         name: "Stranger".to_owned(),
         request_id: rand::random(),
-        through: tilo_relay_protocol::entering::Through::Entry,
+        through: tilo_server_protocol::entering::Through::Entry,
     };
     // An entry's hello, its proof signed over `connection`'s keying material.
     let hello_on = |connection: &iroh::endpoint::Connection,
@@ -401,7 +401,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     );
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// The entry of a device that has no root at hand: what it holds is all it can enter under.
@@ -447,7 +447,10 @@ async fn a_device_without_a_root_comes_to_the_entry_only_under_what_it_holds_fro
     assert_eq!(kept, cert);
     assert_eq!(entry.workspace, "lounge");
     assert!(
-        matches!(entry.through, tilo_relay_protocol::entering::Through::Entry),
+        matches!(
+            entry.through,
+            tilo_server_protocol::entering::Through::Entry
+        ),
         "{entry:?}"
     );
 
@@ -462,7 +465,7 @@ async fn a_device_without_a_root_comes_to_the_entry_only_under_what_it_holds_fro
             .unwrap_err();
         assert_eq!(
             refused.code,
-            HostRefusal::NO_CERTIFICATE,
+            DeviceRefusal::NO_CERTIFICATE,
             "{row}: {refused:?}"
         );
     }

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 
 use crate::common::publisher;
@@ -31,7 +31,7 @@ fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questi
     let session = crate::common::headless(Options {
         questions: Some(questions.clone()),
         collab: false,
-        action_plane: ActionPlane::At(root.join("plane.sock")),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(socket.to_path_buf()),
         ..Options::default()
     });
@@ -187,7 +187,10 @@ fn an_admitted_client_is_an_agent_member_people_find() {
             .find(|agent| agent.name == "Claude Code")
     });
     assert_eq!(listed.key, "claude-code");
-    assert!(listed.mine, "kept by the person who admitted it");
+    assert_eq!(
+        listed.status, "Kept by you",
+        "kept by the person who admitted it"
+    );
     program.end();
 }
 
@@ -232,7 +235,7 @@ fn a_send_lists_the_workspaces_agents_and_people() {
 #[track_caller]
 fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) {
     for request in [
-        json!({"op": "agent_seat"}),
+        json!({"op": "agent_place"}),
         json!({"op": "pointer_move", "x": 40.0, "y": 24.0}),
         json!({"op": "click_at", "x": 2.0, "y": 2.0}),
         json!({"op": "type", "text": "hello"}),
@@ -288,7 +291,7 @@ fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
         questions: Some(questions),
         collab: false,
         state: Some(root.path().to_path_buf()),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(socket),
         ..Options::default()
     });

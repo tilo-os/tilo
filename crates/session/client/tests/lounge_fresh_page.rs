@@ -1,5 +1,5 @@
 //! A fresh page joining a real Lounge, as the deployment rehearsal: the
-//! image's own entrypoint with eu1's environment, `tilo-relay workspace
+//! image's own entrypoint with eu1's environment, `tilo-server workspace
 //! --persistent` on a copy of the deployment's state, watched by pages that
 //! were never here before.
 //!
@@ -41,16 +41,16 @@ use std::sync::Arc;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use std::time::Duration;
-use tilo_relay_client::https::HttpFuture;
+use tilo_server_client::https::HttpFuture;
 
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_client::invite::guest_certificate;
-use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_relay_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
+use tilo_server_client::Host;
+use tilo_server_client::invite::guest_certificate;
+use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent};
+use tilo_server_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -80,11 +80,14 @@ fn entrypoint() -> std::path::PathBuf {
         })
 }
 
-/// A PATH holding the relay this run built, so the image's `exec tilo-relay`
+/// A PATH holding the server this run built, so the image's `exec tilo-server`
 /// runs it.
-fn relay_on_path() -> std::ffi::OsString {
-    let relay = tilo_test_env::sibling_binary("tilo-relay", "tilo-relay");
-    let programs = relay.parent().expect("the relay's directory").to_path_buf();
+fn server_on_path() -> std::ffi::OsString {
+    let server = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
+    let programs = server
+        .parent()
+        .expect("the server's directory")
+        .to_path_buf();
     let mut paths = vec![programs];
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
@@ -101,7 +104,7 @@ struct Lounge {
     host_cert: DeviceCert,
     /// Where the host's iroh endpoint answers: what a page's session dials,
     /// which is what `/host` publishes.
-    address: tilo_relay_protocol::web::HostAddress,
+    address: tilo_server_protocol::web::HostAddress,
     /// The snapshot's owner root: the workspace's owner, from the volume.
     owner_root: SigningKey,
     _state: tempfile::TempDir,
@@ -200,7 +203,7 @@ impl Lounge {
             // here holds a port no one is bound to.
             .env("TILO_WORKSPACES_LINK", "127.0.0.1:0")
             .env("TILO_WORKSPACES_LINK_ORIGIN", "https://127.0.0.1:0")
-            .env("PATH", relay_on_path())
+            .env("PATH", server_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it,
             // without the Discord, mail and model secrets: this run starts no
             // bridge that needs them.
@@ -213,7 +216,7 @@ impl Lounge {
             .env("TILO_WORKSPACES_DEFAULT_ROLE", "editor")
             .env("TILO_WORKSPACES_LAYOUT", "shared")
             .env("TILO_WORKSPACES_ADMISSION", "invite")
-            .env("TILO_WORKSPACES_RELAY_ORIGIN", "https://127.0.0.1")
+            .env("TILO_WORKSPACES_SERVER_ORIGIN", "https://127.0.0.1")
             .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
             .env(
                 "TILO_WORKSPACES_SITE_ORIGINS",
@@ -226,11 +229,11 @@ impl Lounge {
             .env("TILO_WORKSPACES_SEED_APPS", "")
             .env("TILO_WORKSPACES_STATE", state.path())
             .env("TILO_WORKSPACES_WEB", "127.0.0.1:0")
-            .env("TILO_WORKSPACES_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_WORKSPACES_SERVER_PLAIN", "127.0.0.1:0")
             .env("TILO_WORKSPACES_LIVE", "127.0.0.1:0")
             .env("TILO_WORKSPACES_HTTP", "127.0.0.1:0")
             .env("TILO_SECRETS_DIR", state.path().join("secrets"))
-            .env("TILO_RELAY_LOG", "info")
+            .env("TILO_SERVER_LOG", "info")
             .env(
                 "TILO_SOURCE_REVISION",
                 "0123456789abcdef0123456789abcdef01234567",
@@ -242,7 +245,7 @@ impl Lounge {
             command.env("TILO_WORKSPACES_REFOUND", refound);
         }
         // The image lays every version of each built-in app's `surface.toml`
-        // at this one path and the host publishes them into its content plane
+        // at this one path and the host publishes them into its content store
         // at start (`tools/ci/publish/lounge-context.sh`). The image has them;
         // a rehearsal can name the same set built from its checkout.
         if let Some(surfaces) = std::env::var_os("TILO_LOUNGE_SURFACES") {
@@ -287,7 +290,7 @@ impl Lounge {
         let entry = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
         let info = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(tilo_relay_client::https::host_info(entry.as_ref()))
+                .block_on(tilo_server_client::https::host_info(entry.as_ref()))
         })
         .expect("the host's certificate");
         let host_cert = info.host_cert;
@@ -381,11 +384,11 @@ impl Lounge {
     fn page_entering(
         &self,
         who: &Person,
-        entering: Option<tilo_relay_protocol::entering::Entering>,
+        entering: Option<tilo_server_protocol::entering::Entering>,
     ) -> Link {
         // A page reaches its host over WebTransport, at the listener `/host`
         // names: exactly what a browser in the Lounge has.
-        let host = Host::published(&self.address).over(tilo_relay_client::Carrier::WebTransport);
+        let host = Host::published(&self.address).over(tilo_server_client::Carrier::WebTransport);
         tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
                 host,
@@ -520,7 +523,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     println!("the host minted an invitation for the visitor");
 
     let page = fresh_page(&lounge, &visitor, &invitation).await;
-    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
     println!("the fresh page joined the Lounge");
 
     let desktop = DocumentRoute {
@@ -697,12 +700,12 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 /// state volume, and the second sees where the first put its pointer.
 ///
 /// This is the deployment's own composition (`os/containers/tilo-lounge/
-/// entrypoint.sh` starting `tilo-relay workspace --persistent`), with nothing of
+/// entrypoint.sh` starting `tilo-server workspace --persistent`), with nothing of
 /// production: the host makes its workspace and its owner root as it starts,
 /// and both people are guests the host invites through the entry it serves. It
 /// is the fast check of the one thing a member's page needs to see another
-/// member move: both pages join the workspace's live plane over the host's
-/// packet relay, the first says where its pointer is on that plane's presence
+/// member move: both pages join the workspace's live session over the host's
+/// packet relay, the first says where its pointer is on that live session's presence
 /// track, and the second's board places it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
@@ -717,11 +720,11 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     let other = fresh_page(&lounge, &second, &second_invitation).await;
     println!("both pages joined the Lounge");
     let workspace_id = workspace_id(&lounge);
-    // Both pages are in the workspace's live plane before anything is said:
-    // a page says presence only on a plane it joined, and a plane joined
+    // Both pages are in the workspace's live session before anything is said:
+    // a page says presence only on a live session it joined, and a live session joined
     // after the word would not draw it.
-    wait_for_plane(&page).await;
-    wait_for_plane(&other).await;
+    wait_for_live_session(&page).await;
+    wait_for_live_session(&other).await;
 
     let (tab, at) = (0x41, (12.0f32, 34.0f32));
     let bound = Duration::from_secs(10);
@@ -783,7 +786,7 @@ const BRIDGE_FRAMES: usize = 200;
 /// An agent's bridge (`tilo mcp`) is a device of the person in their workspace, asking the host's
 /// actions through its session, while the person's page in the same workspace says where its
 /// pointer is many times a second and another member's page draws it. Nothing on the bridge shows
-/// people, so its plane subscribes to none of their presence: not one frame reaches it.
+/// people, so its live session subscribes to none of their presence: not one frame reaches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let lounge = Lounge::fresh();
@@ -797,9 +800,9 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let other = fresh_page(&lounge, &member, &member_invitation).await;
     let bridge = fresh_page(&lounge, &agent, &agent_invitation).await;
     let workspace_id = workspace_id(&lounge);
-    wait_for_plane(&tab).await;
-    wait_for_plane(&other).await;
-    wait_for_plane(&bridge).await;
+    wait_for_live_session(&tab).await;
+    wait_for_live_session(&other).await;
+    wait_for_live_session(&bridge).await;
     // What `tilo mcp` holds once it entered: the device's session and the host's actions asked
     // through it, and nothing that reads the workspace's live frames.
     let actions = tilo_session_client::device::Device::of(
@@ -812,7 +815,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let drawn = other.events_where(|event| {
         matches!(
             event,
-            Event::LivePlane {
+            Event::LiveSession {
                 track: tilo_live::live::Track::Presence,
                 ..
             }
@@ -842,8 +845,8 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     assert!(
         channels
             .lines()
-            .any(|line| line.starts_with("plane ") && line.ends_with(", heard 0 object(s)")),
-        "the bridge heard nothing on its workspace's plane while the person said {heard} presence \
+            .any(|line| line.starts_with("live session ") && line.ends_with(", heard 0 object(s)")),
+        "the bridge heard nothing on its workspace's live_session while the person said {heard} presence \
          frames: {channels}"
     );
     drop(actions);
@@ -852,36 +855,36 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     tab.close();
 }
 
-/// Wait until `page` is in the workspace's live plane: the plane reports the
+/// Wait until `page` is in the workspace's live session: the live session reports the
 /// devices it reads and the objects it heard, which it lists only once joined.
-async fn wait_for_plane(page: &Link) {
+async fn wait_for_live_session(page: &Link) {
     let started = tokio::time::Instant::now();
     loop {
         let channels = page.status().key_state;
         if channels
             .lines()
-            .any(|line| line.starts_with("plane ") && line.contains(" epoch "))
+            .any(|line| line.starts_with("live session ") && line.contains(" epoch "))
         {
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(60),
-            "the page never joined the workspace's live plane; its channels:\n{channels}"
+            "the page never joined the workspace's live session; its channels:\n{channels}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
 /// The workspace's id as a page numbers it.
-fn workspace_id(lounge: &Lounge) -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
+fn workspace_id(lounge: &Lounge) -> tilo_server_protocol::WorkspaceId {
+    tilo_server_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
 }
 
 /// Every presence frame `page` heard over `secs`, and the devices that said
 /// anything: presence is a live frame the host fans out and never keeps, so
 /// the frames are gathered over a while and replayed into a board. A page
-/// takes another device's presence off its plane's presence track
-/// ([`Event::LivePlane`] with `Track::Presence`): the plane opened the
+/// takes another device's presence off its live session's presence track
+/// ([`Event::LiveSession`] with `Track::Presence`): the live session opened the
 /// scope's seal, and the body is the [`Presence`] frame the device said.
 async fn presence_frames(
     page: &Events,
@@ -911,7 +914,7 @@ fn gather_presence(
 ) -> bool {
     let mut heard = false;
     for event in page.drain() {
-        if let Event::LivePlane {
+        if let Event::LiveSession {
             from,
             track: tilo_live::live::Track::Presence,
             body,
@@ -965,7 +968,7 @@ fn pointer_on(
 /// (the deployment's ingress terminates TLS in front of it).
 struct Plain(String);
 
-impl tilo_relay_client::https::HttpClient for Plain {
+impl tilo_server_client::https::HttpClient for Plain {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
         Box::pin(async move {

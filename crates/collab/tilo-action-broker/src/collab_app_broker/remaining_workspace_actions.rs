@@ -1,8 +1,8 @@
-//! Registered workspace services share original-custody host admission.
+//! Registered workspace services share original-ownership host admission.
 use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{AppBrokerState, BrokerActor, InvocationCaller};
 use std::sync::Arc;
-use tilo_actions::remote::{ActionHostError, Caller, Confirmation, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, Caller, Confirmation, InvokeRequest};
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationUpdate};
 use tilo_desktop_model::Workspace;
 
@@ -111,7 +111,7 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         request: &InvokeRequest,
         argument: Option<&str>,
-    ) -> Option<Result<u64, ActionHostError>> {
+    ) -> Option<Result<u64, ActionCallError>> {
         let address = &request.target.address;
         if address.resource == crate::automation::LIBRARY_RESOURCE
             && self.services.shortcut_library.is_some()
@@ -125,7 +125,7 @@ impl AppBrokerState {
         {
             // A signed remote device is not physical intent on this keyboard.
             return Some(if caller.device_public_key().is_some() {
-                Err(ActionHostError::NotPermitted)
+                Err(ActionCallError::NotPermitted)
             } else {
                 self.admitted_keyboard_shortcut(caller, origin, authority, request, argument)
             });
@@ -150,8 +150,8 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
-    ) -> Result<(AdmittedHostAction, bool), ActionHostError> {
-        let witnessed = self.authorize_framework_descriptor(authority, action, input)?;
+    ) -> Result<(AdmittedHostAction, bool), ActionCallError> {
+        let approved = self.authorize_framework_descriptor(authority, action, input)?;
         let admitted = self.admit_host_action(
             caller,
             origin,
@@ -164,7 +164,7 @@ impl AppBrokerState {
         )?;
         #[cfg(test)]
         tests::at_effect_barrier();
-        Ok((admitted, witnessed))
+        Ok((admitted, approved))
     }
 
     fn authorize_framework_descriptor(
@@ -172,31 +172,31 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
-    ) -> Result<bool, ActionHostError> {
+    ) -> Result<bool, ActionCallError> {
         let (workspace, actor, _) = authority;
         let (request, argument) = input;
         let workspace_id = workspace.id().to_string();
-        let witnessed = self.consume_answer(
+        let approved = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.member(), &workspace_id, request),
+            &self.approval_binding(actor.member(), &workspace_id, request),
         );
         if !Self::confirmed_as_asked(
             actor,
             action.1,
             argument,
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
         ) {
-            return Err(ActionHostError::confirmation_required());
+            return Err(ActionCallError::confirmation_required());
         }
         self.framework_policy(
             authority,
             action,
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
             false,
         )?;
-        Ok(witnessed)
+        Ok(approved)
     }
 
     // Admission may synchronously cross disk and owner-service barriers. Never
@@ -206,11 +206,11 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&InvocationCaller>,
         workspace: &str,
-    ) -> Result<(Workspace, BrokerActor, u64), ActionHostError> {
-        let unavailable = |reason| ActionHostError::Unavailable { reason };
+    ) -> Result<(Workspace, BrokerActor, u64), ActionCallError> {
+        let unavailable = |reason| ActionCallError::Unavailable { reason };
         if !self.is_accepting() || (caller.execution_id().is_some() && !caller.execution_is_live())
         {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         let original = match origin {
             Some(InvocationCaller::Certified {
@@ -223,9 +223,9 @@ impl AppBrokerState {
                 let certificate = current
                     .certificate
                     .as_ref()
-                    .ok_or(ActionHostError::NotPermitted)?;
+                    .ok_or(ActionCallError::NotPermitted)?;
                 if original.workspace != workspace {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 if caller.device_public_key().is_none() {
                     self.current_native_person(workspace, certificate)
@@ -248,7 +248,7 @@ impl AppBrokerState {
                 self.checked_policy_time(time.as_ref())
                     .map_err(unavailable)?;
                 if route.cluster_id != workspace {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 if let Some(registration) = &admitted.worker_registration {
                     let workers = self
@@ -259,7 +259,7 @@ impl AppBrokerState {
                         .values()
                         .any(|worker| worker.worker_registration.as_ref() == Some(registration))
                     {
-                        return Err(ActionHostError::NotPermitted);
+                        return Err(ActionCallError::NotPermitted);
                     }
                 }
                 let current = self
@@ -276,7 +276,7 @@ impl AppBrokerState {
                 ..
             }) => {
                 if original != workspace {
-                    return Err(ActionHostError::NotPermitted);
+                    return Err(ActionCallError::NotPermitted);
                 }
                 self.checked_policy_time(Some(time)).map_err(unavailable)?;
                 self.current_native_person(workspace, certificate)
@@ -289,7 +289,7 @@ impl AppBrokerState {
             .decide_for(caller, workspace, |workspace, actor, now| {
                 (workspace.clone(), actor.clone(), now)
             })
-            .ok_or(ActionHostError::NotPermitted)?;
+            .ok_or(ActionCallError::NotPermitted)?;
         Ok((workspace, original.unwrap_or(actor), now))
     }
 
@@ -298,9 +298,9 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         confirmation: Option<&Confirmation>,
-        witnessed: bool,
+        approved: bool,
         spend: bool,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let (workspace, actor, now) = authority;
         let (answer, charged) = actor.action_verdict_in(
             workspace,
@@ -314,12 +314,12 @@ impl AppBrokerState {
             now,
         );
         match answer {
-            tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Deny => return Err(ActionCallError::NotPermitted),
             tilo_action_policy::Answer::Ask
-                if !(witnessed
+                if !(approved
                     || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
             {
-                return Err(ActionHostError::confirmation_required());
+                return Err(ActionCallError::confirmation_required());
             }
             _ => {}
         }
@@ -331,7 +331,7 @@ impl AppBrokerState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered admission of a shortcut library operation: descriptor, witness, decode, catalogue and run"
+        reason = "one ordered admission of a shortcut library operation: descriptor, approval, decode, catalogue and run"
     )]
     fn admitted_shortcut_library(
         self: &Arc<Self>,
@@ -340,23 +340,23 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         request: &InvokeRequest,
         argument: Option<&str>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let library = self
             .services
             .shortcut_library
             .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let descriptor = crate::automation::library_descriptor(&request.target.address.action)
-            .ok_or(ActionHostError::UnknownAction)?;
-        let witnessed = self.authorize_framework_descriptor(
+            .ok_or(ActionCallError::UnknownAction)?;
+        let approved = self.authorize_framework_descriptor(
             authority,
             (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
             (request, argument),
         )?;
         let operation = crate::automation::decode_library(&request.target.address.action, argument)
-            .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
+            .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
         let catalog = tilo_automation::ActionCatalog::new(
-            self.eager_catalogue(caller, super::action_host::RowScope::All)
+            self.eager_catalogue(caller, super::action_provider::RowScope::All)
                 .0,
         );
         let keymap = library.keymap();
@@ -370,7 +370,7 @@ impl AppBrokerState {
                 fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
             },
         )
-        .map_err(|reason| ActionHostError::Refused { reason })?;
+        .map_err(|reason| ActionCallError::Refused { reason })?;
         let admitted = self.admit_host_action(
             caller,
             origin,
@@ -391,9 +391,9 @@ impl AppBrokerState {
             // concurrent shortcut edit even when the caller still has permission.
             let operation =
                 crate::automation::decode_library(&request.target.address.action, argument)
-                    .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
+                    .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
             let catalog = tilo_automation::ActionCatalog::new(
-                self.eager_catalogue(caller, super::action_host::RowScope::All)
+                self.eager_catalogue(caller, super::action_provider::RowScope::All)
                     .0,
             );
             let keymap = library.keymap();
@@ -407,13 +407,13 @@ impl AppBrokerState {
                     fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
                 },
             )
-            .map_err(|reason| ActionHostError::Refused { reason })?;
+            .map_err(|reason| ActionCallError::Refused { reason })?;
             let (current_workspace, actor, now) =
                 self.current_framework_authority(caller, origin, &workspace_id)?;
             if serde_json::to_value(&workspace).ok()
                 != serde_json::to_value(&current_workspace).ok()
             {
-                return Err(ActionHostError::Refused {
+                return Err(ActionCallError::Refused {
                     reason: "shortcut library changed while planning; retry with a new invocation"
                         .into(),
                 });
@@ -422,7 +422,7 @@ impl AppBrokerState {
                 (&current_workspace, &actor, now),
                 (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
                 request.confirmation.as_ref(),
-                witnessed,
+                approved,
                 true,
             )?;
             Ok((plan, actor))
@@ -487,17 +487,17 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         request: &InvokeRequest,
         argument: Option<&str>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let service = self
             .services
             .keyboard_shortcuts
             .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let mut keymap = settings_store::hardware::ShortcutConfig::load();
         let descriptor = service
             .descriptor(&keymap, &request.target.address)
-            .ok_or(ActionHostError::UnknownAction)?;
-        let (admitted, witnessed) = self.admit_framework_descriptor(
+            .ok_or(ActionCallError::UnknownAction)?;
+        let (admitted, approved) = self.admit_framework_descriptor(
             caller,
             origin,
             authority,
@@ -508,9 +508,9 @@ impl AppBrokerState {
             keymap = settings_store::hardware::ShortcutConfig::load();
             let fresh = service
                 .descriptor(&keymap, &request.target.address)
-                .ok_or(ActionHostError::UnknownAction)?;
+                .ok_or(ActionCallError::UnknownAction)?;
             if serde_json::to_value(&fresh).ok() != serde_json::to_value(&descriptor).ok() {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             let (workspace, actor, now) =
                 self.current_framework_authority(caller, origin, &authority.0.id().to_string())?;
@@ -518,7 +518,7 @@ impl AppBrokerState {
                 (&workspace, &actor, now),
                 (service.app_id(), &fresh),
                 request.confirmation.as_ref(),
-                witnessed,
+                approved,
                 true,
             )?;
             Ok(())
@@ -529,7 +529,7 @@ impl AppBrokerState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered admission of a governance action: descriptor, owner confirmation floor, witness and run"
+        reason = "one ordered admission of a governance action: descriptor, owner confirmation floor, approval and run"
     )]
     fn admitted_workspace_governance(
         self: &Arc<Self>,
@@ -538,40 +538,44 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         request: &InvokeRequest,
         argument: Option<&str>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let service = self
             .services
             .workspace_governance
             .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?;
+            .ok_or(ActionCallError::UnknownAction)?;
         let owner_action = service.requires_descriptor_admission(&request.target.address.action);
         let descriptor =
             governance_descriptor(service.as_ref(), authority.0, &request.target.address)
-                .ok_or(ActionHostError::UnknownAction)?;
+                .ok_or(ActionCallError::UnknownAction)?;
         // Owner actions retain their explicit direct-person confirmation floor.
         if owner_action && !authority.1.direct() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
-        let witnessed = owner_action
+        let approved = owner_action
             && self.consume_answer(
                 request.confirmation.as_ref(),
-                &self.witness_binding(authority.1.member(), &authority.0.id().to_string(), request),
+                &self.approval_binding(
+                    authority.1.member(),
+                    &authority.0.id().to_string(),
+                    request,
+                ),
             );
-        if owner_action && !witnessed && request.confirmation != Some(Confirmation::Confirmed) {
-            return Err(ActionHostError::confirmation_required());
+        if owner_action && !approved && request.confirmation != Some(Confirmation::Confirmed) {
+            return Err(ActionCallError::confirmation_required());
         }
-        // Convert only the exact consumed owner witness; ordinary governance
+        // Convert only the exact consumed owner approval; ordinary governance
         // retains its legacy phrase/confirmation semantics at the service.
         let mut checked = request.clone();
-        if witnessed {
+        if approved {
             checked.confirmation = Some(Confirmation::Confirmed);
         }
-        // Admission records the original witness-bearing request, not a rewrite.
+        // Admission records the original approval-bearing request, not a rewrite.
         self.framework_policy(
             authority,
             (service.app_id(), &descriptor),
             checked.confirmation.as_ref(),
-            witnessed,
+            approved,
             false,
         )?;
         if owner_action
@@ -580,10 +584,10 @@ impl AppBrokerState {
                 &descriptor,
                 argument,
                 checked.confirmation.as_ref(),
-                witnessed,
+                approved,
             )
         {
-            return Err(ActionHostError::confirmation_required());
+            return Err(ActionCallError::confirmation_required());
         }
         let admitted = self.admit_host_action(
             caller,
@@ -609,7 +613,7 @@ impl AppBrokerState {
             let (workspace, _, _) =
                 self.current_framework_authority(caller, origin, &workspace_id)?;
             let fresh = governance_descriptor(service.as_ref(), &workspace, &descriptor.address)
-                .ok_or(ActionHostError::UnknownAction)?;
+                .ok_or(ActionCallError::UnknownAction)?;
             let (current_workspace, actor, now) =
                 self.current_framework_authority(caller, origin, &workspace_id)?;
             if serde_json::to_value(&fresh).ok() != serde_json::to_value(&descriptor).ok()
@@ -617,13 +621,13 @@ impl AppBrokerState {
                     != serde_json::to_value(&current_workspace).ok()
                 || (owner_action && !actor.direct())
             {
-                return Err(ActionHostError::NotPermitted);
+                return Err(ActionCallError::NotPermitted);
             }
             self.framework_policy(
                 (&current_workspace, &actor, now),
                 (service.app_id(), &fresh),
                 checked.confirmation.as_ref(),
-                witnessed,
+                approved,
                 true,
             )?;
             Ok(actor)
@@ -686,8 +690,8 @@ impl AppBrokerState {
     pub(super) fn framework_effect_ready<T>(
         &self,
         admitted: &AdmittedHostAction,
-        check: impl FnOnce() -> Result<T, ActionHostError>,
-    ) -> Result<T, ActionHostError> {
+        check: impl FnOnce() -> Result<T, ActionCallError>,
+    ) -> Result<T, ActionCallError> {
         check().inspect_err(|error| {
             let update = InvocationUpdate::Failed {
                 invocation: admitted.invocation,
@@ -712,7 +716,7 @@ impl AppBrokerState {
         &self,
         admitted: AdmittedHostAction,
         result: crate::services::WorkspaceGovernanceOutcome,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<u64, ActionCallError> {
         let invocation = admitted.invocation;
         let update = match result {
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },

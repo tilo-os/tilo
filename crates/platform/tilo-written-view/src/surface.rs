@@ -3,10 +3,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use serde_json::json;
+use serde_json::{Map, Value as Json, json};
 use tilo_actions::{Actor, MemberId};
+use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local;
-use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::RootView;
 use tilolang_tilo::instance::wire::resource;
 use tilolang_tilo::instance::{Config, Instance, Mode};
@@ -19,7 +19,7 @@ use ui::written_view::{Shown, WrittenView};
 
 use crate::apps::{self, App};
 use crate::platform::ViewPlatform;
-use crate::state::State;
+use crate::state::{Asked, State};
 use crate::workspace::{Read, Workspace};
 use crate::wrapper::{self, SHOWN};
 
@@ -36,7 +36,7 @@ pub(crate) fn shown(view: &WrittenView, workspace: Box<dyn Workspace>) -> Shown 
         Ok(surface) => Box::new(surface),
         Err(why) => {
             tracing::error!(why, "a written view did not open");
-            Box::new(ui::widget::EmptyState::new(tilo_ui_host::i18n::t(
+            Box::new(ui::widget::EmptyState::new(tilo_app_window::i18n::t(
                 "tilolang-open-failed",
             )))
         }
@@ -81,8 +81,8 @@ impl Surface {
         state: Rc<State>,
     ) -> Result<Self, String> {
         let wrapper = wrapper::get()?;
-        let apps = apps::named(&view.source);
-        tilo_ui_host::i18n::ensure();
+        let apps = apps::named(&view.source, &view.reads);
+        tilo_app_window::i18n::ensure();
         let wake = ui::wake::WakeHandle::new();
         state.woken_by(wake.clone());
         let failed = Rc::new(RefCell::new(None));
@@ -94,7 +94,7 @@ impl Surface {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 // A view reaches nothing outside the workspace by itself.
                 sink: Some(Box::new(MemorySink::new())),
                 root: RootView::default(),
@@ -258,9 +258,8 @@ impl Surface {
             match self.decide(&invocation) {
                 Decision::Allow => self.send(&invocation),
                 Decision::Ask => {
-                    if let Some((app, action)) = self.described(&invocation) {
-                        self.state
-                            .suggest(app, action, self.author.clone(), invocation);
+                    if let Some(asked) = self.described(&invocation) {
+                        self.state.suggest(asked, self.author.clone(), invocation);
                     }
                 }
                 Decision::Deny => {
@@ -308,43 +307,74 @@ impl Surface {
         )
     }
 
-    /// The app `invocation` would change and what it would do, in words.
-    fn described(&self, invocation: &Invocation) -> Option<(String, String)> {
-        let Invocation::Action { app, action, .. } = invocation else {
+    /// What `invocation` would do, as the person is asked about it: the app it would change, the
+    /// action in the app's own words, and everything the action is given, exactly as
+    /// [`Self::send`] sends it. The words are the action's, never those of the control that
+    /// asked.
+    fn described(&self, invocation: &Invocation) -> Option<Asked> {
+        let Invocation::Action {
+            app,
+            action,
+            destructive,
+            ..
+        } = invocation
+        else {
             return None;
         };
         let declared = self.app(app.as_str())?;
-        Some((declared.title.clone(), declared.label(action)))
+        let (_, arguments) = sent(&declared, invocation)?;
+        Some(Asked {
+            app: declared.title.clone(),
+            action: declared.label(action),
+            arguments: arguments
+                .iter()
+                .map(|(name, value)| (name.clone(), spoken(value)))
+                .collect(),
+            destructive: *destructive,
+        })
     }
 
     /// Send `invocation` to its app's own API, as the person at the window.
     fn send(&mut self, invocation: &Invocation) {
-        let Invocation::Action {
-            app,
-            action,
-            target,
-            ..
-        } = invocation
-        else {
+        let Invocation::Action { app, action, .. } = invocation else {
             return;
         };
         let Some(declared) = self.app(app.as_str()) else {
             return;
         };
-        let resource = target
-            .as_ref()
-            .map(ResourceRef::id_string)
-            .or_else(|| declared.root.as_ref().map(|root| root.published.clone()));
-        let Some(resource) = resource else {
+        let Some((resource, arguments)) = sent(&declared, invocation) else {
             return;
         };
-        let arguments = declared.arguments(action, invocation.api_arguments());
         self.workspace.invoke(
             &declared.meta.app,
             &resource,
             declared.verb(action),
             arguments,
         );
+    }
+}
+
+/// Where `invocation` goes in the app `declared` and what it is given there, by the names the
+/// app's own action takes: what is sent, and so what the person is asked about.
+fn sent(declared: &App, invocation: &Invocation) -> Option<(String, Map<String, Json>)> {
+    let Invocation::Action { action, target, .. } = invocation else {
+        return None;
+    };
+    let resource = target
+        .as_ref()
+        .map(ResourceRef::id_string)
+        .or_else(|| declared.root.as_ref().map(|root| root.published.clone()))?;
+    Some((
+        resource,
+        declared.arguments(action, invocation.api_arguments()),
+    ))
+}
+
+/// An argument's value as a person reads it: text as it is, anything else as it is sent.
+fn spoken(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -376,25 +406,96 @@ impl Surface {
         let mut out = Vec::new();
         if let Some(view) = self
             .instance
-            .view(tilo_render_protocol::patch::Lane::Detail)
+            .view(tilo_render_protocol::patch::Level::Detail)
         {
             walk(view.borrow().tree(), kind, &mut out);
         }
         out
     }
 
+    /// What the first node of kind `kind` the view shows holds in its prop `prop`.
+    fn held(&self, kind: &str, prop: &str) -> Option<Value> {
+        fn find(node: &tilolang_tilo::runtime::UiNode, kind: &str, prop: &str) -> Option<Value> {
+            if node.kind == kind {
+                return node.props.get(prop).cloned();
+            }
+            node.children
+                .iter()
+                .find_map(|child| find(child, kind, prop))
+        }
+        let view = self
+            .instance
+            .view(tilo_render_protocol::patch::Level::Detail)?;
+        let view = view.borrow();
+        find(view.tree(), kind, prop)
+    }
+
+    /// Every number the first node of kind `kind` holds in its prop `prop`, in order, through
+    /// the lists and cases it is given in: a chart's readings.
+    pub(crate) fn numbers(&self, kind: &str, prop: &str) -> Vec<f64> {
+        fn walk(value: &Value, out: &mut Vec<f64>) {
+            match value {
+                Value::Float(number) => out.push(*number),
+                Value::List(items) | Value::Tuple(items) => {
+                    for item in items {
+                        walk(item, out);
+                    }
+                }
+                Value::Opt(Some(inner)) => walk(inner, out),
+                Value::Enum(case) => {
+                    for field in case.fields.values() {
+                        walk(field, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(value) = self.held(kind, prop) {
+            walk(&value, &mut out);
+        }
+        out
+    }
+
+    /// The texts the first node of kind `kind` holds in its list prop `prop`, in order.
+    pub(crate) fn words(&self, kind: &str, prop: &str) -> Vec<String> {
+        match self.held(kind, prop) {
+            Some(Value::List(items)) => items
+                .into_iter()
+                .filter_map(|item| match item {
+                    Value::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// How many widgets named `name` the window drew the view with.
+    pub(crate) fn drawn(&self, name: &str) -> usize {
+        fn walk(widget: &dyn Widget, name: &str, found: &mut usize) {
+            if widget.name() == name {
+                *found = found.saturating_add(1);
+            }
+            widget.for_each_child(&mut |child| walk(child, name, found));
+        }
+        let mut found = 0;
+        walk(&self.view, name, &mut found);
+        found
+    }
+
     /// Press the control `key`, as the person at the window does.
     pub(crate) fn press(&mut self, key: &str) {
         let view = self
             .instance
-            .view(tilo_render_protocol::patch::Lane::Detail)
+            .view(tilo_render_protocol::patch::Level::Detail)
             .expect("the view is open");
         view.borrow().press(key).expect("the press runs");
         self.exchange();
     }
 }
 
-/// The surface stands for the UI host's window in the layout and in every walk of the widgets.
+/// The surface stands for the app window's window in the layout and in every walk of the widgets.
 impl ui::widget::Decorator for Surface {
     type Inner = dyn Widget;
 

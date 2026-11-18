@@ -53,8 +53,11 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
     for definition in catalogue.iter() {
         let app = crate::common::open(
             definition.app_id(),
-            &MemberId::person("coverage-agent"),
-            ReplicaActor::Agent,
+            &MemberId::agent("coverage-agent"),
+            ReplicaActor::Agent {
+                person: MemberId::person("maker"),
+                name: String::new(),
+            },
             Seed::New,
         )
         .unwrap_or_else(|error| panic!("{} did not open: {error}", definition.app_id()));
@@ -105,8 +108,11 @@ fn every_web_apps_record_reads_with_no_window_open() {
         // nothing but the record's own declaration can answer.
         let replica = crate::common::confined(
             app,
-            &MemberId::person("reading-agent"),
-            &ReplicaActor::Agent,
+            &MemberId::agent("reading-agent"),
+            &ReplicaActor::Agent {
+                person: MemberId::person("maker"),
+                name: String::new(),
+            },
             Seed::New,
         )
         .unwrap_or_else(|error| panic!("{app} did not open: {error}"));

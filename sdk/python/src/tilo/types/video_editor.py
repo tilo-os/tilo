@@ -51,7 +51,7 @@ __all__ = [
     "RemoveMarkerArgs",
     "AddTrackArgs",
     "ResetMixArgs",
-    "TrimLanesArgs",
+    "TrimTracksArgs",
     "DeleteTrackArgs",
     "PlaceClipArgs",
     "DeleteMediaArgs",
@@ -192,7 +192,7 @@ class Track(TypedDict):
     gain_db: float
     pan: float
 
-TrackKind = Literal["Video", "Audio"]
+TrackKind = Literal["video", "audio"]
 
 class Transform(TypedDict):
     scale_x: float
@@ -271,12 +271,12 @@ ResetMixArgs = TypedDict("ResetMixArgs", {
 })
 """The arguments of `reset-mix`."""
 
-TrimLanesArgs = TypedDict("TrimLanesArgs", {
+TrimTracksArgs = TypedDict("TrimTracksArgs", {
     "tracks": "list[str]",
     "db": "float",
     "headroom": "float",
 })
-"""The arguments of `trim-lanes`."""
+"""The arguments of `trim-tracks`."""
 
 DeleteTrackArgs = TypedDict("DeleteTrackArgs", {
     "track": "str",
@@ -401,7 +401,7 @@ LinkWithArgs = TypedDict("LinkWithArgs", {
 
 class Project(Resource):
     """Project — `video-editor.project`."""
-    __surface__ = "so.tilo.video-editor@292027a7bde8cd96"
+    __surface__ = "so.tilo.video-editor@1e9101e2655f4676"
     name: str
     fps: float
     width: int
@@ -629,18 +629,18 @@ class Project(Resource):
         """Runs `reset-mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset-mix", items)
 
-    def trim_lanes(self,
+    def trim_tracks(self,
         *,
         tracks: list[str],
         db: float,
         headroom: float,
     ) -> None:
         """Runs the app's action."""
-        return self.action("trim-lanes", tracks=tracks, db=db, headroom=headroom)
+        return self.action("trim-tracks", tracks=tracks, db=db, headroom=headroom)
 
-    def trim_lanes_many(self, items: list[TrimLanesArgs]) -> list[dict[str, Any]]:
-        """Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("trim-lanes", items)
+    def trim_tracks_many(self, items: list[TrimTracksArgs]) -> list[dict[str, Any]]:
+        """Runs `trim-tracks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("trim-tracks", items)
 
     def delete_track(self, *, track: str) -> None:
         """Runs the app's action."""
@@ -934,6 +934,6 @@ class Project(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_frame_size", "set_frame_size_many", "set_frame_rate", "set_frame_rate_many", "set_render_range", "set_render_range_many", "clear_marks", "clear_marks_many", "add_title", "set_title", "add_clip", "move_clip", "set_clip", "remove_clip", "add_marker", "add_marker_many", "place_two_angles", "place_two_angles_many", "unplace_two_angles", "unplace_two_angles_many", "remove_marker", "remove_marker_many", "add_track", "add_track_many", "reset_mix", "reset_mix_many", "trim_lanes", "trim_lanes_many", "delete_track", "delete_track_many", "place_clip", "place_clip_many", "delete_media", "delete_media_many", "use_as_project_format", "use_as_project_format_many", "delete", "delete_many", "ripple_delete", "ripple_delete_many", "split_clip", "split_clip_many", "trim_in_clip", "trim_in_clip_many", "trim_out_clip", "trim_out_clip_many", "set_speed", "set_speed_many", "toggle_reverse", "toggle_reverse_many", "reset_speed", "reset_speed_many", "set_param", "set_param_many", "add_effect", "add_effect_many", "remove_effect", "remove_effect_many", "move_effect", "move_effect_many", "set_effect_amount", "set_effect_amount_many", "clear_effects", "clear_effects_many", "unlink", "unlink_many", "link_audio", "link_audio_many", "link_with", "link_with_many", "export_timeline_content", "render_timeline", "export_video_content", "export_video_status", "cancel_video_export", "view_frame_content"})
+    __actions__ = frozenset({"set_frame_size", "set_frame_size_many", "set_frame_rate", "set_frame_rate_many", "set_render_range", "set_render_range_many", "clear_marks", "clear_marks_many", "add_title", "set_title", "add_clip", "move_clip", "set_clip", "remove_clip", "add_marker", "add_marker_many", "place_two_angles", "place_two_angles_many", "unplace_two_angles", "unplace_two_angles_many", "remove_marker", "remove_marker_many", "add_track", "add_track_many", "reset_mix", "reset_mix_many", "trim_tracks", "trim_tracks_many", "delete_track", "delete_track_many", "place_clip", "place_clip_many", "delete_media", "delete_media_many", "use_as_project_format", "use_as_project_format_many", "delete", "delete_many", "ripple_delete", "ripple_delete_many", "split_clip", "split_clip_many", "trim_in_clip", "trim_in_clip_many", "trim_out_clip", "trim_out_clip_many", "set_speed", "set_speed_many", "toggle_reverse", "toggle_reverse_many", "reset_speed", "reset_speed_many", "set_param", "set_param_many", "add_effect", "add_effect_many", "remove_effect", "remove_effect_many", "move_effect", "move_effect_many", "set_effect_amount", "set_effect_amount_many", "clear_effects", "clear_effects_many", "unlink", "unlink_many", "link_audio", "link_audio_many", "link_with", "link_with_many", "export_timeline_content", "render_timeline", "export_video_content", "export_video_status", "cancel_video_export", "view_frame_content"})
 
 

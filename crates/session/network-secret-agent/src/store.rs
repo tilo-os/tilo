@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use secret_vault::{Custody, VaultFormat};
+use secret_vault::{VaultBackend, VaultFormat};
 use zeroize::Zeroizing;
 
 use super::SettingSecrets;
@@ -116,7 +116,7 @@ type Entries = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
 /// The network secrets vault, plus the roaming store for passphrases.
 pub struct VaultStore {
     dir: PathBuf,
-    custody: Custody,
+    backend: VaultBackend,
     roaming: RoamingWifiSlot,
     /// One read-modify-write at a time.
     lock: Mutex<()>,
@@ -128,13 +128,13 @@ impl VaultStore {
         let dir = tilo_paths::xdg::config_home()?
             .join("tilo")
             .join("network-secrets");
-        Some(Self::at(dir, Custody::for_session(), roaming))
+        Some(Self::at(dir, VaultBackend::for_session(), roaming))
     }
 
-    pub fn at(dir: PathBuf, custody: Custody, roaming: RoamingWifiSlot) -> Self {
+    pub fn at(dir: PathBuf, backend: VaultBackend, roaming: RoamingWifiSlot) -> Self {
         Self {
             dir,
-            custody,
+            backend,
             roaming,
             lock: Mutex::new(()),
         }
@@ -153,7 +153,7 @@ impl VaultStore {
             Err(error) => return Err(format!("could not read the network secrets vault: {error}")),
         };
         let key = FORMAT
-            .load_or_create_key(&self.dir, self.custody)
+            .load_or_create_key(&self.dir, self.backend)
             .ok_or_else(|| "the network secrets vault key is unavailable".to_string())?;
         let plaintext = FORMAT
             .open(&key, &blob)
@@ -166,7 +166,7 @@ impl VaultStore {
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create the vault directory: {error}"))?;
         let key = FORMAT
-            .load_or_create_key(&self.dir, self.custody)
+            .load_or_create_key(&self.dir, self.backend)
             .ok_or_else(|| "no vault key is available".to_string())?;
         let plaintext = Zeroizing::new(
             serde_json::to_vec(entries)

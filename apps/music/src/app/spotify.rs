@@ -847,23 +847,23 @@ impl ui::widget::controls::ActionControls for Music {
             ui::widget::controls::on_control_invocation_result(child, address, result);
         }
     }
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
+        attachment: ui::control_domain::DomainAttachment,
     ) {
         self.control_domain = Some(domain.clone());
         // These retained controls appear on different destinations. Install the
-        // same owner custody before a hidden control joins the physical tree.
+        // same owner ownership before a hidden control joins the physical tree.
         for button in &mut self.page.source_buttons {
-            ui::widget::controls::install_control_custody(button, domain, attachment);
+            ui::widget::controls::attach_controls(button, domain, attachment);
         }
 
         for emitter in &mut self.spotify_menu_controls {
-            let _ = emitter.install_custody(domain, attachment);
+            let _ = emitter.attach(domain, attachment);
         }
         for child in ui::widget::Widget::children_mut(self) {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
+            ui::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -1201,7 +1201,7 @@ mod tests {
     tilo_test_env::scenario! {
         /// What the person does to a Spotify account leaves the app as one host intent; the
         /// document and the provider's state stay as they were.
-        fn spotify_edits_leave_as_host_intents_and_never_as_document_edits;
+        fn spotify_edits_leave_as_process_intents_and_never_as_document_edits;
 
         phase spotify_artist_follow_is_a_host_effect_and_provider_confirmation_only;
         {
@@ -1339,7 +1339,7 @@ mod tests {
             );
         }
 
-        phase spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent;
+        phase spotify_creation_prompt_cancel_and_reopen_emit_one_process_intent;
         {
             use ui::tilo_resource::Effect as _;
             let mut app = Music::without_profile();

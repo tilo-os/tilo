@@ -205,7 +205,7 @@ pub enum FilesEffect {
     #[effect(icon = "external-link")]
     #[effect(label = "files-shortcuts-open")]
     OpenItem {
-        #[param("The row: an entry, a place or a found record")]
+        #[param("The row: an entry, a place or a found resource")]
         item: String,
     },
     /// Read entry
@@ -219,7 +219,7 @@ pub enum FilesEffect {
     #[effect(view, row)]
     #[effect(icon = "folder-open")]
     Reveal {
-        #[param("The collaborative record's id")]
+        #[param("The collaborative resource's id")]
         record: String,
     },
     #[effect(view, row)]

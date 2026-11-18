@@ -6,10 +6,10 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use neighbour_wire::placement::{Answer, Choice, Power, Rank, pick};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
-use tilo_peer_state::placement::{Answer, Choice, Power, Rank, pick};
-use tilo_relay::offload::{BindError, MediaFuture};
+use tilo_server::offload::{BindError, MediaFuture};
 
 /// The workspace the fixtures invoke in.
 const WORKSPACE: &str = "3f2a1b7c-4d8e-4f60-9a51-2b3c4d5e6f70";
@@ -113,7 +113,7 @@ enum Reply {
     Later(Pending<Result<RanAway, String>>),
 }
 
-/// The workspace's other devices, as the host's plane serves them.
+/// The workspace's other devices, as the host's action service serves them.
 struct Peers {
     reply: Mutex<Reply>,
     asked: Mutex<Vec<(String, Route, Work)>>,

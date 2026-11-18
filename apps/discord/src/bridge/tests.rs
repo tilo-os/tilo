@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use super::*;
+use crate::guild::Link;
 use crate::layout::tests::mapping;
-use crate::record::Link;
 
 fn guild() -> Guild {
     let mut g = Guild {
@@ -22,12 +22,13 @@ fn guild() -> Guild {
 
 fn chat() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false}}}),
+        json!({}),
         vec![(
             "m1".into(),
             json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "hello", "parent": null}),
         )],
     )
+    .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
 }
 
 fn verb(name: &str) -> Value {
@@ -367,7 +368,7 @@ tilo_test_env::scenario! {
 
     phase a_filed_report_goes_across_as_its_message_with_its_picture;
     {
-        // Chat records filing on the channel, with the submission it filed.
+        // Chat resources filing on the channel, with the submission it filed.
         let event = json!({
             "kind": CHAT_KIND,
             "did": verb(SUBMIT_FEEDBACK),
@@ -423,16 +424,17 @@ fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
            "path": [{"field": "messages"}, {"item": message}, {"field": "reactions"}]})
 }
 
-/// The chat as the record api reads it with a filed report's message: its
+/// The chat as the resource api reads it with a filed report's message: its
 /// text read out of the report, its picture as an image, a reaction on it.
 fn with_report() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false}}}),
+        json!({}),
         vec![(
             "m_feedback_r1".into(),
             json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "Saving does nothing\n1. Files: Save (button)", "attachments": [{"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200}], "reactions": [{"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 1}]}),
         )],
     )
+    .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
 }
 
 fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {

@@ -94,12 +94,7 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Workspace) {
     let models = Models::new(backend);
     let identity = LocalIdentity::demo();
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     crate::testing::say(&mut doc, identity.id.id(), "c_chat", "Question");
     let mut app = ChatApp::new(
         identity.clone(),
@@ -144,7 +139,7 @@ fn native_chat_descriptor_setup_completes_actual_conversation() {
     let (mut app, mut doc) = chat(&client);
     drop(client);
     assert_eq!(app.model_command("c_chat", "ask").unwrap()["started"], true);
-    pump_until(&mut app, &mut doc, |app, _| !app.host_model.needs_frame());
+    pump_until(&mut app, &mut doc, |app, _| !app.model_stream.needs_frame());
     server.join().unwrap();
     let messages = crate::testing::messages(&doc, "c_chat");
     let reply = messages.last().unwrap();
@@ -206,7 +201,7 @@ fn native_chat_stop_retains_partial_and_retries_on_same_descriptor() {
     let retry = app.model_command("c_chat", "retry").unwrap();
     assert_eq!(retry["started"], true);
     assert_ne!(retry["reply"], first["reply"]);
-    pump_until(&mut app, &mut doc, |app, _| !app.host_model.needs_frame());
+    pump_until(&mut app, &mut doc, |app, _| !app.model_stream.needs_frame());
     server.join().unwrap();
     let messages = crate::testing::messages(&doc, "c_chat");
     let first = messages

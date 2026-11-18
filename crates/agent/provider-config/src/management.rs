@@ -1,5 +1,5 @@
 //! Host-authorized provider administration, separate from inference authority.
-//! Credentials are write-only here; custody stays in the shared backend broker.
+//! Credentials are write-only here; ownership stays in the shared backend broker.
 
 use std::{future::Future, pin::Pin};
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ModelDescriptor, ProviderConfig, protocol::ModelError};
 
-/// Non-secret diagnosis of a provider's credential custody.
+/// Non-secret diagnosis of a provider's credential storage.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialStatus {

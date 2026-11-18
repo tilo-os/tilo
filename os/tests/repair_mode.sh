@@ -151,7 +151,7 @@ else
   bad "repair publication and Secure Boot signing do not share a stable ESP-inode lock"
 fi
 
-# --- the health gate is wired the way systemd expects -------------------------
+# --- the health check is wired the way systemd expects -------------------------
 h="$OS/usr/lib/systemd/system/tilo-boot-health.service"
 if grep -q '^Before=boot-complete.target' "$h" && grep -q '^RequiredBy=boot-complete.target' "$h"; then
   ok "the health check is ordered before boot-complete.target and required by it"
@@ -215,7 +215,7 @@ else
       machine would boot the desktop while reporting that it had not."
 fi
 
-# --- the repair console gates on a real secret --------------------------------
+# --- the repair console waits for a real secret --------------------------------
 r="$OS/usr/libexec/tilo-repair"
 if grep -q 'cryptsetup open --test-passphrase' "$r"; then
   ok "the repair console proves a LUKS passphrase rather than trusting an open disk"
@@ -226,7 +226,7 @@ else
 fi
 for verb in act_rollback act_update act_shell act_logs act_var_rw act_boot_once act_recover_files; do
   if sed -n "/^$verb()/,/^}/p" "$r" | grep -q 'require_auth'; then
-    ok "$verb is behind the authentication gate"
+    ok "$verb is behind the authentication check"
   else
     bad "$verb does not call require_auth"
   fi

@@ -44,8 +44,8 @@ fn pending_revocation_and_stale_selection_remain_publicly_readable() {
     ] {
         widget.service_observation = Some(
             serde_json::json!({"session_id": "selected", "status": status,
-                "custody_revoked": status == "forgotten", "engine_shutdown_confirmed": status == "forgotten",
-                "custody_backend_needed": status != "forgotten", "local_only": false,
+                "ownership_revoked": status == "forgotten", "engine_shutdown_confirmed": status == "forgotten",
+                "ownership_backend_needed": status != "forgotten", "local_only": false,
                 "requires_reconnect": status == "needs-reconnect"}),
         );
         let resource = widget.published();
@@ -201,8 +201,8 @@ fn delayed_address_paste_survives_layout() {
         }
     }
     let clipboard = Arc::new(Delayed::default());
-    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
-    let _host = ui::host::enter(&services);
+    let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::process::enter(&services);
     let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
     let (tree, node) = super::tests::layout_keeping_tree(&mut widget, 900.0, 700.0, &Theme::dark());
     assert!(widget.focus_address_input());

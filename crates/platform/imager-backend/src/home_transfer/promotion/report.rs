@@ -89,7 +89,7 @@ impl Reports {
         let target = match entry.kind {
             Kind::Move => &mut self.installed,
             Kind::Collision { .. } => &mut self.collisions,
-            Kind::InactiveCustody => &mut self.inactive,
+            Kind::InactiveOwnership => &mut self.inactive,
             Kind::MergedDirectory { .. } => &mut self.merged,
         };
         for item in entry.items.iter() {
@@ -105,7 +105,7 @@ impl Reports {
         self.merged.finish(&cancel)?;
         report.installed = Paths(Some(Arc::new(self.installed)));
         report.collisions = Paths(Some(Arc::new(self.collisions)));
-        report.inactive_custody = Paths(Some(Arc::new(self.inactive)));
+        report.inactive_ownership = Paths(Some(Arc::new(self.inactive)));
         report.merged_directories = Paths(Some(Arc::new(self.merged)));
         Ok(())
     }
@@ -123,7 +123,7 @@ impl PromotionReport {
             "installed" if !review => &self.installed,
             "will_install" if review => &self.installed,
             "collisions" => &self.collisions,
-            "inactive_custody" => &self.inactive_custody,
+            "inactive_ownership" => &self.inactive_ownership,
             "merged_directories" => &self.merged_directories,
             _ => return Err(changed("Unknown adoption result category")),
         };
@@ -135,7 +135,7 @@ impl PromotionReport {
     pub fn summary(&self, review: bool) -> io::Result<serde_json::Value> {
         let mut value = serde_json::json!({
             "collisions":self.collisions.page(0,8)?["items"],"collisions_count":self.collisions.len(),
-            "inactive_custody":self.inactive_custody.page(0,8)?["items"],"inactive_custody_count":self.inactive_custody.len(),
+            "inactive_ownership":self.inactive_ownership.page(0,8)?["items"],"inactive_ownership_count":self.inactive_ownership.len(),
             "merged_directories":self.merged_directories.page(0,8)?["items"],"merged_directories_count":self.merged_directories.len(),
             "failed":self.failed.iter().map(|(path,error)|serde_json::json!({"path":[{"display":path.to_string_lossy(),"native":NativePath::encode(path)}],"error":error})).collect::<Vec<_>>(),"verified":self.verified
         });

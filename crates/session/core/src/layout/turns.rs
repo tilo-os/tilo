@@ -28,7 +28,7 @@ const TURN_HEIGHT: i64 = 240;
 /// view hugs its words up to a window's own height, and a long answer reads whole rather than
 /// cut at its last line.
 const TURN_MOST: i64 = 480;
-/// The gap between a turn standing at a rectangle's top and the room left under it: the canvas's
+/// The gap between a turn at a rectangle's top and the room left under it: the canvas's
 /// own gap between a place and the one under it, so a place filling the room stands where the
 /// canvas would keep it and its caption stands clear of the turn.
 const TURN_GAP: i64 = tilo_desktop_model::CANVAS_ROW_GAP as i64;
@@ -225,6 +225,14 @@ impl Layout {
             return Ok(Some(held));
         }
         let (width, height, room) = turn_geometry(at, ask.size, ask.seen);
+        // Asked by a click, the turn stands at the click, narrowed to the free area before the
+        // next place to its right as a thing found at a click is, rather than being put beside
+        // that place, past the edge of the screen, with the camera panning after it.
+        let width = if ask.size.is_none() {
+            self.width_at_click(at, width, height, ask.seen)
+        } else {
+            width
+        };
         // A step of the turn taken before the turn stood filled the room already.
         let room = room.filter(|_| !ask.room_taken);
         let surface = self.surface_at_strip(ask.strip)?;
@@ -240,7 +248,9 @@ impl Layout {
             width,
             height,
             float: None,
-            hugs: false,
+            // A turn is drawn as tall as its words, up to its height (canvas.md §7): the layout
+            // takes the height it is drawn at, so the canvas under a short answer stays free.
+            hugs: true,
         };
         self.ask(asked, action, busy)?;
         self.opened_as

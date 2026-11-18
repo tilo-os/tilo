@@ -45,7 +45,7 @@ impl Map {
 
     /// Take up the answer the map built before this one kept (`held` its pins, `answer` its
     /// answer), and choose it again among the places that arrived since: of those that grow from
-    /// where the person pointed, the one standing nearest the point is the answer (the turn at
+    /// where the person pointed, the one access nearest the point is the answer (the turn at
     /// the caret, a thing found at a click), unless the answer kept stands nearer.
     pub(super) fn take_answer(&mut self, held: &[String], answer: Option<String>) {
         let Some(asked) = self.asked else {
@@ -135,7 +135,7 @@ impl Map {
         }
     }
 
-    /// The answer `key` (standing at `answer`, canvas pixels) with every place that arrived since
+    /// The answer `key` (at `answer`, canvas pixels) with every place that arrived since
     /// the person pointed and fits in the viewport beside it, nearest first: what the camera
     /// frames together.
     fn answer_group(&self, key: &str, answer: Rect, margin: f64) -> Rect {

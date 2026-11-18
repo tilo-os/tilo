@@ -1,4 +1,4 @@
-//! Native setup custody and continuation actors shared by installer frontends.
+//! Native setup ownership and continuation actors shared by installer frontends.
 #[cfg(target_os = "linux")]
 pub use crate::migration_review::{GrantedHomeRoots, GrantedRoot, HomeRootSet, RootKind};
 pub use crate::{

@@ -31,11 +31,13 @@ use automerge::transaction::Transactable as _;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_resource::{self, device};
-use tilo_desktop_model::{Layout, TileContent, Workspace, WorkspaceId, peer_salt_of};
+use tilo_desktop_model::{
+    Layout, Strip, TileContent, Workspace, WorkspaceId, WorkspaceLayout, peer_salt_of,
+};
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
-use tilo_broker_core::custody::OwnerCustody as _;
+use tilo_broker_core::owner_service::OwnerService as _;
 
 use crate::engine::{Engine, SealKeys};
 use tilo_desktop_surface::DesktopHandle;
@@ -139,19 +141,19 @@ struct Held {
     /// Where the engine stood when this record was last read, or found not to have moved: a look
     /// that skips the record (its write under way) or a write of it that finished leaves it behind
     /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
-    read_at: Option<Standing>,
+    read_at: Option<EngineVersion>,
 }
 
 /// Where the engine's copy of the workspaces stood at a look: its revision, and the generation of
 /// the channel keys that open their sealed records. A record read at one reads the same until
 /// either moves: keys that arrive open writes the copy already held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Standing {
+pub(crate) struct EngineVersion {
     pub(crate) revision: u64,
     pub(crate) keys: u64,
 }
 
-impl Standing {
+impl EngineVersion {
     pub(crate) fn of(engine: &Engine) -> Self {
         Self {
             revision: engine.owner().revision(),
@@ -425,12 +427,13 @@ pub(crate) struct Layouts {
     /// of this device's that is not among them is one it opened since, which the layout has not
     /// taken in yet.
     recorded: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
-    /// The workspace that was in front at the last look.
-    front: Cell<Option<WorkspaceId>>,
-    /// The workspace the front left, whose layout is written before it stops being the one this
-    /// look captures: a strip made or a window moved in the turn the person switched away is
-    /// otherwise on a workspace no later look writes.
-    left: Cell<Option<WorkspaceId>>,
+    /// Each workspace's layout as the last look left it: one that differs on the next look was
+    /// changed here in between, in front or not, and is written.
+    shown: RefCell<HashMap<WorkspaceId, (Vec<Strip>, WorkspaceLayout)>>,
+    /// The workspaces whose change this device has not handed to a write yet: a window sent to a
+    /// workspace behind, or a strip made in the turn the person switched away, is on a workspace
+    /// the front's write never covers.
+    owed: RefCell<BTreeSet<WorkspaceId>>,
     /// This session's own revision at the last look.
     seen: Cell<Option<u64>>,
     /// A failure to read or write a record that the person has not heard yet.
@@ -491,6 +494,15 @@ impl Layouts {
         edit(self.held.borrow_mut().entry(key.clone()).or_default())
     }
 
+    /// Whether the layout of every workspace `tree` holds has been read at least once: what
+    /// the workspaces held of this device's windows when the session started is laid out.
+    pub(crate) fn all_read(&self, tree: &Layout) -> bool {
+        tree.workspaces
+            .iter()
+            .filter(|workspace| !workspace.id().is_nil())
+            .all(|workspace| self.held(&(workspace.id(), Route::layout()), |held| held.read))
+    }
+
     /// Note that this look left `workspace_id`'s layout unwritten for `why`, said at debug when the
     /// reason changes; `None` once a write of it goes out.
     fn unwritten(&self, workspace_id: WorkspaceId, why: Option<&'static str>) {
@@ -529,9 +541,9 @@ impl Layouts {
     }
 
     /// Whether every record of every workspace `tree` holds was read here with the engine at
-    /// `standing`, and this session has not moved since: nothing of them can have changed, so no
+    /// `version`, and this session has not moved since: nothing of them can have changed, so no
     /// record is read or written again. Notes what was looked at.
-    pub(crate) fn settled(&self, standing: Standing, tree: &Layout) -> bool {
+    pub(crate) fn settled(&self, version: EngineVersion, tree: &Layout) -> bool {
         // A write under way is taken first, and while it is no record is read or written.
         if !self.settle_publishing() {
             return true;
@@ -546,7 +558,7 @@ impl Layouts {
                 .filter(|workspace| !workspace.id().is_nil())
                 .all(|workspace| {
                     let workspace_id = workspace.id();
-                    let current = |held: &mut Held| held.read && held.read_at == Some(standing);
+                    let current = |held: &mut Held| held.read && held.read_at == Some(version);
                     self.held(&(workspace_id, Route::layout()), current)
                         && person.as_deref().is_none_or(|person| {
                             self.held(&(workspace_id, Route::view(person)), current)
@@ -581,6 +593,18 @@ impl Layouts {
     /// changed.
     pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let changed = self.follow_layout(engine, device, tree) | self.follow_view(engine, tree);
+        // What the workspaces' layouts laid in is theirs: only what changes here after it is
+        // this device's to write.
+        *self.shown.borrow_mut() = tree
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                (
+                    workspace.id(),
+                    (workspace.strips.clone(), workspace.layout.clone()),
+                )
+            })
+            .collect();
         if self.device.borrow().as_str() != device {
             device.clone_into(&mut self.device.borrow_mut());
         }
@@ -598,10 +622,7 @@ impl Layouts {
     ) {
         self.wait_writes(patience);
         if let Some(person) = self.person.borrow().clone() {
-            if let Some(left) = self.left.get() {
-                self.capture_layout(engine, &person, tree, left, None);
-            }
-            self.capture_layout(engine, &person, tree, tree.active, None);
+            self.capture_layouts(engine, &person, tree);
             self.capture_view(engine, &person, tree, true);
         }
         self.wait_writes(patience);
@@ -711,7 +732,7 @@ impl Layouts {
     /// Fold the layout of every workspace in the engine's copy into `tree`.
     fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
-        let at = Standing::of(engine);
+        let at = EngineVersion::of(engine);
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let workspace_id = workspace.id();
@@ -835,7 +856,7 @@ impl Layouts {
             return false;
         };
         let route = Route::view(&person);
-        let at = Standing::of(engine);
+        let at = EngineVersion::of(engine);
         let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
         for workspace_id in held {
@@ -912,28 +933,38 @@ impl Layouts {
             .collect()
     }
 
-    /// Write what this device changed about the layout of the workspace in front into that
-    /// workspace's layout, and the person's view of every workspace into theirs, and publish them:
-    /// the strips and windows it makes and arranges, and where the person here is looking. Returns
-    /// whether this look published the view.
+    /// Write what this device changed about the layout of each workspace into that workspace's
+    /// layout, and the person's view of every workspace into theirs, and publish them: the strips
+    /// and windows it makes and arranges, and where the person here is looking. Returns whether
+    /// this look published the view.
     pub(crate) fn capture(&self, engine: &Arc<Engine>, tree: &Layout) -> bool {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
-        // The workspace the front leaves is written while the layout still holds it, and until that
-        // write is handed: a strip made or a window moved in the turn the person switched away is
-        // otherwise on a workspace no later look captures.
-        let front = self.front.replace(Some(tree.active));
-        if let Some(previous) = front.filter(|previous| *previous != tree.active) {
-            self.left.set(Some(previous));
-        }
-        if let Some(previous) = self.left.get()
-            && self.capture_layout(engine, &person, tree, previous, None)
-        {
-            self.left.set(None);
-        }
-        self.capture_layout(engine, &person, tree, tree.active, None);
+        self.capture_layouts(engine, &person, tree);
         self.capture_view(engine, &person, tree, false)
+    }
+
+    /// Write the layout of the workspace in front, and of every other workspace this device
+    /// changed since the last look or still owes a write: a window sent to a workspace behind
+    /// changes two layouts, and a restart reads both.
+    fn capture_layouts(&self, engine: &Arc<Engine>, person: &str, tree: &Layout) {
+        let owed = {
+            let shown = self.shown.borrow();
+            let mut owed = self.owed.borrow_mut();
+            owed.extend(tree.workspaces.iter().filter_map(|workspace| {
+                let was = shown.get(&workspace.id())?;
+                (was.0 != workspace.strips || was.1 != workspace.layout).then(|| workspace.id())
+            }));
+            owed.insert(tree.active);
+            owed.retain(|id| tree.workspaces.iter().any(|held| held.id() == *id));
+            owed.clone()
+        };
+        for workspace in owed {
+            if self.capture_layout(engine, person, tree, workspace, None) {
+                self.owed.borrow_mut().remove(&workspace);
+            }
+        }
     }
 
     /// Write this device's changes to the layout of `workspace` into that workspace's record, as
@@ -2539,7 +2570,7 @@ mod tests {
             ..Layouts::default()
         };
         let key = (workspace, Route::layout());
-        let at = |revision| Standing { revision, keys: 0 };
+        let at = |revision| EngineVersion { revision, keys: 0 };
         let read_at = |revision| {
             desktops.held(&key, |held| {
                 held.read = true;
@@ -2585,7 +2616,7 @@ mod tests {
         // Keys that arrive open what the record held sealed, though the engine's copy did not move.
         assert!(
             !desktops.settled(
-                Standing {
+                EngineVersion {
                     revision: 8,
                     keys: 1
                 },
@@ -2598,12 +2629,12 @@ mod tests {
     /// A key whose signatures wait for the test to let them go: a write that signs through it is
     /// under way until then, whatever the machine's speed.
     #[derive(Default)]
-    struct Gate {
+    struct Hold {
         held: std::sync::atomic::AtomicBool,
         waiting: std::sync::Mutex<Vec<std::task::Waker>>,
     }
 
-    impl Gate {
+    impl Hold {
         fn held(&self) -> bool {
             self.held.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -2614,20 +2645,20 @@ mod tests {
 
         fn open(&self) {
             self.held.store(false, std::sync::atomic::Ordering::SeqCst);
-            let waiting = std::mem::take(&mut *self.waiting.lock().expect("the gate"));
+            let waiting = std::mem::take(&mut *self.waiting.lock().expect("the hold"));
             for waker in waiting {
                 waker.wake();
             }
         }
     }
 
-    /// A device key signing behind a [`Gate`].
-    struct GatedSigner {
+    /// A device key signing behind a [`Hold`].
+    struct HeldSigner {
         key: ed25519_dalek::SigningKey,
-        gate: Arc<Gate>,
+        hold: Arc<Hold>,
     }
 
-    impl collab_types::signer::DeviceSigner for GatedSigner {
+    impl collab_types::signer::DeviceSigner for HeldSigner {
         fn device_public_key(&self) -> [u8; 32] {
             self.key.verifying_key().to_bytes()
         }
@@ -2638,14 +2669,14 @@ mod tests {
 
         fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
             let signature = ed25519_dalek::Signer::sign(&self.key, &message).to_bytes();
-            let gate = Arc::clone(&self.gate);
+            let hold = Arc::clone(&self.hold);
             Box::pin(std::future::poll_fn(move |context| {
-                if gate.held() {
-                    gate.waiting
+                if hold.held() {
+                    hold.waiting
                         .lock()
-                        .expect("the gate")
+                        .expect("the hold")
                         .push(context.waker().clone());
-                    if gate.held() {
+                    if hold.held() {
                         return std::task::Poll::Pending;
                     }
                 }
@@ -2687,17 +2718,17 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x30; 32]);
         let key = SigningKey::from_bytes(&[0x31; 32]);
         let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
-        let gate = Arc::new(Gate::default());
-        let theirs = Arc::clone(&gate);
+        let hold = Arc::new(Hold::default());
+        let theirs = Arc::clone(&hold);
         let engine = Arc::new(
             Engine::open(
-                tilo_identity_host::custody::HostIdentity::kept(
+                tilo_identity::identity_store::DeviceIdentity::kept(
                     cert.clone(),
-                    GatedSigner { key, gate: theirs },
+                    HeldSigner { key, hold: theirs },
                 ),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::custody::of_this_session(),
+                crate::platform::membership_check::of_this_session(),
             )
             .expect("this device's engine opens"),
         );
@@ -2760,7 +2791,7 @@ mod tests {
         let layout = (workspace, Route::layout());
         // The write's signature waits for the test: it is under way, so nothing of it can have been
         // taken in here.
-        gate.hold();
+        hold.hold();
         desktops.capture(&engine, &tree);
         assert!(
             desktops.held(&layout, |held| matches!(
@@ -2788,7 +2819,7 @@ mod tests {
 
         // The task answers, and the change it wrote is one step of the person's in the layout's
         // history, on any of their devices.
-        gate.open();
+        hold.open();
         heard
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");
@@ -2826,17 +2857,17 @@ mod tests {
         strip
             .take(1)
             .for_each(|strip| strip.name = "Moved".to_owned());
-        let standing = Standing::of(&engine);
-        let _ = desktops.settled(standing, &tree);
-        gate.hold();
+        let version = EngineVersion::of(&engine);
+        let _ = desktops.settled(version, &tree);
+        hold.hold();
         desktops.capture(&engine, &tree);
         desktops.follow(&engine, "", &mut tree.clone());
-        gate.open();
+        hold.open();
         heard
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");
         assert!(
-            !desktops.settled(standing, &tree),
+            !desktops.settled(version, &tree),
             "the look after a write reads the record its follow skipped"
         );
     }

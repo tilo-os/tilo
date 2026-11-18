@@ -38,7 +38,7 @@ arboard = { workspace = true, features = ["image-data"], optional = true }
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
 # `smithay-clipboard` reads over the app's own `wl_display`; the image and
-# text publisher uses the regular focus-gated `wl_data_device` protocol
+# text publisher uses the regular focus-guarded `wl_data_device` protocol
 # through smithay-client-toolkit, because data-control would bypass Tilo's
 # focus/privilege boundary.
 smithay-clipboard = "0.7"

@@ -1,6 +1,6 @@
 //! Playback preferences live in this device's settings, since two people reviewing the
 //! same clip may want different defaults. The recent videos and where each left off are
-//! a record beside the library, one list per device.
+//! a resource beside the library, one list per device.
 
 use std::collections::BTreeMap;
 
@@ -72,7 +72,7 @@ pub struct RecentVideos {
 }
 
 impl RecentVideos {
-    /// What the record holds: the videos played on this device, newest first, and where
+    /// What the resource holds: the videos played on this device, newest first, and where
     /// each was left off.
     pub fn read_document(
         &self,

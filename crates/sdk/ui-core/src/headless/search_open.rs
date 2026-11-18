@@ -152,7 +152,7 @@ mod tests {
     fn a_component_owned_search_launcher_opens_the_host_palette() {
         use crate::application::{LaunchTarget, RestoreInput};
         use crate::application_test_support as probe;
-        let owner = probe::ProbeHost::new();
+        let owner = probe::ProbeHarness::new();
         let mut component =
             probe::instantiate_probe(&owner, 71, LaunchTarget::New, RestoreInput::None).unwrap();
         struct Launcher(crate::widget::Button);

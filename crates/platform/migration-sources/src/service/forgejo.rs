@@ -359,7 +359,7 @@ fn incoming(
         });
     let due = text(issue, "due_date")
         .get(..10)
-        .filter(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok())
+        .filter(|day| jiff::civil::Date::strptime("%Y-%m-%d", day).is_ok())
         .map(str::to_owned);
     IncomingIssue {
         source: SOURCE.into(),

@@ -5,7 +5,7 @@ Tilo: a credential its backend holds without a browser in the loop, a way to
 make one workspace per customer and act in it, and a credential narrowed to
 that one workspace to hand the customer's agent. This note says how each one
 is built from what already exists: grants, the person's certificates, the
-relay's own operations and the agent surface's MCP tools. It adds no second
+server's own operations and the agent surface's MCP tools. It adds no second
 authority and no second action model.
 
 ## API keys are grants
@@ -24,7 +24,7 @@ back. Instead of a code for a client, the API server issues one bearer token,
 `tilo_sk_…`, that lasts as long as the certificate does. That token resolves
 to the grant, so every existing rule applies unchanged:
 
-- the scope check at the API server and the relay;
+- the scope check at the API server and the server;
 - the certificate's expiry, where it has one;
 - the person's revocations, checked at every handshake;
 - the History attribution of each run;
@@ -84,10 +84,10 @@ the following hold:
   always expires, even when its issuer is a server key that does not;
 - its key is neither the issuer's nor the root's.
 
-The relay verifies every certificate it is shown with
+The server verifies every certificate it is shown with
 `verify_device_cert_at`, checks the scope (`capabilities.agent`), and checks
 the person's revocations, issuer included. A minted grant passes those checks
-as one-workspace grants do. It cannot list or make workspaces, and the relay
+as one-workspace grants do. It cannot list or make workspaces, and the server
 admits it only to its own workspace.
 
 ### Revocation cascades
@@ -102,7 +102,7 @@ There are two places a grant ends, and both cascade:
   key refuses every certificate that key issued, at any time
   (`RevocationList::refuses`). A stand-in's revocation counts only from its
   time, because the devices it vouched for are the person's own. A grant's
-  children are the grant: they never outlive it. The relay checks the
+  children are the grant: they never outlive it. The server checks the
   certificate against the person's revocations, including its issuer, at
   every handshake and audit.
 
@@ -119,10 +119,10 @@ no `workspace` and whose path is under `account` is answered by the API server:
 
 | Path | What it is |
 |---|---|
-| `account/workspaces#list` | the relay's `workspace.list` as the grant: the workspaces of the person's own there |
-| `account/workspaces#create {name, host?}` | the relay's `workspace.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
-| `account/workspaces#branch {workspace, name, labels?, id?}` | the relay's `workspace.branch-own` as the grant, for one of the person's own: a new workspace of theirs holding the source's records with their history and the content they name, apart from it from then on ("Branching a workspace" in `workspace.md`). Answers `{workspace}` once the branch holds everything; `id` is the branch's, so a retry answers the same one. One not theirs is `not_found` |
-| `account/workspaces#delete {workspace}` | the relay's `workspace.delete` as the grant, for one of the person's own: final. The relay tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the API server then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
+| `account/workspaces#list` | the server's `workspace.list` as the grant: the workspaces of the person's own there |
+| `account/workspaces#create {name, host?}` | the server's `workspace.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
+| `account/workspaces#branch {workspace, name, labels?, id?}` | the server's `workspace.branch-own` as the grant, for one of the person's own: a new workspace of theirs holding the source's records with their history and the content they name, apart from it from then on ("Branching a workspace" in `workspace.md`). Answers `{workspace}` once the branch holds everything; `id` is the branch's, so a retry answers the same one. One not theirs is `not_found` |
+| `account/workspaces#delete {workspace}` | the server's `workspace.delete` as the grant, for one of the person's own: final. The server tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the API server then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
 | `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |
@@ -133,8 +133,8 @@ the same answer typed in `structuredContent`, so programs get JSON.
 
 Everything else is the agent surface `tilo mcp` serves
 (`tilo_mcp::McpServer`), which the API server runs for each session over
-the grant's own session with the relay: `tilo_ls`, `tilo_read`, `tilo_find`,
-`tilo_do`, `tilo_status` and `tilo`. Its actions are asked of the relay's own
+the grant's own session with the server: `tilo_ls`, `tilo_read`, `tilo_find`,
+`tilo_do`, `tilo_status` and `tilo`. Its actions are asked of the server's own
 device, whose app workers run them with no tab open. File bytes go into the
 workspace's content store with `tilo_put_*`, carried over the same session,
 and come back out of it with `tilo_get` (`{content, offset?, length?}`,
@@ -149,7 +149,7 @@ dials the relay's iroh endpoint with the grant's certificate, as a `tilo
 login` computer dials with its own, and enters the way that computer does
 (`tilo_session_client::device`).
 
-The relay keeps one session per device: a second session of the same key cuts
+The server keeps one session per device: a second session of the same key cuts
 the first off. So each holder keeps one session and every run shares it. The
 API server holds one per grant for all of that grant's MCP sessions. A `tilo
 login` computer holds one per device: the first `tilo mcp` starts `tilo mcp
@@ -158,7 +158,7 @@ agent window, `tilo agent check`) connects to it over a socket only that
 account can open. Each connection is its own agent run over that one session.
 The holder leaves the workspace ten seconds after its last connection ends.
 
-The relay admits an agent's grant (`tilo_workspace_host::workspace_access`) as
+The server admits an agent's grant (`tilo_workspace_service::workspace_access`) as
 its person's agent, iff
 
 - its scope reaches the workspace;
@@ -166,36 +166,36 @@ its person's agent, iff
   person, as every new device of theirs does, so the workspace's roster holds
   it under its person;
 - in a governed workspace, its person is still a member;
-- and the plane is one an agent works on (subscribe, state, publish, replay,
-  channel access, remote actions, the live plane, content discovery), never
+- and the protocol is one an agent works on (subscribe, state, publish, replay,
+  channel access, remote actions, the live session, content discovery), never
   compute, environments or governed membership, and never by attachment or a
   same-owner host's enrolment.
 
-What it does there is its person's agent's: the relay makes its caller the
+What it does there is its person's agent's: the server makes its caller the
 agent a device of the person handed its session to
 (`Caller::delegated_to`), so an agent's role cap holds it at Editor at most,
-and it governs, invites and administers nothing. The relay's own operations
+and it governs, invites and administers nothing. The server's own operations
 treat it as its person within its scope (`host_authority`): a grant reaching
 all workspaces makes and lists the person's own; nothing else.
 
 A grant enters a workspace as every device of the person does
-(`Device::enter_workspace`): on its session with the relay, in no workspace,
-it asks the relay for the invitation into that workspace (`workspace.create-own`
+(`Device::enter_workspace`): on its session with the server, in no workspace,
+it asks the server for the invitation into that workspace (`workspace.create-own`
 naming it), redeems the invitation on the same connection, and joins. A grant reaching all the person's workspaces may
 also make one; a minted grant, or one certified for one workspace directly,
-enters only its own and makes none. The relay asks for no parent and no site
+enters only its own and makes none. The server asks for no parent and no site
 workspace first: a workspace's roster admits devices one by one, each by an
 invitation, and the grant's certificate chain is checked at that join and at
 every handshake after.
 
-A workspace of one's own is for a person the site let in. The relay names its
+A workspace of one's own is for a person the site let in. The server names its
 site's home workspace (`Workspaces::admit_own_through`), and makes a new
 workspace only for its own person, a member of the home workspace (its entry or
 an invitation admitted them), a person an invitation into it still names, or a
 person who already keeps workspaces of their own there. Every key and agent of
 that person is the person, within its scope. Anyone else, a fresh root or any
 key it certified, is refused with the API server's own refusal (`EntryRefused`, read
-back as `HostRefusal::entry`), which offers the wait list when the API server takes
+back as `DeviceRefusal::entry`), which offers the wait list when the API server takes
 people by invitation. Entering a workspace a person was invited into stays
 theirs either way, and so does keeping their workspace list once they are a
 member of any workspace there.

@@ -2,9 +2,9 @@
 //! from its Automerge document: what news and waits compare and tell.
 //!
 //! A message is a map holding who sent it beside what it says. Chat,
-//! Messages and Mail keep theirs so; a chat's roster, read marks and the
-//! order keys of a collection's items are not messages, so a member
-//! introducing itself or reading a channel adds no line.
+//! Messages and Mail keep theirs so; a chat's read marks and the order keys
+//! of a collection's items are not messages, so reading a channel adds no
+//! line.
 
 use std::collections::HashMap;
 

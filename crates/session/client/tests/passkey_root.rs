@@ -17,7 +17,7 @@ use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_relay_client::{
+use tilo_server_client::{
     DeviceSigner, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
 use tilo_user_identity::DeviceCapabilities;

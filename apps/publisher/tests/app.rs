@@ -14,7 +14,7 @@ use ui::tilo_actions::{ActionKind, ApiError, Availability, ConfirmationPolicy, R
 /// kept in this test's memory.
 struct Machine {
     _home: tilo_test_env::TestHome,
-    _host: ui::host::HostScope,
+    _host: ui::process::ProcessScope,
     secrets: ui::secrets::SecretStore,
 }
 
@@ -30,13 +30,13 @@ impl Machine {
 fn home() -> Machine {
     let mut home = tilo_test_env::TestHome::new().expect("test home");
     home.env().remove(app_registry::publisher::key::KEY_ENV);
-    let services = ui::host::HostServices::null();
+    let services = ui::process::ProcessServices::null();
     let secrets = services
         .secrets
         .store(app_registry::publisher::key::SECRETS_APP);
     Machine {
         _home: home,
-        _host: ui::host::enter(&services),
+        _host: ui::process::enter(&services),
         secrets,
     }
 }
@@ -196,8 +196,8 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
 #[test]
 fn copying_the_secret_key_is_a_job_that_ends_as_the_clipboard_says() {
     let _home = home();
-    let (host, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&host);
+    let (host, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&host);
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
         .expect("create the key");

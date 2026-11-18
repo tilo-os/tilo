@@ -1,0 +1,147 @@
+//! The invocations the host's action service remembers: what a retry under
+//! the same id, `tilo_status` and history read back.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use tilo_actions::remote::{Caller, InvokeRequest};
+use tilo_actions::{InvocationId, InvocationUpdate};
+
+use tilo_actions::remote::ActorPlace;
+
+/// Invocations remembered for retries, status and history.
+pub(super) const REMEMBERED: usize = 1024;
+
+pub(super) struct Entry {
+    pub(super) caller: Caller,
+    pub(super) request: InvokeRequest,
+    pub(super) update: InvocationUpdate,
+    /// Where the invocation left its actor in the record it acted on.
+    pub(super) left_at: Option<ActorPlace>,
+    /// The link that opens what it made or changed ([`super::Worker::changed_link`]).
+    pub(super) link: Option<String>,
+    /// Set while the host's shell runs this invocation: what a cancel of it,
+    /// or a Ctrl+C in the session it runs in, stops.
+    pub(super) stop: Option<Arc<AtomicBool>>,
+    /// The person was asked to allow it ([`super::bounded`]): it was answered
+    /// accepted, and settles as failed rather than being forgotten.
+    pub(super) asked: bool,
+    /// It ran, and is answered done once the host holds what it changed:
+    /// too late to cancel.
+    pub(super) saving: bool,
+    /// The token naming the person's answer, once they allowed it.
+    pub(super) approval: Option<String>,
+    /// What the person is asked about it, once it waits for their answer
+    /// ([`super::bounded::About`]).
+    pub(super) about: Option<Box<super::bounded::About>>,
+    /// The workspace it was asked in, once admitted there: what a listing of
+    /// that workspace's invocations reads it by ([`super::invocations`]).
+    pub(super) workspace: Option<tilo_server_protocol::WorkspaceId>,
+    /// When it was asked for, in milliseconds since the Unix epoch.
+    pub(super) started_ms: i64,
+    /// When the host first saw it ended ([`InvocationLog::stamp_ended`]).
+    pub(super) ended_ms: Option<i64>,
+    /// The changes it handed to the session, each by its record's app, the
+    /// record's id and the change's short hash as History lists it: what its
+    /// changes are found by where its step is not known ([`super::invocations`]).
+    pub(super) written: Vec<(String, String, String)>,
+}
+
+#[derive(Default)]
+pub(super) struct InvocationLog {
+    pub(super) entries: HashMap<InvocationId, Entry>,
+    pub(super) order: VecDeque<InvocationId>,
+    /// The invocations running now, each on the thread serving its
+    /// workspace.
+    pub(super) running: HashSet<InvocationId>,
+}
+
+impl InvocationLog {
+    /// Remember `request`, making room by forgetting the oldest invocation
+    /// that settled. One still queued, running or waiting for the person is
+    /// never forgotten: it would never run, or run and leave its caller no
+    /// answer, and a retry under its id would run it twice. `false`, and
+    /// nothing remembered, when every invocation held is still unsettled.
+    #[must_use]
+    pub(super) fn insert(&mut self, caller: &Caller, request: InvokeRequest) -> bool {
+        while self.order.len() >= REMEMBERED {
+            let settled = self.order.iter().position(|id| {
+                self.entries
+                    .get(id)
+                    .is_none_or(|entry| entry.update.is_terminal())
+            });
+            let Some(at) = settled else {
+                return false;
+            };
+            if let Some(oldest) = self.order.remove(at) {
+                self.entries.remove(&oldest);
+            }
+        }
+        let invocation = request.invocation;
+        self.order.push_back(invocation);
+        self.entries.insert(
+            invocation,
+            Entry {
+                caller: caller.clone(),
+                request,
+                update: InvocationUpdate::Accepted { invocation },
+                left_at: None,
+                link: None,
+                stop: None,
+                asked: false,
+                saving: false,
+                approval: None,
+                about: None,
+                workspace: None,
+                started_ms: now_ms(),
+                ended_ms: None,
+                written: Vec::new(),
+            },
+        );
+        true
+    }
+
+    /// Note, of every invocation that ended since the last look, that it
+    /// ended now: what a listing of invocations says it ended at.
+    pub(super) fn stamp_ended(&mut self) {
+        let now = now_ms();
+        for entry in self.entries.values_mut() {
+            if entry.ended_ms.is_none() && entry.update.is_terminal() {
+                entry.ended_ms = Some(now);
+            }
+        }
+    }
+
+    pub(super) fn forget(&mut self, id: &InvocationId) {
+        self.entries.remove(id);
+        self.order.retain(|candidate| candidate != id);
+    }
+
+    /// `invocation` ends with `update`, the record it acted on showing where
+    /// it left its actor.
+    pub(super) fn answered(
+        &mut self,
+        invocation: InvocationId,
+        update: &InvocationUpdate,
+        left_at: Option<ActorPlace>,
+    ) {
+        if let Some(entry) = self.entries.get_mut(&invocation) {
+            entry.update = update.clone();
+            entry.left_at = left_at;
+        }
+    }
+
+    pub(super) fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {
+        self.entries.get(id).filter(|entry| entry.caller == *caller)
+    }
+}
+
+/// Now, in milliseconds since the Unix epoch.
+pub(super) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
+}

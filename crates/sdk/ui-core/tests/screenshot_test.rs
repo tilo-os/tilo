@@ -5,7 +5,7 @@
 //! at (0, 0), a filled rect lighting up opaque pixels inside its bounds,
 //! untouched regions staying at the base colour.
 //!
-//! Skipped without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one (CI does, so a lane
+//! Skipped without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one (CI does, so a job
 //! without llvmpipe fails rather than passing on nothing) — not `#[ignore]`,
 //! so local runs without GPU libraries stay green and say they skipped.
 //!

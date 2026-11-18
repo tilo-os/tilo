@@ -119,13 +119,13 @@ impl Press {
             .map(|action| action.borrow().metadata(control_id))
     }
 
-    pub(crate) fn install_custody(
+    pub(crate) fn attach(
         &self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &self.action {
-            let _ = action.borrow_mut().install_custody(domain, attachment);
+            let _ = action.borrow_mut().attach(domain, attachment);
         }
     }
 

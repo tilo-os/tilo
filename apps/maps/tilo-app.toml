@@ -65,11 +65,11 @@ hosts = [
 
 [sandbox.portals]
 file-chooser = "via-host"
+location = "via-host"
 
 [sandbox.services]
-collab = "optional@30"
-tilo-fs = "optional@30"
-shell-ui   = "optional@34"
+collab = "optional@31"
+tilo-fs = "optional@31"
 
 [entrypoint]
 bin             = "bin/maps"

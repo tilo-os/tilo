@@ -48,7 +48,7 @@ pub struct ExecCtx {
     pub chain: Vec<ModuleHash>,
     pub approved_by: Option<Actor>,
     /// The run this invocation already is, when something every replica reads names it: the
-    /// record of a suggestion names the run that waits on a person (`InvocationRecord::run`),
+    /// record of a suggestion names the run that waits on a person (`InvocationEntry::run`),
     /// and a device that holds no journal of it runs its action under that run. Every effect the
     /// run queues is keyed by the id it starts with, so a device that runs the same invocation
     /// queues each effect once. Without one, the run gets an id of its own.

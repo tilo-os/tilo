@@ -2,7 +2,7 @@
 //! ([`tilo_actions::remote::identity_admin`]).
 //!
 //! The list is the person's record on the host the page's peer is with
-//! ([`tilo_relay_session::workspaces::LIST_PERSONAL`]): every key their root
+//! ([`tilo_server_session::workspaces::LIST_PERSONAL`]): every key their root
 //! certified, which each device that signs one adds there, marked where a
 //! revocation the host keeps refuses it. Taking a device back is the person's
 //! root's to sign, and the root is in this tab: a revoke is handed to the page
@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "wasm32")]
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 #[cfg(target_arch = "wasm32")]
@@ -38,7 +38,7 @@ use tilo_actions::{ActionAddress, ActionOutput};
 #[cfg(target_arch = "wasm32")]
 use tilo_desktop_surface::session::DesktopSession;
 #[cfg(target_arch = "wasm32")]
-use tilo_relay_session::workspaces::{
+use tilo_server_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_DEVICE_NAME,
 };
 #[cfg(target_arch = "wasm32")]
@@ -267,7 +267,7 @@ pub(crate) fn devices_moved() {
 #[cfg(target_arch = "wasm32")]
 /// The person's devices as the page's desktop asks for them.
 struct PageIdentity {
-    host: SessionActions,
+    provider: SessionActions,
     /// This page's own device, which the list marks current.
     own: [u8; 32],
     revoked: Revoked,
@@ -286,7 +286,7 @@ struct PageIdentity {
 /// `link` its session, on which the host sends the record as it changes.
 pub(crate) fn serve(
     session: &DesktopSession,
-    host: SessionActions,
+    provider: SessionActions,
     own: [u8; 32],
     revoked: &Revoked,
     woken: &Arc<AtomicBool>,
@@ -308,7 +308,7 @@ pub(crate) fn serve(
     session.serve_person_api(
         identity_admin::PROVIDER,
         Arc::new(PageIdentity {
-            host,
+            provider,
             own,
             revoked: Arc::clone(revoked),
             woken: Arc::clone(woken),
@@ -328,8 +328,8 @@ fn personal_record() -> RemoteActionTarget {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.to_owned(),
     }
 }
@@ -342,7 +342,7 @@ impl PageIdentity {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let InvokeArgument::Json(argument) = &request.argument else {
             return Pending::ready(Err(invalid(
                 "naming a device says which device, and its name",
@@ -356,12 +356,12 @@ impl PageIdentity {
             argument: InvokeArgument::Json(argument.clone()),
             ..request.clone()
         };
-        self.host.invoke(caller, record)
+        self.provider.invoke(caller, record)
     }
 
     /// Hand the page the device `request` takes back, for the reason it
     /// gives.
-    fn revoke(&self, request: &InvokeRequest) -> Result<InvocationReceipt, ActionHostError> {
+    fn revoke(&self, request: &InvokeRequest) -> Result<InvocationReceipt, ActionCallError> {
         let InvokeArgument::Json(argument) = &request.argument else {
             return Err(invalid("a revoke names its device"));
         };
@@ -371,7 +371,7 @@ impl PageIdentity {
             .filter(|key| hex::decode(key).is_ok_and(|key| key.len() == 32))
             .ok_or_else(|| invalid("a device is named by its key"))?;
         if hex::decode(key).ok().as_deref() == Some(self.own.as_slice()) {
-            return Err(ActionHostError::Refused {
+            return Err(ActionCallError::Refused {
                 reason: "This browser can't take itself back; do it from another device".into(),
             });
         }
@@ -433,7 +433,7 @@ impl PageIdentity {
             appearance: None,
         };
         let (live, own) = (Arc::clone(&self.live), self.own);
-        self.host.invoke(caller, record).then(move |receipt| {
+        self.provider.invoke(caller, record).then(move |receipt| {
             let listed = match receipt {
                 Some(Ok(InvocationReceipt {
                     status: ReceiptStatus::Completed { output },
@@ -446,7 +446,7 @@ impl PageIdentity {
     }
 }
 
-/// The person's record `value` (`tilo_relay_session::workspaces::PersonalList`),
+/// The person's record `value` (`tilo_server_session::workspaces::PersonalList`),
 /// as the devices it lists ([`identity_admin::FleetDevice`]), `own` marked
 /// as this page's. Read from the answer's JSON, each certificate by the
 /// fields its JSON form names, rather than parsed whole: a page only shows
@@ -560,12 +560,12 @@ fn fingerprint(key: &[u8; 32]) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-impl ActionHost for PageIdentity {
+impl ActionProvider for PageIdentity {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage {
             exhausted: true,
             ..CataloguePage::default()
@@ -576,10 +576,10 @@ impl ActionHost for PageIdentity {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let step = request.target.address.action.as_str();
         if request.target.address.resource != identity_admin::RESOURCE {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         match step {
             identity_admin::REVOKE => Pending::ready(self.revoke(&request)),
@@ -597,7 +597,7 @@ impl ActionHost for PageIdentity {
                 };
                 self.live.expect(invocation);
                 let (live, own) = (Arc::clone(&self.live), self.own);
-                self.host.invoke(caller, record).map(move |receipt| {
+                self.provider.invoke(caller, record).map(move |receipt| {
                     let mut receipt = receipt.inspect_err(|_| {
                         live.end(&invocation);
                     })?;
@@ -617,13 +617,13 @@ impl ActionHost for PageIdentity {
                     Ok(receipt)
                 })
             }
-            _ => Pending::ready(Err(ActionHostError::UnknownAction)),
+            _ => Pending::ready(Err(ActionCallError::UnknownAction)),
         }
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         if !self.live.reads(id) {
-            return self.host.observe(caller, id);
+            return self.provider.observe(caller, id);
         }
         self.take_sent();
         if let Some(state) = self.live.state(id) {
@@ -631,7 +631,7 @@ impl ActionHost for PageIdentity {
         }
         // The host had not answered the record at admission: its answer
         // opens the read.
-        let state = self.host.observe(caller, id)?;
+        let state = self.provider.observe(caller, id)?;
         match &state.update {
             InvocationUpdate::Succeeded { output, .. } => {
                 self.live
@@ -648,12 +648,12 @@ impl ActionHost for PageIdentity {
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         if !self.live.reads(id) {
-            return self.host.next_change(caller, id);
+            return self.provider.next_change(caller, id);
         }
         self.take_sent();
         let Some((change, owes)) = self.live.wait(id) else {
             // Not answered yet: the host says when it is.
-            return self.host.next_change(caller, id);
+            return self.provider.next_change(caller, id);
         };
         if owes {
             self.read_again(caller);
@@ -669,18 +669,18 @@ impl ActionHost for PageIdentity {
         Some(change)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         if self.live.end(id) {
             return Pending::ready(Ok(()));
         }
-        self.host.cancel(caller, id)
+        self.provider.cancel(caller, id)
     }
 }
 
 #[cfg(test)]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "a helper that builds the JSON a host answered reads best taking it whole"
+    reason = "a helper that builds the JSON a provider answered reads best taking it whole"
 )]
 mod tests {
     use super::*;
@@ -721,8 +721,8 @@ mod tests {
             assert!(!live.reads(&id));
             live.expect(id);
             assert!(live.reads(&id));
-            assert!(live.state(&id).is_none(), "the host has not answered yet");
-            assert!(live.wait(&id).is_none(), "the host says when it has");
+            assert!(live.state(&id).is_none(), "the provider has not answered yet");
+            assert!(live.wait(&id).is_none(), "the provider says when it has");
             live.answered(id, json!([{"label": "Laptop"}]));
             assert_eq!(item(&live, &id), (1, json!([{"label": "Laptop"}])));
         }
@@ -756,10 +756,10 @@ mod tests {
             live.moved();
             assert!(told(&mut change), "whoever waits looks again");
             let (mut change, owes) = live.wait(&id).unwrap();
-            assert!(owes, "the record is read from the host");
+            assert!(owes, "the record is read from the provider");
             let (_, again) = live.wait(&id).unwrap();
             assert!(!again, "once: the read under way answers every waiter");
-            assert_eq!(item(&live, &id).0, 1, "the list stands until the host answers");
+            assert_eq!(item(&live, &id).0, 1, "the list stands until the provider answers");
             live.read(Some(json!([{"label": "Laptop", "revoked": true}])));
             assert!(told(&mut change));
             assert_eq!(
@@ -797,7 +797,7 @@ mod tests {
             assert!(!told(&mut change), "nothing new to look at");
             assert_eq!(item(&live, &id), (1, json!([{"label": "Laptop"}])));
             let (_, owes) = live.wait(&id).unwrap();
-            assert!(!owes, "and the host is not asked again for it");
+            assert!(!owes, "and the provider is not asked again for it");
         }
 
         phase a_read_that_ended_is_gone_and_its_waiters_hear;

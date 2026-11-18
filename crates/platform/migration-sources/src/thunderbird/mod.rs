@@ -46,6 +46,7 @@ pub const MAX_MESSAGES: u64 = 100_000;
 pub const MAX_SIDECAR_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_FOLDERS: usize = 4096;
 const MAX_PROFILES: usize = 128;
+const MAX_PROBLEMS: usize = 256;
 const MAX_DEPTH: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -164,6 +165,104 @@ pub struct ThunderbirdCalendar {
     pub events: Option<u64>,
 }
 
+/// Something of a Thunderbird source that could not be read, named so a person
+/// or their agent can act on it. A read with any of these is incomplete, never
+/// silently empty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unreadable {
+    /// The profile as people see it, when the failure is at or inside one;
+    /// `None` names the Thunderbird root itself.
+    pub profile: Option<String>,
+    /// The path inside the profile that could not be read; `None` names the
+    /// profile itself.
+    pub relative: Option<String>,
+    /// What kind of failure it was.
+    pub kind: std::io::ErrorKind,
+    /// The reader's own words, when it said more than the kind does.
+    pub detail: Option<String>,
+}
+
+impl Unreadable {
+    fn of(profile: Option<String>, relative: Option<String>, error: &std::io::Error) -> Self {
+        let detail = error.to_string();
+        Self {
+            profile,
+            relative,
+            kind: error.kind(),
+            detail: (!detail.is_empty()).then_some(detail),
+        }
+    }
+
+    fn of_kind(
+        profile: Option<String>,
+        relative: Option<String>,
+        kind: std::io::ErrorKind,
+    ) -> Self {
+        Self {
+            profile,
+            relative,
+            kind,
+            detail: None,
+        }
+    }
+
+    fn inside_profile(profile: &str, relative: &[String], error: &std::io::Error) -> Self {
+        Self::of(Some(profile.to_owned()), Some(relative.join("/")), error)
+    }
+
+    /// The source this belongs to, as a receipt names it without a path.
+    #[must_use]
+    pub fn source(&self) -> &'static str {
+        if self.profile.is_some() {
+            "Thunderbird profile"
+        } else {
+            "Thunderbird profile root"
+        }
+    }
+
+    fn says(&self) -> &'static str {
+        match self.kind {
+            std::io::ErrorKind::NotFound => "not found",
+            std::io::ErrorKind::PermissionDenied => "permission denied",
+            std::io::ErrorKind::InvalidData => "unreadable data",
+            std::io::ErrorKind::InvalidInput => "refused",
+            std::io::ErrorKind::NotADirectory => "not a directory",
+            std::io::ErrorKind::IsADirectory => "a directory, not a file",
+            _ => "unreadable",
+        }
+    }
+
+    fn reason(&self) -> String {
+        let says = self.says();
+        match &self.detail {
+            Some(detail) if !detail.to_ascii_lowercase().contains(says) => {
+                format!("{says}: {detail}")
+            }
+            _ => says.to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = self.reason();
+        match (&self.profile, &self.relative) {
+            (None, _) => write!(
+                formatter,
+                "the Thunderbird profile root could not be read ({reason})"
+            ),
+            (Some(profile), None) => write!(
+                formatter,
+                "Thunderbird profile {profile:?} could not be read ({reason})"
+            ),
+            (Some(profile), Some(relative)) => write!(
+                formatter,
+                "Thunderbird profile {profile:?}, {relative}, could not be read ({reason})"
+            ),
+        }
+    }
+}
+
 /// It is not serialized into public status records.
 #[derive(Clone)]
 pub struct ReviewedThunderbird {
@@ -172,6 +271,20 @@ pub struct ReviewedThunderbird {
     pub accounts: Vec<ReviewedAccount>,
     pub address_books: Vec<ReviewedFile>,
     pub calendars: Vec<ReviewedFile>,
+    /// The folders and files inside this profile that could not be read; the
+    /// rest of the profile is still listed.
+    pub problems: Vec<Unreadable>,
+}
+
+impl ReviewedThunderbird {
+    /// The profile as a review lists it, with how many contacts and events its
+    /// address books and calendars hold.
+    #[must_use]
+    pub fn profile(&self) -> ThunderbirdProfile {
+        let mut profile = self.profile.clone();
+        count_personal_data(&mut profile, self);
+        profile
+    }
 }
 
 impl std::fmt::Debug for ReviewedThunderbird {
@@ -182,6 +295,7 @@ impl std::fmt::Debug for ReviewedThunderbird {
             .field("accounts", &self.accounts.len())
             .field("address_books", &self.address_books.len())
             .field("calendars", &self.calendars.len())
+            .field("problems", &self.problems.len())
             .finish_non_exhaustive()
     }
 }
@@ -235,13 +349,26 @@ fn roots(home: &Path) -> Vec<(&'static str, PathBuf)> {
     }
 }
 
-/// What one home's Thunderbird profiles are, and which roots could not be read.
+/// What one home's Thunderbird profiles are, and everything that could not be
+/// read while looking. A scan with any problem is incomplete, never empty.
 pub struct Scan {
     /// The profiles with the pinned roots the importer reads through.
     pub reviewed: Vec<ReviewedThunderbird>,
-    /// The sources that could not be read, named as people see them. A scan with
-    /// any of these is incomplete, never empty.
-    pub unreadable: Vec<&'static str>,
+    /// The sources outside a returned profile that could not be read: a root,
+    /// a profile's own files, its index. Each names its path and reason.
+    pub problems: Vec<Unreadable>,
+}
+
+impl Scan {
+    /// What could not be read, as one line, so a message says every reason it has.
+    #[must_use]
+    pub fn problems_text(&self) -> String {
+        self.problems
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
 }
 
 /// Every Thunderbird profile in `home`, with the pinned profile root kept for
@@ -250,56 +377,88 @@ pub struct Scan {
 pub fn scan(home: &Path) -> Scan {
     let mut scan = Scan {
         reviewed: Vec::new(),
-        unreadable: Vec::new(),
+        problems: Vec::new(),
     };
     // The home is where the person keeps their profiles, named however their system names it:
     // on Fedora Atomic `/home` is a link to `/var/home`. Its own path is resolved once; inside
     // it, a profile is read without following any link.
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     for (label, path) in roots(&home) {
+        // The root's own last name is never followed. Its parent may be a link,
+        // as Flatpak's application directory is, and is resolved to where it
+        // points: a granted root reached through a link is still that root.
+        let path = match resolve_root(&path) {
+            Ok(Some(path)) => path,
+            Ok(None) => continue,
+            Err(error) => {
+                scan.problems.push(Unreadable::of(None, None, &error));
+                continue;
+            }
+        };
         match std::fs::symlink_metadata(&path) {
             Ok(info) if info.is_dir() && !info.is_symlink() => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Ok(_) | Err(_) => {
-                scan.unreadable.push("Thunderbird profile root");
+            Ok(_) => {
+                scan.problems.push(Unreadable::of_kind(
+                    None,
+                    None,
+                    std::io::ErrorKind::NotADirectory,
+                ));
+                continue;
+            }
+            Err(error) => {
+                scan.problems.push(Unreadable::of(None, None, &error));
                 continue;
             }
         }
         match discover_root(&path, label) {
-            Ok((profiles, unreadable)) => {
+            Ok((profiles, problems)) => {
                 scan.reviewed.extend(profiles);
-                if unreadable {
-                    scan.unreadable.push("Thunderbird profile");
-                }
+                scan.problems.extend(problems);
             }
-            Err(_) => scan.unreadable.push("Thunderbird profile"),
+            Err(error) => scan.problems.push(Unreadable::of(None, None, &error)),
         }
     }
     scan
+}
+
+/// Where a root really is. Its own last name is left as it is, so a linked
+/// root is refused rather than followed; a linked parent is resolved, because
+/// a system may reach a granted folder through one. `None` when the parent is
+/// not there, which means the root is not either.
+fn resolve_root(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Ok(Some(path.to_path_buf()));
+    };
+    match std::fs::canonicalize(parent) {
+        Ok(parent) => Ok(Some(parent.join(name))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Every Thunderbird profile under `home`, with its accounts, folders, address
 /// books and calendars. Counts are filled in from the files that are present.
 ///
 /// # Errors
-/// Thunderbird profiles were there but none could be read.
+/// Thunderbird profiles were there but none could be read; the message names
+/// what failed and why.
 pub fn discover(home: &Path) -> Result<Vec<ThunderbirdProfile>, String> {
     let scan = scan(home);
     if scan.reviewed.is_empty() {
-        return if scan.unreadable.is_empty() {
+        return if scan.problems.is_empty() {
             Ok(Vec::new())
         } else {
-            Err("no Thunderbird profile could be read".into())
+            Err(format!(
+                "no Thunderbird profile could be read: {}",
+                scan.problems_text()
+            ))
         };
     }
     Ok(scan
         .reviewed
         .iter()
-        .map(|reviewed| {
-            let mut profile = reviewed.profile.clone();
-            count_personal_data(&mut profile, reviewed);
-            profile
-        })
+        .map(ReviewedThunderbird::profile)
         .collect())
 }
 
@@ -408,7 +567,10 @@ pub fn account_settings(
         .and_then(|candidate| candidate.settings.clone())
 }
 
-fn discover_root(root: &Path, label: &str) -> std::io::Result<(Vec<ReviewedThunderbird>, bool)> {
+fn discover_root(
+    root: &Path,
+    label: &str,
+) -> std::io::Result<(Vec<ReviewedThunderbird>, Vec<Unreadable>)> {
     let root_path = root.to_path_buf();
     let root = PinnedDirectory::open_absolute(root)?;
     root.validate()?;
@@ -417,7 +579,7 @@ fn discover_root(root: &Path, label: &str) -> std::io::Result<(Vec<ReviewedThund
         return Err(invalid("Thunderbird profile index exceeds its bound"));
     }
     let mut output = Vec::new();
-    let mut unreadable = false;
+    let mut problems = Vec::new();
     for (name, relative) in profiles {
         let profile_path = relative
             .iter()
@@ -425,14 +587,18 @@ fn discover_root(root: &Path, label: &str) -> std::io::Result<(Vec<ReviewedThund
         match discover_profile(&root, &profile_path, &relative, label, &name) {
             Ok(Some(profile)) => output.push(profile),
             Ok(None) => {}
-            Err(_) => unreadable = true,
+            Err(error) => problems.push(Unreadable::of(
+                Some(format!("{label} · {name}")),
+                None,
+                &error,
+            )),
         }
         if output.len() > MAX_PROFILES {
             return Err(invalid("Too many Thunderbird profiles"));
         }
     }
     root.validate()?;
-    Ok((output, unreadable))
+    Ok((output, problems))
 }
 
 fn profiles(root: &Arc<PinnedDirectory>) -> std::io::Result<Vec<(String, Vec<String>)>> {
@@ -540,10 +706,21 @@ fn discover_profile(
         calendars: Vec::new(),
     };
     let mut accounts = Vec::new();
+    let profile_label = format!("{label} · {name}");
+    let mut problems = Problems {
+        profile: &profile_label,
+        problems: Vec::new(),
+    };
     for account in &parsed.accounts {
         let identities = identities(&parsed_prefs, account);
-        let (inventory, reviewed) =
-            account_inventory(&directory, profile_path, &profile_id, account, identities)?;
+        let (inventory, reviewed) = account_inventory(
+            &directory,
+            profile_path,
+            &profile_id,
+            account,
+            identities,
+            &mut problems,
+        );
         profile.accounts.push(inventory.clone());
         accounts.push(ReviewedAccount {
             inventory,
@@ -604,7 +781,25 @@ fn discover_profile(
         accounts,
         address_books,
         calendars,
+        problems: problems.problems,
     }))
+}
+
+/// Where one profile's read notes what it could not read, under that
+/// profile's name. A profile with more failures than the bound names the first
+/// ones and stops; it is already incomplete, and the rest add no reason.
+struct Problems<'a> {
+    profile: &'a str,
+    problems: Vec<Unreadable>,
+}
+
+impl Problems<'_> {
+    fn note(&mut self, relative: &[String], error: &std::io::Error) {
+        if self.problems.len() < MAX_PROBLEMS {
+            self.problems
+                .push(Unreadable::inside_profile(self.profile, relative, error));
+        }
+    }
 }
 
 fn account_inventory(
@@ -613,7 +808,8 @@ fn account_inventory(
     profile_id: &str,
     account: &metadata::AccountMetadata,
     identities: Vec<ThunderbirdIdentity>,
-) -> std::io::Result<(ThunderbirdAccount, Vec<ReviewedFolder>)> {
+    problems: &mut Problems<'_>,
+) -> (ThunderbirdAccount, Vec<ReviewedFolder>) {
     let source_id = opaque(
         "thunderbird-account",
         &[profile_id, &account.source_account, &account.server_key],
@@ -638,12 +834,23 @@ fn account_inventory(
         folders: Vec::new(),
         settings: Some(account.clone()),
     };
-    let Some(relative) = mail_directory(profile, profile_path, account)? else {
-        return Ok((inventory, Vec::new()));
+    let relative = match mail_directory(profile, profile_path, account) {
+        Ok(Some(relative)) => relative,
+        Ok(None) => return (inventory, Vec::new()),
+        Err((relative, error)) => {
+            problems.note(&relative, &error);
+            return (inventory, Vec::new());
+        }
     };
-    let directory = walk(profile, &relative)?;
+    let directory = match walk(profile, &relative) {
+        Ok(directory) => directory,
+        Err(error) => {
+            problems.note(&relative, &error);
+            return (inventory, Vec::new());
+        }
+    };
     let mut folders = Vec::new();
-    scan_folders(
+    if let Err(error) = scan_folders(
         &directory,
         &relative,
         &[],
@@ -651,29 +858,49 @@ fn account_inventory(
         &source_id,
         0,
         &mut folders,
-    )?;
+        problems,
+    ) {
+        problems.note(&relative, &error);
+    }
     for folder in &folders {
         inventory.folders.push(folder.inventory.clone());
     }
-    Ok((inventory, folders))
+    (inventory, folders)
 }
 
+/// Where `account` keeps its mail inside this profile.
+///
+/// `prefs.js` names the directory both absolutely and relative to the profile.
+/// A profile Thunderbird copied from another location keeps naming the old
+/// place; that is stale metadata, not an unreadable folder, so a path outside
+/// the granted profile is left out and the next candidate is tried. The last
+/// candidate is where Thunderbird lays the mail out for the account's server.
+///
+/// # Errors
+/// A named directory is present but could not be opened: its path and the
+/// reason, so a review can say which folder is missing from it.
 fn mail_directory(
     profile: &Arc<PinnedDirectory>,
     profile_path: &Path,
     account: &metadata::AccountMetadata,
-) -> std::io::Result<Option<Vec<String>>> {
+) -> Result<Option<Vec<String>>, (Vec<String>, std::io::Error)> {
+    let mut candidates: Vec<Vec<String>> = Vec::new();
+    let mut try_candidate = |relative: Option<Vec<String>>| {
+        if let Some(relative) = relative.filter(|relative| !relative.is_empty())
+            && !candidates.contains(&relative)
+        {
+            candidates.push(relative);
+        }
+    };
     if let Some(path) = account.directory.as_deref().filter(|path| !path.is_empty()) {
         let path = Path::new(path);
-        if path.is_absolute() {
-            let Ok(relative) = path.strip_prefix(profile_path) else {
-                return Err(invalid(
-                    "Thunderbird mail directory lies outside its granted profile",
-                ));
-            };
-            return safe_relative(relative).map(Some);
-        }
-        return safe_relative(path).map(Some);
+        try_candidate(if path.is_absolute() {
+            path.strip_prefix(profile_path)
+                .ok()
+                .and_then(|inside| safe_relative(inside).ok())
+        } else {
+            safe_relative(path).ok()
+        });
     }
     if let Some(path) = account
         .directory_rel
@@ -684,9 +911,9 @@ fn mail_directory(
             .strip_prefix("[ProfD]")
             .or_else(|| path.strip_prefix("[profD]"))
             .unwrap_or(path);
-        return safe_relative(Path::new(path.trim_start_matches('/'))).map(Some);
+        try_candidate(safe_relative(Path::new(path.trim_start_matches('/'))).ok());
     }
-    let relative = match account.server_kind {
+    try_candidate(match account.server_kind {
         ServerKind::Imap => account
             .hostname
             .as_deref()
@@ -699,13 +926,19 @@ fn mail_directory(
             .map(|host| vec!["Mail".into(), host.into()]),
         ServerKind::Local => Some(vec!["Mail".into(), "Local Folders".into()]),
         ServerKind::Other => None,
-    };
-    if let Some(relative) = &relative
-        && !walk(profile, relative).is_ok_and(|dir| dir.validate().is_ok())
-    {
-        return Ok(None);
+    });
+    let mut failure = None;
+    for relative in candidates {
+        match walk(profile, &relative) {
+            Ok(_) => return Ok(Some(relative)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failure = Some((relative, error)),
+        }
     }
-    Ok(relative)
+    match failure {
+        Some((relative, error)) => Err((relative, error)),
+        None => Ok(None),
+    }
 }
 
 fn scan_folders(
@@ -716,6 +949,7 @@ fn scan_folders(
     account_id: &str,
     depth: usize,
     output: &mut Vec<ReviewedFolder>,
+    problems: &mut Problems<'_>,
 ) -> std::io::Result<()> {
     if depth > MAX_DEPTH || output.len() > MAX_FOLDERS {
         return Err(invalid("Thunderbird folder tree exceeds its bound"));
@@ -731,16 +965,32 @@ fn scan_folders(
     for (name, info) in &names {
         if info.is_dir() {
             let child_relative = child(relative, name);
-            let child_dir = walk(directory, std::slice::from_ref(name))?;
-            if is_maildir(&child_dir)? {
+            let child_dir = match walk(directory, std::slice::from_ref(name)) {
+                Ok(child_dir) => child_dir,
+                Err(error) => {
+                    problems.note(&child_relative, &error);
+                    continue;
+                }
+            };
+            let maildir = match is_maildir(&child_dir) {
+                Ok(maildir) => maildir,
+                Err(error) => {
+                    problems.note(&child_relative, &error);
+                    continue;
+                }
+            };
+            if maildir {
                 let folder_hierarchy = child(hierarchy, name);
-                output.push(count_maildir(
+                match count_maildir(
                     &child_dir,
                     &child_relative,
                     folder_hierarchy,
                     kind,
                     account_id,
-                )?);
+                ) {
+                    Ok(folder) => output.push(folder),
+                    Err(error) => problems.note(&child_relative, &error),
+                }
             } else if Path::new(name)
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("sbd"))
@@ -752,7 +1002,7 @@ fn scan_folders(
                 if !base.is_empty() {
                     child_hierarchy.push(base.into());
                 }
-                scan_folders(
+                if let Err(error) = scan_folders(
                     &child_dir,
                     &child_relative,
                     &child_hierarchy,
@@ -760,18 +1010,24 @@ fn scan_folders(
                     account_id,
                     depth.saturating_add(1),
                     output,
-                )?;
+                    problems,
+                ) {
+                    problems.note(&child_relative, &error);
+                }
             }
         } else if info.is_file() && !ignored_mail_file(name) {
             let folder_hierarchy = child(hierarchy, name);
-            output.push(count_mbox(
+            match count_mbox(
                 directory,
                 name,
                 &child(relative, name),
                 folder_hierarchy,
                 kind,
                 account_id,
-            )?);
+            ) {
+                Ok(folder) => output.push(folder),
+                Err(error) => problems.note(&child(relative, name), &error),
+            }
         }
     }
     Ok(())

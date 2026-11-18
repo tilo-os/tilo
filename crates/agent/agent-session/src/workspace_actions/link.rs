@@ -1,6 +1,6 @@
-//! What the service needs of the host it runs under, and what the host
-//! hands it: the host's own device in its workspaces
-//! ([`HostDevice`]), the standing and read policy it decides a view by
+//! What the service needs of the holder it runs under, and what the holder
+//! hands it: the holder's own device in its workspaces
+//! ([`HostDevice`]), the access and read policy it decides a view by
 //! ([`ViewReadPolicy`]), the verified snapshot a view is discovered from
 //! ([`ViewDocument`]), and the two APIs back into the host
 //! ([`WorkspaceDocumentsLink`] for everything the service asks, and
@@ -9,17 +9,18 @@
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::remote::person_asking::{Asked, Words};
 use tilo_actions::remote::{
-    ActionHostError, Caller, ConfirmationQuestion, ConfirmationReply, Pending,
+    ActionCallError, Caller, ConfirmationQuestion, ConfirmationReply, Pending,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
 use crate::host::HostEndpoint;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The host's own device, as the service takes part in its workspaces: a
-/// member of each workspace's channels like any other device. It opens only
+/// member of each workspace's documents like any other device. It opens only
 /// what a workspace's members admitted it to and seals everything it writes.
 #[derive(Clone)]
 pub struct HostDevice {
@@ -36,21 +37,25 @@ pub struct HostDevice {
 pub struct ViewReadPolicy {
     /// Governed workspace whose current policy authorized the exact source record.
     pub workspace: String,
-    /// The certified caller's current standing in the workspace, including the
+    /// The certified caller's current member access in the workspace, including the
     /// bound of a device that is not theirs.
-    pub standing: ui::permissions::Standing,
+    pub access: ui::permissions::MemberAccess,
     /// The workspace's current sandbox capabilities.
     pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
+    /// What the workspace's list of its agents bounds the agent asking to, when an agent asks
+    /// for the person ([`WorkspaceDocumentsLink::workspace_agent`]): empty follows the default.
+    #[serde(default)]
+    pub agent_bound: Vec<ui::permissions::policy::Rule>,
 }
 
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::new(
-            ui::permissions::Acting::person(self.standing.person_id().unwrap_or_default()),
+            ui::permissions::Acting::person(self.access.person_id().unwrap_or_default()),
             self.sandbox.clone(),
-            self.standing.clone(),
+            self.access.clone(),
         )
         .at_unix_time(self.unix_time)
     }
@@ -88,7 +93,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<ViewReadPolicy> {
         None
     }
-    /// The certified caller's standing across `workspace` now, with no
+    /// The certified caller's access across `workspace` now, with no
     /// record's read checked: what its content and its new records are
     /// decided by. Absence denies.
     fn workspace_policy(
@@ -97,6 +102,17 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
         _caller: &Caller,
     ) -> Option<ViewReadPolicy> {
         None
+    }
+    /// The agent `caller` is, which a person's own device handed its session to, works in
+    /// `workspace`: the server adds it to the workspace's list of its agents where that list
+    /// does not name it yet, and answers the bound the list keeps for it, which narrows
+    /// everything it does there. Empty follows the default.
+    fn workspace_agent(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+    ) -> Vec<ui::permissions::policy::Rule> {
+        Vec::new()
     }
     /// Read an exact existing source using already-owned host keys. The host
     /// must check current certified Read under its workspace lock before key access
@@ -109,17 +125,17 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Result<ViewDocument, String> {
         Err("existing view documents unavailable".into())
     }
-    /// The content keys of `route`'s channel, when the host device itself
-    /// takes part in the channels of `route`'s workspace: it is then already the
-    /// channel's member, and the service, which joins as that device, can
-    /// only be handed the keys the host holds. `create` opens the channel of
+    /// The content keys of `route`'s document, when the host device itself
+    /// takes part in the documents of `route`'s workspace: it is then already the
+    /// document's member, and the service, which joins as that device, can
+    /// only be handed the keys the host holds. `create` opens the document of
     /// a record the service is about to write for the first time.
     ///
     /// `None` when the host does not take part in the workspace's channels: the
-    /// service waits for a member to admit it over the channel, like
+    /// service waits for a member to admit it over the document, like
     /// any member.
     /// `Some(Err)` when the host refused the hand-off or holds no such
-    /// channel. Called only on behalf of a caller the service serves.
+    /// document. Called only on behalf of a caller the service serves.
     fn host_keys(
         &self,
         _route: &DocumentRoute,
@@ -127,7 +143,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<Result<key_group::ContentKeys, String>> {
         None
     }
-    /// Every record this host holds of the workspace whose channels are
+    /// Every record this host holds of the workspace whose documents are
     /// `channel`, by the app whose document it is and its id, with the parts
     /// of a chain left to the record that keeps them.
     ///
@@ -197,7 +213,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
         _workspace: WorkspaceId,
         _caller: &Caller,
         _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
+    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
         None
     }
     /// Whether `caller` runs a command in the machine of `workspace` without
@@ -207,6 +223,55 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn runs_unattended(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
         false
     }
+    /// The lasting permission of the person `caller` acts for that covers
+    /// `asked`, by its id: that person answered a question about exactly
+    /// this with always and has not taken it back
+    /// ([`tilo_actions::remote::person_asking`]). `None` asks first, which is
+    /// what a holder that keeps none answers.
+    fn stands(&self, _workspace: WorkspaceId, _caller: &Caller, _asked: &Asked) -> Option<String> {
+        None
+    }
+    /// What the lasting permission `permission` covers ran unasked for
+    /// `caller`: counted where its person reads what stands.
+    fn permission_used(&self, _workspace: WorkspaceId, _caller: &Caller, _permission: &str) {}
+}
+
+/// What puts an agent's question to its person in the conversation its turn
+/// is in: the runtime that works agents on this server, which the service is
+/// given ([`super::WorkspaceActions::ask_in_conversations`]).
+pub trait AsksInConversation: Send + Sync {
+    /// Put what `caller`, an agent working inside a turn of `workspace`,
+    /// wants to do to its person as a question in the conversation, where
+    /// it waits until they answer it, however long that takes
+    /// ([`AskedInTurn`]). Answered once the server kept what was asked: `Ok`
+    /// and the question is theirs to answer, or why it could not be asked.
+    /// The invocation then ends as asked, and the server does it from the
+    /// person's own answer ([`super::WorkspaceActions::serve_allowed`]).
+    /// `None` leaves it to the person's devices
+    /// ([`WorkspaceDocumentsLink::ask_person`]).
+    fn ask(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        asked: AskedInTurn,
+    ) -> Option<Pending<Result<(), String>>>;
+}
+
+/// What an agent working inside a turn wants to do, as its person is asked
+/// about it in the conversation the turn is in.
+#[derive(Clone, Debug)]
+pub struct AskedInTurn {
+    /// The invocation: its target and the arguments it would go with. It
+    /// holds nothing a draft withholds.
+    pub request: tilo_actions::remote::InvokeRequest,
+    /// The invocation as the person reviews it.
+    pub draft: tilo_actions::Draft,
+    /// What is asked, by the names the system gave it: what an answer of
+    /// always would let stand.
+    pub asked: Asked,
+    /// The action and the thing it is on, in the system's own words. The
+    /// workspace's name is the server's to add.
+    pub words: Words,
 }
 
 /// A model the host lends its admitted reporters to look over a report's

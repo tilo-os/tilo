@@ -229,7 +229,7 @@ fn invocation_fixture(
 ) {
     let broker = AppBrokerState::test_broker_with_authority(
         Arc::clone(authority) as WorkspaceTreeHandle,
-        HostServices::default(),
+        ProcessServices::default(),
     );
     let state = Arc::clone(broker.state());
     state.replace_published_surfaces_for_test(vec![write_surface(workspace)]);
@@ -261,7 +261,7 @@ tilo_test_env::scenario! {
         assert!(copy_free_budget() < copied, "the budget admits a copy");
     }
 
-    phase action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot;
+    phase action_provider_invocation_admission_samples_authority_once_without_an_owned_snapshot;
     {
         let (tree, workspace) = owned_workspace();
         let authority = SampledAuthority::new(tree);
@@ -412,7 +412,7 @@ async fn query_wide_page(
         Some(Arc::clone(authority) as WorkspaceTreeHandle),
         None,
         None,
-        HostServices::default(),
+        ProcessServices::default(),
     );
     let route = CrdtRoute::record("so.tilo.atlas", workspace, "atlas");
     let directories = LocalActionDirectoryRegistry::new(bridge_rx);

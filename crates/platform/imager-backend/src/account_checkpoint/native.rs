@@ -129,7 +129,7 @@ pub(super) fn save(
     group: [u8; 32],
     password: &[u8],
 ) -> io::Result<Receipt> {
-    let _custody = checkpoint_authority(handle, root, binding, group)?;
+    let _ownership = checkpoint_authority(handle, root, binding, group)?;
     ensure_checkpoint_directory(root)?;
     let (pin, _) = directory(root)?;
     let filename = format!("{}.sealed", uuid::Uuid::new_v4());
@@ -176,7 +176,7 @@ pub(super) fn save(
     Ok(receipt)
 }
 
-/// Explicitly authenticate the exact draft generation into fresh private custody.
+/// Explicitly authenticate the exact draft generation into fresh private ownership.
 pub(super) fn restore(
     root: &Path,
     receipt: &Receipt,

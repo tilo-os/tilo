@@ -9,7 +9,7 @@
 //! owner approved `device.unlock` or turned on auto-approval for exactly this
 //! device. The half then travels sealed to the request's ephemeral key, and the
 //! owner's answer is a fact every one of their devices keeps
-//! ([`UnlockDecisionRecord`]), so a boot that lost its stream hears it again.
+//! ([`UnlockDecisionEntry`]), so a boot that lost its stream hears it again.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -21,7 +21,7 @@ use tilo_unlock_protocol::{
     RefusalReason, SealedSiblingHalf, SiblingFrame, SlotId, UnlockHello, UnlockRequest,
     approval_code, attest, open_sibling_half, seal_release,
 };
-use tilo_user_identity::{CertifiedFleet, DeviceStanding};
+use tilo_user_identity::{CertifiedFleet, DeviceCertification};
 
 use crate::FabricError;
 use tilo_network_actor::fabric::DeviceId;
@@ -188,7 +188,7 @@ pub type DecisionKey = ([u8; 32], BootId, SlotId);
 /// away before the answer reached it therefore hears the answer instead of
 /// asking again, and a boot whose handler died leaves no question behind.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnlockDecisionRecord {
+pub struct UnlockDecisionEntry {
     /// The enrolment that asked: the boot certificate's digest.
     pub boot_cert_digest: [u8; 32],
     pub boot_id: BootId,
@@ -201,7 +201,7 @@ pub struct UnlockDecisionRecord {
     pub valid_until_ns: u64,
 }
 
-impl UnlockDecisionRecord {
+impl UnlockDecisionEntry {
     /// The boot this answers.
     #[must_use]
     pub fn key(&self) -> DecisionKey {
@@ -224,12 +224,12 @@ impl UnlockDecisionRecord {
 /// the person's devices kept one.
 #[must_use]
 pub fn decision_for<'a>(
-    decisions: &'a BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    decisions: &'a BTreeMap<DecisionKey, UnlockDecisionEntry>,
     digest: &[u8; 32],
     boot_id: BootId,
     slot: SlotId,
     now_ns: u64,
-) -> Option<&'a UnlockDecisionRecord> {
+) -> Option<&'a UnlockDecisionEntry> {
     decisions
         .get(&(*digest, boot_id, slot))
         .filter(|record| record.valid_until_ns > now_ns)
@@ -244,7 +244,7 @@ pub struct UnlockFabricState {
     /// for any device of the person.
     pub auto_approvals: Vec<AutoApproval>,
     /// This device's answers to boots that asked it, kept while they hold.
-    pub decisions: Vec<UnlockDecisionRecord>,
+    pub decisions: Vec<UnlockDecisionEntry>,
 }
 
 impl UnlockFabricState {
@@ -287,7 +287,7 @@ impl UnlockFabricState {
 pub struct MergedUnlock {
     pub enrolments: BTreeMap<[u8; 32], UnlockEnrolment>,
     pub auto_approvals: BTreeMap<[u8; 32], AutoApproval>,
-    pub decisions: BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    pub decisions: BTreeMap<DecisionKey, UnlockDecisionEntry>,
 }
 
 /// The enrolments, auto-approvals and answers across the person's fabric,
@@ -301,11 +301,12 @@ pub fn merged_unlock_state<'a>(
     now_ns: u64,
 ) -> MergedUnlock {
     let mut merged = MergedUnlock::default();
-    let standing = |device: &[u8; 32]| fleet.standing(device, now_ns);
+    let certification = |device: &[u8; 32]| fleet.certification(device, now_ns);
     for state in snapshots {
         for enrolment in &state.enrolments {
             if enrolment.cert.user_public_key == *fleet.user_public_key()
-                && standing(&enrolment.cert.device_public_key) == DeviceStanding::Certified
+                && certification(&enrolment.cert.device_public_key)
+                    == DeviceCertification::Certified
                 && let Some(id) = enrolment.id()
             {
                 merged.enrolments.insert(id, enrolment.clone());
@@ -313,7 +314,7 @@ pub fn merged_unlock_state<'a>(
         }
         for approval in &state.auto_approvals {
             if approval.user_public_key != *fleet.user_public_key()
-                || standing(&approval.device_public_key) != DeviceStanding::Certified
+                || certification(&approval.device_public_key) != DeviceCertification::Certified
             {
                 continue;
             }
@@ -328,7 +329,7 @@ pub fn merged_unlock_state<'a>(
             }
         }
         for decision in &state.decisions {
-            if standing(&decision.decided_by) != DeviceStanding::Certified
+            if certification(&decision.decided_by) != DeviceCertification::Certified
                 || decision.valid_until_ns <= now_ns
             {
                 continue;
@@ -358,9 +359,9 @@ pub struct UnlockView<'a> {
     pub enrolments: &'a BTreeMap<[u8; 32], UnlockEnrolment>,
     pub auto_approvals: &'a BTreeMap<[u8; 32], AutoApproval>,
     /// The owner's answers still in force, from every device of theirs.
-    pub decisions: &'a BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    pub decisions: &'a BTreeMap<DecisionKey, UnlockDecisionEntry>,
     /// Whether this device holds the person's root, so it can release.
-    pub custodian: bool,
+    pub key_holder: bool,
     /// The secret-sync key, loaded only where a half is released.
     pub secret_sync: Option<&'a SecretKey>,
 }
@@ -392,7 +393,7 @@ pub enum UnlockDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decided {
     pub frame: SiblingFrame,
-    pub record: Option<UnlockDecisionRecord>,
+    pub record: Option<UnlockDecisionEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -477,10 +478,10 @@ impl UnlockSibling {
         if cert.user_public_key != *view.fleet.user_public_key() || cert.verify().is_err() {
             return Err(RefusalReason::BadCertificate);
         }
-        match view.fleet.standing(&cert.device_public_key, now_ns) {
-            DeviceStanding::Certified => {}
-            DeviceStanding::Revoked(_) => return Err(RefusalReason::Revoked),
-            DeviceStanding::Uncertified => return Err(RefusalReason::BadCertificate),
+        match view.fleet.certification(&cert.device_public_key, now_ns) {
+            DeviceCertification::Certified => {}
+            DeviceCertification::Revoked(_) => return Err(RefusalReason::Revoked),
+            DeviceCertification::Uncertified => return Err(RefusalReason::BadCertificate),
         }
         let id = cert
             .signing_digest()
@@ -490,8 +491,8 @@ impl UnlockSibling {
             return Err(RefusalReason::NotEnrolled);
         }
         self.charge(cert.device_public_key, now_ns)?;
-        if !view.custodian {
-            return Err(RefusalReason::NotACustodian);
+        if !view.key_holder {
+            return Err(RefusalReason::NotAKeyHolder);
         }
         Ok(id)
     }
@@ -584,7 +585,9 @@ impl UnlockSibling {
             .retain(|nonce| nonce != challenge_nonce);
         let digest = request.verify(cert, &open.challenge, now_ns)?;
         // The fleet or the enrolments may have changed since the hello.
-        if let DeviceStanding::Revoked(_) = view.fleet.standing(&cert.device_public_key, now_ns) {
+        if let DeviceCertification::Revoked(_) =
+            view.fleet.certification(&cert.device_public_key, now_ns)
+        {
             return Err(RefusalReason::Revoked);
         }
         let enrolment = view
@@ -688,8 +691,8 @@ impl UnlockSibling {
             UnlockDecision::Approve { approver } => approver,
         };
         let still_enrolled = !matches!(
-            view.fleet.standing(&pending.device_public_key, now_ns),
-            DeviceStanding::Revoked(_)
+            view.fleet.certification(&pending.device_public_key, now_ns),
+            DeviceCertification::Revoked(_)
         ) && view.enrolments.contains_key(&pending.enrolment);
         let frame = if still_enrolled {
             view.enrolments.get(&pending.enrolment).map_or(
@@ -781,8 +784,8 @@ fn decision_record(
     outcome: DecisionOutcome,
     decided_by: [u8; 32],
     now_ns: u64,
-) -> UnlockDecisionRecord {
-    UnlockDecisionRecord {
+) -> UnlockDecisionEntry {
+    UnlockDecisionEntry {
         boot_cert_digest: pending.enrolment,
         boot_id: pending.boot_id,
         slot: pending.slot,
@@ -801,12 +804,12 @@ fn release(
     view: &UnlockView<'_>,
 ) -> SiblingFrame {
     let Some(secret_sync) = view.secret_sync else {
-        return SiblingFrame::Refused(RefusalReason::NotACustodian);
+        return SiblingFrame::Refused(RefusalReason::NotAKeyHolder);
     };
     open_sibling_half(secret_sync, &enrolment.cert, &enrolment.sealed_half)
         .and_then(|half| seal_release(&pending.ephemeral_public, &pending.request_digest, &half))
         .map_or(
-            SiblingFrame::Refused(RefusalReason::NotACustodian),
+            SiblingFrame::Refused(RefusalReason::NotAKeyHolder),
             SiblingFrame::Released,
         )
 }

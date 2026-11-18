@@ -12,14 +12,14 @@ use ui::application::AppComponent;
 use ui::headless::FrameHarness;
 use ui::widget::TileHost;
 
-fn page_count(f: &NotebookFixture, checkout: &ui::resource::DocumentCheckout) -> usize {
-    f.records
-        .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
-        .unwrap()
+fn page_count(f: &NotebookFixture) -> usize {
+    f.store
+        .read(&f.part(), |doc| notes::read::list_pages(doc).len())
+        .unwrap_or_default()
 }
 
 /// Answers with a notice until its component arrives, as the browser
-/// desktop does while a tab's record is still loading.
+/// desktop does while a tab's resource is still loading.
 struct Arriving(Rc<RefCell<Option<AppComponent>>>);
 impl TileSource for Arriving {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
@@ -37,11 +37,10 @@ impl TileSource for Arriving {
 /// creates a page.
 fn assert_plus_creates_a_page(
     f: &NotebookFixture,
-    checkout: &ui::resource::DocumentCheckout,
     harness: &mut FrameHarness,
     press: impl FnOnce(&mut FrameHarness),
 ) {
-    let before = page_count(f, checkout);
+    let before = page_count(f);
     press(harness);
     for _ in 0..4 {
         harness.poll_frame().unwrap();
@@ -52,7 +51,7 @@ fn assert_plus_creates_a_page(
         harness.control_failures()
     );
     assert_eq!(
-        page_count(f, checkout),
+        page_count(f),
         before.checked_add(1).unwrap(),
         "the + button creates a page"
     );
@@ -66,10 +65,10 @@ fn hosted_header_plus_creates_a_page_as_root_component() {
     let component = component_support::component(&f, 7, component_support::existing(&checkout));
     let mut harness = component_support::component_driver(component);
     harness.relayout();
-    assert_plus_creates_a_page(&f, &checkout, &mut harness, |harness| {
+    assert_plus_creates_a_page(&f, &mut harness, |harness| {
         harness.click_named("new-note").unwrap();
     });
-    assert_plus_creates_a_page(&f, &checkout, &mut harness, |harness| {
+    assert_plus_creates_a_page(&f, &mut harness, |harness| {
         let new_note = harness
             .a11y_node_named("New note")
             .expect("the page tree offers New note");
@@ -114,7 +113,7 @@ fn hosted_header_plus_creates_a_page_in_a_desktop_tab_built_late() {
     harness.attach_owner_wake_queue(wakes.clone()).unwrap();
     harness.relayout();
 
-    // The record arrives after the desktop is already running.
+    // The resource arrives after the desktop is already running.
     let mut component = component_support::component(&f, 7, component_support::existing(&checkout));
     component.mount_with_owner_queue(&wakes, |_| {}).unwrap();
     *arriving.borrow_mut() = Some(component);
@@ -126,7 +125,7 @@ fn hosted_header_plus_creates_a_page_in_a_desktop_tab_built_late() {
     assert!(arriving.borrow().is_none(), "the desktop rebuilt the tab");
 
     // New note stands in the page tree's header, inside the tab: clicked as a person does.
-    assert_plus_creates_a_page(&f, &checkout, &mut harness, |harness| {
+    assert_plus_creates_a_page(&f, &mut harness, |harness| {
         let new_note = harness
             .a11y_nodes()
             .into_iter()

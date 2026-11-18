@@ -535,7 +535,7 @@ jobs:
           # Advancing main must not invalidate an already-running immutable build.
 
   build:
-    # PR compilation belongs to the focused CI lane. Packaging remains available
+    # PR compilation belongs to the focused CI job. Packaging remains available
     # through workflow_dispatch (publish=false) before requesting publication.
     if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true' && needs.plan.outputs.signal_provider_only != 'true'"
     needs: [plan, authorize-publish]
@@ -666,7 +666,7 @@ jobs:
       # engine libraries built with it are reported beside it, and
       # none may be loaded by those apps.
       - name: Shared runtime within its size budget
-        # Each measurement below gates on its own subject: a tapp over its
+        # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: >-
@@ -680,7 +680,7 @@ jobs:
       # memory once it is up. The app's block is the one with the runtime's
       # relocations; RELR entries are not in glibc's "relative relocations".
       - name: Report the runtime's loader cost
-        # Each measurement below gates on its own subject: a tapp over its
+        # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: bash
@@ -762,7 +762,7 @@ jobs:
       # loader's trace says how libgstreamer arrived: by the runtime's dlopen,
       # or at exec when the app's own code calls GStreamer too.
       - name: A media app decodes through the lazily loaded runtime
-        # Each measurement below gates on its own subject: a tapp over its
+        # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: bash
@@ -800,7 +800,7 @@ jobs:
       # that saves typesets through libtilo_typst_engine.so; the loader's trace
       # says that Typst Editor, not the runtime, brought the engine in.
       - name: Typst Editor typesets through its engine library
-        # Each measurement below gates on its own subject: a tapp over its
+        # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: bash
@@ -840,7 +840,7 @@ jobs:
       # account, network or audio device; the loader's trace says that Music,
       # not the runtime, brought the engine in.
       - name: Music runs Spotify playback from its engine library
-        # Each measurement below gates on its own subject: a tapp over its
+        # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: bash
@@ -871,7 +871,7 @@ jobs:
           printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf "$runtime"
       # Canvas's painting engines, the YouTube client of Music and Tube,
-      # account custody with the IMAP client (Mail, Settings), the time-zone
+      # account credentials with the IMAP client (Mail, Settings), the time-zone
       # database (Calendar, Clocks), the contact directory (Calendar,
       # Contacts, Mail, Messages), the spreadsheet formula engine (Sheets) and
       # the agent's web search live in engine libraries beside the runtime. Each app's
@@ -881,7 +881,7 @@ jobs:
       # accounts engine with it: for Settings only the trace of its start
       # counts (it need not accept --help).
       - name: Apps run their engine libraries
-        # Each measurement below gates on its own subject: a tapp over its
+        # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: bash

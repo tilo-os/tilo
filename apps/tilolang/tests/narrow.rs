@@ -114,8 +114,8 @@ fn named_text(harness: &FrameHarness, name: &str) -> Option<String> {
         .find_map(|node| node.test_id.clone())
 }
 
-/// The test id of the first control that runs `action` on a record of the app `app`: what the
-/// window says it does is the address the app publishes the action under on that record, wherever
+/// The test id of the first control that runs `action` on a document of the app `app`: what the
+/// window says it does is the address the app publishes the action under on that document, wherever
 /// the window's composition draws it and whatever the person's language calls it.
 fn doing_control(harness: &FrameHarness, (app, action): (&str, &str)) -> Option<String> {
     let record = format!("tl:so.tilo.lang.{app}:");

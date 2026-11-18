@@ -163,7 +163,7 @@ pub struct PartTokens {
     /// with the evaluated shader. A theme's document is validated when it is
     /// read, so a shader here has already been checked.
     pub shader: crate::ShaderSource,
-    /// The sides standing on the display's own edge, where a body draws no
+    /// The sides on the display's own edge, where a body draws no
     /// edge of its own and a rim does not light ([`Sides`]).
     pub flush: Sides,
 }

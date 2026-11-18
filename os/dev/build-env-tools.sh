@@ -58,7 +58,7 @@ while IFS= read -r line; do
   started=$(date +%s)
   if result="$("$bin" build --runtime-tapp "$runtime_tapp" --state "$state" \
       --out-dir "$out" --catalog "$out/catalog.json" "${identity_args[@]}" \
-      --network "${TILO_ENV_TOOLS_NETWORK:-gated}" \
+      --network "${TILO_ENV_TOOLS_NETWORK:-guarded}" \
       -- "${packages[@]}")"; then
     wall=$(( $(date +%s) - started ))
     printf '%s' "$result" | python3 -c '

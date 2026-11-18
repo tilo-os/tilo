@@ -621,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_custody() {
+    fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_ownership() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let rows = app
             .with_widget::<crate::window::Inspected, _>(|app| super::rows(app))

@@ -28,7 +28,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
                 workspace: WORKSPACE.into(),
                 operation: CommitOperation::Document {
                     app: APP.into(),
-                    record: String::new(),
+                    document: String::new(),
                     envelope,
                     own: None,
                 },
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
                     frame,
                     joined.now,
                 )

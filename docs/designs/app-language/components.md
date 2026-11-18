@@ -69,10 +69,10 @@ view contact_row(c: Contact) {
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
   text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
   person is not typing there. The view places the editor; no marker on a field says which
-  control draws it. `links:` names the records its `[[` picker offers, which the editor is given
-  as the references they are and what each reads as now, so a record renamed later reads by its
+  control draws it. `links:` names the resources its `[[` picker offers, which the editor is given
+  as the references they are and what each reads as now, so a resource renamed later reads by its
   new title wherever it was linked; choosing one writes a reference in the text, which is what
-  `linked(r)` reports the record by. A picker over a collection reads the records while it is
+  `linked(r)` reports the resource by. A picker over a collection reads the resources while it is
   open, and only what it shows: the view keeps the picker's state (`on links_open(open)` and
   `on links_query(text)`) and answers it with a query of what is typed,
   `links: if linking { nb.notes.matching(text).take(48) } else { [] }`, so a keystroke in the
@@ -87,7 +87,7 @@ a view puts them and give the view they stand in a menu, a toolbar shown on hove
 a swipe. A list item holds those of its row wherever the row's layout puts them — through its
 stacks, rows, grids and calls — while what a component of its own meaning holds (a card, a
 section) stays that component's. Its menu ends with each of the item's actions the row's menu
-did not place, so every action stays reachable. They all run in the UI host.
+did not place, so every action stays reachable. They all run in the app window.
 
 ## 2. Views are components
 
@@ -189,7 +189,7 @@ std.list(shown, tree: true, ungrouped: .some("No day")) { (t, at) ->
 }
 ```
 
-A key the platform has no words for — a case of an enum, a record reference — is grouped by the
+A key the platform has no words for — a case of an enum, a resource reference — is grouped by the
 text the caller reads off it (`group: x -> .some(x.status.label())`): the heading is the text the
 platform draws, so the runs are the runs of that text.
 
@@ -204,7 +204,7 @@ and the row stays a row of the list it is in. One row stands open at a time, Esc
 outside close it, and a row that leaves the list — a place switched, a filter, a sync — closes
 with it, so the open item is always one of the items on screen. A window re-renders its list as
 its place, its filter or its rows change, and the item stays open across that: `open:` carries
-the item standing open, `opened:` reports the item the person opened, `closed:` that it closed
+the item access open, `opened:` reports the item the person opened, `closed:` that it closed
 (pressing the open row again, Escape, a press beside it, or its item leaving the list), and the
 view keeps it as its own state — `std.list` does that for its person.
 
@@ -413,7 +413,7 @@ view usage_ring(used: Float, caption: Text) {
   x2, y2)`, `.path(points, smooth, closed, wash)` and `.text(x, y, text, role, ink, anchor,
   strong)`. Coordinates are fractions of the drawing's box, so a drawing scales with its layout
   and never names pixels. A field with a default (`round`, `fill`, `weight`, the path's flags, a
-  text's role and ink) may be left out, as a record's may.
+  text's role and ink) may be left out, as a resource's may.
 - **Shapes are computed like any list.** A function returns `List<ui.Shape>`, and `map` and
   `flat_map` give their lambda the item's place as a second name, so a bar stands where its
   reading does: `xs.map((x, i) -> ui.Shape.rect(x: i.to_float() * w, y: 1.0 - x, w: w, h: x))`.
@@ -486,7 +486,7 @@ at once).
 - Counts, filters and queries come from the index, never a loop in a view. The compiler warns
   when a view iterates a whole collection outside a virtual list.
 - Every app gets a performance matrix from its scenarios (open, scroll, keystroke, peer edit,
-  filter at 1k, 10k and 100k items), gated by counted work: boundaries rendered, items built,
+  filter at 1k, 10k and 100k items), guarded by counted work: boundaries rendered, items built,
   pages read, repainted area.
 - Widgets report exactly what changed and damage only their own area; the test harness handles
   changes exactly as the live host does.

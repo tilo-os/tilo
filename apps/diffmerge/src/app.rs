@@ -1570,8 +1570,8 @@ mod tests {
             app.harness().control_failures()
         );
 
-        let (services, recorder) = ui::host::HostServices::recording();
-        ui::host::scoped(&services, || {
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        ui::process::scoped(&services, || {
             app.harness().click_named("diffmerge.open-files").unwrap();
             app.settle();
         });
@@ -1723,12 +1723,12 @@ mod tests {
         });
         assert!(half.is_err(), "both paths or neither");
 
-        let (services, recorder) = ui::host::HostServices::recording();
+        let (services, recorder) = ui::process::ProcessServices::recording();
         let chosen_left = write_temp("left.txt", "alpha\nbeta\ngamma\n");
         let chosen_right = write_temp("right.txt", "alpha\nBETA\ngamma\ndelta\n");
         recorder.respond_to_pick(PortalOutcome::Opened(chosen_left.clone()));
         recorder.respond_to_pick(PortalOutcome::Opened(chosen_right.clone()));
-        ui::host::scoped(&services, || {
+        ui::process::scoped(&services, || {
             app.effect(&DiffmergeEffect::OpenFiles {
                 left: None,
                 right: None,
@@ -1748,7 +1748,7 @@ mod tests {
             ("left.txt", "right.txt")
         );
 
-        let cancelled = ui::host::scoped(&services, || {
+        let cancelled = ui::process::scoped(&services, || {
             app.effect(&DiffmergeEffect::OpenFiles {
                 left: None,
                 right: None,
@@ -1758,7 +1758,7 @@ mod tests {
         assert_eq!(app.state().comparison.unwrap().left_label.0, "left.txt");
 
         recorder.respond_to_pick(PortalOutcome::Failed("no portal".into()));
-        let failed = ui::host::scoped(&services, || {
+        let failed = ui::process::scoped(&services, || {
             app.effect(&DiffmergeEffect::OpenFiles {
                 left: None,
                 right: None,
@@ -1852,7 +1852,7 @@ mod tests {
         assert_eq!(
             state.resolutions(),
             vec![(hunk, HunkChoice::Theirs)],
-            "the key resolved the change under review, through the record"
+            "the key resolved the change under review, through the resource"
         );
         assert_ne!(state.merged, before, "the merged result composed it");
         let changes = state.merge_model().change_indices();

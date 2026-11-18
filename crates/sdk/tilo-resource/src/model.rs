@@ -1999,6 +1999,7 @@ macro_rules! json_scalar {
 // A capability names who it reaches, and who granted it: the two policy values
 // a stored record holds beside its scope.
 json_scalar!(tilo_action_policy::MemberId, Actor);
+json_scalar!(tilo_action_policy::Actor, Actor);
 json_scalar!(tilo_action_policy::Grantee, Text);
 
 /// An app's id is the string it is: written as one, read as one.

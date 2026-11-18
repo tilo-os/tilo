@@ -4,11 +4,11 @@
 use vello::kurbo::Point;
 use winit::keyboard::{Key, NamedKey};
 
-use super::{ListModel, VirtualList};
+use super::{ListKey, VirtualRows};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::time::Instant;
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn takes_row_press(&self, event: &winit::event::WindowEvent) -> bool {
         if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
             return false;
@@ -46,9 +46,9 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Show `source` being dragged to just before `before`, for a capture: the row lifts under
-    /// a pointer resting on the seam above `before` and the drop line shows. Nothing moves
+    /// a pointer resting on the boundary above `before` and the drop line shows. Nothing moves
     /// unless a real release follows. Whether both rows stand placed, so it showed.
-    pub fn stage_reorder(&mut self, source: &M::Key, before: &M::Key) -> bool {
+    pub fn stage_reorder(&mut self, source: &ListKey, before: &ListKey) -> bool {
         if self.rect.is_zero_area() {
             return false;
         }
@@ -66,7 +66,7 @@ impl<M: ListModel> VirtualList<M> {
 
     pub(super) fn update_reorder_pointer(&mut self, cursor: Point, now: Instant) {
         let candidate = self.reorder_candidate(cursor);
-        let model = &self.model;
+        let model = &*self.model;
         let validator = &mut self.reorder_validator;
         self.reorder
             .update(cursor, candidate, now, |source, target| {
@@ -117,7 +117,7 @@ impl<M: ListModel> VirtualList<M> {
                 DropPlacement::After
             },
         );
-        let model = &self.model;
+        let model = &*self.model;
         let accepted = self
             .reorder_validator
             .as_mut()
@@ -137,12 +137,12 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    pub(super) fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
+    pub(super) fn commit_reorder(&mut self, dropped: ReorderDrop<ListKey>) -> bool {
         let anchor = self.capture_anchor();
         let changed = self
             .reorder_commit
             .as_mut()
-            .is_some_and(|commit| commit(&mut self.model, dropped));
+            .is_some_and(|commit| commit(&mut *self.model, dropped));
         if changed {
             self.forget_tree();
             self.reconcile_model(anchor.as_ref());

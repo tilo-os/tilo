@@ -80,6 +80,14 @@ macro_rules! main {
         }
     };
     ($app:ty, init = $init:expr, engine = $engine:literal) => {
+        $crate::main!(
+            $app,
+            init = $init,
+            engine = $engine,
+            entry = tilo_app_engine_main
+        );
+    };
+    ($app:ty, init = $init:expr, engine = $engine:literal, entry = $entry:ident) => {
         // The app's own build (`tilo-app dev`, tests, the browser) runs it
         // here, as any app runs.
         #[cfg(not(feature = "runtime-engine"))]
@@ -92,12 +100,12 @@ macro_rules! main {
         #[cfg(feature = "runtime-engine")]
         #[link(name = $engine, kind = "dylib")]
         unsafe extern "C-unwind" {
-            safe fn tilo_app_engine_main();
+            safe fn $entry();
         }
 
         #[cfg(feature = "runtime-engine")]
         fn main() {
-            tilo_app_engine_main();
+            $entry();
         }
     };
 }
@@ -111,14 +119,21 @@ macro_rules! main {
 ///
 /// The app enables the engine form with a `runtime-engine` feature; without
 /// it the binary runs the app itself.
+///
+/// An engine that carries several apps names each one's entry
+/// (`entry = tilo_hello_main`), and each app names the same entry in its
+/// `ui::main!`.
 #[macro_export]
 macro_rules! engine_main {
     ($app:ty, init = $init:expr) => {
+        $crate::engine_main!($app, init = $init, entry = tilo_app_engine_main);
+    };
+    ($app:ty, init = $init:expr, entry = $entry:ident) => {
         /// Run the app: the whole of its binary, which names this library and
         /// calls this function by its unmangled name. A panic unwinds
         /// through it as through any Rust call.
         #[unsafe(no_mangle)]
-        pub extern "C-unwind" fn tilo_app_engine_main() {
+        pub extern "C-unwind" fn $entry() {
             ($init)();
             $crate::framework::run::<$app>();
         }
@@ -309,8 +324,8 @@ pub mod prelude {
     pub use crate::framework::{
         ActionControl, Actions, Bindable, Command, Dispatcher, Each, EditsText, EffectCx,
         EffectStatus, Effected, Fixture, Form, Jobs, LaunchInput, Live, LiveRow, PersonKind,
-        PersonResource, Query, ReadFailure, Records, ResourceApp, ResourceSelection,
-        ResourceSurface, RunMode, SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx,
+        PersonResource, Query, ReadFailure, ResourceApp, ResourceSelection, ResourceSurface,
+        Resources, RunMode, SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx,
         WorkspaceResource,
     };
     pub use tilo_resource::{
@@ -322,8 +337,8 @@ pub mod prelude {
 
     pub use ui_core::application::{
         ANY_MEDIA_TYPE, AppComponent, ApplicationCatalog, ApplicationDefinition,
-        ComponentBehaviour, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
-        OpenFile, PlaybackHandoff, PreparedComponentInputs, RestoreInput,
+        ComponentBehaviour, ComponentRunnerInputs, LaunchTarget, OpenFile, PlaybackHandoff,
+        PreparedComponentInputs, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::arriving::{Arrival, Arriving};

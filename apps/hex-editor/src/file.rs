@@ -1,7 +1,7 @@
 use ui::application::MAX_OPEN_FILE_BYTES;
 
 /// The file's bytes, refusing one larger than a host may hand the app at launch:
-/// the buffer is a record every member holds whole.
+/// the buffer is a resource every member holds whole.
 ///
 /// A file whose size already says it is too large is refused without a byte read.
 pub(crate) fn read(path: &std::path::Path) -> Result<Vec<u8>, String> {

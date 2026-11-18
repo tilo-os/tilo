@@ -4,7 +4,7 @@
  * rules every device takes, tilo-session-client's `way_in`); the page takes it
  * and says what happened. In the order the rules try them:
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
- *    once the home's entry let them in where it gates (`ownDesktop`);
+ *    once the home's entry let them in where it checks (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter, how many people it has), confirmed by the person, then
  *    redeemed. An invitation is the approval of whoever made it: the host
@@ -37,6 +37,7 @@
  * the page read the workspace's catalogue to resolve the target.
  */
 import {parsePairSecret} from './pairing.mjs';
+import {deviceRemoved} from './session-refusal.mjs';
 
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
 /** An invitation the site no longer keeps, or one that does not open: the
@@ -72,7 +73,7 @@ async function viaInvitation({origin, invitation, id = null, secrets, runtime, d
   if (!runtime.admittedAsAsked(id ?? undefined, offer.workspace ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
-  if (!await deps.confirmInvitation(offer)) throw new AdmissionError('declined', 'You did not join');
+  if (!await deps.confirmInvitation(offer, origin)) throw new AdmissionError('declined', 'You did not join');
   return ready(await deps.joinWorkspace({
     origin, invitation, admissionToken: secrets.token,
     onProgress: event => onProgress(event),
@@ -138,8 +139,8 @@ async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
  * host let in is sent to the home's entry instead, which says how to get
  * in; an admission to the workspace is not a desktop of their own. */
 async function ownDesktop({home, runtime, deps, onProgress}) {
-  const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
-  if (gated) {
+  const guarded = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
+  if (guarded) {
     const {peer} = await viaHost({workspace: home, runtime, deps, onProgress});
     await peer?.dispose?.();
     if (!await deps.ownDesktopOpen(home)) throw new AdmissionError('no-access', NO_ACCESS);
@@ -225,9 +226,13 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
           // once the peer is certified: that, too, is no access.
           return await ready(await deps.connectMember({origin, workspace: id, account}), onProgress);
         } catch (error) {
+          // This browser was removed from its person's devices. Its server said so at the
+          // handshake, before any workspace was named, so it tells nothing of this one:
+          // the person reads that, and no other way in is tried.
+          if (deviceRemoved(error)) throw error;
           // Other tabs of this browser hold every device key the account has here:
           // not the host's answer, and not no access.
-          const held = error?.name === 'CustodyError' && error.code === 'custody-busy';
+          const held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';
           // The host's reason could tell "no such workspace" from "not a member".
           if (!held) console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
           busy = held ? error : busy;
@@ -248,9 +253,11 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         try {
           peer = await deps.reconnect?.({origin, workspace: id, onProgress});
         } catch (error) {
+          // Removed from its person's devices: said, as above, and nothing else is tried.
+          if (deviceRemoved(error)) throw error;
           // Other tabs hold every device key this browser can get in with: not
           // the host's answer.
-          held = error?.name === 'CustodyError' && error.code === 'custody-busy';
+          held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';
           busy = held ? error : busy;
           // As below: the host's reason could tell a missing workspace from a private one.
           if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');

@@ -7,10 +7,10 @@
 //! and grants do; the record the channel carries ([`super::JoinedChannel::resource_route`])
 //! stays under the earlier id, as its reads, writes and keys do.
 
-use super::{CrdtRoute, HostServices, JoinedChannel, native_media::LocalAppConnection};
+use super::{CrdtRoute, JoinedChannel, ProcessServices, native_media::LocalAppConnection};
 
 /// The ids `app` had before, as the launcher's catalogue believes them.
-pub(super) fn earlier_ids_of(services: &HostServices, app: &str) -> Vec<String> {
+pub(super) fn earlier_ids_of(services: &ProcessServices, app: &str) -> Vec<String> {
     services
         .launcher
         .as_ref()

@@ -54,7 +54,7 @@ pub struct Config {
     pub platform_pcrs: Vec<u32>,
     pub pcr_public_key: String,
     /// Public half of the key that authorises floor advances. Defaults to the prediction
-    /// key; production custody should separate them, since a floor approval permanently
+    /// key; production ownership should separate them, since a floor approval permanently
     /// narrows what a machine boots.
     /// narrows what a machine will boot.
     pub floor_authority_key: String,

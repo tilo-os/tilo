@@ -98,7 +98,7 @@ impl LocalInputCapture {
     }
 
     #[cfg(test)]
-    pub(super) fn custody_size(&self) -> usize {
+    pub(super) fn ownership_size(&self) -> usize {
         self.pending
             .values()
             .map(|pending| retained_size(&pending.capture))
@@ -117,7 +117,7 @@ fn retained_size(capture: &crate::local_document_action::CapturedAction) -> usiz
         + capture.encoded.type_id.len()
         + capture.revision.len()
         + serde_json::to_vec(&capture.context).map_or(0, |bytes| bytes.len())
-        + serde_json::to_vec(&capture.custody).map_or(0, |bytes| bytes.len())
+        + serde_json::to_vec(&capture.ownership).map_or(0, |bytes| bytes.len())
         + capture.published.as_ref().map_or(0, |published| {
             published.resource.len()
                 + published.action.len()
@@ -257,7 +257,7 @@ impl App {
                         }
                     }
                     Ok(None) => {
-                        if let Some(witness) = self
+                        if let Some(observation) = self
                             .collaboration
                             .manager
                             .primary_route()
@@ -265,7 +265,7 @@ impl App {
                         {
                             aliases
                                 .entry(None)
-                                .or_insert_with(|| (witness.route().clone(), HashMap::new()))
+                                .or_insert_with(|| (observation.route().clone(), HashMap::new()))
                                 .1
                                 .insert(address.resource.clone(), address.resource.clone());
                         }
@@ -287,7 +287,7 @@ impl App {
                     .or_default()
                     .clone();
                 routes.push(InputRoute {
-                    custody: self.collaboration.manager.connection_snapshot(&route),
+                    ownership: self.collaboration.manager.connection_snapshot(&route),
                     owner,
                     queue,
                     revision: if pin.is_some() {
@@ -399,7 +399,7 @@ impl App {
                 {
                     failures.push(error);
                 }
-                // Transfer custody before enqueueing: send failure must not
+                // Transfer ownership before enqueueing: send failure must not
                 // discard an action already applied to the local document.
                 self.local_input_capture
                     .hold(route.clone(), capture, lease, now);
@@ -440,8 +440,8 @@ impl App {
             {
                 // Missing legacy provenance is private evidence only. Never
                 // relabel it with the actor of a new connection.
-                if pending.capture.custody.is_none()
-                    || pending.capture.custody
+                if pending.capture.ownership.is_none()
+                    || pending.capture.ownership
                         != self
                             .collaboration
                             .manager
@@ -556,7 +556,7 @@ impl App {
                 continue;
             };
             if let Err(error) = pending.capture.report_against(&revision) {
-                // It can never be reported: drop its custody.
+                // It can never be reported: drop its ownership.
                 self.local_input_capture.pending.remove(&request_id);
                 self.local_input_capture_failed(&error);
                 continue;
@@ -582,9 +582,9 @@ impl App {
         for (checkpoint, receipt) in entries {
             // Neither private receipts nor pending intents may enter the new
             // session until its authenticated destination and actor match.
-            // Missing legacy/offline custody stays on disk for explicit resolution.
-            if checkpoint.custody.is_none()
-                || checkpoint.custody != self.collaboration.manager.connection_snapshot(route)
+            // Missing legacy/offline ownership stays on disk for explicit resolution.
+            if checkpoint.ownership.is_none()
+                || checkpoint.ownership != self.collaboration.manager.connection_snapshot(route)
             {
                 return Err(
                     "private action recovery requires original authenticated connection".into(),
@@ -614,7 +614,7 @@ impl App {
                 .map_err(|error| error.to_string())?,
             };
             let capture = crate::local_document_action::CapturedAction {
-                custody: checkpoint.custody,
+                ownership: checkpoint.ownership,
                 invocation: report.invocation,
                 capture_id: report.capture_id,
                 revision: report.revision.clone(),
@@ -652,7 +652,7 @@ impl App {
                 .map(|pending| retained_size(&pending.capture))
                 .sum();
             if history.pending.len() >= 128 || bytes + retained_size(&capture) > 4 * 1024 * 1024 {
-                return Err("private action recovery exceeds pending custody budget".into());
+                return Err("private action recovery exceeds pending ownership budget".into());
             }
             let queue = history.queues.entry(route.clone()).or_default();
             let lease = queue.restore_lease(
@@ -856,7 +856,7 @@ impl App {
                 return Err(Uncertain("local action admission was not confirmed".into()));
             }
             // A known terminal refusal need not carry an admission. Release
-            // custody before the next input needs the frozen directory's pin.
+            // ownership before the next input needs the frozen directory's pin.
             if matches!(
                 update,
                 tilo_actions::InvocationUpdate::Failed { .. }
@@ -891,7 +891,7 @@ impl App {
                 self.retire_rejected_local_capture(request_id);
                 self.local_input_capture_failed(&error);
             }
-            // Unknown or malformed replies keep custody until a bounded,
+            // Unknown or malformed replies keep ownership until a bounded,
             // backoff-paced exact-UUID report reconciles their outcome.
             Err(Uncertain(error)) => {
                 tracing::debug!(%error, "a change is still on its way to the history");
@@ -921,7 +921,7 @@ mod tests {
             &self,
             route: &RouteSpec,
         ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
-            Some(custody(route))
+            Some(ownership(route))
         }
         fn is_connected(&self) -> bool {
             true
@@ -937,7 +937,7 @@ mod tests {
             Ok(())
         }
     }
-    fn custody(route: &RouteSpec) -> runtime_collab::committed_document::ConnectionSnapshot {
+    fn ownership(route: &RouteSpec) -> runtime_collab::committed_document::ConnectionSnapshot {
         runtime_collab::committed_document::ConnectionSnapshot {
             root: [1; 32],
             device: [2; 32],
@@ -949,7 +949,7 @@ mod tests {
     }
     fn input(queue: &Queue, route: &RouteSpec) -> crate::local_document_action::Scope {
         crate::local_document_action::enter_input(vec![InputRoute {
-            custody: Some(custody(route)),
+            ownership: Some(ownership(route)),
             owner: None,
             queue: queue.clone(),
             revision: "snapshot".into(),
@@ -1093,7 +1093,7 @@ mod tests {
             );
         }
 
-        phase legacy_capture_without_custody_is_not_relabelled_by_a_live_connection;
+        phase legacy_capture_without_ownership_is_not_relabelled_by_a_live_connection;
         {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));

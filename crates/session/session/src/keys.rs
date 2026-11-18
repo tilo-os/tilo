@@ -138,7 +138,7 @@ pub(crate) struct ControllerKeys {
     /// The controller the person last drove the desktop with, which a press of their own replaces:
     /// the guide then leads with the keyboard.
     pub(crate) last: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed are a controller's own, standing for its presses rather than
+    /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     pub(crate) own: Rc<Cell<bool>>,
 }
@@ -404,7 +404,7 @@ pub(crate) struct SessionKeys {
     /// The controller the person last drove the desktop with, which a press of their own replaces:
     /// the guide then leads with the keyboard.
     controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed are a controller's own, standing for its presses rather than
+    /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     controller_keys: Rc<Cell<bool>>,
     /// When each display's bar shows over the window covering it: Super asks for it, and the app
@@ -715,7 +715,7 @@ impl SessionKeys {
             return;
         }
         // A press of the person's own: the guide leads with the keyboard again. The controller's
-        // own presses reach here too, standing for its buttons, and say nothing about a keyboard.
+        // own presses reach here too, for its buttons, and say nothing about a keyboard.
         if !self.controller_keys.get() {
             self.controller.set(None);
         }
@@ -783,7 +783,7 @@ mod tests {
     use crate::platform::keys::{
         CALCULATOR, CAPTURE_STUDIO, KEY_XF86_RFKILL, MEDIA, NETWORK, NativeKeys, SLEEP, SOUND,
     };
-    use tilo_session_core::surface::{HostKey, SurfaceHost};
+    use tilo_session_core::surface::{ShellSurface, SurfaceKey};
     use xkeysym::key as keysyms;
 
     /// The session's keys as this device hands them its presses: over `session`, with `guide`, the
@@ -821,7 +821,7 @@ mod tests {
     impl NativeKeys {
         fn resolve(
             &self,
-            key: &HostKey,
+            key: &SurfaceKey,
             locked: bool,
             inhibited: bool,
         ) -> Option<(Invocation, KeyClaim)> {
@@ -829,8 +829,8 @@ mod tests {
         }
     }
 
-    fn key(keysym: u32, text: Option<char>, modifiers: KeyModifiers) -> HostKey {
-        HostKey {
+    fn key(keysym: u32, text: Option<char>, modifiers: KeyModifiers) -> SurfaceKey {
+        SurfaceKey {
             keycode: 0,
             at: std::time::Instant::now(),
             pressed: true,
@@ -889,8 +889,8 @@ mod tests {
     }
 
     /// A release of `keysym` with `modifiers` held.
-    fn released(keysym: u32, modifiers: KeyModifiers) -> HostKey {
-        HostKey {
+    fn released(keysym: u32, modifiers: KeyModifiers) -> SurfaceKey {
+        SurfaceKey {
             pressed: false,
             ..key(keysym, None, modifiers)
         }
@@ -1151,7 +1151,7 @@ mod tests {
 
             let (mut keys, walk) = with_walk();
             walk.walk(SwitcherScope::Workspace, 1);
-            let repeat = HostKey {
+            let repeat = SurfaceKey {
                 repeat: true,
                 ..key(keysyms::a, Some('a'), KeyModifiers::default())
             };

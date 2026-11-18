@@ -202,7 +202,7 @@ impl Link {
 }
 
 impl crate::widget::controls::ActionControls for Link {
-    crate::widget::controls::optional_emitter_controls!(custody);
+    crate::widget::controls::optional_emitter_controls!(ownership);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
@@ -500,8 +500,8 @@ mod tests {
             }
 
             fn click_opens_url_through_the_opener_with_the_right_url() {
-                let (services, recorder) = crate::host::HostServices::recording();
-                let _host = crate::host::enter(&services);
+                let (services, recorder) = crate::process::ProcessServices::recording();
+                let _host = crate::process::enter(&services);
                 let work = crate::background::Pumped::new();
                 let _work = work.background().enter();
                 let mut link = Link::new("https://example.com/page");
@@ -551,12 +551,12 @@ mod tests {
             }
 
             fn keyboard_activate_opens_url() {
-                let (services, recorder) = crate::host::HostServices::recording();
+                let (services, recorder) = crate::process::ProcessServices::recording();
                 let work = crate::background::Pumped::new();
                 let _work = work.background().enter();
                 let mut link = Link::new("https://w3.org");
                 let mut doc = AutoCommit::new();
-                let handled = crate::host::scoped(&services, || {
+                let handled = crate::process::scoped(&services, || {
                     link.perform_action(
                         &crate::a11y::Action::Activate,
                         &[],

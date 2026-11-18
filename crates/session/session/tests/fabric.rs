@@ -20,7 +20,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::clock::{
     ClockSyncState, fabric_monotonic_us, hold_fabric_clock_sync,
@@ -37,7 +37,7 @@ use tilo_user_identity::DeviceCapabilities;
 const PASS: Duration = Duration::from_millis(20);
 
 /// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
-/// plane as its certified self.
+/// app wire as its certified self.
 struct Device {
     client: Client,
     id: DeviceId,
@@ -70,7 +70,7 @@ fn permitted() -> Continuity {
 
 /// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
-    kept_device(person, seed, label, None, test_relay::loopback(), None)
+    kept_device(person, seed, label, None, test_server::loopback(), None)
 }
 
 /// Discovery on this machine's loopback instead of the network the session runs on: what a
@@ -88,11 +88,11 @@ fn kept_device(
     relays: tilo_endpoint_reachability::EndpointRelays,
     lan: Option<tilo_endpoint_reachability::Nearby>,
 ) -> Device {
-    let key = test_relay::signing_key(seed);
-    let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
+    let key = test_server::signing_key(seed);
+    let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
     let client = Client::start(
         Entry {
-            identity: Some(HostIdentity::kept(cert, key)),
+            identity: Some(DeviceIdentity::kept(cert, key)),
             own: OwnPresence::default(),
             hosts: Vec::new(),
             continuity: permitted(),
@@ -200,7 +200,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         1,
         "Laptop",
         Some(kept.path()),
-        test_relay::loopback(),
+        test_server::loopback(),
         None,
     );
     let id = laptop.id.clone();
@@ -225,7 +225,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         1,
         "Laptop",
         Some(kept.path()),
-        test_relay::loopback(),
+        test_server::loopback(),
         None,
     );
     laptop.client.connect(session.client.endpoint_addr());
@@ -241,7 +241,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         3,
         "Branch",
         Some(kept.path()),
-        test_relay::loopback(),
+        test_server::loopback(),
         None,
     );
     assert!(
@@ -250,7 +250,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
     );
 }
 
-/// Two of the person's devices on one local network, whose relay is unreachable and which ask no
+/// Two of the person's devices on one local network, whose server is unreachable and which ask no
 /// directory: each is told only the other's key, finds it on the network, and what is copied on one
 /// reaches the other. Each lists the other as nearby; a device of someone else's, heard on the same
 /// network, is neither dialled nor named. The three discover on this machine's loopback, so the
@@ -298,7 +298,7 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
         "the two devices found each other on the local network"
     );
     let now = tilo_clock::unix_now_ms();
-    let text = "copied with no relay";
+    let text = "copied with no server";
     let copy = ClipboardEntry::shareable(
         ClipboardPayload::Text(text.to_owned()),
         laptop.id.clone(),

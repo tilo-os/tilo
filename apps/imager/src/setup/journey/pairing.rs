@@ -1,4 +1,4 @@
-//! Existing-device pairing presentation; custody and helper execution stay in the backend.
+//! Existing-device pairing presentation; ownership and helper execution stay in the backend.
 use super::super::strings::t;
 use imager_backend::prepared_identity::PreparedIdentity;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ impl Pairing {
         if !imager_backend::pairing::Pairing::supported() {
             return Err("installer-pairing-helper-unavailable");
         }
-        let lease = tilo_relay_protocol::ProcessLease::capture(std::process::id())
+        let lease = tilo_server_protocol::ProcessLease::capture(std::process::id())
             .map_err(|_| "installer-pairing-failed")?;
         self.actor.start(label, lease.pid(), lease.start_time())
     }
@@ -113,7 +113,7 @@ impl Pairing {
 mod tests {
     use super::*;
     #[test]
-    fn forged_complete_status_never_becomes_enrolled_custody() {
+    fn forged_complete_status_never_becomes_enrolled_ownership() {
         let (_temporary, actor) = imager_backend::pairing::failed_fixture();
         let mut pairing = Pairing { actor };
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();

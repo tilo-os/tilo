@@ -1,10 +1,10 @@
-//! What Camera offers beyond its record's verbs: its effects, and the live
+//! What Camera offers beyond its resource's verbs: its effects, and the live
 //! rows the surface publishes.
 //!
 //! The camera's *pixels* are verified content-store bytes with an optional
 //! local file projection, and the *device I/O* around them (opening a lens,
 //! decoding a QR out of a frame, the live viewfinder) is not collaborative.
-//! The record ([`crate::record::Record`]) holds the portable metadata: the
+//! The resource ([`crate::camera::Camera`]) holds the portable metadata: the
 //! recent capture handoff and the scan history.
 //!
 //! Capturing a photo or video, scanning codes and documents, switching
@@ -18,8 +18,8 @@ use ui::tilo_actions::ActionSpec;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Effect};
 
+use crate::camera::SharedCapture;
 use crate::model::{CaptureKind, CaptureMode, Facing, Settings};
-use crate::record::SharedCapture;
 
 pub use ui::tilo_actions::remote::ApplicationLaunch;
 /// Device discovery is external and potentially hostile. Publishing a small,
@@ -55,7 +55,7 @@ pub enum CameraEffect {
     /// Use capture mode
     ///
     /// Switches the viewfinder between photo and video. Unavailable while a
-    /// video records.
+    /// video resources.
     #[effect(view)]
     UseMode {
         #[param("Capture mode", choices = ["photo", "video"])]
@@ -495,7 +495,7 @@ fn document_row(ctx: &CameraResourceCtx) -> LiveRow {
     )
 }
 
-/// What the surface publishes beside the record's verbs: the capture
+/// What the surface publishes beside the resource's verbs: the capture
 /// pipeline with its cameras, the code scanner and the document scanner,
 /// each with the effects it offers now, and the recent capture with its
 /// handoff to the app that owns it. Mode, lens and the capture preferences
@@ -512,19 +512,19 @@ pub(crate) fn live_rows(ctx: &CameraResourceCtx) -> Vec<LiveRow> {
 mod tests {
     use super::*;
     use crate::app::CameraApp;
-    use crate::record::Record;
+    use crate::camera::Camera;
     use ui::tilo_actions::{OperationKind, ResourceSpec};
 
-    fn seeded() -> Record {
-        let mut record = ui::tilo_resource::Replica::<Record>::new();
+    fn seeded() -> Camera {
+        let mut record = ui::tilo_resource::Replica::<Camera>::new();
         record
-            .apply(Record::REGISTER_CAPTURE.with(crate::resource::sample_capture()))
+            .apply(Camera::REGISTER_CAPTURE.with(crate::resource::sample_capture()))
             .unwrap();
         record.state().unwrap()
     }
 
-    fn tree(ctx: &CameraResourceCtx, state: &Record) -> Vec<ResourceSpec> {
-        let mut resources = vec![ui::tilo_resource::publish::<Record>(
+    fn tree(ctx: &CameraResourceCtx, state: &Camera) -> Vec<ResourceSpec> {
+        let mut resources = vec![ui::tilo_resource::publish::<Camera>(
             "camera", "Camera", state,
         )];
         resources.extend(live_rows(ctx).into_iter().map(LiveRow::into_resource));
@@ -532,7 +532,7 @@ mod tests {
     }
 
     fn provide_resources(ctx: &CameraResourceCtx) -> Vec<ResourceSpec> {
-        tree(ctx, &Record::default())
+        tree(ctx, &Camera::default())
     }
 
     fn find_resource(resource: &ResourceSpec, id: &str) -> Option<ResourceSpec> {
@@ -545,9 +545,9 @@ mod tests {
             .find_map(|child| find_resource(child, id))
     }
 
-    fn published(state: &Record) -> Vec<ResourceSpec> {
+    fn published(state: &Camera) -> Vec<ResourceSpec> {
         let mut app = CameraApp::sample();
-        app.present_record(state);
+        app.present_resource(state);
         tree(&app.camera_resource_ctx(), state)
     }
 

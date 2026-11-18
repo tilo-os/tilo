@@ -1,4 +1,4 @@
-//! The terminal's actions and effects: a session is a record, and what drives its process is an
+//! The terminal's actions and effects: a session is a resource, and what drives its process is an
 //! effect that changes no document.
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //! what each field held before and after as the field's type shows it (a title as text, a due
 //! day as a day), read from the change itself; consecutive changes by one person or one run
 //! fold into one entry; and Undo on an entry takes back exactly that step, or the whole run,
-//! through the record's history verb.
+//! through the document's history verb.
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{Verified, entry_of};
@@ -509,7 +509,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back;
-    // The changes one action made on one record are one entry of its history, and its Undo takes
+    // The changes one action made on one document are one entry of its history, and its Undo takes
     // them all back together.
     {
         let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PAIRED, "")]);
@@ -531,14 +531,14 @@ tilo_test_env::scenario! {
         );
 
         // History lists the action once: one entry saying how many changes it made, beside the
-        // record's own first entry.
+        // document's own first entry.
         let mut window = ada.host.open_resource(&tally, None).unwrap();
         let section = history(&mut window);
         let said = says(&section);
         assert_eq!(
             entries(&section).len(),
             2,
-            "the record's creation, then the action: {said:#?}"
+            "the document's creation, then the action: {said:#?}"
         );
         assert_eq!(
             said.iter()
@@ -1195,8 +1195,8 @@ impl LongPost {
     }
 }
 
-/// What `from`'s actions kept as content reaches `to`'s record store, as the record's route
-/// brings it: sealed, by the reference the record names, verified against it.
+/// What `from`'s actions kept as content reaches `to`'s document store, as the document's route
+/// brings it: sealed, by the reference the document names, verified against it.
 fn bring_content(from: &Replica, to: &ui::content::ContentStore) {
     for envelope in &from.log {
         for (reference, bytes) in envelope.recorded_content().unwrap_or_default() {
@@ -1214,7 +1214,7 @@ fn pasted_body() -> Vec<String> {
 }
 
 /// The work reading one entry's body diff does in a post of `paragraphs` paragraphs: the
-/// store's reads of the record and the document's operations Automerge searches, counted.
+/// store's reads of the document and the document's operations Automerge searches, counted.
 ///
 /// The body is written before any window shows it: a window draws the whole body, which is
 /// the post's length, and that is not the entry's read.
@@ -1299,7 +1299,7 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
 #[test]
 fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_their_words() {
     // A note past a hundred thousand characters, whose editor hands over the whole body on each
-    // keystroke: what the keystroke records is the paragraph it typed into, never the note.
+    // keystroke: what the keystroke documents is the paragraph it typed into, never the note.
     // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
     let _window = crate::window::store();
     let mut post = LongPost::new(1_571);
@@ -1420,16 +1420,16 @@ fn words_pasted(post: &LongPost) -> Vec<String> {
 #[test]
 fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
     // A post of three paragraphs, which Ada pastes a body past a mebibyte over: one edit, too
-    // large to record inline, whose change keeps the body as content in the record's store.
+    // large to record inline, whose change keeps the body as content in the document's store.
     let ada_window = crate::window::store();
     let mut post = LongPost::new(3);
     let pasted = pasted_body();
     let paste = post.write(false, &pasted);
     pasted_parts(&post, paste, &ada_window);
 
-    // The record returns to Ada, through Bo's replica, which now holds the paste too. She then
-    // types into the paragraph she pasted: the store knows the record already holds her paste,
-    // so it never writes the pasted body over the record's, and her word reads back at once.
+    // The document returns to Ada, through Bo's replica, which now holds the paste too. She then
+    // types into the paragraph she pasted: the store knows the document already holds her paste,
+    // so it never writes the pasted body over the document's, and her word reads back at once.
     post.ada.sync_with(&mut post.bo);
     let mut lines = post.reads(&post.ada);
     lines[0] = lines[0].replacen("Pasted", "Typed", 1);
@@ -1455,9 +1455,9 @@ fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
         inserted.len()
     );
 
-    // Bo holds the change, not the bytes it kept: its action reads the record's content store,
+    // Bo holds the change, not the bytes it kept: its action reads the document's content store,
     // on whatever thread reads the change — no window of his lent one — and what it kept reaches
-    // that store on the record's route.
+    // that store on the document's route.
     let bo_store = ui::content::ContentStore::memory().sealing();
     assert!(
         matches!(
@@ -1504,7 +1504,7 @@ fn reading_one_entrys_body_diff_stays_within_a_fixed_budget_however_long_the_not
     // objects: what reading the entry costs is the paragraph it changed, never the note.
     assert_eq!(
         large_reads, small_reads,
-        "the store reads nothing of the record either way: {small_reads} reads in {small_chars} \
+        "the store reads nothing of the document either way: {small_reads} reads in {small_chars} \
          characters, {large_reads} in {large_chars}"
     );
     assert!(
@@ -1515,7 +1515,7 @@ fn reading_one_entrys_body_diff_stays_within_a_fixed_budget_however_long_the_not
 }
 
 /// The workspace calls Ada "Ada Lovelace"; an agent has no name but its kind. The history row shows
-/// the name the avatar beside it shows, never the id the record holds, and the agent reads as
+/// the name the avatar beside it shows, never the id the document holds, and the agent reads as
 /// its kind and that it is one.
 struct Named;
 
@@ -1571,7 +1571,7 @@ fn labels(section: &UiNode) -> Vec<String> {
 }
 
 #[test]
-fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_and_kind() {
+fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name() {
     let (mut ada, notes, _) = two_people();
     ada.host.runtime().set_name_host(Named);
     let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
@@ -1593,11 +1593,11 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     ada.commit_in_run(&helper(), RUN, "Tidy the notes");
     let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
     let section = history(&mut editor);
-    // The run's rename, newest, then Ada's own: the agent reads as its name plus that it is
-    // software, the person looking as the platform's word for them, each over what it did.
+    // The agent's rename, newest, then Ada's own: the agent reads as its own name, the person
+    // looking as the platform's word for them, each over what it did.
     assert_eq!(
         labels(&section),
-        ["Helper (agent)", "You", "changed title"],
+        ["Helper", "You", "changed title"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(
@@ -1872,7 +1872,7 @@ fn an_action_that_calls_two_of_its_apps_actions_is_one_step() {
     );
 }
 
-/// An app whose action calls two of its own actions, each changing the one record: what makes
+/// An app whose action calls two of its own actions, each changing the one document: what makes
 /// the action's changes two, of one person, on one resource.
 const PAIRED: &str = r#"app test.paired "Paired"
 

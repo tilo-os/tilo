@@ -188,7 +188,7 @@ enum RetiredMissingApp {
     Unavailable,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tab {
     pub id: TabId,
     /// What the tab shows: the name a person gave it, else what its window
@@ -201,8 +201,8 @@ pub struct Tab {
     /// Written only by [`Tab::set_window_title`] and [`Tab::rename`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_title: Option<String>,
-    /// The view the tab shows its record through; empty for the app's own
-    /// default view.
+    /// The view the tab shows its record through, or the item its window
+    /// opened on, on every device; empty for the app's own default view.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub view: String,
     /// Whether the person pinned the tab: an agent arranges a pinned tab
@@ -318,7 +318,7 @@ impl Tab {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub id: GroupId,
     pub tabs: Vec<Tab>,
@@ -372,7 +372,7 @@ impl WindowGroup {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Strip {
     pub id: StripId,
     pub name: String,
@@ -434,7 +434,7 @@ pub const WINDOW_MIN_HEIGHT: u32 = 120;
 
 /// Where a window group stands on the canvas, in canvas pixels: its top-left
 /// corner and its size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct CanvasPlace {
     pub x: i32,
     pub y: i32,
@@ -445,6 +445,30 @@ pub struct CanvasPlace {
     /// sized — a rectangle they dragged, an edge they pulled — keeps its height exactly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hugs: bool,
+    /// How tall a hugging place is drawn now, in canvas pixels, as the person's own canvas
+    /// reports it: the height what it shows comes to, up to [`Self::height`]. View state, never
+    /// an arranging step and never written: it names no size the person gave, the canvas that
+    /// draws the place reports it again, and a place that stops hugging drops it.
+    #[serde(skip)]
+    pub drawn_height: Option<u32>,
+}
+
+impl PartialEq for CanvasPlace {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x
+            && self.y == other.y
+            && self.width == other.width
+            && self.height == other.height
+            && self.hugs == other.hugs
+    }
+}
+
+impl Eq for CanvasPlace {}
+
+impl std::hash::Hash for CanvasPlace {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.x, self.y, self.width, self.height, self.hugs).hash(state);
+    }
 }
 
 impl CanvasPlace {
@@ -456,6 +480,7 @@ impl CanvasPlace {
             width,
             height,
             hugs: false,
+            drawn_height: None,
         }
     }
 
@@ -464,6 +489,33 @@ impl CanvasPlace {
     pub fn hugging(mut self) -> Self {
         self.hugs = true;
         self
+    }
+
+    /// The area of the canvas this place takes now: its full height, or a hugging place's height
+    /// as it is drawn when its canvas has reported one. Every free-area check stands a place
+    /// against this, so what the person sees free is what is free (`canvas.md` §1, §3, §7).
+    #[must_use]
+    pub fn occupied(&self) -> Self {
+        let mut occupied = Self {
+            drawn_height: None,
+            ..*self
+        };
+        if let Some(drawn) = self.drawn_height.filter(|_| self.hugs) {
+            occupied.height = drawn.min(self.height).max(1);
+        }
+        occupied
+    }
+
+    /// Report how tall this hugging place is drawn now, in canvas pixels: what its canvas sees of
+    /// what it shows, up to its height. A place that does not hug keeps no drawn height. Whether
+    /// anything changed.
+    pub fn drawn(&mut self, height: u32) -> bool {
+        let height = self.hugs.then(|| height.clamp(1, self.height));
+        if self.drawn_height == height {
+            return false;
+        }
+        self.drawn_height = height;
+        true
     }
 
     /// This place as a window's: no smaller than [`WINDOW_MIN_WIDTH`] ×
@@ -509,10 +561,13 @@ impl CanvasPlace {
 
     /// Whether the two stand too close on a canvas: closer than [`CANVAS_GAP`] side by side, or
     /// than [`CANVAS_ROW_GAP`] one over the other, so the caption over the lower one is never
-    /// under the upper one.
+    /// under the upper one. A hugging place takes the height it is drawn at, not the most it
+    /// could grow to ([`Self::occupied`]): this is the one place the canvas's crowding rule
+    /// reads it.
     #[must_use]
     pub fn crowds_on_canvas(&self, other: &Self) -> bool {
-        self.crowds_apart(other, CANVAS_GAP, CANVAS_ROW_GAP)
+        self.occupied()
+            .crowds_apart(&other.occupied(), CANVAS_GAP, CANVAS_ROW_GAP)
     }
 
     /// Whether this place stands wholly inside `area`.
@@ -852,9 +907,20 @@ impl WorkspaceLayout {
         }
         place.width = width;
         place.height = height;
-        // Sized by hand, it keeps the size it was given.
+        // Sized by hand, it keeps the size it was given: it no longer hugs, and how tall it was
+        // drawn is not its size.
         place.hugs = false;
+        place.drawn_height = None;
         true
+    }
+
+    /// Report how tall the hugging place `group` is drawn now, `height` canvas pixels: what its
+    /// canvas sees of what it shows, up to the place's height. A place that does not hug, and one
+    /// the layout does not hold, keeps nothing. Whether the layout changed.
+    pub fn set_drawn_height(&mut self, group: GroupId, height: u32) -> bool {
+        self.places
+            .get_mut(&group)
+            .is_some_and(|place| place.drawn(height))
     }
 
     /// Float `group` where `float` says (`None` snaps it back into the grid).
@@ -885,7 +951,7 @@ impl WorkspaceLayout {
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
-            .map(|(_, place)| *place)
+            .map(|(_, place)| place.occupied())
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let wanted = CanvasPlace::new(anchor.0, anchor.1, width, height);
@@ -1007,7 +1073,7 @@ impl WorkspaceLayout {
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
-            .map(|(_, place)| *place)
+            .map(|(_, place)| place.occupied())
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let gap = i64::from(CANVAS_GAP);
@@ -1068,7 +1134,8 @@ impl WorkspaceLayout {
     /// turn's own line first: the camera pans to show both. Failing that, the largest part of the
     /// window that is free beside the turn, never under a window's least size, the spot most
     /// inside what the person sees first: `seen` (the part of the canvas they saw when they
-    /// asked), panned the least that shows the turn whole, since the camera keeps the turn. Nothing
+    /// asked), panned the least that shows the turn whole, since the camera keeps the turn. Before
+    /// all of these, a spot on any side that stands whole in that view, so nothing pans. Nothing
     /// placed moves, and every spot is clear of everything but `except`
     /// ([`CanvasPlace::crowds_on_canvas`]). `None` when no spot adjacent to the turn is free: the
     /// caller stands it further along ([`Self::free_place_next_to`]).
@@ -1084,11 +1151,28 @@ impl WorkspaceLayout {
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
-            .map(|(_, place)| *place)
+            .map(|(_, place)| place.occupied())
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let beside = Beside::new(subject, seen);
-        // On the screen with the turn first, shrunk to fit; then as large as is free beside it.
+        // In what the person sees first, on any side, shrunk to fit: nothing pans, and what they
+        // were looking at stays in view.
+        for side in [Side::Trailing, Side::Below, Side::Leading, Side::Above] {
+            let Some(asked) = beside.size(side, (width, height), true) else {
+                continue;
+            };
+            for size in shrinking(asked) {
+                let best = beside
+                    .spots(side, size, &others)
+                    .filter(|place| free(place) && beside.in_view(place))
+                    .max_by_key(|place| beside.rank(side, place, true));
+                if best.is_some() {
+                    return best;
+                }
+            }
+        }
+        // Then on the screen with the turn, shrunk to fit, the camera panning to show both; then
+        // as large as is free beside it.
         for on_screen in [true, false] {
             for side in [Side::Trailing, Side::Below, Side::Leading, Side::Above] {
                 let Some(asked) = beside.size(side, (width, height), on_screen) else {
@@ -1108,7 +1192,7 @@ impl WorkspaceLayout {
         None
     }
 
-    /// The groups standing within `radius` canvas pixels of `point`,
+    /// The groups within `radius` canvas pixels of `point`,
     /// nearest first.
     #[must_use]
     pub fn near(&self, point: (i32, i32), radius: u32) -> Vec<GroupId> {
@@ -1323,7 +1407,7 @@ impl Beside {
         })
     }
 
-    /// The spots of `width` × `height` adjacent to the turn on `side`: standing against that edge
+    /// The spots of `width` × `height` adjacent to the turn on `side`: against that edge
     /// and sharing some of its length, lined up with the turn's ends, the view's edges and each
     /// place's edges, where the free spots nearest each lie.
     fn spots<'a>(
@@ -1390,6 +1474,18 @@ impl Beside {
                 let (x, y) = if across { (at, slide) } else { (slide, at) };
                 CanvasPlace::new(clamp_point(x), clamp_point(y), width, height)
             })
+    }
+
+    /// Whether `place` stands whole in the view the turn is seen in, clear of its edges: shown
+    /// there, nothing pans.
+    fn in_view(&self, place: &CanvasPlace) -> bool {
+        let gap = i64::from(CANVAS_GAP);
+        let (x0, y0, x1, y1) = on_screen(place);
+        let (vx0, vy0, vx1, vy1) = self.view;
+        x0 >= vx0.saturating_add(gap)
+            && y0 >= vy0.saturating_add(gap)
+            && x1 <= vx1.saturating_sub(gap)
+            && y1 <= vy1.saturating_sub(gap)
     }
 
     /// Whether `place` and the turn stand on the screen together.
@@ -1576,6 +1672,75 @@ mod workspace_layout_tests {
         }
     }
 
+    /// A hugging place takes on the canvas the height it is drawn at once its canvas reports one,
+    /// and its full height until then: the free area under it is an area a person can use, though
+    /// the place could grow into it, and a place that does not hug takes its full height whatever
+    /// a drawing says (canvas.md §1, §7). A place sized by hand stops hugging and drops the height
+    /// it was drawn at.
+    #[test]
+    fn a_hugging_place_leaves_the_area_below_it_free_where_it_is_drawn() {
+        // A hugging place: 720 × 520 is the most it takes, drawn 140 tall. A place dragged just
+        // under where it is drawn, at the row gap's clearance, is free there.
+        let hugging = CanvasPlace::new(0, 0, 720, 520).hugging();
+        let mut drawn = hugging;
+        assert!(drawn.drawn(140), "a hugging place keeps its drawn height");
+        assert_eq!(
+            drawn.occupied().height,
+            140,
+            "it takes what it is drawn at on the canvas"
+        );
+        // A place dragged to just under what is drawn, at the row gap's clearance.
+        let below_drawn = i32::try_from(140 + CANVAS_ROW_GAP).expect("a canvas row");
+        let under = CanvasPlace::new(0, below_drawn + 1, 400, 260);
+        assert!(
+            !under.crowds_on_canvas(&drawn),
+            "the area below the height it is drawn at is free: {under:?} vs {drawn:?}"
+        );
+        assert!(
+            under.crowds_on_canvas(&hugging),
+            "without a drawn height, the place takes its full height: {hugging:?}"
+        );
+        let layout = canvas(&[(1, drawn)]);
+        let placed = layout.free_place_near((0, below_drawn), 400, 260, None);
+        assert_eq!(
+            (placed.x, placed.y),
+            (0, below_drawn),
+            "a place put under it stands where it was asked, clear of what is drawn"
+        );
+        // The area to its trailing side is the line it is drawn to, not its tallest: a place put
+        // beside it at its line stands there.
+        let beside = canvas(&[(1, drawn)]).free_place_next_to(drawn, 300, 200, None);
+        let trailing = i32::try_from(720 + CANVAS_GAP).expect("a canvas column");
+        assert_eq!(
+            (beside.x, beside.y),
+            (trailing, 0),
+            "beside the place at its line, clear of what is drawn"
+        );
+        assert!(!beside.crowds_on_canvas(&drawn));
+        // A place that does not hug keeps its full height, whatever a drawing reported.
+        let mut sized = CanvasPlace::new(0, 0, 720, 520);
+        assert!(!sized.drawn(140), "a place that does not hug keeps nothing");
+        assert_eq!(sized.drawn_height, None);
+        let below = CanvasPlace::new(0, 300, 400, 260);
+        assert!(
+            below.crowds_on_canvas(&sized),
+            "a place its person sized takes its full height: {sized:?}"
+        );
+        // Sized by hand, a hugging place stops hugging and keeps the size it was given.
+        let mut by_hand = canvas(&[(1, hugging)]);
+        let group: GroupId = 1;
+        by_hand.set_drawn_height(group, 140);
+        assert_eq!(
+            by_hand.place_of(group).and_then(|p| p.drawn_height),
+            Some(140)
+        );
+        assert!(by_hand.set_size(group, 700, 500));
+        let resized = by_hand.place_of(group).expect("its place");
+        assert!(!resized.hugs, "sized by hand it no longer hugs");
+        assert_eq!(resized.drawn_height, None, "and the drawing is dropped");
+        assert_eq!((resized.width, resized.height), (700, 500));
+    }
+
     /// A place under another keeps its caption's band clear of the one above (canvas.md §7,
     /// "Captions never hidden"): one over the other they stand the band and the gap apart, side by
     /// side the gap.
@@ -1612,33 +1777,45 @@ mod workspace_layout_tests {
     }
 
     /// Beside a turn, an answer's view stands in the free spot adjacent to it, trailing side
-    /// first, at the turn's line: in view when the turn is, and past the edge of what the person
-    /// sees when that is where the free spot beside the turn is (the camera pans to both), made
-    /// smaller so the turn and it stand on the screen together. Nothing adjacent free: nothing.
+    /// first, at the turn's line, in what the person sees when a side has a free spot there: a turn near
+    /// the trailing edge has it stand on another side in view rather than past the edge. Only
+    /// when no side has a free spot in view does it stand past the edge, made smaller so the turn and it
+    /// stand on the screen together (the camera pans to both). Nothing adjacent free: nothing.
     #[test]
     fn an_answer_stands_adjacent_to_its_turn() {
         let seen = CanvasPlace::new(0, 0, 1280, 740);
         let turn = CanvasPlace::new(100, 100, 520, 480);
         let place = canvas(&[(1, turn)])
             .free_place_within(turn, (600, 400), seen, None)
-            .expect("room beside the turn");
+            .expect("a spot beside the turn");
         assert_eq!(
             (place.x, place.y, place.width, place.height),
             (644, 100, 600, 400),
             "the trailing side, at its line, at its size"
         );
         assert!(place.inside(&seen) && !place.crowds_on_canvas(&turn));
-        // The turn near the trailing edge: the answer still stands on its trailing side, past
-        // what the person saw, and the two fit on one screen for the camera to show.
+        // The turn near the trailing edge, with a free spot on its leading side: the answer stands
+        // there, in view, rather than past the edge with the camera panning away from what the
+        // person was looking at.
         let right = CanvasPlace::new(700, 100, 520, 480);
         let place = canvas(&[(1, right)])
             .free_place_within(right, (600, 400), seen, None)
-            .expect("room on the trailing side");
-        assert_eq!((place.x, place.y), (1244, 100), "trailing, at its line");
+            .expect("room beside the turn");
+        assert!(place.inside(&seen), "in view: {place:?}");
         assert!(
-            on_one_screen(right, place, seen),
-            "{place:?} with {right:?}"
+            place.right() <= i64::from(right.x),
+            "on the leading side: {place:?}"
         );
+        assert!(!place.crowds_on_canvas(&right));
+        // No side with a free spot in view (the turn fills the view's height and the leading side is
+        // taken): the trailing side past the edge, the two on one screen for the camera to show.
+        let tall = CanvasPlace::new(700, 30, 520, 680);
+        let taken = CanvasPlace::new(0, 0, 676, 740);
+        let place = canvas(&[(1, tall), (2, taken)])
+            .free_place_within(tall, (600, 400), seen, None)
+            .expect("room on the trailing side");
+        assert_eq!((place.x, place.y), (1244, 30), "trailing, at its line");
+        assert!(on_one_screen(tall, place, seen), "{place:?} with {tall:?}");
         // A turn too wide for the whole size beside it on one screen: a smaller part of it.
         let wide = CanvasPlace::new(0, 60, 700, 480);
         let place = canvas(&[(1, wide)])
@@ -1660,9 +1837,8 @@ mod workspace_layout_tests {
     }
 
     /// A turn asked by a click near the bottom of what the person sees, after another turn and
-    /// its answer took the top of the view: the answer stands on the turn's trailing side at
-    /// its line, never in the far corner of the view by the first turn, and the turn and it fit
-    /// on one screen for the camera to pan to.
+    /// its answer took the top of the view: the answer stands beside the turn at its line, never
+    /// in the far corner of the view by the first turn, and the turn and it fit on one screen.
     #[test]
     fn an_answer_to_a_turn_near_the_bottom_of_the_view_stands_beside_it() {
         let seen = CanvasPlace::new(0, 0, 1280, 760);
@@ -1672,13 +1848,39 @@ mod workspace_layout_tests {
         let place = canvas(&[(1, first), (2, notes), (3, turn)])
             .free_place_within(turn, (720, 520), seen, None)
             .expect("room beside the turn");
-        assert_eq!(
-            (i64::from(place.x), place.y),
-            (turn.right().saturating_add(i64::from(CANVAS_GAP)), turn.y),
-            "the trailing side, at its line: {place:?}"
+        let gap = i64::from(CANVAS_GAP);
+        let trailing = i64::from(place.x) == turn.right().saturating_add(gap);
+        let leading = place.right().saturating_add(gap) == i64::from(turn.x);
+        assert!(
+            (trailing || leading) && place.y == turn.y,
+            "beside the turn, at its line: {place:?}"
         );
         assert!(on_one_screen(turn, place, seen), "{place:?} with {turn:?}");
         for other in [first, notes, turn] {
+            assert!(
+                !place.crowds_on_canvas(&other),
+                "{place:?} clear of {other:?}"
+            );
+        }
+    }
+
+    /// "Show me my mails" asked at the top right of the view, with the screen below empty: the
+    /// inbox stands below the turn, in view, never past the trailing edge with the camera
+    /// panning the earlier turns off the screen.
+    #[test]
+    fn an_answer_takes_a_spot_in_view_before_one_past_the_edge() {
+        let seen = CanvasPlace::new(0, 0, 1440, 860);
+        let earlier = CanvasPlace::new(208, 173, 362, 100);
+        let turn = CanvasPlace::new(625, 60, 520, 140);
+        let place = canvas(&[(1, earlier), (2, turn)])
+            .free_place_within(turn, (720, 520), seen, None)
+            .expect("a spot beside the turn");
+        assert!(place.inside(&seen), "in view: {place:?}");
+        assert!(
+            i64::from(place.y) >= turn.bottom(),
+            "below the turn: {place:?}"
+        );
+        for other in [earlier, turn] {
             assert!(
                 !place.crowds_on_canvas(&other),
                 "{place:?} clear of {other:?}"
@@ -1722,7 +1924,7 @@ mod workspace_layout_tests {
         );
     }
 
-    /// The places standing in `layout`, for saying one crowds none.
+    /// The places in `layout`, for saying one crowds none.
     fn opened_places(layout: &WorkspaceLayout) -> Vec<CanvasPlace> {
         layout.places.values().copied().collect()
     }

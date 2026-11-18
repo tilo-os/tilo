@@ -40,7 +40,9 @@ impl DesktopChrome {
             }
             // The window the person closed last comes back where it was; the shell answers the chord
             // either way, as the shell it replaces did.
-            ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
+            ShortcutAction::ReopenClosedTab => {
+                self.dispatch(ChromeEffect::ReopenClosed { app: None });
+            }
             ShortcutAction::ToggleMaximize => {
                 self.choose_row(&[window_menu::MAXIMIZE, window_menu::RESTORE]);
             }
@@ -256,7 +258,7 @@ impl DesktopChrome {
         );
     }
 
-    /// Put the tab in front into the window `direction` places away in its strip, its tab standing
+    /// Put the tab in front into the window `direction` places away in its strip, its tab
     /// last there.
     fn attach_focused_tab(&self, direction: isize) {
         let Some(route) = self.focused_route() else {

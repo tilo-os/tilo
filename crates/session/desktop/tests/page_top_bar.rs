@@ -17,7 +17,7 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{ChromeIntent, OwnChip};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
@@ -45,8 +45,8 @@ impl ChromeSource for Page {
         PERSON
     }
 
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
-        answer(&Standing {
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R {
+        answer(&Requester {
             person: PERSON,
             role: None,
             members: None,

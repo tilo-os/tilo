@@ -1,6 +1,6 @@
 //! Per-user hosted model gateway.
 //!
-//! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
+//! This is a narrow OpenAI-compatible/Anthropic server for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
 #[cfg(feature = "local-models")]
@@ -33,7 +33,9 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{read_frame, write_frame};
-use account_custody::{Capability, Custodian, CustodyError, GrantState, OAuthIssuer, OAuthUse};
+use account_credentials::{
+    Capability, CredentialError, CredentialStore, GrantState, OAuthIssuer, OAuthUse,
+};
 use accounts::{AccountId, CredentialRef, ServiceAuthorization, ServiceCredentials};
 use agent_provider_config::{
     EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, ReasoningParam,
@@ -73,7 +75,7 @@ enum Action {
     /// Give this configuration's person a provider, as Settings' "Add
     /// provider", "Use model", "Set default provider" and "Save API key" do:
     /// the profile into their provider settings, the key (read from stdin,
-    /// never an argument) into the gateway's own credential custody. For a
+    /// never an argument) into the gateway's own credential storage. For a
     /// scripted session; `provision::Record` on stdin with `--record`.
     #[command(hide = true)]
     ProvisionProvider {
@@ -1372,8 +1374,8 @@ fn sign_in_issuer(profile: &ProviderProfile) -> Result<SignInIssuer, String> {
 }
 
 /// How long before a minted access token's expiry it stops being reused, so
-/// a kept token is never one custody already counts as due for refresh
-/// (custody refreshes within a minute of expiry) and a request still
+/// a kept token is never one ownership already counts as due for refresh
+/// (ownership refreshes within a minute of expiry) and a request still
 /// reaches the provider while it is valid.
 const TOKEN_MARGIN: u64 = 90;
 
@@ -1395,12 +1397,12 @@ fn grant_id(profile_id: &str) -> Result<AccountId, String> {
 
 fn sign_in_state(profile: &ProviderProfile) -> Result<GrantState, String> {
     sign_in_issuer(profile)?;
-    Custodian::live()
+    CredentialStore::live()
         .oauth_grant_state(&grant_id(&profile.id)?)
         .map_err(|error| error.to_string())
 }
 
-/// A current access token for `profile`'s sign-in, refreshed by custody
+/// A current access token for `profile`'s sign-in, refreshed by ownership
 /// when due (the refresh token never leaves it), and the instant after
 /// which it must not be reused. For a Copilot subscription the refresh is
 /// the trade of its GitHub token for a Copilot token.
@@ -1414,11 +1416,11 @@ fn sign_in_token(
     // A refresh reseals the grant: one read-modify-write of the vault, like
     // a key set through this gateway.
     let _serial = management_write()?;
-    let (token, expires) = Custodian::live()
+    let (token, expires) = CredentialStore::live()
         .oauth_access_token_with_expiry(&grant, models_use(issuer), false)
         .map_err(|error| match error {
-            CustodyError::NeedsAuthentication => SIGN_IN_AGAIN.to_string(),
-            CustodyError::Offline => format!(
+            CredentialError::NeedsAuthentication => SIGN_IN_AGAIN.to_string(),
+            CredentialError::Offline => format!(
                 "{} could not be reached to renew the sign-in",
                 issuer.label()
             ),
@@ -3070,7 +3072,7 @@ mod tests {
                 ErrorKind::Authentication
             );
 
-            // Editing the profile must not give its new origin custody of the old key.
+            // Editing the profile must not give its new origin ownership of the old key.
             loaded.endpoint = "https://edited.example/v1".into();
             assert_eq!(
                 credential_status_in(&store, &loaded).unwrap(),

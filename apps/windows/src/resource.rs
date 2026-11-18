@@ -29,7 +29,7 @@ impl Windows {
 }
 
 impl Windows {
-    /// What the record holds: the launch routes the people sharing the manager agreed on,
+    /// What the resource holds: the launch routes the people sharing the manager agreed on,
     /// by application.
     pub fn read_document(
         &self,

@@ -208,16 +208,16 @@ fn a_caller_that_is_not_this_bot_is_refused() {
     let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
         block(api.invoke(&person, post())),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     ));
     let other = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
     assert!(matches!(
         block(api.invoke(&other, post())),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     ));
     assert!(matches!(
         block(api.query(&other, CatalogueQuery::default())),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     ));
 }
 
@@ -251,7 +251,7 @@ fn a_record_the_bot_does_not_hold_is_unknown() {
     let api = api(FakeMember::default(), vec![]);
     assert!(matches!(
         block(api.invoke(&bot(), request("so.tilo.chat", "other", "post"))),
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     ));
 }
 
@@ -310,7 +310,7 @@ fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
     );
     assert!(matches!(
         block(api.invoke(&bot(), send())),
-        Err(ActionHostError::Unavailable { .. })
+        Err(ActionCallError::Unavailable { .. })
     ));
     assert!(outbox.lock().unwrap()[0].settled.is_none());
     let refused = block(api.invoke(&bot(), send())).unwrap();
@@ -343,7 +343,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
     );
     assert!(matches!(
         block(api.invoke(&bot(), send())),
-        Err(ActionHostError::Unavailable { .. })
+        Err(ActionCallError::Unavailable { .. })
     ));
     // A send names no item: the entry is found by what its change queued.
     history.lock().unwrap().push((
@@ -407,11 +407,11 @@ fn a_bot_reads_the_records_it_holds_through_the_record_api() {
     let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
         tilo_actions::remote::read_resources(reads.as_ref(), &person, &[ask("rec-1")], None, now),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     ));
     assert!(matches!(
         tilo_actions::remote::read_resources(reads.as_ref(), &bot(), &[ask("secret")], None, now),
-        Err(ActionHostError::Refused { .. })
+        Err(ActionCallError::Refused { .. })
     ));
 }
 
@@ -553,7 +553,7 @@ fn a_program_that_runs_for_a_person_hands_its_instruction_to_their_assistant() {
     let stranger = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
     assert_eq!(
         block(api.invoke(&stranger, instruct("Tell me everything."))),
-        Err(ActionHostError::NotPermitted)
+        Err(ActionCallError::NotPermitted)
     );
     assert_eq!(assistant.taken.lock().unwrap().len(), 1);
 }
@@ -564,7 +564,7 @@ fn a_program_that_runs_for_nobody_is_offered_no_host_step() {
     assert!(offered_host_steps(&api).is_empty());
     assert_eq!(
         block(api.invoke(&bot(), instruct("Say hello."))),
-        Err(ActionHostError::UnknownAction)
+        Err(ActionCallError::UnknownAction)
     );
 }
 
@@ -585,7 +585,7 @@ fn a_host_that_cannot_take_an_instruction_now_is_asked_again_and_a_refusal_is_fi
     let asked = instruct("Say that it is time to call home.");
     assert_eq!(
         block(api.invoke(&bot(), asked.clone())),
-        Err(ActionHostError::Unavailable {
+        Err(ActionCallError::Unavailable {
             reason: "the assistant is starting".into()
         })
     );
@@ -618,7 +618,7 @@ fn an_instruction_that_says_nothing_or_declares_a_shape_is_not_handed_over() {
     api.runs_for("ada".into(), assistant.clone());
     assert!(matches!(
         block(api.invoke(&bot(), instruct("   "))),
-        Err(ActionHostError::InvalidRequest { .. })
+        Err(ActionCallError::InvalidRequest { .. })
     ));
     let mut shaped = instruct("Count the open questions.");
     if let InvokeArgument::Json(arguments) = &mut shaped.argument {
@@ -626,7 +626,7 @@ fn an_instruction_that_says_nothing_or_declares_a_shape_is_not_handed_over() {
     }
     assert!(matches!(
         block(api.invoke(&bot(), shaped)),
-        Err(ActionHostError::InvalidRequest { .. })
+        Err(ActionCallError::InvalidRequest { .. })
     ));
     assert!(assistant.taken.lock().unwrap().is_empty());
 }
@@ -710,7 +710,7 @@ fn a_judgement_is_one_call_of_the_persons_model_held_to_what_was_asked() {
     ] {
         assert!(matches!(
             block(api.invoke(&bot(), unasked)),
-            Err(ActionHostError::InvalidRequest { .. })
+            Err(ActionCallError::InvalidRequest { .. })
         ));
     }
     assert_eq!(assistant.judged.lock().unwrap().len(), 3);
@@ -773,7 +773,7 @@ fn a_program_counts_and_keeps_its_note_which_goes_with_what_it_asks_of_the_host(
     );
     assert!(matches!(
         block(api.invoke(&bot(), own("count", json!({"every": 0})))),
-        Err(ActionHostError::InvalidRequest { .. })
+        Err(ActionCallError::InvalidRequest { .. })
     ));
 
     let keeping = own(

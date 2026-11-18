@@ -54,7 +54,7 @@ struct Connection {
     /// The program the person's answer was remembered for (`claude-code`), which taking that
     /// answer back names.
     program: String,
-    /// What the shell calls it (`Claude Code #2`).
+    /// What the shell calls it (`Claude Code`).
     name: String,
     workspace_name: String,
     workspace: String,
@@ -62,7 +62,7 @@ struct Connection {
     /// The environment's server it came in by: none for the session's own. It ends with that
     /// environment.
     environment: Option<Entered>,
-    /// The other device of the person's it came from, as the remote relay verified it: none for a
+    /// The other device of the person's it came from, as the remote server verified it: none for a
     /// program of this login.
     origin: Option<tilo_actions::InvokerDevice>,
     /// What the person allowed it for every later step like one it asked about.
@@ -561,7 +561,7 @@ pub(crate) struct Present {
     pub(crate) session: AgentSessionId,
     /// The agent member it is a session of: the key of its colour.
     pub(crate) agent: String,
-    /// What the shell calls it (`Claude Code #2`).
+    /// What the shell calls it (`Claude Code`).
     pub(crate) name: String,
     /// The workspace it works in, by id.
     pub(crate) workspace: String,
@@ -638,7 +638,7 @@ pub(crate) struct Agent {
     pub unseen: i64,
     /// Whether the person may stop it here.
     pub stoppable: bool,
-    /// The other device of the person's it works from, as the relay that let it in verified: its
+    /// The other device of the person's it works from, as the server that let it in verified: its
     /// key in hex. Empty for a program of this device.
     pub device: String,
     /// What that device is called, as its certificate labels it.
@@ -678,11 +678,11 @@ mod tests {
             "nothing shows before it is admitted"
         );
         let shown = sessions.revision();
-        admit(&sessions, &one, "Claude Code #1");
+        admit(&sessions, &one, "Claude Code");
         sessions.attached(&one, &first);
         assert!(sessions.revision() > shown, "the shell is told");
         let two = sessions.joining(None, None);
-        admit(&sessions, &two, "Claude Code #2");
+        admit(&sessions, &two, "Claude Code");
         sessions.attached(&two, &second);
         let here = sessions.here();
         assert_eq!(here.len(), 2, "one presence per session");
@@ -748,9 +748,9 @@ mod tests {
             sessions.readings().is_empty(),
             "nothing shows before it is admitted"
         );
-        admit(&sessions, &remote, "Claude Code #1");
+        admit(&sessions, &remote, "Claude Code");
         let local = sessions.joining(None, None);
-        admit(&sessions, &local, "Claude Code #1");
+        admit(&sessions, &local, "Claude Code");
         let listed = sessions.readings();
         let listed = |session: &AgentSessionId| {
             listed
@@ -767,14 +767,14 @@ mod tests {
         assert_eq!(
             listed(&remote),
             Some((
-                "Claude Code #1".to_owned(),
+                "Claude Code".to_owned(),
                 laptop.id,
                 "Studio laptop".to_owned()
             ))
         );
         assert_eq!(
             listed(&local),
-            Some(("Claude Code #1".to_owned(), String::new(), String::new())),
+            Some(("Claude Code".to_owned(), String::new(), String::new())),
             "a program of this login came from no other device"
         );
     }
@@ -791,9 +791,9 @@ mod tests {
             name: "Dev box".to_owned(),
         };
         let inside = sessions.joining(Some(entered), None);
-        admit(&sessions, &inside, "Claude Code #1");
+        admit(&sessions, &inside, "Claude Code");
         let outside = sessions.joining(None, None);
-        admit(&sessions, &outside, "Claude Code #1");
+        admit(&sessions, &outside, "Claude Code");
         let listed = sessions.readings();
         let listed = |session: &AgentSessionId| {
             listed
@@ -829,7 +829,7 @@ mod tests {
     fn a_session_is_found_by_its_presence_key() {
         let sessions = AgentSessions::new();
         let one = sessions.joining(None, None);
-        admit(&sessions, &one, "Claude Code #1");
+        admit(&sessions, &one, "Claude Code");
         let speaker = [7; 32];
         let member = hex::encode(collab_types::presence::stand_in(speaker, one.as_str()));
         assert_eq!(sessions.spoken_as(speaker, &member), Some(one));

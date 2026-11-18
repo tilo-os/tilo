@@ -118,7 +118,6 @@ pub mod collection;
 mod concurrent_text_tests;
 pub mod content;
 mod cow;
-#[cfg(feature = "chrono")]
 mod dates;
 mod search_preview;
 pub use search_preview::SearchPreview;
@@ -137,6 +136,7 @@ pub mod keyed;
 pub mod kind;
 pub mod label;
 mod map;
+pub mod members;
 pub mod model;
 mod non_blank;
 pub mod order;
@@ -171,8 +171,8 @@ pub use __private::FlatFields;
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, minted_ids,
-    minted_keys, reverting_type, take_minted,
+    Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, invoking_member,
+    invoking_name, minted_ids, minted_keys, reverting_type, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;

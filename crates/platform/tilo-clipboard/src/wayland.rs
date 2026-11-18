@@ -374,7 +374,7 @@ impl WaylandClipboard {
     }
 
     /// Construct a publication backend around an already-connected Wayland
-    /// client. This is intentionally public only as a protocol test seam: the
+    /// client. This is intentionally public only as a protocol test hook: the
     /// normal application path uses [`Self::new`] with winit's live display.
     #[doc(hidden)]
     pub fn new_for_wayland_test(

@@ -337,7 +337,7 @@ async function openKept(storage, record, persist, runtime) {
  * `create: false` and none kept.
  */
 export async function browserIdentity({storage, create = true, persist = globalThis.navigator?.storage} = {}) {
-  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  storage ??= (await import('./device-key.mjs')).idbStorage();
   const runtime = await pageRuntime();
   let record = await storage.get(BROWSER_RECORD);
   if (!record) {
@@ -360,7 +360,7 @@ export async function browserIdentity({storage, create = true, persist = globalT
  * the person agrees to anything) asks this instead.
  */
 export async function keptIdentity({storage} = {}) {
-  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  storage ??= (await import('./device-key.mjs')).idbStorage();
   const record = await storage.get(BROWSER_RECORD);
   return record ? {rootPublicKey: record.rootPublicKey, held: record.held} : null;
 }
@@ -391,7 +391,7 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
  */
 export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime, now} = {}) {
   if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
-  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  storage ??= (await import('./device-key.mjs')).idbStorage();
   runtime ??= await pageRuntime();
   credentials = credentialsOf({credentials});
   if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
@@ -559,7 +559,7 @@ export async function certifyDevice(options) {
 }
 
 /**
- * Hand a node waiting for its certificate (`tilo-relay run
+ * Hand a node waiting for its certificate (`tilo-server run
  * --install-token-file`) the certificate `certifyDevice` issued for it, at
  * its HTTPS `origin`, with the install token it was provisioned with, and
  * with it `sessionCertificate`, the one issued for the session beside it
@@ -633,7 +633,7 @@ export async function nodeInstallInfo({origin, devicePublicKey, installToken, ru
   const node = devicePublicKey.toLowerCase();
   if (info?.device_public_key !== node) throw new IdentityError('install-refused', 'the node at this origin has another key');
   if (!info.session) return {sessionPublicKey: null};
-  // The node signs the two keys together (`tilo-relay-protocol`'s
+  // The node signs the two keys together (`tilo-server-protocol`'s
   // `node_session_message`): only a session its own key vouches for is one
   // this person certifies.
   const session = String(info.session.device_public_key).toLowerCase();

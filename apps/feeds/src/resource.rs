@@ -10,7 +10,7 @@
 //! carry are published there as places that reveal what they label.
 //!
 //! Refreshing and OPML import/export change nothing by themselves: they are
-//! the reader's [`FeedsEffect`]s, whose results reach the records as verbs
+//! the reader's [`FeedsEffect`]s, whose results reach the resources as verbs
 //! (what a refresh fetched lands through [`crate::part::ArticlePart::receive`]
 //! and the subscription it fed is noted by [`Library::note_feed`]). How
 //! articles read (text size, face, paper) is the person's
@@ -31,11 +31,11 @@ use crate::part::ArticlePart;
 pub const MAX_TAG_PLACES: usize = 32;
 
 impl Library {
-    /// What the record holds: the folders and the subscriptions.
+    /// What the resource holds: the folders and the subscriptions.
     ///
     /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
+    /// with no window open reads the resource as it reads any app's resource, and
+    /// a named item is read from the resource's table or by the read its own
     /// type gives it.
     pub fn read_document(
         &self,
@@ -267,8 +267,8 @@ impl ResourceApp for FeedsShell {
     }
 
     /// The articles, kept in parts beside the library.
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.chain::<ArticlePart>();
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.chain::<ArticlePart>();
     }
 
     #[cfg(feature = "samples")]

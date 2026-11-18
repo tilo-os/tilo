@@ -1,4 +1,4 @@
-"""Exercise the changed-file rustfmt gate against real divergent/shallow Git history."""
+"""Exercise the changed-file rustfmt check against real divergent/shallow Git history."""
 from __future__ import annotations
 
 import os

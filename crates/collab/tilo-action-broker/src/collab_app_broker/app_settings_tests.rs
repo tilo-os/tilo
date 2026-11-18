@@ -212,11 +212,11 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let records = session(dir.path());
         let admitted = Arc::new(AtomicBool::new(true));
-        let gate = Arc::clone(&admitted);
+        let check = Arc::clone(&admitted);
         let settings = handle(
             Arc::clone(&records),
             Arc::new(move || {
-                if gate.load(Ordering::Acquire) {
+                if check.load(Ordering::Acquire) {
                     Ok(())
                 } else {
                     Err("admission withdrawn".to_owned())

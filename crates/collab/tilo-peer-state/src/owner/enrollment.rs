@@ -2,9 +2,9 @@ use crate::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
     PendingEnrollmentId, PendingEnrollmentStatus, StatePeer, SystemTime, TransportOrigin,
     VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
-    record,
+    stored,
 };
-use record::{StoredPendingEnrollment, StoredWorkspace};
+use stored::{StoredPendingEnrollment, StoredWorkspace};
 
 pub(crate) fn validate_pending(
     workspace: WorkspaceId,
@@ -25,7 +25,7 @@ pub(crate) fn restore(
     record: &StoredWorkspace,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
-    if record.version != crate::owner::record::WORKSPACE_VERSION
+    if record.version != crate::owner::stored::WORKSPACE_VERSION
         || workspace != record.workspace
         || record.generation == 0
         || record.continuity == 0
@@ -81,7 +81,7 @@ pub(crate) fn restore(
 fn validate_enrollment(
     workspace: WorkspaceId,
     record: &StoredWorkspace,
-    enrollment: &crate::owner::record::StoredEnrollment,
+    enrollment: &crate::owner::stored::StoredEnrollment,
 ) -> Result<(), String> {
     let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
     let join = intent.verified_join();
@@ -154,13 +154,13 @@ impl NativeWorkspaceOwner {
         {
             let current = self.0.current.read();
             if current.fenced || current.denied.contains(&workspace) || !self.0.store.healthy() {
-                return Err("native enrollment custody is fenced".into());
+                return Err("native enrollment ownership is fenced".into());
             }
         }
         let mut next = self.0.authority.read().clone();
         if next.workspaces.contains_key(&workspace) {
             return Err(
-                "workspace is already enrolled; identity replacement requires explicit custody handoff"
+                "workspace is already enrolled; identity replacement requires explicit ownership handoff"
                     .into(),
             );
         }
@@ -371,11 +371,11 @@ impl NativeWorkspaceOwner {
         }
 
         let record = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: bootstrap.host.clone(),
             device: enrollment.local_device().clone(),
-            enrollment: Some(crate::owner::record::StoredEnrollment {
+            enrollment: Some(crate::owner::stored::StoredEnrollment {
                 invitation: enrollment.verified_join().signed_invitation().to_vec(),
                 enrollment_intent: pending.intent.clone(),
                 enrolled_at_ns: ns(now)?,
@@ -391,7 +391,7 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_ledger: crate::join_ledger::JoinLedger::default(),
+            join_log: crate::join_log::JoinLog::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
         Ok(self.publish_workspace(
@@ -415,7 +415,7 @@ pub(crate) fn install_governance(
     bootstrap: &crate::join::JoinBootstrap,
     now: SystemTime,
 ) -> Result<usize, crate::AdmissionError> {
-    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
+    let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
     let mut app_messages = 0usize;
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -425,7 +425,7 @@ pub(crate) fn install_governance(
         }
         // Only the closed, pinned Complete evidence selects historical
         // admission here; ongoing relay input uses strict receive_from_report.
-        // The origin labels that admission context, not a relay frame.
+        // The origin labels that admission context, not a server frame.
         peer.receive_from(origin, message, now)?;
     }
     Ok(app_messages)

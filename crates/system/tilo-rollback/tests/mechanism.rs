@@ -167,7 +167,7 @@ impl Fixture {
 
     /// Issue approvals covering floor generations up to `up_to_floor`. `strict` applies the
     /// safe bound (never above the newest enrolled generation); counter-only tests pass `false`
-    /// to move the floor as setup, the same override the CLI gates behind an explicit flag.
+    /// to move the floor as setup, the same override the CLI checks behind an explicit flag.
     fn issue_approvals(
         &self,
         floor: counter::FloorState,
@@ -422,7 +422,7 @@ fn the_floor_counter_survives_undefine_and_redefine() {
     );
 }
 
-// The floor gates the unseal, at exactly the right boundary
+// The floor checks the unseal, at exactly the right boundary
 
 #[test]
 fn the_floor_blocks_generations_below_it_and_admits_the_rest() {

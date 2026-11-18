@@ -197,7 +197,7 @@ fn native_selected_slack_key_qualifies_only_on_isolated_real_secret_service() {
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let service = server(&bus, case, &evidence);
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("witness");
+        let path = root.path().join("proof");
         std::fs::write(&path, b"unchanged source").unwrap();
         let before = std::fs::metadata(&path).unwrap();
         let directory = std::fs::File::open(root.path()).unwrap();

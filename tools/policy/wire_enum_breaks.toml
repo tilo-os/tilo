@@ -41,7 +41,7 @@ reason = "the sandbox asks with an `Acting` (a member chain and an app) instead 
 [[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "WorkspaceMembershipCommand"
-reason = "puts the retired task grant commands back at their places: workspaces and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"
+reason = "drops the retired agent, app authorship and task grant commands: stored formats change with the code, and a workspace that holds one of them from an older build no longer reads it"
 
 [[break]]
 file = "crates/sdk/tilo-resource/src/path.rs"
@@ -126,37 +126,37 @@ reason = "read and written as JSON by name; the variant that named the workspace
 [[break]]
 file = "apps/terminal/src/sessions.rs"
 enum = "Reply"
-reason = "one JSON line per reply from the ush supervisor, tagged by its `result` name; the `list-relays` ask that answered as `relays` went with the relay environments, and both ends of the socket ship in one image"
+reason = "one JSON line per reply from the ush supervisor, tagged by its `result` name; the `list-relays` ask that answered as `relays` went with the server environments, and both ends of the socket ship in one image"
 
 [[break]]
 file = "crates/runtime/ush/src/supervisor.rs"
 enum = "ServeRequest"
-reason = "one JSON line per request over the supervisor's socket, tagged by its `op` name; only the relay environment's client asked `list-relays`, and it went with that client"
+reason = "one JSON line per request over the supervisor's socket, tagged by its `op` name; only the server environment's client asked `list-relays`, and it went with that client"
 
 [[break]]
 file = "crates/runtime/ush/src/supervisor.rs"
 enum = "ServeResponse"
-reason = "one JSON line per answer over the supervisor's socket, tagged by its `result` name; only the relay picker's ask was answered as `relays`, and it went with that picker"
+reason = "one JSON line per answer over the supervisor's socket, tagged by its `result` name; only the server picker's ask was answered as `relays`, and it went with that picker"
 
 [[break]]
 file = "crates/runtime/ush/src/supervisor/session_end.rs"
 enum = "EndReport"
-reason = "write-only: one JSON line a session's lease carries to the app that asked, tagged by its `ended` name, and nothing decodes it back; `lost` and `superseded` described relay sessions no longer served"
+reason = "write-only: one JSON line a session's lease carries to the app that asked, tagged by its `ended` name, and nothing decodes it back; `lost` and `superseded` described server sessions no longer served"
 
 [[break]]
 file = "crates/collab/collab-types/src/peer.rs"
 enum = "PeerPresencePayload"
-reason = "postcard presence frames between devices and between an app and its runtime, which speak only at an equal peer and runtime version; that variant said which services carried a page's media into a call, which calls riding the call lane no longer have, and both numbers were raised past its removal, so no device or app reads a frame written before it"
+reason = "postcard presence frames between devices and between an app and its runtime, which speak only at an equal peer and runtime version; that variant said which services carried a page's media into a call, which calls riding the call stream no longer have, and both numbers were raised past its removal, so no device or app reads a frame written before it"
 
 [[break]]
 file = "crates/runtime/runtime-collab/src/wire.rs"
 enum = "Topic"
-reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation topic went with the private lane it named, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation topic went with the private connection it named, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
 
 [[break]]
 file = "crates/runtime/runtime-collab/src/wire.rs"
 enum = "Event"
-reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private lane that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private connection that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
 
 [[break]]
 file = "crates/browser/tilo-browser-runtime/src/shell.rs"
@@ -166,12 +166,12 @@ reason = "write-only: the desktop hands its embedded page a JSON list of request
 [[break]]
 file = "crates/session/messaging-service/src/service"
 enum = "Call"
-reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that lane, and no byte of the wire is kept"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that connection, and no byte of the wire is kept"
 
 [[break]]
 file = "crates/session/messaging-service/src/service"
 enum = "Reply"
-reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo lane, and no byte of the wire is kept"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo connection, and no byte of the wire is kept"
 
 [[break]]
 file = "crates/session/messaging-service/src/service"
@@ -179,12 +179,12 @@ enum = "PublicationKind"
 reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image wire; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
+file = "crates/server/tilo-server-protocol/src/operator.rs"
 enum = "OperatorCommand"
 reason = "one JSON line per command between the workspace service and the workspace process it starts from the same image; the line names its command (`tag = \"op\"`), so the pre-admission and spectator commands go by name, and the protocol version (announced in `Started`, refused when it is another) is bumped from 4 to 5 with them, so neither side reads a line written by the other; the Discord sign-in command went the same way when the host that signs in began answering Discord's callback itself"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
+file = "crates/server/tilo-server-protocol/src/operator.rs"
 enum = "OperatorEvent"
 reason = "one JSON line per event on the same one-image operator pipe, tagged by name (`tag = \"event\"`); the pre-admission and spectator events went with the commands that asked for them, and the protocol version is bumped from 4 to 5 in the same commit, so no reader of either version decodes the other's streams"
 
@@ -206,15 +206,15 @@ reason = "the rows a writer's operation names are new in this type and no build 
 [[break]]
 file = "crates/runtime/legacy-vm/src/hosted/size.rs"
 enum = "VmSize"
-reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no ledger, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
+reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no log, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
 enum = "WorkspacesRequest"
-reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the relay serves the page's own assets), and these requests are live messages of a session or a server, never bytes kept anywhere, so nothing written under the retirement is read back"
+reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the server serves the page's own assets), and these requests are live messages of a session or a server, never bytes kept anywhere, so nothing written under the retirement is read back"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
 enum = "WorkspacesReply"
 reason = "the answers to those requests, live on the same session and kept nowhere, so the retired placeholder takes the meaning its position always had"
 
@@ -224,7 +224,7 @@ enum = "Kind"
 reason = "a layout check's finding kinds are written only into the report of the run that found them and read back by nobody: `sidebar-header-on-reveal` becomes `header-on-reveal`, now held for every column, beside the new `offered-twice`"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
 enum = "JoinReply"
 reason = "drops the challenge, waiting and declined answers of the HTTP join steps that redeeming an invitation no longer takes (it is an entry on the device's session now): what is left is the host's answer to `/invitation`, which a page reads from the host that served it, from the same build, and the host's own answer to a redemption in its process; no byte of it is kept"
 
@@ -289,7 +289,7 @@ enum = "Response"
 reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/transport.rs"
+file = "crates/server/tilo-server-protocol/src/transport.rs"
 enum = "Envelope"
 reason = "`ChannelReader` is renamed `KeyFollower` at the same index: postcard writes no names, so the bytes read the same"
 
@@ -329,19 +329,19 @@ enum = "VerifiedActor"
 reason = "the task-run actors went with the task-run path; the variants left keep their names in the JSON evidence, and evidence naming a task run is refused as unsupported"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/entering.rs"
+file = "crates/server/tilo-server-protocol/src/entering.rs"
 enum = "EnterRefusal"
-reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+reason = "drops the retired app action settings: stored formats change with the code, and a workspace that holds one of them from an older build no longer reads it"
 
 [[break]]
-file = "crates/hosting/tilo-relay-protocol/src/entering.rs"
+file = "crates/server/tilo-server-protocol/src/entering.rs"
 enum = "Through"
-reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+reason = "drops the retired app action settings: stored formats change with the code, and a workspace that holds one of them from an older build no longer reads it"
 
 [[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "SettingsChange"
-reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+reason = "drops the retired app action settings: stored formats change with the code, and a workspace that holds one of them from an older build no longer reads it"
 
 [[break]]
 file = "crates/lang/tilolang/src/pred.rs"
@@ -401,3 +401,48 @@ reason = "renames RecordsArrived to ResourcesArrived in place: the runtime inter
 file = "crates/session/network-actor/src/lib.rs"
 enum = "PersonalFabricPayload"
 reason = "renames the RecordContent variants to DocumentContent in place: devices of one person speak one build's format"
+
+[[break]]
+file = "crates/collab/actions/src/remote/workspace_activity.rs"
+enum = "DetailAction"
+reason = "renames UndoRecord to UndoEntry in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/actions/src/remote/confirmation.rs"
+enum = "Confirmation"
+reason = "renames Witnessed to Approved in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/actions/src/remote/content_put.rs"
+enum = "ContentPutStep"
+reason = "renames Standing to Progress in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/tilo-unlock-protocol/src/wire.rs"
+enum = "RefusalReason"
+reason = "renames NotACustodian to NotAKeyHolder in place: both devices of an unlock speak one build's format"
+
+[[break]]
+file = "crates/platform/imager-backend/src/home_transfer/promotion.rs"
+enum = "Kind"
+reason = "renames InactiveCustody to InactiveOwnership in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the content-refused envelope goes with the content budget it reported, and content is no longer budgeted; it is a live frame on a device's session, never stored, and the peer protocol version is bumped from 52 to 53 with its removal, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/refusal.rs"
+enum = "Refusal"
+reason = "the refusal a spent content budget sent goes with that budget; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 52 to 53 with the removal, so a device at another version reads none of these bytes"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/refusal.rs"
+enum = "Refusal"
+reason = "the refusal a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 53 to 54 with the removal, so a device at another version reads none of these bytes"
+
+[[break]]
+file = "crates/collab/action-policy/src/grant.rs"
+enum = "Lifetime"
+reason = "drops the retired task lifetime that kept the later lifetimes at their places: stored formats change with the code, and grants an older build wrote no longer read"

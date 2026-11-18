@@ -1,4 +1,4 @@
-// The waits the gate uses to know the shell has done what the person asked,
+// The waits the check uses to know the shell has done what the person asked,
 // as state the page publishes — never a count of frames or a stopwatch.
 //
 // A page drawing a megapixel through a software rasteriser presents a few
@@ -11,7 +11,7 @@ import {availableParallelism} from 'node:os';
 import {readFileSync, readdirSync} from 'node:fs';
 import {nextChange} from '../../../../tools/web/chrome.mjs';
 
-/** The memory the gate's browsers hold, read from /proc while they run: each
+/** The memory the check's browsers hold, read from /proc while they run: each
  * renderer and the GPU process (which holds a software GPU's buffers), with
  * what each holds now and its peak, and what the machine has left. A renderer
  * that dies says what it held just before. */
@@ -92,7 +92,7 @@ export const stripAtRest = pan => Boolean(pan) && pan.moving === false;
  * longer silence is a shell with nothing left to draw, and waiting for the
  * timeout instead spends it on every step.
  *
- * `evaluate` reads an expression in the page (`tab.evaluate` in the gate,
+ * `evaluate` reads an expression in the page (`tab.evaluate` in the check,
  * a stub in a test); `pause(ms)` waits for the page's next change, at most
  * `ms` (the page's own `tiloChanges`), and `now` is the clock, both
  * injectable so a test can prove the wait ends on state without any frame
@@ -176,7 +176,7 @@ export async function reloaded(
     now = () => Date.now(),
   } = {},
 ) {
-  const mark = `__gateDocument${Math.random().toString(36).slice(2)}`;
+  const mark = `__checkDocument${Math.random().toString(36).slice(2)}`;
   await evaluate(`globalThis[${JSON.stringify(mark)}] = true`).catch(() => {});
   await tab.reload();
   const deadline = now() + timeoutMs;

@@ -10,7 +10,8 @@
 use crate::metadata::CATALOG;
 use ui::tilo_resource::SearchEntry;
 
-use crate::notebook::{Notebook, Page, page_of};
+use crate::notebook::{Page, page_of};
+use ui::tilo_resource::Id;
 
 /// The result group notes are listed under.
 #[must_use]
@@ -33,11 +34,11 @@ fn display_title(page: &Page) -> String {
     crate::metadata::note_title(&page.title)
 }
 
-/// Every note and every non-empty block of `notebook`, each opening its
+/// Every note of `pages` and every non-empty block of it, each opening its
 /// note.
-pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
+pub fn entries<'a>(pages: impl Iterator<Item = (&'a Id, &'a Page)>) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
-    for (id, page) in notebook.pages.iter() {
+    for (id, page) in pages {
         let Some(page_id) = page_of(id) else {
             continue;
         };
@@ -79,13 +80,14 @@ pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
 mod tests {
     use super::*;
     use crate::model::PageId;
+    use crate::part::PagePart;
     use ui::search::SearchProvider;
     use ui::tilo_resource::{Invoke, Replica};
     use ui::widget::BlockContent;
 
     /// A notebook with three titled notes.
-    fn populated() -> (Replica<Notebook>, Vec<PageId>) {
-        let mut notebook = Replica::<Notebook>::new();
+    fn populated() -> (Replica<PagePart>, Vec<PageId>) {
+        let mut notebook = Replica::<PagePart>::new();
         let pages: Vec<PageId> = ["Grocery list", "Meeting notes", "Trip planning"]
             .into_iter()
             .map(|title| add(&mut notebook, title))
@@ -93,7 +95,7 @@ mod tests {
         (notebook, pages)
     }
 
-    fn add(notebook: &mut Replica<Notebook>, title: &str) -> PageId {
+    fn add(notebook: &mut Replica<PagePart>, title: &str) -> PageId {
         let id = PageId::new_v4();
         notebook
             .apply_action(&crate::actions::create_page_action(id, None, title))
@@ -102,7 +104,7 @@ mod tests {
     }
 
     /// `page`'s body made of paragraphs `texts`.
-    fn with_blocks(notebook: &mut Replica<Notebook>, page: PageId, texts: &[&str]) {
+    fn with_blocks(notebook: &mut Replica<PagePart>, page: PageId, texts: &[&str]) {
         let blocks: Vec<BlockContent> = texts
             .iter()
             .map(|text| BlockContent::paragraph("", *text))
@@ -112,8 +114,8 @@ mod tests {
             .unwrap();
     }
 
-    fn search(notebook: &Replica<Notebook>) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<Notebook>(entries(&notebook.state().unwrap()))
+    fn search(notebook: &Replica<PagePart>) -> impl SearchProvider + use<> {
+        ui::framework::testing::search_source::<PagePart>(notebook.state().unwrap().search())
     }
 
     tilo_test_env::scenario! {
@@ -134,7 +136,7 @@ mod tests {
                 );
             }
             {
-                let mut notebook = Replica::<Notebook>::new();
+                let mut notebook = Replica::<PagePart>::new();
                 add(&mut notebook, "");
                 let hits = search(&notebook).search("untitled");
                 assert_eq!(
@@ -193,12 +195,12 @@ mod tests {
     }
 
     /// A note nobody named reads as the word for one in the language of whoever looks it up, and
-    /// the record itself holds no title at all.
+    /// the resource itself holds no title at all.
     #[test]
     fn a_note_nobody_named_reads_in_the_readers_own_language() {
         crate::metadata::CATALOG.ensure();
         CATALOG.set_locale("de");
-        let mut notebook = Replica::<Notebook>::new();
+        let mut notebook = Replica::<PagePart>::new();
         let id = add(&mut notebook, "");
         assert!(
             notebook
@@ -230,7 +232,9 @@ mod tests {
             tilo_content::ContentStore::memory(),
         );
         let _in_the_window = window.enter();
-        let texts: Vec<String> = (0..3_000).map(|n| format!("ordinary record {n}")).collect();
+        let texts: Vec<String> = (0..3_000)
+            .map(|n| format!("ordinary resource {n}"))
+            .collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let (mut notebook, pages) = populated();
         with_blocks(&mut notebook, pages[0], &refs);
@@ -241,9 +245,9 @@ mod tests {
         assert!(first.results.len() <= 3);
         assert!(
             source
-                .search("record 2999")
+                .search("resource 2999")
                 .iter()
-                .any(|hit| hit.title == "ordinary record 2999"),
+                .any(|hit| hit.title == "ordinary resource 2999"),
             "the last block is as findable as the first"
         );
     }

@@ -197,6 +197,11 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
         (TriggerSpec::AppEvent { app_id, kind }, Event::AppEvent(declared)) => {
             declared.app_id == *app_id && declared.kind == *kind
         }
+        // Whoever reads the times already held them to the trigger's filter.
+        (TriggerSpec::ResourceTime { .. }, Event::Time(fired)) => fired.trigger == index,
+        // Whoever looked at the source already held what it found to the
+        // trigger's filter.
+        (TriggerSpec::SourceChanged { .. }, Event::Source(found)) => found.trigger == index,
         _ => false,
     }
 }

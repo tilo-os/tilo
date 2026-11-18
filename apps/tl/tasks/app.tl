@@ -36,7 +36,7 @@ type Task {
     assignee: Option<Actor> = .none
     /// The project it belongs to; none while it waits in the inbox.
     project: Option<Project> = .none
-    /// The lane of its project's board it is in; none for the first lane.
+    /// The list of its project's board it is in; none for the first list.
     section: Option<Section> = .none
     priority: Priority = .none
     /// The task it is a subtask of, to any depth; none for a task of its own.
@@ -66,7 +66,7 @@ type Project {
     notes: RichText
 }
 
-/// A section of a project: one lane of its board, such as "Doing".
+/// A section of a project: one list of its board, such as "Doing".
 type Section {
     name: Text
     /// The project it is a section of.
@@ -96,7 +96,7 @@ row view task_summary for Task
 
 place view to_do for Tasks
 
-/// Adds a task to the inbox or to `p`, in the lane `s` of its board: the entry at a list's end
+/// Adds a task to the inbox or to `p`, in the list `s` of its board: the entry at a list's end
 /// fills `title` with the words nothing else there takes, and the day, moment and person they
 /// name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
 primary action new_task(
@@ -208,6 +208,31 @@ action schedule(t: Task, due: Option<Date>) (
 fn moved(moment: Option<Time>, from: Option<Date>, to: Option<Date>) -> Option<Time> {
     if let m = moment {
         if let f = from { if let d = to { m + (d - f) } else { m } } else { m }
+    }
+}
+
+/// Sets the time of day a task is due at: the day it is on stays, and a task with no day is due
+/// on the day the moment names. A reminder that was set for the old moment moves with it, as a
+/// day moved by `schedule` keeps its time of day: a task due Wednesday at six, reminded at six,
+/// made seven is due at seven and reminded then.
+action set_time(t: Task, at: Option<Time>) uses time (
+    label: "Set time",
+    icon: .clock,
+    group: "Due",
+) {
+    let when: Option<Time> = if let m = at {
+        if let d = t.due { .some(m + (d - m.day())) } else { .some(m) }
+    } else { .none }
+    if let old = t.at {
+        if t.remind == .some(old) {
+            t.remind = when
+        }
+    }
+    t.at = when
+    if t.due == .none {
+        if let w = when {
+            t.due = w.day()
+        }
     }
 }
 
@@ -419,7 +444,7 @@ action rename_section(s: Section, name: Text) {
     s.name = name
 }
 
-/// Deletes a section; its tasks go to the project's first lane.
+/// Deletes a section; its tasks go to the project's first list.
 destructive action remove_section(s: Section) (icon: .trash, label: "Delete section") {
     for t in tasks.items.filter(t -> t.section == s) {
         t.section = .none
@@ -427,7 +452,7 @@ destructive action remove_section(s: Section) (icon: .trash, label: "Delete sect
     tasks.sections.remove(s)
 }
 
-/// Adds a task to a project, at the end of the lane `s` of its board (none for the first). It is the
+/// Adds a task to a project, at the end of the list `s` of its board (none for the first). It is the
 /// project's primary action, so its key brings the person to the entry that adds there.
 primary action add_to(p: Project, title: Text, s: Option<Section> = .none) -> Task (
     icon: .plus,
@@ -437,10 +462,10 @@ primary action add_to(p: Project, title: Text, s: Option<Section> = .none) -> Ta
     tasks.items.insert(Task(title: title, project: p, section: s))
 }
 
-/// Puts a task into the lane `s` of its project's board (none for the first) at the place `at`
+/// Puts a task into the list `s` of its project's board (none for the first) at the place `at`
 /// among the tasks already there: what a card's drag names.
 action place(t: Task, s: Option<Section>, at: Int) (label: "Place in board") {
-    require s == .none or s?.project == t.project "That lane belongs to another project"
+    require s == .none or s?.project == t.project "That list belongs to another project"
     applies t.project != .none "It is in no project's board"
     t.section = s
     tasks.items.move(
@@ -519,8 +544,8 @@ fn task_day(t: Task, by_day: Bool, done_place: Bool) -> Option<Date> {
     if by_day { t.due } else if done_place { finished_at(t)?.day() }
 }
 
-/// The open tasks of one lane of a board: those of section `s`, or of none; never a card.
-fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
+/// The open tasks of one list of a board: those of section `s`, or of none; never a card.
+fn list_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
 }
 
@@ -644,7 +669,7 @@ view home(t: Tasks) {
     }
 }
 
-/// What there is to do, standing on its own as a place shows it: the open tasks, due soonest
+/// What there is to do, on its own as a place shows it: the open tasks, due soonest
 /// first and grouped by day, each opening where it stands, with the entry that adds one at their
 /// foot. None of the window's places, search or bar is around them.
 view to_do(t: Tasks) {
@@ -764,15 +789,15 @@ view project_list(p: Project) {
     }
 }
 
-/// A project's board: a lane per section, the first for the tasks in none, each open task a card.
+/// A project's board: a list per section, the first for the tasks in none, each open task a card.
 view project_board(p: Project) {
     let sections = tasks.sections.filter(s -> s.project == p)
     std.page(p, canvas: true, fill: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
-                let loose = lane_of(p, .none)
+                let loose = list_of(p, .none)
                 // No section named: it keeps its heading's height so cards line up, and is not headed.
-                ui.BoardLane {
+                ui.BoardList {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
                         std.add_entry("New task", new_task(tasks, p: p))
@@ -782,8 +807,8 @@ view project_board(p: Project) {
                     }
                 }
                 for s in sections {
-                    let cards = lane_of(p, s)
-                    ui.BoardLane(s, title: s.name, count: cards.counted()) {
+                    let cards = list_of(p, s)
+                    ui.BoardList(s, title: s.name, count: cards.counted()) {
                         on drop(moved: Task, at: Int): place(moved, s, at)
                         foot: {
                             std.add_entry("New task", new_task(tasks, p: p, s: s))
@@ -798,7 +823,7 @@ view project_board(p: Project) {
     }
 }
 
-/// A task on a board: its row, opening in a window of its own, with its lane moves in its menu.
+/// A task on a board: its row, opening in a window of its own, with its list moves in its menu.
 view task_card(t: Task, p: Project, sections: List<Section>) {
     ui.BoardCard(t, actions: [check(primary: true), schedule(group: "Plan"), assign, remove]) {
         on activate: open(t)

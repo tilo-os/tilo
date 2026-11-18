@@ -76,8 +76,6 @@ mod ghost_cursor_render_test;
 mod group_row_visual_journey;
 #[path = "headless_app_test.rs"]
 mod headless_app_test;
-#[path = "host_entry_points.rs"]
-mod host_entry_points;
 #[path = "immersive_widget_geometry.rs"]
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]
@@ -117,6 +115,8 @@ mod presence_context;
 mod presence_experience_test;
 #[path = "presence_remote_cursors_test.rs"]
 mod presence_remote_cursors_test;
+#[path = "process_entry_points.rs"]
+mod process_entry_points;
 #[path = "profiling.rs"]
 mod profiling;
 #[cfg(unix)]

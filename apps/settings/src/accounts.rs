@@ -20,39 +20,39 @@ pub struct AccountMutationJournal {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountRoot {
     explicit: Option<PathBuf>,
-    person: Option<PersonAccountsRecord>,
+    person: Option<PersonAccountsResource>,
     #[cfg(test)]
-    vault_gate: VaultGate,
+    vault_hold: VaultHold,
 }
 
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub struct VaultGate(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
+pub struct VaultHold(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
 
 #[cfg(test)]
-impl std::fmt::Debug for VaultGate {
+impl std::fmt::Debug for VaultHold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("VaultGate")
+        f.write_str("VaultHold")
     }
 }
 
 /// A root is told apart by where its files live, not by what its vault
 /// waits for.
 #[cfg(test)]
-impl PartialEq for VaultGate {
+impl PartialEq for VaultHold {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
 #[cfg(test)]
-impl Eq for VaultGate {}
+impl Eq for VaultHold {}
 
 #[derive(Clone)]
 pub struct VaultOpener {
     explicit: Option<PathBuf>,
     #[cfg(test)]
-    gate: VaultGate,
+    check: VaultHold,
 }
 
 impl VaultOpener {
@@ -62,17 +62,17 @@ impl VaultOpener {
     }
 
     #[cfg(feature = "tilo-os")]
-    pub fn custodian(&self) -> account_custody::Custodian {
-        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
+    pub fn credential_store(&self) -> account_credentials::CredentialStore {
+        account_credentials::CredentialStore::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     #[cfg(feature = "tilo-os")]
     pub fn oauth_granted(&self, ids: Vec<String>) -> std::collections::BTreeSet<String> {
         self.reach();
-        let custodian = self.custodian();
+        let credential_store = self.credential_store();
         ids.into_iter()
             .filter(|id| {
-                custodian
+                credential_store
                     .oauth_scopes(&accounts::AccountId::from(id.clone()))
                     .is_ok()
             })
@@ -80,38 +80,38 @@ impl VaultOpener {
     }
 
     /// About to reach the vault: never on the UI thread, and in a test only
-    /// once its gate lets it.
+    /// once its check lets it.
     #[cfg_attr(
         not(test),
-        expect(clippy::unused_self, reason = "only a test's gate is kept on it")
+        expect(clippy::unused_self, reason = "only a test's check is kept on it")
     )]
     fn reach(&self) {
         crate::device_read::off_ui_thread();
         #[cfg(test)]
         {
-            if let Some(gate) = &self.gate.0 {
-                gate();
+            if let Some(check) = &self.check.0 {
+                check();
             }
         }
     }
 }
 
 #[derive(Clone)]
-struct PersonAccountsRecord(ui::framework::PersonResource<accounts::person::PersonAccounts>);
+struct PersonAccountsResource(ui::framework::PersonResource<accounts::person::PersonAccounts>);
 
-impl std::fmt::Debug for PersonAccountsRecord {
+impl std::fmt::Debug for PersonAccountsResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PersonAccounts")
     }
 }
 
-impl PartialEq for PersonAccountsRecord {
+impl PartialEq for PersonAccountsResource {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl Eq for PersonAccountsRecord {}
+impl Eq for PersonAccountsResource {}
 
 impl AccountRoot {
     pub fn live() -> Self {
@@ -127,8 +127,8 @@ impl AccountRoot {
 
     #[cfg(test)]
     #[must_use]
-    pub fn with_vault_gate(mut self, gate: impl Fn() + Send + Sync + 'static) -> Self {
-        self.vault_gate = VaultGate(Some(std::sync::Arc::new(gate)));
+    pub fn with_vault_hold(mut self, check: impl Fn() + Send + Sync + 'static) -> Self {
+        self.vault_hold = VaultHold(Some(std::sync::Arc::new(check)));
         self
     }
 
@@ -137,7 +137,7 @@ impl AccountRoot {
         mut self,
         record: ui::framework::PersonResource<accounts::person::PersonAccounts>,
     ) -> Self {
-        self.person = Some(PersonAccountsRecord(record));
+        self.person = Some(PersonAccountsResource(record));
         self
     }
 
@@ -146,8 +146,8 @@ impl AccountRoot {
     }
 
     #[cfg(feature = "tilo-os")]
-    pub fn custodian(&self) -> account_custody::Custodian {
-        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
+    pub fn credential_store(&self) -> account_credentials::CredentialStore {
+        account_credentials::CredentialStore::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     pub fn path(&self) -> Option<PathBuf> {
@@ -164,7 +164,7 @@ impl AccountRoot {
     }
 
     pub fn store(&self) -> accounts::AccountStore {
-        if let Some(PersonAccountsRecord(record)) = &self.person {
+        if let Some(PersonAccountsResource(record)) = &self.person {
             return record.get().store();
         }
         self.path()
@@ -175,11 +175,11 @@ impl AccountRoot {
     pub fn revision(&self) -> Option<u64> {
         self.person
             .as_ref()
-            .map(|PersonAccountsRecord(record)| record.revision())
+            .map(|PersonAccountsResource(record)| record.revision())
     }
 
     pub fn take_in_device_accounts(&self) -> std::io::Result<()> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
+        let Some(PersonAccountsResource(record)) = &self.person else {
             return Ok(());
         };
         let Some(root) = self.path() else {
@@ -200,8 +200,8 @@ impl AccountRoot {
         origin: String,
         display_name: String,
     ) -> Result<(), String> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
-            return Err("Settings' personal account record is unavailable".into());
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            return Err("Settings' personal account resource is unavailable".into());
         };
         record
             .invoke(
@@ -219,8 +219,8 @@ impl AccountRoot {
         account: String,
         enabled: bool,
     ) -> Result<(), String> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
-            return Err("Settings' personal account record is unavailable".into());
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            return Err("Settings' personal account resource is unavailable".into());
         };
         let current = record
             .get()
@@ -244,8 +244,8 @@ impl AccountRoot {
     }
 
     pub fn remove_browser_identity(&self, account: String) -> Result<(), String> {
-        let Some(PersonAccountsRecord(record)) = &self.person else {
-            return Err("Settings' personal account record is unavailable".into());
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            return Err("Settings' personal account resource is unavailable".into());
         };
         let current = record
             .get()
@@ -267,7 +267,7 @@ impl AccountRoot {
     /// Add or replace the email account `config` in the person's accounts,
     /// keyed by its address, and keep this device's file their projection.
     /// Its secret is sealed apart ([`Self::seal_password`] or the session's
-    /// custody), never here.
+    /// ownership), never here.
     /// Save the email account `config`, with the other names and addresses
     /// it sends as (`identities`, each `Name <address>`).
     pub fn save_email_account(
@@ -290,11 +290,13 @@ impl AccountRoot {
 
     pub fn seal_password(&self, id: &accounts::AccountId, password: &str) -> Result<(), String> {
         let Some(root) = &self.explicit else {
-            return Err("This device's account custody is unavailable".into());
+            return Err("This device's account credentials is unavailable".into());
         };
         let mut credentials = accounts::AccountCredentials::open_in(root)?;
         let token = credentials.get(id).and_then(|secret| secret.token);
-        credentials.put(
+        // Typed just now: bound to the servers its account names where it
+        // is first joined.
+        credentials.put_anew(
             id,
             &accounts::Secret {
                 password: password.to_owned(),
@@ -306,7 +308,7 @@ impl AccountRoot {
 
     pub fn project(&self) -> std::io::Result<()> {
         match &self.person {
-            Some(PersonAccountsRecord(record)) => {
+            Some(PersonAccountsResource(record)) => {
                 record.get().project_in(&self.require_io()?).map(|_| ())
             }
             None => Ok(()),
@@ -315,7 +317,7 @@ impl AccountRoot {
 
     pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
         let root = self.require_io()?;
-        let Some(PersonAccountsRecord(record)) = &self.person else {
+        let Some(PersonAccountsResource(record)) = &self.person else {
             return store.save_in(&root);
         };
         let refused =
@@ -380,7 +382,7 @@ impl AccountRoot {
         VaultOpener {
             explicit: self.explicit.clone(),
             #[cfg(test)]
-            gate: self.vault_gate.clone(),
+            check: self.vault_hold.clone(),
         }
     }
 
@@ -569,10 +571,10 @@ impl AccountKind {
             AccountKind::CalDav => CALDAV_TYPE,
             AccountKind::WebDav => WEBDAV_TYPE,
             AccountKind::Nextcloud => NEXTCLOUD_TYPE,
-            AccountKind::GoogleDrive => account_custody::providers::GOOGLE_DRIVE_TYPE,
-            AccountKind::OneDrive => account_custody::providers::ONEDRIVE_TYPE,
-            AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
-            AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
+            AccountKind::GoogleDrive => account_credentials::providers::GOOGLE_DRIVE_TYPE,
+            AccountKind::OneDrive => account_credentials::providers::ONEDRIVE_TYPE,
+            AccountKind::Dropbox => account_credentials::providers::DROPBOX_TYPE,
+            AccountKind::ICloudDrive => account_credentials::providers::ICLOUD_DRIVE_TYPE,
         }
     }
 
@@ -589,8 +591,8 @@ impl AccountKind {
     }
 
     #[cfg(feature = "tilo-os")]
-    pub fn oauth_cloud(self) -> Option<account_custody::OAuthCloud> {
-        account_custody::OAuthCloud::from_type_id(self.type_id())
+    pub fn oauth_cloud(self) -> Option<account_credentials::OAuthCloud> {
+        account_credentials::OAuthCloud::from_type_id(self.type_id())
     }
 
     #[cfg(feature = "tilo-os")]
@@ -872,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_identity_publication_is_a_settings_owned_personal_record_action() {
+    fn browser_identity_publication_is_a_settings_owned_personal_resource_action() {
         use accounts::person::PersonAccounts;
         let root_key = "ab".repeat(32);
         let mut app =
@@ -971,7 +973,7 @@ mod tests {
     /// In a host the accounts are the person's record: saving edits it,
     /// reading reads it, and this device's file follows as its projection.
     #[test]
-    fn in_a_host_the_accounts_are_the_persons_record_and_the_file_follows() {
+    fn in_a_host_the_accounts_are_the_persons_resource_and_the_file_follows() {
         use accounts::person::PersonAccounts;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
@@ -993,7 +995,7 @@ mod tests {
         assert_eq!(
             accounts::AccountStore::load_in(dir.path()).get(&account.id),
             Some(&account),
-            "the device file is the record's projection"
+            "the device file is the resource's projection"
         );
 
         store.remove(&account.id);
@@ -1003,10 +1005,10 @@ mod tests {
     }
 
     /// The accounts this device's file held before it followed the person's
-    /// record are taken in once, the record's own accounts stay, and a file
-    /// that is the record's projection brings nothing back.
+    /// resource are taken in once, the resource's own accounts stay, and a file
+    /// that is the resource's projection brings nothing back.
     #[test]
-    fn the_device_files_accounts_are_taken_into_the_persons_record_once() {
+    fn the_device_files_accounts_are_taken_into_the_persons_resource_once() {
         use accounts::person::PersonAccounts;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");

@@ -368,14 +368,14 @@ impl Profile {
     #[cfg(target_os = "linux")]
     fn service(
         &self,
-        custodian: account_custody::Custodian,
+        credential_store: account_credentials::CredentialStore,
     ) -> TestResult<fs::cloud::CloudService> {
         let mut service = fs::cloud::CloudService::new(
             fs::cloud::ServiceConfig {
                 config_root: Some(self.root.path().ok_or("isolated account root")?),
                 mounts_root: self.home.join("Remote"),
                 state_root: self.state.clone(),
-                refresher: Arc::new(custodian),
+                refresher: Arc::new(credential_store),
                 control_socket: None,
                 file_socket: None,
             },
@@ -399,7 +399,7 @@ impl Profile {
 )]
 fn open_settings(
     root: &AccountRoot,
-    custodian: &account_custody::Custodian,
+    credential_store: &account_credentials::CredentialStore,
 ) -> TestResult<TestApp<SettingsShell>> {
     let mut settings = TestApp::<SettingsShell>::open_data_dir(
         &root.path().ok_or("explicit isolated Settings profile")?,
@@ -416,7 +416,7 @@ fn open_settings(
                 .borrow_mut();
             let hosted = std::mem::replace(&mut *model, AccountsPane::in_root(root.clone()));
             *model = hosted
-                .with_custodian(custodian.clone())
+                .with_credential_store(credential_store.clone())
                 .with_browser_opener(Arc::new(Browser));
         })
         .ok_or("mounted Settings surface")?;
@@ -531,7 +531,7 @@ fn browse_and_select(
 fn cancel_import(
     files: &mut Files,
     service: &mut fs::cloud::CloudService,
-    recorder: &ui::host::HostRecorder,
+    recorder: &ui::process::ProcessRecorder,
     destination: &std::path::Path,
 ) -> TestResult {
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
@@ -592,7 +592,7 @@ fn recover_import(
 
 #[cfg(target_os = "linux")]
 fn save_imported_data(
-    recorder: &ui::host::HostRecorder,
+    recorder: &ui::process::ProcessRecorder,
     destination: &std::path::Path,
     home: &std::path::Path,
 ) -> TestResult {
@@ -610,7 +610,7 @@ fn save_imported_data(
 
 #[cfg(target_os = "linux")]
 fn assert_imported_data(
-    recorder: &ui::host::HostRecorder,
+    recorder: &ui::process::ProcessRecorder,
     destination: &std::path::Path,
     home: &std::path::Path,
     text: &[u8],
@@ -695,21 +695,21 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
-    let mut clients = account_custody::ClientTable::default();
+    let mut clients = account_credentials::ClientTable::default();
     clients.google.client_id = "google-services-client".into();
     clients.google.scopes.files = vec!["https://www.googleapis.com/auth/drive".into()];
     clients.google.scopes.mail = vec!["https://mail.google.com/".into()];
-    let custodian = profile
+    let credential_store = profile
         .root
-        .custodian()
+        .credential_store()
         .with_client_table(clients)
-        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, auth.provider())
+        .with_issuer_endpoints(account_credentials::OAuthIssuer::Google, auth.provider())
         .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()))
         .with_storage_config(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             serde_json::to_value(drive.config())?,
         );
-    let mut settings = open_settings(&profile.root, &custodian)?;
+    let mut settings = open_settings(&profile.root, &credential_store)?;
     settings.call_on(
         "settings.root",
         "select-account-services",
@@ -731,7 +731,7 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     let store = profile.root.store();
     assert_google_completion(finished, &store, &gmail, 2);
     let files = store
-        .list(&account_custody::providers::GOOGLE_DRIVE_TYPE.into())
+        .list(&account_credentials::providers::GOOGLE_DRIVE_TYPE.into())
         .first()
         .copied()
         .ok_or("connected Files service")?;
@@ -813,12 +813,12 @@ fn google_mail_only_is_not_presented_as_drive() -> TestResult {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
-    let custodian = profile
+    let credential_store = profile
         .root
-        .custodian()
-        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, auth.provider())
+        .credential_store()
+        .with_issuer_endpoints(account_credentials::OAuthIssuer::Google, auth.provider())
         .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
-    let mut settings = open_settings(&profile.root, &custodian)?;
+    let mut settings = open_settings(&profile.root, &credential_store)?;
     settings.call_on(
         "settings.root",
         "select-account-services",
@@ -852,19 +852,19 @@ fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {
     let drive = cloud_source_gdrive::fake::FakeDrive::start();
     let auth = tilo_oauth::fake::FakeAuthorizationServer::start();
     auth.issue_access_token(cloud_source_gdrive::fake::SOURCE_TOKEN);
-    let custodian = profile
+    let credential_store = profile
         .root
-        .custodian()
+        .credential_store()
         .with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             auth.provider(),
             "drive-client",
         )
         .with_storage_config(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             serde_json::to_value(drive.config())?,
         );
-    let mut settings = open_settings(&profile.root, &custodian)?;
+    let mut settings = open_settings(&profile.root, &credential_store)?;
     capture_provider_form(&mut settings)?;
     let account = sign_in(&mut settings, &profile.root)?;
     let document = drive.put_native(
@@ -873,9 +873,9 @@ fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {
         "application/vnd.google-apps.document",
     );
     let plain = drive.put_file(&drive.root_id(), "note.txt", b"independent cloud original");
-    let mut service = profile.service(custodian)?;
-    let (host, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&host);
+    let mut service = profile.service(credential_store)?;
+    let (host, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&host);
     let mut files = Files::launched(&[profile.home.to_str().ok_or("home path")?])?;
     browse_and_select(&mut files, &mut service, &account, &document, &plain)?;
     let destination = profile.home.join("Chosen folder");

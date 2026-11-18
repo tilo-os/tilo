@@ -3,7 +3,7 @@
 //! a running provider or mistake a child exit for writer quiescence.
 use super::{Account as NativeSignalAccount, SendError};
 use crate::service::consent::Consent;
-use crate::service::gate::Gate;
+use crate::service::guard::AccountGuard;
 use std::sync::Arc;
 use std::{
     ffi::{CString, OsStr},
@@ -31,7 +31,7 @@ pub(crate) mod provision;
 /// the durable active marker: no previous crypto state can silently resume.
 pub(crate) struct NativeSignalWorkingProfile {
     ram: RamDirectory,
-    gate: Arc<Gate>,
+    guard: Arc<AccountGuard>,
     sealed: EncryptedSignalProfile,
     image: Option<ProfileImage>,
     lent: AtomicBool,
@@ -47,7 +47,7 @@ impl NativeSignalWorkingProfile {
         &self,
         options: &mut launcher::run::RunOptions,
     ) -> Result<(), SendError> {
-        self.gate.check()?;
+        self.guard.check()?;
         if options.app_id.as_deref() != Some(SERVICE_PACKAGE)
             || options.workspace_id.is_some()
             || !matches!(options.mode, launcher::run::LaunchMode::Service { .. })
@@ -81,7 +81,7 @@ impl NativeSignalWorkingProfile {
         self.configure_launch(&mut launch.options)?;
         let stopped = launcher::owned_service::run_connected(
             launch,
-            Arc::new(ProfileServiceAuthority(self.gate.clone(), network)),
+            Arc::new(ProfileServiceAuthority(self.guard.clone(), network)),
             cancellation,
             self.launch_key.clone(),
             connected,
@@ -108,7 +108,7 @@ impl NativeSignalWorkingProfile {
             .map_err(|_| SendError::Unavailable)
     }
 }
-struct ProfileServiceAuthority(Arc<Gate>, Option<Arc<Consent>>);
+struct ProfileServiceAuthority(Arc<AccountGuard>, Option<Arc<Consent>>);
 impl launcher::owned_service::ServiceAuthority for ProfileServiceAuthority {
     fn network_hosts(&self) -> io::Result<Vec<String>> {
         self.1
@@ -131,14 +131,14 @@ impl NativeSignalAccount {
     /// private tmpfs runtime directory. Disk, links and permissive roots refuse
     /// before beginning use or exposing any profile bytes.
     /// # Errors
-    /// Refuses invalid RAM custody, original admission/grant, interrupted image
+    /// Refuses invalid RAM ownership, original admission/grant, interrupted image
     /// or file creation failure. Failed materialization leaves use interrupted.
     pub(crate) fn materialize_profile(
         &self,
         encrypted_root: &Path,
         runtime_root: &Path,
     ) -> Result<NativeSignalWorkingProfile, SendError> {
-        self.gate.check()?;
+        self.guard.check()?;
         let ram = RamDirectory::allocate(runtime_root).map_err(|_| SendError::Unavailable)?;
         let mut sealed = self.open_profile(encrypted_root)?;
         let image = sealed.begin_use().map_err(|_| SendError::Unavailable)?;
@@ -148,10 +148,10 @@ impl NativeSignalAccount {
                     .map_err(|_| ProfileError::Unavailable)
             })
             .map_err(|_| SendError::Unavailable)?;
-        self.gate.check()?;
+        self.guard.check()?;
         Ok(NativeSignalWorkingProfile {
             ram,
-            gate: self.gate.clone(),
+            guard: self.guard.clone(),
             sealed,
             image: Some(image),
             lent: AtomicBool::new(false),
@@ -432,7 +432,7 @@ pub(super) mod tests {
             output.status.success()
                 && stdout.contains("running 1 test")
                 && stdout.contains("test result: ok. 1 passed"),
-            "actual noswap custody qualification failed: {}\n{stdout}\n{stderr}",
+            "actual noswap ownership qualification failed: {}\n{stdout}\n{stderr}",
             output.status
         );
 

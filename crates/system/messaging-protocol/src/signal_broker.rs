@@ -17,7 +17,7 @@ use tilo_messaging::{
     SendFuture, SendReceipt, SendRequest,
 };
 
-/// A snapshot from the host's current grant/Contacts/provider identity gate.
+/// A snapshot from the host's current grant/Contacts/provider identity check.
 /// Returning it must verify the certified caller, account grant, exact current
 /// association and provider fingerprint. Editable metadata alone is insufficient.
 pub struct Authorization {
@@ -28,7 +28,7 @@ pub struct Authorization {
     retained: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 impl Authorization {
-    /// The host must check its current caller/account/identity gate first.
+    /// The host must check its current caller/account/identity check first.
     /// This snapshot alone creates no credential permission.
     pub fn new(
         directory: tilo_contact_directory::ContactDirectory,

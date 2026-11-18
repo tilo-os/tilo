@@ -287,9 +287,9 @@ def derive(original, approval_sha):
     require(hashlib.sha256(original).hexdigest()==RECIPE,'original recipe differs')
     require(re.fullmatch('[0-9a-f]{64}',approval_sha),'approval SHA required')
     text=original.decode(); marker='    make -j"$JOBS" all; \\\n'
-    require(text.count(marker)==1,'make seam differs')
+    require(text.count(marker)==1,'make boundary differs')
     start=text.rfind('RUN set -eux; \\\n',0,text.index(marker))
-    require(start>=0,'RUN seam missing')
+    require(start>=0,'RUN boundary missing')
     text=text[:start]+text[start:].replace('RUN set -eux; \\\n','RUN --mount=type=bind,from=kernel-checkpoint,target=/checkpoint,ro set -eux; \\\n',1)
     text=text.replace(marker,
         f'    python3 /checkpoint/kernel_checkpoint_restore.py restore --approval-sha256 {approval_sha}; \\\n    cd "$KSRC"; \\\n'+marker+'    python3 /checkpoint/kernel_checkpoint_restore.py assert-embedded; \\\n',1)

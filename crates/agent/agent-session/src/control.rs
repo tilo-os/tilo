@@ -5,7 +5,7 @@
 //! conversation, and the pause and stop switches its member obeys
 //! before every step. [`AgentSupervisor`] holds every approved delegation
 //! (Cloud's grant offers) and every running agent, and answers the
-//! vocabulary in `tilo_relay_protocol::agents` through [`ActionHost`], so a
+//! vocabulary in `tilo_server_protocol::agents` through [`ActionProvider`], so a
 //! browser steers agents over the same remote-action frames it uses for
 //! apps. Only devices of the delegating user may steer; an agent may not.
 
@@ -17,24 +17,24 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+    Pending,
 };
 use tilo_actions::{
     ActionContract, ActionOutput, Collects, ExecutionLocus, InvocationId, InvocationUpdate,
     OperationKind,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::agents::{
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::agents::{
     AGENT_KIND, AgentGrant, AgentInfo, AgentMessage, AgentStatus, AgentStep, AgentTask,
     AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState, MESSAGE_ACTION, MessageRole,
     PAUSE_ACTION, REQUEST_GRANT_ACTION, RESUME_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION,
     STOP_ACTION, SUPERVISOR_KIND, SUPERVISOR_RESOURCE, TaskState, agent_resource, color_hex,
     parse_color_hex,
 };
-use tilo_relay_protocol::delegation::{
+use tilo_server_protocol::delegation::{
     Delegate, DelegateProposal, DelegateScope, Delegation, MAX_DELEGATE_TEXT_BYTES,
     MAX_DELEGATED_APPS, MAX_DELEGATED_WORKSPACES,
 };
@@ -177,18 +177,18 @@ pub struct AgentControl {
     changed: Changed,
     /// Who confirms an action the agent's grants leave to the person: the
     /// person's own host, never the agent.
-    witness: Mutex<Option<Witness>>,
+    approver: Mutex<Option<Approver>>,
     /// The supervisor's signal that its snapshot changed, once the agent
     /// is one of its agents.
     reports_to: OnceLock<Arc<SnapshotChanges>>,
 }
 
 /// The person's host an agent asks before an action that asks first
-/// ([`tilo_actions::remote::ActionHost::confirm`]): it puts the question to
+/// ([`tilo_actions::remote::ActionProvider::confirm`]): it puts the question to
 /// the person on their own device and answers with their
-/// [`Confirmation::Witnessed`](tilo_actions::remote::Confirmation::Witnessed),
+/// [`Confirmation::Approved`](tilo_actions::remote::Confirmation::Approved),
 /// or refuses.
-pub type Witness = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
+pub type Approver = Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>;
 
 impl AgentControl {
     #[must_use]
@@ -204,7 +204,7 @@ impl AgentControl {
                 workspace: None,
             }),
             changed: Changed::default(),
-            witness: Mutex::new(None),
+            approver: Mutex::new(None),
             reports_to: OnceLock::new(),
         })
     }
@@ -238,7 +238,7 @@ impl AgentControl {
                 workspace: info.workspace.clone(),
             }),
             changed: Changed::default(),
-            witness: Mutex::new(None),
+            approver: Mutex::new(None),
             reports_to: OnceLock::new(),
         })
     }
@@ -336,12 +336,12 @@ impl AgentControl {
 
     /// The person's host that confirms what the agent's grants leave to
     /// them. Without one, such an action is refused.
-    pub fn set_witness(&self, witness: Option<Witness>) {
-        *self.witness.lock_recover() = witness;
+    pub fn set_approver(&self, approver: Option<Approver>) {
+        *self.approver.lock_recover() = approver;
     }
 
-    pub(crate) fn witness(&self) -> Option<Witness> {
-        self.witness.lock_recover().clone()
+    pub(crate) fn approver(&self) -> Option<Approver> {
+        self.approver.lock_recover().clone()
     }
 
     #[must_use]
@@ -695,7 +695,7 @@ pub type Spawner =
     Arc<dyn Fn(AgentIdentity, Arc<AgentControl>) -> Result<(), String> + Send + Sync>;
 
 /// What a host gives its supervisor: the approver for new grants, and the
-/// relay's register of agent devices.
+/// server's register of agent devices.
 pub trait AgentHostLink: Send + Sync {
     /// Ask the user's approving device to certify `key` as the agent
     /// `proposal` describes, in one consent step. Returns the pairing code
@@ -725,7 +725,7 @@ pub trait AgentHostLink: Send + Sync {
     /// The host of the person `delegation` names, which puts an action the
     /// agent's grants leave to them to them on their own device. `None`: no
     /// such host here, and the agent's actions that ask first are refused.
-    fn witness(&self, delegation: &Delegation) -> Option<Witness> {
+    fn approver(&self, delegation: &Delegation) -> Option<Approver> {
         let _ = delegation;
         None
     }
@@ -825,7 +825,7 @@ pub struct AgentSupervisor {
     spawner: Spawner,
     link: Mutex<Option<Arc<dyn AgentHostLink>>>,
     state: Mutex<SupervisorState>,
-    ledger: Mutex<InvocationLedger<InvocationState>>,
+    log: Mutex<InvocationLog<InvocationState>>,
     /// Raised whenever [`Self::snapshot`] would return something new.
     changes: Arc<SnapshotChanges>,
     me: Weak<Self>,
@@ -842,7 +842,7 @@ impl AgentSupervisor {
                 grants: Vec::new(),
                 agents: BTreeMap::new(),
             }),
-            ledger: Mutex::new(InvocationLedger::default()),
+            log: Mutex::new(InvocationLog::default()),
             changes: Arc::default(),
             me: me.clone(),
         })
@@ -868,8 +868,8 @@ impl AgentSupervisor {
             .min()
     }
 
-    fn ledger(&self) -> MutexGuard<'_, InvocationLedger<InvocationState>> {
-        self.ledger.lock_recover()
+    fn log(&self) -> MutexGuard<'_, InvocationLog<InvocationState>> {
+        self.log.lock_recover()
     }
 
     fn link(&self) -> Option<Arc<dyn AgentHostLink>> {
@@ -881,7 +881,7 @@ impl AgentSupervisor {
     pub fn set_link(&self, link: Arc<dyn AgentHostLink>) {
         // Agents already running ask the person through this host too.
         for control in self.state().agents.values() {
-            control.set_witness(link.witness(control.delegation()));
+            control.set_approver(link.approver(control.delegation()));
         }
         *self.link.lock_recover() = Some(link);
     }
@@ -1134,9 +1134,9 @@ impl AgentSupervisor {
             let control = AgentControl::new(identity.delegation.clone());
             control.report_to(&self.changes);
             control.set_workspace(&workspace);
-            control.set_witness(
+            control.set_approver(
                 self.link()
-                    .and_then(|link| link.witness(&identity.delegation)),
+                    .and_then(|link| link.approver(&identity.delegation)),
             );
             state.agents.insert(grant.to_owned(), control.clone());
             drop(state);
@@ -1287,9 +1287,9 @@ impl AgentSupervisor {
                 (None, Err(_)) => continue,
             };
             let control = AgentControl::restore(delegation, &info);
-            control.set_witness(
+            control.set_approver(
                 self.link()
-                    .and_then(|link| link.witness(control.delegation())),
+                    .and_then(|link| link.approver(control.delegation())),
             );
             control.report_to(&self.changes);
             match identity {
@@ -1313,7 +1313,7 @@ impl AgentSupervisor {
         caller.acting().is_person() && caller.user_public_key() == Some(&self.user_public_key)
     }
 
-    fn run(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionHostError> {
+    fn run(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionCallError> {
         let address = &request.target.address;
         let value = if address.resource == SUPERVISOR_RESOURCE {
             match address.action.as_str() {
@@ -1353,13 +1353,13 @@ impl AgentSupervisor {
                         .map_err(refused)?;
                     serde_json::json!({"grant": id, "pairingCode": pairing_code})
                 }
-                _ => return Err(ActionHostError::UnknownAction),
+                _ => return Err(ActionCallError::UnknownAction),
             }
         } else {
             let id = address
                 .resource
-                .strip_prefix(tilo_relay_protocol::agents::AGENT_RESOURCE_PREFIX)
-                .ok_or(ActionHostError::UnknownAction)?;
+                .strip_prefix(tilo_server_protocol::agents::AGENT_RESOURCE_PREFIX)
+                .ok_or(ActionCallError::UnknownAction)?;
             if address.action == REVOKE_ACTION {
                 self.revoke(id)
                     .map_err(|error| refused(error.to_string()))?;
@@ -1368,7 +1368,7 @@ impl AgentSupervisor {
                     resources: Vec::new(),
                 });
             }
-            let control = self.control(id).ok_or(ActionHostError::UnknownAction)?;
+            let control = self.control(id).ok_or(ActionCallError::UnknownAction)?;
             match address.action.as_str() {
                 MESSAGE_ACTION => {
                     let InvokeArgument::Text(text) = &request.argument else {
@@ -1404,7 +1404,7 @@ impl AgentSupervisor {
                         .map_err(|error| refused(error.to_string()))?;
                     serde_json::json!({})
                 }
-                _ => return Err(ActionHostError::UnknownAction),
+                _ => return Err(ActionCallError::UnknownAction),
             }
         };
         Ok(ActionOutput {
@@ -1513,8 +1513,8 @@ fn row(
     input: InputSpec,
 ) -> CatalogueRow {
     CatalogueRow {
-        provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
-        app_id: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
+        provider: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
+        app_id: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
         parent_resource: String::new(),
         resource: CatalogueResource {
             id: resource.into(),
@@ -1546,27 +1546,27 @@ fn row(
     }
 }
 
-fn invalid(reason: &str) -> ActionHostError {
-    ActionHostError::InvalidRequest {
+fn invalid(reason: &str) -> ActionCallError {
+    ActionCallError::InvalidRequest {
         reason: reason.into(),
     }
 }
 
-fn refused(reason: String) -> ActionHostError {
-    ActionHostError::Refused { reason }
+fn refused(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
 }
 
-/// [`ActionHost`] over a shared [`AgentSupervisor`]; wrap it in
-/// `tilo_relay::ActionHostPlane` to answer browsers through the host.
+/// [`ActionProvider`] over a shared [`AgentSupervisor`]; wrap it in
+/// `tilo_server::ActionProviderServer` to answer browsers through the host.
 #[derive(Clone)]
 pub struct SupervisorHost(pub Arc<AgentSupervisor>);
 
-impl ActionHost for SupervisorHost {
+impl ActionProvider for SupervisorHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if !self.0.authorized(caller) {
             return Pending::ready(Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query)));
         }
@@ -1581,17 +1581,17 @@ impl ActionHost for SupervisorHost {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
         if !self.0.authorized(caller) {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let invocation = request.invocation;
         let supervisor = &self.0;
         let receipt = supervisor
-            .ledger()
+            .log()
             .admit(caller, &request, || {
                 let output = supervisor.run(&request)?;
                 Ok(InvocationState::new(
@@ -1604,18 +1604,18 @@ impl ActionHost for SupervisorHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.ledger().get(caller, id).cloned()
+        self.0.log().get(caller, id).cloned()
     }
 
     fn cancel(
         &self,
         caller: &Caller,
         id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(if self.0.ledger().get(caller, id).is_none() {
-            Err(ActionHostError::UnknownInvocation)
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(if self.0.log().get(caller, id).is_none() {
+            Err(ActionCallError::UnknownInvocation)
         } else {
-            Err(ActionHostError::NotCancellable {
+            Err(ActionCallError::NotCancellable {
                 reason: "agent control completes at once".into(),
             })
         })
@@ -1641,7 +1641,7 @@ pub(crate) mod tests {
         let delegation = Delegation::sign(
             root,
             device,
-            tilo_relay_protocol::delegation::Delegate::Agent {
+            tilo_server_protocol::delegation::Delegate::Agent {
                 agent_id: "writer".into(),
             },
             "Writer helper",
@@ -1698,7 +1698,7 @@ pub(crate) mod tests {
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
-                provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
+                provider: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
                 address: ActionAddress::new(resource, action),
             },
             argument,
@@ -1714,7 +1714,7 @@ pub(crate) mod tests {
         host: &SupervisorHost,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         let receipt = match host.invoke(caller, request).poll_ready() {
             PendingPoll::Ready(receipt) => Some(receipt),
             _ => None,
@@ -1838,7 +1838,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             invoke(&host, &caller, message("something else")),
-            Err(ActionHostError::InvocationConflict),
+            Err(ActionCallError::InvocationConflict),
             "an id names one request"
         );
         let other = Caller::authenticated(
@@ -1847,7 +1847,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             invoke(&host, &other, message("sum the sheet")),
-            Err(ActionHostError::InvocationConflict),
+            Err(ActionCallError::InvocationConflict),
             "and one caller"
         );
         let control = host.0.control("writer").unwrap();
@@ -1877,7 +1877,7 @@ pub(crate) mod tests {
             ),
         );
         assert!(
-            matches!(refused, Err(ActionHostError::Refused { ref reason }) if reason == "the agent has no such task"),
+            matches!(refused, Err(ActionCallError::Refused { ref reason }) if reason == "the agent has no such task"),
             "{refused:?}"
         );
     }

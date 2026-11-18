@@ -467,7 +467,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase every_board_declares_a_crash_record_its_kernel_arguments_keep;
+    phase every_board_declares_a_crash_report_its_kernel_arguments_keep;
     {
         let lenovo = shipped("lenovo-83ed");
         let record = &lenovo["crash_record"];

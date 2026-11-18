@@ -258,7 +258,7 @@ fn block(
     }
 }
 
-fn review_gate(state: &InternalProjection) -> (&'static str, &'static str) {
+fn review_check(state: &InternalProjection) -> (&'static str, &'static str) {
     if state.on_review {
         (
             "internal_unavailable",
@@ -276,7 +276,7 @@ fn internal_commands(
     state: &InternalProjection,
 ) -> [(&'static str, &'static str, bool, &'static str, &'static str); 16] {
     let a = state.availability;
-    let (review_code, review_reason) = review_gate(state);
+    let (review_code, review_reason) = review_check(state);
     [
         (
             SetupEffect::USE_MIGRATION_INTENT.id,
@@ -442,7 +442,7 @@ pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
         .collect()
 }
 
-fn gated(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionSpec {
+fn guarded(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionSpec {
     if available {
         spec
     } else {
@@ -536,7 +536,7 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
                 Err(_) => continue,
             },
         };
-        row = row.operation(gated(spec, open, code, &super::strings::t(reason)));
+        row = row.operation(guarded(spec, open, code, &super::strings::t(reason)));
     }
     row
 }
@@ -619,7 +619,7 @@ pub(super) fn desktop_preparation_row(retry: bool) -> LiveRow {
         "imager.setup.desktop-preparation",
         super::strings::t("installer-desktop-resource"),
     )
-    .operation(gated(
+    .operation(guarded(
         bound(
             &SetupEffect::RetryDesktop,
             super::strings::t("installer-desktop-retry"),
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_row_offers_gated_commands_bound_to_the_reviewed_digest() {
+    fn internal_row_offers_guarded_commands_bound_to_the_reviewed_digest() {
         let actions = internal_actions(&projection(InternalProjection::default()));
         for (id, ..) in internal_commands(&InternalProjection::default()) {
             let action = actions
@@ -759,7 +759,7 @@ mod tests {
                 .iter()
                 .any(|blocked| blocked.id == "install-internal"
                     && blocked.code == "full_os_review_only"),
-            "the declared effect is gated like the row's"
+            "the declared effect is guarded like the row's"
         );
 
         let actions = internal_actions(&projection(InternalProjection {

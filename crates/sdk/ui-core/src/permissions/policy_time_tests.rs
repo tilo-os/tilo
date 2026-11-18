@@ -8,13 +8,13 @@ fn member_with(answer: Answer) -> PermissionContext {
         &crate::permissions::MemberId::person("member"),
         Role::Viewer,
     );
-    let mut standing = context.standing().clone();
+    let mut access = context.access().clone();
     if answer == Answer::Deny {
-        std::sync::Arc::make_mut(&mut standing.policy)
+        std::sync::Arc::make_mut(&mut access.policy)
             .members
             .insert("member".into(), Role::Editor);
     }
-    std::sync::Arc::make_mut(&mut standing.policy).grants.push(
+    std::sync::Arc::make_mut(&mut access.policy).grants.push(
         policy::Grant::new(
             "fixture",
             policy::Grantee::person("member"),
@@ -25,7 +25,7 @@ fn member_with(answer: Answer) -> PermissionContext {
         )
         .with_lifetime(policy::Lifetime::Until(100_000)),
     );
-    context.with_standing(standing)
+    context.with_access(access)
 }
 
 tilo_test_env::scenario! {

@@ -130,7 +130,12 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
         }
         if let Some(work) = &reply.work
             && work.failed()
+            && reply.text.trim().is_empty()
         {
+            // Only when the reply itself says nothing does the failure stand as its own card:
+            // a reply that already says what went wrong in the person's words (the agent's own
+            // sentence) keeps its details in the steps disclosure, not a second surface saying
+            // the same thing again.
             column.push(failed_row(reply, work, cx));
         }
     }

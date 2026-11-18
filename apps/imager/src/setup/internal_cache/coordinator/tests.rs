@@ -998,8 +998,8 @@ tilo_test_env::scenario! {
             || {
                 for cancel in [false, true] {
                     let bytes = manifest();
-                    let gate = Arc::new((Mutex::new(false), Condvar::new()));
-                    let server_gate = gate.clone();
+                    let hold = Arc::new((Mutex::new(false), Condvar::new()));
+                    let server_hold = hold.clone();
                     let requested = Arc::new(AtomicU64::new(0));
                     let seen = requested.clone();
                     let server = Server::on_request(
@@ -1009,7 +1009,7 @@ tilo_test_env::scenario! {
                         ],
                         move || {
                             if seen.fetch_add(1, Ordering::AcqRel) == 1 {
-                                let (m, c) = &*server_gate;
+                                let (m, c) = &*server_hold;
                                 let mut released = m.lock().unwrap();
                                 while !*released {
                                     released = c
@@ -1035,8 +1035,8 @@ tilo_test_env::scenario! {
                     if cancel {
                         worker.cancel(&t).unwrap();
                     }
-                    *gate.0.lock().unwrap() = true;
-                    gate.1.notify_all();
+                    *hold.0.lock().unwrap() = true;
+                    hold.1.notify_all();
                     let stopped = wait(
                         &worker,
                         if cancel {

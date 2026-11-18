@@ -1,6 +1,6 @@
 //! The keyboard's preferences: what may change them ([`SetPreference`]), the
 //! effects a palette, an agent or a script takes, and the rows the keyboard
-//! publishes. They are the person's settings ([`OskPreferences`]), not a record's
+//! publishes. They are the person's settings ([`OskPreferences`]), not a resource's
 //! content: they follow the person to their devices and are never undone.
 use serde::{Deserialize, Serialize};
 use ui::framework::LiveRow;

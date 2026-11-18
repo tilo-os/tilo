@@ -47,6 +47,17 @@ fn probe() -> Probe {
 /// emoji record beside its own, on a route whose reads the host refuses,
 /// so it never opens.
 fn probe_keeping_beside(beside: bool) -> Probe {
+    probe_on(beside, true)
+}
+
+/// [`probe`] whose own route's committed recheck the broker never answers:
+/// the route that offers its actions is joined and never opens, while the
+/// connection stands.
+fn probe_whose_route_never_opens() -> Probe {
+    probe_on(false, false)
+}
+
+fn probe_on(beside: bool, opens: bool) -> Probe {
     let definition = crate::application_test_support::runner_probe_definition();
     let temp = tempfile::tempdir().unwrap();
     let workspace = uuid::Uuid::new_v4().to_string();
@@ -60,9 +71,9 @@ fn probe_keeping_beside(beside: bool) -> Probe {
         )
         .unwrap(),
     );
-    let context = HostContext::prepare(
+    let context = ProcessContext::prepare(
         definition,
-        HostContextInputs {
+        ProcessContextInputs {
             records,
             views,
             device_id: "fixture-device".into(),
@@ -102,12 +113,18 @@ fn probe_keeping_beside(beside: bool) -> Probe {
         .records
         .read(&owner.checkout.id, |doc| doc.clone().save())
         .unwrap();
-    let (manager, invocations) =
+    let (manager, invocations) = if opens {
         CollaborationManager::native_initial_named_invocation_fixture_for_test(
             owner.broker_route().unwrap(),
             original,
             &refused,
-        );
+        )
+    } else {
+        CollaborationManager::native_initial_named_invocation_fixture_held_for_test(
+            owner.broker_route().unwrap(),
+            original,
+        )
+    };
     app.collaboration.manager = manager;
     Probe {
         app,
@@ -193,6 +210,7 @@ tilo_test_env::scenario! {
 
     phase an_own_invocation_waiting_on_a_route_that_closes_fails_with_the_route_error;
     {
+        crate::window_toolbar::notify(None);
         let mut probe = probe();
         assert!(!probe.app.published_action_history_ready());
         probe.invoke_effect();
@@ -216,6 +234,58 @@ tilo_test_env::scenario! {
         assert!(probe.app.actions.broker_requests.is_empty());
         assert!(probe.app.actions.held_own_invocations.is_empty());
         assert!((probe.invocations)().is_empty());
+        // The person is told too: a press that was not carried out is never
+        // silent. The pass that follows says it in the window's bar.
+        probe.app.controlled_local_idle_for_test();
+        let told = crate::window_toolbar::notice()
+            .expect("the window says why the press did nothing");
+        assert!(
+            told.text.contains(route_error),
+            "the person is told the route's own error: {}",
+            told.text
+        );
+    }
+
+    phase an_own_invocation_whose_route_never_opens_is_refused_and_the_person_told;
+    // While the connection stands and the route that offers the action does
+    // not open, a press waits for it. It does not wait for good: once the
+    // route's join has failed, or the wait has lasted its limit, the press is
+    // refused, nothing of it goes out, and the person is told why.
+    {
+        crate::window_toolbar::notify(None);
+        let pressed = crate::time::now();
+        let mut probe = probe_whose_route_never_opens();
+        crate::time::testing::with_monotonic_time(pressed, || {
+            probe.invoke_effect();
+            probe.app.pump_collab_presence();
+        });
+        assert!(
+            probe.app.collaboration.manager.is_connected(),
+            "the connection stands"
+        );
+        assert!(
+            !probe.app.published_action_history_ready(),
+            "the route that offers the action never opens"
+        );
+        crate::time::testing::with_monotonic_time(pressed + App::HELD_OWN_INVOCATION_WAIT, || {
+            probe.app.pump_collab_presence();
+        });
+        assert!(
+            probe.app.actions.held_own_invocations.is_empty(),
+            "a press waits for its route, never for good"
+        );
+        assert!(
+            probe.app.actions.broker_requests.is_empty(),
+            "nothing waits for an answer that cannot come"
+        );
+        assert!(
+            (probe.invocations)().is_empty(),
+            "nothing went out ahead of the surface that offers it"
+        );
+        probe.app.controlled_local_idle_for_test();
+        let told = crate::window_toolbar::notice()
+            .expect("the window says why the press did nothing");
+        assert!(!told.text.trim().is_empty());
     }
 
     phase a_window_whose_beside_record_never_opens_still_offers_its_actions;

@@ -24,7 +24,7 @@ stage=$work/stage
 main=$work/tilo-session
 dev=$work/tilo-session-devel
 mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec/tilo,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/doc/tilo-session}
-install -pm 0755 "$stage/bin/tilo-session" "$stage/bin/tilo" \
+install -pm 0755 "$stage/bin/tilo-session" "$stage/bin/tilo" "$stage/bin/tilolang-process" \
     "$stage/bin/tilo-import-folders" "$main/usr/bin/"
 # Tilo's own programs live in /usr/libexec/tilo; the old name stays on PATH.
 install -pm 0755 "$stage/bin/tilo-launcher" "$main/usr/libexec/tilo/"

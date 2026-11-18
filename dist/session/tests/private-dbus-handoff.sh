@@ -140,7 +140,7 @@ if ! XDG_DATA_HOME="$work/data" dbus-run-session -- "$0" --private-bus "$work" "
     # usable /tmp-backed stream transport to dbus-daemon.  That prevents the
     # private test bus from activating even the initial probe, before any Tilo
     # session lifecycle code runs.  Keep that host limitation distinct from a
-    # real hand-off failure; Fedora package lanes and developer hosts still run
+    # real hand-off failure; Fedora package jobs and developer hosts still run
     # the complete test.
     if ! grep -Fq 'dbus-activation:' "$work/log" 2>/dev/null; then
         echo 'private D-Bus handoff: SKIP (private bus could not activate the initial probe)'

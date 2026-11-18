@@ -14,8 +14,8 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     // The persistent OS-search API and CLI use this same runtime facade.
-    // It retains certified custody without installing a native seat service.
-    let host = session.action_host().unwrap();
+    // It retains certified ownership without installing a local person service.
+    let provider = session.action_provider().unwrap();
     let owner = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = session.media_host().handle().unwrap();
     let store = session.media_host().store();
@@ -24,17 +24,17 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         .unwrap();
     let untouched = runtime.block_on(store.ingest(b"revoked".to_vec())).unwrap();
     let accepted = request(session.workspace(), &first.to_hex());
-    let result = finish(&host, &owner, &accepted).unwrap();
+    let result = finish(&provider, &owner, &accepted).unwrap();
     assert!(matches!(
         result.update,
         tilo_actions::InvocationUpdate::Succeeded { .. }
     ));
-    let selected = tilo_identity_host::registry::identity_for_workspace(session.workspace())
+    let selected = tilo_identity::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let (_, certificate) =
-        tilo_identity_host::broker::trusted_current_device(session.workspace()).unwrap();
-    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        tilo_identity::broker::trusted_current_device(session.workspace()).unwrap();
+    tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .unwrap()
         .revoke(
             &selected.id,
@@ -48,18 +48,19 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         request(session.workspace(), &untouched.to_hex()),
     ] {
         assert!(matches!(
-            host.invoke(&owner, asked).poll_ready(),
+            provider.invoke(&owner, asked).poll_ready(),
             PendingPoll::Ready(Err(_))
         ));
     }
-    assert!(host.observe(&owner, &accepted.invocation).is_none());
-    assert!(host.next_change(&owner, &accepted.invocation).is_none());
+    assert!(provider.observe(&owner, &accepted.invocation).is_none());
+    assert!(provider.next_change(&owner, &accepted.invocation).is_none());
     assert!(
-        host.cancel(&owner, &accepted.invocation)
+        provider
+            .cancel(&owner, &accepted.invocation)
             .wait_timeout(std::time::Duration::from_secs(30))
             .ok()
             .flatten()
-            .expect("the host answers")
+            .expect("the provider answers")
             .is_err()
     );
     let client = BlobClient::connect_session(&profile.join(BLOB_SOCKET)).unwrap();
@@ -68,7 +69,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         scope.read_all(&untouched.to_hex()).unwrap(),
         ReadOutcome::Unavailable
     );
-    drop(host);
+    drop(provider);
     drop(session);
 }
 
@@ -96,23 +97,24 @@ fn request(workspace: &str, hash: &str) -> InvokeRequest {
 }
 
 fn finish(
-    host: &RuntimeActionHost,
+    provider: &RuntimeActionProvider,
     caller: &Caller,
     request: &InvokeRequest,
-) -> Result<InvocationState, ActionHostError> {
-    admission(host, caller, request).expect("workspace admission must not be abandoned")?;
-    Ok(wait_for_terminal(host, caller, request.invocation))
+) -> Result<InvocationState, ActionCallError> {
+    admission(provider, caller, request).expect("workspace admission must not be abandoned")?;
+    Ok(wait_for_terminal(provider, caller, request.invocation))
 }
 
 /// The host's answer to the request, or `None` if it abandoned it.
 fn admission(
-    host: &RuntimeActionHost,
+    provider: &RuntimeActionProvider,
     caller: &Caller,
     request: &InvokeRequest,
-) -> Option<Result<InvocationReceipt, ActionHostError>> {
+) -> Option<Result<InvocationReceipt, ActionCallError>> {
     let runtime = tilo_rt::try_app().unwrap();
     let _entered = runtime.handle().enter();
-    host.invoke(caller, request.clone())
+    provider
+        .invoke(caller, request.clone())
         .wait_timeout(
             tilo_test_env::hang_deadline().saturating_duration_since(std::time::Instant::now()),
         )
@@ -120,7 +122,7 @@ fn admission(
 }
 
 fn wait_for_terminal(
-    host: &RuntimeActionHost,
+    provider: &RuntimeActionProvider,
     caller: &Caller,
     invocation: tilo_actions::InvocationId,
 ) -> InvocationState {
@@ -130,10 +132,12 @@ fn wait_for_terminal(
     let _entered = runtime.handle().enter();
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let change = host
+        let change = provider
             .next_change(caller, &invocation)
             .expect("owned invocation");
-        let state = host.observe(caller, &invocation).expect("owned invocation");
+        let state = provider
+            .observe(caller, &invocation)
+            .expect("owned invocation");
         if state.is_terminal() {
             return state;
         }
@@ -146,9 +150,9 @@ fn wait_for_terminal(
     }
 }
 
-fn refused(host: &RuntimeActionHost, caller: &Caller, mut request: InvokeRequest) {
+fn refused(provider: &RuntimeActionProvider, caller: &Caller, mut request: InvokeRequest) {
     request.invocation = tilo_actions::InvocationId::new();
-    let result = finish(host, caller, &request);
+    let result = finish(provider, caller, &request);
     assert!(
         matches!(
             result,
@@ -164,47 +168,51 @@ fn refused(host: &RuntimeActionHost, caller: &Caller, mut request: InvokeRequest
 
 fn refuse_scoped_imports(
     session: &Standalone,
-    host: &RuntimeActionHost,
+    provider: &RuntimeActionProvider,
     owner: &Caller,
     asked: &InvokeRequest,
 ) {
     let workspace = session.workspace();
     refused(
-        host,
+        provider,
         &Caller::local_agent("limited").in_workspace(workspace),
         asked.clone(),
     );
     refused(
-        host,
+        provider,
         &Caller::local_app("so.tilo.photos").in_workspace(workspace),
         asked.clone(),
     );
     refused(
-        host,
+        provider,
         &Caller::local_person("other-owner").in_workspace(workspace),
         asked.clone(),
     );
     refused(
-        host,
+        provider,
         &owner.clone().running_shortcut("saved"),
         asked.clone(),
     );
-    // Confirmation is not owner custody when an owner delegates the call or
+    // Confirmation is not owner ownership when an owner delegates the call or
     // attributes it to another invocation.
-    refused(host, &owner.clone().delegated_to("limited"), asked.clone());
     refused(
-        host,
+        provider,
+        &owner.clone().delegated_to("limited"),
+        asked.clone(),
+    );
+    refused(
+        provider,
         owner,
         InvokeRequest {
             on_behalf_of: Some(tilo_actions::InvocationId::new()),
             ..asked.clone()
         },
     );
-    let selected = tilo_identity_host::registry::identity_for_workspace(workspace)
+    let selected = tilo_identity::registry::identity_for_workspace(workspace)
         .unwrap()
         .unwrap();
     refused(
-        host,
+        provider,
         &Caller::authenticated(selected.user_public_key, [9; 32]).in_workspace(workspace),
         asked.clone(),
     );
@@ -212,9 +220,9 @@ fn refuse_scoped_imports(
     if let InvokeArgument::Json(fields) = &mut spoofed.argument {
         fields.insert("account".into(), serde_json::json!(session.actor()));
     }
-    refused(host, owner, spoofed);
+    refused(provider, owner, spoofed);
     refused(
-        host,
+        provider,
         owner,
         InvokeRequest {
             confirmation: None,
@@ -229,13 +237,13 @@ fn refuse_scoped_imports(
             serde_json::json!("another-workspace"),
         );
     }
-    refused(host, owner, outside);
+    refused(provider, owner, outside);
     let mut excess = asked.clone();
     excess.invocation = tilo_actions::InvocationId::new();
     if let InvokeArgument::Json(fields) = &mut excess.argument {
         fields.insert("max_bytes".into(), serde_json::json!(1));
     }
-    refused(host, owner, excess);
+    refused(provider, owner, excess);
 }
 
 #[test]
@@ -244,7 +252,7 @@ fn owner_import_through_the_canonical_api_grants_only_the_selected_workspace() {
         return;
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    let host = session.action_host().unwrap();
+    let provider = session.action_provider().unwrap();
     let workspace = session.workspace();
     let owner = Caller::local_person(session.actor()).in_workspace(workspace);
     // Historical raw content in the actual runtime profile store, without a
@@ -270,12 +278,12 @@ fn owner_import_through_the_canonical_api_grants_only_the_selected_workspace() {
         ReadOutcome::Unavailable
     );
     let asked = request(workspace, &hash.to_hex());
-    refuse_scoped_imports(&session, &host, &owner, &asked);
+    refuse_scoped_imports(&session, &provider, &owner, &asked);
     assert_eq!(
         own.read_all(&hash.to_hex()).unwrap(),
         ReadOutcome::Unavailable
     );
-    let result = finish(&host, &owner, &asked).unwrap();
+    let result = finish(&provider, &owner, &asked).unwrap();
     assert!(
         matches!(
             result.update,
@@ -307,14 +315,14 @@ fn owner_import_through_the_canonical_api_grants_only_the_selected_workspace() {
     );
     // Retry uses the canonical invocation journal; it does not mint another import.
     assert!(matches!(
-        host.invoke(&owner, asked).poll_ready(),
+        provider.invoke(&owner, asked).poll_ready(),
         PendingPoll::Ready(Ok(_))
     ));
     let cli_request = serde_json::to_string(&request(workspace, &untouched.to_hex())).unwrap();
     // An active daemon owns the profile. The owner CLI must never start a
-    // second server or bypass that custody.
+    // second server or bypass that ownership.
     assert!(crate::cli::owner_action::<Standalone>(&profile, &cli_request).is_err());
-    drop(host);
+    drop(provider);
     drop(own);
     drop(other);
     drop(client);

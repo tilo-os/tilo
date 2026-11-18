@@ -1,6 +1,6 @@
 //! The undo step an API call joins: one per invocation a client names, one
 //! per task step a program names, one of its own for any other call.
-use super::{ActionHost, McpServer, Value};
+use super::{ActionProvider, McpServer, Value};
 
 /// The undo step a tool call joins, in its `_meta`: `{"so.tilo.mcp":
 /// {"step": "…"}}`. Every call of this session naming the same step is
@@ -66,7 +66,7 @@ impl DeclaredInvocation {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The undo step a tool call's invocations join: the invocation its
     /// `_meta["so.tilo.mcp"].invocation.id` names (or the task step its
     /// `step` names), which every call naming the same one in this session
@@ -125,11 +125,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(tilo_actions::ActionId(
             uuid::Builder::from_custom_bytes(id).into_uuid(),
         ))
-    }
-
-    /// The undo step the invocations of the call being answered join.
-    pub(super) fn call_step() -> Option<tilo_actions::ActionId> {
-        STEP.try_with(|step| *step).ok()
     }
 
     /// The invocation the call being answered is a step of: its undo step

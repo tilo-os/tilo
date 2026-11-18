@@ -41,7 +41,7 @@ impl crate::services::HostStepServices for NativeFacadeHostSteps {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn signed_native_facade_runs_host_steps_with_original_certified_custody() {
+async fn signed_native_facade_runs_host_steps_with_original_certified_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use tilo_actions::remote::{device_pairing, identity_admin};
@@ -57,7 +57,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
             };
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),
@@ -86,7 +86,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let native = rig
                 .state
-                .certified_native_action_host(&caller, &evidence)
+                .certified_native_action_provider(&caller, &evidence)
                 .unwrap();
             let original = rig
                 .state
@@ -173,7 +173,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
             ));
             assert!(
                 !is_local_host_caller(&projected, Some(&origin(original.clone(), false))),
-                "keyless Certified is not itself evidence of native device custody"
+                "keyless Certified is not itself evidence of native device identity"
             );
             // Isolate the matcher after the protected-device verification bit:
             // it must still reject mismatched or restricted projections.
@@ -276,7 +276,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             let governance = Arc::new(NativeFacadeGovernance::default());
             let rig = Rig::with_services(
                 &env,
-                HostServices {
+                ProcessServices {
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),
@@ -294,11 +294,11 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let ordinary = rig
                 .state
-                .certified_local_action_host(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence)
                 .unwrap();
             let native = rig
                 .state
-                .certified_native_action_host(&caller, &evidence)
+                .certified_native_action_provider(&caller, &evidence)
                 .unwrap();
             let mut request = local_host_request(false);
             request.target = tilo_actions::remote::RemoteActionTarget {
@@ -348,7 +348,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn signed_caller_without_protected_seat_cannot_acquire_physical_intent() {
+async fn signed_caller_without_protected_local_person_cannot_acquire_physical_intent() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
@@ -356,12 +356,12 @@ async fn signed_caller_without_protected_seat_cannot_acquire_physical_intent() {
             let (caller, evidence) = local_host_evidence(&env);
             assert!(
                 rig.state
-                    .certified_local_action_host(&caller, &evidence)
+                    .certified_local_action_provider(&caller, &evidence)
                     .is_ok()
             );
             assert!(
                 rig.state
-                    .certified_native_action_host(&caller, &evidence)
+                    .certified_native_action_provider(&caller, &evidence)
                     .is_err()
             );
             rig.stop().await;

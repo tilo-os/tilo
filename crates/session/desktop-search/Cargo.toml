@@ -31,6 +31,8 @@ catalogue = ["dep:app-catalogue"]
 lazy-engine = ["ui/lazy-engine"]
 
 [dependencies]
+# Where choosing a notice lands, as a search hit opens it.
+tilo-service = { version = "0.1.0", path = "../service" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Every Tilo app's manifest metadata: where it runs, its names and keywords.
 app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }

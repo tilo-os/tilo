@@ -36,7 +36,7 @@ impl PeerWorkspaceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
+        use automerge::{ReadDoc, transaction::Transactable};
         use tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY;
         if key.device_public_key() != caller.device_public_key {
             return Err("a shortcut change is signed by its caller's own device".into());
@@ -72,14 +72,7 @@ impl PeerWorkspaceMut<'_> {
         let mut candidate = workspace.clone();
         let before = candidate.get_heads();
         candidate.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
-        let map = match candidate
-            .get(ROOT, WORKSPACE_AUTOMATIONS_KEY)
-            .map_err(|e| e.to_string())?
-        {
-            Some((Value::Object(ObjType::Map), map)) => Some(map),
-            Some(_) => return Err("the workspace's shortcuts are malformed".into()),
-            None => None,
-        };
+        let map = super::governed_map(&candidate, WORKSPACE_AUTOMATIONS_KEY)?;
         let changed = match change {
             ShortcutChange::Save(shortcut) => {
                 if let Some(saver) = &shortcut.saved_by {
@@ -99,16 +92,12 @@ impl PeerWorkspaceMut<'_> {
                     }
                 }
                 let blob = serde_json::to_vec(shortcut).map_err(|e| e.to_string())?;
-                put_shortcut(&mut candidate, map, shortcut.id.as_str(), blob)?
+                put_shortcut(&mut candidate, &map, shortcut.id.as_str(), blob)?
             }
             ShortcutChange::Delete(id) => {
-                let held = map
-                    .as_ref()
-                    .and_then(|map| candidate.get(map, id.as_str()).ok().flatten())
-                    .is_some();
-                let Some(map) = map.filter(|_| held) else {
+                if candidate.get(&map, id.as_str()).ok().flatten().is_none() {
                     return Err(format!("there is no shortcut `{id}`"));
-                };
+                }
                 candidate
                     .delete(&map, id.as_str())
                     .map_err(|e| e.to_string())?;
@@ -125,32 +114,25 @@ impl PeerWorkspaceMut<'_> {
     }
 }
 
-/// Put `blob` as shortcut `id` into the workspace's shortcuts `map`, made if the
-/// workspace has none yet. Answers whether the workspace changed.
+/// Put `blob` as shortcut `id` into the workspace's shortcuts `map`. Answers
+/// whether the workspace changed.
 fn put_shortcut(
     candidate: &mut impl automerge::transaction::Transactable,
-    map: Option<automerge::ObjId>,
+    map: &automerge::ObjId,
     id: &str,
     blob: Vec<u8>,
 ) -> Result<bool, String> {
-    use automerge::{ObjType, ROOT, ScalarValue, Value};
-    use tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY;
-    let map = match map {
-        Some(map) => map,
-        None => candidate
-            .put_object(ROOT, WORKSPACE_AUTOMATIONS_KEY, ObjType::Map)
-            .map_err(|e| e.to_string())?,
-    };
-    match candidate.get(&map, id).map_err(|e| e.to_string())? {
+    use automerge::{ScalarValue, Value};
+    match candidate.get(map, id).map_err(|e| e.to_string())? {
         Some((Value::Scalar(held), _)) if matches!(held.as_ref(), ScalarValue::Bytes(bytes) if *bytes == blob) => {
             Ok(false)
         }
         held => {
-            if held.is_none() && candidate.length(&map) >= MAX_SHORTCUTS {
+            if held.is_none() && candidate.length(map) >= MAX_SHORTCUTS {
                 return Err("the workspace holds as many shortcuts as it can".into());
             }
             candidate
-                .put(&map, id, ScalarValue::Bytes(blob))
+                .put(map, id, ScalarValue::Bytes(blob))
                 .map_err(|e| e.to_string())?;
             Ok(true)
         }

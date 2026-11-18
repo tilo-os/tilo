@@ -54,7 +54,7 @@ impl FlathubFeed {
     }
 
     #[must_use]
-    pub fn from_records(
+    pub fn from_resources(
         locale: &str,
         popular: &[AppStreamRecord],
         catalogue: &[AppStreamRecord],
@@ -65,18 +65,18 @@ impl FlathubFeed {
         let mut items = Vec::with_capacity(catalogue.len().max(popular.len()));
         for (rank, record) in popular.iter().enumerate() {
             if seen.insert(record.app_id.clone()) {
-                let mut item = crate::sources::flathub_record_to_item(record, &[]);
+                let mut item = crate::sources::flathub_resource_to_item(record, &[]);
                 item.listing.featured_rank = u32::try_from(rank).ok();
                 items.push(item);
             }
         }
         for record in catalogue {
             if seen.insert(record.app_id.clone()) {
-                items.push(crate::sources::flathub_record_to_item(record, &[]));
+                items.push(crate::sources::flathub_resource_to_item(record, &[]));
             } else if let Some(item) = items.iter_mut().find(|item| item.id == record.app_id) {
                 // The catalogue page carries fields a collection row may
                 // not; keep the featured rank and fill what is missing.
-                let fresh = crate::sources::flathub_record_to_item(record, &[]);
+                let fresh = crate::sources::flathub_resource_to_item(record, &[]);
                 if item.listing.updated_at_unix == 0 {
                     item.listing.updated_at_unix = fresh.listing.updated_at_unix;
                 }
@@ -132,7 +132,7 @@ pub fn fetch(locale: &str, now_unix: u64) -> Result<FlathubFeed, String> {
         }
         Err(error) => return Err(error.to_string()),
     };
-    Ok(FlathubFeed::from_records(
+    Ok(FlathubFeed::from_resources(
         locale, &popular, &catalogue, complete, now_unix,
     ))
 }
@@ -183,7 +183,7 @@ fn from_local_appstream(locale: &str, now_unix: u64) -> Option<FlathubFeed> {
                     .collect(),
                 ..AppStreamRecord::default()
             };
-            crate::sources::flathub_record_to_item(&record, &[])
+            crate::sources::flathub_resource_to_item(&record, &[])
         })
         .collect();
     (!items.is_empty()).then(|| FlathubFeed {
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn popular_apps_come_first_ranked_and_the_catalogue_fills_the_rest() {
-        let feed = FlathubFeed::from_records(
+        let feed = FlathubFeed::from_resources(
             "de-DE",
             &[record("org.b.B", 0), record("org.a.A", 0)],
             &[record("org.a.A", 50), record("org.c.C", 70)],

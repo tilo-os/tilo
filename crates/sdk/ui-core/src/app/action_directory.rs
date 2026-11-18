@@ -14,11 +14,11 @@ impl App {
 
     fn try_action_directory_revision(&mut self) -> Result<String, String> {
         let captured = (|| {
-            let owners = crate::bound_dispatch::directory_witness(
+            let owners = crate::bound_dispatch::directory_observation(
                 self.root_widget.as_ref(),
                 &self.state.doc,
             )?;
-            let permissions = self.permission_ctx.directory_witness()?;
+            let permissions = self.permission_ctx.directory_observation()?;
             let reusable = owners.iter().all(|owner| owner.generation.is_some());
             // Described, not made: making a provider can build its index,
             // and this runs on every frame that publishes the surface.
@@ -28,7 +28,7 @@ impl App {
                 .iter()
                 .map(|provider| provider.invocation_domain)
                 .collect();
-            let witness = action_directory_snapshot::DirectoryWitness {
+            let observation = action_directory_snapshot::DirectoryObservation {
                 registry_generation: self.actions.action_registry_generation,
                 root_domain: crate::resources::action_directory_invocation_domain(
                     self.root_widget.as_ref(),
@@ -54,9 +54,9 @@ impl App {
                     })
                     .collect(),
             };
-            Ok::<_, String>((reusable, witness))
+            Ok::<_, String>((reusable, observation))
         })();
-        let (reusable, witness) = match captured {
+        let (reusable, observation) = match captured {
             Ok(value) => value,
             Err(error) => {
                 self.actions.action_directory_stamp = None;
@@ -68,7 +68,7 @@ impl App {
         };
         if reusable
             && let Some((old, revision)) = &self.actions.action_directory_stamp
-            && old.as_ref() == &witness
+            && old.as_ref() == &observation
         {
             return Ok(revision.clone());
         }
@@ -76,7 +76,8 @@ impl App {
         // heads here would commit an open transaction and split an undo unit.
         self.retire_action_directory();
         let revision = format!("v5:{}", uuid::Uuid::new_v4());
-        self.actions.action_directory_stamp = Some((std::rc::Rc::new(witness), revision.clone()));
+        self.actions.action_directory_stamp =
+            Some((std::rc::Rc::new(observation), revision.clone()));
         Ok(revision)
     }
 

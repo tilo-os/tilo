@@ -1,10 +1,10 @@
 //! Where a task's tilolang programs run: the tilolang host of one task, started over a socket of
 //! its own, for any API whose workspace hosts programs — a desktop session's MCP server, a
-//! device's, or the API server's over a workspace the relay keeps.
+//! device's, or the API server's over a workspace the server keeps.
 //!
 //! The host holds no authority: it decides nothing and writes no record, and everything its
 //! programs read or change comes back over the program connection to the API, which does it as
-//! the program's author, through the same gate as every other call ([`crate::mcp_tilo`]). What
+//! the program's author, through the same check as every other call ([`crate::mcp_tilo`]). What
 //! differs between hosts is what a program may name there: the apps of the workspace the task
 //! runs in, which [`TaskCatalogue`] answers.
 
@@ -13,9 +13,9 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
-use runtime_portal::tilolang_host::App;
+use runtime_portal::tilolang_process::App;
 #[cfg(target_os = "linux")]
-use runtime_portal::tilolang_host::{TaskFds, TaskRequest, encode_apps};
+use runtime_portal::tilolang_process::{TaskFds, TaskRequest, encode_apps, send_task};
 use tilo_lock::MutexRecover as _;
 
 /// What a task's programs may name in one workspace: the apps it compiles against, and what the
@@ -26,7 +26,7 @@ pub struct Catalogue {
     /// The id each app keeps its records under, when it was renamed from an earlier one.
     pub documents_under: BTreeMap<String, String>,
     /// The apps whose records the API changes itself, rather than invoking their actions.
-    pub changed_at_record: BTreeSet<String>,
+    pub changed_at_document: BTreeSet<String>,
 }
 
 /// Where a task's catalogue comes from: the workspace's apps, as its host runs them.
@@ -36,7 +36,7 @@ pub trait TaskCatalogue: Send + Sync {
 }
 
 /// The hosts of one connection's task connections: each task's tilolang host, started on its
-/// first program in a thread of the API's own ([`crate::TaskHosts`]).
+/// first program as a process of its own ([`crate::TaskHosts`]).
 pub struct TaskHosts {
     /// The person the connection was admitted for: `me` in its programs.
     person: Mutex<Option<String>>,
@@ -83,30 +83,82 @@ impl crate::TaskHosts for TaskHosts {
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
             documents_under: catalogue.documents_under,
-            changed_at_record: catalogue.changed_at_record,
+            changed_at_document: catalogue.changed_at_document,
         };
-        std::thread::Builder::new()
-            .name("tilo-task-host".into())
-            .spawn(move || {
-                let fds = TaskFds {
-                    program: host_end.into(),
-                    apps,
-                };
-                let opened = tilolang_host::task::Task::open(&request, fds);
-                let task = match opened {
-                    Ok(task) => task,
-                    Err(error) => {
-                        tracing::warn!(task = request.task, %error, "MCP server: a task's host did not start");
-                        return;
-                    }
-                };
-                // Every line the server sends is answered; the host ends when the server closes
-                // the connection, with the client that started it.
-                while task.serve_all() {}
-                tracing::debug!(task = request.task, "MCP server: a task's host ended");
-            })?;
+        let api = start_program()?;
+        send_task(
+            &api,
+            &request,
+            &TaskFds {
+                program: host_end.into(),
+                apps,
+            },
+        )?;
+        // The host ends when the server closes the program connection, with the client that
+        // started it: it needs its api for nothing more.
         Ok(server_end.into())
     }
+}
+
+/// The task host's program: `tilolang-process` beside this program, as a build or an install puts
+/// them, or beside the directory it is in, as Cargo keeps a test's program.
+#[cfg(target_os = "linux")]
+fn program() -> io::Result<std::path::PathBuf> {
+    const NAME: &str = "tilolang-process";
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent();
+    [dir, dir.and_then(std::path::Path::parent)]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join(NAME))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no tilolang-process is installed beside this program to run a task's programs",
+            )
+        })
+}
+
+/// Start a task host of its own: the tilolang host's program, holding the other end of the api
+/// this returns and nothing else of this process. It ends with this process, and with its last
+/// task.
+#[cfg(target_os = "linux")]
+fn start_program() -> io::Result<OwnedFd> {
+    use std::os::fd::{AsRawFd as _, BorrowedFd};
+    use std::os::unix::process::CommandExt as _;
+    let (ours, theirs) = runtime_portal::tilolang_process::pair()?;
+    let raw = theirs.as_raw_fd();
+    let mut command = std::process::Command::new(program()?);
+    command
+        .env(
+            runtime_portal::tilolang_process::SOCKET_FD_ENV,
+            raw.to_string(),
+        )
+        .env_remove(runtime_portal::tilolang_process::STORAGE_ENV)
+        .stdin(std::process::Stdio::null())
+        // This process's own output may be a protocol (`tilo mcp` speaks on it).
+        .stdout(std::process::Stdio::null());
+    // SAFETY: runs in the forked child before exec and calls only async-signal-safe system calls
+    // (fcntl, prctl), allocating nothing; `raw` stays open in the parent until the spawn returns.
+    unsafe {
+        command.pre_exec(move || {
+            let api = BorrowedFd::borrow_raw(raw);
+            rustix::io::fcntl_setfd(api, rustix::io::FdFlags::empty())?;
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    drop(theirs);
+    std::thread::Builder::new()
+        .name("tilo-task-host".into())
+        .spawn(move || match child.wait() {
+            Ok(status) if status.success() => tracing::debug!("a task's host ended"),
+            Ok(status) => tracing::warn!(%status, "a task's host failed"),
+            Err(error) => tracing::warn!(%error, "a task's host was lost"),
+        })?;
+    Ok(ours)
 }
 
 /// The apps a workspace's host publishes, as a task's programs compile against them there: every
@@ -128,7 +180,7 @@ impl<H> WorkspaceCatalogue<H> {
 
 impl<H> TaskCatalogue for WorkspaceCatalogue<H>
 where
-    H: tilo_actions::remote::ActionHost + Send + Sync,
+    H: tilo_actions::remote::ActionProvider + Send + Sync,
 {
     /// The apps the workspace lists, each with the surface this build of the app publishes: a
     /// program compiles against the app's own declarations, so an app whose surface this build

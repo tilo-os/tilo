@@ -16,7 +16,7 @@ use std::sync::{Arc, mpsc};
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_broker_core::custody::OwnerCustody as _;
+use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::MemberId;
 use ui::resource::workspace::WorkspaceResources;
@@ -244,7 +244,7 @@ impl EngineRecords {
 
 impl Drop for Inner {
     /// What the session changed and no pass wrote yet still reaches the workspace, as far as this
-    /// device's custody signs it at once.
+    /// device's ownership signs it at once.
     fn drop(&mut self) {
         self.write(true);
     }
@@ -696,7 +696,7 @@ impl crate::Shared {
     /// keeps its records under, its earliest when it was renamed), so the service, the windows,
     /// an agent's programs and the person's other devices read and change one record.
     pub(crate) fn keep_app_records(&self) {
-        let records = self.services.borrow().workspace_records();
+        let records = self.services.borrow().workspace_documents();
         if records.is_empty() {
             return;
         }

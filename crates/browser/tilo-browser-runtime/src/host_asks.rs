@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 
 /// What the host answered, from its own thread.
 pub(crate) type Reply = Result<WorkspacesReply, String>;

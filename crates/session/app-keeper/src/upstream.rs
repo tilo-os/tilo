@@ -82,6 +82,8 @@ pub(crate) struct Upstream {
         wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     >,
     pub dialog: Option<wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1>,
+    /// The desktop's colour manager.
+    pub color: Option<crate::color::UpColor>,
     pub toplevel_icon: Option<
         wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
     >,
@@ -95,6 +97,9 @@ pub(crate) struct Upstream {
         wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1,
     >,
     pub feedback: FeedbackParts,
+    /// The dma-buf formats this desktop's default feedback names, once it arrived: a held buffer
+    /// it cannot take is not made there (that would be a protocol error ending every window).
+    pub dmabuf_formats: Option<std::collections::HashSet<smithay::backend::allocator::Format>>,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
     pub tablet_manager: Option<
@@ -173,11 +178,13 @@ impl Upstream {
                 idle_inhibit: None,
                 shortcuts_inhibit: None,
                 dialog: None,
+                color: None,
                 toplevel_icon: None,
                 icon_sizes: Vec::new(),
                 presentation_version: 0,
                 toplevel_tag: None,
                 feedback: FeedbackParts::default(),
+                dmabuf_formats: None,
                 xdg_outputs: None,
                 seat: None,
                 tablet_manager: None,
@@ -348,6 +355,7 @@ fn bind_global(
         "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
             up.shortcuts_inhibit = Some(registry.bind(name, 1, qh, ()));
         }
+        "wp_color_manager_v1" => crate::color::UpColor::bind(up, registry, name, version),
         "xdg_wm_dialog_v1" => {
             up.dialog = Some(registry.bind(name, 1, qh, ()));
         }
@@ -402,6 +410,7 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
         // An app that took a tablet seat before this desktop attached gets its devices on the
         // desktop's seat once both the manager and the seat are bound.
         state.ensure_upstream_tablet_seat();
+        state.ensure_up_color_outputs();
     }
 }
 
@@ -426,10 +435,14 @@ impl Dispatch<c::wl_callback::WlCallback, SyncStage> for State {
                 if let Some(dmabuf) = &up.dmabuf {
                     dmabuf.get_default_feedback(qh, ());
                 }
+                // The windows are made once the default feedback above arrived, so a held
+                // dma-buf is made only in a format this desktop takes.
                 conn.display().sync(qh, SyncStage::Ready);
-                state.push_all();
             }
-            SyncStage::Ready => state.desktop_ready(),
+            SyncStage::Ready => {
+                state.push_all();
+                state.desktop_ready();
+            }
         }
     }
 }
@@ -618,7 +631,7 @@ impl State {
 impl Dispatch<cx::xdg_wm_base::XdgWmBase, ()> for State {
     fn event(
         state: &mut Self,
-        wm_base: &cx::xdg_wm_base::XdgWmBase,
+        _: &cx::xdg_wm_base::XdgWmBase,
         event: cx::xdg_wm_base::Event,
         (): &(),
         _: &Connection,
@@ -626,7 +639,7 @@ impl Dispatch<cx::xdg_wm_base::XdgWmBase, ()> for State {
     ) {
         // Answered for the app, never by the keeper alone: an app that hangs must look hung.
         if let cx::xdg_wm_base::Event::Ping { serial } = event {
-            state.desktop_ping(wm_base, serial);
+            state.desktop_ping(serial);
         }
     }
 }
@@ -767,10 +780,15 @@ impl State {
         self.drop_unseen_outputs();
         self.desktop_data_device();
         self.desktop_primary_selection();
+        // The app's own selections are offered to the desktop it just attached to, before its
+        // windows get the focus: a paste into anything else first must still find them.
+        self.reassert_owner();
+        self.primary_reassert_owner();
         self.desktop_text_input();
         self.desktop_pointer_constraints();
         self.desktop_relative_pointers();
         self.desktop_pointer_gestures();
+        self.desktop_color_ready();
         self.ready_once = true;
         self.windows_changed = true;
     }

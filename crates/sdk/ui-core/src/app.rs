@@ -26,7 +26,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use crate::host_core::{ControlHost as _, HostCore as _, KeyHost as _, ResourceInvocation};
+use crate::app_core::{AppCore as _, ControlCore as _, KeyCore as _, ResourceInvocation};
 use std::cell::Cell;
 
 #[cfg(feature = "native")]
@@ -63,14 +63,14 @@ mod runtime;
 mod window_bar;
 use runtime::{
     AccessibilityRuntime, ActionRuntime, BrokerReply, CollaborationRuntime, ContinuationRuntime,
-    HistoryRuntime, InputRuntime, LayoutRuntime, PersistenceRuntime, PresenceRuntime,
-    WindowRuntime,
+    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime, PersistenceRuntime,
+    PresenceRuntime, WindowRuntime,
 };
 include!("app/continuation.rs");
 include!("app/dev_session.rs");
 include!("app/dev_library.rs");
 include!("app/actions.rs");
-include!("app/host_core.rs");
+include!("app/app_core.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
@@ -215,13 +215,13 @@ use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "native")]
 use vello::kurbo::Rect as KurboRect;
 
-/// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
+/// Cached [`crate::process::RunnerDiagnostics::perf_log`] check
 /// (`TILO_UI_PERF=1` natively), so the per-frame read is cheap.
 #[cfg(feature = "native")]
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
+    *FLAG.get_or_init(|| crate::process::environment().diagnostics.perf_log)
 }
 
 /// `TILO_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
@@ -233,7 +233,7 @@ fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
-        crate::host::environment()
+        crate::process::environment()
             .diagnostics
             .disable_scroll_fast_path
     })
@@ -680,7 +680,7 @@ impl AppConstructionInputs {
         // The screen reader below speaks through the host's services, so a
         // process that never installed any gets the native platform's.
         #[cfg(feature = "native")]
-        crate::host::native::install_default_if_unset(None);
+        crate::process::native::install_default_if_unset(None);
         #[cfg(feature = "native")]
         crate::emoji_catalogue::keep_recents_on_the_device();
         Self {
@@ -694,13 +694,13 @@ impl AppConstructionInputs {
             },
             watch_system_settings: true,
             debug_mode: || {
-                cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
+                cfg!(debug_assertions) && crate::process::environment().diagnostics.debug_overlay
             },
             theme_store_stamp: settings_store::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
-                if crate::host::environment().accessibility.screen_reader
+                if crate::process::environment().accessibility.screen_reader
                     || settings_store::accessibility::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
@@ -709,16 +709,16 @@ impl AppConstructionInputs {
                 }
             },
             your_colour: crate::local_identity::own_colour,
-            high_contrast: || crate::host::environment().accessibility.high_contrast,
-            reduce_motion: || crate::host::environment().accessibility.reduce_motion,
+            high_contrast: || crate::process::environment().accessibility.high_contrast,
+            reduce_motion: || crate::process::environment().accessibility.reduce_motion,
             text_scale: || {
-                crate::host::environment()
+                crate::process::environment()
                     .accessibility
                     .text_scale
                     .unwrap_or(1.0)
             },
             ui_scale: || {
-                crate::host::environment()
+                crate::process::environment()
                     .accessibility
                     .ui_scale
                     .unwrap_or(1.0)
@@ -827,7 +827,7 @@ impl App {
         let scope =
             crate::collaboration::native_initial::take_component_scope().unwrap_or_default();
         let retirement = component.take_root_retirement();
-        let mut assembly = retirement_assembly::ComponentAssemblyCustody {
+        let mut assembly = retirement_assembly::ComponentAssemblyOwnership {
             component: None,
             scope: None,
             retirement,
@@ -861,7 +861,7 @@ impl App {
             ));
         };
         let mut root = Box::new(crate::widget::BoundAppWidget::new(component));
-        let mut root_custody = retirement_assembly::AppAssemblyCustody {
+        let mut root_ownership = retirement_assembly::AppAssemblyOwnership {
             retirement: assembly.retirement.take(),
             root: None,
             wake: assembly.scope.take(),
@@ -872,7 +872,8 @@ impl App {
             screen_reader: None,
             values: Default::default(),
         };
-        let validation = retirement_assembly::ValidationRetirement(&root_custody.retirement, true);
+        let validation =
+            retirement_assembly::ValidationRetirement(&root_ownership.retirement, true);
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
         {
@@ -881,8 +882,8 @@ impl App {
                 .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
         }
         validation.disarm();
-        root_custody.root = Some(root);
-        let mut app = retirement_assembly::assemble(root_custody);
+        root_ownership.root = Some(root);
+        let mut app = retirement_assembly::assemble(root_ownership);
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
@@ -918,7 +919,7 @@ impl App {
     }
 
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
-        let accessibility = crate::host::environment().accessibility;
+        let accessibility = crate::process::environment().accessibility;
         let theme = Theme::configured().with_a11y(
             &crate::a11y::A11ySettings {
                 high_contrast: accessibility.high_contrast,
@@ -1037,7 +1038,7 @@ impl App {
         Ok(app)
     }
 
-    /// Registered producer inventory; legacy private custody remains unqualified.
+    /// Registered producer inventory; legacy private ownership remains unqualified.
     pub fn control_coverage(&self) -> crate::ControlCoverage {
         self.control_domain.coverage()
     }
@@ -1117,7 +1118,7 @@ impl App {
     ) -> Self {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
-        let domain = crate::control_custody::ControlDomain::outer();
+        let domain = crate::control_domain::ControlDomain::outer();
         let root = factory();
         Self::from_scoped_parts_with_inputs(scope, state, root, || {
             let mut inputs = inputs();
@@ -1141,14 +1142,14 @@ impl App {
     ) -> Result<Self, E> {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
-        let domain = crate::control_custody::ControlDomain::outer();
+        let domain = crate::control_domain::ControlDomain::outer();
         let root = factory()?;
-        Ok(Self::from_scoped_parts_with_custody(
+        Ok(Self::from_scoped_parts_with_ownership(
             scope, state, root, domain,
         ))
     }
 
-    pub(crate) fn from_scoped_parts_with_custody(
+    pub(crate) fn from_scoped_parts_with_ownership(
         scope: crate::WakeScope,
         state: State,
         root: Box<dyn Widget>,
@@ -1161,7 +1162,7 @@ impl App {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_scoped_parts_with_controlled_custody(
+    pub(crate) fn from_scoped_parts_with_controlled_ownership(
         scope: crate::WakeScope,
         state: State,
         root: Box<dyn Widget>,
@@ -1279,7 +1280,7 @@ impl App {
         root_widget: Box<dyn Widget>,
         inputs: AppConstructionInputs,
     ) -> Self {
-        retirement_assembly::assemble(retirement_assembly::AppAssemblyCustody {
+        retirement_assembly::assemble(retirement_assembly::AppAssemblyOwnership {
             retirement: None,
             root: Some(root_widget),
             wake: wake_scope,
@@ -1582,12 +1583,12 @@ impl App {
         else {
             return;
         };
-        let Some(witness) = self.collaboration.manager.primary_route().cloned() else {
+        let Some(observation) = self.collaboration.manager.primary_route().cloned() else {
             return;
         };
-        if self.continuation.search_index_route.as_ref() != Some(&witness) {
+        if self.continuation.search_index_route.as_ref() != Some(&observation) {
             self.continuation.search_index.reset();
-            self.continuation.search_index_route = Some(witness.clone());
+            self.continuation.search_index_route = Some(observation.clone());
         }
         if !self.continuation.search_index.wants(state) {
             return;
@@ -1605,16 +1606,16 @@ impl App {
     }
 
     fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
-        let witness = self.collaboration.manager.primary_route()?.clone();
+        let observation = self.collaboration.manager.primary_route()?.clone();
         let instance = self.collaboration.manager.private_window_instance()?;
-        if self.continuation.last_private_route.as_ref() != Some(&witness)
+        if self.continuation.last_private_route.as_ref() != Some(&observation)
             || self.continuation.private_instance != Some(instance)
         {
             if self
                 .continuation
                 .last_private_route
                 .as_ref()
-                .is_some_and(|last| last.route() != witness.route())
+                .is_some_and(|last| last.route() != observation.route())
                 || self.continuation.private_instance != Some(instance)
             {
                 self.continuation.owner_view = Default::default();
@@ -1624,10 +1625,10 @@ impl App {
             }
             self.continuation.last_published = None;
             self.continuation.publication_initialized = false;
-            self.continuation.last_private_route = Some(witness.clone());
+            self.continuation.last_private_route = Some(observation.clone());
             self.continuation.private_instance = Some(instance);
         }
-        Some(witness.route().clone())
+        Some(observation.route().clone())
     }
 }
 
@@ -1912,7 +1913,7 @@ impl App {
             .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         let settings = settings_store::accessibility::ScreenReaderSettings::load();
         self.set_screen_reader_enabled(
-            settings.enabled || crate::host::environment().accessibility.screen_reader,
+            settings.enabled || crate::process::environment().accessibility.screen_reader,
         );
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             reader.configure(&settings);
@@ -2343,7 +2344,7 @@ impl App {
                 };
             }
             requested = self.apply_focus_request();
-            crate::host_core::KeyHost::hand_owed_keyboard(self);
+            crate::app_core::KeyCore::hand_owed_keyboard(self);
         }
         self.invalidate_widget_resource_cache();
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
@@ -2486,11 +2487,11 @@ fn generic_floating_ids_to_dismiss(
 }
 
 #[cfg(feature = "native")]
-fn completed_primary_frame_gates(
-    gates: &std::collections::HashMap<String, Option<u64>>,
+fn completed_primary_frame_checks(
+    checks: &std::collections::HashMap<String, Option<u64>>,
     last_presented: u64,
 ) -> Vec<String> {
-    gates
+    checks
         .iter()
         .filter_map(|(id, required)| {
             required
@@ -2574,7 +2575,7 @@ fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant>
 #[cfg(test)]
 mod generic_floating_activity_tests {
     use super::{
-        completed_primary_frame_gates, generic_floating_ids_to_dismiss,
+        completed_primary_frame_checks, generic_floating_ids_to_dismiss,
         native_floating_logical_size,
     };
     use crate::floating_surface::FloatingSurfacePresentation;
@@ -2615,14 +2616,14 @@ mod generic_floating_activity_tests {
         }
 
         {
-            let gates = HashMap::from([
+            let checks = HashMap::from([
                 ("waiting".to_string(), None),
                 ("next".to_string(), Some(12)),
                 ("later".to_string(), Some(13)),
             ]);
-            assert!(completed_primary_frame_gates(&gates, 11).is_empty());
+            assert!(completed_primary_frame_checks(&checks, 11).is_empty());
             assert_eq!(
-                completed_primary_frame_gates(&gates, 12),
+                completed_primary_frame_checks(&checks, 12),
                 vec!["next".to_string()]
             );
         }
@@ -2631,7 +2632,7 @@ mod generic_floating_activity_tests {
 
 #[cfg(feature = "native")]
 fn resolve_window_title(explicit: Option<&str>) -> String {
-    let environment = crate::host::environment();
+    let environment = crate::process::environment();
     let app_name = environment.identity.app_name.clone();
     let app_id = environment.identity.app_id.clone();
     let binary = std::env::current_exe()
@@ -2650,7 +2651,7 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let app_id = crate::host::environment().identity.app_id.clone();
+    let app_id = crate::process::environment().identity.app_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -2962,7 +2963,7 @@ pub(crate) mod ordinary_confirmation_tests {
     pub(crate) struct Fixture {
         child: Box<dyn Widget>,
         pub resources: Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
-        pub ledger: Rc<RefCell<Vec<serde_json::Value>>>,
+        pub log: Rc<RefCell<Vec<serde_json::Value>>>,
         output: Rc<RefCell<Option<crate::ControlOutbox>>>,
     }
     impl Widget for Fixture {
@@ -3015,7 +3016,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     path,
                 );
             };
-            self.ledger
+            self.log
                 .borrow_mut()
                 .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -3031,16 +3032,12 @@ pub(crate) mod ordinary_confirmation_tests {
     }
 
     impl crate::widget::controls::ActionControls for Fixture {
-        fn install_control_custody(
+        fn attach_controls(
             &mut self,
             domain: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
+            attachment: crate::control_domain::DomainAttachment,
         ) {
-            crate::widget::controls::install_control_custody(
-                self.child.as_mut(),
-                domain,
-                attachment,
-            );
+            crate::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
             if self.output.borrow().is_none() {
                 *self.output.borrow_mut() =
                     Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
@@ -3084,16 +3081,16 @@ pub(crate) mod ordinary_confirmation_tests {
         })
         .unwrap();
         let resources = Rc::new(RefCell::new(vec![resource]));
-        let ledger = Rc::new(RefCell::new(vec![]));
+        let log = Rc::new(RefCell::new(vec![]));
         let widget = Fixture {
             child: Box::new(
                 crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
             ),
             resources: resources.clone(),
-            ledger: ledger.clone(),
+            log: log.clone(),
             output: Rc::new(RefCell::new(None)),
         };
-        (widget, ledger, resources)
+        (widget, log, resources)
     }
     fn managed(widget: Box<dyn Widget>) -> ManagedRoot {
         let registration = HistoryRegistration::new(
@@ -3126,13 +3123,13 @@ pub(crate) mod ordinary_confirmation_tests {
         Rc<RefCell<Vec<serde_json::Value>>>,
         Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
     ) {
-        let (widget, ledger, resources) = fixture_widget(policy, source());
-        (managed(Box::new(widget)), ledger, resources)
+        let (widget, log, resources) = fixture_widget(policy, source());
+        (managed(Box::new(widget)), log, resources)
     }
     crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
     struct OwnerGuard {
         binding: crate::bound_dispatch::CallbackBinding,
-        _host: crate::application_test_support::ProbeHost,
+        _host: crate::application_test_support::ProbeHarness,
     }
     impl OwnerGuard {
         fn close(&self) {
@@ -3169,7 +3166,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
     fn owned(widget: Fixture) -> (Box<dyn Widget>, OwnerGuard) {
         use crate::application_test_support::*;
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = runner_probe_definition();
         let target = crate::application::LaunchTarget::New;
         let mut instance = definition
@@ -3407,7 +3404,7 @@ pub(crate) mod ordinary_confirmation_tests {
 
         phase ordinary_confirmation_native_events_keep_bounded_measured_tree;
         {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(true, root);
             let expected_rect = match &host {
                 Host::Native(app) => {
@@ -3446,7 +3443,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.root_widget.get_rect(),
                 ));
             }
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
             let bounded = samples.iter().all(|(nodes, _)| *nodes <= baseline_nodes);
             let measured = samples.iter().all(|(_, rect)| *rect == expected_rect);
             assert!(
@@ -3476,10 +3473,10 @@ pub(crate) mod ordinary_confirmation_tests {
                             phrase: phrase.into(),
                         }
                     };
-                    let (root, ledger, _) = fixture(policy);
+                    let (root, log, _) = fixture(policy);
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
-                    assert!(ledger.borrow().is_empty());
+                    assert!(log.borrow().is_empty());
                     let stale = host.submit_id();
                     let submit = if phrase == "CONFIRM" {
                         "Run fixture"
@@ -3489,16 +3486,16 @@ pub(crate) mod ordinary_confirmation_tests {
                     if phrase != "CONFIRM" {
                         host.value("wrong");
                         assert!(host.disabled(submit), "not the name it asks for");
-                        assert!(ledger.borrow().is_empty(), "not the name it asks for");
+                        assert!(log.borrow().is_empty(), "not the name it asks for");
                         host.value(phrase);
                     }
                     host.activate(submit);
                     assert_eq!(
-                        &*ledger.borrow(),
+                        &*log.borrow(),
                         &[serde_json::json!({"payload":"original"})]
                     );
                     host.stale(stale);
-                    assert_eq!(ledger.borrow().len(), 1);
+                    assert_eq!(log.borrow().len(), 1);
                 }
             }
         }
@@ -3517,7 +3514,7 @@ pub(crate) mod ordinary_confirmation_tests {
         {
             for native in [true, false] {
                 for cancel in [false, true] {
-                    let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                    let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
                     let label = if cancel { "Cancel" } else { "Run fixture" };
@@ -3552,11 +3549,11 @@ pub(crate) mod ordinary_confirmation_tests {
                             winit::event::MouseButton::Left,
                         ));
                     }
-                    assert_eq!(ledger.borrow().len(), usize::from(!cancel));
+                    assert_eq!(log.borrow().len(), usize::from(!cancel));
                 }
             }
             for native in [true, false] {
-                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
                 let event = crate::synthetic_input::key_input(
@@ -3582,14 +3579,14 @@ pub(crate) mod ordinary_confirmation_tests {
                     }
                     Host::FrameHarness(driver) => driver.send(&event),
                 }
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
             }
         }
 
         phase ordinary_confirmation_cancel_restores_retained_background_focus;
         {
             for native in [true, false] {
-                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.act("Emit request", crate::a11y::Action::Focus);
                 assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
@@ -3603,13 +3600,13 @@ pub(crate) mod ordinary_confirmation_tests {
                 if let Host::Native(app) = &host {
                     assert!(app.actions.ordinary_palette_return_focus.is_none());
                 }
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
             }
         }
 
         phase ordinary_confirmation_cancel_does_not_focus_a_removed_opener;
         {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(true, root);
             host.act("Emit request", crate::a11y::Action::Focus);
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
@@ -3653,21 +3650,21 @@ pub(crate) mod ordinary_confirmation_tests {
                 "removed focus must not transfer"
             );
             assert!(
-                ledger.borrow().is_empty(),
+                log.borrow().is_empty(),
                 "cancellation executes no action"
             );
         }
 
         phase ordinary_confirmation_native_publishes_actual_prompt;
         {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut app = App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
             layout(&mut app);
             let named_action_target = named(&mut app, "Emit request");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             app.controlled_local_idle_for_test();
             layout(&mut app);
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
             named(&mut app, "Run fixture?");
             named(&mut app, "Run fixture");
             named(&mut app, "Cancel");
@@ -3675,7 +3672,7 @@ pub(crate) mod ordinary_confirmation_tests {
 
         phase ordinary_confirmation_driver_publishes_actual_prompt;
         {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
                 State::new(),
                 root,
@@ -3688,7 +3685,7 @@ pub(crate) mod ordinary_confirmation_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
             assert!(
                 driver.a11y_node_named("Run fixture?").is_some(),
                 "the actual dialog question must be published"
@@ -3703,7 +3700,7 @@ pub(crate) mod ordinary_confirmation_tests {
 
         phase ordinary_confirmation_history_outcome_stays_visible_without_moving_content;
         {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(true, root);
             let Host::Native(app) = &mut host else {
                 unreachable!()
@@ -3740,27 +3737,27 @@ pub(crate) mod ordinary_confirmation_tests {
                 .expect("the outcome is published in the existing History bar");
             assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
             assert_eq!(app.root_widget.get_rect(), original);
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
         }
 
         phase ordinary_confirmation_history_clears_old_confirmation_and_fresh_no_resolver_works;
         {
             for native in [true, false] {
-                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
                 let stale = host.submit_id();
                 host.activate("History");
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
                 host.activate("History");
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
                 host.stale(stale);
                 host.activate("Run fixture");
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
                 host.activate("Cancel");
                 host.activate("Emit request");
                 host.activate("Run fixture");
-                assert_eq!(ledger.borrow().len(), 1);
+                assert_eq!(log.borrow().len(), 1);
             }
         }
 
@@ -3768,7 +3765,7 @@ pub(crate) mod ordinary_confirmation_tests {
         {
             for native in [true, false] {
                 let input = source();
-                let (widget, ledger, _) =
+                let (widget, log, _) =
                     fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, input.clone());
                 let mut host = Host::new(native, managed(Box::new(widget)));
                 host.activate("Emit request");
@@ -3779,7 +3776,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.key("CONFIRM");
                 host.activate("Run fixture");
                 assert_eq!(
-                    &*ledger.borrow(),
+                    &*log.borrow(),
                     &[serde_json::json!({"payload":"original"})]
                 );
             }
@@ -3790,7 +3787,7 @@ pub(crate) mod ordinary_confirmation_tests {
             use tilo_actions::*;
             const PROMPT: &str = "Enter original text";
             for text in [false, true] {
-                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                let (root, log, resources) = fixture(ConfirmationPolicy::Confirm);
                 let mut spec = if text {
                     ActionSpec::prompted_operation(
                         "run",
@@ -3840,7 +3837,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     ));
                     layout(&mut app);
                 }
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
                 assert!(
                     app.action_palette_handle_key(&crate::synthetic_input::key_input(
                         &Key::Character("CONFIRM".into()),
@@ -3852,7 +3849,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
                 layout(&mut app);
                 assert_eq!(
-                    &*ledger.borrow(),
+                    &*log.borrow(),
                     &[if text {
                         serde_json::json!({"prompted_argument":"not-a-value-field"})
                     } else {
@@ -3867,7 +3864,7 @@ pub(crate) mod ordinary_confirmation_tests {
             use tilo_actions::*;
             for native in [true, false] {
                 for changed in [false, true] {
-                    let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                    let (root, log, resources) = fixture(ConfirmationPolicy::Confirm);
                     let original = resources.borrow()[0].actions[0].clone();
                     resources.borrow_mut()[0].actions[0] = original.with_continuation_identity(|q| {
                         matches!(q, ContinuationQuery::Exact(_)).then(|| ContinuationEvidence::Exact {
@@ -3883,10 +3880,10 @@ pub(crate) mod ordinary_confirmation_tests {
                             "Changed during History".into();
                     }
                     host.activate("History");
-                    assert!(ledger.borrow().is_empty());
+                    assert!(log.borrow().is_empty());
                     host.activate("Run fixture");
                     assert_eq!(
-                        ledger.borrow().len(),
+                        log.borrow().len(),
                         usize::from(!changed),
                         "{native}:{changed}"
                     );
@@ -3971,7 +3968,7 @@ pub(crate) mod ordinary_confirmation_tests {
             for native in [true, false] {
                 for owner in [0, 1] {
                     let input = source();
-                    let (widget, ledger, resources) =
+                    let (widget, log, resources) =
                         fixture_widget(ConfirmationPolicy::Confirm, input.clone());
                     let output = widget.output.clone();
                     let spec = resources.borrow()[0].actions[0].clone();
@@ -4001,20 +3998,20 @@ pub(crate) mod ordinary_confirmation_tests {
                                 .unwrap()
                                 .clone()
                         }),
-                        Ok(crate::control_custody::LocalEmission::Suppressed)
+                        Ok(crate::control_domain::LocalEmission::Suppressed)
                     );
                     input
                         .lock()
                         .unwrap()
                         .insert("payload".into(), serde_json::json!("F"));
                     host.activate("History");
-                    assert!(ledger.borrow().is_empty());
+                    assert!(log.borrow().is_empty());
                     host.stale(stale);
-                    if ledger.borrow().is_empty() {
+                    if log.borrow().is_empty() {
                         host.activate("Run fixture");
                     }
                     assert_eq!(
-                        &*ledger.borrow(),
+                        &*log.borrow(),
                         &[serde_json::json!({"payload":"original"})]
                     );
                     let mut fresh = resources.borrow()[0].actions[0].clone();
@@ -4023,7 +4020,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     host.activate("Emit request");
                     host.activate("Run fixture");
                     assert_eq!(
-                        &*ledger.borrow(),
+                        &*log.borrow(),
                         &[
                             serde_json::json!({"payload":"original"}),
                             serde_json::json!({"payload":"F"})
@@ -4076,10 +4073,10 @@ pub(crate) mod ordinary_confirmation_tests {
             },
         ] {
             let phrase = matches!(policy, tilo_actions::ConfirmationPolicy::Phrase { .. });
-            let (root, ledger, _) = fixture(policy);
+            let (root, log, _) = fixture(policy);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
             // The published question names the action; its button goes
             // ahead. An irreversible action that names what it destroys asks
             // for that name in a labelled field first, its verb disabled
@@ -4097,19 +4094,16 @@ pub(crate) mod ordinary_confirmation_tests {
                     "the field for the name is labelled"
                 );
                 assert!(host.disabled("Run"), "not without the name");
-                assert!(ledger.borrow().is_empty(), "not without the name");
+                assert!(log.borrow().is_empty(), "not without the name");
                 host.value("APPLY EXACT");
             } else {
                 assert!(!host.published("Type APPLY EXACT to confirm"));
             }
             let stale = host.submit_id();
             host.activate(if phrase { "Run" } else { "Run fixture" });
-            assert_eq!(
-                &*ledger.borrow(),
-                &[serde_json::json!({"payload":"original"})]
-            );
+            assert_eq!(&*log.borrow(), &[serde_json::json!({"payload":"original"})]);
             host.stale(stale);
-            assert_eq!(ledger.borrow().len(), 1);
+            assert_eq!(log.borrow().len(), 1);
         }
     }
 
@@ -4119,16 +4113,16 @@ pub(crate) mod ordinary_confirmation_tests {
         phase ordinary_confirmation_cancel_and_successor_reject_stale_submit;
         {
             for native in [true, false] {
-                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
                 let stale = host.submit_id();
                 host.activate("Cancel");
                 host.activate("Emit request");
                 host.stale(stale);
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
                 host.activate("Run fixture");
-                assert_eq!(ledger.borrow().len(), 1);
+                assert_eq!(log.borrow().len(), 1);
             }
         }
 
@@ -4148,7 +4142,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     "label",
                     "kind",
                 ] {
-                    let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                    let (root, log, resources) = fixture(ConfirmationPolicy::Confirm);
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
                     {
@@ -4227,7 +4221,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         host.revoke();
                     }
                     host.activate("Run fixture");
-                    assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
+                    assert!(log.borrow().is_empty(), "{native}:{mutation}");
                 }
             }
         }
@@ -4242,7 +4236,7 @@ pub(crate) mod ordinary_confirmation_tests {
             for native in [true, false] {
                 for later in [0, 2] {
                     for handler in [false, true] {
-                        let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                        let (root, log, resources) = fixture(ConfirmationPolicy::Confirm);
                         let epoch = Arc::new(AtomicU64::new(1));
                         let captured = epoch.clone();
                         let original = resources.borrow()[0].actions[0].clone();
@@ -4277,7 +4271,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         host.activate("Emit request");
                         epoch.store(later, Ordering::SeqCst);
                         host.activate("Run fixture");
-                        assert!(ledger.borrow().is_empty());
+                        assert!(log.borrow().is_empty());
                     }
                 }
             }
@@ -4288,7 +4282,7 @@ pub(crate) mod ordinary_confirmation_tests {
             for native in [true, false] {
                 {
                     for case in ["positive", "closed", "revoked", "duplicate"] {
-                        let (widget, ledger, resources) =
+                        let (widget, log, resources) =
                             fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
                         let (root, guard) = owned(widget);
                         let mut host = Host::new(native, guard.managed(root));
@@ -4304,7 +4298,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         }
                         host.activate("Run fixture");
                         assert_eq!(
-                            ledger.borrow().len(),
+                            log.borrow().len(),
                             usize::from(case == "positive"),
                             "{native}:{case}"
                         );
@@ -4317,10 +4311,10 @@ pub(crate) mod ordinary_confirmation_tests {
         {
             for native in [true, false] {
                 {
-                    let (widget, old_ledger, _) =
+                    let (widget, old_log, _) =
                         fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
                     let (old, old_guard) = owned(widget);
-                    let (widget, new_ledger, _) =
+                    let (widget, new_log, _) =
                         fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
                     let (new, new_guard) = owned(widget);
                     let mut values = [Some(old), Some(new)];
@@ -4345,8 +4339,8 @@ pub(crate) mod ordinary_confirmation_tests {
                             let _ = driver.perform_a11y_action(stale, &crate::a11y::Action::Activate);
                         }
                     }
-                    assert!(old_ledger.borrow().is_empty());
-                    assert!(new_ledger.borrow().is_empty());
+                    assert!(old_log.borrow().is_empty());
+                    assert!(new_log.borrow().is_empty());
                     drop((old_guard, new_guard));
                 }
             }
@@ -4356,11 +4350,11 @@ pub(crate) mod ordinary_confirmation_tests {
         {
             use tilo_actions::*;
             for native in [true, false] {
-                let (root, ledger, _) = fixture(ConfirmationPolicy::None);
+                let (root, log, _) = fixture(ConfirmationPolicy::None);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                assert_eq!(ledger.borrow().len(), 1);
-                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                assert_eq!(log.borrow().len(), 1);
+                let (root, log, resources) = fixture(ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
                 let spec = resources.borrow()[0].actions[0].clone();
@@ -4371,14 +4365,14 @@ pub(crate) mod ordinary_confirmation_tests {
                     })
                 });
                 host.activate("Run fixture");
-                assert_eq!(ledger.borrow().len(), 1);
+                assert_eq!(log.borrow().len(), 1);
             }
         }
 
         phase ordinary_confirmation_native_closed_or_replaced_outer_domain_refuses;
         {
             for replacement in [false, true] {
-                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let (root, log, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(true, root);
                 host.activate("Emit request");
                 let Host::Native(app) = &mut host else {
@@ -4391,7 +4385,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     old.close();
                 }
                 host.activate("Run fixture");
-                assert!(ledger.borrow().is_empty());
+                assert!(log.borrow().is_empty());
             }
         }
     }

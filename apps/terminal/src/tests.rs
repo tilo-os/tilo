@@ -585,7 +585,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     {
         use std::io::BufRead as _;
 
-        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true,\"protocol\":2}\n";
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"commands\":true,\"protocol\":2}\n";
         let (terminal_end, supervisor_end) =
             std::os::unix::net::UnixStream::pair().expect("socket pair");
         let supervisor = std::thread::spawn(move || {
@@ -629,13 +629,13 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         let backend = match opened {
             Ok(backend) => backend,
-            Err(error) => panic!("a session reply that marks runs must open: {error:?}"),
+            Err(error) => panic!("a session reply that marks commands must open: {error:?}"),
         };
         assert_eq!(backend.shell_name, "ush");
         assert_eq!(
             backend.commands.as_deref(),
-            request["runs"].as_str(),
-            "the session marks its runs with the key the request named"
+            request["commands"].as_str(),
+            "the session marks its commands with the key the request named"
         );
         assert!(backend.commands.is_some());
     }
@@ -719,7 +719,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
         let mut widget = crate::TerminalWidget::spawn_hosted(services)
             .expect("the discovered ush connection must use the supervisor protocol");
-        let doc = session_record_at(&crate::target::SessionTarget::default_environment());
+        let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the healthy open to finish", || {
             ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
@@ -760,7 +760,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let mut widget =
             crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) })
                 .unwrap();
-        let doc = session_record_at(&crate::target::SessionTarget::default_environment());
+        let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the failed open to finish", || {
             ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
@@ -777,7 +777,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     }
 }
 
-fn session_record_at(target: &crate::target::SessionTarget) -> AutoCommit {
+fn session_resource_at(target: &crate::target::SessionTarget) -> AutoCommit {
     let mut record = ui::tilo_resource::Replica::<crate::resource::Terminal>::new();
     record
         .apply(crate::resource::Terminal::RECORD_TARGET.with((target.encode(), None::<String>)))
@@ -1095,7 +1095,7 @@ tilo_test_env::scenario! {
                 }
                 assert!(
                     (a.x1 - b.x0).abs() < 1e-9,
-                    "neighbouring cells meet without a seam or overlap"
+                    "neighbouring cells meet without a boundary or overlap"
                 );
             }
         }
@@ -2764,7 +2764,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         );
         assert!(
             !b.grid_text().contains("peer-a-line-one"),
-            "A's output is not in the record; B grid:\n{}",
+            "A's output is not in the resource; B grid:\n{}",
             b.grid_text()
         );
         let a_key = a

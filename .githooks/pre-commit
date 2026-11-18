@@ -81,7 +81,7 @@ python3 "$root/tools/policy/check_session_copy_contract.py"
 # catalogue in well under a second.
 python3 "$root/tools/policy/check_catalogue_coverage.py"
 python3 "$root/tools/policy/check_app_copy_resolution.py"
-python3 "$root/tools/policy/check_ui_host_inputs_contract.py" --staged
+python3 "$root/tools/policy/check_app_window_inputs_contract.py" --staged
 python3 "$root/tools/policy/check_ui_clock_contract.py" --staged
 python3 "$root/tools/policy/check_clock_contract.py" --staged
 python3 "$root/tools/policy/check_loop_never_blocks.py" || fail=1
@@ -151,20 +151,24 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
   # Which generated files the person is editing by hand: those are left
   # alone, since staging them would stage their edits too.
   sdk_dirty=$(git diff --name-only -- $sdk_paths)
+  # What lay there untracked before anything was written stays the person's own.
+  sdk_untracked=$(git ls-files --others --exclude-standard -- $sdk_paths)
   sdk_done=""
-  # With a remote builder (rcargo), the generator is built and run there from
-  # this tree's sources, as the builder already holds this worktree's build,
-  # and the files it writes come back into the tree: nothing to build or
-  # download here. Its own index, so it sees the whole tree.
-  if command -v rcargo >/dev/null 2>&1 && rcargo exec --help >/dev/null 2>&1; then
+  # With a cargo drop-in that runs a command on a build server ($CARGO), the
+  # generator is built and run there from this tree's sources, as the builder
+  # already holds this worktree's build, and the files it writes come back into
+  # the tree: nothing to build or download here. Its own index, so it sees the
+  # whole tree.
+  cargo_dropin=${CARGO:-cargo}
+  if "$cargo_dropin" exec --help >/dev/null 2>&1; then
     sdk_script="set -e"
     for spec in $sdk_langs; do
       sdk_script="$sdk_script; cargo run --locked -q -p tilo-cli -- sdk gen --lang ${spec%%:*} --out ${spec#*:}"
     done
-    note "sdk: an app's surface changed; writing the SDK's types on the builder (rcargo)"
+    note "sdk: an app's surface changed; writing the SDK's types on the builder ($cargo_dropin)"
     sdk_log=$(mktemp)
-    if (cd "$root" && GIT_INDEX_FILE="$full_index" rcargo exec sh -c "$sdk_script") >"$sdk_log" 2>&1; then
-      sdk_done=rcargo
+    if (cd "$root" && GIT_INDEX_FILE="$full_index" "$cargo_dropin" exec sh -c "$sdk_script") >"$sdk_log" 2>&1; then
+      sdk_done=drop-in
     else
       note "sdk: writing them on the builder failed:"
       tail -n 20 "$sdk_log" | sed 's/^/  /' >&2
@@ -189,12 +193,58 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
     fi
     if [ -n "$sdk_gen" ]; then
       sdk_done=$sdk_gen
+      # A generator found in target/ can be older than this tree: built before a
+      # rebase, or copied from another worktree. What it knows of the API itself is
+      # compiled into it, so its whole output would take out of
+      # docs/api/openapi.json whatever main gained since it was built. So only what
+      # the surfaces changed is taken from it: it writes the files once from HEAD's
+      # surfaces and once from this tree's, and what differs between the two is
+      # merged into the files as they stand. A generator as new as the tree, on
+      # files that were current, changes them exactly as its whole output would.
+      sdk_scratch=$(mktemp -d)
+      mkdir -p "$sdk_scratch/head" "$sdk_scratch/was" "$sdk_scratch/now"
+      sdk_failed=""
+      # All a generator reads from a checkout: each app's surface and manifest.
+      sdk_inputs=$(git ls-tree -r --name-only HEAD -- apps 2>/dev/null \
+        | grep -E '^apps/[^/]+/(surface|tilo-app)\.toml$' || true)
+      if [ -n "$sdk_inputs" ]; then
+        # shellcheck disable=SC2086
+        git archive HEAD -- $sdk_inputs | tar -x -C "$sdk_scratch/head" || sdk_failed=1
+      fi
       for spec in $sdk_langs; do
-        (cd "$root" && "$sdk_gen" sdk gen --lang "${spec%%:*}" --out "${spec#*:}") >/dev/null || {
-          note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
-          fail=1
-        }
+        sdk_lang=${spec%%:*}
+        sdk_out=${spec#*:}
+        mkdir -p "$sdk_scratch/was/$sdk_out" "$sdk_scratch/now/$sdk_out"
+        if [ -n "$sdk_inputs" ]; then
+          (cd "$sdk_scratch/head" \
+            && "$sdk_gen" sdk gen --lang "$sdk_lang" --out "$sdk_scratch/was/$sdk_out") \
+            >/dev/null 2>&1 || sdk_failed=1
+        fi
+        (cd "$root" && "$sdk_gen" sdk gen --lang "$sdk_lang" --out "$sdk_scratch/now/$sdk_out") \
+          >/dev/null || sdk_failed=1
       done
+      if [ -z "$sdk_failed" ]; then
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          if [ ! -e "$sdk_scratch/was/$f" ] || [ ! -e "$root/$f" ]; then
+            mkdir -p "$(dirname "$root/$f")"
+            cp "$sdk_scratch/now/$f" "$root/$f"
+          elif ! cmp -s "$sdk_scratch/was/$f" "$sdk_scratch/now/$f"; then
+            if git merge-file -p "$root/$f" "$sdk_scratch/was/$f" "$sdk_scratch/now/$f" \
+              >"$sdk_scratch/merged" 2>/dev/null; then
+              cat "$sdk_scratch/merged" >"$root/$f"
+            else
+              note "sdk: $f changed on both sides of this surface change"
+              sdk_failed=1
+            fi
+          fi
+        done < <(cd "$sdk_scratch/now" && find . -type f | sed 's|^\./||' | sort)
+      fi
+      rm -rf "$sdk_scratch"
+      if [ -n "$sdk_failed" ]; then
+        note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
+        fail=1
+      fi
     fi
   fi
   if [ -n "$sdk_done" ]; then
@@ -208,7 +258,11 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
         GIT_INDEX_FILE="$full_index" git add -- "$f"
         sdk_wrote=$((sdk_wrote + 1))
       fi
-    done < <(GIT_INDEX_FILE="$full_index" git diff --name-only -- $sdk_paths)
+    # The files that changed, and the ones a new app's first surface made: git diff names
+    # no file it does not track yet, and a commit without them leaves the app's types out.
+    done < <(GIT_INDEX_FILE="$full_index" git diff --name-only -- $sdk_paths
+             git ls-files --others --exclude-standard -- $sdk_paths \
+               | grep -vxF -f <(printf '%s\n' "$sdk_untracked") || true)
     if [ "$sdk_wrote" -gt 0 ]; then
       note "sdk: wrote the types of the apps whose surface changed and staged them"
     fi
@@ -345,7 +399,22 @@ tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
         (apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
       esac
     done | sort -u)
-if [ -n "$tl_packages" ]; then
+# A package's ids lock (`app.ids`) and source catalogue (`locales/en-US.ftl`) are
+# written from its sources, and nothing reads them back until the package is
+# compiled: a rename done by replacing text leaves them stale or in another
+# order, and every later build then rewrites them, which breaks the build's
+# provenance. Writing them is not a judgement call, so do it below with the same
+# binary that formats, and stage what it wrote.
+tl_locked_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
+    --diff-filter=ACMR -- '*.tl' '*/app.ids' '*/locales/*.ftl' \
+  | while IFS= read -r f; do
+      case "$f" in
+        (crates/lang/tilolang/std/*) printf '%s\n' crates/lang/tilolang/std ;;
+        (apps/tl/*/locales/*.ftl) printf '%s\n' "${f%/locales/*}" ;;
+        (apps/tl/*/*) printf '%s\n' "${f%/*}" ;;
+      esac
+    done | sort -u)
+if [ -n "$tl_packages$tl_locked_packages" ]; then
   # The compiler's own sources and manifests. A formatter older than any of them
   # prints an earlier revision's canonical form, so it is not this tree's: that
   # is what makes a binary in target/ one this hook may use.
@@ -359,8 +428,11 @@ if [ -n "$tl_packages" ]; then
   # platform cannot run here and one that is not the formatter does not know
   # `fmt`; both are skipped rather than failing the commit.
   tl_fmt=""
+  tl_candidates=()
   tl_find_fmt() {
     local built=() c newer_count
+    tl_fmt=""
+    tl_candidates=()
     while IFS= read -r -d '' c; do built+=("$c"); done < <(
       find "$root/target" -maxdepth 4 -type f \
         \( -name tlc -o -name tilolangc -o -name tilolang \) -print0 2>/dev/null)
@@ -370,13 +442,24 @@ if [ -n "$tl_packages" ]; then
         newer_count=$(find "${tl_sources[@]}" -newer "$c" -print 2>/dev/null | wc -l)
         [ "$newer_count" -gt 0 ] && continue
         case "$("$c" --help 2>&1)" in
-          *fmt*) tl_fmt=$c; return 0 ;;
+          *fmt*) [ -n "$tl_fmt" ] || tl_fmt=$c; tl_candidates+=("$c") ;;
         esac
       fi
     done < <(ls -td -- "${built[@]}" 2>/dev/null || true)
+    # The language's own tool resolves the packages an app imports from the
+    # tree (`so.tilo.session` and the like); the compiler alone knows tilolang
+    # packages only, so it goes last when the locks below are refreshed.
+    local cli=() rest=()
+    for c in "${tl_candidates[@]}"; do
+      case "${c##*/}" in
+        (tilolang) cli+=("$c") ;;
+        (*) rest+=("$c") ;;
+      esac
+    done
+    tl_candidates=("${cli[@]}" "${rest[@]}")
   }
   tl_find_fmt
-  if [ -z "$tl_fmt" ]; then
+  if [ -z "$tl_fmt" ] && [ -n "$tl_packages" ]; then
     # The formatter is this tree's compiler, so build its one binary. A build
     # that fails is not retried by every commit: this worktree remembers it, and
     # why, for an hour. It is this worktree's, never the clone's, so one tree
@@ -457,6 +540,56 @@ if [ -n "$tl_packages" ]; then
     if [ -n "$tl_unformatted" ]; then
       note "tilolang fmt: cannot format packages with unstaged changes, stage the whole package first:"
       printf '%s' "$tl_unformatted" | sed 's/^/  /' >&2
+      fail=1
+    fi
+  fi
+
+  # The locks and catalogues of the packages above: refreshed with a binary
+  # from this tree, as the formatter was. A package whose sources have unstaged
+  # edits is left alone, since they would be written into this commit; one whose
+  # generator cannot run now keeps what it has, and the compiler's own test,
+  # which compares every package under apps/tl with its sources, still holds it
+  # on CI. The generated files themselves do not count as edits to guard: they
+  # are whatever the sources give.
+  if [ -n "$tl_locked_packages" ] && [ "${#tl_candidates[@]}" -eq 0 ]; then
+    note "tilolang ids: no generator for the staged packages; run \
+'tilolang check --write-ids <dir>' on each and stage its app.ids and locales/en-US.ftl"
+  elif [ -n "$tl_locked_packages" ]; then
+    tl_lock_wrote=0
+    tl_lock_left=""
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- "$d" \
+           ":(exclude)$d/app.ids" ":(exclude)$d/locales"; then
+        tl_lock_left="$tl_lock_left$d"$'\n'
+        continue
+      fi
+      tl_lock_why=""
+      for c in "${tl_candidates[@]}"; do
+        if tl_lock_out=$(cd "$root" && "$c" check --write-ids "$d" 2>&1); then
+          tl_lock_why=""
+          break
+        fi
+        tl_lock_why=$(printf '%s\n' "$tl_lock_out" | tail -n 1)
+      done
+      if [ -n "$tl_lock_why" ]; then
+        note "tilolang ids: $d: $tl_lock_why"
+        continue
+      fi
+      for f in "$d/app.ids" "$d/locales/en-US.ftl"; do
+        [ -f "$root/$f" ] || continue
+        if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- "$f"; then
+          GIT_INDEX_FILE="$full_index" git add -- "$f"
+          tl_lock_wrote=$((tl_lock_wrote + 1))
+        fi
+      done
+    done <<< "$tl_locked_packages"
+    if [ "$tl_lock_wrote" -gt 0 ]; then
+      note "tilolang ids: wrote $tl_lock_wrote generated file(s) from the staged sources and staged them"
+    fi
+    if [ -n "$tl_lock_left" ]; then
+      note "tilolang ids: cannot write the generated files of packages with unstaged changes, stage the whole package first:"
+      printf '%s' "$tl_lock_left" | sed 's/^/  /' >&2
       fail=1
     fi
   fi

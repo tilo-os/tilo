@@ -1,4 +1,4 @@
-//! What the connector does without changing its record by itself.
+//! What the connector does without changing its resource by itself.
 //!
 //! A bot's program only sequences steps, so `plan-event` works out what an
 //! event means ([`crate::bridge`]) and answers the lists
@@ -17,9 +17,9 @@ use ui::linked_accounts::{AccountName, LinkStart, OfferReading, Reading};
 use ui::tilo_resource::{self, Effect, Id};
 
 use crate::bridge;
+use crate::guild::{Guild, LinkOffer};
 use crate::locales::CATALOG;
 use crate::outbound::Context;
-use crate::record::{Guild, LinkOffer};
 
 /// The connector's effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -68,7 +68,7 @@ pub enum DiscordEffect {
     /// Set the bot token
     ///
     /// Keeps the Discord bot token in this host's secret store, where the
-    /// connector's worker reads it. It never reaches the record.
+    /// connector's worker reads it. It never reaches the resource.
     #[effect(privileged)]
     SetBotToken {
         #[param(secret)]
@@ -106,7 +106,7 @@ pub enum DiscordEffect {
     PlanEvent {
         event: Value,
         #[param(
-            "Chat's records as the record api reads them: chat, its record of the workspace; messages, the newest part of its messages' chain; changed, the part a change was made in, or null"
+            "Chat's resources as the resource api reads them: chat, its resource of the workspace; messages, the newest part of its messages' chain; changed, the part a change was made in, or null"
         )]
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]
@@ -142,7 +142,8 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
         } => serde_json::to_value(bridge::plan(
             bridge::Reading {
                 guild,
-                chat: &crate::tilo::ChatRead::of(chat),
+                chat: &crate::tilo::ChatRead::of(chat)
+                    .knowing(workspace.as_ref().unwrap_or(&Value::Null)),
                 context: &context.clone().unwrap_or_default(),
                 workspace: workspace.as_ref().unwrap_or(&Value::Null),
                 emoji: emoji.as_ref(),
@@ -281,7 +282,7 @@ pub fn answer(effect: DiscordEffect, cx: &mut EffectCx<Guild>) -> EffectAnswer {
             ))
         }
         DiscordEffect::AcceptLink { token } => {
-            // Said here, in the words the person reads; the record checks
+            // Said here, in the words the person reads; the resource checks
             // the same again when it takes the proof.
             read_offer(
                 &guild,

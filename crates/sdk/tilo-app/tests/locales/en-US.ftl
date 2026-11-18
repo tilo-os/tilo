@@ -73,9 +73,9 @@ test-note = Note
 ## crates/sdk/tilo-app/tests/attached_view.rs
 test-bench = Bench
 test-bench-sit = Sit down
-test-ledger = Ledger
-test-ledger-ask = Ask for an entry
-test-ledger-answer = Record what looking an entry up answered
+test-entries = Entries
+test-entries-ask = Ask for an entry
+test-entries-answer = Record what looking an entry up answered
 
 ## crates/sdk/tilo-app/tests/by_app.rs
 test-jukebox = Player
@@ -89,6 +89,23 @@ test-chain-log = Log
 test-chain-log-rename = Rename the log
 test-chain-log-part = Lines
 test-chain-log-part-write = Write a line
+test-chain-log-part-mark = Mark lines
+
+## crates/sdk/tilo-app/tests/owed.rs
+test-owed-shelf = Shelf
+test-owed-shelf-rename = Rename the shelf
+test-owed-shelf-part = Items
+test-owed-shelf-part-put = Put an item on the shelf
+test-owed-shelf-part-say = Change what an item says
+test-owed-shelf-part-told = The outside holds this
+
+## crates/sdk/tilo-app/tests/chain_spread.rs
+test-spread-deck = Deck
+test-spread-deck-rename = Rename the deck
+test-spread-deck-part = Cards
+test-spread-deck-part-add = Add a card
+test-spread-deck-part-rename = Rename a card
+test-spread-deck-part-repoint = Point the cards at another
 
 ## crates/sdk/tilo-app/tests/child_records.rs
 test-child-workspace = Workspace
@@ -334,3 +351,7 @@ test-blob-store = Keep the bytes a file holds
 ## crates/sdk/tilo-app/tests/view_outline.rs
 test-outline-notebook = Notebook
 test-outline-notebook-write = Write a page
+
+## crates/sdk/tilo-app/tests/people.rs
+test-ticket = Ticket
+test-ticket-assign = Give the ticket to someone, or to nobody

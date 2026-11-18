@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
 use tilo_actions::remote::environment_commands::CommandOutput;
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
 use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Programs, TiloHost};
@@ -126,7 +126,7 @@ impl WorkspaceShells {
     }
 
     /// Where a run `payer` pays for runs its Linux programs when the environment names the hosted-VM
-    /// service but no account: a member taking a relay's work, whose every run names who pays,
+    /// service but no account: a member taking a server's work, whose every run names who pays,
     /// runs them on the service its workspaces' Browser starts on.
     fn paid_on_browsers(&self, payer: Option<&Payer>) -> Option<HostedTarget> {
         let payer = payer?;

@@ -38,7 +38,7 @@ struct Manifest {
     secure_boot: String,
     installer_protocol: u32,
     #[serde(default)]
-    account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
+    account_credentials: Option<imager_backend::account_admission::ConsumerCapability>,
     #[serde(default)]
     home_archive: Option<imager_backend::home_admission::ConsumerCapability>,
     #[serde(default)]
@@ -123,7 +123,7 @@ impl InternalBundle {
     pub fn require_account_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
             self.manifest
-                .account_custody
+                .account_credentials
                 .as_ref()
                 .is_none_or(|capability| capability.protected_grant_protocol != protocol)
         }) {
@@ -132,19 +132,22 @@ impl InternalBundle {
         Ok(())
     }
 
-    pub fn account_custody(
+    pub fn account_credentials(
         &self,
     ) -> Option<&imager_backend::account_admission::ConsumerCapability> {
-        self.manifest.account_custody.as_ref()
+        self.manifest.account_credentials.as_ref()
     }
 
     pub fn require_service_session_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
-            self.manifest.account_custody.as_ref().is_none_or(|proof| {
-                !proof.supports_service_session_protocol(protocol)
-                    && !imager_backend::account_admission::source_candidate(protocol, proof)
-                        .unwrap_or(false)
-            })
+            self.manifest
+                .account_credentials
+                .as_ref()
+                .is_none_or(|proof| {
+                    !proof.supports_service_session_protocol(protocol)
+                        && !imager_backend::account_admission::source_candidate(protocol, proof)
+                            .unwrap_or(false)
+                })
         }) {
             return Err("The selected system cannot use the saved connections".into());
         }
@@ -292,7 +295,7 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
         require(
             shape.is_object()
                 && shape
-                    .get("account_custody")
+                    .get("account_credentials")
                     .is_none_or(serde_json::Value::is_object)
                 && shape
                     .get("applications")
@@ -318,7 +321,7 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
         data.schema == SCHEMA && data.installer_protocol == 1,
         "unsupported schema or installer protocol",
     )?;
-    if let Some(capability) = &data.account_custody {
+    if let Some(capability) = &data.account_credentials {
         capability.validate().map_err(|error| error.to_string())?;
     }
     if let Some(capability) = &data.applications {
@@ -993,7 +996,7 @@ pub(crate) mod tests {
                 "credential_helper_sha256":"a".repeat(64),"runtime_root_hash":"b".repeat(64),
                 "runtime_probe_sha256":"c".repeat(64),"runtime_library_sha256":"d".repeat(64),
                 "runtime_version":"0.1.0+native.abc","runtime_library":"lib/libruntime_dylib.so"});
-            data["account_custody"] = capability.clone();
+            data["account_credentials"] = capability.clone();
             let updated = validate_internal_bundle(&bytes(&data)).unwrap();
             assert!(updated.require_account_protocol(Some(1)).is_ok());
             assert!(updated.require_service_session_protocol(None).is_ok());
@@ -1002,11 +1005,11 @@ pub(crate) mod tests {
             assert!(updated.require_account_protocol(None).is_ok());
             assert_eq!(updated.uki_sha256(), legacy.uki_sha256());
             for bad in [json!(null), json!([]), json!(true)] {
-                data["account_custody"] = bad;
+                data["account_credentials"] = bad;
                 assert!(validate_internal_bundle(&bytes(&data)).is_err());
             }
-            data["account_custody"] = capability;
-            data["account_custody"]["protected_grant_protocol"] = json!(2);
+            data["account_credentials"] = capability;
+            data["account_credentials"]["protected_grant_protocol"] = json!(2);
             assert!(validate_internal_bundle(&bytes(&data)).is_err());
         }
 

@@ -127,7 +127,7 @@ pub enum Answer<'a> {
 /// connection is.
 pub fn mcp_answer<H>(server: &std::sync::Arc<McpServer<H>>, request: Value) -> Answer<'static>
 where
-    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
     let server = std::sync::Arc::clone(server);
     let initialize = request.get("method").and_then(Value::as_str) == Some("initialize");

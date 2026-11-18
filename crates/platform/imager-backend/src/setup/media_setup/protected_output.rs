@@ -1,4 +1,4 @@
-//! Root-private custody and delegated ciphertext inbox, provisioned by writer.
+//! Root-private ownership and delegated ciphertext inbox, provisioned by writer.
 use super::*;
 use std::{
     ffi::OsStr,
@@ -167,8 +167,8 @@ fn create_directory(
     if bytes.len() > 4096 {
         return Err(denied("Protected pending area receipt exceeds bounds"));
     }
-    // Durable custody before the first delegated write. Only the fresh sibling
-    // is delegated; GID stays root and root-private witness/store stay hidden.
+    // Durable ownership before the first delegated write. Only the fresh sibling
+    // is delegated; GID stays root and root-private proof/store stay hidden.
     storage
         .publish(
             OsStr::new(RECORD),
@@ -198,7 +198,7 @@ pub fn provision_after_write(
         return Err(io::ErrorKind::Interrupted.into());
     }
     validate_pending_caller(layout, caller)?;
-    // Independently refuse overlap BEFORE any writable mount/format/witness.
+    // Independently refuse overlap BEFORE any writable mount/format/proof.
     let daemon = block_devices::udisks::Udisks::system().map_err(io::Error::other)?;
     let raw = daemon
         .open_read_only(&target.dev_path())
@@ -243,7 +243,7 @@ pub fn provision_after_write(
     })
 }
 /// Canonical root read-media helper supplies UID from its authenticated peer.
-/// Returns exact delegated descriptor only, never the root witness namespace.
+/// Returns exact delegated descriptor only, never the root proof namespace.
 pub fn review(
     grant: &MediaFilesystemGrant,
     layout: &crate::setup::OfflineLayout,

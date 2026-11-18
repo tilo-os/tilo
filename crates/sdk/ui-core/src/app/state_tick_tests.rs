@@ -9,12 +9,12 @@
 
 #[test]
 fn a_window_that_is_never_drawn_still_runs_a_woken_state_pass() {
-    let (widget, ledger, _) = fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+    let (widget, log, _) = fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
     let mut app =
         App::from_managed_root_with_controlled_inputs(State::new(), managed(Box::new(widget)))
             .unwrap();
     layout(&mut app);
-    assert!(ledger.borrow().is_empty());
+    assert!(log.borrow().is_empty());
     // Something the app hears without a frame asked for the sync a frame
     // would have run.
     app.needs_sync = true;
@@ -27,7 +27,7 @@ fn a_window_that_is_never_drawn_still_runs_a_woken_state_pass() {
         app.root_widget.get_rect().width() > 0.0,
         "the tree it synced is the one laid out"
     );
-    assert!(ledger.borrow().is_empty(), "no invocation was waiting");
+    assert!(log.borrow().is_empty(), "no invocation was waiting");
 }
 
 /// A surface whose last frame's callback never comes (a hidden layer surface hears none) still
@@ -42,7 +42,7 @@ fn a_surface_that_hears_no_frame_callback_answers_an_invoked_action() {
         .type_mut()
         .contract
         .confirmation = tilo_actions::ConfirmationPolicy::None;
-    let ledger = widget.ledger.clone();
+    let log = widget.log.clone();
     let mut app =
         App::from_managed_root_with_controlled_inputs(State::new(), managed(Box::new(widget)))
             .unwrap();
@@ -74,7 +74,7 @@ fn a_surface_that_hears_no_frame_callback_answers_an_invoked_action() {
     app.run_state_tick();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
-        &*ledger.borrow(),
+        &*log.borrow(),
         &[serde_json::json!(0)],
         "answered without a frame"
     );

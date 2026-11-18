@@ -84,8 +84,8 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
             }
         }
     });
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
     let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
     files.state().cloud_fixture_consent = true;
     files.state().startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
@@ -169,8 +169,8 @@ tilo_test_env::scenario! {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("Copies");
         std::fs::create_dir(&destination).unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.state().cloud.active = true;
         files.state().cloud.account = "private-account".into();
@@ -273,8 +273,8 @@ tilo_test_env::scenario! {
     phase local_navigation_invalidates_page_and_destination_chooser;
     {
         let root = tempfile::tempdir().unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.state().cloud.active = true;
         files.state().cloud.account = "account".into();

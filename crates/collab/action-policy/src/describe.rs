@@ -19,7 +19,7 @@ pub trait Labels {
     fn everything(&self) -> String;
 }
 
-/// Labels nodes by their ids, for a reader that speaks the ledger's own
+/// Labels nodes by their ids, for a reader that speaks the log's own
 /// language (an agent, a bot's directory). A window passes its own labels,
 /// so the word it paints for the whole tree comes from its catalogue.
 #[derive(Clone, Copy, Debug, Default)]
@@ -159,7 +159,7 @@ impl Ord for LifetimeKey<'_> {
 ///
 /// [`describe`] merges a grant set into what each node finally answers;
 /// this keeps the grants apart, so a person reads the exception and the rule
-/// it narrows as the two records they are, and an agent handed the same
+/// it narrows as the two resources they are, and an agent handed the same
 /// sentences knows what it holds. Grants come from the most specific node to
 /// the least, so an exception sits beside the grant it excepts.
 #[must_use]

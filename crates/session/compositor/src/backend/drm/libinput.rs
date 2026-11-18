@@ -757,7 +757,7 @@ impl TabletEvent {
 }
 
 /// libinput half of [`ConfigurableDevice`]. Every failure is ignored: libinput errors on an
-/// unsupported setting, and [`input_config::plan_for`]'s capability gates already avoid asking;
+/// unsupported setting, and [`input_config::plan_for`]'s capability checks already avoid asking;
 /// anything left is a driver quirk that must not take the session down.
 impl ConfigurableDevice for Device {
     fn caps(&self) -> DeviceCaps {

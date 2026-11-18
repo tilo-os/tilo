@@ -1,5 +1,5 @@
 //! Current privacy on local Linux POSIX ACL filesystems, without userspace ACL
-//! enumeration. `ACL_MASK` is reflected in group mode bits and gates named users
+//! enumeration. `ACL_MASK` is reflected in group mode bits and checks named users
 //! and groups. Kernel/capability and hostile same-principal bypasses are outside
 //! this discretionary privacy contract. tmpfs is not persistence evidence.
 use std::{
@@ -19,7 +19,7 @@ pub(super) fn validate_private(file: &File, metadata: &Metadata) -> io::Result<(
     Ok(())
 }
 
-/// Only the shared exclusive-mkdir custody invokes this fresh-only operation.
+/// Only the shared exclusive-mkdir ownership invokes this fresh-only operation.
 pub(super) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_dir() {

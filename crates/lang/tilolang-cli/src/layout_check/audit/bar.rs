@@ -41,7 +41,7 @@ pub fn column_headers_at_rest(
 }
 
 /// What is wrong with the window's bar against the window's own header rows: an action the bar
-/// offers that a button standing in the window offers too, by the same name.
+/// offers that a button in the window offers too, by the same name.
 pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String]) -> Vec<Problem> {
     layout
         .controls
@@ -70,7 +70,7 @@ pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String])
 
 /// What is wrong with one window's bar as it lays itself out across the
 /// window: a control it shows twice, and an action that asks for its
-/// words standing as its icon alone while the bar has room for those
+/// words shown as its icon alone while the bar has room for those
 /// words.
 pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     let mut out = Vec::new();
@@ -146,7 +146,7 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
 }
 
 /// What is wrong with a window that shows its bar and, under it, a second header row of its own:
-/// one bar per window, the app's title, navigation, actions and catch-up standing in it and the
+/// one bar per window, the app's title, navigation, actions and catch-up in it and the
 /// window's controls at its end.
 pub fn stacked_header_rows(bar_height: f64, header_row: f64) -> Vec<Problem> {
     if bar_height <= EPSILON || header_row <= EPSILON {
@@ -160,7 +160,7 @@ pub fn stacked_header_rows(bar_height: f64, header_row: f64) -> Vec<Problem> {
         detail: format!(
             "the window shows a bar {bar_height:.0}px tall and, under it, a header row of its \
              own {header_row:.0}px tall: one bar per window, with the app's title, navigation \
-             and actions standing in it and the window's controls at its trailing end",
+             and actions state in it and the window's controls at its trailing end",
         ),
     }]
 }

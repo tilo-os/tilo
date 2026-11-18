@@ -1,5 +1,5 @@
 //! The conversation in the middle of the window: Chat's own view of the thread, drawn by the
-//! shell on this device's copy of Chat's record ([`ui::window_share`]). The window writes no
+//! shell on this device's copy of Chat's resource ([`ui::window_share`]). The window writes no
 //! chat of its own: it says where the conversation stands and the shell draws Chat there.
 
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ pub(crate) fn agent_resource(id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<WorkspaceAgents>("agents", &Id::from(id))
 }
 
-/// Chat's view of the conversation with the agent `id`: Chat's record of the workspace, shown
+/// Chat's view of the conversation with the agent `id`: Chat's resource of the workspace, shown
 /// at that agent.
 pub(crate) fn chat_view(id: &str) -> ResourceView {
     ResourceView {
@@ -213,7 +213,7 @@ mod tests {
     fn the_conversation_is_chats_view_of_the_agent() {
         let view = chat_view("assistant");
         assert_eq!(view.app, "so.tilo.chat");
-        assert_eq!(view.record, "", "Chat's own record of the workspace");
+        assert_eq!(view.record, "", "Chat's own document of the workspace");
         assert_eq!(
             ui::tilo_resource::items::item_of_resource::<WorkspaceAgents>(&view.resource)
                 .map(|(field, id)| (field, id.as_str().to_owned())),

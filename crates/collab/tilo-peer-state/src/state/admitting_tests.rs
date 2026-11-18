@@ -111,16 +111,16 @@ tilo_test_env::scenario! {
             Role::Viewer
         );
         let governance = received(&peer);
-        let ledgered = crate::state::LedgerReceipt::decode(
+        let logged = crate::state::StoredReceipt::decode(
             &governance.invitation_receipts[&hex::encode(invited.join().invite_id())][0],
         )
         .unwrap();
         assert_eq!(
-            ledgered
-                .invitation(|digest| invitation_ledger::part_in(&governance.invitation_parts, digest))
+            logged
+                .invitation(|digest| invitation_receipts::part_in(&governance.invitation_parts, digest))
                 .as_deref(),
             Some(invited.join().signed_invitation()),
-            "the ledger keeps the invitation, its issuer's certificate named once"
+            "the log keeps the invitation, its issuer's certificate named once"
         );
         assert_eq!(editor.user_public_key, user);
 
@@ -272,11 +272,11 @@ tilo_test_env::scenario! {
 }
 
 /// What a receiver says to an administrator's admission of a guest, its
-/// ledger changed by `tamper` before it is sent: the ledger's map, the
+/// log changed by `tamper` before it is sent: the log's map, the
 /// receipt's key, the receipt as written, and the document. The guest is
 /// admitted only by the admission as written.
 fn refusal_of_tampered_admission(
-    tamper: impl FnOnce(&mut AutoCommit, &str, crate::state::LedgerReceipt, &VerifiedRedemption),
+    tamper: impl FnOnce(&mut AutoCommit, &str, crate::state::StoredReceipt, &VerifiedRedemption),
 ) -> String {
     let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
     let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
@@ -286,7 +286,7 @@ fn refusal_of_tampered_admission(
         .unwrap();
     // The administrator's device admits the guest as every device does — the
     // rows its operation names beside the receipt — and then changes what
-    // the ledger holds in the same batch.
+    // the log holds in the same batch.
     let guest = device(78, 79);
     let owner = peer.owner_certificates()[0].clone();
     let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Editor, 80, now);
@@ -301,7 +301,7 @@ fn refusal_of_tampered_admission(
         .unwrap();
     let mut doc = (**writer.core.workspace_doc.as_ref().unwrap()).clone();
     let key = hex::encode(invited.join().invite_id());
-    let receipt = crate::state::LedgerReceipt::decode(
+    let receipt = crate::state::StoredReceipt::decode(
         &crate::workspace::invitation_receipts(&doc).unwrap()[&key][0],
     )
     .unwrap();
@@ -318,7 +318,7 @@ fn refusal_of_tampered_admission(
     let workspace = peer.workspace_id().to_owned();
     let refused = peer
         .receive_from(
-            TransportOrigin::RelayDelta(editor_key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(editor_key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp { changes, workspace },
             now,
         )
@@ -328,10 +328,10 @@ fn refusal_of_tampered_admission(
     refused
 }
 
-fn put_receipt(doc: &mut AutoCommit, key: &str, receipt: &crate::state::LedgerReceipt) {
-    let ledger = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
+fn put_receipt(doc: &mut AutoCommit, key: &str, receipt: &crate::state::StoredReceipt) {
+    let log = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
     doc.put(
-        &ledger,
+        &log,
         key,
         automerge::ScalarValue::Bytes(receipt.encode().unwrap()),
     )
@@ -344,11 +344,11 @@ fn put_part(doc: &mut AutoCommit, key: &str, bytes: Vec<u8>) {
         .unwrap();
 }
 
-/// A receiver refuses a member's admission whose ledger was changed in the
+/// A receiver refuses a member's admission whose log was changed in the
 /// batch that carries it: one case per change, each with the reason it is
 /// refused for.
 #[test]
-fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
+fn a_receiver_refuses_a_members_admission_whose_log_was_changed() {
     let refuses = |case: &str, reason: &str, refused: String| {
         assert!(refused.contains(reason), "{case}: {refused}");
     };
@@ -356,7 +356,7 @@ fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
         "a receipt filed under one invitation that spells another",
         "names no invitation",
         refusal_of_tampered_admission(|doc, key, mut receipt, other| {
-            receipt.invitation = vec![invitation_ledger::Piece::Own(
+            receipt.invitation = vec![invitation_receipts::Piece::Own(
                 other.join().signed_invitation().to_vec(),
             )];
             put_receipt(doc, key, &receipt);
@@ -371,8 +371,8 @@ fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
                 .iter_mut()
                 .rev()
                 .find_map(|piece| match piece {
-                    invitation_ledger::Piece::Own(bytes) => Some(bytes),
-                    invitation_ledger::Piece::Shared(_) => None,
+                    invitation_receipts::Piece::Own(bytes) => Some(bytes),
+                    invitation_receipts::Piece::Shared(_) => None,
                 })
                 .unwrap();
             // The invitation's signature, at its end.
@@ -386,12 +386,12 @@ fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
         "part under another key",
         refusal_of_tampered_admission(|doc, _, receipt, _| {
             let digest = *receipt.shared().next().expect("the issuer is named once");
-            let parts = invitation_ledger::parts(doc).unwrap();
-            let mut forged = invitation_ledger::part_in(&parts, &digest)
+            let parts = invitation_receipts::parts(doc).unwrap();
+            let mut forged = invitation_receipts::part_in(&parts, &digest)
                 .unwrap()
                 .to_vec();
             forged[0] ^= 1;
-            put_part(doc, &invitation_ledger::part_key(&digest), forged);
+            put_part(doc, &invitation_receipts::part_key(&digest), forged);
         }),
     );
     refuses(
@@ -401,7 +401,7 @@ fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
             let stray = other.join().signed_invitation().to_vec();
             put_part(
                 doc,
-                &invitation_ledger::part_key(blake3::hash(&stray).as_bytes()),
+                &invitation_receipts::part_key(blake3::hash(&stray).as_bytes()),
                 stray,
             );
         }),

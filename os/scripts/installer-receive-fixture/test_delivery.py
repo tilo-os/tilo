@@ -13,7 +13,7 @@ SPEC.loader.exec_module(delivery)
 
 
 class DeliveryCommands(unittest.TestCase):
-    def test_authenticated_custody_uses_native_cli_without_python_wrapper(self):
+    def test_authenticated_ownership_uses_native_cli_without_python_wrapper(self):
         with tempfile.TemporaryDirectory() as scratch:
             source = Path(scratch) / 'source'
             source.mkdir(mode=0o700)

@@ -2,20 +2,20 @@
 //! it (`docs/hosted-browser.md`, "What the session in the VM is handed").
 //!
 //! The session in a workspace's VM is started at the first browser action, so it
-//! holds nothing of its own: the relay placement record on its standard input is the workspace it
+//! holds nothing of its own: the server placement record on its standard input is the workspace it
 //! joins, the record whose Browser window it opens, and the device certificate and key it joins
-//! as. It is a device of the workspace like any other — the relay lists it, and its window is
+//! as. It is a device of the workspace like any other — the server lists it, and its window is
 //! published, subscribed and acted on as a window on anyone's computer is — and it does nothing
 //! else a person's session does on start: no onboarding, no Lounge, no other app.
 //!
 //! The session reports what it became on its standard output, one [`Report`] per line: [`READY`]
 //! once the identity it was handed is the one it runs as, [`UP`] with the window's provider once
 //! the window publishes, and [`USED`] whenever the page is used. The host that started it counts
-//! its idle limit from that, and hands the provider to the relay, which routes page actions to it.
+//! its idle limit from that, and hands the provider to the server, which routes page actions to it.
 //!
 //! The window also holds departures nobody asked for — a page posting on its own, a download it
 //! started — and nobody stands in front of it to allow them. The session reports each one the
-//! window publishes ([`SEND_HELD`], by the id it is published with) to the relay's device, which
+//! window publishes ([`SEND_HELD`], by the id it is published with) to the server's device, which
 //! puts it to the person and answers with their word: their allow runs that one request as their
 //! own, and a denial runs [`KEEP_HELD`] instead, leaving the page as it was filled.
 //!
@@ -42,13 +42,16 @@ use tilo_actions::remote::browser::{MARK, Report, SEND_HELD};
 use tilo_actions::remote::environment_device;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery,
+    ConfirmedInvocation, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::selection::logical_resource_id;
-use tilo_relay_protocol::hosted::Material;
+use tilo_server_protocol::hosted::Material;
 
 use crate::Shared;
+use crate::app_wire::AppWire;
+use crate::item_lending::ItemLending;
+use runtime_collab::BrowserServiceSessionReply as ItemReply;
 
 /// The app whose window a session holds.
 pub use ui::apps::BROWSER;
@@ -59,7 +62,7 @@ const KEEP_HELD: &str = tilo_actions::remote::browser::KEEP_HELD;
 /// The most held requests one page of the window's catalogue is read for:
 /// the window itself bounds what it holds at once, so one page names them all.
 const HELD_PAGE: u32 = 64;
-/// How long the invitation the relay answers the join with stays redeemable.
+/// How long the invitation the server answers the join with stays redeemable.
 const ENTER_INVITATION_SECONDS: u64 = 600;
 /// How far behind the host this session's clock may read and still wait for it
 /// to reach the certificate it was handed: a guest resumed from a template's
@@ -109,10 +112,10 @@ pub fn shares_by_default() -> bool {
     Holds::marked().is_some()
 }
 
-/// The session in a workspace's VM: the identity it was handed, the join it asked of its relay,
+/// The session in a workspace's VM: the identity it was handed, the join it asked of its server,
 /// and the window it holds.
 pub struct HostedBrowser {
-    /// The relay's placement record: what this session joins, opens and is.
+    /// The server's placement record: what this session joins, opens and is.
     material: Material,
     /// What it holds: Browser's window, or the Linux apps it is told to start.
     holds: Holds,
@@ -122,30 +125,35 @@ pub struct HostedBrowser {
     /// way to reach the loop.
     told_wake: std::sync::Arc<std::sync::Mutex<Option<tilo_service::Wake>>>,
     reports: Reports,
-    /// What wakes the session's loop when the relay answers or the page is used.
+    /// What wakes the session's loop when the server answers or the page is used.
     waking: Option<tilo_service::Wake>,
     arrived: std::sync::mpsc::Receiver<Arrived>,
     sender: std::sync::mpsc::Sender<Arrived>,
     /// The session's broker, while it serves one: what the window publishes,
     /// and what the requests it holds are answered through.
     broker: Option<std::sync::Arc<AppBrokerState>>,
-    /// Where the workspace's host is asked about a page: the relay's device,
+    /// Where the workspace's host is asked about a page: the server's device,
     /// which puts the person's answer to them.
     hosted: Option<std::sync::Arc<dyn HostedWorkspaces>>,
     /// Who sits here, as this session's own actions name them.
     person: String,
-    /// The held requests the relay has been told about, by the id the window
+    /// The held requests the server has been told about, by the id the window
     /// published them with: each is put to the person once.
     held: HashSet<u32>,
     join: Join,
     window: Window,
     /// When the page's use was last reported.
     said_used: Option<Instant>,
-    /// Whether the session's plane and its window shares ask the workspace's host yet: for the
+    /// Whether the session's action service and its window shares ask the workspace's host yet: for the
     /// media keys of this device's own streams, and to write its shares.
     asks_host: bool,
     /// Whether this session's window shares are written by the workspace's host yet.
     governed: bool,
+    /// What the session's account-credentials service answers Browser's asks for vault items
+    /// with, once the session was handed it.
+    items: Option<std::sync::Arc<ItemLending>>,
+    /// Whether that service asks the workspace's server for those items yet.
+    lends_items: bool,
 }
 
 /// How this session asks the workspace's host what its device may not hold or write itself
@@ -163,7 +171,37 @@ impl HostAsks {
     /// Ask the host for `action` with `argument`: what it answered, or `None` when it refused or
     /// did not answer.
     async fn ask(&self, action: &str, argument: InvokeArgument) -> Option<serde_json::Value> {
-        let host = self.hosted.host_actions(&self.workspace)?;
+        match self.ask_told(action, argument).await {
+            Ok(answer) => answer,
+            Err(unanswered) => {
+                match *unanswered {
+                    Unanswered::Unreached => {}
+                    Unanswered::Refused(error) => {
+                        tracing::warn!(%error, action, "the workspace's host refused this session");
+                    }
+                    Unanswered::Status(status) => {
+                        tracing::warn!(
+                            ?status,
+                            action,
+                            "the workspace's host did not answer this session"
+                        );
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Ask as [`Self::ask`] does, and where there is no answer say why: a refusal's reason is
+    /// handed back to whoever asked and not only written down.
+    async fn ask_told(
+        &self,
+        action: &str,
+        argument: InvokeArgument,
+    ) -> Result<Option<serde_json::Value>, Box<Unanswered>> {
+        let Some(host) = self.hosted.host_actions(&self.workspace) else {
+            return Err(Box::new(Unanswered::Unreached));
+        };
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: environment_device::target(action),
@@ -175,28 +213,142 @@ impl HostAsks {
             wait_ms: None,
             appearance: None,
         };
-        let receipt = match host.invoke(&self.caller, request).await? {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                tracing::warn!(%error, action, "the workspace's host refused this session");
-                return None;
-            }
+        let receipt = match host.invoke(&self.caller, request).await {
+            Some(Ok(receipt)) => receipt,
+            Some(Err(error)) => return Err(Box::new(Unanswered::Refused(error))),
+            None => return Err(Box::new(Unanswered::Unreached)),
         };
         match receipt.status {
-            ReceiptStatus::Completed { output } => output.value,
-            status => {
-                tracing::warn!(
-                    ?status,
-                    action,
-                    "the workspace's host did not answer this session"
+            ReceiptStatus::Completed { output } => Ok(output.value),
+            status => Err(Box::new(Unanswered::Status(status))),
+        }
+    }
+
+    /// Ask the server to use the vault item `used` names for the page action it names, as
+    /// the device it placed, and open what it answers with `key`, this device's own: the
+    /// text, that its person is asked first, or the refusal in the server's own words.
+    async fn use_item(
+        &self,
+        key: &ed25519_dalek::SigningKey,
+        used: &environment_device::ItemUse,
+    ) -> ItemReply {
+        let argument = match serde_json::to_value(used) {
+            Ok(serde_json::Value::Object(named)) => InvokeArgument::Json(named),
+            _ => {
+                return ItemReply::item_refused(
+                    used.invocation,
+                    "This session could not name the item to its workspace's server, so nothing \
+                     was filled.",
                 );
-                None
+            }
+        };
+        let answered = self.ask_told(environment_device::USE_ITEM, argument).await;
+        item_answer(&self.workspace, key, used, answered)
+    }
+}
+
+/// Why the workspace's server gave this session no answer.
+enum Unanswered {
+    /// The server was not reached.
+    Unreached,
+    /// It refused before it started anything.
+    Refused(ActionCallError),
+    /// It answered that the action did not complete.
+    Status(ReceiptStatus),
+}
+
+impl Unanswered {
+    /// Why, in the server's own words where it gave any: a refusal's reason is carried as it
+    /// was given.
+    fn reason(&self) -> String {
+        match self {
+            Self::Unreached => {
+                "This session cannot reach its workspace's server, so nothing was filled."
+                    .to_owned()
+            }
+            Self::Refused(error) | Self::Status(ReceiptStatus::Rejected { error }) => match error {
+                ActionCallError::Refused { reason } => reason.clone(),
+                other => other.to_string(),
+            },
+            Self::Status(ReceiptStatus::Failed { error }) => error.message.clone(),
+            Self::Status(ReceiptStatus::Cancelled { message }) => {
+                message.clone().unwrap_or_else(|| {
+                    "The workspace's server stopped the ask for the item, so nothing was filled."
+                        .to_owned()
+                })
+            }
+            Self::Status(_) => {
+                "The workspace's server has not decided about the item, so nothing was filled."
+                    .to_owned()
             }
         }
     }
 }
 
-/// The plane's lender: the media keys of this device's own streams, as the workspace's host lends
+/// What a box that does not open here is refused with: it names nothing of what it holds.
+const NOT_SEALED_FOR_THIS: &str = "What the workspace's server answered was not sealed for \
+                                   this fill of this page on this device, so nothing was filled.";
+
+/// What Browser is answered for `used`, from what the workspace's server answered this
+/// device: a text it sealed to `key` for this workspace, this page action and this site is
+/// opened, a question's words and a refusal's reason are carried, and a box sealed for
+/// anything else opens for nothing.
+///
+/// The text is held by the answer alone, which wipes it and prints nothing. No failure here
+/// says anything of it.
+fn item_answer(
+    workspace: &str,
+    key: &ed25519_dalek::SigningKey,
+    used: &environment_device::ItemUse,
+    answered: Result<Option<serde_json::Value>, Box<Unanswered>>,
+) -> ItemReply {
+    let invocation = used.invocation;
+    let refused = |reason: &str| ItemReply::item_refused(invocation, reason);
+    let answer = match answered {
+        Ok(Some(answer)) => answer,
+        Ok(None) => {
+            return refused(
+                "The workspace's server answered nothing for the item, so nothing was filled.",
+            );
+        }
+        Err(unanswered) => return refused(&unanswered.reason()),
+    };
+    match serde_json::from_value::<environment_device::ItemUsed>(answer) {
+        Ok(environment_device::ItemUsed::Asked { words }) => {
+            ItemReply::item_asked(invocation, &words)
+        }
+        Ok(environment_device::ItemUsed::Released { sealed, into }) => {
+            let Some(into) = runtime_collab::ItemField::from_word(&into) else {
+                return refused(
+                    "The workspace's server named a kind of field this session does not know, \
+                     so nothing was filled.",
+                );
+            };
+            let Ok(sealed) = hex::decode(sealed) else {
+                return refused(NOT_SEALED_FOR_THIS);
+            };
+            let bound = key_group::ReleasedFor {
+                workspace,
+                invocation: *invocation.0.as_bytes(),
+                origin: &used.origin,
+            };
+            match key_group::open_released_text(key, &bound, &sealed) {
+                Ok(text) => ItemReply::ItemText {
+                    invocation,
+                    text,
+                    into,
+                },
+                Err(_) => refused(NOT_SEALED_FOR_THIS),
+            }
+        }
+        Err(_) => refused(
+            "The workspace's server answered something that is no item's use, so nothing was \
+             filled.",
+        ),
+    }
+}
+
+/// The action service's lender: the media keys of this device's own streams, as the workspace's host lends
 /// them, opened with this device's key.
 struct HostLends {
     asking: HostAsks,
@@ -272,9 +424,9 @@ impl crate::window_share::ShareGovernor for HostGoverns {
     }
 }
 
-/// What reached the loop from the tasks that watch the relay and the shell.
+/// What reached the loop from the tasks that watch the server and the shell.
 enum Arrived {
-    /// The relay answered the join: the invitation text to redeem, or why it did not.
+    /// The server answered the join: the invitation text to redeem, or why it did not.
     Invitation(Result<String, String>),
     /// An action ran on the window's page.
     PageAction,
@@ -286,7 +438,7 @@ enum Arrived {
     /// why they did not give one, and the invocation it answers.
     Answered {
         request: Box<InvokeRequest>,
-        answer: Box<Result<ConfirmedInvocation, ActionHostError>>,
+        answer: Box<Result<ConfirmedInvocation, ActionCallError>>,
     },
 }
 
@@ -305,9 +457,9 @@ struct Held {
 
 /// How far the join has come.
 enum Join {
-    /// The relay has not been asked yet.
+    /// The server has not been asked yet.
     Waiting,
-    /// The relay was asked, and what it answers is on its way: the invitation is redeemed by the
+    /// The server was asked, and what it answers is on its way: the invitation is redeemed by the
     /// session's own join, which settles the workspace on the shell.
     Asking,
 }
@@ -326,13 +478,13 @@ enum Window {
 }
 
 impl HostedBrowser {
-    /// The session, joining as the device `material`, the relay's placement record
+    /// The session, joining as the device `material`, the server's placement record
     /// names: its identity is taken here, before anything reads this device of itself, and `ready`
     /// is reported. `reports` is where the session says what it became.
     ///
     /// # Errors
     ///
-    /// The material is not the relay's, or the identity it names is not one this device may take.
+    /// The material is not the server's, or the identity it names is not one this device may take.
     pub fn take(material: &str, reports: Reports) -> Result<Self, String> {
         Self::take_holding(material, Holds::Browser, reports)
     }
@@ -344,7 +496,7 @@ impl HostedBrowser {
     /// As [`Self::take`].
     pub fn take_holding(material: &str, holds: Holds, reports: Reports) -> Result<Self, String> {
         let material: Material = serde_json::from_str(material.trim())
-            .map_err(|error| format!("the material is not the relay's: {error}"))?;
+            .map_err(|error| format!("the material is not the server's: {error}"))?;
         take_identity(&material)?;
         let (sender, arrived) = std::sync::mpsc::channel();
         let mut hosted = Self {
@@ -365,18 +517,44 @@ impl HostedBrowser {
             said_used: None,
             asks_host: false,
             governed: false,
+            items: None,
+            lends_items: false,
         };
         hosted.say(Report::Ready);
         Ok(hosted)
     }
 
-    /// Wake the session's loop with `wake` when the relay answers the join or the page is used.
+    /// Wake the session's loop with `wake` when the server answers the join or the page is used.
     pub(crate) fn waking(&mut self, wake: tilo_service::Wake) {
         *self
             .told_wake
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake.clone());
         self.waking = Some(wake);
+    }
+
+    /// Take what the session's account-credentials service answers Browser's asks for vault
+    /// items with. A session that holds a workspace's Browser says so from here on, and has
+    /// the items used once its server can be asked.
+    pub(crate) fn lending(&mut self, items: Option<std::sync::Arc<ItemLending>>) {
+        if self.holds == Holds::Browser
+            && let Some(items) = &items
+        {
+            items.hold(&self.material.workspace);
+        }
+        self.items = items;
+    }
+
+    /// Take from the session's app wire what the window it holds needs of it, as `person`'s
+    /// device: what its broker admits ([`Self::watching`]), and then what answers Browser's
+    /// asks for vault items ([`Self::lending`]).
+    pub(crate) fn wired(&mut self, app_wire: Option<&AppWire>, person: &str) {
+        self.watching(
+            app_wire.and_then(AppWire::agent_broker).as_ref(),
+            app_wire.and_then(AppWire::hosted_workspaces),
+            person,
+        );
+        self.lending(app_wire.map(AppWire::item_lending));
     }
 
     /// Read what its host tells it on `input` from now on, a line at a time, each a Linux app
@@ -414,7 +592,7 @@ impl HostedBrowser {
 
     /// Follow what the session's broker admits: an action on the window's page is the page in use,
     /// and the page track's viewers say so too ([`Self::follow`]). `hosted` is where the workspace's
-    /// host is asked about a departure the window holds, and `person` who this seat acts as.
+    /// host is asked about a departure the window holds, and `person` who this device acts as.
     pub(crate) fn watching(
         &mut self,
         broker: Option<&std::sync::Arc<AppBrokerState>>,
@@ -456,7 +634,7 @@ impl HostedBrowser {
         });
     }
 
-    /// What the session does each pass: redeem the invitation the relay answered with, open the
+    /// What the session does each pass: redeem the invitation the server answered with, open the
     /// record's window once the shell holds the workspace, and report what became of it.
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
@@ -476,7 +654,7 @@ impl HostedBrowser {
     }
 
     /// Once the workspace's host can be asked, have the session ask it for what this device may not
-    /// hold or write itself: the plane is lent the media keys of this device's own streams
+    /// hold or write itself: the action service is lent the media keys of this device's own streams
     /// ([`HostLends`]), and the window shares are written by the host ([`HostGoverns`]).
     fn ask_host(&mut self, shared: &Shared) {
         if self.asks_host {
@@ -490,6 +668,30 @@ impl HostedBrowser {
             caller: self.caller(),
             workspace: self.material.workspace.clone(),
         };
+        if !self.lends_items {
+            // The pages of this window are filled from vault items the server keeps: the
+            // session's account-credentials service asks for each as this device from here on,
+            // and opens the answer with this device's key.
+            self.lends_items = true;
+            if self.holds == Holds::Browser
+                && let Some(items) = &self.items
+            {
+                match self.material.key() {
+                    Ok(key) => {
+                        let asking = asking.clone();
+                        items.lent_by(std::sync::Arc::new(
+                            move |used: environment_device::ItemUse| -> crate::item_lending::Lending {
+                                let (asking, key) = (asking.clone(), key.clone());
+                                Box::pin(async move { asking.use_item(&key, &used).await })
+                            },
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "no vault item is used for this window's pages");
+                    }
+                }
+            }
+        }
         if !self.governed {
             // Before any window is shared: a share the session wrote itself would be dropped.
             self.governed = true;
@@ -511,7 +713,7 @@ impl HostedBrowser {
         };
         let lender = std::sync::Arc::new(HostLends { asking, key });
         if !sync.lend_media_keys(lender) {
-            // No plane yet: the next pass hands it over.
+            // No action service yet: the next pass hands it over.
             return;
         }
         self.asks_host = true;
@@ -552,7 +754,7 @@ impl HostedBrowser {
         }
     }
 
-    /// Redeem what the relay answered the join with: the invitation text through the session's own
+    /// Redeem what the server answered the join with: the invitation text through the session's own
     /// join, the path a pasted invitation takes.
     fn take_arrived(&mut self, shared: &Shared) {
         let arrived: Vec<Arrived> = self.arrived.try_iter().collect();
@@ -566,7 +768,7 @@ impl HostedBrowser {
                     }
                 }
                 Arrived::Invitation(Err(reason)) => {
-                    tracing::warn!(%reason, "the relay did not let this session into the workspace");
+                    tracing::warn!(%reason, "the server did not let this session into the workspace");
                 }
                 Arrived::PageAction => self.used(),
                 Arrived::Launch(launch) => self.launches.push(launch),
@@ -592,20 +794,20 @@ impl HostedBrowser {
         }
     }
 
-    /// Ask its relay to enter the device into the workspace, once: as the device the
+    /// Ask its server to enter the device into the workspace, once: as the device the
     /// material certifies, it answers with an invitation, which the session redeems.
     ///
-    /// The relay is reached at the address the material names, which is where this VM reaches
-    /// it; the invitation names the relay where it sees itself, its own loopback. Once the relay
+    /// The server is reached at the address the material names, which is where this VM reaches
+    /// it; the invitation names the server where it sees itself, its own loopback. Once the server
     /// answered there, the session's endpoint dials it there too, so the join and everything
-    /// after it reach the relay this session did.
+    /// after it reach the server this session did.
     fn join(&mut self, shared: &Shared) {
         if !matches!(self.join, Join::Waiting) {
             return;
         }
         self.join = Join::Asking;
         let Ok(runtime) = tilo_rt::try_app() else {
-            tracing::warn!("the workspace is not joined: no task to ask the relay on");
+            tracing::warn!("the workspace is not joined: no task to ask the server on");
             return;
         };
         let material = self.material.clone();
@@ -617,7 +819,7 @@ impl HostedBrowser {
             if answer.is_ok()
                 && let Some(reached) = &reached
             {
-                reached.note(&material.relay);
+                reached.note(&material.server);
             }
             if arrived.send(Arrived::Invitation(answer)).is_err() {
                 return;
@@ -659,7 +861,7 @@ impl HostedBrowser {
     }
 
     /// The provider the session's broker lists this session's window under: the
-    /// app the session started, on the record the relay opened it on. `None`
+    /// app the session started, on the record the server opened it on. `None`
     /// while the broker lists no such window yet.
     fn window_provider(&self) -> Option<u64> {
         self.broker.as_ref()?.window_provider(
@@ -754,7 +956,7 @@ impl HostedBrowser {
                 let answered = Arrived::Answered {
                     request: Box::new(request),
                     answer: Box::new(
-                        answer.unwrap_or(Err(ActionHostError::confirmation_required())),
+                        answer.unwrap_or(Err(ActionCallError::confirmation_required())),
                     ),
                 };
                 if arrived.send(answered).is_err() {
@@ -767,7 +969,7 @@ impl HostedBrowser {
         }
     }
 
-    /// Run `request` on the window as the person at this seat: the page action
+    /// Run `request` on the window as the person at this device: the page action
     /// that releases what they allowed, or drops what they did not.
     fn run(&self, request: &InvokeRequest) {
         let (Some(broker), Ok(runtime)) = (self.broker.clone(), tilo_rt::try_app()) else {
@@ -782,7 +984,7 @@ impl HostedBrowser {
         });
     }
 
-    /// Who this seat is, as the session's own actions name it: the person in
+    /// Who this device acts as, as the session's own actions name it: the person in
     /// the workspace the session holds a window of.
     fn caller(&self) -> Caller {
         Caller::local_person(self.person.clone()).in_workspace(self.material.workspace.clone())
@@ -854,9 +1056,9 @@ fn say_on_stdout(report: &Report) {
 }
 
 /// Take `material`'s device as this session's own: the key it signs with, and the certificate the
-/// relay issued for it, where every part of the session that reads this device of itself reads it.
+/// server issued for it, where every part of the session that reads this device of itself reads it.
 fn take_identity(material: &Material) -> Result<(), String> {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
     paths
         .ensure_directories()
         .map_err(|error| format!("this device's identity has nowhere to live: {error}"))?;
@@ -880,7 +1082,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
     tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &key)
         .map_err(|error| format!("this device's key was not written: {error}"))?;
     // A guest resumed from its template's snapshot wakes with the clock that
-    // snapshot was taken at, behind the host's: the certificate the relay issued
+    // snapshot was taken at, behind the host's: the certificate the server issued
     // this moment is there "not yet valid". The host sets the guest's clock as
     // it wakes it; should it still read a little behind, this session waits for
     // the clock to reach its certificate rather than ending without an identity.
@@ -910,10 +1112,10 @@ fn take_identity(material: &Material) -> Result<(), String> {
             ));
         }
     }
-    // The person the workspace belongs to, as a record this device holds of them: the relay hands
+    // The person the workspace belongs to, as a record this device holds of them: the server hands
     // over their public key, and every part of the session that presents this device's person in a
     // workspace reads that person from this login's identity records. The record carries no root:
-    // what signs here is the device certificate the relay issued.
+    // what signs here is the device certificate the server issued.
     let directory = runtime_identity::identity_dir_from_env()
         .map_err(|error| format!("this device's identity directory is not known: {error}"))?;
     let record = runtime_identity::public_member_record(
@@ -930,33 +1132,33 @@ fn take_identity(material: &Material) -> Result<(), String> {
         return Err(format!("the person's record was not taken: {error}"));
     }
     // The person's devices this device trusts are the ones their fleet lists, and an app's identity
-    // service answers only while this device is one of them: the certificate the relay issued is
+    // service answers only while this device is one of them: the certificate the server issued is
     // listed, as a device enrolled at this login lists its own.
-    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+    tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .and_then(|fleet| fleet.register_current_device(&user))
         .map_err(|error| format!("this device was not listed among the person's: {error}"))?;
     Ok(())
 }
 
-/// Ask its relay to enter the session's device into the workspace, the way a member
-/// device asks to enter a workspace its relay hosts, and answer the invitation text it redeems.
+/// Ask its server to enter the session's device into the workspace, the way a member
+/// device asks to enter a workspace its server hosts, and answer the invitation text it redeems.
 async fn invitation(material: &Material) -> Result<String, String> {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .map_err(|error| format!("the session reached no network: {error}"))?;
     let joined = async {
-        let client = tilo_relay_session::RelayClient::connect(
+        let client = tilo_server_session::ServerClient::connect(
             endpoint.clone(),
-            material.relay.clone(),
+            material.server.clone(),
             material.user_public_key,
             material.device.clone(),
             material.key()?,
             tilo_user_identity::RevocationList::new(),
         )
         .await
-        .map_err(|error| format!("the session could not reach its relay: {error}"))?;
-        tilo_relay_session::workspaces::enter_invitation(
+        .map_err(|error| format!("the session could not reach its server: {error}"))?;
+        tilo_server_session::workspaces::enter_invitation(
             &client,
             &material.workspace,
             ENTER_INVITATION_SECONDS,
@@ -1084,9 +1286,9 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use tilo_relay_protocol::WorkspaceId;
+    use tilo_server_protocol::WorkspaceId;
 
-    /// What a relay hands a session: a device of the workspace's person that
+    /// What a server hands a session: a device of the workspace's person that
     /// the host certified with its stand-in.
     fn material() -> Material {
         let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
@@ -1121,7 +1323,7 @@ mod tests {
             record: "browser-1".into(),
             device,
             secret,
-            relay: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            server: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
             user_public_key: user,
             account: "acct-1".into(),
         }
@@ -1146,7 +1348,7 @@ mod tests {
         take_identity(&handed).expect("the session took the identity it was handed");
         // Taken again, as a session restarted in the same VM takes it.
         take_identity(&handed).expect("the session took the identity it was handed again");
-        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        let fleet = tilo_identity::device_fleet::DeviceFleetStore::from_env()
             .unwrap()
             .load(&hex::encode(handed.user_public_key))
             .unwrap();
@@ -1157,7 +1359,7 @@ mod tests {
                 .any(|cert| cert.device_public_key == handed.device.device_public_key),
             "the device is among the person's trusted devices, so an app's identity service answers"
         );
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(
@@ -1204,7 +1406,7 @@ mod tests {
                     issuer: None,
                 },
                 secret: [0; 32],
-                relay: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+                server: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
                 user_public_key: [1; 32],
                 account: "acct".into(),
             },
@@ -1229,7 +1431,193 @@ mod tests {
             said_used: None,
             asks_host: false,
             governed: false,
+            items: None,
+            lends_items: false,
         }
+    }
+
+    /// A vault item's reference, made up.
+    const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+    /// Where the made-up item is kept for.
+    const ORIGIN: &str = "https://login.example.test";
+    /// What the made-up item keeps: nobody's password, and it says so.
+    const MADE_UP_TEXT: &str = "made-up item text, nobody's password";
+
+    /// The workspace's server is stood in for by what it answers this device: a text sealed
+    /// to it is opened for the fill, the site and the workspace it was sealed for and for no
+    /// other, a question's words and a refusal's reason are carried, and nothing that is said
+    /// holds the text.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+    fn what_the_server_answers_an_items_use_is_opened_here_or_its_reason_is_carried() {
+        use environment_device::{ItemUse, ItemUsed};
+        let handed = material();
+        let key = handed.key().unwrap();
+        let device = key.verifying_key().to_bytes();
+        let used = ItemUse {
+            invocation: tilo_actions::InvocationId::new(),
+            item: ITEM.into(),
+            origin: ORIGIN.into(),
+        };
+        let sealed_for = |workspace: &str,
+                          invocation: tilo_actions::InvocationId,
+                          device: [u8; 32],
+                          origin: &str,
+                          into: &str|
+         -> Result<Option<serde_json::Value>, Box<Unanswered>> {
+            let bound = key_group::ReleasedFor {
+                workspace,
+                invocation: *invocation.0.as_bytes(),
+                origin,
+            };
+            let sealed = key_group::seal_released_text(device, &bound, MADE_UP_TEXT).unwrap();
+            Ok(Some(
+                serde_json::to_value(ItemUsed::Released {
+                    sealed: hex::encode(sealed),
+                    into: into.to_owned(),
+                })
+                .unwrap(),
+            ))
+        };
+        let here = handed.workspace.as_str();
+
+        // Sealed to this device for this fill of this page: opened, with its kind of field.
+        let reply = item_answer(
+            here,
+            &key,
+            &used,
+            sealed_for(here, used.invocation, device, ORIGIN, "password"),
+        );
+        assert!(matches!(
+            &reply,
+            ItemReply::ItemText { invocation, text, into: runtime_collab::ItemField::Password }
+                if *invocation == used.invocation && text.as_str() == MADE_UP_TEXT
+        ));
+        assert!(!format!("{reply:?}").contains(MADE_UP_TEXT));
+
+        // Sealed for another site, another page action, another device or another workspace,
+        // or for a kind of field nobody knows: nothing is released, and the refusal holds
+        // nothing of the text.
+        let another = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+            .verifying_key()
+            .to_bytes();
+        for answered in [
+            sealed_for(
+                here,
+                used.invocation,
+                device,
+                "https://other.example.test",
+                "password",
+            ),
+            sealed_for(
+                here,
+                tilo_actions::InvocationId::new(),
+                device,
+                ORIGIN,
+                "password",
+            ),
+            sealed_for(here, used.invocation, another, ORIGIN, "password"),
+            sealed_for(
+                "22222222-2222-4222-8222-222222222222",
+                used.invocation,
+                device,
+                ORIGIN,
+                "password",
+            ),
+            sealed_for(here, used.invocation, device, ORIGIN, "elsewhere"),
+            Ok(Some(
+                serde_json::to_value(ItemUsed::Released {
+                    sealed: "not hex".into(),
+                    into: "password".into(),
+                })
+                .unwrap(),
+            )),
+        ] {
+            let reply = item_answer(here, &key, &used, answered);
+            assert!(matches!(
+                &reply,
+                ItemReply::ItemRefused { invocation, reason }
+                    if *invocation == used.invocation
+                        && reason.contains("nothing was filled")
+                        && !reason.contains(MADE_UP_TEXT)
+            ));
+        }
+
+        // A refusal comes back in the server's own words, however it was given.
+        let no_fill = "No fill this server handed this window waits for that item";
+        let said_no = "Ada said no, so the item is not used.";
+        let late = "Nobody answered in time, so the item is not used.";
+        for (answered, reason) in [
+            (
+                Err(Box::new(Unanswered::Refused(ActionCallError::Refused {
+                    reason: no_fill.to_owned(),
+                }))),
+                no_fill,
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused {
+                        reason: said_no.to_owned(),
+                    },
+                }))),
+                said_no,
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused {
+                        reason: late.to_owned(),
+                    },
+                }))),
+                late,
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Rejected {
+                    error: ActionCallError::NotPermitted,
+                }))),
+                "may not invoke this action",
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Cancelled {
+                    message: None,
+                }))),
+                "stopped the ask",
+            ),
+            (Err(Box::new(Unanswered::Unreached)), "cannot reach"),
+            (Ok(None), "answered nothing"),
+            (
+                Ok(Some(serde_json::json!({"neither": true}))),
+                "no item's use",
+            ),
+        ] {
+            let reply = item_answer(here, &key, &used, answered);
+            assert!(
+                matches!(
+                    &reply,
+                    ItemReply::ItemRefused { invocation, reason: said }
+                        if *invocation == used.invocation && said.contains(reason)
+                ),
+                "a refusal lost its reason: {reason}"
+            );
+        }
+
+        // That its person is asked first comes back in the words whoever asked is told.
+        let words = "Ada is asked whether the assistant may sign in.";
+        let reply = item_answer(
+            here,
+            &key,
+            &used,
+            Ok(Some(
+                serde_json::to_value(ItemUsed::Asked {
+                    words: words.to_owned(),
+                })
+                .unwrap(),
+            )),
+        );
+        assert!(matches!(
+            &reply,
+            ItemReply::ItemAsked { invocation, words: said }
+                if *invocation == used.invocation && said == words
+        ));
     }
 
     /// An apps session reads each later line of its input as one app to start, wakes its loop

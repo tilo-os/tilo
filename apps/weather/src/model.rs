@@ -1,4 +1,4 @@
-//! The app's data: the saved places the record shares, and the in-memory
+//! The app's data: the saved places the resource shares, and the in-memory
 //! projection the widgets render from.
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use crate::units::Units;
 
 pub type LocationId = Uuid;
 
-/// A saved place as the record shares it: the item id is the place's uuid, and
+/// A saved place as the resource shares it: the item id is the place's uuid, and
 /// its position in [`Weather::places`] is its position in the list.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = Place::valid)]
@@ -179,9 +179,9 @@ impl HourPoint {
     pub fn hour_label(&self) -> String {
         self.time
             .get(11..13)
-            .and_then(|hour| hour.parse::<u32>().ok())
-            .and_then(|hour| chrono::NaiveTime::from_hms_opt(hour, 0, 0))
-            .map(|time| ui::format::time(&time))
+            .and_then(|hour| hour.parse::<i8>().ok())
+            .and_then(|hour| jiff::civil::Time::new(hour, 0, 0, 0).ok())
+            .map(ui::format::time)
             .unwrap_or_default()
     }
 }

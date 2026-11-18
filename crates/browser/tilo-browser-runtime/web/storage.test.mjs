@@ -69,11 +69,11 @@ test('worker protocol: open, commit with transferred bytes, hydrate, release',as
 
 test('a commit resolves only once the worker confirms the strict transaction completed',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');
-  const gate=h.idb.gateNextCommit();let resolved=false;
+  const hold=h.idb.holdNextCommit();let resolved=false;
   const commit=lease.commit([write('k','1')]).then(()=>{resolved=true;});
-  await gate.held;await settle();
+  await hold.held;await settle();
   assert.equal(resolved,false);assert.equal(h.idb.rows().length,0);
-  gate.release();await commit;
+  hold.release();await commit;
   assert.equal(h.idb.rows().length,1);
   await lease.release();
 });
@@ -108,9 +108,9 @@ test('quota and security errors keep their codes through the worker',async t=>{
 
 test('a worker crash fails the in-flight commit as storage-transaction-failed and the session continues in-page with the same epoch',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');const worker=h.worker();
-  const gate=h.idb.gateNextCommit();
+  const hold=h.idb.holdNextCommit();
   const run=lease.commit([write('k','1')]);
-  await gate.held;worker.crash();
+  await hold.held;worker.crash();
   await assert.rejects(run,error=>error.name==='StorageWorkerError');
   assert.equal(worker.terminated,true);assert.equal(h.fallbacks.length,1);assert.equal(h.access.mode(),'inline');
   assert.equal(h.idb.rows().length,0,'the interrupted transaction did not commit');
@@ -181,14 +181,14 @@ test('hydrate through the worker returns only this namespace as byte arrays',asy
 
 test('one worker queue per namespace orders peer batches, private-action writes and close writes',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');
-  const gate=h.idb.gateNextCommit(),order=[];
+  const hold=h.idb.holdNextCommit(),order=[];
   const peer=lease.commit([write('{"type":"record"}','1',[1])]).then(()=>order.push('peer'));
-  await gate.held;
+  await hold.held;
   const action=lease.commit([write('{"type":"privateActions"}','1',[2])]).then(()=>order.push('action'));
   const close=lease.commit([{key:'{"type":"record"}',revision:2,bytes:[3],actor:null}]).then(()=>order.push('close'));
   await settle();
   assert.deepEqual(order,[]);assert.equal(h.idb.transactions().length,1,'later writes wait behind the in-flight strict transaction');
-  gate.release();await Promise.all([peer,action,close]);
+  hold.release();await Promise.all([peer,action,close]);
   assert.deepEqual(order,['peer','action','close']);
   assert.deepEqual(h.idb.transactions().map(tx=>tx.outcome),['complete','complete','complete']);
   assert.deepEqual(h.idb.rows().map(row=>[row.key,String(row.revision),[...row.bytes]]).sort(),[['{"type":"privateActions"}','1',[2]],['{"type":"record"}','2',[3]]]);
@@ -197,11 +197,11 @@ test('one worker queue per namespace orders peer batches, private-action writes 
 
 test('pagehide posts a final flush that settles after the queued commits',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');const worker=h.worker();
-  const gate=h.idb.gateNextCommit();const commit=lease.commit([write('k','1')]);await gate.held;
+  const hold=h.idb.holdNextCommit();const commit=lease.commit([write('k','1')]);await hold.held;
   h.events.dispatchEvent(new Event('pagehide'));await settle();
   assert.deepEqual(postedTypes(worker),['open','commit','flush']);
   assert.equal(worker.replies.length,1,'the flush answers only after the queued commit');
-  gate.release();await commit;await settle();
+  hold.release();await commit;await settle();
   assert.deepEqual(worker.replies.map(reply=>reply.id),[1,2,3]);
   await lease.release();
 });
@@ -221,8 +221,8 @@ test('shared references open one worker lease and re-acquisition waits for its r
 test('a lease already releasing when the worker dies is not re-acquired in-page',async t=>{
   const h=harness(t);
   const lease=await h.access.acquireStorage('p','d'),kept=await h.access.acquireStorage('p','e');
-  const gate=h.idb.gateNextCommit();
-  const commit=lease.commit([write('k','1')]);await gate.held;
+  const hold=h.idb.holdNextCommit();
+  const commit=lease.commit([write('k','1')]);await hold.held;
   const releasing=lease.release();await settle();
   h.worker().crash();
   await assert.rejects(commit,error=>error.name==='StorageWorkerError');

@@ -100,7 +100,7 @@ impl StatePeer {
         let workspace = self.core.workspace.clone();
         let outcome = self
             .receive_from(
-                TransportOrigin::RelayDelta(key.device_public_key()),
+                TransportOrigin::ServerDelta(key.device_public_key()),
                 NeighbourMsg::SyncResp { changes, workspace },
                 now,
             )
@@ -144,11 +144,18 @@ impl StatePeer {
     ) -> Result<(), String> {
         use crate::members::{self, SignedMembershipOp};
         let workspace = self.core.workspace.clone();
-        let cert = self
-            .certificate(&key.device_public_key(), now)
-            .map_err(|error| error.to_string())?;
+        // A holder that is no member admits through invitations under the
+        // certificate its signed address carries.
+        let device = key.device_public_key();
+        let cert = match self.certificate(&device, now) {
+            Ok(cert) => cert.clone(),
+            Err(error) => match (&command, self.holder_certificate(&device)) {
+                (members::MembershipOpCommand::Admit { .. }, Some(cert)) => cert,
+                _ => return Err(error.to_string()),
+            },
+        };
         let op = SignedMembershipOp::signed(
-            cert,
+            &cert,
             key,
             members::heads_of(doc, &workspace),
             now_ns(now),
@@ -181,11 +188,18 @@ impl StatePeer {
             return Ok(());
         }
         rows.sort_unstable();
-        let cert = self
-            .certificate(&key.device_public_key(), now)
-            .map_err(|error| error.to_string())?;
+        // A member's device signs as the certificate the workspace holds of
+        // it; a holder that is no member, as the device its signed entry
+        // names. Every receiver judges the row the operation names by the
+        // operation's author all the same.
+        let cert = match self.certificate(&key.device_public_key(), now) {
+            Ok(cert) => cert.clone(),
+            Err(error) => self
+                .holder_certificate(&key.device_public_key())
+                .ok_or_else(|| error.to_string())?,
+        };
         let op = SignedMembershipOp::signed(
-            cert,
+            &cert,
             key,
             members::heads_of(doc, &workspace),
             now_ns(now),

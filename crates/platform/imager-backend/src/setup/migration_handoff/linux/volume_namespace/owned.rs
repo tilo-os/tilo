@@ -1,4 +1,4 @@
-//! Actual owned readonly foreign-volume custody, never a synthetic Home.
+//! Actual owned readonly foreign-volume ownership, never a synthetic Home.
 use super::*;
 pub(super) struct OwnedVolumeMount(Option<Arc<MountedVolume>>);
 impl Drop for OwnedVolumeMount {
@@ -12,7 +12,7 @@ impl OwnedVolumeMount {
     pub(super) fn bind_facts(&self, facts: &mut Facts) -> io::Result<()> {
         self.0
             .as_ref()
-            .ok_or_else(|| refusal("Volume mount custody retired"))?
+            .ok_or_else(|| refusal("Volume mount ownership retired"))?
             .service
             .bind_facts(facts)
     }
@@ -21,7 +21,7 @@ impl OwnedVolumeMount {
         retire_owned_mount(
             self.0
                 .take()
-                .ok_or_else(|| refusal("Volume mount custody retired"))?,
+                .ok_or_else(|| refusal("Volume mount ownership retired"))?,
         )
     }
 }
@@ -50,7 +50,7 @@ impl VolumeNamespace {
             Ok::<_, io::Error>(current)
         })();
         // No automatic Drop acknowledgment. Incomplete or substituted mount
-        // evidence quarantines its actual service custody through retirement.
+        // evidence quarantines its actual service ownership through retirement.
         let result = current.and_then(|facts| {
             let mut resolved = Self::reopen_read_only_with(entry, &facts)?;
             resolved.owned = Some(OwnedVolumeMount(Some(owned.clone())));

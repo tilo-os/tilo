@@ -1,6 +1,6 @@
 // The tilo.sh happy path, shot end to end with a real agent.
 //
-// One run: a local hosted Tilo (a `tilo-relay workspace` host: its own user root, a
+// One run: a local hosted Tilo (a `tilo-server workspace` host: its own user root, a
 // listed workspace whose entry lets a person in, the records served), the site
 // in front of it (the desktop bundle, with the `entry.json` a deployment
 // writes and the host's routes behind it at one origin, as an ingress puts
@@ -34,11 +34,11 @@
 // run, which the CLI trusts with `TILO_TEST_CA_FILE` and the browser loads as
 // the only certificate it accepts.
 //
-// usage: node agent-shell.mjs --bundle DIR [--out DIR] [--relay BIN] [--tilo BIN]
+// usage: node agent-shell.mjs --bundle DIR [--out DIR] [--server BIN] [--tilo BIN]
 //          [--widths 1280,390] [--themes light,dark] [--[no-]video] [--build]
 //   --bundle  build.sh --bundle desktop output (with --build and no --bundle:
 //             built into $CARGO_TARGET_DIR/agent-shell/bundle, --profile quick)
-//   --relay   tilo-relay with features web,agents (default: target/debug, then
+//   --server   tilo-server with features web,agents (default: target/debug, then
 //             target/release, below $CARGO_TARGET_DIR)
 //   --tilo    the tilo CLI (the same directories)
 //   --out     the shots, recordings and the run's logs (default:
@@ -47,7 +47,7 @@
 //   --work    what the run keeps for itself: certificates, the host's state,
 //             the agent's device key, the throwaway HOMEs (default:
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
-//   --build   cargo build the relay and the CLI, and build the bundle
+//   --build   cargo build the server and the CLI, and build the bundle
 //   --record-scale  the device scale the follow is recorded at (default 1; 2, the shots' own,
 //             on a machine with a GPU)
 // Needs Chrome (CHROME, or Playwright's cache), node, and openssl. The
@@ -136,7 +136,7 @@ const known = get => { try { return get() ?? null; } catch { return null; } };
 const writeSummary = () => {
   try {
     writeFileSync(join(out, 'summary.json'), JSON.stringify({started: new Date(t0).toISOString(), out,
-      bundle: known(() => bundle), relay: known(() => relayBin), tilo: known(() => tiloBin),
+      bundle: known(() => bundle), server: known(() => serverBin), tilo: known(() => tiloBin),
       site: known(() => siteOrigin), host: known(() => hostOrigin), workspace: known(() => workspaceId),
       stoppedBy, checks, notes, calls}, null, 2));
   } catch { /* The log has it. */ }
@@ -173,7 +173,7 @@ const note = (id, pass, detail = '') => {
 };
 
 // ---------------------------------------------------------------------------
-// Builds (opt-in): the relay with its agent features, the CLI, and the bundle.
+// Builds (opt-in): the server with its agent features, the CLI, and the bundle.
 
 const cargo = args => {
   log('cargo', args.join(' '));
@@ -183,7 +183,7 @@ const cargo = args => {
   if (result.status !== 0) throw new Error(`cargo ${args.join(' ')} failed`);
 };
 if (flag('--build')) {
-  cargo(['build', '-p', 'tilo-relay', '--features', 'web,agents', '--bin', 'tilo-relay']);
+  cargo(['build', '-p', 'tilo-server', '--features', 'web,agents', '--bin', 'tilo-server']);
   cargo(['build', '-p', 'tilo-cli', '--bin', 'tilo']);
 }
 let bundle = option('--bundle');
@@ -208,9 +208,9 @@ if (!bundle || !existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'))) {
 }
 bundle = resolve(bundle);
 const firstOf = (name, dirs) => dirs.map(dir => join(dir, name)).find(existsSync);
-const relayBin = resolve(option('--relay', firstOf('tilo-relay', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-relay'));
+const serverBin = resolve(option('--server', firstOf('tilo-server', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-server'));
 const tiloBin = resolve(option('--tilo', firstOf('tilo', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo'));
-for (const bin of [relayBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --relay and --tilo`);
+for (const bin of [serverBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --server and --tilo`);
 // The builder's build container carries Chromium where CI's CHROME points.
 if (!process.env.CHROME && existsSync('/usr/lib64/chromium-browser/chromium-browser')) {
   process.env.CHROME = '/usr/lib64/chromium-browser/chromium-browser';
@@ -262,7 +262,7 @@ const presentedFrames = tab => tab.evaluate('globalThis.tiloMount?.state?.()?.fr
  * laying out what it opened, and one more for what that brought in. */
 const DRAWN_FRAMES = 3;
 /** The frames a window a press opened takes to show what it holds: the press's frame, the window
- * standing as it opens, the app loading and drawing, and its first read of what it shows. A wait of
+ * as it opens, the app loading and drawing, and its first read of what it shows. A wait of
  * {@link DRAWN_FRAMES} on a page drawing a frame every few seconds gave up while the window still
  * loaded, and the card came a few frames later. */
 const WINDOW_FRAMES = 8;
@@ -402,7 +402,7 @@ let entryJson = '{}';
 const sitePort = await freePort();
 const hostPort = await freePort();
 // The relay the host runs for the pages it serves: a page has no UDP socket,
-// so it reaches the workspace's live plane only through one.
+// so it reaches the workspace's live session only through one.
 const relayPort = await freePort();
 const plainPort = await freePort();
 // Where pages reach the host: WebTransport over UDP. The site in front of the host carries only
@@ -465,7 +465,7 @@ const hostHome = join(work, 'host-home');
 const secretsDir = join(work, 'secrets');
 mkdirSync(secretsDir, {recursive: true, mode: 0o700});
 const OPERATOR_LINE = 'tilo-workspace-operator ';
-const host = detached('host', relayBin, ['workspace', '--state', join(work, 'workspace-state'),
+const host = detached('host', serverBin, ['workspace', '--state', join(work, 'workspace-state'),
   '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--workspace-id-file', workspaceIdFile,
   '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,
   '--web-plain', `127.0.0.1:${plainPort}`, '--public-origin', siteOrigin,
@@ -478,7 +478,7 @@ const host = detached('host', relayBin, ['workspace', '--state', join(work, 'wor
   // beside the workspace's records.
   '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat',
   '--seed-app', 'so.tilo.terminal'],
-{env: {...homeDirs(hostHome), TILO_RELAY_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_relay=info,warn',
+{env: {...homeDirs(hostHome), TILO_SERVER_LOG: process.env.AGENT_SHELL_SERVER_LOG ?? 'tilo_server=info,warn',
   // A machine with no keychain to unlock keeps its secrets in files here.
   TILO_SECRETS_DIR: secretsDir}, stdin: 'pipe', logTo: browserDir});
 let stopped = null;
@@ -1181,7 +1181,7 @@ async function unpinned(tab) {
   if (!back) return undefined;
   await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
   // Back in the bar, the panel it was pinned as is gone, and so is the control only the pinned
-  // panel offers. A list still standing over the shell is the press having done nothing.
+  // panel offers. A list still there over the shell is the press having done nothing.
   const left = await untilDrawn(tab, async () => {
     const seen = await semantics(tab);
     const pinned = seen.some(node => speaks(node, /^put back in the bar$/i));
@@ -1955,7 +1955,7 @@ try {
         const cardNow = cardSays(await semantics(tab));
         check(`${combo}: the agent's card lists its run`, Boolean(card),
           card ? card.name : cardNow ? `the card says "${cardNow.name}"`
-            // The windows standing, by their tabs: what the shell holds at once, which the first
+            // The windows there, by their tabs: what the shell holds at once, which the first
             // names of the tree (one window's controls) do not say.
             : `no card; the windows are ${(await semantics(tab)).filter(node => node.role === 'Tab').map(node => `"${node.name}"`).join(', ')}`);
         await shot(tab, combo, 'agent-card');

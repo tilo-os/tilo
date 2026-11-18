@@ -29,7 +29,7 @@ use tilo_compositor::InputEvent;
 use tilo_desktop_model::Layout;
 use tilo_session::parts::BINDINGS;
 use tilo_session::shell::state::WINDOW_MENU;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
 
@@ -80,12 +80,12 @@ view menu(m: desktop.WindowMenu) {
 use crate::common::probe::{probe_binary, reading, until_reported};
 use crate::common::tree::layout_tree;
 
-/// The session the probe talks to: headless, its plane on `socket` , showing one window, keeping
+/// The session the probe talks to: headless, its app wire on `socket` , showing one window, keeping
 /// the person's settings as the session does.
 fn session_with(socket: &Path, tree: Layout) -> Session {
     let mut session = crate::common::headless(Options {
         collab: false,
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         services: vec![Box::new(SettingsService::new())],
         ..Options::default()
     });

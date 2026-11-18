@@ -106,7 +106,10 @@ fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
     deliver(&alice.take(), &mut [&mut bob], &members);
     assert_eq!(bob.epoch(), alice.epoch());
     assert!(
-        Device::waiting(4, workspace).peer.standing().is_empty(),
+        Device::waiting(4, workspace)
+            .peer
+            .current_frames()
+            .is_empty(),
         "a device that is not in the group has nothing of it to hand over"
     );
 
@@ -120,14 +123,14 @@ fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
     assert!(alice.peer.outbox().is_empty(), "and nothing is left to say");
 
     // What Alice holds of the group, handed to Bob as he reaches her again.
-    let standing = alice.peer.standing();
+    let frames = alice.peer.current_frames();
     assert!(
-        standing
+        frames
             .iter()
             .any(|frame| frame.epoch == alice.epoch().unwrap()),
         "the head is among what a member is handed"
     );
-    deliver(&standing, &mut [&mut bob], &members);
+    deliver(&frames, &mut [&mut bob], &members);
     assert_eq!(bob.epoch(), alice.epoch());
     let sealed = carol.seal("after the commit");
     assert_eq!(bob.opens(&sealed).as_deref(), Some("after the commit"));
@@ -156,12 +159,12 @@ fn deliver(
 }
 
 #[test]
-fn genesis_closes_the_plaintext_gate_for_everyone() {
+fn genesis_closes_off_plaintext_for_everyone() {
     let workspace = WorkspaceId::new();
     let mut alice = Device::creating(1, workspace);
     let mut bob = Device::waiting(2, workspace);
-    assert!(alice.peer.gate().encryption_required);
-    assert!(!bob.peer.gate().encryption_required);
+    assert!(alice.peer.seal_check().encryption_required);
+    assert!(!bob.peer.seal_check().encryption_required);
     let everyone = allowed(&[&alice, &bob]);
     let genesis = alice.take();
     assert_eq!(genesis.len(), 1);
@@ -169,7 +172,7 @@ fn genesis_closes_the_plaintext_gate_for_everyone() {
         bob.receive(&genesis[0], &everyone).unwrap(),
         PeerEvent::Genesis
     );
-    assert!(bob.peer.gate().encryption_required);
+    assert!(bob.peer.seal_check().encryption_required);
     assert_eq!(
         bob.receive(&genesis[0], &everyone).unwrap(),
         PeerEvent::Duplicate
@@ -852,7 +855,7 @@ fn state_survives_a_restart_and_an_export() {
     let exported = device.peer.export_sealed(&vault()).unwrap();
     let restored =
         GroupPeer::restore(workspace, Box::new(key.clone()), &exported, &vault()).unwrap();
-    assert_eq!(restored.gate(), device.peer.gate());
+    assert_eq!(restored.seal_check(), device.peer.seal_check());
     // Another device's state, as a machine copied from this one holds: the
     // caller tells it apart, drops it and joins as itself.
     assert!(matches!(

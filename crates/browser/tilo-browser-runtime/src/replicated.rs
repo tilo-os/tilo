@@ -22,7 +22,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use durable_store::MemoryStore;
-use tilo_relay_protocol::workspaces::WorkspacesRequest;
+use tilo_server_protocol::workspaces::WorkspacesRequest;
 use tilo_session::platform::records::{Changes, Since};
 use ui::automerge::AutoCommit;
 use ui::resource::ResourceStore;
@@ -56,7 +56,7 @@ pub(crate) type Ask = Box<dyn FnOnce(&str) -> WorkspacesRequest>;
 
 /// Where the host's answer to an [`Ask`] goes.
 pub(crate) type Answer =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>)>;
+    Box<dyn FnOnce(Result<tilo_server_protocol::workspaces::WorkspacesReply, String>)>;
 
 /// What a page without a peer answers when it is asked about the workspace it
 /// replicates: it replicates none.
@@ -73,6 +73,10 @@ pub(crate) struct Replicated {
     pub(crate) detach: fn(u32, u64),
     /// Publish what a mount wrote since the last pass.
     pub(crate) publish: fn(u32),
+    /// When peer `id`'s page must ask the workspace again what its person may
+    /// do there, in Unix milliseconds (`0` is now): the page's loop wakes for
+    /// it, since a page that changes nothing draws no frame of its own.
+    pub(crate) permits_due: fn(u32) -> Option<u64>,
     /// Follow the answers the workspace sent since the last pass.
     pub(crate) follow_answers: fn(u32),
     /// Ask the host for the content of the records this page wants.
@@ -89,6 +93,11 @@ pub(crate) struct Replicated {
     pub(crate) record_since: fn(u32, &str, &str, &[ui::automerge::ChangeHash]) -> Since,
     /// The heads the workspace last delivered a record at, as the page took it in.
     pub(crate) record_heads: fn(u32, &str, &str) -> Option<Vec<ui::automerge::ChangeHash>>,
+    /// Answer what the window of a mount that shows one app alone asked to read of other apps'
+    /// documents ([`crate::browser::Mount::answer_reads_alone`]). The session that takes such a
+    /// read and what a reading is made of are reached from here alone, so they load with the
+    /// peer's code and not with the start module.
+    pub(crate) reads_alone: fn(&mut crate::browser::Mount),
     /// The content store a mount lends its windows: its workspace's.
     pub(crate) content: fn(u32) -> Option<tilo_content::ContentStore>,
     /// The workspace's answer whether the person may change `node`.
@@ -136,6 +145,10 @@ pub(crate) fn detach(id: u32, mount: u64) {
 
 pub(crate) fn publish(id: u32) {
     installed((), |replicated| (replicated.publish)(id));
+}
+
+pub(crate) fn permits_due(id: u32) -> Option<u64> {
+    installed(None, |replicated| (replicated.permits_due)(id))
 }
 
 pub(crate) fn follow_answers(id: u32) {
@@ -190,6 +203,15 @@ pub(crate) fn record_heads(
     installed(None, |replicated| {
         (replicated.record_heads)(id, app, record)
     })
+}
+
+/// Answer what `mount`, which shows one app alone, was asked to read of other apps' documents.
+/// Nothing while the peer's code is not in: what its window asked waits for it.
+pub(crate) fn answer_reads_alone(mount: &mut crate::browser::Mount) {
+    // Taken out of the table before it is called: the answering asks this table in turn.
+    if let Some(answer) = installed(None, |replicated| Some(replicated.reads_alone)) {
+        answer(mount);
+    }
 }
 
 pub(crate) fn content(id: u32) -> Option<tilo_content::ContentStore> {

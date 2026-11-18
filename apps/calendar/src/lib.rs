@@ -33,6 +33,16 @@ pub mod date;
 pub mod display;
 mod draw_util;
 mod event_popovers;
+/// The calendar server tests ask: the one the holder's tests start, so that what this app's
+/// writer makes a server send is judged by the same reading of the standard's tables (RFC 6638,
+/// 3.2) as what the holder's writer does.
+#[cfg(all(test, feature = "live"))]
+#[path = "../../../crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs"]
+#[allow(
+    dead_code,
+    reason = "this app's tests ask the server less than the holder's tests do"
+)]
+mod fake_caldav;
 pub mod ics;
 mod import_inbox;
 mod input_context;

@@ -1,6 +1,6 @@
 //! The container manager's three kinds of interaction: a document change (the
 //! draft), an external effect on the engine (start, stop, remove, a shell), which the
-//! host checks for permission and records, and where the window is, which is the
+//! host checks for permission and resources, and where the window is, which is the
 //! window's own.
 
 #[cfg(test)]
@@ -14,7 +14,7 @@ mod tests {
     use crate::podman::Action as Lifecycle;
     use crate::resource::Containers;
 
-    /// The record as the framework publishes it beside the sample engine's rows.
+    /// The resource as the framework publishes it beside the sample engine's rows.
     fn published(doc: &AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
         let state = Containers::read(doc).unwrap_or_default();
         let mut root =
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(
             keys,
             ["draft"],
-            "the canonical record contains only the app draft: at its first version it names none"
+            "the canonical resource contains only the app draft: at its first version it names none"
         );
         assert_eq!(Containers::read(&doc).unwrap(), Containers::default());
     }

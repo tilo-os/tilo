@@ -12,13 +12,14 @@ public typealias LivePlatformImage = UIImage
 #endif
 
 /// One live Tilo thing a native view shows: an app on a record of the person's workspace, or
-/// a view written in the app language.
+/// the view a message carries.
 public struct LiveThing: Hashable, Sendable, Identifiable {
     public enum Content: Hashable, Sendable {
         /// This app on this record.
         case record(app: String, record: String)
-        /// A view written in the app language, by its source. Tilo's page cannot run one yet.
-        case writtenView(source: String)
+        /// The view a message carries, by its message and the conversation it stands in, never by
+        /// its text: Tilo's page shows it alone, as this device's person, and says whose code it is.
+        case messageView(message: String, conversation: String)
     }
 
     public let id: String
@@ -33,21 +34,21 @@ public struct LiveThing: Hashable, Sendable, Identifiable {
     }
 
     /// From the words a conversation's model carries for it: `record:<app>:<record>`, as Tilo
-    /// names a record's own actions, or `view:<source>`. Nil for anything else.
+    /// names a record's own actions, or `view:<message>:<conversation>`. Nil for anything else.
     public init?(id: String, title: String, reference: String) {
-        if reference.hasPrefix("view:") {
-            self.init(id: id, title: title, .writtenView(source: String(reference.dropFirst("view:".count))))
-            return
-        }
         let parts = reference.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 3, parts[0] == "record", !parts[1].isEmpty, !parts[2].isEmpty else { return nil }
-        self.init(id: id, title: title, .record(app: parts[1], record: parts[2]))
+        guard parts.count == 3, !parts[1].isEmpty, !parts[2].isEmpty else { return nil }
+        switch parts[0] {
+        case "record": self.init(id: id, title: title, .record(app: parts[1], record: parts[2]))
+        case "view": self.init(id: id, title: title, .messageView(message: parts[1], conversation: parts[2]))
+        default: return nil
+        }
     }
 
     public var reference: String {
         switch content {
         case .record(let app, let record): "record:\(app):\(record)"
-        case .writtenView(let source): "view:\(source)"
+        case .messageView(let message, let conversation): "view:\(message):\(conversation)"
         }
     }
 }
@@ -58,20 +59,20 @@ enum LiveWords: String {
     case loading = "live-loading"
     case offline = "live-offline"
     case failed = "live-failed"
-    case notYet = "live-written-view-not-yet"
     case showLive = "live-show"
     case openInTilo = "live-open-in-tilo"
     case tryAgain = "live-try-again"
+    case notOffered = "live-not-offered"
 
     var english: String {
         switch self {
         case .loading: "Loading"
         case .offline: "This device is offline"
         case .failed: "Tilo could not show this"
-        case .notYet: "Tilo cannot show a written view here yet"
         case .showLive: "Show live"
         case .openInTilo: "Open in Tilo"
         case .tryAgain: "Try again"
+        case .notOffered: "This Tilo cannot show this yet"
         }
     }
 
@@ -86,79 +87,118 @@ enum LiveWords: String {
 /// they come to it. At most `limit` stay mounted; past it the one longest away is taken down.
 @MainActor
 public final class LiveStage: ObservableObject {
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         /// Not in front. It shows its last picture, or its name.
         case asleep
         case loading
         case live
         /// The device is not connected to the person's Tilo.
         case offline
-        /// Tilo's own sentence, or none.
+        /// Tilo's own refusal as it came, or none: for a program's log, never for a person.
         case failed(String)
-        /// A kind of thing Tilo's page cannot show yet.
-        case notYet
+    }
+
+    /// Why a thing is not shown, for the words its place says. Tilo's own refusal names
+    /// addresses and actions and is no sentence for a person: the place says one of these,
+    /// in the app's words.
+    public enum Trouble: Equatable, Sendable {
+        /// The person's Tilo does not offer this yet. Asking again changes nothing.
+        case notOffered
+        /// It was asked for and did not come this time.
+        case notShown
     }
 
     public let engine: TiloEngine
     @Published public private(set) var front: LiveThing.ID?
-    @Published public private(set) var standings: [LiveThing.ID: Standing] = [:]
+    @Published public private(set) var states: [LiveThing.ID: State] = [:]
+    /// Why each thing that failed is not shown.
+    @Published public private(set) var troubles: [LiveThing.ID: Trouble] = [:]
     @Published public private(set) var pictures: [LiveThing.ID: LivePlatformImage] = [:]
+    /// The size each thing's content asks for, as its mount in Tilo's page said it last.
+    @Published public private(set) var sizes: [LiveThing.ID: CGSize] = [:]
     public var limit = 3
 
     /// The mounted things, the one longest away first.
     private var mounted: [LiveThing.ID] = []
     private weak var room: LivePlatformView?
     private var listening: Task<Void, Never>?
+    private var sizing: Task<Void, Never>?
 
     public init(engine: TiloEngine) {
         self.engine = engine
-        listening = Task { [weak self] in
-            for await standing in engine.standings() {
+        sizing = Task { [weak self] in
+            for await (id, size) in engine.contentSizes() {
                 guard let self else { return }
-                if case .open = standing { continue }
+                if self.sizes[id] != size { self.sizes[id] = size }
+            }
+        }
+        listening = Task { [weak self] in
+            for await state in engine.states() {
+                guard let self else { return }
+                if case .open = state { continue }
                 // The page left: whatever it had mounted went with it.
                 self.mounted.removeAll()
                 if let front = self.front {
-                    self.standings[front] = .offline
+                    self.states[front] = .offline
                     self.front = nil
                 }
             }
         }
     }
 
-    deinit { listening?.cancel() }
+    deinit {
+        listening?.cancel()
+        sizing?.cancel()
+    }
 
-    public func standing(of thing: LiveThing) -> Standing { standings[thing.id] ?? .asleep }
+    public func state(of thing: LiveThing) -> State { states[thing.id] ?? .asleep }
 
     /// Bring a live thing to the front: the one web view shows it and takes the person's input.
     public func bring(_ thing: LiveThing) async {
-        guard case .record(let app, let record) = thing.content else {
-            standings[thing.id] = .notYet
-            return
+        let what: TiloEngine.Mounted = switch thing.content {
+        case .record(let app, let record): .record(app: app, record: record)
+        case .messageView(let message, let conversation): .messageView(message: message, conversation: conversation)
         }
-        guard case .open = engine.standing else {
-            standings[thing.id] = .offline
+        guard case .open = engine.state else {
+            states[thing.id] = .offline
             return
         }
         if let before = front, before != thing.id { await sleep(before) }
-        standings[thing.id] = .loading
+        states[thing.id] = .loading
+        troubles[thing.id] = nil
         do {
-            try await engine.show(live: thing.id, .record(app: app, record: record))
+            try await engine.show(live: thing.id, what)
             mounted.removeAll { $0 == thing.id }
             mounted.append(thing.id)
             front = thing.id
-            standings[thing.id] = .live
+            states[thing.id] = .live
             engine.setSeen(true)
             while mounted.count > max(limit, 1), let oldest = mounted.first {
                 mounted.removeFirst()
                 await engine.close(live: oldest)
             }
-        } catch TiloEngine.Problem.refused(_, let reason) {
-            standings[thing.id] = .failed(reason)
+        } catch TiloEngine.Problem.refused(let code, let reason) {
+            troubles[thing.id] = await offered(thing, refusedAs: code) ? .notShown : .notOffered
+            states[thing.id] = .failed(reason)
         } catch TiloEngine.Problem.notOpen {
-            standings[thing.id] = .offline
+            states[thing.id] = .offline
         } catch {
-            standings[thing.id] = .failed("")
+            troubles[thing.id] = .notShown
+            states[thing.id] = .failed("")
+        }
+    }
+
+    /// Whether the person's Tilo offers what it just refused to show. A site older than views
+    /// in messages answers that it knows no such action, and so does one that offers them
+    /// while the Chat mounted for the view does not hold the message yet. They are told apart
+    /// by what Chat's own page offers of the message: the action that opens its view, or none.
+    private func offered(_ thing: LiveThing, refusedAs code: String) async -> Bool {
+        guard code == "unknown_action", case .messageView(let message, _) = thing.content else { return true }
+        let listed = (try? await engine.actions()) ?? []
+        return listed.contains { action in
+            guard action["view"]?["id"]?.string == "view", let opens = action["view"]?["open_action"]?.string else { return false }
+            return opens == action["address"]?["action"]?.string
+                && (action["address"]?["resource"]?.string ?? "").hasSuffix("/messages/\(message)")
         }
     }
 
@@ -177,7 +217,7 @@ public final class LiveStage: ObservableObject {
             pictures[id] = picture
         }
         if front == id { front = nil }
-        standings[id] = .asleep
+        states[id] = .asleep
     }
 
     // MARK: Where the web view stands
@@ -303,20 +343,45 @@ public struct TiloLiveView: View {
     private let thing: LiveThing
     private let size: Size
     private let openInTilo: (() -> Void)?
+    private let says: Says?
 
-    /// - Parameter openInTilo: opens the same thing in Tilo itself. It is offered when the
-    ///   thing cannot be shown here.
-    public init(_ thing: LiveThing, on stage: LiveStage, size: Size = .compact, openInTilo: (() -> Void)? = nil) {
+    /// The app's own sentence for why a thing is not shown, in its person's language.
+    public typealias Says = @MainActor (LiveStage.Trouble) -> String
+
+    /// - Parameters:
+    ///   - openInTilo: opens the same thing in Tilo itself. It is offered when the thing cannot
+    ///     be shown here.
+    ///   - says: the app's sentences for a thing that is not shown. Without them the place
+    ///     says this package's own.
+    public init(_ thing: LiveThing, on stage: LiveStage, size: Size = .compact, openInTilo: (() -> Void)? = nil,
+                says: Says? = nil) {
         self.thing = thing
         self.stage = stage
         self.size = size
         self.openInTilo = openInTilo
+        self.says = says
+    }
+
+    /// What a place says of a thing that could not be shown, and whether it offers to ask again.
+    struct Unshown: Equatable {
+        var sentence: String
+        var asksAgain: Bool
+    }
+
+    /// The words under the name of a thing that could not be shown: the app's sentence for
+    /// why, or this package's own, and never Tilo's refusal as it came. Asking again is
+    /// offered only where another ask can be answered otherwise.
+    @MainActor static func unshown(_ thing: LiveThing, on stage: LiveStage, says: Says?) -> Unshown? {
+        guard case .failed = stage.state(of: thing) else { return nil }
+        let trouble = stage.troubles[thing.id] ?? .notShown
+        let own = trouble == .notOffered ? LiveWords.notOffered : LiveWords.failed
+        return Unshown(sentence: says?(trouble) ?? own.said, asksAgain: trouble == .notShown)
     }
 
     public var body: some View {
         ZStack {
             Rectangle().fill(.background.secondary)
-            if stage.front == thing.id, stage.standing(of: thing) == .live {
+            if stage.front == thing.id, stage.state(of: thing) == .live {
                 HolderView(holder: Holder(made: { [stage] view in stage.stand(in: view) },
                                           gone: { [stage] view in stage.leaves(view) }))
                     .allowsHitTesting(size == .working)
@@ -324,7 +389,8 @@ public struct TiloLiveView: View {
                 resting
             }
         }
-        .aspectRatio(size == .compact ? 16.0 / 10.0 : nil, contentMode: .fit)
+        .aspectRatio(size == .compact && asked == nil ? 16.0 / 10.0 : nil, contentMode: .fit)
+        .frame(height: size == .compact ? asked : nil)
         .clipShape(RoundedRectangle(cornerRadius: size == .compact ? 10 : 0, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(thing.title)
@@ -338,8 +404,15 @@ public struct TiloLiveView: View {
         }
     }
 
+    /// How tall a message's view stands in its message: what its content asked for, as Tilo's
+    /// page said it. Until it has, a few lines' height. Nil for a thing that keeps a shape.
+    private var asked: CGFloat? {
+        guard case .messageView = thing.content else { return nil }
+        return stage.sizes[thing.id].map { min(max($0.height, 44), 1200) } ?? 132
+    }
+
     @ViewBuilder private var resting: some View {
-        let standing = stage.standing(of: thing)
+        let state = stage.state(of: thing)
         ZStack {
             if let picture = stage.pictures[thing.id] {
                 #if os(macOS)
@@ -350,7 +423,7 @@ public struct TiloLiveView: View {
             }
             VStack(spacing: 8) {
                 Text(thing.title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
-                switch standing {
+                switch state {
                 case .loading:
                     ProgressView().accessibilityLabel(LiveWords.loading.said)
                 case .asleep, .live:
@@ -358,13 +431,13 @@ public struct TiloLiveView: View {
                 case .offline:
                     Text(LiveWords.offline.said).foregroundStyle(.secondary)
                     Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } }
-                case .failed(let why):
-                    Text(why.isEmpty ? LiveWords.failed.said : why).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } }
-                case .notYet:
-                    Text(LiveWords.notYet.said).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                case .failed:
+                    if let unshown = Self.unshown(thing, on: stage, says: says) {
+                        Text(unshown.sentence).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        if unshown.asksAgain { Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } } }
+                    }
                 }
-                if let openInTilo, standing != .loading, standing != .asleep {
+                if let openInTilo, state != .loading, state != .asleep {
                     Button(LiveWords.openInTilo.said, action: openInTilo)
                 }
             }

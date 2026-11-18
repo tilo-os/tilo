@@ -12,9 +12,9 @@ fn canonical(evidence: &ContinuationEvidence) -> Vec<u8> {
 }
 
 tilo_test_env::scenario! {
-    fn an_effective_primitive_fires_the_same_on_every_lane;
+    fn an_effective_primitive_fires_the_same_on_every_endpoint;
 
-    phase effective_primitive_fixed_witness_is_what_every_lane_fires;
+    phase effective_primitive_fixed_approval_is_what_every_endpoint_fires;
     {
         let original = encoded(1);
         let spec =
@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
             .encode_immediate()
             .expect("an eager action remains eager");
         let InvocationBuilder::Fixed(private) = &spec.build else {
-            panic!("an eager action retains its private fixed witness");
+            panic!("an eager action retains its private fixed approval");
         };
         assert!(Arc::ptr_eq(&public, private), "one immutable allocation");
         let cloned = spec.clone();
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase effective_primitive_typed_zero_remains_dynamic_and_witness_does_not_execute;
+    phase effective_primitive_typed_zero_remains_dynamic_and_approval_does_not_execute;
     {
         let calls = Arc::new(AtomicUsize::new(0));
         let worker = calls.clone();

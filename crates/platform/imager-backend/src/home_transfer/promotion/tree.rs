@@ -1,7 +1,7 @@
 use super::storage::{Builder, Sequence, Store};
 use super::*;
 use crate::migration_review::storage::{IndexValue, SortedIndex};
-const CUSTODY: &[&str] = &[".config/tilo", ".local/state/tilo"];
+const OWNERSHIP: &[&str] = &[".config/tilo", ".local/state/tilo"];
 #[derive(Serialize, Deserialize)]
 pub(super) struct Name;
 impl IndexValue for Name {
@@ -223,7 +223,9 @@ fn review_children(
             ));
         }
         let parent_mode = source.identity.mode() & 0o777;
-        let protected = CUSTODY.iter().any(|protected| path == Path::new(protected));
+        let protected = OWNERSHIP
+            .iter()
+            .any(|protected| path == Path::new(protected));
         let target_metadata = if protected {
             None
         } else {
@@ -260,7 +262,7 @@ fn review_children(
         }
         let (source_fact, items) = capture(source, &name, &path, &store, cancel)?;
         let kind = if protected {
-            Kind::InactiveCustody
+            Kind::InactiveOwnership
         } else if target_metadata.is_some() {
             Kind::Collision {
                 target: target_fact(target, &name, &path)?.0,

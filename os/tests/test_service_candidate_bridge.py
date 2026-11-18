@@ -94,16 +94,16 @@ class ServiceCandidateBridge(unittest.TestCase):
 
     def test_revocation_rejects_local_cleanup_and_unobserved_backend(self):
         selected = {'id': 'selected-slack', 'service': 'slack', 'setup_binding': 'native-person'}
-        report = dict(session_id=selected['id'], status='forgotten', custody_revoked=True,
-                      custody_backend_needed=False, local_only=False, engine_shutdown_confirmed=True)
+        report = dict(session_id=selected['id'], status='forgotten', ownership_revoked=True,
+                      ownership_backend_needed=False, local_only=False, engine_shutdown_confirmed=True)
         self.assertTrue(sessions.revoked(report, selected))
-        for changed in (dict(report, custody_revoked=False), dict(report, local_only=True),
+        for changed in (dict(report, ownership_revoked=False), dict(report, local_only=True),
                         dict(report, engine_shutdown_confirmed=False),
-                        dict(report, custody_backend_needed=True), dict(report, status='local-forgotten'),
+                        dict(report, ownership_backend_needed=True), dict(report, status='local-forgotten'),
                         dict(report, session_id='different-slack')):
             with self.assertRaises(RuntimeError):
                 sessions.revoked(changed, selected)
-        self.assertFalse(sessions.revoked(dict(report, status='forgetting', custody_revoked=False), selected))
+        self.assertFalse(sessions.revoked(dict(report, status='forgetting', ownership_revoked=False), selected))
 
     def test_profile_removal_is_observed_on_held_directory_not_report_flags(self):
         import os
@@ -155,10 +155,10 @@ class ServiceCandidateBridge(unittest.TestCase):
             self.assertEqual(maximum, 4096)
             close.assert_called_once_with(43)
             with patch.object(contract.fcntl, 'ioctl', return_value=0):
-                with self.assertRaisesRegex(RuntimeError, 'namespace witness'):
+                with self.assertRaisesRegex(RuntimeError, 'namespace proof'):
                     contract.owned_bridge(command, env, raw)
             with patch.object(contract.os, 'fstat', return_value=types.SimpleNamespace(st_uid=0, st_ino=2)):
-                with self.assertRaisesRegex(RuntimeError, 'namespace witness'):
+                with self.assertRaisesRegex(RuntimeError, 'namespace proof'):
                     contract.owned_bridge(command, env, raw)
             execute.assert_called_once()
             for wrong in (command + ['--candidate', '/tmp'], ['/tmp/python', *command[1:]]):

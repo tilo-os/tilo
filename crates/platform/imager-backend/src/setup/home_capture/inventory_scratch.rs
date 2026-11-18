@@ -126,7 +126,7 @@ impl InventoryScratch {
             || held.mode() & 0o7777 != 0o700
             || fs_native::snapshot_lease::mount_id(&self.directory)? != self.mount
         {
-            return Err(refused("Admitted inventory directory custody changed"));
+            return Err(refused("Admitted inventory directory ownership changed"));
         }
         Ok(())
     }

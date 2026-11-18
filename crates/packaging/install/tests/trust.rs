@@ -143,9 +143,9 @@ impl TestEnv {
 }
 
 tilo_test_env::scenario! {
-    fn publisher_trust_gates_installs;
+    fn publisher_trust_checks_installs;
 
-    phase required_attestors_gate_installs_with_optional_self_signed_fallback;
+    phase required_attestors_check_installs_with_optional_self_signed_fallback;
     {
         {
             let env = TestEnv::new();

@@ -3,7 +3,7 @@
 //!
 //! An MCP connection joins as the agent its certificate names, certified by a device of the person
 //! who admitted it; a turn's agent acts as its connection was handed the turn. Either is then
-//! served as any admitted connection is ([`ConnectionActionHost`]): the workspace's grants decide
+//! served as any admitted connection is ([`ConnectionActionProvider`]): the workspace's grants decide
 //! each step, the agent capped at what its person may do and at what a device lets its agents do,
 //! and only while the session goes ([`AppBrokerState::agent_session_goes`],
 //! [`AppBrokerState::turn_session_goes`]).
@@ -22,12 +22,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_peer_state::join::agent_cert::AgentCert;
 
-use super::action_host::ConnectionActionHost;
+use super::action_provider::ConnectionActionProvider;
 use super::published_invocation::InvocationCaller;
 use super::{AppBrokerState, CrdtRoute};
 use crate::app_actions::{AGENT_SESSION_ASK, AppActionConsent, AppActionConsentPrompter};
@@ -36,7 +36,7 @@ use crate::app_actions::{AGENT_SESSION_ASK, AppActionConsent, AppActionConsentPr
 const STILL_GOES_EVERY: Duration = Duration::from_millis(500);
 
 struct Inner {
-    host: ConnectionActionHost,
+    provider: ConnectionActionProvider,
     caller: Caller,
     workspace: String,
     agent: String,
@@ -108,7 +108,7 @@ impl AppBrokerState {
             .in_new_execution()
             .named(name)
             .in_agent_session(cert.session.clone());
-        let host = ConnectionActionHost {
+        let provider = ConnectionActionProvider {
             state: Arc::clone(self),
             own_peer: self.next_peer_id(),
             origin: InvocationCaller::Local {
@@ -118,7 +118,7 @@ impl AppBrokerState {
             },
         };
         Ok(AgentConnection(Arc::new(Inner {
-            host,
+            provider,
             caller,
             workspace,
             agent: cert.agent_id.clone(),
@@ -138,7 +138,7 @@ impl AppBrokerState {
         let (session, agent) = acting.agent_session.as_ref().zip(acting.agent_id())?;
         let workspace = caller.workspace()?.to_owned();
         Some(AgentConnection(Arc::new(Inner {
-            host: ConnectionActionHost {
+            provider: ConnectionActionProvider {
                 state: Arc::clone(self),
                 own_peer: self.next_peer_id(),
                 origin,
@@ -163,7 +163,7 @@ impl AppBrokerState {
 
 impl AgentConnection {
     fn state(&self) -> &Arc<AppBrokerState> {
-        &self.0.host.state
+        &self.0.provider.state
     }
 
     /// Whether the session still goes: the connection's authority ends with it.
@@ -179,12 +179,12 @@ impl AgentConnection {
     }
 
     /// The caller is one of this connection's, still live.
-    fn check(&self, caller: &Caller) -> Result<(), ActionHostError> {
+    fn check(&self, caller: &Caller) -> Result<(), ActionCallError> {
         if !caller.execution_is_live() || !self.0.caller.execution_is_live() {
-            return Err(ActionHostError::NotPermitted);
+            return Err(ActionCallError::NotPermitted);
         }
         self.goes()
-            .map_err(|reason| ActionHostError::Unavailable { reason })
+            .map_err(|reason| ActionCallError::Unavailable { reason })
     }
 
     /// Put `request` to the session's person on the host's sheet and wait for their answer: the
@@ -192,17 +192,17 @@ impl AgentConnection {
     async fn ask_person(
         &self,
         request: &InvokeRequest,
-    ) -> Result<ConfirmedInvocation, ActionHostError> {
+    ) -> Result<ConfirmedInvocation, ActionCallError> {
         let state = Arc::clone(self.state());
         let caller = &self.0.caller;
         let person = caller
             .acting_for_person()
-            .ok_or(ActionHostError::NotPermitted)?
+            .ok_or(ActionCallError::NotPermitted)?
             .to_owned();
         let question = state
-            .witness_question(caller, &person, request)?
-            .ok_or(ActionHostError::UnknownAction)?;
-        let nobody = || ActionHostError::Unavailable {
+            .approval_question(caller, &person, request)?
+            .ok_or(ActionCallError::UnknownAction)?;
+        let nobody = || ActionCallError::Unavailable {
             reason: "nobody is at this desktop to answer the agent's question".into(),
         };
         let prompter = state.consent_prompter().ok_or_else(nobody)?;
@@ -235,7 +235,7 @@ impl AgentConnection {
         ) {
             sessions.keep_answer(&self.0.session, grant);
         }
-        state.witness_answer(&question, request, &answer.edits)
+        state.approval_answer(&question, request, &answer.edits)
     }
 
     /// The person's answer on the sheet to the question about `label`, waited for while the
@@ -244,8 +244,8 @@ impl AgentConnection {
         &self,
         mut answer: tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>,
         label: &str,
-    ) -> Result<crate::app_actions::AppActionAnswer, ActionHostError> {
-        let refused = |reason: String| ActionHostError::Refused { reason };
+    ) -> Result<crate::app_actions::AppActionAnswer, ActionCallError> {
+        let refused = |reason: String| ActionCallError::Refused { reason };
         let answer = loop {
             tokio::select! {
                 answer = &mut answer => break answer,
@@ -304,11 +304,11 @@ impl tilo_actions::remote::ResourceReads for SessionRecords {
         &self,
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionHostError> {
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
         self.connection.check(caller)?;
         self.reads
             .as_ref()
-            .ok_or(ActionHostError::NotPermitted)?
+            .ok_or(ActionCallError::NotPermitted)?
             .read(&self.connection.0.caller, address)
     }
 
@@ -328,11 +328,11 @@ impl tilo_actions::remote::ResourceReads for SessionRecords {
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
         wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         self.connection.check(caller)?;
         self.reads
             .as_ref()
-            .ok_or(ActionHostError::NotPermitted)?
+            .ok_or(ActionCallError::NotPermitted)?
             .watch(&self.connection.0.caller, address, wake)
     }
 }
@@ -342,11 +342,11 @@ impl tilo_actions::remote::ResourceChanges for SessionRecords {
         &self,
         caller: &Caller,
         change: &tilo_actions::remote::ResourceChange,
-    ) -> Result<serde_json::Value, ActionHostError> {
+    ) -> Result<serde_json::Value, ActionCallError> {
         self.connection.check(caller)?;
         self.changes
             .as_ref()
-            .ok_or(ActionHostError::NotPermitted)?
+            .ok_or(ActionCallError::NotPermitted)?
             .apply(&self.connection.0.caller, change)
     }
 }
@@ -361,7 +361,7 @@ impl AgentConnection {
     }
 }
 
-impl ActionHost for AgentConnection {
+impl ActionProvider for AgentConnection {
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         let records = self.session_records();
         records.reads.as_ref()?;
@@ -378,18 +378,18 @@ impl ActionHost for AgentConnection {
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        self.0.host.query(&self.0.caller, query)
+        self.0.provider.query(&self.0.caller, query)
     }
 
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
@@ -399,28 +399,28 @@ impl ActionHost for AgentConnection {
         let mut context = request.context.take().unwrap_or_default();
         context.group = self.0.caller.agent_session();
         request.context = Some(context);
-        self.0.host.invoke(&self.0.caller, request)
+        self.0.provider.invoke(&self.0.caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         self.check(caller).ok()?;
-        self.0.host.observe(&self.0.caller, id)
+        self.0.provider.observe(&self.0.caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         self.check(caller).ok()?;
-        self.0.host.next_change(&self.0.caller, id)
+        self.0.provider.next_change(&self.0.caller, id)
     }
 
     fn cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionHostError>> {
+    ) -> Pending<Result<(), ActionCallError>> {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        self.0.host.cancel(&self.0.caller, id)
+        self.0.provider.cancel(&self.0.caller, id)
     }
 
     /// Ask the session's person to confirm `request` on the host's sheet.
@@ -428,13 +428,13 @@ impl ActionHost for AgentConnection {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
         let runtime = match super::launchable::delivery_runtime() {
             Ok(runtime) => runtime,
-            Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
+            Err(reason) => return Pending::ready(Err(ActionCallError::Unavailable { reason })),
         };
         let connection = self.clone();
         let request = request.clone();

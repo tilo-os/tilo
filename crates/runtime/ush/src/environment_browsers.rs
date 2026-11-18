@@ -1,7 +1,7 @@
 //! A workspace's Browser, opened in the workspace's VM on the member device
 //! that runs it (`docs/hosted-browser.md`).
 //!
-//! The member device answers the relay's ask by asking this host's hosted-VM
+//! The member device answers the server's ask by asking this host's hosted-VM
 //! service (`legacy_vm::hosted`, the one that runs the workspace's VM) over
 //! its socket ([`Request::OpenBrowser`]) to start the browser session in that
 //! VM, and waits while it says the host is full.
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
 use tilo_actions::remote::browser::{OpenBrowser, OpenedBrowser};
-use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::linux_apps::{OpenApp, UP_PROVIDER};
+use tilo_actions::remote::server_account::Refusal;
 
 /// Why a workspace's Linux app did not open.
 #[derive(Debug)]

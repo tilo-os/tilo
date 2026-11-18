@@ -27,7 +27,7 @@ pub(super) struct Process {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Revocation is safe at every stage. Durable frontend custody still
+        // Revocation is safe at every stage. Durable frontend ownership still
         // owns descendant quiescence and protected-receipt cleanup.
         let _ = self.process.revoke();
     }
@@ -184,7 +184,7 @@ impl HostProcess {
             .load(std::sync::atomic::Ordering::Acquire)
         {
             return Err(failure(
-                "capture host handoff already began; exact custody is required to stop it",
+                "capture host handoff already began; exact ownership is required to stop it",
             ));
         }
         let _ = child.kill();

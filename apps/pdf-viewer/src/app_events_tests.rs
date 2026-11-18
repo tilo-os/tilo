@@ -550,7 +550,7 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
         matches!(&rig.app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))),
         "the note's body is focused for typing"
     );
-    for ch in "Relay path".chars() {
+    for ch in "Server path".chars() {
         let key = if ch == ' ' {
             Key::Named(NamedKey::Space)
         } else {
@@ -565,7 +565,7 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
     );
     let saved = crate::markup::PdfMarkup::of(&rig.st.doc).list_comments();
     assert!(
-        saved.iter().any(|c| c.comment.text == "Relay path"),
+        saved.iter().any(|c| c.comment.text == "Server path"),
         "the typed comment body landed in the shared document: {:?}",
         saved
             .iter()
@@ -743,8 +743,8 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
         app.bar_entry("Open PDF").enabled,
         "the window bar offers Open"
     );
-    let (services, recorder) = ui::host::HostServices::recording();
-    ui::host::scoped(&services, || {
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    ui::process::scoped(&services, || {
         app.press_bar("Open PDF");
     });
     assert!(
@@ -763,13 +763,13 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
     app.sync_viewport_frame();
     assert!(!app.has_document, "empty app starts with no document");
     let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
     assert!(
         app.bar_entry("Open PDF").enabled,
         "the bar offers Open with no document"
     );
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.press_bar("Open PDF");
     });
     app.sync_settled(&mut st.doc, &st.root);
@@ -792,9 +792,9 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
     let (mut app, mut st) = sample_app(); // sample document already loaded
     let before = app.has_document;
     let name_before = app.doc_name.clone();
-    let (services, recorder) = ui::host::HostServices::recording();
+    let (services, recorder) = ui::process::ProcessServices::recording();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
-    ui::host::scoped(&services, || {
+    ui::process::scoped(&services, || {
         app.press_bar("Open PDF");
     });
     assert!(

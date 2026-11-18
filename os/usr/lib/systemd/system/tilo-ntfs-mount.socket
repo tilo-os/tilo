@@ -1,7 +1,7 @@
 # The NTFS mount service starts when the shell or Settings first asks about a
 # drive, never at boot: a machine that never sees an NTFS drive never runs it.
 [Unit]
-Description=Consent-gated NTFS mount service socket
+Description=Consent-guarded NTFS mount service socket
 
 [Socket]
 ListenStream=/run/tilo-ntfs-mount/control.sock

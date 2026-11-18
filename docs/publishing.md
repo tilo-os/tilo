@@ -303,7 +303,7 @@ scope above, so who may publish is who may push a `vX.Y.Z` tag.
 ### Native packages
 
 Both SDKs will gain a native half over the one Rust client, so a program can reach a Tilo host
-directly instead of through a browser or a relay: Python's `tilo._native`, a PyO3 extension
+directly instead of through a browser or a server: Python's `tilo._native`, a PyO3 extension
 module, and the npm package `tilo-sdk-native`, built with napi-rs as one package per platform.
 Neither crate exists yet, so nothing publishes them, and the pure packages above release on their
 own until they do. What follows is the step that switches on, as a check of its own beside
@@ -332,7 +332,7 @@ podman run --rm -v "$PWD:/io:z" -w /io --platform linux/arm64 \
   quay.io/pypa/manylinux_2_28_aarch64 bash -ec \
   'pip install maturin && maturin build --release --compatibility manylinux_2_28 --out dist'
 
-# macOS arm64 and x86_64 on a Mac, Windows x86_64 on Windows, once those lanes exist.
+# macOS arm64 and x86_64 on a Mac, Windows x86_64 on Windows, once those jobs exist.
 maturin build --release --target aarch64-apple-darwin --out dist
 maturin build --release --target x86_64-apple-darwin --out dist
 maturin build --release --out dist
@@ -397,8 +397,8 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 ```
 
 It needs `publish-sdks` because it adds files to that release rather than making one, and it
-builds every platform on the x86_64 lane the SDK checks already run on, the arm64 wheel under
-qemu, until there are macOS and Windows lanes for the last two. Like the pure release it skips
+builds every platform on the x86_64 job the SDK checks already run on, the arm64 wheel under
+qemu, until there are macOS and Windows jobs for the last two. Like the pure release it skips
 what is already on a registry, so it can be dispatched on a tag on its own.
 
 ## Decisions

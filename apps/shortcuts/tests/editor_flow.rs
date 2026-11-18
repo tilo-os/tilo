@@ -18,7 +18,8 @@ use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
-    ActionHost, Caller, CataloguePage, CatalogueResource, CatalogueRow, InvokeArgument, TestHost,
+    ActionProvider, Caller, CataloguePage, CatalogueResource, CatalogueRow, InvokeArgument,
+    TestProvider,
 };
 use ui::tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -150,9 +151,9 @@ impl Workspace {
 
     /// The host serving this workspace: it records every invocation and
     /// answers each at once.
-    fn host(self) -> TestHost {
+    fn provider(self) -> TestProvider {
         let Self { rows, saved } = self;
-        TestHost::new()
+        TestProvider::new()
             .with_catalogue(move |_, _| {
                 Ok(CataloguePage {
                     revision: "1".into(),
@@ -189,8 +190,9 @@ impl Workspace {
 }
 
 /// The arguments of each call `host` was asked of the library's `action`.
-fn library_calls(host: &TestHost, action: &str) -> Vec<Value> {
-    host.asked()
+fn library_calls(provider: &TestProvider, action: &str) -> Vec<Value> {
+    provider
+        .asked()
         .iter()
         .filter(|request| {
             request.target.address.resource == "shortcuts"
@@ -217,18 +219,18 @@ fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
     .unwrap()
 }
 
-fn open() -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>) {
+fn open() -> (Arc<TestProvider>, RemoteActionsGuard, TestApp<App>) {
     open_with(Workspace::new())
 }
 
-fn open_with(workspace: Workspace) -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>) {
-    let host = Arc::new(workspace.host());
+fn open_with(workspace: Workspace) -> (Arc<TestProvider>, RemoteActionsGuard, TestApp<App>) {
+    let provider = Arc::new(workspace.provider());
     let guard = RemoteActions::enter(
-        Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+        Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
         Caller::local_app(APP_ID).in_workspace("workspace"),
     );
     let app = TestApp::<App>::new().expect("the app opens");
-    (host, guard, app)
+    (provider, guard, app)
 }
 
 fn act(app: &mut TestApp<App>, target: &str, action: &Action) {
@@ -259,18 +261,23 @@ fn press_bar(app: &mut TestApp<App>, name: &str) {
 
 #[test]
 fn the_app_starts_empty_and_reads_the_api_as_itself() {
-    let (host, _guard, mut app) = open();
+    let (provider, _guard, mut app) = open();
     assert!(app.state().drafts.is_empty(), "no seeded drafts");
     app.harness()
         .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
-        host.callers()
+        provider
+            .callers()
             .iter()
             .all(|caller| caller.acting().app().is_some_and(|app| *app == APP_ID)),
         "every request goes to the API as the Shortcuts app"
     );
-    assert_eq!(library_calls(&host, "list").len(), 1, "the library is read");
+    assert_eq!(
+        library_calls(&provider, "list").len(),
+        1,
+        "the library is read"
+    );
     let audit = app.harness().native_app_audit();
     assert!(audit.issues.is_empty(), "{audit:#?}");
 }
@@ -361,7 +368,7 @@ fn every_operation_is_a_published_action() {
         );
     }
     // The API's effects are published on the drafts, beside their edits. The framework's own
-    // share verbs stand on every record's root, so they are no part of what the API declares.
+    // share verbs stand on every resource's root, so they are no part of what the API declares.
     let mut effects: Vec<&str> = workbench
         .actions
         .iter()
@@ -384,7 +391,7 @@ fn every_operation_is_a_published_action() {
 
 #[test]
 fn add_steps_bind_them_validate_and_save_through_the_api() {
-    let (host, _guard, mut app) = open();
+    let (provider, _guard, mut app) = open();
     app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");
     let shortcut_id = app
@@ -459,7 +466,7 @@ fn add_steps_bind_them_validate_and_save_through_the_api() {
     act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
     app.harness().key("Enter");
 
-    let created = library_calls(&host, "create");
+    let created = library_calls(&provider, "create");
     assert_eq!(created.len(), 1, "saved once through shortcuts#create");
     assert_eq!(
         created[0],
@@ -486,8 +493,8 @@ fn add_steps_bind_them_validate_and_save_through_the_api() {
 
 /// The workspace also offers the agent's free-form transform.
 fn with_agent() -> Workspace {
-    let mut host = Workspace::new();
-    host.rows.push(row(
+    let mut provider = Workspace::new();
+    provider.rows.push(row(
         "9",
         tilo_automation::AGENT_APP_ID,
         "agent.transform:default",
@@ -501,7 +508,7 @@ fn with_agent() -> Workspace {
         ActionKind::Undoable,
         ResultSpec::Json { schema: json!({}) },
     ));
-    host
+    provider
 }
 
 #[test]
@@ -518,7 +525,7 @@ fn drafting_is_hidden_without_the_agent() {
 
 #[test]
 fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
-    let (host, _guard, mut app) = open_with(with_agent());
+    let (provider, _guard, mut app) = open_with(with_agent());
     act(
         &mut app,
         "describe-shortcut",
@@ -533,7 +540,7 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
         )
         .expect("the draft is offered");
 
-    let asked: Vec<_> = host
+    let asked: Vec<_> = provider
         .asked()
         .iter()
         .filter(|request| request.target.address.action == "freeform")
@@ -568,15 +575,16 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
     assert_eq!(shortcut.name, "Note the inbox");
     assert_eq!(shortcut.steps.len(), 2);
     assert!(
-        library_calls(&host, "create").is_empty() && library_calls(&host, "update").is_empty(),
+        library_calls(&provider, "create").is_empty()
+            && library_calls(&provider, "update").is_empty(),
         "nothing is saved without the grant review"
     );
 }
 
 /// The workspace holds one saved shortcut that asks for a title.
 fn with_saved_note() -> Workspace {
-    let mut host = Workspace::new();
-    host.rows.push(row(
+    let mut provider = Workspace::new();
+    provider.rows.push(row(
         "workspace:w1",
         APP_ID,
         &tilo_automation::shortcut_resource_id("quick-note"),
@@ -586,7 +594,7 @@ fn with_saved_note() -> Workspace {
         ActionKind::Undoable,
         ResultSpec::None,
     ));
-    host.saved.push(json!({
+    provider.saved.push(json!({
         "id": "quick-note",
         "name": "Quick note",
         "inputs": [{
@@ -599,12 +607,12 @@ fn with_saved_note() -> Workspace {
              "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
         ]
     }));
-    host
+    provider
 }
 
 #[test]
 fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
-    let (host, _guard, mut app) = open_with(with_saved_note());
+    let (provider, _guard, mut app) = open_with(with_saved_note());
     // The library lists the saved shortcut under the overview: one step
     // down the list opens its page.
     app.harness()
@@ -627,11 +635,12 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
 
     tilo_test_env::wait_until("the shortcut's run to be invoked", || {
         app.settle();
-        host.asked()
+        provider
+            .asked()
             .iter()
             .any(|request| request.target.address.action == "run")
     });
-    let runs: Vec<_> = host
+    let runs: Vec<_> = provider
         .asked()
         .iter()
         .filter(|request| request.target.address.action == "run")
@@ -670,12 +679,12 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     refresh.action.as_mut().unwrap().kind = OperationKind::Effect;
     refresh.action.as_mut().unwrap().resource_label = "Chosen weather".into();
     fixture.rows.push(refresh);
-    let (host, _guard, mut app) = open_with(fixture);
+    let (provider, _guard, mut app) = open_with(fixture);
     app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
         "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}]
     }))).unwrap();
     act(&mut app, "schedule-enabled", &Action::Focus);
-    assert!(library_calls(&host, "create").is_empty());
+    assert!(library_calls(&provider, "create").is_empty());
     assert!(
         app.state()
             .drafts
@@ -704,7 +713,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
         }]
     );
     assert!(
-        library_calls(&host, "create").is_empty(),
+        library_calls(&provider, "create").is_empty(),
         "schedule choice edits only the draft"
     );
     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -732,7 +741,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     app.harness().resize((1600, 1000)).unwrap();
     act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
     app.harness().key("Enter");
-    let saved = library_calls(&host, "create");
+    let saved = library_calls(&provider, "create");
     assert_eq!(saved.len(), 1);
     let saved: tilo_automation::Shortcut =
         serde_json::from_value(saved[0]["shortcut"].clone()).unwrap();
@@ -847,8 +856,8 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
 /// A draft with an `if` holding the list step in its `then` block, built the
 /// way a person does: three steps from the catalogue, one of them a
 /// condition, the last moved inside it.
-fn draft_with_a_condition() -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>) {
-    let (host, guard, mut app) = open();
+fn draft_with_a_condition() -> (Arc<TestProvider>, RemoteActionsGuard, TestApp<App>) {
+    let (provider, guard, mut app) = open();
     app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");
     app.harness()
@@ -868,7 +877,7 @@ fn draft_with_a_condition() -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>)
         &format!("offer-{NOTES}-{INBOX}-create"),
         &Action::Activate,
     );
-    (host, guard, app)
+    (provider, guard, app)
 }
 
 #[test]

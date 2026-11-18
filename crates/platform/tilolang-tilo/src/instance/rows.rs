@@ -108,7 +108,7 @@ impl ListRows {
     }
 
     /// Render the rows of `range` not rendered yet, and the document of the row at `open` — the
-    /// row standing open into its item where it stands — forgetting those rendered outside the
+    /// row held open into its item where it stands — forgetting those rendered outside the
     /// range and the document of the row that closed: how many rows the list has, the keys from
     /// `range.start` on, and the rows rendered now.
     pub fn request(&mut self, range: Range<usize>, open: Option<&str>) -> Requested {

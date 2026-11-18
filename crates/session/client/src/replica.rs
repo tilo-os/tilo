@@ -4,7 +4,7 @@
 //! storage through its [`PeerStore`].
 //!
 //! The host sends a subscriber the workspace's bootstrap ahead of its replay
-//! ([`tilo_relay_protocol::Envelope::WorkspaceBootstrap`]): the workspace-join
+//! ([`tilo_server_protocol::Envelope::WorkspaceBootstrap`]): the workspace-join
 //! contract's membership answer, the workspace's governing authority, roster and
 //! revocations. The owner holds the workspace on that answer, vouched for by the
 //! host the page authenticated to
@@ -40,7 +40,7 @@ use tilo_peer_state::owner::{
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
-use crate::custody::PeerStore;
+use crate::membership_check::PeerStore;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 /// The owner's record in the page's [`PeerStore`]. A record the store
@@ -50,7 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 struct PageWorkspaces {
     store: Arc<dyn PeerStore>,
     healthy: AtomicBool,
-    /// The runs of custody this page keeps beside its record, by name: those the record it last
+    /// The runs of ownership this page keeps beside its record, by name: those the record it last
     /// kept names, and those put since. A store without runs of its own reads them from here.
     runs: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
     /// The record kept as an index and per-workspace parts, so a publication
@@ -152,9 +152,9 @@ impl Store for PageWorkspaces {
         false
     }
 
-    fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
+    fn put_ownership(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
         let hash = *blake3::hash(bytes).as_bytes();
-        let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
+        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
         if self.store.keeps_workspaces() {
             self.store.save_workspaces_run(&name, Some(bytes))?;
         }
@@ -162,14 +162,20 @@ impl Store for PageWorkspaces {
         Ok(hash)
     }
 
-    fn read_custody(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
-        if let Some(Some(bytes)) = self.runs.lock_recover().get(&name) {
-            return Ok(bytes.clone());
+    fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
+        // What a build kept under the name the code gives it reads too.
+        let between = tilo_peer_state::owner::ownership_name_between(workspace, hash);
+        if let Some(bytes) = [&name, &between]
+            .into_iter()
+            .find_map(|name| self.runs.lock_recover().get(name).cloned().flatten())
+        {
+            return Ok(bytes);
         }
         self.store
             .load_workspaces_run(&name)
-            .ok_or_else(|| format!("the run of custody {name} is not kept"))
+            .or_else(|| self.store.load_workspaces_run(&between))
+            .ok_or_else(|| format!("the run of ownership {name} is not kept"))
     }
 
     fn publish(
@@ -208,8 +214,8 @@ impl Store for PageWorkspaces {
             tracing::warn!(%error, "the workspaces' older copy was kept");
         }
         install();
-        // A run the record no longer names moved to custody's head.
-        let named: BTreeSet<String> = next.custody_runs().collect();
+        // A run the record no longer names moved to ownership's head.
+        let named: BTreeSet<String> = next.ownership_runs().collect();
         let gone: Vec<String> = {
             let mut runs = self.runs.lock_recover();
             let gone = runs
@@ -222,7 +228,7 @@ impl Store for PageWorkspaces {
         };
         for name in gone.into_iter().filter(|_| self.keeps) {
             if let Err(error) = self.store.save_workspaces_run(&name, None) {
-                tracing::warn!(%error, "a run of custody the record no longer names was kept");
+                tracing::warn!(%error, "a run of ownership the record no longer names was kept");
             }
         }
         Ok(())
@@ -247,7 +253,7 @@ impl Replicas {
         let kept = workspaces.kept();
         let runs = kept
             .iter()
-            .flat_map(NativeAuthorityStorage::custody_runs)
+            .flat_map(NativeAuthorityStorage::ownership_runs)
             .map(|name| (name, None))
             .collect();
         *workspaces.runs.lock_recover() = runs;
@@ -462,14 +468,14 @@ impl Replicas {
     /// workspace's own governance keeps for it: the address a peer dials the
     /// host at, and the relay it is reached through. `None` until the host's
     /// bootstrap or a governance message named it.
-    pub(crate) fn host(&self, workspace_id: WorkspaceId) -> Option<tilo_relay_client::Host> {
+    pub(crate) fn host(&self, workspace_id: WorkspaceId) -> Option<tilo_server_client::Host> {
         let hint = self
             .with_workspace(workspace_id, |view| {
                 let host = view.workspace_host().device_public_key;
                 Ok(view
                     .peer()
                     .governance()
-                    .workspace_hosts()
+                    .keeping_devices()
                     .into_iter()
                     .find(|hint| hint.host.device_public_key == host))
             })?
@@ -483,7 +489,7 @@ impl Replicas {
             "iroh:direct" => None,
             url => Some(url.parse().ok()?),
         };
-        Some(tilo_relay_client::Host::through(
+        Some(tilo_server_client::Host::through(
             payload.endpoint_addr,
             relay,
         ))
@@ -522,7 +528,7 @@ impl Replicas {
 /// this session, relayed as it arrived or from what its store kept: decided
 /// as of its own timestamp, and in the clear only before its record sealed.
 fn relayed(author: [u8; 32]) -> TransportOrigin {
-    TransportOrigin::RetainedRelayDelta(author)
+    TransportOrigin::RetainedServerDelta(author)
 }
 
 #[cfg(test)]

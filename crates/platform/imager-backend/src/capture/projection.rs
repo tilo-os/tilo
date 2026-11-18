@@ -79,7 +79,7 @@ impl Directory {
 }
 impl Drop for Directory {
     fn drop(&mut self) {
-        // Custody, not a recursive temporary-directory destructor, decides when
+        // Ownership, not a recursive temporary-directory destructor, decides when
         // aliases may disappear. Unproved hosts retain their protected receipt.
         if let Some(directory) = self.temporary.take() {
             let _ = directory.keep();

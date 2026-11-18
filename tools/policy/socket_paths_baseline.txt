@@ -10,11 +10,11 @@
 1 crates/dev/tilo-vm/src/scenario/console.rs
 2 crates/dev/tilo-vmd/src/input.rs
 1 crates/dev/tilo-vmd/src/systemd.rs
-2 crates/hosting/tilo-relay/src/environment_guest.rs
+2 crates/server/tilo-server/src/environment_guest.rs
 1 crates/lang/tilolang-cli/src/repl/api.rs
 1 crates/packaging/launcher/examples/dbus_proxy_startup.rs
 1 crates/packaging/launcher/src/main.rs
-2 crates/packaging/launcher/src/netgate.rs
+2 crates/packaging/launcher/src/egress_proxy.rs
 1 crates/packaging/launcher/src/owned_service.rs
 5 crates/packaging/launcher/src/services.rs
 1 crates/packaging/launcher/src/system_stats.rs
@@ -40,7 +40,7 @@
 1 crates/runtime/tilo-fs-client/src/cloud.rs
 1 crates/runtime/tilo-fs-client/src/lib.rs
 1 crates/runtime/tilo-fs-client/src/storage.rs
-2 crates/runtime/tilo-identity-host/src/broker.rs
+2 crates/runtime/tilo-identity/src/broker.rs
 1 crates/runtime/tilo-runtime/src/computer.rs
 5 crates/runtime/tilo-runtime/src/daemon.rs
 3 crates/runtime/tilo-runtime/src/unix.rs

@@ -3,7 +3,7 @@
 //! mount changes reaches the person's other devices — a device that joins
 //! later is given the tree whole, and a device of someone else is refused.
 //!
-//! The session here is the record's plane: the mounts reach it as two
+//! The session here is the record's app wire: the mounts reach it as two
 //! certified devices of one person reach the workspace their records route on,
 //! and the tree is read back through `fs_protocol::tree`, the projection the
 //! Files app renders.
@@ -287,7 +287,7 @@ fn a_shared_workspaces_tree_reaches_each_member() {
     for device in [&ada_laptop, &bob_laptop, &cyd_laptop] {
         let warnings = device.warnings();
         assert!(
-            !warnings.contains("a document op its channel's gate does not take"),
+            !warnings.contains("a document op its channel's check does not take"),
             "{} refused a plaintext op of the sealed tree:\n{warnings}",
             device.label,
         );

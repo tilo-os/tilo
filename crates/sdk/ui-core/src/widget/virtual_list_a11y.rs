@@ -1,4 +1,4 @@
-//! The accessibility tree of a [`super::VirtualList`]: its mounted rows, and the heading standing
+//! The accessibility tree of a [`super::VirtualList`]: its mounted rows, and the heading
 //! before each group of them.
 use crate::i18n::widget_text;
 use std::collections::HashMap;
@@ -8,7 +8,8 @@ use super::edit::RenameStamp;
 use super::groups::{Band, HEADING_TARGET};
 use super::jump::PILL_TARGET;
 use super::open::first_page_title;
-use super::{ListModel, MountedRow, MountedRowState, VirtualList};
+use super::{ListKey, VirtualRows};
+use super::{MountedRow, MountedRowState};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::widget::Widget;
 use vello::kurbo::Rect;
@@ -70,7 +71,7 @@ impl From<&MountedRowState> for RowStateStamp {
     }
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     #[cfg(any(test, feature = "test-support"))]
     pub fn access_row_builds_for_test(&self) -> usize {
         self.access_rows.borrow().builds
@@ -91,25 +92,25 @@ impl<M: ListModel> VirtualList<M> {
     /// carries a control of its own (a box to tick, a field, a button) that the row's state
     /// alone does not reach. A row of words stays summarized: the row states it, and its words
     /// are not read twice.
-    pub(super) fn handing_controls(&self, row: &MountedRow<M::Key>) -> bool {
-        self.standing_open(row) || holds_controls(row.widget.as_ref())
+    pub(super) fn handing_controls(&self, row: &MountedRow<ListKey>) -> bool {
+        self.held_open(row) || holds_controls(row.widget.as_ref())
     }
 
-    fn standing_open(&self, row: &MountedRow<M::Key>) -> bool {
+    fn held_open(&self, row: &MountedRow<ListKey>) -> bool {
         self.open.as_ref() == Some(&row.key)
     }
 
     pub(super) fn row_node(
         &self,
-        row: &MountedRow<M::Key>,
+        row: &MountedRow<ListKey>,
         enabled: bool,
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
         let child = crate::a11y::stated_node(row.widget.as_ref());
-        // The item standing open in its row is still the row: it is named by the title its
+        // The item held open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
         let name = self
-            .standing_open(row)
+            .held_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
             .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
@@ -129,7 +130,7 @@ impl<M: ListModel> VirtualList<M> {
                 .focusable(true)
                 .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
                 .selected(self.selection.is_selected(&row.key))
-                .context_menu(self.menus.row_offers(&self.model, &row.key))
+                .context_menu(self.menus.row_offers(&*self.model, &row.key))
                 .disabled(!enabled),
         );
         // A row that is a control of its own — a task's box, say — keeps its state and what it
@@ -153,7 +154,7 @@ impl<M: ListModel> VirtualList<M> {
                 item.state.expanded = Some(!marks.is_folded(&row.key));
             }
         }
-        if self.standing_open(row) {
+        if self.held_open(row) {
             item.state.expanded = Some(true);
         }
         match &row.state {
@@ -271,7 +272,7 @@ impl<M: ListModel> VirtualList<M> {
                 _ => false,
             };
         }
-        // A tree row's disclosure, standing where the painted chevron is: pressing it folds the
+        // A tree row's disclosure, where the painted chevron is: pressing it folds the
         // row's notes away or shows them again, where a press on the row itself opens the item
         // it stands for.
         if let Some(encoded) = target.strip_prefix("fold:") {
@@ -416,7 +417,7 @@ impl<M: ListModel> VirtualList<M> {
 
     fn row_access_inputs(
         &self,
-        row: &MountedRow<M::Key>,
+        row: &MountedRow<ListKey>,
         enabled: bool,
         count: usize,
     ) -> RowAccessInputs {
@@ -429,7 +430,7 @@ impl<M: ListModel> VirtualList<M> {
             ),
             None => (None, None),
         };
-        let expanded = if self.standing_open(row) {
+        let expanded = if self.held_open(row) {
             Some(true)
         } else {
             folded
@@ -441,7 +442,7 @@ impl<M: ListModel> VirtualList<M> {
             bounds: self.row_box(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menus.row_offers(&self.model, &row.key),
+            menu: self.menus.row_offers(&*self.model, &row.key),
             disabled: !enabled,
             level,
             expanded,
@@ -492,7 +493,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The pill as a reader, an agent or a keyboard meets it: one button saying the words it
-    /// shows, standing where it is drawn, so the way back a list offers over its rows is reached
+    /// shows, where it is drawn, so the way back a list offers over its rows is reached
     /// by something that is not a pointer.
     fn pill_node(&self, enabled: bool) -> Option<AccessNode> {
         let (jump, _) = self.pill_rect_for(self.rect)?;

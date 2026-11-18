@@ -3,12 +3,12 @@ use crate::windows_inventory::Inventory;
 use std::path::Path;
 
 /// Private sign-in metadata; never serialized into the public review receipt.
-pub use account_custody::hints::AccountHint;
+pub use account_credentials::hints::AccountHint;
 
 /// Copy the reviewed selection and bind sealed suggestions to a durable receipt.
 pub fn export(
     inventory: &Inventory,
-    hints: &[account_custody::hints::AccountHint],
+    hints: &[account_credentials::hints::AccountHint],
     password: &[u8],
     destination: &Path,
 ) -> Result<crate::windows_media::WindowsMedia, String> {
@@ -21,7 +21,7 @@ pub fn export(
         .create_child(std::ffi::OsStr::new(&name))
         .map_err(|e| e.to_string())?;
     let binding = uuid::Uuid::new_v4().to_string();
-    let sealed = account_custody::hints::seal_password(password, &binding, hints)
+    let sealed = account_credentials::hints::seal_password(password, &binding, hints)
         .map_err(|e| e.to_string())?;
     let dir = cap_std::fs::Dir::from_std_file(output.file.try_clone().map_err(|e| e.to_string())?);
     let mut options = cap_std::fs::OpenOptions::new();
@@ -65,7 +65,7 @@ pub fn export(
     crate::migration_durability::sync_directory(&output.file).map_err(|e| e.to_string())?;
     crate::migration_durability::sync_directory(&parent.file).map_err(|e| e.to_string())?;
     let prepared =
-        account_custody::hints::media::Prepared::seal(password, &binding, hints, &receipt)
+        account_credentials::hints::media::Prepared::seal(password, &binding, hints, &receipt)
             .map_err(|e| e.to_string())?;
     crate::windows_media::WindowsMedia::new(prepared, destination.join(name).join("review.json"))
         .map_err(|e| e.to_string())

@@ -1,6 +1,6 @@
 //! What Mail publishes beside its mailbox, and the values its verbs take.
 //!
-//! The mailbox record and its verbs are [`crate::resource::Mail`]. Here are
+//! The mailbox resource and its verbs are [`crate::resource::Mail`]. Here are
 //! Mail's effects (what changes no document: what the window shows, the
 //! composer, fetching, saving an attachment, preparing an invitation), the
 //! values the verbs carry (a message to send, what a fetch reports, what a
@@ -82,7 +82,7 @@ pub enum MailEffect {
     /// the store the account lives in — the person's vault when the
     /// account is kept there — and is never written, logged or answered
     /// anywhere. An account without one asks for it in Settings. It reaches
-    /// outside the record, so an agent asking for it is put to the person in
+    /// outside the resource, so an agent asking for it is put to the person in
     /// their tab first, as any agent's outside action is, unless they allowed
     /// it.
     #[effect(returns, audience = "agents")]

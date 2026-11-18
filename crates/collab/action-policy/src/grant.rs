@@ -14,7 +14,7 @@ use crate::{EarlierIds, KindSet, TreePath};
 pub enum Answer {
     /// Refuse.
     Deny,
-    /// Pause for the person's approval, witnessed by the host on their device.
+    /// Pause for the person's approval, approved by the host on their device.
     Ask,
     /// Run.
     Allow,
@@ -267,11 +267,7 @@ impl fmt::Display for Grantee {
 
 /// How long a grant is live.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(
-    rename_all = "snake_case",
-    from = "StoredLifetime",
-    into = "StoredLifetime"
-)]
+#[serde(rename_all = "snake_case")]
 pub enum Lifetime {
     /// For one use; the API that used it revokes it.
     Once,
@@ -281,46 +277,6 @@ pub enum Lifetime {
     Until(u64),
     /// Until someone revokes it.
     UntilRevoked,
-}
-
-/// A lifetime as workspaces store it, read and written. A grant once lived while
-/// a task of the workspace was open; those tasks are gone, and such a grant reads
-/// as one that has expired, so a workspace that holds one still loads. The task
-/// keeps its place: compact encodings (postcard) name a variant by its
-/// position, and a workspace's stored grants and the digests of its
-/// administration requests are made of those bytes, so every lifetime is
-/// written as it always was.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum StoredLifetime {
-    Once,
-    Task(String),
-    Session(String),
-    Until(u64),
-    UntilRevoked,
-}
-
-impl From<Lifetime> for StoredLifetime {
-    fn from(lifetime: Lifetime) -> Self {
-        match lifetime {
-            Lifetime::Once => Self::Once,
-            Lifetime::Session(session) => Self::Session(session),
-            Lifetime::Until(at) => Self::Until(at),
-            Lifetime::UntilRevoked => Self::UntilRevoked,
-        }
-    }
-}
-
-impl From<StoredLifetime> for Lifetime {
-    fn from(stored: StoredLifetime) -> Self {
-        match stored {
-            StoredLifetime::Once => Self::Once,
-            StoredLifetime::Session(session) => Self::Session(session),
-            StoredLifetime::Until(at) => Self::Until(at),
-            StoredLifetime::Task(_) => Self::Until(0),
-            StoredLifetime::UntilRevoked => Self::UntilRevoked,
-        }
-    }
 }
 
 /// Names one grant, so it can be revoked or consumed.
@@ -400,7 +356,7 @@ impl Grant {
 pub struct Context<'a> {
     /// Wall clock, Unix milliseconds.
     pub now_unix_ms: u64,
-    /// The current session. `None` where sessions are not known (a relay): a
+    /// The current session. `None` where sessions are not known (a server): a
     /// session grant then counts as live, and the device that holds the session
     /// is the one that refuses after it ends.
     pub session: Option<&'a str>,
@@ -408,8 +364,8 @@ pub struct Context<'a> {
     /// renamed app (`crate::earlier`). `None` reads what this process registered
     /// (`crate::earlier::register`).
     pub earlier: Option<&'a EarlierIds>,
-    /// A member's own record the decision is about, as the write or window that
-    /// names it says: `(record, person)`, the record's id and the person whose
+    /// A member's own document the decision is about, as the write or window that
+    /// names it says: `(resource, person)`, the resource's id and the person whose
     /// own it is. Only that person decides anything in it, whatever their role
     /// or the workspace's grants.
     pub own: Option<(&'a str, &'a str)>,
@@ -426,22 +382,22 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Deciding about `record`, which is `person`'s own record (the hex of
+    /// Deciding about `resource`, which is `person`'s own document (the hex of
     /// their user root key).
     #[must_use]
-    pub const fn with_own_resource(mut self, record: &'a str, person: &'a str) -> Self {
-        self.own = Some((record, person));
+    pub const fn with_own_resource(mut self, resource: &'a str, person: &'a str) -> Self {
+        self.own = Some((resource, person));
         self
     }
 
-    /// The person whose own record `node` is in, when the decision is about
+    /// The person whose own document `node` is in, when the decision is about
     /// one ([`Self::with_own_resource`]).
     #[must_use]
     pub fn owner_of(&self, node: &TreePath) -> Option<&'a str> {
-        let (record, person) = self.own?;
+        let (resource, person) = self.own?;
         node.segments()
             .iter()
-            .any(|segment| matches!(segment, crate::Segment::Name(crate::Level::Resource, name) if name == record))
+            .any(|segment| matches!(segment, crate::Segment::Name(crate::Level::Resource, name) if name == resource))
             .then_some(person)
     }
 

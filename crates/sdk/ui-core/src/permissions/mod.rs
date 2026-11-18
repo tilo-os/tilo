@@ -1,9 +1,9 @@
-//! The toolkit's permission gate.
+//! The toolkit's permission check.
 //!
 //! Two questions, each answered by the one model that owns it:
 //!
 //! - **May this person (or their agent) perform this action?** Decided by
-//!   `tilo-action-policy` over the workspace's grants: a [`Standing`] names the
+//!   `tilo-action-policy` over the workspace's grants: a [`MemberAccess`] names the
 //!   person, the workspace's policy and any delegation bounding them, and
 //!   [`PermissionScope::Action`] names a node below the workspace and the action's
 //!   kind.
@@ -58,7 +58,7 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role;
 pub use tilo_action_policy as policy;
-pub use tilo_action_policy::{ActionKind, Answer, KindSet, Standing, TreePath};
+pub use tilo_action_policy::{ActionKind, Answer, KindSet, MemberAccess, TreePath};
 
 /// The id the local, unrestricted user acts as under
 /// [`PermissionContext::permissive`].
@@ -194,7 +194,7 @@ pub enum Denial {
 }
 
 /// The authority and sandbox a frame's permission checks are decided against.
-/// Held by `App`, consulted by `app::dispatch_gated_event` before a gated
+/// Held by `App`, consulted by `app::dispatch_guarded_event` before a guarded
 /// widget ever sees an event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionContext {
@@ -204,8 +204,8 @@ pub struct PermissionContext {
     acting: Acting,
     sandbox: Vec<CapOverride>,
     /// Who acts in the workspace and what bounds them. Shared, so a frame's
-    /// copies of the context and its directory witness copy no policy.
-    standing: Arc<Standing>,
+    /// copies of the context and its directory observation copy no policy.
+    access: Arc<MemberAccess>,
     /// The instant grants and capabilities are judged at, Unix seconds, for
     /// contexts without a retained sampler. `None` skips expiry and is only
     /// for deliberately unclocked local contexts.
@@ -227,26 +227,26 @@ pub struct PermissionContext {
 
 /// Inert directory cache identity. It cannot make a permission decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DirectoryPermissionWitness {
+pub(crate) struct DirectoryPermissionObservation {
     user: MemberId,
     acting: Acting,
     sandbox: Vec<CapOverride>,
-    standing: Arc<Standing>,
+    access: Arc<MemberAccess>,
     /// Which grants (workspace, then each bound's own) and sandbox capabilities
     /// were live: time matters only where it changes an answer.
     live: Vec<bool>,
-    action_authority: Option<(String, Box<DirectoryPermissionWitness>)>,
+    action_authority: Option<(String, Box<DirectoryPermissionObservation>)>,
 }
 
 impl PermissionContext {
-    /// Decide with `standing` in the workspace and `sandbox` for the app's code,
+    /// Decide with `access` in the workspace and `sandbox` for the app's code,
     /// reached as `actor`.
-    pub fn new(acting: Acting, sandbox: Vec<CapOverride>, standing: Standing) -> Self {
+    pub fn new(acting: Acting, sandbox: Vec<CapOverride>, access: MemberAccess) -> Self {
         Self {
-            user: MemberId::person(standing.person_id().unwrap_or_default()),
+            user: MemberId::person(access.person_id().unwrap_or_default()),
             acting,
             sandbox,
-            standing: Arc::new(standing),
+            access: Arc::new(access),
             now: crate::time::try_unix_now(),
             policy_time: None,
             action_authority: None,
@@ -266,11 +266,11 @@ impl PermissionContext {
         self
     }
 
-    /// Who an invocation admitted here asks ([`tilo_action_policy::Standing::asker`]):
+    /// Who an invocation admitted here asks ([`tilo_action_policy::MemberAccess::asker`]):
     /// the person, who answers themselves, or whom the host reaches; and
     /// whether someone acts for them.
     pub fn asker(&self) -> policy::Asker {
-        self.standing.asker(self.reaches_person)
+        self.access.asker(self.reaches_person)
     }
 
     /// The **unrestricted local user**: the owner of [`LOCAL_WORKSPACE`] holding
@@ -286,18 +286,18 @@ impl PermissionContext {
             Acting::person(LOCAL_USER),
             [
                 Scope::FsPath("/".into()),
-                Scope::Device(collab_types::caps::EVERY.into()),
                 Scope::NetHost(collab_types::caps::EVERY.into()),
                 Scope::FsResource(collab_types::caps::EVERY.into()),
             ]
             .into_iter()
+            .chain(collab_types::caps::DeviceCap::ALL.map(Scope::Device))
             .enumerate()
             .map(|(index, scope)| {
                 CapOverride::grant(Grantee::person(LOCAL_USER), scope, Access::Write)
                     .with_id(format!("local-user-unrestricted-{index}"))
             })
             .collect(),
-            Standing::person(
+            MemberAccess::person(
                 policy::WorkspacePolicy::new(LOCAL_WORKSPACE, LOCAL_USER),
                 LOCAL_USER,
             ),
@@ -325,18 +325,18 @@ impl PermissionContext {
         Self::new(
             Acting::person(person.clone()),
             Vec::new(),
-            Standing::person(policy, person),
+            MemberAccess::person(policy, person),
         )
     }
 
-    /// The permissions of a whole standing a host built (an installer
-    /// bounded by a bot's grants), decided exactly as that standing says.
+    /// The permissions of a whole member access a host built (an installer
+    /// bounded by a bot's grants), decided exactly as that access says.
     #[must_use]
-    pub fn from_standing(standing: Standing) -> Self {
+    pub fn from_access(access: MemberAccess) -> Self {
         Self::new(
-            Acting::person(standing.person_id().unwrap_or_default()),
+            Acting::person(access.person_id().unwrap_or_default()),
             Vec::new(),
-            standing,
+            access,
         )
     }
 
@@ -347,7 +347,7 @@ impl PermissionContext {
         Self::new(
             Acting::person(person.clone()),
             Vec::new(),
-            Standing::person(
+            MemberAccess::person(
                 policy::WorkspacePolicy::unowned(
                     LOCAL_WORKSPACE,
                     &policy::Grantee::role(Role::Owner),
@@ -413,7 +413,7 @@ impl PermissionContext {
 
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
-        Arc::make_mut(&mut Arc::make_mut(&mut self.standing).policy)
+        Arc::make_mut(&mut Arc::make_mut(&mut self.access).policy)
             .grants
             .push(grant);
         self
@@ -423,7 +423,7 @@ impl PermissionContext {
     /// `grants`.
     #[must_use]
     pub fn acting_as(mut self, subject: policy::Actor, grants: Vec<policy::Grant>) -> Self {
-        self.standing = Arc::new(Arc::unwrap_or_clone(self.standing).acting_as(subject, grants));
+        self.access = Arc::new(Arc::unwrap_or_clone(self.access).acting_as(subject, grants));
         self
     }
 
@@ -431,7 +431,7 @@ impl PermissionContext {
     /// version offers whoever holds it.
     #[must_use]
     pub fn read_only(&self) -> Self {
-        let mut context = Self::member_of(self.standing.workspace(), &self.user, Role::Viewer);
+        let mut context = Self::member_of(self.access.workspace(), &self.user, Role::Viewer);
         context.acting = self.acting.clone();
         context.now = self.now;
         context.policy_time.clone_from(&self.policy_time);
@@ -501,30 +501,30 @@ impl PermissionContext {
     /// samplers, sandbox and spent grants carry over.
     #[must_use]
     pub fn with_participation(&self, writable: bool) -> Option<Self> {
-        let person = self.standing.person_id().unwrap_or_default().to_owned();
-        let current = self.standing.policy.members.get(&person).copied()?;
-        if self.standing.acting.delegated()
+        let person = self.access.person_id().unwrap_or_default().to_owned();
+        let current = self.access.policy.members.get(&person).copied()?;
+        if self.access.acting.delegated()
             || !matches!(current, Role::Viewer | Role::Editor)
-            || self.standing.policy.members.len() != 1
+            || self.access.policy.members.len() != 1
         {
             return None;
         }
         let role = if writable { Role::Editor } else { Role::Viewer };
-        let mut standing = (*self.standing).clone();
-        Arc::make_mut(&mut standing.policy)
+        let mut access = (*self.access).clone();
+        Arc::make_mut(&mut access.policy)
             .members
             .insert(person.clone(), role);
         let mut next = self.clone();
-        next.standing = Arc::new(standing);
+        next.access = Arc::new(access);
         Some(next)
     }
 
     /// The same context with the workspace's policy replaced, for a host that
     /// learned of a change.
     #[must_use]
-    pub fn with_standing(mut self, standing: Standing) -> Self {
-        self.user = MemberId::person(standing.person_id().unwrap_or_default());
-        self.standing = Arc::new(standing);
+    pub fn with_access(mut self, access: MemberAccess) -> Self {
+        self.user = MemberId::person(access.person_id().unwrap_or_default());
+        self.access = Arc::new(access);
         self
     }
 
@@ -549,14 +549,14 @@ impl PermissionContext {
                 .filter(|at| *at > now)
                 .min()
         };
-        let standing_ends = |standing: &Standing| {
-            after(&mut standing.policy.grants.iter().chain(standing.granted.iter()))
+        let access_ends = |access: &MemberAccess| {
+            after(&mut access.policy.grants.iter().chain(access.granted.iter()))
         };
         let authority = self
             .action_authority
             .as_ref()
             .and_then(|authority| authority.sample_for(self).ok())
-            .and_then(|current| standing_ends(&current.standing));
+            .and_then(|current| access_ends(&current.access));
         let sandbox = self
             .sandbox
             .iter()
@@ -565,7 +565,7 @@ impl PermissionContext {
                 _ => None,
             })
             .min();
-        [standing_ends(&self.standing), authority, sandbox]
+        [access_ends(&self.access), authority, sandbox]
             .into_iter()
             .flatten()
             .min()
@@ -573,8 +573,8 @@ impl PermissionContext {
     }
 
     /// Compare the current policy meaning, not callback allocation or elapsed
-    /// seconds. Sampling is fallible; no cached/empty witness replaces failure.
-    pub(crate) fn directory_witness(&self) -> Result<DirectoryPermissionWitness, String> {
+    /// seconds. Sampling is fallible; no cached/empty observation replaces failure.
+    pub(crate) fn directory_observation(&self) -> Result<DirectoryPermissionObservation, String> {
         let now = match &self.policy_time {
             Some(sampler) => Some((sampler.0)()?),
             None => self.now,
@@ -586,25 +586,25 @@ impl PermissionContext {
                 let current = authority.sample_for(self)?;
                 Ok::<_, String>((
                     authority.app_id.clone(),
-                    Box::new(current.directory_witness()?),
+                    Box::new(current.directory_observation()?),
                 ))
             })
             .transpose()?;
         let cx = policy::Context::at_secs(now.unwrap_or(0));
         let live = self
-            .standing
+            .access
             .policy
             .grants
             .iter()
-            .chain(self.standing.granted.iter())
+            .chain(self.access.granted.iter())
             .map(|grant| grant.is_live(&cx))
             .chain(self.sandbox.iter().map(|cap| cap.expiry.is_live_at(now)))
             .collect();
-        Ok(DirectoryPermissionWitness {
+        Ok(DirectoryPermissionObservation {
             user: self.user.clone(),
             acting: self.acting.clone(),
             sandbox: self.sandbox.clone(),
-            standing: Arc::clone(&self.standing),
+            access: Arc::clone(&self.access),
             live,
             action_authority,
         })
@@ -640,14 +640,14 @@ impl PermissionContext {
 
     /// The role the person holds in the workspace, if any.
     pub fn role(&self) -> Option<Role> {
-        self.standing
+        self.access
             .policy
-            .active_role(self.standing.person_id().unwrap_or_default())
+            .active_role(self.access.person_id().unwrap_or_default())
     }
 
-    /// The standing actions are decided against.
-    pub fn standing(&self) -> &Standing {
-        &self.standing
+    /// The access actions are decided against.
+    pub fn access(&self) -> &MemberAccess {
+        &self.access
     }
 
     /// The sandbox capabilities in force.
@@ -698,13 +698,13 @@ impl PermissionContext {
         let sampled;
         let held = match &self.action_authority {
             Some(authority) if authority.matches(node) => {
-                sampled = authority.sample_for(self)?.standing;
+                sampled = authority.sample_for(self)?.access;
                 &sampled
             }
-            _ => &self.standing,
+            _ => &self.access,
         };
-        let standing = self.usable(held, once);
-        let mut verdict = standing.verdict(&standing.node(node), kind, &cx);
+        let access = self.usable(held, once);
+        let mut verdict = access.verdict(&access.node(node), kind, &cx);
         if privileged {
             verdict = verdict.privileged();
         }
@@ -713,10 +713,10 @@ impl PermissionContext {
 
     /// `held` without the `Once` grants this decision may not rely on: all of
     /// them unless `once` (an admission that spends them) and this context
-    /// can spend them, and those it already spent. Most standings hold none
+    /// can spend them, and those it already spent. Most accesses hold none
     /// to leave out and are decided against as they are; one is copied only
     /// to drop some.
-    fn usable<'s>(&self, held: &'s Standing, once: bool) -> std::borrow::Cow<'s, Standing> {
+    fn usable<'s>(&self, held: &'s MemberAccess, once: bool) -> std::borrow::Cow<'s, MemberAccess> {
         let usable = once && self.once_spender.is_some();
         let keep = |grant: &policy::Grant| {
             grant.lifetime != policy::Lifetime::Once || (usable && !self.spent.contains(&grant.id))
@@ -730,10 +730,10 @@ impl PermissionContext {
         if all_kept {
             return std::borrow::Cow::Borrowed(held);
         }
-        let mut standing = held.clone();
-        Arc::make_mut(&mut standing.policy).grants.retain(keep);
-        standing.granted.retain(keep);
-        std::borrow::Cow::Owned(standing)
+        let mut access = held.clone();
+        Arc::make_mut(&mut access.policy).grants.retain(keep);
+        access.granted.retain(keep);
+        std::borrow::Cow::Owned(access)
     }
 
     /// Whether the scope is permitted: an action that is allowed or asks
@@ -908,7 +908,7 @@ impl PermissionContext {
         app_id: &str,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        // A host action authority decides some nodes from a standing it
+        // A host action authority decides some nodes from a member access it
         // samples per action: ask action by action.
         if self.action_authority.is_some() {
             return keep_permitted(resource, &|kind, id, action| {
@@ -925,15 +925,15 @@ impl PermissionContext {
     /// Answers whether each of many actions of `app_id` is permitted, as
     /// [`Self::permits_action`] does.
     pub fn action_decider<'a>(&'a self, app_id: &'a str) -> ActionDecider<'a> {
-        let answers = match (&self.action_authority, self.usable(&self.standing, false)) {
-            (None, std::borrow::Cow::Borrowed(standing)) => {
+        let answers = match (&self.action_authority, self.usable(&self.access, false)) {
+            (None, std::borrow::Cow::Borrowed(access)) => {
                 self.policy_now().ok().map(|now| PublishedAnswers {
-                    authority: standing.authority(),
-                    workspace: standing.policy.node(),
+                    authority: access.authority(),
+                    workspace: access.policy.node(),
                     cx: policy::Context::at_secs(now.unwrap_or(0)),
                 })
             }
-            // A host action authority, a standing to filter, or no clock:
+            // A host action authority, a member access to filter, or no clock:
             // asked action by action.
             _ => None,
         };
@@ -966,13 +966,13 @@ impl PermissionContext {
     /// `app_id` is their own record, of a kind the app's manifest declares
     /// each member's own ([`collab_types::OwnResource::recognise`]).
     fn own_person(&self, app_id: &str, record: &str) -> Option<&str> {
-        let person = self.standing.person_id()?;
+        let person = self.access.person_id()?;
         let mut root = [0; 32];
         hex::decode_to_slice(person, &mut root).ok()?;
         collab_types::OwnResource::recognise(app_id, record, root).map(|_| person)
     }
 
-    /// `decide` with one authority for the standing as it is, for answers
+    /// `decide` with one authority for the member access as it is, for answers
     /// about published actions (no host action authority, no `Once` grant
     /// spent). An unavailable clock is an error.
     fn published_answers<R>(
@@ -980,10 +980,10 @@ impl PermissionContext {
         decide: impl FnOnce(&PublishedAnswers<'_>) -> R,
     ) -> Result<R, String> {
         let now = self.policy_now()?;
-        let standing = self.usable(&self.standing, false);
+        let access = self.usable(&self.access, false);
         let answers = PublishedAnswers {
-            authority: standing.authority(),
-            workspace: standing.policy.node(),
+            authority: access.authority(),
+            workspace: access.policy.node(),
             cx: policy::Context::at_secs(now.unwrap_or(0)),
         };
         Ok(decide(&answers))
@@ -1317,10 +1317,10 @@ impl LivePermissions {
     /// or a member, here now or not: what the workspace holds is shared with them.
     pub fn workspace_has_others(&self) -> bool {
         let context = self.0.borrow();
-        let standing = context.standing();
-        standing
+        let access = context.access();
+        access
             .policy
-            .has_others(standing.person_id().unwrap_or_default())
+            .has_others(access.person_id().unwrap_or_default())
     }
 
     /// The permissions in force now.
@@ -1359,7 +1359,7 @@ pub fn admit_in_window(
         tilo_action_policy::Invoked {
             answer,
             attended: action.contract.is_attended(),
-            record: None,
+            resource: None,
         },
         asker,
     );
@@ -1484,7 +1484,7 @@ mod tests {
                     let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
                     owner
                         .clone()
-                        .with_standing(owner.standing().clone().acting_as(
+                        .with_access(owner.access().clone().acting_as(
                             policy::Actor::Member(policy::MemberId::agent("scribe")),
                             grants,
                         ))
@@ -1567,7 +1567,7 @@ mod tests {
             let context = |kinds| {
                 owner
                     .clone()
-                    .with_standing(owner.standing().clone().acting_as(
+                    .with_access(owner.access().clone().acting_as(
                         policy::Actor::Member(policy::MemberId::agent("scribe")),
                         vec![grant(policy::Grantee::agent("scribe"), node.clone(), kinds)],
                     ))
@@ -1603,8 +1603,8 @@ mod tests {
             // phase: a_restriction_denies_inside_its_node
             {
                 let mut ctx = PermissionContext::member(&crate::permissions::MemberId::person("u_editor"), Role::Editor);
-                let mut standing = ctx.standing().clone();
-                Arc::make_mut(&mut standing.policy)
+                let mut access = ctx.access().clone();
+                Arc::make_mut(&mut access.policy)
                     .grants
                     .push(policy::Grant::new(
                         "terminal-read-only",
@@ -1614,7 +1614,7 @@ mod tests {
                         Answer::Deny,
                         policy::Grantee::person("owner"),
                     ));
-                ctx = ctx.with_standing(standing);
+                ctx = ctx.with_access(access);
                 assert!(!ctx.check(&PermissionScope::app_kind(
                     AppKind::Terminal,
                     ActionKind::Undoable
@@ -1629,7 +1629,7 @@ mod tests {
                 let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
                 let app = owner
                     .clone()
-                    .with_standing(owner.standing().clone().acting_as(
+                    .with_access(owner.access().clone().acting_as(
                         policy::Actor::Member(policy::MemberId::agent("thing")),
                         Vec::new(),
                     ));

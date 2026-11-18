@@ -400,7 +400,7 @@
     },
     {
       "name": "Board",
-      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status.",
+      "doc": "Cards in lists, side by side: a kanban board, a pipeline, tasks by status.",
       "props": [
         {
           "name": "name",
@@ -412,10 +412,10 @@
       ],
       "parts": [
         {
-          "name": "lanes",
-          "doc": "The lanes, in order.",
+          "name": "lists",
+          "doc": "The lists, in order.",
           "accepts": {
-            "component": "BoardLane"
+            "component": "BoardList"
           },
           "many": true,
           "default": true
@@ -558,7 +558,7 @@
         },
         {
           "name": "count",
-          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count standing on its icon's top-trailing corner, as an app icon's does, and nothing at 0.",
+          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count on its icon's top-trailing corner, as an app icon's does, and nothing at 0.",
           "type": {
             "option": "int"
           }
@@ -600,7 +600,7 @@
     },
     {
       "name": "Place",
-      "doc": "A resource's view standing on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
+      "doc": "A resource's view on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
       "props": [
         {
           "name": "name",
@@ -747,6 +747,65 @@
       "semantics": {
         "role": "List",
         "label": "name"
+      }
+    },
+    {
+      "name": "BarChart",
+      "doc": "Bars over named categories: how much there is of each, to compare. Several measured things stand beside each other in a category, stack on each other, or stack as shares of the category's whole; each takes the next colour of the theme's palette and is named in a legend.",
+      "props": [
+        {
+          "name": "bars",
+          "doc": "What is measured, each with its reading in every category: `.bars(values: done, label: \"Done\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Bars"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "categories",
+          "doc": "What each group of bars is of, in order, under it: a week, a team, a stage.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "layout",
+          "doc": "How several measured things share a category: `grouped` beside each other unless said, `stacked` on each other, `share` stacked as parts of the category's whole.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "BarLayout",
+                "cases": [
+                  "grouped",
+                  "stacked",
+                  "share"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "readings",
+          "doc": "Each bar's reading written at it.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -3069,7 +3128,7 @@
         },
         {
           "name": "context",
-          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin pin_places under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
           "value": "text",
           "at": {
             "list": "int"
@@ -3087,6 +3146,14 @@
           "name": "seen",
           "doc": "The person pointed on the map's free space (a click, a dragged rectangle, a right press): carries the part of the canvas they see as they point, in canvas pixels, its x, its y, its width and its height. It is reported before the pointing itself (`press`, `frame`, `context`), so what answers it can stand in free room where they look (canvas.md §7, \"Everything stays in view\").",
           "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "drawn",
+          "doc": "A hugging pin's view came to a height of its own and the pin is laid out at it: carries the pin's key and its drawn height in canvas pixels. Reported once each time that height changes, never every frame, so a view that reads it as free area on the canvas (`canvas.md` §1, §7) learns what the pin takes without a report a frame.",
+          "value": "text",
+          "at": {
             "list": "int"
           }
         }
@@ -3775,6 +3842,48 @@
       "semantics": {
         "role": "Group",
         "label": "label"
+      }
+    },
+    {
+      "name": "PieChart",
+      "doc": "The parts of one whole as the slices of a pie: how a total divides. Each slice takes the next colour of the theme's palette and is named in a legend with its share.",
+      "props": [
+        {
+          "name": "slices",
+          "doc": "The parts, in order: `.slice(label: \"Open\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Slice"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "ring",
+          "doc": "A ring rather than a full pie, with `total` read at its centre.",
+          "type": "bool"
+        },
+        {
+          "name": "total",
+          "doc": "What a ring reads at its centre: the whole, as it reads (\"128 issues\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -4596,7 +4705,7 @@
         },
         {
           "name": "across",
-          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
+          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lists.",
           "type": "bool"
         },
         {
@@ -5319,7 +5428,7 @@
         },
         {
           "name": "changed_by",
-          "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
+          "doc": "Someone else changed the text and the person has not seen it yet: hovering the field says who. The app's runtime sets it, from what the field is bound to (task-legibility §3).",
           "type": {
             "option": "actor"
           }
@@ -5346,7 +5455,7 @@
         },
         {
           "name": "caret",
-          "doc": "A caret standing on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
+          "doc": "A caret on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
           "type": "bool"
         }
       ],
@@ -5708,7 +5817,7 @@
         },
         {
           "name": "removed",
-          "doc": "The rows standing in for nodes someone else removed that the person has not seen go: they stand after the nodes, struck, each with its mark. The UI host places them.",
+          "doc": "The rows in place of nodes someone else removed that the person has not seen go: they stand after the nodes, struck, each with its mark. The UI host places them.",
           "accepts": {
             "component": "TreeViewNode"
           },
@@ -6014,7 +6123,7 @@
         },
         {
           "name": "closed",
-          "doc": "The row standing open closed: pressed again, Escape, a press beside it, or its item left the list."
+          "doc": "The row held open closed: pressed again, Escape, a press beside it, or its item left the list."
         }
       ],
       "state": [
@@ -6045,7 +6154,7 @@
         },
         {
           "name": "open",
-          "doc": "The item standing open into its document where it stands in the list: its row grows to hold what the item's row gives as its `detail`, and Escape or a press beside it closes it. A host keeps which item is open and gives it back, so a list it builds again shows the item as the person left it.",
+          "doc": "The item held open into its document where it stands in the list: its row grows to hold what the item's row gives as its `detail`, and Escape or a press beside it closes it. A host keeps which item is open and gives it back, so a list it builds again shows the item as the person left it.",
           "type": {
             "option": "resource"
           }
@@ -6095,7 +6204,7 @@
     },
     {
       "name": "WindowFrame",
-      "doc": "A window standing on a shell: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
+      "doc": "A window on a shell: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
       "props": [
         {
           "name": "name",
@@ -6419,12 +6528,12 @@
       }
     },
     {
-      "name": "BoardLane",
-      "doc": "One lane of a board: a heading and its cards, in order.",
+      "name": "BoardList",
+      "doc": "One list of a board: a heading and its cards, in order.",
       "props": [
         {
           "name": "item",
-          "doc": "The resource the lane stands for: a column, a status.",
+          "doc": "The resource the list stands for: a column, a status.",
           "type": {
             "option": "resource"
           },
@@ -6432,21 +6541,21 @@
         },
         {
           "name": "title",
-          "doc": "What the lane is called, as its heading.",
+          "doc": "What the list is called, as its heading.",
           "type": {
             "option": "text"
           }
         },
         {
           "name": "count",
-          "doc": "How many cards the lane holds, beside its heading.",
+          "doc": "How many cards the list holds, beside its heading.",
           "type": {
             "option": "int"
           }
         },
         {
           "name": "action",
-          "doc": "The label of the one action that adds to the lane, at its foot under the cards: \"New card\".",
+          "doc": "The label of the one action that adds to the list, at its foot under the cards: \"New card\".",
           "type": {
             "option": "text"
           }
@@ -6464,18 +6573,18 @@
         },
         {
           "name": "foot",
-          "doc": "What stands at the lane's foot, under its cards: the entry that adds to the lane.",
+          "doc": "What stands at the list's foot, under its cards: the entry that adds to the list.",
           "accepts": "view"
         }
       ],
       "events": [
         {
           "name": "act",
-          "doc": "The lane's action was pressed."
+          "doc": "The list's action was pressed."
         },
         {
           "name": "drop",
-          "doc": "A card was dropped into the lane: carries the card and its place among the lane's other cards, from 0.",
+          "doc": "A card was dropped into the list: carries the card and its place among the list's other cards, from 0.",
           "value": "resource",
           "at": "int"
         }
@@ -6488,7 +6597,7 @@
     },
     {
       "name": "BoardCard",
-      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens.",
+      "doc": "One card of a list: a summary of the resource it stands for, which a press opens.",
       "props": [
         {
           "name": "item",
@@ -8611,6 +8720,55 @@
               "name": "to",
               "ty": "text",
               "doc": "Where it ends."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bars",
+      "doc": "The bars of one measured thing: its reading in each category.",
+      "cases": [
+        {
+          "name": "bars",
+          "doc": "A bar in each category for `values`, named `label` in the chart's legend.",
+          "fields": [
+            {
+              "name": "values",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The readings, one for each category, in the categories' order."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What is measured, in the legend."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Slice",
+      "doc": "One part of the whole a pie shows.",
+      "cases": [
+        {
+          "name": "slice",
+          "doc": "A slice as large as `value` is of the sum, named `label` in the legend.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What the part is of."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "How much of it there is; nothing below zero is drawn."
             }
           ]
         }

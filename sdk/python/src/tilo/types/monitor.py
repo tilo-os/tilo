@@ -24,11 +24,11 @@ __all__ = [
     "Processes",
 ]
 
-SortKey = Literal["Pid", "Name", "User", "Cpu", "Mem", "Threads"]
+SortKey = Literal["pid", "name", "user", "cpu", "mem", "threads"]
 
 class Processes(Resource):
     """Processes — `monitor.processes`."""
-    __surface__ = "so.tilo.monitor@02b17dcd35328b9c"
+    __surface__ = "so.tilo.monitor@ede2747c2e3967d9"
     sort: SortKey
     ascending: bool
     flat: bool

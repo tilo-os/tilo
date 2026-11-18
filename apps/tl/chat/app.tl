@@ -138,7 +138,7 @@ action message_person(all: Conversations, who: Actor) -> Direct (
         }
     }
     let d = all.channels.insert(Direct(name: who.name(), person: who))
-    // Its fields written, so the record holds the conversation from its first press: an item
+    // Its fields written, so the resource holds the conversation from its first press: an item
     // stored by its id alone is found only once it says something.
     d.name = who.name()
     d.person = who

@@ -16,7 +16,7 @@ use crate::surface;
 use crate::wire::Link;
 
 mod agent_loop;
-/// What a failed turn says, split into the person's sentence and the run's record.
+/// What a failed turn says, split into the person's sentence and the run's resource.
 pub(crate) use agent_loop::Failure;
 
 mod confirmation;
@@ -99,7 +99,15 @@ pub fn answer_descriptor() -> tilo_actions::ActionDescriptor {
             cancellable: true,
             item_schema: spent_schema(),
         },
-        result: tilo_actions::ResultSpec::Job,
+        // The answer's result is its reply: what the person reads in the conversation, and what
+        // whoever asked the agent through the API gets back.
+        result: tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {"reply": {"type": "string"}},
+                "required": ["reply"],
+            }),
+        },
         ..tilo_actions::ActionContract::default()
     };
     contract.set_audience(tilo_actions::Audience::Agents);
@@ -137,7 +145,7 @@ struct TaskAction {
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
-    /// What the action did, as its app declares it ("showed on the canvas"):
+    /// What the action did, as its app declares it ("showed"):
     /// how the reply's step line says it, beside its label.
     did: Option<String>,
     /// The parameter whose content comes from the immediately preceding
@@ -265,7 +273,7 @@ pub struct Config {
     pub app_id: String,
     /// The workspace the document lives in.
     pub cluster: Uuid,
-    /// The record the app announced for the document (`file:<path>`), or
+    /// The resource the app announced for the document (`file:<path>`), or
     /// `None` for an untitled document.
     pub record: Option<String>,
     /// Display name used by name-addressed instructions. The admitted id
@@ -313,7 +321,7 @@ pub struct Session {
     /// The task catalogue survey for [`Self::broker_revision`], shared by
     /// every reader until the broker republishes.
     catalogue_cache: Option<(u64, std::sync::Arc<surface::Catalogue>)>,
-    /// What each app whose records the session serves declares, compacted for the first turn,
+    /// What each app whose resources the session serves declares, compacted for the first turn,
     /// by the alias programs name it with: read once through the API's `describe` and kept, as
     /// an app's declarations change only when it is updated.
     declarations: std::collections::BTreeMap<String, String>,
@@ -321,7 +329,7 @@ pub struct Session {
     turn: Option<agent_loop::ActiveTurn>,
     /// The turn the run in progress answers, as its reply is being told.
     record: Option<conversation::Record>,
-    /// The run's working record of the failure that ended its turn, kept for
+    /// The run's working resource of the failure that ended its turn, kept for
     /// whoever debugs it later: the transport's error, the partial answer, the
     /// provider's exposed reasoning. The reply's own words are the failure's
     /// sentence, never this.
@@ -743,7 +751,7 @@ impl Session {
     /// and the turn's answer reports it.
     fn report_task(&mut self, run: &Asked, update: TurnUpdate) -> Result<()> {
         self.show_turn(run, &update)?;
-        // How the turn ended, with what the person reads, once: the record a run's
+        // How the turn ended, with what the person reads, once: the resource a run's
         // reader (and the live eval, `dist/dev/agent-eval.py`) finds its end by.
         let ended = match &update {
             TurnUpdate::Succeeded { message } => Some(("succeeded", message)),
@@ -778,6 +786,7 @@ impl Session {
                     value: serde_json::json!({ "spent": cost_micros }),
                 }
             }
+            // The answer's result is its reply (`answer_descriptor`), as its contract declares.
             TurnUpdate::Succeeded { message } => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput {
@@ -810,7 +819,7 @@ impl Session {
 
     /// Record a failed turn on the reply to the run's message, and tell the
     /// host it failed. The reply's words are the failure's sentence — what a
-    /// person reads — and the run's working record goes beside it in the work,
+    /// person reads — and the run's working resource goes beside it in the work,
     /// for whoever debugs it later.
     fn fail_task(&mut self, run: &Asked, failure: &agent_loop::Failure) -> Result<()> {
         self.failure_detail = Some(failure.detail().to_owned());
@@ -1044,5 +1053,29 @@ mod tests {
                 "a step that produced nothing cannot feed a content input"
             );
         }
+    }
+
+    /// A turn's answer declares its reply as its result ([`answer_descriptor`]): the reply the
+    /// agent reports is admitted by the broker (a job, which may carry no value, refused it as
+    /// "an undeclared terminal value" and failed the invocation the conversation waited on), and
+    /// a result without one is not.
+    #[test]
+    fn a_turns_result_is_its_reply() {
+        let contract = answer_descriptor().contract;
+        let replied = tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({"reply": "Hi! I work across your Notes."})),
+            resources: Vec::new(),
+        };
+        assert!(
+            contract.result.validate(&replied).is_ok(),
+            "the reply is the answer's result: the broker admits it"
+        );
+        assert!(
+            contract
+                .result
+                .validate(&tilo_actions::ActionOutput::default())
+                .is_err(),
+            "an answer without its reply does not satisfy the contract"
+        );
     }
 }

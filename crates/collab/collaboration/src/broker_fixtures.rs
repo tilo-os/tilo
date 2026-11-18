@@ -26,8 +26,8 @@ impl CollaborationManager {
         let (fd, captures, _thread) = tests::stand_up_fake_broker(FakeBroker::default());
         let manager = Self::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4());
         let hold = Box::new(move || {
-            let (release, held) = tokio::sync::oneshot::channel();
-            captures.lock().unwrap().join_gates.push_back(held);
+            let (release, held) = hold_pair();
+            captures.lock().unwrap().join_holds.push_back(held);
             release
         });
         (manager, hold)
@@ -103,11 +103,52 @@ impl CollaborationManager {
         Self,
         Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
     ) {
+        Self::named_invocation_fixture(route, history, refused, None)
+    }
+
+    /// [`Self::native_initial_named_invocation_fixture_for_test`] whose broker
+    /// leaves the route's committed recheck unanswered for as long as the
+    /// returned probe lives: the route is joined and does not open
+    /// meanwhile, while the connection stands.
+    pub fn native_initial_named_invocation_fixture_held_for_test(
+        route: RouteSpec,
+        history: Vec<u8>,
+    ) -> (
+        Self,
+        Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
+    ) {
+        let (release, hold) = hold_pair();
+        let (manager, invocations) =
+            Self::named_invocation_fixture(route, history, &[], Some(hold));
+        let invocations = Box::new(move || {
+            // Kept with the probe: dropping it would answer the recheck.
+            let _held = &release;
+            invocations()
+        });
+        (manager, invocations)
+    }
+
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
+    fn named_invocation_fixture(
+        route: RouteSpec,
+        history: Vec<u8>,
+        refused: &[RouteSpec],
+        hold: Option<tokio::sync::oneshot::Receiver<()>>,
+    ) -> (
+        Self,
+        Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
+    ) {
         let (mut manager, invocations) = tests::native_initial_invocation_fixture(
             &route.app_id,
             route.cluster_id,
             history,
             refused.iter().map(RouteSpec::channel_id).collect(),
+            hold,
         );
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id,
@@ -140,13 +181,13 @@ impl CollaborationManager {
         clippy::panic,
         reason = "a fixture for the toolkit's tests"
     )]
-    pub fn native_initial_fixture_gated_for_test(
+    pub fn native_initial_fixture_held_for_test(
         app: &str,
         workspace: Uuid,
         history: Vec<u8>,
-        gate: tokio::sync::oneshot::Receiver<()>,
+        hold: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture_gated(app, workspace, history, Some(gate))
+        tests::native_initial_fixture_held(app, workspace, history, Some(hold))
     }
 
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
@@ -160,9 +201,9 @@ impl CollaborationManager {
         app: &str,
         workspace: Uuid,
         history: Vec<u8>,
-        gate: tokio::sync::oneshot::Receiver<()>,
+        hold: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_parked_fixture(app, workspace, history, gate)
+        tests::native_initial_parked_fixture(app, workspace, history, hold)
     }
 
     #[allow(
@@ -197,15 +238,15 @@ impl CollaborationManager {
         history: Vec<u8>,
         workspace: runtime_collab::WorkspaceStatus,
     ) -> (Self, JoiningProbe) {
-        let (answer, gate) = tokio::sync::oneshot::channel();
+        let (answer, hold) = tokio::sync::oneshot::channel();
         let (workspace_status, status) = tokio::sync::watch::channel(Ok(workspace));
         let broker = tests::FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(tests::Captures {
                 committed_history_fixture: Some(history),
-                join_gates: std::collections::VecDeque::from([gate]),
+                join_holds: std::collections::VecDeque::from([hold]),
                 workspace_status: Some(status),
                 // The session's answer to the app's private requests, as the
-                // custodian gives it: sealing stores, release answers with
+                // owner gives it: sealing stores, release answers with
                 // the secret, anything else is not the session's.
                 service_sessions: Some(Arc::new(|command| match command {
                     runtime_collab::BrowserServiceSessionCommand::StoreAccountSecret {
@@ -247,4 +288,13 @@ impl CollaborationManager {
         };
         (manager, probe)
     }
+}
+
+/// A hold and what ends it: the hold is over once the sender sends or is
+/// dropped.
+fn hold_pair() -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    tokio::sync::oneshot::channel()
 }

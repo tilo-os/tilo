@@ -61,7 +61,7 @@ for bin in /usr/bin/tilo-session /usr/bin/fs; do
     fi
 done
 # The browser engine runtime is optional: an image built with
-# TILO_WITH_BROWSER=0 ships without it so boot verification isn't gated on the
+# TILO_WITH_BROWSER=0 ships without it so boot verification isn't depending on the
 # engine building. Absent is allowed, present-but-broken is not.
 engine_host=$(find /usr/lib/tilo-runtime -mindepth 4 -maxdepth 4 -path '*/lib/chromium/tilo-chromium-host' -print -quit 2>/dev/null)
 if [ -n "$engine_host" ] && [ ! -x "$engine_host" ]; then

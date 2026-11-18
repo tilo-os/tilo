@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase account_step_keeps_secrets_out_of_the_crdt_and_gates_on_username;
+    phase account_step_keeps_secrets_out_of_the_crdt_and_waits_for_username;
     {
         {
             let mut app = InstallerApp::with_disks(sample());
@@ -423,7 +423,7 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     #[allow(clippy::too_many_lines, reason = "scenario test: each labelled phase keeps one former test's fixture and assertions")]
-    fn the_storage_step_explains_and_gates_what_happens_to_the_disk;
+    fn the_storage_step_explains_and_checks_what_happens_to_the_disk;
 
     phase storage_explains_missing_drives_and_the_confirmation_boundary;
     {
@@ -456,7 +456,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase disk_step_gates_next_on_a_usable_selection;
+    phase disk_step_allows_next_only_on_a_usable_selection;
     {
         {
             let mut app = InstallerApp::with_disks(sample());
@@ -898,7 +898,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase prepared_preflight_gates_leaving_storage;
+    phase prepared_preflight_checks_leaving_storage;
     {
         {
             let mut app = InstallerApp::with_disks(Disk::samples());
@@ -1545,7 +1545,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase review_begin_is_gated_on_ack_confirmation_and_power;
+    phase review_begin_requires_ack_confirmation_and_power;
     {
         {
             let mut app = InstallerApp::with_disks(sample());
@@ -1862,7 +1862,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase recovery_key_stays_out_of_shared_state_and_gates_power;
+    phase recovery_key_stays_out_of_shared_state_and_checks_power;
     {
         {
             let mut app = InstallerApp::with_disks(sample());
@@ -1877,8 +1877,8 @@ tilo_test_env::scenario! {
             );
         }
         {
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
             app.install_state = InstallState::Running;
@@ -2077,7 +2077,7 @@ tilo_test_env::scenario! {
             assert_eq!(reboot.role, ui::a11y::Role::Button);
             assert!(
                 !reboot.state.focusable,
-                "power stays gated until the key is saved"
+                "power stays guarded until the key is saved"
             );
             assert!(find_accessible(&done, "Power off").is_some());
             done.recovery_key_saved = true;

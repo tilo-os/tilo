@@ -17,7 +17,7 @@ use settings_store::system_sounds::SystemSoundEvent;
 use tilo_files::native::ChangeWatch;
 use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
-use ui::format::NaiveDate;
+use ui::format::Date;
 
 use crate::drives::Medium;
 use crate::i18n::{t, t_args};
@@ -388,24 +388,24 @@ pub fn codec_notice(
 /// The notice for `news`, a session or computer that stopped and started again; `today` decides
 /// whether it names the time of day or the date too.
 #[must_use]
-pub fn news_notice(news: &tilo_crash_records::News, today: NaiveDate) -> Notice {
+pub fn news_notice(news: &tilo_crash_reports::News, today: Date) -> Notice {
     let time = if news.at.date() == today {
         ui::format::time_of(&news.at)
     } else {
         ui::format::timestamp(&news.at)
     };
     let (urgency, title, body) = match news.ended {
-        tilo_crash_records::Ended::Froze => (
+        tilo_crash_reports::Ended::Froze => (
             1,
             t("crash-notice-title"),
             t_args("crash-notice-froze-body", &[("time", time.into())]),
         ),
-        tilo_crash_records::Ended::Crashed => (
+        tilo_crash_reports::Ended::Crashed => (
             1,
             t("crash-notice-title"),
             t_args("crash-notice-crashed-body", &[("time", time.into())]),
         ),
-        tilo_crash_records::Ended::Stopped => (
+        tilo_crash_reports::Ended::Stopped => (
             1,
             t("crash-notice-stopped-title"),
             t("crash-notice-stopped-body"),
@@ -652,10 +652,10 @@ pub(crate) fn tell_shell_not_taken(
 
 /// Tell the person what the crash records in `dir` say happened before this start.
 pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
-    let Some(news) = tilo_crash_records::take_news(dir) else {
+    let Some(news) = tilo_crash_reports::take_news(dir) else {
         return;
     };
-    let today = ui::clock::local_now().date_naive();
+    let today = ui::clock::local_now().date();
     tell_daemon(&news_notice(&news, today), notifications);
 }
 
@@ -712,12 +712,12 @@ pub fn start(notifications: &Notifications) {
     let crash_news = std::thread::Builder::new()
         .name("crash-news".into())
         .spawn(move || {
-            let Some(dir) = tilo_crash_records::directory() else {
+            let Some(dir) = tilo_crash_reports::directory() else {
                 return;
             };
             // What the kernel kept of the computer stopping becomes a record first, so it is news
             // like the session's own.
-            tilo_crash_records::stopped::take_in(&dir);
+            tilo_crash_reports::stopped::take_in(&dir);
             tell_crash_news(&news, &dir);
         });
     if let Err(error) = crash_news {
@@ -1054,7 +1054,7 @@ mod tests {
         tell_crash_news(&notifications, dir.path());
         assert!(notifications.live().is_empty());
 
-        tilo_crash_records::write_record(
+        tilo_crash_reports::write_report(
             dir.path(),
             "2026-10-24-225201-9-freeze.log",
             "tilo session freeze\n===================\nversion:   0.1.0\n",
@@ -1065,8 +1065,7 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].summary, "The desktop restarted");
         let at =
-            ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
-                .unwrap();
+            ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01").unwrap();
         assert!(
             live[0].body.contains(&ui::format::timestamp(&at)),
             "{}",
@@ -1151,15 +1150,12 @@ mod tests {
 
         phase a_computer_that_stopped_is_its_own_notice;
         {
-            let news = tilo_crash_records::News {
-                ended: tilo_crash_records::Ended::Stopped,
-                at: ui::format::NaiveDateTime::parse_from_str(
-                    "2026-10-24 22:52:01",
-                    "%Y-%m-%d %H:%M:%S",
-                )
+            let news = tilo_crash_reports::News {
+                ended: tilo_crash_reports::Ended::Stopped,
+                at: ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
                 .unwrap(),
             };
-            let notice = news_notice(&news, news.at.date().succ_opt().unwrap());
+            let notice = news_notice(&news, news.at.date().tomorrow().unwrap());
             assert_eq!(notice.title, "The computer restarted");
             assert!(notice.body.contains("stays on this computer"));
         }
@@ -1358,7 +1354,7 @@ mod tests {
 
     /// The notice that a workspace did not take the window layout names the workspace by
     /// the name the person gave it. One nobody named, and one that left the shell since, are said
-    /// to be that: the title never opens with an empty name, or with a word standing in for one.
+    /// to be that: the title never opens with an empty name, or with a word in place of one.
     #[test]
     fn a_shell_the_workspace_did_not_take_names_the_workspace_or_says_it_has_no_name() {
         let title = |workspace| {

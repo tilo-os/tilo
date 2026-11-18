@@ -1,4 +1,4 @@
-//! Private service credentials are resolved from canonical custody, never document state.
+//! Private service credentials are resolved from canonical ownership, never document state.
 use browser_continuity::sessions::{Service, SessionCookies};
 use ui::tilo_resource::Effect;
 use ui::webview::{
@@ -136,7 +136,7 @@ impl PendingView {
                 return Some(Err("This account could not be opened".into()));
             }
             // A stale public anchor still challenges private Resolve: a non-authorizing
-            // binding cannot grant custody for an absent row.
+            // binding cannot grant ownership for an absent row.
             let binding = selections.iter().find(|v| v.id == self.id).map_or_else(
                 || "unavailable-selection".into(),
                 |selected| selected.binding.clone(),
@@ -521,7 +521,7 @@ impl ServiceView {
             } else if self.status == "forgetting" && self.cleanup.as_ref().is_some_and(NativeCleanup::settled) {
                 "local-forget-incomplete"
             } else { self.status }, "authenticated": false,
-            "custody_revoked": self.status == "forgotten", "custody_backend_needed": self.status == "forgetting",
+            "ownership_revoked": self.status == "forgotten", "ownership_backend_needed": self.status == "forgetting",
             "local_only": self.status == "forgetting",
             "origin_storage_imported": self.status == "imported-unverified" && self.expected_origins > 0,
             "requires_reconnect": self.status == "needs-reconnect" || self.selection.service == Service::Discord && self.expected_origins == 0,
@@ -641,7 +641,7 @@ pub fn service_session_capability() -> Result<serde_json::Value, String> {
     }
     Ok(
         serde_json::json!({"schema":1,"service_session_protocol":2,"codec_verified":true,
-        "custody_binding_verified":true,"resource_action_verified":true}),
+        "ownership_binding_verified":true,"resource_action_verified":true}),
     )
 }
 
@@ -720,7 +720,7 @@ mod lifecycle_tests {
             assert!(!payload.to_string().contains("private-setup-binding"));
         }
 
-        phase retry_forget_is_selected_destructive_and_contains_no_custody_binding;
+        phase retry_forget_is_selected_destructive_and_contains_no_ownership_binding;
         {
             let selected = Selection {
                 id: "selected-account".into(),
@@ -757,10 +757,10 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn browser_protocol_two_probe_exercises_discord_custody_and_public_resource() {
+    fn browser_protocol_two_probe_exercises_discord_ownership_and_public_resource() {
         let proof = service_session_capability().unwrap();
         assert_eq!(proof["service_session_protocol"], 2);
-        assert_eq!(proof["custody_binding_verified"], true);
+        assert_eq!(proof["ownership_binding_verified"], true);
         assert_eq!(proof["resource_action_verified"], true);
         assert!(!proof.to_string().contains("synthetic-consumer-"));
         assert!(proof.get("authenticated").is_none());
@@ -1208,14 +1208,14 @@ while True:
         std::fs::remove_file(&hold)?;
         require_eq!(
             reply
-                .get("custody_revoked")
-                .ok_or("missing custody_revoked")?,
+                .get("ownership_revoked")
+                .ok_or("missing ownership_revoked")?,
             false
         );
         require_eq!(
             reply
-                .get("custody_backend_needed")
-                .ok_or("missing custody_backend_needed")?,
+                .get("ownership_backend_needed")
+                .ok_or("missing ownership_backend_needed")?,
             true
         );
         cached.0.finish_close()?;

@@ -5,7 +5,7 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 
 use crate::activity::Activity;
-use crate::record::Outcome;
+use crate::model::Outcome;
 
 /// The shortest restriction worth imposing.
 pub const MIN_RESTRICT_MINUTES: u32 = 5;

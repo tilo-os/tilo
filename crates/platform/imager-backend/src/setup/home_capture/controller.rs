@@ -59,7 +59,7 @@ impl Ticket {
 }
 
 impl Controller {
-    /// The backend owns helper revocation, status framing and request custody.
+    /// The backend owns helper revocation, status framing and request ownership.
     pub fn attach(child: Child, request: tempfile::TempDir, operation: &str) -> io::Result<Self> {
         Ok(Self {
             capture: crate::capture::Capture::attach(child, request, operation)
@@ -168,7 +168,7 @@ impl Controller {
         self.capture.cancel_now();
     }
     /// Existing original-source helper only: transfer the consumed matching
-    /// permission generation; a witness is returned only after actual Store ACK.
+    /// permission generation; a proof is returned only after actual Store ACK.
     pub fn register_original_mounted_async(
         &self,
         roots: Arc<super::super::GrantedHomeRoots>,

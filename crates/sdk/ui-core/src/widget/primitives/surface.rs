@@ -56,6 +56,19 @@ impl SurfaceLevel {
         })
     }
 
+    /// `node`, at `rect`, as a page shows this level: on its ground, a window or a panel
+    /// floating over what is under it.
+    pub fn compose(self, theme: &Theme, rect: Rect, node: &mut crate::composition::Composed) {
+        let fill = self.color(theme);
+        let floats = matches!(self, Self::Window | Self::Floating);
+        node.ground = Some(crate::composition::Ground {
+            fill: Some(crate::composition::rgba8(fill)),
+            edge: floats.then(|| crate::composition::rgba8(theme.window_edge())),
+            radius: self.radius(theme).min(rect.height() / 2.0),
+        });
+        node.floats = floats;
+    }
+
     /// The radius of something inset `inset` inside a surface of this
     /// level: concentric with it, never below `radii.detail`.
     #[must_use]
@@ -184,7 +197,7 @@ pub fn paint_window_card(
 
 /// A window card a person lifted off the shell, drawn in the shell's floating material: the
 /// panel ground and hairline a menu stands on and the two-layer lift under it, so the window
-/// reads as standing over the shell rather than as another window on it.
+/// reads as over the shell rather than as another window on it.
 pub fn paint_floating_window_card(
     scene: &mut Scene,
     transform: Affine,
@@ -336,6 +349,8 @@ impl Widget for Surface {
     /// The surface it raises under what it holds.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("section");
+        let theme = cx.theme();
+        self.level.compose(theme, self.rect, cx.node());
         cx.children();
     }
 

@@ -16,29 +16,29 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 
 /// How the bar stands on its display, which its room in the column follows.
-pub type Standing = Rc<dyn Fn() -> TopBarPresence>;
+pub type BarState = Rc<dyn Fn() -> TopBarPresence>;
 
 /// Takes the workspace [`super::TopBarChrome`] takes in the desktop's column
 /// (none under a fullscreen window, none while the person hides the bar,
 /// else the bar's height) and draws nothing.
 pub struct BarSpace {
-    standing: Standing,
+    state: BarState,
     laid_out: Option<TopBarPresence>,
     rect: Rect,
 }
 
 impl BarSpace {
     #[must_use]
-    pub fn new(standing: Standing) -> Self {
+    pub fn new(state: BarState) -> Self {
         Self {
-            standing,
+            state,
             laid_out: None,
             rect: Rect::ZERO,
         }
     }
 
     fn now(&self) -> TopBarPresence {
-        (self.standing)()
+        (self.state)()
     }
 
     fn stale(&self) -> bool {
@@ -145,8 +145,8 @@ mod tests {
 
         phase the_room_follows_the_bar_showing_over_a_window;
         {
-            let standing = Rc::new(Cell::new(TopBarPresence::Docked));
-            let read = standing.clone();
+            let state = Rc::new(Cell::new(TopBarPresence::Docked));
+            let read = state.clone();
             let mut space = BarSpace::new(Rc::new(move || read.get()));
             let theme = Theme::default();
             let mut taffy = TaffyTree::new();
@@ -161,7 +161,7 @@ mod tests {
             );
             assert!(!space.take_structure_dirty());
             // Shown over a fullscreen window: the window keeps its whole size.
-            standing.set(TopBarPresence::Shown);
+            state.set(TopBarPresence::Shown);
             assert!(space.take_structure_dirty(), "showing moves the windows");
             let node = space.build_layout(&mut taffy, &theme, &mut nodes);
             assert_eq!(
@@ -169,18 +169,18 @@ mod tests {
                 Display::None,
                 "shown over the window, the strip is the window's"
             );
-            standing.set(TopBarPresence::Hidden);
+            state.set(TopBarPresence::Hidden);
             let node = space.build_layout(&mut taffy, &theme, &mut nodes);
             assert_eq!(taffy.style(node).unwrap().display, Display::None);
-            standing.set(TopBarPresence::Docked);
+            state.set(TopBarPresence::Docked);
             let node = space.build_layout(&mut taffy, &theme, &mut nodes);
             assert_eq!(taffy.style(node).unwrap().display, Display::Flex);
         }
 
         phase a_laid_out_room_asks_for_no_frame;
         {
-            let standing = Rc::new(Cell::new(TopBarPresence::Docked));
-            let mut space = BarSpace::new(Rc::new(move || standing.get()));
+            let state = Rc::new(Cell::new(TopBarPresence::Docked));
+            let mut space = BarSpace::new(Rc::new(move || state.get()));
             let mut taffy = TaffyTree::new();
             let mut nodes = HashMap::new();
             space.build_layout(&mut taffy, &Theme::default(), &mut nodes);

@@ -55,7 +55,7 @@ activity-why-this-work = Warum diese Arbeit
 activity-agent-task-by = Zugewiesen und ausgeführt von
 activity-agent-decision = Entscheidung
 activity-no-decision = Es wurde kein Grund aufgezeichnet.
-activity-affected-records = Betroffene Einträge
+activity-affected-resources = Betroffene Einträge
 activity-name-heading = Name
 activity-name-placeholder = Diese Arbeitssitzung benennen
 activity-name-save = Namen speichern
@@ -72,7 +72,7 @@ activity-replay-window = { $window }, { $share } % der Breite
 activity-presence-trail = Anwesend
 
 # Was das System getan hat, neben den Änderungen des Arbeitsbereichs.
-activity-ledger-heading = Was dieses Gerät getan hat
+activity-log-heading = Was dieses Gerät getan hat
 # Wie ein geändertes Feld liest: sein Name und was es vorher war.
 activity-was = War { $before }
 

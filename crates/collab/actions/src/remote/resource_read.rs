@@ -1,7 +1,7 @@
 //! Record reads outside their app: how an agent reads a workspace's records
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
-//! A workspace's records are sealed per app: a connection holding that app's launch custody opens
+//! A workspace's records are sealed per app: a connection holding that app's launch ownership opens
 //! them. An agent is not an app. It is admitted acting for the person whose session it works in,
 //! never session-delegated and holding no app's route, and reads one record at a time through
 //! this API. Each read is decided by the check every reader of a record goes through (the lesser
@@ -10,10 +10,10 @@
 //! committed content and nothing that writes to it: the agent changes a record only by invoking
 //! actions.
 
-use super::{ActionHostError, Caller};
+use super::{ActionCallError, Caller};
 
-/// What a host without record reads answers.
-pub const RESOURCE_READS_UNAVAILABLE: &str = "this host reads no records outside their apps";
+/// What a provider without record reads answers.
+pub const RESOURCE_READS_UNAVAILABLE: &str = "this provider reads no records outside their apps";
 
 /// What a caller is told about a record it may not read.
 pub const RESOURCE_READ_REFUSED: &str = "not allowed to read this record";
@@ -40,30 +40,30 @@ pub enum ResourceCopy {
     Absent,
 }
 
-/// A host's API for reading records outside their app.
+/// A provider's API for reading records outside their app.
 pub trait ResourceReads: Send + Sync {
     /// The record `address` of `caller`'s workspace, as `caller` may read it now.
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::NotPermitted`] for a caller that is not an agent task acting for its
-    /// person, [`ActionHostError::Refused`] for a record the caller may not read,
-    /// [`ActionHostError::Unavailable`] when the workspace's records cannot be read now (still
+    /// [`ActionCallError::NotPermitted`] for a caller that is not an agent task acting for its
+    /// person, [`ActionCallError::Refused`] for a record the caller may not read,
+    /// [`ActionCallError::Unavailable`] when the workspace's records cannot be read now (still
     /// arriving, or held nowhere on this device).
     fn read(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionHostError>;
+    ) -> Result<ResourceCopy, ActionCallError>;
 
-    /// Answer a read of one of this host's records, asked as `correlation` over the API
+    /// Answer a read of one of this provider's records, asked as `correlation` over the API
     /// ([`super::RemoteActionMessage::ResourceRead`]), with what every reader of it is answered:
-    /// [`answer_read`], which every host that reads records through this trait answers with.
+    /// [`answer_read`], which every provider that reads records through this trait answers with.
     ///
     /// The API posts a read here rather than to code of its own, so what a reading is made of —
     /// every copy as JSON, and the record format behind it — is reached only from the reader's
-    /// code. A host that serves an app's windows and reads no record through the API leaves
-    /// [`super::ActionHost::resource_reads`] `None` and carries none of it.
+    /// code. A provider that serves an app's windows and reads no record through the API leaves
+    /// [`super::ActionProvider::resource_reads`] `None` and carries none of it.
     fn answer_read(
         self: std::sync::Arc<Self>,
         caller: &Caller,
@@ -71,22 +71,22 @@ pub trait ResourceReads: Send + Sync {
         read: super::ResourceReadRequest,
     ) -> super::Pending<super::RemoteActionMessage>;
 
-    /// Wake `wake` once the next write to `address` lands on this host, decided as a read is:
+    /// Wake `wake` once the next write to `address` lands on this provider, decided as a read is:
     /// what a reader holding a copy waits on before it reads again. Watched before the read it
     /// guards, so no write between the two is missed.
     ///
     /// # Errors
     ///
-    /// As [`Self::read`]; a host that cannot tell when a record changes answers
-    /// [`ActionHostError::Unavailable`].
+    /// As [`Self::read`]; a provider that cannot tell when a record changes answers
+    /// [`ActionCallError::Unavailable`].
     fn watch(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
         wake: &ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         let _ = (caller, address, wake);
-        Err(ActionHostError::Unavailable {
+        Err(ActionCallError::Unavailable {
             reason: RESOURCE_READS_UNAVAILABLE.into(),
         })
     }
@@ -125,7 +125,7 @@ impl ResourceReads for HeldCopies {
         answer_read(self, caller, correlation, read)
     }
 
-    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionHostError> {
+    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
         Ok(self
             .0
             .get(&address.record)
@@ -139,7 +139,7 @@ impl ResourceReads for HeldCopies {
         _: &Caller,
         _: &ResourceAddress,
         _: &ResourceWake,
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<(), ActionCallError> {
         Ok(())
     }
 }
@@ -165,19 +165,19 @@ pub struct ResourceReadings {
 
 /// One pass over `asks`: each record `read` answers (a joined one as its parts) and the revision of
 /// them all, which changes with any write to any of them. A record `read` answers
-/// [`ActionHostError::Unavailable`] for is still arriving and reads as `None`. A host that waits on
+/// [`ActionCallError::Unavailable`] for is still arriving and reads as `None`. A provider that waits on
 /// writes watches a record inside `read`, before it reads it, so no write between the two is missed.
 ///
-/// Every host answers a read with this pass, whatever it waits with: [`read_resources`] on a thread
-/// of its own, a desktop that hosts its windows in process when its records next change.
+/// Every provider answers a read with this pass, whatever it waits with: [`read_resources`] on a thread
+/// of its own, a desktop that serves its windows in process when its records next change.
 ///
 /// # Errors
 ///
-/// What `read` refuses a record with, other than [`ActionHostError::Unavailable`].
+/// What `read` refuses a record with, other than [`ActionCallError::Unavailable`].
 pub fn readings_of(
     asks: &[ResourceAsk],
-    mut read: impl FnMut(&ResourceAddress) -> Result<ResourceCopy, ActionHostError>,
-) -> Result<ResourceReadings, ActionHostError> {
+    mut read: impl FnMut(&ResourceAddress) -> Result<ResourceCopy, ActionCallError>,
+) -> Result<ResourceReadings, ActionCallError> {
     let mut revision = blake3::Hasher::new();
     let mut records = Vec::new();
     for ask in asks {
@@ -202,7 +202,7 @@ pub fn readings_of(
             let copy = match read(&address) {
                 Ok(copy) => Some(copy),
                 // A record still arriving is not held yet: its write wakes the reader.
-                Err(ActionHostError::Unavailable { .. }) => None,
+                Err(ActionCallError::Unavailable { .. }) => None,
                 Err(error) => return Err(error),
             };
             let bytes: &[u8] = match &copy {
@@ -254,7 +254,7 @@ pub fn read_resources(
     asks: &[ResourceAsk],
     after: Option<&str>,
     deadline: tilo_clock::time::Instant,
-) -> Result<ResourceReadings, ActionHostError> {
+) -> Result<ResourceReadings, ActionCallError> {
     loop {
         let (wake, woken) = ResourceWake::new();
         let readings = readings_of(asks, |address| {
@@ -270,12 +270,12 @@ pub fn read_resources(
     }
 }
 
-/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the host's record API: on
+/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the provider's record API: on
 /// a thread of its own, which the wait for a write past `read.after` and the record's capture hold.
 ///
-/// Every host that reads records answers [`ResourceReads::answer_read`] with this, and the API
+/// Every provider that reads records answers [`ResourceReads::answer_read`] with this, and the API
 /// posts a read through that method rather than here: the reading, the JSON every reader is
-/// answered and the record format behind it are reached only from a reader's own code, so a host
+/// answered and the record format behind it are reached only from a reader's own code, so a provider
 /// that serves an app's windows and reads no record does not carry them.
 pub fn answer_read(
     reads: std::sync::Arc<dyn ResourceReads>,
@@ -291,13 +291,13 @@ pub fn answer_read(
     })
 }
 
-/// What a host that reads no records answers a read of one: the API posts every read through
-/// [`ResourceReads::answer_read`], and a host whose [`super::ActionHost::resource_reads`] is `None`
+/// What a provider that reads no records answers a read of one: the API posts every read through
+/// [`ResourceReads::answer_read`], and a provider whose [`super::ActionProvider::resource_reads`] is `None`
 /// answers as this one does.
 pub(crate) fn unanswered(correlation: u64) -> super::Pending<super::RemoteActionMessage> {
     super::Pending::ready(super::RemoteActionMessage::ResourceReading {
         correlation,
-        result: Err(ActionHostError::Unavailable {
+        result: Err(ActionCallError::Unavailable {
             reason: RESOURCE_READS_UNAVAILABLE.into(),
         }),
     })
@@ -307,7 +307,7 @@ fn serve_readings(
     reads: std::sync::Arc<dyn ResourceReads>,
     caller: &Caller,
     read: super::ResourceReadRequest,
-) -> super::Pending<Result<String, ActionHostError>> {
+) -> super::Pending<Result<String, ActionCallError>> {
     let (answer, answered) = super::pending();
     let caller = caller.clone();
     let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
@@ -334,7 +334,7 @@ fn serve_readings(
                     readings
                         .readable()
                         .map(|answer| answer.to_string())
-                        .map_err(|reason| ActionHostError::Refused { reason })
+                        .map_err(|reason| ActionCallError::Refused { reason })
                 }),
             );
         });
@@ -463,7 +463,7 @@ pub struct ResourceChange {
     pub preview: Option<serde_json::Value>,
 }
 
-/// A host's API for an agent task's changes to records outside their apps. A change goes to
+/// A provider's API for an agent task's changes to records outside their apps. A change goes to
 /// the record's origin, which runs the action against the record as it is then, applies what it
 /// wrote as the task's step and answers with its JSON: `{"ok": {value, resources}, "differs":
 /// bool}`, or `{"failed": why}` when the action did not run.
@@ -472,15 +472,15 @@ pub trait ResourceChanges: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`ActionHostError::Refused`] for a caller that is not an agent task acting for its
-    /// person or a change the workspace does not allow it, [`ActionHostError::ConfirmationRequired`]
-    /// for one that asks its person first, [`ActionHostError::Unavailable`] when the origin
+    /// [`ActionCallError::Refused`] for a caller that is not an agent task acting for its
+    /// person or a change the workspace does not allow it, [`ActionCallError::ConfirmationRequired`]
+    /// for one that asks its person first, [`ActionCallError::Unavailable`] when the origin
     /// cannot be reached.
     fn apply(
         &self,
         caller: &Caller,
         change: &ResourceChange,
-    ) -> Result<serde_json::Value, ActionHostError>;
+    ) -> Result<serde_json::Value, ActionCallError>;
 }
 
 #[cfg(test)]

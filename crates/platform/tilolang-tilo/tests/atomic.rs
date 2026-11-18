@@ -1,6 +1,6 @@
 //! One action and every action it calls are one action of the workspace: every change of the
 //! run names the one invocation, and a run that fails anywhere leaves nothing of itself in the
-//! record or in what the host would commit.
+//! document or in what the host would commit.
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
@@ -46,7 +46,7 @@ action boom(t: Tally) {
 
 const APP: &str = "test.nested";
 
-/// A host over a fresh record, running `NESTED`, and the tally it counts.
+/// A host over a fresh document, running `NESTED`, and the tally it counts.
 fn workspace() -> (Host, AutoCommit, tilolang_tilo::runtime::ResourceRef, Meta) {
     let mut doc = AutoCommit::new();
     let host = Host::new(
@@ -57,7 +57,7 @@ fn workspace() -> (Host, AutoCommit, tilolang_tilo::runtime::ResourceRef, Meta) 
     .unwrap();
     let package = host.load_builtin(NESTED, "").unwrap();
     let tally = host.root_of(APP).unwrap();
-    // The root itself is a change of the record, committed before any action runs.
+    // The root itself is a change of the document, committed before any action runs.
     for created in host.take_committed() {
         apply(&host, &mut doc, &created.action);
     }
@@ -100,8 +100,8 @@ fn value(host: &Host, tally: &tilolang_tilo::runtime::ResourceRef, meta: &Meta) 
     }
 }
 
-/// Apply `action` to `doc` as the record does, in the run it was committed in
-/// ([`tilolang_tilo::instance::record::InstanceRecord`]): its context names the run's
+/// Apply `action` to `doc` as the document does, in the run it was committed in
+/// ([`tilolang_tilo::instance::document::InstanceDocument`]): its context names the run's
 /// invocation.
 fn apply(host: &Host, doc: &mut AutoCommit, action: &DynAction) {
     let mut context = ActionContext::for_resource(
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
         }
         let change = DocumentMutation::Incremental(doc.save_after(&before));
         let commit = collab_types::WorkspaceCommit::of_mutation(
-            "workspace",
+            uuid::Uuid::from_u128(1),
             APP,
             "tally",
             &collab_types::CommitAuthor {
@@ -157,8 +157,12 @@ tilo_test_env::scenario! {
         )
         .unwrap()
         .expect("the calls are committed as one action");
-        assert_eq!(commit.parts.len(), 1, "one record, one part");
-        assert_eq!(commit.parts[0].changes.len(), 2, "both calls are in it");
+        assert_eq!(commit.parts.len(), 1, "one document, one part");
+        assert_eq!(
+            commit.parts[0].heads,
+            vec![doc.get_heads()[0].0],
+            "the second call is built on the first: both are in it"
+        );
         assert_eq!(
             commit.invocation,
             Some(invocation_id(&run).0),
@@ -178,7 +182,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             doc.get_heads(),
             before,
-            "and nothing of it is in the record"
+            "and nothing of it is in the document"
         );
         assert_eq!(value(&host, &tally, &meta), 0);
     }

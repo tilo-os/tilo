@@ -164,7 +164,7 @@ pub struct Slider {
     readout_reach: (f64, vello::kurbo::Insets),
     /// The width the shown value takes at the trailing edge, measured when
     /// drawn; the track is the rest.
-    value_lane: f64,
+    value_area: f64,
     touch: SliderTouch,
     /// How loud what the slider sets is right now (`0..=1` of full scale),
     /// read each frame: an output volume shows what plays inside its own
@@ -239,7 +239,7 @@ impl Slider {
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_target: None,
             shows_value: false,
-            value_lane: 0.0,
+            value_area: 0.0,
             touch: SliderTouch::default(),
             reads_out: false,
             readout_drawn: false,
@@ -397,7 +397,7 @@ impl Slider {
         Rect::new(
             self.rect.x0,
             self.rect.y0,
-            (self.rect.x1 - self.value_lane).max(self.rect.x0),
+            (self.rect.x1 - self.value_area).max(self.rect.x0),
             self.rect.y1,
         )
     }
@@ -999,12 +999,12 @@ pub fn paint_held_readout(
 
 /// The width a shown value takes from the track: the widest value, a gap, and the knob's reach
 /// past the track's end, so a knob at the top of the range never stands on the value.
-fn value_lane(widest: f64, theme: &Theme) -> f64 {
+fn value_area(widest: f64, theme: &Theme) -> f64 {
     widest + f64::from(theme.gap_standard) + SliderFace::overhang() + KNOB_BORDER
 }
 
 /// How far above its knob a held slider's readout reaches: the tooltip
-/// chip standing above it in `theme`.
+/// chip above it in `theme`.
 fn readout_height(theme: &Theme) -> f64 {
     crate::widget::tooltip::chip_reach_above(theme)
 }
@@ -1052,7 +1052,8 @@ impl Widget for Slider {
             min: self.range.0,
             max: self.range.1,
             step: self.step,
-            text: self.value_text.as_ref().map(|_| self.spoken_value()),
+            text: (self.value_text.is_some() || self.shows_value).then(|| self.spoken_value()),
+            shown: self.shows_value,
         });
     }
 
@@ -1060,7 +1061,7 @@ impl Widget for Slider {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1174,7 +1175,7 @@ impl Widget for Slider {
     ) {
         if self.shows_value {
             let style = theme.text(crate::tokens::TextRole::Body).numeric();
-            // The lane fits the widest value the slider shows, so the track
+            // The area fits the widest value the slider shows, so the track
             // does not shift as the value changes.
             let widest = [
                 self.range.0,
@@ -1187,7 +1188,7 @@ impl Widget for Slider {
                 f64::from(text_renderer.measure_style(&text, None, &style).0)
             })
             .fold(0.0_f64, f64::max);
-            self.value_lane = value_lane(widest, theme).min(self.rect.width() / 2.0);
+            self.value_area = value_area(widest, theme).min(self.rect.width() / 2.0);
             let text = self.spoken_value();
             let (width, height) = text_renderer.measure_style(&text, None, &style);
             let ink = if self.effectively_enabled() {
@@ -1201,7 +1202,7 @@ impl Widget for Slider {
                 ink,
                 transform.pre_translate(
                     (
-                        // Leading in its lane, beside the knob's end of travel: the value reads
+                        // Leading in its area, beside the knob's end of travel: the value reads
                         // with the track rather than off at the row's far edge.
                         self.rect.x1 - widest.max(f64::from(width)),
                         self.rect.y0 + (self.rect.height() - f64::from(height)) / 2.0,
@@ -1212,7 +1213,7 @@ impl Widget for Slider {
                 &style,
             );
         } else {
-            self.value_lane = 0.0;
+            self.value_area = 0.0;
         }
         self.level_drawn = self.live_level();
         self.motion = Some(theme.motion());
@@ -1236,7 +1237,9 @@ impl Widget for Slider {
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
 
     fn draw_overlay(
@@ -1447,7 +1450,7 @@ impl crate::presence::capability::PublishesPresence for Slider {
     }
 }
 
-impl crate::permissions::capability::PermissionGated for Slider {
+impl crate::permissions::capability::PermissionGuarded for Slider {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -1507,9 +1510,9 @@ impl Drop for Slider {
 #[cfg(test)]
 mod tests {
     tilo_test_env::scenario! {
-        /// How a slider is drawn: its knob, its thumb and the lane of a shown value.
+        /// How a slider is drawn: its knob, its thumb and the area of a shown value.
         /// Each phase was a test of its own and builds its own fixture.
-        fn a_sliders_face_knob_and_value_lane;
+        fn a_sliders_face_knob_and_value_area;
 
         phase a_disabled_knob_at_either_end_is_dimmed_whole_not_clipped;
         {
@@ -1526,16 +1529,16 @@ mod tests {
             }
         }
 
-        phase a_shown_value_takes_its_lane_from_the_track;
+        phase a_shown_value_takes_its_area_from_the_track;
         {
             let mut slider = Slider::from_state(&crate::LocalState::new(0.72)).shows_value();
             slider.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
             assert_eq!(
                 slider.track_rect(),
                 slider.rect,
-                "no lane before it is measured"
+                "no area before it is measured"
             );
-            slider.value_lane = 48.0;
+            slider.value_area = 48.0;
             assert_eq!(slider.track_rect().x1, 152.0);
             assert_eq!(slider.spoken_value(), "72%");
             assert!((slider.value_from_cursor_x(152.0) - 1.0).abs() < 0.05);
@@ -1551,7 +1554,7 @@ mod tests {
             let widest = f64::from(text.measure_style("100%", None, &style).0);
             let mut slider = Slider::from_state(&crate::LocalState::new(1.0)).shows_value();
             slider.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
-            slider.value_lane = value_lane(widest, &theme);
+            slider.value_area = value_area(widest, &theme);
             let knob = SliderFace::new(slider.track_rect(), 1.0).knob_centre();
             let reach = knob.x + SliderFace::overhang() + KNOB_BORDER;
             let value = slider.rect.x1 - widest;

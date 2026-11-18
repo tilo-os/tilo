@@ -65,7 +65,7 @@ impl Medium {
     }
 }
 
-/// What this needs of `NetworkManager`, behind one seam so the sequence is tested against a fake.
+/// What this needs of `NetworkManager`, behind one boundary so the sequence is tested against a fake.
 trait Profiles {
     fn wake(&self, profile: &str) -> Result<(Medium, u32), String>;
     fn active_interface(&self, profile: &str) -> Result<Option<String>, String>;

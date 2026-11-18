@@ -31,7 +31,7 @@ FILES = (
     "os/Containerfile.dev",
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
-    "os/containers/tilo-relay/Containerfile",
+    "os/containers/tilo-server/Containerfile",
     "os/Containerfile.env-runtime",
 )
 

@@ -133,8 +133,8 @@ fn opened(call: &InvocationCall) -> Option<Result<(), String>> {
     })
 }
 
-/// The `record:<app>:<record>` provider of the record `at` lives in, its
-/// record empty for the app's own.
+/// The `record:<app>:<record>` provider of the resource `at` lives in, its
+/// resource empty for the app's own.
 fn provider(at: &tilo_reference::ResourceAt) -> String {
     format!("record:{}:{}", at.app, at.record.as_deref().unwrap_or(""))
 }
@@ -268,7 +268,7 @@ impl ChatApp {
     }
 
     /// Open the resource a message shares where it lives: its own app
-    /// opens at it, launched on its record when no window shows it.
+    /// opens at it, launched on its resource when no window shows it.
     pub(crate) fn open_shared_resource(&mut self, message: &str, attachment: usize) {
         let started = self.request_open(message, attachment);
         self.finish_starting(message, attachment, true, started);
@@ -380,7 +380,7 @@ impl ChatApp {
             .ok_or_else(|| "This message does not share a resource here".to_owned())
     }
 
-    /// Ask the app behind `at`'s resource, in its own record, for its link.
+    /// Ask the app behind `at`'s resource, in its own document, for its link.
     fn ask_resource_link(&self, at: tilo_reference::ResourceAt) -> Asked {
         let call = self.resource_navigation.remote.invoke(
             ui::tilo_resource::share::share_link_target(provider(&at), at.reference.id.clone()),
@@ -514,7 +514,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tilo_actions::remote::{
-        ActionHostError, Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus, TestHost,
+        ActionCallError, Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus,
+        TestProvider,
     };
 
     use super::*;
@@ -540,20 +541,20 @@ mod tests {
 
     const URL: &str = "https://tilo.so/app/#/host.example/workspace/so.tilo.notes/r/page:1";
 
-    type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionHostError>>;
+    type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionCallError>>;
 
     /// The resource's app behind the API: answers `share-link` with `URL`.
-    fn api() -> TestHost {
-        TestHost::new().completing(|_| tilo_actions::ActionOutput {
+    fn api() -> TestProvider {
+        TestProvider::new().completing(|_| tilo_actions::ActionOutput {
             value: Some(serde_json::json!({"url": URL})),
             resources: Vec::new(),
         })
     }
 
     /// The resource's app behind the API, refusing with `message`.
-    fn refusing(message: &str) -> TestHost {
+    fn refusing(message: &str) -> TestProvider {
         let message = message.to_owned();
-        TestHost::new().answering(move |_, request| {
+        TestProvider::new().answering(move |_, request| {
             HostPending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
                 status: ReceiptStatus::Failed {
@@ -570,10 +571,10 @@ mod tests {
 
     /// The resource's app behind the API, answering only once the test
     /// hands over the answers it keeps.
-    fn holding() -> (TestHost, Arc<Mutex<Vec<Answer>>>) {
+    fn holding() -> (TestProvider, Arc<Mutex<Vec<Answer>>>) {
         let held = Arc::new(Mutex::new(Vec::new()));
         let keep = Arc::clone(&held);
-        let api = TestHost::new().answering(move |_, _| {
+        let api = TestProvider::new().answering(move |_, _| {
             let (answer, pending) = tilo_actions::remote::pending();
             keep.lock().unwrap().push(answer);
             pending
@@ -641,8 +642,8 @@ mod tests {
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
-        let _scope = ui::host::enter(&services);
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
 
@@ -700,8 +701,8 @@ mod tests {
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
-        let _scope = ui::host::enter(&services);
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
         app.chat().settle_resource_navigation();
@@ -758,9 +759,9 @@ mod tests {
         let api = Arc::new(api);
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(ClickClipboard::default()));
-        let _scope = ui::host::enter(&services);
+        let services = ui::process::ProcessServices::null()
+            .with_clipboard(Arc::new(ClickClipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         app.chat().begin_resource_navigation(&id, 0);
         assert!(app.chat().resource_navigation.pending());
@@ -796,8 +797,8 @@ mod tests {
         let _served = RemoteActions::enter(api, Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
-            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
-        let _scope = ui::host::enter(&services);
+            ui::process::ProcessServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::process::enter(&services);
         let id = shared(&mut app);
         ui::clipboard_copy("sentinel");
 
@@ -880,8 +881,8 @@ mod tests {
         );
     }
 
-    /// Words quoted from a record get the same controls as a whole resource:
-    /// the chip opens the record they came from.
+    /// Words quoted from a resource get the same controls as a whole resource:
+    /// the chip opens the resource they came from.
     #[test]
     fn a_quoted_run_opens_the_record_it_came_from() {
         use crate::resource::ChatShell;
@@ -892,7 +893,7 @@ mod tests {
         let api = Arc::new(api());
         let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let _scope = ui::host::enter(&ui::host::HostServices::null());
+        let _scope = ui::process::enter(&ui::process::ProcessServices::null());
         app.call_on(
             &crate::testing::chain(),
             "post",
@@ -920,7 +921,7 @@ mod tests {
             api.asked()
                 .into_iter()
                 .find(|request| request.target.address.action == "open")
-                .expect("the chip asked the API to open the record")
+                .expect("the chip asked the API to open the resource")
                 .target,
             page.open_target(WORKSPACE_ID, "so.tilo.notes", Some("plan"))
         );

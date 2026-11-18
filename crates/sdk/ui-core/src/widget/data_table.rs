@@ -3711,25 +3711,25 @@ struct RowChoice {
 }
 
 impl crate::widget::controls::ActionControls for DataTableCore {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(view) = self.row_choice.as_mut() {
-            view.choice.install_custody(domain, attachment);
+            view.choice.attach(domain, attachment);
         }
         if let Some(opens) = self.opens.as_mut() {
-            opens.choice.install_custody(domain, attachment);
+            opens.choice.attach(domain, attachment);
         }
         if let Some(check) = self.check.as_mut() {
-            let _ = check.action.install_custody(domain, attachment);
+            let _ = check.action.attach(domain, attachment);
         }
         if let Some(click) = self.row_click.as_mut() {
-            let _ = click.action.install_custody(domain, attachment);
+            let _ = click.action.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -3795,6 +3795,13 @@ impl Widget for DataTableCore {
         let head_row = head.part("row", "DataTable", head_rect);
         head_row.tag = Some("tr");
         let header_style = header_style(theme);
+        // Words keep the cell's inset on each side and its column's alignment, as painted.
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let align = |align: CellAlign| match align {
+            CellAlign::Leading => "start",
+            CellAlign::Center => "center",
+            CellAlign::Trailing => "end",
+        };
         for (index, column) in self.columns.iter().enumerate() {
             if self.hidden.get(index).copied().unwrap_or(false) {
                 continue;
@@ -3805,7 +3812,12 @@ impl Widget for DataTableCore {
             let cell = head_row.part(
                 &format!("th:{index}"),
                 "DataTable",
-                Rect::new(column_rect.x0, head_rect.y0, column_rect.x1, head_rect.y1),
+                Rect::new(
+                    column_rect.x0 + pad,
+                    head_rect.y0,
+                    column_rect.x1 - pad,
+                    head_rect.y1,
+                ),
             );
             cell.tag = Some("th");
             cell.attrs.push(("scope", "col".into()));
@@ -3825,7 +3837,8 @@ impl Widget for DataTableCore {
                     &header_style,
                     Some(theme.tokens.colors.text_dim),
                 )
-                .with_max_lines(Some(1)),
+                .with_max_lines(Some(1))
+                .aligned(align(column.alignment())),
             ));
         }
         let body_rect = Rect::new(band.x0, head_rect.y1, band.x1, self.rect.y1);
@@ -3854,7 +3867,12 @@ impl Widget for DataTableCore {
                 let cell = row.part(
                     &format!("td:{ci}"),
                     "DataTable",
-                    Rect::new(column_rect.x0, row_rect.y0, column_rect.x1, row_rect.y1),
+                    Rect::new(
+                        column_rect.x0 + pad,
+                        row_rect.y0,
+                        column_rect.x1 - pad,
+                        row_rect.y1,
+                    ),
                 );
                 cell.tag = Some("td");
                 let value = column
@@ -3870,7 +3888,8 @@ impl Widget for DataTableCore {
                 let style = cell_style(theme, column.kind);
                 cell.own = Some(Own::Text(
                     TextLook::new(value, &style, Some(ink))
-                        .with_max_lines(Some(u32::try_from(column.max_lines).unwrap_or(u32::MAX))),
+                        .with_max_lines(Some(u32::try_from(column.max_lines).unwrap_or(u32::MAX)))
+                        .aligned(align(column.alignment())),
                 ));
             }
         }

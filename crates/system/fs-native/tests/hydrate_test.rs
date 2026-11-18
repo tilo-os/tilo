@@ -304,7 +304,7 @@ tilo_test_env::scenario! {
         a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice();
     }
 
-    phase hydrators_adopt_placeholders_replace_versions_and_gate_writers;
+    phase hydrators_adopt_placeholders_replace_versions_and_check_writers;
     {
         fn a_restarted_hydrator_adopts_placeholders_and_keeps_local_writes() {
             let Some(s) = fanotify_scratch("hydrate_adopt") else {
@@ -398,15 +398,15 @@ tilo_test_env::scenario! {
             assert_eq!(buf, pattern(13, MIB, 4096));
             h.stop();
         }
-        fn a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers() {
-            let Some(s) = fanotify_scratch("hydrate_gate") else {
+        fn a_guarded_file_refuses_writers_with_ebusy_and_still_serves_readers() {
+            let Some(s) = fanotify_scratch("hydrate_check") else {
                 return;
             };
             let fetcher = PatternFetcher::new(Duration::ZERO);
             let h = start(&fetcher, 64 * 1024);
             let path = s.live.join("db.sqlite");
             fs::write(&path, vec![7u8; 64 * 1024]).unwrap();
-            h.gate_writes(&path, libc::EBUSY).unwrap();
+            h.check_writes(&path, libc::EBUSY).unwrap();
 
             let mut buf = vec![0u8; 4096];
             File::open(&path)
@@ -423,7 +423,7 @@ tilo_test_env::scenario! {
                 .unwrap();
             let err = w.write_at(b"x", 0).unwrap_err();
             assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
-            assert!(h.stats().gated_denials.load(Ordering::Relaxed) >= 1);
+            assert!(h.stats().guarded_denials.load(Ordering::Relaxed) >= 1);
             // Each access is judged by the call that makes it: reads by the same
             // process, even through its writable descriptor, are served.
             let mut probe = vec![0u8; 16];
@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
             );
             h.stop();
         }
-        fn an_asking_gate_lets_the_write_policy_decide() {
+        fn an_asking_check_lets_the_write_policy_decide() {
             let Some(s) = fanotify_scratch("hydrate_ask") else {
                 return;
             };
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
             h.set_write_policy(Arc::clone(&policy) as Arc<dyn fs_native::hydrate::WritePolicy>);
             let path = s.live.join("wal");
             fs::write(&path, vec![1u8; 8192]).unwrap();
-            let key = h.gate(&path, fs_native::hydrate::WriteGate::Ask).unwrap();
+            let key = h.check(&path, fs_native::hydrate::WriteGuard::Ask).unwrap();
             assert_eq!(key, Hydrator::file_key(&path).unwrap());
 
             // Readers never ask.
@@ -480,8 +480,8 @@ tilo_test_env::scenario! {
         a_restarted_hydrator_adopts_placeholders_and_keeps_local_writes();
         without_a_serving_group_a_placeholder_reads_as_holes_until_adopted();
         replacing_a_file_with_a_placeholder_keeps_open_readers_on_the_old_version();
-        a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers();
-        an_asking_gate_lets_the_write_policy_decide();
+        a_guarded_file_refuses_writers_with_ebusy_and_still_serves_readers();
+        an_asking_check_lets_the_write_policy_decide();
     }
 }
 
@@ -846,7 +846,7 @@ tilo_test_env::scenario! {
 
 /// A source that never delivers one content id until the fill is
 /// cancelled, as a peer does that went quiet, and serves every other at
-/// once. It gives up when cancelled, as the content plane's fetcher does.
+/// once. It gives up when cancelled, as the content store's fetcher does.
 struct GivesUpWhenCancelled {
     pattern: Arc<PatternFetcher>,
     quiet: [u8; 32],

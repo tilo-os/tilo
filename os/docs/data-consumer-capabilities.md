@@ -4,7 +4,7 @@ The installed consumer producers and checks are compiled into the
 `prepared-setup` helper (`crates/platform/imager-backend/src/installed_consumers`).
 The image build runs each producer once as root; admission
 (`home_admission`, `applications_admission`, `account_admission`) runs the
-matching read-only check in-process before any target custody write. No mode
+matching read-only check in-process before any target ownership write. No mode
 accepts paths, alternate helpers, saved evidence inputs, passwords or
 environment configuration. Standard output is the closed Rust
 `home_admission` / `applications_admission` JSON object, below 4096 bytes
@@ -51,7 +51,7 @@ Namespace edges are checked for root ownership, foreign writability and symlink
 redirection. Reads and subprocess stdout/stderr are bounded; commands have
 deadlines and precisely owned process groups are retired. Receipts are fsynced
 and atomically published without replacement. The tests' root, owner and runner
-seams are not command-line interfaces or qualification evidence.
+boundaries are not command-line interfaces or qualification evidence.
 
 ## Authenticated release carriage
 

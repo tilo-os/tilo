@@ -6,7 +6,7 @@
 //! real model gateway to it.
 //!
 //! The runtime's own `llama-server` and libraries run from the verified
-//! archive's root through its own dynamic loader, standing in for podman,
+//! archive's root through its own dynamic loader, in place of podman,
 //! which t's sandbox lacks. `tools/release/local-model-runtime-e2e.sh` runs it
 //! with the archive, the model and the gateway it built.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]

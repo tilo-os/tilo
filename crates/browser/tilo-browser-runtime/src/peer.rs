@@ -1,13 +1,13 @@
 //! The page's certified peer: `tilo_session_client` behind wasm-bindgen for
 //! `web/peer.mjs`, reaching the host over HTTPS only.
 //!
-//! The device key stays in custody (`web/device-custody.mjs`): either a
+//! The device key stays in device key (`web/device-key.mjs`): either a
 //! non-extractable `WebCrypto` Ed25519 key that signs through a JavaScript
 //! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
 //! `IndexedDB` straight into this module, which keeps it only in wasm
 //! memory. Nothing here generates or holds a user root: a page that holds
 //! one (`web/identity.mjs`) lends it as a signer, the same shape as
-//! custody, to [`issue_device_cert`] and [`certify_with_root`].
+//! device key, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) and the workspaces it
 //! holds are kept in the profile's durable store when the page names a profile
@@ -17,7 +17,7 @@
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
 //! Presence — who is here, their pointer, what their shell shows — rides the
-//! workspace's live plane like every other device's, kept on the session's own
+//! workspace's live session like every other device's, kept on the session's own
 //! board ([`crate::peer_sync`]) and read back as the members answer
 //! ([`WasmPeer::take_live_events`]). Documents reach the desktop's
 //! `CollaborationManager` through [`WasmPeer::collab_transport`].
@@ -30,16 +30,16 @@ use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::https::{HttpClient, HttpFuture};
-use tilo_relay_client::{Answer, AnswerFuture};
-use tilo_relay_client::{DeviceSigner, Host, SignError, SignFuture};
-use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
-use tilo_relay_protocol::web::{PageHost, PageHostAddress};
+use tilo_server_client::https::{HttpClient, HttpFuture};
+use tilo_server_client::{Answer, AnswerFuture};
+use tilo_server_client::{DeviceSigner, Host, SignError, SignFuture};
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
+use tilo_server_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_client::device::{Device, HostRefusal};
+use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Events, FailureKind, Link, LocalState};
-use tilo_session_client::{PeerConfig, PeerRecord, PeerStore};
+use tilo_session_client::{PeerConfig, PeerEntry, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use wasm_bindgen::prelude::*;
@@ -52,11 +52,11 @@ pub(crate) fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
 }
 
-/// `refusal` as the page reads it: an `Error` named `HostRefusal`, with the refusal's `code` and,
+/// `refusal` as the page reads it: an `Error` named `DeviceRefusal`, with the refusal's `code` and,
 /// where the host gave one, its typed `refusal` (`{reason, message, next}`).
-pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
+pub(crate) fn refusal_error(refusal: &DeviceRefusal) -> JsValue {
     let error = js_sys::Error::new(&refusal.message);
-    error.set_name("HostRefusal");
+    error.set_name("DeviceRefusal");
     let _ = Reflect::set(&error, &"code".into(), &refusal.code.as_str().into());
     if let Some(typed) = refusal
         .refusal
@@ -77,8 +77,8 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
     error.into()
 }
 
-/// A refusal of a workspace's host, `wire` as it travels (an `ActionHostError`'s JSON), read as
-/// every caller reads it ([`HostRefusal::of`]): `{code, message, refusal}` JSON, `refusal` the
+/// A refusal of a workspace's host, `wire` as it travels (an `ActionCallError`'s JSON), read as
+/// every caller reads it ([`DeviceRefusal::of`]): `{code, message, refusal}` JSON, `refusal` the
 /// host's typed refusal where it gave one.
 ///
 /// # Errors
@@ -86,9 +86,9 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
 /// Throws for text that is no refusal of a host's.
 #[wasm_bindgen(js_name = hostRefusal)]
 pub fn host_refusal(wire: &str) -> Result<String, JsError> {
-    let error: tilo_actions::remote::ActionHostError =
+    let error: tilo_actions::remote::ActionCallError =
         serde_json::from_str(wire).map_err(js_error)?;
-    serde_json::to_string(&HostRefusal::of(&error)).map_err(js_error)
+    serde_json::to_string(&DeviceRefusal::of(&error)).map_err(js_error)
 }
 
 /// The page store without a surface; a desktop surface; its asset.
@@ -100,7 +100,7 @@ fn failure_kind(surface: Option<String>, asset: Option<String>) -> FailureKind {
     }
 }
 
-/// A device signer backed by page custody.
+/// A device signer backed by page device key.
 pub(crate) enum PageSigner {
     /// `{publicKey: Uint8Array(32), sign(message): Promise<Uint8Array(64)>}`
     /// over a non-extractable `WebCrypto` key.
@@ -115,8 +115,8 @@ pub(crate) enum PageSigner {
 }
 
 impl PageSigner {
-    pub(crate) fn from_js(custody: &JsValue) -> Result<Self, JsError> {
-        let seed = Reflect::get(custody, &"seed".into()).map_err(|_| js_error("custody"))?;
+    pub(crate) fn from_js(device_key: &JsValue) -> Result<Self, JsError> {
+        let seed = Reflect::get(device_key, &"seed".into()).map_err(|_| js_error("device key"))?;
         if !seed.is_undefined() && !seed.is_null() {
             let seed: [u8; 32] = Uint8Array::new(&seed)
                 .to_vec()
@@ -125,19 +125,19 @@ impl PageSigner {
             return Ok(Self::Seed(ed25519_dalek::SigningKey::from_bytes(&seed)));
         }
         let public_key: [u8; 32] = Uint8Array::new(
-            &Reflect::get(custody, &"publicKey".into()).map_err(|_| js_error("custody"))?,
+            &Reflect::get(device_key, &"publicKey".into()).map_err(|_| js_error("device key"))?,
         )
         .to_vec()
         .try_into()
         .map_err(|_| js_error("device public key must be 32 bytes"))?;
-        let sign: Function = Reflect::get(custody, &"sign".into())
-            .map_err(|_| js_error("custody"))?
+        let sign: Function = Reflect::get(device_key, &"sign".into())
+            .map_err(|_| js_error("device key"))?
             .dyn_into()
-            .map_err(|_| js_error("custody.sign must be a function"))?;
+            .map_err(|_| js_error("device key.sign must be a function"))?;
         Ok(Self::WebCrypto {
             public_key,
             sign,
-            this: custody.clone(),
+            this: device_key.clone(),
         })
     }
 }
@@ -157,12 +157,12 @@ impl DeviceSigner for PageSigner {
                 let called = sign.call1(this, &Uint8Array::from(message.as_slice()).into());
                 Box::pin(async move {
                     let promise: Promise = called
-                        .map_err(|_| SignError("custody refused to sign".into()))?
+                        .map_err(|_| SignError("device key refused to sign".into()))?
                         .dyn_into()
-                        .map_err(|_| SignError("custody.sign must return a promise".into()))?;
+                        .map_err(|_| SignError("device key.sign must return a promise".into()))?;
                     let signature = JsFuture::from(promise)
                         .await
-                        .map_err(|_| SignError("custody signing failed".into()))?;
+                        .map_err(|_| SignError("device key signing failed".into()))?;
                     Uint8Array::new(&signature)
                         .to_vec()
                         .try_into()
@@ -188,7 +188,7 @@ struct DurablePeerStore {
     groups_key: durable_store::StorageKey,
     /// The workspaces the peer holds, beside the record.
     workspaces_key: durable_store::StorageKey,
-    /// What the keys of the runs of custody kept beside the workspaces begin with.
+    /// What the keys of the runs of device key kept beside the workspaces begin with.
     runs_prefix: String,
     /// What the keys of the record's own parts, kept beside the workspaces' index, begin with.
     parts_prefix: String,
@@ -202,7 +202,7 @@ thread_local! {
 }
 
 impl DurablePeerStore {
-    /// The key the run of custody `name` is kept under.
+    /// The key the run of device key `name` is kept under.
     fn run_key(&self, name: &str) -> durable_store::StorageKey {
         durable_store::StorageKey::document(
             PEER_PACKAGE,
@@ -258,13 +258,13 @@ impl DurablePeerStore {
 }
 
 impl PeerStore for DurablePeerStore {
-    fn load(&self) -> Option<PeerRecord> {
+    fn load(&self) -> Option<PeerEntry> {
         use durable_store::DurableStore as _;
         let stored = self.store.read(&self.key).ok()??;
         postcard::from_bytes(&stored.bytes).ok()
     }
 
-    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+    fn save(&self, record: &PeerEntry) -> Result<(), String> {
         use durable_store::DurableStore as _;
         let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
         self.store
@@ -370,16 +370,16 @@ impl PeerStore for DurablePeerStore {
 /// The peer record in page storage: loaded before start, saved through a
 /// callback that writes it to `IndexedDB`.
 struct PageStore {
-    current: RefCell<Option<PeerRecord>>,
+    current: RefCell<Option<PeerEntry>>,
     save: Function,
 }
 
 impl PeerStore for PageStore {
-    fn load(&self) -> Option<PeerRecord> {
+    fn load(&self) -> Option<PeerEntry> {
         self.current.borrow().clone()
     }
 
-    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+    fn save(&self, record: &PeerEntry) -> Result<(), String> {
         let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
         *self.current.borrow_mut() = Some(record.clone());
         self.save
@@ -426,7 +426,7 @@ impl HttpClient for PageHttp {
             let retry_after_secs = Reflect::get(&answer, &"retryAfter".into())
                 .ok()
                 .and_then(|value| value.as_string())
-                .and_then(|value| tilo_relay_client::https::retry_after(&value));
+                .and_then(|value| tilo_server_client::https::retry_after(&value));
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -449,7 +449,7 @@ type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
 struct ConnectConfig {
     cert: DeviceCert,
     host_cert: DeviceCert,
-    /// Where the host's iroh endpoint is dialled: the session and its planes
+    /// Where the host's iroh endpoint is dialled: the session and its live sessions
     /// reach it there.
     address: PageHostAddress,
     /// The person's chosen name, for history and presence; empty for none.
@@ -464,7 +464,7 @@ struct ConnectConfig {
     /// The workspace this device enters through its entry as its session
     /// opens ([`entry_request`]), when the host has not admitted it yet.
     #[serde(default)]
-    entering: Option<tilo_relay_protocol::entering::Entering>,
+    entering: Option<tilo_server_protocol::entering::Entering>,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -493,7 +493,7 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
     route: &str,
     body: Vec<u8>,
 ) -> Result<T, JsError> {
-    let path = format!("{}{route}", tilo_relay_protocol::web::API_PREFIX);
+    let path = format!("{}{route}", tilo_server_protocol::web::API_PREFIX);
     let (status, bytes) = post.post(&path, body).await.map_err(js_error)?;
     if status != 200 {
         return Err(js_error(format!("host answered {status}")));
@@ -515,16 +515,16 @@ fn dialled(address: PageHostAddress) -> Host {
 /// to JSON.
 #[wasm_bindgen(js_name = hostInfo)]
 pub async fn host_info(post: Function) -> Result<String, JsError> {
-    let info: tilo_relay_protocol::web::HostInfo =
+    let info: tilo_server_protocol::web::HostInfo =
         post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
     serde_json::to_string(&PageHost::from(info)).map_err(js_error)
 }
 
 /// Whether the owner of `workspace` (its id) deleted it, as the host `post` reaches says to
-/// any device that names it ([`tilo_relay_client::https::workspace_deleted`]).
+/// any device that names it ([`tilo_server_client::https::workspace_deleted`]).
 #[wasm_bindgen(js_name = workspaceDeleted)]
 pub async fn workspace_deleted(post: Function, workspace: String) -> Result<bool, JsError> {
-    tilo_relay_client::https::workspace_deleted(&PageHttp(post), &workspace)
+    tilo_server_client::https::workspace_deleted(&PageHttp(post), &workspace)
         .await
         .map_err(js_error)
 }
@@ -543,11 +543,11 @@ pub async fn certify_device(
     user_public_key_hex: String,
     label: String,
     invite_hex: Option<String>,
-    custody: JsValue,
+    device_key: JsValue,
     on_pairing_code: Function,
     address: String,
 ) -> Result<String, JsError> {
-    let signer = PageSigner::from_js(&custody)?;
+    let signer = PageSigner::from_js(&device_key)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
         .map_err(js_error)?
         .try_into()
@@ -561,7 +561,7 @@ pub async fn certify_device(
     };
     let host = host_at(&address)?;
     let (cert, host_cert, label) =
-        tilo_relay_client::certify(&host, user, &label, invite, &signer, |code| {
+        tilo_server_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
         .await
@@ -630,12 +630,12 @@ pub async fn issue_device_cert(
     role: String,
 ) -> Result<String, JsError> {
     let role = match role.as_str() {
-        "browser" => tilo_relay_client::IssuedRole::Browser,
-        "node" | "session" => tilo_relay_client::IssuedRole::Device,
+        "browser" => tilo_server_client::IssuedRole::Browser,
+        "node" | "session" => tilo_server_client::IssuedRole::Device,
         _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_relay_client::issue_device_cert(
+    let cert = tilo_server_client::issue_device_cert(
         &root,
         device_key(&device_public_key_hex)?,
         &label,
@@ -646,8 +646,8 @@ pub async fn issue_device_cert(
     serde_json::to_string(&cert).map_err(js_error)
 }
 
-fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_json::Value {
-    use tilo_relay_protocol::workspaces::JoinReply;
+fn join_reply_json(reply: tilo_server_protocol::workspaces::JoinReply) -> serde_json::Value {
+    use tilo_server_protocol::workspaces::JoinReply;
     match reply {
         JoinReply::Invitation {
             workspace,
@@ -757,7 +757,7 @@ pub async fn redeem_invitation(site: String, secret: String) -> Result<String, J
 /// checks it whole.
 #[wasm_bindgen(js_name = inspectInvitation)]
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
-    let reply = tilo_relay_client::https::invitation(&PageHttp(post), &invitation)
+    let reply = tilo_server_client::https::invitation(&PageHttp(post), &invitation)
         .await
         .map_err(js_error)?;
     let mut answer = join_reply_json(reply);
@@ -824,7 +824,7 @@ struct Accepting {
     admission_token: Option<String>,
 }
 
-/// What this page's device (`custody`) enters the workspace `invitation` (its signed bytes)
+/// What this page's device (`device key`) enters the workspace `invitation` (its signed bytes)
 /// admits into with, on the host whose certificate is `hostCert` (JSON), through the one entry
 /// every device takes ([`tilo_session_client::device::invitation_entry`]): the certificate it enters
 /// under (the one it holds from that host where it still serves, else one the person's root
@@ -835,13 +835,13 @@ struct Accepting {
 ///
 /// # Errors
 ///
-/// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`, or
+/// Rejects with an `Error` named `DeviceRefusal` whose `code` is `no_certificate`, or
 /// `not_admitted` for an invitation that names no workspace.
 #[wasm_bindgen(js_name = invitationEntry)]
 pub async fn invitation_entry(
     host_cert: String,
     invitation: Vec<u8>,
-    custody: JsValue,
+    device_key: JsValue,
     root: JsValue,
     options: String,
 ) -> Result<String, JsValue> {
@@ -854,7 +854,7 @@ pub async fn invitation_entry(
         .transpose()
         .map_err(js_error)?;
     let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
-    let device = PageSigner::from_js(&custody)?;
+    let device = PageSigner::from_js(&device_key)?;
     let root = if root.is_undefined() || root.is_null() {
         None
     } else {
@@ -881,7 +881,7 @@ pub async fn invitation_entry(
     .to_string())
 }
 
-/// What this page's device (`custody`) enters `workspace` through its entry with, on the host whose
+/// What this page's device (`device key`) enters `workspace` through its entry with, on the host whose
 /// certificate is `hostCert` (JSON), through the one entry every device takes
 /// ([`tilo_session_client::device::entry_request`]): the certificate it enters under (the one it holds
 /// from that host where it still serves, else one the person's root `root` certifies now) and the
@@ -891,12 +891,12 @@ pub async fn invitation_entry(
 ///
 /// # Errors
 ///
-/// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`.
+/// Rejects with an `Error` named `DeviceRefusal` whose `code` is `no_certificate`.
 #[wasm_bindgen(js_name = entryRequest)]
 pub async fn entry_request(
     host_cert: String,
     workspace: String,
-    custody: JsValue,
+    device_key: JsValue,
     root: JsValue,
     options: String,
 ) -> Result<String, JsValue> {
@@ -909,7 +909,7 @@ pub async fn entry_request(
         .transpose()
         .map_err(js_error)?;
     let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
-    let device = PageSigner::from_js(&custody)?;
+    let device = PageSigner::from_js(&device_key)?;
     let root = if root.is_undefined() || root.is_null() {
         None
     } else {
@@ -944,20 +944,20 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
     tilo_user_identity::canonical::canonical_bytes(&cert).map_err(js_error)
 }
 
-/// Certify this page's device key (`custody`) with the user root the page
+/// Certify this page's device key (`device key`) with the user root the page
 /// holds, for the host at `post`, whose certificate must be a host of that
 /// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
     post: Function,
     root: JsValue,
-    custody: JsValue,
+    device_key: JsValue,
     label: String,
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
-    let signer = PageSigner::from_js(&custody)?;
+    let signer = PageSigner::from_js(&device_key)?;
     let (cert, host_cert) =
-        tilo_relay_client::certify_with_root(&PageHttp(post), &root, &signer, &label)
+        tilo_server_client::certify_with_root(&PageHttp(post), &root, &signer, &label)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {
@@ -970,8 +970,8 @@ pub async fn certify_with_root(
 
 /// `refusal` as the page reads it: an `Error` named `LoginCodeError`, with the host's HTTP
 /// `status` (0 unreached) and the kind of refusal as `code`
-/// ([`tilo_relay_client::login_code::CodeRefusal::code`]).
-fn code_error(refusal: &tilo_relay_client::login_code::CodeRefusal) -> JsValue {
+/// ([`tilo_server_client::login_code::CodeRefusal::code`]).
+fn code_error(refusal: &tilo_server_client::login_code::CodeRefusal) -> JsValue {
     let error = js_sys::Error::new(&refusal.message);
     error.set_name("LoginCodeError");
     let _ = Reflect::set(&error, &"code".into(), &refusal.code().into());
@@ -988,7 +988,7 @@ fn code_error(refusal: &tilo_relay_client::login_code::CodeRefusal) -> JsValue {
 /// Rejects with a `LoginCodeError` ([`code_error`]).
 #[wasm_bindgen(js_name = createLoginCode)]
 pub async fn create_login_code(post: Function, link: Option<String>) -> Result<String, JsValue> {
-    let made = tilo_relay_client::login_code::create(&PageHttp(post), link)
+    let made = tilo_server_client::login_code::create(&PageHttp(post), link)
         .await
         .map_err(|refusal| code_error(&refusal))?;
     serde_json::to_string(&made).map_err(|error| js_error(error).into())
@@ -1008,17 +1008,17 @@ pub async fn follow_login_code(
     offer: Option<String>,
 ) -> Result<String, JsValue> {
     let offer = offer
-        .map(|offer| serde_json::from_str::<tilo_relay_protocol::login_code::Offer>(&offer))
+        .map(|offer| serde_json::from_str::<tilo_server_protocol::login_code::Offer>(&offer))
         .transpose()
         .map_err(js_error)?;
-    let polled = tilo_relay_client::login_code::follow(&PageHttp(post), &follow, offer)
+    let polled = tilo_server_client::login_code::follow(&PageHttp(post), &follow, offer)
         .await
         .map_err(|refusal| code_error(&refusal))?;
     serde_json::to_string(&polled).map_err(|error| js_error(error).into())
 }
 
 /// Give the person whose root the page holds (`root`) a stand-in on the host `post` reaches
-/// ([`tilo_relay_client::login_code::keep_stand_in`]). Resolves to the stand-in's key, hex.
+/// ([`tilo_server_client::login_code::keep_stand_in`]). Resolves to the stand-in's key, hex.
 ///
 /// # Errors
 ///
@@ -1026,7 +1026,7 @@ pub async fn follow_login_code(
 #[wasm_bindgen(js_name = keepStandIn)]
 pub async fn keep_stand_in(post: Function, root: JsValue) -> Result<String, JsValue> {
     let root = PageSigner::from_js(&root)?;
-    tilo_relay_client::login_code::keep_stand_in(&PageHttp(post), &root)
+    tilo_server_client::login_code::keep_stand_in(&PageHttp(post), &root)
         .await
         .map_err(|refusal| code_error(&refusal))
 }
@@ -1039,7 +1039,7 @@ pub async fn keep_stand_in(post: Function, root: JsValue) -> Result<String, JsVa
 #[wasm_bindgen(js_name = retireStandIn)]
 pub async fn retire_stand_in(post: Function, root: JsValue) -> Result<(), JsValue> {
     let root = PageSigner::from_js(&root)?;
-    tilo_relay_client::login_code::retire_stand_in(&PageHttp(post), &root)
+    tilo_server_client::login_code::retire_stand_in(&PageHttp(post), &root)
         .await
         .map_err(|refusal| code_error(&refusal))
 }
@@ -1068,7 +1068,7 @@ pub async fn revoke_device(
             ));
         }
     };
-    let entry = tilo_relay_client::revoke_device(
+    let entry = tilo_server_client::revoke_device(
         &root,
         device_key(&key_hex)?,
         tilo_clock::unix_now_ns(),
@@ -1097,14 +1097,15 @@ enum PairingReach {
     Session(tilo_session_client::SessionMemberHost),
     /// From an endpoint bound for pairing alone: the page holds no session
     /// with this host yet.
-    Own(tilo_relay_client::MemberApprover),
+    Own(tilo_server_client::MemberApprover),
 }
 
-impl tilo_relay_client::MemberHost for PairingReach {
+impl tilo_server_client::MemberHost for PairingReach {
     async fn ask(
         &self,
-        approval: &tilo_relay_protocol::certify::MemberApproval,
-    ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
+        approval: &tilo_server_protocol::certify::MemberApproval,
+    ) -> Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>
+    {
         match self {
             Self::Session(session) => session.ask(approval).await,
             Self::Own(approver) => approver.ask(approval).await,
@@ -1122,7 +1123,7 @@ impl PairingHost {
     #[wasm_bindgen(constructor)]
     pub fn new(address: &str) -> Result<Self, JsError> {
         Ok(Self(PairingReach::Own(
-            tilo_relay_client::MemberApprover::new(host_at(address)?),
+            tilo_server_client::MemberApprover::new(host_at(address)?),
         )))
     }
 
@@ -1135,7 +1136,7 @@ impl PairingHost {
     /// The host was not reached, or turned the root away.
     pub async fn pending(&self, root: JsValue) -> Result<String, JsError> {
         let root = PageSigner::from_js(&root)?;
-        let pending = tilo_relay_client::pending_pairings(&self.0, &root)
+        let pending = tilo_server_client::pending_pairings(&self.0, &root)
             .await
             .map_err(js_error)?;
         Ok(serde_json::Value::Array(
@@ -1175,7 +1176,7 @@ impl PairingHost {
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
-        let issued = tilo_relay_client::answer_pairing(&self.0, &root, digest, approved)
+        let issued = tilo_server_client::answer_pairing(&self.0, &root, digest, approved)
             .await
             .map_err(js_error)?;
         if issued.is_some() {
@@ -1265,7 +1266,7 @@ fn ops_from_js(ops: Vec<JsPreviewOp>) -> Result<Vec<PreviewOp>, JsError> {
 }
 
 pub(crate) fn workspace_id(text: &str) -> Result<WorkspaceId, JsError> {
-    tilo_relay_protocol::WorkspaceId::parse(text).ok_or_else(|| js_error("not a workspace uuid"))
+    tilo_server_protocol::WorkspaceId::parse(text).ok_or_else(|| js_error("not a workspace uuid"))
 }
 
 /// One live (non-presence) message another member published.
@@ -1329,8 +1330,8 @@ struct JsDirections {
     subscribe: bool,
 }
 
-impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
-    fn from(value: tilo_relay_protocol::voice::Directions) -> Self {
+impl From<tilo_server_protocol::voice::Directions> for JsDirections {
+    fn from(value: tilo_server_protocol::voice::Directions) -> Self {
         Self {
             publish: value.publish,
             subscribe: value.subscribe,
@@ -1357,7 +1358,7 @@ struct JsVoiceMember {
     deafened: bool,
 }
 
-fn voice_members(members: Vec<tilo_relay_protocol::voice::VoiceMember>) -> Vec<JsVoiceMember> {
+fn voice_members(members: Vec<tilo_server_protocol::voice::VoiceMember>) -> Vec<JsVoiceMember> {
     members
         .into_iter()
         .map(|member| JsVoiceMember {
@@ -1396,7 +1397,7 @@ struct JsCall {
     members: Vec<JsVoiceMember>,
 }
 
-fn call_state(state: &tilo_relay_protocol::voice::CallState) -> serde_json::Value {
+fn call_state(state: &tilo_server_protocol::voice::CallState) -> serde_json::Value {
     serde_json::json!({
         "call": hex::encode(state.call),
         "epoch": state.epoch,
@@ -1430,7 +1431,7 @@ enum JsVoiceEvent {
         reason: String,
     },
     /// One frame of a call's voice, as the device `from` published it on the
-    /// workspace's plane: the page's app plays it.
+    /// workspace's live session: the page's app plays it.
     Heard {
         workspace: String,
         from: String,
@@ -1438,7 +1439,7 @@ enum JsVoiceEvent {
         timestamp48k: u64,
         opus: String,
     },
-    /// One picture of a call on the workspace's plane: the tilo-video/1
+    /// One picture of a call on the workspace's live session: the tilo-video/1
     /// object of `from`'s camera or screen, in hex, as the app's decoder
     /// draws it.
     Picture {
@@ -1617,8 +1618,8 @@ enum JsCallOperation {
 }
 
 impl JsCallOperation {
-    fn into_operation(self) -> Result<tilo_relay_protocol::voice::CallOperation, JsError> {
-        use tilo_relay_protocol::voice::{CallOperation, Directions};
+    fn into_operation(self) -> Result<tilo_server_protocol::voice::CallOperation, JsError> {
+        use tilo_server_protocol::voice::{CallOperation, Directions};
         Ok(match self {
             Self::Open {
                 app,
@@ -1678,7 +1679,7 @@ fn is_durable(event: &Event) -> bool {
 
 /// The events [`WasmPeer::take_live_events`] reads.
 fn is_live(event: &Event) -> bool {
-    matches!(event, Event::LivePlane { .. } | Event::Live { .. })
+    matches!(event, Event::LiveSession { .. } | Event::Live { .. })
 }
 
 /// The events [`WasmPeer::take_voice_events`] reads: a page that never takes them (it has no
@@ -1709,7 +1710,7 @@ pub struct WasmPeer {
     /// The person's workspace lists as their host sends them: what the
     /// switcher offers without asking the host again.
     personal_events: Events,
-    personal_list: RefCell<Option<tilo_relay_session::workspaces::PersonalList>>,
+    personal_list: RefCell<Option<tilo_server_session::workspaces::PersonalList>>,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<WorkspaceId, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
@@ -1723,15 +1724,15 @@ pub struct WasmPeer {
 }
 
 impl WasmPeer {
-    /// What signs a question command of this session's: `custody`, the
+    /// What signs a question command of this session's: `device key`, the
     /// person's root where the page holds it, else this session's own
     /// device key with its certificate.
     fn question_signer(
         &self,
-        custody: &JsValue,
+        device_key: &JsValue,
     ) -> Result<(PageSigner, Option<DeviceCert>), JsError> {
-        use tilo_relay_client::DeviceSigner as _;
-        let signer = PageSigner::from_js(custody)?;
+        use tilo_server_client::DeviceSigner as _;
+        let signer = PageSigner::from_js(device_key)?;
         let key = signer.device_public_key();
         if key == self.reporter_cert.user_public_key {
             Ok((signer, None))
@@ -1771,7 +1772,7 @@ fn peer_store(
         return Ok((Arc::new(durable), Some(kept)));
     }
     let record = record
-        .map(|bytes| postcard::from_bytes::<PeerRecord>(&bytes))
+        .map(|bytes| postcard::from_bytes::<PeerEntry>(&bytes))
         .transpose()
         .map_err(js_error)?;
     let save = save.ok_or_else(|| js_error("a peer needs a namespace or a save callback"))?;
@@ -1793,7 +1794,7 @@ fn set_member_name(handle: &Link, workspace: &str, name: &str) {
     if name.trim().is_empty() {
         return;
     }
-    let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Name {
+    let request = tilo_server_protocol::workspaces::WorkspacesRequest::Name {
         workspace: workspace.to_owned(),
         name: name.to_owned(),
     };
@@ -1804,8 +1805,8 @@ impl WasmPeer {
     /// Ask the host `request`, and resolve to its answer.
     pub(crate) async fn workspaces_request(
         &self,
-        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
-    ) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, JsError> {
+        request: tilo_server_protocol::workspaces::WorkspacesRequest,
+    ) -> Result<tilo_server_protocol::workspaces::WorkspacesReply, JsError> {
         self.handle
             .ask_workspaces(request)
             .map_err(js_error)?
@@ -1830,7 +1831,7 @@ impl WasmPeer {
             None => self
                 .device
                 .personal_list(
-                    &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                    &tilo_server_session::workspaces::WorkspaceLabels::new(),
                     None,
                 )
                 .await
@@ -1853,7 +1854,7 @@ impl WasmPeer {
     ///
     /// # Errors
     ///
-    /// Throws for a malformed configuration, custody object, namespace or
+    /// Throws for a malformed configuration, device key object, namespace or
     /// channel vault, or neither a namespace nor a save callback.
     #[allow(
         clippy::arc_with_non_send_sync,
@@ -1865,16 +1866,18 @@ impl WasmPeer {
     )]
     pub fn start(
         config_json: &str,
-        custody: &JsValue,
+        device_key: &JsValue,
         namespace: Option<String>,
         record: Option<Vec<u8>>,
         save: Option<Function>,
         channel_vault: Option<Vec<u8>>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
-        let signer = PageSigner::from_js(custody)?;
+        let signer = PageSigner::from_js(device_key)?;
         if signer.device_public_key() != config.cert.device_public_key {
-            return Err(js_error("custody does not hold the certified device key"));
+            return Err(js_error(
+                "device key does not hold the certified device key",
+            ));
         }
         let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
         let (store, profile_store) = peer_store(
@@ -2083,7 +2086,7 @@ impl WasmPeer {
     /// Rejects for malformed options, when the root does not sign, or when the
     /// host refuses.
     /// Pair this person's new devices through this session's host, as the
-    /// person's root custody the page holds: over this session, with no
+    /// person's root device key the page holds: over this session, with no
     /// connection of its own.
     pub fn pairing(&self) -> PairingHost {
         PairingHost(PairingReach::Session(tilo_session_client::member_host(
@@ -2093,28 +2096,28 @@ impl WasmPeer {
 
     /// Answer what this person's agents on this session's host ask them,
     /// over this session, on the question sheet over the desktop: with
-    /// `custody`, the person's root custody where the page holds it, else
+    /// `device key`, the person's root device key where the page holds it, else
     /// this session's own device key. Once per session.
     ///
     /// # Errors
-    /// `custody` is no custody, or neither the person's root nor this
+    /// `device key` is no device key, or neither the person's root nor this
     /// session's device key.
     #[wasm_bindgen(js_name = answerAgentQuestions)]
-    pub fn answer_agent_questions(&self, custody: &JsValue) -> Result<(), JsError> {
-        crate::questions::answer_agent_questions(self.id, custody, &self.reporter_cert)
+    pub fn answer_agent_questions(&self, device_key: &JsValue) -> Result<(), JsError> {
+        crate::questions::answer_agent_questions(self.id, device_key, &self.reporter_cert)
     }
 
     /// The key this session's host signs its pushes with, which the page's
     /// browser subscribes with: empty where the host pushes nothing. Asked
-    /// as `custody` (the person's root, or this session's device key).
+    /// as `device key` (the person's root, or this session's device key).
     ///
     /// # Errors
-    /// Rejects when `custody` is neither, or the host refuses.
+    /// Rejects when `device key` is neither, or the host refuses.
     #[wasm_bindgen(js_name = pushKey)]
-    pub async fn push_key(&self, custody: JsValue) -> Result<Vec<u8>, JsError> {
-        let (signer, device) = self.question_signer(&custody)?;
+    pub async fn push_key(&self, device_key: JsValue) -> Result<Vec<u8>, JsError> {
+        let (signer, device) = self.question_signer(&device_key)?;
         let host = tilo_session_client::member_host(&self.handle);
-        tilo_relay_client::questions::MemberQuestions {
+        tilo_server_client::questions::MemberQuestions {
             host: &host,
             root: &signer,
             device: device.as_ref(),
@@ -2127,28 +2130,28 @@ impl WasmPeer {
     /// Have this session's host push this browser a word when an agent waits
     /// for the person and no Tilo of theirs is open: the browser's push
     /// subscription (its `endpoint`, and its `p256dh` and `auth` keys as
-    /// `getKey` reads them), asked as `custody`.
+    /// `getKey` reads them), asked as `device key`.
     ///
     /// # Errors
-    /// Rejects for a malformed subscription, when `custody` is neither the
+    /// Rejects for a malformed subscription, when `device key` is neither the
     /// person's root nor this session's device key, or the host refuses.
     #[wasm_bindgen(js_name = notifyAt)]
     pub async fn notify_at(
         &self,
-        custody: JsValue,
+        device_key: JsValue,
         endpoint: String,
         p256dh: Vec<u8>,
         auth: Vec<u8>,
     ) -> Result<(), JsError> {
-        let subscription = tilo_relay_protocol::certify::PushSubscription {
+        let subscription = tilo_server_protocol::certify::PushSubscription {
             endpoint,
             p256dh,
             auth,
         };
         subscription.check().map_err(js_error)?;
-        let (signer, device) = self.question_signer(&custody)?;
+        let (signer, device) = self.question_signer(&device_key)?;
         let host = tilo_session_client::member_host(&self.handle);
-        tilo_relay_client::questions::MemberQuestions {
+        tilo_server_client::questions::MemberQuestions {
             host: &host,
             root: &signer,
             device: device.as_ref(),
@@ -2160,7 +2163,7 @@ impl WasmPeer {
 
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
-        use tilo_relay_client::DeviceSigner as _;
+        use tilo_server_client::DeviceSigner as _;
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Options {
@@ -2179,7 +2182,7 @@ impl WasmPeer {
         let seconds = crate::workspaces::seconds(Some(options.expires_in_seconds))?;
         let root = PageSigner::from_js(&root)?;
         let now_ns = ui::time::unix_now_ns();
-        let mut grant = tilo_relay_protocol::workspaces::PreAdmission {
+        let mut grant = tilo_server_protocol::workspaces::PreAdmission {
             workspace: options.workspace,
             role: crate::workspaces::wire_role(&options.role)?,
             token_sha256: device_key(&options.token_sha256)?,
@@ -2194,7 +2197,7 @@ impl WasmPeer {
             .map_err(|error| js_error(error.0))?;
         let reply = self
             .workspaces_request(
-                tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
+                tilo_server_protocol::workspaces::WorkspacesRequest::PreAdmit {
                     request_id: request_id(&options.request_id)?,
                     grant,
                     inviter_name: options.inviter_name,
@@ -2411,7 +2414,7 @@ impl WasmPeer {
         self.handle
             .send(Cmd::VoiceShow(
                 workspace_id(workspace)?,
-                tilo_relay_protocol::voice::Showing {
+                tilo_server_protocol::voice::Showing {
                     camera,
                     screen,
                     muted,
@@ -2489,7 +2492,7 @@ impl WasmPeer {
     }
 
     /// Publish `frames` (JSON array of `{timestamp48k, opus}`, `opus` in hex)
-    /// on `workspace`'s live plane as this page's voice, in the order given:
+    /// on `workspace`'s live session as this page's voice, in the order given:
     /// one voice object per frame, heard by every device in the call.
     ///
     /// # Errors
@@ -2518,7 +2521,7 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// Publish `pictures` this page's camera and screen encoded on the plane
+    /// Publish `pictures` this page's camera and screen encoded on the live session
     /// of `workspace`, as JSON: `[{source, layer, sequence, keyframe,
     /// timestampUs, width, height, payload}]`, `source` and `layer` as
     /// `web/voice-video.mjs` names them and `payload` in hex. Every device
@@ -2562,7 +2565,7 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// Show the devices' layers of `shown` on the plane of `workspace`, as
+    /// Show the devices' layers of `shown` on the live session of `workspace`, as
     /// JSON: `[{device, camera: [layer], screen: [layer]}]`, `device` in hex.
     /// The devices left out are no longer read, and their owners stop encoding
     /// the layers nobody shows.
@@ -2604,7 +2607,7 @@ impl WasmPeer {
     }
 
     /// Ask `device` (hex) for `source` (`camera` or `screen`) afresh on the
-    /// plane of `workspace`: its next picture starts a group this page can
+    /// live session of `workspace`: its next picture starts a group this page can
     /// begin decoding at.
     ///
     /// # Errors
@@ -2641,7 +2644,7 @@ impl WasmPeer {
     }
 
     /// Why this page shows no live presence, in the words it shows in the
-    /// members' place, or `null` while it has a plane: no plane could be
+    /// members' place, or `null` while it has a live session: no live session could be
     /// reached.
     #[wasm_bindgen(js_name = liveNote)]
     pub fn live_note(&self) -> Option<String> {
@@ -2672,7 +2675,7 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track: Track::Presence,
@@ -2684,7 +2687,7 @@ impl WasmPeer {
                 }
                 // A window's page: the display list the device hosting it publishes, drawn in the
                 // tab of that window.
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track: Track::Page(tab),
@@ -2696,7 +2699,7 @@ impl WasmPeer {
                 }
                 // A window's pictures: the video the device hosting it publishes, drawn in the tab
                 // of that window.
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track: Track::Window(tab, _),
@@ -2790,6 +2793,38 @@ impl WasmPeer {
             .map_err(|error| js_error(&error))
     }
 
+    /// Resolves `true` once the workspace's server says a write landed in the workspace's documents
+    /// ([`tilo_actions::remote::ActionProvider::changed`], a request the server holds for ten seconds
+    /// at most), and `false` once `until` settles first or the server cannot tell. The wait is let
+    /// go of when this resolves, so a server that never answers costs this page nothing: the
+    /// session forgets a wait nobody reads any more.
+    ///
+    /// It says that something was written and never what: what changed is read from the server's
+    /// feed of changes, which answers each caller with what it may read.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace and a page with no session with a server.
+    #[wasm_bindgen(js_name = writeLanded)]
+    pub async fn write_landed(&self, workspace: &str, until: Promise) -> Result<bool, JsError> {
+        use std::future::Future as _;
+        use std::pin::Pin;
+        use std::task::Poll;
+        let number = workspace_id(workspace)?;
+        let api = crate::peer_sync::actions_of(self.id, number)
+            .ok_or_else(|| js_error("this page holds no session with a server"))?;
+        let mut landed = api.wait_for_change(tilo_actions::remote::WatchScope::Records);
+        let mut over = JsFuture::from(until);
+        Ok(std::future::poll_fn(move |context| {
+            // A wait the server refused, or one its session could not carry, wakes nobody.
+            if let Poll::Ready(woken) = Pin::new(&mut landed).poll(context) {
+                return Poll::Ready(woken.is_some());
+            }
+            Pin::new(&mut over).poll(context).map(|_| false)
+        })
+        .await)
+    }
+
     /// Have this page's device in the person's own workspace on the host, asked on the session it
     /// holds there: made the first time, under an id the host chooses, answered again after, another
     /// for each `name` ([`Device::enter_own_workspace`]). This very device
@@ -2799,8 +2834,8 @@ impl WasmPeer {
     ///
     /// # Errors
     ///
-    /// Rejects with an `Error` named `HostRefusal` whose `code` says how the host refused
-    /// ([`HostRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
+    /// Rejects with an `Error` named `DeviceRefusal` whose `code` says how the host refused
+    /// ([`DeviceRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
     /// whose `refusal` is the host's typed refusal where it gave one.
     #[wasm_bindgen(js_name = enterOwnWorkspace)]
     pub async fn enter_own_workspace(
@@ -2826,7 +2861,7 @@ impl WasmPeer {
         serde_json::to_string(&listing).map_err(|error| js_error(error).into())
     }
 
-    /// Whether the page holds the workspace's record `record` of `app`: open in
+    /// Whether the page holds the workspace's document `record` of `app`: open in
     /// a mount, or received from the workspace and stored for whoever opens it.
     #[wasm_bindgen(js_name = hasRecord)]
     pub fn has_record(&self, app: &str, record: &str) -> bool {

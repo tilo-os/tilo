@@ -69,7 +69,7 @@ action rename_column(col: Column, title: Text) {
     col.title = title
 }
 
-/// The board's window: a lane per column with its cards, each card its title and the start of
+/// The board's window: a list per column with its cards, each card its title and the start of
 /// its notes. A card is dragged to another place or column, or moved from its menu, which also
 /// holds its actions, and opens in a page of its own.
 view board(b: Board) {
@@ -79,7 +79,7 @@ view board(b: Board) {
                 for col in b.columns {
                     // A column adds at its foot, in its own place: typing there puts the card
                     // in that column.
-                    ui.BoardLane(col, title: col.title, count: col.cards.len()) {
+                    ui.BoardList(col, title: col.title, count: col.cards.len()) {
                         on drop(moved: Card): move_to(moved, col)
                         foot: {
                             std.add_entry("New card", new_card(col))

@@ -52,13 +52,13 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
     reload: () => { state.reloads += 1; }, online: () => online()});
   // One follow round: the tick, and the host's answer.
   const tick = async () => { state.ticks?.(); await settle(); };
-  // Run the timers set for `ms`.
+  // Fire the timers set for `ms`.
   const fire = async ms => {
     for (const [id, timer] of [...state.timers]) if (timer.ms === ms) { state.timers.delete(id); timer.run(); }
     await settle();
   };
   const kept = () => readSetup({getItem: key => stored.get(key) ?? null});
-  return {run, said, names, last, stored, state, copied, tick, fire, kept};
+  return {run, screen: run, said, names, last, stored, state, copied, tick, fire, kept};
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -139,7 +139,7 @@ test('the click copies exactly the prompt shown, inside the click, and only then
 });
 
 test('the code is followed before the clipboard holds it: the host knows it when an agent asks', async () => {
-  // The host keeps a code only from its tab's first follow (tilo-relay's login
+  // The host keeps a code only from its tab's first follow (tilo-server's login
   // codes), and the prompt is on the clipboard the moment the click returns: an
   // agent handed it at once asks for a code the host must already have. The
   // shown code is followed as soon as it is on the screen; the click follows it
@@ -278,6 +278,57 @@ test('a host that refuses, or a page that never offers codes, is said, not waite
   await gone.run.signInWithAgent();
   assert.deepEqual(gone.last('notReady'), ['notReady', 'signIn', setupFailure({code: 'refused'})]);
   assert.equal(setupFailure({code: 'not-let-in'}), 'This tab isn’t let in yet. Try again in a moment.');
+});
+
+test('a server that refuses the code says the code could not be made, never that the workspace could not be opened', async () => {
+  // What a page that came by its server's second name got from it: the workspace is there, the code is refused.
+  const {screen, last} = fixture({site: 'https://tilo.wifi.example:24520'});
+  const refusal = Object.assign(new Error('the code route answered 400'),
+    {name: 'LoginCodeError', code: 'refused', status: 400, origin: 'https://tilo.wifi.example:24500'});
+  screen.offerSetup(async () => { throw refusal; });
+  await settle();
+  await settle();
+  const [, , {problem}] = last('offer');
+  const rest = ' Try again, or skip for now and use Tilo without an agent.';
+  assert.equal(problem, `The code for your agent could not be made here: tilo.wifi.example:24520 refused it.${rest}`);
+  // The site is named as its address bar names it, not by the address its codes come from, and never
+  // by an address by number.
+  const numbered = Object.assign(new Error('the code route answered 400'), {name: 'LoginCodeError', code: 'refused', status: 400, origin: 'http://127.0.0.1:24500'});
+  assert.equal(setupFailure(numbered, {site: 'http://tilo.localhost:24520'}),
+    `The code for your agent could not be made here: tilo.localhost:24520 refused it.${rest}`);
+  assert.equal(setupFailure(numbered, {site: 'http://127.0.0.1:24520'}), `The code for your agent could not be made here: this site refused it.${rest}`);
+  assert.equal(setupFailure(numbered), `The code for your agent could not be made here: tilo.sh refused it.${rest}`);
+  // Skip for now still opens the person's own workspace, as the sentence says it does.
+  let opened = 0;
+  screen.whenDone(() => { opened += 1; });
+  screen.skip();
+  await settle();
+  assert.equal(opened, 1, 'the person’s own workspace opens');
+  // Only the page's own stop says a workspace could not be opened and promises a why (the page shows it
+  // beneath this screen): no other failure does.
+  for (const code of ['refused', 'no-workspace', 'no-codes', 'not-let-in', 'not-loaded', 'copy-failed', 'not-a-device', 'unknown',
+    'too-many', 'timeout', 'unreachable', undefined]) {
+    assert.doesNotMatch(setupFailure({code}), /to see why|could not open a workspace/, `the failure ${code}`);
+  }
+  assert.equal(setupFailure({code: 'stopped'}), 'Tilo could not open a workspace for you here yet. Skip for now to see why.');
+  assert.equal(setupFailure({code: 'refused'}), `The code for your agent could not be made here.${rest}`, 'refused by something other than the site’s server');
+  assert.equal(setupFailure({code: 'no-workspace'}), 'There is no workspace here yet to set your agent up in. Try again, or skip for now.');
+  assert.equal(setupFailure({code: 'no-codes'}), 'This tab can’t make the code an agent needs. Try again, or skip for now.');
+});
+
+test('a page that stopped promises a why, and Skip for now leaves the screen for it at once', async () => {
+  const {screen, said, names, last, kept} = fixture();
+  screen.unavailable({code: 'stopped'});
+  assert.deepEqual(said.findLast(([name, of]) => name === 'offer' && of === 'setup'),
+    ['offer', 'setup', {problem: 'Tilo could not open a workspace for you here yet. Skip for now to see why.'}]);
+  let opened = 0;
+  screen.whenDone(() => { opened += 1; });
+  screen.skip();
+  await settle();
+  assert.ok(names().includes('close'), 'the screen leaves: the page says why beneath it');
+  assert.equal(last('opening'), undefined, 'and never says a workspace is opening');
+  assert.equal(opened, 0, 'nothing is opened for a page that cannot go on');
+  assert.notEqual(kept()?.step, 'opening', 'nor kept as opening for the next load');
 });
 
 test('a clipboard that refuses claims no copy: the prompt stays, to copy by hand', async () => {

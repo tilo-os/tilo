@@ -4,7 +4,7 @@ set -euo pipefail
 # runner-large jobs execute inside disposable Kata guests. Their job container
 # starts with a static /dev tmpfs even though the guest kernel has working FUSE
 # and loop devices. Use the guest's devtmpfs so repart, losetup -P, and Podman
-# see dynamically created loop partition nodes throughout the sealed VM gate.
+# see dynamically created loop partition nodes throughout the sealed VM check.
 [[ ${1:-} == --kata-job ]] || {
     echo 'usage: ci-prepare-disk-devices.sh --kata-job' >&2
     exit 2

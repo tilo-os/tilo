@@ -18,7 +18,7 @@ ignored = ["serde_bytes"]
 name = "fs"
 path = "src/lib.rs"
 
-# The content plane is portable. Filesystem projection, mounting and service
+# The content store is portable. Filesystem projection, mounting and service
 # protocols remain enabled by default for the OS; app-only consumers opt out.
 [features]
 default = ["filesystem"]
@@ -81,9 +81,9 @@ name = "fs"
 path = "src/main.rs"
 required-features = ["filesystem"]
 
-# The content plane's integration tests: one binary, its files included as
+# The content store's integration tests: one binary, its files included as
 # modules by `tests/it.rs` (a file per binary linked the whole crate once
-# each), gated on the filesystem half they all drive.
+# each), depending on the filesystem half they all drive.
 [[test]]
 name = "it"
 path = "tests/it.rs"
@@ -196,7 +196,7 @@ image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
 tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-test-relay = { path = "../../dev/test-relay" }
+test-server = { path = "../../dev/test-server" }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
@@ -207,7 +207,7 @@ workspace = true
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 fuser = { workspace = true, optional = true }
 
-# The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
+# The Tier 1 native backend: fanotify journal, Btrfs capture epochs and
 # pre-content placeholders. Linux-only kernel interfaces, which the daemon
 # that mounts the tree reads.
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -228,7 +228,7 @@ def image_of_layout(root, arch=None):
 
 
 def load_fragment(path, arch=None):
-    """A fragment directory, or a whole layout standing for the fragment of its layers."""
+    """A fragment directory, or a whole layout for the fragment of its layers."""
     meta = os.path.join(path, "fragment.json")
     if os.path.exists(meta):
         with open(meta) as f:

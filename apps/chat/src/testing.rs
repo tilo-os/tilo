@@ -1,13 +1,13 @@
 //! Test fixtures over a chat held without a window ([`Workspace`]): the demo and
-//! starter records, verbs applied as a named person, and the record and its
+//! starter resources, verbs applied as a named person, and the resource and its
 //! messages read back as the window reads them.
 
 use automerge::AutoCommit;
 use ui::tilo_resource::{Id, Invoke};
 
+use crate::chat::chat;
 pub(crate) use crate::demo::{Workspace, apply_as, apply_at, post};
 use crate::model::{Channel, Message, User};
-use crate::record::chat;
 use crate::resource::Chat;
 
 /// A workspace holding the demo workspace, read by [`crate::model::ME`].
@@ -15,7 +15,7 @@ pub(crate) fn demo_doc() -> Workspace {
     Workspace::demo().unwrap()
 }
 
-/// The demo workspace's chat record alone, read by [`crate::model::ME`]:
+/// The demo workspace's chat resource alone, read by [`crate::model::ME`]:
 /// for what reads no messages.
 pub(crate) fn demo_chat() -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -44,13 +44,30 @@ pub(crate) fn apply_part_as(
     workspace.apply_part_as(&ui::tilo_resource::MemberId::person(author), invoke)
 }
 
-/// Start the chat in `doc` as `me` would: the workspace's `#chat` and `#voice`.
-pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
-    crate::demo::start(doc, me, name, initials).unwrap();
+/// Start the chat in `doc` as `me`, called `name`, would: the workspace's `#chat` and `#voice`.
+pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str) {
+    crate::demo::start(doc, me).unwrap();
+    member(me, name);
 }
 
-pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
-    crate::demo::introduce(doc, me, name, initials).unwrap();
+/// The person `me` is a member of the workspace, called `name`, as its member list says.
+pub(crate) fn member(me: &str, name: &str) {
+    let me = ui::tilo_resource::MemberId::person(me);
+    let mut members = ui::tilo_resource::members::named();
+    members.retain(|(id, _)| *id != me);
+    members.push((me, name.to_owned()));
+    ui::tilo_resource::members::know(members);
+}
+
+/// The agent `agent` is a member of the workspace, called `name`, as the member list `app` and
+/// the record's code receive says.
+pub(crate) fn agent_member(app: &mut crate::app::ChatApp, agent: &str, name: &str) {
+    let agent = ui::tilo_resource::MemberId::agent(agent);
+    let mut members = ui::tilo_resource::members::named();
+    members.retain(|(id, _)| *id != agent);
+    members.push((agent.clone(), name.to_owned()));
+    ui::tilo_resource::members::know(members);
+    app.workspace_names.insert(agent, name.to_owned());
 }
 
 /// Post `text` in `channel` as `author`; the new message's id.
@@ -158,8 +175,8 @@ pub(crate) fn channels(doc: &AutoCommit) -> Vec<Channel> {
 }
 
 /// The people in the workspace.
-pub(crate) fn users(doc: &AutoCommit) -> Vec<User> {
-    crate::projection::read(doc).user_rows()
+pub(crate) fn users() -> Vec<User> {
+    crate::projection::member_rows()
 }
 
 /// How many top-level messages `channel` has.
@@ -179,7 +196,7 @@ pub(crate) fn draft_text(doc: &AutoCommit, key: &str) -> String {
     crate::projection::draft_text(doc, key)
 }
 
-/// The id of the item resource the record publishes for `id` of `field`.
+/// The id of the item resource the resource publishes for `id` of `field`.
 pub(crate) fn item(field: &str, id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
@@ -224,7 +241,7 @@ pub(crate) fn submit_feedback(submission: &ui::feedback::Submission) -> Invoke<C
 
 /// The demo agent's reply to the `agent-work` summons.
 pub(crate) fn agent_reply() -> String {
-    crate::record::reply_id(
+    crate::chat::reply_id(
         &Id::from_raw(crate::resource::DEMO_SUMMONS),
         &crate::resource::demo_agent(),
     )
@@ -247,7 +264,7 @@ pub(crate) fn call_row(channel: &str) -> String {
     format!("{}/call", item("channels", channel))
 }
 
-pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
+pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::chat::WorkUpdate {
     use crate::model::{AgentStepOutcome, AgentWorkState};
 
     let (state, app, did, about) = match &work.state {
@@ -270,7 +287,7 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::Work
             (state, None, None, None)
         }
     };
-    crate::record::WorkUpdate {
+    crate::chat::WorkUpdate {
         state: state.into(),
         app,
         did,
@@ -285,7 +302,7 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::Work
                     AgentStepOutcome::NoChange => ("no_change", None),
                     AgentStepOutcome::Refused { why } => ("refused", Some(why.clone())),
                 };
-                crate::record::StepUpdate {
+                crate::chat::StepUpdate {
                     id: step.id.clone(),
                     sequence: step.sequence,
                     resource: step.resource.clone(),

@@ -1,8 +1,8 @@
 //! The agent in the workspace: a certified member beside browsers and
 //! native devices.
 //!
-//! [`AgentMember`] holds a certified relay session under the agent's own
-//! device key and joins the workspace's durable and live planes. It holds the
+//! [`AgentMember`] holds a certified server session under the agent's own
+//! device key and joins the workspace's durable and live sessions. It holds the
 //! records it works in as replicas of their resources, each in its own
 //! confined app worker ([`ConfinedReplica`]), acts
 //! only through the operations they publish, and commits each resulting
@@ -37,9 +37,9 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_live::presence::KEEPALIVE_MS;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
-use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
-use tilo_relay_protocol::live::{LiveAnchor, LiveResource};
+use tilo_server_client::Host;
+use tilo_server_protocol::agents::{AgentStatus, AgentStep, TaskState};
+use tilo_server_protocol::live::{LiveAnchor, LiveResource};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::DeviceCert;
 
@@ -51,7 +51,6 @@ mod context;
 mod decompose;
 mod document_api;
 mod facts;
-mod introduce;
 mod logs;
 mod obligations;
 mod parts;
@@ -70,7 +69,7 @@ use running::{
     FollowUp, NEW_DOCUMENT_NOTE, Running, imports, named_without_documents, produced,
     unknown_action,
 };
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// The longest a pump runs local steps back to back before it takes in the
 /// session again.
@@ -212,11 +211,11 @@ struct Asking {
     arguments: serde_json::Map<String, serde_json::Value>,
     /// The person's answer once it arrives; a host that went away without
     /// one answers that confirmation is still required.
-    answer: Arc<std::sync::Mutex<Option<WitnessAnswer>>>,
+    answer: Arc<std::sync::Mutex<Option<ApprovalAnswer>>>,
 }
 
-type WitnessAnswer =
-    Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
+type ApprovalAnswer =
+    Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>;
 
 /// One agent in one workspace.
 #[allow(
@@ -362,7 +361,7 @@ pub struct AgentMember {
 
 impl AgentMember {
     /// Connect as `identity` and join `config.workspace`'s durable and live
-    /// planes.
+    /// live sessions.
     pub fn start(
         config: MemberConfig,
         identity: AgentIdentity,
@@ -737,7 +736,7 @@ impl AgentMember {
             }) if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
             }
-            Event::LivePlane {
+            Event::LiveSession {
                 ws: workspace_id,
                 from,
                 track: tilo_live::live::Track::Presence,
@@ -879,9 +878,9 @@ impl AgentMember {
         let waits = if matches!(step.action, StepAction::Continue(_)) {
             self.touched_keys_pending()
         } else {
-            self.step_record_pending(&step)
+            self.step_entry_pending(&step)
                 || self.edits_arriving(&step)
-                || self.step_record_arriving(&step)
+                || self.step_entry_arriving(&step)
         };
         if waits && self.may_wait_for_host() {
             // A record the task just opened is planned with once it opens,
@@ -936,7 +935,7 @@ impl AgentMember {
             // The person's own device answered for this invocation: it runs
             // as they allowed it, with the arguments as they changed them.
             Ok(tilo_actions::remote::ConfirmedInvocation {
-                confirmation: tilo_actions::remote::Confirmation::Witnessed(_),
+                confirmation: tilo_actions::remote::Confirmation::Approved(_),
                 arguments,
             }) => self
                 .invoke_step(
@@ -1637,7 +1636,7 @@ impl AgentMember {
     /// Whether an open record of the app `step` acts in holds edits it could
     /// not decide yet: waiting for their keys, their surface or the
     /// workspace's governance.
-    fn step_record_pending(&self, step: &Step) -> bool {
+    fn step_entry_pending(&self, step: &Step) -> bool {
         let held = |route: &DocumentRoute| self.undecided.contains(route);
         // By app: the record a step names may not be open yet.
         self.apps
@@ -1840,7 +1839,7 @@ impl AgentMember {
                 tilo_actions::api::ApiError::ConfirmationRequired.code()
             )))
         };
-        let Some(witness) = self.control.witness() else {
+        let Some(approver) = self.control.approver() else {
             return refused();
         };
         let caller = tilo_actions::remote::Caller::delegated_agent(
@@ -1884,9 +1883,9 @@ impl AgentMember {
         };
         let answer = Arc::new(std::sync::Mutex::new(None));
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
-        witness.confirm(&caller, &request).then(move |given| {
+        approver.confirm(&caller, &request).then(move |given| {
             *arrived.lock_recover() = Some(given.unwrap_or(Err(
-                tilo_actions::remote::ActionHostError::confirmation_required(),
+                tilo_actions::remote::ActionCallError::confirmation_required(),
             )));
             control.wake();
         });
@@ -2018,17 +2017,22 @@ impl AgentMember {
             None => (Seed::New, None),
         };
         // Lent the workspace's content store, so an export keeps its content in
-        // the workspace and content an operation names reaches the worker.
+        // the workspace and content an operation names reaches the worker, and its members, so a
+        // message names whom it mentions and an export its authors.
         let app = ConfinedReplica::open(
             &self.catalogue,
             app_id,
             &self.workspace,
-            &crate::control::person(&self.identity.delegation),
-            &crate::ReplicaActor::Agent,
+            &tilo_actions::MemberId::agent(crate::control::agent_id(&self.identity.delegation)),
+            &crate::ReplicaActor::Agent {
+                person: crate::control::person(&self.identity.delegation),
+                name: self.identity.delegation.label.clone(),
+            },
             seed,
         )
         .map_err(|error| error.to_string())?
-        .lending(self.content.clone());
+        .lending(self.content.clone())
+        .knowing(Arc::clone(self.peer.engine()));
         if let Some(seeded) = &seeded {
             self.unopened.forget(seeded);
         }
@@ -2040,7 +2044,6 @@ impl AgentMember {
         self.apps.insert(route.clone(), app);
         self.ask_workspace_through(&route);
         self.hold_waiting_parts(&route);
-        self.introduce_in_chat(&route);
         self.generation = self.generation.wrapping_add(1);
         // A record it made opens in front of the people; one it only opened
         // to read does not.
@@ -2102,7 +2105,7 @@ impl AgentMember {
         self.invoke_as(route, address, arguments, confirmed)
     }
 
-    /// [`Self::invoke`], with `confirmed` standing for whoever confirmed:
+    /// [`Self::invoke`], with `confirmed` naming whoever confirmed:
     /// the person, on their own device, for the agent's own steps; a person
     /// invoking it directly for a remote invocation.
     fn invoke_as(
@@ -2248,7 +2251,7 @@ impl AgentMember {
         let view = tilo_desktop_model::place::View {
             app_id: &route.app_id,
             title,
-            record: &record,
+            document: &record,
             beside: beside
                 .as_ref()
                 .map(|(app, record)| (app.as_str(), record.as_str())),
@@ -2259,7 +2262,7 @@ impl AgentMember {
         let person = hex::encode(delegation.user_public_key);
         let opener = tilo_desktop_model::place::Opener {
             person: &person,
-            run: Some(tilo_desktop_model::ownership::OpenedBy {
+            opened_by: Some(tilo_desktop_model::ownership::OpenedBy {
                 run: self.running.as_ref().map_or_else(
                     || format!("agent:{}", crate::control::agent_id(delegation)),
                     |running| running.id.clone(),
@@ -2275,13 +2278,20 @@ impl AgentMember {
         let place = |doc: &automerge::AutoCommit| {
             tilo_desktop_model::place::place_view(doc, &opener, &view)
         };
-        let change = match (self.unopened.desktop(), self.apps.get(&desktop)) {
+        let placed = match (self.unopened.desktop(), self.apps.get(&desktop)) {
             (Some(doc), _) => place(&doc),
-            (None, Some(app)) => app.read(place).flatten(),
-            (None, None) => None,
+            (None, Some(app)) => app
+                .read(place)
+                .unwrap_or(Err(tilo_desktop_model::place::NotPlaced::NoLayout)),
+            (None, None) => Err(tilo_desktop_model::place::NotPlaced::NoLayout),
         };
-        let Some(change) = change else {
-            return;
+        let change = match placed {
+            Ok(Some(change)) => change,
+            Ok(None) => return,
+            Err(why) => {
+                tracing::warn!(%why, "agent: its view is not on the layout");
+                return;
+            }
         };
         let mutation = collab_types::DocumentMutation::Incremental(change);
         if let Err(error) = self.peer.write(desktop.clone(), &mutation) {

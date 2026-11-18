@@ -25,11 +25,11 @@ its unit tests, both of:
 
 Pixel variety alone cannot tell imagery from a refusal: a provider that stops
 serving can answer with a valid, colourful PNG at HTTP 200. Assert on what the
-backend returned as well. The maps lane requires the tiles cached for distinct
+backend returned as well. The maps job requires the tiles cached for distinct
 city-centre coordinates to be distinct images, and the tile layer records error
 statuses and non-PNG answers as rejected failures, not as imagery.
 
-Both must remain runnable through a named, documented opt-in lane. Network tests
+Both must remain runnable through a named, documented opt-in job. Network tests
 must use `#[ignore]` rather than returning early: ordinary CI should report that
 it did not execute them, never count a no-assertion branch as a passing test.
 
@@ -55,7 +55,7 @@ is generic over `ui::widget::Widget`, so any app can reuse the pattern:
   assertions: real imagery is varied and differs from the placeholder; a broken
   path leaves a near-uniform placeholder that these catch.
 
-## Running the maps live lane
+## Running the maps live job
 
 ```bash
 # Full plumbing + live-render pixel inspection (needs real network + a GPU).
@@ -65,15 +65,15 @@ MAPS_LIVE_OUT=apps/maps/live-out \
   --ignored --nocapture --test-threads 1
 ```
 
-The lane loads about one viewport of OpenStreetMap Standard tiles per case,
+The job loads about one viewport of OpenStreetMap Standard tiles per case,
 the interactive scale the OSMF tile policy permits. Do not widen it into
 area sweeps.
 
 Ordinary `cargo test -p maps` compiles these cases but reports them as
-ignored. The lane drives the whole app rather than duplicating a weaker raw
+ignored. The job drives the whole app rather than duplicating a weaker raw
 `load_tile` network smoke test.
 
-## Database client live lane
+## Database client live job
 
 The database client proves its production PostgreSQL and MySQL query,
 introspection, truncation, and cancellation paths against disposable services:
@@ -90,7 +90,7 @@ different server release. Direct execution against existing servers remains
 available through the `TILO_DB_TEST_{PG,MYSQL}_*` connection variables described
 in `apps/db-client/tests/live_roundtrip.rs`.
 
-## Display configuration live lane
+## Display configuration live job
 
 Display unit tests cannot prove that a monitor accepted a KMS mode or that its
 ICC calibration is visually correct. Before release, run the compositor on a
@@ -107,7 +107,7 @@ TTY and record this matrix:
 
 Capture `$XDG_RUNTIME_DIR/tilo/display-state.json`, compositor DRM logs, and a
 photo/video of the Keep/Revert path with the report. Do not mark HDR or VRR
-working from EDID/kernel capability alone: the lane must also verify HDR DRM
+working from EDID/kernel capability alone: the job must also verify HDR DRM
 metadata/colorspace plus 10-bit encoding (below), or VRR CRTC activation plus
 measured variable presentation.
 

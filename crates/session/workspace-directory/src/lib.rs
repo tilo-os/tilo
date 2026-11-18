@@ -5,7 +5,7 @@
 //! A site names its home workspace and the directory of its public ones in
 //! its `entry.json`; the directory then lists every public workspace it
 //! serves with what it is, who is in it now and how lively it is
-//! ([`tilo_relay_protocol::directory`]). The directory sheet's store
+//! ([`tilo_server_protocol::directory`]). The directory sheet's store
 //! (`tilo_sheets::directory::Store`) reads those sites and asks their entries
 //! through this crate.
 //!
@@ -23,8 +23,8 @@ mod client;
 
 use std::collections::BTreeSet;
 
-use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
-use tilo_relay_protocol::workspaces::Role;
+use tilo_server_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
+use tilo_server_protocol::workspaces::Role;
 
 pub use client::{
     Granted, Person, SealedInvitation, Shelved, SiteEntry, SiteWorkspace, Taken, Way, client,
@@ -190,7 +190,7 @@ pub fn ordered(listings: Vec<Listed>, now_ms: u64) -> Vec<Listed> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::directory::{Face, entry_path};
+    use tilo_server_protocol::directory::{Face, entry_path};
 
     fn entry(name: &str) -> DirectoryEntry {
         let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";

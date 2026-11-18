@@ -408,7 +408,9 @@ impl NativeMediaService {
             | Command::SetDeafened { deafened: true } => {
                 Err("native media intent already handled".into())
             }
-            Command::Pictures { .. } => Err("pictures are collected on their own lane".into()),
+            Command::Pictures { .. } => {
+                Err("pictures are collected on their own media queue".into())
+            }
         }
     }
 

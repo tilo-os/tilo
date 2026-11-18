@@ -1,8 +1,8 @@
-//! A member as a client of the collaboration plane: the workspaces it takes part in, this
+//! A member as a client of the peer network: the workspaces it takes part in, this
 //! person's presence in them, and everyone else's.
 //!
 //! The client says what a member says and never how a host carries it. A host brings a
-//! [`Transport`] and, where it keeps more of its own, a [`Host`] that takes what the plane heard
+//! [`Transport`] and, where it keeps more of its own, a [`Host`] that takes what the peer network heard
 //! beside the boards and opens what only it can open.
 
 use std::cell::{Cell, RefCell};
@@ -14,16 +14,16 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::Layout;
 
 use crate::Enrolled;
-use crate::plane::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
+use crate::network::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
 use crate::presence::OwnPresence;
 
-pub use gate::Shell;
+pub use message_policy::Shell;
 pub use presence::Presence;
 
-mod gate;
+mod message_policy;
 mod presence;
 
-/// What a host keeps of the plane beside the boards: its channels, its fabric, the windows it
+/// What a host keeps of the peer network beside the boards: its channels, its fabric, the windows it
 /// streams, the workspace state it holds.
 pub trait Host: 'static {
     /// The person the workspace `workspace`'s governance admitted `device` as, when the device
@@ -32,7 +32,7 @@ pub trait Host: 'static {
         None
     }
 
-    /// What this host keeps of one thing the plane heard; whether it was the host's alone, in which
+    /// What this host keeps of one thing the peer network heard; whether it was the host's alone, in which
     /// case the boards never see it.
     fn heard(&self, _event: &Event, _client: &Client) -> bool {
         false
@@ -42,7 +42,7 @@ pub trait Host: 'static {
     /// it needs dialable.
     fn touched(&self, _client: &Client) {}
 
-    /// This session joined `workspace` on the plane: what its host opens there.
+    /// This session joined `workspace` on the peer network: what its host opens there.
     fn joined(&self, _workspace: &str) {}
 
     /// The device `workspace`'s governance pins as its host, as this device verified it: the only
@@ -56,23 +56,23 @@ pub trait Host: 'static {
     fn pass(&self, _client: &Client) {}
 }
 
-/// The client of the collaboration plane: the workspaces this member shows and this person's
+/// The client of the peer network: the workspaces this member shows and this person's
 /// presence in them — [`Presence`], which any host's own thread can hold — beside what this host
-/// keeps of the plane and of the person's other devices.
+/// keeps of the peer network and of the person's other devices.
 pub struct Client {
     presence: Presence,
-    /// Where this session says what it says to the plane.
+    /// Where this session says what it says to the peer network.
     outgoing: std::sync::Arc<dyn Outbox>,
-    /// What the plane heard, as this session reads it.
+    /// What the peer network heard, as this session reads it.
     arrived: std::sync::mpsc::Receiver<Event>,
     /// The person this device belongs to, by their root key, as its certificate names them.
     user: Option<[u8; 32]>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
-    /// The shell this session shows, which the workspace gate reads every message from another
+    /// The shell this session shows, which the workspace check reads every message from another
     /// member against: `None` until the session hands it over.
     shell: RefCell<Option<Rc<dyn Shell>>>,
-    /// What this host keeps of the plane beside the boards.
+    /// What this host keeps of the peer network beside the boards.
     host: RefCell<Option<Rc<dyn Host>>>,
     /// The certificates each of the person's other devices was heard with, by its publisher.
     siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
@@ -124,16 +124,16 @@ impl Drop for Client {
 }
 
 impl Client {
-    /// A client on a transport the host brings: it says what the session says through `plane`, and
+    /// A client on a transport the host brings: it says what the session says through `network`, and
     /// reads on every [`Self::follow`] what the transport delivered there.
     #[must_use]
-    pub fn over(plane: Transport, device: Device, own: OwnPresence) -> Self {
+    pub fn over(network: Transport, device: Device, own: OwnPresence) -> Self {
         let Transport {
             outgoing,
             arrived,
             enrolled,
             saying,
-        } = plane;
+        } = network;
         Self {
             presence: Presence::over(saying, &device, own),
             outgoing,
@@ -153,25 +153,25 @@ impl Client {
         }
     }
 
-    /// Hand the workspace gate the shell this session shows: whose workspaces' policies hold every
+    /// Hand the workspace check the shell this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     pub fn attach_shell(&self, shell: Rc<dyn Shell>) {
         self.shell.borrow_mut().replace(shell);
     }
 
-    /// Hand this client its host: what the host keeps of the plane beside the boards.
+    /// Hand this client its host: what the host keeps of the peer network beside the boards.
     pub fn attach_host(&self, host: Rc<dyn Host>) {
         self.host.borrow_mut().replace(host);
     }
 
-    /// The protocols this device's endpoint answers beside the plane's own, as the host bound it.
+    /// The protocols this device's endpoint answers beside the peer network's own, as the host bound it.
     #[must_use]
     pub fn serving(mut self, beside: Vec<Vec<u8>>) -> Self {
         self.beside = beside;
         self
     }
 
-    /// The endpoint this device bound, for a host that serves more on it than the plane's own
+    /// The endpoint this device bound, for a host that serves more on it than the peer network's own
     /// traffic.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
@@ -184,7 +184,7 @@ impl Client {
     }
 
     /// Whether this session answers `alpn` on this device's endpoint: what it was handed beside its
-    /// own planes, from the pass the endpoint bound.
+    /// own peer networks, from the pass the endpoint bound.
     #[must_use]
     pub fn serves(&self, alpn: &[u8]) -> bool {
         self.beside.iter().any(|served| served == alpn)
@@ -223,7 +223,7 @@ impl Client {
             |workspace, topic| {
                 let _ = outgoing.send(Cmd::Join(topic));
                 // A workspace joined is one this device takes part in through whatever its host
-                // opens there: the desktop's custody session, which carries the workspace's app
+                // opens there: the desktop's ownership session, which carries the workspace's app
                 // records.
                 if let Some(host) = self.host.borrow().clone() {
                     host.joined(workspace);
@@ -268,7 +268,7 @@ impl Client {
         }
     }
 
-    /// Hear everything that reached the plane since the last call. Whether anything did.
+    /// Hear everything that reached the peer network since the last call. Whether anything did.
     pub fn follow(&self) -> bool {
         let mut heard = false;
         while let Ok(event) = self.arrived.try_recv() {
@@ -286,9 +286,9 @@ impl Client {
         said || forgot || heard
     }
 
-    /// One member's word about themselves on `workspace`'s live plane: what they said of
+    /// One member's word about themselves on `workspace`'s live session: what they said of
     /// themselves, where their pointer went.
-    /// A session takes these from its planes on every [`follow`](Self::follow). One with no plane
+    /// A session takes these from its peer networks on every [`follow`](Self::follow). One with no peer network
     /// of its own — a test, an embedder that carries the frames itself — hands them here instead.
     pub fn heard_presence(&self, workspace: &str, from: EndpointId, frame: &Frame) {
         let heard = self.presence.heard_presence(workspace, from, frame);
@@ -327,7 +327,7 @@ impl Client {
             .and_then(|host| host.governed_person(workspace, device))
     }
 
-    /// Take one thing the plane heard, and hand the host who is here now: who said they are here,
+    /// Take one thing the peer network heard, and hand the host who is here now: who said they are here,
     /// what they said of themselves, where their pointer went. A session's loop calls this for
     /// everything its transport hands it.
     pub fn hear(&self, event: Event) {
@@ -348,7 +348,7 @@ impl Client {
             return;
         }
         self.keep_personal(&event);
-        // What this host keeps of the plane — its channels, its fabric, the windows it streams — is
+        // What this host keeps of the peer network — its channels, its fabric, the windows it streams — is
         // the host's before the boards are: what it takes alone, the boards never see.
         if let Some(host) = self.host.borrow().clone()
             && host.heard(&event, self)
@@ -359,7 +359,7 @@ impl Client {
         self.touched();
     }
 
-    /// Say `command` to the plane.
+    /// Say `command` to the peer network.
     pub fn say(&self, command: Cmd) -> bool {
         self.outgoing.send(command).is_ok()
     }
@@ -509,7 +509,7 @@ impl Client {
     }
 
     /// Where that endpoint lands, for what starts before it has bound: a call joins the endpoint
-    /// the moment the plane has it.
+    /// the moment the peer network has it.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn endpoint_handle(&self) -> std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>> {
@@ -524,17 +524,17 @@ impl Client {
     }
 
     /// A client taking part in no transport: it publishes nowhere and hears only what it is handed
-    /// ([`Self::hear`]). A session given one (`Options::sync`) takes part in the plane this client
+    /// ([`Self::hear`]). A session given one (`Options::sync`) takes part in the peer network this client
     /// does, so what a test hands it is what the desktop shows.
     #[must_use]
     pub fn untethered(publisher: EndpointId, own: OwnPresence) -> Self {
-        Self::planeless(publisher, own, Vec::new()).0
+        Self::without_network(publisher, own, Vec::new()).0
     }
 
-    /// A client of a plane with no transport: what both the real client and [`Self::untethered`]
-    /// are, at their middle. A test that reads what one plane would have sent to another takes the
+    /// A client of a peer network with no transport: what both the real client and [`Self::untethered`]
+    /// are, at their middle. A test that reads what one peer network would have sent to another takes the
     /// receiver.
-    pub(crate) fn planeless(
+    pub(crate) fn without_network(
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
@@ -563,8 +563,8 @@ impl Client {
         (client, said)
     }
 
-    /// The same plane, taken part in as `person` (their user root, hex): what a device's
-    /// certificate says of it on a plane that has one, and what the workspaces' policies hold its
+    /// The same peer network, taken part in as `person` (their user root, hex): what a device's
+    /// certificate says of it on a peer network that has one, and what the workspaces' policies hold its
     /// members' messages to.
     #[must_use]
     pub fn taking_part_as(mut self, person: &str) -> Self {

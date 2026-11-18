@@ -5,7 +5,7 @@
 //! refresh brought in, each an item of a [`Collection`] whose fields merge
 //! the way their types say (read and star flags last writer wins, tags per
 //! tag). `#[derive(Model)]` is the whole storage contract; nothing here
-//! touches the document. The record's verbs are in [`crate::resource`].
+//! touches the document. The resource's verbs are in [`crate::resource`].
 //! Selection, scroll and the chosen place are this window's, never stored.
 
 use std::ops::Deref;
@@ -537,7 +537,7 @@ pub struct Library {
 }
 
 /// Bring a library stored before its articles moved into parts up to this
-/// one: the articles such a record kept itself are dropped, not read, and
+/// one: the articles such a resource kept itself are dropped, not read, and
 /// from then on the parts beside the library hold them. Nothing converts
 /// them.
 ///
@@ -681,11 +681,11 @@ mod tests {
             assert_eq!(relative_time(0, now), "—");
             assert_eq!(
                 relative_time(now - 30, now),
-                ui::format::time(&local(now - 30))
+                ui::format::time(local(now - 30))
             );
             assert_eq!(
                 relative_time(now - 3 * 86400, now),
-                ui::format::weekday_short(chrono::Datelike::weekday(&local(now - 3 * 86400)))
+                ui::format::weekday_short((local(now - 3 * 86400)).weekday())
             );
             assert_eq!(
                 relative_time(now - 400 * 86400, now),

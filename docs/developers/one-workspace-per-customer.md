@@ -73,7 +73,7 @@ import { Refused, Tilo } from "tilo-sdk";
 import type { MintedKey } from "tilo-sdk";
 
 const tilo = new Tilo();                                     // your backend's key
-const agents: Record<string, MintedKey> = {};
+const agents: Resource<string, MintedKey> = {};
 
 for (const applicant of ["Jane Doe", "Amir Haddad"]) {       // one per customer, no limit
   const workspace = tilo.workspace((await tilo.workspaces.create(`Applicant: ${applicant}`)).id);
@@ -266,7 +266,7 @@ host's memory and CPU. Against a local tilo.sh:
 ```sh
 eval "$(os/containers/tilo-sh/stack.sh env)"             # TILO_API_URL, TILO_SITE: the local stack
 eval "$(os/containers/tilo-sh/stack.sh owner --here)"    # TILO_API_KEY: the stack's own person, an owner
-CUSTOMERS=300 SAMPLE_PIDS=relay:$(cat ~/.local/state/tilo-sh-local/run/relay.pid) \
+CUSTOMERS=300 SAMPLE_PIDS=server:$(cat ~/.local/state/tilo-sh-local/run/server.pid) \
   bun sdk/typescript/examples/workspace_per_customer.ts
 ```
 
@@ -290,11 +290,12 @@ The agent sees that one workspace's apps through the same tools a person's agent
 (`pdf-viewer/application.pdf#field-edit`) and writes a cover letter in Writer (`word-processor#append-paragraph`,
 then `#export-content` as docx). It cannot list, read or act in any other workspace: another workspace's
 MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
-tool call naming another workspace reaches nothing, and the account's paths (`account/...`, `GET
-/v1/account`, making, deleting, minting) are refused. Listing workspaces with it names its own alone. Revoking
-the key ends its open MCP sessions at once: their next call is refused, and the token opens no new one
-(`401 key_revoked`). Every call that
-changed a record answers that record's `link`, and `tilo_link {path}` answers the link to anything a path
+tool call naming another workspace reaches nothing, and the account's paths (`account/...` apart from the
+keys its workspace admitted, `GET /v1/account`, making, deleting, minting) are refused. `GET /v1/keys`
+lists the key and the keys it minted there, from the workspace's own governance. Listing workspaces
+with it names its own alone. Revoking the key ends its open MCP sessions at once: their next call is
+refused, and the token opens no new one (`401 key_revoked`). Every call that
+changed a resource answers that resource's `link`, and `tilo_link {path}` answers the link to anything a path
 names, so the agent can end its work by handing a person the link to what it did.
 
 ## Review
@@ -308,10 +309,10 @@ tilo members name "Jane Doe" -w applicant-jane-doe   # what its people and your 
 ```
 
 Following the link signs them in to Tilo (with a passkey, or by approving an agent) and lands them in the
-workspace as that role. No mail is sent: hand the link over yourself. From then on, the record links your
-agent hands over open straight in the record's app for them.
+workspace as that role. No mail is sent: hand the link over yourself. From then on, the resource links your
+agent hands over open straight in the resource's app for them.
 
-A record link is the one a person copies in the app, for example
+A resource link is the one a person copies in the app, for example
 `https://tilo.sh/app/#/@eu1.tilo.sh/w/<workspace>/so.tilo.pdf-viewer/<record>`. It carries no secret: it
 opens only for the workspace's members, and anyone else meets the workspace's admission, so invite the
 reviewer first. Your key invites into the workspaces you administer, as an editor at most; a key minted for
@@ -332,7 +333,7 @@ tilo account workspaces rm applicant-jane-doe   # {"deleted": id, "revoked_keys"
 ```
 
 Deleting is final: there is no undo, and nothing asks again, so the call is the confirmation. The host
-removes the workspace's records, files and history and stops counting them against your storage. Anyone
+removes the workspace's documents, files and history and stops counting them against your storage. Anyone
 with it open is told it was deleted, and their Tilo forgets it; a desktop or browser that was away is told
 when it is back, also one of someone invited to only that workspace. Every key minted for it is revoked:
 its agent's next call raises `KeyRevoked` (`key_revoked` on the wire), which says when. Only a key reaching

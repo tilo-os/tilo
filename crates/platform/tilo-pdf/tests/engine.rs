@@ -54,7 +54,7 @@ fn pdfium_present() -> bool {
 
 fn engine() -> Option<Engine> {
     if !pdfium_present() {
-        // A lane that requires the confined helper must not pass by skipping.
+        // A job that requires the confined helper must not pass by skipping.
         assert!(
             std::env::var_os(tilo_pdf::REQUIRE_SANDBOX_ENV).is_none(),
             "{} is set but no pdfium library is installed (set TILO_PDFIUM_LIB)",
@@ -69,9 +69,9 @@ fn engine() -> Option<Engine> {
         Engine::with_helper(&tilo_test_env::package_binary!("tilo-pdf-helper")),
         "a helper engine test",
     ) {
-        tilo_pdf::HelperGate::Sandboxed(engine) => Some(engine),
-        tilo_pdf::HelperGate::StandDown => None,
-        tilo_pdf::HelperGate::Failed(e) => panic!("the PDF helper does not start: {e}"),
+        tilo_pdf::HelperCheck::Sandboxed(engine) => Some(engine),
+        tilo_pdf::HelperCheck::StandDown => None,
+        tilo_pdf::HelperCheck::Failed(e) => panic!("the PDF helper does not start: {e}"),
     }
 }
 

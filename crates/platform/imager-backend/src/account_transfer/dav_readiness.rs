@@ -1,4 +1,4 @@
-//! DAV readiness runs in the native backend before custody is published.
+//! DAV readiness runs in the native backend before ownership is published.
 #[cfg(test)]
 use super::ConnectionError;
 pub(super) use crate::account_dav_readiness::verify;
@@ -43,7 +43,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn explicit_dav_readiness_checks_the_actual_root;
 
-        phase explicit_dav_readiness_checks_actual_root_before_sealed_custody;
+        phase explicit_dav_readiness_checks_actual_root_before_sealed_ownership;
         {
             let targets = Arc::new(Mutex::new(Vec::new()));
             let seen = targets.clone();
@@ -64,14 +64,14 @@ mod tests {
             let id = connect(&root, &format!("{}/files", server.url())).unwrap();
             let vault = accounts::SecretVault::open_in(&root);
             assert_eq!(
-                account_custody::password_credential(&vault.get(&id).unwrap()).as_str(),
+                account_credentials::password_credential(&vault.get(&id).unwrap()).as_str(),
                 PASSWORD
             );
             let next = temporary.path().join("nextcloud");
             Connector::new(next)
                 .connect_nextcloud_app_password(
                     "Files",
-                    account_custody::nextcloud::NextcloudLogin {
+                    account_credentials::nextcloud::NextcloudLogin {
                         server: format!("{}/base", server.url()),
                         login_name: "ada space".into(),
                         app_password: Zeroizing::new(PASSWORD.into()),

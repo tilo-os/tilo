@@ -76,9 +76,9 @@ states systemd-boot "requires the Composefs Backend and is unavailable for
 Ostree", and that if bootupd is absent from the image, systemd-boot is used by
 default (except s390x).
 
-### The gate has already been removed
+### The check has already been removed
 
-`--composefs-backend` is **not** hidden and **not** feature-gated — it is a plain
+`--composefs-backend` is **not** hidden and **not** feature-dependent — it is a plain
 clap bool in `InstallComposefsOpts`:
 
 ```rust
@@ -87,7 +87,7 @@ clap bool in `InstallComposefsOpts`:
 pub(crate) composefs_backend: bool,
 ```
 
-This matters because bootc *does* gate things it considers unstable, in the same
+This matters because bootc *does* check things it considers unstable, in the same
 file and the same release: `unified_storage_exp` carries an `_exp` suffix, and
 1.16.0's notes introduce a `BOOTC_EXP_EXTERNAL_CONTAINER_TOOL` env override.
 composefs carries neither. It is documented in the shipped man page
@@ -356,7 +356,7 @@ deployment names change on every update. The mechanism resolves it:
 Caveat, honestly: [#2334](https://github.com/bootc-dev/bootc/issues/2334) is an
 open bug titled "Error during upgrade w/ composefs-backend and UKI: `composefs=`
 parameter mismatch". The design is sound; the implementation has live bugs on
-exactly this seam.
+exactly this boundary.
 
 ### 4. On-disk format risk on real machines
 

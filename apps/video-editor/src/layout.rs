@@ -6,7 +6,7 @@ use ui::tokens::metrics::Metrics;
 use ui::tokens::spacing::Spacing;
 use vello::kurbo::Rect;
 
-/// `spacing.s1`: a label and its control, lanes, the pills on a track head.
+/// `spacing.s1`: a label and its control, tracks, the pills on a track head.
 pub(crate) const S1: f64 = Spacing::BASE.s1 as f64;
 /// `spacing.s2`: rows that read as one group; a row's inner inset.
 pub(crate) const S2: f64 = Spacing::BASE.s2 as f64;
@@ -21,14 +21,14 @@ pub(crate) const HEAD_PILL: f64 = Metrics::BASE.icon_md as f64;
 /// A 9 px line box: the head's kind line, "VIDEO", "AUDIO · +4.5 dB".
 pub(crate) const HEAD_KIND_H: f64 = S3;
 pub(crate) const METER_H: f64 = HEAD_KIND_H / 2.0;
-/// The shortest lane that fits a head with every band clear of the next.
-pub(crate) const MIN_LANE_H: f64 = S1 + HEAD_PILL + S1 + HEAD_KIND_H + S1 + METER_H + S1;
+/// The shortest track that fits a head with every band clear of the next.
+pub(crate) const MIN_TRACK_H: f64 = S1 + HEAD_PILL + S1 + HEAD_KIND_H + S1 + METER_H + S1;
 
 /// Where a track head's parts go, built once and used by both the paint and the
 /// hit-test, so the pill a pointer lands on is the pill that was drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TrackHead {
-    /// The gutter cell, `S1` clear of the lane stripe beside it.
+    /// The gutter cell, `S1` clear of the track stripe beside it.
     pub card: Rect,
     /// The band the three pills share; a long name is elided before the pills.
     pub name: Rect,
@@ -39,8 +39,8 @@ pub(crate) struct TrackHead {
     pub meter: Rect,
 }
 
-pub(crate) fn track_head_card(gutter: Rect, lane: &Rect) -> Rect {
-    Rect::new(gutter.x0, lane.y0, gutter.x1 - S1, lane.y1)
+pub(crate) fn track_head_card(gutter: Rect, track: &Rect) -> Rect {
+    Rect::new(gutter.x0, track.y0, gutter.x1 - S1, track.y1)
 }
 
 pub(crate) fn track_head(card: Rect) -> TrackHead {
@@ -88,31 +88,31 @@ mod tests {
 
     const GUTTER: Rect = Rect::new(0.0, 30.0, 128.0, 320.0);
 
-    fn head_for(lane_h: f64) -> TrackHead {
-        let lane = Rect::new(128.0, 34.0, 1280.0, 34.0 + lane_h);
-        track_head(track_head_card(GUTTER, &lane))
+    fn head_for(track_h: f64) -> TrackHead {
+        let track = Rect::new(128.0, 34.0, 1280.0, 34.0 + track_h);
+        track_head(track_head_card(GUTTER, &track))
     }
 
     #[test]
-    fn lane_heads_and_master_strip_keep_token_gaps() {
+    fn track_heads_and_master_strip_keep_token_gaps() {
         {
-            let lane = Rect::new(128.0, 34.0, 1280.0, 96.0);
-            let card = track_head_card(GUTTER, &lane);
+            let track = Rect::new(128.0, 34.0, 1280.0, 96.0);
+            let card = track_head_card(GUTTER, &track);
             assert!(
-                ((lane.x0 - card.x1) - (S1)).abs() < 1e-9,
-                "head ↔ lane stripe"
+                ((track.x0 - card.x1) - (S1)).abs() < 1e-9,
+                "head ↔ track stripe"
             );
             assert!(
-                ((card.y0) - (lane.y0)).abs() < 1e-9,
+                ((card.y0) - (track.y0)).abs() < 1e-9,
                 "card.y0 is {}, want {}",
                 card.y0,
-                lane.y0
+                track.y0
             );
             assert!(
-                ((card.y1) - (lane.y1)).abs() < 1e-9,
+                ((card.y1) - (track.y1)).abs() < 1e-9,
                 "card.y1 is {}, want {}",
                 card.y1,
-                lane.y1
+                track.y1
             );
         }
         {
@@ -154,20 +154,20 @@ mod tests {
             assert!(h.name.width() > 0.0, "a 128 px gutter leaves the name room");
         }
         {
-            for lane_h in [MIN_LANE_H, 62.0] {
-                let h = head_for(lane_h);
+            for track_h in [MIN_TRACK_H, 62.0] {
+                let h = head_for(track_h);
                 assert!(
                     h.kind.y0 - h.name.y1 >= S1,
-                    "{lane_h}: name ↔ kind gap {}",
+                    "{track_h}: name ↔ kind gap {}",
                     h.kind.y0 - h.name.y1
                 );
                 assert!(
                     h.meter.y0 - h.kind.y1 >= S1,
-                    "{lane_h}: kind ↔ meter gap {}",
+                    "{track_h}: kind ↔ meter gap {}",
                     h.meter.y0 - h.kind.y1
                 );
-                assert!(h.name.y0 - h.card.y0 >= S1, "{lane_h}: top inset");
-                assert!(h.card.y1 - h.meter.y1 >= S1, "{lane_h}: bottom inset");
+                assert!(h.name.y0 - h.card.y0 >= S1, "{track_h}: top inset");
+                assert!(h.card.y1 - h.meter.y1 >= S1, "{track_h}: bottom inset");
             }
         }
         {

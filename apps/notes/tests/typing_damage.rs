@@ -1,5 +1,5 @@
 //! What typing in a note repaints when Notes runs as the desktop runs an app
-//! in a tile (`ui::app::EmbeddedApp`): the real window, its real record and
+//! in a tile (`ui::app::EmbeddedApp`): the real window, its real resource and
 //! saver, driven through `App::surface_input` and painted by
 //! `App::surface_frame_with_damage` into a scene the host compares part by
 //! part (`ui::scene_parts`), exactly as the shell does.
@@ -497,7 +497,7 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
     hold_edit_clock(app, 1_790_000_000);
 }
 
-/// Let the note's record finish saving and show it, with no input, as it
+/// Let the note's resource finish saving and show it, with no input, as it
 /// does between a person's keystrokes.
 fn let_the_save_land(app: &mut App, host: &mut Host) {
     let deadline = tilo_test_env::hang_deadline();
@@ -508,7 +508,7 @@ fn let_the_save_land(app: &mut App, host: &mut Host) {
             return;
         }
     }
-    panic!("the note's record never finished saving");
+    panic!("the note's resource never finished saving");
 }
 
 /// Let the window come to rest with no input: the save bubble shown for the
@@ -632,7 +632,13 @@ fn bounds_of_target(app: &App, prefix: &str, suffix: &str) -> Rect {
 /// The id of the one item of the notebook's `collection` published under
 /// `name`.
 fn item_id(app: &App, collection: &str, name: &str) -> String {
-    let marker = format!(":notes.notebook/{collection}/");
+    // Notes are items of the notes' parts; tags, of the notebook.
+    let kind = if collection == "pages" {
+        "notes.pages"
+    } else {
+        "notes.notebook"
+    };
+    let marker = format!(":{kind}/{collection}/");
     let ids: Vec<String> = app
         .semantic_tree()
         .iter()
@@ -923,13 +929,22 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             let_the_save_land(app, &mut host);
             host.frames(app, 3);
             let page = item_id(app, "pages", "Untitled");
+            // A note is tagged with the notebook's tags.
+            for name in ["work", "home"] {
+                invoke_with(
+                    app,
+                    &notes::Notebook::NEW_TAG.on("notes.notebook"),
+                    serde_json::json!({ "name": name }),
+                );
+            }
+            host.frames(app, 6);
             let tag = |name: &str| {
                 let page = page.clone();
                 let name = name.to_owned();
                 move |app: &mut App, host: &mut Host| {
                     invoke_with(
                         app,
-                        &notes::Notebook::TAG.on(format!("notes.notebook/pages/{page}")),
+                        &notes::PagePart::TAG.on(format!("notes.pages/pages/{page}")),
                         serde_json::json!({ "name": name }),
                     );
                     host.frames(app, 6);
@@ -950,7 +965,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             let label = format!("{name}: removing a tag");
             let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
                 let untag = ui::tilo_resource::Invoke::from(
-                    notes::notebook::Notebook::paths()
+                    notes::PagePart::paths()
                         .pages
                         .item(&ui::tilo_resource::Id::from(page.as_str()))
                         .tags
@@ -958,7 +973,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
                 );
                 invoke_with(
                     app,
-                    &untag.address(),
+                    &untag.address_on(notes::part::chain_resource()),
                     serde_json::Value::Object(untag.arguments),
                 );
                 host.frames(app, 6);

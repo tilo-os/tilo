@@ -1,5 +1,5 @@
 //! Where someone's windows are on their screen, as their live presence says
-//! (`tilo_relay_protocol::live::LiveLayout`): what a mini view of their screen is drawn from. Each
+//! (`tilo_server_protocol::live::LiveLayout`): what a mini view of their screen is drawn from. Each
 //! window is named by its app and a short digest of its record only, which a viewer matches against
 //! the records it holds itself; nothing of the window's content travels. A viewer that holds the
 //! record names the window with what it shows there, and every other window with its app's name.
@@ -26,7 +26,7 @@ pub struct ScreenWindow {
     /// The app it shows.
     pub app: String,
     /// The short digest of the record it shows
-    /// (`tilo_relay_protocol::live::LiveResource::short_digest`).
+    /// (`tilo_server_protocol::live::LiveResource::short_digest`).
     pub record: [u8; 8],
     /// Where it is, in the unit square of the screen.
     pub rect: Rect,

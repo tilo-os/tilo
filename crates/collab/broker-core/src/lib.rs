@@ -12,7 +12,7 @@ pub mod access;
 pub mod actor;
 pub mod collab_core;
 pub mod collab_history;
-pub mod custody;
+pub mod owner_service;
 pub mod published;
 pub mod route;
 pub mod services;

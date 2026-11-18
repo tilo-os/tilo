@@ -7,13 +7,16 @@
 //! has it, and an entry is removed once its page is in, so a deleted page is never revived.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use base64::Engine as _;
 use serde::Deserialize;
-use ui::application::HostContext;
-use ui::tilo_resource::{Bytes, Id, Invoke, MemberId, Replica};
+use ui::application::ProcessContext;
+use ui::framework::Chain;
+use ui::tilo_resource::{Bytes, Id, Invoke};
 
-use crate::notebook::{Notebook, notebook, page_id};
+use crate::notebook::{Notebook, page_id};
+use crate::part::{PagePart, page_part};
 
 const INBOX: &str = "personal-data-incoming/pages";
 const VERSION: u32 = 1;
@@ -47,7 +50,7 @@ fn note_for(source: &str, key: &str) -> Id {
     page_id(uuid::Builder::from_random_bytes(bytes).into_uuid())
 }
 
-pub(crate) fn import(context: &HostContext) -> Result<(), String> {
+pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;
     let Ok(inbox) = tilo_files::VPath::new(INBOX) else {
@@ -91,7 +94,14 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
         .cloned()
         .unwrap_or_else(tilo_content::ContentStore::memory);
     let author = context.author().clone();
-    context.migrate_resource(move |doc| apply(doc, entries, &store, &author))?;
+    // The pages go into the parts beside the notebook, through their own
+    // verbs, as the window would carry them out.
+    let chain =
+        Chain::<PagePart>::detached_in(context.records().clone(), ui::apps::NOTES, &author, || {
+            Rc::new(Notebook::default())
+        })
+        .ok_or_else(|| "the notebook's notes cannot be opened".to_owned())?;
+    apply(&chain, entries, &store)?;
     for name in names {
         let _ = tilo_files::blocking::remove(&data, &name);
     }
@@ -100,18 +110,14 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
 
 /// Add `entries` the notebook does not hold yet, parents and link targets first.
 pub(crate) fn apply(
-    doc: &mut automerge::AutoCommit,
+    chain: &Chain<PagePart>,
     entries: Vec<Entry>,
     content: &tilo_content::ContentStore,
-    author: &MemberId,
 ) -> Result<bool, String> {
-    let mut replica = Replica::<Notebook>::from_doc(doc.clone()).as_member(author.clone());
-    let held: BTreeSet<Id> = replica
-        .state()
-        .map_err(|error| error.to_string())?
-        .pages
-        .ids()
-        .cloned()
+    let held: BTreeSet<Id> = chain
+        .parts()
+        .iter()
+        .flat_map(|(_, part)| part.pages.ids().cloned().collect::<Vec<_>>())
         .collect();
     let steps = invokes(entries, &held, &mut |bytes| {
         Bytes::keep(content, &bytes).map_err(|error| error.to_string())
@@ -120,11 +126,8 @@ pub(crate) fn apply(
         return Ok(false);
     }
     for step in steps {
-        replica
-            .apply_confirmed(step)
-            .map_err(|error| error.to_string())?;
+        chain.invoke(&step).map_err(|error| error.to_string())?;
     }
-    *doc = replica.doc_mut().clone();
     Ok(true)
 }
 
@@ -134,7 +137,7 @@ pub(crate) fn invokes(
     entries: Vec<Entry>,
     held: &BTreeSet<Id>,
     keep: &mut dyn FnMut(Vec<u8>) -> Result<Bytes, String>,
-) -> Result<Vec<Invoke<Notebook>>, String> {
+) -> Result<Vec<Invoke<PagePart>>, String> {
     let mut present = held.clone();
     let ordered = ordered(
         entries
@@ -156,13 +159,14 @@ pub(crate) fn invokes(
             }
             images.push(keep(bytes)?);
         }
-        steps.push(Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+        steps.push(PagePart::IMPORT_MARKDOWN.with(page_part::ImportMarkdown {
             title: entry.title.clone(),
             markdown: entry.markdown.clone(),
             images,
             note: Some(note.clone()),
             path: None,
             origin: None,
+            reads: None,
         }));
         present.insert(note.clone());
         let parent = entry
@@ -171,10 +175,11 @@ pub(crate) fn invokes(
             .map(|parent| note_for(&entry.source, parent))
             .filter(|parent| present.contains(parent));
         if let Some(parent) = parent {
-            steps.push(Notebook::MOVE_NOTE.with(notebook::MoveNote {
+            steps.push(PagePart::MOVE_NOTE.with(page_part::MoveNote {
                 page: note,
                 parent: Some(parent),
                 before: None,
+                place: None,
             }));
         }
     }
@@ -183,7 +188,7 @@ pub(crate) fn invokes(
 
 /// What the `migrated` screenshot shows: an Outline team's handbook as a migration lands it.
 #[cfg(feature = "samples")]
-pub(crate) fn migrated_scenario() -> Vec<Invoke<Notebook>> {
+pub(crate) fn migrated_scenario() -> Vec<Invoke<PagePart>> {
     let picture = base64::engine::general_purpose::STANDARD.encode(crate::scenario::IMAGE);
     let digest = blake3::hash(crate::scenario::IMAGE).to_hex();
     let page = |key: &str, title: &str, markdown: String, parent: Option<&str>| Entry {
@@ -346,26 +351,17 @@ mod tests {
             entry("doc-welcome", "Welcome", "Hello.", Some("collection:c1")),
             entry("collection:c1", "Handbook", "How we work", None),
         ];
-        let mut replica = Replica::<Notebook>::new();
-        let mut doc = replica.doc_mut().clone();
+        let chain = Chain::<PagePart>::detached(
+            ui::apps::NOTES,
+            &ui::tilo_resource::MemberId::person("ada"),
+            || Rc::new(Notebook::default()),
+        )
+        .unwrap();
         let content = tilo_content::ContentStore::memory();
-        assert!(
-            apply(
-                &mut doc,
-                entries.clone(),
-                &content,
-                &ui::tilo_resource::MemberId::person("ada")
-            )
-            .unwrap()
-        );
-        let notebook = <Notebook as ui::tilo_resource::Resource>::read(&doc).unwrap();
-        let note = |key: &str| {
-            notebook
-                .pages
-                .get(&note_for("outline", key))
-                .unwrap()
-                .clone()
-        };
+        assert!(apply(&chain, entries.clone(), &content).unwrap());
+        let parts = chain.parts();
+        let pages = crate::part::Pages::of(&parts);
+        let note = |key: &str| pages.get(&note_for("outline", key)).unwrap().clone();
         let handbook = note("collection:c1");
         assert_eq!(handbook.title, "Handbook");
         assert_eq!(handbook.parent, None);
@@ -375,27 +371,16 @@ mod tests {
         );
         let checklist = note("doc-child");
         assert_eq!(checklist.parent, Some(note_for("outline", "doc-welcome")));
-        assert_eq!(
-            notebook.images.len(),
-            1,
-            "the picture is kept with the notebook"
-        );
-        assert!(notebook.images.contains_key(&digest));
+        let images = crate::part::images(&parts);
+        assert_eq!(images.len(), 1, "the picture is kept with the notebook");
+        assert!(images.contains_key(&digest));
         let blocks = format!("{:?}", checklist.blocks());
         assert!(blocks.contains(&format!("asset:{digest}")), "{blocks}");
 
         // Opening again with the same entries adds nothing.
-        assert!(
-            !apply(
-                &mut doc,
-                entries,
-                &content,
-                &ui::tilo_resource::MemberId::person("ada")
-            )
-            .unwrap()
-        );
-        let again = <Notebook as ui::tilo_resource::Resource>::read(&doc).unwrap();
-        assert_eq!(again.pages.len(), 3);
+        assert!(!apply(&chain, entries, &content).unwrap());
+        let parts = chain.parts();
+        assert_eq!(crate::part::Pages::of(&parts).len(), 3);
     }
 
     #[test]

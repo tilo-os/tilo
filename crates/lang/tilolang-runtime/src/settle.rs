@@ -40,14 +40,14 @@ pub enum AgentBlock {
     /// The block applies an action. The host ran it, or suggested it to a person, and recorded
     /// the outcome as an `Invocation` resource that syncs like any other.
     Invocation {
-        record: Box<InvocationRecord>,
+        record: Box<InvocationEntry>,
         resource: ResourceRef,
     },
 }
 
 /// What the host records of an invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InvocationRecord {
+pub struct InvocationEntry {
     /// The id of the action.
     pub action: String,
     pub name: String,
@@ -68,7 +68,7 @@ pub struct InvocationRecord {
     pub proposed: bool,
 }
 
-impl InvocationRecord {
+impl InvocationEntry {
     /// The action's arguments, as it is invoked with them.
     ///
     /// # Errors
@@ -272,7 +272,7 @@ impl Core {
         invoker: &Actor,
         identity: &ModuleHash,
         block: &EmbedBlock,
-    ) -> (InvocationRecord, Option<ResourceRef>) {
+    ) -> (InvocationEntry, Option<ResourceRef>) {
         let value = self.eval_block(&block.pkg, &block.block.value_type, Some(identity));
         let aref = match value {
             Ok(Value::Action(aref)) => aref,
@@ -338,7 +338,7 @@ impl Core {
         state: &str,
         result: &str,
         run: &str,
-    ) -> InvocationRecord {
+    ) -> InvocationEntry {
         let (action, app, name, args) = match aref {
             Some(a) => {
                 let (app, name, _) = self.action_facts(&a.action, &a.args);
@@ -347,7 +347,7 @@ impl Core {
             }
             None => (String::new(), String::new(), String::new(), String::new()),
         };
-        InvocationRecord {
+        InvocationEntry {
             action,
             name,
             app,
@@ -370,7 +370,7 @@ impl Core {
 
     fn create_invocation(
         &self,
-        record: &InvocationRecord,
+        record: &InvocationEntry,
         note: &ChangeNote,
     ) -> Result<ResourceRef, RuntimeError> {
         let new = self
@@ -449,7 +449,7 @@ impl Core {
     /// # Errors
     ///
     /// `NotFound` when the resource is not an invocation.
-    pub fn read_invocation(&self, inv: &ResourceRef) -> Result<InvocationRecord, RuntimeError> {
+    pub fn read_invocation(&self, inv: &ResourceRef) -> Result<InvocationEntry, RuntimeError> {
         let (_, info) = self
             .registry
             .borrow()
@@ -475,7 +475,7 @@ impl Core {
             },
             _ => None,
         };
-        Ok(InvocationRecord {
+        Ok(InvocationEntry {
             action: text("action")?,
             name: text("name")?,
             app: text("app")?,
@@ -516,7 +516,7 @@ impl Core {
 
     /// Whether `who` may decide a suggestion of this action: the authority does not deny them.
     /// An `ask` is the very decision they are making, so only a denial refuses. It is what a view
-    /// offers them too: an action their standing denies stands disabled. Their standing is theirs
+    /// offers them too: an action their state denies stands disabled. Their state is theirs
     /// alone, so a view that asked runs again when it changes.
     pub(crate) fn may_decide(&self, who: &Actor, action: &str) -> bool {
         self.read_person();
@@ -578,7 +578,7 @@ impl Core {
     fn approve_invocation(
         &self,
         origin: &str,
-        rec: &InvocationRecord,
+        rec: &InvocationEntry,
         identity: &ModuleHash,
         approver: &Actor,
     ) -> Result<(String, String, String), RuntimeError> {

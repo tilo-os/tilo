@@ -230,7 +230,7 @@ async fn a_workspace_names_its_own_host_again_once_the_relay_it_is_reached_throu
     );
     assert!(
         !owner.name_host(workspace, moved).unwrap(),
-        "an address that moved beside the same relay writes nothing"
+        "an address that moved beside the same server writes nothing"
     );
     drop(owner);
     assert_eq!(

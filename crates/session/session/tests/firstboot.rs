@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use crate::common::publisher;
 use tilo_compositor::OutputConfig;
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_onboarding_host::identity::IdentityProblem;
-use tilo_onboarding_host::identity_provisioning::IDENTITY_RECOVERY_ENV;
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_onboarding_session::identity::IdentityProblem;
+use tilo_onboarding_session::identity_provisioning::IDENTITY_RECOVERY_ENV;
 use tilo_session::firstboot::{OneShot, one_shot};
 use tilo_session::startup::{self, Identity};
 use tilo_session::{BeforeShell, Options};
@@ -85,7 +85,7 @@ impl Machine {
 /// The record the session resolves for this account: what it reads before it decides whether the
 /// shell opens.
 fn record() -> PathBuf {
-    tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env()
+    tilo_onboarding_session::identity_provisioning::DiskIdentityStore::from_env()
         .expect("the identity store")
         .path()
         .to_path_buf()
@@ -107,7 +107,7 @@ fn machine() -> Machine {
         .set(FILE_SECRETS_ENV, "1");
     let personal = config.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
+    tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
         &paths,
         IdentityStorage::Files,

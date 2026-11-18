@@ -5,19 +5,19 @@ use os_actions::WifiNetworkInfo;
 pub(crate) const OTHERS_SHOWN: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Standing {
+enum Rank {
     Connected,
     Known,
     Other,
 }
 
-fn standing(network: &WifiNetworkInfo, known: &impl Fn(&WifiNetworkInfo) -> bool) -> Standing {
+fn rank(network: &WifiNetworkInfo, known: &impl Fn(&WifiNetworkInfo) -> bool) -> Rank {
     if network.connected {
-        Standing::Connected
+        Rank::Connected
     } else if known(network) {
-        Standing::Known
+        Rank::Known
     } else {
-        Standing::Other
+        Rank::Other
     }
 }
 
@@ -27,8 +27,8 @@ pub(crate) fn arranged(
 ) -> Vec<&WifiNetworkInfo> {
     let mut order: Vec<&WifiNetworkInfo> = networks.iter().collect();
     order.sort_by(|a, b| {
-        standing(a, &known)
-            .cmp(&standing(b, &known))
+        rank(a, &known)
+            .cmp(&rank(b, &known))
             .then(b.signal.cmp(&a.signal))
             .then_with(|| a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase()))
             .then_with(|| a.ssid.cmp(&b.ssid))
@@ -45,7 +45,7 @@ pub(crate) fn shortlist<'a>(
         .iter()
         .copied()
         .filter(|network| {
-            if standing(network, &known) != Standing::Other {
+            if rank(network, &known) != Rank::Other {
                 return true;
             }
             others += 1;

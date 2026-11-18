@@ -463,7 +463,7 @@ pub(super) fn readout_fit(
         fit.total_x = Some(total_x);
         used_to = total_x + total_w;
     }
-    // Zero width is "the playhead is standing still", which places nothing.
+    // Zero width is "the playhead is not moving", which places nothing.
     if motion_w > 0.0 {
         let motion_x = used_to + 14.0;
         if motion_x + motion_w <= right_edge {
@@ -736,7 +736,7 @@ pub(super) fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
 }
 /// Built once per paint and handed down rather than asked per clip: "is anything
 /// linked to me" is a scan of every clip, and asking it inside the per-clip draw
-/// would make painting the lanes quadratic in the project.
+/// would make painting the tracks quadratic in the project.
 #[derive(Default)]
 pub(super) struct LinkMarks {
     /// `(group, members, any member selected)`, sorted by group so a lookup is

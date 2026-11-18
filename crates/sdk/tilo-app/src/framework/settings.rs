@@ -10,7 +10,7 @@ use std::rc::{Rc, Weak};
 use ui_core::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
 
-use super::record::{Held, ResourceApi};
+use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 
 /// One typed settings value, kept current while the view lives: a write
@@ -87,7 +87,7 @@ impl<T: SettingsSchema + Clone + PartialEq + Send + Sync> Setting<T> {
 
 type Refresh = Box<dyn FnMut()>;
 
-impl<T> super::record::sealed::Hold<T> for Setting<T>
+impl<T> super::resources::sealed::Hold<T> for Setting<T>
 where
     T: tilo_resource::Resource<State = T>
         + tilo_resource::Fields
@@ -97,15 +97,15 @@ where
         + Send
         + Sync,
 {
-    fn held(&self, storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<T>>> {
+    fn held(&self, storage: super::resources::sealed::Storage<'_>) -> Option<Rc<Held<T>>> {
         storage.0.section_held(&self.settings)
     }
 
     fn api(
         &self,
-        storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
-        Some(super::record::sealed::Api(
+        storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
+        Some(super::resources::sealed::Api(
             storage.0.section(&self.settings) as Rc<dyn ResourceApi>,
         ))
     }
@@ -128,7 +128,7 @@ pub(crate) struct ViewStorage {
     /// Those sections, as the API reaches them.
     section_apis: RefCell<Vec<Rc<dyn ResourceApi>>>,
     /// The records another provider keeps, by id, with that provider
-    /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
+    /// ([`Resources::kept_by`](super::Resources::kept_by)): views show them and
     /// bind to them, the window neither publishes nor runs their actions.
     kept_by: RefCell<HashMap<String, &'static str>>,
     /// The store of the app's records in the workspace, for the records it
@@ -136,6 +136,9 @@ pub(crate) struct ViewStorage {
     records: Option<super::chain::WorkspaceResources>,
     /// The chains the views opened ([`super::Chain`]).
     chains: super::chain::Chains,
+    /// The view operations the chains publish on what they hold, at the
+    /// chains' revision they were collected at.
+    chain_views: RefCell<Option<(u64, Rc<std::collections::HashSet<String>>)>>,
     /// The records every app of the workspace opens, when the host keeps them:
     /// not in a view of a past version.
     workspace: Option<Rc<super::workspace::WorkspaceState>>,
@@ -235,6 +238,7 @@ impl ViewStorage {
             kept_by: RefCell::default(),
             records: hosted.records,
             chains: super::chain::Chains::default(),
+            chain_views: RefCell::default(),
             workspace: hosted.workspace,
             emoji: hosted.emoji,
         })
@@ -247,7 +251,7 @@ impl ViewStorage {
         &self,
         record: Option<&ui_core::resource::DocumentId>,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
-    ) -> Option<Rc<super::chain::ChainState<P>>> {
+    ) -> Option<Rc<super::chain::ChainState>> {
         super::controls::opened_resource::<P>();
         self.chains.open::<P>(self.records.as_ref(), record, base)
     }
@@ -259,7 +263,7 @@ impl ViewStorage {
         &self,
         base: &ui_core::resource::DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
-    ) -> Option<Rc<super::chain::ChainState<P>>> {
+    ) -> Option<Rc<super::chain::ChainState>> {
         super::controls::opened_resource::<P>();
         self.chains
             .open_beside::<P>(self.records.as_ref(), base, base_state)
@@ -381,6 +385,7 @@ impl ViewStorage {
             .unwrap_or_default();
         apis.extend(self.section_apis.borrow().iter().cloned());
         apis.extend(self.chains.apis());
+        apis.extend(self.workspace_apis());
         apis.iter()
             .map(|api| (api.id().to_owned(), api.revision()))
             .collect()
@@ -411,6 +416,54 @@ impl ViewStorage {
         })
     }
 
+    /// The view operations the records kept beside the app's own publish,
+    /// on themselves or on what they hold (a note's body opened in an
+    /// editor): the window handles them as it does its own record's.
+    pub(crate) fn view_types_beside(&self) -> std::collections::HashSet<String> {
+        fn collect(
+            resource: &tilo_actions::ResourceSpec,
+            views: &mut std::collections::HashSet<String>,
+        ) {
+            views.extend(
+                resource
+                    .actions
+                    .iter()
+                    .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
+                    .filter_map(|spec| spec.operation_type.clone()),
+            );
+            for child in &resource.children {
+                collect(child, views);
+            }
+        }
+        let mut views = std::collections::HashSet::new();
+        let mut beside = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::resources)
+            .unwrap_or_default();
+        beside.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
+        for resource in &beside {
+            collect(resource, &mut views);
+        }
+        // A chain holds every part's items: collected once per change.
+        let revision = self.chains_revision();
+        let mut kept = self.chain_views.borrow_mut();
+        let chains = match kept.as_ref() {
+            Some((at, chains)) if *at == revision => Rc::clone(chains),
+            _ => {
+                let mut chains = std::collections::HashSet::new();
+                for api in self.chains.apis() {
+                    collect(&api.publish(), &mut chains);
+                }
+                let chains = Rc::new(chains);
+                *kept = Some((revision, Rc::clone(&chains)));
+                chains
+            }
+        };
+        views.extend(chains.iter().cloned());
+        views
+    }
+
     pub(crate) fn resource_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self
             .person
@@ -419,6 +472,7 @@ impl ViewStorage {
             .unwrap_or_default();
         resources.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
         resources.extend(self.chains.apis().iter().map(|api| api.publish()));
+        resources.extend(self.workspace_apis().iter().map(|api| api.publish()));
         let kept_by = self.kept_by.borrow();
         if !kept_by.is_empty() {
             for resource in &mut resources {
@@ -430,8 +484,43 @@ impl ViewStorage {
         resources
     }
 
+    /// [`Self::resource_resources`] as shared trees: a chain's items are the nodes its last
+    /// publication carried wherever its parts are unchanged.
+    pub(crate) fn resource_resources_shared(&self) -> Vec<ui_core::published::SharedResource> {
+        let kept_by = self.kept_by.borrow();
+        let owned = |mut resource: tilo_actions::ResourceSpec| {
+            if let Some(provider) = kept_by.get(resource.id.as_str()) {
+                run_by(&mut resource, provider);
+            }
+            ui_core::published::SharedResource::from_resource(resource)
+        };
+        let mut resources: Vec<ui_core::published::SharedResource> = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::resources)
+            .unwrap_or_default()
+            .into_iter()
+            .map(owned)
+            .collect();
+        resources.extend(
+            self.section_apis
+                .borrow()
+                .iter()
+                .map(|api| owned(api.publish())),
+        );
+        resources.extend(self.chains.apis().iter().map(|api| {
+            // A chain run by another provider names it on every action, so it is built whole.
+            if kept_by.contains_key(api.id()) {
+                owned(api.publish())
+            } else {
+                api.publish_shared()
+            }
+        }));
+        resources
+    }
+
     /// Mark the record `id` as kept by `provider`
-    /// ([`Records::kept_by`](super::Records::kept_by)).
+    /// ([`Resources::kept_by`](super::Resources::kept_by)).
     pub(crate) fn keep_by(&self, id: &str, provider: &'static str) {
         self.kept_by.borrow_mut().insert(id.to_owned(), provider);
     }
@@ -453,7 +542,7 @@ impl ViewStorage {
             .as_ref()
             .map(super::person::PersonState::me)
             .or(me);
-        super::record::answer(&self.answering_apis(), me, payload)
+        super::resources::answer(&self.answering_apis(), me, payload)
     }
 
     /// Answer a `read` of one of those records, named `record`
@@ -483,9 +572,45 @@ impl ViewStorage {
             .map(super::person::PersonState::apis)
             .unwrap_or_default();
         apis.extend(self.section_apis.borrow().iter().cloned());
+        apis.extend(self.workspace_apis());
         let kept_by = self.kept_by.borrow();
         apis.retain(|api| !kept_by.contains_key(api.id()));
         apis
+    }
+
+    /// Open what was on its way from the workspace when it was asked for and has arrived
+    /// since ([`super::workspace::WorkspaceState::open_arrived`]): whether anything opened.
+    pub(crate) fn open_arrived(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.open_arrived())
+    }
+
+    /// The part of a view kept alive by `part` is being built, until what this returns is
+    /// dropped ([`super::workspace::WorkspaceState::building`]). `None` in a window that
+    /// opens no documents of a workspace.
+    pub(crate) fn building(&self, part: &Rc<()>) -> Option<super::workspace::Building> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.building(part))
+    }
+
+    /// Whether the part kept alive by `part` is to be built again: a document of the
+    /// workspace it asked for while it was built, and that was on its way, has opened since
+    /// ([`super::workspace::WorkspaceState::take_arrived`]).
+    pub(crate) fn take_arrived(&self, part: &Rc<()>) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.take_arrived(part))
+    }
+
+    /// What the app keeps for its whole workspace beside its own resource, as the API reaches
+    /// it: offered by the keeping app's window alone, and decided by the workspace's grants.
+    fn workspace_apis(&self) -> Vec<Rc<dyn ResourceApi>> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.apis())
+            .unwrap_or_default()
     }
 
     /// The settings section `T` held as a record, opened on first use: with

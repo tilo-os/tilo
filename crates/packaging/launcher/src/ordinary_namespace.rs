@@ -1,6 +1,6 @@
 //! Canonical namespace supervision for ordinary signed GUI launches.
 //!
-//! This is kernel process custody, not a filesystem admission.
+//! This is kernel process ownership, not a filesystem admission.
 
 use crate::{
     managed::EnrolledProcessObserver,
@@ -19,7 +19,7 @@ use std::{
 
 /// An init observed by the canonical owner after bubblewrap's actual info pipe and kernel parent/PID
 /// namespace checks.
-pub struct NamespaceWitness {
+pub struct NamespaceProof {
     init: OwnedFd,
     pid_namespace: File,
     mount_namespace: File,
@@ -27,7 +27,7 @@ pub struct NamespaceWitness {
     outer: u32,
     launcher: u32,
 }
-impl NamespaceWitness {
+impl NamespaceProof {
     pub(crate) fn observed(
         init: OwnedFd,
         pid_namespace: File,
@@ -58,7 +58,7 @@ impl NamespaceWitness {
     pub fn mount_namespace(&self) -> io::Result<File> {
         self.mount_namespace.try_clone()
     }
-    /// Verify this opaque witness against the independently authenticated executing launcher.
+    /// Verify this opaque proof against the independently authenticated executing launcher.
     pub fn validate_for_launcher(
         &self,
         peer: &runtime_portal::process_binding::ExecutingPeer,
@@ -134,7 +134,7 @@ impl NamespaceWitness {
         Ok(())
     }
 
-    /// Transfer kernel witnesses over the already authenticated private lease endpoint.
+    /// Transfer kernel proofs over the already authenticated private lease endpoint.
     pub fn send(
         &self,
         stream: &mut UnixStream,
@@ -192,7 +192,7 @@ impl NamespaceWitness {
         let pid_namespace = File::from(descriptors.pop().ok_or(io::ErrorKind::InvalidData)?);
         let init = descriptors.pop().ok_or(io::ErrorKind::InvalidData)?;
         let [pid, outer, launcher] = values;
-        let witness = Self {
+        let proof = Self {
             init,
             pid_namespace,
             mount_namespace,
@@ -200,8 +200,8 @@ impl NamespaceWitness {
             outer,
             launcher,
         };
-        witness.validate_for_launcher(peer)?;
-        Ok(witness)
+        proof.validate_for_launcher(peer)?;
+        Ok(proof)
     }
     /// Kill only the exact held namespace init and wait for kernel exit.
     pub fn cancel_and_wait(&self, budget: Duration) -> io::Result<()> {
@@ -266,11 +266,11 @@ impl ConnectedNamespace {
     }
     pub(crate) fn send(
         mut self,
-        witness: NamespaceWitness,
+        proof: NamespaceProof,
         cancellation: &ServiceCancellation,
     ) -> io::Result<()> {
-        let result = witness.send(&mut self.stream, cancellation);
-        drop(witness);
+        let result = proof.send(&mut self.stream, cancellation);
+        drop(proof);
         result
     }
 }
@@ -485,7 +485,7 @@ mod tests {
             let init = unsafe { OwnedFd::from_raw_fd(i32::try_from(raw).unwrap()) };
             let pid_namespace = File::open(format!("/proc/{}/ns/pid", child.0.id())).unwrap();
             let mount_namespace = File::open(format!("/proc/{}/ns/mnt", child.0.id())).unwrap();
-            let candidate = Arc::new(NamespaceWitness {
+            let candidate = Arc::new(NamespaceProof {
                 init,
                 pid_namespace,
                 mount_namespace,
@@ -529,7 +529,7 @@ mod tests {
                 "genuine same-UID QPE cannot make a live unisolated child a consuming namespace"
             );
             let error =
-                NamespaceWitness::receive(&mut receiver, &peer, &ServiceCancellation::default())
+                NamespaceProof::receive(&mut receiver, &peer, &ServiceCancellation::default())
                     .err()
                     .expect("unisolated child must be refused");
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);

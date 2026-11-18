@@ -73,7 +73,7 @@ fn open_flags_write(flags: u64) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
 }
 
-/// Classifies one call against the gated file. `refers` says whether a
+/// Classifies one call against the guarded file. `refers` says whether a
 /// descriptor of the calling thread is that file; `openat2_flags` reads the
 /// flags of an `openat2` call's `struct open_how`.
 pub fn classify_call(
@@ -231,7 +231,7 @@ mod tests {
             of(&map(libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED)),
             Access::Write
         );
-        // The gated file (descriptor 3) as source or destination.
+        // The guarded file (descriptor 3) as source or destination.
         assert_eq!(
             of(&call(libc::SYS_copy_file_range, [3, 0, 4, 0, 9, 0])),
             Access::Read

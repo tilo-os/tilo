@@ -170,12 +170,12 @@ impl SheetsApp {
             .map(|(card, width)| cm.height(*card, *width))
             .fold(0.0, f64::max);
         let content_w = widths.iter().sum::<f64>() + gaps + 2.0 * pad;
-        let lane = if content_w > area.width() + 0.5 {
+        let bar_width = if content_w > area.width() + 0.5 {
             f64::from(self.chrome_theme.tokens.metrics.scrollbar_gutter)
         } else {
             0.0
         };
-        let dock_h = card_h + 2.0 * pad + lane;
+        let dock_h = card_h + 2.0 * pad + bar_width;
         let min_grid = m.grid.col_header_h()
             + f64_of_usize(MIN_GRID_ROWS) * m.grid.default_row_h()
             + self.grid.scrollbar_thickness();

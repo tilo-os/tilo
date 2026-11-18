@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider the host answers the person's model providers under.
+/// The provider that answers the person's model providers under.
 pub const PROVIDER: &str = "tilo.models";
 /// The resource the providers are actions of.
 pub const RESOURCE: &str = "models";
@@ -164,6 +164,10 @@ impl std::fmt::Debug for SetKey {
 pub struct SetKeyFromItem {
     pub provider: String,
     pub key: super::person_vault::ItemRef,
+    /// Why whoever asks needs it, in a sentence its person reads when they
+    /// are asked first; empty when nothing was said.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// The model one kind of work runs on, or with neither provider nor model,

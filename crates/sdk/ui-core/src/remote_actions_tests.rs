@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
@@ -37,19 +37,19 @@ fn target(action: &str) -> RemoteActionTarget {
 
 /// Two catalogue pages; `done` completes at once, `slow` is still running for its first
 /// [`RUNNING_LOOKS`] observes and done after, `forbidden` is refused. It cannot signal changes, so it
-/// answers a waiting observe at once, as a host from before waits does.
+/// answers a waiting observe at once, as a provider from before waits does.
 #[derive(Default)]
 struct FakeHost {
     seen: Mutex<Vec<Caller>>,
     observed: std::sync::atomic::AtomicUsize,
 }
 
-impl ActionHost for FakeHost {
+impl ActionProvider for FakeHost {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.seen.lock().unwrap().push(caller.clone());
         let second = !query.cursor.is_empty();
         Pending::ready(Ok(CataloguePage {
@@ -65,7 +65,7 @@ impl ActionHost for FakeHost {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let status = match request.target.address.action.as_str() {
             "done" => ReceiptStatus::Completed {
                 output: ActionOutput {
@@ -74,7 +74,7 @@ impl ActionHost for FakeHost {
                 },
             },
             "slow" => ReceiptStatus::Accepted,
-            _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
+            _ => return Pending::ready(Err(ActionCallError::NotPermitted)),
         };
         Pending::ready(Ok(InvocationReceipt {
             invocation: request.invocation,
@@ -101,12 +101,12 @@ impl ActionHost for FakeHost {
         &self,
         _caller: &Caller,
         _id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
-/// How often `slow` is seen still running: once by the host's own look when the invoke asks to wait,
+/// How often `slow` is seen still running: once by the provider's own look when the invoke asks to wait,
 /// once by the client's first waiting observe.
 const RUNNING_LOOKS: usize = 2;
 
@@ -137,12 +137,12 @@ fn catalogue_correlation(actions: &mut RemoteActions, what: &str) -> u64 {
 }
 
 fn client() -> (Arc<FakeHost>, RemoteActions) {
-    let host = Arc::new(FakeHost::default());
-    let actions = RemoteActions::with_host(
-        Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+    let provider = Arc::new(FakeHost::default());
+    let actions = RemoteActions::with_provider(
+        Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
         Caller::local_app("so.tilo.example").in_workspace("workspace"),
     );
-    (host, actions)
+    (provider, actions)
 }
 
 tilo_test_env::scenario! {
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
 
     phase a_catalogue_read_gathers_every_page_as_the_app;
     {
-        let (host, actions) = client();
+        let (provider, actions) = client();
         let answer = actions.catalogue(CatalogueQuery::default());
         let Arrival::Ready(page) = answer.get() else {
             panic!("the catalogue is answered: {:?}", answer.get());
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
         assert!(page.next_cursor.is_empty());
         assert!(!page.stale_cursor);
         assert!(!page.budget_exhausted);
-        let seen = host.seen.lock().unwrap();
+        let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 2, "one request per page");
         assert!(
             seen.iter().all(
@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
             });
             assert!(matches!(
                 answer.get(),
-                Arrival::Failed(ActionHostError::Unavailable { reason })
+                Arrival::Failed(ActionCallError::Unavailable { reason })
                     if reason.contains("inconsistent completion metadata")
             ));
             assert!(!actions.is_busy());
@@ -210,7 +210,7 @@ tilo_test_env::scenario! {
 
     phase a_single_page_catalogue_read_leaves_hierarchy_budget_with_its_caller;
     {
-        let (host, actions) = client();
+        let (provider, actions) = client();
         let answer = actions.catalogue_page(CatalogueQuery::default());
         let Arrival::Ready(page) = answer.get() else {
             panic!("the first page is answered: {:?}", answer.get());
@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
             ["a"]
         );
         assert_eq!(page.next_cursor, [1]);
-        assert_eq!(host.seen.lock().unwrap().len(), 1);
+        assert_eq!(provider.seen.lock().unwrap().len(), 1);
         assert!(!actions.is_busy());
     }
 
@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
         });
         assert!(matches!(
             answer.get(),
-            Arrival::Failed(ActionHostError::Unavailable { reason })
+            Arrival::Failed(ActionCallError::Unavailable { reason })
                 if reason.contains("repeated a cursor")
         ));
         assert!(actions.take_collab_requests().is_empty());
@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
         }
         assert!(matches!(
             answer.get(),
-            Arrival::Failed(ActionHostError::Unavailable { reason })
+            Arrival::Failed(ActionCallError::Unavailable { reason })
                 if reason.contains("page budget")
         ));
         assert!(actions.take_collab_requests().is_empty());
@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
         }
         assert!(matches!(
             answer.get(),
-            Arrival::Failed(ActionHostError::Unavailable { reason })
+            Arrival::Failed(ActionCallError::Unavailable { reason })
                 if reason.contains("page budget")
         ));
         assert!(actions.take_collab_requests().is_empty());
@@ -354,7 +354,7 @@ tilo_test_env::scenario! {
         });
         assert!(matches!(
             answer.get(),
-            Arrival::Failed(ActionHostError::Unavailable { reason })
+            Arrival::Failed(ActionCallError::Unavailable { reason })
                 if reason.contains("changed revision")
         ));
     }
@@ -378,13 +378,13 @@ tilo_test_env::scenario! {
         });
         assert!(matches!(
             answer.get(),
-            Arrival::Failed(ActionHostError::Unavailable { reason })
+            Arrival::Failed(ActionCallError::Unavailable { reason })
                 if reason.contains("work budget")
         ));
     }
 
     phase an_unanswered_catalogue_read_is_refused_after_its_wait;
-    // A catalogue request nothing answers (no host in reach of the connection) is refused as unavailable
+    // A catalogue request nothing answers (no provider in reach of the connection) is refused as unavailable
     // once its wait is up, so the app can say so instead of waiting forever.
     {
         let clock = crate::background::Pumped::new();
@@ -403,7 +403,7 @@ tilo_test_env::scenario! {
         actions.poll();
         assert_eq!(
             answer.get(),
-            Arrival::Failed(ActionHostError::Unavailable {
+            Arrival::Failed(ActionCallError::Unavailable {
                 reason: CATALOGUE_UNANSWERED.into()
             })
         );
@@ -425,7 +425,7 @@ tilo_test_env::scenario! {
         let refused = actions.invoke(target("forbidden"), InvokeArgument::None, None);
         assert_eq!(
             refused.get(),
-            Arrival::Failed(ActionHostError::NotPermitted)
+            Arrival::Failed(ActionCallError::NotPermitted)
         );
         assert!(refused.get().is_finished());
     }
@@ -448,7 +448,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_running_invocation_is_followed_until_it_ends;
-    // Against a host that answers a waiting observe at once with nothing new (one from before waits), the
+    // Against a provider that answers a waiting observe at once with nothing new (one from before waits), the
     // client falls back to observing on its interval.
     {
         let clock = crate::background::Pumped::new();
@@ -540,7 +540,7 @@ tilo_test_env::scenario! {
         let _invoke = actions.take_collab_requests();
         let cancellation = actions.cancel(invocation).expect("tracked invocation");
         let _cancel = actions.take_collab_requests();
-        let error = ActionHostError::NotCancellable {
+        let error = ActionCallError::NotCancellable {
             reason: "the provider is still attaching".into(),
         };
         actions.handle_collab_event(&CollabEvent::RemoteAction {
@@ -665,7 +665,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_old_host_is_observed_on_the_interval;
-    // A host from before waits answers the waiting observe at once with nothing new; the client then
+    // A provider from before waits answers the waiting observe at once with nothing new; the client then
     // observes it on its interval, as before.
     {
         let clock = crate::background::Pumped::new();
@@ -702,7 +702,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_followed_result_shows_each_item_and_stops_when_dropped;
-    // A followed live result shows each new item the host sends, keeps a waiting observe out for the next,
+    // A followed live result shows each new item the provider sends, keeps a waiting observe out for the next,
     // and is cancelled once dropped.
     {
         let mut actions = RemoteActions::session();
@@ -779,25 +779,25 @@ tilo_test_env::scenario! {
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
                 correlation: correlation + 100,
-                result: Err(ActionHostError::NotPermitted),
+                result: Err(ActionCallError::NotPermitted),
             },
         });
         assert!(answer.get().is_pending());
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
                 correlation,
-                result: Err(ActionHostError::NotPermitted),
+                result: Err(ActionCallError::NotPermitted),
             },
         });
-        assert_eq!(answer.get(), Arrival::Failed(ActionHostError::NotPermitted));
+        assert_eq!(answer.get(), Arrival::Failed(ActionCallError::NotPermitted));
     }
 
     phase an_entered_host_serves_the_current_client_until_the_guard_drops;
     {
-        let host = Arc::new(FakeHost::default());
+        let provider = Arc::new(FakeHost::default());
         {
             let _served = RemoteActions::enter(
-                Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+                Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
                 Caller::local_app("so.tilo.example").in_workspace("workspace"),
             );
             let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
@@ -849,8 +849,8 @@ fn progress(invocation: InvocationId, sequence: u64) -> InvocationUpdate {
     }
 }
 
-/// A host that reads one record, whose readings count its writes. While it holds reads, one that
-/// names the revision it is at and waits is answered by the next [`Records::write`], as a host
+/// A provider that reads one record, whose readings count its writes. While it holds reads, one that
+/// names the revision it is at and waits is answered by the next [`Records::write`], as a provider
 /// that waits for writes answers it; otherwise every read is answered at once.
 #[derive(Default)]
 struct Records {
@@ -865,7 +865,7 @@ impl Records {
     fn reading(&self, correlation: u64) -> RemoteActionMessage {
         let writes = *self.writes.lock().unwrap();
         let result = if self.refuses.load(Ordering::SeqCst) {
-            Err(ActionHostError::Refused {
+            Err(ActionCallError::Refused {
                 reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
             })
         } else {
@@ -907,7 +907,7 @@ impl tilo_actions::remote::ResourceReads for Records {
         &self,
         _: &Caller,
         _: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionHostError> {
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
         Ok(tilo_actions::remote::ResourceCopy::Absent)
     }
 
@@ -929,15 +929,15 @@ impl tilo_actions::remote::ResourceReads for Records {
     }
 }
 
-/// A host whose only service is its [`Records`].
+/// A provider whose only service is its [`Records`].
 struct RecordHost(Arc<Records>);
 
-impl ActionHost for RecordHost {
+impl ActionProvider for RecordHost {
     fn query(
         &self,
         _: &Caller,
         _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::default()))
     }
 
@@ -945,15 +945,15 @@ impl ActionHost for RecordHost {
         &self,
         _: &Caller,
         _: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(ActionHostError::UnknownAction))
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
     }
 
     fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
         None
     }
 
-    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 
@@ -962,12 +962,12 @@ impl ActionHost for RecordHost {
     }
 }
 
-/// A reader of a host's [`Records`], which hold reads when `holds`.
+/// A reader of a provider's [`Records`], which hold reads when `holds`.
 fn reader(holds: bool) -> (Arc<Records>, RemoteActions) {
     let records = Arc::new(Records::default());
     records.holds.store(holds, Ordering::SeqCst);
-    let actions = RemoteActions::with_host(
-        Arc::new(RecordHost(Arc::clone(&records))) as Arc<dyn ActionHost + Send + Sync>,
+    let actions = RemoteActions::with_provider(
+        Arc::new(RecordHost(Arc::clone(&records))) as Arc<dyn ActionProvider + Send + Sync>,
         Caller::local_person("ada").in_workspace("workspace"),
     );
     (records, actions)
@@ -1045,7 +1045,7 @@ tilo_test_env::scenario! {
         records.write();
         assert_eq!(
             followed.call().get(),
-            Arrival::Failed(ActionHostError::Refused {
+            Arrival::Failed(ActionCallError::Refused {
                 reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
             }),
             "what was shown is no longer this reader's to see"
@@ -1067,7 +1067,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             records.asked().len(),
             2,
-            "the waiting read came back at once with nothing new: this host holds none"
+            "the waiting read came back at once with nothing new: this provider holds none"
         );
         {
             let mut writes = records.writes.lock().unwrap();
@@ -1086,12 +1086,12 @@ tilo_test_env::scenario! {
     {
         let clock = crate::background::Pumped::new();
         let _entered = clock.background().enter();
-        // A host that reads no records outside their apps.
+        // A provider that reads no records outside their apps.
         let (_host, actions) = client();
         let followed = actions.follow_resource(None, tasks());
         assert_eq!(
             followed.call().get(),
-            Arrival::Failed(ActionHostError::Unavailable {
+            Arrival::Failed(ActionCallError::Unavailable {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             })
         );
@@ -1118,29 +1118,29 @@ tilo_test_env::scenario! {
 
     phase what_it_asked_before_and_what_it_asks_under_the_guard_are_answered_by_that_host;
     {
-        let host = Arc::new(FakeHost::default());
+        let provider = Arc::new(FakeHost::default());
         // The window a desktop opens with is built before the desktop serves its windows.
         let early = RemoteActions::current();
         let before = early.catalogue(CatalogueQuery::default());
         assert!(before.get().is_pending(), "nothing answers it yet");
         let _served = RemoteActions::enter(
-            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
             Caller::local_person("ada").in_workspace("workspace"),
         );
         let under = early.catalogue(CatalogueQuery::default());
         assert!(matches!(under.get(), Arrival::Ready(_)));
         assert!(
             matches!(before.get(), Arrival::Ready(_)),
-            "what it asked before is that host's to answer too"
+            "what it asked before is that provider's to answer too"
         );
     }
 
     phase a_client_that_names_the_session_keeps_to_it;
     {
-        let host = Arc::new(FakeHost::default());
+        let provider = Arc::new(FakeHost::default());
         let mut session = RemoteActions::session();
         let _served = RemoteActions::enter(
-            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
             Caller::local_person("ada").in_workspace("workspace"),
         );
         let _pending = session.catalogue(CatalogueQuery::default());
@@ -1152,7 +1152,7 @@ tilo_test_env::scenario! {
         let (_host, actions) = client();
         assert_eq!(
             actions.changed(WatchScope::Records).get(),
-            Arrival::Failed(ActionHostError::Unavailable {
+            Arrival::Failed(ActionCallError::Unavailable {
                 reason: tilo_actions::remote::CHANGED_UNAVAILABLE.into(),
             })
         );

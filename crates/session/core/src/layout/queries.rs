@@ -36,7 +36,7 @@ pub(super) fn settle(state: &str, matches: &[LayoutRefReading]) -> (String, Stri
 
 /// The query `query` publishes as a resource of its own, through the view a place shows it by
 /// (`query_view`): what a place stands as until its app answers, and what several or no matches
-/// leave standing (shell.md §8).
+/// leave as they are (shell.md §8).
 pub(super) fn query_resource(query: &LayoutQueryReading, words: &Words) -> ResourceSpec {
     query_actions(&query.key, words).into_iter().fold(
         ResourceSpec::new(

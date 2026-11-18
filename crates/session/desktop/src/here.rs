@@ -225,7 +225,7 @@ pub struct HereState {
     /// The live layer's members, or `None` while it is not live.
     members: Option<Vec<LiveMember>>,
     /// Why this page cannot join the live layer at all, in the words it shows in the members'
-    /// place: a live plane that could not be reached.
+    /// place: a live session that could not be reached.
     unavailable: Option<String>,
     /// This page itself: its publisher, name and colour.
     own: Option<LiveMember>,
@@ -413,8 +413,8 @@ fn member_name(member: &LiveMember) -> Option<&str> {
 }
 
 /// The row already listed for the agent at `device`: the same publisher, or the same person's
-/// agent going by the same name (one agent heard through two publishers). Two sessions of one
-/// client are told apart by their names ("Claude Code #2"), so they stay two rows.
+/// agent going by the same name (one agent heard through two publishers). One member is one row,
+/// however many sessions of it work here.
 fn same_agent<'a>(
     people: &'a mut [Person],
     device: &str,
@@ -820,7 +820,7 @@ impl HereState {
     }
 
     /// The person the device `publisher` is a device of, as its certificate says; `None` before it
-    /// was heard.
+    /// was heard, and for a device whose presence names no person's root key.
     pub fn user_of(&self, publisher: &str) -> Option<&str> {
         if Some(publisher) == self.own_id()
             && let Some(own) = self.own_user()
@@ -832,7 +832,7 @@ impl HereState {
             .flatten()
             .find(|member| member.publisher == publisher)
             .and_then(|member| member.user.as_deref())
-            .filter(|user| !user.is_empty())
+            .filter(|user| !user.is_empty() && PersonId::parse(user).is_ok())
     }
 
     /// The member the device `publisher` is here as: the agent or bot its presence names, else its

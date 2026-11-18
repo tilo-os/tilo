@@ -1,6 +1,6 @@
 /**
  * An in-process API server that speaks `/v1`, as `docs/developers/api.md`
- * describes it, with the answers `crates/hosting/tilo-api/src/v1` gives.
+ * describes it, with the answers `crates/server/tilo-api/src/v1` gives.
  *
  * Hand it to a client as its `fetch`: it records every request, so a test can
  * assert what the SDK sent, and its state says what the host answers.
@@ -243,7 +243,7 @@ export class FakeApi {
     if (rest[0] === "account") {
       return this.json({
         host: "eu1.tilo.sh",
-        standing: { plan: "alpha", account: "ada", usage: { workspaces: [] } },
+        subscription: { plan: "alpha", account: "ada", usage: { workspaces: [] } },
       });
     }
     if (rest[0] === "workspaces") {
@@ -512,7 +512,19 @@ export class FakeApi {
         status: "ok",
         invocation,
         path: whole,
-        result: { fields: Object.keys(this.fields[PDF]?.form_values ?? {}) },
+        result: {
+          file: "application.pdf",
+          fields: Object.keys(this.fields[PDF]?.form_values ?? {}).map((name) => ({
+            name,
+            kind: "text",
+            value: {},
+            path: null,
+            options: [],
+            export: null,
+            page: null,
+            read_only: false,
+          })),
+        },
       });
     }
     if (this.pendingRuns > 0) {
@@ -566,7 +578,7 @@ export class FakeApi {
     const start = Number(call.query.cursor ?? 0);
     const page = newest.slice(start, start + limit);
     return this.json({
-      invocations: page,
+      items: page,
       total: newest.length,
       waiting: newest.filter((invocation) => invocation.status === "waiting").length,
       pending: false,

@@ -4,7 +4,7 @@ import Foundation
 /// phone when the host tells an activity its news, so it stays small and plain.
 public struct LiveFacts: Codable, Hashable, Sendable {
     public var kind: Kind
-    public var standing: Standing
+    public var state: State
     public var title: String
     /// One line under the title.
     public var detail: String?
@@ -14,10 +14,10 @@ public struct LiveFacts: Codable, Hashable, Sendable {
     public var until: Date?
     public var isImportant: Bool
 
-    public init(kind: Kind, standing: Standing = .running, title: String, detail: String? = nil,
+    public init(kind: Kind, state: State = .running, title: String, detail: String? = nil,
                 points: [String] = [], until: Date? = nil, isImportant: Bool = false) {
         self.kind = kind
-        self.standing = standing
+        self.state = state
         self.title = title
         self.detail = detail
         self.points = points
@@ -34,7 +34,7 @@ public struct LiveFacts: Codable, Hashable, Sendable {
         case brief
     }
 
-    public enum Standing: String, Codable, Sendable {
+    public enum State: String, Codable, Sendable {
         case running
         case needsYou
         case done
@@ -73,13 +73,13 @@ public enum LiveActivityPlan {
             found["brief-\(item.id)"] = LiveFacts(kind: .brief, title: brief.title, points: points(of: brief.text),
                                                   until: begins, isImportant: item.isImportant)
         }
-        for task in tasks where task.isImportant && task.standing != .resolved && task.standing != .upNext {
-            found["task-\(task.id)"] = LiveFacts(kind: .work, standing: task.standing == .inProgress ? .running : .needsYou,
+        for task in tasks where task.isImportant && task.state != .resolved && task.state != .upNext {
+            found["task-\(task.id)"] = LiveFacts(kind: .work, state: task.state == .inProgress ? .running : .needsYou,
                                                  title: task.title, detail: task.note, isImportant: true)
         }
         for agent in subAgents where agent.startedBy == .person {
-            guard agent.standing == .working || agent.standing == .needsYou else { continue }
-            found["sub-agent-\(agent.id)"] = LiveFacts(kind: .work, standing: agent.standing == .working ? .running : .needsYou,
+            guard agent.state == .working || agent.state == .needsYou else { continue }
+            found["sub-agent-\(agent.id)"] = LiveFacts(kind: .work, state: agent.state == .working ? .running : .needsYou,
                                                        title: agent.title, detail: agent.role.isEmpty ? nil : agent.role)
         }
         return found
@@ -88,7 +88,7 @@ public enum LiveActivityPlan {
     /// Whether an activity may begin in this state. Work begins while it runs: work that is
     /// born needing the person is told by a notification, which has the answer on it.
     public static func mayBegin(_ facts: LiveFacts) -> Bool {
-        facts.kind != .work || facts.standing == .running
+        facts.kind != .work || facts.state == .running
     }
 
     /// A brief's points: its list's entries, or its lines, three at most.

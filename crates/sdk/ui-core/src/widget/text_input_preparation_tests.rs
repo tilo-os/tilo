@@ -145,7 +145,7 @@ fn assert_cold_geometry(
 }
 
 #[test]
-fn preparation_tracks_unwitnessed_text_marks_theme_ime_and_renderer() {
+fn preparation_tracks_unobserved_text_marks_theme_ime_and_renderer() {
     let mut tr = crate::font_catalog::fixture_renderer();
     let mut theme = Theme::dark();
     let mut input = TextInput::local()
@@ -155,7 +155,7 @@ fn preparation_tracks_unwitnessed_text_marks_theme_ime_and_renderer() {
     let mut width = 160.0;
     for transition in 0..10 {
         match transition {
-            // Deliberately bypass dirty flags: they are not a complete text witness.
+            // Deliberately bypass dirty flags: they are not a complete text observation.
             1 => {
                 input.text.replace_range(..3, "pub");
             }

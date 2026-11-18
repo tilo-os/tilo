@@ -27,7 +27,7 @@ const CHANNELS_USIZE: usize = CHANNELS as usize;
 type Open = Arc<dyn Fn() -> Result<Box<dyn Output>, String> + Send + Sync>;
 
 /// Converts one tab's PCM to 48 kHz stereo, keeping resampler state between packets so a
-/// stream's seams do not click.
+/// stream's boundaries do not click.
 struct Converter {
     rate: u32,
     channels: usize,
@@ -514,9 +514,9 @@ mod tests {
                 assert!(state.take_mix().is_none());
             }
             {
-                let gate = Arc::new(Mutex::new(()));
-                let held = gate.lock().unwrap();
-                let waiting = gate.clone();
+                let check = Arc::new(Mutex::new(()));
+                let held = check.lock().unwrap();
+                let waiting = check.clone();
                 let mixer = Mixer::new(
                     Arc::new(move || {
                         drop(waiting.lock().unwrap());

@@ -27,7 +27,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    // The restarted host is found at the relay the page knew, whichever port
+    // The restarted host is found at the server the page knew, whichever port
     // it came back on.
     let host = start_host_serving(
         &root,
@@ -60,7 +60,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     .unwrap();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     let host = restart_host_relayed(&root, &host_device, state.path()).await;
     // A reconnect resumes: the page already holds what it published.
     peer.send(Cmd::Reconnect).unwrap();
@@ -85,7 +85,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
             .all(|failure| failure.kind != FailureKind::Admission)
     );
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Back online after a long outage, a session waiting out its backoff
@@ -110,7 +110,7 @@ fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backof
                 let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
                 let browser = enrol(&root, "browser", DeviceCapabilities::member());
                 let state = tempfile::tempdir().unwrap();
-                // Back online, the page reaches the host through the relay it knew,
+                // Back online, the page reaches the host through the server it knew,
                 // whichever port the host came back on.
                 let host = start_host_serving(
                     &root,
@@ -162,7 +162,7 @@ fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backof
                 );
 
                 drop(host.web);
-                host.relay.shutdown().await;
+                host.server.shutdown().await;
                 // The session waits out a backoff before its next attempt, and its
                 // status names when that is.
                 let due = wait_for("the session to wait out a backoff", || async {
@@ -185,7 +185,7 @@ fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backof
                 let host = restart_host_relayed(&root, &host_device, state.path()).await;
                 ready(&[&peer]).await;
                 peer.close();
-                host.relay.shutdown().await;
+                host.server.shutdown().await;
             });
         });
     });
@@ -269,5 +269,5 @@ async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     peer.clear_failure(&FailureKind::Storage);
     assert!(page_failures().is_empty());
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

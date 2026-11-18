@@ -17,11 +17,11 @@ architecture, all read from the ELF file itself:
 
 It also names the `DT_NEEDED` libraries. A media library there would be loaded
 by every app, media or not: `[targets] needed_absent` names them, and the
-build gate fails when one is in the runtime's `DT_NEEDED`, in the closure of
+build check fails when one is in the runtime's `DT_NEEDED`, in the closure of
 libraries every app loads with it, or in the closure of a built app that
 `apps_without_media` lists. GLib and GStreamer reach the runtime
 through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
-and records them in the `.tilo.lazy_needed` section; the gate reports those.
+and records them in the `.tilo.lazy_needed` section; the check reports those.
 
 Engines a few apps use live in libraries of their own beside the runtime
 (crates/runtime/engines/). `measure --engine FILE` reports each one's
@@ -29,10 +29,10 @@ numbers, fails when one does not link the runtime, and fails when an app of
 `apps_without_media` loads one at exec: an engine is loaded only by its apps,
 and an app of that list that uses one is named in `[engine_users]`. Each
 engine's file has a budget of its own (`[engines.<arch>]`, by library name),
-with the same headroom, rounding and raise files: the build gate fails when
+with the same headroom, rounding and raise files: the build check fails when
 one is over its budget or has none.
 
-Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
+Three checks, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
 - **The build.** `measure FILE --arch ARCH` reads the dylib Release / apps has
   just built (`target/thin-app/libruntime_dylib.so`) and fails when a number
@@ -47,7 +47,7 @@ Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
 `tools/perf/runtime-size-budget/budget.toml` holds the budgets: a measurement
 plus `headroom`, rounded up to 64 KiB (counts to 64). Intended growth adds one
-`raises/<change>.toml` per change. When the runtime shrinks, both gates print
+`raises/<change>.toml` per change. When the runtime shrinks, both checks print
 the lower budget to commit. docs/measurements/runtime-size.md has the steps.
 """
 
@@ -284,7 +284,7 @@ def run_label() -> str:
 
 
 def describe(stats: ElfStats) -> list[str]:
-    """What a person reading the gate needs to see where the bytes are."""
+    """What a person reading the check needs to see where the bytes are."""
     biggest = sorted(((size, name) for name, size in stats.sections.items() if name), reverse=True)[:8]
     return [f"runtime {stats.arch}: {stats.bytes} bytes; " + ", ".join(
                 f"{name} {size / 1e6:.2f} MB" for size, name in biggest),

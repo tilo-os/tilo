@@ -13,8 +13,8 @@ use ui::window_toolbar::{
 
 use super::CameraApp;
 use crate::actions::{CameraEffect, DOCUMENT_ROW};
+use crate::camera::Camera;
 use crate::model::{CaptureMode, Screen};
-use crate::record::Record;
 
 /// The views, in the order the bar shows them; the index is
 /// [`CameraApp::selected_capture_mode`]'s.
@@ -56,19 +56,19 @@ enum Command {
 
 /// The bar's entries: Camera's effects, and the window's commands.
 pub(super) struct Bar {
-    actions: Option<BarActions<Record>>,
+    actions: Option<BarActions<Camera>>,
     commands: BarCommands<Command>,
 }
 
 impl Bar {
-    pub(super) fn new(dispatcher: Option<&Dispatcher<Record>>) -> Self {
+    pub(super) fn new(dispatcher: Option<&Dispatcher<Camera>>) -> Self {
         Self {
             actions: dispatcher.cloned().map(BarActions::new),
             commands: BarCommands::new(),
         }
     }
 
-    pub(super) fn attach(&mut self, dispatcher: Dispatcher<Record>) {
+    pub(super) fn attach(&mut self, dispatcher: Dispatcher<Camera>) {
         self.actions = Some(BarActions::new(dispatcher));
     }
 }
@@ -220,7 +220,7 @@ impl CameraApp {
     fn invoke(&mut self, effect: &CameraEffect) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.effect(effect),
-            None => self.toast.show("Camera is not open on a record"),
+            None => self.toast.show("Camera is not open on a resource"),
         }
     }
 
@@ -237,11 +237,11 @@ mod tests {
     struct SampleCamera;
 
     impl ui::framework::ResourceApp for SampleCamera {
-        type Resource = crate::record::Record;
+        type Resource = crate::camera::Camera;
         const ID: &'static str = ui::apps::CAMERA;
         const TITLE: &'static str = "Camera";
 
-        fn view(cx: &mut ui::framework::ViewCx<crate::record::Record>) -> ui::widget::Element {
+        fn view(cx: &mut ui::framework::ViewCx<crate::camera::Camera>) -> ui::widget::Element {
             crate::app::window(cx, CameraApp::sample())
         }
     }

@@ -87,6 +87,30 @@ its state can be issued approvals that strand it. A device that lies is already
 compromised; the bound exists so that a *later* compromise cannot turn a stash of
 approvals into a bricked machine.
 
+### Approvals from the person's own devices
+
+A paired server has no person at its keyboard, and its person's root is an
+Ed25519 key, which cannot sign a TPM approval. So the person has one RSA
+**floor key**, kept in their admin workspace's floor resource
+(`tilo-server/src/servers/floor.rs`): its public half signed by their root, its
+private half sealed to their root-derived secret-sync key, so it opens only on
+a device that holds the root, as a sibling unlock half does. Each server's
+entry in the admin workspace says which key its floor counter takes approvals
+from.
+
+After a server's update boots healthy, `tilo-server-update-apply` calls
+`floor-request` and hands the statement to the daemon (`tilo-server-admin
+rollout floor`), which posts it in the admin workspace as a typed request
+naming the generation and the image it booted. Another of the person's devices
+that opens the floor key answers it by itself: it checks the server is one of
+the person's, its counter takes the person's floor key, the image came from the
+updates the server follows, and signs approvals no further than the generation
+that booted. A server never answers its own request; the resource refuses it.
+The approvals come back to the server through the same resource, land in the
+approvals directory, and `tilo-rollback-confirm` spends them. Every request and
+its answer stays in the resource's history. When nobody answers, the rule below
+holds.
+
 ### If the authority is unavailable
 
 **The floor stops advancing. The disk keeps unlocking.** Unsealing only reads the
@@ -158,7 +182,7 @@ known-vulnerable generation instead of leaving it inside the window.
 
 `--floor-authority-key` selects the key that authorises floor advances; it defaults
 to the PCR-prediction key because both are the same trust domain. Production
-custody should separate them — a prediction signature says "these are the expected
+ownership should separate them — a prediction signature says "these are the expected
 measurements", while a floor approval permanently narrows what a machine will boot.
 
 `TILO_ROLLBACK_DEBUG=1` prints the failing TPM tool's own diagnostics, which is
@@ -213,7 +237,7 @@ the stronger one. `tilo-rollback boot-status` prints the whole decision —
 Secure Boot state, lockdown level, the `db` digest, the recorded one, and whether a
 PIN-less slot would open this boot — without touching a device.
 
-Repair mode is unaffected and stays gated on a typed secret. Its command line
+Repair mode is unaffected and still needs a typed secret. Its command line
 measures differently, so both kinds of generation token refuse it
 ([repair-mode.md](repair-mode.md), "Why generation-bound unlock is still
 stronger").
@@ -274,7 +298,7 @@ firmware update from turning into a recovery-key prompt.
    `latest`/generation split. A registry can still freeze a brand-new machine on a
    complete older signed view; an installed machine's TPM floor prevents that view
    from unlocking once its floor advanced. Closing freshness for new installations
-   requires an independent signed witness/checkpoint, tracked as a priority gap in
+   requires an independent signed approval/checkpoint, tracked as a priority gap in
    [threat-model.md](threat-model.md).
 
    There is no default, and nothing falls back to one when the registry cannot be
@@ -363,10 +387,10 @@ the boot loader falls back to is still able to unseal.
 
 They also disagree about strictness, deliberately.
 `rollback_system_is_healthy` here requires `systemctl is-system-running` =
-`running`, because it gates **destroying** the fallback and refusing costs
+`running`, because it checks **destroying** the fallback and refusing costs
 nothing. `tilo-boot-health` requires only that the session came up (a greeter
 that presented a frame and held it without greetd restarting), because it
-gates **keeping the current generation**, and the same strictness there would
+checks **keeping the current generation**, and the same strictness there would
 fail every boot of every generation over one unrelated broken unit and walk the
 retention window down to nothing.
 

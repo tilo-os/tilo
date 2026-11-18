@@ -12,7 +12,7 @@ root signature over the right 32 bytes is a device certificate or a revocation,
 so no application ever obtains one (`runtime_identity::broker::serve_metadata`).
 A store record whose key was never secured still fails the launch and names the
 Settings step that secures it.
-Application signatures come from the identity service (`tilo-identity-host`,
+Application signatures come from the identity service (`tilo-identity`,
 file descriptor 31), which signs with this device's enrolled key and only under
 a grant naming the app, workspace and action. Read-only workspace participation gets
 no broker descriptor; the identity-service connection is still attached when the
@@ -73,7 +73,7 @@ and removal. Imports reject a second record with the same public key. Older
 duplicate records share one provider locator, so removing one retains the
 secret until the last reference is gone.
 
-The `SecretProvider` trait is the TPM/hardware-backed seam. A provider must
+The `SecretProvider` trait is the TPM/hardware-backed boundary. A provider must
 store, load, remove, report its backend id, and report `HardwareBacked` only
 after it actually sealed the secret. No TPM provider is implemented: the
 default resolver deliberately refuses `tpm2-sealed-v1` records, and no record
@@ -139,7 +139,7 @@ Why this is at least as strong as reading the link:
   PID; the store still takes the PID from the bus daemon's credentials only
   to check the user and to read the link first.
 
-Rejected alternatives: a dumpable relay process that makes the calls for the
+Rejected alternatives: a dumpable server process that makes the calls for the
 compositor would itself be a confused deputy (any same-user process can
 start it and ask), and would carry the identity root secret through a
 dumpable process; caching an identity read while the compositor was still
@@ -167,7 +167,7 @@ imports, shared-secret removal, active/final record protections, and prevention
 of migration/chmod outside the canonical identity store.
 
 `runtime-identity`'s own test builds always use the file store. The store a
-real session chooses is proven by `crates/system/secret-service/tests/identity_custody.rs`,
+real session chooses is proven by `crates/system/secret-service/tests/identity_ownership.rs`,
 which runs the production identity and vault code against the built
 `tilo-secret-service` on a private session bus. With no Secret Service on the
 bus, a new key goes to the 0600 file, the record names `broker-file-v1`,

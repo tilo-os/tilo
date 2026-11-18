@@ -8,8 +8,12 @@ final class WordsTests: XCTestCase {
 
     func testTheBundlesSentencesAreTheTables() throws {
         let file = package.appendingPathComponent("AssistantBundle/en.lproj/Localizable.strings")
+        // The file is the table written out: asked to, the test writes it, and then reads it as the bundle will.
+        if ProcessInfo.processInfo.environment["TILO_WRITE_WORDS"] != nil {
+            try AssistantWords.catalogue.write(to: file, atomically: true, encoding: .utf8)
+        }
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), AssistantWords.catalogue,
-                       "write AssistantWords.catalogue to \(file.path)")
+                       "run this test once with TILO_WRITE_WORDS=1 to write AssistantWords.catalogue to \(file.path)")
         let read = try XCTUnwrap(NSDictionary(contentsOf: file) as? [String: String])
         XCTAssertEqual(Set(read.keys), Set(AssistantWords.allCases.map(\.rawValue)))
         for words in AssistantWords.allCases {

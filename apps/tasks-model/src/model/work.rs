@@ -1,22 +1,22 @@
-//! What an issue keeps while it is worked on over many runs: where its working material is, what
-//! it waits for, what it may cost, and why it stopped.
+//! What an issue keeps while it is worked on over many agent sessions: where its working
+//! material is, what it waits for, what it may cost, and why it stopped.
 //!
-//! Work that takes hours or weeks does not fit one run of whoever does it. A run ends, the
-//! machine restarts, a reply takes two days. So everything the next run needs is kept with the
-//! issue, in the workspace's own records, and nothing beside them:
+//! Work that takes hours or weeks does not fit one session of whoever does it. A session ends,
+//! the machine restarts, a reply takes two days. So everything the next session needs is kept
+//! with the issue, in the workspace's own resources, and nothing beside them:
 //!
-//! - **A place.** A folder in the workspace's files and a note in Notes, both named here. A run
-//!   writes its plan, what it found (with where it found it) and what is still open into the
-//!   note, and puts files into the folder; a fresh run starts from them.
+//! - **A place.** A folder in the workspace's files and a note in Notes, both named here. A
+//!   session writes its plan, what it found (with where it found it) and what is still open into
+//!   the note, and puts files into the folder; a fresh session starts from them.
 //! - **Waits.** What the work waits for, in words a person reads, and the latest moment the wait
 //!   ends. Whichever comes first ends it: any one of the things waited for, or that moment.
-//!   Waiting costs nothing: nothing runs until the wait ends.
-//! - **A budget.** Money and working time for the whole issue, over all its runs.
-//! - **Why it stopped.** A run that hit the budget, lost its worker or failed says so here, in a
-//!   plain line, so an issue nobody works on never reads as one somebody does.
+//!   Waiting costs nothing: nobody works on it until the wait ends.
+//! - **A budget.** Money and working time for the whole issue, over all its sessions.
+//! - **Why it stopped.** A session that hit the budget, lost its worker or failed says so here,
+//!   in a plain line, so an issue nobody works on never reads as one somebody does.
 //!
-//! [`standing`] is how every reader tells these apart: the panel that lists a person's tasks,
-//! the host that decides whether to run, and a test.
+//! [`task_state`] is how every reader tells these apart: the panel that lists a person's tasks,
+//! the server that decides whether to work on it, and a test.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{JsonSchema, Model, Refusal};
@@ -29,8 +29,10 @@ pub const MAX_WAITS: usize = 16;
 pub const MAX_LINE_CHARS: usize = 1024;
 /// The longest address a wait or a place names, in characters.
 pub const MAX_ADDRESS_CHARS: usize = 1024;
-/// How often in a row a run may be lost before the issue stops and says so.
-pub const MOST_LOST_RUNS: u64 = 2;
+/// How often in a row an agent session may be lost before the issue stops and says so.
+pub const MOST_LOST_SESSIONS: u64 = 2;
+/// The most of an issue's pieces that are worked on at once, where their number is bounded.
+pub const MOST_PIECES_AT_ONCE: u64 = 250;
 
 /// What a wait is for.
 #[derive(
@@ -43,12 +45,14 @@ pub enum WaitKind {
     Time,
     /// A reply: in a mail thread, a conversation.
     Reply,
-    /// A record of the workspace changing.
+    /// A resource of the workspace changing.
     Change,
     /// An answer of the person the work is for: the issue needs them.
     Answer,
     /// Answers of several people.
     People,
+    /// Its pieces, the issues under it: it goes on when none of them is still to be worked on.
+    Pieces,
 }
 
 /// One thing an issue waits for.
@@ -80,7 +84,7 @@ pub enum StoppedWhy {
     Budget,
     /// Its budget in working time is spent.
     Time,
-    /// Its runs were interrupted and did not come back.
+    /// Its agent sessions were interrupted and did not come back.
     LostWorker,
     /// A person stopped it.
     Person,
@@ -116,7 +120,7 @@ pub enum BudgetBy {
     Agent,
 }
 
-/// What an issue keeps while it is worked on over many runs.
+/// What an issue keeps while it is worked on over many agent sessions.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Work {
     /// The folder in the workspace's files its working material is kept in; empty for none.
@@ -132,24 +136,28 @@ pub struct Work {
     pub since_ms: Option<i64>,
     /// What the whole issue may cost, in millionths of the currency.
     pub budget_micros: Option<u64>,
-    /// How long it may be worked on over all its runs, in milliseconds. Waiting is not counted.
+    /// How long it may be worked on over all its sessions, in milliseconds. Waiting is not
+    /// counted.
     pub budget_ms: Option<u64>,
     /// Who set the budget.
     pub budget_by: BudgetBy,
-    /// What its runs cost so far.
+    /// What its sessions cost so far.
     pub spent_micros: u64,
-    /// How long its runs worked so far.
+    /// How long its sessions worked so far.
     pub worked_ms: u64,
-    /// How many runs began.
-    pub runs: u64,
-    /// Since when a run is going, as its agent said when it began.
-    pub running_since_ms: Option<i64>,
-    /// How many runs in a row began and never ended.
+    /// How many agent sessions began on it.
+    pub sessions: u64,
+    /// Since when a session is going, as its agent said when it began.
+    pub session_since_ms: Option<i64>,
+    /// How many sessions in a row began and never ended.
     pub lost: u64,
     /// Set when the work stopped.
     pub stopped: Option<Stopped>,
     /// Set when the work was told to go on: its agent is asked again from then.
     pub resumed: Option<Resumed>,
+    /// How many of its pieces, the issues under it, are worked on at once by the agents they
+    /// are given to; none for any number.
+    pub pieces_at_once: Option<u64>,
 }
 
 impl Work {
@@ -194,9 +202,9 @@ impl Work {
 }
 
 /// How an issue stands, as whoever lists tasks reads it. The first of these that fits, in the
-/// order [`standing`] tries them.
+/// order [`task_state`] tries them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum TaskState {
     /// A person called it off.
     Cancelled,
     /// Its work stopped before it was finished: it needs its person, and is never read as done
@@ -223,7 +231,7 @@ pub enum Standing {
     UpNext,
 }
 
-impl Standing {
+impl TaskState {
     /// Whether the issue is over: finished or called off. A stopped one never is.
     #[must_use]
     pub const fn resolved(&self) -> bool {
@@ -236,39 +244,39 @@ impl Standing {
 /// A stop is read before `done` and `in-review`: work that hit its budget, lost its worker or
 /// failed is not finished, whatever its status was set to since.
 #[must_use]
-pub fn standing(issue: &Issue) -> Standing {
+pub fn task_state(issue: &Issue) -> TaskState {
     if issue.status == Status::Cancelled {
-        return Standing::Cancelled;
+        return TaskState::Cancelled;
     }
     let work = issue.work.as_ref();
     if let Some(stopped) = work.and_then(|work| work.stopped.as_ref()) {
-        return Standing::Stopped {
+        return TaskState::Stopped {
             why: stopped.why,
             words: stopped.words.clone(),
         };
     }
     match issue.status {
-        Status::Done => return Standing::Done,
-        Status::InReview => return Standing::ReadyForReview,
+        Status::Done => return TaskState::Done,
+        Status::InReview => return TaskState::ReadyForReview,
         _ => {}
     }
     if let Some(work) = work
         && let Some(until_ms) = work.until_ms
     {
         if let Some(asked) = work.waits.iter().find(|wait| wait.kind == WaitKind::Answer) {
-            return Standing::NeedsYou {
+            return TaskState::NeedsYou {
                 what: asked.what.clone(),
             };
         }
-        return Standing::Waiting {
+        return TaskState::Waiting {
             what: work.waits.iter().map(|wait| wait.what.clone()).collect(),
             until_ms,
         };
     }
     if issue.status == Status::InProgress {
-        Standing::Working
+        TaskState::Working
     } else {
-        Standing::UpNext
+        TaskState::UpNext
     }
 }
 
@@ -399,9 +407,9 @@ mod tests {
                 Status::InReview,
                 Status::Done,
             ] {
-                let read = standing(&issue(status, Some(stopped(why))));
+                let read = task_state(&issue(status, Some(stopped(why))));
                 assert!(
-                    matches!(&read, Standing::Stopped { why: read_why, words }
+                    matches!(&read, TaskState::Stopped { why: read_why, words }
                         if *read_why == why && words.contains("budget of $2.00")),
                     "{status:?} stopped for {why:?} reads {read:?}"
                 );
@@ -410,24 +418,24 @@ mod tests {
         }
         // Called off by a person, it is over.
         assert_eq!(
-            standing(&issue(Status::Cancelled, Some(stopped(StoppedWhy::Budget)))),
-            Standing::Cancelled
+            task_state(&issue(Status::Cancelled, Some(stopped(StoppedWhy::Budget)))),
+            TaskState::Cancelled
         );
     }
 
     #[test]
     fn an_issue_reads_by_its_status_and_what_it_waits_for() {
-        assert_eq!(standing(&issue(Status::Backlog, None)), Standing::UpNext);
-        assert_eq!(standing(&issue(Status::Todo, None)), Standing::UpNext);
+        assert_eq!(task_state(&issue(Status::Backlog, None)), TaskState::UpNext);
+        assert_eq!(task_state(&issue(Status::Todo, None)), TaskState::UpNext);
         assert_eq!(
-            standing(&issue(Status::InProgress, None)),
-            Standing::Working
+            task_state(&issue(Status::InProgress, None)),
+            TaskState::Working
         );
         assert_eq!(
-            standing(&issue(Status::InReview, None)),
-            Standing::ReadyForReview
+            task_state(&issue(Status::InReview, None)),
+            TaskState::ReadyForReview
         );
-        assert_eq!(standing(&issue(Status::Done, None)), Standing::Done);
+        assert_eq!(task_state(&issue(Status::Done, None)), TaskState::Done);
 
         let reply = WaitFor {
             kind: WaitKind::Reply,
@@ -440,8 +448,8 @@ mod tests {
             ..Work::default()
         };
         assert_eq!(
-            standing(&issue(Status::InProgress, Some(waiting.clone()))),
-            Standing::Waiting {
+            task_state(&issue(Status::InProgress, Some(waiting.clone()))),
+            TaskState::Waiting {
                 what: vec!["a reply from the supplier".into()],
                 until_ms: 9_000
             }
@@ -459,8 +467,8 @@ mod tests {
             ..waiting
         };
         assert_eq!(
-            standing(&issue(Status::InProgress, Some(asked))),
-            Standing::NeedsYou {
+            task_state(&issue(Status::InProgress, Some(asked))),
+            TaskState::NeedsYou {
                 what: "Which regions count?".into()
             }
         );
@@ -470,8 +478,8 @@ mod tests {
             ..Work::default()
         };
         assert_eq!(
-            standing(&issue(Status::Todo, Some(until))),
-            Standing::Waiting {
+            task_state(&issue(Status::Todo, Some(until))),
+            TaskState::Waiting {
                 what: Vec::new(),
                 until_ms: 9_000
             }

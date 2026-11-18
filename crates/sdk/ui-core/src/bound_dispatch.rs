@@ -1,11 +1,10 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 pub(crate) mod local_target;
 
-mod executing_host;
-use executing_host::{ExecutingHostDevice, ExecutingHostPerson, ExecutingHostScope};
-pub use executing_host::{
-    executing_host_device, executing_host_person, executing_host_scope,
-    host_person_invocation_permitted,
+mod executing;
+use executing::{ExecutingHostDevice, ExecutingHostPerson, ExecutingScope};
+pub use executing::{
+    executing_device, executing_person, executing_scope, local_person_invocation_permitted,
 };
 use tilo_actions::ResourceSpec;
 
@@ -174,7 +173,7 @@ impl BoundActionTarget {
 
 pub(crate) fn has_matching_broker_component(
     root: &dyn Widget,
-    route: Option<&crate::collaboration::PrimaryRouteWitness>,
+    route: Option<&crate::collaboration::AcceptedRoute>,
 ) -> bool {
     if root
         .callback_binding()
@@ -247,7 +246,7 @@ pub(crate) fn component_controls_allowed(
         (Some(only), None) => Some(only),
         _ => None,
     };
-    let permissions = binding.permissions.borrow().directory_witness().ok();
+    let permissions = binding.permissions.borrow().directory_observation().ok();
     if let (Some(snapshot), Some(permissions)) = (only, permissions)
         && let Some(forest) = snapshot.shared_forest()
     {
@@ -280,7 +279,7 @@ impl ControlAvailability {
     fn derive(
         binding: &CallbackBinding,
         forest: &Rc<[SharedResource]>,
-        permissions: crate::permissions::DirectoryPermissionWitness,
+        permissions: crate::permissions::DirectoryPermissionObservation,
         addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> Self {
         let mut derived = Self {
@@ -429,7 +428,7 @@ pub(crate) fn capture_control_invocations(root: &mut dyn Widget) -> BoundControl
     visit_control_queues(root, true)
 }
 
-/// Retry custody traversal without opening any live queue after History entry.
+/// Retry ownership traversal without opening any live queue after History entry.
 pub(crate) fn inspect_control_owners(root: &mut dyn Widget) -> BoundControlBatch {
     visit_control_queues(root, false)
 }
@@ -706,7 +705,7 @@ impl BoundResourceSnapshot {
 /// and the APIs its host offers.
 pub(crate) struct ControlAvailability {
     forest: Rc<[SharedResource]>,
-    permissions: crate::permissions::DirectoryPermissionWitness,
+    permissions: crate::permissions::DirectoryPermissionObservation,
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
@@ -899,7 +898,7 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
     )
 }
 
-/// [`search_providers`] as the action directory's witness reads them: the
+/// [`search_providers`] as the action directory's observation reads them: the
 /// same providers in the same order, described without being made, so a
 /// source that indexes to answer builds nothing until someone searches.
 pub(crate) fn search_provider_descriptors(
@@ -1191,14 +1190,14 @@ pub(crate) fn activate_bound_search(
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct BoundDirectoryWitness {
+pub(crate) struct BoundDirectoryObservation {
     owner: uuid::Uuid,
     pub(crate) generation: Option<u64>,
-    permissions: crate::permissions::DirectoryPermissionWitness,
+    permissions: crate::permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
 }
-impl BoundDirectoryWitness {
+impl BoundDirectoryObservation {
     pub(crate) fn supports_model_refresh(&self) -> bool {
         self.generation.is_some_and(|value| value != u64::MAX)
             && !self.domains.is_empty()
@@ -1216,15 +1215,15 @@ impl BoundDirectoryWitness {
             && matches!((before.generation, self.generation), (Some(old), Some(new)) if new >= old)
     }
 }
-pub(crate) fn directory_witness(
+pub(crate) fn directory_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
-) -> Result<Vec<BoundDirectoryWitness>, String> {
+) -> Result<Vec<BoundDirectoryObservation>, String> {
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<CallbackBinding>,
-        witnesses: &mut Vec<BoundDirectoryWitness>,
+        observations: &mut Vec<BoundDirectoryObservation>,
     ) -> Result<(), String> {
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
@@ -1240,29 +1239,29 @@ pub(crate) fn directory_witness(
             .transpose()
             .map_err(|error| format!("{error:?}"))?;
         if let Some(binding) = &binding {
-            let permissions = binding.permissions.borrow().directory_witness()?;
-            let index = witnesses
+            let permissions = binding.permissions.borrow().directory_observation()?;
+            let index = observations
                 .iter()
-                .position(|witness| witness.owner == binding.lifetime_id)
+                .position(|observation| observation.owner == binding.lifetime_id)
                 .unwrap_or_else(|| {
-                    witnesses.push(BoundDirectoryWitness {
+                    observations.push(BoundDirectoryObservation {
                         owner: binding.lifetime_id,
                         generation: None,
                         permissions: permissions.clone(),
                         revisions: Vec::new(),
                         domains: Vec::new(),
                     });
-                    witnesses.len().saturating_sub(1)
+                    observations.len().saturating_sub(1)
                 });
-            let witness = witnesses
+            let observation = observations
                 .get_mut(index)
                 .ok_or_else(|| "directory owner disappeared".to_string())?;
-            if witness.permissions != permissions {
+            if observation.permissions != permissions {
                 return Err("directory owner policy changed during traversal".into());
             }
-            witness.generation = binding.generation().map_err(|error| format!("{error:?}"))?;
+            observation.generation = binding.generation().map_err(|error| format!("{error:?}"))?;
             if boundary.is_some() {
-                witness.domains.push(
+                observation.domains.push(
                     binding
                         .read_document(doc, |doc, _| {
                             crate::resources::action_directory_invocation_domain(widget, doc)
@@ -1271,7 +1270,7 @@ pub(crate) fn directory_witness(
                 );
             }
             if boundary.is_none() {
-                witness.revisions.push(
+                observation.revisions.push(
                     binding
                         .read_document(doc, |doc, _| {
                             crate::resources::action_directory_revision(widget, doc)
@@ -1283,14 +1282,14 @@ pub(crate) fn directory_witness(
         let mut result = Ok(());
         widget.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = visit(child, doc, binding.clone(), witnesses);
+                result = visit(child, doc, binding.clone(), observations);
             }
         });
         result
     }
-    let mut witnesses = Vec::new();
-    visit(root, doc, None, &mut witnesses)?;
-    Ok(witnesses)
+    let mut observations = Vec::new();
+    visit(root, doc, None, &mut observations)?;
+    Ok(observations)
 }
 
 #[derive(Default)]
@@ -1341,23 +1340,23 @@ impl UndoStatusCache {
 }
 
 /// One bound owner's admission generation and record frontier, read on each side of an input dispatch
-/// (the native App) or of a frame (the frame harness, which also reads the owner's standing:
-/// [`bound_owner_standing`]).
+/// (the native App) or of a frame (the frame harness, which also reads the owner's inputs:
+/// [`bound_owner_inputs`]).
 pub(crate) struct BoundOwnerMark {
     binding: CallbackBinding,
     /// Only the native input path has snapshots across generations.
     #[cfg(feature = "native")]
     generation: Option<u64>,
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
-    standing: Option<OwnerStanding>,
+    inputs: Option<OwnerInputs>,
 }
 
 /// What an owner's published controls and synced root read besides its record and its widgets: what its
 /// permissions mean now (a grant expires with time) and its record's durability, which its root shows
 /// once synced.
 #[derive(PartialEq)]
-pub(crate) struct OwnerStanding {
-    pub(crate) permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+pub(crate) struct OwnerInputs {
+    pub(crate) permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
@@ -1375,16 +1374,16 @@ pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<Bo
     owner_marks(root, outer, false)
 }
 
-/// [`bound_owner_marks`] with each owner's standing.
-pub(crate) fn bound_owner_standing(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+/// [`bound_owner_marks`] with each owner's inputs.
+pub(crate) fn bound_owner_inputs(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
     owner_marks(root, outer, true)
 }
 
-fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<BoundOwnerMark> {
+fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<BoundOwnerMark> {
     fn visit(
         widget: &dyn Widget,
         outer: &AutoCommit,
-        standing: bool,
+        inputs: bool,
         marks: &mut Vec<BoundOwnerMark>,
     ) {
         if let Some(binding) = widget.callback_binding()
@@ -1400,8 +1399,8 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<Bou
             let document = binding
                 .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
-            let standing = standing.then(|| OwnerStanding {
-                permissions: binding.permissions.borrow().directory_witness(),
+            let inputs = inputs.then(|| OwnerInputs {
+                permissions: binding.permissions.borrow().directory_observation(),
                 save: binding
                     .records
                     .save_status(&binding.checkout.id)
@@ -1413,26 +1412,26 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<Bou
                 #[cfg(feature = "native")]
                 generation,
                 document,
-                standing,
+                inputs,
             });
         }
-        widget.for_each_child(&mut |child| visit(child, outer, standing, marks));
+        widget.for_each_child(&mut |child| visit(child, outer, inputs, marks));
     }
     let mut marks = Vec::new();
-    visit(root, outer, standing, &mut marks);
+    visit(root, outer, inputs, &mut marks);
     marks
 }
 
-/// Whether two [`bound_owner_standing`] reads name the same owners, each with its record committed and
-/// unmoved and with the same standing.
-pub(crate) fn same_owner_standing(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
+/// Whether two [`bound_owner_inputs`] reads name the same owners, each with its record committed and
+/// unmoved and with the same inputs.
+pub(crate) fn same_owner_inputs(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
     before.len() == after.len()
         && before.iter().zip(after).all(|(before, after)| {
             before.binding.same_component(&after.binding)
                 && before.is_committed()
                 && before.document == after.document
-                && before.standing.is_some()
-                && before.standing == after.standing
+                && before.inputs.is_some()
+                && before.inputs == after.inputs
         })
 }
 
@@ -1479,7 +1478,7 @@ struct CachedBoundResources {
     /// ([`crate::component_inputs`]); the host's frame count for an owner without one.
     local: LocalInputs,
     locale: u64,
-    permissions: crate::permissions::DirectoryPermissionWitness,
+    permissions: crate::permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     filter_token: u64,
 }
@@ -1570,7 +1569,7 @@ pub(crate) fn discover_cached_bound_resources(
                 .any(|snapshot| snapshot.binding.same_component(binding))
         {
             let generation = binding.generation().map_err(|error| format!("{error:?}"))?;
-            let permissions = match binding.permissions.borrow().directory_witness() {
+            let permissions = match binding.permissions.borrow().directory_observation() {
                 Ok(permissions) => permissions,
                 Err(error) => {
                     cache
@@ -1662,7 +1661,7 @@ pub(crate) fn discover_cached_bound_resources(
                     });
                 let resources = resources.map_err(|error| format!("{error:?}"))?;
                 let revision = binding.lifetime.revision();
-                if binding.permissions.borrow().directory_witness()? != permissions {
+                if binding.permissions.borrow().directory_observation()? != permissions {
                     return Err("owner policy changed while filtering resources".into());
                 }
                 let snapshot = BoundResourceSnapshot::shared(binding.clone(), resources, controls);
@@ -1894,6 +1893,21 @@ fn discover_bound_resources_with_filter(
             if boundary.is_none() && (snapshot.is_none() || publishes()) {
                 let resources = binding.read_document(doc, |doc, _| {
                     let presence = crate::invocation_scope::current_presence();
+                    // Asked for one address, the component's own tree answers with the node it
+                    // names, found in its shared tree, not with every resource it publishes.
+                    if let Some(address) = address
+                        && root
+                        && presence.is_none()
+                        && let Some(found) = crate::widget::capability::capability::<
+                            dyn crate::resources::PublishesResources,
+                        >(widget)
+                        .and_then(|publisher| publisher.shared_resources_for(None, doc))
+                        .and_then(|forest| {
+                            shared_target(&forest, filtered.then_some(binding), address)
+                        })
+                    {
+                        return vec![found];
+                    }
                     let mut resources =
                         crate::resources::resources_for(widget, presence.as_ref(), doc);
                     if !root {
@@ -2109,7 +2123,7 @@ pub(crate) struct OrdinaryConfirmation {
     pub(crate) target: local_target::LocalResourceTarget,
     pub(crate) address: tilo_actions::ActionAddress,
     pub(crate) arguments: ControlContinuationArguments,
-    domain: crate::control_custody::WeakControlDomain,
+    domain: crate::control_domain::WeakControlDomain,
     snapshot: OrdinaryConfirmationSnapshot,
     pub(crate) context: tilo_actions::ActionContext,
     /// Why the person is asked when the action declares no confirmation of it: the workspace's grants
@@ -2139,7 +2153,7 @@ fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface
 }
 
 #[derive(Clone)]
-pub(crate) struct ControlWitness {
+pub(crate) struct ControlObservation {
     identity: ControlIdentity,
     intent: PreparedActionIntent,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -2148,7 +2162,7 @@ pub(crate) struct ControlWitness {
     label: String,
 }
 
-impl PartialEq for ControlWitness {
+impl PartialEq for ControlObservation {
     fn eq(&self, other: &Self) -> bool {
         self.identity == other.identity
             && self.intent == other.intent
@@ -2184,7 +2198,7 @@ pub(crate) struct ControlIdentity {
     input_surface: ControlInputSurface,
 }
 
-impl ControlWitness {
+impl ControlObservation {
     pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
         &self.confirmation
     }
@@ -2225,15 +2239,15 @@ impl ControlContinuationArguments {
     }
 }
 
-/// Re-resolve one exact custody target and derive inert comparison data.
+/// Re-resolve one exact ownership target and derive inert comparison data.
 /// The returned encoding is never executed.
-pub(crate) fn control_witness(
+pub(crate) fn control_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
-) -> Result<ControlWitness, tilo_actions::ApiError> {
-    control_witness_with_arguments(
+) -> Result<ControlObservation, tilo_actions::ApiError> {
+    control_observation_with_arguments(
         root,
         doc,
         target,
@@ -2242,13 +2256,13 @@ pub(crate) fn control_witness(
     )
 }
 
-pub(crate) fn control_witness_with_arguments(
+pub(crate) fn control_observation_with_arguments(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
     original_arguments: &ControlContinuationArguments,
-) -> Result<ControlWitness, tilo_actions::ApiError> {
+) -> Result<ControlObservation, tilo_actions::ApiError> {
     let resources = resources_for_control_target(root, doc, target, &invocation.address)?;
     let (resource, spec) = unique_control_spec(&resources, &invocation.address)?;
     let (argument, arguments) = match original_arguments {
@@ -2277,7 +2291,7 @@ pub(crate) fn control_witness_with_arguments(
                 })?;
             (PreparedActionIntent::Encoded(encoded), continuation)
         };
-    Ok(ControlWitness {
+    Ok(ControlObservation {
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
         confirmation: spec.contract.confirmation.clone(),
@@ -2435,10 +2449,6 @@ pub(crate) fn control_draft_identity(
     Ok(control_identity_from_spec(resource, spec, continuation))
 }
 
-/// The item resources the action in `envelope` created: the ids it minted
-/// that its change stored as keys of a collection, in minting order. Read
-/// from the action changes since `before`, never a diff of the whole
-/// document, so an edit costs the same however large the record is.
 /// The item resources the action in `envelope` created, each with its id and
 /// the address it is published under, in minting order: what a write answers
 /// its caller, so nothing reads an id out of a rendered address. `minted`
@@ -2477,23 +2487,30 @@ pub fn minted_items(
     } else {
         minted.to_vec()
     };
-    ids.into_iter()
+    // Each item it stored, under the path of map keys down to it from the document's root: `issues`, or
+    // `issues/<issue>/comments` for one inside an item.
+    let made: Vec<(String, String)> = ids
+        .into_iter()
         .filter_map(|id| {
             let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
             automerge::ReadDoc::get(&*doc, &obj, id.as_str())
                 .ok()
                 .flatten()?;
-            let parent = automerge::ReadDoc::parents(&*doc, &obj).ok()?.next()?;
-            // Only the record's own collections publish items: a field
-            // inside an item (an issue's body blocks) is part of the item the
-            // write made, not a second thing it made.
-            if parent.obj != automerge::ROOT {
-                return None;
-            }
-            match parent.prop {
-                automerge::Prop::Map(field) => Some((id.clone(), format!("{kind}/{field}/{id}"))),
-                automerge::Prop::Seq(_) => None,
-            }
+            let path = tilo_resource::collection::path_to(&*doc, &obj)?;
+            Some((id, path.join("/")))
+        })
+        .collect();
+    // The document's own collections publish items. What a write that made one stored inside it
+    // (an issue's body blocks) is part of that item; one that made none made the item it added
+    // to a collection of an item (a comment in an issue's `comments`), named under it. Deeper
+    // keys (a text's blocks) are the item's content, not items.
+    let depth = |path: &str| path.split('/').count();
+    let top = made.iter().any(|(_, path)| depth(path) == 1);
+    made.into_iter()
+        .filter(|(_, path)| depth(path) == 1 || (!top && depth(path) == 3))
+        .map(|(id, path)| {
+            let address = format!("{kind}/{path}/{id}");
+            (id, address)
         })
         .collect()
 }
@@ -2948,12 +2965,14 @@ pub(crate) fn execute_resource_operation(
                 ),
             };
             let op = op.with_target(target.as_ref());
-            crate::widget::start_operation(
-                &mut *widget,
-                &op,
-                &mut crate::widget::Edits::lend(doc),
-                path,
-            )
+            tilo_actions::with_invoking_context(ambient.cloned(), || {
+                crate::widget::start_operation(
+                    &mut *widget,
+                    &op,
+                    &mut crate::widget::Edits::lend(doc),
+                    path,
+                )
+            })
             .map_err(tilo_actions::ApiError::Failed)?
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?
         };
@@ -3062,7 +3081,7 @@ pub(crate) fn invoke_resource_action(
                     let presence = crate::invocation_scope::current_presence();
                     let resolved = presence
                         .is_none()
-                        .then(|| resolve_document_action(widget, doc, binding, &target.address.address))
+                        .then(|| resolve_published_action(widget, doc, binding, &target.address.address))
                         .flatten();
                     let resources = if let Some(resource) = resolved {
                         vec![resource]
@@ -3255,7 +3274,7 @@ pub(crate) fn invoke_resource_action(
                 .and_then(std::convert::identity),
         );
         // Even a post-delivery contract fault must retain Accepted lifecycle
-        // custody for the component's existing CLOSED cancellation/cleanup path.
+        // ownership for the component's existing CLOSED cancellation/cleanup path.
         accepted.then_some((invocation, true))
     };
     root.visit_components(&mut ComponentRequest {
@@ -3270,27 +3289,36 @@ pub(crate) fn invoke_resource_action(
 
 /// The resource a local invocation of `address` resolves to in `widget`'s
 /// filtered tree, read from the component's shared tree without building,
-/// copying or filtering the rest of it, when the action is a
-/// document edit: executing one reads the resource's identity and the
-/// action alone. It is exactly the node [`resolve_resource_invocation`]
-/// finds in the tree [`filter_resource`] keeps — the first, depth first,
-/// with the address's resource id that filtering does not drop — with its
-/// permitted actions and without its children. `None` defers to the whole
-/// tree: the tree does not resolve the address itself (the unbound and
-/// provider fallbacks), the action is not a permitted document edit, or
-/// anything else.
-fn resolve_document_action(
+/// copying or filtering the rest of it: executing an action reads the
+/// resource's identity and the action alone, whatever its kind ([`shared_target`]).
+/// `None` defers to the whole tree: the tree does not resolve the address
+/// itself (the unbound and provider fallbacks), or the action is not
+/// permitted there.
+fn resolve_published_action(
     widget: &dyn Widget,
     doc: &AutoCommit,
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
 ) -> Option<ResourceSpec> {
-    fn collect(widget: &dyn Widget, doc: &AutoCommit, forest: &mut Vec<SharedResource>) {
-        if widget.has_separate_document_owner() {
-            return;
-        }
-        forest.extend(crate::resources::shared_resources(widget, doc));
+    if widget.has_separate_document_owner() {
+        return None;
     }
+    let forest = crate::resources::shared_resources(widget, doc);
+    shared_target(&forest, Some(binding), address)
+}
+
+/// The node `address` names in `forest`, exactly as [`resolve_resource_invocation`] finds it in
+/// the tree [`filter_resource`] keeps for `binding` (or in the whole tree, with no binding): the
+/// first, depth first, with the address's resource id that filtering does not drop. Answered as
+/// its head alone, with its permitted actions and without its children, found without building,
+/// copying or filtering the rest of the tree: a resource of thousands of items resolves one of them,
+/// or itself, for the cost of finding it. `None` when the forest does not resolve the address, or
+/// the node found does not offer the action.
+fn shared_target(
+    forest: &[SharedResource],
+    binding: Option<&CallbackBinding>,
+    address: &tilo_actions::ActionAddress,
+) -> Option<ResourceSpec> {
     fn resolves(node: &SharedResource, address: &tilo_actions::ActionAddress) -> bool {
         (node.id() == address.resource
             && node
@@ -3300,48 +3328,49 @@ fn resolve_document_action(
                 .any(|action| action.id == address.action))
             || node.children().iter().any(|child| resolves(child, address))
     }
-    fn kept(binding: &CallbackBinding, node: &SharedResource) -> bool {
-        let permissions = binding.permissions.borrow();
-        let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
+    fn kept(decider: &crate::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
         let head = node.head();
         head.actions
             .iter()
             .any(|action| decider.permits(&head.kind, head.id.as_str(), action))
-            || node.children().iter().any(|child| kept(binding, child))
+            || node.children().iter().any(|child| kept(decider, child))
     }
-    /// The first node with resource id `id` that filtering keeps. A node
+    /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
     /// filtering drops has no kept node beneath it.
-    fn first_kept<'a>(
-        binding: &CallbackBinding,
+    fn first<'a>(
+        decider: Option<&crate::permissions::ActionDecider<'_>>,
         node: &'a SharedResource,
         id: &str,
     ) -> Option<&'a SharedResource> {
-        if node.id() == id && kept(binding, node) {
+        if node.id() == id && decider.is_none_or(|decider| kept(decider, node)) {
             return Some(node);
         }
         node.children()
             .iter()
-            .find_map(|child| first_kept(binding, child, id))
+            .find_map(|child| first(decider, child, id))
     }
-    let mut forest = Vec::new();
-    collect(widget, doc, &mut forest);
     if !forest.iter().any(|node| resolves(node, address)) {
         return None;
     }
+    let permissions = binding.map(|binding| binding.permissions.borrow());
+    let decider = binding
+        .zip(permissions.as_ref())
+        .map(|(binding, permissions)| {
+            permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str())
+        });
     let node = forest
         .iter()
-        .find_map(|node| first_kept(binding, node, &address.resource))?;
+        .find_map(|node| first(decider.as_ref(), node, &address.resource))?;
     let mut resource = node.head().clone();
-    let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
-    resource
-        .actions
-        .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
+    if let Some(decider) = &decider {
+        resource
+            .actions
+            .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
+    }
     resource
         .actions
         .iter()
-        .find(|action| action.id == address.action)
-        .is_some_and(|action| action.kind == tilo_actions::OperationKind::Document)
+        .any(|action| action.id == address.action)
         .then_some(resource)
 }
 
@@ -3470,26 +3499,26 @@ pub struct CallbackBinding {
     pub(crate) closing: Rc<Cell<bool>>,
     pub(crate) registry_owner: std::rc::Weak<()>,
     pub(crate) lifetime_id: uuid::Uuid,
-    pub(crate) control_domain: crate::control_custody::WeakControlDomain,
+    pub(crate) control_domain: crate::control_domain::WeakControlDomain,
     pub(crate) queued_controls:
         Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
-    /// Searches the component asked the host to open, drained as host intents by the shell that
+    /// Searches the component asked the process to open, drained as process intents by the shell that
     /// presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
-    /// Executing device supplied by the component's HostContext, never its caller.
+    /// Executing device supplied by the component's ProcessContext, never its caller.
     pub(crate) device_id: String,
     /// Immutable local person supplied at host preparation, not the action author.
-    pub(crate) host_person: MemberId,
+    pub(crate) local_person: MemberId,
     pub(crate) records: ResourceStore,
     pub(crate) checkout: DocumentCheckout,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: MemberId,
     pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
     /// Edits commit as the author writer on the record
-    /// ([`crate::application::HostContext::write_as_author`]).
+    /// ([`crate::application::ProcessContext::write_as_author`]).
     pub(crate) writes_as_author: bool,
 }
 
@@ -3814,8 +3843,8 @@ struct OperationSpan {
 
 fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     ACTIVE.with_borrow(|active| {
-        let (_, _, witness, handle) = active.as_ref()?;
-        if !std::ptr::eq(*witness, doc) {
+        let (_, _, observation, handle) = active.as_ref()?;
+        if !std::ptr::eq(*observation, doc) {
             return None;
         }
         let handle = handle.as_ref()?;
@@ -3838,8 +3867,8 @@ fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
         return Some(handle);
     }
     ACTIVE.with_borrow(|active| {
-        let (_, _, witness, handle) = active.as_ref()?;
-        if !std::ptr::eq(*witness, doc) {
+        let (_, _, observation, handle) = active.as_ref()?;
+        if !std::ptr::eq(*observation, doc) {
             return None;
         }
         let handle = handle.as_ref()?;
@@ -4449,7 +4478,7 @@ pub struct CallbackScopeGuard {
     _wake: WakeScopeGuard,
     _device: ExecutingHostDevice,
     _person: ExecutingHostPerson,
-    _scope: ExecutingHostScope,
+    _scope: ExecutingScope,
     _actor: tilo_resource::action::ResourceActorScope,
 }
 
@@ -4504,9 +4533,9 @@ impl CallbackBinding {
     }
     pub(crate) fn matches_broker_route(
         &self,
-        witness: Option<&crate::collaboration::PrimaryRouteWitness>,
+        observation: Option<&crate::collaboration::AcceptedRoute>,
     ) -> bool {
-        witness.is_some_and(|witness| self.matches_route(witness.route()))
+        observation.is_some_and(|observation| self.matches_route(observation.route()))
     }
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
@@ -4812,7 +4841,7 @@ impl CallbackBinding {
             && self.records.same_owner(&other.records)
             && self.checkout == other.checkout
             && self.device_id == other.device_id
-            && self.host_person == other.host_person
+            && self.local_person == other.local_person
             && self.author == other.author
     }
     fn check_resource(&self) -> Result<Option<*const AutoCommit>, BoundDispatchError> {
@@ -4840,8 +4869,8 @@ impl CallbackBinding {
         Ok(CallbackScopeGuard {
             _wake: wake,
             _device: ExecutingHostDevice::enter(&self.device_id),
-            _person: ExecutingHostPerson::enter(&self.host_person),
-            _scope: ExecutingHostScope::enter(self.lifetime_id),
+            _person: ExecutingHostPerson::enter(&self.local_person),
+            _scope: ExecutingScope::enter(self.lifetime_id),
             _actor: tilo_resource::action::ResourceActorScope::enter(
                 crate::invocation_scope::current_invoker()
                     .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))
@@ -5099,7 +5128,7 @@ struct BoundNode {
     inactive: bool,
 }
 
-/// Record owners outside a component (person records, routed records) keep their real record custody;
+/// Record owners outside a component (person records, routed records) keep their real record ownership;
 /// they do not impersonate a canonical component.
 pub(crate) fn restore_resource_history(
     store: &ResourceStore,

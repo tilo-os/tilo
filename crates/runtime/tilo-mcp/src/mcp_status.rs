@@ -1,10 +1,10 @@
 //! `tilo_status`: how an invocation went, and the two things done to one after
-//! it answered: stopping it (`cancel`) and taking its run back (`undo`).
+//! it answered: stopping it (`cancel`) and taking it back (`undo`).
 //! Named no invocation, it answers this session's invocations and how each
 //! stands, so an agent that lost an id, or wonders what is still running,
 //! asks the same tool.
 
-use super::{ActionHost, Failure, McpServer, Reply, answer_of, invocation_id, link, outcome};
+use super::{ActionProvider, Failure, McpServer, Reply, answer_of, invocation_id, link, outcome};
 use serde::Deserialize;
 use std::fmt::Write as _;
 use tilo_lock::MutexRecover as _;
@@ -23,7 +23,7 @@ pub(super) struct AgentStatusArgs {
     undo: bool,
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// [`AgentStatusArgs`] as one answer.
     pub(super) async fn agent_status(
         &self,

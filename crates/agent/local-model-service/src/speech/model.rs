@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 
 /// A privately constructed, digest-checked immutable descriptor. No caller can
-/// manufacture this witness from a mutable installed path or arbitrary bytes.
+/// manufacture this approval from a mutable installed path or arbitrary bytes.
 pub struct SealedSpeechModel {
     file: File,
     size: u64,

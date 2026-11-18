@@ -19,8 +19,8 @@ use neighbour_wire::offer::{Answer, Decline, Power, Query, Rank, Route, Work};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::TestHost;
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane, OFFER_DEADLINE, Offering};
+use tilo_actions::remote::TestProvider;
+use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, OFFER_DEADLINE, Offering};
 use tilo_peer_state::direct::Replica;
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 use web_time::SystemTime;
@@ -34,25 +34,25 @@ const PATIENCE: Duration = Duration::from_secs(20);
 
 /// The choice a round of `targets` came to, waited for.
 async fn asked(
-    plane: &ActionPlane,
+    action_service: &ActionService,
     asker: &Endpoint,
     targets: Vec<EndpointAddr>,
     within: Duration,
-) -> tilo_peer_state::placement::Choice {
-    asked_about(plane, asker, targets, &work(), within).await
+) -> neighbour_wire::placement::Choice {
+    asked_about(action_service, asker, targets, &work(), within).await
 }
 
 /// The choice a round about `work` came to, waited for.
 async fn asked_about(
-    plane: &ActionPlane,
+    action_service: &ActionService,
     asker: &Endpoint,
     targets: Vec<EndpointAddr>,
     work: &Work,
     within: Duration,
-) -> tilo_peer_state::placement::Choice {
+) -> neighbour_wire::placement::Choice {
     tokio::time::timeout(
         PATIENCE,
-        plane.offers(
+        action_service.offers(
             asker,
             targets,
             WORKSPACE,
@@ -75,15 +75,15 @@ impl Offering for Reported {
     fn report(
         &self,
         _from: [u8; 32],
-        _whose: &tilo_relay_protocol::Whose,
+        _whose: &tilo_server_protocol::Whose,
         _offer: &Query,
     ) -> Answer {
         self.0.clone()
     }
 }
 
-/// A device that answers offers: its workspace replica, its plane, and the
-/// router that serves the plane's connection.
+/// A device that answers offers: its workspace replica, its action service, and the
+/// router that serves the action service's connection.
 struct Engine {
     key: SigningKey,
     endpoint: Endpoint,
@@ -93,13 +93,13 @@ struct Engine {
 impl Engine {
     async fn serving(replica: Replica, key: SigningKey, reported: Option<Answer>) -> Self {
         let endpoint = localhost_endpoint(&key).await;
-        let plane = ActionPlane::new(key.clone(), Arc::new(TestHost::new()));
-        plane.hold(replica);
+        let action_service = ActionService::new(key.clone(), Arc::new(TestProvider::new()));
+        action_service.hold(replica);
         if let Some(state) = reported {
-            plane.offering(Reported(state));
+            action_service.offering(Reported(state));
         }
         let router = Router::builder(endpoint.clone())
-            .accept(ACTIONS_ALPN, plane)
+            .accept(ACTIONS_ALPN, action_service)
             .spawn();
         Self {
             key,
@@ -177,12 +177,12 @@ async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
     let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(willing(750))).await;
     let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&here.0).await;
-    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
-    plane.hold(replica.clone());
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
+    action_service.hold(replica.clone());
     let targets = vec![busy.addr(), idle.addr()];
 
     let started = Instant::now();
-    let choice = asked(&plane, &asker, targets, OFFER_DEADLINE).await;
+    let choice = asked(&action_service, &asker, targets, OFFER_DEADLINE).await;
 
     assert_eq!(
         choice.worker,
@@ -225,9 +225,9 @@ async fn nobody_offering_leaves_the_run_where_it_was_asked() {
     let without_app = Answer::declining(Decline::AppNotInstalled);
     let other = Engine::serving(replica.clone(), other.0.clone(), Some(without_app)).await;
     let asker = localhost_endpoint(&here.0).await;
-    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
 
-    let choice = asked(&plane, &asker, vec![other.addr()], OFFER_DEADLINE).await;
+    let choice = asked(&action_service, &asker, vec![other.addr()], OFFER_DEADLINE).await;
     assert!(choice.is_local(), "no device takes it: {choice}");
     assert_eq!(
         choice.considered.first().map(|candidate| candidate.verdict),
@@ -267,12 +267,12 @@ async fn a_device_that_is_away_is_ranked_as_away_inside_the_deadline() {
             )));
 
     let asker = localhost_endpoint(&here.0).await;
-    let plane = ActionPlane::new(here.0, Arc::new(TestHost::new()));
-    plane.hold(replica);
+    let action_service = ActionService::new(here.0, Arc::new(TestProvider::new()));
+    action_service.hold(replica);
 
     let started = Instant::now();
     let choice = asked(
-        &plane,
+        &action_service,
         &asker,
         vec![unreachable],
         Duration::from_millis(500),
@@ -305,9 +305,15 @@ async fn a_device_asked_from_outside_the_workspace_answers_nothing() {
 
     let answering = Engine::serving(replica, member.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&stranger.0).await;
-    let plane = ActionPlane::new(stranger.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(stranger.0.clone(), Arc::new(TestProvider::new()));
 
-    let choice = asked(&plane, &asker, vec![answering.addr()], OFFER_DEADLINE).await;
+    let choice = asked(
+        &action_service,
+        &asker,
+        vec![answering.addr()],
+        OFFER_DEADLINE,
+    )
+    .await;
     assert!(choice.is_local(), "no answer came: {choice}");
     assert_eq!(
         choice.considered.first().map(|candidate| candidate.verdict),
@@ -346,16 +352,16 @@ async fn the_devices_a_round_asks_are_the_workspaces_own() {
             ))
             .unwrap()
     );
-    let plane = ActionPlane::new(here.0, Arc::new(TestHost::new()));
-    plane.hold(replica);
+    let action_service = ActionService::new(here.0, Arc::new(TestProvider::new()));
+    action_service.hold(replica);
 
     assert_eq!(
-        plane.key_holders(WORKSPACE).await,
+        action_service.key_holders(WORKSPACE).await,
         vec![other.1.device_public_key],
         "the device that asked and the revoked one are never asked"
     );
     assert!(
-        plane.key_holders(ELSEWHERE).await.is_empty(),
+        action_service.key_holders(ELSEWHERE).await.is_empty(),
         "a workspace this device does not hold has nobody to ask"
     );
 }
@@ -373,9 +379,9 @@ async fn a_device_with_nothing_to_say_offers_nothing() {
 
     let quiet = Engine::serving(replica, quiet.0.clone(), None).await;
     let asker = localhost_endpoint(&here.0).await;
-    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
 
-    let choice = asked(&plane, &asker, vec![quiet.addr()], OFFER_DEADLINE).await;
+    let choice = asked(&action_service, &asker, vec![quiet.addr()], OFFER_DEADLINE).await;
     assert!(choice.is_local());
     assert_eq!(
         choice.considered.first().map(|candidate| candidate.verdict),
@@ -412,11 +418,11 @@ async fn the_jobs_inputs_decide_before_rank_does() {
     )
     .await;
     let asker = localhost_endpoint(&here.0).await;
-    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
-    plane.hold(replica);
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
+    action_service.hold(replica);
 
     let choice = asked_about(
-        &plane,
+        &action_service,
         &asker,
         vec![near.addr(), far.addr()],
         &heavy,
@@ -464,9 +470,16 @@ async fn a_job_whose_inputs_move_slower_than_it_runs_stays_here() {
 
     let other = Engine::serving(replica, other.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&here.0).await;
-    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
+    let action_service = ActionService::new(here.0.clone(), Arc::new(TestProvider::new()));
 
-    let choice = asked_about(&plane, &asker, vec![other.addr()], &heavy, OFFER_DEADLINE).await;
+    let choice = asked_about(
+        &action_service,
+        &asker,
+        vec![other.addr()],
+        &heavy,
+        OFFER_DEADLINE,
+    )
+    .await;
     assert!(
         choice.is_local(),
         "moving the inputs would be slower: {choice}"

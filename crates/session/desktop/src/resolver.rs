@@ -1,7 +1,7 @@
 //! Exact application identity and checked mounting. Hosts supply admitted records/services.
 use tilo_desktop_model::{Tab, WorkspaceId};
 use ui::application::{
-    AppComponent, ApplicationCatalog, ApplicationDefinition, HostContext, LaunchTarget,
+    AppComponent, ApplicationCatalog, ApplicationDefinition, LaunchTarget, ProcessContext,
     RestoreInput,
 };
 use ui::launch::LaunchError;
@@ -86,7 +86,7 @@ pub trait ComponentContextSource {
         definition: &'static ApplicationDefinition,
         request: &TileRequest<'_>,
         target: &LaunchTarget,
-    ) -> Result<(HostContext, RestoreInput), LaunchError>;
+    ) -> Result<(ProcessContext, RestoreInput), LaunchError>;
 }
 pub struct ApplicationCatalogTileResolver<H> {
     pub catalog: ApplicationCatalog,
@@ -138,7 +138,7 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
     }
 }
 impl TileResolution {
-    /// The tile that shows this resolution, standing for what it holds: a
+    /// The tile that shows this resolution, for what it holds: a
     /// component mounted as its own App, a notice where an app cannot open,
     /// or the arrival placeholder while a window's content is on its way.
     pub fn mount(

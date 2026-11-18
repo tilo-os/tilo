@@ -16,7 +16,7 @@
     allow(
         clippy::future_not_send,
         clippy::arc_with_non_send_sync,
-        reason = "a page runs on one thread, and the directory and gates a page hands the engine \
+        reason = "a page runs on one thread, and the directory and seal_checks a page hands the engine \
                   are `MaybeSendSync`, never `Send` there"
     )
 )]
@@ -29,8 +29,8 @@ mod pump;
 pub use pump::*;
 pub mod schedule;
 pub use schedule::*;
-mod gates;
-pub use gates::*;
+mod seal_checks;
+pub use seal_checks::*;
 
 /// Fixtures a host's group tests drive: an in-memory workspace transport and a fixed policy.
 #[cfg(any(test, feature = "test-support"))]

@@ -1161,7 +1161,17 @@ impl DmabufParamsData {
                 }
             };
 
-            if let Ok(size) = seek(&plane.fd, SeekFrom::End(0)) {
+            // Every dma-buf can be sized by seeking to its end. A descriptor that cannot (a pipe,
+            // a socket) is no buffer, and a software renderer that maps it crashes the server.
+            let Ok(size) = seek(&plane.fd, SeekFrom::End(0)) else {
+                params.post_error(
+                    zwp_linux_buffer_params_v1::Error::OutOfBounds,
+                    format!("Plane {} cannot be sized: it is no buffer.", plane.plane_idx),
+                );
+
+                return None;
+            };
+            {
                 // Reset seek point
                 let _ = seek(&plane.fd, SeekFrom::Start(0));
 

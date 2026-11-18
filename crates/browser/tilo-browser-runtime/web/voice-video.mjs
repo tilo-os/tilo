@@ -12,8 +12,8 @@
  * is what a device that fell behind asks for.
  *
  * What the encoder writes is one picture's coded bytes and its place in the
- * source's stream: the page publishes it on its call's plane as it is made,
- * and the app draws the objects the plane delivers.
+ * source's stream: the page publishes it on its call's live session as it is made,
+ * and the app draws the objects the live session delivers.
  */
 import {SOURCES, base64Of, encodeVideoObject, fitted} from './video-profile.mjs';
 

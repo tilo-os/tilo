@@ -1041,7 +1041,7 @@ tilo_test_env::scenario! {
     phase describe_operation_names_an_edit_verbs_fields;
     // `edit-text` names the type's editable fields in its `field` parameter, so
     // `describe_operation` and the refusal hint show an agent the field to set instead of its
-    // guessing at an internal record id.
+    // guessing at an internal resource id.
     {
         let mut catalogue = workspace();
         let mut edit = offer(
@@ -1178,8 +1178,7 @@ tilo_test_env::scenario! {
     }
 
     phase content_beside_words_shows_the_words_and_carries_the_content;
-    // An operation taking content beside words lists its other parameters
-    // and says the content one is carried in from the step before it.
+    // An operation taking content beside words lists its other parameters    // and says the content one is carried in from the step before it.
     {
         let mut attach = offer(
             "mail",
@@ -1235,6 +1234,94 @@ fn a_web_search_without_its_query_is_told_what_it_sent_and_what_it_takes() {
     assert!(
         described.contains("never the person's own things"),
         "{described}"
+    );
+}
+
+/// A `tilo` program names an action `<app>.<action>` (`tasks.schedule`); `describe_operation`
+/// finds it by that name the same as by the id a listing returned.
+#[test]
+fn an_app_qualified_action_name_finds_the_operation() {
+    let tasks = |action: &str| {
+        offer(
+            "so.tilo.lang.tasks",
+            "tl:so.tilo.lang.tasks:root-fjqi4yze",
+            "tl.so.tilo.lang.tasks.Task",
+            action,
+            "Pick date",
+            InputSpec::None,
+        )
+    };
+    let mut catalogue = workspace();
+    catalogue.offers.push(tasks("schedule"));
+    catalogue.offers.push(tasks("remind_at"));
+    let mut revealed = Revealed::new();
+    let by_alias = describe(
+        &json!({"operation": "tasks.schedule"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert!(
+        by_alias.contains("#schedule"),
+        "an app-qualified name finds the action: {by_alias}"
+    );
+    let by_id = describe(
+        &json!({"operation": "so.tilo.lang.tasks.remind_at"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert!(
+        by_id.contains("#remind_at"),
+        "the app's whole id names it too: {by_id}"
+    );
+    let absent = describe(
+        &json!({"operation": "tasks.imaginary_verb"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert_eq!(absent, nothing_found("the operation tasks.imaginary_verb"));
+    // A search for the name a program writes finds the operation that does it: a model that
+    // reaches the task's actions this way still meets the one it will call.
+    let found = operations(
+        &json!({"search": "tasks.schedule"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert!(found.contains("#schedule"), "{found}");
+    assert!(!found.contains("#remind_at"), "{found}");
+}
+
+/// The loop's system prompt keeps the agent speaking as the person's assistant: a greeting
+/// names no internal word, a reply does not narrate what the canvas already shows, and a thing
+/// that cannot be done is one short sentence — never the person asked to do the agent's work.
+#[test]
+fn the_system_prompt_keeps_the_agent_speaking_as_the_persons_assistant() {
+    let system = crate::tools::system_for(None).to_lowercase();
+    // A greeting: no jargon a person never sees, and no naming "the shell".
+    for word in [
+        "the shell",
+        "the canvas",
+        "the broker",
+        "a resource",
+        "an operation",
+    ] {
+        assert!(
+            !system.contains(&format!("say {word}")) && !system.contains(&format!("name {word}")),
+            "the greeting rule does not teach {word:?}"
+        );
+    }
+    assert!(
+        system.contains("never name what they never see"),
+        "the greeting rule forbids internal words"
+    );
+    // A reply does not narrate what the canvas shows.
+    assert!(
+        system.contains("never narrate it"),
+        "a reply must not narrate what the person can already see"
+    );
+    // A thing that cannot be done is one short sentence, never the person doing it.
+    assert!(
+        system.contains("never ask the person to do it themselves"),
+        "the agent never asks the person to do its work"
     );
 }
 

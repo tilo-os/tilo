@@ -1329,7 +1329,7 @@ mod tests {
         {
             use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
             let host = Arc::new(IdentityHost::default());
-            let remote = ui::RemoteActions::with_host(
+            let remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
@@ -1398,7 +1398,7 @@ mod tests {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
     }
 
-    impl ui::tilo_actions::remote::ActionHost for IdentityHost {
+    impl ui::tilo_actions::remote::ActionProvider for IdentityHost {
         fn query(
             &self,
             _: &ui::tilo_actions::remote::Caller,
@@ -1406,11 +1406,11 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::CataloguePage,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             ui::tilo_actions::remote::Pending::ready(Err(
-                ui::tilo_actions::remote::ActionHostError::NotPermitted,
+                ui::tilo_actions::remote::ActionCallError::NotPermitted,
             ))
         }
 
@@ -1421,7 +1421,7 @@ mod tests {
         ) -> ui::tilo_actions::remote::Pending<
             Result<
                 ui::tilo_actions::remote::InvocationReceipt,
-                ui::tilo_actions::remote::ActionHostError,
+                ui::tilo_actions::remote::ActionCallError,
             >,
         > {
             use ui::tilo_actions::remote::identity_admin;
@@ -1457,7 +1457,7 @@ mod tests {
             &self,
             _: &ui::tilo_actions::remote::Caller,
             _: &ui::tilo_actions::InvocationId,
-        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
         {
             ui::tilo_actions::remote::Pending::ready(Ok(()))
         }
@@ -1501,8 +1501,8 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Users);
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::users::area(settings)
                 .unwrap()
@@ -1524,7 +1524,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("the click");
+        check.assert_held("the click");
         let frame = app.harness().inspection_json().unwrap();
         assert!(
             frame.contains("Grace Hopper"),
@@ -1532,7 +1532,7 @@ mod tests {
         );
         assert!(!frame.contains("Barbara Liskov"), "{frame}");
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
@@ -1547,8 +1547,8 @@ mod tests {
         use crate::resource::SettingsShell;
         use ui::prelude::TestApp;
 
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         crate::area::replace_in_next_window(move |context| {
             let area = UsersArea::new(context, ui::RemoteActions::current());
             assert!(area.read.start(move || {
@@ -1569,7 +1569,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("the change");
+        check.assert_held("the change");
         let open = app
             .with_widget::<crate::window::Inspected, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
@@ -1577,7 +1577,7 @@ mod tests {
             .unwrap();
         assert!(!open, "the model waits for the read");
 
-        gate.release();
+        check.release();
         tilo_test_env::wait_until("the change to be answered", || {
             app.settle();
             app.effect_progress().iter().any(|update| {

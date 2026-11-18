@@ -184,7 +184,7 @@ export LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
 : "${TILO_CARGO_TIMINGS:=}"
 : "${TILO_REQUIRE_COMPILER_CACHE:=0}"
 # `local` compiles through sccache over SCCACHE_DIR unless the caller gives a
-# wrapper of its own (t's). `off` is the independent reproduction lane of a
+# wrapper of its own (t's). `off` is the independent reproduction job of a
 # publication: with no cache at all, a planted object in a shared cache makes the
 # two builds differ. It runs no wrapper, and refuses compiler-cache settings.
 : "${TILO_COMPILER_CACHE:=local}"
@@ -244,14 +244,14 @@ case "$TILO_RUST_LTO" in \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be cargo, clean or content' >&2; exit 1 ;; \
        esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,sheets/runtime-engine,agent/runtime-engine,imager/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine,notes/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,model-providers/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,sheets/runtime-engine,agent/runtime-engine,imager/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine,notes/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
          DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p imager -p runtime-bundle -p tilo-rollback -p tilo-auth -p tilo-sibling-unlock -p tilo-boot-signin -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-session-record -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-custody -p legacy-vm -p tilo-ntfs-mount -p tilo-device-vpn -p tilo-net-answers -p tilo-app-keeper -p tilo-audio-service -p tilo-messaging-service -p tilo-identity-host -p tilo-window-menu -p tilo-lock-screen -p tilo-quick-settings -p osk" \
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-sibling-unlock --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-legacy --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-identity --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p imager -p runtime-bundle -p tilo-rollback -p tilo-auth -p tilo-sibling-unlock -p tilo-boot-signin -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-flight-log -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p package-service -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-credentials -p legacy-vm -p tilo-ntfs-mount -p tilo-device-vpn -p tilo-net-answers -p tilo-app-keeper -p tilo-audio-service -p tilo-messaging-service -p tilo-identity -p tilo-window-menu -p tilo-lock-screen -p tilo-quick-settings -p osk -p tilolang-process" \
+    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-package-service --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-sibling-unlock --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-server --bin tilo-server-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-legacy --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-identity --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk --bin tilolang-process" \
     && build_thin_apps() { \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
@@ -272,7 +272,7 @@ case "$TILO_RUST_LTO" in \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} --features tilo-relay/web,tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation,imager/destination \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-server ${RELEASE_BINS} --features tilo-server/web,tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation,imager/destination \
     && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py $target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
@@ -287,7 +287,7 @@ case "$TILO_RUST_LTO" in \
        cargo build --release -p pam-tilo --lib \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in tilo-session tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-sibling-unlock tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-identity tilo-window-menu tilo-lock-screen tilo-quick-settings osk; do \
+    && for b in tilo-session tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-server-admin tilo-enroll tilo-home-peer-control tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-sibling-unlock tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-identity tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:tilo-session|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "$target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -317,8 +317,8 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-session-report \
           $target/release/tilo-pdf-helper \
           $target/release/fs \
-          $target/release/tilo-relay \
-          $target/release/tilo-relay-admin \
+          $target/release/tilo-server \
+          $target/release/tilo-server-admin \
           $target/release/tilo-enroll \
           $target/release/tilo-home-peer-control \
           $target/release/tilo-legacy \
@@ -334,7 +334,7 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-installer-prepared-setup-extract \
           $target/release/tilo-prepared-setup \
           $target/release/tilo-runtime-bundle \
-          $target/release/tilo-app-host \
+          $target/release/tilo-package-service \
           $target/release/tilo-rollback \
           $target/release/tilo-authd \
           $target/release/tilo-auth \
@@ -379,6 +379,7 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-lock-screen \
           $target/release/tilo-quick-settings \
           $target/release/osk \
+          $target/release/tilolang-process \
           "$out"/ \
     && ln -sfn app "$out"/store \
     && ln -sfn tilo "$out"/system \

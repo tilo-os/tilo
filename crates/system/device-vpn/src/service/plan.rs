@@ -263,10 +263,10 @@ const NM: [&str; 8] = [
 /// `NetworkManager`'s global DNS: every name asked of the gateway, or (with
 /// `None`) back to each connection's own servers.
 #[must_use]
-pub fn global_dns(through_gateway: bool) -> Command {
+pub fn global_dns(through_proxyway: bool) -> Command {
     let mut args: Vec<String> = NM.iter().map(|arg| (*arg).to_owned()).collect();
     args.extend(["GlobalDnsConfiguration".to_owned(), "a{sv}".to_owned()]);
-    if through_gateway {
+    if through_proxyway {
         let gateway = GATEWAY.to_string();
         args.extend(
             [
@@ -282,7 +282,7 @@ pub fn global_dns(through_gateway: bool) -> Command {
         program: Program::Busctl,
         args,
         input: None,
-        required: through_gateway,
+        required: through_proxyway,
     }
 }
 

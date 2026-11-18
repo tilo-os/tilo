@@ -44,7 +44,7 @@ path = "src/bin/vm_install_proof.rs"
 
 # The loopback proofs (os/tests/staging_helper_loop.sh,
 # os/tests/staging_reclaim_loop.sh) run the staging handoff against fixture
-# firmware variables, a fixture ESP and fixture lsblk output: the seams the
+# firmware variables, a fixture ESP and fixture lsblk output: the boundaries the
 # shipped tilo-staging-handoff never takes from anywhere.
 [[example]]
 name = "staging-handoff-fixture"
@@ -76,7 +76,7 @@ name = "install-test-firstboot-files"
 path = "../firstboot-files/src/main.rs"
 
 [dependencies]
-account-custody = { path = "../account-custody" }
+account-credentials = { path = "../account-credentials" }
 # The code refresh daemon's hold on the backend's lock.
 tilo-advisory-lock = { path = "../advisory-lock" }
 tilo-seal = { path = "../tilo-seal" }

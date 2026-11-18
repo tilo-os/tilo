@@ -1,15 +1,15 @@
-//! A member's client of the collaboration plane: the workspaces it takes part in, who is here
+//! A member's client of the peer network: the workspaces it takes part in, who is here
 //! in each of them, and this device's own word on them.
 //!
 //! A host brings the transport; the client says what a member says on it. What only one host
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 //!
-//! A page, an agent or a program is a device of its person through the relay transport the client
-//! carries itself: [`start_session`] keeps one certified relay session to the person's host, held
+//! A page, an agent or a program is a device of its person through the server transport the client
+//! carries itself: [`start_session`] keeps one certified server session to the person's host, held
 //! through a [`Link`], and [`device::Device`] is the one entry a program takes it by. It carries
 //! signed document envelopes ([`document`]) as acknowledged commits from a persisted outbox
 //! replayed after every reconnect, each joined workspace's governance in its replica, the live
-//! plane's presence and previews, and calls ([`voice`]).
+//! peer network's presence and previews, and calls ([`voice`]).
 
 #![cfg_attr(
     all(target_arch = "wasm32", target_os = "unknown"),
@@ -24,20 +24,20 @@ pub mod arrivals;
 pub mod client;
 mod clock;
 pub mod content;
-pub mod custody;
 /// A device's entry into its person's workspaces: the one the CLI, agents, the API server and the
 /// page all take.
 pub mod device;
 pub mod engine;
 pub mod entered;
-pub mod gate;
 pub mod health;
 mod held_live;
 pub mod identity;
 pub mod link;
 pub mod membership;
+pub mod membership_check;
+pub mod message_policy;
 pub mod narration;
-pub mod plane;
+pub mod network;
 pub mod presence;
 pub mod remote;
 mod replica;
@@ -52,16 +52,16 @@ pub mod workspace_keys;
 
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
-pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use link::{
     Entry, Events, Failure, FailureKind, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
     PeerStatus, Reports, TransportPhase,
 };
-pub use plane::{
-    Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Outbox, PageShown,
+pub use membership_check::{MemoryPeerStore, PeerEntry, PeerStore};
+pub use network::{
+    Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Kept, Outbox, PageShown,
     Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError,
-    VoiceEvent, answer, topic_of,
+    VoiceEvent, Waits, answer, topic_of,
 };
 pub use presence::OwnPresence;
 pub use saying::saying;
@@ -73,7 +73,7 @@ pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};
 /// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.
 pub use tilo_peer_state::document_frame::DocumentRoute;
-pub use tilo_relay_protocol::DocumentAnswer;
+pub use tilo_server_protocol::DocumentAnswer;
 
 /// Why an enrollment or an entry gave nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]

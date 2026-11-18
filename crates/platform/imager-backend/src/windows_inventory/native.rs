@@ -1,4 +1,4 @@
-//! Native registry seam. Queries metadata only; never enumerates profile files.
+//! Native registry boundary. Queries metadata only; never enumerates profile files.
 use super::RootRole;
 #[cfg(any(windows, test))]
 use serde::Deserialize;

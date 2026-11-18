@@ -5,7 +5,7 @@
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{DocumentMutation, Outcome, Worker};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 impl Worker {
     /// The route an app another device holds the windows of opens, and the

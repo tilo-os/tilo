@@ -2,13 +2,11 @@
 //! [`Workspace`] takes `now` explicitly so the model stays clock-free; every host asks through this
 //! one trait instead of reading the time itself.
 
-use std::collections::HashMap;
-
 use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef};
 use collab_types::role::Role as CapRole;
 use tilo_action_policy::{Acting, ActionKind, Answer, Grant, KindSet, TreePath, roles};
 use tilo_clock::unix_now;
-use tilo_desktop_model::{AppId, Capability, UserId, Workspace, WorkspaceDefaultError};
+use tilo_desktop_model::{UserId, Workspace, WorkspaceDefaultError};
 
 /// The model's authority questions answered at this machine's clock.
 pub trait WorkspaceAuthority {
@@ -25,9 +23,6 @@ pub trait WorkspaceAuthority {
         resolver: &desktop_policy::DefaultAppResolver<'_>,
     ) -> Result<(), WorkspaceDefaultError>;
     fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride>;
-    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
-    fn has_app_grants(&self) -> bool;
-    fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
     /// Whether `acting` reaches the sandboxed `resource` for `access` .
     fn decide(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> CapDecision;
     fn allows(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> bool;
@@ -64,15 +59,6 @@ impl WorkspaceAuthority for Workspace {
     }
     fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
         self.app_capabilities_at(app_id, unix_now())
-    }
-    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
-        self.app_grants_snapshot_at(unix_now())
-    }
-    fn has_app_grants(&self) -> bool {
-        self.has_app_grants_at(unix_now())
-    }
-    fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
-        self.app_grant_ids_at(app_id, unix_now())
     }
     fn decide(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> CapDecision {
         self.sandbox_decide_as_at(acting, resource, access, unix_now())
@@ -156,7 +142,7 @@ mod tests {
             assert_eq!(
                 WorkspaceAuthority::role_of(&ws, &peer),
                 Some(CapRole::Editor),
-                "a member in good standing has the role they were admitted with"
+                "a member has the role they were admitted with"
             );
 
             let block = ws.policy.block(PEER, Grantee::person(OWNER));

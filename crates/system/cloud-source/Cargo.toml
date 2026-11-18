@@ -16,7 +16,7 @@ description = "The provider interface behind mounted cloud accounts: items, chan
 [dependencies]
 # RFC 3339 timestamps and HTTP-dates (`http::parse_rfc3339`,
 # `http::parse_http_date`), as every provider reads them.
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 serde.workspace = true
 # Bounded JSON bodies (`http::read_json`).
 serde_json.workspace = true

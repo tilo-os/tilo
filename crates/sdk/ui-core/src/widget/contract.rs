@@ -70,7 +70,7 @@ pub trait Widget {
         self.callback_binding().is_some()
     }
 
-    /// Opaque actual custody for framework History source registration.
+    /// Opaque actual ownership for framework History source registration.
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         self.callback_binding()
             .map(crate::history_mode::HistoryOwner::component)
@@ -353,7 +353,7 @@ pub trait Widget {
     }
 
     /// Offsets along `axis` that this widget, as a scroll view's content, offers it to settle on,
-    /// measured from its own leading edge: a board's lanes ([`crate::widget::Board`]).
+    /// measured from its own leading edge: a board's lists ([`crate::widget::Board`]).
     fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
         let _ = (axis, out);
     }
@@ -690,7 +690,7 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; false only for a widget standing in for a window's content whose first frame has
+    /// Default `true`; false only for a widget in place of a window's content whose first frame has
     /// not drawn.
     fn presented(&self) -> bool {
         true
@@ -705,7 +705,7 @@ pub trait Widget {
     fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
         None
     }
-    /// The shape this content declares for the placeholder standing in for its first frame.
+    /// The shape this content declares for the placeholder in place of its first frame.
     fn arrival_shape(&self) -> crate::widget::SkeletonShape {
         crate::widget::SkeletonShape::Ground
     }

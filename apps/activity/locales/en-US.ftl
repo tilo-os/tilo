@@ -56,7 +56,7 @@ activity-why-this-work = Why this work
 activity-agent-task-by = Assigned and run by
 activity-agent-decision = Decision
 activity-no-decision = No reason was recorded.
-activity-affected-records = Affected records
+activity-affected-resources = Affected resources
 activity-name-heading = Name
 activity-name-placeholder = Name this work session
 activity-name-save = Save name
@@ -73,7 +73,7 @@ activity-replay-window = { $window }, { $share }% of the width
 activity-presence-trail = Present
 
 # What the system did, beside the workspace's changes.
-activity-ledger-heading = What this device did
+activity-log-heading = What this device did
 # How a changed field reads: its name, and what it was before.
 activity-was = Was { $before }
 

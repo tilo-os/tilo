@@ -2,9 +2,9 @@
 //! inspector in one Vello scene with hand-rolled hit-testing.
 //!
 //! A timeline is a canvas — clips positioned by time, trim handles on sub-pixel
-//! edges, a playhead across every lane — which is far cleaner as direct drawing
+//! edges, a playhead across every track — which is far cleaner as direct drawing
 //! and geometric hit-tests than as a layout tree. The edit itself lives in the
-//! record; only view state (playhead, zoom, selection) is held here.
+//! resource; only view state (playhead, zoom, selection) is held here.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -94,7 +94,7 @@ const GOTO_CARD_W: f64 = 260.0;
 
 /// The preview's share of the room under the header row, as the window
 /// opens: about a 360 px timeline in an ordinary window, more preview in a
-/// small one. The person drags the divider; the lanes scroll.
+/// small one. The person drags the divider; the tracks scroll.
 const PREVIEW_SHARE: f32 = 0.52;
 const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
@@ -102,9 +102,9 @@ const INSPECTOR_W: f64 = 300.0;
 const GUTTER_W: f64 = 160.0;
 const RULER_H: f64 = 30.0;
 const TRANSPORT_H: f64 = 58.0;
-const LANE_GAP: f64 = S1;
-const VIDEO_LANE_H: f64 = 62.0;
-const AUDIO_LANE_H: f64 = crate::layout::MIN_LANE_H;
+const TRACK_GAP: f64 = S1;
+const VIDEO_TRACK_H: f64 = 62.0;
+const AUDIO_TRACK_H: f64 = crate::layout::MIN_TRACK_H;
 const TRIM_HIT: f64 = 8.0;
 const PAD: f64 = S3;
 const SCROLLBAR_THICKNESS: f64 = 8.0;
@@ -356,7 +356,7 @@ struct PaneCursor {
 }
 
 /// A collapsible block of inspector controls. Which are folded is presentation —
-/// this reader's panel, not the clip — so it never reaches the record, and it
+/// this reader's panel, not the clip — so it never reaches the resource, and it
 /// persists across selections.
 ///
 /// A folded header still states what is inside it (see `section_summary`), so
@@ -366,7 +366,7 @@ enum Section {
     Curves,
     Transform,
     Speed,
-    /// The **lane** the selected clip sits on: its fader and its pan. Placed after
+    /// The **track** the selected clip sits on: its fader and its pan. Placed after
     /// Speed, the other control that changes what a clip sounds like.
     Mix,
     Key,
@@ -454,7 +454,7 @@ enum NumField {
     TitleBackdrop,
     CurveMix,
     /// The track's fader in decibels and its place across the stereo field: the
-    /// only knobs that edit the lane rather than the clip — see
+    /// only knobs that edit the track rather than the clip — see
     /// [`NumField::is_track`], which routes the write and the commit.
     TrackGain,
     TrackPan,
@@ -582,7 +582,7 @@ impl NumField {
 
     /// Whether this knob writes the **track** the selected clip sits on. It must be
     /// named rather than inferred: the write, the undo boundary and the committed
-    /// action are all per-track, and a lane fader dispatched as a clip write
+    /// action are all per-track, and a track fader dispatched as a clip write
     /// replicates as an edit to the wrong thing.
     fn is_track(self) -> bool {
         matches!(self, NumField::TrackGain | NumField::TrackPan)
@@ -626,7 +626,7 @@ impl NumField {
             NumField::TitleSize => (0.02, 0.4),
             NumField::TitleBackdrop => (0.0, 1.0),
             NumField::CurveMix => (0.0, 1.0),
-            // Decibels: off to four times unity, with 0 dB — where a lane starts —
+            // Decibels: off to four times unity, with 0 dB — where a track starts —
             // five sixths of the way along, where a fader's unity mark belongs.
             NumField::TrackGain => (MIN_GAIN_DB, MAX_GAIN_DB),
             NumField::TrackPan => (-1.0, 1.0),
@@ -734,7 +734,7 @@ enum Drag {
     TrimOut {
         id: ClipId,
     },
-    /// Rubber-band selection from `origin` on empty lane space. `additive`
+    /// Rubber-band selection from `origin` on empty track space. `additive`
     /// keeps the previous selection (shift held). A press that never leaves
     /// [`MARQUEE_THRESHOLD`] falls back to scrubbing on release.
     Marquee {
@@ -769,7 +769,7 @@ enum Drag {
     Num(NumField),
 }
 
-/// Pointer travel (logical px) before a press on empty lane space becomes a
+/// Pointer travel (logical px) before a press on empty track space becomes a
 /// rubber-band selection rather than a playhead scrub.
 const MARQUEE_THRESHOLD: f64 = 4.0;
 
@@ -786,7 +786,7 @@ enum ScrollPane {
     Timeline,
     Inspector,
     Bin,
-    Lanes,
+    Tracks,
 }
 
 #[derive(Default)]
@@ -865,7 +865,7 @@ pub struct VideoEditorApp {
     faces: ui::widget::FaceMotions,
     content: Option<ui::framework::content::ContentStore>,
     /// Optimistic actions diff this against the local result, then check only those
-    /// old values against the live record. Diffing a stale local result against a
+    /// old values against the live resource. Diffing a stale local result against a
     /// newer remote projection would turn unrelated remote edits into reverse
     /// patches.
     clip_edit_bases: HashMap<ClipId, Clip>,
@@ -887,14 +887,14 @@ pub struct VideoEditorApp {
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,   // pixels per second
-    scroll: f64, // seconds at the left edge of the lane area
+    scroll: f64, // seconds at the left edge of the track area
     /// The same interaction models [`ui::widget::Scrollable`] uses, so every bar
     /// here behaves and looks like every other scroll surface in the fleet.
     hbar: ui::widget::Scrollbar,
     inspector_bar: ui::widget::Scrollbar,
     bin_bar: ui::widget::Scrollbar,
-    lanes_bar: ui::widget::Scrollbar,
-    lane_scroll: f64,
+    tracks_bar: ui::widget::Scrollbar,
+    track_scroll: f64,
     timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
@@ -941,7 +941,7 @@ pub struct VideoEditorApp {
     #[cfg(not(any(feature = "gst", feature = "decode")))]
     page_monitor: crate::page_sound::PageMonitor,
     /// The level the mix is running at, written by whatever is mixing and
-    /// read here. **Not** feature-gated: a build with no audio backend still
+    /// read here. **Not** feature-dependent: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
     /// blocks through this exact api rather than through a drawing that
     /// imitates one.
@@ -1000,7 +1000,7 @@ pub struct VideoEditorApp {
     actions: Option<ui::framework::Dispatcher<Project>>,
     /// Copied clips, ready to paste at the playhead (Ctrl+C / Ctrl+X / Ctrl+V).
     /// Holds full clip snapshots — trim window, filters and fades come along —
-    /// and pasting preserves their relative offsets and lanes, so copying a
+    /// and pasting preserves their relative offsets and tracks, so copying a
     /// multi-clip selection round-trips as a block rather than a pile.
     clipboard: Vec<Clip>,
     /// JKL shuttle rate: -1 reverse, 0 stop, +1..N forward speed multiplier.
@@ -1192,8 +1192,8 @@ impl VideoEditorApp {
             hbar: ui::widget::Scrollbar::horizontal(),
             inspector_bar: ui::widget::Scrollbar::vertical(),
             bin_bar: ui::widget::Scrollbar::vertical(),
-            lanes_bar: ui::widget::Scrollbar::vertical(),
-            lane_scroll: 0.0,
+            tracks_bar: ui::widget::Scrollbar::vertical(),
+            track_scroll: 0.0,
             timeline_split: ui::widget::SplitHandle::new(
                 ui::widget::SplitOrientation::Vertical,
                 ui::widget::SplitRatio::new(PREVIEW_SHARE).with_bounds(0.3, 0.8),
@@ -1373,7 +1373,7 @@ impl VideoEditorApp {
         r.inspector.y0 + self.inspector_header(r).height
     }
 
-    /// The fixed header's measured extent: the clip's name and its lane (or
+    /// The fixed header's measured extent: the clip's name and its track (or
     /// that nothing is selected), measured in the roles it is drawn in, so the
     /// header and the body below it never overlap at any text size or window
     /// height. Everything else, the clip's facts included, scrolls.
@@ -1406,7 +1406,7 @@ impl VideoEditorApp {
     }
 
     /// UI zoom grows the whole canvas chrome. Additional accessibility type
-    /// growth is bounded separately, preserving room for footage and lanes.
+    /// growth is bounded separately, preserving room for footage and tracks.
     fn chrome_scale(&self) -> f64 {
         self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.35)
     }
@@ -1450,33 +1450,33 @@ impl VideoEditorApp {
         self.timeline_split.handle_event(event, ctx)
     }
 
-    /// The lanes' scrolled extent: every lane, then the add-track buttons,
+    /// The tracks' scrolled extent: every track, then the add-track buttons,
     /// then room for the horizontal scroll bar.
-    fn lanes_content_height(&self) -> f64 {
-        let lanes: f64 = self
+    fn tracks_content_height(&self) -> f64 {
+        let tracks: f64 = self
             .project
             .display_tracks()
             .iter()
-            .map(|t| self.lane_height(t.kind) + LANE_GAP * self.chrome_scale())
+            .map(|t| self.track_height(t.kind) + TRACK_GAP * self.chrome_scale())
             .sum();
         let footer = 2.0 * S2 + ButtonFace::height(ControlSize::Small, &self.chrome_theme);
-        LANE_GAP * self.chrome_scale() + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+        TRACK_GAP * self.chrome_scale() + tracks + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
     }
 
-    fn lanes_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+    fn tracks_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
         ui::widget::ScrollMetrics::new(
-            self.lanes_content_height(),
-            r.lanes.height(),
-            self.lane_scroll,
+            self.tracks_content_height(),
+            r.tracks.height(),
+            self.track_scroll,
         )
     }
 
-    /// The lanes' vertical scroll bar track, or `None` when every lane fits.
-    fn lanes_scroll_track(&self, r: &Regions) -> Option<Rect> {
-        if !self.lanes_metrics(r).overflows() {
+    /// The tracks' vertical scroll bar track, or `None` when every track fits.
+    fn tracks_scroll_track(&self, r: &Regions) -> Option<Rect> {
+        if !self.tracks_metrics(r).overflows() {
             return None;
         }
-        let x1 = r.lanes.x1 - SCROLLBAR_INSET;
+        let x1 = r.tracks.x1 - SCROLLBAR_INSET;
         let bottom = if self.hscroll_track(r).is_some() {
             SCROLLBAR_THICKNESS + 2.0 * SCROLLBAR_INSET
         } else {
@@ -1484,9 +1484,9 @@ impl VideoEditorApp {
         };
         Some(Rect::new(
             x1 - SCROLLBAR_THICKNESS,
-            r.lanes.y0 + SCROLLBAR_INSET,
+            r.tracks.y0 + SCROLLBAR_INSET,
             x1,
-            r.lanes.y1 - bottom,
+            r.tracks.y1 - bottom,
         ))
     }
 
@@ -1498,11 +1498,11 @@ impl VideoEditorApp {
         RULER_H * self.chrome_scale()
     }
 
-    fn lane_height(&self, kind: TrackKind) -> f64 {
+    fn track_height(&self, kind: TrackKind) -> f64 {
         let base = if kind == TrackKind::Video || self.text_scale > 1.25 {
-            VIDEO_LANE_H
+            VIDEO_TRACK_H
         } else {
-            AUDIO_LANE_H
+            AUDIO_TRACK_H
         };
         base * self.chrome_scale()
     }
@@ -1512,15 +1512,15 @@ impl VideoEditorApp {
             && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
     }
 
-    fn time_to_x(&self, t: f64, lanes: &Rect) -> f64 {
-        lanes.x0 + (t - self.scroll) * self.zoom
+    fn time_to_x(&self, t: f64, tracks: &Rect) -> f64 {
+        tracks.x0 + (t - self.scroll) * self.zoom
     }
-    fn x_to_time(&self, x: f64, lanes: &Rect) -> f64 {
-        (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
+    fn x_to_time(&self, x: f64, tracks: &Rect) -> f64 {
+        (self.scroll + (x - tracks.x0) / self.zoom).max(0.0)
     }
 
     fn visible_seconds(&self, r: &Regions) -> f64 {
-        (r.lanes.width() / self.zoom.max(0.001)).max(0.0)
+        (r.tracks.width() / self.zoom.max(0.001)).max(0.0)
     }
 
     /// The scrollable extent in seconds: the project's content plus a screenful
@@ -1541,7 +1541,7 @@ impl VideoEditorApp {
     fn h_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
         ui::widget::ScrollMetrics::new(
             self.content_seconds(r) * self.zoom,
-            r.lanes.width(),
+            r.tracks.width(),
             self.scroll * self.zoom,
         )
     }
@@ -1589,13 +1589,13 @@ impl VideoEditorApp {
     /// timeline does not queue decodes nobody can see.
     fn request_filmstrips(&mut self, r: &Regions) {
         let mut want: Vec<(MediaId, u8, crate::media::MediaSource, f64, f64, usize)> = Vec::new();
-        for (tid, kind, lane) in self.lane_rects(r) {
+        for (tid, kind, track) in self.track_rects(r) {
             if kind != TrackKind::Video {
                 continue;
             }
             for clip in self.project.clips_on(tid) {
-                let cr = self.clip_rect(clip, &lane, r);
-                if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
+                let cr = self.clip_rect(clip, &track, r);
+                if cr.x1 < r.tracks.x0 || cr.x0 > r.tracks.x1 {
                     continue;
                 }
                 let inner = clip_inner_rect(cr, self.clip_header_rect(cr).height());
@@ -1626,7 +1626,7 @@ impl VideoEditorApp {
     }
 
     /// The horizontal scrollbar's track rect, or `None` when the timeline
-    /// content already fits. Overlaid on the bottom of the lane area, inset
+    /// content already fits. Overlaid on the bottom of the track area, inset
     /// like every other toolkit scroll surface.
     fn hscroll_track(&self, r: &Regions) -> Option<Rect> {
         if !self.h_metrics(r).overflows() {
@@ -1634,9 +1634,9 @@ impl VideoEditorApp {
         }
         let y1 = r.timeline.y1 - SCROLLBAR_INSET;
         Some(Rect::new(
-            r.lanes.x0 + SCROLLBAR_INSET,
+            r.tracks.x0 + SCROLLBAR_INSET,
             y1 - SCROLLBAR_THICKNESS,
-            r.lanes.x1 - SCROLLBAR_INSET,
+            r.tracks.x1 - SCROLLBAR_INSET,
             y1,
         ))
     }
@@ -1646,25 +1646,25 @@ impl VideoEditorApp {
         self.clamp_scroll(r);
     }
 
-    /// (track id, kind, lane rect) in display order. Lane rect spans the
-    /// full lane width.
-    fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
+    /// (track id, kind, track rect) in display order. Track rect spans the
+    /// full track width.
+    fn track_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
         let mut out = Vec::new();
-        let gap = LANE_GAP * self.chrome_scale();
-        let mut y = r.lanes.y0 + gap - self.lane_scroll;
+        let gap = TRACK_GAP * self.chrome_scale();
+        let mut y = r.tracks.y0 + gap - self.track_scroll;
         for t in self.project.display_tracks() {
-            let h = self.lane_height(t.kind);
-            let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
-            out.push((t.id, t.kind, lane));
+            let h = self.track_height(t.kind);
+            let track = Rect::new(r.tracks.x0, y, r.tracks.x1, y + h);
+            out.push((t.id, t.kind, track));
             y += h + gap;
         }
         out
     }
 
-    fn clip_rect(&self, clip: &Clip, lane: &Rect, r: &Regions) -> Rect {
-        let x0 = self.time_to_x(clip.start, &r.lanes);
-        let x1 = self.time_to_x(clip.end(), &r.lanes);
-        Rect::new(x0, lane.y0 + 2.0, x1.max(x0 + 2.0), lane.y1 - 2.0)
+    fn clip_rect(&self, clip: &Clip, track: &Rect, r: &Regions) -> Rect {
+        let x0 = self.time_to_x(clip.start, &r.tracks);
+        let x1 = self.time_to_x(clip.end(), &r.tracks);
+        Rect::new(x0, track.y0 + 2.0, x1.max(x0 + 2.0), track.y1 - 2.0)
     }
 
     /// The bounded title band at the top of every clip.  Sharing this small
@@ -1705,13 +1705,15 @@ impl VideoEditorApp {
         format!("Clip {:+.1}", self.mix.worst_over_db())
     }
 
-    /// The two "add track" buttons under the last lane: `(kind, rect)` for a
+    /// The two "add track" buttons under the last track: `(kind, rect)` for a
     /// Video and an Audio add, each as wide as its label, starting at the
-    /// gutter's edge and running out under the lanes when the gutter is
+    /// gutter's edge and running out under the tracks when the gutter is
     /// narrower than the two of them.
     fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
-        let lanes = self.lane_rects(r);
-        let y = lanes.last().map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
+        let tracks = self.track_rects(r);
+        let y = tracks
+            .last()
+            .map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
         let (h, widths) = self.with_dialog_layout(|_, tr, theme| {
             let h = ButtonFace::height(ControlSize::Small, theme);
             let mut width = |kind| {
@@ -1723,8 +1725,8 @@ impl VideoEditorApp {
             };
             (h, [width(TrackKind::Video), width(TrackKind::Audio)])
         });
-        // Scrolled out of the lanes' view, they are not there to press.
-        if y < r.lanes.y0 || y + h > r.timeline.y1 {
+        // Scrolled out of the tracks' view, they are not there to press.
+        if y < r.tracks.y0 || y + h > r.timeline.y1 {
             return Vec::new();
         }
         let vbtn = Rect::new(r.gutter.x0 + S2, y, r.gutter.x0 + S2 + widths[0], y + h);
@@ -2013,9 +2015,9 @@ impl VideoEditorApp {
                 .inspector_scroll_track(r)
                 .map(|t| (t, self.inspector_metrics(r))),
             ScrollPane::Bin => self.bin_scroll_track(r).map(|t| (t, self.bin_metrics(r))),
-            ScrollPane::Lanes => self
-                .lanes_scroll_track(r)
-                .map(|t| (t, self.lanes_metrics(r))),
+            ScrollPane::Tracks => self
+                .tracks_scroll_track(r)
+                .map(|t| (t, self.tracks_metrics(r))),
         }
     }
 
@@ -2024,7 +2026,7 @@ impl VideoEditorApp {
             ScrollPane::Timeline => &mut self.hbar,
             ScrollPane::Inspector => &mut self.inspector_bar,
             ScrollPane::Bin => &mut self.bin_bar,
-            ScrollPane::Lanes => &mut self.lanes_bar,
+            ScrollPane::Tracks => &mut self.tracks_bar,
         }
     }
 
@@ -2033,7 +2035,7 @@ impl VideoEditorApp {
             ScrollPane::Timeline => &self.hbar,
             ScrollPane::Inspector => &self.inspector_bar,
             ScrollPane::Bin => &self.bin_bar,
-            ScrollPane::Lanes => &self.lanes_bar,
+            ScrollPane::Tracks => &self.tracks_bar,
         }
     }
 
@@ -2048,9 +2050,9 @@ impl VideoEditorApp {
                 let max = self.bin_max_scroll(r);
                 self.bin_scroll = offset.clamp(0.0, max);
             }
-            ScrollPane::Lanes => {
-                let max = self.lanes_metrics(r).max_scroll();
-                self.lane_scroll = offset.clamp(0.0, max);
+            ScrollPane::Tracks => {
+                let max = self.tracks_metrics(r).max_scroll();
+                self.track_scroll = offset.clamp(0.0, max);
             }
         }
     }
@@ -2059,7 +2061,7 @@ impl VideoEditorApp {
         ScrollPane::Inspector,
         ScrollPane::Bin,
         ScrollPane::Timeline,
-        ScrollPane::Lanes,
+        ScrollPane::Tracks,
     ];
 
     /// One reconcile per frame rather than a call at every site that moves the
@@ -2135,7 +2137,7 @@ impl VideoEditorApp {
     }
 
     /// Whether the meter still has something to say — a bar in flight, or a
-    /// clipping report standing. Keeps frames coming so a meter finishes
+    /// clipping report still to finish. Keeps frames coming so a meter finishes
     /// falling instead of freezing part-way down when the transport stops.
     fn mix_meter_is_live(&self) -> bool {
         self.mix.master[0] > 0.001 || self.mix.master[1] > 0.001
@@ -2168,17 +2170,17 @@ impl VideoEditorApp {
                 .map(|t| timecode(*t, self.project.fps))
                 .unwrap_or_default();
             let n = self.mix.overs.len();
-            let lanes: Vec<String> = self
+            let tracks: Vec<String> = self
                 .mix
                 .clipped_tracks()
                 .iter()
                 .filter_map(|id| self.project.track(*id))
                 .map(|t| t.name.clone())
                 .collect();
-            let on = if lanes.is_empty() {
+            let on = if tracks.is_empty() {
                 String::new()
             } else {
-                format!(" on {}", lanes.join(", "))
+                format!(" on {}", tracks.join(", "))
             };
             return Some(format!(
                 "Mix clipped{on}: {:+.1} dB over, first at {where_words}{}",
@@ -2330,14 +2332,14 @@ impl VideoEditorApp {
     }
 
     /// One predicate, because the play button, the transport readout and the name a
-    /// reader hears for it must agree: gating them all on `playing` left a shuttle at
+    /// reader hears for it must agree: guarding them all on `playing` left a shuttle at
     /// 16× wearing a play triangle and reporting itself nowhere.
     fn is_moving(&self) -> bool {
         self.playback.playing || self.shuttle != 0.0
     }
 
     /// The words the transport puts above the scrubber for what the playhead is
-    /// doing, or `None` when it is standing still.
+    /// doing, or `None` when it is still.
     fn motion_words(&self) -> Option<String> {
         if self.playback.playing {
             return Some("Playing".to_string());
@@ -2585,7 +2587,7 @@ impl VideoEditorApp {
     fn split_selected(&mut self) {
         let before = self.project.clone();
         let mut right_halves = Vec::new();
-        // Cut a linked shot on both its lanes as one edit, so the two tails
+        // Cut a linked shot on both its tracks as one edit, so the two tails
         // become a link group of their own rather than joining the heads' —
         // four clips in one group would make dragging the second half of the
         // shot drag the first half with it.
@@ -2772,7 +2774,7 @@ impl VideoEditorApp {
     /// One entry per shot rather than one per clip, so an operation that treats a
     /// linked pair as a unit (a split, whose two tails become a group of their own)
     /// sees it as one. [`Self::edit_targets`] refuses groups containing a locked
-    /// lane.
+    /// track.
     fn target_groups(&self) -> Vec<Vec<ClipId>> {
         let targets = self.edit_targets();
         let mut groups: Vec<Vec<ClipId>> = Vec::new();
@@ -2844,8 +2846,8 @@ impl VideoEditorApp {
         v
     }
 
-    /// What makes a placed video file into two clips: the picture on a video lane
-    /// and its sound on an audio lane (created if there is none), sharing one link.
+    /// What makes a placed video file into two clips: the picture on a video track
+    /// and its sound on an audio track (created if there is none), sharing one link.
     /// Both are written inside the caller's event, so the pair is one undo step.
     fn attach_linked_audio(&mut self, video_clip: ClipId) -> Option<ClipId> {
         let clip = self.project.clip(video_clip)?;
@@ -3093,7 +3095,7 @@ impl VideoEditorApp {
         }
     }
 
-    /// The lane the selected clip sits on — what the MIX section edits.
+    /// The track the selected clip sits on — what the MIX section edits.
     fn selected_track(&self) -> Option<&crate::model::Track> {
         let clip = self.selected_clip()?;
         self.project.track(clip.track)
@@ -3121,8 +3123,8 @@ impl VideoEditorApp {
         }
     }
 
-    /// Submit what changed of the lane `track` since it was last stored or
-    /// submitted, as field edits of that lane alone.
+    /// Submit what changed of the track `track` since it was last stored or
+    /// submitted, as field edits of that track alone.
     fn submit_track(&mut self, track: &crate::model::Track) {
         let edits = Project::paths()
             .tracks
@@ -3163,7 +3165,7 @@ impl VideoEditorApp {
         self.submit(edits);
     }
 
-    /// Put the selected clip's lane back to unity and centre, as one action
+    /// Put the selected clip's track back to unity and centre, as one action
     /// and one undo boundary.
     fn reset_selected_track_mix(&mut self) {
         self.preview_track_edit(|t| {
@@ -3221,7 +3223,7 @@ impl VideoEditorApp {
     }
 
     fn num_value(&self, f: NumField) -> Option<f64> {
-        // The two lane knobs read the track, not the clip, and they read it
+        // The two track knobs read the track, not the clip, and they read it
         // first: `param()` is `None` for both and the clip has no field to
         // fall through to.
         if f.is_track() {
@@ -4058,7 +4060,7 @@ impl VideoEditorApp {
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(id);
         // A picture that carries sound lands as two clips, not one: the sound
-        // on its own lane, linked to the picture. Without it there is nothing
+        // on its own track, linked to the picture. Without it there is nothing
         // to slide, level, fade or cut the sound with.
         self.attach_linked_audio(id);
         self.selection.select_only(id);
@@ -4093,33 +4095,33 @@ impl VideoEditorApp {
         }
     }
 
-    /// The lane under the current cursor while a bin drag is live, as
-    /// `(track, kind, lane rect)` — the drop target.
+    /// The track under the current cursor while a bin drag is live, as
+    /// `(track, kind, track rect)` — the drop target.
     ///
-    /// Only the pointer's **y** picks the lane. Requiring `x >= lanes.x0` used
+    /// Only the pointer's **y** picks the track. Requiring `x >= tracks.x0` used
     /// to mean a straight-down drag from a bin row — the natural gesture,
     /// since the bin sits above the gutter — landed in the 128px track-header
-    /// gutter, missed every lane, and silently appended the clip at the end of
+    /// gutter, missed every track, and silently appended the clip at the end of
     /// the timeline instead of placing it. A drop anywhere across the
-    /// timeline's width now hits the lane it is level with; the gutter simply
+    /// timeline's width now hits the track it is level with; the gutter simply
     /// resolves to the leftmost visible time (see [`Self::drop_time`]).
-    fn bin_drop_lane(&self, r: &Regions) -> Option<(TrackId, TrackKind, Rect)> {
+    fn bin_drop_track(&self, r: &Regions) -> Option<(TrackId, TrackKind, Rect)> {
         let p = self.last_mouse;
         if p.x < r.timeline.x0 || p.x > r.timeline.x1 {
             return None;
         }
-        self.lane_rects(r)
+        self.track_rects(r)
             .into_iter()
-            .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1)
+            .find(|(_, _, track)| p.y >= track.y0 && p.y <= track.y1)
     }
 
     fn drop_time(&self, x: f64, r: &Regions) -> f64 {
-        self.x_to_time(x.max(r.lanes.x0), &r.lanes)
+        self.x_to_time(x.max(r.tracks.x0), &r.tracks)
     }
 
     /// Finish a bin drag: place the dragged media as a clip at the drop
-    /// position. A drop on a matching-kind unlocked lane lands at the drop time
-    /// on that track; a kind-mismatched or locked lane lands at the drop time
+    /// position. A drop on a matching-kind unlocked track lands at the drop time
+    /// on that track; a kind-mismatched or locked track lands at the drop time
     /// on a matching-kind track (created if needed); a drop elsewhere on the
     /// timeline appends to a matching track. A drop off the timeline cancels.
     ///
@@ -4151,12 +4153,12 @@ impl VideoEditorApp {
         } else {
             TrackKind::Audio
         };
-        if let Some((tid, kind, _)) = self.bin_drop_lane(r) {
+        if let Some((tid, kind, _)) = self.bin_drop_track(r) {
             let t = self.drop_time(p.x, r);
             if kind == want_kind && !self.project.track_locked(tid) {
                 self.place_media_at(bd.media, tid, t);
             } else {
-                // Wrong kind, or the lane refuses edits: fall to a track that
+                // Wrong kind, or the track refuses edits: fall to a track that
                 // can take it, at the same drop time.
                 let track = self
                     .project
@@ -4165,7 +4167,7 @@ impl VideoEditorApp {
                 self.place_media_at(bd.media, track, t);
             }
         } else if r.timeline.contains(p) {
-            // On the timeline but not level with any lane (below the last one)
+            // On the timeline but not level with any track (below the last one)
             // → append to a matching track.
             self.add_media_to_timeline(bd.media);
         }
@@ -4307,10 +4309,10 @@ impl VideoEditorApp {
 
     fn open_clip_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
-        if !r.lanes.contains(p) {
+        if !r.tracks.contains(p) {
             return false;
         }
-        let Some((cid, _lane)) = self.clip_at(r, p) else {
+        let Some((cid, _track)) = self.clip_at(r, p) else {
             return false;
         };
         self.open_clip_menu(cid, p);
@@ -4337,8 +4339,8 @@ impl VideoEditorApp {
         if !r.gutter.contains(p) {
             return false;
         }
-        for (tid, _kind, lane) in self.lane_rects(r) {
-            let header = VideoEditorApp::track_head_rect(r, &lane);
+        for (tid, _kind, track) in self.track_rects(r) {
+            let header = VideoEditorApp::track_head_rect(r, &track);
             if header.contains(p) {
                 self.open_track_menu(tid, p);
                 return true;
@@ -5091,12 +5093,12 @@ impl VideoEditorApp {
         }
     }
 
-    /// Zoom so the whole project fits the lane area, and park the view at the
+    /// Zoom so the whole project fits the track area, and park the view at the
     /// start. The answer to "I zoomed in and now I am lost", which the editor
     /// previously had no button for at all.
     fn zoom_to_fit(&mut self, r: &Regions) {
         let dur = self.project.duration().max(0.01);
-        let w = r.lanes.width().max(1.0);
+        let w = r.tracks.width().max(1.0);
         self.zoom = (w / dur).clamp(6.0, 220.0);
         self.scroll = 0.0;
         self.clamp_scroll(r);
@@ -5105,7 +5107,7 @@ impl VideoEditorApp {
     /// The zoom readout, at the right end of the ruler it scales.
     ///
     /// It used to sit in the corner over the track heads, which is where the master
-    /// meter goes: the zoom has nothing to do with the column of lane names
+    /// meter goes: the zoom has nothing to do with the column of track names
     /// underneath it.
     /// The zoom-readout chip is also the fit-to-window button.
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
@@ -5132,11 +5134,11 @@ impl VideoEditorApp {
     }
 
     /// Zoom keeping the time currently under `anchor_x` pinned to that pixel —
-    /// the wheel-over-the-timeline gesture. Outside the lane area it falls
+    /// the wheel-over-the-timeline gesture. Outside the track area it falls
     /// back to anchoring on the playhead, which is what the keyboard's +/- do.
     fn zoom_at(&mut self, factor: f64, anchor_x: f64, r: &Regions) {
-        let anchor_t = if anchor_x >= r.lanes.x0 && anchor_x <= r.lanes.x1 {
-            self.x_to_time(anchor_x, &r.lanes)
+        let anchor_t = if anchor_x >= r.tracks.x0 && anchor_x <= r.tracks.x1 {
+            self.x_to_time(anchor_x, &r.tracks)
         } else {
             self.playhead
         };
@@ -5899,9 +5901,9 @@ impl Widget for VideoEditorApp {
         // Same for the bin: deleting sources shortens the list under us.
         let bin_max = self.bin_max_scroll(&r);
         self.bin_scroll = self.bin_scroll.clamp(0.0, bin_max);
-        // And the lanes: removing a track shortens them.
-        let lanes_max = self.lanes_metrics(&r).max_scroll();
-        self.lane_scroll = self.lane_scroll.clamp(0.0, lanes_max);
+        // And the tracks: removing a track shortens them.
+        let tracks_max = self.tracks_metrics(&r).max_scroll();
+        self.track_scroll = self.track_scroll.clamp(0.0, tracks_max);
         // Keep the playhead on screen while it is moving under its own steam,
         // and the horizontal scroll inside a timeline whose length may have
         // just changed under us (a delete, a remote edit).
@@ -5954,7 +5956,7 @@ impl Widget for VideoEditorApp {
                 self.draw_bin(scene, transform, tr, theme, &r);
             }
         }
-        // Live bin→timeline drag: drop-lane highlight, insertion marker + ghost.
+        // Live bin→timeline drag: drop-track highlight, insertion marker + ghost.
         self.draw_bin_drag(scene, transform, tr, theme, &r);
         // Inline rename field, drawn over the bin item's name band.
         self.draw_bin_rename(scene, transform, tr, theme, presence, &r);
@@ -6380,12 +6382,12 @@ impl Widget for VideoEditorApp {
                     *ctx.handled = true;
                 } else if dy.abs() > 0.0
                     && !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
-                    && self.lanes_metrics(&r).overflows()
+                    && self.tracks_metrics(&r).overflows()
                 {
-                    // More lanes than the timeline holds: the wheel scrolls
+                    // More tracks than the timeline holds: the wheel scrolls
                     // them; Ctrl (Cmd) + wheel still zooms.
-                    let max = self.lanes_metrics(&r).max_scroll();
-                    self.lane_scroll = (self.lane_scroll - dy * 40.0).clamp(0.0, max);
+                    let max = self.tracks_metrics(&r).max_scroll();
+                    self.track_scroll = (self.track_scroll - dy * 40.0).clamp(0.0, max);
                     *ctx.handled = true;
                 } else if dy.abs() > 0.0 {
                     // Plain wheel zooms, anchored on the time under the pointer
@@ -6504,8 +6506,8 @@ impl Widget for VideoEditorApp {
             return Some(CursorIcon::ColResize);
         }
         if r.gutter.contains(point) {
-            for (_, _, lane) in self.lane_rects(&r) {
-                let header = VideoEditorApp::track_head_rect(&r, &lane);
+            for (_, _, track) in self.track_rects(&r) {
+                let header = VideoEditorApp::track_head_rect(&r, &track);
                 let head = self.track_head_layout(header);
                 if header.contains(point)
                     && [head.mute, head.lock, head.solo]
@@ -6525,13 +6527,13 @@ impl Widget for VideoEditorApp {
             return Some(CursorIcon::Default);
         }
         // Timeline clips: trim handles at the edges, grab in the body.
-        if r.lanes.contains(point) {
-            if let Some((cid, lane)) = self.clip_at(&r, point) {
+        if r.tracks.contains(point) {
+            if let Some((cid, track)) = self.clip_at(&r, point) {
                 if !self.project.clip_editable(cid) {
                     return Some(CursorIcon::NotAllowed);
                 }
                 if let Some(clip) = self.project.clip(cid) {
-                    let cr = self.clip_rect(clip, &lane, &r);
+                    let cr = self.clip_rect(clip, &track, &r);
                     let trim_hit = TRIM_HIT * self.chrome_scale();
                     if (point.x - cr.x0).abs() <= trim_hit || (point.x - cr.x1).abs() <= trim_hit {
                         return Some(CursorIcon::EwResize);
@@ -6713,7 +6715,7 @@ impl Widget for VideoEditorApp {
         if self.presentation.export_open {
             kids.push(self.a11y_export_dialog());
         }
-        // A render that outlived its dialog. Gated on the *render*, never on
+        // A render that outlived its dialog. Depends on the *render*, never on
         // the dialog — a dismissed export used to vanish from the tree
         // entirely while it was still encoding.
         if let Some(status) = self.a11y_export_status() {
@@ -7116,7 +7118,7 @@ enum PickField {
     /// way round it reads.
     LinkToggle,
     /// Offered only when one of them has been moved, the same condition the panel
-    /// draws it on: a keyboard could set a lane and then had no way back to unity that
+    /// draws it on: a keyboard could set a track and then had no way back to unity that
     /// did not go through two sliders.
     MixReset,
 }
@@ -7249,7 +7251,7 @@ impl VideoEditorApp {
                 });
             }
             Drag::Playhead => {
-                self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
+                self.playhead = snap_to_frame(self.x_to_time(p.x, &r.tracks), self.project.fps)
                     .clamp(0.0, self.project.duration());
                 self.playback.chase_playhead = true;
             }
@@ -7275,27 +7277,27 @@ impl VideoEditorApp {
                 if self.edit_targets().is_empty() {
                     return;
                 }
-                let raw = (self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0);
+                let raw = (self.x_to_time(p.x, &r.tracks) - grab_dt).max(0.0);
                 // Snap the grabbed clip's left edge to a neighbouring edge /
                 // playhead when within a few pixels, then to the frame grid.
                 let snapped = self.snap_time(raw, id);
                 let new_start = snap_to_frame(snapped, self.project.fps);
                 let old_start = self.project.clip(id).map_or(new_start, |c| c.start);
                 let dt = new_start - old_start;
-                // A vertical drag moves the clip between tracks. Only a lane that will
+                // A vertical drag moves the clip between tracks. Only a track that will
                 // actually accept it becomes the target, so over anything else the drag
                 // degrades to a horizontal move instead of vanishing.
                 let target = self
-                    .lane_rects(r)
+                    .track_rects(r)
                     .into_iter()
-                    .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1)
+                    .find(|(_, _, track)| p.y >= track.y0 && p.y <= track.y1)
                     .map(|(tid, _, _)| tid)
                     .filter(|tid| self.project.can_place(id, *tid))
                     .unwrap_or(track);
                 // Move the grabbed clip, then carry the rest of the selection
                 // by the same time delta so a multi-clip drag stays rigid.
-                // Only the grabbed clip changes lane; the others would need a
-                // parallel lane each, which the timeline cannot promise.
+                // Only the grabbed clip changes track; the others would need a
+                // parallel track each, which the timeline cannot promise.
                 self.remember_clip_before(id);
                 self.project.move_clip_to(id, target, new_start);
                 if dt != 0.0 {
@@ -7320,7 +7322,7 @@ impl VideoEditorApp {
                 if !self.link_group_editable(id) {
                     return;
                 }
-                let raw = self.x_to_time(p.x, &r.lanes);
+                let raw = self.x_to_time(p.x, &r.tracks);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self
                     .project
@@ -7339,7 +7341,7 @@ impl VideoEditorApp {
                 if !self.link_group_editable(id) {
                     return;
                 }
-                let raw = self.x_to_time(p.x, &r.lanes);
+                let raw = self.x_to_time(p.x, &r.tracks);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self
                     .project
@@ -7427,7 +7429,7 @@ impl VideoEditorApp {
             Drag::Playhead | Drag::Scrubber | Drag::Scrollbar(_) | Drag::Marquee { .. } => {}
             Drag::ClipMove { id, .. } => {
                 // The whole moved selection lands in one event, so the move —
-                // including the lane change and every clip carried along —
+                // including the track change and every clip carried along —
                 // is a single all-or-nothing field patch rather than a row of
                 // stale whole-clip snapshots.
                 let mut ids = self.edit_targets();
@@ -7459,7 +7461,7 @@ impl VideoEditorApp {
             // A title knob writes the *source*, so it commits a media write;
             // everything else on this path is a clip field.
             Drag::Num(f) if f.is_media() => self.dispatch_selected_media(),
-            // …and the two lane knobs write the *track*, which is a third
+            // …and the two track knobs write the *track*, which is a third
             // destination again. Committed as one whole-track action, so the
             // fader lands on one undo boundary and replays on a peer as the
             // same change the palette's `set-gain` makes.
@@ -7588,13 +7590,13 @@ impl VideoEditorApp {
             None
         };
         self.hover_clip = None;
-        if r.lanes.contains(p) {
-            for (tid, _k, lane) in self.lane_rects(r) {
-                if p.y < lane.y0 || p.y > lane.y1 {
+        if r.tracks.contains(p) {
+            for (tid, _k, track) in self.track_rects(r) {
+                if p.y < track.y0 || p.y > track.y1 {
                     continue;
                 }
                 for c in self.project.clips_on(tid) {
-                    let cr = self.clip_rect(c, &lane, r);
+                    let cr = self.clip_rect(c, &track, r);
                     if p.x >= cr.x0 && p.x <= cr.x1 {
                         self.hover_clip = Some(c.id);
                     }
@@ -8047,12 +8049,12 @@ impl VideoEditorApp {
 }
 
 impl VideoEditorApp {
-    fn track_head_rect(r: &Regions, lane: &Rect) -> Rect {
-        chrome_layout::track_head_card(r.gutter, lane)
+    fn track_head_rect(r: &Regions, track: &Rect) -> Rect {
+        chrome_layout::track_head_card(r.gutter, track)
     }
 
     fn playhead_head_rect(&self, r: &Regions) -> Rect {
-        let px = self.time_to_x(self.playhead, &r.lanes);
+        let px = self.time_to_x(self.playhead, &r.tracks);
         Rect::new(px - 6.0, r.ruler.y0, px + 6.0, r.ruler.y0 + 16.0)
     }
 

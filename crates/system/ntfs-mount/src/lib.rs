@@ -1,4 +1,4 @@
-//! Consent-gated access to NTFS drives: Windows partitions next to Tilo and
+//! Consent-guarded access to NTFS drives: Windows partitions next to Tilo and
 //! external drives, opened in place instead of copied.
 //!
 //! The kernel's NTFS driver is never loaded by a mere mount attempt (the

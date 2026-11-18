@@ -273,7 +273,7 @@ impl Editor {
         let bpr = self.model.bytes_per_row();
 
         // The glyphs keep their size; the gaps absorb the rest of the width, so no
-        // band of empty space is left beside the scroll bar's lane.
+        // band of empty space is left beside the scroll bar's gutter.
         let scale =
             ((content.width() - plan.fixed(bpr)) / plan.gaps(bpr)).clamp(GAP_SCALE.0, GAP_SCALE.1);
         let (byte_gap, group_gap, col_gap) = (
@@ -316,11 +316,11 @@ impl Editor {
                 .top_row()
                 .min(rows.saturating_sub(geo.visible_rows)),
         );
-        // The quiet bar every scroll view has, standing off the edge by an `s1` step.
-        let lane = s(theme.tokens.metrics.scrollbar_gutter);
+        // The quiet bar every scroll view has, off the edge by an `s1` step.
+        let gutter = s(theme.tokens.metrics.scrollbar_gutter);
         let inset = s(sp.s1);
         geo.scroll_track = Rect::new(
-            content.x1 - inset - lane * 2.0 / 3.0,
+            content.x1 - inset - gutter * 2.0 / 3.0,
             geo.grid.y0,
             content.x1 - inset,
             geo.grid.y0 + geo.visible_rows as f64 * row_h,

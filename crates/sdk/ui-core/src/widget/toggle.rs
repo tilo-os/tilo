@@ -677,11 +677,21 @@ impl Widget for Toggle {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{CheckStyle, Control};
         cx.element("label");
+        // Its caption leads and the switch keeps the row's trailing edge, as painted.
+        let theme = cx.theme();
+        let ink = if self.control.effectively_enabled() {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        let label = self.label.as_ref().map(|label| {
+            crate::composition::TextLook::new(widget_text(label), &self.label_style, Some(ink))
+        });
         cx.control(Control::Check {
             style: CheckStyle::Switch,
             checked: self.control.is_checked,
             mixed: false,
-            label: None,
+            label,
         });
     }
 
@@ -832,7 +842,9 @@ impl Widget for Toggle {
                 &self.label_style,
             );
         }
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
 
     fn is_layout_dirty(&self) -> bool {

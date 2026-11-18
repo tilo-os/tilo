@@ -52,8 +52,8 @@ public struct Wording: Sendable {
     // MARK: The conversation
 
     /// What a task's line says after the task's name.
-    public func line(_ standing: TaskLine.Standing) -> String? {
-        switch standing {
+    public func line(_ state: TaskLine.State) -> String? {
+        switch state {
         case .none: nil
         case .scheduled(let when): W.lineScheduled.said(["when": when])
         case .actedAlone: W.lineActedAlone.said
@@ -72,8 +72,8 @@ public struct Wording: Sendable {
     // MARK: Sub-agents
 
     /// "working", "needs you", "done yesterday"
-    public func standing(_ agent: SubAgent) -> String {
-        switch agent.standing {
+    public func state(_ agent: SubAgent) -> String {
+        switch agent.state {
         case .working: return W.working.said
         case .needsYou: return W.needsYou.said
         case .failed: return W.failed.said
@@ -88,7 +88,7 @@ public struct Wording: Sendable {
 
     /// The line under a sub-agent's name in the sidebar: "Coder · working".
     public func sidebarLine(_ agent: SubAgent) -> String {
-        joined([agent.role, standing(agent)])
+        joined([agent.role, state(agent)])
     }
 
     /// The line under a sub-agent's name in its own window: who it is, where it runs, when it
@@ -147,6 +147,17 @@ public struct Wording: Sendable {
         return count.formatted(.number.locale(locale))
     }
 
+    /// The day's messages as the view's figure: the count the person's server said, or that
+    /// their server counts none. Never a nought that nobody counted.
+    public func messages(_ usage: Supervision.Usage) -> String {
+        usage.messagesToday.map { $0.formatted(.number.locale(locale)) } ?? W.notCounted.said
+    }
+
+    /// The day's tokens as the view's figure, said the same way.
+    public func tokens(_ usage: Supervision.Usage) -> String {
+        usage.tokensToday.map(tokens) ?? W.notCounted.said
+    }
+
     /// "3.12 $", "10 $"
     public func money(micros: Int, currency: String) -> String {
         let whole = micros % 1_000_000 == 0
@@ -166,9 +177,13 @@ public struct Wording: Sendable {
         return Line(first: model, second: W.modelNote.said)
     }
 
-    /// "Name · added 17 Nov · 23 commands"
+    /// "Name · added 17 Nov · 23 commands", or "Name · added 17 Nov · sign-in needed": one that
+    /// nobody is signed in to offers nothing until they are, and the line says that for a count.
     public func said(_ connection: Supervision.Connection) -> String {
-        W.connectionLine.said(["name": connection.name, "date": day(connection.added), "count": String(connection.commands)])
+        guard !connection.needsSignIn else {
+            return W.connectionSignIn.said(["name": connection.name, "date": day(connection.added)])
+        }
+        return W.connectionLine.said(["name": connection.name, "date": day(connection.added), "count": String(connection.commands)])
     }
 
     /// "Name · typed 17 Nov · used today"
@@ -213,9 +228,11 @@ public struct Wording: Sendable {
         lines(facts.places.map { "\($0.name), \($0.detail)" })
     }
 
+    /// The workspaces the source says the assistant works in. Under one stands that it works
+    /// there. Nothing is said of any other workspace, and of several nothing is promised.
     public func workspaces(_ facts: Supervision) -> Line {
         guard !facts.workspaces.isEmpty else { return Line(first: W.none.said, second: nil) }
-        return Line(first: joined(facts.workspaces), second: W.yoursInEach.said)
+        return Line(first: joined(facts.workspaces), second: facts.workspaces.count == 1 ? W.worksInThis.said : nil)
     }
 
     /// The first thing on the line, the second under it, and how many more there are.

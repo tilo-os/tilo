@@ -187,7 +187,7 @@ members = [
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/ui-kms",
-    "crates/sdk/tilo-host",
+    "crates/sdk/tilo-process-services",
     "crates/sdk/tilo-formats",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -233,7 +233,7 @@ members = [
     "crates/dev/test-env",
     "crates/dev/test-app-registry",
     "crates/dev/test-http",
-    "crates/dev/test-relay",
+    "crates/dev/test-server",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
     "crates/dev/tilo-device-admin",
@@ -260,18 +260,18 @@ members = [
     "crates/lang/tilolang-runtime",
 
     # Hosting
-    "crates/hosting/tilo-delivery-protocol",
-    "crates/hosting/tilo-api",
+    "crates/server/tilo-delivery-protocol",
+    "crates/server/tilo-api",
     # The SDKs' native parts: the API in process, as a key the program holds.
     "sdk/python/native",
     "sdk/typescript/native",
-    "crates/hosting/tilo-host-account",
-    "crates/hosting/tilo-relay",
-    "crates/hosting/tilo-relay-client",
-    "crates/hosting/tilo-relay-protocol",
-    "crates/hosting/tilo-relay-session",
-    "crates/hosting/tilo-relay-store",
-    "crates/hosting/tilo-workspace-host",
+    "crates/server/tilo-server-account",
+    "crates/server/tilo-server",
+    "crates/server/tilo-server-client",
+    "crates/server/tilo-server-protocol",
+    "crates/server/tilo-server-session",
+    "crates/server/tilo-server-store",
+    "crates/server/tilo-workspace-service",
 
     # Media
     "crates/media/ocr",
@@ -285,7 +285,7 @@ members = [
     "crates/packaging/app-catalogue",
     "crates/packaging/app-fleet",
     "crates/packaging/app-cli",
-    "crates/packaging/app-host",
+    "crates/packaging/package-service",
     "crates/packaging/app-registry",
     "crates/packaging/oci-images",
     "crates/packaging/cli-shim",
@@ -330,7 +330,7 @@ members = [
     "crates/platform/tilo-clock",
     "crates/platform/tilo-durable-writer",
     "crates/platform/tilolang-tilo",
-    "crates/platform/tilolang-host",
+    "crates/platform/tilolang-process",
     "crates/platform/tilolang-mail",
     "crates/platform/tilolang-youtube",
     "crates/platform/tilo-failure",
@@ -368,7 +368,7 @@ members = [
     "crates/platform/tilo-presentation",
     "crates/platform/tilo-system-info",
     "crates/platform/tilo-render-protocol",
-    "crates/platform/tilo-ui-host",
+    "crates/platform/tilo-app-window",
     "crates/platform/tilo-written-view",
     "crates/platform/tilo-view",
     "crates/platform/tilo-rt",
@@ -393,7 +393,7 @@ members = [
     "crates/runtime/engines/accounts",
     "crates/runtime/engines/adblock",
     "crates/runtime/engines/agent-web",
-    "crates/runtime/engines/app-host",
+    "crates/runtime/engines/app-process",
     "crates/runtime/engines/browser-import",
     "crates/runtime/engines/contact-directory",
     "crates/runtime/engines/emoji",
@@ -418,7 +418,7 @@ members = [
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
-    "crates/runtime/tilo-identity-host",
+    "crates/runtime/tilo-identity",
     "crates/runtime/tilo-mcp",
     "crates/runtime/tilo-runtime",
     "crates/runtime/environment",
@@ -429,13 +429,15 @@ members = [
     "crates/runtime/env-tools",
 
     # Session
+    "crates/session/color-params",
+    "crates/session/x11-transfer",
     "crates/session/color-pipeline",
     "crates/session/compositor",
     "crates/session/app-keeper",
-    "crates/session/surface-host",
+    "crates/session/shell-surface",
     "crates/session/session",
     "crates/session/console-control",
-    "crates/session/crash-records",
+    "crates/session/crash-reports",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/core",
@@ -458,14 +460,14 @@ members = [
     "crates/session/activities",
     "crates/session/notifications-service",
     "crates/session/onboarding",
-    "crates/session/onboarding-host",
+    "crates/session/onboarding-session",
     "crates/session/polkit-agent",
     "crates/session/portal",
     "crates/session/capture-studio",
     "crates/session/power-service",
     "crates/session/quick-settings",
     "crates/session/render-service",
-    "crates/session/session-record",
+    "crates/session/flight-log",
     "crates/session/session-logging",
     "crates/session/sheets",
     "crates/session/tilo-unlock-helper",
@@ -479,14 +481,14 @@ members = [
     "crates/session/device-fabric",
     "crates/session/nearby-service",
     "crates/session/speaker-service",
-    "crates/session/tray-host",
+    "crates/session/tray",
     "crates/session/wayland-ext",
     "crates/session/window-menu",
     "crates/session/window-share",
     "crates/session/workspace-directory",
 
     # System
-    "crates/system/account-custody",
+    "crates/system/account-credentials",
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",
@@ -755,13 +757,13 @@ data-encoding = "2.10"
 data-encoding-macro = "0.1.19"
 hex = "0.4.3"
 bytes = "1.11.1"
-# The moq-lite live plane's protocol layer, shared by native devices and pages.
+# The moq-lite live session's protocol layer, shared by native devices and pages.
 moq-net = "0.3.3"
 flate2 = "1"
 miniz_oxide = "0.8"
 # A standalone build (a published crate) needs flate2 to name its backend;
 # zlib-rs is the one the workspace already links.
-zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
@@ -804,7 +806,7 @@ iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-st
 bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
 irpc = { version = "0.17.0", default-features = false }
 ref-cast = "1.0.24"
-# Content-defined chunking for the native data plane (normalised FastCDC).
+# Content-defined chunking for the native backend (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
 # Embedded metadata database of the storage daemon (already in the graph
 # through iroh-blobs' store).
@@ -852,7 +854,7 @@ wayland-client = "0.31.14"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
-# through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
+# through smithay-clipboard (see crates/sdk/tilo-process-services/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.18.0"
 # Defaults on: the only default is `macos_fsevent`, without which notify has no
@@ -882,7 +884,10 @@ clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.9"
 strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
-chrono = { version = "0.4", default-features = false }
+jiff = { version = "0.2.37", default-features = false, features = ["std", "serde", "tz-system"] }
+# The IANA time-zone database, built in so every device resolves a named zone
+# the same way whatever zoneinfo its host has.
+jiff-tzdb = "0.1"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.
@@ -1404,21 +1409,21 @@ strip = "symbols"
 inherits = "wasm-release"
 strip = "none"
 
-# `wasm-split` without its whole-program link, as `lounge-gate` is `release`
+# `wasm-split` without its whole-program link, as `lounge-check` is `release`
 # without it: the local tilo.sh stack's and its checks' desktop bundle, which a
 # change to one app relinks in a minute instead of fat LTO's single
 # codegen unit over every app. Same opt-level, same split, same wasm-opt; the
 # module is larger before wasm-opt and the shipped bundle stays `wasm-split`'s.
-[profile.wasm-split-gate]
+[profile.wasm-split-check]
 inherits = "wasm-split"
 lto = false
 codegen-units = 16
 
-# `wasm-split-gate` compiled incrementally: the local stack's desktop bundle
+# `wasm-split-check` compiled incrementally: the local stack's desktop bundle
 # (build.sh --profile local), built in a build directory that stays, as
-# `lounge-local` is to `lounge-gate`, in as many codegen units.
+# `lounge-local` is to `lounge-check`, in as many codegen units.
 [profile.wasm-split-local]
-inherits = "wasm-split-gate"
+inherits = "wasm-split-check"
 incremental = true
 codegen-units = 256
 lto = "off"
@@ -1547,23 +1552,23 @@ debug-assertions = true
 # reads the speed of. Release optimisation without it: the same code at the same opt-level,
 # sixteen codegen units, and each cached crate stored without the bitcode a whole-program link
 # alone needs.
-[profile.lounge-gate]
+[profile.lounge-check]
 inherits = "release"
 lto = false
 codegen-units = 16
 
-# `lounge-gate` compiled incrementally: the local tilo.sh stack's programs
+# `lounge-check` compiled incrementally: the local tilo.sh stack's programs
 # (os/containers/tilo-sh/stack.sh), built in a build directory that stays, so
 # a one-line change recompiles the parts of the crate it touched rather than
 # the whole crate. The same code at the same opt-level, in rustc's 256
 # codegen units for incremental builds and without the ThinLTO pass across
 # them, so a change re-optimises the units it touched and nothing those units
 # were inlined into: with sixteen units and that pass, a one-line change to
-# the relay's library took 48 s of rustc, without it 21 s. A build that
+# the server's library took 48 s of rustc, without it 21 s. A build that
 # starts from an empty directory (a check's) gains nothing from it and keeps
-# `lounge-gate`, whose crates the compiler cache stores.
+# `lounge-check`, whose crates the compiler cache stores.
 [profile.lounge-local]
-inherits = "lounge-gate"
+inherits = "lounge-check"
 incremental = true
 codegen-units = 256
 lto = "off"
@@ -1658,7 +1663,7 @@ serde_json = { path = "vendor/serde_json" }
 # kernel cancels on resume or a clock step replaces it). See each crate's
 # TILO-PATCH.md.
 iroh = { path = "vendor/iroh" }
-# A relay client sends right behind its answer to the relay's challenge
+# A server client sends right behind its answer to the server's challenge
 # instead of waiting a round trip for the relay to confirm it; iroh turns that
 # on for its relay connections. See vendor/iroh-relay/TILO-PATCH.md.
 iroh-relay = { path = "vendor/iroh-relay" }

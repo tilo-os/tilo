@@ -1,4 +1,4 @@
-//! Placeholder bytes from the content plane. Filling a range makes it resident in
+//! Placeholder bytes from the content store. Filling a range makes it resident in
 //! the content store first, and on the store volume copying it into the
 //! placeholder clones extents instead of writing the bytes twice.
 //!
@@ -149,7 +149,7 @@ mod tests {
         let manifest = elsewhere.local(quiet_id).await.unwrap();
         assert_eq!(store.ingest(manifest).await.unwrap(), quiet_id);
         let quiet = crate::hydration::test_peers::silent().await;
-        let hydrator = Arc::new(Hydrator::new(test_relay::direct_endpoint().await, store));
+        let hydrator = Arc::new(Hydrator::new(test_server::direct_endpoint().await, store));
         hydrator.add_peer(quiet.endpoint().addr());
         let fetcher = ContentFetcher::new(
             Arc::clone(&hydrator),

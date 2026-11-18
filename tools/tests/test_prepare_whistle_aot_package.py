@@ -12,14 +12,14 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-class AotPackageCustody(unittest.TestCase):
+class AotPackageOwnership(unittest.TestCase):
     def test_image_parents_remain_non_writable_with_group_umask(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             destination = root / 'candidate'
             previous = os.umask(0o002)
             try:
-                # Custody rejection is exercised independently below. Replace
+                # Ownership rejection is exercised independently below. Replace
                 # only fixture input reading to exercise real package creation.
                 with patch.object(MODULE, 'verified', return_value=b'fixture'):
                     MODULE.prepare(root / 'runtime', root / 'notices', destination)

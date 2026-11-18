@@ -1,4 +1,4 @@
-//! Outside effects wait in the workspace record for the device that owns them: approved twice, the
+//! Outside effects wait in the workspace document for the device that owns them: approved twice, the
 //! letter leaves once.
 
 use automerge::AutoCommit;
@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
             sent_by_ada.delivered(),
             sent_by_grace.delivered()
         );
-        // Settled in the record: no device has anything left to carry out.
+        // Settled in the document: no device has anything left to carry out.
         assert_eq!(ada.host.store().outbox_pending_count(), 0);
         assert_eq!(grace.host.store().outbox_pending_count(), 0);
     }
@@ -157,14 +157,14 @@ tilo_test_env::scenario! {
     {
         use tilo_actions::ActionKind::{Outside, Undoable};
         let (ada, invocation) = suggested_workspace();
-        // Creating the root is a change of the record. The host offers its commit as one, which a
-        // workspace whose grants let the app author the record allows.
+        // Creating the root is a change of the document. The host offers its commit as one, which a
+        // workspace whose grants let the app author the document allows.
         let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
         fresh.host.root_of("test.letters").unwrap();
         let created = fresh.host.take_committed();
         assert_eq!(created.len(), 1);
         assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));
-        // Approving the send queues the letter: committing that reaches outside the record.
+        // Approving the send queues the letter: committing that reaches outside the document.
         ada.host
             .runtime()
             .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
@@ -180,7 +180,7 @@ tilo_test_env::scenario! {
 
     phase a_post_that_went_out_before_the_ask_leaves_once_when_both_replicas_run_it;
     {
-        let (mut ada, mut grace, invocation) = relay_workspace();
+        let (mut ada, mut grace, invocation) = server_workspace();
         let (by_ada, by_grace) = (MemorySink::new(), MemorySink::new());
         ada.host.runtime().set_sink(by_ada.clone());
         grace.host.runtime().set_sink(by_grace.clone());
@@ -260,8 +260,8 @@ fn commit_need(
     )
 }
 
-/// A relay app: a post that goes out at once, and the ask for who records it.
-const RELAY: &str = r#"app test.relay "Relay" (icon: .mail, category: .office)
+/// A server app: a post that goes out at once, and the ask for who records it.
+const SERVER: &str = r#"app test.server "Server" (icon: .mail, category: .office)
 
 type Draft {
     to: Text
@@ -294,23 +294,26 @@ action new_draft(letters: Letters) -> Draft (icon: .plus) {
 action post_and_record(d: Draft) {
     d.sent = true
     outside("post", (d.to,))
-    record(d)
+    document(d)
 }
 
 /// Seals the posted letter in the archive.
-action record(d: Draft) {
+action document(d: Draft) {
     outside("smtp.send", (d.to,))
     d.sealed = true
 }
 "#;
-const RELAY_APP: &str = "test.relay";
+const SERVER_APP: &str = "test.server";
 const WORKSPACE: &str = "workspace";
 
-/// `who`'s standing in the relay workspace: an editor of it, allowed to post, so the action runs
+/// `who`'s access in the server workspace: an editor of it, allowed to post, so the action runs
 /// up to the effect it queues before the ask about recording the letter.
-fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action_policy::Standing {
+fn server_access(
+    meta: &tilolang_runtime::meta::Meta,
+    who: &str,
+) -> tilo_action_policy::MemberAccess {
     use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
     for member in ["ada", "grace"] {
@@ -320,9 +323,9 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
         .actions
         .iter()
         .find(|action| action.name == "post_and_record")
-        .expect("the relay posts");
+        .expect("the server posts");
     let node = TreePath::workspace(WORKSPACE)
-        .app(RELAY_APP)
+        .app(SERVER_APP)
         .kind(meta.kind_of("Draft"))
         .action(&post.id);
     let owner = Grantee::person("sol");
@@ -334,23 +337,23 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
         Answer::Allow,
         owner,
     )]);
-    Standing::person(policy, who)
+    MemberAccess::person(policy, who)
 }
 
-/// Two replicas of a relay workspace: ada posted a letter, and recording it waits on a person.
-fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
+/// Two replicas of a server workspace: ada posted a letter, and recording it waits on a person.
+fn server_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     // The ids the app compiles to: every replica loads the same lock, so they agree on them.
-    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[(RELAY, "")]);
+    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[(SERVER, "")]);
     let meta = probe[0].meta.clone();
     let ids = probe[0].ids.clone();
-    let packages = [(RELAY, ids.as_str())];
-    let (mut ada, _) = Replica::standing(
+    let packages = [(SERVER, ids.as_str())];
+    let (mut ada, _) = Replica::access(
         "ada",
         AutoCommit::new(),
         &packages,
-        Some(relay_standing(&meta, "ada")),
+        Some(server_access(&meta, "ada")),
     );
-    let letters = ada.host.root_of(RELAY_APP).unwrap();
+    let letters = ada.host.root_of(SERVER_APP).unwrap();
     ada.commit();
     let new_draft = meta
         .actions
@@ -400,11 +403,11 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
         )
         .unwrap();
     ada.commit();
-    let grace = Replica::standing(
+    let grace = Replica::access(
         "grace",
         ada.doc.fork(),
         &packages,
-        Some(relay_standing(&meta, "grace")),
+        Some(server_access(&meta, "grace")),
     )
     .0;
     (ada, grace, invocation)

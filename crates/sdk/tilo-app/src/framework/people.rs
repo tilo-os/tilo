@@ -20,8 +20,9 @@ use ui_core::LocalState;
 use ui_core::icons::Icon;
 use ui_core::presence::PresenceCtx;
 use ui_core::tokens::PresenceHue;
+use ui_core::widget::arrange::Stack as Arranged;
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
-use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
+use ui_core::widget::{Button, ButtonRole, Element, Tone};
 
 use super::ViewCx;
 use tilo_resource::MemberId;
@@ -79,16 +80,25 @@ impl Actor {
         }
     }
 
-    /// The id a face takes its photograph from.
-    #[must_use]
-    pub fn identity(&self) -> &str {
-        self.member.as_ref().map_or(&self.name, MemberId::id)
-    }
-
     /// Whether they are an agent of the workspace, not a person in it.
     #[must_use]
     pub fn agent(&self) -> bool {
         self.member.as_ref().is_some_and(MemberId::is_agent)
+    }
+
+    /// Them as a face shows them ([`ui_core::widget::AvatarFace::of`]); someone outside the
+    /// workspace as a person by their name.
+    #[must_use]
+    pub fn person(&self) -> ui_core::component::Person {
+        let member = self
+            .member
+            .clone()
+            .unwrap_or_else(|| MemberId::person(self.name.clone()));
+        ui_core::component::Person {
+            identity: tilo_actions::Actor::Member(member),
+            name: self.name.clone(),
+            hue: self.hue,
+        }
     }
 }
 
@@ -211,6 +221,16 @@ impl People {
 
     /// Take the names the host's roster holds now. Whether any changed.
     pub(crate) fn follow(&self, presence: &PresenceCtx) -> bool {
+        let mut members = merged_roster(presence, &[]);
+        if presence.knows_members() {
+            // The workspace's own list says who its people are: a device that named someone
+            // it never admitted — a host's own — is nobody's row.
+            members.retain(|candidate| {
+                candidate.id.is_agent()
+                    || presence.is_member(&candidate.id)
+                    || presence.is_own_identity(&candidate.id)
+            });
+        }
         let next = Roster {
             names: presence
                 .names
@@ -223,7 +243,7 @@ impl People {
                 .map(|user| (user.clone(), presence.hue_for(user)))
                 .collect(),
             own: presence.self_label(),
-            members: merged_roster(presence, &[]),
+            members,
             registry: {
                 let mut registry =
                     ui_core::history_source::AuthorDirectory::from_presence(presence);
@@ -316,13 +336,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 (Rc::clone(&label), Rc::clone(&nobody), Rc::clone(&value_of));
             let held_action = action.clone();
             cx.switch(&held, move |cx, who| {
-                let mut choices = Stack::new();
+                let mut choices = Arranged::stack();
                 choices = choices.push(cx.person_choice(
                     &format!("{id}-none"),
                     &nobody,
                     None,
                     None,
-                    false,
                     held_action.clone(),
                 ));
                 for member in &members {
@@ -338,8 +357,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         &format!("{id}-{kind}-{}", member.id.id()),
                         &member.name,
                         Some(value),
-                        Some((&member.name, member.id.id(), member.hue)),
-                        member.id.is_agent(),
+                        Some(ui_core::component::Person {
+                            identity: tilo_actions::Actor::Member(member.id.clone()),
+                            name: member.name.clone(),
+                            hue: member.hue,
+                        }),
                         held_action.clone(),
                     ));
                 }
@@ -348,7 +370,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         who.name.clone(),
                         who.agent(),
                         Button::new(id, &who.name)
-                            .with_avatar(&who.name, who.identity(), who.hue)
+                            .with_avatar(who.person())
                             .showing_choice(),
                     ),
                     None => (
@@ -374,13 +396,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         id: &str,
         label: &str,
         value: Option<String>,
-        face: Option<(&str, &str, PresenceHue)>,
-        agent: bool,
+        face: Option<ui_core::component::Person>,
         action: B,
     ) -> Element {
+        let agent = face
+            .as_ref()
+            .and_then(|who| who.identity.member_id())
+            .is_some_and(MemberId::is_agent);
         let mut button = Button::new(id, label).role(ButtonRole::Plain);
         button = match face {
-            Some((name, identity, hue)) => button.with_avatar(name, identity, hue),
+            Some(who) => button.with_avatar(who),
             None => button.with_icon(Icon::User).with_placeholder(),
         };
         if agent {

@@ -9,10 +9,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use tilo_relay_protocol::live::LiveResource;
+use tilo_server_protocol::live::LiveResource;
 
 use crate::session::LiveCompletion;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// Frames kept per record.
 const PER_KEY: usize = 16;

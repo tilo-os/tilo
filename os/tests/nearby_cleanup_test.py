@@ -107,7 +107,7 @@ def function(source, name):
 
 
 class CleanupTrapTest(unittest.TestCase):
-    def run_cleanup(self, gate=0, stop_a=0, after_a=0, before_a=0, source=None):
+    def run_cleanup(self, check=0, stop_a=0, after_a=0, before_a=0, source=None):
         source = source or (DEV / "test-nearby-pairing.sh").read_text()
         definitions = []
         for name in ("stop_owned_vm", "cleanup"):
@@ -115,7 +115,7 @@ class CleanupTrapTest(unittest.TestCase):
                 definitions.append(function(source, name))
         with tempfile.TemporaryDirectory() as work:
             out = Path(work)
-            (out / "verdict.txt").write_text("PASS\n" if gate == 0 else "FAIL\n")
+            (out / "verdict.txt").write_text("PASS\n" if check == 0 else "FAIL\n")
             runner = '''set -euo pipefail
 out=$1; run_a=owned-a; run_b=owned-b; dev_dir=unused
 collect() { printf 'collect %s\\n' "$1" >> "$out/calls.txt"; }
@@ -135,7 +135,7 @@ backend() {
 vm_a() { backend a "$@"; }
 vm_b() { backend b "$@"; }
 '''.replace("STOP_A", str(stop_a)).replace("AFTER_A", str(after_a)).replace("BEFORE_A", str(before_a))
-            runner += "\n".join(definitions) + "\ntrap cleanup EXIT\n(exit " + str(gate) + ")\n"
+            runner += "\n".join(definitions) + "\ntrap cleanup EXIT\n(exit " + str(check) + ")\n"
             result = subprocess.run(["bash", "-c", runner, "fixture", str(out)], capture_output=True, text=True, timeout=5)
             files = {p.name: p.read_text() for p in out.iterdir() if p.is_file()}
             return result.returncode, files
@@ -144,14 +144,14 @@ vm_b() { backend b "$@"; }
         rc, files = self.run_cleanup()
         self.assertEqual(rc, 0)
         self.assertEqual(files["cleanup-exit-status.txt"], "0\n")
-        self.assertEqual(files["gate-verdict.txt"], "PASS\n")
+        self.assertEqual(files["check-verdict.txt"], "PASS\n")
         self.assertEqual(files["verdict.txt"], "PASS\n")
 
-    def test_failed_stop_cannot_report_gate_pass(self):
+    def test_failed_stop_cannot_report_check_pass(self):
         rc, files = self.run_cleanup(stop_a=73)
         self.assertEqual(rc, 1)
-        self.assertEqual(files["gate-exit-status.txt"], "0\n")
-        self.assertEqual(files["gate-verdict.txt"], "PASS\n")
+        self.assertEqual(files["check-exit-status.txt"], "0\n")
+        self.assertEqual(files["check-verdict.txt"], "PASS\n")
         self.assertEqual(files["verdict.txt"], "FAIL\n")
         self.assertIn("stop=73 verify=0", files["a-cleanup-status.txt"])
         self.assertIn("b stop", files["calls.txt"])
@@ -168,10 +168,10 @@ vm_b() { backend b "$@"; }
         self.assertNotIn("a stop", files["calls.txt"])
         self.assertIn("b stop", files["calls.txt"])
 
-    def test_existing_gate_failure_status_is_preserved(self):
-        rc, files = self.run_cleanup(gate=42, stop_a=73)
+    def test_existing_check_failure_status_is_preserved(self):
+        rc, files = self.run_cleanup(check=42, stop_a=73)
         self.assertEqual(rc, 42)
-        self.assertEqual(files["gate-exit-status.txt"], "42\n")
+        self.assertEqual(files["check-exit-status.txt"], "42\n")
         self.assertEqual(files["exit-status.txt"], "42\n")
 
 

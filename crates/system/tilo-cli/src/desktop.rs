@@ -5,7 +5,7 @@
 //! Which socket a request reaches is decided per process, never widened:
 //!
 //! - **The device owner's own login or ssh** reaches the admin socket, with
-//!   their authority at the keyboard, through the same capability gate as
+//!   their authority at the keyboard, through the same capability check as
 //!   the palette.
 //! - **A terminal app, and everything run in it,** is turned away there by
 //!   the desktop (the kernel says it is an app's process), and goes on to the
@@ -65,6 +65,16 @@ pub enum WorkspaceCmd {
         /// What to call the new workspace.
         name: String,
     },
+    /// The hosts holding a workspace (-w), and having another hold it as well:
+    /// both keep it, a change on either reaches the other, and its people
+    /// reach it at either.
+    #[command(after_help = "Examples:\n  tilo workspace hosts ls -w Tilo\n  \
+                      tilo workspace hosts add https://tilo.sh -w Tilo\n  \
+                      tilo workspace hosts remove https://tilo.sh -w Tilo")]
+    Hosts {
+        #[command(subcommand)]
+        cmd: crate::hosted::HostsCmd,
+    },
 }
 
 /// Run one `workspace` subcommand.
@@ -86,6 +96,11 @@ pub fn run_workspace(cmd: WorkspaceCmd, spelling: &Spelling) -> ExitCode {
                 spelling,
                 io,
             )
+        }
+        // A hosted workspace's hosts, which `tilo`'s hosted commands answer.
+        WorkspaceCmd::Hosts { .. } => {
+            let _ = writeln!(io.err, "name the workspace: -w <name or id>");
+            2
         }
     })
 }

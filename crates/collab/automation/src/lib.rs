@@ -3,7 +3,7 @@
 //! A [`Shortcut`] is a small program whose every effect is an ordinary
 //! published action: the same `(app, resource, action)` addresses a person
 //! reaches through the palette, an agent through the control socket and a
-//! peer through [`ActionHost`](tilo_actions::remote::ActionHost). Nothing in
+//! peer through [`ActionProvider`](tilo_actions::remote::ActionProvider). Nothing in
 //! here touches an application directly, so a shortcut can do exactly what
 //! its author could do by hand and no more.
 //!
@@ -45,10 +45,12 @@ pub mod invocation;
 pub mod path;
 pub mod program;
 pub mod requirements;
+pub mod resource_time;
 mod saved;
 pub mod scenario;
 pub mod schedule;
 pub mod shortcut;
+pub mod source_change;
 mod template;
 pub mod text;
 mod text_read;

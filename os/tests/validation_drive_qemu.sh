@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Catch QEMU validation-drive argument errors before the release gate boots.
+# Catch QEMU validation-drive argument errors before the release check boots.
 # Run on the native ARM KVM release runner; never fall back to CPU emulation.
 set -euo pipefail
 

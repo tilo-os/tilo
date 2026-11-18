@@ -14,8 +14,8 @@ use ui::{
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn owned_views_restore_selection_and_clamp_utf8_offsets() {
-    // Catches reopening the default page, or projecting old text over the latest record.
-    eprintln!("phase owned_close_restores_each_instances_selected_page_from_latest_record");
+    // Catches reopening the default page, or projecting old text over the latest resource.
+    eprintln!("phase owned_close_restores_each_instances_selected_page_from_latest_resource");
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
@@ -35,8 +35,8 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         // What is typed in the title names the note at once.
         a.type_text("Draft ");
         let title = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 read::list_pages(doc)
                     .into_iter()
                     .find(|page| page.id == f.child)
@@ -58,8 +58,8 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
             serde_json::json!({ "title": "Latest Launch" }),
         );
         let before = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 (
                     doc.base_heads(),
                     doc.pending_ops(),
@@ -70,7 +70,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         let revision_before = revision(&f, &checkout);
         let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
         let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
-        // A window presented again shows the record's title and gives the
+        // A window presented again shows the resource's title and gives the
         // keyboard back to the note's body: a title edit is the person's own
         // gesture, never one a presentation restores for them.
         a.expect(
@@ -83,8 +83,8 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
             .unwrap();
         assert_eq!(
             before,
-            f.records
-                .read(&checkout.id, |doc| (
+            f.store
+                .read(&f.part(), |doc| (
                     doc.base_heads(),
                     doc.pending_ops(),
                     read::page_block_snapshots(doc, f.child)
@@ -103,17 +103,17 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         let checkout = notebook(&f);
         let mut b = driver(&f, 12, &checkout);
         let block = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 read::page_block_snapshots(doc, f.child)[0].0.clone()
             })
             .unwrap();
-        replace_text_through(&mut b, 12, &f, &checkout, &block, "éλx");
-        stamp_current_runs(&f, &checkout, f.child, 0);
+        replace_text_through(&mut b, 12, &f, &block, "éλx");
+        stamp_current_runs(&f, f.child, 0);
         let before = fingerprint(&f, &checkout);
         for (offset, expected) in [(0, 0), (1, 0), (2, 2), (3, 2), (4, 4), (5, 5), (900, 5)] {
             let local = payload(f.child, "Editor", Some(&block), None, offset, 0.0);
-            let mut app = app_from_payload(&f, &checkout, &local);
+            let mut app = app_from_payload(&f, &local);
             assert_eq!(
                 app.main_panel_mut().editor().blocks()[0].line.cursor_pos(),
                 expected
@@ -130,11 +130,8 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
             );
         }
         for focus in ["None", "Sidebar", "Title", "Editor"] {
-            let mut app = app_from_payload(
-                &f,
-                &checkout,
-                &payload(f.child, focus, Some(&block), Some(0), 4, 0.0),
-            );
+            let mut app =
+                app_from_payload(&f, &payload(f.child, focus, Some(&block), Some(0), 4, 0.0));
             assert_eq!(
                 app.main_panel_mut().editor().selected_text().as_deref(),
                 Some("éλ")
@@ -205,23 +202,18 @@ fn fingerprint(
     checkout: &ui::resource::DocumentCheckout,
 ) -> (Vec<automerge::ChangeHash>, usize, Vec<u8>, u64) {
     let (heads, pending, bytes) = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             (doc.base_heads(), doc.pending_ops(), doc.clone().save())
         })
         .unwrap();
     (heads, pending, bytes, revision(f, checkout))
 }
-fn stamp_current_runs(
-    f: &NotebookFixture,
-    checkout: &ui::resource::DocumentCheckout,
-    page: notes::PageId,
-    index: usize,
-) {
+fn stamp_current_runs(f: &NotebookFixture, page: notes::PageId, index: usize) {
     // Explicit canonical fixture content: bound replace-text deliberately does not
     // synthesize authorship/formatting. Restoration must adopt these existing marks.
-    f.records
-        .with(&checkout.id, |doc| {
+    f.store
+        .with(&f.part(), |doc| {
             let snapshots = read::page_block_snapshots(doc, page);
             let body = &snapshots[index].1;
             apply_to(
@@ -257,12 +249,11 @@ fn stamp_current_runs(
 }
 fn app_from_payload(
     f: &NotebookFixture,
-    checkout: &ui::resource::DocumentCheckout,
     local: &ui::application_view::ApplicationLocalView,
 ) -> notes::NotesApp {
     use ui::application_view::ApplicationViewState;
-    f.records
-        .read(&checkout.id, |doc| {
+    f.store
+        .read(&f.part(), |doc| {
             let mut app = notes::NotesApp::from_document(doc, &f.author).unwrap();
             assert_eq!(
                 app.restore_application_view(local, doc).unwrap(),
@@ -378,12 +369,12 @@ fn first_note_pointer_activation_needs_layout_but_no_paint() {
         }
     }
     app.sync(&doc, &automerge::ROOT);
+    // The note is made in the first part of the notes, beside the notebook.
     assert_eq!(
-        read::list_pages(&doc).len(),
+        app.workspace_pages_for_test().len(),
         1,
         "one click creates exactly one note"
     );
-    assert_eq!(app.workspace_pages_for_test().len(), 1);
     assert!(app.selected_for_test().is_some());
     layout(app, 1200.0, 700.0);
     assert!(
@@ -402,8 +393,8 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
     let block = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             read::page_block_snapshots(doc, f.child)[3].0.clone()
         })
         .unwrap();
@@ -427,11 +418,11 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     assert_eq!(selected.caret.as_ref().unwrap().byte_offset, 2);
     assert_eq!(selected.caret.as_ref().unwrap().block_id, block);
     drop(a);
-    replace_text_through(&mut b, 12, &f, &checkout, &block, "é current");
+    replace_text_through(&mut b, 12, &f, &block, "é current");
     // The current native formatting/author projection must survive immutable adoption.
-    stamp_current_runs(&f, &checkout, f.child, 3);
+    stamp_current_runs(&f, f.child, 3);
     let before = fingerprint(&f, &checkout);
-    let projected = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
+    let projected = app_from_payload(&f, saved.application.as_ref().unwrap());
     let mut projected = projected;
     let current_marks = projected.main_panel_mut().inline_marks();
     assert!(
@@ -450,7 +441,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     // Closing ends the typed word's step.
     close_driver(&mut a);
     assert_eq!(revision(&f, &checkout), before.3 + 1);
-    f.records
+    f.store
         .read_history(&checkout.id, |doc, history| {
             assert_eq!(read::page_block_snapshots(doc, f.child)[3].1, "Q current");
             let last = history.next_undo_in(doc, &f.author, 11).unwrap();
@@ -496,8 +487,8 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             mark: actions::InlineMark::Bold
         }]
     );
-    f.records
-        .read(&checkout.id, |doc| {
+    f.store
+        .read(&f.part(), |doc| {
             assert_eq!(
                 read::page_block_marks(doc, f.child)
                     .iter()
@@ -521,8 +512,8 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
     let block = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             read::page_block_snapshots(doc, f.child)[0].0.clone()
         })
         .unwrap();
@@ -544,7 +535,7 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
         "close before measure retains requested scroll"
     );
     assert_eq!(captured.focus, notes::local_view::NotesFocus::Sidebar);
-    let mut app = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
+    let mut app = app_from_payload(&f, saved.application.as_ref().unwrap());
     layout(&mut app, 390.0, 220.0);
     assert!(!app.drawer_open_for_test());
     let local: notes::local_view::NotesLocalViewV1 =
@@ -570,8 +561,8 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
     let mut b = driver(&f, 12, &checkout);
     let a_before = semantic_rect(&a, &format!("notes.block:{block}")).y0;
     let index_block = f
-        .records
-        .read(&checkout.id, |doc| {
+        .store
+        .read(&f.part(), |doc| {
             read::page_block_snapshots(doc, f.root)[0].0.clone()
         })
         .unwrap();
@@ -598,8 +589,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
         let block = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 read::page_block_snapshots(doc, f.child)[0].0.clone()
             })
             .unwrap();
@@ -613,7 +604,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         invoke_confirmed(&mut b, 12, &actions::page_resource_id(f.child), "delete");
         invoke_confirmed(&mut b, 12, &actions::tag_resource_id(f.tag), "delete-tag");
         let before = fingerprint(&f, &checkout);
-        let mut app = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
+        let mut app = app_from_payload(&f, saved.application.as_ref().unwrap());
         assert_eq!(app.selected_for_test(), Some(f.root));
         assert_eq!(
             app.main_panel_mut().editor().blocks()[0].line.cursor_pos(),
@@ -639,13 +630,13 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         close_driver(&mut a);
         // Build the empty canonical fixture directly; a View never seeds its content.
         let empty_block = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 read::page_block_snapshots(doc, f.empty)[0].0.clone()
             })
             .unwrap();
-        f.records
-            .with(&checkout.id, |doc| {
+        f.store
+            .with(&f.part(), |doc| {
                 remove_block(doc, f.empty, &empty_block);
                 doc.commit();
             })
@@ -653,7 +644,6 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let before = fingerprint(&f, &checkout);
         let mut empty = app_from_payload(
             &f,
-            &checkout,
             &payload(f.empty, "Editor", Some(&block), Some(0), 99, 80.0),
         );
         layout(&mut empty, 1000.0, 500.0);
@@ -678,8 +668,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         a.type_text("f");
         close_driver(&mut a);
         assert_eq!(revision(&f, &checkout), before.3 + 1);
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert_eq!(
                     read::page_block_snapshots(doc, f.empty)
                         .iter()
@@ -698,8 +688,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
         let block = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 read::page_block_snapshots(doc, f.child)[0].0.clone()
             })
             .unwrap();
@@ -794,8 +784,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
         let (spelling, page_map) = f
-            .records
-            .with(&checkout.id, |doc| {
+            .store
+            .with(&f.part(), |doc| {
                 let (_, pages) = doc.get(automerge::ROOT, "pages").unwrap().unwrap();
                 let (_, item) = doc.get(&pages, f.root.to_string()).unwrap().unwrap();
                 let (_, page) = doc.get(&item, "v").unwrap().unwrap();
@@ -804,7 +794,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             .unwrap();
         let spelling = spelling.as_str();
         let local = payload(f.root, "Editor", Some(spelling), None, 1, 0.0);
-        let mut app = app_from_payload(&f, &checkout, &local);
+        let mut app = app_from_payload(&f, &local);
         assert_eq!(app.main_panel_mut().editor().blocks()[0].id, spelling);
         let captured: notes::local_view::NotesLocalViewV1 =
             serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload)
@@ -819,8 +809,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         );
         let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.type_text("Q");
-        f.records
-            .read(&checkout.id, |doc| {
+        f.store
+            .read(&f.part(), |doc| {
                 assert_eq!(
                     read::page_block_snapshots(doc, f.root)[0],
                     (spelling.into(), "PQroject index".into())
@@ -828,8 +818,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             })
             .unwrap();
         close_driver(&mut a);
-        f.records
-            .with(&checkout.id, |doc| {
+        f.store
+            .with(&f.part(), |doc| {
                 // A body that is no rich text: a peer's damaged write.
                 ui::tilo_resource::Slot::Key(&page_map, "body")
                     .put_scalar(doc, automerge::ScalarValue::Int(42))
@@ -839,8 +829,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             .unwrap();
         let before = fingerprint(&f, &checkout);
         let result = f
-            .records
-            .read(&checkout.id, |doc| {
+            .store
+            .read(&f.part(), |doc| {
                 app.restore_application_view(saved.application.as_ref().unwrap(), doc)
             })
             .unwrap();

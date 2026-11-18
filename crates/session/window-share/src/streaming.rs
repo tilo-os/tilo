@@ -2,7 +2,7 @@
 //!
 //! `tilo_callstream`'s `StreamingThrottle` throttles the owner's damage-aware encode loop to
 //! 30fps. [`ShareRegistry`] tracks which surfaces are shared with which
-//! peer and whether read-only, gating
+//! peer and whether read-only, guarding
 //! [`neighbour_wire::NeighbourMsg::RemoteInput`] via
 //! [`ShareRegistry::accept_remote_input`].
 //!
@@ -109,7 +109,7 @@ impl ShareRegistry {
         }
     }
 
-    /// Decide whether an inbound `RemoteInput` clears the *share* gate: a
+    /// Decide whether an inbound `RemoteInput` clears the *share* check: a
     /// record exists and isn't marked read-only. Where/how fast it may land is the compositor's input firewall's job.
     pub fn accept_remote_input(&self, peer: PeerId, surface: SurfaceId) -> bool {
         match self.shares.get(&(peer, surface)) {
@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_input_is_gated_by_the_owners_grant() {
+    fn remote_input_is_guarded_by_the_owners_grant() {
         let peer: PeerId = 7;
         let surface: SurfaceId = 42;
         let mut registry = ShareRegistry::new();

@@ -20,14 +20,21 @@ use collab_types::DocumentMutation;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
-use tilo_fs::tree_document::record as tree_document;
+use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 
 /// The tree the workspace's host keeps, as the records its members read: the
 /// tree's own record and each chunk it lists.
 async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tree {
-    let workspaces = hosted.relay.workspaces().unwrap();
+    tree_kept(hosted.server.workspaces().unwrap(), workspace).await
+}
+
+/// [`tree_of`], read from the workspaces a server keeps.
+pub(super) async fn tree_kept(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+) -> Tree {
     let index = workspaces
         .resource_document(workspace, FILES_APP, &tree_document())
         .await
@@ -248,7 +255,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
 
     // No app's record was made of any of them: the workspace holds the tree
     // and whatever its members opened, not a record per file.
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let records = workspaces.records(WORKSPACE).await.unwrap_or_default();
     let made: Vec<&(String, String)> = records
         .iter()
@@ -359,7 +366,7 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
         json!({"path": "files#open", "args": {"content": content, "name": "filed.pdf"}}),
     )
     .await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let records = workspaces.records(WORKSPACE).await.unwrap_or_default();
     assert!(
         records.iter().all(|(app, _)| app != "so.tilo.pdf-viewer"),
@@ -420,7 +427,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
 
     // The folder is one chunk, named by the tree's own record, and the host
     // keeps that chunk beside it: a reader takes the folder record by record.
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let index = workspaces
         .resource_document(WORKSPACE, FILES_APP, &tree_document())
         .await
@@ -476,3 +483,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         "the laptop's file is still there"
     );
 }
+
+/// Files' verbs by a path in the workspace, on the tree the workspace's server keeps.
+#[path = "put_files_by_path.rs"]
+mod by_path;

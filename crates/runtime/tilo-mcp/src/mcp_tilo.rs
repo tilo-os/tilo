@@ -5,12 +5,16 @@
 //! task, started by the session ([`TaskHosts`]) on the task's first `tilo` call and living as long
 //! as this connection. The host holds the task's `let`s and no records. It compiles each program
 //! against every installed app and runs it; what the program reads and changes comes back here on
-//! the task's program connection, and this API does it as the task, with the gate, attribution
+//! the task's program connection, and this API does it as the task, with the check, attribution
 //! and grants of every other call:
 //!
 //! - a read is the app's own `read`, as the task, in the app; a resource that does not read
 //!   itself is read by the resource the app's directory lists it under, which takes it as its
 //!   `item` — the read a window and `tilo_read` take too;
+//! - a resource the session publishes itself rather than from an app's record (the device's
+//!   sound, its power, the session's windows and styles, Settings' sections) is read from the
+//!   newest reading its service publishes, taken within the program ([`Readings`]): the shell's
+//!   parts read the same ones, so `device.styles.offered` is a program's to read;
 //! - a change is an invocation of the action's own app: a method its type's declared action, an
 //!   assignment the resource's field edit. Each is decided at that action's node, asked about or
 //!   refused as the workspace's policy says, never done silently. A program never writes a record.
@@ -41,7 +45,7 @@ use tilo_actions::remote::workspace_invocations::{
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, app_names};
+use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_names};
 
 /// How long a program waits for an action it invoked to settle before it gives up on the
 /// action's outcome: as long as any caller of an invoke may ask. A program cannot poll and a trap
@@ -877,6 +881,8 @@ fn preview(answer: &Value) -> String {
 pub struct TaskProgram {
     /// What the agent reads: the API's tilolang answer.
     pub text: String,
+    /// What a person reads: the same answer in their words (`person_text`), no references.
+    pub person_text: String,
     pub failed: bool,
     /// The host's answer (`{state, output, detail, steps, changed, apps}`), when the program ran.
     pub answer: Option<Value>,
@@ -886,7 +892,7 @@ pub struct TaskProgram {
     pub source: Option<String>,
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One task of agent `agent_id` in `workspace`, acting for `person` who started it (the Tasks
     /// agent's run of an issue): it may do what both the agent and that person may, as the
     /// agent's own calls of the run do. Each session is its own fresh execution.
@@ -913,7 +919,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One program of this task for a runner of the task's own (the Tasks agent's loop) rather
     /// than an MCP client: the same step as the `tilo` tool, read back with what it did.
     /// `this` is what the person pointed at, as a resource literal, which `this` then names.
@@ -954,8 +960,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 refs.push((text, literal.clone()));
             }
         }
+        let person_text = answer
+            .as_ref()
+            .map_or_else(String::new, |answer| person_text(answer, &reply));
         TaskProgram {
             text: reply.text,
+            person_text,
             failed: reply.failed,
             answer,
             refs,
@@ -1009,11 +1019,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default(),
+            // The same lines as a person reads them: no reference literals, a day or a moment in
+            // their formats, a field that is none left out. A reply the person reads takes these;
+            // the model keeps `output` for its next program.
+            "person_output": answer
+                .get("person_output")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
             "changed": answer.get("changed").cloned().unwrap_or_else(|| json!(0)),
             "apps": answer.get("apps").cloned().unwrap_or_else(|| json!([])),
             "steps": steps,
-            // What a person reads: the answer's lines, each resource by its reference.
-            "text": reply.text,
+            // What a person reads: the answer's lines as they read them, each resource by its
+            // title, not the reference the model names it by.
+            "text": person_text(answer, reply),
         });
         if let Some(fields) = typed.as_object_mut() {
             for key in ["detail", "error"] {
@@ -1273,10 +1292,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Box::pin(self.task_children(listing, &mut providers)).await
             } else if let Some(reads) = message.get("reads") {
                 Box::pin(self.task_reads(reads, &mut providers)).await
+            } else if let Some(reading) = message.get("reading") {
+                self.task_reading(reading)
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
-                json!({"err": "the API answers record reads, listings, reads and invocations"})
+                json!({"err": "the API answers record reads, listings, reads, readings and invocations"})
             };
             task.send(&reply).await?;
         }
@@ -1284,7 +1305,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Who a program sent now is written by, as the task's host names it: `{actor, agent,
     /// on_behalf_of}`, the caller this session acts as. The host decides nothing by it; every
-    /// read and change still comes back here and passes the gate as that caller.
+    /// read and change still comes back here and passes the check as that caller.
     fn program_author(&self) -> Value {
         let caller = self.execution_caller();
         let acting = caller.acting();
@@ -1398,6 +1419,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// The newest reading of the resource `resource` the app `app` publishes (`{app, resource,
+    /// type}`), as the session's own services read it: `{"ok": {"reading": …}}`, `{"none": true}`
+    /// for a resource no service publishes, or `{"err": why}`. Taken at once, so the program
+    /// reading it goes on within the same call: `device.styles.offered`, `device.time.clock`, the
+    /// session's windows and Settings' sections are read this way, and by the shell's parts too,
+    /// so one reading serves every reader.
+    fn task_reading(&self, reading: &Value) -> Value {
+        let (Some(app), Some(resource)) = (reading["app"].as_str(), reading["resource"].as_str())
+        else {
+            return json!({"err": "a reading names its app and resource"});
+        };
+        let Some(readings) = self.host().readings() else {
+            return json!({"none": true});
+        };
+        let caller = self.execution_caller();
+        match readings.reading(&caller, app, resource) {
+            Ok(Some(reading)) => json!({"ok": {"reading": reading}}),
+            Ok(None) => json!({"none": true}),
+            Err(error) => {
+                let name = app_names(&[app.to_owned()]).join("");
+                json!({"err": format!("{name}: {error}")})
+            }
+        }
+    }
+
     /// The task's invocation `call` (`{app, resource, action, arguments}`): invoked at the
     /// action's own app as the task, in this call's step, decided there.
     async fn task_invoke(&self, call: &Value, providers: &mut Providers) -> Value {
@@ -1485,13 +1531,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }
             }
-            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })) => {
+            Ok(Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })) => {
                 json!({"asks": format!("{action}: asks the person first")})
             }
             Ok(Err(
-                error @ (tilo_actions::remote::ActionHostError::Refused { .. }
-                | tilo_actions::remote::ActionHostError::NotPermitted
-                | tilo_actions::remote::ActionHostError::UnknownAction),
+                error @ (tilo_actions::remote::ActionCallError::Refused { .. }
+                | tilo_actions::remote::ActionCallError::NotPermitted
+                | tilo_actions::remote::ActionCallError::UnknownAction),
             )) => {
                 json!({"refused": format!("{action}: {error}")})
             }
@@ -1541,12 +1587,21 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .agent_id()
             .or_else(|| acting.member_id().map(collab_types::MemberId::id))
             .map(str::to_owned);
-        let query = InvocationsQuery {
+        self.listed_invocations(&InvocationsQuery {
             limit: workspace_invocations::PAGE,
             by,
             ..InvocationsQuery::default()
-        };
-        let argument = match serde_json::to_value(&query) {
+        })
+        .await
+    }
+
+    /// The page of the workspace's invocations `query` asks for, as its server lists them for this
+    /// session's caller.
+    pub(super) async fn listed_invocations(
+        &self,
+        query: &InvocationsQuery,
+    ) -> Result<Invocations, String> {
+        let argument = match serde_json::to_value(query) {
             Ok(Value::Object(fields)) => InvokeArgument::Json(fields),
             _ => InvokeArgument::None,
         };
@@ -1580,16 +1635,42 @@ type Providers = BTreeMap<String, Addressed>;
 
 /// Whether the API's error `why` is the policy's refusal, not a failure of the action.
 const fn refused(why: &super::Failure) -> bool {
-    use tilo_actions::remote::ActionHostError;
+    use tilo_actions::remote::ActionCallError;
     matches!(
         why.host,
         Some(
-            ActionHostError::NotPermitted
-                | ActionHostError::Refused { .. }
-                | ActionHostError::ConfirmationRequired { .. }
-                | ActionHostError::UnknownAction
+            ActionCallError::NotPermitted
+                | ActionCallError::Refused { .. }
+                | ActionCallError::ConfirmationRequired { .. }
+                | ActionCallError::UnknownAction
         )
     )
+}
+
+/// The text of a program's answer as a person reads it: what the program printed in their words
+/// (`person_output`: no reference literals, days and moments in their formats), and the step's own
+/// bookkeeping line. Where the task answered no person line — a program that only changed
+/// something — the model's text with its references dropped is what is left.
+fn person_text(answer: &Value, reply: &Reply) -> String {
+    let person: Vec<&str> = answer["person_output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .flat_map(str::lines)
+        .collect();
+    let bookkeeping: Vec<&str> = reply
+        .text
+        .lines()
+        .filter(|line| line.starts_with("step "))
+        .collect();
+    let mut lines: Vec<&str> = person;
+    lines.extend(bookkeeping);
+    if lines.is_empty() {
+        reply.text.clone()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// The text of a program's answer in `programs`' session, and whether it is an error.
@@ -1808,7 +1889,7 @@ fn run_line(run: &Invocation) -> String {
     }
 }
 
-impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Take back this task's last step in each of `apps` (ids), the last changed first.
     async fn undo_in(&self, history: &[History]) -> Result<(), String> {
         let mut providers: Providers = BTreeMap::new();
@@ -1939,7 +2020,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 mod tests {
     use super::*;
     use tilo_actions::remote::{
-        ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+        ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
         CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest,
         Pending,
     };
@@ -2097,15 +2178,15 @@ mod tests {
 
         phase the_policys_refusals_are_told_from_failures;
         {
-            use tilo_actions::remote::ActionHostError;
-            let host = |error: ActionHostError| {
+            use tilo_actions::remote::ActionCallError;
+            let host = |error: ActionCallError| {
                 crate::Failure::from(crate::BridgeError::Host(error))
             };
-            assert!(refused(&host(ActionHostError::NotPermitted)));
-            assert!(refused(&host(ActionHostError::Refused {
+            assert!(refused(&host(ActionCallError::NotPermitted)));
+            assert!(refused(&host(ActionCallError::Refused {
                 reason: "asks the person first".into()
             })));
-            assert!(refused(&host(ActionHostError::UnknownAction)));
+            assert!(refused(&host(ActionCallError::UnknownAction)));
             assert!(!refused(&crate::Failure::from("the action failed: no such note")));
         }
 
@@ -2255,12 +2336,12 @@ mod tests {
         }
     }
 
-    impl ActionHost for Native {
+    impl ActionProvider for Native {
         fn query(
             &self,
             _caller: &Caller,
             query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
             let Some(provider) = query.provider else {
                 return Pending::ready(Ok(CataloguePage {
                     revision: "v1".into(),
@@ -2296,7 +2377,7 @@ mod tests {
             &self,
             _caller: &Caller,
             request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
             let arguments = match &request.argument {
                 tilo_actions::remote::InvokeArgument::Json(arguments) => {
                     Value::Object(arguments.clone())
@@ -2358,7 +2439,7 @@ mod tests {
             &self,
             _caller: &Caller,
             _id: &InvocationId,
-        ) -> Pending<Result<(), ActionHostError>> {
+        ) -> Pending<Result<(), ActionCallError>> {
             Pending::ready(Ok(()))
         }
     }

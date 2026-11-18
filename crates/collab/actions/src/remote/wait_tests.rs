@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::super::{
-    ActionHost, ActionHostError, Admission, Caller, CataloguePage, CatalogueQuery, Completer,
-    InvocationLedger, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Admission, Caller, CataloguePage, CatalogueQuery, Completer,
+    InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
     PendingPoll, REMOTE_ACTIONS_VERSION, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget, pending, serve,
 };
@@ -13,14 +13,14 @@ use super::{MAX_IMMEDIATE_WAKES, MAX_REMOTE_WAIT, UpdateMark};
 use crate::ActionAddress;
 use crate::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 
-/// How a [`Stepped`] host signals changes.
+/// How a [`Stepped`] provider signals changes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Signals {
-    /// Not at all: `next_change` is `None`, as for a host that predates it.
+    /// Not at all: `next_change` is `None`, as for a provider that predates it.
     None,
     /// When the test says so.
     OnDemand,
-    /// Always already fired: a host whose every wake is spurious.
+    /// Always already fired: a provider whose every wake is spurious.
     AlwaysFired,
 }
 
@@ -45,11 +45,11 @@ impl Stepped {
         })
     }
 
-    /// A host already running `id`, still at `Accepted`.
+    /// A provider already running `id`, still at `Accepted`.
     fn running(signals: Signals, id: InvocationId) -> Arc<Self> {
-        let host = Self::new(signals);
-        host.step(InvocationUpdate::Accepted { invocation: id });
-        host
+        let provider = Self::new(signals);
+        provider.step(InvocationUpdate::Accepted { invocation: id });
+        provider
     }
 
     fn step(&self, update: InvocationUpdate) {
@@ -65,7 +65,7 @@ impl Stepped {
     }
 
     /// Signals a wait still listens on; one an answered wait let go of is
-    /// abandoned, which ends the host's own watch for it.
+    /// abandoned, which ends the provider's own watch for it.
     fn parked(&self) -> usize {
         self.waiting
             .lock()
@@ -76,12 +76,12 @@ impl Stepped {
     }
 }
 
-impl ActionHost for Stepped {
+impl ActionProvider for Stepped {
     fn query(
         &self,
         _caller: &Caller,
         _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::default()))
     }
 
@@ -89,7 +89,7 @@ impl ActionHost for Stepped {
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
         self.step(InvocationUpdate::Accepted { invocation });
@@ -119,7 +119,7 @@ impl ActionHost for Stepped {
         }
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
 }
@@ -212,30 +212,30 @@ tilo_test_env::scenario! {
 
     phase a_waiting_observe_answers_when_the_invocation_finishes;
     {
-        let host = Stepped::running(Signals::OnDemand, id());
-        let mut answer = serve(&host, &alice(), waiting_observe(id(), 1_000)).unwrap();
+        let provider = Stepped::running(Signals::OnDemand, id());
+        let mut answer = serve(&provider, &alice(), waiting_observe(id(), 1_000)).unwrap();
         assert!(answered(&mut answer).is_none(), "held while nothing moved");
-        assert_eq!(host.parked(), 1, "one parked signal, no thread, no timer");
+        assert_eq!(provider.parked(), 1, "one parked signal, no thread, no timer");
 
-        host.step(succeeded(id()));
-        host.signal();
+        provider.step(succeeded(id()));
+        provider.signal();
         let state = state_of(answered(&mut answer).expect("answered on the change"));
         assert_eq!(state.unwrap().update, succeeded(id()));
     }
 
     phase a_spurious_wake_keeps_one_wait_parked;
     {
-        let host = Stepped::running(Signals::OnDemand, id());
-        let mut answer = serve(&host, &alice(), waiting_observe(id(), 1_000)).unwrap();
+        let provider = Stepped::running(Signals::OnDemand, id());
+        let mut answer = serve(&provider, &alice(), waiting_observe(id(), 1_000)).unwrap();
         for _ in 0..3 {
-            host.signal();
+            provider.signal();
             assert!(
                 answered(&mut answer).is_none(),
                 "nothing moved past Accepted"
             );
-            assert_eq!(host.parked(), 1, "at most one signal per waiting request");
+            assert_eq!(provider.parked(), 1, "at most one signal per waiting request");
         }
-        host.step(InvocationUpdate::Progress {
+        provider.step(InvocationUpdate::Progress {
             invocation: id(),
             sequence: 1,
             phase: "renaming".into(),
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
             total: None,
             message: None,
         });
-        host.signal();
+        provider.signal();
         let state = state_of(answered(&mut answer).expect("progress moves past what was seen"));
         assert_eq!(
             UpdateMark::of(&state.unwrap().update),
@@ -253,12 +253,12 @@ tilo_test_env::scenario! {
 
     phase a_waiting_observe_times_out_with_the_latest_state;
     {
-        let host = Stepped::running(Signals::OnDemand, id());
-        let mut at_once = serve(&host, &alice(), waiting_observe(id(), 0)).unwrap();
+        let provider = Stepped::running(Signals::OnDemand, id());
+        let mut at_once = serve(&provider, &alice(), waiting_observe(id(), 0)).unwrap();
         let state = state_of(answered(&mut at_once).expect("a zero wait answers at once"));
         assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
 
-        let mut briefly = serve(&host, &alice(), waiting_observe(id(), 1)).unwrap();
+        let mut briefly = serve(&provider, &alice(), waiting_observe(id(), 1)).unwrap();
         assert!(answered(&mut briefly).is_none());
         let past = tilo_clock::now()
             .checked_add(std::time::Duration::from_millis(2))
@@ -266,11 +266,11 @@ tilo_test_env::scenario! {
         while tilo_clock::now() < past {
             std::hint::spin_loop();
         }
-        // The host's bounded change interval: nothing changed, the wait is over.
-        host.signal();
+        // The provider's bounded change interval: nothing changed, the wait is over.
+        provider.signal();
         let state = state_of(answered(&mut briefly).expect("answered once the wait ran out"));
         assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
-        assert_eq!(host.parked(), 0, "nothing stays parked after the answer");
+        assert_eq!(provider.parked(), 0, "nothing stays parked after the answer");
     }
 
     phase a_wait_is_capped_whatever_it_asks;
@@ -283,31 +283,31 @@ tilo_test_env::scenario! {
 
     phase an_old_style_observe_answers_immediately;
     {
-        let host = Stepped::running(Signals::OnDemand, id());
+        let provider = Stepped::running(Signals::OnDemand, id());
         let old = format!(
             r#"{{"version":{REMOTE_ACTIONS_VERSION},"message":{{"Observe":{{"invocation":"{}"}}}}}}"#,
             id().0
         );
         let frame = RemoteActionFrame::decode(old.as_bytes()).expect("an old frame still decodes");
         assert_eq!(frame.message, RemoteActionMessage::observe(id()));
-        let mut answer = serve(&host, &alice(), frame.message).unwrap();
+        let mut answer = serve(&provider, &alice(), frame.message).unwrap();
         let state = state_of(answered(&mut answer).expect("answered at once, as before"));
         assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
-        assert_eq!(host.parked(), 0);
+        assert_eq!(provider.parked(), 0);
     }
 
     phase a_host_without_change_signals_answers_a_waiting_observe_at_once;
     {
-        let host = Stepped::running(Signals::None, id());
-        let mut answer = serve(&host, &alice(), waiting_observe(id(), 1_000)).unwrap();
+        let provider = Stepped::running(Signals::None, id());
+        let mut answer = serve(&provider, &alice(), waiting_observe(id(), 1_000)).unwrap();
         let state = state_of(answered(&mut answer).expect("nothing to wait on"));
         assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
     }
 
     phase a_host_whose_signal_always_fired_cannot_spin_a_wait;
     {
-        let host = Stepped::running(Signals::AlwaysFired, id());
-        let mut answer = serve(&host, &alice(), waiting_observe(id(), 1_000)).unwrap();
+        let provider = Stepped::running(Signals::AlwaysFired, id());
+        let mut answer = serve(&provider, &alice(), waiting_observe(id(), 1_000)).unwrap();
         let state =
             state_of(answered(&mut answer).unwrap_or_else(|| {
                 panic!("answered after at most {MAX_IMMEDIATE_WAKES} immediate wakes")
@@ -317,21 +317,21 @@ tilo_test_env::scenario! {
 
     phase a_waiting_invoke_returns_a_terminal_receipt;
     {
-        let host = Stepped::new(Signals::OnDemand);
+        let provider = Stepped::new(Signals::OnDemand);
         let mut answer = serve(
-            &host,
+            &provider,
             &alice(),
             RemoteActionMessage::Invoke(rename(id(), Some(2_000))),
         )
         .unwrap();
         assert!(answered(&mut answer).is_none(), "held past admission");
         assert_eq!(
-            host.invoked.lock().unwrap().as_slice(),
+            provider.invoked.lock().unwrap().as_slice(),
             [rename(id(), None)],
-            "the host runs the request without the transport's wait"
+            "the provider runs the request without the transport's wait"
         );
-        host.step(succeeded(id()));
-        host.signal();
+        provider.step(succeeded(id()));
+        provider.signal();
         assert_eq!(
             answered(&mut answer),
             Some(RemoteActionMessage::Receipt(InvocationReceipt {
@@ -347,9 +347,9 @@ tilo_test_env::scenario! {
         );
 
         // Without a wait the receipt is the admission, as before.
-        let host = Stepped::new(Signals::OnDemand);
+        let provider = Stepped::new(Signals::OnDemand);
         let mut answer = serve(
-            &host,
+            &provider,
             &alice(),
             RemoteActionMessage::Invoke(rename(id(), None)),
         )
@@ -365,12 +365,12 @@ tilo_test_env::scenario! {
 
     phase a_waiting_answer_rechecks_the_caller;
     {
-        let host = Stepped::running(Signals::OnDemand, id());
-        let mut answer = serve(&host, &alice(), waiting_observe(id(), 1_000)).unwrap();
+        let provider = Stepped::running(Signals::OnDemand, id());
+        let mut answer = serve(&provider, &alice(), waiting_observe(id(), 1_000)).unwrap();
         // Access goes between the request and the change.
-        host.revoked.store(true, Ordering::SeqCst);
-        host.step(succeeded(id()));
-        host.signal();
+        provider.revoked.store(true, Ordering::SeqCst);
+        provider.step(succeeded(id()));
+        provider.signal();
         assert_eq!(
             state_of(answered(&mut answer).expect("answered")),
             None,
@@ -380,33 +380,33 @@ tilo_test_env::scenario! {
 
     phase a_waiting_observe_ends_with_its_execution;
     {
-        let host = Stepped::running(Signals::OnDemand, id());
+        let provider = Stepped::running(Signals::OnDemand, id());
         let caller = alice().in_new_execution();
-        let mut answer = serve(&host, &caller, waiting_observe(id(), 1_000)).unwrap();
+        let mut answer = serve(&provider, &caller, waiting_observe(id(), 1_000)).unwrap();
         assert!(answered(&mut answer).is_none());
         caller.retire_execution();
-        host.signal();
+        provider.signal();
         let state = state_of(answered(&mut answer).expect("a retired run stops waiting"));
         assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
     }
 
     phase a_retry_that_waits_differently_is_the_same_invocation;
     {
-        let mut ledger = InvocationLedger::<u32>::default();
-        ledger
+        let mut log = InvocationLog::<u32>::default();
+        log
             .admit(&alice(), &rename(id(), None), || Ok(1))
             .unwrap();
-        let (handle, admission) = ledger
+        let (handle, admission) = log
             .admit(&alice(), &rename(id(), Some(5_000)), || Ok(2))
             .unwrap();
         assert_eq!((*handle, admission), (1, Admission::Retried));
         let mut other = rename(id(), Some(5_000));
         other.argument = InvokeArgument::Text("Other".into());
         assert_eq!(
-            ledger
+            log
                 .admit(&alice(), &other, || Ok(3))
                 .map(|(handle, _)| *handle),
-            Err(ActionHostError::InvocationConflict)
+            Err(ActionCallError::InvocationConflict)
         );
     }
 
@@ -414,7 +414,7 @@ tilo_test_env::scenario! {
     {
         let encode = |message| RemoteActionFrame::new(message).encode().unwrap();
 
-        // A new caller's waiting requests reach an old host as the plain
+        // A new caller's waiting requests reach an old provider as the plain
         // requests it always answered.
         let observe: old::Frame =
             serde_json::from_slice(&encode(waiting_observe(id(), 10_000))).unwrap();
@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
         assert_eq!(request.invocation, id());
         assert_eq!(request.argument, InvokeArgument::Text("Plans".into()));
 
-        // An old caller's requests reach a new host without a wait.
+        // An old caller's requests reach a new provider without a wait.
         for (sent, received) in [
             (
                 old::Message::Observe { invocation: id() },

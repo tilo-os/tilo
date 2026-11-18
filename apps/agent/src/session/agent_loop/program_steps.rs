@@ -17,7 +17,7 @@ use tilo_actions::remote::task_programs;
 
 /// What the model reads after a program that called an app's actions and changed nothing, in
 /// place of the reply it wrote for a change: nothing it looked for was there.
-const CHANGED_NOTHING: &str = "\nIt changed nothing: no record matched what the program looked \
+const CHANGED_NOTHING: &str = "\nIt changed nothing: no resource matched what the program looked \
      for, so your reply was not shown. Find what the person means another way, or tell them it \
      is not there.";
 
@@ -40,7 +40,7 @@ pub(in crate::session) struct ProgramWorld {
     types: BTreeMap<String, String>,
     /// Every host's declarations, merged: what the first message's app lines are read from.
     catalogue: Vec<Value>,
-    /// The apps whose records the session serves, by alias, with their root's type, when the
+    /// The apps whose resources the session serves, by alias, with their root's type, when the
     /// session's api runs programs: what a program names without a window of the app open.
     served: Vec<(String, String)>,
     /// What each served app declares, compacted ([`programs::compact_declarations`]), by alias:
@@ -87,7 +87,7 @@ impl ProgramWorld {
             }
             let mut lines = String::new();
             for (alias, root) in &self.served {
-                let _ = writeln!(lines, "- `{alias}`: its record is a `{alias}.{root}`");
+                let _ = writeln!(lines, "- `{alias}`: its resource is a `{alias}.{root}`");
                 if let Some(declared) = self.declared.get(alias).filter(|d| !d.is_empty()) {
                     for line in declared.lines() {
                         let _ = writeln!(lines, "    {line}");
@@ -96,7 +96,7 @@ impl ProgramWorld {
             }
             return format!(
                 "Apps your `{}` programs can use, open or not (`find({{alias}}.{{Type}})` finds \
-                 their records, `describe({{alias}})` lists an app's types with their fields, \
+                 their resources, `describe({{alias}})` lists an app's types with their fields, \
                  filters and actions; a program answers with references you can place):\n\n{lines}",
                 programs::TILO
             );
@@ -110,7 +110,7 @@ impl ProgramWorld {
     }
 }
 
-/// The apps whose records the session serves (`tl:<app>:<root>`, of kind `tl.<app>.<Type>`), by
+/// The apps whose resources the session serves (`tl:<app>:<root>`, of kind `tl.<app>.<Type>`), by
 /// alias with their root's type, when the session's api runs programs: none without the API.
 fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
     let api = catalogue.offers.iter().any(|offer| {
@@ -147,7 +147,7 @@ fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
     served
 }
 
-/// The ids of the apps whose records the session serves (`tl:<app>:<root>`).
+/// The ids of the apps whose resources the session serves (`tl:<app>:<root>`).
 fn served_app_ids(catalogue: &crate::surface::Catalogue) -> Vec<String> {
     let mut apps: Vec<String> = Vec::new();
     for offer in &catalogue.offers {
@@ -334,7 +334,7 @@ impl Session {
         };
         // The session's api runs the program in the task's own tilolang host, over every app
         // the session runs: no window of an app need be open for a program to read or change its
-        // records. What the open apps' hosts declare only describes them better.
+        // resources. What the open apps' hosts declare only describes them better.
         self.program_world(run, state)?;
         let catalogue = self.task_catalogue();
         let Some(api) = catalogue.offers.iter().find(|offer| {
@@ -394,12 +394,41 @@ impl Session {
         if ran && changed > 0 && program.reply.is_none() {
             text.push_str(CHANGED_UNSAID);
         }
+        // The reply the person reads takes what the program printed in their words (no reference
+        // literals, days and moments in their formats); where the task answered no person line,
+        // the model's text is what is left. `{answer}` therefore fills from the person's words,
+        // never the model's.
+        let for_a_person = if answered.person_text.is_empty() {
+            text.clone()
+        } else {
+            answered.person_text
+        };
         let reply = program
             .reply
             .as_deref()
             .filter(|_| ran && !changed_nothing)
-            .map(|reply| programs::reply_with_answer(reply, &text))
+            .map(|reply| programs::reply_with_answer(reply, &for_a_person))
             .and_then(|reply| tools::spoken_reply(&reply));
+        // A reply that rides a step cannot end the turn while a declared part of the request has
+        // no successful operation yet: the request asked for something this step did not do, and
+        // the person would read a finished answer to it. The step answers with what is left
+        // instead, and the loop goes on to do it (or to name it `unable`). Without this, a step
+        // that only read Mail and said "Checking what happened in Mail." ended the turn succeeded
+        // with the reply to Bo never written.
+        let undone: Vec<String> = state
+            .undone_parts()
+            .iter()
+            .map(|part| format!("{} (in {})", part.text, part.app))
+            .collect();
+        if reply.is_some() && !undone.is_empty() {
+            let left = format!(
+                "\nNot finished: these parts of the request have no successful operation yet: \
+                 {}. Do them now, or finish with plan listing them under `unable` with the \
+                 reason. Your reply is held until they are done.",
+                undone.join("; ")
+            );
+            return Ok(Handled::Result(text + &left));
+        }
         if let Some(reply) = &reply {
             state.reply = Some(reply.clone());
         }

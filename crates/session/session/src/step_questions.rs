@@ -3,7 +3,7 @@
 //! An agent session (an MCP server connection's, [`crate::agent_sessions`]) pauses before a step
 //! its grants ask first about, and the broker puts the question to the person here
 //! ([`AppActionConsentPrompter`]): the same sheet family that admitted the agent, naming it as the
-//! shell names it ("Claude Code in dev #1"), the step and what it would do. The person allows it
+//! shell names it ("Claude Code"), the step and what it would do. The person allows it
 //! once, allows the agent every such step for as long as the session lasts, or denies it, with
 //! Deny or Escape. An agent from another of the person's devices is asked about on the device it
 //! drives, where its session is — unless the person let such agents act without asking on this

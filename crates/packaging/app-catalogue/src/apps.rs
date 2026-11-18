@@ -2,7 +2,7 @@
 //! manifest each was admitted with. Every installed package ([`package_store::Catalog`]) read
 //! through the view of its manifest ([`tilo_app_package::view`]), and what each declared it may do
 //! on the action API under its own identity. The desktop session, the per-user runtime and
-//! app-host launch from this one answer.
+//! package-service launch from this one answer.
 
 use std::path::PathBuf;
 

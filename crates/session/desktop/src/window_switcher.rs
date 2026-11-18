@@ -156,7 +156,7 @@ pub struct SwitcherWindow {
 }
 
 /// The shape a card takes when the shell knows nothing of its window's: the shell's own 16:10.
-const STANDING_ASPECT: f64 = 16.0 / 10.0;
+const DEFAULT_ASPECT: f64 = 16.0 / 10.0;
 
 /// The shortest a preview well goes, however small the display: a card still shows what it holds.
 const LEAST_WELL: f64 = 24.0;
@@ -184,12 +184,12 @@ pub struct SwitcherCard {
 }
 
 impl SwitcherCard {
-    /// The window's width over its height, or the standing shape of a card with no window to
+    /// The window's width over its height, or the default shape of a card with no window to
     /// measure.
     fn aspect(&self) -> f64 {
         self.size
             .filter(|(width, height)| *width > 0 && *height > 0)
-            .map_or(STANDING_ASPECT, |(width, height)| {
+            .map_or(DEFAULT_ASPECT, |(width, height)| {
                 f64::from(width) / f64::from(height)
             })
     }
@@ -212,11 +212,11 @@ pub use tilo_desktop_surface::host::contract::SwitcherAsk;
 /// Sizes of the panel, all read off the theme's tokens.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Metrics {
-    /// The app mark standing in for a window without a preview.
+    /// The app mark in place of a window without a preview.
     icon: f64,
     /// The app mark beside a previewed window's title.
     mark: f64,
-    /// The height a card's well measures: the standing card's at the theme's own size, and the
+    /// The height a card's well measures: the default card's at the theme's own size, and the
     /// page's shared one once the layout has fitted it to the display.
     well_h: f64,
     well_radius: f64,
@@ -238,7 +238,7 @@ impl Metrics {
         let spacing = &tokens.spacing;
         let line = |role| f64::from(tokens.typography.style(role).line_height_px());
         let inset = f64::from(spacing.s2);
-        // The standing card is the one a window with no shape of its own gets: the same size the
+        // The default card is the one a window with no shape of its own gets: the same size the
         // panel has always shown.
         let well_w = f64::from(spacing.s16) * 2.5;
         let well_h = well_w * 10.0 / 16.0;
@@ -264,16 +264,16 @@ impl Metrics {
     }
 
     /// The tallest a well goes on this display: a share of the display, and never under the
-    /// standing card.
+    /// card.
     fn box_h(self, host: Rect) -> f64 {
         (host.height() * CARD_HEIGHT_SHARE).max(self.well_h)
     }
 
     /// The widest a card goes on this display, its insets included: a share of the display, and
-    /// never under the standing card.
+    /// never under the default card.
     fn box_w(self, host: Rect) -> f64 {
-        let standing = self.well_h * STANDING_ASPECT + 2.0 * self.inset;
-        (host.width() * CARD_WIDTH_SHARE).max(standing)
+        let default_width = self.well_h * DEFAULT_ASPECT + 2.0 * self.inset;
+        (host.width() * CARD_WIDTH_SHARE).max(default_width)
     }
 
     /// What the panel spends under its cards: a gap, then the keys.
@@ -360,7 +360,7 @@ impl Layout {
 }
 
 /// The cards at `well_h` : each the shape of its own window, all sharing one height, wrapped onto
-/// as many rows as `room_w` takes, with `room_h` standing as many of those rows as fit.
+/// as many rows as `room_w` takes, with `room_h` as many of those rows as fit.
 fn rows_at(aspects: &[f64], well_h: f64, m: Metrics, room_w: f64, room_h: f64) -> Layout {
     let widths: Vec<f64> = aspects
         .iter()
@@ -409,7 +409,7 @@ fn one_line(aspects: &[f64], m: Metrics, room_w: f64) -> f64 {
 /// The tallest well that still stands every card on the page, found by halving: smaller cards wrap
 /// onto fewer rows and leave more of those rows on the page. `least` when even the least well
 /// pages.
-fn tallest_standing_on_page(
+fn tallest_fitting_on_page(
     aspects: &[f64],
     m: Metrics,
     room_w: f64,
@@ -435,7 +435,7 @@ fn tallest_standing_on_page(
 fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
     let count = view.cards.len();
     let aspects: Vec<f64> = view.cards.iter().map(SwitcherCard::aspect).collect();
-    let widest = aspects.iter().copied().fold(STANDING_ASPECT, f64::max);
+    let widest = aspects.iter().copied().fold(DEFAULT_ASPECT, f64::max);
     let room_w = (host.width() - 2.0 * (m.margin + m.pad)).max(0.0);
     let room_h = (host.height() - 2.0 * (m.margin + m.pad) - m.footer_band()).max(0.0);
     // Every card shares one height, so the row reads as a row: as tall as the display's box allows,
@@ -444,18 +444,18 @@ fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
     let usable_h = (room_h - m.text_part()).max(0.0);
     let widest_h = ((room_w.min(m.box_w(host)) - 2.0 * m.inset).max(0.0)) / widest;
     let tallest = usable_h.min(m.box_h(host)).min(widest_h);
-    // The least a card goes: the standing card the panel has always shown, or as much as a display
+    // The least a card goes: the default card the panel has always shown, or as much as a display
     // too small for it allows. Cards never shrink under it to fit more on a page; the walk turns
     // the page instead.
     let least = m.well_h.min(tallest).max(LEAST_WELL.min(tallest));
     // A handful of windows stands on one line, as tall as that line allows, so the walk reads at a
-    // glance. More windows than a line of standing cards holds give way to rows: as tall as stand
+    // glance. More windows than a line of cards holds give way to rows: as tall as stand
     // every one of them on the page.
     let line_h = one_line(&aspects, m, room_w).min(tallest);
     let well_h = if line_h >= least {
         line_h
     } else {
-        tallest_standing_on_page(&aspects, m, room_w, room_h, least, tallest)
+        tallest_fitting_on_page(&aspects, m, room_w, room_h, least, tallest)
     };
     let Layout {
         widths,
@@ -1203,7 +1203,7 @@ mod tests {
 
         phase every_card_takes_its_windows_shape_at_the_rows_one_height;
         // Every card takes the shape of the window it shows, at the one height the row shares: the
-        // compositor's picture of the window then fills the card instead of standing in it with bare
+        // compositor's picture of the window then fills the card instead of leaving it with bare
         // bars at its sides.
         {
             let theme = Theme::dark();
@@ -1241,15 +1241,15 @@ mod tests {
             }
             // A card the shell has no window to measure stands at the shell's own shape, so an unpictured
             // window's app face is not squeezed either.
-            let mut standing = shaped.clone();
-            for card in &mut standing.cards {
+            let mut defaulted = shaped.clone();
+            for card in &mut defaulted.cards {
                 card.size = None;
             }
-            let g = geometry(host, &standing, Metrics::from_theme(&theme));
+            let g = geometry(host, &defaulted, Metrics::from_theme(&theme));
             for (index, card) in &g.cards {
                 let well = Switcher::well_of_rect(*card, g.metrics);
                 assert!(
-                    (well.width() / well.height() - STANDING_ASPECT).abs() < 1e-6,
+                    (well.width() / well.height() - DEFAULT_ASPECT).abs() < 1e-6,
                     "card {index} with no window to measure stands at 16:10"
                 );
             }
@@ -1257,7 +1257,7 @@ mod tests {
 
         phase previews_grow_with_the_display_they_stand_on;
         // A preview grows with the display it stands on: a handful of windows on a desktop show far
-        // larger than the standing thumbnail, while a small display still stands the panel inside
+        // larger than the access thumbnail, while a small display still stands the panel inside
         // itself.
         {
             let m = Metrics::from_theme(&Theme::dark());
@@ -1476,7 +1476,7 @@ mod tests {
     fn card(title: &str, window: Option<u64>) -> SwitcherCard {
         SwitcherCard {
             window,
-            // The standing shape's pixels: a card drawn before its window is measured.
+            // The access shape's pixels: a card drawn before its window is measured.
             size: window.map(|_| (1600, 1000)),
             title: title.to_owned(),
             app_key: "so.tilo.notes".to_owned(),

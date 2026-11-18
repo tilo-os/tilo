@@ -76,7 +76,7 @@ use tilolang_runtime::{
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::host::{Host, Opening};
 use crate::publish::{Planner, Publications};
-use crate::record::{DynRecord, DynValue};
+use crate::resource::{DynResource, DynValue};
 use crate::schema::{MergeKind, lookup};
 
 type Doc = tilo_resource::Doc;
@@ -113,7 +113,7 @@ pub struct BenchConfig {
     /// Also run what is measured in time alone, which counts no [`Work`]: loading the record,
     /// the first frame over the index, search over every entry, re-indexing and republishing the
     /// whole workspace, idle wakeups; and every sample of an open (the first counts its work). Off, a
-    /// run does the work a gate on the counts reads, and nothing else.
+    /// run does the work a check on the counts reads, and nothing else.
     pub timings: bool,
     pub env: Env,
 }
@@ -221,9 +221,10 @@ fn now_utc() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    chrono::DateTime::from_timestamp(secs, 0)
+    jiff::Timestamp::from_second(secs)
+        .ok()
         .unwrap_or_default()
-        .format("%Y-%m-%dT%H:%M:%SZ")
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
         .to_string()
 }
 
@@ -254,7 +255,7 @@ pub(crate) struct Shape {
     links: Vec<(Option<String>, Shape)>,
 }
 
-/// A collection and its items, and the one item standing between the root and it: a mail
+/// A collection and its items, and the one item between the root and it: a mail
 /// account holding the conversations, whose own collection is what people use and what grows.
 pub(crate) struct List {
     field: String,
@@ -482,9 +483,9 @@ fn texts_of(schema: &crate::schema::TypeSchema) -> Vec<String> {
 /// that has no default (a time, a date, a person), as the type's constructor would have
 /// written one. Every record the bench seeds starts here, so none holds a field a view reads
 /// as a trap.
-pub(crate) fn unwritten(ty: &str) -> Result<DynRecord, String> {
+pub(crate) fn unwritten(ty: &str) -> Result<DynResource, String> {
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
-    let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
+    let mut record = DynResource::empty(schema).map_err(|e| e.to_string())?;
     fill_registers(&mut record, &register_fields(ty)?)?;
     Ok(record)
 }
@@ -497,7 +498,7 @@ pub(crate) fn unwritten(ty: &str) -> Result<DynRecord, String> {
 ///
 /// A register whose type has no value to start from and none here to seed: a view reading it
 /// would trap, so the seed names the field it cannot fill instead.
-fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<(), String> {
+fn fill_registers(record: &mut DynResource, registers: &[(String, Ty)]) -> Result<(), String> {
     for (field, ty) in registers {
         let Some(DynValue::Register(slot)) = record.get_mut(field) else {
             continue;
@@ -651,7 +652,9 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
 /// is its change, in each chunk it wrote ([`crate::chunk::Chunks::parts_of`]).
 fn commit(host: &Host, action: &DynAction, who: &str) -> Result<(), String> {
     let (action, context) = bench_step(action, who);
-    let parts = host.store().with_record(|chunks| chunks.parts_of(&action));
+    let parts = host
+        .store()
+        .with_document(|chunks| chunks.parts_of(&action));
     for (chunk, part) in parts {
         let encoded = part.encode().map_err(|e| e.to_string())?;
         host.with_schemas(|| {
@@ -946,7 +949,7 @@ impl Workspace {
     fn record(&self) -> Doc {
         self.host
             .store()
-            .with_record(|chunks| chunks.committed(crate::chunk::FIRST))
+            .with_document(|chunks| chunks.committed(crate::chunk::FIRST))
             .unwrap_or_default()
     }
 
@@ -1826,7 +1829,7 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
         // derived at, so the frame reads what it shows of it.
         host.set_clock(|| BENCH_TIME.to_owned());
         let held = Rc::clone(&loading);
-        host.set_record_loader(Box::new(move || {
+        host.set_document_loader(Box::new(move || {
             held.borrow_mut().wait().ok().map(|doc| doc.clone())
         }));
         for compiled in sized.packages {
@@ -2185,7 +2188,7 @@ fn peer_change<'a>(
     sized: &Sized<'a>,
     workspace: &Workspace,
     sample: usize,
-) -> Result<(&'a Shape, Edit<DynRecord>), String> {
+) -> Result<(&'a Shape, Edit<DynResource>), String> {
     let shape = sized.shape;
     if let Some((root, list)) = shape.target() {
         let title = list.texts.first().cloned().unwrap_or_default();
@@ -2561,7 +2564,7 @@ mod tests {
     use super::*;
     use crate::schema::{FieldSchema, TypeSchema};
 
-    fn record_of(field: &str) -> DynRecord {
+    fn record_of(field: &str) -> DynResource {
         let schema: &'static TypeSchema = Box::leak(Box::new(TypeSchema {
             id: "bench.Place".to_owned(),
             app: "bench".to_owned(),
@@ -2580,7 +2583,7 @@ mod tests {
             title: None,
             untitled: None,
         }));
-        DynRecord::empty(schema).unwrap_or_else(|e| panic!("{e}"))
+        DynResource::empty(schema).unwrap_or_else(|e| panic!("{e}"))
     }
 
     tilo_test_env::scenario! {

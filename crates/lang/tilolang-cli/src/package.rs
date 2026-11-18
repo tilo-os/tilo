@@ -108,7 +108,7 @@ fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
             "mode = \"off\"",
         );
     }
-    // The mail origin also reads the account's credentials from custody; the others hold none.
+    // The mail origin also reads the account's credentials from ownership; the others hold none.
     let capabilities = if origins.contains(&"imap") {
         "required = [\"network.http\"]\noptional = [\"secrets\"]"
     } else {
@@ -142,7 +142,7 @@ pub fn manifest_text(
     publisher: &str,
 ) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
-    let record_kind = tilolang_tilo::meta::MetaExt::record_kind(meta);
+    let resource_type = tilolang_tilo::meta::MetaExt::resource_type(meta);
     let origins = origins_of(meta);
     let (capabilities, namespaces, net) = sandbox(&origins);
     let mut extra = if meta.icon.is_some() {
@@ -191,7 +191,7 @@ aarch64 = "aarch64"
 {capabilities}
 
 [resources]
-kinds = [{record_kinds}]
+kinds = [{resource_types}]
 
 {invokes}[publisher]
 identity = "ed25519:{publisher}"
@@ -213,9 +213,6 @@ landlock = "strict"
 # Collaboration and the filesystem, at the version the runtime serves its session services.
 collab = "optional@{services}"
 tilo-fs = "optional@{services}"
-# The shell's side of the window: where it is shown (the workspace's appearance), and whether
-# its workspace has synced, which every empty state says until it has.
-shell-ui = "optional@{shell_ui}"
 
 [entrypoint]
 runtime = {tilolang}
@@ -234,14 +231,13 @@ ext = []
         tilolang = toml_string(&options.tilolang_runtime),
         // The app's workspace record, and the workspace's record of each person's own state of it,
         // which every app of the language opens.
-        record_kinds = [
-            toml_string(&record_kind),
-            toml_string(tilolang::PERSONAL_RECORD_KIND),
+        resource_types = [
+            toml_string(&resource_type),
+            toml_string(tilolang::PERSONAL_RESOURCE_TYPE),
         ]
         .join(", "),
         bin = toml_string(RUNTIME_BIN),
         invokes = invokes,
-        shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,
         capabilities = capabilities,
         namespaces = namespaces,

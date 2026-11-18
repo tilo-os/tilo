@@ -1,6 +1,6 @@
 //! Page actions on records nobody has open, answered by the host.
 //!
-//! The host runs `tilo_relay::agents::start`, whose app-serving plane now
+//! The host runs `tilo_server::agents::start`, whose app action server now
 //! also answers the workspace's records ([`tilo_agent_session::WorkspaceActions`]).
 //! A browser session creates a Sheets and a Slides record and closes them;
 //! no agent exists. The page then lists the workspace's catalogue, runs a record's
@@ -23,7 +23,7 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 #[cfg(test)]
 #[path = "workspace_actions/agent_mcp.rs"]
@@ -46,8 +46,8 @@ mod api_links;
 #[cfg(test)]
 #[path = "workspace_actions/api_notebook.rs"]
 mod api_notebook;
-#[path = "workspace_actions/api_on_relay.rs"]
-pub mod api_on_relay;
+#[path = "workspace_actions/api_on_server.rs"]
+pub mod api_on_server;
 #[cfg(test)]
 #[path = "workspace_actions/api_programs.rs"]
 mod api_programs;
@@ -69,7 +69,13 @@ mod branch_files;
 #[cfg(test)]
 #[path = "workspace_actions/branch_workspace.rs"]
 mod branch_workspace;
+#[cfg(test)]
+#[path = "workspace_actions/computer_agent.rs"]
+mod computer_agent;
 
+#[cfg(test)]
+#[path = "workspace_actions/chat_group.rs"]
+mod chat_group;
 #[cfg(test)]
 #[path = "workspace_actions/chat_post.rs"]
 mod chat_post;
@@ -92,6 +98,12 @@ mod governed_agent;
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_agent_issues.rs"]
+mod hosted_agent_issues;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_agent_questions.rs"]
+mod hosted_agent_questions;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_agent_turns.rs"]
 mod hosted_agent_turns;
 #[cfg(test)]
@@ -100,6 +112,15 @@ mod hosted_browser;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_mail_turn.rs"]
+mod hosted_mail_turn;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_secret_use.rs"]
+mod hosted_secret_use;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_web_call.rs"]
+mod hosted_web_call;
 #[cfg(test)]
 #[path = "workspace_actions/invocations_read.rs"]
 mod invocations_read;
@@ -139,6 +160,9 @@ mod scale;
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 #[cfg(test)]
+#[path = "workspace_actions/throughput.rs"]
+mod throughput;
+#[cfg(test)]
 #[path = "workspace_actions/workspace_find.rs"]
 mod workspace_find;
 
@@ -169,11 +193,11 @@ use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, Remote
 #[cfg(test)]
 use tilo_actions::{
     ConfirmationPolicy,
-    remote::{ActionHostError, Confirmation, ReceiptStatus, RemoteActionMessage},
+    remote::{ActionCallError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
 use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::Host;
+use tilo_server_client::Host;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::harness::hosted::{Hosted, Options};
@@ -203,7 +227,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let state = crate::support::scratch_dir();
     let hosted = start(&identity_key, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Native resource fixture")
@@ -221,7 +245,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
     crate::common::add_channel(&mut doc, "ada", "general", None);
-    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
+    let general = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -230,7 +254,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let message = resource_support::on_messages(
         &mut source,
         "post",
-        &serde_json::json!({"channel": channel.id, "text": "Hello é, shared natively"}),
+        &serde_json::json!({"channel": general.id, "text": "Hello é, shared natively"}),
     );
     let (id, kind) = resource_support::published_message(&source, &message);
     assert_eq!(
@@ -244,7 +268,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let shared = resource_support::on_messages(
         &mut source,
         "share-resource",
-        &serde_json::json!({"channel": channel.id, "attached": attached, "text": "Discuss this resource"}),
+        &serde_json::json!({"channel": general.id, "attached": attached, "text": "Discuss this resource"}),
     );
     let shared = source
         .read_resource(&part, chat::messages::read_part)
@@ -422,7 +446,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         "a missing exact source must not create a record, keys or a locator"
     );
     let other_workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Isolated resource fixture")
@@ -464,7 +488,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         let link = Arc::new(DeliveryReadFixture {
             member: tilo_agent_session::workspace_actions::HostDevice {
                 endpoint: tilo_agent_session::HostEndpoint::iroh(
-                    hosted.relay.node_addr(),
+                    hosted.server.node_addr(),
                     host.cert.clone(),
                 ),
                 key: host.key.clone(),
@@ -498,7 +522,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             panic!("expected catalogue response")
         };
         if revoke_on_read {
-            assert_eq!(result, Err(ActionHostError::UnknownAction));
+            assert_eq!(result, Err(ActionCallError::UnknownAction));
             assert_eq!(
                 link.locator_reads.load(std::sync::atomic::Ordering::SeqCst),
                 0,
@@ -517,7 +541,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     }
     browser.peer.close();
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// Deterministically changes authority after a real Chat snapshot is read.
@@ -555,7 +579,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
         }
         Some(tilo_agent_session::workspace_actions::ViewReadPolicy {
             workspace: self.route.cluster_id.clone(),
-            standing: ui::permissions::Standing::person(
+            access: ui::permissions::MemberAccess::person(
                 ui::permissions::policy::WorkspacePolicy::new(
                     &self.route.cluster_id,
                     hex::encode(self.user_public_key()),
@@ -564,6 +588,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
             ),
             sandbox: Vec::new(),
             unix_time: 1,
+            agent_bound: Vec::new(),
         })
     }
     fn view_document(
@@ -855,14 +880,14 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         assert_ne!(
             receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::UnknownAction
+                error: ActionCallError::UnknownAction
             },
             "{:?} is listed but unknown",
             action.address
         );
     }
     let retained = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(crate::support::workspace())
         .await
@@ -876,7 +901,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -965,7 +990,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(
         conflict.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::InvocationConflict
+            error: ActionCallError::InvocationConflict
         }
     );
     let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the retry").await;
@@ -1018,7 +1043,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(
         refused.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::confirmation_required()
+            error: ActionCallError::confirmation_required()
         }
     );
     let confirmed = InvokeRequest {
@@ -1031,7 +1056,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         !matches!(
             ran.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired { .. }
+                error: ActionCallError::ConfirmationRequired { .. }
             }
         ),
         "a refused invocation is forgotten, so the confirmed retry under its id is admitted: {ran:?}"
@@ -1056,7 +1081,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         .await;
     assert!(matches!(
         finished,
-        Err(ActionHostError::NotCancellable { .. })
+        Err(ActionCallError::NotCancellable { .. })
     ));
 
     // 6. The workspace's "open an app" action creates a record through the host.
@@ -1078,7 +1103,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     );
 
     let retained = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(crate::support::workspace())
         .await
@@ -1092,7 +1117,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1130,7 +1155,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
         matches!(
             receipt.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::Refused { .. }
+                error: ActionCallError::Refused { .. }
             }
         ),
         "{receipt:?}"

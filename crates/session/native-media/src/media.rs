@@ -2,7 +2,7 @@
 //! of it.
 //!
 //! A call is held by whoever can put this device into the channel: the
-//! collaboration plane, where being in the channel is the presence everyone
+//! peer network, where being in the channel is the presence everyone
 //! in the workspace reads. A factory prepares one session per call and says who is
 //! in the record's channels; the session says what the call's own state is,
 //! which microphone it sends, and stops when it ends.

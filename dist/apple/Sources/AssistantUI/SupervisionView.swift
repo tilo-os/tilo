@@ -7,6 +7,7 @@ public struct SupervisionView: View {
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var textSize
     @State private var detail: Detail?
 
     enum Detail: String, Identifiable {
@@ -21,11 +22,16 @@ public struct SupervisionView: View {
         let facts = model.supervision
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle().fill(facts.isOn ? Token.on : Token.ink3).frame(width: 8, height: 8)
-                    Text((facts.isOn ? AssistantWords.assistantOn : AssistantWords.assistantPaused).said)
-                        .font(.title15).foregroundStyle(Token.ink)
-                    Spacer(minLength: 0)
+                // At the largest text sizes Pause stands under the line it belongs to, not squeezed beside it.
+                let large = textSize.isAccessibilitySize
+                let head = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))
+                head {
+                    HStack(spacing: 6) {
+                        Circle().fill(facts.isOn ? Token.on : Token.ink3).frame(width: 8, height: 8)
+                        Text((facts.isOn ? AssistantWords.assistantOn : AssistantWords.assistantPaused).said)
+                            .font(.title15).foregroundStyle(Token.ink)
+                    }
+                    if !large { Spacer(minLength: 0) }
                     Button((facts.isOn ? AssistantWords.pause : AssistantWords.resume).said) { model.setAssistantOn(!facts.isOn) }
                         .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
                 }
@@ -37,6 +43,16 @@ public struct SupervisionView: View {
                             if model.models.isEmpty { Text(AssistantWords.noModelNote.said) }
                             ForEach(model.models) { choice in
                                 Button("\(choice.name) · \(choice.provider)") { model.choose(choice.id) }
+                            }
+                            // Under the models, the ways back to the provider step: another key for a
+                            // provider that is linked, another provider. Each leads to the main chat,
+                            // where the app's one protected field is.
+                            let ways = model.keyWays
+                            if !ways.isEmpty {
+                                Divider()
+                                ForEach(ways) { way in
+                                    Button(way.words) { model.take(way) }
+                                }
                             }
                         } label: {
                             Text(AssistantWords.change.said).font(.tilo(14, .medium)).foregroundStyle(Token.asst)
@@ -82,18 +98,25 @@ public struct SupervisionView: View {
     /// Messages, tokens and money of the day: `.use`.
     private func usage(_ usage: Supervision.Usage) -> some View {
         let spent = wording.spent(usage)
-        return HStack(alignment: .top, spacing: 10) {
-            figure(String(usage.messagesToday), AssistantWords.messagesToday.said)
-            figure(wording.tokens(usage.tokensToday), AssistantWords.tokensToday.said)
+        // At the largest text sizes each figure has a line of its own: three beside each other break in mid-word.
+        let row = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .lastTextBaseline, spacing: 10))
+        return row {
+            figure(wording.messages(usage), AssistantWords.messagesToday.said, counted: usage.messagesToday != nil)
+            figure(wording.tokens(usage), AssistantWords.tokensToday.said, counted: usage.tokensToday != nil)
             figure(spent.first, spent.second ?? "")
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Token.line).frame(height: 1) }
     }
 
-    private func figure(_ figure: String, _ name: String) -> some View {
+    /// One figure of the day over what it counts. Where the person's server counts none, the
+    /// words that say so stand in the figure's place as a sentence stands: nothing there reads
+    /// as a number.
+    private func figure(_ figure: String, _ name: String, counted: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(figure).font(.tilo(19, .semibold, relativeTo: .title3)).monospacedDigit().foregroundStyle(Token.ink)
+            Text(figure).font(counted ? .tilo(19, .semibold, relativeTo: .title3) : .body14).monospacedDigit()
+                .foregroundStyle(counted ? Token.ink : Token.ink2)
             Text(name).font(.small125).foregroundStyle(Token.ink2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,8 +158,10 @@ private struct FactLine<Action: View>: View {
 
     private var said: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(line.first).font(.body14).foregroundStyle(Token.ink)
-            if let second = line.second { Text(second).font(.small125).foregroundStyle(Token.ink2) }
+            Text(line.first).font(.body14).foregroundStyle(Token.ink).accessibilityLabel(line.first.spoken)
+            if let second = line.second {
+                Text(second).font(.small125).foregroundStyle(Token.ink2).accessibilityLabel(second.spoken)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -190,7 +215,7 @@ private struct DetailSheet: View {
                         ForEach(facts.places, id: \.name) { row("\($0.name), \($0.detail)") }
                     case .workspaces:
                         ForEach(facts.workspaces, id: \.self) { row($0) }
-                        Fine(words: AssistantWords.yoursInEach.said).padding(.top, 10)
+                        if facts.workspaces.count == 1 { Fine(words: AssistantWords.worksInThis.said).padding(.top, 10) }
                     }
                     if isEmpty(facts) { Fine(words: AssistantWords.none.said) }
                 }

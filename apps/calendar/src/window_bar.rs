@@ -1,7 +1,7 @@
 //! The calendar's toolbar, as slots in the window's bar
 //! ([`ui::window_toolbar`]).
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use ui::format::Period;
 use ui::framework::BarCommands;
 use ui::window_toolbar::{ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
@@ -21,7 +21,7 @@ pub(crate) enum BarAction {
     Import,
 }
 
-pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
+pub(crate) fn period(view: View, anchor: Date) -> Option<Period> {
     match view {
         View::Tasks => None,
         View::Month => Some(Period::Month(anchor)),
@@ -36,7 +36,7 @@ pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
     }
 }
 
-fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation {
+fn location(view: View, anchor: Date, tasks_list: &str) -> ToolbarLocation {
     period(view, anchor).map_or_else(
         || ToolbarLocation {
             label: tasks_list.to_owned(),
@@ -49,7 +49,7 @@ fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation 
 pub(crate) fn window_toolbar(
     bar: &BarCommands<BarAction>,
     view: View,
-    anchor: NaiveDate,
+    anchor: Date,
     tasks_list: &str,
     sidebar_open: bool,
 ) -> WindowToolbar {
@@ -136,11 +136,11 @@ pub(crate) fn window_toolbar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Datelike;
+
     use ui::window_toolbar::ToolbarEvent;
 
-    fn anchor() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 10, 21).unwrap_or_default()
+    fn anchor() -> Date {
+        Date::new(2026, 10, 21).ok().unwrap_or_default()
     }
 
     #[test]

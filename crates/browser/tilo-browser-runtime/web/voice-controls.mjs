@@ -256,7 +256,7 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
   };
 }
 
-/** Pump the bound media lane on a mounted surface; stopping does not wait
+/** Pump the bound media queue on a mounted surface; stopping does not wait
  * for another command or a pending workspace lookup. */
 export function createMediaPump({runtime, id, voice, workspace, active, report = () => {}, clock = globalThis}) {
   let controls = services.get(voice);
@@ -264,7 +264,7 @@ export function createMediaPump({runtime, id, voice, workspace, active, report =
   const routes = new Map();
   let closed = false;
   let timer;
-  // A page's lane is served whatever its own call is doing: Chat watches who
+  // A page's media queue is served whatever its own call is doing: Chat watches who
   // is in each voice channel with no call here, so it hears a call start and
   // hears it end, and only this look finds the request a drawing frame made.
   function schedule() {

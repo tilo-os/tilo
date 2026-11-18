@@ -563,7 +563,7 @@ tilo_test_env::scenario! {
             );
             drop(token);
             assert!(store.is_ready(&want.id));
-            // Construct a stale-generation witness privately: no public handle can do this.
+            // Construct a stale-generation observation privately: no public handle can do this.
             let other = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let token = store.reserve_resource(&other).unwrap();
             let stale_generation = token.generation;
@@ -1273,7 +1273,7 @@ tilo_test_env::scenario! {
     // Every window of a workspace-record app is its own process on the workspace's
     // one notebook, and a relaunch overlaps the instance still exiting: the
     // workspace's own document opens for all of them at once, and again after
-    // the first closes, instead of failing on the writer's gate.
+    // the first closes, instead of failing on the writer's check.
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");

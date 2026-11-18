@@ -2,7 +2,7 @@
 //! workspace: from the moment the sender's page publishes it to the moment the
 //! other page's state holds it. A message in a conversation, and a window one
 //! person opens on the workspace's shared layout. Two pages reach one host over
-//! its live plane on loopback, as two browsers in a workspace do; nothing of
+//! its live session on loopback, as two browsers in a workspace do; nothing of
 //! either page's frames is in it. This is the carrier, the host, and the state
 //! each page holds.
 
@@ -183,7 +183,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     for peer in [a, b] {
         peer.close();
     }
-    pages.host.relay.shutdown().await;
+    pages.host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -243,7 +243,7 @@ async fn a_window_opened_on_the_shared_layout_reaches_the_other_person() {
     for peer in [a, b] {
         peer.close();
     }
-    pages.host.relay.shutdown().await;
+    pages.host.server.shutdown().await;
 }
 
 /// The route of the workspace's shared desktop.

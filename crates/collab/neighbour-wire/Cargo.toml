@@ -25,6 +25,8 @@ tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # Host retention channels are BLAKE3 digests of the message route, and an
 # action's signature covers the digest of the bytes it signs.
 blake3.workspace = true
+# A device key's first four bytes, as a log line names it.
+hex.workspace = true
 # The app↔host action payload a directed action carries.
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # A directed action's routing fields and signature.
@@ -36,8 +38,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 # The production codec; tests pin every variant's exact encoding.
-hex.workspace = true
 serde_json.workspace = true
+# The environment a placement test's devices are asked in.
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

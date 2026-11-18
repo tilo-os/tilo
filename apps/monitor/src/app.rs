@@ -3,6 +3,7 @@
 //! of them. The shared table layout is the document's; the tab, filter and
 //! selection belong to this window, and the process list never leaves this machine.
 
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -69,7 +70,8 @@ impl Tab {
 }
 
 /// The column the process table sorts by.
-#[derive(Model, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Model, Default, Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SortKey {
     Pid,
     Name,
@@ -203,7 +205,7 @@ fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent flags: sampling gate, publishing and a capture's reveal"
+    reason = "independent flags: sampling check, publishing and a capture's reveal"
 )]
 pub(crate) struct MonitorState {
     model: MonitorModel,

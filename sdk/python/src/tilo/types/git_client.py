@@ -58,7 +58,7 @@ class Commit(TypedDict):
     time: int
     parents: list[str]
     refs: list[RefLabel]
-    lane: int
+    column: int
     files: list[FileChange]
 
 class FileChange(TypedDict):
@@ -109,7 +109,7 @@ RecordRepositoryArgs = TypedDict("RecordRepositoryArgs", {
 
 class Repo(Resource):
     """Repository — `git_client.repo`."""
-    __surface__ = "so.tilo.git-client@a8b4e212b7ce16dc"
+    __surface__ = "so.tilo.git-client@6d8bc9cabb47c522"
     repository: str
     @property
     def shared(self) -> Any:

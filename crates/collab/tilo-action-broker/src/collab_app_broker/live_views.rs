@@ -41,7 +41,7 @@ pub(super) struct Following {
     pub workspace: String,
     pub app_id: String,
     pub descriptor: ActionDescriptor,
-    pub witnessed: bool,
+    pub approved: bool,
 }
 
 /// Why a view ended.
@@ -248,7 +248,7 @@ impl AppBrokerState {
     fn live_view_permitted(
         &self,
         following: &Following,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
         let (workspace, actor, now) = self.current_framework_authority(
             &following.caller,
             following.origin.as_ref(),
@@ -258,7 +258,7 @@ impl AppBrokerState {
             (&workspace, &actor, now),
             (&following.app_id, &following.descriptor),
             None,
-            following.witnessed,
+            following.approved,
             false,
         )
     }

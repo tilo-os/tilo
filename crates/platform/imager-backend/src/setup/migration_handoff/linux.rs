@@ -356,7 +356,7 @@ impl ResolvedSource {
                     }
                     drop(shared);
                     failure.get_or_insert_with(|| {
-                        refusal("Original source resolver still has custody leases")
+                        refusal("Original source resolver still has ownership leases")
                     });
                 }
             }
@@ -440,7 +440,7 @@ impl RetainedSource {
         self.validate()?;
         if self.mode != AccessMode::ReadWrite || rustix::process::geteuid().as_raw() != 0 {
             return Err(refusal(
-                "Retained projection requires root writable custody",
+                "Retained projection requires root writable ownership",
             ));
         }
         self.source.pin.file.try_clone()
@@ -906,14 +906,14 @@ trait MountRelease: Send + Sync {
     }
     fn release(&self, device: &str) -> io::Result<()>;
 }
-struct OwnedMountWitness {
+struct OwnedMountProof {
     namespace: (u64, u64),
     id: u64,
     number: String,
     root: PathBuf,
     point: PathBuf,
 }
-impl OwnedMountWitness {
+impl OwnedMountProof {
     fn capture(facts: &Facts, point: &Path, namespace: (u64, u64)) -> io::Result<Self> {
         let mut matches = facts.mounts.iter().filter(|mount| mount.point == point);
         let mount = matches
@@ -922,15 +922,15 @@ impl OwnedMountWitness {
         if matches.next().is_some() {
             return Err(refusal("Owned source mountpoint is ambiguous"));
         }
-        let witness = Self {
+        let proof = Self {
             namespace,
             id: mount.id,
             number: mount.number.clone(),
             root: mount.root.clone(),
             point: mount.point.clone(),
         };
-        witness.validate(facts, namespace)?;
-        Ok(witness)
+        proof.validate(facts, namespace)?;
+        Ok(proof)
     }
     fn validate(&self, facts: &Facts, namespace: (u64, u64)) -> io::Result<()> {
         if self.namespace != namespace {
@@ -964,7 +964,7 @@ struct NativeMountRelease {
     volume: SourceVolume,
     point: PathBuf,
     namespace: fs::File,
-    witness: Option<OwnedMountWitness>,
+    proof: Option<OwnedMountProof>,
 }
 impl MountRelease for NativeMountRelease {
     fn release(&self, device: &str) -> io::Result<()> {
@@ -973,12 +973,12 @@ impl MountRelease for NativeMountRelease {
         if (held.dev(), held.ino()) != (current_namespace.dev(), current_namespace.ino()) {
             return Err(refusal("Owned source mount namespace changed"));
         }
-        let witness = self
-            .witness
+        let proof = self
+            .proof
             .as_ref()
             .ok_or_else(|| refusal("Owned source mount has no verified initial identity"))?;
         let facts = Facts::read()?;
-        witness.validate(&facts, (held.dev(), held.ino()))?;
+        proof.validate(&facts, (held.dev(), held.ino()))?;
         if facts.matching_volume(&self.volume)? != device {
             return Err(refusal(
                 "Owned retained source device changed before unmount",
@@ -987,7 +987,7 @@ impl MountRelease for NativeMountRelease {
         let mount = facts
             .mounts
             .iter()
-            .find(|mount| mount.id == witness.id)
+            .find(|mount| mount.id == proof.id)
             .ok_or_else(|| refusal("Owned retained source mount disappeared"))?;
         let (volume, current) = facts.volume(mount)?;
         if volume != self.volume || current != device || mount.point != self.point {
@@ -1006,7 +1006,7 @@ fn retire_owned_mount(mount: Arc<MountedVolume>) -> io::Result<()> {
         Ok(owned) => owned,
         Err(shared) => {
             retain_failed_mount(shared);
-            return Err(refusal("Original source mount still has custody leases"));
+            return Err(refusal("Original source mount still has ownership leases"));
         }
     };
     // Explicit retirement never delegates its result to a Drop retry.
@@ -1070,17 +1070,17 @@ fn mount_root_role_volume(
     let point = service
         .mount_read_only(&device, filesystem)
         .map_err(io::Error::other)?;
-    let witness = Facts::read().ok().and_then(|facts| {
-        OwnedMountWitness::capture(&facts, Path::new(&point), (metadata.dev(), metadata.ino())).ok()
+    let proof = Facts::read().ok().and_then(|facts| {
+        OwnedMountProof::capture(&facts, Path::new(&point), (metadata.dev(), metadata.ino())).ok()
     });
-    let verified = witness.is_some();
+    let verified = proof.is_some();
     let owned = Arc::new(MountedVolume {
         service: Box::new(NativeMountRelease {
             service,
             volume: volume.clone(),
             point: PathBuf::from(&point),
             namespace,
-            witness,
+            proof,
         }),
         device,
         automatic_release: false,
@@ -1088,7 +1088,7 @@ fn mount_root_role_volume(
     if !verified {
         retire_owned_mount(owned)?;
         return Err(refusal(
-            "Authenticated readonly source has no initial mount witness",
+            "Authenticated readonly source has no initial mount proof",
         ));
     }
     Ok((PathBuf::from(point), owned))
@@ -1187,22 +1187,22 @@ fn mount_source_with_retained(
     }
     .map_err(io::Error::other)?;
     let mounted_facts = Facts::read();
-    let witness = mounted_facts.as_ref().ok().and_then(|facts| {
-        OwnedMountWitness::capture(
+    let proof = mounted_facts.as_ref().ok().and_then(|facts| {
+        OwnedMountProof::capture(
             facts,
             Path::new(&point),
             (namespace_metadata.dev(), namespace_metadata.ino()),
         )
         .ok()
     });
-    let initial_identity_verified = witness.is_some();
+    let initial_identity_verified = proof.is_some();
     let owned = MountedVolume {
         service: Box::new(NativeMountRelease {
             service,
             volume: plan.home.volume.clone(),
             point: PathBuf::from(&point),
             namespace,
-            witness,
+            proof,
         }),
         device,
         automatic_release: true,

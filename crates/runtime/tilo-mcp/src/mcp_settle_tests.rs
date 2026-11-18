@@ -4,8 +4,7 @@
 //! waits.
 use super::*;
 use crate::test_hosts::{
-    GatedHost, Stale, StoredByTestApp, StubHost, WithoutRevision, long_invoke, run, run_paused,
-    tool,
+    HeldHost, Stale, StoredByTestApp, StubHost, WithoutRevision, long_invoke, run, run_paused, tool,
 };
 use crate::{MAX_ADMITTED, MAX_WORKING};
 use std::sync::Arc;
@@ -14,12 +13,12 @@ use std::time::Duration;
 use tilo_actions::InvocationId;
 
 /// The session a test's calls share.
-fn gated_server(host: GatedHost) -> Arc<McpServer<GatedHost>> {
+fn held_server(host: HeldHost) -> Arc<McpServer<HeldHost>> {
     Arc::new(McpServer::new(host, "workspace".into(), "owner".into()))
 }
 
 /// Open the session, as a client's connection does before its first call.
-async fn initialized(server: &Arc<McpServer<GatedHost>>) {
+async fn initialized(server: &Arc<McpServer<HeldHost>>) {
     let opened = server
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"a","version":"1"}}}))
         .await;
@@ -31,7 +30,7 @@ async fn initialized(server: &Arc<McpServer<GatedHost>>) {
 
 /// Yield to the session's other requests until the host has been asked to
 /// start `count` invocations.
-async fn until_invoked(host: &GatedHost, count: usize) {
+async fn until_invoked(host: &HeldHost, count: usize) {
     tilo_test_env::within("the invocation to reach the host", async {
         while host.invoked().len() < count {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -52,8 +51,8 @@ tilo_test_env::scenario! {
     // the invoke then wakes on the host's change, observing once before it
     // waits and once after, however long the action ran.
     {
-        let host = GatedHost::default();
-        let server = gated_server(host.clone());
+        let host = HeldHost::default();
+        let server = held_server(host.clone());
         // Many poll intervals of the old 25 ms loop, on the paused clock.
         let ran_for = std::time::Duration::from_millis(250);
         run_paused(async {
@@ -107,8 +106,8 @@ tilo_test_env::scenario! {
     // retry racing its original cannot start or retry it a second time.
     // Calls naming different ids overlap.
     {
-        let host = GatedHost::default();
-        let server = gated_server(host.clone());
+        let host = HeldHost::default();
+        let server = held_server(host.clone());
         run_paused(async {
             initialized(&server).await;
             let shared = InvocationId::new();
@@ -154,11 +153,11 @@ tilo_test_env::scenario! {
     // for the agent to invoke again with that id, rather than as a failure
     // that names no id to retry with.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             admission_unanswered: true,
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host.clone());
+        let server = held_server(host.clone());
         run_paused(async {
             initialized(&server).await;
             let invocation = InvocationId::new();
@@ -184,8 +183,8 @@ tilo_test_env::scenario! {
     // waits, and the invoke then answers that it was cancelled: the cancel
     // does not wait behind the very call it cancels.
     {
-        let host = GatedHost::default();
-        let server = gated_server(host.clone());
+        let host = HeldHost::default();
+        let server = held_server(host.clone());
         // On the paused clock the cancel's answer takes no time unless it waits
         // on a timer, as it would behind the invoke's wait.
         run_paused(async {
@@ -221,8 +220,8 @@ tilo_test_env::scenario! {
     // a turn, and `tilo_status` and `tilo_cancel` still answer beside them.
     // The cancelled call's turn goes to the one that waited.
     {
-        let host = GatedHost::default();
-        let server = gated_server(host.clone());
+        let host = HeldHost::default();
+        let server = held_server(host.clone());
         run_paused(async {
             initialized(&server).await;
             let ids: Vec<_> = (0..=MAX_WORKING).map(|_| InvocationId::new()).collect();
@@ -254,8 +253,8 @@ tilo_test_env::scenario! {
     // Beyond [`MAX_ADMITTED`] calls working or waiting, a session refuses one
     // more at once rather than queue it, and `tilo_status` still answers.
     {
-        let host = GatedHost::default();
-        let server = gated_server(host.clone());
+        let host = HeldHost::default();
+        let server = held_server(host.clone());
         run_paused(async {
             initialized(&server).await;
             let ids: Vec<_> = (0..MAX_ADMITTED).map(|_| InvocationId::new()).collect();
@@ -296,9 +295,9 @@ tilo_test_env::scenario! {
     // which app produced an answer's content lists nothing again; a later
     // call on the instance that listing named lists nothing at all.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             at_once: true,
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
         let server = Arc::new(
             McpServer::new(host.clone(), "workspace".into(), "owner".into())
@@ -352,11 +351,11 @@ tilo_test_env::scenario! {
     // page of the app's directory first, which was a round trip to the app of
     // its own.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             at_once: true,
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host.clone());
+        let server = held_server(host.clone());
         run(async {
             initialized(&server).await;
             let reply = tool(&server, "tilo_invoke", current_invoke()).await;
@@ -373,12 +372,12 @@ tilo_test_env::scenario! {
     // revision as a moved one; the bridge then reads the revision it is at and
     // starts the action once with it.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             at_once: true,
             without_revision: Some(WithoutRevision::Stale),
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host.clone());
+        let server = held_server(host.clone());
         run(async {
             initialized(&server).await;
             let reply = tool(&server, "tilo_invoke", current_invoke()).await;
@@ -399,12 +398,12 @@ tilo_test_env::scenario! {
     // confirmed at; the bridge, which confirms on its client's policy, reads
     // the revision it is at and starts the action once with it.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             at_once: true,
             without_revision: Some(WithoutRevision::NeedsConfirmation),
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host.clone());
+        let server = held_server(host.clone());
         run(async {
             initialized(&server).await;
             let reply = tool(&server, "tilo_invoke", current_invoke()).await;
@@ -425,7 +424,7 @@ tilo_test_env::scenario! {
     // the revision the bridge read, and the retry names that revision, so a
     // contract that moved on since is refused rather than answered stale.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             at_once: true,
             stub: StubHost {
                 confirmation: tilo_actions::ConfirmationPolicy::Phrase {
@@ -433,9 +432,9 @@ tilo_test_env::scenario! {
                 },
                 ..StubHost::default()
             },
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host.clone());
+        let server = held_server(host.clone());
         run(async {
             initialized(&server).await;
             let reply = tool(&server, "tilo_invoke", current_invoke()).await;
@@ -448,7 +447,7 @@ tilo_test_env::scenario! {
         assert_eq!(started.len(), 1, "{started:?}");
         assert_eq!(
             started[0].confirmation,
-            Some(tilo_actions::remote::Confirmation::Witnessed(format!(
+            Some(tilo_actions::remote::Confirmation::Approved(format!(
                 "person:{}",
                 started[0].invocation.0
             )))
@@ -465,11 +464,11 @@ tilo_test_env::scenario! {
     // happened and what to do, rather than a bare code: the caller read a
     // revision the app has since left.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             stale: Some(Stale::Reads),
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host);
+        let server = held_server(host);
         run(async {
             initialized(&server).await;
             let mut args = current_resolve();
@@ -489,12 +488,12 @@ tilo_test_env::scenario! {
     // action, not that snapshot: it runs once more with the revision omitted.
     // A refusal that still says stale is told as what happened and what to do.
     {
-        let host = GatedHost {
+        let host = HeldHost {
             at_once: true,
             stale: Some(Stale::Invokes),
-            ..GatedHost::default()
+            ..HeldHost::default()
         };
-        let server = gated_server(host.clone());
+        let server = held_server(host.clone());
         run(async {
             initialized(&server).await;
             let mut args = current_invoke();
@@ -507,7 +506,7 @@ tilo_test_env::scenario! {
             assert_eq!(revisions_and_reads(&host).0.last(), Some(&None), "{reply}");
         });
         let told = String::from(BridgeError::Host(
-            tilo_actions::remote::ActionHostError::StaleRevision,
+            tilo_actions::remote::ActionCallError::StaleRevision,
         ));
         for expected in ["changed", "now", "omit revision", "tilo_query"] {
             assert!(told.contains(expected), "{expected}: {told}");
@@ -518,7 +517,7 @@ tilo_test_env::scenario! {
 
 /// The revisions an invoke was started with, and how many directory pages
 /// of the instance were read on the way.
-fn revisions_and_reads(host: &GatedHost) -> (Vec<Option<String>>, usize) {
+fn revisions_and_reads(host: &HeldHost) -> (Vec<Option<String>>, usize) {
     let revisions = host
         .stub
         .invoked
@@ -542,14 +541,14 @@ fn current_invoke() -> Value {
 }
 
 /// The state `tilo_status` or `tilo_cancel` of `invocation` answers.
-async fn about(server: &Arc<McpServer<GatedHost>>, name: &str, invocation: InvocationId) -> Value {
+async fn about(server: &Arc<McpServer<HeldHost>>, name: &str, invocation: InvocationId) -> Value {
     let arguments = json!({"invocation_id": invocation.0.to_string()});
     tool(server, name, arguments).await["structuredContent"]["update"]["state"].clone()
 }
 
 /// Start an invoke of each of `ids` in the session, each on its own task.
 fn invoke_all(
-    server: &Arc<McpServer<GatedHost>>,
+    server: &Arc<McpServer<HeldHost>>,
     ids: &[InvocationId],
 ) -> tokio::task::JoinSet<Value> {
     let mut calls = tokio::task::JoinSet::new();

@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 fn denied() -> io::Error {
-    failure("Installed completed cleanup custody differs")
+    failure("Installed completed cleanup ownership differs")
 }
 fn absent(parent: &File, name: &str) -> io::Result<()> {
     match crate::setup::nofollow::metadata_nofollow(parent, Path::new(name)) {
@@ -45,7 +45,7 @@ fn child(
     pin.validate()?;
     Ok(pin)
 }
-/// Constructor-private permit retains actual completion/source/target custody.
+/// Constructor-private permit retains actual completion/source/target ownership.
 /// Private flags change only after this object's exact owned native syscall.
 pub(in crate::setup::home_capture) struct CompletedCleanup {
     attempt: Arc<InstalledCopyAttempt>,
@@ -168,21 +168,21 @@ fn match_complete(
     {
         return Err(denied());
     }
-    receiver.custody.require_stopped()?;
+    receiver.ownership.require_stopped()?;
     record
         .export_namespace
         .as_ref()
         .ok_or_else(denied)?
-        .custody
+        .ownership
         .require_stopped()?;
     record
         .verify_namespace
         .as_ref()
         .ok_or_else(denied)?
-        .custody
+        .ownership
         .require_stopped()?;
     if let Some(namespace) = &record.recovery_namespace {
-        namespace.custody.require_stopped()?;
+        namespace.ownership.require_stopped()?;
     }
     Ok(())
 }

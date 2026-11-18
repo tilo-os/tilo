@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<ApiTesterShell>::new().unwrap();
         let auth = Workspace::paths().request.auth;
-        app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::Basic)).unwrap())
+        app.invoke(Invoke::edit(&auth.scheme.set(crate::workspace::AuthScheme::Basic)).unwrap())
             .unwrap();
         app.invoke(Invoke::edit(&auth.username.replace("ada")).unwrap())
             .unwrap();
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
                 username: "ada".into(),
                 password: String::new()
             },
-            "the record holds the auth scheme and username, with no credential"
+            "the resource holds the auth scheme and username, with no credential"
         );
         let first_reference = app.state().request.auth.reference;
         assert!(first_reference.starts_with("request-auth/"));
@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
                 .windows(22)
                 .any(|window| window == b"replacement-credential")
         );
-        app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::ApiKey)).unwrap())
+        app.invoke(Invoke::edit(&auth.scheme.set(crate::workspace::AuthScheme::ApiKey)).unwrap())
             .unwrap();
         app.invoke(Invoke::edit(&auth.header.replace("X-Api-Key")).unwrap())
             .unwrap();
@@ -472,7 +472,7 @@ tilo_test_env::scenario! {
     }
 
     phase rereading_the_document_keeps_the_order_on_screen;
-    // The document returns records in the order of their ids, so a pick or a rename must not
+    // The document returns resources in the order of their ids, so a pick or a rename must not
     // shuffle the lists a person arranged.
     {
         let (mut app, mut doc) = demo();
@@ -640,7 +640,10 @@ fn view_commands_stay_device_local() {
     assert!(matches!(a.request.auth, Auth::Basic { .. }));
     let stored = record(&doc);
     assert_eq!(stored.request.body_mode, BodyMode::Json);
-    assert_eq!(stored.request.auth.scheme, crate::record::AuthScheme::Basic);
+    assert_eq!(
+        stored.request.auth.scheme,
+        crate::workspace::AuthScheme::Basic
+    );
     assert_ne!(
         doc.get_heads(),
         heads,
@@ -661,7 +664,7 @@ fn key_value_tables_edit_the_request() {
 
     let params = Table::Params.rows();
     let blank_id = Id::from_raw(blank.clone());
-    a.submit(params.insert_as(&blank_id, count, &crate::record::Row::new("limit", "")));
+    a.submit(params.insert_as(&blank_id, count, &crate::workspace::Row::new("limit", "")));
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     let pair = a.request.params.last().expect("the new pair");
@@ -769,16 +772,16 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
 }
 
 #[test]
-fn resource_provider_sends_for_real_and_resolves_exact_records() {
+fn resource_provider_sends_for_real_and_resolves_exact_resources() {
     resource_send_performs_a_real_http_round_trip();
-    resource_provider_resolves_a_late_record_without_scanning_the_workspace();
+    resource_provider_resolves_a_late_resource_without_scanning_the_workspace();
 }
 
 fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
     app.invoke(Workspace::NEW_REQUEST.with(())).unwrap();
     let edits = Workspace::paths().request.path().edits(
         &app.state().request,
-        &crate::record::RequestRecord::of(request),
+        &crate::workspace::RequestResource::of(request),
     );
     for edit in edits {
         app.invoke(Invoke::edit(&edit).unwrap()).unwrap();
@@ -834,9 +837,9 @@ fn resource_send_performs_a_real_http_round_trip() {
     );
     assert!(
         app.state().history.is_empty(),
-        "admission is not a completed request record"
+        "admission is not a completed request resource"
     );
-    // A later edit cannot change the history record of the request already sent.
+    // A later edit cannot change the history resource of the request already sent.
     let builder = Workspace::paths().request;
     app.invoke(Invoke::edit(&builder.url.replace("http://127.0.0.1/edited-after-send")).unwrap())
         .unwrap();
@@ -1312,17 +1315,17 @@ fn send_answers_its_caller_with_the_response() {
     );
 }
 
-fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
+fn resource_provider_resolves_a_late_resource_without_scanning_the_workspace() {
     let mut workspace = Replica::<Workspace>::new();
     let mut requests = ui::tilo_resource::Collection::new();
     for index in 0..5_000 {
         requests.push(
             crate::model::fresh_id(),
-            crate::record::RequestRecord::named(format!("Request {index}")),
+            crate::workspace::RequestResource::named(format!("Request {index}")),
         );
     }
     let collection = crate::model::fresh_id();
-    let saved = crate::record::SavedCollection {
+    let saved = crate::workspace::SavedCollection {
         name: "Load test".into(),
         requests,
     };

@@ -309,7 +309,7 @@ impl LaunchReadiness {
             .map_err(|error| error.to_string())
     }
 
-    /// Observe the adopted window association when the native host supplies custody.
+    /// Observe the adopted window association when the native host supplies ownership.
     /// Legacy hosts still settle readiness without inventing an association.
     pub async fn wait_with_adoption(
         mut self,
@@ -390,7 +390,7 @@ pub enum Launched {
     Unconfirmed,
 }
 
-/// Content-free progress of the existing executing-process custody handshake.
+/// Content-free progress of the existing executing-process ownership handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutingBindingPhase {
     Started,
@@ -413,7 +413,7 @@ pub struct WorkspaceGovernanceRequest<'a> {
     /// Direct local origin, excluding a Shortcut or an on-behalf-of run.
     /// Installed by the broker, never decoded from action arguments.
     pub local_device: bool,
-    /// The original run's live custody, when the caller belongs to a run.
+    /// The original run's live ownership, when the caller belongs to a run.
     pub execution_lease: Option<tilo_actions::remote::ExecutionLease>,
     pub workspace: &'a str,
     pub actor: &'a crate::actor::BrokerActor,

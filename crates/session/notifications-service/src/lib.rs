@@ -397,7 +397,7 @@ impl Notifications {
 
     /// Deliver every deadline due at `now` as a notification. When the next
     /// one falls due, if any.
-    pub fn deliver_due<Tz: chrono::TimeZone>(&self, now: &chrono::DateTime<Tz>) -> Option<i64> {
+    pub fn deliver_due(&self, now: &jiff::Zoned) -> Option<i64> {
         match self.schedules.take_due(now, || self.alloc_id()) {
             Ok(due) => {
                 let delivered = !due.is_empty();

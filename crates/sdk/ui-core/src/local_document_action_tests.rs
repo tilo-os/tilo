@@ -53,7 +53,7 @@ tilo_test_env::scenario! {
     {
         let private = "private note body";
         let capture = CapturedAction {
-            custody: None,
+            ownership: None,
             invocation: uuid::Uuid::new_v4(),
             capture_id: uuid::Uuid::new_v4(),
             revision: private.into(),
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
             });
             let mut doc = AutoCommit::new();
             let mut host = crate::local_dispatch::LocalDispatch::new();
-            let custody = runtime_collab::committed_document::ConnectionSnapshot {
+            let ownership = runtime_collab::committed_document::ConnectionSnapshot {
                 root: [1; 32],
                 device: [2; 32],
                 agent: Some("agent".into()),
@@ -289,7 +289,7 @@ tilo_test_env::scenario! {
                 document: "document".into(),
             };
             ACTIVE.with_borrow_mut(|active| {
-                active.as_mut().unwrap().custody = Some(custody.clone());
+                active.as_mut().unwrap().ownership = Some(ownership.clone());
             });
             doc.put(ROOT, "existing", true).unwrap();
             let context = ActionContext::default()
@@ -300,13 +300,13 @@ tilo_test_env::scenario! {
             let bytes = queue.0.borrow().bytes;
             let actions = queue.drain_leased();
             let action = &actions[0].0;
-            assert_eq!(action.custody, Some(custody));
+            assert_eq!(action.ownership, Some(ownership));
             assert_eq!(
-                action.clone().into_report().unwrap().custody,
-                action.custody
+                action.clone().into_report().unwrap().ownership,
+                action.ownership
             );
             let mut report = runtime_collab::LocalDocumentActionReport {
-                custody: action.custody.clone(),
+                ownership: action.ownership.clone(),
                 version: 1,
                 invocation: action.invocation,
                 capture_id: action.capture_id,

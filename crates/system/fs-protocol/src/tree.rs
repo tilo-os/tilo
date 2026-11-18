@@ -111,6 +111,48 @@ pub fn document_id() -> String {
 /// host that keeps the tree reads it as that app's record.
 pub const FILES_APP: &str = <FilesTree as SharedResource>::OWNER;
 
+/// The verbs of Files that act on a workspace's own folder by a path in the workspace
+/// (`Tasks/12 Plan/notes.md`), whoever holds its tree: a workspace's server while every device
+/// of its people is off, or the device that keeps the workspace. The same verbs naming a
+/// `device` and absolute paths change that device's own disk, and only that device carries
+/// them out.
+pub const TREE_VERBS: [&str; 6] = [
+    "new-folder",
+    "rename",
+    "move",
+    "copy-into",
+    "trash",
+    "restore",
+];
+
+/// Whether `action` is one of [`TREE_VERBS`].
+#[must_use]
+pub fn is_tree_verb(action: &str) -> bool {
+    TREE_VERBS.contains(&action)
+}
+
+/// The read of Files that answers what a folder of the workspace holds, by a path in the
+/// workspace: names, kinds, sizes and changed times, a page at a time; or what its trash holds.
+pub const LIST: &str = "list";
+
+/// The read of Files that answers what a file of the workspace says, by a path in the
+/// workspace, a page at a time.
+pub const READ_TEXT: &str = "read-text";
+
+/// Whether `action` is one of the reads of a workspace's own folder by a path in the workspace
+/// ([`LIST`], [`READ_TEXT`]), which whoever holds its tree answers as it carries out
+/// [`TREE_VERBS`]: with no window, and with every device of its people off.
+#[must_use]
+pub fn is_tree_read(action: &str) -> bool {
+    matches!(action, LIST | READ_TEXT)
+}
+
+/// The verb of Files that writes a file into a workspace's own folder by a path in the
+/// workspace, from text or from content the workspace keeps, where its tree is kept: what
+/// another app answered as content becomes a file with every device off. With a `device` it
+/// writes text to that device's own disk, and only that device carries it out.
+pub const WRITE_FILE: &str = "write-file";
+
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
 

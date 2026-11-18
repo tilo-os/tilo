@@ -612,7 +612,7 @@ pub(super) fn run(
         output = collect_stopped_capture(&mut child, &mut outcome, &mut error);
     }
     // Final informational drain never changes independently observed execution.
-    // Revoked custody refuses all remaining callbacks, including terminal copies.
+    // Revoked ownership refuses all remaining callbacks, including terminal copies.
     if reports.drain(&mut child, &authority, &report).is_ok() {
         reports.finish();
         let _ = reports.publish(&authority, &report);
@@ -727,17 +727,17 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         return Err("approved check helper binary identity changed".into());
     }
     if uuid::Uuid::parse_str(&prepared.token).is_err() {
-        return Err("invalid approved-check gate token".into());
+        return Err("invalid approved-check token".into());
     }
     let check = &prepared.check;
     let permit = check.scratch.join(format!("permit-{}", prepared.token));
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(16))
-        .ok_or("check gate deadline overflow")?;
+        .ok_or("check check deadline overflow")?;
     loop {
         match read_private(&permit) {
             Ok(bytes) if bytes == prepared.token.as_bytes() => break,
-            Ok(_) => return Err("approved-check cgroup gate identity mismatched".into()),
+            Ok(_) => return Err("approved-check cgroup check identity mismatched".into()),
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
             Err(e) => return Err(format!("approved check was never admitted: {e}")),
         }
@@ -1073,12 +1073,12 @@ mod tests {
             }
         }
 
-        phase private_gate_refuses_symlink_hardlink_public_input_and_unbounded_files;
+        phase private_check_refuses_symlink_hardlink_public_input_and_unbounded_files;
         {
             let dir = tempfile::tempdir().unwrap();
             let input = dir.path().join("input");
-            private_file(&input, b"gate").unwrap();
-            assert_eq!(read_private(&input).unwrap(), b"gate");
+            private_file(&input, b"check").unwrap();
+            assert_eq!(read_private(&input).unwrap(), b"check");
             let link = dir.path().join("link");
             std::os::unix::fs::symlink(&input, &link).unwrap();
             assert!(read_private(&link).is_err());

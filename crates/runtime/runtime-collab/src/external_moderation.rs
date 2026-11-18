@@ -1,4 +1,4 @@
-//! Exact operation envelope for the host's external moderation lane.
+//! Exact operation envelope for the host's external moderation endpoint.
 
 use registry_types::ExternalModerationOperation;
 use serde::{Deserialize, Serialize};

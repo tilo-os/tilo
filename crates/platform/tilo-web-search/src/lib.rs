@@ -23,9 +23,14 @@ pub mod urls;
 pub use engines::{Engine, EngineError, EngineResult, SafeMode};
 #[cfg(feature = "fixture-servers")]
 pub use fetch::fetch_fixture;
+#[cfg(all(feature = "fixture-servers", not(target_family = "wasm")))]
+pub use fetch::fetch_looking_up;
 pub use fetch::{FetchError, FetchLimits, FetchedBody, FetchedPage, fetch};
 pub use guard::{Refusal, check_address, check_url};
+#[cfg(not(target_family = "wasm"))]
+pub use guard::{public_only, system_lookup};
 pub use merge::SearchResult;
+pub use readable::NeedsBrowser;
 #[cfg(feature = "fixture-servers")]
 pub use search::search_fixture;
 pub use search::{
@@ -39,11 +44,29 @@ use std::time::Duration;
 /// read about it, rather than impersonating a browser.
 pub const USER_AGENT: &str = "Mozilla/5.0 (compatible; Tilo-Web-Search/0.1; +https://tilo.so)";
 
+/// The client every search and fetch goes out through. It dials a name only
+/// at the addresses its own lookup answered and found on the public internet
+/// ([`public_only`]): that lookup is the connection's, so nothing resolves
+/// the name a second time behind the check.
 pub fn client() -> Result<tilo_net::Client, tilo_net::NetError> {
+    #[cfg(not(target_family = "wasm"))]
+    let builder = builder().lookup(public_only(system_lookup()));
+    #[cfg(target_family = "wasm")]
+    let builder = builder();
+    builder.build()
+}
+
+/// [`client`], resolving names by `lookup` in place of the system's resolver
+/// and under the same refusal: for a test whose names no resolver knows.
+#[cfg(all(feature = "fixture-servers", not(target_family = "wasm")))]
+pub fn client_looking_up(lookup: tilo_net::Lookup) -> Result<tilo_net::Client, tilo_net::NetError> {
+    builder().lookup(public_only(lookup)).build()
+}
+
+fn builder() -> tilo_net::ClientBuilder {
     tilo_net::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(5))
         .redirects(tilo_net::Redirects::None)
         .default_header("accept-language", "en-US,en;q=0.7")
-        .build()
 }

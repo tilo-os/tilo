@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::model::BodyMode;
-use crate::record::{AuthScheme, Row};
+use crate::workspace::{AuthScheme, Row};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ResourceSpec as Published;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
@@ -87,7 +87,7 @@ fn offers(resource: &Published, id: &str) -> bool {
 tilo_test_env::scenario! {
     fn the_workspace_on_its_own_keeps_requests_environments_and_history;
 
-    phase verbs_make_open_save_and_remove_records;
+    phase verbs_make_open_save_and_remove_resources;
     {
         let mut workspace = seeded();
         let collection = collection_id(&workspace);
@@ -400,7 +400,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase credentials_never_enter_the_record;
+    phase credentials_never_enter_the_resource;
     // A credential never reaches the record: a request's auth keeps its scheme and public
     // fields, and a secret variable carries no value.
     {
@@ -440,7 +440,7 @@ tilo_test_env::scenario! {
         );
         let saved = String::from_utf8_lossy(&workspace.save()).to_string();
         for secret in ["sk-live-variable", "sk-live-edit"] {
-            assert!(!saved.contains(secret), "{secret} reached the record");
+            assert!(!saved.contains(secret), "{secret} reached the resource");
         }
         assert_eq!(
             workspace.state().unwrap().request.auth.shown(),
@@ -502,9 +502,9 @@ tilo_test_env::scenario! {
         assert_eq!(state.request.params.len(), 1);
     }
 
-    phase records_offer_their_verbs_and_search_names_them;
+    phase resources_offer_their_verbs_and_search_names_them;
     // Each collection, environment and sent request is published with the verbs that act on
-    // it; search finds records by name, never a value.
+    // it; search finds resources by name, never a value.
     {
         let mut workspace = seeded();
         workspace

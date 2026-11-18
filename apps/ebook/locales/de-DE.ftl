@@ -350,5 +350,5 @@ ebook-library-note-page = Notiz zu dieser Seite
 ebook-library-highlight-selection = Auswahl markieren
 ebook-library-note-selection = Notiz zur Auswahl
 
-## What the records are called, and the actions on them
+## What the resources are called, and the actions on them
 settings-books-catalogues = Buchkataloge

@@ -69,8 +69,9 @@ __all__ = [
     "WaitArgs",
     "ResumeArgs",
     "SetBudgetArgs",
-    "RunBeganArgs",
-    "RunEndedArgs",
+    "SetPiecesAtOnceArgs",
+    "SessionBeganArgs",
+    "SessionEndedArgs",
     "StopArgs",
 ]
 
@@ -213,7 +214,7 @@ class WaitFor(TypedDict):
     on: str | None
     event: str | None
 
-WaitKind = Literal["time", "reply", "change", "answer", "people"]
+WaitKind = Literal["time", "reply", "change", "answer", "people", "pieces"]
 
 class Work(TypedDict):
     folder: str
@@ -226,11 +227,12 @@ class Work(TypedDict):
     budget_by: BudgetBy
     spent_micros: int
     worked_ms: int
-    runs: int
-    running_since_ms: int | None
+    sessions: int
+    session_since_ms: int | None
     lost: int
     stopped: Stopped | None
     resumed: Resumed | None
+    pieces_at_once: int | None
 
 CreateAreaArgs = TypedDict("CreateAreaArgs", {
     "name": "str",
@@ -413,17 +415,23 @@ SetBudgetArgs = TypedDict("SetBudgetArgs", {
 })
 """The arguments of `set-budget`."""
 
-RunBeganArgs = TypedDict("RunBeganArgs", {
+SetPiecesAtOnceArgs = TypedDict("SetPiecesAtOnceArgs", {
+    "issue": "str",
+    "at_once": NotRequired["int | None"],
+})
+"""The arguments of `set-pieces-at-once`."""
+
+SessionBeganArgs = TypedDict("SessionBeganArgs", {
     "issue": "str",
 })
-"""The arguments of `run-began`."""
+"""The arguments of `session-began`."""
 
-RunEndedArgs = TypedDict("RunEndedArgs", {
+SessionEndedArgs = TypedDict("SessionEndedArgs", {
     "issue": "str",
     "cost_micros": "int",
     "worked_ms": "int",
 })
-"""The arguments of `run-ended`."""
+"""The arguments of `session-ended`."""
 
 StopArgs = TypedDict("StopArgs", {
     "issue": "str",
@@ -434,7 +442,7 @@ StopArgs = TypedDict("StopArgs", {
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@dbcb4eda35527380"
+    __surface__ = "so.tilo.tasks@08dd277334e91a39"
     areas: list[Entry[TrackerArea]]
 
     def create_area(self,
@@ -526,7 +534,7 @@ class Tracker(Resource):
 
 class Issues(Resource):
     """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@dbcb4eda35527380"
+    __surface__ = "so.tilo.tasks@08dd277334e91a39"
     issues: list[Entry[Issue]]
     @property
     def before(self) -> int:
@@ -876,26 +884,42 @@ class Issues(Resource):
         """Runs `set-budget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-budget", items)
 
-    def run_began(self, *, issue: str) -> None:
+    def set_pieces_at_once(self,
+        *,
+        issue: str,
+        at_once: int | None = None,
+    ) -> None:
         """Runs the app's action."""
-        return self.action("run-began", issue=issue)
+        args: dict[str, Any] = {}
+        args["issue"] = issue
+        if at_once is not None:
+            args["at_once"] = at_once
+        return self.action("set-pieces-at-once", **args)
 
-    def run_began_many(self, items: list[RunBeganArgs]) -> list[dict[str, Any]]:
-        """Runs `run-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("run-began", items)
+    def set_pieces_at_once_many(self, items: list[SetPiecesAtOnceArgs]) -> list[dict[str, Any]]:
+        """Runs `set-pieces-at-once` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-pieces-at-once", items)
 
-    def run_ended(self,
+    def session_began(self, *, issue: str) -> None:
+        """Runs the app's action."""
+        return self.action("session-began", issue=issue)
+
+    def session_began_many(self, items: list[SessionBeganArgs]) -> list[dict[str, Any]]:
+        """Runs `session-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("session-began", items)
+
+    def session_ended(self,
         *,
         issue: str,
         cost_micros: int,
         worked_ms: int,
     ) -> None:
         """Runs the app's action."""
-        return self.action("run-ended", issue=issue, cost_micros=cost_micros, worked_ms=worked_ms)
+        return self.action("session-ended", issue=issue, cost_micros=cost_micros, worked_ms=worked_ms)
 
-    def run_ended_many(self, items: list[RunEndedArgs]) -> list[dict[str, Any]]:
-        """Runs `run-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("run-ended", items)
+    def session_ended_many(self, items: list[SessionEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `session-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("session-ended", items)
 
     def stop(self,
         *,
@@ -912,6 +936,6 @@ class Issues(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create", "create_many", "start", "start_many", "rename", "rename_many", "move_under", "move_under_many", "assign", "assign_many", "set_project", "set_project_many", "attach", "attach_many", "detach", "detach_many", "add_label", "add_label_many", "place", "place_many", "comment", "comment_many", "link", "link_many", "link_note", "link_note_many", "delete", "delete_many", "plan", "plan_many", "set_place", "set_place_many", "wait", "wait_many", "resume", "resume_many", "set_budget", "set_budget_many", "run_began", "run_began_many", "run_ended", "run_ended_many", "stop", "stop_many"})
+    __actions__ = frozenset({"create", "create_many", "start", "start_many", "rename", "rename_many", "move_under", "move_under_many", "assign", "assign_many", "set_project", "set_project_many", "attach", "attach_many", "detach", "detach_many", "add_label", "add_label_many", "place", "place_many", "comment", "comment_many", "link", "link_many", "link_note", "link_note_many", "delete", "delete_many", "plan", "plan_many", "set_place", "set_place_many", "wait", "wait_many", "resume", "resume_many", "set_budget", "set_budget_many", "set_pieces_at_once", "set_pieces_at_once_many", "session_began", "session_began_many", "session_ended", "session_ended_many", "stop", "stop_many"})
 
 

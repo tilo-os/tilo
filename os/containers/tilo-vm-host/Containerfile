@@ -8,7 +8,7 @@
 # Nothing here compiles: t builds the service, the jail helper and the member
 # (tools/ci/publish/server-binaries.sh, the check vm-host-binaries) and this
 # build lays them out with the base and the packages they run against, from the
-# same frozen snapshot and mirrored base as the relay
+# same frozen snapshot and mirrored base as the server
 # (tools/ci/publish/vm-host-build.sh).
 
 # ---- Frozen RPM repo (cross-time reproducibility) ---------------------------
@@ -23,7 +23,7 @@ FROM scratch AS external-assets
 COPY --from=github-assets / /
 
 # ---- Runtime -----------------------------------------------------------------
-# Fedora's minimal base, the same runtime base as the relay, pinned by digest on
+# Fedora's minimal base, the same runtime base as the server, pinned by digest on
 # registry.fedoraproject.org, which keeps superseded digests; quay.io prunes
 # them, so a pin there stops resolving.
 FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475
@@ -68,7 +68,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 RUN groupadd --system --gid 10001 tilo-hosted \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/tilo-hosted --shell /usr/sbin/nologin tilo-hosted
 COPY bin/tilo-legacy /usr/local/bin/tilo-legacy
-# The member that takes the relay's runs for the workspaces on this host.
+# The member that takes the server's runs for the workspaces on this host.
 COPY bin/tilo-runtime /usr/local/bin/tilo-runtime
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 RUN chown root:tilo-hosted /usr/libexec/tilo/tilo-hosted-jail \

@@ -243,7 +243,7 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
 }
 
 fn session() -> Session {
-    // Headless tests take no part in the collaboration plane: no endpoint, no workspace.
+    // Headless tests take no part in the peer network: no endpoint, no workspace.
     crate::common::headless(Options {
         collab: false,
         ..Options::default()
@@ -1843,10 +1843,10 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(&identity).expect("the identity's directory");
         let root = home.root().join("system");
         home.env().set("TILO_IDENTITY_ROOT", &root);
-        tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        tilo_identity::provisioning::ensure_throwaway_test_identity(
             &identity,
-            &tilo_identity_host::provisioning::collaboration_identity_paths(),
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("the throwaway identity");
         let mut session = crate::common::headless(Options {

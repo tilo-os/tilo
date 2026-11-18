@@ -30,7 +30,7 @@ pub trait FileRow: 'static {
     fn name(&self) -> &str;
     fn is_dir(&self) -> bool;
     fn size_text(&self) -> String;
-    fn modified(&self) -> Option<chrono::DateTime<chrono::Local>>;
+    fn modified(&self) -> Option<jiff::Timestamp>;
     fn kind(&self) -> Option<String> {
         None
     }
@@ -413,7 +413,9 @@ impl<R: FileRow> FileTable<R> {
                             if with_time {
                                 crate::format::timestamp(&at)
                             } else {
-                                crate::format::date(at.date_naive())
+                                crate::format::date(
+                                    at.to_zoned(jiff::tz::TimeZone::system()).date(),
+                                )
                             }
                         })
                     },
@@ -898,7 +900,7 @@ mod tests {
         fn size_text(&self) -> String {
             String::new()
         }
-        fn modified(&self) -> Option<chrono::DateTime<chrono::Local>> {
+        fn modified(&self) -> Option<jiff::Timestamp> {
             None
         }
     }

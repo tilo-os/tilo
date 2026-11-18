@@ -1,6 +1,6 @@
 //! A key holder keeps a sealed record open between reads: each read opens
 //! only the writes admitted since, reads what a whole read of the same
-//! history reads, and keeps nothing once the keys or the reader's standing
+//! history reads, and keeps nothing once the keys or the reader's access
 //! no longer allow it.
 use super::*;
 use crate::KeptDocument;

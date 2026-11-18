@@ -22,7 +22,7 @@ use ui_core::{Theme, taffy};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
-use super::reactive::{Gate, Updaters};
+use super::reactive::{RowMount, Updaters};
 
 /// One entry of a row's context menu: an action published on the row's item.
 struct MenuEntry {
@@ -54,12 +54,12 @@ struct Row {
     view: Option<Box<RowView>>,
 }
 
-/// A built row: its widgets and the gate its readers run behind.
+/// A built row: its widgets and the check its readers run behind.
 struct RowView {
     /// Dropping it retires every binding the row registered.
     _alive: Rc<()>,
     /// Whether the row's readers run: while it is mounted.
-    gate: Gate,
+    row_mount: RowMount,
     widget: Element,
     /// Layout node while the row is mounted.
     node: Option<NodeId>,
@@ -111,7 +111,7 @@ impl Pushed {
 }
 
 type Ids<R> = Box<dyn Fn(&<R as Resource>::State) -> Vec<Id>>;
-type BuildRow = Box<dyn Fn(&Id, &Rc<()>, &Gate) -> Element>;
+type BuildRow = Box<dyn Fn(&Id, &Rc<()>, &RowMount) -> Element>;
 
 /// Height assumed for a row before any row was measured.
 const ESTIMATED_ROW_HEIGHT: f64 = 32.0;
@@ -306,13 +306,13 @@ impl<R: Resource> Each<R> {
             return;
         }
         let alive = Rc::new(());
-        let gate = Gate::mounted();
-        let mut widget = (self.build)(&row.id, &alive, &gate);
+        let row_mount = RowMount::mounted();
+        let mut widget = (self.build)(&row.id, &alive, &row_mount);
         self.pushed.apply(widget.as_mut());
-        let reads_unmounted = gate.reads_unmounted();
+        let reads_unmounted = row_mount.reads_unmounted();
         row.view = Some(Box::new(RowView {
             _alive: alive,
-            gate,
+            row_mount,
             widget,
             node: None,
         }));
@@ -343,10 +343,10 @@ impl<R: Resource> Each<R> {
                 continue;
             };
             let shown = window.binary_search(&index).is_ok();
-            view.gate.set_mounted(shown);
+            view.row_mount.set_mounted(shown);
             if shown {
                 self.live
-                    .with(|state| self.updaters.catch_up(&view.gate, state));
+                    .with(|state| self.updaters.catch_up(&view.row_mount, state));
             }
         }
     }

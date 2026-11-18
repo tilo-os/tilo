@@ -114,7 +114,7 @@ requirements. Its default is preflight only; `--execute` explicitly performs the
 bounded build. It uses the existing pinned compatibility image with no pull,
 network or package installation, two CPUs, 3 GiB and no swap. The source and
 extracted dependencies are read-only; only the fresh private output is writable.
-A successful compile is not the single-line speech/Undo or accessibility gate.
+A successful compile is not the single-line speech/Undo or accessibility check.
 Neither runtime installation nor activation is part of this driver.
 
 
@@ -123,16 +123,16 @@ The native library and subjects compiled in the pinned private image on October
 failed and were corrected using the generated target catalogue and exact
 public/generated header paths. All failed build logs remain private evidence.
 
-`native_history_gate.c` exercises the actual GtkEntryAccessible AtkAction. It
+`native_history_check.c` exercises the actual GtkEntryAccessible AtkAction. It
 waits for a real compositor-to-Wayland IM selected replacement, then requires
 ONE native Undo/Redo, original selection, and the same buffer before commit and
 across Undo/Redo. It also rejects unregistered, read-only, insensitive,
 PASSWORD/PIN, unfocused and intercepted Undo owners. The unregistered and
-protected native action/status gate passed with fatal GLib warnings. The test
-controller must wait for `GTK3_NATIVE_GATE_READY_IM_REPLACEMENT`, then send `!`
+protected native action/status check passed with fatal GLib warnings. The test
+controller must wait for `GTK3_NATIVE_CHECK_READY_IM_REPLACEMENT`, then send `!`
 through the existing compositor `type` operation; direct programmatic insertion
 into a selected range is a different native operation and its earlier selection
-failure remains recorded. No assertion from the selected-replacement gate was
+failure remains recorded. No assertion from the selected-replacement check was
 weakened.
 
 The previous patch passed the strict recorded public German speech journey:
@@ -155,10 +155,10 @@ unregistered fields. Namespacing avoids declaring an inherited `undo`/`redo`
 signal that could collide with a subclass's existing history. Native ATK action
 names remain `undo` and `redo`, and their implementation checks the same native
 admission and reports the actual signal result. New fallback assertions in the
-native gate exercise real `gtk_bindings_activate`, not a separate helper.
+native check exercise real `gtk_bindings_activate`, not a separate helper.
 The earlier qualified native/speech receipts pin the previous patch; this
 fallback increment has now passed its own bounded incremental native compile,
-actual binding/ATK gate and strict recorded public speech journey. Unregistered
+actual binding/ATK check and strict recorded public speech journey. Unregistered
 Ctrl+Z was first reproduced as a failing assertion on the previous library; the
 repaired library returns false and preserves ordinary binding propagation. The
 new German speech measurement is 8.594 seconds to first nonempty preview and

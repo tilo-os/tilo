@@ -66,7 +66,7 @@ impl Calculator {
 
 impl Calculator {
     /// Answers through [`fields`](tilo_resource::read::fields), so a caller with
-    /// no window open reads the record as it reads any app's.
+    /// no window open reads the resource as it reads any app's.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -345,7 +345,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_record_keeps_history_and_graph_rows_through_its_verbs_and_edits;
+        fn the_resource_keeps_history_and_graph_rows_through_its_verbs_and_edits;
 
         phase history_commits_capped_deletes_and_clears;
         {

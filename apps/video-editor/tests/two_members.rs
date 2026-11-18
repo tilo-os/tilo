@@ -19,7 +19,7 @@
 //! proves only that one function agrees with itself, while the failure that happens is a
 //! publisher and a renderer keying a frame differently.
 //!
-//! The two editors share one record, as members do: the second merges the first's
+//! The two editors share one resource, as members do: the second merges the first's
 //! document, which is what a late joiner receives.
 
 use ui::offscreen::OffscreenRenderer;
@@ -44,14 +44,14 @@ impl Member {
     /// The member who opens the project: the demo project, as the
     /// plain capture stages it.
     fn opening() -> Self {
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         Self::focused(TestApp::<VideoEditor>::capture(None).expect("the project opens"))
     }
 
     /// A member who joins and is handed the project, the way a late
     /// joiner is answered with the document.
     fn joining(from: &Member) -> Self {
-        ui::host::install_default(ui::host::HostServices::recording().0);
+        ui::process::install_default(ui::process::ProcessServices::recording().0);
         let mut app = TestApp::<VideoEditor>::new().expect("the editor opens");
         app.merge_peer(&mut from.app.peer_document())
             .expect("the handed-over document");
@@ -341,7 +341,7 @@ fn members_presence_reaches_the_other_screen() {
         assert!(
             with > 200,
             "Ada's colour {ada_colour:?} covers only {with} pixels -- a playhead \
-         down the lanes and a name on it should be plainly visible",
+         down the tracks and a name on it should be plainly visible",
         );
         assert!(
             with > without * 4,
@@ -366,7 +366,7 @@ fn members_presence_reaches_the_other_screen() {
         assert!(
             with > without + 100,
             "Ada's playhead put only {} more pixels of her colour on screen than \
-         her absence did ({without}) -- a line down every lane with her name \
+         her absence did ({without}) -- a line down every track with her name \
          on it should be unmistakable",
             with.saturating_sub(without),
         );

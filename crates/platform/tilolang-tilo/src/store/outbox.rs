@@ -15,7 +15,7 @@ impl TiloStore {
         seed: &[u8],
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
-        self.load_record()?;
+        self.load_document()?;
         let mut inner = self.mutate();
         let (app, ty) = inner
             .index

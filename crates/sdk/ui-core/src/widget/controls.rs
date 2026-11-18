@@ -53,13 +53,13 @@ pub type AttributedControlInvocation = (
 
 pub trait ActionControls: Widget {
     /// Bind retained producers before their first callback.
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         for child in self.children_mut() {
-            install_control_custody(child, domain, attachment);
+            attach_controls(child, domain, attachment);
         }
     }
 
@@ -125,12 +125,12 @@ pub trait ActionControls: Widget {
     }
 }
 
-/// The custody, drain and availability [`ActionControls`](crate::widget::controls::ActionControls)
+/// The ownership, drain and availability [`ActionControls`](crate::widget::controls::ActionControls)
 /// methods of a widget whose only producer is its optional `self.action` emitter.
 #[macro_export]
 macro_rules! optional_emitter_controls {
     () => {
-        $crate::optional_emitter_controls!(custody);
+        $crate::optional_emitter_controls!(ownership);
         fn refresh_control_action_availability(
             &mut self,
             allowed: &std::collections::HashSet<$crate::tilo_actions::ActionAddress>,
@@ -140,14 +140,14 @@ macro_rules! optional_emitter_controls {
             }
         }
     };
-    (custody) => {
-        fn install_control_custody(
+    (ownership) => {
+        fn attach_controls(
             &mut self,
             domain: &$crate::ControlDomain,
-            attachment: $crate::control_custody::CustodyAttachment,
+            attachment: $crate::control_domain::DomainAttachment,
         ) {
             if let Some(action) = &mut self.action {
-                let _ = action.install_custody(domain, attachment);
+                let _ = action.attach(domain, attachment);
             }
         }
         fn take_control_invocation(&mut self) -> Option<$crate::tilo_actions::ControlInvocation> {
@@ -235,17 +235,17 @@ fn result_to_children(
 }
 
 /// Bind every retained control producer under `widget`.
-pub fn install_control_custody(
+pub fn attach_controls(
     widget: &mut dyn Widget,
     domain: &crate::ControlDomain,
-    attachment: crate::control_custody::CustodyAttachment,
+    attachment: crate::control_domain::DomainAttachment,
 ) {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
-        controls.install_control_custody(domain, attachment);
+        controls.attach_controls(domain, attachment);
         return;
     }
     for child in widget.children_mut() {
-        install_control_custody(child, domain, attachment);
+        attach_controls(child, domain, attachment);
     }
 }
 

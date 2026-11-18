@@ -100,7 +100,7 @@ class AuthenticatedStagingPlan:
     """Private fixture observation of the native-authenticated composite Plan.
 
     This cannot grant source access. The actual read/copy consumers still replay
-    their protected root declarations and signed source witnesses independently.
+    their protected root declarations and signed source proofs independently.
     """
     def __init__(self, plan, scope, native_services, service_protocol=None):
         self.plan = plan
@@ -148,7 +148,7 @@ def authenticated_staging_plan(package_directory, password, source, evidence, lo
             before = os.fstat(fd)
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0
                     or before.st_mode & 0o077 or not 0 < before.st_size <= 131072):
-                raise RuntimeError('native authenticated manifest is not bounded private custody')
+                raise RuntimeError('native authenticated manifest is not bounded private ownership')
             raw = os.read(fd, before.st_size + 1)
             after = os.fstat(fd)
             if len(raw) != before.st_size or (before.st_dev, before.st_ino, before.st_size,

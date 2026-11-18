@@ -1,4 +1,4 @@
-//! Merger: Tilo registry entries + Flathub records + local install
+//! Merger: Tilo registry entries + Flathub resources + local install
 //! snapshot → one canonical [`StoreItem`] list.
 //!
 //! The merge rule the task calls out: **a Tilo entry with the same
@@ -20,7 +20,7 @@ use package_store::InstalledPackage;
 /// the user's `registries.toml`, not the wire — the registry
 /// doesn't publish its own name to a fetched entry).
 ///
-/// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
+/// `installed_index` is the package service's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
@@ -187,7 +187,7 @@ pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
 /// offer an update based on stale or invented metadata.
 pub fn installed_tilo_to_store_item(
     entry: &InstalledPackage,
-    about: Option<&app_host::client::PackageAbout>,
+    about: Option<&package_service::client::PackageAbout>,
 ) -> StoreItem {
     let locale = preferred_locale();
     StoreItem {
@@ -222,7 +222,7 @@ pub fn installed_tilo_to_store_item(
         source: StoreSource::Tilo {
             registry_name: INSTALLED_ON_DEVICE.into(),
         },
-        // app-host accepts only packages whose signature and declared package
+        // package-service accepts only packages whose signature and declared package
         // identity verified at installation. This is not a current registry
         // review claim; the detail sheet spells that distinction out.
         trust: StoreTrust::PublisherSigned,
@@ -374,7 +374,7 @@ pub fn apply_flatpak_origin<S: std::hash::BuildHasher>(
     }
 }
 
-pub fn flathub_record_to_item(
+pub fn flathub_resource_to_item(
     r: &AppStreamRecord,
     installed_flatpaks: &[(String, String)],
 ) -> StoreItem {
@@ -850,7 +850,7 @@ pub(crate) mod tests {
                 screenshots: Vec::new(),
                 ..AppStreamRecord::default()
             };
-            flathub_record_to_item(&record, &[])
+            flathub_resource_to_item(&record, &[])
         };
         {
             let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
@@ -898,7 +898,7 @@ pub(crate) mod tests {
                 ..AppStreamRecord::default()
             };
             assert_eq!(
-                flathub_record_to_item(&record, &[]).description,
+                flathub_resource_to_item(&record, &[]).description,
                 "Long description"
             );
         }

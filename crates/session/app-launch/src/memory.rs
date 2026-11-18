@@ -382,6 +382,34 @@ mod tests {
             assert!(ended.is_empty(), "rising pressure ends nothing");
         }
 
+        phase only_the_apps_in_view_hold_a_floor;
+        {
+            // Ten apps open, as a desktop taken back after an in-place restart holds them (each
+            // past its startup window), two of whose windows stand on the display: two floors of
+            // an eighth of the machine each, and nothing promised to the other eight.
+            let home = tempfile::tempdir().unwrap();
+            let apps: Vec<(PathBuf, String)> = (0..10)
+                .map(|n| app_cgroup(&home.path().join(format!("app-{n}")), Tier::Foreground, GIB))
+                .collect();
+            let launches: Vec<Launch> = apps.iter().map(|app| launch(app, false)).collect();
+            let in_view = [apps[3].0.clone(), apps[7].0.clone()];
+            assert_eq!(put_in_tiers(&launches, &in_view, None, Some(32 * GIB)), 8);
+            let floors: u64 = apps
+                .iter()
+                .map(|app| {
+                    std::fs::read_to_string(app.0.join("memory.low"))
+                        .unwrap()
+                        .trim()
+                        .parse::<u64>()
+                        .unwrap()
+                })
+                .sum();
+            assert_eq!(floors, 2 * 4 * GIB, "a floor for each app in view, and only those");
+            let weights: Vec<String> = apps.iter().map(weight).collect();
+            assert_eq!(weights.iter().filter(|weight| *weight == "800").count(), 2);
+            assert_eq!(weights.iter().filter(|weight| *weight == "50").count(), 8);
+        }
+
         phase an_app_that_comes_back_to_the_front_is_restored;
         {
             let home = tempfile::tempdir().unwrap();

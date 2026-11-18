@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::bot_review::{InspectedProgram, review_bot_versions};
 use crate::{
-    InspectedVersion, InspectionPolicy, ModerationService, PendingSubmission, ReviewRecord, Storage,
+    InspectedVersion, InspectionPolicy, ModerationService, PendingSubmission, ReviewEntry, Storage,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -47,7 +47,7 @@ pub fn approve(
     reason: &str,
     reviewed_at_unix: u64,
     policy: InspectionPolicy,
-) -> anyhow::Result<ReviewRecord> {
+) -> anyhow::Result<ReviewEntry> {
     if storage.load_pending(&pending.submission_id)?.as_ref() != Some(pending) {
         return Err(crate::ModerationError::PendingChanged(pending.submission_id.clone()).into());
     }

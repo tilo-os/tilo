@@ -556,7 +556,7 @@ mod tests {
         .collect()
     }
     #[test]
-    fn native_and_flatpak_slack_selected_cookies_use_real_capture_and_sealed_custody() {
+    fn native_and_flatpak_slack_selected_cookies_use_real_capture_and_sealed_ownership() {
         for flatpak in [false, true] {
             let home = tempfile::tempdir().unwrap();
             let (path, _database) = native_slack_database(home.path(), flatpak, false, true);
@@ -603,7 +603,7 @@ mod tests {
                     & 0o777,
                 0o700
             );
-            let destination = target.path().join("custody");
+            let destination = target.path().join("ownership");
             assert!(
                 imager_backend::setup::service_sessions::import(
                     &artifact,
@@ -641,8 +641,9 @@ mod tests {
                     & 0o777,
                 0o700
             );
-            let custodian = account_custody::Custodian::for_root(Some(destination.clone()));
-            let imported = custodian
+            let credential_store =
+                account_credentials::CredentialStore::for_root(Some(destination.clone()));
+            let imported = credential_store
                 .service_session(
                     &accounts::AccountId::from(declaration.sessions[0].id.clone()),
                     [7; 32],
@@ -846,11 +847,11 @@ mod tests {
             std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
             assert!(
                 guarded_inventory.validate_home().is_err(),
-                "the held guard used around actual presence observes in-flight Home custody loss"
+                "the held guard used around actual presence observes in-flight Home ownership loss"
             );
             assert!(
                 Selection::discover(home.path(), &candidates.candidates).is_err(),
-                "global Home custody must remain fatal"
+                "global Home ownership must remain fatal"
             );
         }
 

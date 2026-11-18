@@ -1,8 +1,8 @@
 //! A relay held at its admission bound by endpoints nobody knows, and a device of the workspace
-//! that asks it for the workspace's live plane meanwhile: two real sessions of one person, one
-//! hosting the workspace and so relaying its plane, the other dialling it.
+//! that asks it for the workspace's live session meanwhile: two real sessions of one person, one
+//! hosting the workspace and so relaying its live session, the other dialling it.
 //!
-//! Anything that reaches a session's endpoint can open the live plane's protocol and say nothing,
+//! Anything that reaches a session's endpoint can open the live session's protocol and say nothing,
 //! and the relay holds each such session in admission for as long as a preface may take. Before
 //! the relay told endpoints apart, sixteen of them held every place it admits through, and a
 //! device of the workspace that asked meanwhile was told busy for as long as they kept it up.
@@ -11,8 +11,8 @@
 //!
 //! What a device that *is* told busy reads and does is checked where a relay's places can be
 //! filled by a workspace's own devices: the relay's tests hold sixteen of them in admission
-//! through its served endpoint, and the session's own tests read the standing and the words of a
-//! plane whose relay was busy. Sixteen further sessions of one workspace are sixteen processes
+//! through its served endpoint, and the session's own tests read the access and the words of a
+//! live session whose relay was busy. Sixteen further sessions of one workspace are sixteen processes
 //! with a shell each, more than a suite's machine starts for one test.
 
 #![cfg(target_os = "linux")]
@@ -37,17 +37,17 @@ use tilo_live::relay::{MAX_ADMITTING, MAX_ADMITTING_STRANGERS};
 
 use crate::common::people::{Device, log_sessions_at, two_devices_of_one_person};
 
-/// What the devices' sessions log here: the live plane says which relay it missed and why only
+/// What the devices' sessions log here: the live session says which relay it missed and why only
 /// below `info`.
 const LOGGED: &str = "info,tilo_session::live=debug";
-/// How `device`'s session says the live plane of `workspace` stands: the workspace's row in `live`
-/// of its shares' reading, `Null` while the session names no plane for it.
-fn plane_of(device: &Device, workspace: &str) -> Value {
+/// How `device`'s session says the live session of `workspace` stands: the workspace's row in `live`
+/// of its shares' reading, `Null` while the session names no live session for it.
+fn live_session_of(device: &Device, workspace: &str) -> Value {
     device.state()["state"]["sharing"]["live"]
         .as_array()
         .and_then(|live| {
             live.iter()
-                .find(|plane| plane["workspace"].as_str() == Some(workspace))
+                .find(|live_session| live_session["workspace"].as_str() == Some(workspace))
                 .cloned()
         })
         .unwrap_or(Value::Null)
@@ -55,7 +55,7 @@ fn plane_of(device: &Device, workspace: &str) -> Value {
 
 /// What `device` says of who hosts `workspace`: `Null` while it does not hold it.
 fn hosting_of(device: &Device, workspace: &str) -> Value {
-    device.ask(&json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+    device.ask(&json!({"op": "keeping_devices"}))["answer"]["workspaces"]
         .as_array()
         .and_then(|held| {
             held.iter()
@@ -65,7 +65,7 @@ fn hosting_of(device: &Device, workspace: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// How each of `devices` says the plane of `workspace` stands, and what its session's live plane
+/// How each of `devices` says the live session of `workspace` stands, and what its session's live session
 /// logged last: what a step that did not happen fails with.
 fn report(workspace: &str, devices: &[&Device]) -> String {
     let mut out = String::new();
@@ -77,17 +77,17 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
             .collect();
         let _ = writeln!(
             out,
-            "== {} (device {}) ==\nplane: {}\n-- the live plane, last --\n{}",
+            "== {} (device {}) ==\nlive session: {}\n-- the live session, last --\n{}",
             device.label,
             hex::encode(device.cert.device_public_key),
-            plane_of(device, workspace),
+            live_session_of(device, workspace),
             said[said.len().saturating_sub(60)..].join("\n"),
         );
     }
     out
 }
 
-/// Wait until `holds`, and if it does not within `within`, fail with how the plane stands on each
+/// Wait until `holds`, and if it does not within `within`, fail with how the live session stands on each
 /// of `devices`.
 #[track_caller]
 fn eventually(
@@ -170,8 +170,8 @@ fn told_refused(device: &Device, workspace: &str) -> usize {
 
 /// An endpoint of nobody's on this machine's loopback relay, as the devices' sessions are.
 async fn anybody() -> iroh::Endpoint {
-    let key = test_relay::fresh_signing_key("an endpoint that says nothing");
-    test_relay::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
+    let key = test_server::fresh_signing_key("an endpoint that says nothing");
+    test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
 }
 
 /// The code the other end closed a connection with, when it closed it.
@@ -185,7 +185,7 @@ fn close_code(error: &iroh::endpoint::ConnectionError) -> Option<u64> {
 }
 
 /// A device's relay held by endpoints nobody knows: [`MAX_ADMITTING`] connections, each from an
-/// endpoint of its own, that open the live plane's protocol on its endpoint and say nothing. The
+/// endpoint of its own, that open the live session's protocol on its endpoint and say nothing. The
 /// relay keeps as many of them in admission as it has places for strangers
 /// ([`MAX_ADMITTING_STRANGERS`]), each for as long as a preface may take, and tells the rest it is
 /// busy; each is opened again the moment it is closed, so those places stay taken.
@@ -212,7 +212,7 @@ impl Held {
         // A device's session is reached on its device key, through the relay its profile names.
         let id = iroh::EndpointId::from_bytes(&relay.cert.device_public_key)
             .expect("a device key names an endpoint");
-        let through: iroh::RelayUrl = test_relay::loopback_url()
+        let through: iroh::RelayUrl = test_server::loopback_url()
             .parse()
             .expect("the loopback relay's address");
         let at = iroh::EndpointAddr::new(id).with_relay_url(through);
@@ -255,7 +255,7 @@ impl Held {
 }
 
 /// Keep one of the relay's places in admission taken until `released` says to let go: open the
-/// live plane's protocol at `at`, say nothing, and open it again whenever the relay closes it.
+/// live session's protocol at `at`, say nothing, and open it again whenever the relay closes it.
 async fn hold_one(at: iroh::EndpointAddr, mut released: tokio::sync::watch::Receiver<bool>) {
     let endpoint = anybody().await;
     while !*released.borrow() {
@@ -283,7 +283,7 @@ async fn hold_one(at: iroh::EndpointAddr, mut released: tokio::sync::watch::Rece
 /// A person's laptop is started while sixteen endpoints nobody knows hold the relay of the phone
 /// that hosts their workspace, opening its protocol and saying nothing, again and again. They
 /// take the places the relay has for strangers and are told busy among themselves. The laptop,
-/// which the workspace's roster names, is taken in at once: its plane opens while the relay is
+/// which the workspace's roster names, is taken in at once: its live session opens while the relay is
 /// still held, it is never told busy and never stands as busy or refused, and the phone lists
 /// nobody as turned away.
 #[test]
@@ -298,17 +298,17 @@ fn endpoints_nobody_knows_holding_a_relay_do_not_keep_its_workspaces_device_out(
     let (_site, _ada, mut laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
     let phone_key = hex::encode(phone.cert.device_public_key);
-    // Both devices are in the plane first, through the phone: what the workspace's keys and its
+    // Both devices are in the live session first, through the phone: what the workspace's keys and its
     // membership take is done before the relay is held.
     for device in [&laptop, &phone] {
         eventually(
-            &format!("{} says the live plane of {made} is open", device.label),
+            &format!("{} says the live session of {made} is open", device.label),
             Duration::from_secs(90),
             &made,
             &[&laptop, &phone],
             || {
-                let plane = plane_of(device, &made);
-                plane["state"] == json!("open") && plane["relay"] == json!(phone_key)
+                let live_session = live_session_of(device, &made);
+                live_session["state"] == json!("open") && live_session["relay"] == json!(phone_key)
             },
         );
     }
@@ -326,27 +326,28 @@ fn endpoints_nobody_knows_holding_a_relay_do_not_keep_its_workspaces_device_out(
         || held.told() == Some(u64::from(CLOSE_BUSY)),
     );
 
-    // The laptop comes back and asks the phone for the plane. It is taken in while the relay is
-    // held, and on the way its plane never stands as busy or as refused.
+    // The laptop comes back and asks the phone for the live session. It is taken in while the relay is
+    // held, and on the way its live session never stands as busy or as refused.
     laptop.start();
     laptop.wait_holding(&made);
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
-        let plane = plane_of(&laptop, &made);
+        let live_session = live_session_of(&laptop, &made);
         assert!(
-            plane["state"] != json!("refused") && plane["state"] != json!("relay-busy"),
-            "endpoints nobody knows kept the workspace's own device out: {plane}\n{}",
+            live_session["state"] != json!("refused")
+                && live_session["state"] != json!("relay-busy"),
+            "endpoints nobody knows kept the workspace's own device out: {live_session}\n{}",
             report(&made, &[&laptop, &phone])
         );
-        if plane["state"] == json!("open")
-            && plane["waiting_for"] == json!("")
-            && plane["relay"] == json!(phone_key)
+        if live_session["state"] == json!("open")
+            && live_session["waiting_for"] == json!("")
+            && live_session["relay"] == json!(phone_key)
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the laptop did not come into the plane while the phone's relay was held\n{}",
+            "the laptop did not come into the live session while the phone's relay was held\n{}",
             report(&made, &[&laptop, &phone])
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -368,21 +369,21 @@ fn endpoints_nobody_knows_holding_a_relay_do_not_keep_its_workspaces_device_out(
     assert_eq!(
         told_refused(&laptop, &made),
         refused_before,
-        "the laptop's session journalled a refusal on its way into the plane\n{}",
+        "the laptop's session journalled a refusal on its way into the live session\n{}",
         report(&made, &[&laptop, &phone])
     );
     // An endpoint that says nothing is nobody the relay judged: it lists nobody as turned away.
     assert_eq!(
-        plane_of(&phone, &made)["turned_away"],
+        live_session_of(&phone, &made)["turned_away"],
         json!([]),
         "the phone turned nobody away\n{}",
         report(&made, &[&laptop, &phone])
     );
     held.release();
-    let plane = plane_of(&laptop, &made);
+    let live_session = live_session_of(&laptop, &made);
     assert_eq!(
-        (&plane["state"], &plane["unheard"]),
+        (&live_session["state"], &live_session["unheard"]),
         (&json!("open"), &json!(0)),
-        "the laptop is in the plane and hears every device in it: {plane}"
+        "the laptop is in the live session and hears every device in it: {live_session}"
     );
 }

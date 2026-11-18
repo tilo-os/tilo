@@ -8,7 +8,7 @@
 //! runs here and answers in JSON without a secret: listing, activating,
 //! removing and protecting an identity; listing the devices trusted under the
 //! workspace's identity and root-signing a revocation; and removing a home
-//! server, whose relay administration signs with the root key too.
+//! server, whose server administration signs with the root key too.
 //!
 //! Who may take a step is decided at the API, before it reaches this engine:
 //! only a person who administers the workspace's identity, and every change
@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_identity_host::device_admin::{command_error, node_id};
-use tilo_identity_host::registry::IdentityProfile;
+use tilo_identity::device_admin::{command_error, node_id};
+use tilo_identity::registry::IdentityProfile;
 
 use crate::pairing::{Answer, Finished, HostCommand, Runner, Started, run_bounded};
 
@@ -32,7 +32,7 @@ pub(crate) use tilo_actions::remote::identity_admin::{
     REVOKE, STEPS,
 };
 
-const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
+const SERVER_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
 /// Removing a home server dials it to deliver its decommission; this bounds a server that never
 /// answers.
 const HOME_PEER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -95,7 +95,7 @@ pub(crate) const HOME_PEER_REMOVE_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "service",
         ParamType::Text,
-        "The home server's relay service node id, 64 hex characters.",
+        "The home server's server service node id, 64 hex characters.",
     ),
     ActionParam::required(
         "confirm",
@@ -199,16 +199,16 @@ impl Store {
     ///
     /// Why the person's identity directory cannot be found.
     pub(crate) fn from_env() -> Result<Self, String> {
-        let paths = tilo_identity_host::device_admin::PersonPaths::from_env()?;
+        let paths = tilo_identity::device_admin::PersonPaths::from_env()?;
         Ok(Self {
             dir: paths.dir,
-            device: tilo_identity_host::provisioning::collaboration_identity_paths(),
+            device: tilo_identity::provisioning::collaboration_identity_paths(),
             root: paths.root,
         })
     }
 
-    fn fleets(&self) -> tilo_identity_host::device_fleet::DeviceFleetStore {
-        tilo_identity_host::device_fleet::DeviceFleetStore::at(&self.dir, self.device.clone())
+    fn fleets(&self) -> tilo_identity::device_fleet::DeviceFleetStore {
+        tilo_identity::device_fleet::DeviceFleetStore::at(&self.dir, self.device.clone())
     }
 }
 
@@ -218,7 +218,7 @@ impl Store {
 /// # Errors
 ///
 /// Why the person's identity directory cannot be found.
-pub(crate) fn fleet_store() -> Result<tilo_identity_host::device_fleet::DeviceFleetStore, String> {
+pub(crate) fn fleet_store() -> Result<tilo_identity::device_fleet::DeviceFleetStore, String> {
     Ok(Store::from_env()?.fleets())
 }
 
@@ -227,9 +227,7 @@ pub(crate) fn fleet_store() -> Result<tilo_identity_host::device_fleet::DeviceFl
 /// writes a certificate into the fleet on a thread of its own, and the
 /// person's record keeps the keys with their list, so a fleet that moved
 /// says the list again.
-pub(crate) fn fleet_stamps(
-    person: &[u8; 32],
-) -> Option<tilo_identity_host::device_fleet::FleetStamps> {
+pub(crate) fn fleet_stamps(person: &[u8; 32]) -> Option<tilo_identity::device_fleet::FleetStamps> {
     fleet_store().ok()?.stamps(&hex::encode(person))
 }
 
@@ -247,7 +245,7 @@ impl IdentityAdmin {
         &SESSION
     }
 
-    /// Identity administration whose relay commands `runner` runs.
+    /// Identity administration whose server commands `runner` runs.
     pub(crate) fn with_runner(runner: Runner) -> Self {
         Self { runner }
     }
@@ -302,18 +300,18 @@ impl IdentityAdmin {
                 confirmed(args, "remove this home server")?;
                 let device = node_id(args.text("device").unwrap_or_default(), "device")?;
                 let service = node_id(args.text("service").unwrap_or_default(), "service")?;
-                self.relay_admin(home_peer_remove_command(store, &device, &service))
+                self.server_admin(home_peer_remove_command(store, &device, &service))
                     .map(Started::Later)
             }
             HOME_PEER_RETRY => self
-                .relay_admin(home_peer_retry_command(store))
+                .server_admin(home_peer_retry_command(store))
                 .map(Started::Later),
             _ => Err(format!("`{step}` is not an identity step")),
         }
     }
 
-    /// Run the relay administration `command` on a worker thread; the answer is what it reported.
-    fn relay_admin(&self, command: HostCommand) -> Result<Pending<Answer>, String> {
+    /// Run the server administration `command` on a worker thread; the answer is what it reported.
+    fn server_admin(&self, command: HostCommand) -> Result<Pending<Answer>, String> {
         let (completer, answer) = pending();
         let runner = Arc::clone(&self.runner);
         std::thread::Builder::new()
@@ -328,28 +326,28 @@ impl IdentityAdmin {
     }
 }
 
-/// The relay command that root-revokes and stops home server `device` serving through `service` .
+/// The server command that root-revokes and stops home server `device` serving through `service` .
 /// The identity directory is the session's own.
 pub(crate) fn home_peer_remove_command(store: &Store, device: &str, service: &str) -> HostCommand {
-    let mut args = relay_args("home-peer-remove", store);
+    let mut args = server_args("home-peer-remove", store);
     args.extend(["--device", device, "--service", service].map(OsString::from));
     HostCommand {
-        program: PathBuf::from(RELAY_ADMIN),
+        program: PathBuf::from(SERVER_ADMIN),
         args,
         timeout: HOME_PEER_TIMEOUT,
     }
 }
 
-/// The relay command that delivers the home-server removals still pending.
+/// The server command that delivers the home-server removals still pending.
 pub(crate) fn home_peer_retry_command(store: &Store) -> HostCommand {
     HostCommand {
-        program: PathBuf::from(RELAY_ADMIN),
-        args: relay_args("home-peer-retry-removals", store),
+        program: PathBuf::from(SERVER_ADMIN),
+        args: server_args("home-peer-retry-removals", store),
         timeout: HOME_PEER_TIMEOUT,
     }
 }
 
-fn relay_args(command: &str, store: &Store) -> Vec<OsString> {
+fn server_args(command: &str, store: &Store) -> Vec<OsString> {
     vec![
         command.into(),
         "--identity-root".into(),
@@ -359,7 +357,7 @@ fn relay_args(command: &str, store: &Store) -> Vec<OsString> {
     ]
 }
 
-/// What a finished relay command reported: its JSON, or an empty object for one that reports
+/// What a finished server command reported: its JSON, or an empty object for one that reports
 /// nothing.
 fn relay_answer(finished: &Finished) -> Answer {
     if !finished.success {
@@ -432,7 +430,7 @@ fn fleet_devices(
     store: &Store,
     identity: &IdentityProfile,
 ) -> Result<Vec<tilo_actions::remote::identity_admin::FleetDevice>, String> {
-    tilo_identity_host::device_admin::trusted_devices(
+    tilo_identity::device_admin::trusted_devices(
         &store.fleets(),
         &store.device,
         &identity.id,
@@ -452,10 +450,9 @@ pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
 pub(crate) fn devices_with_record(
     store: &Store,
     identity: &IdentityProfile,
-    record: tilo_identity_host::device_admin::Record,
+    record: tilo_identity::device_admin::Record,
 ) -> Answer {
-    let listed =
-        tilo_identity_host::device_admin::with_record(fleet_devices(store, identity)?, record);
+    let listed = tilo_identity::device_admin::with_record(fleet_devices(store, identity)?, record);
     serde_json::to_value(listed).map_err(|error| error.to_string())
 }
 
@@ -472,7 +469,7 @@ pub(crate) fn revoke(
     identity: &IdentityProfile,
     args: &ActionArgs,
 ) -> Result<(String, tilo_user_identity::RevocationEntry), String> {
-    let entry = tilo_identity_host::device_admin::revoke(
+    let entry = tilo_identity::device_admin::revoke(
         &store.fleets(),
         &identity.id,
         args.text("device").unwrap_or_default(),
@@ -488,7 +485,7 @@ pub(crate) fn revoke(
 ///
 /// Why `person` may not administer it.
 pub(crate) fn authorize(
-    session: &crate::plane::LayoutAuthority,
+    session: &crate::app_wire::LayoutAuthority,
     workspace: &str,
     person: &str,
 ) -> Result<IdentityProfile, String> {
@@ -513,7 +510,7 @@ pub(crate) fn authorize(
             "{person} may not administer devices for this workspace's identity"
         ));
     }
-    tilo_identity_host::registry::identity_for_workspace(workspace)
+    tilo_identity::registry::identity_for_workspace(workspace)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no identity selected".into())
 }
@@ -627,7 +624,7 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 /// browser certified in its own tab, is listed here too. `engine` is the
 /// workspaces whose hosts answer it.
 pub(crate) struct BrokerApi {
-    pub(crate) layout: Arc<crate::plane::LayoutAuthority>,
+    pub(crate) layout: Arc<crate::app_wire::LayoutAuthority>,
     pub(crate) admin: &'static IdentityAdmin,
     pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
@@ -713,13 +710,13 @@ mod tests {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
         let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&dir)
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(&dir)
             .load()
             .expect("registry");
         let id = registry.default_identity.clone().expect("default identity");
@@ -1076,7 +1073,7 @@ mod tests {
 
         let recorded = commands.lock().expect("commands").clone();
         let expected = |command: &str, tail: &[&str]| HostCommand {
-            program: PathBuf::from(RELAY_ADMIN),
+            program: PathBuf::from(SERVER_ADMIN),
             args: [
                 command,
                 "--identity-root",
@@ -1103,9 +1100,9 @@ mod tests {
     }
 
     /// A session hosting `workspace` , with nothing else on it.
-    fn shell_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::LayoutAuthority {
+    fn shell_with(workspace: tilo_desktop_model::Workspace) -> crate::app_wire::LayoutAuthority {
         let active = workspace.id();
-        crate::plane::LayoutAuthority::new(
+        crate::app_wire::LayoutAuthority::new(
             tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
                 active,
@@ -1113,7 +1110,7 @@ mod tests {
             },
             crate::engine::revocations_of(None),
             None,
-            crate::plane::Names::default(),
+            crate::app_wire::Names::default(),
         )
     }
 

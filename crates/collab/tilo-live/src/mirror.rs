@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::Task;
 use crate::carrier::{self, OriginTask, origin_config};
-use crate::plane::unused;
+use crate::live_session::unused;
 use crate::voice;
 use tilo_lock::MutexRecover as _;
 
@@ -345,7 +345,7 @@ async fn copy_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plane::UNUSED_GRACE;
+    use crate::live_session::UNUSED_GRACE;
 
     #[tokio::test(start_paused = true)]
     async fn unused_video_cancels_even_while_source_groups_arrive() {

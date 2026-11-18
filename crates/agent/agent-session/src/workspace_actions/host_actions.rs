@@ -1,12 +1,12 @@
-//! The host's whole app-serving plane, split between the agent supervisor and the workspace's
+//! The host's whole app action server, split between the agent supervisor and the workspace's
 //! page actions.
 
 use tilo_actions::remote::{Caller, Pending, RemoteActionMessage};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 use super::WorkspaceActions;
 
-/// The host's whole app-serving plane: the agent supervisor's vocabulary
+/// The host's whole app action server: the agent supervisor's vocabulary
 /// (provider `agents`) and the workspace's page actions (everything else).
 pub struct HostActions {
     /// Answers `agents` requests.
@@ -24,7 +24,7 @@ impl HostActions {
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        use tilo_relay_protocol::agents::AGENTS_PROVIDER;
+        use tilo_server_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
             RemoteActionMessage::FeedbackRequest { .. }
             | RemoteActionMessage::ContentPutRequest { .. }

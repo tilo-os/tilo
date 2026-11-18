@@ -29,7 +29,7 @@ pub struct Remembered {
     pub ended_ms: i64,
     /// Who ran it.
     pub actor: Option<ui::tilo_resource::MemberId>,
-    /// The session that ran it: its record's address.
+    /// The session that ran it: its resource's address.
     pub session: Atom,
     /// The run, an item of the session's `runs`.
     pub run: Id,

@@ -144,9 +144,9 @@
 	# invitation: https://<site>/i/<handle>#<key>. A browser opening it gets
 	# the page, which reads the site's own configuration and files
 	# (/entry.json, /v/…); the page's own request for the invitation — and a
-	# build that takes the link without the page — is the deployment's relay's
+	# build that takes the link without the page — is the deployment's server's
 	# to answer, which keeps the invitation under the handle and was never
-	# given the key in the fragment. That relay is the one the home workspace
+	# given the key in the fragment. That server is the one the home workspace
 	# is hosted on, which the entrypoint names unless the deployment says
 	# otherwise; with no home workspace the page still opens, and an
 	# invitation left there is not one it can take.

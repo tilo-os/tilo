@@ -41,6 +41,7 @@ fn arrived_part(build: Box<ScopedPart>) -> Element {
     Switch::keyed(
         LocalState::new(()),
         Box::new(move |(), alive: &Rc<()>| build(alive)),
+        None,
     )
 }
 
@@ -182,7 +183,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) updaters: Updaters<R>,
     /// The row of an [`Each`] this scope builds, whose readers run while it
     /// is mounted; `None` outside a row.
-    pub(crate) gate: Option<super::reactive::Gate>,
+    pub(crate) row_mount: Option<super::reactive::RowMount>,
     pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
     /// Where this scope's value sits in the record: the root, or the item a
@@ -231,7 +232,7 @@ impl<R: Resource> ViewCx<R> {
             },
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
-            gate: None,
+            row_mount: None,
             action_bindings: Actions::new(app, published),
             item: None,
             path: Some(Vec::new()),
@@ -316,12 +317,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.permission_state(need)
     }
 
-    /// This member's standing in the workspace as the host keeps it when
+    /// This member's access in the workspace as the host keeps it when
     /// called (who they are, the workspace's policy, what bounds them), for a
     /// runtime that decides its own invocations by the policy the API
     /// decides by. `None` outside a host.
-    pub fn standing(&self) -> impl Fn() -> Option<ui_core::permissions::Standing> + 'static {
-        self.dispatch.standing_source()
+    pub fn access(&self) -> impl Fn() -> Option<ui_core::permissions::MemberAccess> + 'static {
+        self.dispatch.access_source()
     }
 
     /// Whether this member may govern the workspace, observed: for an
@@ -495,7 +496,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let mut last = initial.clone();
         self.updaters.push(
             self.alive.clone(),
-            self.gate.clone(),
+            self.row_mount.clone(),
             reads,
             Box::new(move |state| {
                 let next = read(state);
@@ -624,8 +625,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
         // The published tree reads what `bind` captured, mounted row or not.
-        if let Some(gate) = &self.gate {
-            gate.read_while_unmounted();
+        if let Some(row_mount) = &self.row_mount {
+            row_mount.read_while_unmounted();
         }
         self.bindings.push(self.alive.clone(), Box::new(bind));
     }
@@ -715,6 +716,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A part of the view chosen by view-local state — the detail pane of the
     /// selected item, the page of a wizard. The part is built again, with its
     /// own bindings, whenever `key` changes; the previous one is dropped.
+    ///
+    /// It is built again for the key it has, too, once a document of the workspace is here
+    /// that it asked for while it was built and that was still on its way
+    /// ([`ResourceEnv::shared_workspace`]): a part reads such a document where it shows it,
+    /// and shows it when it arrives, while everything around the part stays as it is.
     pub fn switch<K>(
         &self,
         key: &LocalState<K>,
@@ -724,9 +730,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         K: Clone + PartialEq + 'static,
     {
         let scope = self.part_scope();
+        let (building, arrived) = (Rc::clone(&self.storage), Rc::clone(&self.storage));
         Switch::keyed(
             key.clone(),
-            Box::new(move |value: &K, alive: &Rc<()>| part(&mut scope(alive), value)),
+            Box::new(move |value: &K, alive: &Rc<()>| {
+                // What the part asks for while it is built and is still on its way, it is
+                // built again for once that is here.
+                let _building = building.building(alive);
+                part(&mut scope(alive), value)
+            }),
+            Some(Box::new(move |shown: &Rc<()>| arrived.take_arrived(shown))),
         )
     }
 
@@ -788,7 +801,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let env = self.env.clone();
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
-        let gate = self.gate.clone();
+        let row_mount = self.row_mount.clone();
         let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
         let path = self.path.clone();
@@ -799,7 +812,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             env: env.living(alive),
             focus: Rc::clone(&focus),
             updaters: updaters.clone(),
-            gate: gate.clone(),
+            row_mount: row_mount.clone(),
             action_bindings: action_bindings.clone(),
             item: item.clone(),
             path: path.clone(),
@@ -901,8 +914,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let status: StatusSource = Rc::default();
         // The handler and the status the resource publishes read the scope's
         // local state, mounted row or not.
-        if let Some(gate) = &self.gate {
-            gate.read_while_unmounted();
+        if let Some(row_mount) = &self.row_mount {
+            row_mount.read_while_unmounted();
         }
         // Captures and History still describe the controls they draw. Only
         // execution needs a live environment; publication is inert metadata.
@@ -995,7 +1008,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
         let mark = Rc::clone(&stale);
         self.updaters.push(
             self.alive.clone(),
-            self.gate.clone(),
+            self.row_mount.clone(),
             located.clone().map_or(Reads::Always, Reads::Members),
             Box::new(move |_| mark.set(true)),
         );
@@ -1014,7 +1027,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
             stale,
             self.updaters.clone(),
             Box::new(
-                move |id: &Id, alive: &Rc<()>, gate: &super::reactive::Gate| {
+                move |id: &Id, alive: &Rc<()>, row_mount: &super::reactive::RowMount| {
                     let parent = Rc::clone(&parent_focus);
                     let items = Rc::clone(&items);
                     let key = id.clone();
@@ -1030,7 +1043,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
                         env: env.living(alive),
                         focus,
                         updaters: updaters.clone(),
-                        gate: Some(gate.clone()),
+                        row_mount: Some(row_mount.clone()),
                         action_bindings: action_bindings.clone(),
                         item: Some(id.clone()),
                         path,

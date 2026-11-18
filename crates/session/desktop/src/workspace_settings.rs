@@ -14,7 +14,7 @@ use crate::i18n::{t, t_args};
 use tilo_action_policy::{Grantee, Refusal};
 use tilo_sort::CompactSort as _;
 
-use collab_types::caps::{Access, CapOverride, Effect, Expiry, Scope};
+use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Expiry, Scope};
 use collab_types::role::Role as CapRole;
 use collab_types::{Member, MemberId};
 use tilo_desktop_model::{UserId, Workspace};
@@ -37,6 +37,11 @@ pub use people_pane::member_row_offers;
 pub trait AppDirectory {
     /// The name a person knows `app_id` by, when the host knows the app.
     fn app_display_name(&self, app_id: &str) -> Option<String>;
+    /// The apps installed for the workspace, by id: each one an agent may be given answers for
+    /// before it ever touches the app, whether or not a window of it is open.
+    fn installed_apps(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Applications that can open a kind of resource, for the Apps tab.
     fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
         Vec::new()
@@ -124,12 +129,12 @@ pub fn administrator_capability_preview() -> String {
 
 /// The catalogue message for a device-scoped capability, or `None` for a device the catalogue has
 /// no name for (shown by its id).
-fn device_scope_key(device: &str) -> Option<&'static str> {
+fn device_scope_key(device: DeviceCap) -> Option<&'static str> {
     match device {
-        "camera" => Some("workspace-settings-scope-camera"),
-        "microphone" => Some("workspace-settings-scope-microphone"),
-        "screencast" => Some("workspace-settings-scope-screencast"),
-        "remote-desktop" => Some("workspace-settings-scope-remote-desktop"),
+        DeviceCap::Camera => Some("workspace-settings-scope-camera"),
+        DeviceCap::Microphone => Some("workspace-settings-scope-microphone"),
+        DeviceCap::Screen => Some("workspace-settings-scope-screencast"),
+        DeviceCap::Input => Some("workspace-settings-scope-remote-desktop"),
         _ => None,
     }
 }
@@ -152,9 +157,9 @@ fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String
             "workspace-settings-scope-record",
             vec![("id", short_id(record).into())],
         ),
-        Scope::Device(device) => match device_scope_key(device) {
+        Scope::Device(device) => match device_scope_key(*device) {
             Some(key) => (key, Vec::new()),
-            None => return device.clone(),
+            None => return device.name().to_owned(),
         },
         Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
         Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
@@ -367,7 +372,9 @@ impl GrantSubject {
     pub fn to_parts(&self, person: &str) -> Option<(Grantee, Option<String>)> {
         match self.kind {
             SubjectKind::App => Some((Grantee::person(person), Some(self.id.clone()))),
-            SubjectKind::Member => Some((Grantee::Member(MemberId::person(self.id.clone())), None)),
+            SubjectKind::Member => {
+                Some((Grantee::Member(MemberId::parsed_person(&self.id)?), None))
+            }
             SubjectKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
             // A role-wide grant is a policy decision, not a per-workspace click.
             SubjectKind::Role => None,
@@ -376,7 +383,10 @@ impl GrantSubject {
 
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
-            SubjectKind::Member => person_name(ws, local_user, &MemberId::person(self.id.clone())),
+            SubjectKind::Member => MemberId::parsed_person(&self.id).map_or_else(
+                || self.id.clone(),
+                |member| person_name(ws, local_user, &member),
+            ),
             SubjectKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
             SubjectKind::App => app_display_name(apps, &self.id),
             // A role is listed as the phrase its section reads.
@@ -389,14 +399,14 @@ impl GrantSubject {
 /// so the table can stay `const` .
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GrantTarget {
-    Device(&'static str),
+    Device(DeviceCap),
     AnyHost,
     WorkspaceFiles,
 }
 
 /// One entry in the composer's "what does this allow" picker. Every entry produces a capability an
-/// enforcement point actually reads (devices gate the portal, `NetHost` gates egress, `FsPath`
-/// gates the sandbox binds and the filesystem, `Workspace` gates administration).
+/// enforcement point actually reads (devices check the portal, `NetHost` checks egress, `FsPath`
+/// checks the sandbox binds and the filesystem, `Workspace` checks administration).
 pub struct GrantChoice {
     /// What the choice is named by: the same key every host uses.
     pub key: &'static str,
@@ -416,25 +426,25 @@ static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
         key: "camera",
         label_key: "workspace-settings-grant-camera",
-        target: GrantTarget::Device("camera"),
+        target: GrantTarget::Device(DeviceCap::Camera),
         access: Access::Read,
     },
     GrantChoice {
         key: "microphone",
         label_key: "workspace-settings-grant-microphone",
-        target: GrantTarget::Device("microphone"),
+        target: GrantTarget::Device(DeviceCap::Microphone),
         access: Access::Read,
     },
     GrantChoice {
         key: "screencast",
         label_key: "workspace-settings-grant-screencast",
-        target: GrantTarget::Device("screencast"),
+        target: GrantTarget::Device(DeviceCap::Screen),
         access: Access::Read,
     },
     GrantChoice {
         key: "remote-control",
         label_key: "workspace-settings-grant-remote-control",
-        target: GrantTarget::Device("remote-desktop"),
+        target: GrantTarget::Device(DeviceCap::Input),
         access: Access::Write,
     },
     GrantChoice {
@@ -638,7 +648,7 @@ pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Opt
     let subject_entry = subjects.get(idx)?;
     let choice = draft.choice();
     let scope = match choice.target {
-        GrantTarget::Device(d) => Scope::Device(d.to_string()),
+        GrantTarget::Device(d) => Scope::Device(d),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
     };
@@ -1430,7 +1440,7 @@ mod permissions_tests {
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
     use collab_types::caps::ResourceRef;
-    use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceId};
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     /// Whoever is looking at the tab; never a grantor in these fixtures.
@@ -1443,20 +1453,22 @@ mod permissions_tests {
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(3), "perm-test");
         ws.set_owner(OWNER);
-        ws.grant_app(
-            OWNER,
-            "firefox",
-            &Capability::Camera {
-                scope: GRANT_ALWAYS,
-            },
+        ws.grant_sandbox(
+            CapOverride::grant(
+                Grantee::person(OWNER),
+                Scope::Device(DeviceCap::Camera),
+                Access::Read,
+            )
+            .through("firefox"),
         );
-        ws.grant_app(
-            OWNER,
-            "firefox",
-            &Capability::Network {
-                hosts: None,
-                scope: GRANT_SESSION,
-            },
+        ws.grant_sandbox(
+            CapOverride::grant(
+                Grantee::person(OWNER),
+                Scope::NetHost("*".into()),
+                Access::Write,
+            )
+            .through("firefox")
+            .expiring(Expiry::EndOfSession),
         );
         ws
     }
@@ -1625,7 +1637,7 @@ mod permissions_tests {
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design/drafts")),
-                Scope::Device("camera".into()),
+                Scope::Device(DeviceCap::Camera),
                 Scope::NetHost("*".into()),
                 Scope::NetHost("example.com".into()),
                 Scope::FsResource("b0d4e23f-c7cb-4ded-a427-b32cf9da9341".into()),
@@ -1720,7 +1732,7 @@ mod permissions_tests {
             }
             assert!(!ws.allows(
                 &app_acting("firefox"),
-                &ResourceRef::Device("microphone".into()),
+                &ResourceRef::Device(DeviceCap::Microphone),
                 Access::Read
             ));
 
@@ -1730,7 +1742,7 @@ mod permissions_tests {
             assert!(
                 ws.allows(
                     &app_acting("firefox"),
-                    &ResourceRef::Device("microphone".into()),
+                    &ResourceRef::Device(DeviceCap::Microphone),
                     Access::Read
                 ),
                 "the granted capability must start working, not merely start rendering"
@@ -1788,7 +1800,7 @@ mod permissions_tests {
             let camera = ws
                 .sandbox
                 .iter()
-                .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
+                .filter(|c| matches!(&c.scope, Scope::Device(DeviceCap::Camera)))
                 .collect::<Vec<_>>();
             assert_eq!(
                 camera.len(),
@@ -1845,7 +1857,7 @@ mod permissions_tests {
                 let cap = draft_capability(&ws, OWNER, &draft).expect("every choice resolves");
                 assert_eq!(cap.effect, Effect::Grant);
                 let resource = match &cap.scope {
-                    Scope::Device(d) => ResourceRef::Device(d.clone()),
+                    Scope::Device(d) => ResourceRef::Device(*d),
                     Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
                     Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
                     Scope::FsResource(record) => {
@@ -1875,7 +1887,7 @@ mod permissions_tests {
             assert!(
                 !ws.allows(
                     &app_acting("firefox"),
-                    &ResourceRef::Device("camera".into()),
+                    &ResourceRef::Device(DeviceCap::Camera),
                     Access::Read
                 ),
                 "the revoked capability must stop working, not merely stop rendering"

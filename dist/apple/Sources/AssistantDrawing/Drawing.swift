@@ -34,6 +34,7 @@ public enum Drawing {
         content.main = mainChat
         content.subAgents = subAgents
         content.subAgentChats = ["usage-drop": usageDropChat]
+        content.replies = ["maya": mayaReplies]
         content.tasks = tasks
         content.automations = automations
         content.supervision = supervision
@@ -56,9 +57,9 @@ public enum Drawing {
     public static let quietReason = "Dima's mail did not notify you: not important while you are not raising."
 
     public static var mainChat: [Item] {
-        let rundown = TaskLine(task: "morning-rundown", title: "Morning rundown", standing: .scheduled("every day"))
-        let inbound = TaskLine(task: "investor-inbound", title: "Answer investor inbound", standing: .actedAlone)
-        let maya = TaskLine(task: "maya", title: "Reply to Maya at Northwind", standing: .replies(2))
+        let rundown = TaskLine(task: "morning-rundown", title: "Morning rundown", state: .scheduled("every day"))
+        let inbound = TaskLine(task: "investor-inbound", title: "Answer investor inbound", state: .actedAlone)
+        let maya = TaskLine(task: "maya", title: "Reply to Maya at Northwind", state: .replies(2))
         return [
             Item(id: "rundown-1", at: at(7, 30), .message(Message(.assistant, """
                 Good morning. Today:
@@ -77,20 +78,67 @@ public enum Drawing {
         ]
     }
 
+    /// The two replies the line "Reply to Maya at Northwind" counts and the conversation leaves
+    /// out. The drawing only counts them; these words are made up in its manner.
+    public static var mayaReplies: [Item] {
+        [
+            Item(id: "maya-figures", at: at(9, 10), .message(Message(
+                .assistant, "The October figures are in the metrics sheet: revenue, burn and runway."))),
+            Item(id: "maya-draft", at: at(9, 11), .message(Message(
+                .assistant, "The reply is drafted in your words, with the three figures and nothing else."))),
+        ]
+    }
+
     /// The reminder when its time has come, as the phone's lock screen shows it.
     public static let reminder = Item(id: "remind-jonas", at: at(10, 14), .reminder("Call Jonas."))
+
+    // MARK: What the person was told
+
+    /// What came while the person was away, had they left at 8:05 and come back now. The
+    /// drawing shows no such message; its lines are the drawing's own pieces and tasks.
+    public static var sinceLeft: SinceLeft {
+        SinceLeft(left: at(8, 5),
+                  waits: [SinceLeft.Line(id: "maya", words: "Maya at Northwind asks for the October numbers. A reply is drafted.",
+                                         item: "maya", isImportant: true)],
+                  didAlone: [SinceLeft.Line(id: "dima", words: "Dima at Mento reached out. I responded in the usual way.", item: "dima")],
+                  cameIn: [SinceLeft.Line(id: "deck", words: "The board deck for Friday has a first draft.")])
+    }
+
+    /// Pieces as the app marks them from what a person's server told: a question with what
+    /// the server offers under its notice, news an agent of theirs offers a button with, and
+    /// the reminder, raised once more because it insists.
+    public static var toldPieces: [Item] {
+        [
+            Item(id: "maya", at: at(9, 12), .question(mayaQuestion), isImportant: true,
+                 notice: "Maya at Northwind asks for the October numbers. A reply is drafted.",
+                 offers: [Offer(id: "send", title: "Send it", isMain: true), Offer(id: "later", title: "Not now")]),
+            Item(id: "deck", at: at(9, 13), .message(Message(.assistant, "The board deck for Friday has a first draft.")),
+                 isImportant: true, offers: [Offer(id: "show-deck", title: "Show the draft", isMain: true, by: "Researcher")]),
+            Item(id: "remind-jonas", at: at(10, 14), .reminder("Call Jonas."), raised: 1),
+        ]
+    }
+
+    /// Why three things did not notify, each said from the reason a person's server gives:
+    /// a line of their rule that waits on something, no rule at all, and their own model's line.
+    public static var toldQuiet: [String] {
+        [
+            Quiet.line(about: "Dima's mail", code: "nothing-holds", fact: "raising", value: "no"),
+            Quiet.line(about: "Nine mails sorted", code: "no-rule"),
+            Quiet.line(about: "", code: "judged", words: "A newsletter, and you said nothing about newsletters"),
+        ]
+    }
 
     // MARK: Sub-agents
 
     public static var subAgents: [SubAgent] {
         [
-            SubAgent(id: "usage-drop", title: "Usage drop: investigate", role: "Coder", standing: .working,
+            SubAgent(id: "usage-drop", title: "Usage drop: investigate", role: "Coder", state: .working,
                      runsOn: "Claude Code on the cloud machine", started: at(9, 20)),
-            SubAgent(id: "board-deck", title: "Find the Q3 board deck", role: "Researcher", standing: .needsYou,
+            SubAgent(id: "board-deck", title: "Find the Q3 board deck", role: "Researcher", state: .needsYou,
                      runsOn: "The cloud machine", started: at(8, 50)),
-            SubAgent(id: "yc-batch", title: "YC batch against the thesis", role: "Researcher", standing: .working,
+            SubAgent(id: "yc-batch", title: "YC batch against the thesis", role: "Researcher", state: .working,
                      runsOn: "The cloud machine", started: at(8, 5)),
-            SubAgent(id: "data-room", title: "Data room: open requests", role: "Researcher", standing: .done,
+            SubAgent(id: "data-room", title: "Data room: open requests", role: "Researcher", state: .done,
                      runsOn: "The cloud machine", started: at(15, 10, day: 16), finished: at(16, 2, day: 16)),
         ]
     }
@@ -118,11 +166,11 @@ public enum Drawing {
 
     public static var tasks: [AssistantTask] {
         [
-            AssistantTask(id: "maya", title: "Reply to Maya at Northwind", standing: .readyForReview, isImportant: true, item: "maya"),
-            AssistantTask(id: "deck-draft", title: "Board deck for Friday: first draft", standing: .readyForReview),
-            AssistantTask(id: "deck", title: "Find the Q3 board deck", standing: .needsInput, note: "Two versions exist. Which one?"),
-            AssistantTask(id: "usage", title: "Find out why usage dropped", standing: .inProgress),
-            AssistantTask(id: "yc", title: "Shortlist the YC batch for the thesis", standing: .inProgress),
+            AssistantTask(id: "maya", title: "Reply to Maya at Northwind", state: .readyForReview, isImportant: true, item: "maya"),
+            AssistantTask(id: "deck-draft", title: "Board deck for Friday: first draft", state: .readyForReview),
+            AssistantTask(id: "deck", title: "Find the Q3 board deck", state: .needsInput, note: "Two versions exist. Which one?"),
+            AssistantTask(id: "usage", title: "Find out why usage dropped", state: .inProgress),
+            AssistantTask(id: "yc", title: "Shortlist the YC batch for the thesis", state: .inProgress),
         ]
     }
 
@@ -173,6 +221,18 @@ public enum Drawing {
         [ModelChoice(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", provider: "Anthropic"),
          ModelChoice(id: "google/gemini-3-pro", name: "Gemini 3 Pro", provider: "Google")]
     }
+
+    // MARK: The first run
+
+    /// What Tilo's page asks before a device is paired, as it says it for its own server.
+    public static let pairingAsk = PairingAsk(
+        heading: "Add this device?",
+        said: ["You are adding this device to Xaver E’s devices. If that is not you, stop.",
+               "The server that adds it is this site’s own, tilo.example.",
+               "Whoever made this link approves it on a device of theirs. From then on this device acts as them, and what you do here is theirs."],
+        go: "Add this device", stop: "Stop")
+
+    public static let providers = [ProviderChoice(id: "anthropic", name: "Anthropic"), ProviderChoice(id: "gemini", name: "Google Gemini")]
 
     // MARK: Pieces of the conversation
 

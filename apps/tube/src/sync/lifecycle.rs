@@ -19,7 +19,7 @@ const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerRecord {
+pub struct PeerEntry {
     pub id: String,
     pub name: String,
     pub descriptor: PeerDescriptor,
@@ -34,7 +34,7 @@ pub struct PeerRecord {
     pub last_error: Option<String>,
 }
 
-impl PeerRecord {
+impl PeerEntry {
     pub fn is_active(&self) -> bool {
         self.revoked_at.is_none() && !self.pending_approval
     }
@@ -59,13 +59,13 @@ pub struct SyncView {
     pub status: SyncStatus,
     pub summary: String,
     pub device_public_key: Option<String>,
-    pub peers: Vec<PeerRecord>,
+    pub peers: Vec<PeerEntry>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairedDevices {
     #[serde(default)]
-    pub grayjay_peers: Vec<PeerRecord>,
+    pub grayjay_peers: Vec<PeerEntry>,
 }
 
 impl SettingsSchema for PairedDevices {
@@ -82,7 +82,7 @@ impl PeerStore {
         Self { settings }
     }
 
-    fn load(&self) -> SyncResult<Vec<PeerRecord>> {
+    fn load(&self) -> SyncResult<Vec<PeerEntry>> {
         let peers = self.settings.get().grayjay_peers;
         if peers.len() > MAX_PEERS
             || peers.iter().any(|peer| {
@@ -104,7 +104,7 @@ impl PeerStore {
         Ok(peers)
     }
 
-    fn save(&self, peers: &[PeerRecord]) -> SyncResult<()> {
+    fn save(&self, peers: &[PeerEntry]) -> SyncResult<()> {
         self.settings
             .set(&PairedDevices {
                 grayjay_peers: peers.to_vec(),
@@ -185,7 +185,7 @@ impl DeviceSync {
             summary: "One device is approved and one is waiting for your approval.".into(),
             device_public_key: Some("q4w8Jf3mP7k2V9nR6xT1".into()),
             peers: vec![
-                PeerRecord {
+                PeerEntry {
                     id: "6A:1C:92:7E:4B:80".into(),
                     name: "Pixel phone".into(),
                     descriptor: PeerDescriptor {
@@ -199,7 +199,7 @@ impl DeviceSync {
                     last_sync_at: Some(ui::time::unix_now_i64() - 180),
                     last_error: None,
                 },
-                PeerRecord {
+                PeerEntry {
                     id: "B5:73:0D:11:9A:CE".into(),
                     name: "Living-room tablet".into(),
                     descriptor: PeerDescriptor {
@@ -367,7 +367,7 @@ fn publish(
     status: SyncStatus,
     summary: impl Into<String>,
     public_key: &str,
-    peers: &[PeerRecord],
+    peers: &[PeerEntry],
 ) {
     let _ = events.send(Event::View(SyncView {
         status,
@@ -418,7 +418,7 @@ struct SyncWorker {
     store: PeerStore,
     public_key: String,
     events: mpsc::Sender<Event>,
-    peers: Vec<PeerRecord>,
+    peers: Vec<PeerEntry>,
     latest_state: Option<SyncState>,
 }
 
@@ -441,7 +441,7 @@ impl SyncWorker {
     fn publish_ready(&self) {
         self.publish(
             SyncStatus::Ready,
-            if self.peers.iter().any(PeerRecord::is_active) {
+            if self.peers.iter().any(PeerEntry::is_active) {
                 "Approved devices are ready to sync."
             } else {
                 "Paste a Grayjay pairing invite to add your first device."
@@ -525,7 +525,7 @@ impl SyncWorker {
                     "the approved-device limit has been reached".into(),
                 ));
             }
-            candidate.push(PeerRecord {
+            candidate.push(PeerEntry {
                 id: id.0.clone(),
                 name: format!("Grayjay {}", id.0.chars().take(8).collect::<String>()),
                 descriptor,
@@ -723,7 +723,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let document = dir.path().to_path_buf();
                 let store = PeerStore::new(Settings::for_app("so.tilo.tube").in_profile(&document));
-                let record = PeerRecord {
+                let record = PeerEntry {
                     id: "public-key".into(),
                     name: "Phone".into(),
                     descriptor: descriptor("public-key"),

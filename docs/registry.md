@@ -728,7 +728,7 @@ per-user runtime build, and on `leases/<package id>` in the app store for its
 payload tree. Removal takes the same file exclusively without waiting, so an
 app opened while it is being updated keeps the build it chose, payload and
 runtime, and the collection after the launch ends takes them. A launcher that
-dies releases its holds with its descriptors. The app host's own installs and
+dies releases its holds with its descriptors. The app process's own installs and
 removals run the same collection as `tilo-install`, which also removes the
 staging a crashed install left in the store's `tmp/`.
 

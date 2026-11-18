@@ -8,12 +8,11 @@
 use std::cell::{Cell, RefCell};
 
 use collab_types::caps::{Effect, Expiry};
-use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{Answer, Refusal, Role};
+use tilo_action_policy::{Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::people::PeopleNames;
-use tilo_desktop::workspace_settings::{self as domain, agent_access};
+use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::{Layout, UserId, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::{t, t_args};
@@ -22,6 +21,7 @@ use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::engine::Engine;
+use crate::engine::Holder;
 use crate::lists::AppLists;
 use crate::search::SessionSearch;
 use crate::workspaces::{DeviceChoice, Personal};
@@ -245,7 +245,8 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::RemoveAgent { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentModel { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { .. }
-        | sheet::WorkspaceSettingsEffect::SetAgentColour { .. } => agent_ask(state, fed, &effect),
+        | sheet::WorkspaceSettingsEffect::SetAgentAnswer { .. }
+        | sheet::WorkspaceSettingsEffect::ResetAgentApp { .. } => agent_ask(state, fed, &effect),
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
             toggle_workspace_device(state, fed, &device);
         }
@@ -310,15 +311,6 @@ fn ask(
             show_review(state, fed, Some(&agent));
         }
         sheet::WorkspaceSettingsEffect::EndReview => show_review(state, fed, None),
-        sheet::WorkspaceSettingsEffect::SetAgentAnswer {
-            agent,
-            scope,
-            kind,
-            answer,
-        } => answer_agent(handle, person, &agent, &scope, &kind, &answer),
-        sheet::WorkspaceSettingsEffect::ResetAgentApp { agent, scope } => {
-            reset_agent_app(handle, person, &agent, &scope);
-        }
         sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
         sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(state, fed, &bot),
     }
@@ -417,65 +409,36 @@ fn edit(
     });
 }
 
-/// A change to the workspace's people, made where the workspace keeps them.
-/// The workspace's governance is the only source of who shares it, so the change goes there first,
-/// signed with this device's key: every member admits what it answers as it admits every change its
-/// people make. The shell keeps the change only once the workspace took it; one it refuses leaves
-/// the shell as it was, and the sheet says why in the workspace's own words.
-/// A workspace whose governance this device does not hold has only the shell: the change is the
-/// shell's, as it was before workspaces had governance here.
+/// A change to the workspace in front, made where the workspace keeps it
+/// ([`crate::governance::govern`]); one it refuses leaves the shell as it was, and the sheet says why
+/// in the workspace's own words.
 fn govern(
     state: &sheet::WorkspaceSettingsState,
     fed: &Feeding<'_>,
     edit: impl Fn(&mut Workspace, &UserId) -> Result<domain::PolicyEdit, Refusal> + 'static,
 ) {
-    let handle = fed.handle;
-    let person = fed.person;
-    let mut tree = handle.read(Clone::clone);
-    let Some(workspace) = tree.active_workspace_mut() else {
+    let Some(workspace) = fed
+        .handle
+        .read(|tree| tree.active_workspace().map(Workspace::id))
+    else {
         return;
     };
-    let changed = match edit(workspace, person) {
-        Ok(changed) => changed,
-        Err(refusal) => return refuse(state, fed, &refusal.to_string()),
+    let at = crate::governance::Governing {
+        handle: fed.handle,
+        person: fed.person,
+        engine: fed.engine,
+        landings: fed.landings,
     };
-    if changed.is_empty() {
-        return;
-    }
-    let workspace_id = workspace.id();
-    let Some(engine) = governing(fed, workspace_id) else {
+    let landed_state = state.clone();
+    let landed = move |landed: Result<(), String>| match landed {
         // The change the person made is the one that stands, so a refusal they have since
         // corrected has nothing left to say.
-        state.dismiss_notice();
-        handle.replace_tree(tree);
-        return;
+        Ok(()) => landed_state.dismiss_notice(),
+        Err(reason) => refused(&landed_state, &reason),
     };
-    let writes =
-        crate::membership::Membership::of(&engine, workspace_id).changes(workspace, &changed);
-    let written = crate::landing::off_loop(async move {
-        crate::membership::Membership::of(&engine, workspace_id)
-            .write(&writes)
-            .await
-    });
-    let (state, handle, person) = (state.clone(), handle.clone(), person.clone());
-    fed.landings.then(written, move |written| {
-        if let Err(reason) = answered(written) {
-            return refused(&state, &reason);
-        }
-        state.dismiss_notice();
-        // The shell takes the change as it stands now, which moved while the workspace answered.
-        let mut tree = handle.read(Clone::clone);
-        let Some(workspace) = tree
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id() == workspace_id)
-        else {
-            return;
-        };
-        if edit(workspace, &person).is_ok_and(|changed| !changed.is_empty()) {
-            handle.replace_tree(tree);
-        }
-    });
+    if let Err(refusal) = crate::governance::govern(&at, workspace, edit, landed) {
+        refuse(state, fed, &refusal.to_string());
+    }
 }
 
 /// Say why the workspace refused a change, over the tab the person asked on,
@@ -572,51 +535,6 @@ fn next_personal_default(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_
     }
 }
 
-/// Set what an agent may do for one kind of action at one app, and nothing else: the effect carries
-/// the answer the person chose, and an empty one takes the agent back to what its admission says.
-fn answer_agent(
-    handle: &DesktopHandle,
-    person: &UserId,
-    agent: &str,
-    scope: &str,
-    kind: &str,
-    answer: &str,
-) {
-    let (Some(scope), Some(kind)) = (AnswerScope::parse(scope), agent_access::kind_from_key(kind))
-    else {
-        tracing::debug!(%scope, %kind, "no such answer: nothing changed");
-        return;
-    };
-    let answer = if answer.is_empty() {
-        None
-    } else {
-        let Some(answer) = Answer::parse(answer) else {
-            tracing::debug!(%answer, "no such answer: nothing changed");
-            return;
-        };
-        Some(answer)
-    };
-    edit(handle, person, |ws, actor| {
-        agent_access::set_agent_answers(ws, actor, agent, &[(scope, kind, answer)])
-    });
-}
-
-/// Take every answer the person set for an agent at one app back to what the agent's admission
-/// says.
-fn reset_agent_app(handle: &DesktopHandle, person: &UserId, agent: &str, scope: &str) {
-    let Some(scope) = AnswerScope::parse(scope) else {
-        tracing::debug!(%scope, "no such app: nothing changed");
-        return;
-    };
-    edit(handle, person, |ws, actor| {
-        let answers: Vec<_> = agent_access::KINDS
-            .into_iter()
-            .map(|kind| (scope.clone(), kind, None))
-            .collect();
-        agent_access::set_agent_answers(ws, actor, agent, &answers)
-    });
-}
-
 /// The workspace in front, as the record of its agents is opened against.
 fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
     fed.handle.read(|tree| tree.active_workspace().cloned())
@@ -634,12 +552,11 @@ impl Feeding<'_> {
         workspace_id: Option<&str>,
         name: &str,
         model: &str,
-        colour: Option<u8>,
     ) -> Result<String, String> {
         let workspace = self.workspace(workspace_id)?;
         self.tabs
             .agents
-            .create(Some(&workspace), self.person, (name, None), model, colour)
+            .create(Some(&workspace), self.person, (name, None), model)
             .map(|(id, _)| id)
     }
 
@@ -662,13 +579,9 @@ impl Feeding<'_> {
         {
             return Ok(agent);
         }
-        self.tabs.agents.create(
-            Some(&workspace),
-            self.person,
-            (client, Some(client)),
-            "",
-            None,
-        )
+        self.tabs
+            .agents
+            .create(Some(&workspace), self.person, (client, Some(client)), "")
     }
 
     fn workspace(&self, workspace_id: Option<&str>) -> Result<Workspace, String> {
@@ -768,7 +681,14 @@ fn settings(
         tabs: tabs(),
         tab,
         general: general(tree, person, personal, engine),
-        people: workspace.map_or_else(sheet::People::default, |ws| people(ws, &names, person)),
+        people: workspace.map_or_else(sheet::People::default, |ws| {
+            people(
+                ws,
+                &names,
+                person,
+                &engine.map_or_else(Vec::new, |engine| engine.holders(&ws.id().to_string())),
+            )
+        }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
         }),
@@ -1028,9 +948,29 @@ fn own_name() -> Option<String> {
     ui::local_identity::load().map(|identity| identity.display_name)
 }
 
-/// The People tab: who shares the workspace and their roles.
-fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People {
-    crate::workspace_people::tab(domain::people::content(ws, names, person, ws.owns(person)))
+/// The People tab: who shares the workspace, their roles, and the holders of
+/// the workspace with what each can read.
+fn people(
+    ws: &Workspace,
+    names: &PeopleNames,
+    person: &UserId,
+    holders: &[Holder],
+) -> sheet::People {
+    let kept: Vec<domain::people::MemberHolder> = holders
+        .iter()
+        .map(|holder| domain::people::MemberHolder {
+            name: holder.label.clone(),
+            reads: holder.reads,
+            cloud: holder.cloud,
+        })
+        .collect();
+    crate::workspace_people::tab(domain::people::content(
+        ws,
+        names,
+        person,
+        ws.owns(person),
+        &kept,
+    ))
 }
 
 /// The Privacy & Security tab: the permissions the workspace gives, who holds each, and the

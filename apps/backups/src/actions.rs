@@ -302,7 +302,7 @@ mod tests {
     /// device cannot run them.
     #[test]
     fn live_rows_bind_each_items_effects_and_say_why_they_are_unavailable() {
-        let catalog = Catalog::sample(ui::clock::local_now().naive_local());
+        let catalog = Catalog::sample(ui::clock::local_now().datetime());
         let rows = row_tree(&catalog, None);
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
@@ -390,7 +390,7 @@ mod tests {
     /// result names.
     #[test]
     fn snapshots_beyond_the_page_resolve_by_id() {
-        let mut catalog = Catalog::sample(ui::clock::local_now().naive_local());
+        let mut catalog = Catalog::sample(ui::clock::local_now().datetime());
         let template = catalog.snapshots[0].clone();
         catalog.snapshots = (0..SNAPSHOT_PAGE + 5)
             .map(|n| {

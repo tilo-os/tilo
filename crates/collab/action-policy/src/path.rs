@@ -18,7 +18,7 @@ pub enum Level {
     App,
     /// A resource kind the app publishes (`snippets.library`).
     Kind,
-    /// One resource (record) of that kind.
+    /// One resource of that kind.
     Resource,
     Item,
     /// A field, possibly nested; field edits are actions under it.

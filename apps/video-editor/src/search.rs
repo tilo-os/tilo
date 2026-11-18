@@ -105,7 +105,7 @@ fn track_entry(track: &Track) -> SearchEntry {
         .with_icon("layers")
 }
 
-/// A lane's kind as a person reads it.
+/// A track's kind as a person reads it.
 fn track_kind_words(kind: crate::model::TrackKind) -> String {
     crate::resource::CATALOG.t(match kind {
         crate::model::TrackKind::Video => "video-editor-a11y-track-kind-video",
@@ -326,7 +326,7 @@ mod tests {
                     },
                     3_000,
                 );
-                assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+                assert_eq!(hit.title, format!("ordinary resource 2999 {LATE_HIT_NEEDLE}"));
                 let page = provider.search_page(
                     &ui::search::SearchQuery::parse(LATE_HIT_NEEDLE, &[]),
                     None,

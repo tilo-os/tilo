@@ -627,7 +627,7 @@ tilo_test_env::scenario! {
 
     phase a_time_without_an_app_follows_the_body;
     // Without an app's name over the title, how long ago a card arrived follows its body instead of
-    // standing alone on a line of its own, at the end of a text column an action cuts short.
+    // alone on a line of its own, at the end of a text column an action cuts short.
     {
         let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
             .body("Launch notes")

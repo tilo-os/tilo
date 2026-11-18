@@ -1,7 +1,7 @@
 //! Pure data model for the Mail app.
 //!
 //! Everything here is IO-free, render-free logic. The widgets read these
-//! structs; the mailbox record ([`crate::resource::Mail`]) holds the
+//! structs; the mailbox resource ([`crate::resource::Mail`]) holds the
 //! *mutable* per-message state (read/unread, starred, current folder) and the
 //! draft. The immutable message corpus (headers + bodies +
 //! attachments) is hydrated from the server in the live app, or from the
@@ -436,6 +436,10 @@ pub struct Mailbox {
     pub order: Vec<MessageId>,
     search_revision: u64,
     threads: RefCell<HashMap<Folder, ThreadMemo>>,
+    /// Messages loaded since [`Self::take_loaded`] last took them: what
+    /// still needs the reader's flags shown on it, without going over every
+    /// message again.
+    loaded: Vec<MessageId>,
 }
 
 #[derive(Clone, Debug)]
@@ -473,6 +477,7 @@ impl Mailbox {
             order: Vec::new(),
             search_revision: next_search_revision(),
             threads: RefCell::new(HashMap::new()),
+            loaded: Vec::new(),
         }
     }
 
@@ -489,6 +494,7 @@ impl Mailbox {
     pub fn insert(&mut self, msg: Message) {
         if !self.messages.contains_key(&msg.id) {
             self.order.push(msg.id);
+            self.loaded.push(msg.id);
         }
         self.messages.insert(msg.id, msg);
         self.touch_search_revision();
@@ -496,6 +502,11 @@ impl Mailbox {
 
     pub fn get(&self, id: MessageId) -> Option<&Message> {
         self.messages.get(&id)
+    }
+
+    /// The messages loaded since this was last asked, oldest first.
+    pub fn take_loaded(&mut self) -> Vec<MessageId> {
+        std::mem::take(&mut self.loaded)
     }
 
     pub fn get_mut(&mut self, id: MessageId) -> Option<&mut Message> {

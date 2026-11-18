@@ -356,7 +356,7 @@ tilo_test_env::scenario! {
     phase a_widget_holding_parts_takes_other_parts_only_by_being_built_again;
     {
         use crate::widget::{
-            Board, BoardCardProps, BoardLaneProps, BoardProps, Map, MapPinProps, MapProps, Text,
+            Board, BoardCardProps, BoardListProps, BoardProps, Map, MapPinProps, MapProps, Text,
         };
 
         fn pin(key: &str, body: &str) -> MapPinProps {
@@ -448,11 +448,11 @@ tilo_test_env::scenario! {
         };
         let board = |cards: &[&str]| BoardProps {
             name: Some("Plan".into()),
-            lanes: vec![BoardLaneProps {
+            lists: vec![BoardListProps {
                 key: "todo".into(),
                 title: Some("To do".into()),
                 cards: cards.iter().map(|key| card(key)).collect(),
-                ..BoardLaneProps::default()
+                ..BoardListProps::default()
             }],
         };
         let (mut host, before) = laid_out(<Board as Described>::from_props(
@@ -465,7 +465,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             host.root_mut::<Board>().set_props(board(&["a", "b"])),
-            "a board given the lanes and cards it holds takes where it stands"
+            "a board given the lists and cards it holds takes where it stands"
         );
         let after = said(host.root::<Board>());
         assert!(

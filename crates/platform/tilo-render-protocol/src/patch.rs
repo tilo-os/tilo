@@ -8,7 +8,7 @@
 //! the widgets, lays them out, shapes text, draws and takes input; the app (its view
 //! instances, in an app host) holds the data. So:
 //!
-//! - **The app sends its views** ([`ToUi`]): a lane's tree when it opens, the runtime's
+//! - **The app sends its views** ([`ToUi`]): a level's tree when it opens, the runtime's
 //!   patches to it after, the rows of virtual lists the host asked for, what bound controls
 //!   show, and what the window says (a notice, the Ask bar).
 //! - **The host sends what the person did** ([`ToApp`]): events of components (an action
@@ -59,7 +59,7 @@ pub fn is_virtual_list(kind: &str) -> bool {
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a
 /// row) went to, shown after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Lane {
+pub enum Level {
     Root,
     Detail,
 }
@@ -268,7 +268,7 @@ pub struct Invocation {
     pub action: String,
 }
 
-/// One change of a lane's tree, against the tree the ones before it left. Paths are keys from
+/// One change of a level's tree, against the tree the ones before it left. Paths are keys from
 /// the root's children down; the root is the empty path.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Patch {
@@ -517,8 +517,8 @@ pub struct Form {
     pub ready: bool,
     /// Why the action refused the last submit, when that names no field.
     pub error: Option<String>,
-    /// The control that ran the action, by lane and key: a popover form is anchored to it.
-    pub from: Option<(Lane, String)>,
+    /// The control that ran the action, by level and key: a popover form is anchored to it.
+    pub from: Option<(Level, String)>,
     /// Each field's control in `tree` by key, in order, with the text it holds now (what the
     /// person typed, else the default): the window shows it when the form opens.
     pub fields: Vec<(String, String)>,
@@ -573,40 +573,40 @@ impl ActionCatalogue {
 /// What an app sends its window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToUi {
-    /// The window shows the platform's loading state until a lane opens.
+    /// The window shows the platform's loading state until a level opens.
     Loading,
-    /// A lane opened (or opened anew): its view's tree, without the rows of its virtual lists,
+    /// A level opened (or opened anew): its view's tree, without the rows of its virtual lists,
     /// and the resource it shows. A detail opening with `front` comes to the front of a narrow
     /// window.
     Open {
-        lane: Lane,
+        level: Level,
         target: ResourceRef,
         tree: Node,
         front: Option<Front>,
     },
-    /// The detail lane closed.
+    /// The detail level closed.
     Close,
-    /// A lane's page comes to the front of a narrow window. When the window draws the item its
+    /// A level's page comes to the front of a narrow window. When the window draws the item its
     /// own view shows in place (a tree beside what it shows), `shows` is that item and the press
     /// that showed it: what the person types after that press belongs to it.
     Front {
         front: Front,
         shows: Option<(u64, ResourceRef)>,
     },
-    /// The runtime's patches to a lane's tree.
-    Patch { lane: Lane, patches: Vec<Patch> },
+    /// The runtime's patches to a level's tree.
+    Patch { level: Level, patches: Vec<Patch> },
     /// What the bound control `key` shows now. `acked` is the last of its splices the app took:
     /// the host keeps what the person typed after it.
     Bound {
-        lane: Lane,
+        level: Level,
         key: String,
         value: Value,
         acked: u64,
     },
-    /// Rows of the virtual list `list` (its key in the lane): how many it has, the keys of
+    /// Rows of the virtual list `list` (its key in the level): how many it has, the keys of
     /// those from `start` on, and those of them rendered.
     Rows {
-        lane: Lane,
+        level: Level,
         list: String,
         len: u32,
         start: u32,
@@ -615,7 +615,7 @@ pub enum ToUi {
     },
     /// What changed of a virtual list's rows, and how many it has now.
     RowsChanged {
-        lane: Lane,
+        level: Level,
         list: String,
         len: u32,
         changes: Vec<RowChange>,
@@ -660,17 +660,17 @@ pub enum ToUi {
 pub enum ToApp {
     /// The event `event` of the node `key` happened, carrying `value` when it carries one.
     Fire {
-        lane: Lane,
+        level: Level,
         key: String,
         event: String,
         value: Option<Value>,
     },
     /// The checkbox or switch `key` of the view of `target` is now `checked`.
     ///
-    /// An edit names the resource the lane showed when the person made it: it applies to that
-    /// resource, whatever the lane shows by the time the app takes it.
+    /// An edit names the resource the level showed when the person made it: it applies to that
+    /// resource, whatever the level shows by the time the app takes it.
     Toggle {
-        lane: Lane,
+        level: Level,
         target: ResourceRef,
         key: String,
         checked: bool,
@@ -679,7 +679,7 @@ pub enum ToApp {
     /// `at` replaced by `insert`, against what the control showed. `seq` counts the control's
     /// splices.
     Splice {
-        lane: Lane,
+        level: Level,
         target: ResourceRef,
         key: String,
         seq: u64,
@@ -690,7 +690,7 @@ pub enum ToApp {
     /// The bound control `key` of the view of `target`, which edits a value other than text (a
     /// number, a date), now holds `text`.
     Edit {
-        lane: Lane,
+        level: Level,
         target: ResourceRef,
         key: String,
         text: String,
@@ -699,14 +699,14 @@ pub enum ToApp {
     /// paragraphs, marks and references (the runtime brings the field to it by splices and
     /// marks).
     EditRich {
-        lane: Lane,
+        level: Level,
         target: ResourceRef,
         key: String,
         rich: rich::RichText,
     },
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve {
-        lane: Lane,
+        level: Level,
         key: String,
         approve: bool,
     },
@@ -719,12 +719,12 @@ pub enum ToApp {
     OpenReference {
         reference: String,
     },
-    /// Back from the detail lane.
+    /// Back from the detail level.
     Back,
     /// The virtual list `list` shows the rows `start..end` now, and the row `open` — its key —
     /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document).
     Rows {
-        lane: Lane,
+        level: Level,
         list: String,
         start: u32,
         end: u32,
@@ -750,16 +750,16 @@ pub enum ToApp {
     /// (Ctrl+Z, Edit › Undo). The record's undo, the one undo there is: a field the person typed
     /// into keeps no history of its own beside it.
     Undo,
-    /// The keyboard focus is in the bound control `key` of `lane`, or in none.
+    /// The keyboard focus is in the bound control `key` of `level`, or in none.
     Focus {
-        at: Option<(Lane, String)>,
+        at: Option<(Level, String)>,
     },
     /// An input method is composing in the focused control, or stopped.
     Composing(bool),
-    /// The view of `lane` has `width` by `height` of the window, in `rem` (the body text size
+    /// The view of `level` has `width` by `height` of the window, in `rem` (the body text size
     /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
     Space {
-        lane: Lane,
+        level: Level,
         width: f32,
         height: f32,
     },
@@ -890,7 +890,7 @@ mod tests {
     fn a_batch_reads_back_as_it_was_sent_and_scribbles_are_refused() {
         let batch = vec![
             ToUi::Open {
-                lane: Lane::Root,
+                level: Level::Root,
                 target: ResourceRef {
                     id: "doc".to_owned(),
                     ty: "notes.Notebook".to_owned(),
@@ -899,7 +899,7 @@ mod tests {
                 front: None,
             },
             ToUi::Patch {
-                lane: Lane::Root,
+                level: Level::Root,
                 patches: vec![Patch::SetProp {
                     path: Vec::new(),
                     name: "value".to_owned(),
@@ -960,7 +960,7 @@ mod tests {
         ]
         .into_iter()
         .map(|value| ToUi::Patch {
-            lane: Lane::Root,
+            level: Level::Root,
             patches: vec![Patch::SetProp {
                 path: Vec::new(),
                 name: "value".to_owned(),
@@ -984,7 +984,7 @@ mod tests {
         };
         for rich in [rich::RichText::default(), plain] {
             let edit = vec![ToApp::EditRich {
-                lane: Lane::Root,
+                level: Level::Root,
                 target: ResourceRef {
                     id: "n1".into(),
                     ty: "Note".into(),
@@ -1039,7 +1039,7 @@ mod tests {
         };
         let batch = vec![
             ToUi::Open {
-                lane: Lane::Root,
+                level: Level::Root,
                 target: ResourceRef {
                     id: "c".to_owned(),
                     ty: "chat.Conversation".to_owned(),
@@ -1048,7 +1048,7 @@ mod tests {
                 front: None,
             },
             ToUi::Patch {
-                lane: Lane::Root,
+                level: Level::Root,
                 patches: vec![splice.clone()],
             },
         ];

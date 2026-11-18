@@ -323,7 +323,7 @@ fn neg_one() -> i32 {
 }
 
 impl SerializedChannel {
-    /// Build a minimal-but-valid channel record from just a channel URL — the
+    /// Build a minimal-but-valid channel resource from just a channel URL — the
     /// only field Tube tracks. Field fidelity beyond `url`/`name` is lossy (see
     /// module docs); this is enough for the peer to ingest the subscription.
     pub fn from_url(url: impl Into<String>) -> Self {

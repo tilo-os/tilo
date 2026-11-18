@@ -1,5 +1,5 @@
 //! The layout in the page: the role is [`tilo_session_core::layout`]'s, the one a native
-//! session runs, standing on the layout document this page keeps.
+//! session runs, on the layout document this page keeps.
 //!
 //! A page has no compositor to say whether the person is mid-gesture, and the palette's index is
 //! the frame's own, which the role cannot reach from here: an action that would wait for the
@@ -49,7 +49,7 @@ impl PageActions {
             Rc::new(tilo_desktop_search::names::window_name),
             tilo_session_core::layout::source_words(),
         )));
-        // Nothing here answers a search or has an agent to ask, so both seams are honestly empty: a
+        // Nothing here answers a search or has an agent to ask, so both boundaries are honestly empty: a
         // place made by text is the page's palette's to open, never a second index of its own. The
         // empty find answers at once with nothing, as a search over no source would.
         let find: Find = Rc::new(|_: &str, done: FindDone| done(Vec::new()));

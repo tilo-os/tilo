@@ -490,7 +490,7 @@ impl Studio {
 }
 
 impl Studio {
-    /// What the record holds: the themes the person is writing, role by role.
+    /// What the resource holds: the themes the person is writing, role by role.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

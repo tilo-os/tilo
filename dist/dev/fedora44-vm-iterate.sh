@@ -202,7 +202,7 @@ build_session_pair() {
           RUSTC_WRAPPER=sccache \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked -p tilo-session --bin tilo-session --no-default-features --features dev-session \\
-            -p launcher --bin tilo-launcher -p tilo-session-record --bin tilo-flight-recorder"
+            -p launcher --bin tilo-launcher -p tilo-flight-log --bin tilo-flight-recorder"
 }
 
 cmd_build() {
@@ -459,7 +459,7 @@ Usage:
 uses debug builds only, deploys executable files into a disposable VM, then
 hands off to a normal UI logout/login so wrapper cleanup is exercised.
 
-The Fedora 44 lane uses its own container-local sccache server and cache
+The Fedora 44 job uses its own container-local sccache server and cache
 directory. This is required: a copied host server could compile SPA/PipeWire C
 shims in the host's header namespace rather than Fedora 44's.
 EOF

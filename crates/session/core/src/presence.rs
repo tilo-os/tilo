@@ -4,7 +4,7 @@
 //! Whom a view follows is the follower's own word on their live presence, which every roster reads;
 //! this keeps only what a view must not repeat — which of that person's places it already brought
 //! forward. Where the pointers are, and what arrives beside them, is the same for both hosts, so the
-//! page and the native shell draw the plane's members by one rule.
+//! page and the native shell draw the live session's members by one rule.
 
 use collab_types::presence::Shown;
 use tilo_live::presence::{KEEPALIVE_MS, Tile, tile};

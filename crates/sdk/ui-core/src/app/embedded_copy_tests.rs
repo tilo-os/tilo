@@ -56,8 +56,8 @@ struct Host {
     /// The tile drawn inside a translucent group.
     translucent: bool,
     /// The tile, its edge and the member's mark drawn inside a part
-    /// bounded by the whole scene, as a strip's lane holds its windows.
-    lane: bool,
+    /// bounded by the whole scene, as a strip's section holds its windows.
+    section: bool,
 }
 
 fn lay_out(tile: &mut EmbeddedApp, theme: &Theme) {
@@ -97,8 +97,8 @@ fn section(
         None,
         &KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1),
     );
-    if host.lane {
-        crate::scene_parts::begin(&mut scene, PartKey::new("test.lane", ()));
+    if host.section {
+        crate::scene_parts::begin(&mut scene, PartKey::new("test.section", ()));
     }
     let shape = RoundedRect::from_rect(REGION, 12.0);
     if host.translucent {
@@ -170,7 +170,7 @@ fn section(
         );
         vec![KurboRect::from_center_size(at, (20.0, 20.0))]
     });
-    if host.lane {
+    if host.section {
         crate::scene_parts::end(&mut scene, vec![KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1)]);
     }
     if host.badge {
@@ -368,17 +368,17 @@ fn what_the_host_draws_over_the_app_outside_its_parts_is_repainted_and_matches()
 
 #[test]
 fn a_tile_inside_a_part_around_it_still_copies_and_matches() {
-    // What the lane draws after the tile (the tile's clip closing, its
-    // edge, the mark) is over the list only where it paints: the lane's
+    // What the section draws after the tile (the tile's clip closing, its
+    // edge, the mark) is over the list only where it paints: the section's
     // bounds cover the tile too, so they say nothing about what is over it.
     let host = Host {
         peer: Some(Point::new(320.0, 260.0)),
-        lane: true,
+        section: true,
         ..Host::default()
     };
     for scale in [1.0, 2.0] {
         let runs = scroll(&Theme::dark(), host, scale, &[(40.0, 15)]);
-        assert_copies(&runs[0], scale, &format!("lane {scale}x"));
+        assert_copies(&runs[0], scale, &format!("section {scale}x"));
     }
 }
 

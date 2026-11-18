@@ -29,7 +29,7 @@ tilo_test_env::scenario! {
         grant.publish_expectation(&home, &cancel).unwrap();
         std::fs::create_dir(media.join(super::super::media_setup::DIRECTORY)).unwrap();
         // This receipt locates opaque setup bytes; the native consumer separately
-        // authenticates identity custody. Publication must not imply that authority.
+        // authenticates identity storage. Publication must not imply that authority.
         let setup = super::super::media_setup::DeliveryReceipt {
             relative_path: PathBuf::from(".tilo-installer/prepared-setup.sealed"),
             sealed_bytes: 48,
@@ -363,21 +363,25 @@ fn full_home_streams_directly_to_granted_media_and_authenticated_binding_roundtr
 }
 
 #[test]
-fn installer_custody_exclusion_is_exact_and_held_namespace_replacement_refuses() {
+fn installer_ownership_exclusion_is_exact_and_held_namespace_replacement_refuses() {
     let root = fixture();
     let source = root.path().join("source");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("HOME", &source);
     env.set("XDG_STATE_HOME", source.join(".local/state"));
-    let custody = crate::session::preparation_namespace().unwrap();
-    std::fs::create_dir_all(&custody).unwrap();
-    std::fs::set_permissions(&custody, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(custody.join("draft.json"), b"installer private custody").unwrap();
-    let sibling = custody.with_file_name("preparations-user");
+    let ownership = crate::session::preparation_namespace().unwrap();
+    std::fs::create_dir_all(&ownership).unwrap();
+    std::fs::set_permissions(&ownership, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(ownership.join("draft.json"), b"installer private ownership").unwrap();
+    let sibling = ownership.with_file_name("preparations-user");
     std::fs::create_dir(&sibling).unwrap();
-    std::fs::write(sibling.join("notes"), b"real user data beside custody").unwrap();
+    std::fs::write(sibling.join("notes"), b"real user data beside ownership").unwrap();
     let reviewed = HomeSource::review(&source).unwrap();
-    std::fs::write(custody.join("new-checkpoint"), b"new installer checkpoint").unwrap();
+    std::fs::write(
+        ownership.join("new-checkpoint"),
+        b"new installer checkpoint",
+    )
+    .unwrap();
     reviewed.validate().unwrap();
     let cancel = AtomicBool::new(false);
     let expected = reviewed
@@ -416,23 +420,23 @@ fn installer_custody_exclusion_is_exact_and_held_namespace_replacement_refuses()
                 .join(".local/state/tilo/installer/preparations-user/notes")
         )
         .unwrap(),
-        b"real user data beside custody"
+        b"real user data beside ownership"
     );
-    std::fs::rename(&custody, custody.with_file_name("retained-custody")).unwrap();
-    std::fs::create_dir(&custody).unwrap();
-    std::fs::set_permissions(&custody, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::rename(&ownership, ownership.with_file_name("retained-ownership")).unwrap();
+    std::fs::create_dir(&ownership).unwrap();
+    std::fs::set_permissions(&ownership, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(reviewed.validate().is_err());
-    std::fs::remove_dir(&custody).unwrap();
-    symlink(custody.with_file_name("retained-custody"), &custody).unwrap();
+    std::fs::remove_dir(&ownership).unwrap();
+    symlink(ownership.with_file_name("retained-ownership"), &ownership).unwrap();
     assert!(HomeSource::review(&source).is_err());
     assert_eq!(
         std::fs::read(
-            custody
-                .with_file_name("retained-custody")
+            ownership
+                .with_file_name("retained-ownership")
                 .join("draft.json")
         )
         .unwrap(),
-        b"installer private custody"
+        b"installer private ownership"
     );
 }
 

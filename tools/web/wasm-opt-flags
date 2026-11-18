@@ -1,6 +1,6 @@
 # The wasm-opt arguments for every web module this repository builds: the
 # page's start module and the modules split from it, the compute module, and
-# the bundles the app SDK writes. One list, so the module a size gate measures
+# the bundles the app SDK writes. One list, so the module a size check measures
 # is the module the site serves.
 #
 # Read by crates/browser/tilo-browser-runtime/scripts/build.sh,

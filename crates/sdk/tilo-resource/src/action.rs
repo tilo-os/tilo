@@ -178,12 +178,7 @@ impl ActionCx {
     /// the host that admitted it named it; empty for a person.
     #[must_use]
     pub fn acting_name(&self) -> String {
-        tilo_actions::invoking_context()
-            .and_then(|context| context.invoker)
-            .filter(|invoker| !invoker.acting.is_person())
-            .and_then(|invoker| invoker.name)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_default()
+        invoking_name()
     }
 
     /// The name and avatar a bot showed for this action instead of its own,
@@ -273,6 +268,27 @@ impl Drop for MintScope {
     fn drop(&mut self) {
         MINT.with(|mint| mint.set(self.0));
     }
+}
+
+/// Who invoked the action applying now, as its envelope pinned it: what
+/// [`ActionCx::author`] reads, for domain code a verb calls without its
+/// context.
+#[must_use]
+pub fn invoking_member() -> Option<MemberId> {
+    invoking_author()
+}
+
+/// The name software acting for someone (an agent, an app) acted under in
+/// the action applying now: what [`ActionCx::acting_name`] reads, for domain
+/// code a verb calls without its context; empty for a person.
+#[must_use]
+pub fn invoking_name() -> String {
+    tilo_actions::invoking_context()
+        .and_then(|context| context.invoker)
+        .filter(|invoker| !invoker.acting.is_person())
+        .and_then(|invoker| invoker.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_default()
 }
 
 /// A new UUID for domain code that makes things (a clip split in two, a

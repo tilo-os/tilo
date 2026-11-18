@@ -136,7 +136,7 @@ def stage(client, packet, request_raw):
         raise ValueError('remote staging receipt differs')
     result = remote_call(client, 'release', spool.canonical(expected))
     if result != {**expected, 'ready': True}:
-        raise ValueError('operator gate response differs')
+        raise ValueError('operator check response differs')
     return result
 
 
@@ -189,7 +189,7 @@ def release(receipt, work=Path('/work')):
     # Atomic no-overwrite publication from a private directory onto trusted /work.
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.renameat2(-100, os.fsencode(staging / 'ready'), -100, os.fsencode(work / 'operator-ready'), 1):
-        raise OSError(ctypes.get_errno(), 'operator gate publication rejected')
+        raise OSError(ctypes.get_errno(), 'operator check publication rejected')
     spool.sync_directory(work)
     return {**receipt, 'ready': True}
 

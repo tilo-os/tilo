@@ -1,8 +1,8 @@
-app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, records: .own)
+app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, resources: .own)
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in
-/// custody; the system keeps this in step with the server.
+/// ownership; the system keeps this in step with the server.
 type Account (origin: imap.account) {
     key: Text merge register
     address: Text
@@ -215,7 +215,7 @@ fn as_lines(body: Text) -> Text {
 /// The clock time a moment falls at, as people read one: `10:41` or `10:41 AM`, in the clock the
 /// person chose in Settings, as every other time the window shows reads. What the window says
 /// when an account's mail was last read from its server; an account whose mail never came says
-/// nothing, its moment standing at the epoch.
+/// nothing, its moment at the epoch.
 fn fetched_clock(a: Account) -> Text {
     let never = Time("1970-01-01T00:00:00Z")
     if a.fetched <= never {
@@ -724,7 +724,7 @@ view unified(m: Mail) {
     }
 }
 
-/// The person's mail standing on its own, as a place shows it: every account's inbox in one
+/// The person's mail on its own, as a place shows it: every account's inbox in one
 /// list of conversations, newest first, with none of the window's sidebar or bar around it. The
 /// mail window shows the same list under its places (`unified`).
 view all_inboxes(m: Mail) {

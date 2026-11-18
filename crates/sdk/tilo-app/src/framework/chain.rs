@@ -1,4 +1,4 @@
-//! Records an app keeps beside its own as a chain of parts: what grows
+//! Resources an app keeps beside its own as a chain of parts: what grows
 //! without end — a chat's messages, a log — kept as numbered records of
 //! another resource type ([`DocumentId::part`]) in the workspace the app's record
 //! lives in.
@@ -14,8 +14,13 @@
 //!
 //! The resource of the parts says how they are used ([`Chained`]): which
 //! part an action changes (the one holding the item it names, or for a new
-//! item the head or the part after it), and what an action reads of the
-//! app's own record where it is invoked. Everything else is the framework's:
+//! item the head or the part after it), what an action reads of the app's
+//! own record and of the other parts where it is invoked
+//! ([`Chained::prepare`]), and what one action means for the items other
+//! parts keep ([`Chained::spread`]: the links to a renamed note,
+//! relabelled in every part holding one, each part's change its own step
+//! there, by the same invoker). A part's action reads only its own part, so
+//! it replays the same everywhere. Everything else is the framework's:
 //!
 //! - **One API.** The chain is published beside the app's resource as one
 //!   resource ([`Chain::id`]): the head's actions, and every held part's
@@ -59,7 +64,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker, OperationKind};
-use tilo_resource::{Invoke, Reader, Resource};
+use tilo_resource::{Invoke, Resource};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
@@ -69,12 +74,20 @@ use ui_core::resource::{
 
 use super::dispatch::Dispatcher;
 use super::history::{PART_EDIT_TYPE, PartEdit};
-use super::live::Live;
-use super::record::ResourceApi;
+use super::resources::ResourceApi;
 
+mod dispatching;
 mod listing;
+mod part;
+mod reading;
+mod shares;
 
+use dispatching::detached_dispatch;
+pub(crate) use dispatching::dispatching;
 use listing::{Listing, Page};
+use part::{HeldPart, PartType, live_of};
+use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
+use shares::Written;
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -154,6 +167,23 @@ pub trait Chained: Resource {
     /// (or the next part, once the head is full).
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self::State>)]) -> Result<u64, String>;
 
+    /// The share of `action` each part carries out, when it names items
+    /// kept in several parts (archive these messages): one action per part
+    /// holding some of them, written into each as one step that Undo takes
+    /// back whole. `None` (the default) for an action one part carries out,
+    /// the one [`Self::part_for`] names.
+    ///
+    /// # Errors
+    /// Refuses an action naming no item a part held here keeps.
+    #[allow(clippy::type_complexity, reason = "a part's number beside its share")]
+    fn split(
+        action: &Self::Action,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Result<Option<Vec<(u64, Self::Action)>>, String> {
+        let _ = (action, parts);
+        Ok(None)
+    }
+
     /// Fill in, where the action is invoked, what it records from the app's
     /// own record (who a mention names), and refuse what that record does
     /// not allow (a post to a channel it has not got). A part's action
@@ -162,21 +192,51 @@ pub trait Chained: Resource {
     /// `parts` are the parts this device holds, oldest first: what an
     /// action checks across items of other parts reads them here (a task
     /// placed before one kept in another part, a parent that must exist),
-    /// so the verb itself still reads only its own part.
+    /// so the verb itself still reads only its own part. `invoker` is who
+    /// it is invoked by: what an action naming "mine" resolves against (the
+    /// one note they made).
     fn prepare(
         action: &mut Self::Action,
         base: &<Self::Base as Resource>::State,
         parts: &[(u64, Rc<Self::State>)],
+        invoker: &ActionInvoker,
     ) -> Result<(), String> {
-        let _ = (action, base, parts);
+        let _ = (action, base, parts, invoker);
         Ok(())
+    }
+
+    /// Further actions the same invocation writes into other parts, right
+    /// after `action` landed in part `index`: what one change means for
+    /// items kept elsewhere (the links to a renamed note, relabelled in
+    /// every part holding one). `parts` are the parts held, oldest first,
+    /// `index` with `action` applied. Each is written as the same invoker's,
+    /// a history step of its own in the part it names; one naming `index`
+    /// or a part not held here is not written. None by default.
+    fn spread(
+        action: &Self::Action,
+        index: u64,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Vec<(u64, Self::Action)> {
+        let _ = (action, index, parts);
+        Vec::new()
+    }
+
+    /// The items the parts keep that the chain does not show, by their
+    /// resource ids ([`tilo_resource::items::item_resource_id`]), given the
+    /// parts held, oldest first: what reads across parts says is not there
+    /// (a note under one that was deleted, kept in another part). Neither
+    /// published, found by search nor read, and shown again once what hid
+    /// it is back. None by default.
+    fn hidden(parts: &[(u64, Rc<Self::State>)]) -> std::collections::HashSet<String> {
+        let _ = parts;
+        std::collections::HashSet::new()
     }
 
     /// Whether the chain exists only beside the window's own record, never
     /// beside the app's record of the workspace: the parts of an app that
     /// keeps a record per member (Mail) are that person's, so a window that
     /// does not show their record holds no chain at all.
-    const BESIDE_RECORD: bool = false;
+    const BESIDE_RESOURCE: bool = false;
 
     /// Whether a window holds every part of the chain rather than its head
     /// and what a reader scrolled back to: for a chain whose views list all
@@ -284,45 +344,90 @@ pub type Parts<P> = Rc<[(u64, Rc<<P as Resource>::State>)]>;
 
 /// What each held part published, by its number: the state and language it
 /// was built from, and the publication.
-type PartsPublished = BTreeMap<u64, (Rc<dyn Any>, u64, tilo_actions::ResourceSpec)>;
+type PartsPublished = BTreeMap<u64, (Rc<dyn Any>, u64, Rc<PartPublished>)>;
+
+/// What one part publishes as the chain carries it: the part's own resource without its items,
+/// and its items, each routed to the chain and offering the chain's reads and opener, shared
+/// from one version of the chain's publication to the next while the part is unchanged.
+struct PartPublished {
+    head: tilo_actions::ResourceSpec,
+    items: Vec<ui_core::published::SharedResource>,
+}
+
+/// The items of every part before the newest, newest first, each id once: gathered again only
+/// when one of those parts changed, not when the newest one takes another item.
+struct EarlierItems {
+    parts: Vec<Rc<PartPublished>>,
+    items: Vec<ui_core::published::SharedResource>,
+    ids: std::collections::HashSet<String>,
+}
+
+impl EarlierItems {
+    fn of(parts: Vec<Rc<PartPublished>>) -> Self {
+        let mut ids = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        for part in &parts {
+            items.extend(
+                part.items
+                    .iter()
+                    .filter(|item| ids.insert(item.id().to_owned()))
+                    .cloned(),
+            );
+        }
+        Self { parts, items, ids }
+    }
+
+    fn holds(&self, parts: &[Rc<PartPublished>]) -> bool {
+        self.parts.len() == parts.len()
+            && self
+                .parts
+                .iter()
+                .zip(parts)
+                .all(|(kept, part)| Rc::ptr_eq(kept, part))
+    }
+}
 
 /// What search found in each held part, by its number, with the state it was
 /// read from.
 type PartsSearched = BTreeMap<u64, (Rc<dyn Any>, Rc<Vec<tilo_resource::SearchEntry>>)>;
 
-/// The app's record as a part's [`Chained::prepare`] reads it.
-type Base<P> = Rc<dyn Fn() -> Rc<<<P as Chained>::Base as Resource>::State>>;
+/// The app's resource as a part's [`Chained::prepare`] reads it.
+type Base = Rc<dyn Fn() -> Rc<dyn Any>>;
 
 /// A chain held for a window: its parts, read as they change. See the
-/// [module docs](self).
-pub(crate) struct ChainState<P: Chained> {
+/// [module docs](self). Compiled once, whatever resource the parts are: what
+/// it reads of their resource is the resource's [`PartType`].
+pub(crate) struct ChainState {
     core: ChainCore,
-    base: Base<P>,
+    base: Base,
     /// What a part holds before anything was written to it: what the chain
     /// publishes before it has a head.
-    empty: Rc<P::State>,
-    published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
+    empty: Rc<dyn Any>,
+    published: RefCell<Option<((u64, u64), ui_core::published::SharedResource)>>,
     /// The parts held, as view state that follows every change
     /// ([`Chain::state`]), and the revision it was last written at.
-    state: ui_core::LocalState<Parts<P>>,
-    state_at: Cell<Option<u64>>,
-    /// The parts this window's person wrote into here, newest last: what
-    /// the window's Undo takes back first ([`Chain::undo_last`]), and the
-    /// parts it took back from, for Redo.
-    written: RefCell<Vec<u64>>,
-    undone: RefCell<Vec<u64>>,
+    view: Box<dyn Any>,
+    view_at: Cell<Option<u64>>,
+    /// The steps this window's person took here, each the parts it wrote
+    /// into, newest last: what the window's Undo takes back first
+    /// ([`Chain::undo_last`]), and the steps it took back, for Redo.
+    written: RefCell<Vec<Written>>,
+    undone: RefCell<Vec<Written>>,
     /// What [`ChainCore::waiting_resource`] writes into this chain, as a part
-    /// holding only that reads ([`ChainState::unwritten`]), at the record's heads.
-    unwritten: RefCell<Unwritten<P>>,
+    /// holding only that reads ([`ChainState::unwritten`]), at its heads.
+    unwritten: RefCell<Unwritten>,
     /// Whether the actions that waited are being applied now.
     draining: Cell<bool>,
+    /// What the verb written last answers its caller with
+    /// ([`Resource::answer`]), until [`ResourceApi::apply_answering`] takes it.
+    answered: RefCell<Option<serde_json::Value>>,
 }
 
 /// What a held chain does without reading its parts' state: opening, holding
 /// and writing parts. Compiled once, whatever resource the parts are.
 pub(crate) struct ChainCore {
     workspace: WorkspaceResources,
-    part: PartType,
+    part: &'static PartType,
     /// The chain the parts belong to.
     chain: DocumentId,
     id: String,
@@ -334,6 +439,11 @@ pub(crate) struct ChainCore {
     waiting: RefCell<BTreeMap<u64, PartArrival>>,
     revision: Cell<u64>,
     part_published: RefCell<PartsPublished>,
+    /// Each held part's document, by its number: named once, not on every
+    /// frame that follows it.
+    part_ids: RefCell<BTreeMap<u64, DocumentId>>,
+    /// The items of the parts before the newest, as last gathered ([`EarlierItems`]).
+    earlier: RefCell<Option<EarlierItems>>,
     part_search: RefCell<PartsSearched>,
     /// The store's [`ResourceStore::kept_revision`] when the window last
     /// looked for a newer head and at the parts it waits for.
@@ -348,96 +458,13 @@ pub(crate) struct ChainCore {
     unsent_looked: Cell<bool>,
 }
 
-/// What [`ChainCore`] needs of the parts' resource.
-struct PartType {
-    kind: &'static str,
-    label: &'static str,
-    held_whole: bool,
-    /// The fields a row of the listing carries when its caller names none.
-    listed: &'static [&'static str],
-    initialize: fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-    /// Read the part a record holds, brought up to the resource's storage
-    /// version first.
-    read: ReadPart,
-}
-
-/// How [`PartType::read`] reads a part from the store.
-type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
-
-impl PartType {
-    fn of<P: Chained>() -> Self {
-        Self {
-            kind: P::KIND,
-            label: P::LABEL,
-            held_whole: P::HELD_WHOLE,
-            listed: P::LISTED,
-            initialize: |doc| P::initialize(doc).map_err(|error| error.to_string()),
-            read: read_part::<P>,
-        }
-    }
-}
-
-/// A part held, followed as its record changes.
-trait HeldPart {
-    fn sync(&self, doc: &tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>;
-    fn take_change(&self);
-    fn as_any(&self) -> &dyn Any;
-}
-
-impl<R: Resource> HeldPart for Live<R> {
-    fn sync(&self, doc: &tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError> {
-        Live::sync(self, doc)
-    }
-
-    fn take_change(&self) {
-        let _ = Live::take_change(self);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-/// Part `part` of a chain of `P`, read from `store`. An older part is
-/// brought up to the part's storage version before it is read, as the
-/// app's record is when it opens: once, as the same housekeeping change on
-/// every device.
-fn read_part<P: Chained>(
-    store: &ResourceStore,
-    part: &DocumentId,
-) -> Result<Box<dyn HeldPart>, String> {
-    let older = store
-        .read(part, tilo_resource::evolution::needs_migrate::<P>)
-        .ok_or("the part is not open here")?;
-    if older {
-        // Not while a frame reads the store: the part is held at the
-        // next refresh, as a part this device asked for is.
-        if !store.takes_writes() {
-            return Err("the part is migrated once the store takes writes".into());
-        }
-        store.migrate(part, |doc| {
-            tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
-        })?;
-    }
-    let reader = store
-        .read(part, Reader::<P>::read)
-        .ok_or("the part is not open here")?
-        .map_err(|error| error.to_string())?;
-    Ok(Box::new(Live::new(reader)))
-}
-
-/// `part` as a part of a chain of `P`.
-fn live_of<P: Chained>(part: &dyn HeldPart) -> Option<&Live<P>> {
-    part.as_any().downcast_ref::<Live<P>>()
-}
-
 /// What to do once an action that waited for its part was applied (the
 /// part's number) or refused.
 pub(crate) type Later = Box<dyn FnOnce(Result<u64, ActionError>)>;
 
 /// What the actions waiting for their part write, read as a part, at the
 /// heads of the record that keeps them.
-type Unwritten<P> = (Vec<ChangeHash>, Option<Rc<<P as Resource>::State>>);
+type Unwritten = (Vec<ChangeHash>, Option<Rc<dyn Any>>);
 
 /// The kind of the record of a person's actions waiting for their part.
 const UNSENT_KIND: &str = tilo_actions::surface::CHAIN_UNSENT_KIND;
@@ -447,21 +474,24 @@ thread_local! {
     /// part, by its entry in the record of them: told by whichever window
     /// applies it.
     static ANSWERS: RefCell<HashMap<String, Later>> = RefCell::default();
+    /// The published action a chain's answer is carrying out, when it
+    /// declares an answer ([`super::resources::ResourceAction::answers`]).
+    static ASKED: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// An action that waits for the part it changes to arrive, as the record
 /// of them keeps it: `id` names its entry there.
-struct Unsent<P: Chained> {
+struct Unsent {
     id: String,
-    action: P::Action,
+    action: Box<dyn Any>,
     invoker: ActionInvoker,
 }
 
 /// What became of an action applied to the part it changes.
 enum Write {
-    /// Written into the part numbered first, creating the item resources
+    /// Written into the parts named first, creating the item resources
     /// listed second.
-    Done(u64, Vec<String>),
+    Done(Written, Vec<String>),
     /// The part is on its way from the workspace; nothing was written.
     Arriving,
 }
@@ -490,9 +520,15 @@ impl ChainCore {
         }
     }
 
-    /// Keep `entry`, an action and who invoked it, in the record of
+    /// Keep `action`, an action's JSON, invoked by `invoker`, with the
     /// waiting actions, after the others. Its entry there.
-    fn keep_unsent(&self, entry: String) -> Result<String, ActionError> {
+    fn keep_unsent(&self, action: &[u8], invoker: &ActionInvoker) -> Result<String, ActionError> {
+        if !self.open_unsent(true) {
+            return Err(ActionError::Refused(PART_ARRIVING.into()));
+        }
+        let action: serde_json::Value =
+            serde_json::from_slice(action).map_err(ActionError::Encode)?;
+        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
         let chain = self.chain.as_str().to_owned();
         self.edit_unsent(move |doc| {
             let list = match doc.get(ROOT, chain.as_str())? {
@@ -516,18 +552,59 @@ impl ChainCore {
         state: Rc<dyn Any>,
         language: u64,
         publish: &dyn Fn() -> tilo_actions::ResourceSpec,
-    ) -> tilo_actions::ResourceSpec {
+        table: Option<&'static tilo_resource::table::ModelTable>,
+    ) -> Rc<PartPublished> {
         if let Some((kept, at, published)) = self.part_published.borrow().get(&index)
             && Rc::ptr_eq(kept, &state)
             && *at == language
         {
-            return published.clone();
+            return Rc::clone(published);
         }
-        let published = publish();
+        let mut head = publish();
+        let items = std::mem::take(&mut head.children)
+            .into_iter()
+            .map(|child| {
+                ui_core::published::SharedResource::from_resource(
+                    self.carried_item(route_at(child, &self.id, true), table),
+                )
+            })
+            .collect();
+        let published = Rc::new(PartPublished { head, items });
         self.part_published
             .borrow_mut()
-            .insert(index, (state, language, published.clone()));
+            .insert(index, (state, language, Rc::clone(&published)));
         published
+    }
+
+    /// `child`, an item routed to the chain, offering the chain's read of it and its opener.
+    fn carried_item(
+        &self,
+        mut child: tilo_actions::ResourceSpec,
+        table: Option<&'static tilo_resource::table::ModelTable>,
+    ) -> tilo_actions::ResourceSpec {
+        let item = child.id.as_str().to_owned();
+        if tilo_resource::items::item_of_resource_in(self.part.kind, &item).is_none() {
+            return child;
+        }
+        // What the chain holds, read newest part first and paged, and each
+        // item read from the part keeping it ([`Self::read`]): a device holds
+        // a chat's head, and what a caller wants of a chat is its messages,
+        // not the part they were written into.
+        if !child.actions.iter().any(|spec| spec.id == "read") {
+            child
+                .actions
+                .push(read_spec(self.part.label, &self.id, Some(&item)));
+        }
+        // What an item holds as a resource of its own (a rich-text
+        // body) is read through the same read, from the part keeping it.
+        if let Some(table) = table {
+            offer_nested_reads(&mut child.children, table, self.part, &self.id);
+        }
+        // Shown where the app's window shows it, as its search hit
+        // opens it (the window's openers answer the item's address), and
+        // named by a link of its own, as an item of the record is.
+        super::root::offer_item(&mut child);
+        child
     }
 
     /// What search finds in part `index`, read as `state` (`search`): built
@@ -602,64 +679,68 @@ impl ChainCore {
     }
 
     /// The chain as it is published, from what its head published
-    /// (`resource`), its earlier parts, newest first (`earlier`), and the
+    /// (`head`), its earlier parts, newest first (`earlier`), and the
     /// places the app derives from them (`places`): their items, each
     /// carried out through [`CHAIN_ACTION_TYPE`] on the part it changes, and
-    /// the chain's read.
+    /// the chain's read. Each part's items are the very nodes the last
+    /// version carried while that part is unchanged, so a change to one part
+    /// publishes that part's items anew and only points at the others'.
     fn publish(
         &self,
-        mut resource: tilo_actions::ResourceSpec,
-        earlier: Vec<tilo_actions::ResourceSpec>,
+        head: &PartPublished,
+        earlier: Vec<Rc<PartPublished>>,
         places: Vec<tilo_actions::ResourceSpec>,
+        hidden: &std::collections::HashSet<String>,
         table: Option<&'static tilo_resource::table::ModelTable>,
-    ) -> tilo_actions::ResourceSpec {
-        let mut seen: std::collections::HashSet<tilo_actions::ResourceId> = resource
-            .children
-            .iter()
-            .map(|child| child.id.clone())
-            .collect();
-        for earlier in earlier {
-            resource.children.extend(
+    ) -> ui_core::published::SharedResource {
+        let _profile = tilo_resource::profiling::Phase::start("framework.chain_publish");
+        let mut kept = self.earlier.borrow_mut();
+        if !kept.as_ref().is_some_and(|kept| kept.holds(&earlier)) {
+            *kept = Some(EarlierItems::of(earlier));
+        }
+        let (earlier, earlier_ids) = kept.as_ref().map_or((&[][..], None), |kept| {
+            (kept.items.as_slice(), Some(&kept.ids))
+        });
+        let mut items = Vec::with_capacity(
+            head.items
+                .len()
+                .saturating_add(earlier.len())
+                .saturating_add(places.len()),
+        );
+        let mut own: std::collections::HashSet<String> = std::collections::HashSet::new();
+        items.extend(
+            head.items
+                .iter()
+                .filter(|item| own.insert(item.id().to_owned()))
+                .cloned(),
+        );
+        // An earlier part's item the newest part claims too is the newest part's.
+        if earlier_ids.is_some_and(|ids| own.iter().any(|id| ids.contains(id))) {
+            items.extend(
                 earlier
-                    .children
-                    .into_iter()
-                    .filter(|child| seen.insert(child.id.clone())),
+                    .iter()
+                    .filter(|item| !own.contains(item.id()))
+                    .cloned(),
             );
+        } else {
+            items.extend(earlier.iter().cloned());
         }
         for place in places {
-            if seen.insert(place.id.clone()) {
-                resource.children.push(place);
+            let id = place.id.as_str();
+            if own.contains(id) || earlier_ids.is_some_and(|ids| ids.contains(id)) {
+                continue;
             }
+            own.insert(id.to_owned());
+            items.push(ui_core::published::SharedResource::from_resource(
+                self.carried_item(route_at(place, &self.id, true), table),
+            ));
         }
-        let mut published = route(resource, &self.id);
-        // What the chain holds, read newest part first and paged, and each
-        // item read from the part keeping it ([`Self::read`]): a device holds
-        // a chat's head, and what a caller wants of a chat is its messages,
-        // not the part they were written into.
+        drop(kept);
+        let mut published = route(head.head.clone(), &self.id);
         published
             .actions
             .push(read_spec(self.part.label, &self.id, None));
-        for child in &mut published.children {
-            let item = child.id.as_str().to_owned();
-            if tilo_resource::items::item_of_resource_in(self.part.kind, &item).is_none() {
-                continue;
-            }
-            if !child.actions.iter().any(|spec| spec.id == "read") {
-                child
-                    .actions
-                    .push(read_spec(self.part.label, &self.id, Some(&item)));
-            }
-            // What an item holds as a resource of its own (a rich-text
-            // body) is read through the same read, from the part keeping it.
-            if let Some(table) = table {
-                offer_nested_reads(&mut child.children, table, &self.part, &self.id);
-            }
-            // Shown where the app's window shows it, as its search hit
-            // opens it (the window's openers answer the item's address), and
-            // named by a link of its own, as an item of the record is.
-            super::root::offer_item(child);
-        }
-        let own: std::collections::HashSet<String> = published
+        let named: std::collections::HashSet<String> = published
             .actions
             .iter()
             .map(|spec| spec.id.clone())
@@ -667,10 +748,16 @@ impl ChainCore {
         published.actions.extend(
             super::history::part_edit_specs()
                 .into_iter()
-                .filter(|spec| !own.contains(&spec.id))
-                .map(|spec| super::record::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
+                .filter(|spec| !named.contains(&spec.id))
+                .map(|spec| super::resources::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
         );
-        published
+        if !hidden.is_empty() {
+            items.retain(|item| !hidden.contains(item.id()));
+        }
+        ui_core::published::SharedResource::new(
+            published,
+            ui_core::published::SharedChildren::new(items),
+        )
     }
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
@@ -685,14 +772,11 @@ impl ChainCore {
         &self,
         table: Option<&'static tilo_resource::table::ModelTable>,
         parts: &[(u64, &dyn Any)],
-        payload: &[u8],
+        read: &ChainRead,
         prepare: &dyn Fn(&mut listing::Filter) -> Result<(), String>,
+        hidden: &std::collections::HashSet<String>,
     ) -> Result<serde_json::Value, String> {
-        let read = ChainRead::of(payload)?;
         let table = table.ok_or_else(|| format!("{} answer no reads", self.part.label))?;
-        if let Some(item) = read.item.as_deref() {
-            return self.read_item(table, parts, item);
-        }
         let Some(&(newest, _)) = parts.last() else {
             return Ok(serde_json::json!({ "kind": self.part.kind }));
         };
@@ -711,7 +795,7 @@ impl ChainCore {
                 "nextCursor": read_cursor(at, skip),
             }));
         }
-        let listing = Listing::of(&read, table, &self.part, parts, prepare)?;
+        let listing = Listing::of(read, table, self.part, parts, prepare)?;
         let mut page = Page::new(read.page_size);
         // Where the page ran out of parts, rather than out of room.
         let mut ended = None;
@@ -726,7 +810,8 @@ impl ChainCore {
                 skip = 0;
             }
             let kind = self.part.kind;
-            let Some(passed) = page.take(*index, *state, table, kind, &listing, skip) else {
+            let Some(passed) = page.take(*index, *state, table, kind, &listing, hidden, skip)
+            else {
                 break;
             };
             ended = Some((*index, passed));
@@ -760,25 +845,6 @@ impl ChainCore {
         Ok(serde_json::Value::Object(answer))
     }
 
-    /// One item of a part this device holds, as the read of it answers.
-    fn read_item(
-        &self,
-        table: &'static tilo_resource::table::ModelTable,
-        parts: &[(u64, &dyn Any)],
-        item: &str,
-    ) -> Result<serde_json::Value, String> {
-        for (_, state) in parts.iter().rev() {
-            if let Ok(value) = tilo_resource::table::item_json(table, *state, self.part.kind, item)
-            {
-                return Ok(value);
-            }
-        }
-        Err(format!(
-            "{item} is in a part of these {} this device does not hold",
-            self.part.label.to_lowercase()
-        ))
-    }
-
     /// Apply a history verb to the part it names ([`PartEdit`]), invoked by
     /// `invoker` (`action` is that verb): checked as an undoable change where the chain publishes
     /// the verb, and written into the part's history as any of its steps.
@@ -810,7 +876,7 @@ impl ChainCore {
         self.hold_kept(edit.part)
             .map_err(|error| self.refused(error))?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
-        self.write(edit.part, action, encoded, invoker, None)?;
+        self.write(edit.part, action, encoded, invoker, None, &mut |_, _| {})?;
         let now = self
             .workspace
             .store
@@ -832,11 +898,17 @@ impl ChainCore {
         encoded: tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
         place: Option<String>,
+        written: &mut dyn FnMut(&mut ui_core::automerge::AutoCommit, &[ChangeHash]),
     ) -> Result<Vec<String>, ActionError> {
         let mut context = ActionContext::for_resource(&self.id, self.part.kind, self.part.label)
             .with_app(self.workspace.app_id, self.workspace.app_title)
             .with_invoker(invoker.clone())
-            .with_change(tilo_actions::Action::change_kind(action));
+            .with_change(tilo_actions::Action::change_kind(action))
+            .in_step();
+        // The agent session and purpose the invocation came with.
+        if let Some(ambient) = tilo_actions::invoking_context() {
+            context = context.enriched_by(&ambient);
+        }
         if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
             context = context.with_facet(tilo_actions::ActionFacet::new(
                 tilo_actions::PLACE_FACET,
@@ -858,6 +930,7 @@ impl ChainCore {
                     context,
                 )
                 .map(|envelope| {
+                    written(doc, &before);
                     ui_core::bound_dispatch::minted_items(
                         doc,
                         self.part.kind,
@@ -882,7 +955,7 @@ impl ChainCore {
         Ok(created)
     }
 
-    fn new(workspace: WorkspaceResources, part: PartType, chain: DocumentId) -> Self {
+    fn new(workspace: WorkspaceResources, part: &'static PartType, chain: DocumentId) -> Self {
         Self {
             id: ui_core::resource::chain_resource_id(&chain),
             kind: ResourceType::new(part.kind),
@@ -892,6 +965,8 @@ impl ChainCore {
             waiting: RefCell::default(),
             revision: Cell::new(0),
             part_published: RefCell::default(),
+            part_ids: RefCell::default(),
+            earlier: RefCell::new(None),
             part_search: RefCell::default(),
             looked: Cell::new(None),
             waiting_resource: unsent_checkout(&workspace.me),
@@ -904,12 +979,20 @@ impl ChainCore {
     /// arrived on this device. Whether anything moved.
     fn follow_parts(&self) -> bool {
         let mut moved = false;
+        {
+            let parts = self.parts.borrow();
+            let mut ids = self.part_ids.borrow_mut();
+            ids.retain(|index, _| parts.contains_key(index));
+            for index in parts.keys() {
+                ids.entry(*index).or_insert_with(|| self.chain.part(*index));
+            }
+        }
+        let ids = self.part_ids.borrow();
         for (index, part) in self.parts.borrow().iter() {
-            match self
-                .workspace
-                .store
-                .read(&self.chain.part(*index), |doc| part.sync(doc))
-            {
+            let Some(id) = ids.get(index) else {
+                continue;
+            };
+            match self.workspace.store.read(id, |doc| part.sync(doc)) {
                 Some(Ok(true)) => {
                     // Its history arrived, or a first change was made here.
                     self.waiting.borrow_mut().remove(index);
@@ -922,6 +1005,7 @@ impl ChainCore {
             }
             part.take_change();
         }
+        drop(ids);
         // A part opened in the store since (a peer's merged in, one this
         // device asked for and received) is held at once.
         let opened: Vec<u64> = {
@@ -1071,29 +1155,27 @@ impl ChainCore {
             return false;
         }
         let opened = if kept.is_some_and(|kept| kept >= newest) {
-            self.hold_kept(newest)
+            self.hold_kept(newest).map(|()| true)
         } else {
             // A part a peer started, started here from its genesis: what
             // they wrote in it is on its way, and a view of it waits for
-            // that rather than reading back from an empty head.
-            self.open_or_start(newest).and_then(|opened| match opened {
-                Opened::Held => Ok(()),
+            // that rather than reading back from an empty head. One asked
+            // for opens at the look its arrival brings.
+            self.open_or_start(newest).map(|opened| match opened {
+                Opened::Held => true,
                 Opened::Started => {
                     self.waiting
                         .borrow_mut()
                         .insert(newest, PartArrival::Arriving);
-                    Ok(())
+                    true
                 }
-                Opened::Asked => Err(Unopened {
-                    reason: PART_ARRIVING.into(),
-                    retry: false,
-                }),
+                Opened::Asked => false,
             })
         };
         match opened {
-            Ok(()) => {
+            Ok(moved) => {
                 self.looked.set(Some(looked));
-                true
+                moved
             }
             Err(Unopened { reason, retry }) => {
                 // A part another writer held for this moment is not gone: it
@@ -1341,6 +1423,39 @@ impl ChainCore {
         }
     }
 
+    /// The actions waiting for a part of this chain, oldest first: each
+    /// entry's id, its action's JSON and who invoked it.
+    fn unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
+        if !self.open_unsent(false) {
+            return Vec::new();
+        }
+        let kind = self.part.kind;
+        self.workspace
+            .store
+            .read(&self.waiting_resource.id, |doc| {
+                let Ok(Some((Value::Object(ObjType::List), list))) =
+                    doc.get(ROOT, self.chain.as_str())
+                else {
+                    return Vec::new();
+                };
+                doc.list_range(&list, ..)
+                    .filter_map(|item| {
+                        let id = item.id().to_string();
+                        let value = item.value.into_value();
+                        serde_json::from_str::<(serde_json::Value, ActionInvoker)>(
+                            value.as_str().unwrap_or_default(),
+                        )
+                        .map(|(action, invoker)| (id, action, invoker))
+                        .map_err(
+                            |error| tracing::warn!(kind, %error, "a waiting write does not read"),
+                        )
+                        .ok()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Take the entry `id` out of the record of waiting actions.
     fn forget_unsent(&self, id: &str) {
         let chain = self.chain.as_str().to_owned();
@@ -1390,43 +1505,53 @@ impl ChainCore {
     }
 }
 
-impl<P: Chained> ChainState<P> {
-    /// Hold the chain in `workspace`, with its head when this device has one.
-    pub(crate) fn open(workspace: WorkspaceResources, base: Base<P>) -> Option<Self> {
-        Self::open_at(workspace, base, P::chain())
+impl ChainState {
+    /// Hold the chain of `P` kept at `chain` in `workspace`, with its head
+    /// when this device has one: the app's own ([`Chained::chain`]), or one
+    /// beside a resource: the messages of one direct conversation, which
+    /// lives beside the resource the two people share
+    /// ([`Chained::chain_beside`]). Its actions read the app's resource from
+    /// `base`.
+    pub(crate) fn open<P: Chained>(
+        workspace: WorkspaceResources,
+        base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
+        chain: DocumentId,
+    ) -> Option<Self> {
+        Self::open_as(
+            workspace,
+            &part::Of::<P>::PART,
+            Rc::new(move || base() as Rc<dyn Any>),
+            chain,
+        )
     }
 
-    /// [`Self::open`] of the chain `chain` rather than the app's own: the
-    /// messages of one direct conversation, which lives beside the record
-    /// the two people share ([`Chained::chain_beside`]).
-    pub(crate) fn open_at(
+    /// [`Self::open`], whatever resource the parts are.
+    fn open_as(
         workspace: WorkspaceResources,
-        base: Base<P>,
+        part: &'static PartType,
+        base: Base,
         chain: DocumentId,
     ) -> Option<Self> {
         let mut doc = ui_core::automerge::AutoCommit::new();
-        P::initialize(&mut doc)
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "chain part has no genesis"))
+        (part.initialize)(&mut doc)
+            .map_err(|error| tracing::warn!(kind = part.kind, %error, "chain part has no genesis"))
             .ok()?;
-        let empty = Reader::<P>::read(&doc)
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "chain part unreadable"))
-            .ok()?
-            .state()
-            .clone();
+        let empty = (part.state)(&doc)?;
         let state = Self {
-            core: ChainCore::new(workspace, PartType::of::<P>(), chain),
+            core: ChainCore::new(workspace, part, chain),
             base,
             empty,
             published: RefCell::new(None),
-            state: ui_core::LocalState::new(Rc::default()),
-            state_at: Cell::new(None),
+            view: (part.new_view)(),
+            view_at: Cell::new(None),
             written: RefCell::default(),
             undone: RefCell::default(),
             unwritten: RefCell::default(),
             draining: Cell::new(false),
+            answered: RefCell::default(),
         };
-        // Asked for as the chain opens, with the window's other records: the
-        // newest part arrives in the same round trip. A chain with a part
+        // Asked for as the chain opens, with the window's other resources:
+        // the newest part arrives in the same round trip. A chain with a part
         // here already knows its newest one, and asks for nothing.
         if state.head().is_none() {
             let _ = state.core.head_on_its_way();
@@ -1439,19 +1564,23 @@ impl<P: Chained> ChainState<P> {
         &self.core.id
     }
 
+    fn part(&self) -> &'static PartType {
+        self.core.part
+    }
+
     /// The parts held, oldest first.
-    pub(crate) fn parts(&self) -> Vec<(u64, Rc<P::State>)> {
+    fn parts(&self) -> Vec<(u64, Rc<dyn Any>)> {
         self.refresh();
         self.held()
     }
 
     /// The parts held, oldest first, as they were last followed.
-    fn held(&self) -> Vec<(u64, Rc<P::State>)> {
+    fn held(&self) -> Vec<(u64, Rc<dyn Any>)> {
         self.core
             .parts
             .borrow()
             .iter()
-            .filter_map(|(index, part)| Some((*index, live_of::<P>(&**part)?.get())))
+            .map(|(index, part)| (*index, part.state()))
             .collect()
     }
 
@@ -1461,7 +1590,7 @@ impl<P: Chained> ChainState<P> {
     }
 
     /// Whether no part is held here and the workspace has not yet said which
-    /// one is the newest ([`Self::head_on_its_way`]).
+    /// one is the newest ([`ChainCore::head_on_its_way`]).
     pub(crate) fn head_arriving(&self) -> bool {
         self.head().is_none() && self.core.head_on_its_way()
     }
@@ -1483,28 +1612,28 @@ impl<P: Chained> ChainState<P> {
             self.core.moved();
         }
         let revision = self.core.revision.get();
-        if self.state_at.replace(Some(revision)) != Some(revision) {
-            self.state.set(self.held().into());
+        if self.view_at.replace(Some(revision)) != Some(revision) {
+            (self.part().set_view)(&*self.view, (self.part().typed)(&self.held()));
         }
         moved
     }
 
     /// Apply the actions that wait for their part, in order, while their part
     /// is here: what is still on its way waits on, and the ones after it too.
-    /// Each leaves the record of them once written or refused.
+    /// Each leaves the list of them once written or refused.
     fn apply_pending(&self) {
         // Writing one refreshes the chain, which comes back here.
         if self.draining.replace(true) {
             return;
         }
         for entry in self.unsent() {
-            let written = match self.try_apply(&entry.action, &entry.invoker) {
+            let written = match self.try_apply(&*entry.action, &entry.invoker) {
                 Ok(Write::Arriving) => break,
-                Ok(Write::Done(index, _)) => Ok(index),
+                Ok(Write::Done(written, _)) => Ok(written.last()),
                 Err(error) => Err(error),
             };
             self.core.forget_unsent(&entry.id);
-            answer::<P>(&entry.id, written);
+            answer(self.part().kind, &entry.id, written);
         }
         self.draining.set(false);
         if self.follow_unsent() {
@@ -1512,29 +1641,28 @@ impl<P: Chained> ChainState<P> {
         }
     }
 
-    /// Apply `action`, invoked by `invoker`, to the part it changes: read
-    /// against the app's record ([`Chained::prepare`]), checked against
-    /// what they may do in the workspace, attributed to them and written into
-    /// the part's history. The part it was written to, with the item
-    /// resources it created.
+    /// Apply `action`, a `P::Action` invoked by `invoker`, to the part it
+    /// changes: read against the app's resource ([`Chained::prepare`]),
+    /// checked against what they may do in the workspace, attributed to them
+    /// and written into the part's history. The part it was written to, with
+    /// the item resources it created.
     ///
     /// While that part is on its way from the workspace (a device back from
     /// away, before its head arrived) the action waits for it: `Ok(None)`.
-    /// It is kept in the person's record of such actions with the app's
-    /// records, shown in [`Self::unwritten`] by every window of the app, and
-    /// applied by whichever holds the chain once the part is here, after
+    /// It is kept in the person's list of such actions with the app's
+    /// resources, shown in [`Self::unwritten`] by every window of the app,
+    /// and applied by whichever holds the chain once the part is here, after
     /// those that waited before it — after the window closed or the app
     /// restarted too. `later` is taken then: told the part or why it was
     /// refused if this process still runs; a refusal nobody waits for is
     /// logged. Otherwise it is left for the caller to answer now.
     ///
     /// # Errors
-    /// As the API refuses it now: the person may not, the app's record or
-    /// the part refused it, or the record of waiting actions cannot be
-    /// written.
+    /// As the API refuses it now: the person may not, the app's resource or
+    /// the part refused it, or the list of waiting actions cannot be written.
     pub(crate) fn apply_as(
         &self,
-        action: &P::Action,
+        action: &dyn Any,
         invoker: &ActionInvoker,
         later: &mut Option<Later>,
     ) -> Result<Option<(u64, Vec<String>)>, ActionError> {
@@ -1542,18 +1670,16 @@ impl<P: Chained> ChainState<P> {
         if self.unsent().is_empty() {
             match self.try_apply(action, invoker)? {
                 Write::Arriving => {}
-                Write::Done(index, created) => {
-                    // Only what the window's person did themselves: an
-                    // agent's step is its own to take back.
-                    if super::record::acts_for(invoker, &self.core.workspace.me) {
-                        self.written.borrow_mut().push(index);
-                        self.undone.borrow_mut().clear();
-                    }
+                Write::Done(written, created) => {
+                    let index = written.last();
+                    self.wrote(invoker, written, (self.part().is_step)(action));
                     return Ok(Some((index, created)));
                 }
             }
         }
-        let id = self.keep_unsent(action, invoker)?;
+        let id = self
+            .core
+            .keep_unsent(&(self.part().to_json)(action)?, invoker)?;
         if let Some(later) = later.take() {
             ANSWERS.with(|answers| answers.borrow_mut().insert(id, later));
         }
@@ -1566,14 +1692,14 @@ impl<P: Chained> ChainState<P> {
     /// What the actions waiting for their part write ([`Self::apply_as`]),
     /// read as a part holding only that: what a view shows as being sent.
     /// `None` while nothing waits.
-    pub(crate) fn unwritten(&self) -> Option<Rc<P::State>> {
+    pub(crate) fn unwritten(&self) -> Option<Rc<dyn Any>> {
         if self.follow_unsent() {
             self.core.moved();
         }
         self.unwritten.borrow().1.clone()
     }
 
-    /// Read the record of waiting actions again when it changed (here, in
+    /// Read the list of waiting actions again when it changed (here, in
     /// another window, on another of the person's devices). Whether it did.
     fn follow_unsent(&self) -> bool {
         // Not here (nothing waits), or read by whatever runs now: as it was.
@@ -1598,77 +1724,73 @@ impl<P: Chained> ChainState<P> {
         true
     }
 
-    fn read_unwritten(&self, unsent: &[Unsent<P>]) -> Option<Rc<P::State>> {
+    fn read_unwritten(&self, unsent: &[Unsent]) -> Option<Rc<dyn Any>> {
         if unsent.is_empty() {
             return None;
         }
+        let part = self.part();
         let mut doc = ui_core::automerge::AutoCommit::new();
-        P::initialize(&mut doc).ok()?;
+        (part.initialize)(&mut doc).ok()?;
         let base = (self.base)();
         // As held, without a refresh: this is read while one runs.
-        let parts = self.held();
+        let parts = (part.typed)(&self.held());
         for entry in unsent {
-            let mut action = entry.action.clone();
-            if P::prepare(&mut action, &base, &parts).is_err() {
+            let Ok(action) = (part.prepare)(&*entry.action, &*base, &*parts, &entry.invoker) else {
                 continue;
-            }
-            let Ok(encoded) = tilo_resource::encode::<P>(&action) else {
+            };
+            let Ok((action, encoded)) = (part.written)(&*action) else {
                 continue;
             };
             self.core
-                .show_unsent(&mut doc, &action, encoded, &entry.invoker);
+                .show_unsent(&mut doc, action, encoded, &entry.invoker);
         }
-        Reader::<P>::read(&doc)
-            .map(|reader| Rc::clone(reader.state()))
-            .ok()
+        (part.state)(&doc)
     }
 
     /// The actions waiting for a part of this chain, oldest first.
-    fn unsent(&self) -> Vec<Unsent<P>> {
-        if !self.core.open_unsent(false) {
-            return Vec::new();
-        }
+    fn unsent(&self) -> Vec<Unsent> {
+        let part = self.part();
         self.core
-            .workspace
-            .store
-            .read(&self.core.waiting_resource.id, |doc| {
-                read_unsent::<P>(doc, &self.core.chain)
+            .unsent()
+            .into_iter()
+            .filter_map(|(id, action, invoker)| {
+                let action = (part.from_json)(action)
+                    .map_err(|error| {
+                        tracing::warn!(kind = part.kind, %error, "a waiting write does not read");
+                    })
+                    .ok()?;
+                Some(Unsent {
+                    id,
+                    action,
+                    invoker,
+                })
             })
-            .unwrap_or_default()
-    }
-
-    /// Keep `action`, invoked by `invoker`, in the record of waiting
-    /// actions, after the others. Its entry there.
-    fn keep_unsent(
-        &self,
-        action: &P::Action,
-        invoker: &ActionInvoker,
-    ) -> Result<String, ActionError> {
-        if !self.core.open_unsent(true) {
-            return Err(ActionError::Refused(PART_ARRIVING.into()));
-        }
-        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
-        self.core.keep_unsent(entry)
+            .collect()
     }
 
     /// Write `action` into its part now, as [`Self::apply_as`], or say the
     /// part is on its way.
-    fn try_apply(&self, action: &P::Action, invoker: &ActionInvoker) -> Result<Write, ActionError> {
+    fn try_apply(&self, action: &dyn Any, invoker: &ActionInvoker) -> Result<Write, ActionError> {
+        let part = self.part();
         // Which part is the newest is on its way: a part started now would be
         // an old one, or a second first one.
         if self.head_arriving() {
-            tracing::warn!(kind = P::KIND, "a write waits for the chain head");
+            tracing::warn!(kind = part.kind, "a write waits for the chain head");
             return Ok(Write::Arriving);
         }
-        let mut action = action.clone();
         let base = (self.base)();
-        let parts = self.parts();
-        P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
-        let place = P::place(&action, &base);
+        let parts = (part.typed)(&self.parts());
+        let action =
+            (part.prepare)(action, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
+        let (place, index) = (part.route)(&*action, &*base, &*parts);
         drop(base);
-        let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
+        if let Some(shares) = (part.split)(&*action, &*parts).map_err(ActionError::Refused)? {
+            drop(parts);
+            return self.write_shares(shares, invoker, place.as_deref());
+        }
+        let index = index.map_err(ActionError::Refused)?;
         drop(parts);
-        self.may(&action)?;
+        self.may(&*action)?;
         let head = self.core.parts.borrow().keys().next_back().copied();
         match self
             .core
@@ -1683,9 +1805,41 @@ impl<P: Chained> ChainState<P> {
             }
             Opened::Asked => return Ok(Write::Arriving),
         }
-        let encoded = tilo_resource::encode::<P>(&action)?;
-        let created = self.write(index, &action, encoded, invoker, place)?;
-        Ok(Write::Done(index, created))
+        // A field edit and a verb declared to answer nothing (a move) answer
+        // nothing, whatever they made; the rest answer what the part says
+        // they made (a note's id, the blocks a body's action touched).
+        // An edit naming no verb answers as the published action it carries
+        // out, when that declares an answer (a body's `replace-range`).
+        let verb = (part.verb)(&*action);
+        let asked = ASKED.with(|asked| asked.borrow().clone());
+        let answering = verb.as_deref().or(asked.as_deref()).filter(|verb| {
+            *verb != tilo_resource::FIELD_EDIT
+                && *verb != tilo_resource::APPLY
+                && !(part.answers_nothing)(verb)
+        });
+        let (written, encoded) = (part.written)(&*action)?;
+        let created = self.write_answering(index, written, encoded, invoker, place, answering)?;
+        self.spread(&*action, index, invoker);
+        Ok(Write::Done(Written::one(index), created))
+    }
+
+    /// Write what `action`, just written into part `index`, means for the
+    /// other parts held here ([`Chained::spread`]), each as `invoker`'s step
+    /// in its part. One a part refuses is logged: the action itself stands.
+    fn spread(&self, action: &dyn Any, index: u64, invoker: &ActionInvoker) {
+        let part = self.part();
+        let parts = self.parts();
+        let typed = (part.typed)(&parts);
+        for (at, further) in (part.spread)(action, index, &*typed) {
+            if at == index || !parts.iter().any(|(held, _)| *held == at) {
+                continue;
+            }
+            let written = (part.written)(&*further)
+                .and_then(|(further, encoded)| self.write(at, further, encoded, invoker, None));
+            if let Err(error) = written {
+                tracing::warn!(kind = part.kind, part = at, %error, "a change was not carried to another part");
+            }
+        }
     }
 
     /// Apply `group` — several actions invoked as one — as the part (or
@@ -1694,105 +1848,110 @@ impl<P: Chained> ChainState<P> {
     /// is on its way.
     fn try_apply_group(
         &self,
-        group: &tilo_resource::group::ActionGroup<P::Action>,
+        group: &[Box<dyn Any>],
         invoker: &ActionInvoker,
     ) -> Result<Write, ActionError> {
-        if group.actions.is_empty() {
-            return Ok(Write::Done(self.head().unwrap_or(0), Vec::new()));
+        if group.is_empty() {
+            return Ok(Write::Done(
+                Written::one(self.head().unwrap_or(0)),
+                Vec::new(),
+            ));
         }
         if self.head_arriving() {
             return Ok(Write::Arriving);
         }
+        let part = self.part();
         let base = (self.base)();
-        let parts = self.parts();
-        let mut prepared = Vec::with_capacity(group.actions.len());
-        let mut places = Vec::with_capacity(group.actions.len());
-        let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
-        for action in &group.actions {
-            let mut action = action.clone();
-            P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
-            places.push(P::place(&action, &base));
-            self.may(&action)?;
-            let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
-            per_part.entry(index).or_default().push(prepared.len());
+        let parts = (part.typed)(&self.parts());
+        let mut prepared = Vec::with_capacity(group.len());
+        let mut places = Vec::with_capacity(group.len());
+        let mut indices = Vec::with_capacity(group.len());
+        for action in group {
+            let action = (part.prepare)(&**action, &*base, &*parts, invoker)
+                .map_err(ActionError::Refused)?;
+            let (place, index) = (part.route)(&*action, &*base, &*parts);
+            places.push(place);
+            self.may(&*action)?;
+            indices.push(index.map_err(ActionError::Refused)?);
             prepared.push(action);
         }
         drop(base);
         drop(parts);
+        let per_part = by_part(&indices);
         // Every part a member changes must be here: the group is one step, so
         // none of it is written while a part is on its way.
-        let mut opened = Vec::with_capacity(per_part.len());
-        for index in per_part.keys() {
+        for (index, _) in &per_part {
             match self
                 .core
                 .open_or_start(*index)
                 .map_err(|error| self.core.refused(error))?
             {
-                Opened::Held | Opened::Started => opened.push(*index),
+                Opened::Held | Opened::Started => {}
                 Opened::Asked => return Ok(Write::Arriving),
             }
         }
         let head = self.core.parts.borrow().keys().next_back().copied();
-        let mut written = None;
+        let mut written = Vec::with_capacity(per_part.len());
         let mut created = Vec::new();
-        for index in opened {
+        for (index, members) in &per_part {
+            let index = *index;
             if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
                 self.carry(previous, index, invoker)?;
             }
-            let members: Vec<P::Action> = per_part
-                .get(&index)
-                .map(|members| {
-                    members
-                        .iter()
-                        .filter_map(|at| prepared.get(*at).cloned())
-                        .collect()
-                })
-                .unwrap_or_default();
-            let place = per_part
-                .get(&index)
-                .and_then(|members| members.first())
+            let place = members
+                .first()
                 .and_then(|at| places.get(*at).cloned().flatten());
-            let group = tilo_resource::group::ActionGroup { actions: members };
-            let encoded = tilo_actions::EncodedAction::encode(
-                tilo_resource::group::group_type::<P>(),
-                &group,
-            )?;
-            created = self.write(index, &group, encoded, invoker, place)?;
-            written = Some(index);
+            let members: Vec<Box<dyn Any>> = members
+                .iter()
+                .filter_map(|at| Some((part.clone)(&**prepared.get(*at)?)))
+                .collect();
+            let (group, encoded) = (part.group)(members)?;
+            created = self.write(index, &*group, encoded, invoker, place)?;
+            written.push(index);
         }
-        Ok(Write::Done(written.unwrap_or(0), created))
+        for (index, members) in &per_part {
+            for at in members {
+                if let Some(action) = prepared.get(*at) {
+                    self.spread(&**action, *index, invoker);
+                }
+            }
+        }
+        if written.is_empty() {
+            written.push(0);
+        }
+        Ok(Write::Done(Written(written), created))
     }
 
     /// Whether `invoker` may change this chain by `action`, refused as the
     /// API refuses it where the chain publishes the action: a grant on the
     /// app, the parts' kind or the verb covers it.
-    fn may(&self, action: &P::Action) -> Result<(), ActionError> {
+    fn may(&self, action: &dyn Any) -> Result<(), ActionError> {
         if self.core.workspace.permissions.is_none() {
             return Ok(());
         }
-        self.core.may(
-            &tilo_resource::need_of::<P>(action),
-            super::workspace::verb_of::<P>(action).as_deref(),
-        )
+        let part = self.part();
+        let Some(need) = (part.need)(action) else {
+            return Ok(());
+        };
+        self.core.may(&need, (part.verb)(action).as_deref())
     }
 
     /// Write into part `index`, just started after part `previous`, what it
     /// carries of the parts before it ([`Chained::carry`]), as `invoker`'s.
     fn carry(&self, previous: u64, index: u64, invoker: &ActionInvoker) -> Result<(), ActionError> {
+        let part = self.part();
         let Some(carried) = self
             .core
             .parts
             .borrow()
             .get(&previous)
-            .and_then(|part| P::carry(previous, &live_of::<P>(&**part)?.get()))
+            .and_then(|held| (part.carry)(previous, &*held.state()))
         else {
             return Ok(());
         };
-        let action = carried
-            .build(tilo_resource::origin_now_ms())
-            .map_err(ActionError::Refused)?;
-        let encoded = tilo_resource::encode::<P>(&action)?;
-        self.write(index, &action, encoded, invoker, None).map(drop)
+        let action = carried.map_err(ActionError::Refused)?;
+        let (action, encoded) = (part.written)(&*action)?;
+        self.write(index, action, encoded, invoker, None).map(drop)
     }
 
     /// [`ChainCore::apply_history`] of `edit`, then the chain followed.
@@ -1801,8 +1960,8 @@ impl<P: Chained> ChainState<P> {
         edit: &PartEdit,
         invoker: &ActionInvoker,
     ) -> Result<serde_json::Value, ActionError> {
-        let action = super::history::part_action::<P>(edit);
-        let answer = self.core.apply_history(edit, &action, invoker)?;
+        let action = (self.part().history)(edit);
+        let answer = self.core.apply_history(edit, &*action, invoker)?;
         self.refresh();
         self.core.moved();
         Ok(answer)
@@ -1817,7 +1976,37 @@ impl<P: Chained> ChainState<P> {
         invoker: &ActionInvoker,
         place: Option<String>,
     ) -> Result<Vec<String>, ActionError> {
-        let created = self.core.write(index, action, encoded, invoker, place)?;
+        self.write_answering(index, action, encoded, invoker, place, None)
+    }
+
+    /// [`Self::write`], keeping what the verb `answering` answers its caller
+    /// with ([`Resource::answer`]: the note it made) for
+    /// [`ResourceApi::apply_answering`].
+    fn write_answering(
+        &self,
+        index: u64,
+        action: &dyn tilo_actions::Action,
+        encoded: tilo_actions::EncodedAction,
+        invoker: &ActionInvoker,
+        place: Option<String>,
+        answering: Option<&str>,
+    ) -> Result<Vec<String>, ActionError> {
+        let answer = self.part().answer;
+        let mut answered = |doc: &mut ui_core::automerge::AutoCommit, before: &[ChangeHash]| {
+            if let Some(verb) = answering {
+                let after = doc.get_heads();
+                let changes = doc.diff(before, &after);
+                let value = answer(doc, verb, &changes);
+                // The answer names the text it wrote, as the app's own answers do.
+                *self.answered.borrow_mut() = match ui_core::presence::written_by(&changes) {
+                    Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
+                    None => value,
+                };
+            }
+        };
+        let created = self
+            .core
+            .write(index, action, encoded, invoker, place, &mut answered)?;
         self.refresh();
         self.core.moved();
         Ok(created)
@@ -1828,32 +2017,51 @@ impl<P: Chained> ChainState<P> {
     /// part it changes; checked against the member's roles in the workspace
     /// as the app's own actions are.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
+        self.publish_shared().to_resource()
+    }
+
+    /// [`Self::publish`] without its items: what a table of the chain's own actions reads.
+    pub(crate) fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        self.publish_shared().head().clone()
+    }
+
+    /// [`Self::publish`] as a shared tree ([`ChainCore::publish`]).
+    pub(crate) fn publish_shared(&self) -> ui_core::published::SharedResource {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {
             return published.clone();
         }
+        let part = self.part();
         let parts = self.parts();
-        let resource = match parts.last() {
+        let newest = match parts.last() {
             Some((index, head)) => self.part_published(*index, head, revision.1),
-            None => tilo_resource::publish::<P>(&self.core.id, P::LABEL, &self.empty),
+            None => Rc::new(PartPublished {
+                head: (part.publish)(&self.core.id, &*self.empty),
+                items: Vec::new(),
+            }),
         };
-        let earlier: Vec<tilo_actions::ResourceSpec> = parts
+        let earlier: Vec<Rc<PartPublished>> = parts
             .iter()
             .rev()
             .skip(1)
             .map(|(index, state)| self.part_published(*index, state, revision.1))
             .collect();
+        let typed = (part.typed)(&parts);
         // The places the app derives from everything the chain holds, at the
         // address each is published under.
-        let places = tilo_resource::derived::published::<P>(P::places(&(self.base)(), &parts))
-            .to_resources();
+        let places = (part.places)(&*(self.base)(), &*typed);
         let held: Vec<u64> = parts.iter().map(|(index, _)| *index).collect();
         self.core.forget_unheld(&held);
-        let published = self
-            .core
-            .publish(resource, earlier, places, P::RESOURCE_TABLE);
+        // What the chain does not show (`Chained::hidden`) is left out of what it publishes.
+        let published = self.core.publish(
+            &newest,
+            earlier,
+            places,
+            &(part.hidden)(&*typed),
+            part.table,
+        );
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -1862,195 +2070,83 @@ impl<P: Chained> ChainState<P> {
     /// again only when that part changed: the chain's items, in the window's
     /// search beside the app's own.
     pub(crate) fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+        let part = self.part();
         let parts = self.parts();
         let held: Vec<u64> = parts.iter().map(|(index, _)| *index).collect();
         self.core.forget_unheld(&held);
-        let mut entries = P::search_over(&(self.base)(), &parts);
+        let typed = (part.typed)(&parts);
+        let mut entries = (part.search_over)(&*(self.base)(), &*typed);
         for (index, state) in &parts {
             let found = self
                 .core
-                .part_searched(*index, Rc::clone(state) as Rc<dyn Any>, &|| {
-                    P::search(state)
-                });
+                .part_searched(*index, Rc::clone(state), &|| (part.search)(&**state));
             entries.extend(found.iter().cloned());
+        }
+        let hidden = (part.hidden)(&*typed);
+        if !hidden.is_empty() {
+            entries.retain(|entry| {
+                entry
+                    .anchor
+                    .as_deref()
+                    .is_none_or(|anchor| !hidden.contains(anchor))
+            });
         }
         entries
     }
 
     /// [`ChainCore::part_published`] of part `index`, read as `state`.
-    fn part_published(
-        &self,
-        index: u64,
-        state: &Rc<P::State>,
-        language: u64,
-    ) -> tilo_actions::ResourceSpec {
-        self.core
-            .part_published(index, Rc::clone(state) as Rc<dyn Any>, language, &|| {
-                tilo_resource::publish::<P>(&self.core.id, P::LABEL, state)
-            })
+    fn part_published(&self, index: u64, state: &Rc<dyn Any>, language: u64) -> Rc<PartPublished> {
+        let part = self.part();
+        self.core.part_published(
+            index,
+            Rc::clone(state),
+            language,
+            &|| (part.publish)(&self.core.id, &**state),
+            part.table,
+        )
     }
 
-    /// [`ChainCore::read`] of the parts held.
+    /// [`ChainCore::read`] of the parts held, without the items the chain
+    /// does not show; an item read from the part keeping it
+    /// ([`Self::read_item`]).
     pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let part = self.part();
+        let read = ChainRead::of(payload)?;
         let parts = self.parts();
+        let typed = (part.typed)(&parts);
+        let hidden = (part.hidden)(&*typed);
+        if let Some(item) = read.item.as_deref() {
+            let table = part
+                .table
+                .ok_or_else(|| format!("{} answer no reads", part.label))?;
+            return self.read_item(table, &parts, &hidden, item, read.version.as_deref());
+        }
         let base = (self.base)();
-        let prepare = |filter: &mut listing::Filter| P::prepare_read(filter, &base, &parts);
+        let prepare = |filter: &mut listing::Filter| (part.prepare_read)(filter, &*base, &*typed);
         let held: Vec<(u64, &dyn Any)> = parts
             .iter()
-            .map(|(index, state)| (*index, &**state as &dyn Any))
+            .map(|(index, state)| (*index, &**state))
             .collect();
-        self.core.read(P::RESOURCE_TABLE, &held, payload, &prepare)
+        self.core.read(part.table, &held, &read, &prepare, &hidden)
     }
 }
 
-/// Offer the chain's read on every resource under an item that its part's
-/// table reads (an item's rich-text body), bound to that resource.
-fn offer_nested_reads(
-    children: &mut [tilo_actions::ResourceSpec],
-    table: &'static tilo_resource::table::ModelTable,
-    part: &PartType,
-    chain: &str,
-) {
-    for child in children {
-        let id = child.id.as_str().to_owned();
-        if tilo_resource::table::reads_item(table, part.kind, &id)
-            && !child.actions.iter().any(|spec| spec.id == "read")
-        {
-            child.actions.push(read_spec(part.label, chain, Some(&id)));
-        }
-        offer_nested_reads(&mut child.children, table, part, chain);
+/// The members of a group by the part each changes (`indices`, in the
+/// group's order), parts in order: one function for every part type.
+#[inline(never)]
+fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
+    let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (at, index) in indices.iter().enumerate() {
+        per_part.entry(*index).or_default().push(at);
     }
+    per_part.into_iter().collect()
 }
 
-/// The read a chain of parts labelled `label` publishes: on the chain, what it holds, newest part
-/// first and paged; on an item of a part, that item's content. `item` is the
-/// item's resource id, bound here rather than passed, as the record's own
-/// read binds the item it is offered on.
-fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_actions::ActionSpec {
-    let (chain, item) = (chain.to_owned(), item.map(str::to_owned));
-    let label = format!("Read the {}", label.to_lowercase());
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        "read",
-        label.clone(),
-        label,
-        OperationKind::View,
-        CHAIN_READ_TYPE,
-        vec![
-            tilo_actions::ActionParam::optional(
-                "cursor",
-                tilo_actions::ParamType::Text,
-                "Where the page read before ended, as its `nextCursor` said (default: the newest part)",
-            )
-            .nullable(),
-            tilo_actions::ActionParam::optional(
-                "pageSize",
-                tilo_actions::ParamType::Integer,
-                "How many items to answer with at most",
-            )
-            .with_schema(serde_json::json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": READ_PAGE_MAX,
-            })),
-            tilo_actions::ActionParam::optional(
-                "fields",
-                tilo_actions::ParamType::Array,
-                "The fields each row carries of its item, by name (default: what these list of themselves)",
-            )
-            .with_schema(serde_json::json!({
-                "type": "array",
-                "items": { "type": "string" },
-            })),
-            tilo_actions::ActionParam::optional(
-                "where",
-                tilo_actions::ParamType::Object,
-                "Answer only the items whose fields equal these: each a field's name (dotted to reach into a record) with its value, or a list of values for any one of them",
-            )
-            .with_schema(serde_json::json!({ "type": "object" })),
-        ],
-        move |args| {
-            let given = args.to_json();
-            let payload = serde_json::json!({
-                "chain": chain,
-                "item": item,
-                "cursor": args.text("cursor"),
-                "pageSize": args.integer("pageSize"),
-                "fields": given.get("fields"),
-                "where": given.get("where"),
-            });
-            tilo_actions::EncodedAction::encode_operation(CHAIN_READ_TYPE, &payload)
-                .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                    type_id: CHAIN_READ_TYPE.into(),
-                    payload: Vec::new(),
-                })
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description(
-        "What this holds as typed data: the items of its parts, the newest part first, a page at \
-         a time with `cursor` passing on where a page ended, each row with its item's address, \
-         its name and the fields asked for (`fields`), only the items `where` holds of; an \
-         item's own content when the read is of that item.",
-    )
-    // Typed data for a program to reason about; a person reads what the
-    // app shows.
-    .for_audience(tilo_actions::Audience::Agents);
-    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec.reads_document()
-}
-
-/// What one read of a chain asks for, as its published action carries it.
-struct ChainRead {
-    item: Option<String>,
-    cursor: Option<String>,
-    page_size: usize,
-    /// The fields each row carries, when the caller names them.
-    fields: Option<Vec<String>>,
-    /// What an item's fields equal for its row to be answered.
-    filter: listing::Filter,
-}
-
-impl ChainRead {
-    fn of(payload: &[u8]) -> Result<Self, String> {
-        let args: serde_json::Value = if payload.is_empty() {
-            serde_json::Value::Null
-        } else {
-            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
-        };
-        let text = |key: &str| {
-            args.get(key)
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        };
-        let page_size = args
-            .get("pageSize")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|size| usize::try_from(size).ok())
-            .unwrap_or(READ_PAGE)
-            .clamp(1, READ_PAGE_MAX);
-        let (fields, filter) = listing::asked(&args)?;
-        Ok(Self {
-            item: text("item"),
-            cursor: text("cursor"),
-            page_size,
-            fields,
-            filter,
-        })
-    }
-}
-
-/// Where a page of a chain's read ended: the part it was reading and how many
-/// of that part's items, newest first, it has answered with.
-fn read_cursor(part: u64, taken: usize) -> String {
-    format!("{part}:{taken}")
-}
-
-fn parse_read_cursor(cursor: &str) -> Option<(u64, usize)> {
-    let (part, taken) = cursor.split_once(':')?;
-    Some((part.parse().ok()?, taken.parse().ok()?))
+/// A history verb on a part, from its payload: decoded by one function for
+/// every part type.
+#[inline(never)]
+fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
+    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
 }
 
 /// `resource`'s document actions, and those of its children, carried out on
@@ -2072,7 +2168,7 @@ fn route_at(
         .into_iter()
         .filter_map(|spec| {
             if spec.kind == OperationKind::Document {
-                Some(super::record::route_operation(
+                Some(super::resources::route_operation(
                     spec,
                     CHAIN_ACTION_TYPE,
                     chain,
@@ -2089,7 +2185,7 @@ fn route_at(
     resource
 }
 
-impl<P: Chained> ResourceApi for ChainState<P> {
+impl ResourceApi for ChainState {
     fn id(&self) -> &str {
         &self.core.id
     }
@@ -2104,6 +2200,14 @@ impl<P: Chained> ResourceApi for ChainState<P> {
 
     fn publish(&self) -> tilo_actions::ResourceSpec {
         ChainState::publish(self)
+    }
+
+    fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        ChainState::publish_head(self)
+    }
+
+    fn publish_shared(&self) -> ui_core::published::SharedResource {
+        ChainState::publish_shared(self)
     }
 
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
@@ -2128,8 +2232,7 @@ impl<P: Chained> ResourceApi for ChainState<P> {
         invoker: &ActionInvoker,
     ) -> Result<tilo_actions::ActionOutput, String> {
         if action.type_id == PART_EDIT_TYPE {
-            let edit: PartEdit =
-                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+            let edit = part_edit(&action.payload)?;
             let value = self
                 .apply_history(&edit, invoker)
                 .map_err(|error| error.to_string())?;
@@ -2138,73 +2241,64 @@ impl<P: Chained> ResourceApi for ChainState<P> {
                 resources: Vec::new(),
             });
         }
-        if action.type_id == tilo_resource::group::group_type::<P>() {
-            // As every group's payload is read: one written with what its
-            // members share once reads as the list of them.
-            let group: tilo_resource::group::ActionGroup<P::Action> =
-                tilo_actions::decode_payload(&action.type_id, &action.payload)
-                    .map_err(|error| error.to_string())?;
-            for member in &group.actions {
-                super::record::not_by_app::<P>(member)?;
+        match (self.part().decode)(action)? {
+            part::Decoded::Group(group) => {
+                let resources = match self
+                    .try_apply_group(&group, invoker)
+                    .map_err(|error| error.to_string())?
+                {
+                    Write::Done(_, created) => created,
+                    Write::Arriving => Vec::new(),
+                };
+                Ok(tilo_actions::ActionOutput {
+                    value: None,
+                    resources,
+                })
             }
-            let resources = match self
-                .try_apply_group(&group, invoker)
-                .map_err(|error| error.to_string())?
-            {
-                Write::Done(_, created) => created,
-                Write::Arriving => Vec::new(),
-            };
-            return Ok(tilo_actions::ActionOutput {
-                value: None,
-                resources,
-            });
+            part::Decoded::One(action) => {
+                self.answered.borrow_mut().take();
+                // One that waits for its part creates its items once it is written.
+                let resources = self
+                    .apply_as(&*action, invoker, &mut None)
+                    .map_err(|error| error.to_string())?
+                    .map(|(_, created)| created)
+                    .unwrap_or_default();
+                Ok(tilo_actions::ActionOutput {
+                    value: self.answered.borrow_mut().take(),
+                    resources,
+                })
+            }
         }
-        if action.type_id != P::ACTION_TYPE {
-            return Err(format!("{} take no `{}` action", P::LABEL, action.type_id));
-        }
-        let action: P::Action =
-            tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
-        super::record::not_by_app::<P>(&action)?;
-        // One that waits for its part creates its items once it is written.
-        let resources = self
-            .apply_as(&action, invoker, &mut None)
-            .map_err(|error| error.to_string())?
-            .map(|(_, created)| created)
-            .unwrap_or_default();
-        Ok(tilo_actions::ActionOutput {
-            value: None,
-            resources,
-        })
     }
 }
 
 /// A chain of records the app keeps beside its own, held for a view or
 /// surface. See the module docs.
 pub struct Chain<P: Chained> {
-    state: Rc<ChainState<P>>,
+    state: Rc<ChainState>,
     dispatch: Dispatcher<P>,
 }
 
 /// A part of a chain as a record a view part is built over
 /// ([`Chain::part_record`]).
 pub struct PartRecord<P: Chained> {
-    chain: Rc<ChainState<P>>,
-    held: Rc<super::record::Held<P>>,
+    chain: Rc<ChainState>,
+    held: Rc<super::resources::Held<P>>,
 }
 
-impl<P: Chained> super::record::sealed::Hold<P> for PartRecord<P> {
+impl<P: Chained> super::resources::sealed::Hold<P> for PartRecord<P> {
     fn held(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<Rc<super::record::Held<P>>> {
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<Rc<super::resources::Held<P>>> {
         Some(Rc::clone(&self.held))
     }
 
     fn api(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
-        Some(super::record::sealed::Api(
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
+        Some(super::resources::sealed::Api(
             Rc::clone(&self.chain) as Rc<dyn ResourceApi>
         ))
     }
@@ -2214,20 +2308,20 @@ impl<P: Chained> super::record::sealed::Hold<P> for PartRecord<P> {
 /// ([`ViewCx::resource_actions`](super::ViewCx::resource_actions)): its verbs and
 /// every held part's items, carried out on the part each names, whether or
 /// not a part is held yet (a first issue made in an empty tracker).
-impl<P: Chained> super::record::sealed::Hold<P> for Chain<P> {
+impl<P: Chained> super::resources::sealed::Hold<P> for Chain<P> {
     fn held(
         &self,
-        storage: super::record::sealed::Storage<'_>,
-    ) -> Option<Rc<super::record::Held<P>>> {
+        storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<Rc<super::resources::Held<P>>> {
         let head = self.head()?;
         self.part_record(head)?.held(storage)
     }
 
     fn api(
         &self,
-        _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Api> {
-        Some(super::record::sealed::Api(
+        _storage: super::resources::sealed::Storage<'_>,
+    ) -> Option<super::resources::sealed::Api> {
+        Some(super::resources::sealed::Api(
             Rc::clone(&self.state) as Rc<dyn ResourceApi>
         ))
     }
@@ -2243,7 +2337,7 @@ impl<P: Chained> Clone for Chain<P> {
 }
 
 impl<P: Chained> Chain<P> {
-    pub(crate) fn new(state: Rc<ChainState<P>>, dispatch: Dispatcher<P>) -> Self {
+    pub(crate) fn new(state: Rc<ChainState>, dispatch: Dispatcher<P>) -> Self {
         Self { state, dispatch }
     }
 
@@ -2257,7 +2351,11 @@ impl<P: Chained> Chain<P> {
     /// Every part this window holds, oldest first, as it stands now.
     #[must_use]
     pub fn parts(&self) -> Vec<(u64, Rc<P::State>)> {
-        self.state.parts()
+        self.state
+            .parts()
+            .into_iter()
+            .filter_map(|(index, state)| Some((index, state.downcast().ok()?)))
+            .collect()
     }
 
     /// The parts this window holds, oldest first, as view state that
@@ -2269,7 +2367,11 @@ impl<P: Chained> Chain<P> {
     #[must_use]
     pub fn state(&self) -> ui_core::LocalState<Parts<P>> {
         let _ = self.state.refresh();
-        self.state.state.clone()
+        self.state
+            .view
+            .downcast_ref::<ui_core::LocalState<Parts<P>>>()
+            .cloned()
+            .unwrap_or_else(|| ui_core::LocalState::new(Rc::default()))
     }
 
     /// Part `index` as a record a part of the view is built over
@@ -2282,7 +2384,7 @@ impl<P: Chained> Chain<P> {
         let live = live_of::<P>(&**self.state.core.parts.borrow().get(&index)?)?.clone();
         let syncing = Rc::downgrade(&self.state);
         let applying = Rc::downgrade(&self.state);
-        let held = super::record::Held::new(
+        let held = super::resources::Held::new(
             self.state.core.id.clone(),
             P::LABEL.to_owned(),
             true,
@@ -2303,6 +2405,25 @@ impl<P: Chained> Chain<P> {
             chain: Rc::clone(&self.state),
             held: Rc::new(held),
         })
+    }
+
+    /// Read part `index`'s document as this window holds it: what a hand
+    /// widget showing an item of the part (a rich-text body) reads, as a
+    /// view's widgets read the app's own record. `None` while the part is
+    /// not held here.
+    pub fn read_part<T>(
+        &self,
+        index: u64,
+        read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T,
+    ) -> Option<T> {
+        if !self.state.core.parts.borrow().contains_key(&index) {
+            return None;
+        }
+        self.state
+            .core
+            .workspace
+            .store
+            .read(&self.state.core.chain.part(index), read)
     }
 
     /// The number of the chain's head: the newest part held. `None` while
@@ -2352,7 +2473,7 @@ impl<P: Chained> Chain<P> {
     }
 
     /// Apply `action` as the window's person, or whoever the invocation
-    /// carried out here is for ([`super::record::acting`]), to the part it changes. The
+    /// carried out here is for ([`super::resources::acting`]), to the part it changes. The
     /// part's number; `None` while that part is on its way from the
     /// workspace: the action waits for it, shows in [`Self::unwritten`]
     /// meanwhile, and is written once it is here, in the order asked.
@@ -2363,7 +2484,7 @@ impl<P: Chained> Chain<P> {
     pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
         self.state
-            .apply_as(action, &super::record::acting(me), &mut None)
+            .apply_as(action, &super::resources::acting(me), &mut None)
             .map(|written| written.map(|(index, _)| index))
     }
 
@@ -2378,15 +2499,22 @@ impl<P: Chained> Chain<P> {
                 tilo_resource::origin_now_ms(),
             )
             .map_err(ActionError::Refused)?;
-            for member in &group.actions {
-                super::record::not_by_app::<P>(member).map_err(ActionError::Refused)?;
+            let mut members: Vec<Box<dyn Any>> = Vec::with_capacity(group.actions.len());
+            for member in group.actions {
+                super::resources::not_by_app::<P>(&member).map_err(ActionError::Refused)?;
+                members.push(Box::new(member));
             }
             let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
+            let invoker = super::resources::acting(me);
             return self
                 .state
-                .try_apply_group(&group, &super::record::acting(me))
+                .try_apply_group(&members, &invoker)
                 .map(|written| match written {
-                    Write::Done(index, _) => Some(index),
+                    Write::Done(written, _) => {
+                        let index = written.last();
+                        self.state.wrote(&invoker, written, true);
+                        Some(index)
+                    }
                     Write::Arriving => None,
                 });
         }
@@ -2413,7 +2541,7 @@ impl<P: Chained> Chain<P> {
         let mut later: Option<Later> = Some(Box::new(then));
         let answer = match self
             .state
-            .apply_as(&action, &super::record::acting(me), &mut later)
+            .apply_as(&action, &super::resources::acting(me), &mut later)
         {
             Ok(None) => return,
             Ok(Some((index, _))) => Ok(index),
@@ -2429,7 +2557,7 @@ impl<P: Chained> Chain<P> {
     /// ([`Self::apply`]). `None` while nothing waits.
     #[must_use]
     pub fn unwritten(&self) -> Option<Rc<P::State>> {
-        self.state.unwritten()
+        self.state.unwritten()?.downcast().ok()
     }
 
     /// Take back the window's person's last step in part `index`, through
@@ -2468,41 +2596,6 @@ impl<P: Chained> Chain<P> {
             }));
         }
         undone
-    }
-
-    /// Take back the person's newest step in the part they last wrote into
-    /// through this window, as the window's Undo does when that write is
-    /// newer than any of the app's own record. Whether there was one.
-    pub fn undo_last(&self) -> bool {
-        let Some(index) = self.state.written.borrow_mut().pop() else {
-            return false;
-        };
-        let undone = self.undo_in(index).is_ok();
-        if undone {
-            self.state.undone.borrow_mut().push(index);
-        }
-        undone
-    }
-
-    /// Bring back the step [`Self::undo_last`] took back last. Whether there
-    /// was one.
-    pub fn redo_last(&self) -> bool {
-        let Some(index) = self.state.undone.borrow_mut().pop() else {
-            return false;
-        };
-        let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
-        let edit = PartEdit {
-            part: index,
-            edit: super::history::HistoryEdit::Redo { steps: None },
-        };
-        let redone = self
-            .state
-            .apply_history(&edit, &ActionInvoker::member(me.clone()))
-            .is_ok();
-        if redone {
-            self.state.written.borrow_mut().push(index);
-        }
-        redone
     }
 
     /// Whether this window's person wrote into a part here that Undo would
@@ -2662,10 +2755,10 @@ impl<P: Chained> Chain<P> {
         };
         let chain = match record {
             Some(record) => P::chain_beside(record),
-            None if P::BESIDE_RECORD => return None,
+            None if P::BESIDE_RESOURCE => return None,
             None => P::chain(),
         };
-        let state = Rc::new(ChainState::<P>::open_at(workspace, Rc::new(base), chain)?);
+        let state = Rc::new(ChainState::open::<P>(workspace, base, chain)?);
         let dispatch = detached_dispatch(app_id, &state, me);
         Some(Self { state, dispatch })
     }
@@ -2706,65 +2799,6 @@ impl<P: Chained> Chain<P> {
     }
 }
 
-/// The dispatcher of a chain outside any host, applying as `me`.
-fn detached_dispatch<P: Chained>(
-    app_id: &'static str,
-    state: &Rc<ChainState<P>>,
-    me: &tilo_resource::MemberId,
-) -> Dispatcher<P> {
-    dispatching(state, me, |apply| {
-        Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_resource::<P>(
-            state.id(),
-            false,
-            apply,
-        )
-    })
-}
-
-/// The dispatcher `make` makes of what applies an action to `state`'s parts
-/// as `me` ([`ChainState::apply_as`]): one that waits for its part is taken,
-/// as written; refused once its part arrived, it is told in the
-/// dispatcher's [`refused`](Dispatcher::refused) as one the workspace
-/// refused after this device showed it.
-pub(crate) fn dispatching<P: Chained>(
-    state: &Rc<ChainState<P>>,
-    me: &tilo_resource::MemberId,
-    make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
-) -> Dispatcher<P> {
-    let applying = Rc::downgrade(state);
-    let me = me.clone();
-    let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
-        Rc::default();
-    let telling = Rc::clone(&told);
-    let dispatch = make(Box::new(move |action| {
-        let state = applying
-            .upgrade()
-            .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
-        let refused = telling.get().cloned();
-        let named = action.clone();
-        let later: Later = Box::new(move |written| {
-            let Err(error) = written else {
-                return;
-            };
-            tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
-            if let Some(refused) = refused {
-                refused.set(Some(super::dispatch::Refused {
-                    action: super::workspace::verb_of::<P>(&named).unwrap_or_default(),
-                    item: None,
-                    reason: error.to_string(),
-                    by_workspace: true,
-                }));
-            }
-        });
-        // Whoever the invocation carried out here is for (an agent's call
-        // of an effect that writes here), else the window's person.
-        let invoker = super::record::acting(&me);
-        state.apply_as(action, &invoker, &mut Some(later)).map(drop)
-    }));
-    let _ = told.set(dispatch.refused());
-    dispatch
-}
-
 /// The record of `me`'s actions waiting for their part, in the workspace the
 /// app's records are kept in: their own there, as the app's records of a
 /// kind are ([`DocumentId::of_member`]), or the one a person without a root
@@ -2778,52 +2812,24 @@ fn unsent_checkout(me: &tilo_resource::MemberId) -> DocumentCheckout {
     DocumentCheckout::new(id, kind)
 }
 
-/// The actions the record of waiting actions `doc` keeps for `chain`, in
-/// order, each with its entry there; one that does not read is left out and
-/// logged.
-fn read_unsent<P: Chained>(
-    doc: &ui_core::automerge::AutoCommit,
-    chain: &DocumentId,
-) -> Vec<Unsent<P>> {
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(ROOT, chain.as_str()) else {
-        return Vec::new();
-    };
-    doc.list_range(&list, ..)
-        .filter_map(|item| {
-            let id = item.id().to_string();
-            let value = item.value.into_value();
-            serde_json::from_str::<(P::Action, ActionInvoker)>(value.as_str().unwrap_or_default())
-                .map(|(action, invoker)| Unsent {
-                    id,
-                    action,
-                    invoker,
-                })
-                .map_err(
-                    |error| tracing::warn!(kind = P::KIND, %error, "a waiting write does not read"),
-                )
-                .ok()
-        })
-        .collect()
-}
-
 /// Tell whoever waits for the action kept as `id` what became of it; a
 /// refusal nobody waits for is logged.
-fn answer<P: Chained>(id: &str, written: Result<u64, ActionError>) {
+fn answer(kind: &str, id: &str, written: Result<u64, ActionError>) {
     match ANSWERS.with(|answers| answers.borrow_mut().remove(id)) {
         Some(later) => later(written),
         None => {
             if let Err(error) = written {
-                tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
+                tracing::warn!(kind, %error, "a write that waited for its part was refused");
             }
         }
     }
 }
 
+/// The chains a window holds, by part type and chain.
+type HeldChains = BTreeMap<(&'static str, String), Rc<ChainState>>;
+
 /// The chains a window's views opened, by part type and chain: one per each;
 /// and the child records they opened, by container.
-/// The chains a window holds, by part type and chain.
-type HeldChains = BTreeMap<(&'static str, String), Rc<dyn Any>>;
-
 #[derive(Default)]
 pub(crate) struct Chains {
     held: RefCell<HeldChains>,
@@ -2839,21 +2845,18 @@ impl Chains {
         workspace: Option<&WorkspaceResources>,
         record: Option<&DocumentId>,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
-    ) -> Option<Rc<ChainState<P>>> {
+    ) -> Option<Rc<ChainState>> {
         // Beside the record the window shows: the app's own record of the
         // workspace, or the one per member where the app keeps those.
         let chain = match record {
             Some(record) => P::chain_beside(record),
-            None if P::BESIDE_RECORD => return None,
+            None if P::BESIDE_RESOURCE => return None,
             None => P::chain(),
         };
-        if let Some(held) = self.opened::<P>(&chain) {
+        if let Some(held) = self.opened(P::KIND, &chain) {
             return Some(held);
         }
-        let workspace = workspace?.clone();
-        let state = Rc::new(ChainState::<P>::open(workspace, Rc::new(base))?);
-        self.hold(&chain, &state);
-        Some(state)
+        self.open_at::<P>(workspace?, &chain, base)
     }
 
     /// The chain of `P` that lives beside the record `base`
@@ -2863,7 +2866,7 @@ impl Chains {
         workspace: Option<&WorkspaceResources>,
         base: &DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
-    ) -> Option<Rc<ChainState<P>>> {
+    ) -> Option<Rc<ChainState>> {
         self.open_at::<P>(workspace?, &P::chain_beside(base), base_state)
     }
 
@@ -2875,32 +2878,33 @@ impl Chains {
         workspace: &WorkspaceResources,
         chain: &DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
-    ) -> Option<Rc<ChainState<P>>> {
-        if let Some(held) = self.opened::<P>(chain) {
+    ) -> Option<Rc<ChainState>> {
+        if let Some(held) = self.opened(P::KIND, chain) {
             return Some(held);
         }
-        let state = Rc::new(ChainState::<P>::open_at(
+        let state = Rc::new(ChainState::open::<P>(
             workspace.clone(),
-            Rc::new(base_state),
+            base_state,
             chain.clone(),
         )?);
         self.hold(chain, &state);
         Some(state)
     }
 
-    /// The chain of `P` held for `chain`, if the views opened it.
-    fn opened<P: Chained>(&self, chain: &DocumentId) -> Option<Rc<ChainState<P>>> {
-        let held = self.held.borrow();
-        let held = held.get(&(P::KIND, chain.as_str().to_owned()))?;
-        Rc::clone(held).downcast::<ChainState<P>>().ok()
+    /// The chain of parts of `kind` held for `chain`, if the views opened it.
+    fn opened(&self, kind: &'static str, chain: &DocumentId) -> Option<Rc<ChainState>> {
+        self.held
+            .borrow()
+            .get(&(kind, chain.as_str().to_owned()))
+            .cloned()
     }
 
     /// Keep `state` for the views that ask for its chain again, published
     /// and answered beside the others.
-    fn hold<P: Chained>(&self, chain: &DocumentId, state: &Rc<ChainState<P>>) {
+    fn hold(&self, chain: &DocumentId, state: &Rc<ChainState>) {
         self.held.borrow_mut().insert(
-            (P::KIND, chain.as_str().to_owned()),
-            Rc::clone(state) as Rc<dyn Any>,
+            (state.part().kind, chain.as_str().to_owned()),
+            Rc::clone(state),
         );
         self.apis
             .borrow_mut()
@@ -2945,7 +2949,7 @@ impl Chains {
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let request: super::record::ResourceAction =
+        let request: super::resources::ResourceAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         let api = self
             .apis
@@ -2957,7 +2961,14 @@ impl Chains {
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.cloned().map(ActionInvoker::member))
             .ok_or("nobody changes a past version")?;
-        api.apply_in(&request.action, &invoker, live)
+        let asked = ASKED.with(|asked| asked.replace(request.answers.clone()));
+        let output = api.apply_in(&request.action, &invoker, live);
+        ASKED.with(|asking| asking.replace(asked));
+        let mut output = output?;
+        if request.quiet {
+            output.value = None;
+        }
+        Ok(output)
     }
 
     /// Answer a read of the chain `chain` ([`CHAIN_READ_TYPE`]) from the

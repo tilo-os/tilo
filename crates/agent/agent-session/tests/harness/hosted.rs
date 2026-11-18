@@ -1,5 +1,5 @@
-//! The agent host the scenario tests drive: a `tilo-relay` whose app-serving
-//! plane is the agent supervisor, its state under a scratch directory, and
+//! The agent host the scenario tests drive: a `tilo-server` whose app-serving
+//! app action server is the agent supervisor, its state under a scratch directory, and
 //! the laptop that certifies the agents and answers what they ask.
 
 #![allow(
@@ -21,19 +21,19 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_agent_session::{AgentHost, AppCatalogue, FeedbackReviewer, ModelChoice};
-use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
-use tilo_relay_client::Approver;
-use tilo_relay_protocol::certify::PendingConfirmation;
+use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
+use tilo_server::daemon::{Server, ServerIdentity};
+use tilo_server::web::{TlsSource, WebConfig, WebHandle};
+use tilo_server_client::Approver;
+use tilo_server_protocol::certify::PendingConfirmation;
 use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert};
 
 use crate::support::Device;
 
 /// A host serving its workspaces, with the agent supervisor as its
-/// app-serving plane.
+/// app action server.
 pub struct Hosted {
-    pub relay: Relay,
+    pub server: Server,
     pub web: WebHandle,
     pub agents: AgentHost,
     /// The host's own device key, whose records the workspace holds too.
@@ -52,15 +52,12 @@ pub struct Options {
     /// The reviewer a host lends its workspaces' reporters.
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
-    pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
+    pub shell: Option<Arc<tilo_server::agents::HostShells>>,
     /// The Browser this host places for its workspaces.
-    pub browsers: Option<Arc<tilo_relay::hosted_browser::HostedBrowsers>>,
+    pub browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
-    /// The per-person change and content budgets of a host whose workspaces
-    /// admit the public; `None` limits nobody.
-    pub member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
 }
 
 impl Default for Options {
@@ -74,7 +71,6 @@ impl Default for Options {
             shell: None,
             browsers: None,
             plain: false,
-            member_limits: None,
         }
     }
 }
@@ -102,24 +98,23 @@ impl Options {
 
 /// Start a host for `root`'s person on `host`'s device.
 pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Options) -> Hosted {
-    let cfg = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
+    let cfg = tilo_server::ServerConfig {
+        state_root: state.join("server"),
         web_entry: options.web_entry,
-        member_limits: options.member_limits,
         // The host's own packet relay, on this machine: devices reach it here, as
         // the test's devices do, and no test depends on the public relays.
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    let (relay, agents) = tilo_relay::agents::start(
+    let (server, agents) = tilo_server::agents::start(
         cfg,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host.key.clone(),
             device_cert: host.cert.clone(),
             revocations: RevocationList::new(),
         },
-        tilo_relay::agents::AgentOptions {
+        tilo_server::agents::AgentOptions {
             state_dir: state.join("agents"),
             model: options.model,
             catalogue: options.catalogue,
@@ -130,7 +125,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     )
     .await
     .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: TlsSource::Development {
@@ -148,7 +143,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         .await
         .unwrap();
     Hosted {
-        relay,
+        server,
         web,
         agents,
         device: host.cert.device_public_key,
@@ -163,17 +158,17 @@ pub async fn serving_records_with_actions(
     state: &Path,
     catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
 ) -> (
-    Relay,
+    Server,
     tilo_agent_session::workspace_actions::WorkspaceActions,
 ) {
-    let cfg = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
+    let cfg = tilo_server::ServerConfig {
+        state_root: state.join("server"),
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    tilo_relay::agents::start_serving_documents(
+    tilo_server::agents::start_serving_documents(
         cfg,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host.key.clone(),
             device_cert: host.cert.clone(),
@@ -188,7 +183,17 @@ pub async fn serving_records_with_actions(
     .unwrap()
 }
 
-/// Start a host for `root`'s person on `host`'s device as tilo.sh's relay
+/// What a server that reaches nothing beyond this machine is set up with: its state under
+/// `state`, and devices reaching it on loopback.
+pub fn on_this_machine(state: &Path) -> tilo_server::ServerConfig {
+    tilo_server::ServerConfig {
+        state_root: state.join("server"),
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+        ..Default::default()
+    }
+}
+
+/// Start a host for `root`'s person on `host`'s device as tilo.sh's server
 /// runs (`--workspace-documents`): no agents, its workspaces' records served to
 /// their devices, each action run in the record's own app worker here,
 /// whether or not a page of the person's is open. Its apps are
@@ -198,15 +203,10 @@ pub async fn serving_documents(
     host: &Device,
     state: &Path,
     catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
-) -> Relay {
-    let cfg = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
-        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-        ..Default::default()
-    };
-    tilo_relay::agents::start_serving_documents(
-        cfg,
-        RelayIdentity {
+) -> Server {
+    tilo_server::agents::start_serving_documents(
+        on_this_machine(state),
+        ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host.key.clone(),
             device_cert: host.cert.clone(),
@@ -253,14 +253,14 @@ impl Laptop {
         }
     }
 
-    /// Spawn it against `relay`.
+    /// Spawn it against `server`.
     pub fn spawn(
         self,
-        relay: &Relay,
+        server: &Server,
         root: SigningKey,
         laptop: &Device,
     ) -> tokio::task::JoinHandle<()> {
-        let addr = relay.node_addr();
+        let addr = server.node_addr();
         let cert = laptop.cert.clone();
         let key = laptop.key.clone();
         tokio::spawn(async move {

@@ -79,10 +79,8 @@ pub struct RosterRow {
     pub label: String,
     pub initial: char,
     pub color: Color,
-    /// Software, not a person: an agent or a bot.
-    pub is_agent: bool,
-    /// One of the workspace's bots (then also [`Self::is_agent`]): tagged Bot, never Agent.
-    pub is_bot: bool,
+    /// Who they are: a person, an agent or one of the workspace's bots.
+    pub member: tilo_action_policy::MemberId,
     pub role: Option<String>,
     /// Where they are: the app or document in front of them.
     pub activity: Option<String>,
@@ -107,30 +105,10 @@ pub struct RosterRow {
 }
 
 impl RosterRow {
-    /// This person as their own row shows them (the pinned overlay's first): by `id` , `label` and `color` , with what everyone here reads of them, their own words or what is said of them automatically.
+    /// Software, not a person: an agent or a bot.
     #[must_use]
-    pub fn own(id: String, label: String, color: Color, status: Option<RosterStatus>) -> Self {
-        Self {
-            id,
-            initial: label
-                .chars()
-                .next()
-                .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c)),
-            label,
-            color,
-            is_agent: false,
-            is_bot: false,
-            role: None,
-            activity: None,
-            working_in: None,
-            working_app: None,
-            status: status.filter(|status| !status.text.trim().is_empty()),
-            recent: Vec::new(),
-            followable: false,
-            availability: ui::Availability::Available,
-            call: None,
-            join: None,
-        }
+    pub fn is_agent(&self) -> bool {
+        !self.member.is_person()
     }
 }
 
@@ -251,7 +229,7 @@ impl PeopleModel<'_> {
             ("people-panel-section-agents", Vec::new()),
         ];
         for (index, row) in self.rows.iter().enumerate() {
-            if let Some((_, rows)) = groups.get_mut(usize::from(row.is_agent)) {
+            if let Some((_, rows)) = groups.get_mut(usize::from(row.is_agent())) {
                 rows.push(index);
             }
         }
@@ -425,7 +403,7 @@ fn mirror_height(model: &PeopleModel<'_>, width: f64, row_h: f64, theme: &Theme)
     }
     let room = (model.host.height() * 0.5 - row_h).max(0.0);
     // Software has no screen to mirror, so its rows take none of the room people's mirrors share.
-    let people = model.rows.iter().filter(|row| !row.is_agent).count();
+    let people = model.rows.iter().filter(|row| !row.is_agent()).count();
     let each = room / ui::num::f64_of_usize(people.max(1));
     let natural = (width - 2.0 * FloatingPanelFace::body_inset(theme)) / 1.6;
     if each < 64.0 { 0.0 } else { each.min(natural) }
@@ -456,7 +434,7 @@ fn under_height(
     theme: &Theme,
 ) -> f64 {
     let line = f64::from(theme.tokens.metrics.bar_control_height);
-    if row.is_agent {
+    if row.is_agent() {
         // Its line under the row names the window it works in, or, with none, says what it is
         // doing: in the row, under its name, where that holds the words whole (`in_row`), else on
         // a line of its own under the row rather than cut to "Reading Launch notes in…".
@@ -482,7 +460,7 @@ fn under_height(
 /// Whether `row` is a person with a picture of their screen to show: they share where they are, and
 /// something stands open there.
 fn sharing(row: &RosterRow, screen: Option<&Screen>) -> bool {
-    !row.is_agent && screen.is_some_and(|screen| !screen.windows.is_empty())
+    !row.is_agent() && screen.is_some_and(|screen| !screen.windows.is_empty())
 }
 
 /// `row`'s screen as the shell holds it: `None` while they keep where they are to themselves.
@@ -808,14 +786,14 @@ impl PeopleOverlay {
                     // it works in, which pressing brings forward.
                     if sharing(row, screen_of(model, row)) {
                         self.mirrors.push((index, strip));
-                    } else if row.is_agent && row.working_in.is_some() {
+                    } else if row.is_agent() && row.working_in.is_some() {
                         place.working_in = strip;
                     } else {
                         // The line stands in the column their name does, under it. Software's
                         // line says what it is doing: a second line of its row, risen into the
                         // row's own room under the name rather than floating a control's height
                         // below it.
-                        let lift = if row.is_agent {
+                        let lift = if row.is_agent() {
                             gap + f64::from(spacing.s3)
                         } else {
                             0.0
@@ -897,7 +875,7 @@ impl PeopleOverlay {
             index,
             rect,
             follow: if row.followable { follow } else { Rect::ZERO },
-            wave: if row.is_agent { Rect::ZERO } else { wave },
+            wave: if row.is_agent() { Rect::ZERO } else { wave },
             join,
             ..RowPlace::default()
         };
@@ -931,7 +909,7 @@ impl PeopleOverlay {
         if !joins {
             trailing -= self.join_extra;
         }
-        if row.is_agent {
+        if row.is_agent() {
             trailing -= TRAILING_GAP + f64::from(theme.tokens.metrics.bar_control_height);
         }
         trailing.max(0.0)
@@ -1181,8 +1159,7 @@ impl PeopleOverlay {
                 disabled: false,
             };
             let paint_face = |ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect| {
-                let mut face = ui::presence::Face::new(&row.label, &row.id, row.color);
-                face.is_agent = row.is_agent;
+                let mut face = ui::presence::Face::member(&row.label, &row.member, row.color);
                 face.dimmed = row.availability.dims();
                 face.in_call = row.call.as_ref().map(|_| breath);
                 ui::presence::FaceStack {
@@ -1200,7 +1177,7 @@ impl PeopleOverlay {
             // Software is tagged after its name: Bot for the workspace's bots,
             // Agent for agents.
             let tags = [(
-                if row.is_bot {
+                if row.member.is_bot() {
                     bot_tag.as_str()
                 } else {
                     agent_tag.as_str()
@@ -1225,7 +1202,7 @@ impl PeopleOverlay {
             if says_automatically(row) {
                 face = face.mark(ui::icons::Icon::Sparkles);
             }
-            if row.is_agent {
+            if row.is_agent() {
                 face = face.tags(&tags);
             }
             let mut face = face
@@ -1384,7 +1361,7 @@ impl PeopleOverlay {
                 // Why their screen is not drawn here, in one quiet line under their name: the card
                 // says it without holding a picture of nothing. Software with no window to name
                 // says there what it is doing, whole.
-                let line = if row.is_agent {
+                let line = if row.is_agent() {
                     doing_line(row).unwrap_or_default()
                 } else {
                     screen_line(screen_of(model, row))
@@ -1720,7 +1697,7 @@ impl PeopleOverlay {
     pub fn wave_target(&self, index: usize) -> Option<&str> {
         self.shown_rows
             .get(index)
-            .filter(|row| !row.is_agent)
+            .filter(|row| !row.is_agent())
             .map(|row| row.id.as_str())
     }
 

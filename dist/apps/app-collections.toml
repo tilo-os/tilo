@@ -20,7 +20,7 @@ video-player = ["decode"]
 camera = ["live-capture"]
 # The YouTube client from its engine library beside the runtime.
 tube = ["live", "media", "grayjay-sync", "runtime-engine"]
-# Account custody with the IMAP client, and the contact directory, from their
+# Account credentials with the IMAP client, and the contact directory, from their
 # engine libraries beside the runtime.
 mail = ["live", "runtime-engine"]
 disks = ["live"]
@@ -29,10 +29,13 @@ video-editor = ["decode", "gst"]
 typst-editor = ["runtime-engine"]
 # The painting engines from their engine library beside the runtime.
 canvas = ["runtime-engine"]
-# Account custody, the IMAP and the WebDAV client from their engine library
+# Account credentials, the IMAP and the WebDAV client from their engine library
 # beside the runtime.
 settings = ["runtime-engine"]
-# The time-zone database, and the CalDAV client with the account custody its
+# The provider panel from the Settings engine library, which holds it for
+# Settings.
+model-providers = ["runtime-engine"]
+# The time-zone database, and the CalDAV client with the account credentials its
 # sign-in reaches, from their engine libraries beside the runtime.
 calendar = ["runtime-engine"]
 clocks = ["runtime-engine"]
@@ -48,7 +51,7 @@ agent = ["runtime-engine"]
 pdf-viewer = ["runtime-engine"]
 file-explorer = ["runtime-engine"]
 print-centre = ["runtime-engine"]
-# Account custody with the WebDAV client, and the projection worker's FUSE
+# Account credentials with the WebDAV client, and the projection worker's FUSE
 # presentation, from their engine libraries beside the runtime.
 imager = ["runtime-engine"]
 # The import from another browser's profile, with the SQLite it reads, from its

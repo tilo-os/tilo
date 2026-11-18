@@ -8,7 +8,7 @@ command -v busctl >/dev/null
 command -v gdbus >/dev/null
 # TILO_FILES_SESSION_OPENER names a client that asks the running Tilo session
 # to open Files, as a user would, and prints its AT-SPI bus and pid. The
-# installed-image gate uses it: an installed app is launched by the session,
+# installed-image hold uses it: an installed app is launched by the session,
 # inside its sandbox and attached to the session's runtime host.
 session_opener="${TILO_FILES_SESSION_OPENER:-}"
 binary="${TILO_FILES_BINARY:-}"
@@ -189,7 +189,7 @@ collect_tree() {
     # The controls asserted below live in the application chrome/overlay
     # frontier, not an unbounded folder listing.  This keeps each live-bus
     # retry bounded even for a directory with thousands of rows; absence still
-    # fails the gate rather than being masked by a partial result.
+    # fails the hold rather than being masked by a partial result.
     while [[ ${#pending[@]} -gt 0 && ${#visited[@]} -lt 64 ]]; do
         current=${pending[0]}
         pending=("${pending[@]:1}")
@@ -201,7 +201,7 @@ collect_tree() {
         names+="$name"$'\n'
         # The smoke asks for concrete names, not a catalogue dump.  As soon
         # as all requested nodes are present we have enough real object paths
-        # to exercise the action, and should not make the release gate crawl
+        # to exercise the action, and should not make the release hold crawl
         # a large folder/resource catalogue one D-Bus round trip at a time.
         # The hard 256-node ceiling below remains the corruption guard when a
         # requested node is absent.

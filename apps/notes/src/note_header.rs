@@ -49,6 +49,9 @@ pub struct NoteHeader {
     /// What the chips and the reactions invoke, once the notebook's window
     /// is attached.
     actions: Option<ui::framework::Actions<Notebook>>,
+    /// What the reactions invoke on the note: the actions of the notes'
+    /// chain, once the window holds it.
+    pages: Option<ui::framework::Actions<crate::part::PagePart>>,
 }
 
 impl NoteHeader {
@@ -56,6 +59,17 @@ impl NoteHeader {
     pub fn attach(&mut self, actions: ui::framework::Actions<Notebook>) {
         self.actions = Some(actions);
         self.stale = true;
+    }
+
+    /// Bind the reactions to the notes' chain's `pages` actions.
+    pub fn attach_pages(&mut self, pages: ui::framework::Actions<crate::part::PagePart>) {
+        self.pages = Some(pages);
+        self.stale = true;
+    }
+
+    /// The notes' chain's actions the reactions are bound to, once attached.
+    pub fn pages(&self) -> Option<ui::framework::Actions<crate::part::PagePart>> {
+        self.pages.clone()
     }
 
     /// What the chips invoke, when attached.
@@ -191,9 +205,9 @@ impl NoteHeader {
     /// picker, and either is the notebook's field edit, as the person.
     fn reaction_strip(&self, reactions: &NoteReactions) -> ReactionStripWidget {
         let page = crate::notebook::page_id(reactions.page);
-        let toggled = self.actions.as_ref().and_then(|actions| {
+        let toggled = self.pages.as_ref().and_then(|actions| {
             actions.edit_binding_with(
-                Notebook::paths().pages.item(&page).reactions,
+                crate::part::PagePart::paths().pages.item(&page).reactions,
                 |field, toggle: ReactionToggle| {
                     Ok(if toggle.react {
                         field.react(toggle.emoji)

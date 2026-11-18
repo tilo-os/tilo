@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use legacy_agent_protocol::client;
 use legacy_agent_protocol::link::AgentLink;
-use legacy_agent_protocol::window::GUEST_ENV;
 use legacy_agent_protocol::{AGENT_PORT, GuestMessage, GuestShare, HostMessage};
 use libvirt_domain::{Connection, DomainState, Virsh, VirshError, vsock_cid};
 use thiserror::Error;
@@ -26,6 +25,7 @@ use crate::domain::{
 use crate::grants::{Grants, HostShare};
 use crate::lifecycle::{Action, Lifecycle, Phase};
 use crate::memory::actual_mib;
+use crate::peer::same_user;
 use crate::transport::{VsockBackend, hybrid_link, vhost_device_vsock_argv};
 use crate::{image, virtiofs};
 
@@ -80,7 +80,8 @@ pub struct Supervisor {
     self_exe: PathBuf,
     backend: Option<VsockBackend>,
     link: Option<AgentLink>,
-    forwarder: Option<Child>,
+    /// The window forwarder's app keeper, and the keeper's directory in the keepers' registry.
+    forwarder: Option<(Child, PathBuf)>,
     /// `vhost-device-vsock`, when the host has no kernel vhost-vsock.
     vsock_daemon: Option<Child>,
     shares: BTreeMap<String, ShareDaemon>,
@@ -439,41 +440,61 @@ impl Supervisor {
         self.session_shares.clear();
     }
 
-    /// One host `waypipe client`, connected to the compositor, for every
-    /// window this VM opens.
+    /// One host `waypipe client` for every window this VM opens, behind an app keeper: the
+    /// session finds the keeper in its registry and shows it, and the guest's windows stay open
+    /// while the desktop restarts, named `legacy.<guest>.<app id>`.
+    #[cfg(target_os = "linux")]
     fn start_forwarder(&mut self) {
-        if let Some(forwarder) = self.forwarder.as_mut()
-            && matches!(forwarder.try_wait(), Ok(None))
-        {
-            return;
+        if let Some((forwarder, dir)) = self.forwarder.as_mut() {
+            if matches!(forwarder.try_wait(), Ok(None)) {
+                return;
+            }
+            remove_keeper_dir(dir);
+            self.forwarder = None;
         }
-        let Some(display) = compositor_display() else {
-            eprintln!("tilo-legacy: no compositor socket; windows will not appear");
+        let Some(keeper) = tilo_app_keeper::registry::find_keeper() else {
+            eprintln!("tilo-legacy: no app keeper is installed; windows will not appear");
             return;
         };
         let port = self.config.waypipe_port;
-        let argv = if self.backend == Some(VsockBackend::Hybrid) {
+        let waypipe = if self.backend == Some(VsockBackend::Hybrid) {
             let listener = AgentLink::hybrid_listener(&self.config.paths.vsock_uds(), port);
             let _ = std::fs::remove_file(&listener);
             legacy_agent_protocol::waypipe::client_argv_unix("waypipe", &listener)
         } else {
             legacy_agent_protocol::waypipe::client_argv("waypipe", port)
         };
+        let launch = forwarder_launch(self.config.guest);
+        let dir =
+            match tilo_app_keeper::registry::new_dir(&tilo_app_keeper::registry::root(), &launch) {
+                Ok(dir) => dir,
+                Err(error) => {
+                    eprintln!("tilo-legacy: no keeper directory for the windows: {error}");
+                    return;
+                }
+            };
+        let argv = forwarder_argv(&keeper, &dir, &launch, self.config.guest, &waypipe);
         let Some((program, rest)) = argv.split_first() else {
             return;
         };
         match Command::new(program)
             .args(rest)
-            .env("WAYLAND_DISPLAY", display)
-            .env(GUEST_ENV, self.config.guest.as_str())
             .stdin(Stdio::null())
             .process_group(0)
             .spawn()
         {
-            Ok(child) => self.forwarder = Some(child),
-            Err(error) => eprintln!("tilo-legacy: could not start waypipe: {error}"),
+            Ok(child) => self.forwarder = Some((child, dir)),
+            Err(error) => {
+                eprintln!("tilo-legacy: could not start the window forwarder: {error}");
+                remove_keeper_dir(&dir);
+            }
         }
     }
+
+    /// App keepers, and so a VM's windows, are Linux's.
+    #[cfg(not(target_os = "linux"))]
+    #[expect(clippy::unused_self, reason = "the Linux supervisor's signature")]
+    fn start_forwarder(&mut self) {}
 
     fn poll(&mut self) {
         if self.life.phase() != Phase::Running {
@@ -516,9 +537,10 @@ impl Supervisor {
                 let _ = daemon.daemon.wait();
             }
         }
-        if let Some(mut forwarder) = self.forwarder.take() {
+        if let Some((mut forwarder, dir)) = self.forwarder.take() {
             let _ = forwarder.kill();
             let _ = forwarder.wait();
+            remove_keeper_dir(&dir);
         }
         if let Some(mut daemon) = self.vsock_daemon.take() {
             let _ = daemon.kill();
@@ -589,31 +611,6 @@ fn accept_loop(listener: &UnixListener, requests: &mpsc::Sender<(ControlRequest,
     }
 }
 
-/// The socket lives in the user's private runtime directory; checking the
-/// peer anyway costs nothing.
-pub(crate) fn same_user(stream: &UnixStream) -> bool {
-    use std::os::fd::AsRawFd as _;
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: u32::MAX,
-        gid: 0,
-    };
-    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
-        return false;
-    };
-    // SAFETY: both pointers name initialised storage of `length` bytes.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut credentials).cast(),
-            std::ptr::from_mut(&mut length),
-        )
-    };
-    result == 0 && credentials.uid == rustix::process::getuid().as_raw()
-}
-
 fn wait_for_socket(socket: &Path, daemon: &mut Child) -> bool {
     for _ in 0..100 {
         if socket.exists() {
@@ -627,14 +624,101 @@ fn wait_for_socket(socket: &Path, daemon: &mut Child) -> bool {
     false
 }
 
-/// The compositor's public Wayland socket: the session's published name,
-/// else this process's `WAYLAND_DISPLAY`.
-fn compositor_display() -> Option<String> {
-    tilo_paths::xdg::runtime_dir()
-        .and_then(|runtime| {
-            std::fs::read_to_string(runtime.join("tilo-session/wayland-display")).ok()
-        })
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .or_else(|| std::env::var("WAYLAND_DISPLAY").ok())
+/// What the session is told of the VM's window forwarder: a service's launch, which the session
+/// shows and never ends; the VM, not one of its apps.
+#[cfg(target_os = "linux")]
+fn forwarder_launch(
+    guest: legacy_agent_protocol::GuestOs,
+) -> tilo_app_keeper::registry::KeptLaunch {
+    tilo_app_keeper::registry::KeptLaunch {
+        version: tilo_app_keeper::registry::LAUNCH_VERSION,
+        app: format!("legacy.{}", guest.as_str()),
+        title: format!("{} apps", guest.label()),
+        workspace: String::new(),
+        asked: None,
+        window_identities: Vec::new(),
+        service: true,
+    }
+}
+
+/// `keeper` keeping `waypipe` (the forwarder's own argv) in `dir`, every app id it shows prefixed
+/// with the guest's.
+#[cfg(target_os = "linux")]
+fn forwarder_argv(
+    keeper: &Path,
+    dir: &Path,
+    launch: &tilo_app_keeper::registry::KeptLaunch,
+    guest: legacy_agent_protocol::GuestOs,
+    waypipe: &[String],
+) -> Vec<std::ffi::OsString> {
+    let mut argv: Vec<std::ffi::OsString> = vec![
+        keeper.into(),
+        "--dir".into(),
+        dir.into(),
+        "--launch".into(),
+        launch.encode().into(),
+        "--app-id-prefix".into(),
+        legacy_agent_protocol::window::host_app_id_prefix(guest).into(),
+        "--".into(),
+    ];
+    argv.extend(waypipe.iter().map(Into::into));
+    argv
+}
+
+/// A keeper directory this supervisor made and is done with.
+fn remove_keeper_dir(dir: &Path) {
+    if let Err(error) = std::fs::remove_dir_all(dir)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("tilo-legacy: {} stays: {error}", dir.display());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use legacy_agent_protocol::GuestOs;
+
+    tilo_test_env::scenario! {
+        fn the_window_forwarder_runs_behind_an_app_keeper;
+
+        phase the_keeper_keeps_waypipe_and_names_the_guests_windows;
+        {
+            let waypipe = legacy_agent_protocol::waypipe::client_argv("waypipe", 4000);
+            let launch = forwarder_launch(GuestOs::Linux);
+            let argv = forwarder_argv(
+                Path::new("/usr/libexec/tilo-app-keeper"),
+                Path::new("/run/user/1000/tilo-session/kept/abc"),
+                &launch,
+                GuestOs::Linux,
+                &waypipe,
+            );
+            let argv: Vec<String> = argv.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+            assert_eq!(
+                argv.get(..8),
+                Some(
+                    &[
+                        "/usr/libexec/tilo-app-keeper".to_owned(),
+                        "--dir".to_owned(),
+                        "/run/user/1000/tilo-session/kept/abc".to_owned(),
+                        "--launch".to_owned(),
+                        launch.encode(),
+                        "--app-id-prefix".to_owned(),
+                        "legacy.linux.".to_owned(),
+                        "--".to_owned(),
+                    ][..]
+                )
+            );
+            assert_eq!(argv.get(8..), Some(&waypipe[..]), "then waypipe's own command");
+        }
+
+        phase the_session_shows_it_and_leaves_it_to_the_supervisor;
+        {
+            let launch = forwarder_launch(GuestOs::Linux);
+            assert!(launch.service, "the session never ends it");
+            assert!(launch.workspace.is_empty(), "the VM serves every workspace");
+            let read = tilo_app_keeper::registry::KeptLaunch::decode(&launch.encode());
+            assert_eq!(read, Some(launch), "the session reads what the keeper is handed");
+        }
+    }
 }

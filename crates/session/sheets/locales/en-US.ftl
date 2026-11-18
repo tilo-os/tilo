@@ -306,13 +306,17 @@ portal-access-notification = your notifications
 portal-access-secret = your saved passwords
 portal-access-host-shell = the device's own shell
 portal-access-generic = { $capability }
+portal-access-network = the internet
+portal-network-hosts = It reaches only these sites. Everyone in this workspace sees this and can take it back.
+portal-network-any = It may reach any site. Everyone in this workspace sees this and can take it back.
+portal-network-site = Site
 
 ## The portal's other questions
 portal-account-title = Share your identity with { $app }?
 portal-account-detail = { $app } asks for your name and account identifier.
 portal-account-share = Share identity
-portal-email-title = Open the mail app?
-portal-email-detail = Review the message { $app } prepared before it is handed on.
+portal-email-title = Open the message { $app } prepared?
+portal-email-detail = Check the message before it is handed on.
 portal-email-to = To: { $addresses }
 portal-email-cc = Cc: { $addresses }
 portal-email-bcc = Bcc: { $addresses }
@@ -329,8 +333,11 @@ portal-wallpaper-background = your desktop background
 portal-wallpaper-lockscreen = your lock screen
 portal-wallpaper-both = your desktop background and lock screen
 portal-wallpaper-set = Set wallpaper
-portal-print-title = Print “{ $title }”?
-portal-print-detail = { $copies } copies, to the printer you choose.
+portal-print-title = Let { $app } print “{ $title }”?
+portal-print-detail = { $copies ->
+    [one] 1 copy, to the printer you choose.
+   *[other] { $copies } copies, to the printer you choose.
+}
 portal-print-print = Print
 portal-screenshot-title = Let { $app } take a screenshot?
 portal-screenshot-detail = It gets one picture of the screen as it is now.
@@ -342,14 +349,14 @@ portal-app-choice-title = Open with what?
 portal-app-choice-detail = { $app } wants to open { $what }
 portal-app-choice-detail-any = Choose the app that opens it
 portal-app-choice-open = Open
-portal-launcher-title = Add “{ $name }” to your apps?
-portal-launcher-detail = { $app } adds a launcher. The image it supplied has been checked.
+portal-launcher-title = Let { $app } add “{ $name }” to your apps?
+portal-launcher-detail = The image it supplied has been checked.
 portal-launcher-app-icon = The app's own image
 portal-launcher-monogram-icon = Tilo monogram
 portal-launcher-web-icon = Tilo web icon
 portal-launcher-add = Add launcher
 portal-launcher-bad-name = Give the launcher a name, without control characters.
-portal-shortcuts-title = Set global shortcuts
+portal-shortcuts-title = Let { $app } set global shortcuts?
 portal-shortcuts-detail = Choose a row, then press the keys. Backspace clears it.
 portal-shortcuts-save = Save shortcuts
 portal-shortcut-reserved = Reserved by Tilo. Choose another.
@@ -358,7 +365,6 @@ portal-shortcut-not-taken = Press a key with Ctrl, Alt, Shift or Super.
 portal-share-title = Share your screen with { $app }?
 portal-share-detail = { $app } sees what you share, and nothing else.
 portal-share-share = Share
-portal-share-remember = Remember this choice
 portal-remote-title = Let { $app } control this computer?
 portal-remote-detail = { $app } sees the screen you share and drives the input you allow.
 portal-remote-devices = It asks to control: { $devices }
@@ -510,16 +516,10 @@ mcp-server-no-workspace = There is no workspace here to work in.
 mcp-server-client-in-environment = { $who }, in the environment “{ $environment }”
 mcp-server-workspace-refused = You can’t let an agent work in that workspace from here.
 mcp-server-environment-workspace = A program in an environment works in that environment’s workspace only.
-mcp-server-environment-as-person = A program in an environment works as an agent, never as you.
-mcp-server-session = { $client } #{ $instance }
-mcp-server-session-in-environment = { $client } in { $environment } #{ $instance }
 mcp-server-workspace-gone = The workspace this program asked to work in is gone.
 mcp-server-withdrawn = The request was withdrawn before anyone answered it.
 mcp-server-declined = You didn’t let this program work here as an agent.
 mcp-server-not-started = This agent’s work here could not start
-mcp-server-person-from-device = Only a program on this device can act as you; an agent from another of your devices works here as an agent.
-mcp-server-admission-person = Act as you in “{ $workspace }”
-mcp-server-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
 
 ## The shortcut catalogue on the action API: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.
@@ -719,7 +719,6 @@ so-tilo-workspace-settings-change-review-activity = Review the activity
 so-tilo-workspace-settings-change-review-agent = Review an agent
 so-tilo-workspace-settings-change-revoke = Revoke a permission
 so-tilo-workspace-settings-change-set-agent-answer = Answer for one kind
-so-tilo-workspace-settings-change-set-agent-colour = Set the agent's colour
 so-tilo-workspace-settings-change-set-agent-model = Choose the model
 so-tilo-workspace-settings-change-set-agent-spend-limit = Set the daily limit
 so-tilo-workspace-settings-change-set-role = Change a role

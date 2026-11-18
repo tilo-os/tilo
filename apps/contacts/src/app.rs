@@ -2,7 +2,7 @@
 //!
 //! The window is one [`NavShell`]: groups are the sidebar, the people in the
 //! chosen group the overview list, and the selected person or the form editing
-//! them the content. The book is the [`Contacts`] record, read as it was last
+//! them the content. The book is the [`Contacts`] resource, read as it was last
 //! presented; the window keeps only its view of it (selection, filter, forms,
 //! dialogs). Every change to the book goes through the window's dispatcher, as
 //! Ctrl+K and agents do.
@@ -474,7 +474,7 @@ impl ContactsApp {
     }
 
     /// What the workspace answered: a change it kept is said done, one it refused,
-    /// which the record withdrew, says why.
+    /// which the resource withdrew, says why.
     fn announce_answers(&mut self) {
         let Some(effects) = self.dispatcher.clone() else {
             return;
@@ -509,7 +509,7 @@ impl ContactsApp {
             return;
         };
         // The draft is not a durable authority: reopen it, rebased on the
-        // record as it now stands, so the person's text is not lost.
+        // resource as it now stands, so the person's text is not lost.
         let base = self
             .store
             .contact(form.draft.id)
@@ -652,7 +652,7 @@ impl ContactsApp {
     }
 
     /// Stage a hosted capture's scenario once its sample book has been
-    /// presented: open on the book's first, richly filled record, then pose
+    /// presented: open on the book's first, richly filled resource, then pose
     /// `scenario`.
     pub(crate) fn stage_capture(&mut self, scenario: Option<&str>) {
         self.selected = self.store.contacts.first().map(|contact| contact.id);
@@ -872,7 +872,7 @@ impl ContactsApp {
                 Err(error) => {
                     // The draft is intentionally not a durable authority. Put
                     // the document back in charge, then preserve the user's
-                    // unsaved text in an editor rebased on the latest record.
+                    // unsaved text in an editor rebased on the latest resource.
                     let base = self
                         .store
                         .contact(id)

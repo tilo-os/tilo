@@ -9,7 +9,7 @@ use std::sync::Arc;
 ///
 /// Every part of the engine that decides something about the workspace reads
 /// the same replica: the direct link admits frames into it, and the action
-/// plane authorizes the devices asking for its actions against its roster.
+/// action service authorizes the devices asking for its actions against its roster.
 /// The guard a replica's state is read or changed through.
 pub type PeerGuard<'a> = MutexGuard<'a, StatePeer>;
 #[derive(Clone)]
@@ -39,7 +39,7 @@ impl Replica {
         read(&self.0.lock())
     }
 
-    /// Change the replica: a governance change, or anything else the plane's
+    /// Change the replica: a governance change, or anything else the action service's
     /// authorization has to see at once.
     pub fn write<R>(&self, write: impl FnOnce(&mut StatePeer) -> R) -> R {
         write(&mut self.0.lock())

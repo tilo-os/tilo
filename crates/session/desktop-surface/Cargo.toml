@@ -17,7 +17,7 @@ autotests = false
 [features]
 # Another device's shared window, decoded into its tile on this desktop. On by
 # default for every desktop that draws windows; a screenless host that links
-# this surface (a relay, an agent's member) turns it off and links neither
+# this surface (a server, an agent's member) turns it off and links neither
 # the media stack nor a decoder.
 default = ["peer-view"]
 peer-view = [
@@ -37,6 +37,8 @@ lazy-notification-centre = []
 lazy-page-view = []
 
 [dependencies]
+# What a notice says and what it is about, as a session service tells it.
+tilo-service = { version = "0.1.0", path = "../service" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
@@ -52,7 +54,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", default-features = false }
 serde.workspace = true
 # The bar's clock reads the weekday of the local time.
-chrono.workspace = true
+jiff.workspace = true
 hex.workspace = true
 serde_json.workspace = true
 # The workspace history pane reads causal documents and draws with the
@@ -80,9 +82,9 @@ neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
-# Members' pointers are placed through the live plane's layout mapping
+# Members' pointers are placed through the live session's layout mapping
 # against the windows and strip a desktop shows.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # `scenario!`: the cases of one subject in one test function.
 tilo-test-env = { path = "../../dev/test-env" }
 
@@ -102,7 +104,7 @@ workspace-hack = { version = "0.1" }
 # Another device's shared window: the decoder that turns its units into
 # pictures, the colour that tone-maps an HDR stream to this display, and the
 # share's own rule for the input a viewer sends back. All four run the media stack, which has no wasm32 build and which a host
-# without a screen (a relay, an agent's member) never presents. They are
+# without a screen (a server, an agent's member) never presents. They are
 # the `peer-view` feature's, so such a host links this surface without them.
 tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"], optional = true }
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"], optional = true }

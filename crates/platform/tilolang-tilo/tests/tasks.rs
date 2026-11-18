@@ -466,7 +466,7 @@ tilo_test_env::scenario! {
         assert_eq!(list_count(&after), Some(2), "and after");
     }
 
-    phase a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing;
+    phase a_window_open_over_midnight_moves_what_today_lists_without_the_document_changing;
     {
         let (mut ada, root) = workspace();
         let dated = |title: &str| call(&ada, "new_task", create(&root, title));
@@ -495,7 +495,7 @@ tilo_test_env::scenario! {
         );
         go_to(&mut view, "Upcoming");
         assert_eq!(home_list_titles(&ada, &mut view), ["Order a present"]);
-        // The record did not change; the clock did. The same window runs again and lists the day
+        // The document did not change; the clock did. The same window runs again and lists the day
         // it is now.
         ada.host.set_clock(|| "2026-10-30T10:00:00Z".to_owned());
         assert!(
@@ -510,8 +510,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_lanes_header_counts_the_cards_it_holds;
-    // A lane's header counts the cards the lane holds: the open tasks filed in it, not the
+    phase a_lists_header_counts_the_cards_it_holds;
+    // A list's header counts the cards the list holds: the open tasks filed in it, not the
     // project's tasks, the ones it leaves out (done, or a step under a task), or another
     // project's.
     {
@@ -586,16 +586,16 @@ tilo_test_env::scenario! {
         view.poll_patches().unwrap();
         let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
         assert_eq!(
-            lanes(&view),
+            lists(&view),
             [
                 (None, None, ids(&[&boxes, &tape])),
                 (Some("Packing".to_owned()), Some(1), ids(&[&kitchen])),
                 (Some("Booked".to_owned()), Some(0), vec![]),
             ]
         );
-        for (title, count, cards) in lanes(&view) {
+        for (title, count, cards) in lists(&view) {
             let Some(count) = count else {
-                assert!(title.is_none(), "a lane with a heading has a count");
+                assert!(title.is_none(), "a list with a heading has a count");
                 continue;
             };
             assert_eq!(
@@ -756,6 +756,24 @@ fn list_count(view: &ViewInstance) -> Option<i64> {
     out
 }
 
+/// A task a person checks off where it is the last of its place leaves the list with the list:
+/// a task added after it stands there alone, and the one checked off does not come back.
+#[test]
+fn a_task_added_after_the_place_emptied_stands_in_it_alone() {
+    let (mut ada, root) = workspace();
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
+    let first = call(&ada, "new_task", create(&root, "Call the landlord"));
+    ada.commit();
+    assert_eq!(home_list_titles(&ada, &mut view), ["Call the landlord"]);
+    call(&ada, "check", vec![first]);
+    ada.commit();
+    assert_eq!(home_list_titles(&ada, &mut view), Vec::<String>::new());
+    call(&ada, "new_task", create(&root, "Water the plants"));
+    ada.commit();
+    assert_eq!(home_list_titles(&ada, &mut view), ["Water the plants"]);
+}
+
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
@@ -784,28 +802,28 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     }
 }
 
-/// A lane's title as its node carries it: none for the lane of the tasks in no section.
-fn lane_title(node: &UiNode) -> Option<String> {
+/// A list's title as its node carries it: none for the list of the tasks in no section.
+fn list_title(node: &UiNode) -> Option<String> {
     match node.props.get("title") {
         Some(Value::Text(title)) => Some(title.clone()),
         None | Some(Value::Unit | Value::Opt(None)) => None,
-        other => panic!("a lane's title: {other:?}"),
+        other => panic!("a list's title: {other:?}"),
     }
 }
 
-/// A lane as a board's window shows it: what it is called (none for the lane of the tasks in no
+/// A list as a board's window shows it: what it is called (none for the list of the tasks in no
 /// section), the count its header shows (none where it has no heading), and its cards' tasks.
-type Lane = (Option<String>, Option<i64>, Vec<Option<String>>);
+type List = (Option<String>, Option<i64>, Vec<Option<String>>);
 
-/// The lanes of a board as its window shows them, in the order they stand.
-fn lanes(view: &ViewInstance) -> Vec<Lane> {
-    fn walk(node: &UiNode, out: &mut Vec<Lane>) {
-        if node.kind == "ui.BoardLane" {
-            let title = lane_title(node);
+/// The lists of a board as its window shows them, in the order they stand.
+fn lists(view: &ViewInstance) -> Vec<List> {
+    fn walk(node: &UiNode, out: &mut Vec<List>) {
+        if node.kind == "ui.BoardList" {
+            let title = list_title(node);
             let count = match node.props.get("count") {
                 Some(Value::Int(count)) => Some(*count),
                 None | Some(Value::Unit | Value::Opt(None)) => None,
-                other => panic!("a lane's count: {other:?}"),
+                other => panic!("a list's count: {other:?}"),
             };
             let mut cards = Vec::new();
             let mut stack: Vec<&UiNode> = node.children.iter().rev().collect();
@@ -840,7 +858,7 @@ pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) ->
 }
 
 #[test]
-fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
+fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
@@ -875,33 +893,33 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     view.poll_patches().unwrap();
     let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
     assert_eq!(
-        lanes(&view),
+        lists(&view),
         [
             (None, None, ids(&[&boxes, &van, &books, &bedworkspace])),
             (Some("Doing".to_owned()), Some(0), vec![]),
         ]
     );
-    let drop = |view: &mut ViewInstance, lane: Option<&str>, task: &Value, at: i64| {
-        let key = key_of(view, "ui.BoardLane", &|l| match lane {
-            Some(lane) => lane_title(l).as_deref() == Some(lane),
-            None => lane_title(l).is_none(),
+    let drop = |view: &mut ViewInstance, list: Option<&str>, task: &Value, at: i64| {
+        let key = key_of(view, "ui.BoardList", &|l| match list {
+            Some(list) => list_title(l).as_deref() == Some(list),
+            None => list_title(l).is_none(),
         });
         let carried = Value::List(vec![task.clone(), Value::Int(at)]);
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
     };
-    // Into the empty lane, then a second card above it.
+    // Into the empty list, then a second card above it.
     drop(&mut view, Some("Doing"), &books, 0);
     drop(&mut view, Some("Doing"), &van, 0);
-    // Within a lane: the last card to the top.
+    // Within a list: the last card to the top.
     drop(&mut view, None, &bedworkspace, 0);
-    // Below a lane's last card.
+    // Below a list's last card.
     drop(&mut view, Some("Doing"), &boxes, 2);
     ada.commit();
-    // A window hears of a change once, after the record holds it: it runs again now, and shows
+    // A window hears of a change once, after the document holds it: it runs again now, and shows
     // the cards where they landed.
     view.poll_patches().unwrap();
     assert_eq!(
-        lanes(&view),
+        lists(&view),
         [
             (None, None, ids(&[&bedworkspace])),
             (
@@ -1263,7 +1281,7 @@ tilo_test_env::scenario! {
 
     phase a_scenario_reads_the_keys_of_the_branch_it_stages;
     // A scenario's branch reads its counts and its fold from the tasks it staged, as soon as the
-    // record has them: no migration runs after a record.
+    // document has them: no migration runs after a document.
     {
         let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
         let scenario = loaded
@@ -1276,7 +1294,7 @@ tilo_test_env::scenario! {
             .expect("Tasks stages a task's subtasks")
             .action
             .clone();
-        // The packages' record holds no tasks yet: the app's root makes them.
+        // The packages' document holds no tasks yet: the app's root makes them.
         ada.host.root_of(APP).unwrap();
         ada.commit();
         ada.host
@@ -1681,7 +1699,7 @@ fn a_peers_completion_takes_its_row_away() {
 }
 
 /// The assignee a task holds, as its page reads it: who, or nobody.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn assignee(r: &Replica, task: &Value) -> Option<String> {
     match read(r, task, "assignee") {
         Value::Opt(Some(held)) => match *held {
@@ -1694,7 +1712,7 @@ fn assignee(r: &Replica, task: &Value) -> Option<String> {
 }
 
 /// The case a task's priority holds, by the case's name.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn priority(r: &Replica, task: &Value) -> String {
     match read(r, task, "priority") {
         Value::Enum(case) => case.variant,
@@ -1703,7 +1721,7 @@ fn priority(r: &Replica, task: &Value) -> String {
 }
 
 /// The key of the node bound to `field`.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
     if node
         .binding
@@ -1719,7 +1737,7 @@ pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 }
 
 /// Every text the tree shows.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 pub(crate) fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
         if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
@@ -1737,7 +1755,7 @@ pub(crate) fn texts(node: &UiNode) -> Vec<String> {
 
 /// A task made by Ada in a workspace of Ada and Ben, and the page showing it: the list the
 /// assignee's chip opens offers the workspace's members, and the key the page binds it to.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, String) {
     let (mut ada, root) = workspace();
     ada.host.runtime().set_members(
@@ -1759,7 +1777,7 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
 }
 
 /// The text a person field hands back for the person `id`: their identity as the runtime sent it.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn pick(id: &str) -> Value {
     Value::text(tilolang_tilo::runtime::ids::actor_text(&Actor::from(
         tilolang_tilo::runtime::ids::MemberId::person(id),
@@ -1767,7 +1785,7 @@ fn pick(id: &str) -> Value {
 }
 
 /// The person picks `pick` for the task's assignee in the page's chip, and the page redraws.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick: &Value) {
     page.edit(key, pick).unwrap();
     ada.commit();
@@ -1775,7 +1793,7 @@ fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick
 }
 
 tilo_test_env::scenario! {
-    #[cfg(feature = "record")]
+    #[cfg(feature = "document")]
     fn a_tasks_assignee_priority_and_copy_are_single_fields_and_steps;
 
     phase the_assignee_is_one_person_field_whose_chip_shows_each_pick;
@@ -2322,7 +2340,7 @@ fn menu_command(node: &UiNode) -> Command {
 
 /// The commands a task's menus offer, in the order a person reads them: every command, and of
 /// the commands that need something the task may not have, the ones this task has. This is a
-/// task in the inbox, with nothing standing over it and nothing under it: it is on no board to be
+/// task in the inbox, with nothing over it and nothing under it: it is on no board to be
 /// placed on, so it offers none of that, and it can still be moved under another task and copied
 /// with the steps it has.
 fn spec_commands() -> Vec<&'static str> {
@@ -2334,6 +2352,9 @@ fn spec_commands() -> Vec<&'static str> {
         "Tomorrow",
         "Next week",
         "Pick date…",
+        // It asks for the time of day it is due at: the form it opens asks, so the command says
+        // it has a question, and it stands with the commands that say when a task is due.
+        "Set time…",
         "No date",
         // It sets the moment the person is told of the task, once — the form it opens asks
         // when, so the command says it has a question — and clears it. They stand with the
@@ -2913,9 +2934,9 @@ tilo_test_env::scenario! {
     }
 
     phase a_tasks_action_names_the_kind_of_a_task;
-    // An action run on a task names the kind it is published on, a task's, not the record's that
+    // An action run on a task names the kind it is published on, a task's, not the document's that
     // holds the task: the workspace decides the change against the actions of that kind, and a
-    // change naming the record's kind with a task's action is refused.
+    // change naming the document's kind with a task's action is refused.
     {
         let (ada, root) = workspace();
         let made = call(&ada, "new_task", create(&root, "Water the plants"));

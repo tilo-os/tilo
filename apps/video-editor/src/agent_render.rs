@@ -1,9 +1,9 @@
 //! The renders an agent asks of a timeline: `export-video-content`, `export-video-status`,
 //! `cancel-video-export`, `view-frame-content`, and the editor's own `render-timeline`.
 //!
-//! An agent's record lives in a confined worker with no GPU, no media stack and no paths, so
+//! An agent's resource lives in a confined worker with no GPU, no media stack and no paths, so
 //! these are tagged `host_render`: an agent's host answers them in its render service, which
-//! runs the confined `tilo-video-render` helper on a snapshot of the record. This module holds
+//! runs the confined `tilo-video-render` helper on a snapshot of the resource. This module holds
 //! what both sides agree on — the settings an agent may ask for, the answers it gets, which
 //! timelines it may render — and what the helper renders with ([`render_video`],
 //! [`render_still`]).
@@ -297,7 +297,7 @@ pub fn renderable(project: &Project) -> Result<(), String> {
 }
 
 /// The workspace content every source `project` places is read from, once
-/// each, as the record names it: a source's content reference carries the key
+/// each, as the resource names it: a source's content reference carries the key
 /// its bytes are sealed with, so a reader opens them where a bare address
 /// would only find ciphertext.
 #[must_use]
@@ -360,7 +360,7 @@ pub fn pipeline_desc(settings: &AgentExportSettings, sink: &str, with_audio: boo
     )
 }
 
-/// The timeline a record's saved document (`AutoCommit::save`) holds, as a
+/// The timeline a resource's saved document (`AutoCommit::save`) holds, as a
 /// render reads it from the snapshot its host hands over.
 pub fn read_snapshot(bytes: &[u8]) -> Result<Project, String> {
     ui::tilo_resource::Replica::<Project>::load(bytes)

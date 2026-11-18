@@ -2,9 +2,28 @@
 //!
 //! Every message is one JSON value in a frame with a little-endian length prefix ([`FRAMING`]).
 //! The session speaks first, with [`ToKeeper::Hello`] naming [`INTERFACE_VERSION`]; a keeper at
-//! another version answers [`FromKeeper::VersionMismatch`] and closes that connection, and keeps
-//! running and displaying its app. [`ToKeeper::Attach`] carries one descriptor beside its frame
-//! (`SCM_RIGHTS`): the session's end of a fresh Wayland connection to the desktop.
+//! another version answers [`FromKeeper::VersionMismatch`] and keeps running and displaying its
+//! app. [`ToKeeper::Attach`] carries one descriptor beside its frame (`SCM_RIGHTS`): the session's
+//! end of a fresh Wayland connection to the desktop.
+//!
+//! # The part that never changes
+//!
+//! A running keeper is never replaced by an update, so a session meets keepers of builds older and
+//! newer than its own. Everything above is at [`INTERFACE_VERSION`], and a session at another
+//! version speaks none of it. What follows is not versioned, and every build of the keeper and the
+//! session keeps it exactly as written:
+//!
+//! - the first frame of a connection is a hello, read by [`hello_version`];
+//! - a keeper at another version answers it with `{"version-mismatch":{"version":N}}`
+//!   ([`mismatch_version`]), then the frame [`HOLDING`], and keeps the connection open: while a
+//!   connection that said hello at another version stays open, its app is not ended for want of
+//!   a desktop ([`crate::DESKTOP_GONE`]), as a session is there that cannot show it; the time counts
+//!   from when the last such connection closed;
+//! - `<dir>/app` holds the app's process once it started, as [`AppProcess`] in JSON, so a session
+//!   that cannot speak to the keeper can still end exactly that process.
+//!
+//! A keeper from before this rule answers the mismatch and closes the connection: its app ends
+//! once its desktop stayed away for [`crate::DESKTOP_GONE`].
 
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +113,36 @@ pub enum End {
     Signalled { signal: i32 },
 }
 
+/// The frame a keeper sends after its version mismatch when it holds its app for the session at
+/// the other end (see the module's docs): the JSON string `"holding"`. Never changes.
+pub const HOLDING: &str = "holding";
+
+/// Whether `frame` is [`HOLDING`].
+#[must_use]
+pub fn holding(frame: &[u8]) -> bool {
+    serde_json::from_slice::<String>(frame).is_ok_and(|said| said == HOLDING)
+}
+
+/// The version a keeper's version-mismatch answer names, read without the rest of
+/// [`FromKeeper`], so a keeper at any version is understood. Never changes.
+#[must_use]
+pub fn mismatch_version(frame: &[u8]) -> Option<u32> {
+    let value: serde_json::Value = serde_json::from_slice(frame).ok()?;
+    value
+        .get("version-mismatch")?
+        .get("version")?
+        .as_u64()
+        .and_then(|version| u32::try_from(version).ok())
+}
+
+/// The app's process, as a keeper writes it to `<dir>/app` once it started. Never changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppProcess {
+    pub pid: u32,
+    /// When it started, in clock ticks since boot (`/proc/<pid>/stat`).
+    pub started_at: u64,
+}
+
 /// The version a first frame says hello with, read without the rest of [`ToKeeper`], so a
 /// session at any version is answered.
 #[must_use]
@@ -154,5 +203,24 @@ mod tests {
             .first()
             .and_then(|frame| serde_json::from_slice(frame).ok());
         assert_eq!(first, Some(ToKeeper::Describe));
+    }
+
+    #[test]
+    fn the_unversioned_frames_read_as_they_are_written() {
+        let mismatch = encode(&FromKeeper::VersionMismatch { version: 4 }).unwrap_or_default();
+        let mut buffer = mismatch;
+        buffer.extend(encode(&HOLDING).unwrap_or_default());
+        let frames = take_frames(&mut buffer).unwrap_or_default();
+        assert_eq!(frames.first().and_then(|f| mismatch_version(f)), Some(4));
+        assert!(frames.get(1).is_some_and(|f| holding(f)));
+        assert!(!holding(br#"{"hello":{"version":1}}"#));
+        let process = AppProcess {
+            pid: 7,
+            started_at: 9,
+        };
+        assert_eq!(
+            serde_json::to_string(&process).unwrap_or_default(),
+            r#"{"pid":7,"started_at":9}"#
+        );
     }
 }

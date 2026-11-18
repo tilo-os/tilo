@@ -11,7 +11,9 @@ mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
-pub(crate) use interaction::{written_by, written_in};
+mod written;
+pub use written::written_by;
+pub(crate) use written::written_in;
 mod key;
 mod labels;
 mod layer;
@@ -47,6 +49,7 @@ pub use render::{
     layout_peer_pills, paint_follow_frame, paint_followed_pointer, paint_own_chat_bubble,
     paint_reaction, paint_speaking_ring,
 };
+pub(crate) use written::written_under;
 
 /// The scope this process should publish its presence under — the workspace
 /// it collaborates in, or `None` when it has no workspace. Read from
@@ -78,14 +81,6 @@ pub fn local_surface_pointer() -> PresenceKey {
 /// said again as they type ([`DraftSaid`]), so one who stops drops out shortly after, with no
 /// message.
 pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_secs(6);
-
-/// How long a "just typed" highlight lingers, its fade included: the
-/// standard trace of a member's mark ([`crate::motion::Trace`]).
-pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
-
-/// The highlight fades in this many steps, each a wake deadline
-/// ([`crate::motion::Trace::STEPS`]).
-pub const TYPING_FADE_STEPS: u32 = crate::motion::Trace::STEPS;
 
 /// Longest forward caret jump still read as "this peer just wrote that" (the `Caret` arm of
 /// [`PresenceCtx::apply_remote_presence`]). Generous on purpose: a caret key is per *block*, so a
@@ -282,7 +277,7 @@ mod color_tests {
 
 /// One "just typed" highlight span: the run a peer inserted and when.
 /// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes it
-/// once past [`TYPING_FADE`].
+/// once past [`crate::motion::Trace::LIFE`].
 #[derive(Debug, Clone, PartialEq)]
 struct TypingMark {
     range: SelectionRange,
@@ -436,8 +431,8 @@ pub struct PresenceCtx {
     /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
     /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
     pub names: HashMap<MemberId, String>,
-    /// The person each agent or bot acts for, as the broker admitted it:
-    /// "Claude for Ada".
+    /// The person each agent or bot acts for, as the broker admitted it: a fact a history
+    /// hover names, never part of the agent's name.
     acting_for: HashMap<MemberId, MemberId>,
     /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
@@ -450,12 +445,13 @@ pub struct PresenceCtx {
     /// Last marker tip actually painted for each agent. This is local visual
     /// continuity only: it never enters pointer presence or action state.
     interaction_markers: HashMap<tilo_actions::Actor, interaction::AgentMarkerContinuity>,
-    /// Invocations whose exact place a widget already painted this frame —
-    /// the characters a write landed in. The rail leaves them out instead of
-    /// naming the same activity a second time.
-    shown: std::cell::RefCell<std::collections::HashSet<tilo_actions::InvocationId>>,
+    /// What each write put into a text, by writer and place, drawn where it stands
+    /// ([`Self::draw_writes_in`]): an agent's last write in a place stays marked there.
+    written: std::cell::RefCell<HashMap<written::WrittenPlace, written::Written>>,
+    /// Counts changes to `written` ([`Self::written_generation`]).
+    written_generation: std::cell::Cell<u64>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
-    /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
+    /// faded out by [`PresenceCtx::active_typing`] over [`crate::motion::Trace::LIFE`].
     /// Not serialised — purely a local render effect.
     typing: HashMap<(MemberId, PresenceKey), Vec<TypingMark>>,
     /// When a remote *document* change (not just a caret move) was last
@@ -478,12 +474,12 @@ pub struct PresenceCtx {
     presence_marks: std::cell::RefCell<Vec<PresenceMark>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
-    /// and read by gated widgets through [`Self::permits`]. `None` gates
+    /// and read by guarded widgets through [`Self::permits`]. `None` checks
     /// nothing.
     permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
     /// [`crate::permissions::shared_revision`] as the drawing in progress
     /// sees it. A retained drawing made under another revision is stale:
-    /// what a gated widget paints follows permissions that moved with
+    /// what a guarded widget paints follows permissions that moved with
     /// nothing in the tree marking it.
     paint_permissions: std::cell::Cell<u64>,
     /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
@@ -564,7 +560,7 @@ impl PresenceCtx {
         self.viewport.set(prev);
     }
 
-    /// Draw with `permissions` as the authority gated widgets check, then
+    /// Draw with `permissions` as the authority guarded widgets check, then
     /// restore the outer one.
     pub fn with_permissions<R>(
         &self,
@@ -1259,16 +1255,17 @@ impl PresenceCtx {
         }
     }
 
-    /// Re-resolve who needs a number to be told apart, over every person
+    /// Re-resolve who needs a number to be told apart, over every member
     /// the workspace names including this session's own, and relabel the pills
     /// of anyone whose label that changed.
     fn refresh_labels(&mut self) {
         let own = self.self_member.as_ref().map(|(id, name)| (id, name));
-        let next =
-            MemberLabels::by_joining(self.names.iter().chain(own).filter_map(|(id, name)| {
-                let person = id.person_id()?;
-                Some((person, name.as_str(), self.joined.get(id).copied()))
-            }));
+        let next = MemberLabels::by_joining(
+            self.names
+                .iter()
+                .chain(own)
+                .map(|(id, name)| (id.id(), name.as_str(), self.joined.get(id).copied())),
+        );
         if next == self.labels {
             return;
         }
@@ -1284,7 +1281,7 @@ impl PresenceCtx {
         }
     }
 
-    /// The numbers people who share a name are told apart by in this workspace.
+    /// The numbers members who share a name are told apart by in this workspace.
     /// [`Self::display_name`] already applies them; this is for a caller
     /// that holds names of its own for the same members.
     pub fn labels(&self) -> &MemberLabels {
@@ -1292,9 +1289,8 @@ impl PresenceCtx {
     }
 
     /// The friendly name to show for `user`, this session's own member included, falling back
-    /// to the raw id when the roster has not announced one. Never blank. People sharing a name
-    /// carry their number ("Ada (2)", [`MemberLabels`]); software acting for a person is named
-    /// with that person ("Claude for Ada"), else with its kind.
+    /// to the raw id when the roster has not announced one. Never blank. Members sharing a name
+    /// carry their number ("Ada (2)", [`Self::member_label`]).
     pub fn display_name(&self, user: &MemberId) -> String {
         let name = self
             .names
@@ -1312,32 +1308,16 @@ impl PresenceCtx {
             MemberId::Person(_) => guest_label(),
             MemberId::Agent(id) | MemberId::Bot(id) => id.clone(),
         });
-        self.kind_label(user, &name)
+        self.member_label(user, &name)
     }
 
-    fn kind_label(&self, user: &MemberId, name: &str) -> String {
-        if let MemberId::Person(person) = user {
-            return self.labels.label(person.as_str(), name);
-        }
-        // Whom software acts for: "Claude for you", "Claude for Ada". A person the roster has not
-        // named yet is left out rather than shown as their raw key.
-        if let Some(person) = self.acting_for.get(user) {
-            let me = self.self_id();
-            let reader = Some(person) == me;
-            let named = self.names.get(person).and_then(|named| {
-                crate::history_source::human_label(named, person.id())
-                    .map(|named| self.labels.label(person.id(), named))
-            });
-            if reader || named.is_some() {
-                let person = named.unwrap_or_default();
-                return crate::history_source::sentence::acting_line(name, Some(&person), reader);
-            }
-        }
-        if user.is_bot() {
-            crate::i18n::widget_format("member-bot", &[("name", name.into())])
-        } else {
-            crate::history_source::agent_display_label(name)
-        }
+    /// What every surface calls `user`, whose name is `name`: that name, numbered while another
+    /// member here goes by it too ([`MemberLabels`]). The one rule for a member's name, as
+    /// [`crate::tokens::PresenceHue::of_member`] is for their colour: a chip, a caret tag, a
+    /// presence card and a history row say the same name. What a member is shows in the face
+    /// beside it, and whom software acts for in a detail, never in the name.
+    pub(crate) fn member_label(&self, user: &MemberId, name: &str) -> String {
+        self.labels.label(user.id(), name)
     }
 
     /// One row of the roster: who `user` is here, in the colour they wear.
@@ -1394,7 +1374,7 @@ impl PresenceCtx {
 
     /// The peer's still-visible typing spans under `key` at time `now`,
     /// each paired with a fade alpha in `0.0..=1.0` (1.0 = just typed,
-    /// tapering linearly to 0 at [`TYPING_FADE`]). This is a read only:
+    /// tapering linearly to 0 at [`crate::motion::Trace::LIFE`]). This is a read only:
     /// call [`Self::prune_typing`] separately to reclaim expired entries.
     pub fn active_typing(
         &self,
@@ -1402,15 +1382,10 @@ impl PresenceCtx {
         key: &PresenceKey,
         now: Instant,
     ) -> Vec<(SelectionRange, f32)> {
-        let Some(marks) = self.typing.get(&(user.clone(), key.clone())) else {
-            return Vec::new();
-        };
-        marks
-            .iter()
-            .filter_map(|m| {
-                crate::motion::Trace::alpha(now.saturating_duration_since(m.born))
-                    .map(|alpha| (m.range, alpha))
-            })
+        self.typing_marks_for_key(key, now)
+            .into_iter()
+            .filter(|(typist, _, _)| typist == user)
+            .map(|(_, range, alpha)| (range, alpha))
             .collect()
     }
 
@@ -1473,18 +1448,16 @@ impl PresenceCtx {
 
     /// Whether a typing highlight is still on screen at `now`.
     pub fn has_active_typing(&self, now: Instant) -> bool {
-        let fade = TYPING_FADE;
         self.typing
             .values()
             .flatten()
-            .any(|m| now.saturating_duration_since(m.born) < fade)
+            .any(|m| now.saturating_duration_since(m.born) < crate::motion::Trace::LIFE)
     }
 
     /// Call once a frame.
     pub fn prune_typing(&mut self, now: Instant) {
-        let fade = TYPING_FADE;
         self.typing.retain(|_, marks| {
-            marks.retain(|m| now.saturating_duration_since(m.born) < fade);
+            marks.retain(|m| now.saturating_duration_since(m.born) < crate::motion::Trace::LIFE);
             !marks.is_empty()
         });
     }
@@ -1593,10 +1566,7 @@ impl PresenceCtx {
         // by, when it is the name the workspace knows them by.
         let label = display_name.map_or_else(
             || self.display_name(&member),
-            |name| match member.person_id() {
-                Some(person) => self.labels.label(person, name),
-                None => name.to_owned(),
-            },
+            |name| self.labels.label(member.id(), name),
         );
         if let Some(existing) = self.remote_cursors.iter_mut().find(|c| c.member == member) {
             existing.position = position;
@@ -1751,7 +1721,7 @@ impl PresenceCtx {
                 // Derive a typing mark from a caret that advanced under the
                 // same scope, not only from an explicit `Typing` payload —
                 // an agent/SDK peer publishing bare caret moves has no
-                // other way to show what it wrote. Gated on a document
+                // other way to show what it wrote. Depends on a document
                 // change having actually landed, so a caret merely reading
                 // paints nothing.
                 if let Some(prev) = self.caret_for(&key, &uid)
@@ -2499,10 +2469,10 @@ mod string_id_wrapper_tests {
                 let mut ctx = PresenceCtx::empty();
                 let scribe = MemberId::agent("scribe");
                 ctx.set_display_name(scribe.clone(), "Scribe");
-                assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
+                assert_eq!(ctx.display_name(&scribe), "Scribe");
                 ctx.set_display_name(scribe.clone(), "Editorial helper");
                 assert!(!ctx.user(&scribe).id.is_person());
-                assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
+                assert_eq!(ctx.display_name(&scribe), "Editorial helper");
             }
             // phase: an_unnamed_peer_is_a_guest_and_never_its_id
             // A person nobody named is a guest on every surface: never blank, and never their key,
@@ -2580,21 +2550,17 @@ mod string_id_wrapper_tests {
             mine.upsert_remote_cursor(MemberId::person("key-b"), [1.0, 1.0], Some("ada"));
             mine.set_self_member(ada.clone(), "Ada");
             mine.set_display_name(other_ada.clone(), "ada");
-            mine.set_display_name(agent.clone(), "Ada");
+            mine.set_display_name(agent.clone(), "Claude");
             // And from the other Ada's, who heard of everyone in another order.
             let mut theirs = PresenceCtx::empty();
-            theirs.set_display_name(agent.clone(), "Ada");
+            theirs.set_display_name(agent.clone(), "Claude");
             theirs.set_display_name(ada.clone(), "Ada");
             theirs.set_self_member(other_ada.clone(), "ada");
 
             for ctx in [&mine, &theirs] {
                 assert_eq!(ctx.display_name(&ada), "Ada (1)");
                 assert_eq!(ctx.display_name(&other_ada), "ada (2)");
-                assert_eq!(
-                    ctx.display_name(&agent),
-                    crate::history_source::agent_display_label("Ada"),
-                    "an agent keeps its kind label and takes no number"
-                );
+                assert_eq!(ctx.display_name(&agent), "Claude", "a name nobody shares");
             }
             assert_eq!(mine.self_label().as_deref(), Some("Ada (1)"));
             assert_eq!(theirs.self_label().as_deref(), Some("ada (2)"));
@@ -2608,7 +2574,7 @@ mod string_id_wrapper_tests {
                 [
                     "Ada (1)".to_owned(),
                     "ada (2)".to_owned(),
-                    crate::history_source::agent_display_label("Ada"),
+                    "Claude".to_owned(),
                 ]
             );
 
@@ -2617,6 +2583,28 @@ mod string_id_wrapper_tests {
             assert_eq!(mine.remote_cursors[0].label, "Bea");
             theirs.unregister_peer(&MemberId::person("key-a"));
             assert_eq!(theirs.self_label().as_deref(), Some("ada"));
+        }
+
+        phase an_agent_is_its_own_name_on_every_surface_and_numbered_only_beside_a_namesake;
+        {
+            // Helper works for Ada, who reads the workspace: its chip, its caret tag and the card
+            // its step shows all say the name it goes by, never whom it works for or what it is.
+            let ada = MemberId::person("key-a");
+            let helper = MemberId::agent("helper");
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_self_member(ada.clone(), "Ada");
+            ctx.set_display_name(helper.clone(), "Helper");
+            ctx.set_acting_for(helper.clone(), Some(ada.clone()));
+            ctx.upsert_remote_cursor(helper.clone(), [1.0, 1.0], None);
+            assert_eq!(ctx.display_name(&helper), "Helper");
+            assert_eq!(ctx.remote_cursors[0].label, "Helper");
+            assert_eq!(ctx.acting_for(&helper), Some(&ada), "whom it works for is kept");
+            // Bea's agent goes by the same name: both are numbered, alike for everyone.
+            let other = MemberId::agent("helper-bea");
+            ctx.set_display_name(other.clone(), "helper");
+            assert_eq!(ctx.display_name(&helper), "Helper (1)");
+            assert_eq!(ctx.display_name(&other), "helper (2)");
+            assert_eq!(ctx.remote_cursors[0].label, "Helper (1)");
         }
 
         phase typing_marks_fade_prune_and_coalesce;
@@ -2644,7 +2632,7 @@ mod string_id_wrapper_tests {
                 assert!((fresh[0].1 - 1.0).abs() < 1e-3, "just-typed alpha is ~1.0");
 
                 // Half-way through the fade window: alpha ~0.5.
-                let mid = t0 + TYPING_FADE / 2;
+                let mid = t0 + crate::motion::Trace::LIFE / 2;
                 let half = ctx.active_typing(&bob, &key, mid);
                 assert_eq!(half.len(), 1);
                 assert!(
@@ -2655,7 +2643,7 @@ mod string_id_wrapper_tests {
                 assert!(ctx.has_active_typing(mid));
                 assert_eq!(
                     ctx.widgets_change_at(mid),
-                    Some(t0 + TYPING_FADE / 2 + TYPING_FADE / TYPING_FADE_STEPS),
+                    Some(t0 + crate::motion::Trace::LIFE / 2 + crate::motion::Trace::LIFE / crate::motion::Trace::STEPS),
                     "the fade wakes the host at its next step, not every frame"
                 );
                 assert_eq!(
@@ -2665,7 +2653,7 @@ mod string_id_wrapper_tests {
                 );
 
                 // Past the window: gone from the read, and prune reclaims it.
-                let after = t0 + TYPING_FADE + Duration::from_millis(1);
+                let after = t0 + crate::motion::Trace::LIFE + Duration::from_millis(1);
                 assert!(ctx.active_typing(&bob, &key, after).is_empty());
                 assert!(!ctx.has_active_typing(after));
                 assert!(!ctx.typing.is_empty(), "not yet pruned");
@@ -3186,7 +3174,7 @@ mod own_identity_tests {
                 let agent = MemberId::agent("peer@agent-7");
                 ctx.set_display_name(agent.clone(), "Release assistant");
                 ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
-                assert_eq!(ctx.display_name(&agent), "Release assistant · Agent");
+                assert_eq!(ctx.display_name(&agent), "Release assistant");
             }
             // phase: a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not
             // A workspace-scoped pointer registers its peer as present; a

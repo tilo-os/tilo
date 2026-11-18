@@ -946,8 +946,8 @@ fn partial_adoption_refuses_changed_application_output_without_reinstall_or_over
     promotion
         .move_one_for_test(Path::new(".local/share/flatpak"))
         .unwrap();
-    let witness = promotion.witness().unwrap();
-    assert_eq!(witness.application_home().unwrap(), active);
+    let proof = promotion.proof().unwrap();
+    assert_eq!(proof.application_home().unwrap(), active);
     let mapped = FixtureRunner {
         replies: RefCell::default(),
         calls: RefCell::default(),
@@ -956,13 +956,13 @@ fn partial_adoption_refuses_changed_application_output_without_reinstall_or_over
     };
     // First qualify the real mapped repository and exact ref context, so the
     // later refusal cannot be caused by missing fixture replies or wrong home.
-    applications::verify_adopted_output(&request, witness.application_home().unwrap(), &mapped)
+    applications::verify_adopted_output(&request, proof.application_home().unwrap(), &mapped)
         .unwrap();
     let object = active.join(".local/share/flatpak/repo/fixture-object");
     std::fs::write(&object, b"altered output").unwrap();
     let calls = mapped.calls.borrow().len();
     let error =
-        applications::verify_adopted_output(&request, witness.application_home().unwrap(), &mapped)
+        applications::verify_adopted_output(&request, proof.application_home().unwrap(), &mapped)
             .unwrap_err();
     assert_eq!(
         error,

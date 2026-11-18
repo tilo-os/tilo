@@ -1,4 +1,4 @@
-// Exercise production RPC and retained target custody. Refusal cases stop before
+// Exercise production RPC and retained target ownership. Refusal cases stop before
 // disclosure; the included HTTPS regression enrolls an identity and reaches the
 // real registry verifier and durable case store.
 mod external_moderation_rpc_tests {
@@ -139,13 +139,13 @@ mod external_moderation_rpc_tests {
                 .clone();
             let (actor, origin) = self.caller();
             let surface = self.state.surfaces.lock().unwrap()[&peer].clone();
-            let binding = self.state.offered_witness_binding(
+            let binding = self.state.offered_approval_binding(
                 actor.member(),
                 &(surface, offered.clone()),
                 Some(argument),
                 tilo_actions::InvocationId::new(),
             );
-            let witness = self.state.witness_confirmation(&binding).unwrap();
+            let approval = self.state.approval_confirmation(&binding).unwrap();
             let token = self
                 .state
                 .confirmation_token(
@@ -154,7 +154,7 @@ mod external_moderation_rpc_tests {
                     &offered,
                     Some(argument),
                     &actor,
-                    Some(&tilo_actions::remote::Confirmation::Witnessed(witness)),
+                    Some(&tilo_actions::remote::Confirmation::Approved(approval)),
                     &binding,
                 )
                 .unwrap();
@@ -260,7 +260,7 @@ mod external_moderation_rpc_tests {
                 base_url: "http://registry.invalid".into(),
                 owner_pubkey_hex: "ab".repeat(32),
             },
-            request_id: "custody-report".into(),
+            request_id: "ownership-report".into(),
             issued_at_unix: now,
             expires_at_unix: now + 3600,
             mutation: if appeal {
@@ -339,7 +339,7 @@ mod external_moderation_rpc_tests {
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
                     let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
-                    let binding = workspace.state.offered_witness_binding(
+                    let binding = workspace.state.offered_approval_binding(
                         actor.member(),
                         &(surface, offered.clone()),
                         Some(&exact),
@@ -355,7 +355,7 @@ mod external_moderation_rpc_tests {
                             None,
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
                     ));
                     assert!(actor.direct(), "the app's own identity is a direct person");
                     assert!(matches!(
@@ -368,10 +368,10 @@ mod external_moderation_rpc_tests {
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
                     ));
                     for altered in ["missing", "payload", "destination"] {
-                        let witness = workspace.state.witness_confirmation(&binding).unwrap();
+                        let approval = workspace.state.approval_confirmation(&binding).unwrap();
                         let token = workspace
                             .state
                             .confirmation_token(
@@ -380,7 +380,7 @@ mod external_moderation_rpc_tests {
                                 &offered,
                                 Some(&exact),
                                 &actor,
-                                Some(&tilo_actions::remote::Confirmation::Witnessed(witness)),
+                                Some(&tilo_actions::remote::Confirmation::Approved(approval)),
                                 &binding,
                             )
                             .unwrap()
@@ -437,7 +437,7 @@ mod external_moderation_rpc_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn external_moderation_rpc_requires_witness_without_publisher_confirmation_policy() {
+    async fn external_moderation_rpc_requires_approval_without_publisher_confirmation_policy() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
@@ -452,7 +452,7 @@ mod external_moderation_rpc_tests {
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
                     let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
-                    let binding = workspace.state.offered_witness_binding(
+                    let binding = workspace.state.offered_approval_binding(
                         actor.member(),
                         &(surface, offered.clone()),
                         Some(&exact),
@@ -468,7 +468,7 @@ mod external_moderation_rpc_tests {
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
                             &binding,
                         ),
-                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+                        Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })
                     ));
                     // A generic internal/native-task approval is not evidence
                     // that the host showed this external disclosure.
@@ -894,7 +894,7 @@ mod external_moderation_rpc_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn external_moderation_rpc_binds_exact_operation_and_live_target_custody() {
+    async fn external_moderation_rpc_binds_exact_operation_and_live_target_ownership() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
@@ -921,7 +921,7 @@ mod external_moderation_rpc_tests {
                     };
                     request.validate().unwrap();
                     // Admission reached the host worker's real effect, not a
-                    // custody check that refuses every request.
+                    // ownership check that refuses every request.
                     refused(&target.handle, &request, id, "HTTPS").await;
                     for field in ["destination", "owner", "mutation"] {
                         let mut changed = request.clone();

@@ -9,7 +9,7 @@
 //!
 //! A message asks the agents that take part in its conversation, and the agents it `@`mentions
 //! wherever it is written, so naming an agent in a channel brings it in for that message. The
-//! agent's answer is the reply its id and the message's derive ([`crate::record::reply_id_at`]):
+//! agent's answer is the reply its id and the message's derive ([`crate::chat::reply_id_at`]):
 //! a turn goes on until that reply exists and its work is finished, and a person's Retry asks the
 //! same message again in a later attempt. The person a turn is for stops it (`stop-agent`,
 //! [`Stopped`]): the message then asks nobody until someone asks again, and whoever runs the agent
@@ -20,14 +20,14 @@
 //! What a cause asks never replaces anything: it waits until nothing the person wrote is open,
 //! then the one already begun goes on, and after it the oldest.
 //!
-//! Nothing here keeps state of its own: Chat's record says
+//! Nothing here keeps state of its own: Chat's resource says
 //! what is asked and what was answered, so every reader — a person's computer running the agents
 //! they keep, the workspace's host running the agents it runs — finds the same turns.
 
 use ui::permissions::MemberId;
 
+use crate::chat::{Chat, Message, reply_id_at};
 use crate::parts::ChatPart;
-use crate::record::{Chat, Message, reply_id_at};
 use ui::prelude::Id;
 use ui::tilo_resource::Resource as _;
 use ui::tilo_resource::{self, Model};
@@ -189,11 +189,7 @@ fn asked<'a>(chat: &Chat, part: &'a ChatPart) -> Vec<Asked<'a>> {
         let mut agents: Vec<(String, bool)> = members
             .iter()
             .filter(|member| !member.is_person())
-            .filter_map(|member| {
-                member
-                    .agent_id()
-                    .map(|agent| (agent.to_owned(), false))
-            })
+            .filter_map(|member| member.agent_id().map(|agent| (agent.to_owned(), false)))
             .collect();
         for (_, message) in &messages {
             for agent in mentioned_agents(message) {
@@ -213,7 +209,7 @@ fn asked<'a>(chat: &Chat, part: &'a ChatPart) -> Vec<Asked<'a>> {
                         && message.author != key
                         && asks_for(message).is_some_and(|person| {
                             // What a cause asks is for a person who takes part here, as the
-                            // chat's own record says who does.
+                            // chat's own document says who does.
                             message.cause.is_none()
                                 || members.contains(&MemberId::person(person.as_str()))
                         })
@@ -249,11 +245,14 @@ pub fn summonses(chat: &Chat, part: &ChatPart) -> Vec<Summons> {
             .copied()
             .filter(|(id, message)| !stopped_now(message) && unanswered(reply(id, message)))
             .collect();
+        // Of two they wrote within one second the later is the one that stands later in the
+        // part, as a turn is told them ([`crate::recall::told`]): `max_by_key` keeps the last
+        // of equals, and a message's id says nothing of when it was written.
         let turn = open
             .iter()
             .copied()
             .filter(|(_, message)| typed(message))
-            .max_by_key(|(id, message)| (message.ts, id.as_str()))
+            .max_by_key(|(_, message)| message.ts)
             .or_else(|| {
                 open.iter()
                     .copied()
@@ -316,7 +315,7 @@ pub fn stopped(chat: &Chat, part: &ChatPart) -> Vec<Summons> {
 
 /// Whether `agent`'s reply to `message` on `attempt` was left begun: its work is unfinished and
 /// had gone past taking the turn, so it said what it was doing or recorded a step. What it did
-/// may have changed things, and its record does not say which: whoever runs the agent anew ends
+/// may have changed things, and its resource does not say which: whoever runs the agent anew ends
 /// such a turn instead of starting it over, so nothing is done twice. One only taken changed
 /// nothing, and runs.
 #[must_use]
@@ -334,12 +333,12 @@ pub fn left_begun(part: &ChatPart, message: &str, agent: &str, attempt: u32) -> 
 }
 
 /// What `message` asks of the agents it summons, in words: its own, under the words it quotes,
-/// with what it carries said beside them, and the first record it carries as the run's subject.
+/// with what it carries said beside them, and the first resource it carries as the run's subject.
 #[must_use]
 pub fn request(message: &Message) -> (String, Option<tilo_actions::SelectionSubject>) {
     let mut subject = None;
     // A reply that answers a run of another message is asked with the words it quotes above its
-    // own: the quote is the conversation's record of what "that one" is.
+    // own: the quote is the conversation's resource of what "that one" is.
     let mut instruction = message
         .quoted
         .as_ref()
@@ -452,12 +451,12 @@ mod tests {
 
         // The agent's reply, finished, answers it.
         let mut reply = said(&direct, MemberId::agent("scout"), "Here is the summary", 4);
-        reply.work = Some(crate::record::Work {
-            state: Some(crate::record::Transition {
+        reply.work = Some(crate::chat::Work {
+            state: Some(crate::chat::Transition {
                 state: AgentWorkState::Done { did: String::new() },
                 since: 4,
             }),
-            ..crate::record::Work::default()
+            ..crate::chat::Work::default()
         });
         part.messages.push(asked[1].reply(), reply);
         let left = summonses(&chat, &part);
@@ -488,9 +487,9 @@ mod tests {
     /// The agent's reply to `message`, with its work in `state`.
     fn replied(part: &mut ChatPart, channel: &Id, message: &Id, state: AgentWorkState) {
         let mut reply = said(channel, MemberId::agent("scout"), "", 9);
-        reply.work = Some(crate::record::Work {
-            state: Some(crate::record::Transition { state, since: 9 }),
-            ..crate::record::Work::default()
+        reply.work = Some(crate::chat::Work {
+            state: Some(crate::chat::Transition { state, since: 9 }),
+            ..crate::chat::Work::default()
         });
         part.messages
             .push(reply_id_at(message, &MemberId::agent("scout"), 0), reply);
@@ -607,6 +606,32 @@ mod tests {
             AgentWorkState::Done { did: String::new() },
         );
         assert_eq!(turn(&part), second);
+    }
+
+    /// Of two messages a person wrote within one second the later one is their newest: the one
+    /// that stands later in the part, whichever way the two ids sort.
+    #[test]
+    fn of_two_messages_of_one_second_the_later_in_the_part_is_the_newest() {
+        let chat = Chat::default();
+        let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
+        for (earlier, later) in [("m1", "m2"), ("m2", "m1")] {
+            let mut part = ChatPart::default();
+            part.messages.push(
+                Id::from_raw(earlier),
+                said(&direct, MemberId::person(ADA), "plan the launch", 7),
+            );
+            part.messages.push(
+                Id::from_raw(later),
+                said(&direct, MemberId::person(ADA), "also order the cake", 7),
+            );
+            let asked = summonses(&chat, &part);
+            assert_eq!(asked.len(), 1, "one turn at a time: {asked:?}");
+            assert_eq!(
+                asked[0].message,
+                Id::from_raw(later),
+                "written as {earlier}, then as {later}"
+            );
+        }
     }
 
     /// A stop ends the ask of the attempt it is in; whoever runs the agent is told to end its

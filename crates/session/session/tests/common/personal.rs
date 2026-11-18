@@ -1,7 +1,7 @@
 //! One person's own identity and session, as a person record's test needs
 //! them: the device this machine is, another of their devices certified under
 //! their root, a session that serves the person's own store, and a client that
-//! speaks on that session's plane as an app does.
+//! speaks on that session's app wire as an app does.
 //!
 //! A person's own records route on the cluster their store derives from their
 //! root ([`collab_types::personal_cluster`]), and an app they launch joins a
@@ -23,9 +23,9 @@ use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::CollabClient;
-use tilo_identity_host::provisioning::FILE_SECRETS_ENV;
+use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Session};
+use tilo_session::{AppSocket, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 use super::people::Person;
@@ -42,7 +42,7 @@ pub struct Personal {
     pub device: SigningKey,
     /// This machine's certificate, signed by the person's root.
     pub cert: DeviceCert,
-    /// The socket this machine's session serves its plane on.
+    /// The socket this machine's session serves its app wire on.
     socket: PathBuf,
     /// The environment the identity was provisioned in, restored before the
     /// directories it names are removed.
@@ -91,7 +91,7 @@ impl Personal {
     /// person admitted, so this machine's session answers it as one of theirs.
     pub fn second(&self, label: &str) -> Other {
         let other = Other::new(&self.person, label);
-        tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        tilo_identity::device_fleet::DeviceFleetStore::from_env()
             .expect("this machine's device fleet")
             .remember_certificate(&hex::encode(other.cert.user_public_key), other.cert.clone())
             .expect("the person's other device is enrolled on this machine");
@@ -104,7 +104,7 @@ impl Personal {
         collab_types::personal_cluster(&self.cert.user_public_key).to_string()
     }
 
-    /// The socket this machine's session serves its plane on.
+    /// The socket this machine's session serves its app wire on.
     pub fn socket(&self) -> &Path {
         &self.socket
     }
@@ -178,7 +178,7 @@ pub fn session(
     let mut session = super::headless(Options {
         collab: true,
         wake: LoopWake::default(),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: who.to_owned(),
         launches,
         state: Some(state.to_path_buf()),
@@ -192,10 +192,11 @@ pub fn session(
     session
 }
 
-/// An app connected to the session's plane as `app` in `cluster`, as the
+/// An app connected to the session's app wire as `app` in `cluster`, as the
 /// launcher hands it the connection.
 pub fn connect(socket: &Path, app: &str, cluster: &str) -> CollabClient {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
     launcher::services::write_collab_handoff(&mut stream, app, cluster)
         .expect("the launcher names the app on the connection");
     stream

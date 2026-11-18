@@ -50,9 +50,9 @@ pub(super) struct LayoutRuntime {
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree
-    /// ([`crate::host_core::HostCore::layout_maps_stale`]).
+    /// ([`crate::app_core::AppCore::layout_maps_stale`]).
     pub(super) adopted: crate::retained_widgets::Adopted,
-    /// How many builds' maps were admitted ([`crate::host_core::HostCore::admit_layout_maps`]).
+    /// How many builds' maps were admitted ([`crate::app_core::AppCore::admit_layout_maps`]).
     pub(super) admissions: u64,
     /// The mapped nodes the history sweep visits, and the admission and map
     /// size they were found for (`App::history_sweep_nodes`).
@@ -231,7 +231,7 @@ pub(super) struct AvailabilityWalk {
 #[derive(PartialEq)]
 pub(super) struct RouteInputs {
     pub(super) tree: TreeGeneration,
-    pub(super) witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) observation: Option<crate::collaboration::AcceptedRoute>,
     pub(super) autosave_generation: u64,
     pub(super) document: (Vec<automerge::ChangeHash>, usize),
 }
@@ -292,14 +292,14 @@ pub(super) struct InputRuntime {
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
-    pub(super) tooltips: crate::host_core::TooltipLayer,
+    pub(super) tooltips: crate::app_core::TooltipLayer,
     /// Pen samples on their way to the pointer events they describe.
     pub(super) pen: crate::pen::PenInput,
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
     /// Where the pointer is, which buttons it holds and where it last pressed.
-    pub(super) pointer: crate::host_core::PointerPlace,
+    pub(super) pointer: crate::app_core::PointerPlace,
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
@@ -310,9 +310,9 @@ pub(super) struct InputRuntime {
     /// selection without it, and paint no caret ([`crate::caret_owner`]).
     pub(super) keyboard_held: bool,
     /// Whether the widgets last painted their carets: the window held the
-    /// keyboard and nothing standing over them took it.
+    /// keyboard and nothing over them took it.
     pub(super) widget_carets: bool,
-    /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
+    /// [`crate::app_core::KeyCore::keyboard_entry_owed`].
     pub(super) keyboard_entry_owed: bool,
 }
 
@@ -329,10 +329,10 @@ impl InputRuntime {
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
-            tooltips: crate::host_core::TooltipLayer::default(),
+            tooltips: crate::app_core::TooltipLayer::default(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
-            pointer: crate::host_core::PointerPlace::default(),
+            pointer: crate::app_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
         }
     }
@@ -374,14 +374,14 @@ pub(super) struct ActionRuntime {
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_document_sync: Option<super::bound_document_sync::BoundDocumentSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
-    pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) last_published_bound_route: Option<crate::collaboration::AcceptedRoute>,
     /// Publication refusals already logged, so a surface refused on every
     /// frame logs each distinct reason once rather than at frame rate.
     pub(super) refusals_logged: RefusalLog,
     #[cfg(test)]
-    pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) bound_broker_route_for_test: Option<crate::collaboration::AcceptedRoute>,
     pub(super) action_directory_stamp: Option<(
-        std::rc::Rc<super::action_directory_snapshot::DirectoryWitness>,
+        std::rc::Rc<super::action_directory_snapshot::DirectoryObservation>,
         String,
     )>,
     pub(super) action_directory_snapshot:
@@ -456,8 +456,7 @@ pub(super) struct ActionRuntime {
     /// waiting for the route to carry the surface that offers them. The host
     /// resolves an invocation against the surface it last received from this
     /// connection, so one sent ahead of that surface is refused as unknown.
-    pub(super) held_own_invocations:
-        std::collections::VecDeque<tilo_actions::remote::InvokeRequest>,
+    pub(super) held_own_invocations: std::collections::VecDeque<HeldOwnInvocation>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -474,6 +473,13 @@ pub(super) enum BrokerReply {
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
     Update(tilo_actions::InvocationId),
+}
+
+/// An invocation of this app's own action waiting for the route to carry the
+/// surface that offers it, and since when it waits.
+pub(super) struct HeldOwnInvocation {
+    pub(super) request: tilo_actions::remote::InvokeRequest,
+    pub(super) since: crate::time::Instant,
 }
 
 impl ActionRuntime {
@@ -649,7 +655,7 @@ pub(super) struct ContinuationRuntime {
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
-    pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) last_private_route: Option<crate::collaboration::AcceptedRoute>,
     pub(super) private_instance: Option<u64>,
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its shell once.
@@ -658,7 +664,7 @@ pub(super) struct ContinuationRuntime {
     /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
     /// The primary route [`Self::search_index`] published on.
-    pub(super) search_index_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) search_index_route: Option<crate::collaboration::AcceptedRoute>,
 }
 
 impl ContinuationRuntime {

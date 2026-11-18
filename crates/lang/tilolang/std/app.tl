@@ -33,7 +33,7 @@ app tilo.std "Standard library"
 /// list that nests its rows gives `tree`; one that groups says the name of the items that group
 /// under nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that
 /// does neither gives neither. The list is the column's scroller unless `in_column` is off: a
-/// list standing in a page's own scroller is as tall as its rows, and the page scrolls them with
+/// list in a page's own scroller is as tall as its rows, and the page scrolls them with
 /// the rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
 /// beside the list gives the row's item a page of its own, opened in front of the list.
 ///
@@ -471,7 +471,7 @@ template view tree_rows<T>(
 
 /// A window that is a tree of items: the tree down its sidebar and the item open beside it, as
 /// the page `doc` draws — one stack of blocks at the page's rhythm — with `head` the controls
-/// standing in the sidebar's header, given the item open (or none), so what can be done with it
+/// in the sidebar's header, given the item open (or none), so what can be done with it
 /// stands in the window's bar at every width rather than on a line of the page.
 ///
 /// The window keeps which item it shows itself (`opened`): a view that answers `on show` with
@@ -482,7 +482,7 @@ template view tree_rows<T>(
 /// at the top level) and keeps the window's own actions.
 ///
 /// `above` is a place the app keeps over the tree — a filter of its items, such as the ones
-/// pinned — with the filter's own words over them, standing only while it holds anything.
+/// pinned — with the filter's own words over them, only while it holds anything.
 /// Choosing one opens it beside as any row of the tree does. A window whose tree holds nothing
 /// says `empty` in its sidebar, and one with nothing open says so beside it.
 ///
@@ -647,7 +647,7 @@ template view after_body(content: View) {
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
 /// the window's full width, under `header`, the page's own controls, and the actions the host
 /// puts in the bar with them. A `fill` page is exactly the window's height and scrolls inside
-/// its own parts, which is what a board's lanes need; a page that grows with what it holds (a
+/// its own parts, which is what a board's lists need; a page that grows with what it holds (a
 /// grid of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so.
 view page<R>(
     of: R,

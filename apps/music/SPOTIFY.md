@@ -16,7 +16,7 @@ the release collection's direct packaging path. `tilo-app package apps/music
 implementation and the resource kinds in normal local dependencies. It builds
 a self-contained Linux executable and signs its manifest and payload together.
 Use an authorized publisher identity through the normal signing service or
-approved publisher-key custody; an ephemeral signature is not release acceptance.
+approved publisher-key storage; an ephemeral signature is not release acceptance.
 Fully strip the release executable's symbol table before distribution: the
 desktop package's wire and materialized payload are each limited to 64 MiB.
 An already built and stripped executable can use the supported
@@ -46,7 +46,7 @@ installation and a visible sign-in each require the user's applicable approval.
 
 The task registration supplies public client ID
 `fc7bc68792734157a2c9857cba652df7` in the system client table. A distributor can
-override the public ID through `TILO_OAUTH_SPOTIFY_CLIENT_ID` or the system account-custody
+override the public ID through `TILO_OAUTH_SPOTIFY_CLIENT_ID` or the system account-credentials
 client table, and register `http://127.0.0.1:47654/oauth` exactly. Browser sign-in
 uses the existing PKCE S256 implementation and state-validated loopback callback.
 There is no client secret, password prompt, pasted bearer token or borrowed
@@ -56,7 +56,7 @@ Connect Spotify requests only `user-read-private` and `user-library-read` for
 the catalogue and read-only saved library. Authorize playback separately requests
 `streaming` and `user-read-private` and verifies account identity. Both flows
 create persistent device-local OAuth grants, including refresh tokens, in system
-credential custody; a fresh test session needs new user consent. Enabling full
+credential storage; a fresh test session needs new user consent. Enabling full
 library and device controls is a separate consent action and is not required
 for this minimal catalogue/playback sign-in.
 
@@ -74,7 +74,7 @@ username. Missing/deprecated Web API subscription metadata remains unknown;
 native playback waits up to ten seconds for the authenticated session's product
 metadata to confirm Premium before constructing an audio sink. Unknown or rejected
 native eligibility produces an error without audio. Explicit Free profiles are
-rejected before playback authorization. Account custody seals the grants under
+rejected before playback authorization. Account credentials seals the grants under
 `music.spotify` and `music.spotify.streaming`; they never enter Automerge,
 resources, the playback profile, fixtures or continuity payloads. Disconnect
 forgets both device-local grants and stops the local Spotify transport. Revoke
@@ -263,7 +263,7 @@ manifest and audited lock before the 107-test Music/native regression run.
 Cargo-deny passed advisories, bans, licences and sources without exceptions.
 The lock introduces no package version and moves no unrelated dependency;
 ten obsolete dependency packages are removed. Vendor `PROVENANCE.md` files
-record archives, checksums, licences and the exact modifications.
+resource archives, checksums, licences and the exact modifications.
 
 The earlier broad proposal to switch TLS providers was rejected by automatic
 approval review and never applied. The user subsequently authorized only this

@@ -18,8 +18,8 @@ device slot the way a person does, through the kernel input path
 clocks stop at hardware presentation: they exclude peripheral scan time and
 panel pixel response, which only a photodiode sees.
 
-With `--gate` the run is also held to the latency bar on the device itself:
-`tilo-session-report --render-gate` over the session's flight record, with
+With `--check` the run is also held to the latency bar on the device itself:
+`tilo-session-report --render-check` over the session's flight record, with
 key-to-present at the median within 20 ms, direct frames within 11 ms (one
 90 Hz frame) and at least 80 % of them damage-limited or scanned out; and
 the GPU's time at each clock during the run (devfreq `trans_stat`), so a
@@ -56,7 +56,7 @@ SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
 SESSION_REPORT = "/usr/libexec/tilo-session-report"
 # The latency bar: key to photon under 20 ms, a direct frame within one 90 Hz
 # refresh, and most frames repairing only their damage.
-GATE_ARGS = ["--render-gate", "--render-budget-ms", "11", "--key-budget-ms", "20",
+CHECK_ARGS = ["--render-check", "--render-budget-ms", "11", "--key-budget-ms", "20",
              "--min-damage-limited-percent", "80"]
 GPU_TRANS_STAT = "cat /sys/class/devfreq/*.gpu/trans_stat"
 # A switch's frame run is 400 ms; it is read once it has settled, so the
@@ -158,14 +158,14 @@ def gpu_clock_share(before: dict[int, int], after: dict[int, int]) -> dict[str, 
     return {str(hz // 1_000_000): round(100 * max(0, ms) / total, 1) for hz, ms in sorted(spent.items())}
 
 
-def gate(device: Device, out: Path) -> bool:
+def check(device: Device, out: Path) -> bool:
     """Hold the session's flight record to the latency bar; the verdict's text goes to `out`."""
     try:
-        text = device.execute([SESSION_REPORT, *GATE_ARGS])
-        passed = "render gate: PASS" in text
+        text = device.execute([SESSION_REPORT, *CHECK_ARGS])
+        passed = "render check: PASS" in text
     except RuntimeError as error:
         text, passed = str(error), False
-    (out / "gate.txt").write_text(text)
+    (out / "check.txt").write_text(text)
     print(text)
     return passed
 
@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hardware", help="override the DMI/CPU description read off the device")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--no-compare", action="store_true", help="skip the read-only store comparison")
-    parser.add_argument("--gate", action="store_true",
+    parser.add_argument("--check", action="store_true",
                         help="also hold the session to the latency bar (key to photon, frame time, "
                         "damage-limited frames) and report the GPU's clocks over the run")
     args = parser.parse_args(argv)
@@ -207,9 +207,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--switches must be positive and --notes-samples within 0..1000")
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     device = Device(argparse.Namespace(device=args.device, slot=args.slot, tool=args.tool))
-    gate_passed = True
+    check_passed = True
     try:
-        clocks_before = gpu_time_in_state(device.execute(["sh", "-c", GPU_TRANS_STAT])) if args.gate else {}
+        clocks_before = gpu_time_in_state(device.execute(["sh", "-c", GPU_TRANS_STAT])) if args.check else {}
         notes_ms: list[float] = []
         if args.notes_samples:
             notes_out = args.out / "notes"
@@ -222,12 +222,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"{args.notes_samples} keys produced {len(notes_ms)} samples")
         switches = Switcher(device, args.slot).run(args.switches)
         (args.out / "switches.json").write_text(json.dumps(switches, indent=2))
-        if args.gate:
+        if args.check:
             clocks = gpu_clock_share(clocks_before,
                                      gpu_time_in_state(device.execute(["sh", "-c", GPU_TRANS_STAT])))
             (args.out / "gpu-clocks.json").write_text(json.dumps(clocks, indent=2))
             print(f"GPU time at each clock (MHz: % of the run): {clocks}")
-            gate_passed = gate(device, args.out)
+            check_passed = check(device, args.out)
         env = record.environment(args.profile, "gpu", "none", f"device-{args.device}",
                                  args.hardware or hardware(device))
         env["commit"] = args.commit
@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     for item in items:
         record.write(records_path, item)
         print(item.to_json())
-    if not gate_passed:
+    if not check_passed:
         print(f"device_latency_bench.py: the session misses the latency bar\nEvidence: {args.out}",
               file=sys.stderr)
         return 1
@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     # Read-only: the store is consulted, nothing is uploaded. No --groups: one
     # run measures one refresh rate, so the other rate's budgets are not missing.
     return subprocess.run([sys.executable, str(REPO / "tools/perf/compare.py"), "--results", str(records_path),
-                           "--store", "https://code.tilo.so", "--lane", "reference-hardware",
+                           "--store", "https://code.tilo.so", "--job", "reference-hardware",
                            "--summary", str(args.out / "summary.md")],
                           check=False).returncode
 

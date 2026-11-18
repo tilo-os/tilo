@@ -172,7 +172,7 @@ impl FsClient {
         Self { object }
     }
 
-    /// Open independently admitted native directory custody, preserving raw names.
+    /// Open independently admitted native directory ownership, preserving raw names.
     /// # Errors
     /// Refuses backends without a directory grant and lost or revoked connections.
     pub async fn directory(&self) -> Result<directory_client::DirectoryClient, NotAvailable> {

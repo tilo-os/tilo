@@ -4,8 +4,8 @@
 mod artifact;
 #[path = "whistle_v8_worker_review/bridge.rs"]
 mod bridge;
-#[path = "whistle_v8_worker_review/custody.rs"]
-mod custody;
+#[path = "whistle_v8_worker_review/ownership.rs"]
+mod ownership;
 use local_model_service::speech::{self, DraftPolicy, SpeechConfig, SpeechError, worker};
 use std::process::ExitCode;
 use zeroize::Zeroizing;
@@ -165,7 +165,7 @@ fn run() -> Result<(), SpeechError> {
     // Only the private controller's factory-generated artifact is qualified.
     // A CLI receipt is not executable/model catalogue authority.
     let module = artifact::verified(artifact_path, artifact_sha)?;
-    let model = custody::verified(
+    let model = ownership::verified(
         model_path,
         16_919_407,
         "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",

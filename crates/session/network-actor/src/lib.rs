@@ -10,7 +10,7 @@
 //! alone: their device fabric, nearby transfers, codec adverts and their
 //! workspace list. Only what is for one exact device of a workspace (input,
 //! window streams, remote actions) goes directly to it, on the
-//! authenticated device plane.
+//! authenticated device action service.
 //! The actor is the desktop's transport, below the compositor: what arrives
 //! on it that is the desktop's business goes to the services the session
 //! installs ([`services`]), so a compositor change does not rebuild it and
@@ -35,17 +35,17 @@ pub const DEFAULT_WS_TOPIC: tilo_desktop_model::WorkspaceId =
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
 /// the two devices has to update ([`services::Services::peer_version`]).
-fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError) -> String {
+fn server_error(host: &iroh::EndpointId, error: &tilo_server_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
         services::peer_version(host.to_string(), theirs);
     }
     error.to_string()
 }
 
-mod workspace_lane;
-#[cfg(test)]
-mod workspace_lane_tests;
 mod workspace_members;
+mod workspace_worker;
+#[cfg(test)]
+mod workspace_worker_tests;
 use workspace_members::Admission;
 pub use workspace_members::RosterDevice;
 
@@ -57,7 +57,7 @@ use std::time::{Duration, Instant};
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_server_session::{Inbound as HostInbound, ServerClient, ServerCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -108,9 +108,9 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),
-    /// The one lane for file bytes between a person's devices: Nearby sends
+    /// The one worker for file bytes between a person's devices: Nearby sends
     /// and media handoffs alike. Offers and resume checkpoints travel as
-    /// authenticated actions; this lane carries bounded bytes only.
+    /// authenticated actions; this worker carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
     /// One signed mutation of a record in the person's own store. Its scope is
     /// implied by the route: the fabric only ever joins one person's devices.
@@ -180,9 +180,9 @@ struct PersonalFabricWireFrame {
 
 pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
-pub use tilo_identity_host::custody::HostIdentity;
+pub use tilo_identity::identity_store::DeviceIdentity;
 
-/// Enrollment-bound identity expected behind a distinct relay service key.
+/// Enrollment-bound identity expected behind a distinct server service key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomePeerExpectation {
     pub user_public_key: [u8; 32],
@@ -191,7 +191,7 @@ pub struct HomePeerExpectation {
 
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Relay between the devices that take part in this device's workspaces
+    /// Server between the devices that take part in this device's workspaces
     /// through it, as their workspace's host, and the rest of each workspace:
     /// what they write reaches this device's apps and the workspace's own
     /// host, and what reaches this device of the workspace reaches them.
@@ -210,7 +210,7 @@ pub enum NetCmd {
     OpenDocument {
         ws: WorkspaceId,
         channel: [u8; 32],
-        own: Option<tilo_relay_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedChannel>,
     },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
@@ -307,7 +307,7 @@ pub enum NetCmd {
 }
 
 /// A piece of a record's content on its way to the device of the workspace that
-/// asked: over the direct plane when that device is a live member of the
+/// asked: over the direct peer network when that device is a live member of the
 /// workspace, else through the workspace's hosts, which hand it to that
 /// device alone and keep nothing.
 #[derive(Debug)]
@@ -368,7 +368,7 @@ pub enum NetEvent {
         membership_epoch: Option<MembershipEpoch>,
     },
     /// A member of `ws` this device reaches through the workspace host
-    /// `host` joined (`active`) or left the host's live plane.
+    /// `host` joined (`active`) or left the host's live session.
     HostMember {
         ws: WorkspaceId,
         host: PeerId,
@@ -396,7 +396,7 @@ pub enum NetEvent {
     HostRecordOpened {
         ws: WorkspaceId,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     },
     Msg {
         ws: WorkspaceId,
@@ -515,7 +515,7 @@ enum InternalEvent {
         ws: WorkspaceId,
         answers: Vec<tilo_peer_state::direct::Answered>,
     },
-    /// This device let answered writes of workspace `ws` go from its custody: what waited behind
+    /// This device let answered writes of workspace `ws` go from its ownership: what waited behind
     /// them goes now.
     NativeRetired { ws: WorkspaceId },
     /// A workspace's link ended; `deleted` when its host said the
@@ -529,7 +529,7 @@ enum InternalEvent {
     },
     Host {
         ws: WorkspaceId,
-        session: std::sync::Weak<RelayCoeditSession>,
+        session: std::sync::Weak<ServerCoeditSession>,
         peer: EndpointId,
         event: HostEvent,
     },
@@ -556,10 +556,10 @@ enum InternalEvent {
         ws: WorkspaceId,
         peer: EndpointId,
         addr: EndpointAddr,
-        // Boxed: `RelayCoeditSession` (an authenticated relay client plus
+        // Boxed: `ServerCoeditSession` (an authenticated server client plus
         // its subscription state) is far larger than every sibling variant,
         // so an unboxed `Result` here would size the whole enum to fit it.
-        result: Box<Result<RelayCoeditSession, String>>,
+        result: Box<Result<ServerCoeditSession, String>>,
     },
     SurfaceFrame {
         ws: WorkspaceId,
@@ -604,23 +604,23 @@ enum InternalEvent {
         outcome: PersonalTransferOutcome,
         sent_bytes: u64,
     },
-    /// A direct send queued on a workspace's lane went, or did not.
+    /// A direct send queued on a workspace's worker went, or did not.
     DirectSent {
         ws: WorkspaceId,
-        outcome: Box<workspace_lane::DirectOutcome>,
+        outcome: Box<workspace_worker::DirectOutcome>,
     },
 }
 
 enum HostEvent {
     Ready,
     /// The host answered a record this device opened
-    /// ([`RelayCoeditSession::open_resource`]): what it sent of it, as that
+    /// ([`ServerCoeditSession::open_resource`]): what it sent of it, as that
     /// record's frames before this event, or that it is not this device's.
     DocumentOpened {
         channel: [u8; 32],
-        answer: tilo_relay_protocol::DocumentAnswer,
+        answer: tilo_server_protocol::DocumentAnswer,
     },
-    /// A member joined or left the host's live plane.
+    /// A member joined or left the host's live session.
     Member {
         device: [u8; 32],
         active: bool,
@@ -645,7 +645,7 @@ struct HostedTopic {
 }
 
 struct HostRuntime {
-    session: Arc<RelayCoeditSession>,
+    session: Arc<ServerCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
 }
 
@@ -843,7 +843,7 @@ fn read_personal_fabric(
 
 /// Why `command` means a remote party is involved, so this device must be
 /// reachable for a while (`tilo_endpoint_reachability`): it dials a peer
-/// or host, enrols a device, administers a relay workspace, joins a call or
+/// or host, enrols a device, administers a server workspace, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
 /// else is on (its workspaces, its fabric broadcast) sends nothing, and a lone
@@ -860,7 +860,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
 }
 
 /// Why `event` means a remote party reached this device (on a path that
-/// needed no relay, such as the local network), so it should be reachable
+/// needed no server, such as the local network), so it should be reachable
 /// through its relays too.
 fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
     match event {
@@ -875,12 +875,12 @@ pub struct Actor;
 impl Actor {
     /// Spawn the actor for `endpoint`, also serving `served` — protocol
     /// handlers the session's own features answer on, beside the actor's: a
-    /// device's action plane, say. Each names its own ALPN and serves it for
+    /// device's action service, say. Each names its own ALPN and serves it for
     /// as long as the actor runs.
     pub fn spawn_serving(
         endpoint: Endpoint,
         lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
+        host_identity: Option<DeviceIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         reachability: Reachability,
         served: crate::local_host::Protocols,
@@ -903,7 +903,7 @@ impl Actor {
     fn spawn_with_heartbeat(
         endpoint: Endpoint,
         lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
+        host_identity: Option<DeviceIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
@@ -930,7 +930,7 @@ impl Actor {
 
 /// What this endpoint serves beside the actor's own protocols: this
 /// device's own host's handlers, when it hosts the workspaces placed on it,
-/// and the session's own (its action plane, say) — all on the one endpoint
+/// and the session's own (its action service, say) — all on the one endpoint
 /// both reach this device at.
 struct Serving {
     hosting: Option<Hosting>,
@@ -955,7 +955,7 @@ type GovernanceLog = VecDeque<([u8; 32], Vec<u8>)>;
 struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
-    host_identity: Option<HostIdentity>,
+    host_identity: Option<DeviceIdentity>,
     native_routes: native_ingress::Routes,
     /// This device's workspace host, through which the native owner joins the
     /// workspaces hosted here.
@@ -967,8 +967,8 @@ struct ActorState {
     /// The topics only the person's hosts carry that this device joined.
     topics: HashMap<WorkspaceId, HostedTopic>,
     /// Each workspace's direct sends, so one workspace's slow devices hold up no
-    /// other workspace ([`workspace_lane`]).
-    lanes: workspace_lane::Lanes,
+    /// other workspace ([`workspace_worker`]).
+    workers: workspace_worker::Workers,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     /// The person's other devices ([`NetCmd::Connect`]), where each is
     /// reached.
@@ -987,7 +987,7 @@ struct ActorState {
     sibling_events: Option<mpsc::Sender<NetEvent>>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
-    /// Each joined workspace's link, on the direct lane.
+    /// Each joined workspace's link, on the direct connection.
     native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
     /// The devices that take part in this device's workspaces through it
     /// ([`NetCmd::ServeMembers`]).
@@ -1196,7 +1196,7 @@ impl ActorState {
                 self.native_links.remove(&ws);
                 self.subscribers.remove(&ws);
                 self.set_workspace_roster(ws, Vec::new(), false);
-                self.lanes.close(ws);
+                self.workers.close(ws);
                 let leaving: Vec<_> = self
                     .host_sessions
                     .keys()
@@ -1329,11 +1329,11 @@ impl ActorState {
                     .is_some_and(|known| known != &(addr.clone(), expectation.clone()));
                 if changed {
                     // A new address for the same certified service replaces
-                    // only its relay session. Its already authenticated Files
+                    // only its server session. Its already authenticated Files
                     // endpoint remains usable until refreshed discovery proves
                     // a replacement; treating a reconnect as removal creates
                     // a needless offline window (and can strand hydration if
-                    // the new relay hint is temporarily unreachable).
+                    // the new server hint is temporarily unreachable).
                     self.teardown_host(id);
                 }
                 self.lookup.add_endpoint_info(addr.clone());
@@ -1350,7 +1350,7 @@ impl ActorState {
         true
     }
 
-    /// Stop relay sessions and discovery tasks for one host. An address
+    /// Stop server sessions and discovery tasks for one host. An address
     /// refresh must never revoke a still-valid Files hydration source, so
     /// this keeps the host's content registrations.
     fn teardown_host(&mut self, id: EndpointId) {
@@ -1726,7 +1726,7 @@ impl ActorState {
         let msg = match target {
             Some(target) if self.is_surface_member(ws, target) => {
                 match self.publish_direct(ws, target, msg) {
-                    // How it went comes back from the workspace's lane.
+                    // How it went comes back from the workspace's worker.
                     Ok(()) => return,
                     Err(msg) => *msg,
                 }
@@ -1765,7 +1765,7 @@ impl ActorState {
     }
 
     /// Queue one message for exactly `target` on the authenticated direct
-    /// surface/control plane, on the workspace's lane: the peer must be live on
+    /// surface/control peer network, on the workspace's worker: the peer must be live on
     /// this workspace. Gives the message back when it cannot go that way
     /// now; how a queued one went comes back as
     /// [`InternalEvent::DirectSent`] ([`Self::direct_sent`]).
@@ -1796,7 +1796,7 @@ impl ActorState {
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
             return Err(Box::new(wire.message));
         };
-        let direct = workspace_lane::Direct {
+        let direct = workspace_worker::Direct {
             addr: self
                 .own_devices
                 .get(&target)
@@ -1807,16 +1807,16 @@ impl ActorState {
             bytes,
             budget,
         };
-        self.lanes.queue_direct(ws, direct).inspect_err(|_| {
+        self.workers.queue_direct(ws, direct).inspect_err(|_| {
             tracing::warn!(ws = %ws, peer = %target, "workspace's remote work is backed up; not sent directly");
         })
     }
 
-    /// A direct send queued on `ws`'s lane went (or did not): keep its
+    /// A direct send queued on `ws`'s worker went (or did not): keep its
     /// connection, and send what failed the way it would have gone without
     /// a direct route.
-    fn direct_sent(&mut self, ws: WorkspaceId, outcome: workspace_lane::DirectOutcome) {
-        let workspace_lane::DirectOutcome {
+    fn direct_sent(&mut self, ws: WorkspaceId, outcome: workspace_worker::DirectOutcome) {
+        let workspace_worker::DirectOutcome {
             target,
             msg,
             connection,
@@ -2159,7 +2159,7 @@ impl ActorState {
         ws: WorkspaceId,
         peer: EndpointId,
         attempted_addr: &EndpointAddr,
-        result: Box<Result<RelayCoeditSession, String>>,
+        result: Box<Result<ServerCoeditSession, String>>,
     ) {
         self.connecting_hosts.remove(&(ws, peer));
         if self.native_routes.contains(ws) || !self.topics.contains_key(&ws) {
@@ -2193,7 +2193,7 @@ impl ActorState {
                     }
                 }
                 if let Err(error) = session.live_join() {
-                    tracing::warn!(ws = %ws, %error, "could not join the workspace host's live plane");
+                    tracing::warn!(ws = %ws, %error, "could not join the workspace host's live session");
                 }
                 let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let pump = spawn_host_pump(
@@ -2214,7 +2214,7 @@ impl ActorState {
     }
 
     /// The host `host` of `ws` reports another member device joined
-    /// (`active`) or left its live plane; `None` for this device itself.
+    /// (`active`) or left its live session; `None` for this device itself.
     fn host_member(
         &self,
         ws: WorkspaceId,
@@ -2382,7 +2382,7 @@ impl ActorState {
     }
 
     /// Whether `command` stays in this process: it goes to this device's
-    /// own host, so it needs no relay up.
+    /// own host, so it needs no server up.
     fn stays_local(&self, command: &NetCmd) -> bool {
         matches!(
             command,
@@ -2398,12 +2398,12 @@ impl ActorState {
     /// The remote party this actor is connected to or keeps dialling, if
     /// any, which holds this device's relays up ([`Need::Transport`]): a
     /// peer it dials, a peer on one of its topics, a workspace host, a
-    /// governed workspace's relay, one of the person's devices, a window streamed
+    /// governed workspace's server, one of the person's devices, a window streamed
     /// with a peer, a remote action waiting for its peer, a device being
     /// enrolled or a Messages account its contacts text. A peer that left
     /// stops counting once its membership lapses.
     fn remote_party(&self) -> Option<&'static str> {
-        // This device's own host is joined in process and needs no relay.
+        // This device's own host is joined in process and needs no server.
         let own = self.endpoint.id();
         Some(if !self.own_devices.is_empty() {
             "one of the person's devices this device dials"
@@ -2588,7 +2588,7 @@ impl ActorState {
     /// Tell a workspace host session of `ws` that just started who this
     /// device is; what the host holds then is what a later change is judged
     /// by ([`Self::announce_identity_if_changed`]).
-    fn announce_identity_to_new_host(&mut self, ws: WorkspaceId, session: &RelayCoeditSession) {
+    fn announce_identity_to_new_host(&mut self, ws: WorkspaceId, session: &ServerCoeditSession) {
         let Some(hello) = self.identity_hello(ws) else {
             return;
         };
@@ -2605,7 +2605,7 @@ impl ActorState {
     fn announce_identity_to_host(
         ws: WorkspaceId,
         hello: &NeighbourMsg,
-        session: &RelayCoeditSession,
+        session: &ServerCoeditSession,
     ) {
         let (Some((channel, _)), Ok(bytes)) =
             (retention(hello, false), postcard::to_allocvec(hello))
@@ -2831,7 +2831,7 @@ async fn personal_transfer_cancelled(cancel: &mut tokio::sync::watch::Receiver<b
 async fn run(
     endpoint: Endpoint,
     lookup: MemoryLookup,
-    host_identity: Option<HostIdentity>,
+    host_identity: Option<DeviceIdentity>,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
@@ -2852,7 +2852,7 @@ async fn run(
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .accept(
-            tilo_relay_protocol::transport::SIBLING_ALPN,
+            tilo_server_protocol::transport::SIBLING_ALPN,
             device_sessions::SiblingProtocol(internal_tx.clone()),
         );
     // This device's workspace host answers here once it opens: until then its
@@ -2862,7 +2862,7 @@ async fn run(
         None => (None, Vec::new()),
     };
     // What the session serves beside the actor's own protocols: its action
-    // plane, say, on the one endpoint both reach this device at.
+    // peer network, say, on the one endpoint both reach this device at.
     protocols.extend(served);
     let router = protocols
         .into_iter()
@@ -2871,7 +2871,7 @@ async fn run(
         })
         .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
-    let lanes = workspace_lane::Lanes::new(endpoint.clone(), internal_tx.clone());
+    let workers = workspace_worker::Workers::new(endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
         reachability,
         endpoint,
@@ -2879,7 +2879,7 @@ async fn run(
         host_identity,
         native_routes: native_ingress::Routes::default(),
         local_host,
-        lanes,
+        workers,
         internal_tx,
         topics: HashMap::new(),
         subscribers: HashMap::new(),
@@ -2982,7 +2982,7 @@ async fn run(
 /// changes. `None` for an identity kept in memory, or one that cannot be
 /// watched: it is then announced as it was when each link came up.
 fn watch_identity_material(
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     internal_tx: mpsc::Sender<InternalEvent>,
 ) -> Option<tilo_files::native::Watched<()>> {
     let directories = identity.material_directories();
@@ -3028,7 +3028,7 @@ fn report_addrs(
         }
         // A new address or home relay: the network came back or moved, and
         // a certificate renewal that failed meanwhile tries again.
-        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+        tilo_identity::provisioning::RENEWAL_CAUSES.changed();
     };
     report(current);
     tokio::spawn(async move {
@@ -3052,7 +3052,7 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 }
 
 /// An endpoint for a test of the network's own peers: on loopback, with no
-/// relay, no address directory and no gateway port mapping, so its peers
+/// server, no address directory and no gateway port mapping, so its peers
 /// reach each other directly and a run never depends on public relays, DNS
 /// or the local network being up and quick. `key`
 /// fixes its identity; `None` makes a fresh one.
@@ -3137,7 +3137,7 @@ fn encode_for_hosts(ws: WorkspaceId, msg: &NeighbourMsg) -> Option<(Vec<u8>, Hos
 /// Send encoded `bytes` on `session` as `retention` says.
 fn send_encoded(
     ws: WorkspaceId,
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     bytes: Vec<u8>,
     retention: HostRetention,
 ) {
@@ -3212,7 +3212,7 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 /// a window's page says the window, its size and its codec and nothing of when, so the same
 /// window shared again after its share stopped, or shown again by a viewer that had let it go, is
 /// announced exactly as it was the first time. Dropped as a repeat, the second announcement left
-/// the watching device with a share its governance names and no page to ask the plane for, for
+/// the watching device with a share its governance names and no page to ask the peer network for, for
 /// as long as it remembered the first. A copy of either over another route changes nothing: a
 /// stream announced twice is the one stream, and one ended twice is already gone.
 const fn said_again_on_purpose(msg: &NeighbourMsg) -> bool {
@@ -3300,7 +3300,7 @@ fn mark_new_message(
 /// the single discovery-task registry.
 struct HostRouteScheduler<'a> {
     endpoint: &'a Endpoint,
-    identity: &'a HostIdentity,
+    identity: &'a DeviceIdentity,
     internal_tx: &'a mpsc::Sender<InternalEvent>,
     sessions: &'a HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &'a mut HashSet<(WorkspaceId, EndpointId)>,
@@ -3350,7 +3350,7 @@ impl HostRouteScheduler<'_> {
                     }
                     let discovered = tokio::time::timeout(
                         Duration::from_secs(10),
-                        RelayClient::discover_content_peer(
+                        ServerClient::discover_content_peer(
                             &discovery_endpoint,
                             discovery_addr.clone(),
                             ws,
@@ -3367,15 +3367,15 @@ impl HostRouteScheduler<'_> {
                             let _ = register_content_peer(content_peer).await;
                             // Re-advertise periodically. Registration persists the
                             // peer, while this also repairs a daemon replacement
-                            // without coupling its lifecycle to the relay session.
+                            // without coupling its lifecycle to the server session.
                             retry = Duration::from_secs(30);
                         }
                         Ok(Err(error)) => {
-                            tracing::debug!(%error, ws = %ws, "relay content discovery is not ready");
+                            tracing::debug!(%error, ws = %ws, "server content discovery is not ready");
                             retry = retry.saturating_mul(2).min(Duration::from_secs(10));
                         }
                         Err(_) => {
-                            tracing::debug!(ws = %ws, "relay content discovery timed out");
+                            tracing::debug!(ws = %ws, "server content discovery timed out");
                             retry = retry.saturating_mul(2).min(Duration::from_secs(10));
                         }
                     }
@@ -3406,7 +3406,7 @@ impl HostRouteScheduler<'_> {
             tokio::spawn(async move {
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
-                    RelayClient::connect_to_pinned_host(
+                    ServerClient::connect_to_pinned_host(
                         endpoint,
                         addr.clone(),
                         device_cert,
@@ -3416,9 +3416,9 @@ impl HostRouteScheduler<'_> {
                 )
                 .await
                 .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
+                .and_then(|result| result.map_err(|error| server_error(&host, &error)))
                 .and_then(|client| {
-                    RelayCoeditSession::join(client, ws, identity.device_public_key())
+                    ServerCoeditSession::join(client, ws, identity.device_public_key())
                         .map_err(|error| error.to_string())
                 });
                 let _ = tx
@@ -3436,7 +3436,7 @@ impl HostRouteScheduler<'_> {
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
-                RelayClient::connect_v2_to_enrolled_home_peer(
+                ServerClient::connect_v2_to_enrolled_home_peer(
                     endpoint,
                     addr.clone(),
                     expectation.user_public_key,
@@ -3448,9 +3448,9 @@ impl HostRouteScheduler<'_> {
             )
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
-            .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
+            .and_then(|result| result.map_err(|error| server_error(&host, &error)))
             .and_then(|client| {
-                RelayCoeditSession::join(client, ws, identity.device_public_key())
+                ServerCoeditSession::join(client, ws, identity.device_public_key())
                     .map_err(|error| error.to_string())
             });
             let _ = tx
@@ -3465,7 +3465,7 @@ impl HostRouteScheduler<'_> {
     }
 }
 
-/// Submit an authenticated relay-discovered Files peer to the running FUSE
+/// Submit an authenticated server-discovered Files peer to the running FUSE
 /// daemon. This is deliberately a detached worker: endpoint registration may
 /// wait on the group-restricted daemon socket but must never delay networking
 /// or the compositor. The filesystem owns persistence and hydration policy.
@@ -3474,7 +3474,7 @@ impl HostRouteScheduler<'_> {
     reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
 )]
 async fn register_content_peer(
-    registration: tilo_relay_protocol::transport::ContentPeerRegistration,
+    registration: tilo_server_protocol::transport::ContentPeerRegistration,
 ) -> bool {
     if cfg!(any(test, feature = "test-support"))
         && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none()
@@ -3494,7 +3494,7 @@ async fn register_content_peer(
             std::path::PathBuf::from,
         );
     let Ok(payload) = serde_json::to_vec(&registration) else {
-        tracing::warn!("could not serialize relay-discovered filesystem registration");
+        tracing::warn!("could not serialize server-discovered filesystem registration");
         return false;
     };
     let mut child = match tokio::process::Command::new(&publisher)
@@ -3556,7 +3556,7 @@ const HOST_SILENCE_LIMIT: Duration = Duration::from_secs(25);
 /// Wait until host `session` is due a keep-alive check, then make it: a
 /// host silent for [`HOST_PING_AFTER`] is pinged once (`pinged` notes it),
 /// and one silent for [`HOST_SILENCE_LIMIT`] is not worth keeping (`false`).
-async fn host_keepalive(session: &RelayCoeditSession, pinged: &mut bool) -> bool {
+async fn host_keepalive(session: &ServerCoeditSession, pinged: &mut bool) -> bool {
     let silent = session.silent_for();
     if silent < HOST_PING_AFTER {
         *pinged = false;
@@ -3602,7 +3602,7 @@ fn host_event(
             HostEvent::DocumentOpened { channel, answer }
         }
         // Nothing here holds these: a call's audio is the session's, carried
-        // by the relay session the call itself holds, and a host keeps what a
+        // by the server session the call itself holds, and a host keeps what a
         // link's store kept.
         HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { refusal, .. } => {
@@ -3645,19 +3645,19 @@ fn host_event(
 }
 
 /// Whether `data`, a delta this device is receiving, is of a record the
-/// device opened ([`RelayCoeditSession::open_resource`]): the host sends it in
+/// device opened ([`ServerCoeditSession::open_resource`]): the host sends it in
 /// the record's order, its history first, which a device that restarts
 /// reads its records from. Each write is decided by its place in that
 /// order, never by when it arrived.
-fn opened_resource(data: &[u8], session: &RelayCoeditSession) -> bool {
-    tilo_relay_session::retention_metadata(data)
+fn opened_resource(data: &[u8], session: &ServerCoeditSession) -> bool {
+    tilo_server_session::retention_metadata(data)
         .is_some_and(|(channel, _)| session.opened_resource(&channel))
 }
 
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
-    session: Arc<RelayCoeditSession>,
+    session: Arc<ServerCoeditSession>,
     replaying: Arc<std::sync::atomic::AtomicBool>,
     tx: mpsc::Sender<InternalEvent>,
     keepalive: bool,
@@ -3769,13 +3769,13 @@ fn spawn_direct_pump(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                        tracing::warn!(ws = %ws, missed, "answers to this device's writes were missed; they leave custody at the next link");
+                        tracing::warn!(ws = %ws, missed, "answers to this device's writes were missed; they leave ownership at the next link");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 },
                 result = &mut running => {
                     if let Err(reason) = result {
-                        deleted = reason == tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted;
+                        deleted = reason == tilo_server_protocol::refusal::Refusal::WorkspaceDeleted;
                         tracing::debug!(ws = %ws, %reason, "a workspace's link ended");
                     }
                     break;

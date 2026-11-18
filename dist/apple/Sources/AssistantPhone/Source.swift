@@ -1,8 +1,12 @@
+import AssistantClosed
 import AssistantCore
 import AssistantTilo
 import Foundation
 import ShellCore
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Where the app's views get everything from. This is the one place that names an
 /// implementation of `AssistantSource`: Tilo itself, with the app as a device of its person
@@ -18,6 +22,19 @@ enum Source {
     /// agents yet. Without it the main chat is the person's conversation with their assistant.
     static let mainChatKey = "TiloMainChat"
 
+    /// What this device is called where its person lets it in and lists their devices.
+    static var deviceName: String {
+        #if canImport(UIKit)
+        "Tilo Assistant on \(UIDevice.current.name)"
+        #else
+        "Tilo Assistant"
+        #endif
+    }
+
+    /// What this build says of being told while the app is closed. Nil in a build without the
+    /// push right, which asks Apple's service for nothing and keeps no key.
+    static let closed = ClosedBuild(info: Bundle.main.infoDictionary)
+
     static let tilo: TiloSource = {
         ShellSettings.keepArguments()
         let defaults = UserDefaults.standard
@@ -28,8 +45,9 @@ enum Source {
             return made
         }()
         let chat = defaults.string(forKey: mainChatKey).flatMap { $0.isEmpty ? nil : $0 }
-        return TiloSource(settings: settings, store: store,
-                          mainChat: chat.map { .conversation(id: $0, name: $0) } ?? .assistant)
+        // Without one the app finds its person's assistant by itself, and makes it where they keep none.
+        let mainChat: TiloSource.MainChat = chat.map { .conversation(id: $0, name: $0) } ?? .assistant
+        return TiloSource(settings: settings, store: store, mainChat: mainChat, deviceName: deviceName, closedKeys: closed?.keys)
     }()
 
     static func make() -> any AssistantSource { tilo }

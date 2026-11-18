@@ -13,8 +13,8 @@
 //! agents its person admitted at its own API ([`Board::speak_for`]): one
 //! member per invocation, its face said when it changes and again at the keep-alive,
 //! taken down when the invocation's session ends. The host says it outside the live
-//! plane ([`Cmd::SayForSession`](tilo_session_client::Cmd::SayForSession)), signed with
-//! its own device key: it is no member of the plane, holds none of its keys,
+//! live session ([`Cmd::SayForSession`](tilo_session_client::Cmd::SayForSession)), signed with
+//! its own device key: it is no member of the live session, holds none of its keys,
 //! and needs none to speak for its invocations. Only the invocations' words leave.
 
 use std::collections::HashMap;
@@ -24,13 +24,13 @@ use collab_types::presence::{ShellPresence, ShellSelection};
 use tilo_actions::remote::{ActorPlace, Caller, ExecutionLease, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::host_voice::HostWords;
-use tilo_relay_protocol::live::LiveResource;
+use tilo_server_protocol::host_voice::HostWords;
+use tilo_server_protocol::live::LiveResource;
 use tilo_session_client::presence::now_ms;
 use tilo_session_client::{Cmd, Link, Outbox, narration};
 
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, resource_of as route_of};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
 /// How soon an invocation leaves once the session that is the invocation ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);
@@ -67,7 +67,7 @@ struct Voice {
     /// The record it works in, and what its last action left selected there.
     focus: Option<LiveResource>,
     selection: Option<ShellSelection>,
-    /// The sequence of its narration on the live plane.
+    /// The sequence of its narration on the live session.
     narrated: u64,
     /// The execution its session was minted: it closes with the session, which
     /// is when the invocation leaves.
@@ -337,6 +337,18 @@ impl super::Worker {
             phase,
             left_at,
         );
+    }
+
+    /// `caller`'s session arrived in `workspace_id`: an agent a person's device handed its session
+    /// to is added to the workspace's list of its agents before its first request, and the
+    /// session is said present there.
+    pub(super) fn arrived(&mut self, workspace_id: WorkspaceId, caller: &Caller) {
+        if caller.is_session_delegated()
+            && let Some(link) = self.shared.link.get()
+        {
+            link.workspace_agent(workspace_id, caller);
+        }
+        self.voice_arrived(workspace_id, caller);
     }
 
     /// Say `caller`'s session present in `workspace_id`, waiting ([`session_voice`]).

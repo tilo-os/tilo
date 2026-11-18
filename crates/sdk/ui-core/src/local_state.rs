@@ -1061,11 +1061,11 @@ mod tests {
                     let mut request = LatestRequest::new();
                     // Held until the checks below, so the result cannot already
                     // be there when they look.
-                    let (release, gate) = tokio::sync::oneshot::channel::<()>();
+                    let (release, check) = tokio::sync::oneshot::channel::<()>();
                     assert!(request.spawn(async move {
                         // Cross an await point, so a runtime driven from the caller
                         // would have to be polled again here.
-                        let _ = gate.await;
+                        let _ = check.await;
                         let current = std::thread::current();
                         (
                             current.id(),
@@ -1120,9 +1120,9 @@ mod tests {
 
                     let task = LatestTask::new("idle");
                     let state = task.state();
-                    let (release, gate) = tokio::sync::oneshot::channel::<()>();
+                    let (release, check) = tokio::sync::oneshot::channel::<()>();
                     assert!(task.spawn("loading", async move {
-                        let _ = gate.await;
+                        let _ = check.await;
                         "loaded"
                     }));
                     assert_eq!(state.get(), "loading");

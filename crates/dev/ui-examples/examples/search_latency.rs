@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use tilo_actions::ActionAddress;
-use tilo_ui::search::{FieldWeight, SearchCatalog, SearchRecord, SearchResult};
+use tilo_ui::search::{FieldWeight, SearchCatalog, SearchItem, SearchResult};
 
 const SIZES: [usize; 3] = [1_000, 10_000, 100_000];
 const PAGE: usize = 20;
@@ -60,7 +60,7 @@ impl Lcg {
     }
 }
 
-fn record(index: usize, rng: &mut Lcg) -> SearchRecord {
+fn record(index: usize, rng: &mut Lcg) -> SearchItem {
     let title = format!(
         "{} {} {}.{}",
         rng.pick(&WORDS),
@@ -72,7 +72,7 @@ fn record(index: usize, rng: &mut Lcg) -> SearchRecord {
     let id = format!("file:{index}");
     let result = SearchResult::for_action("Files", title.clone(), ActionAddress::new(&id, "open"))
         .with_subtitle(path.clone());
-    SearchRecord::new(id, result)
+    SearchItem::new(id, result)
         .field(title, FieldWeight::TITLE)
         .field(path, FieldWeight::SUBTITLE)
 }

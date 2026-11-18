@@ -71,18 +71,18 @@ def verify_roles(candidate):
         before = os.fstat(descriptor)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_mode & 0o022
                 or not 0 < before.st_size <= 16384):
-            raise RuntimeError('candidate subject ledger is not bounded protected data')
+            raise RuntimeError('candidate subject manifest is not bounded protected data')
         value = os.read(descriptor, before.st_size + 1)
         after = os.fstat(descriptor)
         if (len(value) != before.st_size or (before.st_dev, before.st_ino, before.st_size,
                 before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino,
                 after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
-            raise RuntimeError('candidate subject ledger changed while read')
+            raise RuntimeError('candidate subject manifest changed while read')
         def closed_pairs(pairs):
             output = {}
             for key, item in pairs:
                 if key in output:
-                    raise RuntimeError('candidate subject ledger duplicates a key')
+                    raise RuntimeError('candidate subject manifest duplicates a key')
                 output[key] = item
             return output
         subjects = json.loads(value, object_pairs_hook=closed_pairs)
@@ -205,7 +205,7 @@ def receiving(candidate, evidence, delivery_context):
             owned_gpt.assert_children_retired()
             return
         if receiving_namespace is None:
-            raise RuntimeError('actual receiving namespace witness is missing')
+            raise RuntimeError('actual receiving namespace proof is missing')
         held = os.fstat(receiving_namespace)
         processes = list(Path('/proc').iterdir())
         if len(processes) > 32768:
@@ -262,7 +262,7 @@ def receiving(candidate, evidence, delivery_context):
             actual = Path(f'/proc/{pid}/ns/mnt').stat()
             held = os.fstat(receiving_namespace)
             if (actual.st_dev, actual.st_ino) != (held.st_dev, held.st_ino):
-                raise RuntimeError('target namespace witness differs from the actual owned child')
+                raise RuntimeError('target namespace proof differs from the actual owned child')
             parent_control.sendall(b'N')
             parent_control.close()
             # Keep the exact child owned until actual wait. The outer qualifier's
@@ -312,7 +312,7 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
         parent_control.sendmsg([b'N'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
                                         array.array('i', [current_namespace]))])
         if parent_control.recv(1) != b'N':
-            raise RuntimeError('actual namespace owner did not acknowledge custody')
+            raise RuntimeError('actual namespace owner did not acknowledge ownership')
     finally:
         os.close(current_namespace)
         parent_control.close()
@@ -410,7 +410,7 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
                                     '--cache-dir', '/var/cache/quick-fs', '--storage-sock',
                                     '/run/tilo/fs-storage/storage.sock', '--blob-sock', '/run/tilo/fs-blobs.sock',
                                     '--acl', '/var/lib/tilo/fs-capabilities.json', '--member',
-                                    'person:local', '--data-plane=fuse'])
+                                    'person:local', '--backend=fuse'])
                     fs_started = True
                 if os.waitid(os.P_PID, user_child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
                     break
@@ -434,7 +434,7 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
         if not all(cloud.get(key) is True for key in
                    ('files_account_opened', 'cloud_fuse_mounted', 'local_key_retired',
                     'imported_ciphertext_preserved')):
-            raise RuntimeError('actual default cloud custody and Files hydration remain unproven')
+            raise RuntimeError('actual default cloud ownership and Files hydration remain unproven')
         if (not observations['firstuse']['rw_available']
                 or observations['firstuse'].get('certified_owner_surface') is not True
                 or not services.retired):
@@ -508,7 +508,7 @@ def main():
                  'shared_files_readwrite': result['apps']['shared_files_readwrite'],
                  'writer_shared_file_edit': result['apps']['writer_shared_file_edit'],
                  'apps_data_and_launch': result['apps']['apps_data_and_launch'],
-                 'protected_cloud_custody': True, 'cloud_fs_and_files': True,
+                 'protected_cloud_ownership': True, 'cloud_fs_and_files': True,
                  'identity_headless_lifecycle': result['firstuse']['certified_owner_surface'],
                  'owned_resources_retired': True}
     print(json.dumps(completed, separators=(',', ':')))

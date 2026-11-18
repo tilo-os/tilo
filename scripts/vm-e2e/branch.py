@@ -1075,7 +1075,7 @@ def branch(facts: dict, run: Run) -> None:
 # admission boot during `vm branch` is a boot before this one.
 JOINING = ("journalctl -m --no-pager -o short-iso SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
            "| grep -a 'join_flow\\|join:\\|take this device in\\|admitted\\|host hint\\|"
-           "the workspace.s own host\\|direct\\|relay\\|workspace_sync\\|refus' "
+           "the workspace.s own host\\|direct\\|server\\|workspace_sync\\|refus' "
            "| grep -av 'was not named' | tail -n 250 | cut -c1-500")
 
 
@@ -1098,7 +1098,7 @@ def keep_admission(run: Run) -> None:
         except (VmError, Failed) as exc:
             said, hosts, addresses = f"could not read: {exc}", "", ""
         run.write(f"admission-{name}.txt",
-                  f"== workspace_hosts\n{hosts}\n== addresses\n{addresses}\n== joining\n{said}")
+                  f"== keeping_devices\n{hosts}\n== addresses\n{addresses}\n== joining\n{said}")
 
 
 def setup_shown(vm: TiloVm) -> list[str]:
@@ -1332,8 +1332,8 @@ def steps(run: Run, args) -> None:
 
 def hosts_of(vm: TiloVm) -> list[dict]:
     """Each workspace `vm` 's session holds, who hosts it, and whether it still waits for that
-    host to take this device in (`workspace_hosts`)."""
-    answer = first_json(vm.run("control", "raw", '{"op":"workspace_hosts"}', timeout=60))
+    host to take this device in (`keeping_devices`)."""
+    answer = first_json(vm.run("control", "raw", '{"op":"keeping_devices"}', timeout=60))
     return ((answer.get("answer") or answer).get("workspaces")) or []
 
 

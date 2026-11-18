@@ -4,7 +4,7 @@
 //! its newest receipts' commit receipts hot and archives the rest to a cold
 //! history it anchors in its slice.
 use crate::StatePeer;
-use crate::owner::record::StoredWorkspace;
+use crate::owner::stored::StoredWorkspace;
 use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use serde::{Deserialize, Serialize};
@@ -153,7 +153,7 @@ fn archive_one(
         .set_workspace_effect_history_root(&device, root, now)?;
     // A build that read no effect history root ignored the index and minted
     // a different original receipt for a UUID it already knew; the record's
-    // version is one such a build refuses ([`crate::owner::record::WORKSPACE_VERSION`]).
+    // version is one such a build refuses ([`crate::owner::stored::WORKSPACE_VERSION`]).
     view.effect_history_root = Some(root);
     view.effect_receipts.remove(&id);
     Ok(())

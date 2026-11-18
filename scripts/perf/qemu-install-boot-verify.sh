@@ -229,7 +229,7 @@ fi
 # Menu" won't appear on a single-entry silent boot, but the systemd-boot
 # kernel-cmdline plumbing sets `systemd.boot-loader-entry` / prints the
 # entry title on the console; also, grub's own `GNU GRUB` banner MUST NOT
-# be there). Log for humans; do not use as the pass/fail gate — the on-disk
+# be there). Log for humans; do not use as the pass/fail check — the on-disk
 # check is the source of truth.
 if grep -qi "GNU GRUB" "$CONSOLE" 2>/dev/null; then
   log "warn: serial console contains 'GNU GRUB' — swap did not take"

@@ -119,19 +119,19 @@ fn require_old_stopped(record: &Record) -> io::Result<()> {
         .export_namespace
         .as_ref()
         .ok_or_else(|| failure("Unknown export launch cannot be recovered"))?
-        .custody
+        .ownership
         .require_stopped()?;
     record
         .verify_namespace
         .as_ref()
         .ok_or_else(|| failure("Unknown verifier launch cannot be recovered"))?
-        .custody
+        .ownership
         .require_stopped()?;
     if let Some(n) = &record.recovery_namespace {
-        n.custody.require_stopped()?;
+        n.ownership.require_stopped()?;
     }
     if let Some(receiver) = &record.receiver {
-        receiver.custody.require_stopped()?;
+        receiver.ownership.require_stopped()?;
     }
     Ok(())
 }
@@ -202,7 +202,7 @@ impl InstalledCopyAttempt {
         let importer = self
             .receiver_peer
             .lock()
-            .map_err(|_| failure("Installed importer custody poisoned"))?
+            .map_err(|_| failure("Installed importer ownership poisoned"))?
             .clone();
         let store = self
             .store
@@ -226,7 +226,7 @@ impl InstalledCopyAttempt {
         if let Some(receiver) = &mut record.receiver {
             let peer = importer
                 .as_ref()
-                .ok_or_else(|| failure("Installed pending importer custody absent"))?;
+                .ok_or_else(|| failure("Installed pending importer ownership absent"))?;
             if !peer.current() || peer.pid() != receiver.pid || peer.uid() != receiver.uid {
                 return Err(failure("Installed pending importer retired or changed"));
             }
@@ -254,7 +254,7 @@ impl InstalledCopyAttempt {
         let mut held = self
             .receiver_peer
             .lock()
-            .map_err(|_| failure("Installed importer custody poisoned"))?;
+            .map_err(|_| failure("Installed importer ownership poisoned"))?;
         if held.is_some() {
             return Err(failure("Installed importer already held"));
         }
@@ -277,7 +277,7 @@ impl InstalledCopyAttempt {
     pub fn importer(&self) -> io::Result<Arc<ExecutingPeer>> {
         self.receiver_peer
             .lock()
-            .map_err(|_| failure("Installed importer custody poisoned"))?
+            .map_err(|_| failure("Installed importer ownership poisoned"))?
             .as_ref()
             .cloned()
             .ok_or_else(|| failure("Installed importer held peer absent"))
@@ -319,7 +319,7 @@ impl InstalledCopyAttempt {
         let held = self
             .receiver_peer
             .lock()
-            .map_err(|_| failure("Installed importer custody poisoned"))?;
+            .map_err(|_| failure("Installed importer ownership poisoned"))?;
         let peer = held
             .as_ref()
             .ok_or_else(|| failure("Installed importer pidfd missing"))?;
@@ -359,12 +359,12 @@ impl InstalledCopyAttempt {
         if receiver.pid != peer.pid() || receiver.uid != peer.uid() {
             return Err(failure("Installed importer held identity differs"));
         }
-        receiver.custody.require_stopped()?;
+        receiver.ownership.require_stopped()?;
         record
             .export_namespace
             .as_ref()
             .ok_or_else(|| failure("Unknown export launch cannot retire"))?
-            .custody
+            .ownership
             .require_stopped()?;
         if matches!(
             record.phase,
@@ -374,11 +374,11 @@ impl InstalledCopyAttempt {
                 .verify_namespace
                 .as_ref()
                 .ok_or_else(|| failure("Unknown verifier launch cannot retire"))?
-                .custody
+                .ownership
                 .require_stopped()?;
         }
         if let Some(namespace) = &record.recovery_namespace {
-            namespace.custody.require_stopped()?;
+            namespace.ownership.require_stopped()?;
         }
         record
             .phase
@@ -423,7 +423,7 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed actual completion binding differs"));
         }
-        receiver.custody.require_stopped()?;
+        receiver.ownership.require_stopped()?;
         peer_stopped(&peer)?;
         record
             .phase
@@ -864,7 +864,7 @@ impl InstalledCopyRecovery {
                 || m.gid() != owner.1
                 || m.mode() & 0o7777 != 0o700
             {
-                return Err(failure("Installed recovery directory custody changed"));
+                return Err(failure("Installed recovery directory ownership changed"));
             }
             self.attempt.physical.validate_child(
                 &migration_durability::readable_directory(&pin.file)?,

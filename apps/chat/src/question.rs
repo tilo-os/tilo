@@ -24,7 +24,7 @@
 //! | Kind | Answers | Detail | On an answer |
 //! |---|---|---|---|
 //! | [`CHOICE`] | the asker's own, each with its label | none | the label is posted as the person's own message |
-//! | [`ACTION`] | [`ALLOW`], [`DENY`], and [`ALWAYS`] where one event may do that kind of thing unasked from then on | the invocation as its host keeps it; `draft` is the [`tilo_actions::Draft`] the person reviews | its host says it [`STARTED`], runs that one invocation or drops it, and says which ([`Question::settle`]) |
+//! | [`ACTION`] | [`ALLOW`], [`DENY`], and [`ALWAYS`] where one event may do that kind of thing unasked from then on, or an agent may use one vault item at the same place | the invocation as its host keeps it; `draft` is the [`tilo_actions::Draft`] the person reviews, and `use.item` says which item of their vault it would use: its kind and where, never its address | its host says it [`STARTED`], runs that one invocation or drops it, and says which ([`Question::settle`]) |
 //! | [`SECRET`] | none of its own: [`FILLED`], or [`DECLINED`] | what is asked for: its `kind`, the places it `belongsTo` and, when known, the `username` | the person's device hands what they typed into the protected field to their vault, and the answer's detail carries the vault item's `reference`, never the secret |
 //!
 //! To add a kind: give it a name here, say what its detail holds and what
@@ -153,7 +153,7 @@ pub struct Withdrawn {
 
 /// Where a question stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Standing<'a> {
+pub enum QuestionState<'a> {
     /// Nobody answered it yet, and it was not taken back.
     Waiting,
     /// Its person answered it, and its asker has not said what came of it.
@@ -256,19 +256,19 @@ impl Question {
     /// though an answer reached it too (the two crossed on their way), unless
     /// its asker had already acted on that answer.
     #[must_use]
-    pub fn standing(&self) -> Standing<'_> {
+    pub fn state(&self) -> QuestionState<'_> {
         match (&self.answered, &self.outcome, &self.withdrawn) {
-            (Some(answered), Some(outcome), _) => Standing::Settled(answered, outcome),
-            (_, _, Some(withdrawn)) => Standing::Withdrawn(withdrawn),
-            (Some(answered), None, None) => Standing::Answered(answered),
-            (None, _, None) => Standing::Waiting,
+            (Some(answered), Some(outcome), _) => QuestionState::Settled(answered, outcome),
+            (_, _, Some(withdrawn)) => QuestionState::Withdrawn(withdrawn),
+            (Some(answered), None, None) => QuestionState::Answered(answered),
+            (None, _, None) => QuestionState::Waiting,
         }
     }
 
     /// Whether it still waits for its person.
     #[must_use]
     pub fn waiting(&self) -> bool {
-        self.standing() == Standing::Waiting
+        self.state() == QuestionState::Waiting
     }
 
     /// Whether `member` is the person it asks.
@@ -288,6 +288,18 @@ impl Question {
     #[must_use]
     pub fn draft(&self) -> Option<tilo_actions::Draft> {
         serde_json::from_value(self.kept()?.get("draft")?.clone()).ok()
+    }
+
+    /// The item of its person's vault the action an [`ACTION`] question asks
+    /// about would use, as the server that keeps the vault says it: its kind
+    /// and the places it would be used at. The item's address is never in a
+    /// question.
+    #[must_use]
+    pub fn uses_item(&self) -> Option<crate::secret_ask::Asked> {
+        (self.kind.0 == ACTION)
+            .then(|| self.kept()?.pointer("/use/item").cloned())
+            .flatten()
+            .and_then(|item| serde_json::from_value(item).ok())
     }
 
     /// What the button of the answer `id` says, when the asker worded it.
@@ -329,15 +341,17 @@ impl Question {
                 "only the person a question asks answers it, themselves, on a device of their own",
             ));
         }
-        match self.standing() {
-            Standing::Waiting => {}
-            Standing::Answered(given) | Standing::Settled(given, _) if given.answer.0 == answer => {
+        match self.state() {
+            QuestionState::Waiting => {}
+            QuestionState::Answered(given) | QuestionState::Settled(given, _)
+                if given.answer.0 == answer =>
+            {
                 return Ok(());
             }
-            Standing::Answered(_) | Standing::Settled(..) => {
+            QuestionState::Answered(_) | QuestionState::Settled(..) => {
                 return Err(Refusal::new("the question is already answered"));
             }
-            Standing::Withdrawn(_) => {
+            QuestionState::Withdrawn(_) => {
                 return Err(Refusal::new("the question was taken back"));
             }
         }
@@ -370,10 +384,10 @@ impl Question {
     /// # Errors
     /// It was answered: there is nothing left to take back.
     pub fn withdraw(&mut self, why: Option<String>, at: i64) -> Result<(), Refusal> {
-        match self.standing() {
-            Standing::Waiting => {}
-            Standing::Withdrawn(_) => return Ok(()),
-            Standing::Answered(_) | Standing::Settled(..) => {
+        match self.state() {
+            QuestionState::Waiting => {}
+            QuestionState::Withdrawn(_) => return Ok(()),
+            QuestionState::Answered(_) | QuestionState::Settled(..) => {
                 return Err(Refusal::new("the question is already answered"));
             }
         }
@@ -405,17 +419,17 @@ impl Question {
                 "what came of an answer is `started`, `done`, `dropped` or `failed`",
             ));
         }
-        match self.standing() {
-            Standing::Answered(_) => {}
-            Standing::Settled(_, settled) if settled.outcome.0 == outcome => return Ok(()),
+        match self.state() {
+            QuestionState::Answered(_) => {}
+            QuestionState::Settled(_, settled) if settled.outcome.0 == outcome => return Ok(()),
             // What was started ends done or failed, never as if untouched.
-            Standing::Settled(_, settled)
+            QuestionState::Settled(_, settled)
                 if settled.outcome.0 == STARTED && [DONE, FAILED].contains(&outcome) => {}
-            Standing::Settled(..) => {
+            QuestionState::Settled(..) => {
                 return Err(Refusal::new("what came of the answer is already said"));
             }
-            Standing::Waiting => return Err(Refusal::new("nobody answered the question yet")),
-            Standing::Withdrawn(_) => return Err(Refusal::new("the question was taken back")),
+            QuestionState::Waiting => return Err(Refusal::new("nobody answered the question yet")),
+            QuestionState::Withdrawn(_) => return Err(Refusal::new("the question was taken back")),
         }
         let detail = detail.unwrap_or_default().trim().to_owned();
         if detail.len() > MAX_REASON_BYTES {

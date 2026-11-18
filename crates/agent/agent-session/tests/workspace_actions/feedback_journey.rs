@@ -95,7 +95,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let state = crate::support::scratch_dir();
     let hosted = start(&identity, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Feedback fixture")
@@ -104,7 +104,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
     let person = hex::encode(identity.verifying_key().to_bytes());
     hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .prepare_application(
@@ -214,7 +214,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     drop(queued);
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
     let restored = start(&identity, &host, state.path()).await;
     let mut returning =
         Browser::open_workspace(&restored, &device, &host, &workspace.workspace).await;
@@ -236,7 +236,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     returning.peer.close();
     drop(restored.web);
     restored.agents.shutdown();
-    restored.relay.shutdown().await;
+    restored.server.shutdown().await;
 }
 
 /// A review model the workspace's host lends: what the host names it.
@@ -284,14 +284,14 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     )
     .await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Reviewed feedback")
         .await
         .unwrap();
     hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .prepare_application(
@@ -338,11 +338,11 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// A commenter files a report through the owner's submit action: it runs
-/// there under their own standing and answers only once the owner's durable
+/// there under their own access and answers only once the owner's durable
 /// store holds it. Filing again keeps one report; a Write action such as
 /// triage stays refused to them, as does anything outside `comments`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -361,14 +361,14 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Commenter feedback")
         .await
         .unwrap();
     hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .prepare_application(
@@ -450,7 +450,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     assert_eq!(
         triage.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::NotPermitted
+            error: ActionCallError::NotPermitted
         },
         "triage is the record's, but needs more than a commenter holds: {triage:?}"
     );
@@ -458,7 +458,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// File a report, waiting out an owner still joining the workspace.
@@ -470,7 +470,7 @@ async fn filed_once(browser: &mut Browser, request: InvokeRequest) -> ReceiptSta
         let receipt = browser.invoke(attempt).await;
         match receipt.status {
             ReceiptStatus::Rejected {
-                error: ActionHostError::Unavailable { .. },
+                error: ActionCallError::Unavailable { .. },
             } if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -670,7 +670,7 @@ async fn owner_feedback(
     browser: &mut Browser,
     submission: &Submission,
     include_report: bool,
-) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError> {
     owner_answer(browser, submission, include_report, None).await
 }
 
@@ -679,7 +679,7 @@ async fn owner_answer(
     submission: &Submission,
     include_report: bool,
     review: Option<String>,
-) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError> {
     use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackQuery};
     browser.correlation = browser.correlation.checked_add(1).unwrap();
     let correlation = browser.correlation;
@@ -733,16 +733,16 @@ async fn assert_signed_canonical(
         reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
             .in_workspace(&submission.destination.workspace),
         permissions: {
-            let standing: ui::permissions::Standing =
-                serde_json::from_value(admission.admission.standing).unwrap();
+            let access: ui::permissions::MemberAccess =
+                serde_json::from_value(admission.admission.access).unwrap();
             assert_eq!(
-                standing.person_id(),
+                access.person_id(),
                 Some(hex::encode(reporter.user_public_key).as_str())
             );
             ui::permissions::PermissionContext::new(
-                ui::permissions::Acting::person(standing.person_id().unwrap_or_default()),
+                ui::permissions::Acting::person(access.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.admission.sandbox).unwrap(),
-                standing,
+                access,
             )
             .at_unix_time(admission.admission.unix_time)
         },

@@ -119,7 +119,7 @@ pub struct HeaderRows {
 /// to space").
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum SidebarStanding {
+pub enum SidebarPosition {
     None,
     Docked,
     Over,
@@ -130,7 +130,7 @@ pub enum SidebarStanding {
 /// content beside it, and how the shell held each column's header row.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ShellLayout {
-    pub sidebar: SidebarStanding,
+    pub sidebar: SidebarPosition,
     pub beside: crate::widget::arrange::WidthClass,
     pub needs: crate::widget::arrange::WidthClass,
     pub beside_width: f32,

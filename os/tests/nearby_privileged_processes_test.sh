@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# os/dev/nearby-privileged-processes.sh, the probe the nearby-pairing gate runs
-# on the joining machine, run as the gate runs it (`sh -s` behind a login
+# os/dev/nearby-privileged-processes.sh, the probe the nearby-pairing check runs
+# on the joining machine, run as the check runs it (`sh -s` behind a login
 # shell's `-c`, the way ssh starts a remote command):
 #   1. with nothing privileged running it passes. In particular the shells
 #      around it, whose command lines name what it looks for, are not taken
-#      for those processes; that mistake failed every release gate run.
+#      for those processes; that mistake failed every release check run.
 #   2. each process it exists to catch (pkexec, a polkit agent's helper, the
 #      home-peer control helper), whether known by its own name or by the
 #      program its argv[0] names, makes it fail and is named.

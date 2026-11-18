@@ -280,8 +280,8 @@ pub struct NavArt {
 /// The person a row stands for ([`NavItem::person`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavPerson {
-    /// Who they are; their initials stand in for a picture.
-    pub identity: String,
+    /// Who they are, which picks their face ([`crate::widget::AvatarFace::member`]).
+    pub who: tilo_actions::Actor,
     /// Their colour in the workspace, ringing the avatar; `None` takes the colour their
     /// identity carries ([`AvatarFace::new`]), which every window paints the same.
     pub colour: Option<Color>,
@@ -291,7 +291,6 @@ pub struct NavPerson {
     pub name: Option<String>,
     /// Their picture; their initials stand in while there is none.
     pub image: Option<vello::peniko::ImageData>,
-    pub agent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -491,17 +490,16 @@ impl NavItem {
     #[must_use]
     pub fn person(
         mut self,
-        identity: impl Into<String>,
+        who: impl Into<tilo_actions::Actor>,
         colour: Option<Color>,
         speaking: bool,
     ) -> Self {
         self.person = Some(NavPerson {
-            identity: identity.into(),
+            who: who.into(),
             colour,
             speaking,
             name: None,
             image: None,
-            agent: false,
         });
         self
     }
@@ -517,16 +515,6 @@ impl NavItem {
         if let Some(person) = &mut self.person {
             person.name = Some(name.into());
             person.image = image;
-        }
-        self
-    }
-
-    /// The one the row stands for ([`Self::person`]) is an agent: it wears the agent's own face,
-    /// as every row, card and byline shows it.
-    #[must_use]
-    pub fn agent_face(mut self) -> Self {
-        if let Some(person) = &mut self.person {
-            person.agent = true;
         }
         self
     }
@@ -1020,7 +1008,7 @@ impl NavList {
     }
 
     /// Bind each destination to its published typed action. Bound rows route
-    /// selection through host custody; unbound rows choose through
+    /// selection through host ownership; unbound rows choose through
     /// [`Self::on_view`].
     #[must_use]
     pub fn selection_actions(
@@ -1304,10 +1292,10 @@ impl NavList {
             .filter(|key| self.list.model().is_item(key));
         match &key {
             Some(key) => {
-                self.list.selection_mut().select_only(key.clone());
+                self.list.select_only(Some(key.clone()));
                 self.list.focus_row(key.clone());
             }
-            None => self.list.selection_mut().clear(),
+            None => self.list.select_only(None),
         }
         self.shared.borrow_mut().selected = key.as_deref().map(app_id).map(str::to_owned);
         key
@@ -1560,7 +1548,7 @@ impl NavList {
         }
     }
 
-    /// Run item action `index` on the row of `key`, standing at `rect`: an
+    /// Run item action `index` on the row of `key`, at `rect`: an
     /// action that opens the menu asks for the row's menu at its corner.
     fn press_item_action(&self, key: &str, index: usize, rect: Rect) {
         if self
@@ -1621,7 +1609,7 @@ impl NavList {
         };
         self.list.reveal(&key);
         if self.list.model().is_item(&key) {
-            self.list.selection_mut().select_only(key.clone());
+            self.list.select_only(Some(key.clone()));
             self.shared.borrow_mut().choose(&key);
         }
     }
@@ -2330,24 +2318,24 @@ pub use feed::NavFeed;
 mod tests;
 
 impl crate::widget::controls::ActionControls for NavList {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         let mut shared = self.shared.borrow_mut();
         for action in shared.selection_actions.values_mut() {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         for action in shared.section_add_actions.values_mut() {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
-        shared.bound.install_custody(domain, attachment);
+        shared.bound.attach(domain, attachment);
         if let Some(view) = shared.view.as_mut() {
-            view.choice.install_custody(domain, attachment);
+            view.choice.attach(domain, attachment);
         }
         drop(shared);
-        crate::widget::controls::install_control_custody(&mut *self.list, domain, attachment);
+        crate::widget::controls::attach_controls(&mut *self.list, domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

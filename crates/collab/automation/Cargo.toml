@@ -13,14 +13,14 @@ name = "tilo_automation"
 path = "src/lib.rs"
 
 # Shortcuts: typed pipelines of actions, checked against the descriptors the
-# action API publishes and run through `tilo_actions::remote::ActionHost`.
+# action API publishes and run through `tilo_actions::remote::ActionProvider`.
 # Pure data and logic with no I/O, no runtime and no UI dependency.
 
 [dependencies]
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 blake3.workspace = true
-chrono = { workspace = true, default-features = true }
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

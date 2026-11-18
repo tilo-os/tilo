@@ -203,7 +203,7 @@ pub struct CaptureScene {
     pub linked_account: Option<ui::linked_accounts::LinkState>,
     #[cfg(feature = "tilo-os")]
     pub personal_devices: Vec<crate::panes::device_mesh::PersonalDevice>,
-    pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
+    pub billing: Option<ui::tilo_actions::remote::server_account::ServerAccount>,
     pub network: Option<NetworkSample>,
     pub mobile: Option<MobileSample>,
     pub speakers: Option<SpeakersSample>,
@@ -497,10 +497,10 @@ pub(crate) fn access_fixture(
 
 pub(crate) fn billing_fixture(
     scenario: Option<&str>,
-) -> Option<ui::tilo_actions::remote::host_account::HostAccount> {
-    use ui::tilo_actions::remote::host_account::{
-        Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod,
-        PlanOffer, Standing, Usage, WorkspaceUsage,
+) -> Option<ui::tilo_actions::remote::server_account::ServerAccount> {
+    use ui::tilo_actions::remote::server_account::{
+        Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, ServerAccount,
+        ServerKind, Subscription, Usage, WorkspaceUsage,
     };
     let pro = Limits {
         max_running: 2,
@@ -509,8 +509,8 @@ pub(crate) fn billing_fixture(
         included_vm_seconds: Some(100 * 3600),
         ..Limits::default()
     };
-    let standing = match scenario? {
-        "billing" => Standing {
+    let subscription = match scenario? {
+        "billing" => Subscription {
             account: "acct-ada".into(),
             plan: Some("pro".into()),
             payment_method: Some(PaymentMethod {
@@ -546,22 +546,22 @@ pub(crate) fn billing_fixture(
                 },
             ],
         },
-        BILLING_NEW => Standing {
+        BILLING_NEW => Subscription {
             account: "acct-ada".into(),
-            ..Standing::default()
+            ..Subscription::default()
         },
         _ => return None,
     };
-    Some(HostAccount {
-        host: "Tilo Cloud".into(),
-        kind: HostKind::Provider,
+    Some(ServerAccount {
+        server: "Tilo Cloud".into(),
+        kind: ServerKind::Provider,
         plans: vec![PlanOffer {
             id: "pro".into(),
             name: "Pro".into(),
             price: Some("$20 a month".into()),
             limits: pro,
         }],
-        standing: Some(standing),
+        subscription: Some(subscription),
         manage_billing: Some("https://tilo.sh/billing".into()),
     })
 }

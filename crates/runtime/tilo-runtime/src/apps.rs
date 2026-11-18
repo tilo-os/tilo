@@ -459,18 +459,18 @@ pub struct Launch {
     /// Holds the launcher before it connects anywhere until the launch is
     /// recorded; `None` once released.
     #[cfg(target_os = "linux")]
-    registration: Option<launcher::registration_gate::RegistrationGate>,
+    registration: Option<launcher::launch_hold::LaunchHold>,
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
 }
 
 impl Launch {
-    /// Let a launcher held at its registration gate go on. Call once the
+    /// Let a launcher held at its launch hold go on. Call once the
     /// launch is recorded for attestation.
     fn release_registration(&mut self) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
-        if let Some(gate) = self.registration.take() {
-            return gate.release();
+        if let Some(hold) = self.registration.take() {
+            return hold.release();
         }
         Ok(())
     }

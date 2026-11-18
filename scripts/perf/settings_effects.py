@@ -20,7 +20,7 @@ ALL_CATEGORIES = ('network','bluetooth','devices_sync','appearance','accessibili
 Z_CATEGORIES = ('devices_sync','appearance','accessibility','notifications','default-apps',
     'region_formats','time_date','displays','pointing','power')
 _STABLE = ('app','ready','search_rect','root_rect','selected_category','narrow',
-           'sidebar_open','document_root','document_actor','document_witness_kind','effective_document_heads')
+           'sidebar_open','document_root','document_actor','document_proof_kind','effective_document_heads')
 _SEARCH = ('open','focused','text','caret_byte','rect')
 
 
@@ -60,7 +60,7 @@ def _state(state):
         or state['app']!='so.tilo.settings'
         or state['ready'] is not True or state['selected_category']!='network'
         or state['narrow'] is not False or state['sidebar_open'] is not True
-        or state['document_witness_kind']!='effective_heads_on_disposable_clone'
+        or state['document_proof_kind']!='effective_heads_on_disposable_clone'
         or not isinstance(state['document_root'],str) or not state['document_root']
         or not isinstance(state['document_actor'],str)
         or re.fullmatch('(?:[0-9a-f]{2})+',state['document_actor']) is None):

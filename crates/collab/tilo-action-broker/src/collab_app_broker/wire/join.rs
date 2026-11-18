@@ -1,5 +1,5 @@
 //! Joining: one ordered admission of a connection's identity, route,
-//! custody and channel handle.
+//! ownership and channel handle.
 
 use super::*;
 
@@ -10,7 +10,7 @@ impl AppConnection {
     /// route is held and published.
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered join admission: identity, route, custody and channel handle"
+        reason = "one ordered join admission: identity, route, ownership and channel handle"
     )]
     pub(super) async fn join(&self, join: Join) -> Result<JoinedChannel, BrokerError> {
         let state = self.state.clone();

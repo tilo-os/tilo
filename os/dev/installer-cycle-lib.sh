@@ -4,7 +4,7 @@
 #
 # The functions follow os/dev/test-installer-cycle.sh exactly (same OCR
 # oracle, same private recovery-key handling, same keyboard routes through
-# the installed Tilo first login). That release gate keeps its own inline
+# the installed Tilo first login). That release check keeps its own inline
 # copies: dozens of source-level invariants in os/tests pin its text, so it is
 # not rewritten to source this file.
 #

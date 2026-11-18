@@ -1,8 +1,8 @@
 //! Immutable per-window browsing policy.
 
-/// Catalogue message: why a window without account custody refuses the
+/// Catalogue message: why a window without account credentials refuses the
 /// person's website accounts.
-pub(crate) const NO_ACCOUNT_CUSTODY: &str = "browser-no-account-custody";
+pub(crate) const NO_ACCOUNT_OWNERSHIP: &str = "browser-no-account-credentials";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BrowsingMode {
@@ -11,7 +11,7 @@ pub enum BrowsingMode {
     Private,
     /// A window opened for an agent ([`ui::webview::VISITOR_WINDOW_FLAG`]): a
     /// fresh profile thrown away with it, and none of the person's account
-    /// custody.
+    /// ownership.
     Visitor,
 }
 
@@ -36,7 +36,7 @@ impl BrowsingMode {
 
     /// Whether the window holds the person's cookies and sign-ins, saved
     /// passwords and website accounts.
-    pub const fn holds_account_custody(self) -> bool {
+    pub const fn holds_account_credentials(self) -> bool {
         matches!(self, Self::Normal)
     }
 
@@ -73,11 +73,11 @@ mod tests {
             assert!(BrowsingMode::Normal.persists_personal_state());
         }
 
-        phase only_the_persons_own_window_holds_their_account_custody;
+        phase only_the_persons_own_window_holds_their_account_credentials;
         {
-            assert!(BrowsingMode::Normal.holds_account_custody());
+            assert!(BrowsingMode::Normal.holds_account_credentials());
             for mode in [BrowsingMode::Private, BrowsingMode::Visitor] {
-                assert!(!mode.holds_account_custody(), "{mode:?}");
+                assert!(!mode.holds_account_credentials(), "{mode:?}");
                 assert!(mode.has_own_profile(), "{mode:?}");
             }
             assert!(!BrowsingMode::Normal.has_own_profile());

@@ -6,7 +6,7 @@
 #                                      booted system and logged-in user session
 #
 # The image mode runs during os/Containerfile itself.  Runtime mode is driven
-# over SSH by the installed-desktop gate (t's os-acceptance-{arch}) after bootc
+# over SSH by the installed-desktop check (t's os-acceptance-{arch}) after bootc
 # installation and graphical login, through `os/dev/vm.sh test`, which copies
 # this script, the Files AT-SPI smoke
 # and the external AT-SPI client (test tooling the image does not ship) into
@@ -148,9 +148,9 @@ require_file /usr/lib/systemd/system/tilo-store-loop.service
 require_line /usr/lib/systemd/system/fs.service "ExecStopPost=-/usr/bin/umount --lazy /var/workspace"
 require_line /usr/lib/systemd/system/fs.service "Wants=tilo-store-volume.service var-lib-tilo-store.mount"
 require_line /usr/lib/systemd/system/fs.service "After=tilo-store-volume.service var-lib-tilo-store.mount"
-require_line /usr/lib/systemd/system/fs.service "Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse"
+require_line /usr/lib/systemd/system/fs.service "Environment=TILO_FS_BACKEND_ARGS=--backend=fuse"
 require_line /usr/lib/systemd/system/fs.service "EnvironmentFile=-/run/tilo-store/fs.env"
-require_line /usr/lib/systemd/system/fs.service "    \$TILO_FS_DATA_PLANE_ARGS"
+require_line /usr/lib/systemd/system/fs.service "    \$TILO_FS_BACKEND_ARGS"
 require_line /usr/lib/systemd/system/tilo-store-volume.service "ExecStart=/usr/libexec/tilo-store-volume ensure"
 require_line /usr/lib/systemd/system/tilo-store-volume.service "Before=fs.service"
 require_line /usr/lib/systemd/system/tilo-store-volume.service "RuntimeDirectory=tilo-store"
@@ -283,18 +283,18 @@ if [ "$mode" = runtime ]; then
   systemctl is-active --quiet fs.service || die "fs.service is not active"
   mountpoint -q /var/workspace || die "/var/workspace is not mounted"
   systemctl is-active --quiet tilo-store-volume.service || die "tilo-store-volume.service is not active"
-  [ -r /run/tilo-store/fs.env ] || die "the store preparation announced no data plane"
+  [ -r /run/tilo-store/fs.env ] || die "the store preparation announced no backend"
   fs_type="$(findmnt -n -o FSTYPE --target /var/workspace)"
-  # The data plane follows the store: a mounted, announced store volume means
+  # The backend follows the store: a mounted, announced store volume means
   # the native tree is bound at /var/workspace (unless the daemon logged why the
   # kernel probes refused it); no store means FUSE.
-  if grep -Fq -- '--data-plane=auto' /run/tilo-store/fs.env; then
+  if grep -Fq -- '--backend=auto' /run/tilo-store/fs.env; then
     [ "$(findmnt -n -o FSTYPE -M /var/lib/tilo/store)" = btrfs ] \
       || die "a store was announced but /var/lib/tilo/store is not a mounted Btrfs volume"
     case "$fs_type" in
       btrfs) ;;
       fuse|fuse.*)
-        journalctl -b -u fs.service --no-pager | grep -F 'Data plane: FUSE' \
+        journalctl -b -u fs.service --no-pager | grep -F 'Backend: FUSE' \
           || die "/var/workspace is FUSE on a store volume and fs.service logged no reason"
         ;;
       *) die "/var/workspace type is $fs_type, neither the native tree nor FUSE" ;;
@@ -321,7 +321,7 @@ if [ "$mode" = runtime ]; then
 
   # Unit state and non-empty files are not cryptographic evidence. Require the
   # personal root and every device-chain artifact, then run the same read-only
-  # verifier that gates compositor startup.
+  # verifier that checks compositor startup.
   id -nG | tr ' ' '\n' | grep -Fqx tilo-identity \
     || die "login user is not a member of tilo-identity"
   for identity_file in \

@@ -1460,8 +1460,8 @@ pub(crate) mod tests {
 
     #[test]
     fn copy_paths_share_row_semantics_and_toast_severity() {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
         {
             let mut framed = framed(app_with_state(), 640, 700);
             let (app, state) = Framed::split(&mut framed);
@@ -1840,8 +1840,8 @@ pub(crate) mod tests {
     #[test]
     fn qr_import_routes_through_the_host_portal_and_fills_the_panel() {
         {
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
+            let (services, recorder) = ui::process::ProcessServices::recording();
+            let _host = ui::process::enter(&services);
             let (mut app, _state) = app_with_state();
             app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
             app.add_panel.open();
@@ -1866,11 +1866,11 @@ pub(crate) mod tests {
             let (mut app, state) = app_with_state();
             app.add_panel.open();
 
-            let (services, recorder) = ui::host::HostServices::recording();
+            let (services, recorder) = ui::process::ProcessServices::recording();
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(img));
             let work = ui::background::Pumped::new();
             let _work = work.background().enter();
-            ui::host::scoped(&services, || app.request_qr_via_portal());
+            ui::process::scoped(&services, || app.request_qr_via_portal());
             work.run_pending();
             app.update(&state.doc, &state.root);
 
@@ -1894,11 +1894,11 @@ pub(crate) mod tests {
             let (mut app, state) = app_with_state();
             app.add_panel.open();
             let before = app.add_panel.field_snapshot();
-            let (services, recorder) = ui::host::HostServices::recording();
+            let (services, recorder) = ui::process::ProcessServices::recording();
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let work = ui::background::Pumped::new();
             let _work = work.background().enter();
-            ui::host::scoped(&services, || app.request_qr_via_portal());
+            ui::process::scoped(&services, || app.request_qr_via_portal());
             work.run_pending();
             app.update(&state.doc, &state.root);
             assert!(

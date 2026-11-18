@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// The grid, as a host other than an [`App`] takes it: a tree hands its
-/// controls' custody to the host that adopts it first, and a tree an `App`
+/// controls' ownership to the host that adopts it first, and a tree an `App`
 /// already holds belongs to that app's domain.
 fn fixture_tree(count: usize) -> (Box<dyn Widget>, Rc<RefCell<Vec<usize>>>) {
     let clicks = Rc::new(RefCell::new(Vec::new()));

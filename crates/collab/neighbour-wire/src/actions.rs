@@ -2,7 +2,7 @@
 //! that sends it.
 //!
 //! The addressed device answers it on its own engine, with no host, store or
-//! relay in between. The QUIC
+//! server in between. The QUIC
 //! connection already proves which device is on the other end, so why the
 //! signature: an invocation recorded in the workspace has to prove to *every*
 //! device who asked, not only to the one that answered.
@@ -280,7 +280,7 @@ fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {
 /// the [`RemoteActionFrame`] bytes its dispatcher produced, the offer with
 /// the answering device's [`Answer`](crate::offer::Answer).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum PlaneFrame {
+pub enum ActionServiceFrame {
     /// An action this device asks the addressed one to run.
     Action(Box<SignedDeviceAction>),
     /// A route this device asks the addressed one whether it would run.

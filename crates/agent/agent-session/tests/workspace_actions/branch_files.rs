@@ -5,19 +5,19 @@
 //! one is not in the other.
 
 use super::api::ISSUER;
-use super::api_on_relay::{OnRelay, api_on_relay, json_of};
+use super::api_on_server::{OnServer, api_on_server, json_of};
 use super::branch_workspace::{Key, person};
 use super::*;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
 use serde_json::json;
 use std::sync::Arc;
-use tilo_fs::tree_document::record as tree_document;
+use tilo_fs::tree_document::document_id as tree_document;
 
 /// The tree of `workspace`'s Files as its host keeps it, its own record and every chunk it
 /// lists; empty while it keeps none.
-async fn tree_of(on_relay: &OnRelay, workspace: &str) -> Tree {
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+async fn tree_of(on_server: &OnServer, workspace: &str) -> Tree {
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
     let Some(index) = workspaces
         .resource_document(workspace, FILES_APP, &tree_document())
         .await
@@ -77,8 +77,8 @@ fn chunks_of(bytes: &[u8]) -> usize {
 
 /// The bytes of the file whose manifest is `manifest`, read from `workspace`'s
 /// own content on its host alone: the manifest, then every chunk it lists.
-fn kept_bytes(on_relay: &OnRelay, workspace: &str, manifest: &str) -> Option<Vec<u8>> {
-    let store = on_relay.hosted.relay.content().get(workspace).ok()?;
+fn kept_bytes(on_server: &OnServer, workspace: &str, manifest: &str) -> Option<Vec<u8>> {
+    let store = on_server.hosted.server.content().get(workspace).ok()?;
     let listed = store.read(manifest)?;
     fs_content::whole(listed, u64::MAX, |chunk| store.read(&hex::encode(chunk)))
 }
@@ -106,14 +106,14 @@ async fn put_file(key: &Key<'_>, workspace: &str, dir: &str, name: &str, bytes: 
 
 /// Wait until `workspace`'s host keeps the file `dir/name` as `bytes`: its tree
 /// names it, and its content holds every byte of it.
-async fn keeps(on_relay: &OnRelay, workspace: &str, (dir, name): (&str, &str), bytes: &[u8]) {
+async fn keeps(on_server: &OnServer, workspace: &str, (dir, name): (&str, &str), bytes: &[u8]) {
     let manifest = manifest_of(bytes);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let tree = tree_of(on_relay, workspace).await;
+        let tree = tree_of(on_server, workspace).await;
         let named = file_at(&tree, dir, name).and_then(|node| node.hash.clone());
         if named.as_deref() == Some(manifest.as_str())
-            && kept_bytes(on_relay, workspace, &manifest).as_deref() == Some(bytes)
+            && kept_bytes(on_server, workspace, &manifest).as_deref() == Some(bytes)
         {
             return;
         }
@@ -145,9 +145,9 @@ async fn a_branch_holds_the_workspaces_files_and_each_goes_its_own_way() {
 }
 
 async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let (_, token) = person(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (_, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let (status, made) = backend
         .post("/v1/workspaces", &json!({"name": "Contracts"}), &[])
@@ -173,7 +173,7 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     // The host keeps every one of them whole before the branch: what the
     // branch then lacks is the branch's loss.
     for (dir, name, bytes) in files {
-        keeps(&on_relay, &source, (dir, name), bytes).await;
+        keeps(&on_server, &source, (dir, name), bytes).await;
     }
 
     let (status, branched) = backend
@@ -189,14 +189,14 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     // Every file is in the branch's tree under the same path, and the
     // branch's own content holds every byte of it: its manifest and every
     // chunk the manifest lists.
-    let tree = tree_of(&on_relay, &branch).await;
+    let tree = tree_of(&on_server, &branch).await;
     for (dir, name, bytes) in files {
         let node = file_at(&tree, dir, name)
             .unwrap_or_else(|| panic!("the branch's tree lacks {dir}/{name}"));
         assert_eq!(node.hash.as_deref(), Some(manifest_of(bytes).as_str()));
         assert_eq!(node.size, bytes.len() as u64);
         assert_eq!(
-            kept_bytes(&on_relay, &branch, &manifest_of(bytes)).as_deref(),
+            kept_bytes(&on_server, &branch, &manifest_of(bytes)).as_deref(),
             Some(bytes),
             "the branch's content holds {dir}/{name} whole"
         );
@@ -205,19 +205,19 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     // A file changed in the branch is changed there alone, and the reverse.
     let in_branch = b"Acme's own terms.\n".repeat(300);
     put_file(&backend, &branch, "contracts", "terms.txt", &in_branch).await;
-    keeps(&on_relay, &branch, ("contracts", "terms.txt"), &in_branch).await;
+    keeps(&on_server, &branch, ("contracts", "terms.txt"), &in_branch).await;
     let in_source = b"The template's next terms.\n".repeat(300);
     put_file(&backend, &source, "", "README.txt", &in_source).await;
-    keeps(&on_relay, &source, ("", "README.txt"), &in_source).await;
+    keeps(&on_server, &source, ("", "README.txt"), &in_source).await;
     // A file added to the source after the branch is the source's alone.
     let later = varied(9_000, 3);
     put_file(&backend, &source, "contracts", "later.txt", &later).await;
-    keeps(&on_relay, &source, ("contracts", "later.txt"), &later).await;
+    keeps(&on_server, &source, ("contracts", "later.txt"), &later).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let (source_tree, branch_tree) = (
-        tree_of(&on_relay, &source).await,
-        tree_of(&on_relay, &branch).await,
+        tree_of(&on_server, &source).await,
+        tree_of(&on_server, &branch).await,
     );
     let named = |tree: &Tree, dir: &str, name: &str| {
         file_at(tree, dir, name).and_then(|node| node.hash.clone())
@@ -297,10 +297,10 @@ async fn a_file_its_host_is_still_gathering_makes_no_branch_until_it_is_here() {
 }
 
 async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap().clone();
-    let (_, token) = person(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let workspaces = on_server.hosted.server.workspaces().unwrap().clone();
+    let (_, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let (status, made) = backend
         .post("/v1/workspaces", &json!({"name": "Scans"}), &[])
@@ -309,11 +309,11 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     let source = made["id"].as_str().unwrap().to_owned();
     let scan = varied(700_000, 4);
     put_file(&backend, &source, "scans", "passport.pdf", &scan).await;
-    keeps(&on_relay, &source, ("scans", "passport.pdf"), &scan).await;
+    keeps(&on_server, &source, ("scans", "passport.pdf"), &scan).await;
 
     // The tree names the file, but one of its chunks has not reached the host
     // yet, as when a device that wrote it is still sending it.
-    let store = on_relay.hosted.relay.content().get(&source).unwrap();
+    let store = on_server.hosted.server.content().get(&source).unwrap();
     let (manifest, _) = fs_content::build(&scan, None);
     let chunk = hex::encode(manifest.chunks()[1].hash);
     let held = store.read(&chunk).expect("the host keeps the chunk");
@@ -337,7 +337,7 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
             .await
             .iter()
             .any(|summary| summary.name == "Scans: Acme"),
-        "the relay governs nothing of it"
+        "the server governs nothing of it"
     );
 
     // The chunk arrives: the same call, under the same key, makes the branch,
@@ -349,7 +349,7 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     assert!(!replayed, "the refusal was not kept: the call ran again");
     let branch = branched["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        kept_bytes(&on_relay, &branch, &manifest_of(&scan)).as_deref(),
+        kept_bytes(&on_server, &branch, &manifest_of(&scan)).as_deref(),
         Some(scan.as_slice())
     );
     // Asked once more under that key, it answers the same branch and makes
@@ -366,9 +366,9 @@ async fn content_only_an_earlier_version_named_does_not_stop_a_branch() {
 }
 
 async fn content_only_earlier_named_does_not_stop_a_branch() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let (_, token) = person(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (_, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let (status, made) = backend
         .post("/v1/workspaces", &json!({"name": "Drafts"}), &[])
@@ -380,11 +380,11 @@ async fn content_only_earlier_named_does_not_stop_a_branch() {
     // version, its current state the second. The host let the first go.
     let first = varied(300_000, 5);
     put_file(&backend, &source, "", "draft.txt", &first).await;
-    keeps(&on_relay, &source, ("", "draft.txt"), &first).await;
+    keeps(&on_server, &source, ("", "draft.txt"), &first).await;
     let second = varied(300_000, 6);
     put_file(&backend, &source, "", "draft.txt", &second).await;
-    keeps(&on_relay, &source, ("", "draft.txt"), &second).await;
-    let store = on_relay.hosted.relay.content().get(&source).unwrap();
+    keeps(&on_server, &source, ("", "draft.txt"), &second).await;
+    let store = on_server.hosted.server.content().get(&source).unwrap();
     let (old, _) = fs_content::build(&first, None);
     let (now, _) = fs_content::build(&second, None);
     let kept_now: Vec<String> = now
@@ -404,13 +404,13 @@ async fn content_only_earlier_named_does_not_stop_a_branch() {
     let (status, branched) = branch_of(&backend, &source, "Drafts: Acme").await;
     assert_eq!(status, 201, "{branched}");
     let branch = branched["id"].as_str().unwrap().to_owned();
-    let tree = tree_of(&on_relay, &branch).await;
+    let tree = tree_of(&on_server, &branch).await;
     assert_eq!(
         file_at(&tree, "", "draft.txt").and_then(|node| node.hash.clone()),
         Some(manifest_of(&second))
     );
     assert_eq!(
-        kept_bytes(&on_relay, &branch, &manifest_of(&second)).as_deref(),
+        kept_bytes(&on_server, &branch, &manifest_of(&second)).as_deref(),
         Some(second.as_slice())
     );
 }

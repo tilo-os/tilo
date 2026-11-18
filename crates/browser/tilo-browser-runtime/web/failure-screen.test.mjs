@@ -16,7 +16,7 @@ test('each failure is told apart by what the page knows of it', () => {
     [named('HostAdmissionError', 'invitation-only'), {}, 'invitation-only'],
     [named('AdmissionError', 'no-access'), {}, 'no-access'],
     [named('AdmissionError', 'declined', 'You did not join'), {}, 'refused'],
-    [named('CustodyError', 'custody-busy'), {}, 'custody-busy'],
+    [named('DeviceKeyError', 'device-key-busy'), {}, 'device-key-busy'],
     [new Error('anything'), {settled: 'gone'}, 'gone'],
     [new Error('anything'), {settled: 'deleted'}, 'deleted'],
     [new TypeError('Failed to fetch'), {online: false}, 'offline'],

@@ -1239,7 +1239,7 @@ mod tests {
 
         // The note closed; a different one is open, exporting the same action id.
         let now = vec![
-            ResourceSpec::new("notes.note:2", "notes.note", "Ledger").with_action(
+            ResourceSpec::new("notes.note:2", "notes.note", "Log").with_action(
                 ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
             ),
         ];
@@ -1272,7 +1272,7 @@ mod tests {
         assert_eq!(err, ApiError::MissingArgument(retitle()));
         assert_eq!(err.code(), "invalid_arguments");
 
-        let err = perform(&mut doc, &tree, &star(), Some("Ledger")).unwrap_err();
+        let err = perform(&mut doc, &tree, &star(), Some("Log")).unwrap_err();
         assert_eq!(err, ApiError::UnexpectedArgument(star()));
         assert_eq!(err.code(), "invalid_arguments");
 
@@ -1524,7 +1524,7 @@ mod tests {
             &registry(),
             &mut transport,
         )
-        .expect("a policy gate may explicitly attest confirmation");
+        .expect("a policy check may explicitly attest confirmation");
         assert_eq!(
             doc.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
@@ -1732,19 +1732,19 @@ mod tests {
             let described = survey(&tree);
             let retitle_spec = described.iter().find(|d| d.address == retitle()).unwrap();
             assert_eq!(retitle_spec.prompt_param(), Some("title"));
-            let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Ledger" })
+            let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Log" })
                 .as_object()
                 .unwrap()
                 .clone();
             assert_eq!(
                 retitle_spec.bind_prompt_text(lone.clone()),
-                serde_json::json!({"title": "Ledger"})
+                serde_json::json!({"title": "Log"})
                     .as_object()
                     .unwrap()
                     .clone()
             );
             // Already named, or more than one argument: left as given.
-            let named = serde_json::json!({"title": "Ledger"})
+            let named = serde_json::json!({"title": "Log"})
                 .as_object()
                 .unwrap()
                 .clone();
@@ -1766,7 +1766,7 @@ mod tests {
         }
 
         phase a_confirmed_invocation_inside_a_run_is_recorded_with_its_group;
-        // A destructive operation an agent run performs after its policy gate
+        // A destructive operation an agent run performs after its policy check
         // confirmed it is recorded within the run, exactly like an unconfirmed
         // one — consent is not a reason to lose whose task the change belongs to.
         {

@@ -1,4 +1,4 @@
-//! Receipts from the relay's retained source, with projections confined in the
+//! Receipts from the server's retained source, with projections confined in the
 //! existing app worker. This never invokes document writes on another person's
 //! behalf or enrolls a caller in a channel.
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ed25519_dalek::Signer as _;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::feedback::{FeedbackAdmission, FeedbackAnswer, FeedbackQuery};
-use tilo_actions::remote::{ActionHostError, Caller, Completer};
+use tilo_actions::remote::{ActionCallError, Caller, Completer};
 use tilo_feedback_transport::{
     CanonicalDestination, CanonicalReceiptSource, Enrollment, ReceiptSigner, ReceiptSigningRequest,
 };
@@ -14,10 +14,10 @@ use ui::feedback::Destination;
 use ui::feedback::{Error, Receipt, Submission};
 
 use super::{AppCatalogue, DocumentRoute, HostDevice, WorkspaceDocumentsLink, reads, resource_of};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_server_protocol::WorkspaceId;
 
-fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
-    ActionHostError::Unavailable {
+fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionCallError {
+    ActionCallError::Unavailable {
         reason: reason.to_string(),
     }
 }
@@ -32,7 +32,7 @@ pub(super) fn answer_and_review(
     workspace: WorkspaceId,
     caller: Caller,
     mut query: FeedbackQuery,
-    done: Completer<Result<FeedbackAnswer, ActionHostError>>,
+    done: Completer<Result<FeedbackAnswer, ActionCallError>>,
 ) {
     let prompt = query.review.take();
     let reviewer = link.feedback_reviewer();
@@ -70,7 +70,7 @@ pub(super) fn answer(
     workspace: WorkspaceId,
     caller: Caller,
     mut query: FeedbackQuery,
-) -> Result<FeedbackAnswer, ActionHostError> {
+) -> Result<FeedbackAnswer, ActionCallError> {
     let destination = Destination {
         workspace: query.destination.workspace.clone(),
         provider: query.destination.provider.clone(),
@@ -162,7 +162,7 @@ pub(super) fn answer(
         .view_read_policy(workspace, &caller, "so.tilo.chat", "")
         .filter(|fresh| {
             fresh.workspace == policy.workspace
-                && fresh.standing == policy.standing
+                && fresh.access == policy.access
                 && fresh.sandbox == policy.sandbox
         })
         .ok_or_else(|| unavailable("feedback admission retired"))?;
@@ -178,7 +178,7 @@ fn admission(
     query: FeedbackQuery,
     enrollment: &Enrollment,
     fresh: super::ViewReadPolicy,
-) -> Result<FeedbackAdmission, ActionHostError> {
+) -> Result<FeedbackAdmission, ActionCallError> {
     let owner = &enrollment.owner;
     let caller = &enrollment.reporter;
     Ok(FeedbackAdmission {
@@ -203,7 +203,7 @@ fn admission(
                 .device_public_key()
                 .ok_or_else(|| unavailable("reporter device unavailable"))?,
         ),
-        standing: serde_json::to_value(fresh.standing).map_err(|error| unavailable(&error))?,
+        access: serde_json::to_value(fresh.access).map_err(|error| unavailable(&error))?,
         sandbox: serde_json::to_value(fresh.sandbox).map_err(|error| unavailable(&error))?,
         unix_time: fresh.unix_time,
     })
@@ -283,7 +283,7 @@ impl CanonicalReceiptSource for RetainedSource {
     }
     fn keeps_content(&self, hash: &str) -> Result<bool, Error> {
         // Only bytes the host's own store keeps, verified against their
-        // address, witness a report's screenshot.
+        // address, approval a report's screenshot.
         Ok(self
             .link
             .content_blob(self.workspace, hash)

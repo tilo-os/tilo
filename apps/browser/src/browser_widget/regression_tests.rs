@@ -89,7 +89,7 @@ fn a_navigation_while_a_page_loads_replaces_it() {
 #[test]
 fn the_newest_history_rows_open_however_long_the_history() {
     let mut widget = BrowserWidget::new_headless();
-    // 150 pages in the record's own order, by address, the newest first
+    // 150 pages in the resource's own order, by address, the newest first
     // in the alphabet.
     for n in 0..150_u64 {
         let url = format!("https://{}.test/", 850 + n);
@@ -156,7 +156,7 @@ fn a_narrow_window_bookmarks_into_the_persons_own_library() {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
         .person::<crate::personal_bookmarks::PersonalBookmarks>()
-        .expect("a test profile keeps person records");
+        .expect("a test profile keeps person resources");
     let mut page = BrowserWidget::new_headless();
     page.attach_personal_bookmarks(record);
     page.compact_chrome = true;
@@ -447,7 +447,7 @@ fn a_page_a_web_app_moves_to_is_named_in_history_once_its_title_comes() {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
         .person::<crate::history::BrowsingHistory>()
-        .expect("a test profile keeps person records");
+        .expect("a test profile keeps person resources");
     let engine = TestEngine::new();
     let mut w = BrowserWidget::with_engine(engine.clone(), true);
     w.attach_history(record.clone());
@@ -779,7 +779,7 @@ fn typing_in_the_address_bar_suggests_saved_pages() {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let personal = app
         .person::<crate::personal_bookmarks::PersonalBookmarks>()
-        .expect("a test profile keeps person records");
+        .expect("a test profile keeps person resources");
     personal
         .invoke(
             &crate::personal_bookmarks::PersonalBookmarks::ADD_BOOKMARK.with((
@@ -876,7 +876,7 @@ fn a_history_row_forgets_only_its_own_page() {
         record.with(|history| !history.visits.contains_key(forgotten)
             && history.visits.contains_key("https://one.test/")
             && history.visits.contains_key("https://three.test/")),
-        "the record forgets exactly that page"
+        "the resource forgets exactly that page"
     );
 
     architecture_tests::compose(&mut w);

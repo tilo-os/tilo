@@ -35,7 +35,7 @@ pub(crate) fn icon(kind: SecretItemKind) -> Icon {
     }
 }
 
-/// Resource search receives only item metadata, even when full secret-bearing records are
+/// Resource search receives only item metadata, even when full secret-bearing resources are
 /// supplied. Secret and custom-field values never enter entries.
 pub(crate) fn entries(items: &[SecretItem]) -> Vec<SearchEntry> {
     items
@@ -82,7 +82,7 @@ mod tests {
             for secret in ["Harbor-Lights-2019", "4821-7730", "harbourlights"] {
                 assert!(
                     !metadata.contains(secret),
-                    "full records never publish secret metadata"
+                    "full resources never publish secret metadata"
                 );
             }
             let mut app =
@@ -114,7 +114,7 @@ mod tests {
                 entries(&crate::demo::full_items())
                     .iter()
                     .all(|entry| entry.secret),
-                "every vault entry is secret-bearing, so the system index gates it on the lock"
+                "every vault entry is secret-bearing, so the system index checks it on the lock"
             );
             let hit = provider
                 .search("Northstar")

@@ -17,8 +17,8 @@ pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
 impl Totp {
-    /// What the record holds: the accounts' metadata in list order. Seeds stay in
-    /// this device's secret store and never reach the record.
+    /// What the resource holds: the accounts' metadata in list order. Seeds stay in
+    /// this device's secret store and never reach the resource.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -419,20 +419,20 @@ mod tests {
 
     struct Store(Arc<dyn SecretBackend>);
 
-    impl ui::host::SecretsProvider for Store {
+    impl ui::process::SecretsProvider for Store {
         fn store(&self, app_id: &str) -> SecretStore {
             SecretStore::with_backend(app_id, Arc::clone(&self.0))
         }
     }
 
-    fn open(backend: Arc<dyn SecretBackend>) -> (TestApp<TotpShell>, ui::host::HostScope) {
-        let (recording, _) = ui::host::HostServices::recording();
-        let services = ui::host::HostServices {
+    fn open(backend: Arc<dyn SecretBackend>) -> (TestApp<TotpShell>, ui::process::ProcessScope) {
+        let (recording, _) = ui::process::ProcessServices::recording();
+        let services = ui::process::ProcessServices {
             secrets: Arc::new(Store(backend)),
             clipboard: recording.clipboard,
-            ..ui::host::HostServices::null()
+            ..ui::process::ProcessServices::null()
         };
-        let scope = ui::host::enter(&services);
+        let scope = ui::process::enter(&services);
         (TestApp::<TotpShell>::new().unwrap(), scope)
     }
 

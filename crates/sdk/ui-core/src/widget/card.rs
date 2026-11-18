@@ -46,15 +46,15 @@ pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct CardMetrics {
+pub(crate) struct CardMetrics {
     padding: f64,
     gap: f64,
-    radius: f64,
+    pub(crate) radius: f64,
     stripe: f64,
 }
 
 impl CardMetrics {
-    fn new(theme: &Theme) -> Self {
+    pub(crate) fn new(theme: &Theme) -> Self {
         let rhythm = &theme.tokens.spacing.rhythm;
         Self {
             padding: f64::from(rhythm.section),
@@ -490,7 +490,16 @@ impl Card {
 impl Widget for Card {
     /// A card: its media, head, body and actions.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Ground, rgba8};
         cx.element("article");
+        // Its surface, as the canvas lays it under the card's parts.
+        let theme = cx.theme();
+        let raised = theme.tokens.colors.surfaces.raised;
+        cx.ground(Ground {
+            fill: Some(rgba8(raised)),
+            edge: Some(rgba8(crate::surface::edge_on(raised))),
+            radius: CardMetrics::new(theme).radius,
+        });
         cx.children();
     }
 

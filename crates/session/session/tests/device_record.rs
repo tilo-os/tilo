@@ -20,8 +20,8 @@
 use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_actions::remote::identity_admin;
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_relay_protocol::workspaces::Role;
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_server_protocol::workspaces::Role;
 
 /// The Devices step of the person's identity administration, as Settings asks
 /// it: `resource␟action`, as the action API spells an address.
@@ -86,7 +86,7 @@ fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
         "{own:?}"
     );
 
-    // The page's root certifies the browser it runs in, and the relay keeps
+    // The page's root certifies the browser it runs in, and the server keeps
     // that certificate in the person's record, as it keeps every key a root
     // issues through its pairing.
     let directory = tempfile::tempdir().expect("a directory for the browser's identity");

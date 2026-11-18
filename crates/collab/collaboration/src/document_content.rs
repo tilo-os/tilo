@@ -21,24 +21,24 @@
 //!   The event syncs the window, and [`arrivals`] moves: an app waiting for
 //!   content looks again then, never on a timer.
 //!
-//! The app's window and the store meet in a [`ContentLane`], one per window
-//! ([`ContentLane::of_window`]): the store queues its requests there, and
+//! The app's window and the store meet in a [`ContentLink`], one per window
+//! ([`ContentLink::of_window`]): the store queues its requests there, and
 //! the window's collaboration loop sends them on the record's route and
 //! hands back what arrives. Two windows showing one record each queue on
-//! their own lane, so what one asks for is never what the other sends.
+//! their own content link, so what one asks for is never what the other sends.
 //!
 //! Content an app stores is sealed under a key derived from the content
 //! secret of the members who read the record, once its route holds their
-//! keys ([`ContentLane::hold_secret`]): the same bytes stored twice, by any
+//! keys ([`ContentLink::hold_secret`]): the same bytes stored twice, by any
 //! window on a record of the same members, are one item under one
 //! reference. Before the keys arrive, each item is sealed under a fresh key.
 //! A record is named by its route, whose cluster is its workspace: one app's
-//! records in two workspaces are two lanes, each sealed under the secret of
+//! records in two workspaces are two content links, each sealed under the secret of
 //! its own workspace's members.
 //!
 //! A record other than the window's own — one of the person's records,
-//! kept in their own workspace — has a lane of its own that names its route
-//! ([`ContentLane::resource_store`]): its content lives where that record
+//! kept in their own workspace — has a content link of its own that names its route
+//! ([`ContentLink::resource_store`]): its content lives where that record
 //! does, on the person's devices, never in the window's workspace.
 
 use std::cell::RefCell;
@@ -52,19 +52,19 @@ use tilo_content::{
 };
 use tilo_lock::MutexRecover as _;
 
-// The lane `window`, the wake scope a window's code runs in, keeps for the
+// The content link `window`, the wake scope a window's code runs in, keeps for the
 // record it shows: one per window, so two windows of one app in a process are
-// never the one lane of the record they share. The window's own threads — the
-// ones that entered its scope — read the lane from here.
+// never the one content link of the record they share. The window's own threads — the
+// ones that entered its scope — read the content link from here.
 thread_local! {
-    static OWN_LANE: RefCell<Option<(crate::WakeHandle, Arc<ContentLane>)>> =
+    static OWN_LINK: RefCell<Option<(crate::WakeHandle, Arc<ContentLink>)>> =
         const { RefCell::new(None) };
 }
 
-/// Let `window`'s record content travel on `lane`: the window keeps it, and
-/// its own record content reads it back ([`ContentLane::of_window`]).
-pub fn keep_lane(window: &crate::WakeHandle, lane: Arc<ContentLane>) {
-    OWN_LANE.with(|own| *own.borrow_mut() = Some((window.clone(), lane)));
+/// Let `window`'s record content travel on `link`: the window keeps it, and
+/// its own record content reads it back ([`ContentLink::of_window`]).
+pub fn keep_link(window: &crate::WakeHandle, link: Arc<ContentLink>) {
+    OWN_LINK.with(|own| *own.borrow_mut() = Some((window.clone(), link)));
 }
 
 /// Largest content one record references.
@@ -86,11 +86,11 @@ fn arrived_somewhere() {
 }
 
 #[derive(Default)]
-struct LaneState {
+struct LinkState {
     /// Content asked for and not yet here.
     wanted: BTreeSet<String>,
     /// Where the host said a want stands, for those it said so of.
-    standing: HashMap<String, ContentState>,
+    known: HashMap<String, ContentState>,
     /// Requests the window has yet to send.
     asks: Vec<String>,
     offers: Vec<(String, Vec<u8>)>,
@@ -100,12 +100,12 @@ struct LaneState {
 
 /// Where one record's content store and its window's collaboration meet.
 #[derive(Default)]
-pub struct ContentLane {
+pub struct ContentLink {
     /// The record's route, for a record that is not the window's own.
     route: OnceLock<super::RouteSpec>,
     /// The content store of such a record.
     store: OnceLock<ContentStore>,
-    state: Mutex<LaneState>,
+    state: Mutex<LinkState>,
     wake: Mutex<Option<crate::WakeHandle>>,
     /// The record's host carries its content to the record's other
     /// readers.
@@ -113,24 +113,24 @@ pub struct ContentLane {
     /// The content secret of the members who read the record, while its
     /// route holds their keys.
     secret: Mutex<Option<tilo_seal::SymmetricKey>>,
-    /// The record's own lane ([`Self::of`]), for a window's lane: the
+    /// The record's own content link ([`Self::of`]), for a window's content link: the
     /// secret is the record's, whichever window stores.
-    record: OnceLock<Arc<ContentLane>>,
+    record: OnceLock<Arc<ContentLink>>,
 }
 
 /// What the window sends on the record's route.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct LaneRequests {
+pub struct ContentRequests {
     pub wants: Vec<String>,
     pub offers: Vec<(String, Vec<u8>)>,
 }
 
-/// Which record a lane carries: its workspace (the route's cluster), its
+/// Which record a content link carries: its workspace (the route's cluster), its
 /// app and its wire name. One app's records in two workspaces are two
-/// lanes, each sealed under its own members' secret.
-type LaneKey = (uuid::Uuid, String, String);
+/// content links, each sealed under its own members' secret.
+type LinkKey = (uuid::Uuid, String, String);
 
-fn lane_key(route: &super::RouteSpec) -> LaneKey {
+fn link_key(route: &super::RouteSpec) -> LinkKey {
     (
         route.cluster_id,
         route.app_id.clone(),
@@ -138,81 +138,81 @@ fn lane_key(route: &super::RouteSpec) -> LaneKey {
     )
 }
 
-type Lanes = Mutex<HashMap<LaneKey, Arc<ContentLane>>>;
+type Links = Mutex<HashMap<LinkKey, Arc<ContentLink>>>;
 
-fn lanes() -> std::sync::MutexGuard<'static, HashMap<LaneKey, Arc<ContentLane>>> {
-    static LANES: OnceLock<Lanes> = OnceLock::new();
-    LANES.get_or_init(Mutex::default).lock_recover()
+fn links() -> std::sync::MutexGuard<'static, HashMap<LinkKey, Arc<ContentLink>>> {
+    static LINKS: OnceLock<Links> = OnceLock::new();
+    LINKS.get_or_init(Mutex::default).lock_recover()
 }
 
-/// The lanes windows keep for the records they show, by record
-/// ([`ContentLane::show_on_route`]); a lane goes once its window let it go.
-type WindowLanes = Mutex<HashMap<LaneKey, Vec<std::sync::Weak<ContentLane>>>>;
+/// The content links windows keep for the records they show, by record
+/// ([`ContentLink::show_on_route`]); a content link goes once its window let it go.
+type WindowLinks = Mutex<HashMap<LinkKey, Vec<std::sync::Weak<ContentLink>>>>;
 
-fn window_lanes()
--> std::sync::MutexGuard<'static, HashMap<LaneKey, Vec<std::sync::Weak<ContentLane>>>> {
-    static WINDOW_LANES: OnceLock<WindowLanes> = OnceLock::new();
-    WINDOW_LANES.get_or_init(Mutex::default).lock_recover()
+fn window_links()
+-> std::sync::MutexGuard<'static, HashMap<LinkKey, Vec<std::sync::Weak<ContentLink>>>> {
+    static WINDOW_LINKS: OnceLock<WindowLinks> = OnceLock::new();
+    WINDOW_LINKS.get_or_init(Mutex::default).lock_recover()
 }
 
-impl ContentLane {
-    /// `lane`, a window's own ([`Self::of_window`]), carries the content of
+impl ContentLink {
+    /// `link`, a window's own ([`Self::of_window`]), carries the content of
     /// the record `route` names: whatever moves that record's content for
     /// the process reaches it through [`Self::on_route`] for as long as the
     /// window keeps it, and what it stores is sealed under the secret of
     /// that record's members.
-    pub fn show_on_route(route: &super::RouteSpec, lane: &Arc<Self>) {
-        let _ = lane.record.set(Self::of(route));
-        let mut lanes = window_lanes();
-        let kept = lanes.entry(lane_key(route)).or_default();
+    pub fn show_on_route(route: &super::RouteSpec, link: &Arc<Self>) {
+        let _ = link.record.set(Self::of(route));
+        let mut links = window_links();
+        let kept = links.entry(link_key(route)).or_default();
         kept.retain(|kept| {
-            kept.strong_count() > 0 && !std::ptr::eq(kept.as_ptr(), Arc::as_ptr(lane))
+            kept.strong_count() > 0 && !std::ptr::eq(kept.as_ptr(), Arc::as_ptr(link))
         });
-        kept.push(Arc::downgrade(lane));
+        kept.push(Arc::downgrade(link));
     }
 
-    /// Every lane carrying the content of the record `route` names in this
+    /// Every content link carrying the content of the record `route` names in this
     /// process: the record's own ([`Self::of`]) and those of the windows
     /// showing it ([`Self::show_on_route`]). What their windows ask for is
     /// asked of the record's route, and what arrives on it is handed to
     /// each.
     pub fn on_route(route: &super::RouteSpec) -> Vec<Arc<Self>> {
         let mut found = vec![Self::of(route)];
-        let mut lanes = window_lanes();
-        if let Some(kept) = lanes.get_mut(&lane_key(route)) {
+        let mut links = window_links();
+        if let Some(kept) = links.get_mut(&link_key(route)) {
             kept.retain(|kept| kept.strong_count() > 0);
             found.extend(kept.iter().filter_map(std::sync::Weak::upgrade));
         }
         found
     }
 
-    /// The lane of the record `route` names in this process.
+    /// The content link of the record `route` names in this process.
     pub fn of(route: &super::RouteSpec) -> Arc<Self> {
-        Arc::clone(lanes().entry(lane_key(route)).or_default())
+        Arc::clone(links().entry(link_key(route)).or_default())
     }
 
-    /// The lane of the window whose code is running: the one it keeps
-    /// ([`keep_lane`]), made for it when it keeps none yet.
+    /// The content link of the window whose code is running: the one it keeps
+    /// ([`keep_link`]), made for it when it keeps none yet.
     ///
-    /// A lane belongs to a window, not to a record: two windows of one app
+    /// A content link belongs to a window, not to a record: two windows of one app
     /// showing the same record queue their wants and their offers apart, so
     /// what one asks for is never what the other thinks it asked. The record
     /// travels on its route either way; its route is the same for both
-    /// windows, its lane is not.
+    /// windows, its content link is not.
     pub fn of_window() -> Arc<Self> {
         let window = crate::WakeHandle::new();
-        OWN_LANE.with(|own| {
+        OWN_LINK.with(|own| {
             let mut own = own.borrow_mut();
             match own.as_ref() {
-                Some((kept, lane)) if kept.same_open_scope(&window) => return Arc::clone(lane),
-                // The window that kept a lane before this one closed; the
-                // window here now keeps a lane of its own.
+                Some((kept, link)) if kept.same_open_scope(&window) => return Arc::clone(link),
+                // The window that kept a content link before this one closed; the
+                // window here now keeps a content link of its own.
                 Some(_) => *own = None,
                 None => {}
             }
-            let lane = Arc::new(Self::default());
-            *own = Some((window, Arc::clone(&lane)));
-            lane
+            let link = Arc::new(Self::default());
+            *own = Some((window, Arc::clone(&link)));
+            link
         })
     }
 
@@ -221,20 +221,20 @@ impl ContentLane {
     /// under that record's scope, and travels on its route alone. This
     /// device holds the bytes for the app only while it runs.
     pub fn resource_store(route: &super::RouteSpec) -> ContentStore {
-        let lane = Self::of(route);
-        let _ = lane.route.set(route.clone());
-        lane.store
-            .get_or_init(|| DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)))
+        let link = Self::of(route);
+        let _ = link.route.set(route.clone());
+        link.store
+            .get_or_init(|| DocumentContent::store(ContentStore::memory(), Arc::clone(&link)))
             .clone()
     }
 
-    /// The lanes of app `app`'s records that are not a window's own, with
+    /// The content links of app `app`'s records that are not a window's own, with
     /// the routes they send on.
     pub fn routed(app: &str) -> Vec<(super::RouteSpec, Arc<Self>)> {
-        lanes()
+        links()
             .iter()
-            .filter(|((_, lane_app, _), _)| lane_app == app)
-            .filter_map(|(_, lane)| Some((lane.route.get()?.clone(), Arc::clone(lane))))
+            .filter(|((_, link_app, _), _)| link_app == app)
+            .filter_map(|(_, link)| Some((link.route.get()?.clone(), Arc::clone(link))))
             .collect()
     }
 
@@ -299,11 +299,11 @@ impl ContentLane {
     }
 
     /// Where a want of `hash` stands, while it is wanted.
-    fn standing(&self, hash: &str) -> Option<ContentState> {
+    fn known(&self, hash: &str) -> Option<ContentState> {
         let state = self.state.lock_recover();
         state.wanted.contains(hash).then(|| {
             state
-                .standing
+                .known
                 .get(hash)
                 .copied()
                 .unwrap_or(ContentState::Pending)
@@ -311,9 +311,9 @@ impl ContentLane {
     }
 
     /// The requests to send on the record's route now.
-    pub fn take_requests(&self) -> LaneRequests {
+    pub fn take_requests(&self) -> ContentRequests {
         let mut state = self.state.lock_recover();
-        LaneRequests {
+        ContentRequests {
             wants: std::mem::take(&mut state.asks),
             offers: std::mem::take(&mut state.offers),
         }
@@ -338,13 +338,13 @@ impl ContentLane {
 
     /// The record's host said where a want of `hash` stands. A window
     /// waiting for the content looks again: what it shows follows.
-    pub fn stands(&self, hash: String, standing: ContentState) {
+    pub fn stands(&self, hash: String, found: ContentState) {
         {
             let mut state = self.state.lock_recover();
-            if !state.wanted.contains(&hash) || standing == ContentState::Resolved {
+            if !state.wanted.contains(&hash) || found == ContentState::Resolved {
                 return;
             }
-            state.standing.insert(hash, standing);
+            state.known.insert(hash, found);
         }
         arrived_somewhere();
     }
@@ -357,7 +357,7 @@ impl ContentLane {
         {
             let mut state = self.state.lock_recover();
             state.wanted.remove(hash);
-            state.standing.remove(hash);
+            state.known.remove(hash);
         }
     }
 }
@@ -372,28 +372,28 @@ impl ContentLane {
 /// hold and carry ciphertext alone.
 pub struct DocumentContent {
     local: ContentStore,
-    lane: Arc<ContentLane>,
+    link: Arc<ContentLink>,
 }
 
 impl DocumentContent {
-    /// `local`, joined to the route `lane` reaches.
-    pub fn store(local: ContentStore, lane: Arc<ContentLane>) -> ContentStore {
+    /// `local`, joined to the route `link` reaches.
+    pub fn store(local: ContentStore, link: Arc<ContentLink>) -> ContentStore {
         // What reaches this backend is already as it is kept (sealed, or
         // public): `local` stores it under its own address, never sealing it
         // again, as a lent store that seals would.
         let local = local.unsealed();
-        ContentStore::from_backend(Arc::new(Self { local, lane })).sealing()
+        ContentStore::from_backend(Arc::new(Self { local, link })).sealing()
     }
 
     /// Keep what arrived, verified against the address it arrived under.
     fn keep_arrived(&self) {
-        for (hash, bytes) in self.lane.take_arrived() {
+        for (hash, bytes) in self.link.take_arrived() {
             if !tilo_content::verify(&hash, &bytes) {
                 tracing::warn!(%hash, "record content did not match its address");
                 continue;
             }
             match self.local.put(&bytes) {
-                Ok(_) => self.lane.settled(&hash),
+                Ok(_) => self.link.settled(&hash),
                 Err(error) => tracing::warn!(%error, %hash, "record content was not kept"),
             }
         }
@@ -413,7 +413,7 @@ impl ContentBackend for DocumentContent {
             });
         }
         let stored = self.local.put_reader(&mut bytes.as_slice(), mime)?;
-        self.lane.offer(&stored.hash, bytes);
+        self.link.offer(&stored.hash, bytes);
         arrived_somewhere();
         Ok(stored)
     }
@@ -422,7 +422,7 @@ impl ContentBackend for DocumentContent {
         self.keep_arrived();
         let found = self.local.open(hash);
         if found.is_none() && tilo_content::valid_hash(hash) {
-            self.lane.want(&hash.to_ascii_lowercase());
+            self.link.want(&hash.to_ascii_lowercase());
         }
         Ok(found)
     }
@@ -436,15 +436,12 @@ impl ContentBackend for DocumentContent {
         self.keep_arrived();
         match self.local.state(hash) {
             ContentState::Resolved => ContentState::Resolved,
-            local => self
-                .lane
-                .standing(&hash.to_ascii_lowercase())
-                .unwrap_or(local),
+            local => self.link.known(&hash.to_ascii_lowercase()).unwrap_or(local),
         }
     }
 
     fn shared(&self) -> bool {
-        self.local.shared() || self.lane.is_served()
+        self.local.shared() || self.link.is_served()
     }
 
     /// The route only brings what the record's other readers hold for it, so
@@ -461,7 +458,7 @@ impl ContentBackend for DocumentContent {
     }
 
     fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
-        self.lane.content_secret()
+        self.link.content_secret()
     }
 
     fn max_item_bytes(&self) -> usize {

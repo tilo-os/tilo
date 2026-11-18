@@ -86,7 +86,7 @@ else
 fi
 
 # --- host apps ------------------------------------------------------------
-# The session starts its XDG autostart entries through tilo-launcher run-host
+# The session starts its XDG autostart entries through tilo-launcher machine-app
 # as soon as the desktop has a workspace; each must get a scope of its own.
 slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
 app_cgroups=

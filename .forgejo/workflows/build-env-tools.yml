@@ -225,7 +225,7 @@ jobs:
             echo "## env tool catalog (${{ matrix.arch }}, runtime: ${{ needs.plan.outputs.runtime }})"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          # The builder has no /dev/net/tun for the gated network; a fixed
+          # The builder has no /dev/net/tun for the guarded network; a fixed
           # list on a disposable builder takes the job's own network.
           TILO_ENV_TOOLS_NETWORK=host TILO_ENV_TOOLS_STATE="$state" ./os/dev/build-env-tools.sh \
             "$RUNNER_TEMP/runtime.tapp" "$out" "${identity[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

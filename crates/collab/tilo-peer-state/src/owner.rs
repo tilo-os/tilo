@@ -9,7 +9,8 @@
 //! A host keeps that record beside its state file: an index naming each
 //! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
-//! [`session`] holds the relay co-edit session with that host.
+//! [`session`] holds the server co-edit session with that host.
+mod behind;
 mod certified;
 mod create;
 mod document_read;
@@ -31,10 +32,10 @@ mod journal;
 mod journaled;
 mod limits;
 mod publication;
-mod record;
 pub mod renewal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
+mod stored;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
@@ -57,9 +58,9 @@ pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
     DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
-    custody_run_name, outgoing_bytes, validate_file_layout,
+    outgoing_bytes, ownership_name_between, ownership_run_name, validate_file_layout,
 };
-pub use record::{
+pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
 pub use write::{Committed, WriteRefusal};
@@ -80,7 +81,7 @@ use web_time::SystemTime;
 /// have changed. A page has none: it decides nothing for other processes.
 fn policy_changed() {
     #[cfg(not(target_arch = "wasm32"))]
-    tilo_identity_host::policy_change::announce();
+    tilo_identity::policy_change::announce();
 }
 
 /// Whether `hint` names this device, `device`, as the workspace's host: a workspace
@@ -129,15 +130,15 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
         Err("native owner history content is unavailable".into())
     }
-    /// Durably keep `bytes`, a run of `workspace`'s outgoing custody waiting behind its head,
+    /// Durably keep `bytes`, a run of `workspace`'s outgoing ownership waiting behind its head,
     /// beside the record, and answer the hash it is named by. The store keeps it while the
     /// record names it.
-    fn put_custody(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
-        Err("native outgoing custody runs are unavailable".into())
+    fn put_ownership(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
+        Err("native outgoing ownership runs are unavailable".into())
     }
-    /// Read a run of custody [`Self::put_custody`] kept.
-    fn read_custody(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        Err("native outgoing custody runs are unavailable".into())
+    /// Read a run of ownership [`Self::put_ownership`] kept.
+    fn read_ownership(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        Err("native outgoing ownership runs are unavailable".into())
     }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
@@ -258,7 +259,7 @@ pub struct NativeCommittedView {
     peer: StatePeer,
     /// This device's live replica, shared with the workspace's direct links.
     replica: Replica,
-    record: record::StoredWorkspace,
+    record: stored::StoredWorkspace,
     /// Who holds the workspace's keys, as [`Self::key_holders`] last
     /// answered and for which instant.
     holders: Arc<std::sync::Mutex<Option<KeyHolders>>>,
@@ -271,7 +272,7 @@ pub struct NativeCommittedView {
 /// asked for.
 type KeyHolders = (u64, std::collections::BTreeSet<[u8; 32]>);
 impl NativeCommittedView {
-    fn new(peer: StatePeer, record: record::StoredWorkspace) -> Self {
+    fn new(peer: StatePeer, record: stored::StoredWorkspace) -> Self {
         Self {
             replica: Replica::new(peer.clone()),
             peer,
@@ -324,8 +325,8 @@ impl NativeCommittedView {
     /// refusal changes nothing and no admission of a link interleaves.
     fn change<T>(
         &self,
-        change: impl FnOnce(&mut StatePeer, &mut record::StoredWorkspace) -> Result<T, String>,
-    ) -> Result<(T, record::StoredWorkspace), String> {
+        change: impl FnOnce(&mut StatePeer, &mut stored::StoredWorkspace) -> Result<T, String>,
+    ) -> Result<(T, stored::StoredWorkspace), String> {
         let mut live = self.live();
         let mut next = live.clone();
         let mut record = self.record.clone();
@@ -367,7 +368,7 @@ impl NativeCommittedView {
     pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
         Ok(&self.enrollment()?.invitation)
     }
-    fn enrollment(&self) -> Result<&record::StoredEnrollment, String> {
+    fn enrollment(&self) -> Result<&stored::StoredEnrollment, String> {
         self.record
             .enrollment
             .as_ref()
@@ -390,10 +391,25 @@ impl NativeCommittedView {
     pub fn continuity(&self) -> u64 {
         self.record.continuity
     }
-    /// Where the host that governs this workspace is reached: the hint its
-    /// enrollment carries, the one the host's own answer named for a workspace
-    /// this device holds as a further device of its person, or, for a
-    /// workspace founded here, the one its own host recorded as it founded it.
+    /// Where the devices keeping this workspace are reached, each its own
+    /// signed address, by device key: the holders the workspace's governance
+    /// names, and, for a workspace its governance names none of yet (one
+    /// founded here before its host named itself), the hint this device keeps
+    /// for it. A client tries every holder, so none of them comes first.
+    #[must_use]
+    pub fn keeping_devices(&self) -> Vec<crate::join::TransportHint> {
+        let named = self.peer.governance().keeping_devices();
+        if !named.is_empty() {
+            return named;
+        }
+        self.transport_hint().ok().cloned().into_iter().collect()
+    }
+    /// Where the host this device's own entry names is reached: the hint its
+    /// enrollment carries, the one the host's own answer named for a
+    /// workspace this device holds as a further device of its person, or, for
+    /// a workspace founded here, the one its own host recorded as it founded
+    /// it. [`Self::keeping_devices`] is where the workspace's holders are
+    /// reached now that a workspace has several.
     pub fn transport_hint(&self) -> Result<&crate::join::TransportHint, String> {
         self.record
             .enrollment
@@ -405,9 +421,9 @@ impl NativeCommittedView {
     }
     /// Whether a publication of `peer` and `record` leaves everything
     /// authorization reads from this view as it is: the replica's governance
-    /// ([`StatePeer::same_policy`]) and the record's standing in the workspace.
-    fn same_policy(&self, peer: &StatePeer, record: &record::StoredWorkspace) -> bool {
-        self.peer.same_policy(peer) && self.record.same_standing(record)
+    /// ([`StatePeer::same_policy`]) and the record's access in the workspace.
+    fn same_policy(&self, peer: &StatePeer, record: &stored::StoredWorkspace) -> bool {
+        self.peer.same_policy(peer) && self.record.same_access(record)
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
         if let Some(digest) = self.security.get() {
@@ -447,7 +463,7 @@ pub struct NativeFenceSubscription {
 }
 
 /// Told what this device committed to a workspace it hosts itself, once per
-/// commit, after it is durable: such a workspace keeps no outgoing custody
+/// commit, after it is durable: such a workspace keeps no outgoing ownership
 /// (its own device is its keeper) and holds no link to a host, so what its
 /// device writes reaches the members linked to it only through whoever is
 /// told here.
@@ -481,7 +497,7 @@ impl SharedOwner {
     /// committed to the governance of `workspace`, when it hosts that
     /// workspace itself (`hosted_here`): a share, a member's role, a grant, a
     /// device it admitted, its verdict on a member's write. Such a workspace has no host that hands its
-    /// device's change on, and the custody the change is also kept in leaves
+    /// device's change on, and the ownership the change is also kept in leaves
     /// on no link, so without this the members linked to the device read it
     /// only in the governance their next link starts with.
     fn governance_kept_here(
@@ -536,7 +552,7 @@ impl SharedOwner {
     ///
     /// `policy` says whether the publication changes what authorization
     /// decides on: the workspaces held, their governance, certificates and
-    /// revocations, or this device's standing in them. Its watchers re-check
+    /// revocations, or this device's access in them. Its watchers re-check
     /// on that, not on a write to an app record, which wakes the reads of
     /// that record itself.
     fn publish(
@@ -754,7 +770,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record::DurablePeer::from(live.durable_parts()?)
+            stored::DurablePeer::from(live.durable_parts()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -821,7 +837,7 @@ impl NativeWorkspaceOwner {
         drop(current);
         policy_changed();
     }
-    /// Admits genuine relay provenance; pending document prerequisites are also durable.
+    /// Admits genuine server provenance; pending document prerequisites are also durable.
     pub fn receive(
         &self,
         workspace: WorkspaceId,
@@ -861,7 +877,7 @@ impl NativeWorkspaceOwner {
         // ([`publication::retire_member_changes`]), which a device that
         // published none (a page entering a workspace) never has.
         let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
-        // Custody, as the host's compactions of records this device compacted ahead of it
+        // Ownership, as the host's compactions of records this device compacted ahead of it
         // leave it.
         let mut publication = candidate.record.publication.clone();
         for (origin, message) in inputs {
@@ -871,7 +887,7 @@ impl NativeWorkspaceOwner {
                 .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
             {
                 Some(report) => report.map_err(crate::AdmissionError::from),
-                None => Self::admit_input(&candidate, origin, message, now),
+                None => self.admit_with_keys(&candidate, origin, message, now),
             };
             if report.is_ok()
                 && let Some(changes) = received
@@ -895,10 +911,10 @@ impl NativeWorkspaceOwner {
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = record::DurablePeer::from(live.durable_parts()?);
+            let durable = stored::DurablePeer::from(live.durable_parts()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
-            // state and outgoing custody are byte-for-byte unchanged. In
+            // state and outgoing ownership are byte-for-byte unchanged. In
             // particular, newly settled prerequisites or retired obligations
             // still require publication before they can be observed.
             if durable == record.peer && record.publication == previous_publication {
@@ -922,13 +938,33 @@ impl NativeWorkspaceOwner {
     fn received_changes(origin: TransportOrigin, message: &NeighbourMsg) -> Option<&Vec<Vec<u8>>> {
         if !matches!(
             origin,
-            TransportOrigin::RelayDelta(_) | TransportOrigin::RetainedRelayDelta(_)
+            TransportOrigin::ServerDelta(_) | TransportOrigin::RetainedServerDelta(_)
         ) {
             return None;
         }
         match message {
             NeighbourMsg::SyncResp { changes, .. } => Some(changes),
             _ => None,
+        }
+    }
+    /// [`Self::admit_input`], with a compaction the replica refuses decided once more with the
+    /// keys this device holds ([`Self::receive_behind`]).
+    fn admit_with_keys(
+        &self,
+        candidate: &NativeCommittedView,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, crate::AdmissionError> {
+        let compaction = behind::carries_compaction(&message).then(|| message.clone());
+        match (
+            Self::admit_input(candidate, origin, message, now),
+            compaction,
+        ) {
+            (Err(refusal), Some(compaction)) if !refusal.is_device_failure() => self
+                .receive_behind(candidate, &compaction, &refusal, now)
+                .unwrap_or(Err(refusal)),
+            (report, _) => report,
         }
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.
@@ -991,7 +1027,7 @@ impl NativeWorkspaceOwner {
     fn change_document<T>(
         &self,
         workspace: WorkspaceId,
-        change: impl FnOnce(&NativeCommittedView, &mut record::StoredWorkspace) -> Result<T, String>,
+        change: impl FnOnce(&NativeCommittedView, &mut stored::StoredWorkspace) -> Result<T, String>,
     ) -> Result<T, String> {
         let view = self.view(workspace)?;
         let mut record = view.record.clone();
@@ -1006,7 +1042,7 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         view: &NativeCommittedView,
-        record: record::StoredWorkspace,
+        record: stored::StoredWorkspace,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
         self.publish(workspace, &view.replica, record, enrollment)
@@ -1021,7 +1057,7 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         replica: &Replica,
-        mut record: record::StoredWorkspace,
+        mut record: stored::StoredWorkspace,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
         // One snapshot, taken under the replica's lock: what is published is
@@ -1041,7 +1077,7 @@ impl NativeWorkspaceOwner {
     /// `record` holds: the effect history root, and the replica as published.
     fn snapshot(
         live: &StatePeer,
-        record: &mut record::StoredWorkspace,
+        record: &mut stored::StoredWorkspace,
     ) -> Result<StatePeer, String> {
         // The signed root is the replica's, and the store's blocks follow
         // it: the record mirrors it rather than deciding it, so a
@@ -1063,7 +1099,7 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         replica: &Replica,
-        mut record: record::StoredWorkspace,
+        mut record: stored::StoredWorkspace,
         published: StatePeer,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
@@ -1174,8 +1210,8 @@ pub struct AppWrite {
     pub app_id: String,
     pub cluster_id: String,
     pub document_id: String,
-    /// The author's standing in the workspace.
-    pub author: tilo_action_policy::Standing,
+    /// The author's access in the workspace.
+    pub author: tilo_action_policy::MemberAccess,
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,

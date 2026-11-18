@@ -19,7 +19,9 @@
 )]
 
 use crate::common::people::{Device, Person, Site, share_the_fleet};
-use tilo_relay_protocol::workspaces::Role;
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
+use tilo_server_protocol::workspaces::Role;
 
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
 /// and lets Chat author its records, Ada and Bob join as editors, and Chat is installed and open on
@@ -151,6 +153,216 @@ fn two_desktops_message_each_other() {
         message_ids(&studio.bob_laptop, &ada_key),
         "both desktops read the conversation as one"
     );
+}
+
+/// A direct message is news on the other person's devices: Bob is told that Ada wrote to him, with
+/// what she said, and the conversation reaching him again with that message in it does not tell him
+/// twice.
+#[test]
+fn a_direct_message_is_one_notice_that_names_who_wrote() {
+    let studio = Studio::start();
+    let (ada_key, bob_key) = studio.keys();
+    // Who Ada is here, as the bar's faces and a notice's words name her.
+    let ada_name = person_label(&studio.bob_laptop, &ada_key);
+    studio.ada_laptop.chat().send(&bob_key, "hello Bob");
+    // Both of Bob's devices are told what Ada wrote: the words are hers, the notice names who wrote
+    // as the workspace does, and it names the app it came from. His laptop reads the message first,
+    // so a notice missing after that is the telling's, not the sync's.
+    studio
+        .bob_laptop
+        .chat()
+        .wait_for_texts(&ada_key, &["hello Bob"]);
+    let notice = wait_for_notice(&studio.bob_laptop, "hello Bob");
+    assert!(
+        notice["title"]
+            .as_str()
+            .is_some_and(|title| title.starts_with(&ada_name)),
+        "the notice names {ada_name:?}, who wrote: {notice}"
+    );
+    assert_eq!(
+        notice["app"],
+        json!("Chat"),
+        "the notice names the app it came from: {notice}"
+    );
+    let on_phone = wait_for_notice(&studio.bob_phone, "hello Bob");
+    assert_eq!(
+        on_phone["title"], notice["title"],
+        "his phone is told the same words"
+    );
+    // Ada writes again. Their conversation reaches Bob's laptop once more with her first message
+    // still in it: the second is news, and the first, which he was told of already, is not told a
+    // second time by the same look.
+    studio.ada_laptop.chat().send(&bob_key, "did you see?");
+    studio
+        .bob_laptop
+        .chat()
+        .wait_for_texts(&ada_key, &["hello Bob", "did you see?"]);
+    let told = wait_for_notices(&studio.bob_laptop, &["hello Bob", "did you see?"]);
+    for body in ["hello Bob", "did you see?"] {
+        assert_eq!(
+            told.iter()
+                .filter(|notice| notice["body"] == json!(body))
+                .count(),
+            1,
+            "one notice says {body:?}, not two: {told:?}"
+        );
+    }
+    assert_eq!(told.len(), 2, "each message is one notice: {told:?}");
+    // Choosing Open on the notice of her second message opens Chat at that message on his laptop,
+    // as the banner's button does.
+    let second = told
+        .iter()
+        .find(|notice| notice["body"] == json!("did you see?"))
+        .expect("the second message's notice");
+    let before = chat_title(&studio.bob_laptop);
+    assert!(
+        !before.starts_with(&ada_name),
+        "his laptop's Chat does not show their conversation before he chooses: {before:?}"
+    );
+    choose(&studio.bob_laptop, second, "open");
+    // Chat shows their conversation, which the window's title names.
+    let deadline = tilo_test_env::hang_deadline();
+    while !chat_title(&studio.bob_laptop).starts_with(&ada_name) {
+        assert!(
+            Instant::now() < deadline,
+            "choosing the notice never opens the conversation with {ada_name:?}: Chat shows {:?}\n{}",
+            chat_title(&studio.bob_laptop),
+            studio.bob_laptop.diagnostic()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Choose `action` of `notice` on this device, as pressing its button does: the notifications'
+/// own `act`, by the id the state dump lists the notice under.
+fn choose(device: &Device, notice: &Value, action: &str) {
+    let listed = device.ask(&json!({"op": "actions_enumerate", "query": "notification"}));
+    let row = listed["answer"]["actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| {
+            row["resource"] == json!("session:notifications") && row["operation"] == json!("act")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{} offers no act on its notifications: {listed}",
+                device.label
+            )
+        });
+    let answer = device.act_wait(
+        row["provider"].as_str().expect("a provider"),
+        row["id"].as_str().expect("an action's id"),
+        &json!({"notification": notice["id"], "action": action}),
+    );
+    assert!(
+        answer.get("err").is_none(),
+        "{} chooses {action} on {notice}: {answer}",
+        device.label
+    );
+}
+
+/// The title of this device's Chat window: what it shows, as the session names it.
+fn chat_title(device: &Device) -> String {
+    let windows = device.ask(&json!({"op": "windows"}));
+    windows["answer"]["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|window| window["app_id"] == json!("so.tilo.chat"))
+        .and_then(|window| window["title"].as_str())
+        .map_or_else(
+            || panic!("{} shows no Chat window: {windows}", device.label),
+            str::to_owned,
+        )
+}
+
+/// The notifications this device's session shows now, as its state dump lists them: the banners up
+/// and what the centre keeps.
+fn notices(device: &Device) -> Vec<Value> {
+    device.state()["state"]["notifications"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The notices this device's session shows that say `body`: a person's words are what a notice is
+/// found by, whatever they are called here.
+fn notices_saying(device: &Device, body: &str) -> Vec<Value> {
+    notices(device)
+        .into_iter()
+        .filter(|notice| notice["body"] == json!(body))
+        .collect()
+}
+
+/// Wait until this device's session shows exactly one notice saying `body`, and answer it; what it
+/// shows instead is the failure's message.
+fn wait_for_notice(device: &Device, body: &str) -> Value {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let found = notices_saying(device, body);
+        if found.len() == 1 {
+            return found[0].clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} is never told {body:?} once; its session shows {:?}\n{}",
+            device.label,
+            notices(device),
+            device.diagnostic()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Wait until this device's session shows a notice saying each of `bodies`, and answer those
+/// notices.
+fn wait_for_notices(device: &Device, bodies: &[&str]) -> Vec<Value> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let shown = notices(device);
+        let found: Vec<Value> = shown
+            .iter()
+            .filter(|notice| bodies.iter().any(|body| notice["body"] == json!(*body)))
+            .cloned()
+            .collect();
+        if bodies
+            .iter()
+            .all(|body| found.iter().any(|notice| notice["body"] == json!(*body)))
+        {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} is never told {bodies:?}; its session shows {shown:?}\n{}",
+            device.label,
+            device.diagnostic()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The name this device's session gives the person whose root key is `key`, as the bar's faces
+/// and a notice's words name them.
+fn person_label(device: &Device, key: &str) -> String {
+    let state = device.state();
+    state["state"]["peers"]["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|workspace| {
+            workspace["members"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+        })
+        .find(|member| member["user"].as_str() == Some(key))
+        .and_then(|member| member["label"].as_str())
+        .filter(|label| !label.is_empty())
+        .map_or_else(
+            || panic!("{} gives {key} no name: {state}", device.label),
+            str::to_owned,
+        )
 }
 
 /// The ids of the messages the conversation with `peer` shows, in the app's order.
@@ -389,7 +601,7 @@ fn a_device_takes_the_key_its_host_did_not_hand_it_from_the_persons_other_device
     bob_laptop
         .chat()
         .wait_for_texts(&ada_key, &["under the new key"]);
-    // Each device reached the host and its other device from one endpoint: a relay keeps one
+    // Each device reached the host and its other device from one endpoint: a server keeps one
     // connection per endpoint, and tells the older of two under one key that it was replaced.
     for device in [&bob_laptop, &bob_phone] {
         assert!(

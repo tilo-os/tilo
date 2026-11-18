@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
-use account_custody::openrouter::{self, KeyAuthorization};
-use account_custody::{
-    Capability, Custodian, CustodyError, DeviceAuthorization, DeviceCancel, LoopbackCancel,
-    OAuthIssuer, OAuthUse,
+use account_credentials::openrouter::{self, KeyAuthorization};
+use account_credentials::{
+    Capability, CredentialError, CredentialStore, DeviceAuthorization, DeviceCancel,
+    LoopbackCancel, OAuthIssuer, OAuthUse,
 };
 use agent_provider_config::presets::Preset;
 use agent_provider_config::{ProviderProfile, SecretReference, SignInCredential, SignInIssuer};
@@ -83,9 +83,9 @@ impl Service {
         })
     }
 
-    pub(crate) fn available(self, custodian: &Custodian) -> bool {
+    pub(crate) fn available(self, credential_store: &CredentialStore) -> bool {
         self.oauth_use()
-            .is_none_or(|oauth_use| custodian.is_configured(oauth_use))
+            .is_none_or(|oauth_use| credential_store.is_configured(oauth_use))
     }
 }
 
@@ -262,7 +262,7 @@ impl SignInSetup {
     pub(crate) fn begin(
         service: Service,
         profile: Option<&ProviderProfile>,
-        custodian: &Custodian,
+        credential_store: &CredentialStore,
         opener: &Arc<dyn BrowserOpener>,
     ) -> Result<Self, String> {
         let profile_id = profile.map_or_else(
@@ -270,7 +270,7 @@ impl SignInSetup {
             |profile| profile.id.clone(),
         );
         let grant = agent_vertex::grant_id(&profile_id);
-        let failed = |error: CustodyError| sign_in_error(service, &error);
+        let failed = |error: CredentialError| sign_in_error(service, &error);
         let wait = match service {
             Service::OpenRouter => {
                 let authorization =
@@ -288,17 +288,17 @@ impl SignInSetup {
                 let oauth_use = service
                     .oauth_use()
                     .ok_or_else(|| t("agent-sign-in-stopped"))?;
-                let custodian = custodian.clone();
-                let sealing = custodian.clone();
+                let credential_store = credential_store.clone();
+                let sealing = credential_store.clone();
                 SignInWait::device(
                     opener,
                     move || {
-                        custodian
+                        credential_store
                             .begin_device_sign_in(oauth_use)
                             .map_err(|error| sign_in_error(service, &error))
                     },
                     move |device| {
-                        Custodian::finish_device_sign_in(device)
+                        CredentialStore::finish_device_sign_in(device)
                             .and_then(|tokens| sealing.seal_oauth(&grant, &tokens))
                             .map(|()| SignedIn::Grant)
                             .map_err(|error| sign_in_error(service, &error))
@@ -309,17 +309,17 @@ impl SignInSetup {
                 let oauth_use = service
                     .oauth_use()
                     .ok_or_else(|| t("agent-sign-in-stopped"))?;
-                let authorization = custodian
+                let authorization = credential_store
                     .begin_sign_in_for(oauth_use, None)
                     .map_err(failed)?;
                 let cancel = authorization
                     .canceller()
                     .ok_or_else(|| t("agent-sign-in-ports-busy"))?;
                 let url = authorization.url().to_owned();
-                let custodian = custodian.clone();
+                let credential_store = credential_store.clone();
                 SignInWait::browser(&url, cancel, opener, move || {
-                    Custodian::finish_sign_in(authorization)
-                        .and_then(|tokens| custodian.seal_oauth(&grant, &tokens))
+                    CredentialStore::finish_sign_in(authorization)
+                        .and_then(|tokens| credential_store.seal_oauth(&grant, &tokens))
                         .map(|()| SignedIn::Grant)
                         .map_err(|error| sign_in_error(service, &error))
                 })
@@ -386,13 +386,13 @@ pub(crate) fn new_profile(service: Service, profile_id: &str) -> ProviderProfile
     profile
 }
 
-fn sign_in_error(service: Service, error: &CustodyError) -> String {
+fn sign_in_error(service: Service, error: &CredentialError) -> String {
     let name = service.preset().label();
     match error {
-        CustodyError::NotConfigured { .. } => {
+        CredentialError::NotConfigured { .. } => {
             t_args("agent-sign-in-not-configured", &[("service", name.into())])
         }
-        CustodyError::Offline => t_args("agent-sign-in-offline", &[("service", name.into())]),
+        CredentialError::Offline => t_args("agent-sign-in-offline", &[("service", name.into())]),
         other => t_args(
             "agent-sign-in-failed",
             &[

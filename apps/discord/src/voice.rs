@@ -1,11 +1,11 @@
 //! What a call bridge reads of a guild: which Discord voice channel pairs
 //! with which Tilo one, who an account is in the workspace, and what an avatar
-//! is stored as. The workspace's host carries the calls; the record only says
+//! is stored as. The workspace's host carries the calls; the resource only says
 //! where they go.
 
 use ui::tilo_resource::Id;
 
-use crate::record::{Guild, MappedKind};
+use crate::guild::{Guild, MappedKind};
 
 /// A Discord voice channel and the Tilo voice channel it is mapped to:
 /// one call, heard on both sides.
@@ -76,7 +76,7 @@ impl Guild {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{DChannel, Link, Mapping, Origin};
+    use crate::guild::{DChannel, Link, Mapping, Origin};
 
     fn guild() -> Guild {
         let mut guild = Guild::default();
@@ -94,7 +94,7 @@ mod tests {
             guild.channels.push(channel(id, kind));
         }
         for (tilo, discord) in [("general", "11"), ("lounge", "13"), ("voice", "12")] {
-            let key = crate::record::map_key(MappedKind::Channel, tilo);
+            let key = crate::guild::map_key(MappedKind::Channel, tilo);
             guild.map.push(Mapping {
                 key,
                 kind: MappedKind::Channel,

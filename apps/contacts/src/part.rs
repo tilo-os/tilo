@@ -1,17 +1,17 @@
 //! The address book's contacts, kept in numbered parts beside the book.
 //!
-//! One record cannot hold every contact a workspace ever took at a cost
-//! that stays flat: every holder of a record loads, verifies, diffs and
+//! One resource cannot hold every contact a workspace ever took at a cost
+//! that stays flat: every holder of a resource loads, verifies, diffs and
 //! saves all of it, so a change to one contact of thousands would cost
-//! thousands. The contacts live in a chain of [`ContactPart`] records
+//! thousands. The contacts live in a chain of [`ContactPart`] resources
 //! instead (`tilo_app`'s `Chained`), each holding up to [`PART_CONTACTS`]
 //! contacts or [`PART_TEXT_BYTES`] of their text and pictures; a change
-//! touches the one part that holds its contact. The book's own record
+//! touches the one part that holds its contact. The book's own document
 //! ([`crate::resource::Contacts`]) holds nothing of theirs.
 //!
 //! - **Where a new contact goes.** To the newest part, unless it is full
 //!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same record, so their contacts meet there.
+//!   start the same resource, so their contacts meet there.
 //! - **Where a change goes.** To the part holding the contact it names.
 //! - **Deleting.** A deleted contact's id is kept in the part that held it
 //!   ([`ContactPart::removed`]), and every read hides a contact whose id is
@@ -615,7 +615,7 @@ impl ContactPart {
 #[cfg(test)]
 mod tests;
 
-/// The chain the parts belong to, beside the book's own record.
+/// The chain the parts belong to, beside the book's own document.
 #[must_use]
 pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("contacts", &ui::resource::DocumentId::workspace_default())
@@ -636,6 +636,7 @@ impl ui::framework::Chained for ContactPart {
         action: &mut Self::Action,
         _book: &crate::resource::Contacts,
         parts: &[(u64, Rc<Self>)],
+        _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         prepare(action, parts)
     }

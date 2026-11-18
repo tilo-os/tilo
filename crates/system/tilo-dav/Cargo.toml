@@ -10,7 +10,7 @@ description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies
 
 [dependencies]
 accounts = { version = "0.1.0", path = "../accounts", optional = true }
-account-custody = { version = "0.1.0", path = "../account-custody", optional = true }
+account-credentials = { version = "0.1.0", path = "../account-credentials", optional = true }
 serde_json = { workspace = true, optional = true }
 quick-xml.workspace = true
 roxmltree.workspace = true
@@ -20,8 +20,8 @@ zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["client"]
-# Credential custody and origin-bound calendar access; refresh is blocking.
-oauth = ["client", "net", "dep:accounts", "dep:account-custody", "dep:serde_json"]
+# Credential ownership and origin-bound calendar access; refresh is blocking.
+oauth = ["client", "net", "dep:accounts", "dep:account-credentials", "dep:serde_json"]
 # Explicit trusted loopback fixture, never an implicit production override.
 test-support = ["oauth"]
 # The blocking HTTP client. Without it the crate is the parser and request

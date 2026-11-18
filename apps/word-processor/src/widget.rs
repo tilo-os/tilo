@@ -79,7 +79,6 @@ mod presence_tests;
 mod presences;
 mod proofing;
 mod review;
-mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 mod traits;
@@ -892,6 +891,9 @@ pub struct Editor {
     ime_rect: Option<Rect>,
     color_picker: StyleColorPicker,
     presences: presences::PresenceViews,
+    /// The block the person last edited here, and when: what someone else wrote there before then
+    /// no longer rests as theirs.
+    edited_at: Option<(String, ui::time::Instant)>,
     staged_scenario: Option<String>,
     layout: Option<(
         ui::framework::Setting<proofing::WriterLayout>,
@@ -1126,6 +1128,7 @@ impl Editor {
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             presences: presences::PresenceViews::default(),
+            edited_at: None,
             staged_scenario: None,
             layout: None,
             record_file: None,
@@ -1165,7 +1168,7 @@ impl Editor {
         self.last_dispatched.as_ref()
     }
 
-    pub(crate) fn show_record_of(&mut self, path: PathBuf) {
+    pub(crate) fn show_resource_of(&mut self, path: PathBuf) {
         let format = WpFormat::from_path(&path);
         self.set_file(path.clone(), format);
         self.record_file = Some(path);

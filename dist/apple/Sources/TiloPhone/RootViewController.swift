@@ -9,7 +9,7 @@ import WebKit
 /// The iPhone app's one screen: Tilo's page to every edge, and what only the system can do
 /// around it. The page lays itself out for a phone; nothing native is drawn over it but a
 /// screen for when there is no page, and a line while words wait for a place to go. The way
-/// in at the site's door is in the door: the page shows what this iPhone offers there.
+/// in on the site's entry page is on that page: the page shows what this iPhone offers there.
 @MainActor
 final class RootViewController: UIViewController {
     private var host: PageHost?
@@ -18,9 +18,9 @@ final class RootViewController: UIViewController {
     private var permission = NoticePermission.notAsked
     private var problem: UIView?
     private var hint: UIView?
-    /// The site keeps this iPhone out, and the page shows the way in at its door.
-    private var atDoor = false
-    /// The person is following a link from the door, and belongs where the app starts once in.
+    /// The site keeps this iPhone out, and the page shows the way in at its entry page.
+    private var refused = false
+    /// The person is following a link from the entry page, and belongs where the app starts once in.
     private var returnsToStart = false
     /// Asked for from the app's icon before the page was there.
     private var asked: QuickAction?
@@ -76,8 +76,8 @@ final class RootViewController: UIViewController {
     private func follow(_ text: String?, else refusal: Words) {
         guard let host else { return }
         guard let link = text.flatMap(host.policy.link(in:)) else { return say(refusal.said(site: host.policy.origin)) }
-        // From the door a link is the way in; from anywhere else it is what they asked to see.
-        returnsToStart = atDoor
+        // From the entry page a link is the way in; from anywhere else it is what they asked to see.
+        returnsToStart = refused
         show(nil)
         host.open(link)
     }
@@ -88,7 +88,7 @@ final class RootViewController: UIViewController {
         host?.view.removeFromSuperview()
         host = nil
         arrived = false
-        atDoor = false
+        refused = false
         switch ShellSettings.load() {
         case .success(let settings):
             let host = PageHost(settings: settings, permission: permission, offer: RootViewController.offer,
@@ -170,17 +170,17 @@ final class RootViewController: UIViewController {
 
     // MARK: The way in
 
-    /// What this iPhone offers at the site's door: the code or the link from a device where
-    /// the person is signed in, or an invitation's link. The page shows it in its door
+    /// What this iPhone offers at the site's entry page: the code or the link from a device where
+    /// the person is signed in, or an invitation's link. The page shows it in its entry page
     /// (`Bridge`), so nothing of it is drawn here.
-    private static var offer: DoorOffer {
-        let paste = DoorOffer.Way(.paste, Words.pasteLink.said)
-        guard readsCodes else { return DoorOffer(said: Words.wayInMac.said, ways: [paste]) }
-        return DoorOffer(said: Words.wayInPhone.said, ways: [DoorOffer.Way(.scan, Words.scanCode.said), paste])
+    private static var offer: WayInOffer {
+        let paste = WayInOffer.Way(.paste, Words.pasteLink.said)
+        guard readsCodes else { return WayInOffer(said: Words.wayInMac.said, ways: [paste]) }
+        return WayInOffer(said: Words.wayInPhone.said, ways: [WayInOffer.Way(.scan, Words.scanCode.said), paste])
     }
 
     /// A phone with a camera the system reads codes with: every iPhone. A simulator has no
-    /// camera and offers the button all the same, so that the door can be looked at there.
+    /// camera and offers the button all the same, so that the entry page can be looked at there.
     static var readsCodes: Bool {
         #if targetEnvironment(simulator)
         true
@@ -214,11 +214,11 @@ final class RootViewController: UIViewController {
         }
     }
 
-    /// Say why nothing was opened: in the door while the page offers the way in there, where
+    /// Say why nothing was opened: on the entry page while the page offers the way in there, where
     /// the person pressed, and as an alert anywhere else.
     private func say(_ words: String) {
         Task {
-            if let host, atDoor, await host.say(atDoor: words) {
+            if let host, refused, await host.say(onEntryPage: words) {
                 UIAccessibility.post(notification: .announcement, argument: words)
                 return
             }
@@ -337,14 +337,14 @@ extension RootViewController: PageHostDelegate {
             hint?.removeFromSuperview()
             hint = nil
         case .wayIn(let way):
-            // Pressed in the door.
-            guard atDoor else { return }
+            // Pressed on the entry page.
+            guard refused else { return }
             switch way {
             case .scan: scanCode()
             case .paste: follow(UIPasteboard.general.string, else: .noLink)
             }
         case .entry(let entry):
-            atDoor = entry.wantsWayIn
+            refused = entry.wantsWayIn
             guard entry.state == "open", returnsToStart else { return }
             returnsToStart = false
             Task {

@@ -126,7 +126,7 @@ fn help_overlay_and_accessibility_expose_the_deck() {
         assert!(press_char(app, "?"));
         assert!(
             app.help_overlay.is_visible(),
-            "the help overlay is shown in Present mode (the exact gate `draw` uses)"
+            "the help overlay is shown in Present mode (the exact check `draw` uses)"
         );
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

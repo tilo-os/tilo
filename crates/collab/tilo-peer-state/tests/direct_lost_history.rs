@@ -44,7 +44,7 @@ struct Linked {
     a: DirectSync,
     a_key: SigningKey,
     b: DirectSync,
-    link: tokio::task::JoinHandle<Result<(), tilo_relay_protocol::refusal::Refusal>>,
+    link: tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
     router: iroh::protocol::Router,
     b_endpoint: iroh::Endpoint,
 }

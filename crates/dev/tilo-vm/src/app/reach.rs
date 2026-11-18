@@ -47,16 +47,16 @@ fn until(seconds: u64) -> String {
     let now = unix_now();
     let local = i64::try_from(seconds)
         .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map(|time| time.with_timezone(&chrono::Local));
+        .and_then(|s| jiff::Timestamp::from_second(s).ok())
+        .map(|time| time.to_zoned(jiff::tz::TimeZone::system()));
     let left = seconds.saturating_sub(now);
     let at = local.map_or_else(
         || seconds.to_string(),
         |time| {
             if left >= 86_400 {
-                time.format("%Y-%m-%d %H:%M").to_string()
+                time.strftime("%Y-%m-%d %H:%M").to_string()
             } else {
-                time.format("%H:%M").to_string()
+                time.strftime("%H:%M").to_string()
             }
         },
     );

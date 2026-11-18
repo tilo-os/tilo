@@ -223,7 +223,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::)"
-                  " or test(shared_input::a_window_lifted))",
+                  " or test(shared_input::a_window_lifted) or test(workspace_agents::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
@@ -258,12 +258,12 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Tasks and its launcher for the closed app",
             )
-        # The lounge's end-to-end tests start a persistent relay workspace, a program
+        # The lounge's end-to-end tests start a persistent server workspace, a program
         # of another package that only its `agents` feature builds: the
         # session's workspace-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
         self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tilo-relay:tilo-relay=tilo-relay/agents"])
+                                             "tilo-server:tilo-server=tilo-server/agents"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "lounge-siblings"]
@@ -273,11 +273,13 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'}),
                  ("package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)",
                   {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds the relay for the lounge's tests",
+                f"the {profile} profile builds the server for the lounge's tests",
             )
-        # The relay's coding-agent tests start the guest's own agent program in its
+        # The server's coding-agent tests start the guest's own agent program in its
         # serving mode, as a workspace's machine starts it: a program of another
-        # package, which Cargo builds for no test of the relay's.
+        # package, which Cargo builds for no test of the server's. So do the agent
+        # session's tests of a coding agent on a person's server, which start it
+        # through that server's own keeper of coding agents.
         machine = scripts.pop("machine-siblings")
         self.assertEqual(machine["command"], ["bash", "tools/build-sibling-binaries.sh",
                                               "legacy-agent:tilo-legacy-agent"])
@@ -286,9 +288,10 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "machine-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-relay) and test(coding_agents::)",
-                  {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds the guest's agent for the relay's coding-agent tests",
+                [(filter_, {"host": 'cfg(target_os = "linux")'})
+                 for filter_ in ("package(tilo-server) and test(coding_agents::)",
+                                 "package(tilo-agent-session) and test(hosted_coding_agents::)")],
+                f"the {profile} profile builds the guest's agent for the tests that start a coding agent",
             )
         # The browser peer's page tests drive the page's modules beside a
         # runtime module the harness builds once, before they start.
@@ -323,7 +326,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": "test-runtime",
                                  "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
-                                 "test(device_branch::) or test(shared_input::a_window_lifted))":
+                                 "test(device_branch::) or test(shared_input::a_window_lifted) or "
+                                 "test(workspace_agents::))":
                                      "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
                                  "package(tilo-session) and binary(it) and test(device_branch::)":
@@ -332,7 +336,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
-                                 "package(tilo-relay) and test(coding_agents::)": "machine-siblings",
+                                 "package(tilo-server) and test(coding_agents::)": "machine-siblings",
+                                 "package(tilo-agent-session) and test(hosted_coding_agents::)":
+                                     "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures",

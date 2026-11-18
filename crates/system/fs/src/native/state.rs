@@ -1,4 +1,4 @@
-//! Durable state of the native data plane, in `meta.redb`: the last capture epoch
+//! Durable state of the native backend, in `meta.redb`: the last capture epoch
 //! and, for every path the daemon wrote itself, the record version it materialised
 //! and the inode that followed. An epoch is persisted in one transaction after its
 //! changeset is applied, so a crash replays at most one, and replaying is
@@ -175,7 +175,7 @@ pub enum NodeUpdate {
 impl NativeState {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Database::create(path)
-            .with_context(|| format!("opening native data plane state {}", path.display()))?;
+            .with_context(|| format!("opening native backend state {}", path.display()))?;
         let txn = db.begin_write()?;
         {
             txn.open_table(EPOCH)?;

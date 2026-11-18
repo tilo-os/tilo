@@ -1,4 +1,4 @@
-//! Opaque transfer custody for setup frontends on every host.
+//! Opaque transfer ownership for setup frontends on every host.
 //! Unsupported hosts refuse before inspecting source or destination paths.
 use serde_json::Value;
 use std::path::{Path, PathBuf};

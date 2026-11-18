@@ -5,7 +5,7 @@ use crate::setup::home_capture::SourceReadContext;
 use std::{io::Read, os::unix::fs::MetadataExt, path::PathBuf};
 
 #[test]
-fn installed_completed_btrfs_copy_preserves_original_witness_and_inventory() {
+fn installed_completed_btrfs_copy_preserves_original_proof_and_inventory() {
     assert_eq!(
         rustix::process::geteuid().as_raw(),
         0,
@@ -24,11 +24,11 @@ fn installed_completed_btrfs_copy_preserves_original_witness_and_inventory() {
         .unwrap()
         .unwrap();
     let requested_bytes = declaration.source().bytes().unwrap();
-    let witness = declaration.source_witness().clone();
+    let proof = declaration.source_proof().clone();
     assert!(installed.manifest().planned_btrfs_resize.is_some());
     let context = SourceReadContext::review_installed_copy(&installed).unwrap();
     assert_eq!(context.plan().bytes().unwrap(), requested_bytes);
-    assert_eq!(context.intent.witness().unwrap(), witness);
+    assert_eq!(context.intent.proof().unwrap(), proof);
     assert_ne!(
         context.source.original_plan().home.volume.last_lba,
         context.plan().home.volume.last_lba
@@ -59,7 +59,7 @@ fn installed_completed_btrfs_copy_preserves_original_witness_and_inventory() {
     drop(file);
     // The generic path is still strict and must not accept the old record as
     // though its requested geometry equalled a shrunk physical source.
-    assert!(SourceReadContext::review_witness(context.source.clone(), &witness).is_err());
+    assert!(SourceReadContext::review_proof(context.source.clone(), &proof).is_err());
     let geometry = context.geometry.as_ref().unwrap();
     let mut wrong = geometry.effective.clone();
     wrong.home.volume.last_lba += 1;

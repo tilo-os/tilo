@@ -18,7 +18,7 @@ tilo-notify = { version = "0.1.0", path = "../../platform/tilo-notify" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 blake3.workspace = true
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 # A notification's own artwork, decoded into pixels.

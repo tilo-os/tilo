@@ -37,7 +37,7 @@ pub use moderation_api::{ModerationApiError, ModerationApiService};
 pub use serve::{AppState, handle};
 pub use storage::{
     DroppedVersion, HistoryCompaction, HistoryCompactionReport, PendingSubmission,
-    PromotionJournal, PrunePreview, PruneReport, RetentionPreview, ReviewDecision, ReviewRecord,
+    PromotionJournal, PrunePreview, PruneReport, RetentionPreview, ReviewDecision, ReviewEntry,
     ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
     TwinReport,
 };

@@ -1,4 +1,4 @@
-//! Path-level operations for the native data plane.
+//! Path-level operations for the native backend.
 //!
 //! On Tier 1 the workspace is a real tree on the store volume and nothing passes through FUSE.
 //! Changes are observed afterwards as ordered changesets of paths and applied here through the same
@@ -90,7 +90,7 @@ impl QuickFS {
         self.ns().lookup_kind(parent, name)
     }
 
-    /// The directory at `components`, creating missing directories. A file standing where a directory
+    /// The directory at `components`, creating missing directories. A file where a directory
     /// must be is removed first: the changeset that made the path a directory removed it on the
     /// author's side too.
     fn ensure_dir_components(&self, components: &[Vec<u8>]) -> Result<u64, i32> {
@@ -461,7 +461,7 @@ impl QuickFS {
         Some(cur)
     }
 
-    /// The record plane's current state of one path.
+    /// The record protocol's current state of one path.
     pub fn entry_at(&self, rel: &Path) -> Option<TreeEntry> {
         let components = path_components(rel).ok()?;
         let ino = self.ino_at(&components)?;
@@ -896,7 +896,7 @@ impl QuickFS {
 
 /// Whether a namespace entry's name is exactly one path component.
 ///
-/// The native data plane turns these names into real paths under the live tree, as root, and a name
+/// The native backend turns these names into real paths under the live tree, as root, and a name
 /// merged from a peer's document is whatever bytes the peer wrote: a separator, a NUL or a dot-link
 /// must never reach `Path::join`, or `../../etc/cron.d/x` would leave the tree and `/etc/cron.d/x`
 /// would replace it.

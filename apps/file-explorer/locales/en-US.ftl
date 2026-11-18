@@ -126,8 +126,8 @@ files-transfer-uploading = uploading
 files-transfer-verifying = verifying
 
 ## Sharing
-files-search-collaborative-records = Collaborative files
-files-search-record-provenance = { $path }
+files-search-collaborative-files = Collaborative files
+files-search-provenance = { $path }
 files-share = Share…
 files-share-opening = Opening the invite sheet…
 files-share-failed = The invite sheet did not open: { $reason }
@@ -582,7 +582,7 @@ files-folder-missing = { $path } is not an existing folder.
 files-copy-failed = Copy failed: { $detail }
 files-resource-nearby = Nearby
 
-## What a place, a record and a remote account offer
+## What a place, a resource and a remote account offer
 files-account-status = Show account status
 files-account-reauthenticate = How to sign in again
 files-reveal = Reveal in Files
